@@ -247,10 +247,31 @@ pub(crate) struct Reconsideration {
 }
 
 pub(crate) struct ProbeDecision {
-    pub(crate) result: Result<abr::ProbePermit, abr::ProbeBlock>,
+    result: Result<abr::ProbePermit, abr::ProbeBlock>,
+    current_wire_kbps: u32,
+    conservative_kbps: u32,
+}
+
+pub(crate) struct ProbeBlockSummary {
+    pub(crate) reason: abr::ProbeBlock,
     pub(crate) current_wire_kbps: u32,
     pub(crate) conservative_kbps: u32,
 }
+
+pub(crate) enum RoundAction {
+    Stay,
+    ProbeBlocked(ProbeBlockSummary),
+    ProbeDeferredForCleanup,
+    Probe(abr::ProbePermit),
+    TrialDeferred {
+        proposal: abr::Proposal,
+        refreshing_same_request: bool,
+        reason: TrialDeferral,
+    },
+    Trial { proposal: abr::Proposal, reserve_policy: abr::ReservePolicy },
+}
+
+pub(crate) enum TrialDeferral { EncoderCleanup, PlaybackClock }
 
 pub(crate) struct ProbeGrade {
     pub(crate) verdict: abr::RecoveryVerdict,
@@ -332,7 +353,6 @@ impl Coordinator {
     pub(crate) fn retire(&self, encoder: String) { self.control.retire(encoder); }
     pub(crate) fn trace_generation(&self) -> u32 { self.control.trace_generation() }
     pub(crate) fn original_source_kbps(&self) -> u32 { self.control.original_source_kbps() }
-    pub(crate) fn recover_kbps(&self) -> u32 { self.recover_kbps }
     pub(crate) fn retain_original_recovery(&mut self, kbps: u32) { self.recover_kbps = kbps; }
     pub(crate) fn on_hls_commit(&mut self, direction: abr::Direction) {
         if let Some(gate) = self.recovery.as_mut() { gate.on_hls_commit(direction); }
@@ -369,6 +389,74 @@ impl Coordinator {
             result, current_wire_kbps: current.expected_wire_kbps,
             conservative_kbps: delivery.conservative_kbps(),
         })
+    }
+    pub(crate) fn source_switch(
+        &self, fresh_probe_kbps: Option<u32>, decision: abr::Decision,
+        cleanup_ready: bool, buffered_ms: Option<i64>, media_duration_ms: u32,
+    ) -> LatchedOriginalRecovery {
+        latched_original_recovery(
+            self.recover_kbps, fresh_probe_kbps, decision, cleanup_ready,
+            buffered_ms, media_duration_ms,
+        )
+    }
+
+    /// Called after the higher-priority latched source switch had its publication
+    /// opportunity. A probe spends its permit only on a Stay boundary; a quality
+    /// transaction receives its pending reserve policy from the same controller.
+    pub(crate) fn next_action(
+        &mut self, decision: abr::Decision, telemetry: &abr::ControllerTelemetry,
+        sample: abr::SegmentSample, rollback_media_ms: Option<u32>, remaining_ms: i64,
+        now_ms: u64, paused: bool, cleanup_ready: bool,
+        automatic_permitted: bool, rebuffer_requested: bool, rebuffering: bool,
+    ) -> RoundAction {
+        match decision {
+            abr::Decision::Stay if !paused => {
+                match self.probe_due(telemetry, sample, rollback_media_ms, remaining_ms, now_ms) {
+                    Some(ProbeDecision {
+                        result: Err(reason), current_wire_kbps, conservative_kbps,
+                    }) => RoundAction::ProbeBlocked(ProbeBlockSummary {
+                        reason, current_wire_kbps, conservative_kbps,
+                    }),
+                    Some(ProbeDecision { result: Ok(_), .. }) if !cleanup_ready => {
+                        RoundAction::ProbeDeferredForCleanup
+                    }
+                    Some(ProbeDecision { result: Ok(permit), .. }) => RoundAction::Probe(permit),
+                    None => RoundAction::Stay,
+                }
+            }
+            abr::Decision::Stay => RoundAction::Stay,
+            abr::Decision::Prime(proposal) => {
+                // A higher-priority source latch can cancel this proposal while
+                // its route request is Busy. The completed quantum's decision is
+                // then stale and cannot open a new encoder.
+                if self.controller.pending_reserve_policy(proposal).is_none() {
+                    return RoundAction::Stay;
+                }
+                if proposal.direction == abr::Direction::Up && !cleanup_ready {
+                    let refreshing_same_request = self.reject(
+                        proposal, abr::RejectCause::Circumstance, now_ms,
+                    );
+                    return RoundAction::TrialDeferred {
+                        proposal, refreshing_same_request,
+                        reason: TrialDeferral::EncoderCleanup,
+                    };
+                }
+                if !automatic_permitted || !hls_quality_trial_may_start(
+                    proposal.direction, rebuffer_requested, rebuffering, paused,
+                ) {
+                    let refreshing_same_request = self.reject(
+                        proposal, abr::RejectCause::Circumstance, now_ms,
+                    );
+                    return RoundAction::TrialDeferred {
+                        proposal, refreshing_same_request,
+                        reason: TrialDeferral::PlaybackClock,
+                    };
+                }
+                RoundAction::Trial {
+                    proposal, reserve_policy: self.pending_reserve_policy(proposal),
+                }
+            }
+        }
     }
     pub(crate) fn probe_failed(&mut self) -> Option<ProbeGrade> {
         let delivery = self.controller.delivery();

@@ -5739,12 +5739,8 @@ fn hls_demux(
         // decision therefore cancels that pending rung explicitly instead of becoming stale
         // across a new operating point.
         if !paused_now {
-            if let adaptive::LatchedOriginalRecovery::Switch { kbps, cancel } = adaptive::latched_original_recovery(
-                state.recover_kbps(),
-                None,
-                decision,
-                encoder_cleanup_ready,
-                sample.buffer.buffered_ms(),
+            if let adaptive::LatchedOriginalRecovery::Switch { kbps, cancel } = state.source_switch(
+                None, decision, encoder_cleanup_ready, sample.buffer.buffered_ms(),
                 sample.media_duration_ms(),
             ) {
                 if let Some(lease) = HlsAutomaticLease::begin(
@@ -5788,51 +5784,62 @@ fn hls_demux(
                 }
             }
         }
-
-        if decision == crate::abr::Decision::Stay && !paused_now {
-            let verdict = state.probe_due(
-                &telemetry, sample, rollback_media_ms, remaining_ms, now_ms(),
-            );
-            // **Say why NOT, once per distinct reason.** `abr: mode` is only ever emitted on a
-            // probe RESULT, so a recovery gate that never opens produces a log identical to one
-            // that was never constructed — and on the host that is exactly what happens
-            // (`pipe_auto_original_slow_recover`, 180 s on a 40 Mbit/s link: zero `abr: mode`,
-            // Original never re-requested, no way to tell which of four conditions withheld it).
-            // Rate-limited to CHANGES so a steady refusal costs one line rather than one a
-            // segment; the reason is a name, not a number, so a repeat carries no new information.
-            //
-            // **A fired probe clears the latch, and that is a fix rather than a nicety.** The
-            // reason used to live on the gate as `last_block` and the latch here, two copies of
-            // one fact across a module boundary — and they went out of sync exactly when a probe
-            // succeeded: the gate reset its copy, this one kept the old reason, and the next
-            // refusal FOR THE SAME REASON printed nothing. `probe_due` now returns the reason
-            // instead of publishing it, so there is one answer and one channel.
-            let permit = match verdict {
-                Some(adaptive::ProbeDecision { result: Err(block), current_wire_kbps, conservative_kbps })
-                    if last_probe_block != Some(block) => {
+        let automatic_permitted = match decision {
+            crate::abr::Decision::Stay => true,
+            crate::abr::Decision::Prime(proposal) => {
+                let kind = match proposal.direction {
+                    crate::abr::Direction::Up => crate::player::HlsAutomaticTransition::QualityUp,
+                    crate::abr::Direction::Down => crate::player::HlsAutomaticTransition::QualityDown,
+                };
+                SHARED.hls_automatic_transition_permitted(kind)
+            }
+        };
+        let action = state.next_action(
+            decision, &telemetry, sample, rollback_media_ms, remaining_ms, now_ms(),
+            paused_now, encoder_cleanup_ready, automatic_permitted,
+            SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
+            SHARED.hls_rebuffering.load(Ordering::Acquire),
+        );
+        // The coordinator has already chosen the policy edge. This feed handles only
+        // the measured acquisition, queue work, and diagnostics for that edge.
+        let (permit, trial) = match action {
+            adaptive::RoundAction::Stay => (None, None),
+            adaptive::RoundAction::ProbeDeferredForCleanup => {
+                last_probe_block = None;
+                (None, None)
+            }
+            adaptive::RoundAction::ProbeBlocked(adaptive::ProbeBlockSummary {
+                reason: block, current_wire_kbps, conservative_kbps,
+            }) => {
+                if last_probe_block != Some(block) {
                     last_probe_block = Some(block);
                     crate::player::log(&format!(
                         "abr: probe withheld reason={} rung={}kbps buf={}ms safe={}kbps",
-                        block.as_str(),
-                        current_wire_kbps,
-                        sample.buffer.buffered_ms().unwrap_or(-1),
-                        conservative_kbps,
+                        block.as_str(), current_wire_kbps,
+                        sample.buffer.buffered_ms().unwrap_or(-1), conservative_kbps,
                     ));
-                    None
                 }
-                Some(adaptive::ProbeDecision { result: Ok(permit), .. }) => {
-                    last_probe_block = None;
-                    Some(permit)
-                }
-                _ => None,
-            };
-            if let Some(permit) = permit {
-                if !encoder_cleanup_ready {
-                    // Keep discretionary source traffic behind the same exact-cleanup barrier as
-                    // HLS exploration. The probe itself reuses the ACTIVE resource and creates no
-                    // allocation; this gate only keeps its evidence in a reconciled server epoch.
-                    continue;
-                }
+                (None, None)
+            }
+            adaptive::RoundAction::Probe(permit) => {
+                last_probe_block = None;
+                (Some(permit), None)
+            }
+            adaptive::RoundAction::TrialDeferred { proposal, refreshing_same_request, reason } => {
+                publish_hls_abr_action(proposal, refreshing_same_request, Some(false));
+                crate::player::log(match reason {
+                    adaptive::TrialDeferral::EncoderCleanup =>
+                        "abr: quality exploration deferred until PMS confirms prior encoder cleanup",
+                    adaptive::TrialDeferral::PlaybackClock =>
+                        "abr: quality transaction deferred until playback clock is running and recovery completes",
+                });
+                (None, None)
+            }
+            adaptive::RoundAction::Trial { proposal, reserve_policy } => {
+                (None, Some((proposal, reserve_policy)))
+            }
+        };
+        if let Some(permit) = permit {
                 let Some(lease) = HlsAutomaticLease::begin(
                     crate::player::HlsAutomaticTransition::Original,
                     expected_user_sequence,
@@ -5927,13 +5934,9 @@ fn hls_demux(
                         );
                         continue;
                     }
-                    match adaptive::latched_original_recovery(
-                        state.recover_kbps(),
-                        Some(measured_kbps),
-                        decision,
-                        encoder_cleanup_ready,
-                        sample.buffer.buffered_ms(),
-                        sample.media_duration_ms(),
+                    match state.source_switch(
+                        Some(measured_kbps), decision, encoder_cleanup_ready,
+                        sample.buffer.buffered_ms(), sample.media_duration_ms(),
                     ) {
                         adaptive::LatchedOriginalRecovery::Switch { kbps, cancel } => {
                             debug_assert!(
@@ -5987,51 +5990,11 @@ fn hls_demux(
             }
             continue;
         }
-        let crate::abr::Decision::Prime(proposal) = decision else {
-            continue;
-        };
-        let reserve_policy = state.pending_reserve_policy(proposal);
-        if proposal.direction == crate::abr::Direction::Up && !encoder_cleanup_ready {
-            reject_hls_abr(
-                state,
-                proposal,
-                crate::abr::RejectCause::Circumstance,
-                now_ms(),
-            );
-            crate::player::log(
-                "abr: quality exploration deferred until PMS confirms prior encoder cleanup",
-            );
-            continue;
-        }
-        // The current segment has already been credited to the recovery certificate. Do not put
-        // a private quality experiment in front of the main thread's next `Play`: on device that
-        // turned a completed 320 kbps recovery into a 4.4 s visible hold while a 22 Mbps warm-up
-        // spent its deadline. A downshift remains allowed because it is the recovery operation;
-        // an upshift is refused as a circumstance, so it retains no false claim about the rung and
-        // is naturally reconsidered after the clock resumes.
+        let Some((proposal, reserve_policy)) = trial else { continue; };
         let automatic_kind = match proposal.direction {
             crate::abr::Direction::Up => crate::player::HlsAutomaticTransition::QualityUp,
             crate::abr::Direction::Down => crate::player::HlsAutomaticTransition::QualityDown,
         };
-        if !SHARED.hls_automatic_transition_permitted(automatic_kind)
-            || !adaptive::hls_quality_trial_may_start(
-                proposal.direction,
-                SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
-                SHARED.hls_rebuffering.load(Ordering::Acquire),
-                paused_now,
-            )
-        {
-            reject_hls_abr(
-                state,
-                proposal,
-                crate::abr::RejectCause::Circumstance,
-                now_ms(),
-            );
-            crate::player::log(
-                "abr: quality transaction deferred until playback clock is running and recovery completes",
-            );
-            continue;
-        }
         // A recovery downshift may legitimately span an internally-held rebuffer clock, so it
         // does not use the upward trial-reserve certificate below. It still owns the same single
         // automatic-actuator slot for the whole PMS/candidate transaction: source recovery and a
