@@ -3,7 +3,7 @@
 //! is read here; results leave with the runner call that produced them.
 //! A queued dispatch is not a native command ACK, so `CommandAcknowledged` remains unknown until
 //! the contract can carry an independently confirmed, addressed native acknowledgment.
-use super::attempt_metrics as m;
+use crate::player::attempt_metrics as m;
 use plx_playback_contract::{AttemptId, BackendKind, Failure, Fx, Observation,
     Operation, Playback, ReleaseStatus, StopReason};
 
