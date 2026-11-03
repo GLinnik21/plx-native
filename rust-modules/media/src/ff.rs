@@ -4283,6 +4283,7 @@ impl FeedPort for HlsTrialPort<'_> {
             FeedAction::Open { trial, .. } | FeedAction::ReadNext { trial }
             | FeedAction::AcquireFirst { trial, .. }
             | FeedAction::AcquireFollowup { trial }
+            | FeedAction::CheckFollowupReserve { trial }
             | FeedAction::QueueStaged { trial } => trial,
         };
         if trial != self.trial {
@@ -4297,6 +4298,7 @@ impl FeedPort for HlsTrialPort<'_> {
                 trial, media_budget, yields_to_rebuffer, started_ns, clock,
             ),
             FeedAction::AcquireFollowup { trial } => self.acquire_followup(trial),
+            FeedAction::CheckFollowupReserve { trial } => self.check_followup_reserve(trial),
             FeedAction::QueueStaged { trial } => self.queue_staged(trial),
         }
     }
@@ -4360,6 +4362,14 @@ impl HlsTrialPort<'_> {
             return FeedObservation::Failed { trial, failure: FeedFailure::Protocol };
         };
         self.acquire(trial, deadline)
+    }
+
+    fn check_followup_reserve(&mut self, trial: TrialId) -> FeedObservation {
+        let funded = self.reserve.is_some() && !exploration_expired(&mut *self.reserve);
+        let remaining_ms = self.reserve.as_ref()
+            .and_then(ReserveDeadlineState::remaining)
+            .map(|left| u64::try_from(left.as_millis()).unwrap_or(u64::MAX));
+        FeedObservation::FollowupReserve { trial, funded, remaining_ms }
     }
 
     fn acquire(&mut self, trial: TrialId, deadline: ReserveDeadlineState) -> FeedObservation {
@@ -6340,6 +6350,7 @@ fn hls_demux(
             }
             | FeedObservation::SegmentReady { .. }
             | FeedObservation::Acquired { .. }
+            | FeedObservation::FollowupReserve { .. }
             | FeedObservation::Queued { .. } => {
                 state.abandon(&primed.encoder_session);
                 tx.finish("feed_protocol");
@@ -6401,6 +6412,7 @@ fn hls_demux(
             }
             | FeedObservation::Opened { .. }
             | FeedObservation::Acquired { .. }
+            | FeedObservation::FollowupReserve { .. }
             | FeedObservation::Queued { .. } => {
                 state.abandon(&primed.encoder_session);
                 tx.finish("feed_protocol");
@@ -6533,6 +6545,7 @@ fn hls_demux(
             FeedObservation::Failed { failure: FeedFailure::Protocol | FeedFailure::SourceMoved | FeedFailure::Ended, .. }
             | FeedObservation::Opened { .. }
             | FeedObservation::SegmentReady { .. }
+            | FeedObservation::FollowupReserve { .. }
             | FeedObservation::Queued { .. } => {
                 state.abandon(&primed.encoder_session);
                 tx.finish("feed_protocol");
@@ -6595,16 +6608,17 @@ fn hls_demux(
             first_acquisition,
             hls_buffer_snapshot(Some(&candidate_outputs[0].0)),
         );
-        let first_grade = state.first_candidate_grade(
+        let first_action = runner.first_action(
+            state,
             proposal, current_variant, first_variant, first_sample,
         );
-        let mut verdict = first_grade.verdict;
-
-        if first_grade.needs_followup {
-            let funded = runner.physical().reserve.is_some()
-                && !exploration_expired(&mut *runner.physical().reserve);
-            if !funded { tx.mark_decided(); }
-            if let Err(refreshing) = state.fund_followup(proposal, funded, now_ms()) {
+        let mut verdict = match first_action {
+            adaptive::FirstCandidateAction::Finalize { verdict }
+            | adaptive::FirstCandidateAction::ReadFollowup { verdict, .. } => verdict,
+            adaptive::FirstCandidateAction::Unfunded => {
+                tx.mark_decided();
+                let refreshing = state.fund_followup(proposal, false, now_ms())
+                    .expect_err("an unfunded follow-up must reject the proposal");
                 runner.observe(TrialEvent::Ended)
                     .expect("unfunded follow-up has not entered the queue");
                 state.abandon(&primed.encoder_session);
@@ -6615,12 +6629,17 @@ fn hls_demux(
                 );
                 continue;
             }
+            adaptive::FirstCandidateAction::Protocol => {
+                state.abandon(&primed.encoder_session);
+                tx.finish("feed_protocol");
+                return Err(HlsExit::Failed("adaptive feed follow-up reserve protocol violation"));
+            }
+        };
+
+        if let adaptive::FirstCandidateAction::ReadFollowup { remaining_ms, .. } = first_action {
             crate::player::log(&format!(
                 "abr: setup-bearing candidate retains one staged observation budget={}ms",
-                runner.physical().reserve
-                    .as_ref()
-                    .and_then(ReserveDeadlineState::remaining)
-                    .map_or(0, |left| left.as_millis()),
+                remaining_ms.unwrap_or(0),
             ));
             runner.observe(TrialEvent::FollowupRequested)
                 .expect("a repeatable read follows its first staged object");
@@ -6651,6 +6670,7 @@ fn hls_demux(
                 }
                 | FeedObservation::Opened { .. }
                 | FeedObservation::Acquired { .. }
+                | FeedObservation::FollowupReserve { .. }
                 | FeedObservation::Queued { .. } => {
                     state.abandon(&primed.encoder_session);
                     tx.finish("feed_protocol");
@@ -6698,6 +6718,7 @@ fn hls_demux(
                 }
                 | FeedObservation::Opened { .. }
                 | FeedObservation::SegmentReady { .. }
+                | FeedObservation::FollowupReserve { .. }
                 | FeedObservation::Queued { .. } => {
                     state.abandon(&primed.encoder_session);
                     tx.finish("feed_protocol");

@@ -213,6 +213,27 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
         self.step(FeedAction::AcquireFollowup { trial })
     }
 
+    pub(crate) fn first_action(
+        &mut self, coordinator: &Coordinator, proposal: abr::Proposal,
+        current: VariantFacts, candidate: VariantFacts,
+        sample: Option<abr::SegmentSample>,
+    ) -> FirstCandidateAction {
+        let grade = coordinator.first_candidate_grade(proposal, current, candidate, sample);
+        if !grade.needs_followup {
+            return FirstCandidateAction::Finalize { verdict: grade.verdict };
+        }
+        let trial = self.protocol.id();
+        match self.step(FeedAction::CheckFollowupReserve { trial }) {
+            FeedObservation::FollowupReserve { funded: true, remaining_ms, .. } =>
+                FirstCandidateAction::ReadFollowup {
+                    verdict: grade.verdict, remaining_ms,
+                },
+            FeedObservation::FollowupReserve { funded: false, .. } =>
+                FirstCandidateAction::Unfunded,
+            _ => FirstCandidateAction::Protocol,
+        }
+    }
+
     pub(crate) fn authorize_queue(&mut self) {
         self.observe(TrialObservation::QueueAuthorized)
             .expect("only graded candidate media may enter the queue");
@@ -450,6 +471,14 @@ pub(crate) struct VariantFacts {
 pub(crate) struct FirstCandidateGrade {
     pub(crate) verdict: abr::CandidateVerdict,
     pub(crate) needs_followup: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum FirstCandidateAction {
+    Finalize { verdict: abr::CandidateVerdict },
+    ReadFollowup { verdict: abr::CandidateVerdict, remaining_ms: Option<u64> },
+    Unfunded,
+    Protocol,
 }
 
 pub(crate) struct FinalCandidateGrade {
