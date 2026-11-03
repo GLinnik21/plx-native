@@ -6,12 +6,18 @@
 //! as it always did.
 use std::os::raw::{c_char, c_int};
 
-#[cfg(all(not(feature = "hostsim"), not(test)))]
+#[cfg(all(not(feature = "hostsim"), not(test), feature = "play-feed"))]
 const SINK: &dyn plx_platform::tv::sink::VideoSink = &plx_platform::webos::video_sink::StarfishSink;
 #[cfg(feature = "hostsim")]
 const SINK: &dyn plx_platform::tv::sink::VideoSink = &plx_media::player::ffi_host::HostSink;
-#[cfg(all(not(feature = "hostsim"), test))]
+#[cfg(all(not(feature = "hostsim"), any(test, not(feature = "play-feed"))))]
 const SINK: &dyn plx_platform::tv::sink::VideoSink = &plx_platform::tv::sink::NoSink;
+
+// URI-only native builds retain the display vtable without the packet-feed vtable.
+#[cfg(all(not(feature = "hostsim"), not(test)))]
+const DISPLAY: &dyn plx_platform::tv::sink::DisplaySink = &plx_platform::webos::video_sink::StarfishSink;
+#[cfg(any(feature = "hostsim", test))]
+const DISPLAY: &dyn plx_platform::tv::sink::DisplaySink = SINK;
 
 static PORT: plx_platform::tv::Port = plx_platform::tv::Port {
     probe_device: plx_platform::webos::probe,
@@ -39,7 +45,7 @@ static PORT: plx_platform::tv::Port = plx_platform::tv::Port {
     frame_probe_acquired: crate::system::frame_probe_acquired,
     frame_probe_fields: crate::system::frame_probe_fields,
     sink: SINK,
-    display_sink: SINK,
+    display_sink: DISPLAY,
     uri_media: plx_platform::webos::URI_MEDIA,
 };
 

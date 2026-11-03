@@ -3,7 +3,7 @@ name = "plx_media"
 version = "0.0.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
-description = "PlxNative media layer: demux (the bundled FFmpeg), the HTTPS media plane, HLS, adaptive bitrate, the buffer-feed player engine and route selection."
+description = "Shared playback orchestration, Plex route selection, captions and backend coordination."
 repository = "https://github.com/GLinnik21/plx-native"
 publish = false
 
@@ -19,9 +19,10 @@ name = "plx_media"
 crate-type = ["rlib"]
 
 [features]
-default = []
+default = ["play-feed"]
 # Product driver inclusion is independent of diagnostic triggers and qualification.
 play-uri = ["dep:plx_play_uri"]
+play-feed = ["plx_platform/feed-sink"]
 # Forwarded from the application crate, which is the only one that sets them. `devtriggers` is
 # behaviour here, not plumbing: the quality-override, track-name, playurl and forced-route triggers
 # read their files through `plx_base::devtrig`, which is compile-time `None` without it, and
@@ -71,7 +72,7 @@ plx_media_codecs = { path = "../media-codecs", features = ["test-support"] }
 plx_play_uri = { path = "../play-uri", features = ["devtriggers", "test-support"] }
 # THE rule of the layer crates: dev-depend on ITSELF with `devtriggers`, so `cargo test -p plx_media`
 # alone builds the crate and every layer below it as the Makefile's suite does.
-plx_media = { path = ".", features = ["devtriggers"] }
+plx_media = { path = ".", default-features = false, features = ["devtriggers"] }
 plx_base = { path = "../base", features = ["test-support"] }
 plx_machine = { path = "../machine", features = ["test-support"] }
 plx_platform = { path = "../platform", features = ["test-support"] }
