@@ -3622,7 +3622,7 @@ pub(crate) fn quits_sdl(native_exit: plx_media::player::NativeExit) -> bool {
     }
 }
 
-/// Teardown after the loop: abandon the pending report, stop the feed, wait for the stop
+/// Teardown after the loop: abandon the pending report, stop the active backend, wait for the stop
 /// scrobble, close the capture stream and the poster workers, quit SDL (unless a worker is still
 /// in firmware). The caller (`app::run_and_shutdown`) then ends the process with `_exit`.
 pub(crate) unsafe fn shutdown(
@@ -3630,7 +3630,7 @@ pub(crate) unsafe fn shutdown(
     pa: &mut plx_media::player::adapter::PlayerAdapter,
 ) {
     plx_media::player::report::abandon_pending(ps);
-    if is_started(ps) == Some(true) {
+    if pa.playback_needs_teardown(ps) {
         plx_media::player::stop_playback(ps, pa);
     }
     // The stop's `Unload` runs off-frame; the process must not exit inside it, nor with the
