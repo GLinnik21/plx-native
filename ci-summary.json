@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-03T16:54:58Z",
+ "generated": "2026-11-03T17:12:38Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -103,17 +103,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 23.9,
+   "change7_pct": 24.2,
    "d30": null,
    "delta30": null,
-   "delta7": 39,
+   "delta7": 39.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 77,
+   "n_now": 78,
    "n_prev": 77,
-   "now": 202,
+   "now": 202.5,
    "prev7": 163,
    "shown": true,
    "state": "worse",
@@ -145,17 +145,17 @@
   },
   {
    "change30_pct": -60.4,
-   "change7_pct": 19.6,
+   "change7_pct": 19.4,
    "d30": 1032,
-   "delta30": -623,
-   "delta7": 67,
+   "delta30": -623.5,
+   "delta7": 66.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 85,
+   "n_now": 86,
    "n_prev": 89,
-   "now": 409,
+   "now": 408.5,
    "prev7": 342,
    "shown": true,
    "state": "worse",
@@ -187,18 +187,18 @@
   },
   {
    "change30_pct": -62.3,
-   "change7_pct": 13.9,
+   "change7_pct": 14.0,
    "d30": 1102,
    "delta30": -687,
-   "delta7": 50.5,
+   "delta7": 51,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 211,
-   "n_prev": 210,
+   "n_prev": 209,
    "now": 415,
-   "prev7": 364.5,
+   "prev7": 364,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -408,18 +408,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 27.2,
-   "change7_pct": 7.1,
+   "change30_pct": 27.5,
+   "change7_pct": 7.3,
    "d30": 224,
-   "delta30": 61,
-   "delta7": 19,
+   "delta30": 61.5,
+   "delta7": 19.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 77,
+   "n_now": 78,
    "n_prev": 77,
-   "now": 285,
+   "now": 285.5,
    "prev7": 266,
    "shown": true,
    "state": "flat",
@@ -432,15 +432,15 @@
    "change30_pct": -78.9,
    "change7_pct": 7.5,
    "d30": 1026,
-   "delta30": -810,
+   "delta30": -810.0,
    "delta7": 15.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 77,
+   "n_now": 78,
    "n_prev": 76,
-   "now": 216,
+   "now": 216.0,
    "prev7": 201.0,
    "shown": true,
    "state": "flat",
@@ -539,15 +539,15 @@
    "change30_pct": 12.5,
    "change7_pct": 0.0,
    "d30": 16,
-   "delta30": 2,
-   "delta7": 0,
+   "delta30": 2.0,
+   "delta7": 0.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 77,
+   "n_now": 78,
    "n_prev": 77,
-   "now": 18,
+   "now": 18.0,
    "prev7": 18,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 69.2,
    "commits": [
     {
-     "pr": 1206,
-     "sha": "f1436ba47",
-     "title": "Add source-pinned Player HUD registry tooling"
-    },
-    {
      "pr": 1204,
      "sha": "8da3add42",
      "title": "Dependencies: sentry-native -> 0.17.5"
@@ -715,6 +710,11 @@
      "pr": 1220,
      "sha": "3b651de0a",
      "title": "Align Home and Detail heroes and normalize logo sizing"
+    },
+    {
+     "pr": 1222,
+     "sha": "7004bc986",
+     "title": "Use initial 1.0 resource bundles for Player HUD plugins"
     }
    ],
    "from": 195,
@@ -728,11 +728,6 @@
    "change_pct": 34.4,
    "commits": [
     {
-     "pr": 1206,
-     "sha": "f1436ba47",
-     "title": "Add source-pinned Player HUD registry tooling"
-    },
-    {
      "pr": 1204,
      "sha": "8da3add42",
      "title": "Dependencies: sentry-native -> 0.17.5"
@@ -776,6 +771,11 @@
      "pr": 1220,
      "sha": "3b651de0a",
      "title": "Align Home and Detail heroes and normalize logo sizing"
+    },
+    {
+     "pr": 1222,
+     "sha": "7004bc986",
+     "title": "Use initial 1.0 resource bundles for Player HUD plugins"
     }
    ],
    "from": 215,
@@ -786,13 +786,8 @@
    "to": 289
   },
   {
-   "change_pct": 23.9,
+   "change_pct": 24.2,
    "commits": [
-    {
-     "pr": 1206,
-     "sha": "f1436ba47",
-     "title": "Add source-pinned Player HUD registry tooling"
-    },
     {
      "pr": 1204,
      "sha": "8da3add42",
@@ -837,6 +832,11 @@
      "pr": 1220,
      "sha": "3b651de0a",
      "title": "Align Home and Detail heroes and normalize logo sizing"
+    },
+    {
+     "pr": 1222,
+     "sha": "7004bc986",
+     "title": "Use initial 1.0 resource bundles for Player HUD plugins"
     }
    ],
    "from": 163,
@@ -844,16 +844,11 @@
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "since": "2026-11-03",
    "threshold_pct": 20.0,
-   "to": 202
+   "to": 202.5
   },
   {
    "change_pct": 20.1,
    "commits": [
-    {
-     "pr": 1206,
-     "sha": "f1436ba47",
-     "title": "Add source-pinned Player HUD registry tooling"
-    },
     {
      "pr": 1204,
      "sha": "8da3add42",
@@ -898,6 +893,11 @@
      "pr": 1220,
      "sha": "3b651de0a",
      "title": "Align Home and Detail heroes and normalize logo sizing"
+    },
+    {
+     "pr": 1222,
+     "sha": "7004bc986",
+     "title": "Use initial 1.0 resource bundles for Player HUD plugins"
     }
    ],
    "from": 339,
@@ -908,13 +908,8 @@
    "to": 407
   },
   {
-   "change_pct": 19.6,
+   "change_pct": 19.4,
    "commits": [
-    {
-     "pr": 1206,
-     "sha": "f1436ba47",
-     "title": "Add source-pinned Player HUD registry tooling"
-    },
     {
      "pr": 1204,
      "sha": "8da3add42",
@@ -959,6 +954,11 @@
      "pr": 1220,
      "sha": "3b651de0a",
      "title": "Align Home and Detail heroes and normalize logo sizing"
+    },
+    {
+     "pr": 1222,
+     "sha": "7004bc986",
+     "title": "Use initial 1.0 resource bundles for Player HUD plugins"
     }
    ],
    "from": 342,
@@ -966,16 +966,11 @@
    "label": "Wait after merge",
    "since": "2026-11-03",
    "threshold_pct": 15.0,
-   "to": 409
+   "to": 408.5
   },
   {
    "change_pct": 16.1,
    "commits": [
-    {
-     "pr": 1206,
-     "sha": "f1436ba47",
-     "title": "Add source-pinned Player HUD registry tooling"
-    },
     {
      "pr": 1204,
      "sha": "8da3add42",
@@ -1020,6 +1015,11 @@
      "pr": 1220,
      "sha": "3b651de0a",
      "title": "Align Home and Detail heroes and normalize logo sizing"
+    },
+    {
+     "pr": 1222,
+     "sha": "7004bc986",
+     "title": "Use initial 1.0 resource bundles for Player HUD plugins"
     }
    ],
    "from": 2177.5,
