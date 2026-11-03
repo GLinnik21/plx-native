@@ -5,7 +5,7 @@
 use crate::{abr, route};
 use plx_playback_contract::adaptive::PublicationGate;
 use plx_playback_contract::adaptive::{
-    Acquisition, FeedAction, FeedFailure, FeedObservation, FeedPort, TrialClock, TrialId,
+    Acquisition, FeedAction, FeedFailure, FeedObservation, FeedPort, TrialClock,
     TrialObservation, TrialPhase, TrialProtocol, TrialProtocolError,
 };
 use plx_playback_contract::SourceKey;
@@ -1067,6 +1067,7 @@ pub(crate) fn hls_upshift_strictly_improves(
 #[cfg(test)]
 mod trial_runner_tests {
     use super::*;
+    use plx_playback_contract::adaptive::TrialId;
     use plx_playback_contract::AttemptId;
 
     struct LateReplyPort { response: FeedObservation }
