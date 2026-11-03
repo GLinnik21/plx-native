@@ -46,6 +46,7 @@ pub enum DemuxCallbackEffect {
     NetworkBytes(i64),
     HttpStatus(i32),
     FileSize(i64),
+    DurationNs(i64),
     TransportFailure { rc: i32, age_ms: i64, reopen_failed: bool },
     IoFailed,
     RequestTerminalHold,

@@ -3107,12 +3107,12 @@ fn classify_plaintext_open_failure(error: plx_net::stream::HttpOpenError) -> Hls
     }
 }
 
-fn classify_curl_open_err(e: range_io::OpenErr) -> HlsExit {
+fn classify_curl_open_err(e: range_io::OpenErr, observer: &dyn DemuxObserver) -> HlsExit {
     if e == range_io::OpenErr::Deadline {
         return HlsExit::PrimeExpired;
     }
     if let range_io::OpenErr::Status(status) = e {
-        SHARED.dg_http_status.store(status, Ordering::Relaxed);
+        observer.publish(DemuxCallbackEffect::HttpStatus(status));
         if status == 404 {
             return HlsExit::NotReady;
         }
@@ -3174,8 +3174,8 @@ fn hls_open_curl(
         match reopened {
             Ok(()) => {
                 let (status, size) = (cs.status(), cs.size());
-                SHARED.dg_http_status.store(status, Ordering::Relaxed);
-                SHARED.file_size.store(size, Ordering::Release);
+                net.observer.publish(DemuxCallbackEffect::HttpStatus(status));
+                net.observer.publish(DemuxCallbackEffect::FileSize(size));
                 return Ok((Src::Curl(cs), size));
             }
             Err(range_io::OpenErr::Aborted) => return Err(HlsExit::Aborted),
@@ -3186,10 +3186,10 @@ fn hls_open_curl(
             // A controlled stop keeps the session and never falls through to a fresh dial.
             Err(e @ range_io::OpenErr::Stopped) => {
                 net.curl = Some(cs);
-                return Err(classify_curl_open_err(e));
+                return Err(classify_curl_open_err(e, net.observer.as_ref()));
             }
             Err(range_io::OpenErr::Status(status)) => {
-                SHARED.dg_http_status.store(status, Ordering::Relaxed);
+                net.observer.publish(DemuxCallbackEffect::HttpStatus(status));
                 net.curl = Some(cs);
                 return Err(if status == 404 {
                     HlsExit::NotReady
@@ -3223,10 +3223,10 @@ fn hls_open_curl(
         drop(opened);
         return Err(HlsExit::Aborted);
     }
-    let cs = opened.map_err(classify_curl_open_err)?;
+    let cs = opened.map_err(|e| classify_curl_open_err(e, net.observer.as_ref()))?;
     let (status, size) = (cs.status(), cs.size());
-    SHARED.dg_http_status.store(status, Ordering::Relaxed);
-    SHARED.file_size.store(size, Ordering::Release);
+    net.observer.publish(DemuxCallbackEffect::HttpStatus(status));
+    net.observer.publish(DemuxCallbackEffect::FileSize(size));
     Ok((Src::Curl(cs), size))
 }
 
@@ -3266,9 +3266,9 @@ fn hls_open_plain(
         // Unreachable from a plaintext origin with `same_origin_only`: https is another origin.
         Ok(Opened::Tls(_)) => return Err(HlsExit::Failed("HTTP redirect refused")),
         Err(error) => {
-            SHARED
-                .dg_http_status
-                .store(plx_net::stream::hs_status(hs), Ordering::Relaxed);
+            net.observer.publish(DemuxCallbackEffect::HttpStatus(
+                plx_net::stream::hs_status(hs),
+            ));
             return Err(match error {
                 FollowError::Open(error) => classify_plaintext_open_failure(error),
                 FollowError::TooManyHops
@@ -3287,8 +3287,8 @@ fn hls_open_plain(
         CString::new(target.path).map_err(|_| HlsExit::Failed("invalid HLS request path"))?;
     let status = plx_net::stream::hs_status(hs);
     let size = plx_net::stream::hs_content_length(hs);
-    SHARED.dg_http_status.store(status, Ordering::Relaxed);
-    SHARED.file_size.store(size, Ordering::Release);
+    net.observer.publish(DemuxCallbackEffect::HttpStatus(status));
+    net.observer.publish(DemuxCallbackEffect::FileSize(size));
     Ok((
         Src::Socket {
             hs,
@@ -4662,7 +4662,7 @@ fn hls_cursor_next(
         )
         .map_err(|_| HlsExit::Failed("HLS playlist duration overflow"))?;
         if cursor.publishes_duration {
-            SHARED.duration_ns.store(total_ns, Ordering::Relaxed);
+            net.observer.publish(DemuxCallbackEffect::DurationNs(total_ns));
         }
         let mut refresh = cursor.tracker.apply(&media).map_err(|e| {
             crate::player::log(&format!("hls: refresh rejected: {e}"));

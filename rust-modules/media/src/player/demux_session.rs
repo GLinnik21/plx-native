@@ -88,6 +88,8 @@ impl DemuxObserver for PlayerDemuxObserver {
                 SHARED.dg_http_status.store(status, Ordering::Relaxed),
             DemuxCallbackEffect::FileSize(size) =>
                 SHARED.file_size.store(size, Ordering::Release),
+            DemuxCallbackEffect::DurationNs(ns) =>
+                SHARED.duration_ns.store(ns, Ordering::Relaxed),
             DemuxCallbackEffect::TransportFailure { rc, age_ms, reopen_failed } => {
                 SHARED.dg_transport_rc.store(rc, Ordering::Release);
                 SHARED.dg_transport_age_ms.store(age_ms, Ordering::Release);
