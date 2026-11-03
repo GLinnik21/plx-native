@@ -4302,7 +4302,7 @@ mod scrub_ownership_tests {
 
         let (mx, my) = on_the_bar(0.75);
         pointer(
-            &mut page,
+            &f.session, &mut page,
             InputKind::Click { x: mx, y: my, hit: Some(player_hud::ELEM_SCRUB) },
             1_000,
         );
@@ -4329,7 +4329,7 @@ mod scrub_ownership_tests {
         let mut page = page_on_the_bar();
 
         let (handled, reqs) = pointer(
-            &mut page,
+            &f.session, &mut page,
             InputKind::Click { x: 960.0, y: 400.0, hit: None },
             1_000,
         );
@@ -4344,7 +4344,7 @@ mod scrub_ownership_tests {
             .store(plx_media::player::PlaybackState::Error as u8, Relaxed);
         let mut page = page_on_the_bar();
         let (handled, reqs) = pointer(
-            &mut page,
+            &f.session, &mut page,
             InputKind::Click { x: 960.0, y: 400.0, hit: None },
             1_000,
         );
@@ -4431,8 +4431,8 @@ mod scrub_ownership_tests {
         plx_media::player::TX.scrub_ns.store(-1, Relaxed);
         let elems = |page: &PlayerScreen| {
             let cx = cx(&f.session);
-            let mut f = DrawFrame::new(&cx, plx_ui::Painter::root());
-            page.record_stops(&mut f, true);
+            let mut frame = DrawFrame::new(&cx, plx_ui::Painter::root());
+            page.record_stops(&mut frame, true);
             let mut v: Vec<u32> = f.into_stops().iter().map(|s| s.key.elem).collect();
             v.sort_unstable();
             v
@@ -4523,9 +4523,9 @@ mod scrub_ownership_tests {
             page.hud.dismissed = true;
             let mut map = HitMap::new();
             let cx = cx(&f.session);
-            let mut f = DrawFrame::new(&cx, plx_ui::Painter::root());
-            page.record_stops(&mut f, false);
-            map.fill(f.into_stops());
+            let mut frame = DrawFrame::new(&cx, plx_ui::Painter::root());
+            page.record_stops(&mut frame, false);
+            map.fill(frame.into_stops());
             map.swap();
             map.note_dpad();
 
@@ -4542,9 +4542,9 @@ mod scrub_ownership_tests {
             // A separate pm token lets a frame present the HUD before pd/ck. Register precisely
             // the stops the production draw uses, then keep D-pad hover suppression armed at the
             // SAME point: even with zero pointer travel, a click on a drawn control must work.
-            let mut f = DrawFrame::new(&cx, plx_ui::Painter::root());
-            page.record_stops(&mut f, true);
-            map.fill(f.into_stops());
+            let mut frame = DrawFrame::new(&cx, plx_ui::Painter::root());
+            page.record_stops(&mut frame, true);
+            map.fill(frame.into_stops());
             map.swap();
             map.note_dpad();
             let hit = map.resolve(Some(ENTRY), PointerKind::Click, 1400.0, y, None);
@@ -4570,7 +4570,7 @@ mod scrub_ownership_tests {
 
         let (mx, my) = on_the_bar(0.5);
         let (handled, reqs) = pointer(
-            &mut page,
+            &f.session, &mut page,
             InputKind::Click { x: mx, y: my, hit: Some(player_hud::ELEM_SCRUB) },
             1_000,
         );
@@ -4587,7 +4587,7 @@ mod scrub_ownership_tests {
 
         let (dx, dy) = on_the_bar(0.25);
         let (_, reqs) = pointer(
-            &mut page,
+            &f.session, &mut page,
             InputKind::Drag { x: dx, y: dy, hit: Some(player_hud::ELEM_SCRUB) },
             1_040,
         );
