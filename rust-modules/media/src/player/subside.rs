@@ -1,4 +1,5 @@
-//! The **side subtitle reader**'s thread and state (the FFmpeg half is `ff_subside.rs`).
+//! The **side subtitle reader**'s thread and state (`subtitle_job` runs the transport and
+//! presentation loop over a codec-owned extraction job).
 //!
 //! While the player plays a server remux of a film, PMS cannot put a subtitle in the stream, so the
 //! app reads the film's ORIGINAL Part a second time, subtitle packets only, and draws the track with

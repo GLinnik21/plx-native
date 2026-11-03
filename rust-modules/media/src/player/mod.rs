@@ -2192,7 +2192,7 @@ pub fn subtitle_draw(ps: &crate::route::PlaybackSession) -> Option<(std::sync::A
 /// `ff_subside`'s `sidecar_clock_at_917…` test) — but the engine labels that first frame with the
 /// REQUESTED offset (`disp_base`), so the playhead runs ahead of the content by the snap (measured:
 /// 0.6 s to 2.2 s on one file) and the sidecar drew early. The side reader measures that constant
-/// (`ff::subside`, `delta = part_time − playhead`) and this adds it, so the renderer is asked for
+/// (`subtitle_job`, `delta = part_time − playhead`) and this adds it, so the renderer is asked for
 /// the content time actually on screen. The viewer's timing offset is subtracted after this, by the
 /// caller, and composes with it.
 ///

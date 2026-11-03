@@ -405,7 +405,7 @@ fn host_ffmpeg_binding_restores_the_abi_gate() {
     assert!(!abi_ok(), "the next host test must start with a closed ABI gate");
 }
 
-pub(super) struct HostFfmpeg {
+pub(crate) struct HostFfmpeg {
     previous_abi_ok: bool,
 }
 
@@ -418,7 +418,7 @@ impl Drop for HostFfmpeg {
 /// Bind the host libraries in dependency order and check their ABI majors.
 /// Keep the guard until all readers stop so the next test gets the previous ABI state.
 #[must_use]
-pub(super) fn bind_host_ffmpeg() -> HostFfmpeg {
+pub(crate) fn bind_host_ffmpeg() -> HostFfmpeg {
     plx_base::testlock::assert_held("bind_host_ffmpeg");
     let dir = host_ffmpeg_dir();
     for (what, verdict) in [
