@@ -77,6 +77,8 @@ pub enum FeedAction {
     CheckAbort { trial: TrialId },
     CheckExpired { trial: TrialId },
     BudgetSnapshot { trial: TrialId },
+    PrimeDeadline { trial: TrialId },
+    DeadlineFinal { trial: TrialId, snapshot: Option<std::time::Instant> },
     Open { trial: TrialId, source: SourceKey },
     ReadNext { trial: TrialId },
     AcquireFirst {
@@ -168,6 +170,8 @@ pub enum FeedObservation {
         trial: TrialId, buffered_ms: Option<i64>, started_ns: i64,
         remaining: Option<Duration>, rebuffering: bool,
     },
+    PrimeDeadline { trial: TrialId, deadline: Option<std::time::Instant> },
+    DeadlineFinal { trial: TrialId, final_expiry: bool },
     Opened { trial: TrialId, declared_bps: u64 },
     SegmentReady { trial: TrialId, duration: std::time::Duration },
     Acquired { trial: TrialId, acquisition: Acquisition },
@@ -181,7 +185,9 @@ impl FeedObservation {
     pub const fn trial(self) -> TrialId {
         match self {
             Self::AbortStatus { trial, .. } | Self::ExpiryStatus { trial, .. }
-            | Self::BudgetSnapshot { trial, .. } | Self::Opened { trial, .. }
+            | Self::BudgetSnapshot { trial, .. }
+            | Self::PrimeDeadline { trial, .. } | Self::DeadlineFinal { trial, .. }
+            | Self::Opened { trial, .. }
             | Self::SegmentReady { trial, .. }
             | Self::Acquired { trial, .. }
             | Self::Staged { trial, .. }
