@@ -2,12 +2,18 @@
 //! Payload builders take resolved facts; the physical Load worker reads sound output and logs.
 
 pub mod aq;
+pub mod era_callbacks;
+pub mod feed_resources;
+pub mod feed_state;
+pub mod ff_pcm;
 pub mod hls;
 pub mod native_gate;
 pub mod native_load;
+pub mod native_release;
 pub mod open;
 pub mod pcm_lead;
 pub mod side_reader;
+pub mod shared;
 pub mod vp9_hdr;
 mod send_ptr;
 pub use send_ptr::SendPtr;

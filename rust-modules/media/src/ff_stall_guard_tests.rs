@@ -1,6 +1,7 @@
 //! `StallGuard` arming and abort decisions for a server-paced HLS transfer.
 
 use super::*;
+use crate::player::SHARED;
 #[allow(unused_imports)]
 use super::test_support::*;
 

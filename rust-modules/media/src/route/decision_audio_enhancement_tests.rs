@@ -4386,6 +4386,12 @@ fn sidecar_clock_the_draw_asks_the_sidecar_at_the_corrected_position() {
     crate::player::sidecar::select_loaded_for_test(79, SCRIPT);
     let drawn = crate::player::sidecar::ass_source(false).expect("fixture: the sidecar is loaded");
     let playhead = remux_started_at(917_000_000_000, 83_000_000);
+    let attempt = RouteStartAttempt::fixture();
+    ps.begin_attempt_view(attempt, crate::player::attempt_view::Backend::Feed);
+    assert!(ps.ingest_attempt_facts(attempt, crate::player::attempt_view::Backend::Feed,
+        crate::player::attempt_view::AttemptFacts {
+            position_ns: Some(playhead), seen_frame: Some(true), ..Default::default()
+        }));
     let (source, position) = crate::player::subtitle_draw(&ps).expect("the app draws the sidecar");
     assert!(std::sync::Arc::ptr_eq(&source, &drawn), "the drawn source is the sidecar, not an embedded track");
     assert_eq!(position, playhead, "nothing measured yet: drawn exactly as before");

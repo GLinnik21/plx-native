@@ -2,6 +2,7 @@
 //! projections, quality-trial gating, and candidate transition disposition.
 
 use super::*;
+use crate::player::SHARED;
 #[allow(unused_imports)]
 use super::test_support::*;
 use crate::abr::Direction;

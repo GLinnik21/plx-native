@@ -14,9 +14,10 @@ Media Server (PMS) entirely in-app.
 
 **Almost everything is Rust** in `rust-modules/` (UI, event loop, input, player orchestration,
 the streaming/demux pipeline, and the Plex data layer), compiled to a static lib and linked in
-(see the Makefile). Only two things stay C: `src/main.c` — a small **boot shim** (the event-log
+(see the Makefile). Native startup and playback ABI shims stay C: `src/main.c` — a small **boot shim** (the event-log
 handle, stderr capture, process bring-up) that then calls the Rust `plex_run()` — and
-`src/starfish.c`, the **StarfishMediaAPIs C++/ACB seam**. Two more `.c` files sit beside them:
+`src/starfish.c`, the **buffer-feed StarfishMediaAPIs C++ seam**, and `src/video_plane.c`,
+the shared **ACB/exported-window display binding**. Two more `.c` files sit beside them:
 `src/svg.c` (the nanosvg rasterizer) and, since 2026-08-29, `src/crashtrace.c` — the async-signal-
 safe **crash tracer**, lifted out of `main.c` into its own translation unit for one reason, that
 `ci/crashtrace-test.c` links it ALONE and can therefore fault a process on purpose and check how it
@@ -964,7 +965,7 @@ kills the process at `exec()` — before `main`, before the event log exists. So
   names go to the event log. Read that module's doc before adding a library to it; the rule is
   *only* when the version actually varies, because moving a library there trades link-time symbol
   checking for version tolerance.
-- **`src/starfish.c`** resolves ACB and the webOS 5+ SDL exported-window API the same way, and
+- **`src/video_plane.c`** resolves ACB and the webOS 5+ SDL exported-window API the same way, and
   picks between them (`vp_mode()`). The two are complementary across all 14 firmwares.
 - Adding a new FFmpeg/curl call means **adding it to the `dynlib!` block**. There is no link error
   to catch you any more — the failure is a logged `Incomplete` at boot and a refusal to demux.
@@ -1165,8 +1166,8 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   `make check`** — `ci/crashfmt-test.c` grades the parsing, `ci/crashtrace-test.c` crashes seven
   processes on purpose and checks the record AND the exit status, and probes another with the freeze
   signal (`SIGUSR2`) to check it records and survives. `src/starfish.c` — the
-  StarfishMediaAPIs C++/ACB seam. `src/svg.c` — nanosvg rasterizer. `src/sentry_context.c` — the
-  narrow C wrapper that keeps Sentry's opaque by-value object ABI out of Rust. These five are the
+  buffer-feed StarfishMediaAPIs C++ seam. `src/video_plane.c` — shared ACB/exported-window binding. `src/svg.c` — nanosvg rasterizer. `src/sentry_context.c` — the
+  narrow C wrapper that keeps Sentry's opaque by-value object ABI out of Rust. These six are the
   entire normal C side (`gpdebug.c` is an opt-in allocator instrument). Reach for
   `/tmp/plxnative-crashtest=<segv|abrt|bus|ill|trap|panic|unwind>` to fault the app deliberately
   ON the television — `segv` is a real null write, `abrt`/`bus`/`ill`/`trap` are `raise`, `panic`
@@ -1296,7 +1297,7 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   a table of its own so that a television without libz degrades to an uncompressed upload rather
   than emptying anybody else's table; it exists only in a `lab-diagnostics` build, which is not the
   default set, so an ordinary binary really does have five. (**ACB** is the same idea but not this
-  module: `src/starfish.c` is C and does its own `dlopen`.) Replaced `stub/`, which is deleted.
+  module: `src/video_plane.c` is C and does its own `dlopen`.) Replaced `stub/`, which is deleted.
   `tools/fwcompat.py` grades the result;
   `docs/webos5-port.md` is the full account.
 - `docs/release-notes/` + `docs/release-audits/` — **the two halves of a release, split

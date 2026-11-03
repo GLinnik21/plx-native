@@ -2,7 +2,8 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  * Own interoperability adapter declarations, written from the public ABI contract.
  * LG runtime binaries are not distributed with this file. */
-/* starfish.h — the low-level C subsystem: LG StarfishMediaAPIs (C++) + ACB
+/* starfish.h — flat ABI for starfish.c (buffer-feed) and video_plane.c (shared display).
+ * LG StarfishMediaAPIs (C++) + ACB
  * video-plane binding, behind flat C verbs. Hides the 11 mangled __asm__ symbols,
  * the sret std::string in Feed, the never-reused 64KB in-place objects, and the 3-arg ACB
  * taskId ABI. Library-thread callbacks are forwarded to sf_on_event/acb_on_event,
@@ -45,7 +46,7 @@ void sf_quarantine(void);
  * Two mechanisms, never both, split at exactly webOS 5.0 where LG deleted libAcbAPI and gave SDL
  * an exported-window API instead. `vp_mode` resolves which this television has, once, by trying to
  * dlopen/dlsym each — neither is linked, because naming a library or symbol the device lacks makes
- * the loader kill the process before main. See the long comment at the top of starfish.c. */
+ * the loader kill the process before main. See the long comment in video_plane.c. */
 #define VP_NONE     0   /* neither: video cannot be displayed, but the app still runs */
 #define VP_ACB      1   /* webOS 2.2.3 .. 4.10.0 — libAcbAPI.so.1 */
 #define VP_EXPORTED 2   /* webOS 5.3.1 .. 11.2.0 — SDL_webOS*ExportedWindow* (device-verified webOS 6.5.2, issue #22) */

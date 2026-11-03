@@ -15,7 +15,7 @@
 # trick pinned the binary to webOS 4.x: on anything newer the loader killed it at
 # exec(), before main, before the event log existed. Those libraries are now
 # dlopen'd by SONAME candidate list instead — rust-modules/base/src/dynlib.rs, and the
-# video-plane comment at the top of src/starfish.c. `tools/fwcompat.py` grades the
+# video-plane comment in src/video_plane.c. `tools/fwcompat.py` grades the
 # result against 14 real firmware inventories without leaving the desk.
 #
 # make          — build pkg/plxnative
@@ -263,8 +263,8 @@ SYSROOT      = $(WEBOS_SDK)/arm-webos-linux-gnueabi/sysroot
 # NDK gcc default target is cortex-a9 / armv7-a / soft-float — portable across
 # webOS 3–6 and safe on the A53 (ARMv7 barriers are `dmb`, not the ARMv6 CP15
 # `mcr p15` that SIGILLs on ARMv8). So we do NOT pin -mcpu here.
-# -Wall -Wextra -Werror: the C side is five files (boot shim, crash tracer, narrow Sentry value
-# wrapper, Starfish/ACB seam and nanosvg rasterizer) and it built without this gate until
+# -Wall -Wextra -Werror: the C side includes the boot shim, crash tracer, narrow Sentry value
+# wrapper, separate Starfish/display seams and nanosvg rasterizer and it built without this gate until
 # 2026-08-15 — so the crash tracer and the 15-symbol C++ seam, the two places where a sloppy cast is
 # least survivable, were compiled at gcc's bare default. Turning it on cost nothing: the only hit
 # in the tree is inside the fetched nanosvg, suppressed at its include in src/svg.c.
@@ -407,7 +407,7 @@ LIBS_REAL = -lSDL2 -lSDL2_ttf -lGLESv2 -lluna-service2 -lglib-2.0 \
 #   outright at webOS 5.0). A DT_NEEDED entry is a hard requirement for one exact name, cannot say
 #   "either of these", and a name the device lacks kills the process at exec() — before main,
 #   before the event log exists. So they are dlopen'd by SONAME CANDIDATE LIST:
-#   rust-modules/base/src/dynlib.rs, and the video-plane comment at the top of src/starfish.c.
+#   rust-modules/base/src/dynlib.rs, and the video-plane comment in src/video_plane.c.
 #
 #   FFmpeg is not a version question at all any more: we SHIP our own, pinned (the bundled-FFmpeg
 #   section below builds libav*-plx.so.63/63/61 and stages them into pkg/). It is unlinked because
@@ -425,8 +425,8 @@ LIBS_REAL = -lSDL2 -lSDL2_ttf -lGLESv2 -lluna-service2 -lglib-2.0 \
 # open a URL at all. `docs/agent-reference.md`'s "Linking" section carries the same account at length.
 
 # Rust-first build. The app is Rust (rust-modules/, compiled to a staticlib and
-# linked in); C is only main.c (boot shim) + starfish.c (the StarfishMediaAPIs
-# C++/ACB seam) + svg.c (nanosvg rasterizer).
+# linked in); the native playback seam is starfish.c (buffer-feed StarfishMediaAPIs)
+# plus video_plane.c (shared display binding). main.c is the boot shim; svg.c rasterizes SVGs.
 # (src/gpdebug.c is a debug-only guard-page allocator — never in the normal build.)
 # RELEASE=1 drops BOTH default cargo features — `devtools` (the on-screen seven-segment counter,
 # app.rs) and `devtriggers` (the whole /tmp surface, src/dev.rs). Neither may ship to users.
