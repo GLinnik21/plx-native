@@ -7,6 +7,37 @@ use super::test_support::*;
 use super::test_support::apply_plan;
 
 #[test]
+#[cfg(feature = "play-feed")]
+fn same_source_intent_keeps_spent_candidates_across_effective_audio_and_failed_retry() {
+    use super::super::backend_policy::{BackendPolicy, OfferId};
+    use plx_playback_contract::BackendKind;
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let source = crate::route::SourceSelection { server: plx_plex::plex::ServerId::from_raw(1),
+        part_id: 3134, audio_sid: 42, subtitle_sid: 0,
+        audio_contract: plx_plex::plex::AudioEnhancements::NONE };
+    let mut policy = BackendPolicy::for_request(false);
+    policy.qualify_planned_feed(OfferId::FEED_ORIGINAL);
+    assert!(policy.admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+    ps.backend_policy = Some(policy);
+    ps.bind_source_selection(source);
+    ps.cur_audio = Some(CarriedAudio::named(42, 1));
+    // Feed chose a different effective audio track, while the selected source Part and
+    // stream remain the same. Reapplying its plan must not buy another Original attempt.
+    apply_plan(&mut ps, Plan { sid: source.server, part_id: source.part_id,
+        source_selection: Some(source), url: "https://example.invalid/part.mkv".to_owned(),
+        audio: Some(CarriedAudio::named(99, 2)), acodec: "aac".to_owned(),
+        src_acodec: "aac".to_owned(), ..Default::default() }, "rk-v");
+    assert!(ps.backend_policy.as_ref().is_some_and(|policy|
+        policy.can_reopen(BackendKind::Feed, OfferId::FEED_ORIGINAL)));
+    // A bounded Feed re-resolve after URI expiry can fail before PMS supplies a new Part.
+    // That refusal has no new source fact, and still cannot refill the spent candidate.
+    apply_plan(&mut ps, Plan { sid: source.server, ..Default::default() }, "rk-v");
+    assert!(ps.backend_policy.as_ref().is_some_and(|policy|
+        policy.can_reopen(BackendKind::Feed, OfferId::FEED_ORIGINAL)));
+}
+
+#[test]
 #[cfg(feature = "devtriggers")]
 fn a_user_contract_requested_during_resolve_survives_the_landing() {
     let mut ps = crate::route::PlaybackSession::IDLE;

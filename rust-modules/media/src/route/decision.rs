@@ -9730,6 +9730,10 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
         let requested_resume_ns = s.requested_resume_ns;
         let same_selection = match (s.source_selection, plan.source_selection) {
             (Some(current), Some(next)) => current == next,
+            // A same-episode retry can fail before fetching its Part. It has no new source
+            // selection to compare; begin_track_selection retained the prior one only for a
+            // retry, so this refusal must not replenish spent backend candidates.
+            (Some(_), None) => true,
             _ => s.cur_sid == plan.sid && s.cur_part_id == plan.part_id
                 && s.cur_audio.as_ref().map(|audio| audio.sid)
                     == plan.audio.as_ref().map(|audio| audio.sid)
