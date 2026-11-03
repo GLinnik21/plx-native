@@ -64,6 +64,13 @@ pub struct ActiveQuantum {
     pub now_ms: u64,
 }
 
+/// Accepted user-pause evidence after a blocking probe or playlist read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PauseFact {
+    pub paused: bool,
+    pub completed_ms: Option<u64>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FeedFailure {
     Aborted, Deadline, Ended, NotReady, Parse, SourceMoved, Protocol, TimelineOverflow,

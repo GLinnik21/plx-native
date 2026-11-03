@@ -6,7 +6,7 @@
 use crate::aq::AuQueue;
 use crate::adaptive;
 use plx_playback_contract::adaptive::TrialObservation as TrialEvent;
-use plx_playback_contract::adaptive::{Acquisition, BufferFact, FeedAction, FeedFailure, FeedObservation, FeedPort, TrialClock, TrialId};
+use plx_playback_contract::adaptive::{Acquisition, BufferFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock, TrialId};
 use plx_playback_contract::SourceKey;
 use crate::player::threads::SendPtr;
 use crate::player::SHARED;
@@ -6045,75 +6045,62 @@ fn hls_demux(
                     need,
                     probe_verdict,
                 ));
-                if probe_verdict == Some(crate::abr::RecoveryVerdict::Recover) {
-                    let measured_kbps = probe.kbps.max(1);
-                    // User Pause is an orthogonal accepted event. A probe which was already in
-                    // flight may finish and retain evidence, but it may not promote a route while
-                    // the viewer owns the clock. Consume a complete hidden pause cycle before
-                    // using the result; an active one leaves the verdict latched for Resume.
-                    let commit_pause = crate::player::TX.pause_state_sample();
-                    if let Some(elapsed) = pause_cursor.consume_completed(commit_pause) {
-                        state.on_resume(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX));
-                    }
-                    if commit_pause.paused {
-                        state.retain_original_recovery(measured_kbps);
-                        crate::player::log(
-                            "abr: Original recovery measured during a user hold; retained until Resume",
+                let recovery = state.settle_probe_recovery(
+                    probe_grade.as_ref(), probe.kbps,
+                    || {
+                        let commit_pause = crate::player::TX.pause_state_sample();
+                        PauseFact {
+                            paused: commit_pause.paused,
+                            completed_ms: pause_cursor.consume_completed(commit_pause)
+                                .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)),
+                        }
+                    },
+                    decision, encoder_cleanup_ready, sample.buffer.buffered_ms(),
+                    sample.media_duration_ms(),
+                );
+                match recovery {
+                    adaptive::ProbeRecoveryAction::Steady => {
+                        SHARED.dg_abr_action.store(
+                            crate::player::ABR_ACTION_STEADY, Ordering::Relaxed,
                         );
-                        continue;
+                        SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
                     }
-                    match state.source_switch(
-                        Some(measured_kbps), decision, encoder_cleanup_ready,
-                        sample.buffer.buffered_ms(), sample.media_duration_ms(),
-                    ) {
-                        adaptive::LatchedOriginalRecovery::Switch { kbps, cancel } => {
-                            debug_assert!(
-                                cancel.is_none(),
-                                "a source probe is issued only from a Stay boundary",
-                            );
-                            match state.publish_original(
-                                &mut AqPublicationPort(aq), lease.authorize_commit(), kbps,
-                                || SHARED.playpos_ns.load(Ordering::Relaxed).max(0),
-                                || SHARED.dg_abr_action.store(
-                                    crate::player::ABR_ACTION_RECOVER_ORIGINAL, Ordering::Relaxed,
-                                ),
-                            ) {
-                                adaptive::OriginalPublication::Published => {
-                                    crate::player::log(&format!(
-                                        "abr: source sustainable again at {kbps}kbps; requesting Original on the probe boundary",
-                                    ));
-                                    break;
-                                }
-                                adaptive::OriginalPublication::Busy => {
-                                    state.retain_original_recovery(measured_kbps);
-                                    crate::player::log(
-                                        "abr: Original recovery retained behind another route transition",
-                                    );
-                                }
-                                adaptive::OriginalPublication::ClockMoved => {
-                                    state.retain_original_recovery(measured_kbps);
-                                    crate::player::log(
-                                        "abr: Original recovery retained after playback clock moved",
-                                    );
-                                }
-                                adaptive::OriginalPublication::Aborted
-                                | adaptive::OriginalPublication::RouteMoved => {
-                                    return Err(HlsExit::Aborted);
-                                }
+                    adaptive::ProbeRecoveryAction::Held => crate::player::log(
+                        "abr: Original recovery measured during a user hold; retained until Resume",
+                    ),
+                    adaptive::ProbeRecoveryAction::Retained => {}
+                    adaptive::ProbeRecoveryAction::Switch { kbps, measured_kbps } => {
+                        match state.publish_probed_original(
+                            &mut AqPublicationPort(aq), lease.authorize_commit(),
+                            kbps, measured_kbps,
+                            || SHARED.playpos_ns.load(Ordering::Relaxed).max(0),
+                            || SHARED.dg_abr_action.store(
+                                crate::player::ABR_ACTION_RECOVER_ORIGINAL, Ordering::Relaxed,
+                            ),
+                        ) {
+                            adaptive::OriginalPublication::Published => {
+                                crate::player::log(&format!(
+                                    "abr: source sustainable again at {}kbps; requesting Original on the probe boundary",
+                                    kbps,
+                                ));
+                                break;
+                            }
+                            adaptive::OriginalPublication::Busy => {
+                                crate::player::log(
+                                    "abr: Original recovery retained behind another route transition",
+                                );
+                            }
+                            adaptive::OriginalPublication::ClockMoved => {
+                                crate::player::log(
+                                    "abr: Original recovery retained after playback clock moved",
+                                );
+                            }
+                            adaptive::OriginalPublication::Aborted
+                            | adaptive::OriginalPublication::RouteMoved => {
+                                return Err(HlsExit::Aborted);
                             }
                         }
-                        adaptive::LatchedOriginalRecovery::Wait => {
-                            // Conservation currently makes this unreachable for a permitted
-                            // probe, but retaining the typed state is safer than dropping a valid
-                            // verdict if a future probe contract deliberately changes its runway.
-                            state.retain_original_recovery(measured_kbps);
-                        }
                     }
-                } else {
-                    SHARED
-                        .dg_abr_action
-                        .store(crate::player::ABR_ACTION_STEADY, Ordering::Relaxed);
-                    SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
                 }
                 continue;
             }

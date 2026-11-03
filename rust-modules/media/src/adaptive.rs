@@ -5,7 +5,7 @@
 use crate::{abr, route};
 use plx_playback_contract::adaptive::PublicationGate;
 use plx_playback_contract::adaptive::{
-    Acquisition, ActiveQuantum, BufferFact, FeedAction, FeedFailure, FeedObservation, FeedPort, TrialClock,
+    Acquisition, ActiveQuantum, BufferFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
     TrialObservation, TrialPhase, TrialProtocol, TrialProtocolError,
 };
 use plx_playback_contract::SourceKey;
@@ -568,6 +568,13 @@ pub(crate) struct ProbeGrade {
     pub(crate) probes: u8,
 }
 
+pub(crate) enum ProbeRecoveryAction {
+    Steady,
+    Held,
+    Retained,
+    Switch { kbps: u32, measured_kbps: u32 },
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct VariantFacts {
     pub(crate) width: i32,
@@ -974,6 +981,40 @@ impl Coordinator {
             verdict, comparison: gate.comparison(), basis: gate.basis(), probes: gate.probes(),
         })
     }
+    /// A measured Original verdict gets a fresh pause snapshot only when it
+    /// actually requests recovery. A user hold retains the result; a completed
+    /// hidden pause cycle ages the controller before considering publication.
+    pub(crate) fn settle_probe_recovery(
+        &mut self, grade: Option<&ProbeGrade>, probe_kbps: u32,
+        pause: impl FnOnce() -> PauseFact, decision: abr::Decision,
+        cleanup_ready: bool, buffered_ms: Option<i64>, media_duration_ms: u32,
+    ) -> ProbeRecoveryAction {
+        if !grade.is_some_and(|grade| grade.verdict == abr::RecoveryVerdict::Recover) {
+            return ProbeRecoveryAction::Steady;
+        }
+        let measured_kbps = probe_kbps.max(1);
+        let pause = pause();
+        if let Some(elapsed_ms) = pause.completed_ms {
+            self.on_resume(elapsed_ms);
+        }
+        if pause.paused {
+            self.retain_original_recovery(measured_kbps);
+            return ProbeRecoveryAction::Held;
+        }
+        match self.source_switch(
+            Some(measured_kbps), decision, cleanup_ready,
+            buffered_ms, media_duration_ms,
+        ) {
+            LatchedOriginalRecovery::Switch { kbps, cancel } => {
+                debug_assert!(cancel.is_none(), "a source probe is issued only from Stay");
+                ProbeRecoveryAction::Switch { kbps, measured_kbps }
+            }
+            LatchedOriginalRecovery::Wait => {
+                self.retain_original_recovery(measured_kbps);
+                ProbeRecoveryAction::Retained
+            }
+        }
+    }
     pub(crate) fn probe_original(
         &self, plan: abr::SourceProbePlan, cancelled: impl FnOnce() -> bool,
     ) -> ProbeResult {
@@ -1026,6 +1067,20 @@ impl Coordinator {
     ) -> OriginalPublication {
         publish_original(port, authorized, &self.control, &self.ticket,
             kbps, position_ns, on_published)
+    }
+
+    pub(crate) fn publish_probed_original(
+        &mut self, port: &mut dyn PublicationGate, authorized: bool,
+        kbps: u32, measured_kbps: u32,
+        position_ns: impl FnOnce() -> i64, on_published: impl FnOnce(),
+    ) -> OriginalPublication {
+        let publication = self.publish_original(
+            port, authorized, kbps, position_ns, on_published,
+        );
+        if matches!(publication, OriginalPublication::Busy | OriginalPublication::ClockMoved) {
+            self.retain_original_recovery(measured_kbps);
+        }
+        publication
     }
 
     pub(crate) fn advance_to(&mut self, now_ms: u64) {
