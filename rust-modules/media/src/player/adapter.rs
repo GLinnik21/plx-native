@@ -206,6 +206,23 @@ impl PlayerAdapter {
         self.backend.snapshot()
     }
 
+    /// Route a viewer transport change through the active common attempt. An absent attempt
+    /// leaves legacy no-engine transport handling to the caller.
+    pub fn backend_transport_control(&mut self, paused: bool) -> Option<bool> {
+        let snapshot = self.backend.snapshot();
+        let (Some(backend), Some(attempt)) = (snapshot.backend, snapshot.attempt) else {
+            return None;
+        };
+        let operation = if paused { Operation::Pause } else { Operation::Play };
+        let at = self.backend_tick();
+        let result = self.backend_send_at(Intent::Control { backend, attempt, operation },
+            super::attempt_metrics::Origin::Fresh, at);
+        Some(!result.playback.iter().any(|fx| matches!(fx,
+            plx_playback_contract::Fx::Rejected { .. }
+                | plx_playback_contract::Fx::CommandRefused { .. }
+        )))
+    }
+
     /// Execute one route-owned intent through the sole backend admission state. The caller
     /// supplies the physical attempt's origin and a monotonic tick for local measurements.
     pub fn backend_send_at(&mut self, intent: Intent, origin: super::attempt_metrics::Origin,
@@ -446,13 +463,6 @@ impl PlayerAdapter {
         trace_generation: u32) {
         debug_assert_eq!(self.feed.active_attempt(), Some(attempt.contract_id()));
         self.feed_attempt = Some((attempt, trace_generation));
-    }
-
-    /// The physical executor consumes only the route owner's canonical address and its owned
-    /// prepared source; common route identity is bound after installation succeeds.
-    pub(super) fn launch_native_feed(&mut self, attempt: plx_playback_contract::AttemptId,
-        prepared: super::engine::NativePrepared) -> Result<(), super::engine::NativeOpenError> {
-        super::engine::launch_native_open(&mut self.feed, attempt, prepared)
     }
 
     pub(super) fn clear_feed_attempt(&mut self) {
