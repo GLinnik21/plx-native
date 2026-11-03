@@ -76,7 +76,7 @@ impl WorkerTicket {
 
 /// Identity of one physical `sf_load` attempt inside a prepared route transaction. Attempts are
 /// never reused: a late result from A cannot settle retry B even though both open the same URL.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RouteStartAttempt {
     pub(super) serial: u64,
     pub(super) attempt: u64,
@@ -84,6 +84,12 @@ pub struct RouteStartAttempt {
 
 
 impl RouteStartAttempt {
+    /// Carry the route owner's exact address across the backend boundary without minting
+    /// a second attempt or exposing the route transaction to a physical executor.
+    pub const fn contract_id(self) -> plx_playback_contract::AttemptId {
+        plx_playback_contract::AttemptId::new(self.serial, self.attempt)
+    }
+
     /// A never-running address for reducer and readout tests in any host feature set.
     #[cfg(any(test, feature = "test-support"))]
     pub const fn fixture() -> Self {
