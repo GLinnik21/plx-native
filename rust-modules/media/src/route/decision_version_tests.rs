@@ -143,15 +143,24 @@ const URI_DTS: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-v","t
      {"id":31341,"streamType":1,"codec":"h264","index":0},
      {"id":31342,"streamType":2,"codec":"dca","channels":6,"index":1,"languageCode":"eng","default":true,"selected":true}]}]}]}]}}"#;
 
-#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
-struct QualifiedDts;
+#[cfg(feature = "play-uri")]
+const URI_AV1: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-v","type":"movie","duration":450000,"Media":[
+  {"id":3086,"bitrate":2372,"width":1920,"height":1080,"videoCodec":"av1","audioCodec":"aac","container":"mkv",
+   "Part":[{"id":3134,"duration":450000,"key":"/library/parts/3134/1/file.mkv","container":"mkv","Stream":[
+     {"id":31341,"streamType":1,"codec":"av1","index":0},
+     {"id":31342,"streamType":2,"codec":"aac","channels":2,"index":1,"languageCode":"eng","default":true,"selected":true}]}]}]}]}}"#;
 
 #[cfg(all(feature = "play-uri", feature = "devtriggers"))]
-impl crate::route::uri_preflight::OriginalQualifier for QualifiedDts {
+struct QualifiedOriginal { video: &'static str, audio: &'static str }
+
+#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+impl crate::route::uri_preflight::OriginalQualifier for QualifiedOriginal {
     fn qualify(&self, _: &plx_base::task::OffFrame,
         request: crate::route::uri_preflight::OriginalRequest) -> crate::route::uri_preflight::Verdict {
         use plx_playback_contract::{Fidelity, Requirements, SourceKind, TrackChoice};
-        assert_eq!(request.audio_codec, "dca");
+        assert_eq!(request.video_codec, self.video);
+        assert_eq!(request.audio_codec, self.audio);
+        assert!(!request.dolby_vision.present);
         assert_eq!(request.selection.audio_sid, 31342);
         assert_eq!(request.duration_ms, Some(450_000), "the selected Part overrides item duration");
         assert!(request.source_url.contains("/library/parts/3134/1/file.mkv"));
@@ -168,6 +177,7 @@ impl crate::route::uri_preflight::OriginalQualifier for QualifiedDts {
             requirements: Requirements { source: SourceKind::ProgressiveUri,
                 video: Fidelity::Exact, audio: Fidelity::Exact,
                 audio_track: TrackChoice::Selected(31342), subtitle_track: TrackChoice::Unspecified },
+            certified_dolby_vision: None,
             expires_at: std::time::Instant::now() + std::time::Duration::from_secs(15),
         })
     }
@@ -188,7 +198,7 @@ fn a_qualified_dts_original_lands_from_the_real_resolve_worker_before_feed_decis
         binding: Binding::Exported { canvas: (1920, 1080) }, callable: all,
         certified: all, preview_rectangle: false };
     ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
-        evidence, std::sync::Arc::new(QualifiedDts)));
+        evidence, std::sync::Arc::new(QualifiedOriginal { video: "h264", audio: "dca" })));
     let (port, done, server) = versions_pms_with(URI_DTS, MDE_TRANSCODE_VIDEO);
     let sid = plx_plex::plex::register_for_test("qualified-dts", "127.0.0.1", port, "token", "qualified-dts-client");
     let mut meta = plx_data::stores::metadata::MetadataStore::default();
@@ -209,6 +219,75 @@ fn a_qualified_dts_original_lands_from_the_real_resolve_worker_before_feed_decis
     assert!(requests.iter().any(|line| line.starts_with("POST /playQueues")));
     assert!(!requests.iter().any(|line| line.contains("/decision?") || line.contains("/transcode/")
         || line.starts_with("PUT /library/parts/")), "URI original must not acquire a Feed encoder or substitute source: {requests:?}");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
+#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+fn a_certified_av1_uri_original_does_not_inherit_feeds_video_refusal() {
+    use plx_play_uri::backend::Binding;
+    use plx_playback_contract::Capabilities;
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    assert!(plx_net::net::global_init());
+    let all = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
+        pause: true, seek: true, audio_track: true, subtitle_track: true,
+        audio_off: true, subtitle_off: true };
+    ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
+        crate::route::uri_preflight::ProductEvidence { display_exported: true,
+            binding: Binding::Exported { canvas: (1920, 1080) }, callable: all,
+            certified: all, preview_rectangle: false },
+        std::sync::Arc::new(QualifiedOriginal { video: "av1", audio: "aac" })));
+    let (port, done, server) = versions_pms_with(URI_AV1, MDE_TRANSCODE_VIDEO);
+    let sid = plx_plex::plex::register_for_test("qualified-av1", "127.0.0.1", port, "token", "qualified-av1-client");
+    let mut meta = plx_data::stores::metadata::MetadataStore::default();
+    let feed_cannot_decode_av1 = std::sync::Arc::new(plx_platform::devcaps::Caps {
+        av1: false, ..plx_platform::devcaps::Caps::assumed()
+    });
+    assert!(request_play(&mut ps, &mut meta, feed_cannot_decode_av1, sid,
+        "rk-v", "/library/parts/3134/1/file.mkv", "av1", "aac", "Film", "", None));
+    let finished = wait_resolve_workers_for_test(std::time::Duration::from_secs(15));
+    let start = pump_play(&mut ps, &mut meta);
+    done.send(()).unwrap();
+    let requests = server.join().unwrap();
+    assert!(finished, "the off-frame resolve did not finish");
+    assert!(start.is_some_and(|start| start.uri_offer.is_some()),
+        "a source-qualified URI AV1 must not inherit Feed's video gate");
+    assert!(!requests.iter().any(|line| line.contains("/decision?") || line.contains("/transcode/")),
+        "URI AV1 must not acquire Feed video conversion: {requests:?}");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
+#[cfg(all(feature = "play-uri", feature = "play-feed", feature = "devtriggers"))]
+fn unknown_uri_qualification_keeps_the_existing_feed_decision_path() {
+    use plx_play_uri::backend::Binding;
+    use plx_playback_contract::Capabilities;
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    assert!(plx_net::net::global_init());
+    let callable = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
+        pause: true, seek: true, audio_track: true, subtitle_track: true,
+        audio_off: true, subtitle_off: true };
+    ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
+        crate::route::uri_preflight::ProductEvidence { display_exported: true,
+            binding: Binding::Exported { canvas: (1920, 1080) }, callable,
+            certified: callable, preview_rectangle: false },
+        std::sync::Arc::new(crate::route::uri_preflight::ProductQualifier)));
+    let (port, done, server) = versions_pms_with(URI_DTS, MDE_TRANSCODE_VIDEO);
+    let sid = plx_plex::plex::register_for_test("unknown-dts", "127.0.0.1", port, "token", "unknown-dts-client");
+    let mut meta = plx_data::stores::metadata::MetadataStore::default();
+    assert!(request_play(&mut ps, &mut meta, plx_platform::devcaps::caps(), sid,
+        "rk-v", "/library/parts/3134/1/file.mkv", "h264", "dca", "Film", "", None));
+    let finished = wait_resolve_workers_for_test(std::time::Duration::from_secs(15));
+    let start = pump_play(&mut ps, &mut meta);
+    done.send(()).unwrap();
+    let requests = server.join().unwrap();
+    assert!(finished, "the off-frame resolve did not finish");
+    assert!(start.map_or(true, |start| start.uri_offer.is_none()),
+        "an Unknown qualifier must not publish a URI offer");
+    assert!(requests.iter().any(|line| line.contains("/decision?")),
+        "the existing Feed decision must still run: {requests:?}");
     plx_plex::plex::reset_servers_for_test();
 }
 

@@ -1867,8 +1867,6 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             if let Some(port) = env.uri_preflight_port.as_ref().filter(|_| {
                 (env.audio_sid <= 0 || source_audio.is_some())
                     && (env.subtitle_override.unwrap_or(0) <= 0 || source_sub_pick.is_some())
-                    // The URI qualifier has no source-specific Dolby Vision certificate yet.
-                    && !plan.playing.as_ref().is_some_and(|item| item.dovi.present)
             }) {
                 let source_kbps = plan.playing.as_ref().map_or(env.src_kbps, |p|
                     if p.bitrate > 0 { p.bitrate } else { env.src_kbps });
@@ -1879,6 +1877,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     source_url: client.direct_play_url(part, &session).to_url(),
                     duration_ms: plan.playing.as_ref().and_then(|p| p.duration_ms),
                     video_codec: vcodec.to_owned(),
+                    dolby_vision: plan.playing.as_ref().map_or(plx_data::metadata::Dovi::NONE, |p| p.dovi),
                     audio_codec: source_audio.as_ref().map_or_else(|| acodec.to_owned(), |(_, codec, _)| codec.clone()),
                     source_kbps: u32::try_from(source_kbps).ok().filter(|kbps| *kbps > 0),
                     raster: u32::try_from(width).ok().zip(u32::try_from(height).ok())

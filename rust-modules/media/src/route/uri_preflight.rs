@@ -54,6 +54,8 @@ pub struct OriginalRequest {
     pub source_url: String,
     pub duration_ms: Option<u64>,
     pub video_codec: String,
+    /// Exact selected-source layering; a positive DV verdict must certify this record.
+    pub dolby_vision: plx_data::metadata::Dovi,
     pub audio_codec: String,
     pub source_kbps: Option<u32>,
     pub raster: Option<(u32, u32)>,
@@ -70,6 +72,8 @@ pub struct KnownSource {
     pub selection: SourceSelection,
     pub source: UriSource,
     pub requirements: Requirements,
+    /// Source-specific DV certificate. `None` is enough only when PMS reports no DV.
+    pub certified_dolby_vision: Option<plx_data::metadata::Dovi>,
     pub expires_at: Instant,
 }
 
@@ -107,11 +111,13 @@ impl ResolvePort {
         }
         let preview = request.preview;
         let selected = request.selection;
+        let dovi = request.dolby_vision;
         match self.qualifier.qualify(off, request) {
             Verdict::Known(known) if known.selection == selected
                 && known.requirements.source == SourceKind::ProgressiveUri
                 && known.requirements.video == Fidelity::Exact
                 && known.requirements.audio == Fidelity::Exact
+                && (!dovi.present || known.certified_dolby_vision == Some(dovi))
                 && (selected.audio_sid <= 0 || known.requirements.audio_track
                     == TrackChoice::Selected(selected.audio_sid as u64))
                 && (selected.subtitle_sid <= 0 || known.requirements.subtitle_track
