@@ -46,6 +46,27 @@ impl FeedResources {
     }
 
     pub fn engine(&mut self) -> Option<&mut engine::Engine> { self.engine.as_mut() }
+    pub fn uses_stream_queues(&self) -> bool {
+        self.engine.as_ref().is_some_and(engine::Engine::uses_stream_queues)
+    }
+    pub fn arm_live_clock_prime(&mut self) -> bool {
+        let Some(engine) = self.engine.as_mut() else { return false; };
+        engine::arm_live_clock_prime(engine);
+        true
+    }
+    pub fn stage(&self) -> Option<super::shared::Stage> {
+        self.engine.as_ref().map(|engine| engine.stage)
+    }
+    pub fn pending_seek_ready(&self, seek_reloads: bool) -> bool {
+        self.engine.as_ref().is_some_and(|eng| {
+            matches!(&eng.source, engine::Source::Stream)
+                && eng.stage >= super::shared::Stage::Playing
+                && !(eng.flushed && eng.rebase_pending && !seek_reloads)
+        })
+    }
+    pub fn begin_seek_discontinuity(&self) -> bool {
+        self.engine.as_ref().is_some_and(|eng| super::SHARED.begin_native_media_discontinuity(eng.native_epoch))
+    }
     pub fn is_live(&self) -> bool { self.engine.is_some() }
     pub fn active_attempt(&self) -> Option<RouteStartAttempt> { self.engine.as_ref().map(|e| e.route_start) }
     pub fn loading(&self) -> bool {
@@ -53,6 +74,13 @@ impl FeedResources {
     }
     pub fn foreground_follows_load(&self) -> bool {
         self.engine.as_ref().is_some_and(|e| e.foreground_follows_load)
+    }
+    pub fn route_actions_ready(&self) -> bool {
+        self.engine.as_ref().is_some_and(|e| {
+            matches!(&e.source, engine::Source::Stream)
+                && e.stage >= super::shared::Stage::Playing
+                && !(e.flushed && e.rebase_pending)
+        })
     }
     pub fn install(&mut self, value: engine::Engine) { self.engine = Some(value); }
     pub fn take(&mut self) -> Option<engine::Engine> { self.engine.take() }

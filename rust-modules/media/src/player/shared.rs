@@ -5,7 +5,7 @@
 //! cycle and is *reset*, never freed. Native callbacks additionally carry the exact `Load` epoch:
 //! retirement drains an event already inside that epoch and rejects every later event, so stable
 //! storage is not mistaken for permission to mutate the next playback.
-use plx_data::metadata::track_names::TrackNames;
+use plx_playback_contract::tracks::TrackNames;
 use plx_net::stream::HttpStream;
 use plx_play_feed::native_gate::NativeGate;
 pub use plx_play_feed::native_gate::{EventScope, NativeEventClass};
@@ -15,35 +15,7 @@ use std::sync::atomic::{
 };
 use std::sync::{Condvar, Mutex};
 
-/// How the pipeline refused a Load, for the `playback.failed` event: the Load call itself returned
-/// 0 (`Sync`, `threads::load_thread` via `publish_native_load_failure`), or the call returned and
-/// a `type=18` error callback arrived before any picture (`Async`, `sf_on_event`).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[repr(u8)]
-pub enum RefusalPath {
-    None = 0,
-    Sync = 1,
-    Async = 2,
-}
-
-impl RefusalPath {
-    pub fn from_u8(v: u8) -> Self {
-        match v {
-            1 => Self::Sync,
-            2 => Self::Async,
-            _ => Self::None,
-        }
-    }
-
-    /// The stable wire code.
-    pub const fn code(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Sync => "sync",
-            Self::Async => "async",
-        }
-    }
-}
+pub use super::attempt_view::RefusalPath;
 use std::time::{Duration, Instant};
 
 /// Exact conservation certificate accumulated while the native media clock is held.
@@ -336,41 +308,7 @@ impl SubBitmap {
     }
 }
 
-/// What playback is actually doing, as one value the UI can render from.
-///
-/// This replaces the old single `seeking` boolean, which was only ever set by `request_seek` —
-/// so `player::loading()` was **false for the whole initial load** and the `Spinner` that has sat
-/// in `appkit/player_hud/classic.rs` all along never fired on first play. The HUD drew a
-/// live-looking transport at 0:00 / -0:00 instead, which is the half of the frozen-HUD report that
-/// is not blocking I/O.
-///
-/// Derived once per frame in `pump::set_state` from signals the workers already publish; no
-/// new cross-thread plumbing. `Playing` alone means "a frame is on the panel"; `Paused` (a paused
-/// player with no picture and nothing in flight) is neither busy nor playing.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[repr(u8)]
-pub enum PlaybackState {
-    /// no engine
-    Idle = 0,
-    /// the route/plan resolve is in flight — DERIVED in `player::state()` from `route::play_pending()`,
-    /// and held through a cold resume's rebuild (`route::resume_flight_outstanding()`) after the plan landed
-    Resolving = 1,
-    /// engine started, pipeline not yet loaded — the HTTP GET + Starfish `Load` window
-    Connecting = 2,
-    /// loaded and fed, but no frame has been presented yet
-    Buffering = 3,
-    /// a seek is resolving (reopen → prime → Play)
-    Seeking = 4,
-    /// frames on the panel
-    Playing = 5,
-    /// the producer died (a failed open / no video stream). Terminal until teardown.
-    Error = 6,
-    /// the viewer is paused on a session that has no picture yet and the pump has no work in
-    /// flight for one (`pump::paused_and_idle`): not `Buffering` (nothing is being waited on, so
-    /// no spinner) and not `Playing` (no frame is on the panel, so no `is_playing`, no
-    /// `PlaybackStarted`). The HUD draws its ordinary paused transport.
-    Paused = 7,
-}
+pub use super::attempt_view::PlaybackState;
 
 /// How long a viewer's audio pick may stand as "the reason for the next rebuild" before the
 /// rebuild is assumed to have been refused. A retranscode claim's flight takes 1-15 s
@@ -398,43 +336,6 @@ impl AudioSwitch {
     }
 }
 
-impl PlaybackState {
-    pub fn from_u8(v: u8) -> PlaybackState {
-        match v {
-            1 => PlaybackState::Resolving,
-            2 => PlaybackState::Connecting,
-            3 => PlaybackState::Buffering,
-            4 => PlaybackState::Seeking,
-            5 => PlaybackState::Playing,
-            6 => PlaybackState::Error,
-            7 => PlaybackState::Paused,
-            _ => PlaybackState::Idle,
-        }
-    }
-    /// "something is happening and the user should see a spinner, not a dead transport".
-    pub fn is_busy(self) -> bool {
-        matches!(
-            self,
-            PlaybackState::Resolving
-                | PlaybackState::Connecting
-                | PlaybackState::Buffering
-                | PlaybackState::Seeking
-        )
-    }
-    /// The one-line status the HUD shows beside the spinner. A `&'static CStr` (the house idiom
-    /// for UI strings) so the draw path allocates nothing — this is read 60x/second for the whole
-    /// load window, and indefinitely in `Error`.
-    pub fn caption(self) -> &'static std::ffi::CStr {
-        match self {
-            PlaybackState::Resolving => plx_platform::i18n::msg::widgets_status_preparing_c(),
-            PlaybackState::Connecting => plx_platform::i18n::msg::widgets_status_connecting_c(),
-            PlaybackState::Buffering => plx_platform::i18n::msg::widgets_status_buffering_c(),
-            PlaybackState::Seeking => plx_platform::i18n::msg::widgets_status_seeking_c(),
-            PlaybackState::Error => plx_platform::i18n::msg::widgets_status_failed_c(),
-            _ => c"",
-        }
-    }
-}
 
 pub struct Shared {
     /// Synchronized lifecycle/provenance for callbacks from the current native `Load`.

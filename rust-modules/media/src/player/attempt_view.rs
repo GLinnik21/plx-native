@@ -5,53 +5,7 @@
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Backend { Feed, Uri }
 
-/// Which runtime boundary ended playback after route resolution succeeded.
-///
-/// This is a small product vocabulary, not a copy of FFmpeg or Starfish return codes. Every
-/// variant is backed by a distinct signal the worker already publishes, so the HUD never parses
-/// log strings or guesses from elapsed time.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum RuntimeFailure {
-    /// No worker supplied a cause. Say that honestly rather than leaving the reason slot blank.
-    Unknown,
-    /// The producer never opened a usable media stream or produced a video access unit.
-    MediaSource,
-    /// The media producer stopped after it had supplied at least one access unit. The worker's
-    /// flag deliberately says nothing narrower about why it stopped.
-    PlaybackInterrupted,
-    /// Starfish refused the Load declaration, so no decoder session could start.
-    TvPipeline,
-    /// Issue #74 D.1.4's `NATIVE_LOAD_BUDGET` fired — a hang, not a firmware refusal. See
-    /// [`FailureKind::LoadTimeout`].
-    LoadTimeout,
-    /// The previous object's `Unload` is overdue. See [`FailureKind::ReleaseTimeout`].
-    ReleaseTimeout,
-    /// The resolve landed no plan and no verdict ([`FailureKind::ResolveFailed`]).
-    ResolveFailed,
-}
-
-#[derive(Clone, Copy, Default)]
-pub struct AttemptFacts {
-    pub runtime_failure: Option<RuntimeFailure>,
-    pub no_video: Option<bool>,
-    pub position_ns: Option<i64>,
-    pub duration_ns: Option<i64>,
-    pub playable_buffer_ms: Option<i64>,
-    /// A callback reported a decoded frame. This does not independently prove panel presentation.
-    pub reported_frame: Option<bool>,
-    pub frames: Option<i32>,
-    pub raster: Option<(i32, i32)>,
-    pub pipeline_stage: Option<u8>,
-    pub pipeline_error: Option<i32>,
-    pub http_status: Option<i32>,
-    pub demux_exit: Option<u8>,
-    pub declared_kbps: Option<i64>,
-    pub media_kbps: Option<i64>,
-    pub abr_buffer_ms: Option<i64>,
-    pub transport_rc: Option<i32>,
-    pub transfer_age_ms: Option<i64>,
-    pub transport_reopen_failed: Option<bool>,
-}
+pub use plx_playback_contract::readout::{AttemptFacts, PlaybackState, RefusalPath, RuntimeFailure};
 
 #[derive(Clone, Copy)]
 pub struct AttemptView<A> {
@@ -61,14 +15,7 @@ pub struct AttemptView<A> {
 }
 
 impl<A: Copy + Eq> AttemptView<A> {
-    pub const EMPTY: Self = Self { attempt: None, backend: None, facts: AttemptFacts {
-        runtime_failure: None, no_video: None,
-        position_ns: None, duration_ns: None, playable_buffer_ms: None,
-        reported_frame: None, frames: None, raster: None, pipeline_stage: None,
-        pipeline_error: None, http_status: None, demux_exit: None,
-        declared_kbps: None, media_kbps: None, abr_buffer_ms: None,
-        transport_rc: None, transfer_age_ms: None, transport_reopen_failed: None,
-    } };
+    pub const EMPTY: Self = Self { attempt: None, backend: None, facts: AttemptFacts::EMPTY };
 
     pub fn begin(&mut self, attempt: A, backend: Backend) {
         *self = Self { attempt: Some(attempt), backend: Some(backend), ..Self::EMPTY };

@@ -182,8 +182,8 @@ static LEDGER: std::sync::Mutex<AttemptLedger> = std::sync::Mutex::new(AttemptLe
     ordinal: AttemptOrdinal::FIRST,
 });
 
-/// The current play attempt's in-memory, privacy-bounded history. It lives in [`super::SHARED`]
-/// because both the demux worker (ABR/probe) and main thread (request/seek/error) append to it.
+/// The current play request's in-memory, privacy-bounded history, owned here by [`TRACE`].
+/// Both the common adaptive worker and main thread append addressed transitions to it.
 /// Engine reloads do not clear it; a new play attempt does.
 pub struct PlaybackTrace {
     generation: u32,
@@ -582,10 +582,10 @@ pub fn note_load_gate_for(generation: u32, elapsed: LoadElapsedClass) {
 /// The quality the installed route asked the server for. Original-quality routes ask for the
 /// original, a progressive transcode asks for the viewer's selection, and HLS is the controller's
 /// current rung. No route (`Unknown`) asked for nothing recorded, so it is not inferred.
-fn requested_quality(delivery: DeliveryClass, selected: QualityClass) -> QualityClass {
+fn requested_quality(delivery: DeliveryClass, selected: QualityClass, hls_kbps: Option<i64>) -> QualityClass {
     match delivery {
         DeliveryClass::Unknown => QualityClass::Unknown,
-        DeliveryClass::Hls => QualityClass::from_kbps(super::SHARED.dg_abr_kbps.load(Relaxed)),
+        DeliveryClass::Hls => hls_kbps.map_or(QualityClass::Unknown, QualityClass::from_kbps),
         DeliveryClass::Direct | DeliveryClass::Remux => QualityClass::Original,
         DeliveryClass::Transcode => selected,
     }
@@ -612,7 +612,7 @@ fn error_context(ps: &crate::route::PlaybackSession) -> PlaybackErrorContext {
     let facts = ps.attempt_view().facts();
     let delivery = delivery_class(ps);
     let selected = selected_quality_class(crate::route::quality());
-    let requested = requested_quality(delivery, selected);
+    let requested = requested_quality(delivery, selected, facts.requested_kbps);
     let (transport, transfer_age) = transport_classes(
         facts.transport_rc.unwrap_or(0),
         facts.transfer_age_ms.unwrap_or(0),
@@ -761,7 +761,7 @@ fn refusal_context(ps: &crate::route::PlaybackSession) -> Option<RefusalContext>
 fn presented_event(ps: &crate::route::PlaybackSession) -> TraceEvent {
     let facts = ps.attempt_view().facts();
     let delivery = delivery_class(ps);
-    let requested = requested_quality(delivery, selected_quality_class(crate::route::quality()));
+    let requested = requested_quality(delivery, selected_quality_class(crate::route::quality()), facts.requested_kbps);
     TraceEvent::Presented {
         delivery,
         requested,
@@ -1027,7 +1027,7 @@ fn tick_with(ps: &crate::route::PlaybackSession, report_preview_failures: bool) 
                     context.pipeline_error,
                 )
                 .code(),
-                refusal: super::SHARED.refusal_path().code(),
+                refusal: ps.attempt_view().facts().refusal_path.unwrap_or(super::attempt_view::RefusalPath::None).code(),
             });
         }
         None => {}

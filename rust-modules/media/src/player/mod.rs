@@ -414,7 +414,20 @@ pub use pump::{
     drain_engineless_rollback, land_engineless_rollback, pump, recover_failed_foreground_original, ForegroundOriginalRecovery,
     RollbackLanding,
 };
-pub use shared::PlaybackState;
+pub use attempt_view::PlaybackState;
+
+/// Localized status copy belongs to the common presentation layer.
+pub fn state_caption(state: PlaybackState) -> &'static std::ffi::CStr {
+    match state {
+        PlaybackState::Resolving => plx_platform::i18n::msg::widgets_status_preparing_c(),
+        PlaybackState::Connecting => plx_platform::i18n::msg::widgets_status_connecting_c(),
+        PlaybackState::Buffering => plx_platform::i18n::msg::widgets_status_buffering_c(),
+        PlaybackState::Seeking => plx_platform::i18n::msg::widgets_status_seeking_c(),
+        PlaybackState::Error => plx_platform::i18n::msg::widgets_status_failed_c(),
+        _ => c"",
+    }
+}
+
 
 /// The viewer picked an audio track and the stream is being rebuilt for it: `route::
 /// commit_audio_selection` calls this once its rebuild is queued. See [`shared::Shared::audio_switch`].
@@ -448,7 +461,7 @@ pub fn busy_caption_with(st: PlaybackState, audio_switch: bool) -> &'static std:
     if audio_switch && st == PlaybackState::Buffering {
         plx_platform::i18n::msg::widgets_status_switching_audio_c()
     } else {
-        st.caption()
+        state_caption(st)
     }
 }
 
@@ -517,7 +530,7 @@ pub(crate) fn restore_preroll_volume(mt: &plx_base::task::MainThread) {
 pub fn resume(pa: &mut adapter::PlayerAdapter) -> bool {
     // First, whichever branch follows: the viewer asked for sound, and a Play below must not run muted.
     restore_preroll_volume(pa.mt());
-    let queued_stream = pa.engine().is_some_and(|eng| eng.uses_stream_queues());
+    let queued_stream = pa.feed_uses_stream_queues();
     match SHARED.prepare_hls_user_resume(queued_stream) {
         Some(HlsUserResume::Deferred) => {
             // Feeding may resume, but an initial/seek/recovery certificate still owns the physical
@@ -533,11 +546,10 @@ pub fn resume(pa: &mut adapter::PlayerAdapter) -> bool {
             // Keep Starfish and ACB physically Paused. Opening TX first lets the two AU lanes fill
             // together; their ordinary exact prime certificate owns the eventual Play + ACB
             // Resume. Starting the clock here recreates the pause-to-fill A/V drift race.
-            let Some(eng) = pa.engine() else {
+            if !pa.arm_feed_live_clock_prime() {
                 log("player: queued Resume lost its Engine before prime could arm");
                 return false;
-            };
-            engine::arm_live_clock_prime(eng);
+            }
             if TX.seek_preroll_active() {
                 TX.finish_seek_preroll();
             }
@@ -619,11 +631,10 @@ pub fn force_play_result_for_test(result: Option<c_int>) {
 /// setMediaId/LOADED has happened but setMediaVideoData/window/PLAYING has not, so mirroring a user
 /// Resume there would overtake the rest of the ordered bind transaction.
 pub fn acb_mirror_playstate(pa: &mut adapter::PlayerAdapter, playing: bool) {
-    let (eng, mt) = pa.split();
-    let Some(stage) = eng.map(|e| e.stage) else {
+    let Some(stage) = pa.feed_stage() else {
         return;
     };
-    acb_mirror_playstate_at(mt, stage, playing);
+    acb_mirror_playstate_at(pa.mt(), stage, playing);
 }
 
 /// [`acb_mirror_playstate`] for a caller that already holds the session's `&mut Engine` and so
@@ -673,7 +684,7 @@ pub fn observe_video_plane(
     pl: &mut machine::Player,
     pa: &mut adapter::PlayerAdapter,
 ) -> Option<bool> {
-    let bound = pa.engine().is_some_and(|e| acb_playstate_ready(e.stage));
+    let bound = pa.feed_stage().is_some_and(acb_playstate_ready);
     #[cfg(feature = "devtriggers")]
     let bound = bound || pa.uri_plane_open();
     pl.set_video_plane_bound(bound)
@@ -831,6 +842,11 @@ pub fn state(ps: &crate::route::PlaybackSession) -> shared::PlaybackState {
     // reader between the two still saw Playing: the HUD, which freezes the playhead at the
     // target only while busy, drew one frame of the PRE-seek position between the scrub preview
     // and the frozen target — a visible jump back and forth on every seek.
+    if ps.attempt_view().backend() == Some(attempt_view::Backend::Uri) {
+        let facts = ps.attempt_view().facts();
+        return if facts.runtime_failure.is_some() { PlaybackState::Error }
+            else { facts.status.unwrap_or(PlaybackState::Connecting) };
+    }
     if SHARED.seeking.load(Relaxed) {
         return shared::PlaybackState::Seeking;
     }
@@ -2869,11 +2885,14 @@ mod tests {
         ps.begin_attempt_view(crate::route::RouteStartAttempt::fixture(), attempt_view::Backend::Uri);
         SHARED.load_failed.store(true, Relaxed);
         SHARED.demux_no_video.store(true, Relaxed);
+        SHARED.pb_state.store(PlaybackState::Error as u8, Relaxed);
         let cause = live_runtime_failure(&ps);
         let shape = error_now(&ps).kind;
+        let status = state(&ps);
         SHARED.reset_session();
         assert_eq!(cause, RuntimeFailure::Unknown, "a URI attempt has no feed failure evidence");
         assert_eq!(shape, FailureKind::Unspecified, "retired demux flags cannot diagnose URI media");
+        assert_eq!(status, PlaybackState::Connecting, "retired feed status cannot describe a new URI attempt");
     }
 
     /// The speeds a source can be offered: everything up to 2x for film, nothing above 1x for 60p
@@ -4649,11 +4668,11 @@ mod audio_switch_tests {
     fn the_caption_is_chosen_by_the_pick_and_only_for_buffering() {
         use PlaybackState as S;
         assert_eq!(busy_caption_with(S::Buffering, true), plx_platform::i18n::msg::widgets_status_switching_audio_c());
-        assert_eq!(busy_caption_with(S::Buffering, false), S::Buffering.caption());
+        assert_eq!(busy_caption_with(S::Buffering, false), state_caption(S::Buffering));
         // a switch never renames the other waits
-        assert_eq!(busy_caption_with(S::Seeking, true), S::Seeking.caption());
-        assert_eq!(busy_caption_with(S::Connecting, true), S::Connecting.caption());
-        assert_eq!(busy_caption_with(S::Resolving, true), S::Resolving.caption());
+        assert_eq!(busy_caption_with(S::Seeking, true), state_caption(S::Seeking));
+        assert_eq!(busy_caption_with(S::Connecting, true), state_caption(S::Connecting));
+        assert_eq!(busy_caption_with(S::Resolving, true), state_caption(S::Resolving));
     }
 
     #[test]

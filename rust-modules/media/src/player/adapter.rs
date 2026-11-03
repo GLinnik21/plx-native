@@ -235,11 +235,17 @@ impl PlayerAdapter {
         self.feed.active_attempt()
     }
 
+    pub(super) fn feed_uses_stream_queues(&self) -> bool { self.feed.uses_stream_queues() }
+    pub(super) fn arm_feed_live_clock_prime(&mut self) -> bool { self.feed.arm_live_clock_prime() }
+    pub(super) fn feed_stage(&self) -> Option<super::shared::Stage> { self.feed.stage() }
+
     /// Whether the current physical feed has yet to leave its Load stage.
     pub(super) fn feed_loading(&self) -> bool { self.feed.loading() }
     pub(super) fn foreground_follows_feed_load(&self) -> bool {
         self.feed.foreground_follows_load()
     }
+    /// Native readiness for a route/action claim; the route policy itself stays in the pump.
+    pub(super) fn route_actions_ready(&self) -> bool { self.feed.route_actions_ready() }
 
     /// One physical seek-preroll tick. The common pump supplies route-flight facts and applies
     /// the returned finish request after this borrow of feed resources ends.
@@ -274,6 +280,44 @@ impl PlayerAdapter {
     /// Emit the physical callback-cadence diagnostic after first-picture route settlement.
     pub(super) fn note_missing_era_callback(&mut self) {
         super::feed_pump::note_missing_era_callback(&mut self.feed);
+    }
+
+    pub(super) fn stuck_seek_due(&mut self, now: u32, feed_allowed: bool,
+        route_flight: bool, budget_ms: u32) -> bool {
+        super::feed_pump::stuck_seek_due(&mut self.feed, now, feed_allowed, route_flight, budget_ms)
+    }
+
+    pub(super) fn retry_stuck_seek(&mut self, now: u32, target_ns: i64,
+        can_retry: bool) -> super::feed_pump::StuckSeekAction {
+        super::feed_pump::retry_stuck_seek(&mut self.feed, now, target_ns, can_retry)
+    }
+
+    pub(super) fn pending_seek_ready(&self, seek_reloads: bool) -> bool {
+        super::feed_pump::pending_seek_ready(&self.feed, seek_reloads)
+    }
+    pub(super) fn prepare_seek_pause(&self) -> super::feed_pump::SeekPause {
+        super::feed_pump::prepare_seek_pause(&self.mt)
+    }
+    pub(super) fn begin_seek_discontinuity(&self) -> bool {
+        super::feed_pump::begin_seek_discontinuity(&self.feed)
+    }
+    pub(super) fn apply_inplace_seek_pre(&mut self, target_ns: i64,
+        mode: super::SeekMode, coalesced: u32) {
+        super::feed_pump::apply_inplace_seek_pre(&mut self.feed, &self.mt, target_ns, mode, coalesced);
+    }
+    pub(super) fn apply_inplace_seek_post(&mut self, target_ns: i64, now: u32) {
+        super::feed_pump::apply_inplace_seek_post(&mut self.feed, target_ns, now);
+    }
+
+    pub(super) fn tick_feed_load(&mut self, now: u32, segmented_hls: bool,
+        budget: std::time::Duration, speed_deadline_ms: u32) -> super::feed_pump::LoadTick {
+        super::feed_pump::tick_load(&mut self.feed, &self.mt, now,
+            segmented_hls, budget, speed_deadline_ms)
+    }
+
+    pub(super) fn tick_feed_presentation(&mut self, segmented_hls: bool,
+        immersive: bool) -> super::feed_pump::PresentationTick {
+        super::feed_pump::tick_presentation(&mut self.feed, &self.mt, segmented_hls, immersive)
     }
 
     /// Is a session live? Distinct from [`engine`](Self::engine) because it answers without taking
