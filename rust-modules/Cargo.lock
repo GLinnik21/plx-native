@@ -804,6 +804,7 @@ dependencies = [
 name = "plx_play_feed"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "plx_base",
  "plx_platform",
 ]

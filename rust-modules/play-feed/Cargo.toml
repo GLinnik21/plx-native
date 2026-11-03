@@ -15,6 +15,7 @@ name = "plx_play_feed"
 crate-type = ["rlib"]
 
 [dependencies]
+libc = "0.2"
 plx_base = { path = "../base" }
 plx_platform = { path = "../platform" }
 
