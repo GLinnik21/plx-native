@@ -4,7 +4,8 @@
 
 use super::{HlsAutomaticTransition, HlsClockFenceError, UserPauseCursor, SHARED, TX};
 use plx_playback_contract::adaptive::{AutomaticTransition, BufferFact, FenceHandle, FenceSettlement, LeaseHandle, PhysicalFailure};
-use plx_playback_contract::demux::{DemuxAdaptive, DemuxClock, DemuxEffect, DemuxMedia, DemuxSession, PauseClock, PauseEvent, PauseLane};
+use plx_playback_contract::demux::{DemuxAdaptive, DemuxClock, DemuxEffect, DemuxFault, DemuxMedia, DemuxSession, PauseClock, PauseEvent, PauseLane};
+use plx_telemetry::telemetry::classes::DemuxExitClass;
 use std::sync::atomic::Ordering;
 
 pub struct PlayerDemuxSession {
@@ -173,7 +174,15 @@ impl DemuxAdaptive for PlayerDemuxSession {
 impl DemuxMedia for PlayerDemuxSession {
     fn publish(&mut self, effect: DemuxEffect) {
         match effect {
+            DemuxEffect::NoteFault(fault) => SHARED.note_demux_exit(demux_exit_class(fault)),
+            DemuxEffect::FailFault(fault) => SHARED.fail_demux(demux_exit_class(fault)),
+            DemuxEffect::IoFailed => SHARED.demux_io_failed.store(true, Ordering::Release),
+            DemuxEffect::Failed => SHARED.demux_failed.store(true, Ordering::Release),
+            DemuxEffect::NoVideo => SHARED.demux_no_video.store(true, Ordering::Release),
             DemuxEffect::HttpStatus(status) => SHARED.dg_http_status.store(status, Ordering::Relaxed),
+            DemuxEffect::TrackNames { audio, subs } => {
+                *SHARED.track_names.lock().unwrap() = super::TrackNames { audio, subs };
+            }
             DemuxEffect::FileSize(size) => SHARED.file_size.store(size, Ordering::Release),
             DemuxEffect::TransportRc(rc) => SHARED.dg_transport_rc.store(rc, Ordering::Release),
             DemuxEffect::NetworkBytes(bytes) => { SHARED.dg_net_rx.fetch_add(bytes, Ordering::Relaxed); }
@@ -188,4 +197,25 @@ impl DemuxMedia for PlayerDemuxSession {
     }
 
     fn record(&self, line: &str) { super::log(line); }
+}
+
+fn demux_exit_class(fault: DemuxFault) -> DemuxExitClass {
+    match fault {
+        DemuxFault::HttpsReserveFailed => DemuxExitClass::HttpsReserveFailed,
+        DemuxFault::HttpsOpenFailed => DemuxExitClass::HttpsOpenFailed,
+        DemuxFault::HttpOpenFailed => DemuxExitClass::HttpOpenFailed,
+        DemuxFault::OpenInputFailed => DemuxExitClass::OpenInputFailed,
+        DemuxFault::FindStreamInfoFailed => DemuxExitClass::FindStreamInfoFailed,
+        DemuxFault::NoVideoStream => DemuxExitClass::NoVideoStream,
+        DemuxFault::NoFraming => DemuxExitClass::NoFraming,
+        DemuxFault::LoadMismatch => DemuxExitClass::LoadMismatch,
+        DemuxFault::NoAudioAu => DemuxExitClass::NoAudioAu,
+        DemuxFault::NoUsableVideo => DemuxExitClass::NoUsableVideo,
+        DemuxFault::DtsCoreMissing => DemuxExitClass::DtsCoreMissing,
+        DemuxFault::HlsFailed => DemuxExitClass::HlsFailed,
+        DemuxFault::HlsNotReady => DemuxExitClass::HlsNotReady,
+        DemuxFault::DemuxPanicked => DemuxExitClass::DemuxPanicked,
+        DemuxFault::NoAccessUnits => DemuxExitClass::NoAccessUnits,
+        DemuxFault::Other => DemuxExitClass::Other,
+    }
 }

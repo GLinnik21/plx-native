@@ -58,11 +58,28 @@ pub trait DemuxAdaptive {
     fn transition_permitted(&self, kind: AutomaticTransition) -> bool;
 }
 
+/// Physical reasons a source ended. The player adapter maps this vocabulary
+/// to the report latch; the feed never imports report schema or Shared.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DemuxFault {
+    HttpsReserveFailed, HttpsOpenFailed, HttpOpenFailed,
+    OpenInputFailed, FindStreamInfoFailed, NoVideoStream,
+    NoFraming, LoadMismatch, NoAudioAu, NoUsableVideo,
+    DtsCoreMissing, HlsFailed, HlsNotReady, DemuxPanicked,
+    NoAccessUnits, Other,
+}
+
 /// The effect alphabet is expanded by physical capability, not by adding one
 /// field-writing method per native gauge. The adapter preserves each variant's
 /// original atomic ordering and failure-latch rule.
 pub enum DemuxEffect {
+    NoteFault(DemuxFault),
+    FailFault(DemuxFault),
+    IoFailed,
+    Failed,
+    NoVideo,
     HttpStatus(i32),
+    TrackNames { audio: Vec<String>, subs: Vec<String> },
     FileSize(i64),
     TransportRc(i32),
     NetworkBytes(i64),
