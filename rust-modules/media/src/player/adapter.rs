@@ -235,6 +235,19 @@ impl PlayerAdapter {
         self.feed.active_attempt()
     }
 
+    /// One physical seek-preroll tick. The common pump supplies route-flight facts and applies
+    /// the returned finish request after this borrow of feed resources ends.
+    pub(super) fn paused_seek_step(&mut self, now: u32, route_flight: bool,
+        claim_owns_pause: bool) -> super::feed_pump::PausedSeekStep {
+        super::feed_pump::paused_seek_step(&mut self.feed, now, route_flight, claim_owns_pause)
+    }
+
+    /// Publish native queue and frame diagnostics without exposing Engine to the common prelude.
+    pub(super) fn publish_feed_diag(&mut self, now: u32,
+        last_frames: &std::sync::atomic::AtomicI32) {
+        super::feed_pump::publish_diag(&mut self.feed, now, last_frames);
+    }
+
     /// Is a session live? Distinct from [`engine`](Self::engine) because it answers without taking
     /// the exclusive borrow — `start_bufferfeed`'s double-start guard only needs to ask.
     #[inline]
