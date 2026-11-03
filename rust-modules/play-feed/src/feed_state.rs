@@ -160,6 +160,8 @@ pub struct Engine {
     /// Common startup owns the first Play. Later seek/rebuffer primes retain their physical
     /// clock protocol after that command has been admitted.
     pub startup_controlled: bool,
+    /// Viewer hold captured before this physical Load; first common Play must resume it.
+    pub startup_user_held: bool,
     pub startup_play_commanded: bool,
     /// Physical first Play was accepted; later seek/rebuffer primes are independent.
     pub startup_first_play_done: bool,
