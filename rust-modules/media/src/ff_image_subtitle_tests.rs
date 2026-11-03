@@ -12,6 +12,7 @@
 
 use super::subs::SubCue;
 use super::*;
+use crate::player::SHARED;
 use crate::player::{ass, ass_source};
 use std::sync::Arc;
 

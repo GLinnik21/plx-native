@@ -8,7 +8,6 @@ use plx_playback_contract::adaptive::{Acquisition, ActiveAction, ActiveFeedPort,
 use plx_playback_contract::demux::{DemuxCallbackEffect, DemuxClock, DemuxEffect, DemuxObserver, DemuxSession, HlsBufferClocks, PauseLane};
 use plx_playback_contract::SourceKey;
 use plx_play_feed::SendPtr;
-use crate::player::SHARED;
 use plx_net::stream::HttpStream;
 use plx_net::net::origin::Origin;
 use plx_net::range_io::{self, RangeFactory, RangeReader};

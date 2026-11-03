@@ -1,6 +1,7 @@
 //! Shared fixtures and helpers for the `ff` test modules split out below.
 
 use super::*;
+use crate::player::SHARED;
 
 struct FixtureDemuxObserver;
 

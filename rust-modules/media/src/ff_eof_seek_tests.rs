@@ -30,6 +30,7 @@
 //! cargo test --lib -p plx_media ff::eof_seek_tests -- --ignored`.
 
 use super::*;
+use crate::player::SHARED;
 use std::io::{Read, Write};
 use std::os::raw::c_long;
 use std::path::{Path, PathBuf};

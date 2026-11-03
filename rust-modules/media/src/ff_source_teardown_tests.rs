@@ -2,6 +2,7 @@
 //! read/seek races, and stalled or IO-failed transports across both transports.
 
 use super::*;
+use crate::player::SHARED;
 #[allow(unused_imports)]
 use super::test_support::*;
 
