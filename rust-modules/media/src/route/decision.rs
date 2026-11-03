@@ -734,6 +734,20 @@ mod backend_offer_session_tests {
     }
 
     #[test]
+    fn viewer_reconfigure_retains_selected_external_subtitle_across_retry() {
+        let mut session = PlaybackSession::IDLE;
+        session.bind_source_selection(SourceSelection {
+            server: ServerId::UNSET, part_id: 7, audio_sid: 71, subtitle_sid: 0,
+            audio_contract: plx_plex::plex::AudioEnhancements::NONE,
+        });
+        session.selection_known = true;
+        session.cur_sub_sid = 81;
+        session.cur_sub_sidecar = true;
+        assert_eq!(current_retry_context(&session, 5_000_000_000).selection,
+            Some((71, 81)), "an external source subtitle remains a viewer-selected sidecar");
+    }
+
+    #[test]
     fn qualified_original_feed_precedes_uri_conversion_then_uri_precedes_feed_conversion() {
         let mut session = PlaybackSession::IDLE;
         set_url(&mut session, "https://example.invalid/original.mkv");
