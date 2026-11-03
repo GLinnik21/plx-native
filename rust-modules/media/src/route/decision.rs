@@ -139,6 +139,8 @@ pub struct PlaybackSession {
     /// Viewer speed intent for this item. Feed owns the physical PCM/timebase actuator; a URI
     /// qualification cannot silently reinterpret a non-1× request as native 1× playback.
     requested_rate_permille: i32,
+    /// Local measurement origin of the next physical open, chosen at the request boundary.
+    attempt_origin: crate::player::attempt_metrics::Origin,
     /// Viewer pause goal captured for an explicit same-item reconfiguration. The physical Feed
     /// hold is executor state and cannot describe a URI attempt's viewer intent.
     reconfigure_pause_goal: Option<bool>,
@@ -815,6 +817,8 @@ impl PlaybackSession {
 
     pub fn requested_rate_permille(&self) -> i32 { self.requested_rate_permille }
 
+    pub fn attempt_origin(&self) -> crate::player::attempt_metrics::Origin { self.attempt_origin }
+
     pub fn reconfigure_pause_goal(&self) -> Option<bool> { self.reconfigure_pause_goal }
 
     pub fn set_reconfigure_pause_goal(&mut self, paused: bool) {
@@ -991,6 +995,7 @@ impl PlaybackSession {
         planned_feed_purpose: CandidatePurpose::NewCandidate,
         admitted_feed_offer: None,
         requested_rate_permille: plx_playback_contract::RATE_NORMAL,
+        attempt_origin: crate::player::attempt_metrics::Origin::Fresh,
         reconfigure_pause_goal: None,
         #[cfg(feature = "play-uri")]
         uri_preflight_port: None,
@@ -1090,6 +1095,7 @@ impl PlaybackSession {
             planned_feed_purpose: _,
             admitted_feed_offer: _,
             requested_rate_permille,
+            attempt_origin,
             reconfigure_pause_goal,
             #[cfg(feature = "play-uri")]
             uri_preflight_port: _,
@@ -1171,6 +1177,7 @@ impl PlaybackSession {
             planned_feed_purpose: CandidatePurpose::NewCandidate,
             admitted_feed_offer: None,
             requested_rate_permille: *requested_rate_permille,
+            attempt_origin: *attempt_origin,
             reconfigure_pause_goal: *reconfigure_pause_goal,
             #[cfg(feature = "play-uri")]
             uri_preflight_port: None,
@@ -9112,6 +9119,22 @@ fn request_play_inner(
     request_play_with_queue(ps, meta, caps, request, retry, trace_generation, drain_previous, origin, None, false)
 }
 
+fn local_attempt_origin(origin: crate::player::report::AttemptOrigin)
+    -> crate::player::attempt_metrics::Origin {
+    use crate::player::attempt_metrics::Origin as Local;
+    use crate::player::report::AttemptOrigin as Report;
+    match origin {
+        Report::Fresh => Local::Fresh,
+        Report::UserRetry => Local::UserRetry,
+        Report::QualityChange => Local::QualityChange,
+        Report::ViewerReconfigure => Local::ViewerReconfigure,
+        Report::AutoHandoff => Local::AutomaticHandoff,
+        Report::Recovery => Local::Recovery,
+        Report::Resume => Local::ForegroundResume,
+        Report::Preview => Local::Preview,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn request_play_with_queue(
     ps: &mut PlaybackSession,
@@ -9164,6 +9187,7 @@ fn request_play_with_queue(
         // below, every seek and track pick during the film, and the transcode profile all plan from
         // this one value ([`PlaybackSession::attempt_caps`]); route reads no process-wide answer to plan.
         if !same_episode_feed_retry { s.begin_attempt(caps); }
+        s.attempt_origin = local_attempt_origin(origin);
         s.request = Some(request.clone());
         s.requested_resume_ns = if request.preview {
             0
@@ -9828,6 +9852,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
         let sub_mode = if selection_known { plan.sub_mode } else { s.sub_mode };
         let now_ms = s.now_ms;
         let requested_rate_permille = s.requested_rate_permille;
+        let attempt_origin = s.attempt_origin;
         let reconfigure_pause_goal = s.reconfigure_pause_goal;
         let preview = request.as_ref().is_some_and(|r| r.preview);
         *s = PlaybackSession {
@@ -9837,6 +9862,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             planned_feed_purpose: candidate_purpose,
             admitted_feed_offer,
             requested_rate_permille,
+            attempt_origin,
             reconfigure_pause_goal,
             #[cfg(feature = "play-uri")]
             uri_preflight_port: s.uri_preflight_port.clone(),
