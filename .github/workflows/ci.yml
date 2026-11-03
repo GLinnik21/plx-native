@@ -134,7 +134,7 @@ jobs:
   # read-only token a fork's PR gets. The checkout is only ci/ci_paths.py and this file.
   changes:
     name: which gates apply
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
