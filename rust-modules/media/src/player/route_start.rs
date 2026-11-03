@@ -227,6 +227,15 @@ pub(super) fn start_bufferfeed_inner(
     // The prepared route has finished choosing the stream. Freeze the values the native Load,
     // payload and demux worker will use before any of those physical resources are constructed.
     let open = stream.then(|| super::feed_open::FeedOpenRequest::capture(ps, url));
+    // Payload and native callback guards are resolved before the route mints an attempt, as in
+    // the original Load path. A refusal here remains a Prepared transaction until the caller
+    // aborts it; a later supersession drops both guards without launching a worker.
+    let session_rate = if stream { super::session_rate_for(ps) } else { super::RATE_NORMAL };
+    let trace_generation = open.as_ref().map_or_else(
+        crate::route::playback_trace_generation,
+        |request| request.trace_generation,
+    );
+    let prepared_native = engine::prepare_native_open(pa, open, sample, is_h265, session_rate)?;
     // The route reducer alone mints the physical attempt. The native constructor consumes this
     // identity; no backend-owned logical counter can alias a later route.
     let Some(route_attempt) = crate::route::claim_route_start_attempt(route_start) else {
@@ -234,12 +243,7 @@ pub(super) fn start_bufferfeed_inner(
         return Err(crate::route::RouteStartResult::StartFailed);
     };
     ps.begin_attempt_view(route_attempt, super::attempt_view::Backend::Feed);
-    let session_rate = if stream { super::session_rate_for(ps) } else { super::RATE_NORMAL };
-    let trace_generation = open.as_ref().map_or_else(
-        crate::route::playback_trace_generation,
-        |request| request.trace_generation,
-    );
-    engine::open_prepared(pa, route_attempt, open, sample, is_h265, session_rate, trace_generation)?;
+    engine::launch_native_open(pa, route_attempt, trace_generation, prepared_native)?;
     if stream { pa.start_timeline(ps, route_attempt); }
     Ok(route_attempt)
 }
