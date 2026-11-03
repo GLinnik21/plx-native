@@ -9,8 +9,9 @@
 //! given page shows (`HeroCtl`, `HeroSet`) stays with that page and feeds these functions its
 //! widths.
 //!
-//! **Behaviour-neutral.** These began as the bodies of `screens::detail::hero` and were
-//! re-based on the shared `HStack` without moving a pixel; the Detail page calls them back, so its pixels and its tests are the contract
+//! **Shared contract.** These began as the bodies of `screens::detail::hero` and were
+//! re-based on the shared `HStack`. Both heroes now share the proposal's minimum Play width;
+//! the Detail page also uses the dynamic row geometry
 //! (`hero_layout_tests.rs` pins the arithmetic on its own).
 use std::ffi::CStr;
 
@@ -20,16 +21,16 @@ use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::widgets::CircleButton;
 use plx_ui::{theme, Rect};
 
-/// How many controls the hero row can hold at most: Play + bookmark + Go to Show + Play Version +
-/// Restart + Trailer + Alt + one watch face + one favourite face. [`row_rect`] sizes its stack storage by it.
-pub const MAX_CTLS: usize = 9;
+/// How many controls the hero row can hold at most: Play, bookmark, Go to Show, Version, Restart,
+/// Trailer, Alt, watch face, favourite face and More. [`row_rect`] sizes its stack storage by it.
+pub const MAX_CTLS: usize = 10;
 
 /// How many of the row's controls are discs that unfurl to a verb on focus: Restart, Trailer, the
 /// watch toggle, Play Version and Go to Show (the bookmark disc and the favourite face never unfurl).
 pub const DISCS: usize = 5;
 
 /// The Play/Resume pill's minimum width: a pathologically short label still gets a pill.
-pub const PW: f32 = 168.0;
+pub const PW: f32 = theme::hero::PLAY_MIN_W;
 
 /// The row's inter-control air and its disc diameter: the SHARED control-family numbers
 /// (`ui::widgets::CONTROL_GAP` / `StatusOverlay::CTRL_H`), not a second copy of them.
@@ -79,6 +80,11 @@ pub fn play_label(resumes: bool) -> &'static CStr {
     }
 }
 
+/// Play/Resume geometry for both heroes. Labels grow naturally beyond the design minimum.
+pub fn play_width(measure: &dyn Measure, label: &CStr) -> f32 {
+    pill_w(measure, label, theme::size::BODY, true, None).max(PW)
+}
+
 /// [`play_label`] as text, for the rows that take a `&str`.
 pub fn play_text(resumes: bool) -> &'static str {
     if resumes {
@@ -98,10 +104,12 @@ pub struct HeroWidths {
 }
 
 /// The accumulation itself, PURE: the drawn frame of control `i` in a row whose controls, in drawn
-/// order, are `widths` wide (`CGAP` apart, from the page margin), placed by the shared
+/// order, are `widths` wide, placed by the shared
 /// [`HStack`]. Every control is PRESENT whatever its width: a disc springing between `CD` and its
-/// open width never passes through 0 and so never pops its gap. An index past the end lands one
-/// gap after the last control, as the Detail row always has.
+/// open width never passes through 0 and so never pops its gap. Capsules reserve their focus
+/// expansion on each side, keeping `CGAP` clear when focused. Plain discs retain their ordinary
+/// gap; the first control keeps its base at the page margin. An index past the end lands one gap
+/// after the reserved right edge of the last control.
 ///
 /// `widths` is never empty from the Detail row (`hero_ctls` always yields Play and a watch face).
 /// The Detail-only fallback the old inline loop had for an empty row (`cw.pill`) is therefore
@@ -109,26 +117,46 @@ pub struct HeroWidths {
 pub fn row_rect(widths: &[f32], i: usize, y: f32) -> Rect {
     debug_assert!(widths.len() <= MAX_CTLS);
     let n = widths.len().min(MAX_CTLS);
+    // A dense translated row may already spend nearly all the room before People. Give up
+    // decorative air before letting the existing controls cross that boundary.
+    let base_w = widths[..n].iter().sum::<f32>() + CGAP * n.saturating_sub(1) as f32;
+    let air_w = widths[..n].iter().enumerate()
+        .map(|(k, w)| capsule_focus_air(*w) * if k == 0 { 1.0 } else { 2.0 }).sum::<f32>();
+    let room = (FACTS_R - plx_ui::consts::MARGIN_X - base_w).max(0.0);
+    let air_scale = if air_w > 0.0 { (room / air_w).min(1.0) } else { 1.0 };
     // Fixed storage: this runs ~10-16 times a frame on Detail, so it allocates nothing. One extra,
     // zero-wide item (the sentinel) stands in for "past the end": the stack puts it one gap after
     // the last control, exactly where the old accumulation left `x`.
     let mut items = [Item::absent(); MAX_CTLS + 1];
-    for (slot, w) in items.iter_mut().zip(&widths[..n]) {
-        *slot = Item::new(*w);
+    for (k, (slot, w)) in items.iter_mut().zip(&widths[..n]).enumerate() {
+        let air = capsule_focus_air(*w) * air_scale;
+        *slot = Item::new(*w + air + if k == 0 { 0.0 } else { air });
     }
     items[n] = Item::new(0.0);
     let stack = HStack::new(&items[..=n], CGAP, Align::Leading(plx_ui::consts::MARGIN_X));
     let at = i.min(n);
     let (x, _) = stack.span(at).unwrap_or((plx_ui::consts::MARGIN_X, 0.0));
     let w = widths.get(i).or(widths.last()).copied().unwrap_or(0.0);
-    Rect::new(x, y, w, CD)
+    let leading_air = if at == 0 || at == n { 0.0 } else { capsule_focus_air(w) * air_scale };
+    Rect::new(x + leading_air, y, w, CD)
+}
+
+/// Reserved right edge, including a capsule's focus expansion, for the unfurl budget.
+pub fn row_right(widths: &[f32]) -> f32 {
+    row_rect(widths, widths.len(), 0.0).x - if widths.is_empty() { 0.0 } else { CGAP }
+}
+
+/// Reserve the capsule's horizontal focus pop, opening continuously from a plain disc.
+/// The excess-width bound avoids a jump on the first frame of the unfurl spring.
+fn capsule_focus_air(w: f32) -> f32 {
+    (w * (plx_ui::widgets::CTRL_FOCUS_SCALE - 1.0) * 0.5).min((w - CD).max(0.0))
 }
 
 /// Every disc's drawn width right now. `last_right(disc)` is the right edge of the row's LAST
 /// control when the `N` discs are `disc` wide; `label_w` is each disc's measured verb and
 /// `unfurl` its 0..1 open fraction.
 ///
-/// The widest verb must fit wholly before the People column as a single extra, and the last
+/// Every active verb must fit wholly before the People column as a single extra, and the last
 /// control of the trial layout must still sit at or before [`FACTS_R`], otherwise every disc
 /// remains a circle. Every disc can be mid-unfurl at once (one opening while another closes), so a
 /// pair-wide budget is not enough: two extras that each fit can still push a third across the
@@ -139,7 +167,7 @@ pub fn disc_caps_with<const N: usize>(
     last_right: impl Fn([f32; N]) -> f32,
 ) -> [f32; N] {
     let budget = CircleButton::label_budget(CD, FACTS_R - last_right([CD; N]));
-    if label_w.iter().copied().fold(0.0f32, f32::max) > budget {
+    if label_w.iter().zip(unfurl).any(|(label, open)| open > 0.0 && *label > budget) {
         return [CD; N];
     }
     let open = std::array::from_fn(|i| CircleButton::cap_w(CD, unfurl[i], label_w[i]));
@@ -149,36 +177,44 @@ pub fn disc_caps_with<const N: usize>(
     open
 }
 
-/// The hero's meta line, as `(date, runtime or extent)`. `episode` is the on-deck episode the hero
-/// is showing, if any: it then supplies the aired date and its own runtime; otherwise the item's
-/// own date, and a show's seasons/episodes extent or a title's runtime.
+/// The same episode lead on Home and Detail, including its prose separator.
+pub fn episode_lead(season: i64, index: i64, title: &str) -> String {
+    let kicker = plx_ui::fmt::episode_kicker(season, index, title);
+    if kicker.is_empty() { kicker } else { format!("{kicker}: ") }
+}
+
+/// The date and duration shared by Home and Detail. A valid resume point replaces total duration.
+pub fn time_facts(year: i64, aired: &str, episode: bool, dur_ms: i64, resume_ms: i64) -> (String, Option<String>) {
+    let date = if episode { plx_ui::fmt::hero_date(aired, year) }
+        else if year > 0 { year.to_string() } else { String::new() };
+    let resumes = plx_data::metadata::resume_ns(resume_ms, dur_ms) > 0;
+    let length = (dur_ms >= 60_000).then(|| {
+        if resumes {
+            let left = dur_ms.saturating_sub(resume_ms);
+            if left < 3_600_000 { plx_platform::i18n::msg::browse_detail_minutes_left((left / 60_000).max(1)) }
+            else { plx_ui::fmt::time_left(left) }
+        } else { plx_ui::fmt::duration(dur_ms) }
+    });
+    (date, length)
+}
+
+pub fn listing_facts(item: &plx_data::pms::PmsMovie) -> (String, Option<String>) {
+    time_facts(i64::from(item.year), &item.aired, item.kind == 3, item.dur_ns / 1_000_000, item.resume_ms)
+}
+
+/// An on-deck episode supplies its own date and runtime; an unstarted show keeps its extent.
 pub fn meta_facts(d: &Detail, episode: Option<&Episode>) -> (String, Option<String>) {
     if let Some(ep) = episode {
-        let runtime = (ep.dur_ms >= 60_000).then(|| plx_ui::fmt::duration(ep.dur_ms));
-        return (plx_ui::fmt::pretty_date(&ep.aired, 0), runtime);
+        return time_facts(0, &ep.aired, true, ep.dur_ms, ep.resume_ms);
     }
-    let date = plx_ui::fmt::pretty_date(&d.aired, d.year);
-    if d.is_show {
-        let seasons = d.seasons.len();
-        if seasons == 0 {
-            return (date, None);
-        }
-        let episodes: i64 = d.seasons.iter().map(|season| season.leaf_count).sum();
-        let seasons = plx_platform::i18n::msg::browse_detail_seasons(seasons as i64);
-        let extent = if episodes > 0 {
-            plx_platform::i18n::msg::browse_detail_extent(
-                &plx_platform::i18n::msg::browse_detail_episodes(episodes),
-                &seasons,
-            )
-        } else {
-            seasons
-        };
-        return (date, Some(extent));
-    }
-    (
-        date,
-        (d.dur_ms >= 60_000).then(|| plx_ui::fmt::duration(d.dur_ms)),
-    )
+    let facts = time_facts(d.year, &d.aired, d.kind == "episode", d.dur_ms, d.resume_ms);
+    if !d.is_show || d.seasons.is_empty() { return facts; }
+    let episodes: i64 = d.seasons.iter().map(|season| season.leaf_count).sum();
+    let seasons = plx_platform::i18n::msg::browse_detail_seasons(d.seasons.len() as i64);
+    let extent = if episodes > 0 {
+        plx_platform::i18n::msg::browse_detail_extent(&plx_platform::i18n::msg::browse_detail_episodes(episodes), &seasons)
+    } else { seasons };
+    (facts.0, Some(extent))
 }
 
 #[cfg(test)]

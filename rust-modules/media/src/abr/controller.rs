@@ -603,7 +603,7 @@ impl Controller {
         self.hls_exploration_state() != HlsExplorationState::Open
     }
 
-    /// Exact worst-permutation replay boundary for starting a paused HLS clock on the active
+    /// Exact worst-permutation replay boundary for a fresh HLS Load/seek on the active
     /// rendition. Unlike retired statistical admission this exists before `n` samples; it claims
     /// only what the completed observations would cost to replay, not what an unseen draw will cost.
     pub fn prime_runway_ms(&self) -> Option<i64> {

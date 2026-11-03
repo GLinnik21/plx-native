@@ -1,6 +1,7 @@
 {
   "_comment": "The CLOSED ALPHABET every string value in a committed replay fixture must belong to (restructure spec §5.6 rule 2). Match literals exactly or patterns with fullmatch. Synthetic construction against tests/mock_pms.py remains required: membership is a vocabulary check, not proof of data provenance, and cannot distinguish private values coincidentally equal to allowed words/numbers. CLI, outbound guard and host tests share this policy. Add new protocol constants by source-backed name, never by harvesting an unchecked recording.",
   "_sources": {
+    "hero_proposal": "screens/src/home/mod.rs and detail/hero.rs format Movie/TV Show identity with locales/en/browse.json browse.kind.movie and browse.kind.tv_show; appkit/src/hero_layout.rs formats, remaining minutes through browse.detail.minutes_left, and episode dates through ui/src/fmt.rs hero_date and LocaleContext::date_medium (controlled en-US, tests/mock_pms.py synthetic dates).",
     "playback_diagnostics": "locales/en/settings.json settings.trace.* labels and uppercase section; app/bootstrap/effects.rs deterministic playback_trace status/off codec.",
     "quiet_refetch": "app/bootstrap/effects.rs encodes HubsCmd::RefetchSourceQuiet as {\"hubs\":{\"refetch_source_quiet\":<server>}}: the quiet Home refetch of app/reread.rs.",
     "localization": "ui/table.rs TableView draw elides each section header (uppercased, at CAPTION) through the Measure, so the Settings root's eight headers (Playback, Privacy, Legal, System, About, Information, Reporting, On this TV, from locales/en/settings.json) enter the measurement table in capitals; locales/en/settings.json names the Language destination (Language, its detail line and System default); locales/en/browse.json browse.person.credits pluralises the Filmography count, measured word by word as it wraps; i18n/mod.rs LocaleContext formats dates as ICU YMD short with a full year, and controlled System resolves to en-US, so tests/mock_pms.py's 2011-03-14 reads 3/14/2011; plx_appkit::hero_layout::play_label names the Home hero's Play control (browse.detail.play, or browse.detail.resume, \"Resume\", for a resume point), the one label Home, Detail and the card menu share.",
@@ -24,6 +25,8 @@
     "rating_images": "tests/mock_pms.py _movie: ratingImage and audienceRatingImage of every synthetic movie are the two Plex rating-image URIs rottentomatoes://image.rating.ripe and rottentomatoes://image.rating.upright, which the Library poster ratings (#1129) carry into the recorded Home hubs result."
   },
   "patterns": [
+    "[0-9]+ min left",
+    "(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [0-9]{1,2}, [0-9]{4}",
     "/library/metadata/people/[0-9]+/thumb/1",
     "plex://(movie|show)/s[0-9a-f]{8}",
     "/s[0-9a-f]{8}/s[0-9a-f]{8}\\.mkv",
@@ -61,6 +64,7 @@
     "press phase=(idle|down|up) live=[01] active=[01] long=[01]"
   ],
   "literals": [
+    "Movie", "TV Show",
     "Diagnostics", "Record playback diagnostics", "Local: up to 60s / 8 MiB. May slow playback.", "Save diagnostic log", "Local recording and app log for support.", "Delete diagnostic recordings", "Recording", "Recorded", "Saved", "Unavailable", "Failed", "Saving", "DIAGNOSTICS", "status", "off",
     "Hold",
     "for options",

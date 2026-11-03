@@ -259,11 +259,11 @@ fn the_hero_text_reads_over_bright_artwork() {
     let hc = crate::detail_layout::hero_chain(
         // a two-line blurb — the shape `hero_chain`'s own doc is tuned on. Measuring is the one
         // thing the host cannot do, so the height is quoted, not computed.
-        76.0, true, &crate::fixture::FixtureMeasure,
+        34.0, true, &crate::fixture::FixtureMeasure,
     );
     let band = crate::hero_logo::band_h(crate::hero_logo::LogoRung::Hero);
-    let home_col_r = MARGIN_X + crate::landing_hero::COL_W; // 750 — the column's right end
-    let det_col_r = MARGIN_X + crate::detail_layout::HERO_TEXT_W; // 990 — the synopsis' wrap edge,
+    let home_col_r = MARGIN_X + crate::landing_hero::COL_W; // the shared column's right end
+    let det_col_r = MARGIN_X + crate::detail_layout::HERO_TEXT_W; // the synopsis' wrap edge,
                                                                // and since nit 2 the title band's column too: a very wide wordmark runs the same 990.
     let people_r = SCR_W - MARGIN_X; // 1830 — the right-aligned people column's own edge
 
@@ -290,7 +290,7 @@ fn the_hero_text_reads_over_bright_artwork() {
         (
             "home kicker",
             500.0,
-            home_title_band_top() + band + theme::space::MD,
+            home_title_band_top() + band + theme::space::SM,
             theme::TEXT_SECONDARY,
             false,
             3.0,
@@ -301,7 +301,7 @@ fn the_hero_text_reads_over_bright_artwork() {
         (
             "home synopsis",
             home_col_r,
-            crate::landing_hero::TEXT_BOTTOM - home_syn_h(),
+            crate::landing_hero::hero_stack(band, BADGE_H, Some(home_syn_h())).synopsis.unwrap().y,
             theme::TEXT_READING,
             false,
             3.0,
@@ -347,17 +347,12 @@ fn the_hero_text_reads_over_bright_artwork() {
             3.0,
             2.5,
         ),
-        // The people column at its WORST case: the top line of the tallest block it can produce
-        // (a wrapped credit over a wrapped cast list), `PEOPLE_MAX_LINES` above the buttons —
-        // 74px higher than the old top-anchored block, where the right wedge is feathering in
-        // from y=702 and supplies about half the alpha it did (0.092 against 0.178). It clears
-        // the ordinary floor because its ink is `detail::PEOPLE_INK`, which is read from the
-        // screen rather than restated here, so an ink change here is a test failure and not a
-        // silent one.
+        // Four wrapped credit lines with the shortest reserved synopsis: the highest People paint.
         (
             "detail people (top line)",
             people_r,
-            crate::detail_layout::people_top(hc.btn_y, crate::detail_layout::PEOPLE_MAX_LINES),
+            crate::detail_layout::people_top(hc.btn_y, crate::detail_layout::PEOPLE_MAX_LINES,
+                theme::size::CAPTION as f32), // conservative full-size cap band
             crate::detail_layout::PEOPLE_INK,
             true,
             3.0,

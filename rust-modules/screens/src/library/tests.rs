@@ -1008,7 +1008,7 @@ fn header_controls_sit_in_the_header_row_left_to_right() {
     for elem in page.toolbar_elems() {
         let rect = page.place(elem, &cx, At::Drawn).unwrap().rect;
         assert!(rect.x >= last, "{elem}: controls read left to right without overlap");
-        let lowered = if page.libraries.is_empty() { layout::SINGLE_LIBRARY_DY } else { 0.0 };
+        let lowered = 0.0;
         assert_eq!(rect.y + rect.h * 0.5, layout::HEADER_Y + lowered + plx_ui::page_header::HEIGHT * 0.5 - page.scroll.pos);
         last = rect.x + rect.w;
     }
@@ -1253,23 +1253,9 @@ fn sort_chosen_during_section_fade_commits_to_the_incoming_library() {
         }))) if *target == incoming && key == "titleSort")), "leaving flushes selection and semantic sort in one addressed store command");
 }
 
-/// Issue #100/#165: a Guest or managed profile's own household server always arrives from
-/// `/resources` with `owned: false` (`plex/account.rs:1128-1157`), so on such a profile EVERY
-/// section it sees would once have read as `borrowed`. The 0.6.x server picker's old singleton
-/// exception — carried forward wholesale into the restructure by `3c2de7ad` — read that as "still
-/// ambiguous" and left the legacy `Library · <name> ⌄` chip up, opening the old Sources popover.
-/// That is exactly the symptom the owner saw on a real TV's TV Shows page under `--guest`, and
-/// exactly the gap the maintainer named on #100: "the picker only handles multiple servers, not
-/// multiple libraries per section."
-///
-/// The fix is stronger than "ownership no longer decides this": `SectionView` carries no
-/// ownership bit at all any more, so there is nothing left FOR ownership to decide — a lone
-/// favourite clears the selector unconditionally, on every profile, because the published view
-/// has no field left to ask the old exception's question. Before the `borrowed` field's deletion
-/// this test proved the weaker claim by looping over `[true, false]`; with the field gone the loop
-/// has nothing to vary, so this now asserts the one remaining case directly.
+/// A singleton keeps its direct shortcut and the Library options control.
 #[test]
-fn a_single_favourite_library_draws_no_selector() {
+fn a_single_favourite_library_keeps_its_shortcut_and_options() {
     let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
     fixture.directory = plx_data::browse::view::DirectorySnapshot::fixture(1, 0, vec![
@@ -1277,17 +1263,17 @@ fn a_single_favourite_library_draws_no_selector() {
             kind: SecKind::Movie, row: plx_data::browse::SrcRow { section: 0, title: "Cinema".into(),
                 pinned: true, current: true, ..Default::default() } }]);
     let page = fixture.screen();
-    assert!(page.libraries.is_empty(), "a lone favourite must clear the selector");
+    assert_eq!(page.libraries.len(), 2, "a library shortcut and options");
     assert!(page.layout.libraries, "the header row is always reserved, names or not");
     let cx = fixture.cx(None);
     let mut groups = Vec::new();
     page.groups(&cx, &mut groups);
-    assert_eq!(page.header_elems(), page.toolbar_elems(), "the header row holds only the controls");
+    assert_eq!(page.header_elems().len(), page.toolbar_elems().len() + 2);
     let mut draw = DrawFrame::new(&cx, plx_ui::Painter::root());
     page.record_stops(&mut draw);
     let stops = draw.into_stops();
-    assert!(!stops.iter().any(|stop| region_of_elem(stop.key.elem) == Some(KeyRegion::Library)),
-        "no pointer stop is registered for the selector row");
+    assert!(stops.iter().any(|stop| region_of_elem(stop.key.elem) == Some(KeyRegion::Library)),
+        "the direct library shortcut registers its pointer stop");
 }
 
 #[test]
@@ -1309,7 +1295,7 @@ fn favorite_library_row_uses_shared_strip_geometry_and_incoming_type() {
     page.pending.request_section(SectionTarget { epoch: 1, index: 3,
         identity: LibrarySectionIdentity { sid, key: 4 }, kind: SecKind::Show });
     page.sync(&cx);
-    assert_eq!(page.libraries.iter().map(|(_, section)| *section).collect::<Vec<_>>(), vec![2, 3],
+    assert_eq!(page.libraries.iter().filter(|(elem, _)| *elem != MORE).map(|(_, section)| *section).collect::<Vec<_>>(), vec![2, 3],
         "the favorite row must not keep movie libraries beneath the incoming Shows type");
 }
 
@@ -1361,7 +1347,7 @@ fn the_page_glyph_and_the_librarys_live_tab_strip_never_overlap() {
     let mut solo = Fixture::new();
     solo.listing = solo.listing.clone().with_fetch(SecFetch::Failed, -1);
     let page = solo.screen();
-    assert!(page.libraries.is_empty(), "fixture must NOT have a live strip, or this half proves nothing");
+    assert_eq!(page.libraries.len(), 2, "a singleton keeps its shortcut and Library options");
     let cx = solo.cx(Some(page.key(RETRY)));
     let (caption, reason) = page.status_text(&cx);
     let overlay = page.status_overlay(&cx, &caption, reason.as_deref());

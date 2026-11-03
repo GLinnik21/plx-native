@@ -240,7 +240,8 @@ impl Grid {
 
     /// Turn the landing play ([`GridSpec::animate_landings`]) on or off at run time, for an owner
     /// that plays only some of its landings (the Library plays a server's re-list, not a page
-    /// fill or a query edit). A landing already playing finishes either way.
+    /// fill or a query edit). Enabling adopts the current rows before later changes play.
+    /// A landing already playing finishes either way.
     pub fn set_animate_landings(&mut self, on: bool) {
         self.spec.landings = on;
         self.landing.set_enabled(on);
@@ -1322,7 +1323,7 @@ impl Grid {
             card_row::draw_tile(pr, ghosts.art(j), rect, s, &self.spec.style, ghosts.progress(j));
             let tile = Tile { rect, scale: s, radius: self.spec.style.tile_radius(rect, s), focused: g.focused };
             ghosts.overlay(pr, j, &tile, f.measure);
-            // With a sort value line every ghost keeps its own value while it fades.
+            // In value-line mode every ghost keeps its own value line while it fades.
             if self.spec.value_line {
                 self.draw_value(f, ghosts, j, &CardPaint { rect, p: pr, label: None }, s, false);
                 continue;

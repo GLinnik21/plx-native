@@ -148,19 +148,19 @@ mod tests {
     use super::super::compile::{compile, CompileCtx, DrawOp};
     use super::super::lint::testing::{apply, assert_case};
     use super::super::lint::{lint, LangCtx, LintLang, LintOptions};
-    use super::super::parse::{self, Val};
+    use super::super::parse::Val;
     use super::super::reach::Slot;
-    use super::super::BUILTIN_CLASSIC;
+    use super::super::CLASSIC_HUD;
     use super::*;
 
-    const REFERENCE: &str = include_str!("fixtures/reference.plxhud.json");
-    const MINIMAL: &str = include_str!("fixtures/minimal.plxhud.json");
-    const HERO: &str = include_str!("fixtures/hero-center.plxhud.json");
-    const TABS: &str = include_str!("fixtures/tabs.plxhud.json");
-    const PALETTE: &str = include_str!("fixtures/palette.plxhud.json");
+    const REFERENCE: &str = include_str!("fixtures/reference/hud.json");
+    const MINIMAL: &str = include_str!("fixtures/minimal/hud.json");
+    const HERO: &str = include_str!("fixtures/hero-center/hud.json");
+    const TABS: &str = include_str!("fixtures/tabs/hud.json");
+    const PALETTE: &str = include_str!("fixtures/palette/hud.json");
 
     const FIXTURES: [(&str, &str); 6] = [
-        ("classic", BUILTIN_CLASSIC),
+        ("classic", CLASSIC_HUD),
         ("reference", REFERENCE),
         ("minimal", MINIMAL),
         ("hero-center", HERO),
@@ -182,7 +182,7 @@ mod tests {
     fn classic_and_the_reference_respect_the_band_in_all_eleven_languages() {
         let langs = LintLang::shipped();
         assert_eq!(langs.len(), 11);
-        for (name, text) in [("classic", BUILTIN_CLASSIC), ("reference", REFERENCE)] {
+        for (name, text) in [("classic", CLASSIC_HUD), ("reference", REFERENCE)] {
             let found: Vec<_> = lint(text, &ShippedMeasure, &langs).into_iter().filter(|f| f.code == "HUD-E1201").collect();
             assert!(found.is_empty(), "{name}: {found:?}");
         }
@@ -213,7 +213,7 @@ mod tests {
     /// Run `f` over a compile of `text` in English.
     fn with_cx<R>(text: &str, f: impl FnOnce(&LangCtx<'_>) -> R) -> R {
         let lang = LintLang::for_tag("en").expect("English");
-        let package = parse::parse(text.as_bytes()).package.expect("a package");
+        let package = crate::hud_format::fixtures::parse(text.as_bytes()).package.expect("a package");
         let compiled = compile(&package, &ShippedMeasure, CompileCtx { labels: lang.labels.clone() });
         let opts = LintOptions::default();
         f(&LangCtx { package: &package, compiled: &compiled, measure: &ShippedMeasure, lang: &lang, opts: &opts })
@@ -263,7 +263,7 @@ mod tests {
     /// its own cell, a control by its item.
     #[test]
     fn extents_name_the_node_that_drew_them() {
-        with_cx(BUILTIN_CLASSIC, |cx| {
+        with_cx(CLASSIC_HUD, |cx| {
             let state = |slot| {
                 cx.states().find(|s| s.key.open == 0 && s.key.slot == slot && s.key.episode && s.key.chapters).expect("state").state
             };
@@ -307,7 +307,7 @@ mod tests {
     /// A scan that found no extent at the band's top still reports the violation, at the layout root.
     #[test]
     fn a_scan_that_misses_the_band_names_the_layout_root() {
-        with_cx(BUILTIN_CLASSIC, |cx| {
+        with_cx(CLASSIC_HUD, |cx| {
             let limit = min_controls_top_y();
             let f = finding(cx, limit - 10.0, limit, None);
             assert_eq!((f.code, f.pointer.as_str()), ("HUD-E1201", "/layout"));

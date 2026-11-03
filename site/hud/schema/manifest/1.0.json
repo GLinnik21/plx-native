@@ -1,0 +1,115 @@
+{
+  "$defs": {
+    "app": {
+      "additionalProperties": false,
+      "description": "An app-release range.",
+      "properties": {
+        "max": {
+          "description": "The newest app release this package renders correctly on.",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "type": "string"
+        },
+        "min": {
+          "description": "The oldest app release this package renders correctly on.",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "hud_entry": {
+      "additionalProperties": false,
+      "description": "One HUD document within the package.",
+      "properties": {
+        "entry": {
+          "description": "The package-root-relative HUD JSON document.",
+          "pattern": "^[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)*$",
+          "type": "string"
+        },
+        "format": {
+          "description": "MAJOR.MINOR of the HUD schema, bindings and command vocabulary.",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "format",
+        "entry"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://plxnative.com/hud/schema/manifest/1.0.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The manifest.json of a PlxNative HUD bundle.",
+  "properties": {
+    "$schema": {
+      "description": "The package manifest schema URL for editors.",
+      "pattern": "^https://[!-~]+$",
+      "type": "string"
+    },
+    "app": {
+      "$ref": "#/$defs/app",
+      "description": "The app releases this package renders correctly on."
+    },
+    "author": {
+      "description": "The author.",
+      "type": "string"
+    },
+    "hud": {
+      "$ref": "#/$defs/hud_entry",
+      "description": "The HUD document and its independent schema version."
+    },
+    "id": {
+      "description": "The package's reverse-DNS identity. builtin:classic is reserved for the embedded package.",
+      "pattern": "^(builtin:classic|[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)+)$",
+      "type": "string"
+    },
+    "license": {
+      "description": "The package license identifier.",
+      "type": "string"
+    },
+    "name": {
+      "description": "The display name.",
+      "type": "string"
+    },
+    "notices": {
+      "description": "Declared UTF-8 license and attribution texts.",
+      "items": {
+        "pattern": "^[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)*$",
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "package_format": {
+      "description": "MAJOR.MINOR of the package container profile.",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "type": "string"
+    },
+    "resources": {
+      "additionalProperties": {
+        "pattern": "^[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)*$",
+        "type": "string"
+      },
+      "description": "Logical resource identifiers mapped to package-root-relative files.",
+      "type": "object"
+    },
+    "version": {
+      "description": "The plugin's numeric MAJOR.MINOR.PATCH version.",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "package_format",
+    "id",
+    "version",
+    "name",
+    "author",
+    "license",
+    "hud"
+  ],
+  "title": "PlxNative HUD package, format 1.0",
+  "type": "object"
+}

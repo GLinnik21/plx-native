@@ -6,18 +6,7 @@ impl LibraryScreen {
     pub(super) fn save_cursor<H: LibraryLike>(&self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let listing = H::listing(cx);
         let Some(id) = listing.id() else { return };
-        if self.epoch != Some(id.epoch)
-            || self.query != Some(id.query)
-            || self
-                .section
-                .as_ref()
-                .is_none_or(|section| section.sid != id.sid || section.key != id.section)
-        {
-            return;
-        }
-        let Some(target) = self.address(cx) else {
-            return;
-        };
+        let Some(target) = self.committed_address(cx) else { return };
         if self.grid_reset_pending {
             self.store(
                 target,

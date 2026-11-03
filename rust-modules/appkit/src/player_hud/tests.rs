@@ -1549,8 +1549,8 @@ fn compiled_classic() -> std::sync::Arc<crate::hud_format::compile::Compiled> {
 }
 
 fn compiled_reference() -> std::sync::Arc<crate::hud_format::compile::Compiled> {
-    let text = include_str!("../hud_format/fixtures/reference.plxhud.json");
-    super::loaded::load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &plx_base::fontcov::advances::ShippedMeasure)
+    let text = include_str!("../hud_format/fixtures/reference/hud.json");
+    super::loaded::load(&crate::hud_format::fixtures::with_hud_resources("reference", &text), "0.0.0-test", plx_platform::i18n::english(), &plx_base::fontcov::advances::ShippedMeasure)
         .expect("the reference loads")
         .compiled
 }

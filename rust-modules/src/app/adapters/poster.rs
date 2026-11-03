@@ -834,7 +834,7 @@ fn reset_residency_log_for_test() {
 
 /// The clearLogo transcode request box (was two bare literals inside the old `logo_tex`).
 /// `minSize=1` means COVER, not fit, so a 1:1 source comes back ~600×600 and a 5:1 one ~1200×240 —
-/// both comfortably above anything [`plx_ui::hero_logo`] draws (900×268 worst case), so a hero
+/// both comfortably above anything [`plx_ui::hero_logo`] draws (640×240 worst case), so a hero
 /// logo is always a downscale. Mirrored in `img.rs`'s decode-budget table; change both together.
 const LOGO_REQ_W: c_int = 600;
 const LOGO_REQ_H: c_int = 240;

@@ -6,8 +6,8 @@
 //!
 //! | typed | fetched |
 //! |---|---|
-//! | `gh:owner/repo` | `https://github.com/owner/repo/releases/latest/download/hud.plxhud.json` |
-//! | `gh:owner/repo@tag` | `https://github.com/owner/repo/releases/download/<tag>/hud.plxhud.json` |
+//! | `gh:owner/repo` | `https://github.com/owner/repo/releases/latest/download/hud.plxhud` |
+//! | `gh:owner/repo@tag` | `https://github.com/owner/repo/releases/download/<tag>/hud.plxhud` |
 //! | `https://host[:port]/path?query` | itself, when it is well-formed and carries no `user:pass@` |
 //! | `http://a.b.c.d[:port]/path` | itself, only when the host is a literal RFC 1918 IPv4 address; shown as a [dev source](Address::dev_source) |
 //!
@@ -24,7 +24,7 @@ use std::net::Ipv4Addr;
 
 /// The file name a `gh:` address fetches from a release: the asset a package author attaches to a
 /// release under exactly this name.
-pub const GITHUB_ASSET: &str = "hud.plxhud.json";
+pub const GITHUB_ASSET: &str = "hud.plxhud";
 
 /// The longest address the parser reads. A typed address is input, not content, and an unbounded
 /// string is never handed to a URL builder; browsers and servers settle on this length too.
@@ -286,16 +286,16 @@ mod tests {
     fn a_github_address_maps_to_its_release_asset() {
         assert_eq!(
             url("gh:owner/repo"),
-            "https://github.com/owner/repo/releases/latest/download/hud.plxhud.json"
+            "https://github.com/owner/repo/releases/latest/download/hud.plxhud"
         );
         assert_eq!(
             url("gh:owner/repo@v1.2.3"),
-            "https://github.com/owner/repo/releases/download/v1.2.3/hud.plxhud.json"
+            "https://github.com/owner/repo/releases/download/v1.2.3/hud.plxhud"
         );
         let a = parse("gh:Some-Org/my_repo.v2@1.0.0-rc.1+build").unwrap();
         assert_eq!(
             a.url(),
-            "https://github.com/Some-Org/my_repo.v2/releases/download/1.0.0-rc.1+build/hud.plxhud.json"
+            "https://github.com/Some-Org/my_repo.v2/releases/download/1.0.0-rc.1+build/hud.plxhud"
         );
         assert_eq!((a.host(), a.dev_source()), ("github.com", false));
     }
@@ -342,7 +342,7 @@ mod tests {
     fn an_https_address_passes_when_well_formed() {
         assert_eq!(url("https://example.com"), "https://example.com");
         assert_eq!(url("https://example.com:8443/a/b.json?x=1&y=%20#frag"), "https://example.com:8443/a/b.json?x=1&y=%20#frag");
-        assert_eq!(url("https://raw.githubusercontent.com/o/r/main/hud.plxhud.json"), "https://raw.githubusercontent.com/o/r/main/hud.plxhud.json");
+        assert_eq!(url("https://raw.githubusercontent.com/o/r/main/hud.plxhud"), "https://raw.githubusercontent.com/o/r/main/hud.plxhud");
         let a = parse("https://[2001:db8::1]:8443/hud.json").unwrap();
         assert_eq!((a.host(), a.dev_source()), ("2001:db8::1", false));
         let a = parse("https://Example.COM:8443/hud.json?token=secret").unwrap();
@@ -398,7 +398,7 @@ mod tests {
             assert!(a.dev_source(), "{text}");
             assert_eq!(a.url(), text);
         }
-        let a = parse("http://192.168.1.20:8000/hud.plxhud.json?k=v").unwrap();
+        let a = parse("http://192.168.1.20:8000/hud.plxhud?k=v").unwrap();
         assert_eq!(a.host(), "192.168.1.20", "the host alone");
     }
 

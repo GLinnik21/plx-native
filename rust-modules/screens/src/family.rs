@@ -37,6 +37,8 @@ pub enum SettingsPage {
     AudioSubtitles,
     /// Favorite libraries — the onboard screen in Settings mode.
     Favourites,
+    /// The shared favorites editor opened from Library, returning directly to that page.
+    LibraryFavourites,
     /// Privacy & data — the consent screen in Settings mode.
     Privacy,
     /// The Legal index.
@@ -123,6 +125,7 @@ impl ScreenArg for SettingsPage {
             SettingsPage::UnderPosters => 113,
             SettingsPage::UnderPostersDetails => 114,
             SettingsPage::Favourites => 101,
+            SettingsPage::LibraryFavourites => 116,
             SettingsPage::Privacy => 102,
             SettingsPage::Legal => 103,
             SettingsPage::About => 104,
@@ -166,6 +169,7 @@ impl LogicalState for SettingsPage {
             | SettingsPage::Playback
             | SettingsPage::AudioSubtitles
             | SettingsPage::Favourites
+            | SettingsPage::LibraryFavourites
             | SettingsPage::Privacy
             | SettingsPage::Legal
             | SettingsPage::PlayerHud
@@ -184,6 +188,7 @@ impl LogicalState for SettingsPage {
             SettingsPage::Playback => "playback",
             SettingsPage::AudioSubtitles => "audio-subtitles",
             SettingsPage::Favourites => "favourites",
+            SettingsPage::LibraryFavourites => "library-favourites",
             SettingsPage::Privacy => "privacy",
             SettingsPage::Legal => "legal",
             SettingsPage::About => "about",
@@ -345,6 +350,7 @@ mod tests {
             SettingsPage::Playback,
             SettingsPage::AudioSubtitles,
             SettingsPage::Favourites,
+            SettingsPage::LibraryFavourites,
             SettingsPage::Privacy,
             SettingsPage::Legal,
             SettingsPage::About,

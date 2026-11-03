@@ -1,0 +1,12 @@
+{
+  "package_format": "1.0",
+  "id": "builtin:classic",
+  "version": "1.0.0",
+  "name": "Classic",
+  "author": "PlxNative",
+  "license": "GPL-3.0-or-later",
+  "hud": {
+    "format": "1.0",
+    "entry": "hud.json"
+  }
+}

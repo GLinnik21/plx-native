@@ -843,6 +843,15 @@ impl DetailScreen {
         }
     }
 
+    /// The More disc follows the on-deck subject even when a different season is loaded below it.
+    pub fn hero_menu_episode<'a>(&self, focus: Option<FocusKey<u32>>, meta: plx_data::metadata::MetadataView<'a>)
+        -> Option<(&'a plx_data::metadata::Episode, PosterMark)> {
+        let key = focus.filter(|key| key.entry == self.entry)?;
+        if key.elem != hero::ELEM_MORE { return None; }
+        let ep = hero::hero_episode(self.detail(meta)?)?;
+        Some((ep, episodes::watch_state(ep)))
+    }
+
     pub fn focused_episode(
         &self,
         focus: Option<FocusKey<u32>>,
@@ -1448,7 +1457,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
             set,
             set.restart,
             self.disc_unfurl.map(|s| s.pos),
-            self.named_show(meta),
+            self.named_episode(meta),
         );
         let (_, hero_n) = hero::visible_ctls(set, self.full_trailer());
         let hero_y = self.hero_chain(measure, meta).btn_y;
@@ -1702,7 +1711,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
                     set,
                     set.restart,
                     self.disc_unfurl.map(|s| s.pos),
-                    self.named_show(meta),
+                    self.named_episode(meta),
                 );
                 let base =
                     hero::hero_btn_rect_at(set, i, self.hero_chain(measure, meta).btn_y - vertical, widths);
@@ -1986,13 +1995,13 @@ impl DetailScreen {
     }
 }
 
-/// The scope of the hero's Mark watched/unwatched button: a show reaches all its episodes, a season
-/// (reached through a collection's members) the episodes of its own number under its show
-/// ([`Detail::parent_rk`], not `show_rk`, which is the grandparent key and empty for a season),
-/// anything else the one item.
+/// The watched action follows an on-deck episode when one is displayed. An unstarted or finished
+/// series keeps the whole-show action; a season addresses its own number under its parent show.
 fn hero_mark_scope(d: &Detail) -> plx_data::viewstate::Scope {
     use plx_data::viewstate::Scope;
-    if d.is_show {
+    if hero::hero_episode(d).is_some() {
+        Scope::Leaf
+    } else if d.is_show {
         Scope::Show
     } else if d.kind == "season" && !d.parent_rk.is_empty() {
         Scope::Season { show_rk: d.parent_rk.clone(), index: d.index }
@@ -2806,13 +2815,14 @@ impl DetailScreen {
             tint: theme::with_a(theme::dim(theme::TINT_WHITE, 1.0 - sf * 0.55), art_alpha),
         };
         let visible = hero_alpha(self.scroll.pos, HERO_FADE);
-        // The atmospheric ramp: nothing above the scrim's top, one straight stop to its foot.
+        // Both heroes use the proposal's three-stop atmosphere, including the preview fade.
         let ramp = (visible > 0.01).then(|| {
-            let y0 = plx_ui::widgets::HERO_BASE_SCRIM_Y0;
-            let foot = plx_ui::detail_layout::base_scrim_a(plx_ui::consts::SCR_H, visible)
-                * self.preview_base_scrim;
-            let h = plx_ui::consts::SCR_H;
-            plx_ui::widgets::WashRamp { ink: theme::scrim(1.0), stops: [(y0, 0.0), (h, foot), (h, foot)] }
+            let [y0, knee, mid, foot] = plx_ui::landing_hero::base_scrim_ramp(visible);
+            plx_ui::widgets::WashRamp {
+                ink: theme::scrim(1.0),
+                stops: [(y0, 0.0), (knee, mid * self.preview_base_scrim),
+                    (plx_ui::consts::SCR_H, foot * self.preview_base_scrim)],
+            }
         });
         // The still dissolves over its ground while the page scrolls, so where the ground is drawn
         // the ground, the still and the ramp are one pass (`AmbientWash::draw_ground`).
@@ -2825,15 +2835,15 @@ impl DetailScreen {
             false
         };
         if let Some(ramp) = ramp.filter(|_| !ramp_in_ground) {
-            let y0 = ramp.stops[0].0;
-            p.rect(
-                Rect::new(0.0, y0, plx_ui::consts::SCR_W, plx_ui::consts::SCR_H - y0),
-                0.0,
-                theme::scrim(0.0),
-                theme::scrim(ramp.stops[1].1),
-                0.0,
-            );
+            for pair in ramp.stops.windows(2) {
+                let [(top, a), (bottom, b)] = pair else { unreachable!() };
+                p.rect(
+                    Rect::new(0.0, *top, plx_ui::consts::SCR_W, bottom - top),
+                    0.0, theme::scrim(*a), theme::scrim(*b), 0.0,
+                );
+            }
         }
+
         if visible > 0.01 {
             plx_ui::widgets::hero_scrim(
                 p,
@@ -2962,35 +2972,16 @@ impl DetailScreen {
         if !d.rating.is_empty() {
             parts.push(&d.rating);
         }
-        // One flow: the dotted run, then the resolution badge and the chips, `XS` apart; the run
-        // keeps `SM` from the first badge (an empty run is absent: no room and no gap).
-        let run_w = plx_ui::widgets::dotted_run(
-            p,
-            &parts,
-            plx_ui::consts::MARGIN_X,
-            y,
-            theme::size::BODY,
-            theme::TEXT_SECONDARY,
-            theme::space::SM,
-        );
-        let mut flow = Flow::new(plx_ui::consts::MARGIN_X, theme::space::XS);
-        flow.push(if run_w > 0.0 { Item::new(run_w).after(theme::space::SM) } else { Item::absent() });
-        let (top, base) = plx_gfx::text::text_cap_band(theme::size::BODY, 0);
-        let cy = y + (top + base) * 0.5;
-        if let Some(res) = plx_ui::fmt::resolution(&d.video_resolution, d.width, d.height) {
-            flow.place(|x| {
-                Item::new(plx_ui::widgets::badge(p, x, cy, &res, None, plx_ui::widgets::BadgeStyle::Filled, measure))
-            });
-        }
-        for (present, label) in [
+        if !d.edition.is_empty() { parts.insert(0, &d.edition); }
+        let resolution = plx_ui::fmt::resolution(&d.video_resolution, d.width, d.height);
+        let chips: Vec<&str> = [
             (!d.subs.is_empty(), plx_platform::i18n::msg::widgets_badge_cc()),
             (d.subs.iter().any(|s| s.sdh), plx_platform::i18n::msg::widgets_badge_sdh()),
             (d.audio.iter().any(|s| s.ad), plx_platform::i18n::msg::widgets_badge_ad()),
-        ] {
-            if present {
-                flow.place(|x| Item::new(plx_ui::widgets::keyline_chip(p, x, cy, label, theme::TEXT_SECONDARY, measure)));
-            }
-        }
+        ].into_iter().filter_map(|(present, label)| present.then_some(label)).collect();
+        plx_ui::widgets::hero_identity(p, Rect::new(plx_ui::consts::MARGIN_X, y,
+            plx_ui::detail_layout::HERO_TEXT_W, plx_ui::widgets::BADGE_H),
+            &parts, resolution.as_deref(), &chips, measure);
     }
 
     fn draw_ratings(
@@ -3000,8 +2991,7 @@ impl DetailScreen {
         y: f32,
         measure: &dyn plx_machine::machine::Measure,
     ) {
-        let (top, base) = plx_gfx::text::text_cap_band(theme::size::LABEL, 1);
-        let cy = y + (top + base) * 0.5;
+        let cy = y + plx_ui::widgets::RATING_MARK_D * 0.5;
         // The groups are measured lazily, one at a time, and the row stops at the first that does
         // not fit: a later, smaller group never jumps the queue, and no group past the break is
         // ever measured (a replay holds only the widths the recording asked for), so this does not
@@ -3041,7 +3031,7 @@ impl DetailScreen {
             set,
             set.restart,
             self.disc_unfurl.map(|s| s.pos),
-            self.named_show(meta),
+            self.named_episode(meta),
         );
         // Deliberately `hero_ctls`, not `hero::visible_ctls`: the row's FOCUSABLE extent narrows
         // to Play the instant `full_trailer()` flips (that gate lives in `valid`/`focusable` and
@@ -3103,6 +3093,7 @@ impl DetailScreen {
                     let icon = match ctl {
                         hero::HeroCtl::Restart => plx_ui::icons::Icon::Restart,
                         hero::HeroCtl::Trailer => plx_ui::icons::Icon::Trailer,
+                        hero::HeroCtl::More => plx_ui::icons::Icon::More,
                         hero::HeroCtl::MarkWatched => plx_ui::icons::Icon::Check,
                         hero::HeroCtl::MarkUnwatched => plx_ui::icons::Icon::Minus,
                         // At either rest the plain face; only a flip in flight layers the fill.
@@ -3120,7 +3111,7 @@ impl DetailScreen {
                         .palette(palette)
                         .ground(ground)
                         .scale(scale);
-                    if let Some((slot, label)) = hero::disc_verb(ctl, self.named_show(meta)) {
+                    if let Some((slot, label)) = hero::disc_verb(ctl, self.named_episode(meta)) {
                         button = button.label(label.as_ptr(), self.disc_unfurl[slot].pos);
                     }
                     if ctl == hero::HeroCtl::Watchlist {
@@ -3324,8 +3315,7 @@ fn hero_blurb<'a>(
     if let Some(d) = d {
         if d.is_show {
             if let Some(ep) = hero::hero_episode(d) {
-                let kicker = plx_ui::fmt::episode_kicker(ep.season, ep.index, &ep.title);
-                let lead = if kicker.is_empty() { kicker } else { format!("{kicker}: ") };
+                let lead = plx_appkit::hero_layout::episode_lead(ep.season, ep.index, &ep.title);
                 return (lead, ep.summary.clone());
             }
         }
@@ -3814,7 +3804,7 @@ impl DetailScreen {
         self.season_pop
             .step(matches!(focused, Some(Located::Season(_))).then_some(0), dt);
         let disc = match focused {
-            Some(Located::Hero(c)) => hero::disc_verb(c, self.named_show(meta)).map(|(i, _)| i),
+            Some(Located::Hero(c)) => hero::disc_verb(c, self.named_episode(meta)).map(|(i, _)| i),
             _ => None,
         };
         // The bookmark disc's flip, and the identity the app's feed reads. Decorative: it moves
@@ -4322,6 +4312,7 @@ impl DetailScreen {
             .filter(|d| matches!(d.kind.as_str(), "movie" | "show" | "episode"))
             .and_then(|d| plx_plex::plex::favorite_mark(&d.rk));
         hero::HeroSet {
+            more: self.detail(meta).is_some_and(|d| hero::hero_episode(d).is_some()),
             version: self.detail(meta).is_some_and(|d| hero_versions(d).len() >= 2),
             go_show: self.detail(meta).is_some_and(|d| hero::go_to_show_target(d).is_some()),
             restart,
@@ -4365,8 +4356,8 @@ impl DetailScreen {
         self.detail(meta).is_some_and(plx_data::metadata::Detail::has_own_file)
     }
 
-    fn named_show(&self, meta: plx_data::metadata::MetadataView<'_>) -> bool {
-        self.detail(meta).is_some_and(hero::watch_names_show)
+    fn named_episode(&self, meta: plx_data::metadata::MetadataView<'_>) -> bool {
+        self.detail(meta).is_some_and(hero::watch_names_episode)
     }
 
     fn activate<H: ContentLike + crate::registry::MetadataLike>(&mut self, elem: u32, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
@@ -4517,7 +4508,7 @@ impl DetailScreen {
                         set,
                         set.restart,
                         self.disc_unfurl.map(|s| s.pos),
-                        self.named_show(meta),
+                        self.named_episode(meta),
                     );
                     let mut rect = hero::hero_btn_rect_at(set, i, self.hero_chain(measure, meta).btn_y, widths);
                     rect.y -= self.scroll.pos;
@@ -4546,6 +4537,7 @@ impl DetailScreen {
                     }
                 }
             }
+            hero::HeroCtl::More => self.content(fx, ContentReq::ItemMenu),
             hero::HeroCtl::Favorite | hero::HeroCtl::Unfavorite => {
                 if let Some(d) = self.detail(meta) {
                     plx_plex::plex::set_favorite_mark(&d.rk, ctl == hero::HeroCtl::Favorite);
@@ -4557,16 +4549,15 @@ impl DetailScreen {
                         StoreId::ViewState,
                         StoreCmd::ViewState(ViewStateCmd::Request {
                             sid: d.sid,
-                            rk: d.rk.clone(),
-                            // a show's (or season's) hero toggle changes every episode of it,
-                            // wherever held
+                            rk: hero::hero_episode(d).map_or_else(|| d.rk.clone(), |ep| ep.rk.clone()),
+                            // The watched action follows the episode displayed by the hero.
                             scope: hero_mark_scope(d),
                             write: if ctl == hero::HeroCtl::MarkWatched {
                                 plx_data::viewstate::Write::Watched
                             } else {
                                 plx_data::viewstate::Write::Unwatched
                             },
-                            guid: d.guid.clone(),
+                            guid: if hero::hero_episode(d).is_some() { String::new() } else { d.guid.clone() },
                         }),
                     )));
                 }

@@ -1,0 +1,302 @@
+{
+  "$schema": "https://plxnative.com/hud/schema/hud/1.0.json",
+  "layout": {
+    "anchor": "bottom",
+    "inset": "MD",
+    "x_inset": "LG",
+    "band": "controls",
+    "sections": "modal",
+    "scrim": {
+      "cover": "block",
+      "extra": 120
+    },
+    "block": [
+      {
+        "id": "top",
+        "when": "!sections",
+        "gap": "MD",
+        "cells": [
+          {
+            "align": "start",
+            "vstack": {
+              "gap": "XS",
+              "w": "fill",
+              "cells": [
+                {
+                  "text": {
+                    "bind": "title.kicker",
+                    "size": "CAPTION",
+                    "ink": "TEXT_SECONDARY",
+                    "bold": false,
+                    "max_lines": 1,
+                    "w": "fill"
+                  }
+                },
+                {
+                  "text": {
+                    "bind": "title.main",
+                    "size": "TITLE",
+                    "ink": "TEXT_PRIMARY",
+                    "bold": true,
+                    "max_lines": 1,
+                    "w": "fill"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "align": "end",
+            "segment": {
+              "id": "right",
+              "gap": "SM",
+              "items": [
+                {
+                  "id": "subs",
+                  "widget": "disc",
+                  "size": 52,
+                  "rest": "film",
+                  "focus": "accent",
+                  "command": "open_tracks",
+                  "tab": "subtitles",
+                  "face": "subs-bubble"
+                },
+                {
+                  "id": "audio",
+                  "widget": "disc",
+                  "size": 52,
+                  "rest": "film",
+                  "focus": "accent",
+                  "command": "open_tracks",
+                  "tab": "audio",
+                  "face": "eq"
+                },
+                {
+                  "id": "more",
+                  "widget": "disc",
+                  "size": 52,
+                  "rest": "film",
+                  "focus": "accent",
+                  "command": "open_more"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "bar",
+        "gap_before": "SM",
+        "cells": [
+          {
+            "align": "start",
+            "playbar": {
+              "w": "fill",
+              "fill": "ACCENT",
+              "track": "RAIL_TRACK",
+              "thickness": 6,
+              "knob": "always",
+              "clocks": "ends",
+              "clock_size": "CAPTION",
+              "mark": "busy_only"
+            }
+          }
+        ],
+        "when": "!sections", "chrome": "steady"
+      },
+      {
+        "id": "tabs",
+        "gap_before": "SM",
+        "cells": [
+          {
+            "align": "start",
+            "segment": {
+              "id": "tabs",
+              "gap": "SM",
+              "items": [
+                {
+                  "id": "open_info",
+                  "command": "toggle_section",
+                  "section": "info",
+                  "widget": "pill",
+                  "size": 52
+                },
+                {
+                  "id": "open_chapters",
+                  "command": "toggle_section",
+                  "section": "chapters",
+                  "widget": "pill",
+                  "size": 52,
+                  "when": "chapters.present"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "info",
+        "when": "panel.info",
+        "gap_before": "SM",
+        "gap": "LG",
+        "cells": [
+          {
+            "align": "start",
+            "image": {
+              "bind": "info.still",
+              "w": 292,
+              "h": 164,
+              "radius": 8,
+              "crop": "cover"
+            }
+          },
+          {
+            "align": "start",
+            "valign": "top",
+            "vstack": {
+              "gap": "XS",
+              "w": 760,
+              "cells": [
+                {
+                  "text": {
+                    "bind": "title.kicker",
+                    "size": "CAPTION",
+                    "ink": "TEXT_SECONDARY",
+                    "bold": false,
+                    "max_lines": 1,
+                    "w": "fill"
+                  }
+                },
+                {
+                  "text": {
+                    "bind": "title.main",
+                    "size": "HEADLINE",
+                    "ink": "TEXT_PRIMARY",
+                    "bold": true,
+                    "max_lines": 1,
+                    "w": "fill"
+                  }
+                },
+                {
+                  "text": {
+                    "bind": "info.summary",
+                    "size": "CAPTION",
+                    "ink": "TEXT_SECONDARY",
+                    "bold": false,
+                    "max_lines": 2,
+                    "w": "fill"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "align": "end",
+            "valign": "center",
+            "actions": {
+              "axis": "column",
+              "gap": 16,
+              "item_h": 70,
+              "min_w": 352,
+              "items": [
+                {
+                  "id": "from_beginning",
+                  "command": "from_beginning",
+                  "widget": "button",
+                  "size": 70
+                },
+                {
+                  "id": "go_to_detail",
+                  "command": "go_to_detail",
+                  "widget": "button",
+                  "size": 70
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "chapters",
+        "when": "panel.chapters",
+        "gap_before": "SM",
+        "cells": [
+          {
+            "align": "start",
+            "strip": {
+              "bind": "chapters",
+              "w": "fill",
+              "card_w": 284,
+              "card_h": 160,
+              "gap": "SM",
+              "radius": 8,
+              "focus": "ring",
+              "card": {
+                "art": {
+                  "bind": "item.thumb",
+                  "crop": "cover"
+                },
+                "overlay": [
+                  {
+                    "when": "item.is_current",
+                    "align": "center",
+                    "valign": "center",
+                    "icon": {
+                      "asset": "eq",
+                      "size": 28,
+                      "ink": "TEXT_PRIMARY"
+                    }
+                  }
+                ],
+                "below_gap": "XS",
+                "below": [
+                  {
+                    "text": {
+                      "bind": "item.start",
+                      "size": "MICRO",
+                      "ink": "TEXT_SECONDARY",
+                      "bold": false
+                    }
+                  },
+                  {
+                    "text": {
+                      "bind": "item.title",
+                      "size": "CAPTION",
+                      "bold": false,
+                      "max_lines": 1,
+                      "w": "fill",
+                      "ink": {
+                        "value": "TEXT_SECONDARY",
+                        "if": {
+                          "item.focused": "TEXT_PRIMARY"
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "up_next": {
+      "replaces": [
+        "right"
+      ],
+      "band": "top",
+      "align": "end",
+      "still": false,
+      "caption": false,
+      "watch_credits": {
+        "rest": "film",
+        "focus": "accent"
+      },
+      "play_next": {
+        "rest": "solid",
+        "focus": "ring"
+      },
+      "countdown": "ring"
+    }
+  }
+}

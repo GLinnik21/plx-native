@@ -1,0 +1,22 @@
+{
+  "costs": [],
+  "file": "examples/invalid/unknown-command",
+  "findings": [
+    {
+      "code": "HUD-E0301",
+      "file": "hud.json",
+      "hint": "write one of: toggle_play, seek, previous, next, open_tracks, open_more, toggle_section, from_beginning, go_to_detail, toggle_stats",
+      "message": "`skip_back` is not a known command",
+      "nearest": [
+        "open_tracks",
+        "seek",
+        "open_more"
+      ],
+      "path": "/layout/block/1/cells/0/segment/items/0/command",
+      "rule": "command-known",
+      "severity": "error"
+    }
+  ],
+  "package_sha256": "b09931791bdc2b153a0cd952c32093658bdf2efdcf761fa88a2f1ba5f173706d",
+  "protocol": 1
+}

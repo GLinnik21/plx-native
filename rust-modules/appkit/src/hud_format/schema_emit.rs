@@ -1,7 +1,7 @@
 //! **The JSON Schema of HUD package format 1.0, emitted from the descriptor table** ([`super::schema`]).
 //!
-//! `plxnative-sim --hud-schema` (PR5d) prints [`emit_text`]; the committed copy is
-//! `site/hud/schema/1.0.json`, served at `https://plxnative.com/hud/schema/1.0.json` (`docs/hud-plugins.md`,
+//! `plxnative-sim --hud-schema manifest|hud --version 1.0` (PR5d) prints [`emit_text`]; the committed copy is
+//! `site/hud/schema/{manifest,hud}/1.0.json`, served at `https://plxnative.com/hud/schema/{manifest,hud}/1.0.json` (`docs/hud-plugins.md`,
 //! "LLM authoring"). Nothing is listed here that the table does not list: every key, type, range, closed
 //! vocabulary, pattern, default and description is read from it, and [`Ty`] is matched in full, so a new
 //! table type is a compile error here as it is in the parser.
@@ -53,7 +53,7 @@
 //!
 //! ## Regenerating the golden
 //!
-//! `site/hud/schema/1.0.json` is a committed golden. A test regenerates it and fails, with the first
+//! `site/hud/schema/{manifest,hud}/1.0.json` is a committed golden. A test regenerates it and fails, with the first
 //! differing line, on any difference. After a deliberate change to the table, rewrite it with
 //!
 //! ```text
@@ -61,7 +61,7 @@
 //! ```
 //!
 //! and commit the result. The same variable rewrites the published examples' lint reports
-//! (`site/hud/examples/invalid/*.lint.json`).
+//! (`site/hud/examples/invalid/*/lint.json`).
 
 use plx_ui::rec::strict_json::{Map, Number, Value};
 
@@ -71,7 +71,7 @@ use super::schema::{self, Cmd, Field, Node, NodeKind, Pattern, Since, Ty};
 pub const SCHEMA_DRAFT: &str = "https://json-schema.org/draft/2020-12/schema";
 
 /// Where schemas are published: the file for a format is `<base><major>.<minor>.json`.
-pub const SCHEMA_URL_BASE: &str = "https://plxnative.com/hud/schema/";
+pub const SCHEMA_URL_BASE: &str = "https://plxnative.com/hud/schema/hud/";
 
 /// The `$id` of the schema of `version`.
 pub fn schema_id(version: Since) -> String {
@@ -90,20 +90,37 @@ pub fn emit_text(version: Since) -> String {
 
 /// The schema of format `version`: the table's entries that arrived in it or before.
 pub fn emit(version: Since) -> Value {
+    emit_document(false, version)
+}
+
+/// The manifest and HUD document have independently versioned descriptor roots.
+pub fn emit_manifest(version: Since) -> Value {
+    emit_document(true, version)
+}
+
+pub fn manifest_schema_id(version: Since) -> String {
+    format!("https://plxnative.com/hud/schema/manifest/{}.{}.json", version.0, version.1)
+}
+
+fn emit_document(manifest: bool, version: Since) -> Value {
     let mut emitter = Emitter {
         version,
         defs: Map::new(),
     };
-    emitter.shared_defs();
+    if !manifest {
+        emitter.shared_defs();
+    }
+    let selected = if manifest { &schema::MANIFEST } else { &schema::ROOT };
     for node in schema::all_nodes() {
-        if node.name != schema::ROOT.name {
+        let is_manifest = matches!(node.name, "manifest" | "hud_entry" | "app");
+        if node.name != selected.name && is_manifest == manifest {
             let def = emitter.node_schema(node);
             emitter.def(node.name, def);
         }
     }
-    let mut root = emitter.node_object(&schema::ROOT);
+    let mut root = emitter.node_object(selected);
     root.insert("$schema".to_owned(), text(SCHEMA_DRAFT));
-    root.insert("$id".to_owned(), Value::String(schema_id(version)));
+    root.insert("$id".to_owned(), Value::String(if manifest { manifest_schema_id(version) } else { schema_id(version) }));
     root.insert(
         "title".to_owned(),
         Value::String(format!(
@@ -191,7 +208,8 @@ fn slug(ty: &Ty) -> Option<String> {
         | Ty::Object(_)
         | Ty::List { .. }
         | Ty::Palette
-        | Ty::Assets
+
+        | Ty::Resources
         | Ty::Command
         | Ty::Either(..) => None,
     }
@@ -448,7 +466,7 @@ impl Emitter {
                 object([("type", text("array")), ("items", item)])
             }
             Ty::Palette => map_of(string_pattern(schema::HEX_COLOUR_REGEX)),
-            Ty::Assets => map_of(object([("type", text("string"))])),
+            Ty::Resources => map_of(string_pattern(Pattern::PackagePath.regex())),
             Ty::Command => string_enum(
                 schema::COMMANDS
                     .iter()

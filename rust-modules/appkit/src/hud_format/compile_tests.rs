@@ -26,17 +26,17 @@ use crate::player_hud::geometry::{HudGeometry, RowAnchor};
 use crate::player_hud::{classic, Controls};
 use crate::info_panel;
 
-const CLASSIC: &str = crate::hud_format::CLASSIC_PACKAGE;
-const REFERENCE: &str = include_str!("fixtures/reference.plxhud.json");
-const MINIMAL: &str = include_str!("fixtures/minimal.plxhud.json");
-const HERO: &str = include_str!("fixtures/hero-center.plxhud.json");
-const TABS: &str = include_str!("fixtures/tabs.plxhud.json");
-const PALETTE: &str = include_str!("fixtures/palette.plxhud.json");
+const CLASSIC: &str = crate::hud_format::CLASSIC_HUD;
+const REFERENCE: &str = include_str!("fixtures/reference/hud.json");
+const MINIMAL: &str = include_str!("fixtures/minimal/hud.json");
+const HERO: &str = include_str!("fixtures/hero-center/hud.json");
+const TABS: &str = include_str!("fixtures/tabs/hud.json");
+const PALETTE: &str = include_str!("fixtures/palette/hud.json");
 
 const FM: FixtureMeasure = FixtureMeasure;
 
 fn package(text: &str) -> Package {
-    let parsed = parse::parse(text.as_bytes());
+    let parsed = crate::hud_format::fixtures::parse(text.as_bytes());
     assert!(parsed.findings.is_empty(), "the fixture must parse clean: {:?}", parsed.findings);
     parsed.package.expect("a package")
 }
@@ -704,7 +704,7 @@ fn text_y(ops: impl IntoIterator<Item = DrawOp>, bind: &str) -> Option<f32> {
 
 #[test]
 fn the_references_equaliser_is_drawn_on_the_current_card_only() {
-    // `overlay: [{ "when": "item.is_current", .. "icon": eq }]` (reference.plxhud.json): a card's condition
+    // `overlay: [{ "when": "item.is_current", .. "icon": eq }]` (reference.plxhud): a card's condition
     // is the frame's, so the op is in every card's template and each card asks `item.is_current`.
     let compiled = build(REFERENCE, &FM);
     let state = compiled.lookup(OPEN_CHAPTERS, Slot::Discs, true, true, false).unwrap();
@@ -1218,7 +1218,7 @@ fn no_band_under_the_bar_starts_on_the_clocks_line() {
 
 /// **Classic's tabs did not move.** The bar's cell now holds the clocks' line (`CLOCK_TOP` plus
 /// `clock_line_h(CAPTION)`, 60 px from the track's top), so the `tabs` band's `gap_before` in
-/// `classic.plxhud.json` is the distance from the cell's foot to the tabs' top, `tab_y`: 949 less 882 + 60. The
+/// `classic.plxhud` is the distance from the cell's foot to the tabs' top, `tab_y`: 949 less 882 + 60. The
 /// literal in the fixture is that arithmetic, spelt here from the constants.
 #[test]
 fn classics_tabs_gap_is_the_distance_left_after_the_clocks_line() {

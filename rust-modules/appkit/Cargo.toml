@@ -45,6 +45,8 @@ plx_plex = { path = "../plex" }
 plx_telemetry = { path = "../telemetry" }
 plx_data = { path = "../data" }
 plx_media = { path = "../media" }
+# HUD bundles use STORE-only ZIP. Optional codecs/AES are disabled; the profile rejects encryption.
+zip = { version = "=9.2.2", default-features = false }
 
 [dev-dependencies]
 # THE rule of the layer crates: dev-depend on ITSELF with `devtriggers`, so `cargo test -p plx_appkit`

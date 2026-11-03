@@ -399,7 +399,7 @@ pub(crate) struct Bridge {
     huds_page: Option<(std::sync::mpsc::Sender<plx_screens::hud_settings::HudList>, u64)>,
     /// What the last install or removal said, for the page, until it is opened again.
     huds_notice: Option<plx_data::hudpacks::Notice>,
-    trace_save: Option<(MachineId, plx_base::storage_worker::TypedTicket<plx_platform::playback_trace::Status>)>,
+    trace_save: Option<(MachineId, u64, plx_base::storage_worker::TypedTicket<plx_platform::playback_trace::Status>)>,
     consent_adapter: super::adapters::consent::ConsentAdapter,
     /// Starts the jobs the stores emit (`adapters::stores`). Chosen when the Bridge is built: `Live`
     /// in production, the `Held` runner in a host test.
@@ -899,14 +899,15 @@ impl Bridge {
     /// the dip brings up an empty page and the grid appears in one frame when the image is
     /// replaced. The target is the page's own (`DirectoryView::kind_address`, which its first tick
     /// sends too, so the second select is the same command on a store already there). A store
-    /// already on a library of this kind stays on it (the reader's last pick), as
-    /// `LibraryScreen::sync` keeps it. Not for a Library already on top: its `LibraryCmd::Enter` saves the outgoing
+    /// already on the preferred library stays there; a departed non-favorite visit is restored to
+    /// the last-used favorite. Not for a Library already on top: its `LibraryCmd::Enter` saves the outgoing
     /// section's cursor from the listing it is still showing, before it switches.
     pub(crate) fn aim_library(&mut self, kind: plx_data::browse::SecKind) {
         let target = {
             let directory = self.directory.view();
-            let current = directory.current().map(|i| directory.sections()[i].kind);
-            directory.kind_address(kind).filter(|_| current != Some(kind))
+            let current = directory.current().and_then(|index| directory.sections().get(index))
+                .and_then(|section| section.sid.map(|sid| (sid, section.key)));
+            directory.kind_address(kind).filter(|target| Some((target.sid, target.section)) != current)
         };
         if let Some(target) = target {
             self.browse_run(plx_data::stores::browse::BrowseCmd::Addressed { target,
@@ -1297,6 +1298,15 @@ impl Bridge {
             let sid = match &e.arg { AppArg::Content(ContentArg::Detail { sid, .. }) => *sid, _ => return None };
             let rect = page.focused_rect::<AppHost>(ret.focus, &cx, At::Drawn);
             let meta = <AppHost as plx_screens::registry::MetadataLike>::metadata(&cx);
+            if let Some((ep, mark)) = page.hero_menu_episode(ret.focus, meta) {
+                let mut arg = strip_menu_arg(sid, &ep.rk,
+                    ItemMenuKind::Episode { mark, versions: ep.versions.clone() }, entry, ret.focus, rect);
+                // The on-deck episode need not be in the loaded season window. The ordinary
+                // addressed item path fetches it, rather than the filmstrip's loaded-only path.
+                arg.loaded_episode = false;
+                arg.watchlist = self.watchlist_face(page.watchlist_hex(), plx_data::watchlist::model::Kind::Show, true);
+                return Some(arg);
+            }
             if let Some((rk, show_rk, index, mark)) = page.focused_season(ret.focus, meta) {
                 // the season's address rides on the menu: the strip's item is no catalog row, so
                 // the write's scope cannot be read off one (`apply_item_action`)
@@ -2501,20 +2511,29 @@ impl Bridge {
         if command != Command::Export { return trace::execute(command); }
         let generation = trace::prepare_export();
         match plx_base::storage_worker::submit(move || trace::save_export(generation)) {
-            Ok(ticket) => { self.trace_save = Some((from, ticket)); Status::Saving }
-            Err(_) => { trace::execute(Command::Stop); Status::Failed }
+            Ok(ticket) => { self.trace_save = Some((from, generation, ticket)); Status::Saving }
+            Err(error) => {
+                use plx_base::storage_worker::SubmitError;
+                use trace::SaveWorkerFailure as Failure;
+                trace::fail_export(generation, match error {
+                    SubmitError::Full => Failure::QueueFull,
+                    SubmitError::Stopped => Failure::QueueStopped,
+                    SubmitError::StartFailed => Failure::StartFailed,
+                })
+            }
         }
     }
 
     pub(crate) fn playback_trace_poll(&mut self) -> Option<(MachineId, plx_platform::playback_trace::Status)> {
         use std::sync::mpsc::TryRecvError;
-        let (_, ticket) = self.trace_save.as_ref()?;
+        let (_, generation, ticket) = self.trace_save.as_ref()?;
         let status = match ticket.try_recv() {
             Ok(status) => status,
             Err(TryRecvError::Empty) => return None,
-            Err(TryRecvError::Disconnected) => plx_platform::playback_trace::Status::Failed,
+            Err(TryRecvError::Disconnected) => plx_platform::playback_trace::fail_export(
+                *generation, plx_platform::playback_trace::SaveWorkerFailure::Disconnected),
         };
-        let (to, _) = self.trace_save.take()?;
+        let (to, _, _) = self.trace_save.take()?;
         Some((to, status))
     }
 

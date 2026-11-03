@@ -84,7 +84,7 @@ fn the_grounds_ramp_is_the_hero_scrim_curve() {
             assert!((ramp.alpha(y) - want).abs() < 1e-5, "hero_a {hero_a} y {y}: {} vs {want}", ramp.alpha(y));
         }
     }
-    // Detail's single stop, written by repeating its foot: linear to the foot, never a divide by 0.
+    // A two-stop caller may repeat its foot: linear to the foot, never a divide by 0.
     let ramp = WashRamp { ink: theme::scrim(1.0), stops: [(400.0, 0.0), (SCR_H, 0.6), (SCR_H, 0.6)] };
     assert_eq!(ramp.alpha(400.0), 0.0);
     assert!((ramp.alpha(740.0) - 0.3).abs() < 1e-6);

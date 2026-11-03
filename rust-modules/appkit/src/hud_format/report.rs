@@ -3,15 +3,15 @@
 //! `plxnative-sim --hud-lint <file> [--format text|json]` prints through the `_with_costs` forms,
 //! [`json_text_with_costs`] and [`text_with_costs`] (the findings, then every state's cost: see "Cost lines"
 //! below); the registry's CI reads that JSON. [`json_text`] and [`text`] are the findings alone, which is all
-//! the published `*.lint.json` examples carry. The findings' shape is exactly the plan's, and nothing more:
+//! the findings-only helper produces. The findings' shape is exactly the plan's, and nothing more:
 //!
 //! ```text
-//! {"lint": 1, "file": "<name>", "findings": [
-//!   {"code": "HUD-E0301", "severity": "error", "path": "/layout/block/2/cells/0/segment/items/1/command",
+//! {"protocol": 1, "file": "<name>", "package_sha256": null, "findings": [
+//!   {"code": "HUD-E0301", "severity": "error", "file": "hud.json", "path": "/layout/block/2/cells/0/segment/items/1/command",
 //!    "rule": "command-known", "message": "...", "hint": "...", "nearest": ["seek"]}]}
 //! ```
 //!
-//! `path` is [`Finding::pointer`], an RFC 6901 pointer. The findings are sorted by pointer, so one round
+//! `path` is [`Finding::pointer`], an RFC 6901 pointer. The findings are sorted by archive member and document-local pointer, so one round
 //! fixes many: tokens compare as the document reads (an array index by its number, so `/block/2` comes before
 //! `/block/10`), a key by its text. Findings at one pointer keep the order they were reported in, EXCEPT that
 //! findings carrying a lint [`Context`] sort among themselves by `(code, lang, state, slot, message)` (and
@@ -21,7 +21,7 @@
 //! **Context.** A finding the lint produced against a compiled package carries a [`Context`]; its JSON
 //! gains a `context` object holding only the keys that are set: `lang`, `state`, `slot`, `rects` (each
 //! `{name, x, y, w, h}`) and `text` (`{string, measured, room}`). A finding with no context prints
-//! exactly the seven keys above and nothing else. Object keys come out in `serde_json`'s sorted order
+//! exactly the eight keys above and nothing else. Object keys come out in `serde_json`'s sorted order
 //! (`Map` is a `BTreeMap`; there is no insertion-order feature in this build), which is deterministic: so
 //! `context` sits between `code` and `hint`, and its own keys read `lang, rects, slot, state, text`.
 //!
@@ -106,7 +106,7 @@ fn tie_break(a: &Finding, b: &Finding) -> Ordering {
 /// The findings in report order (see the module doc). The sort is stable.
 pub fn sorted(findings: &[Finding]) -> Vec<&Finding> {
     let mut out: Vec<&Finding> = findings.iter().collect();
-    out.sort_by(|a, b| pointer_order(&a.pointer, &b.pointer).then_with(|| tie_break(a, b)));
+    out.sort_by(|a, b| a.file.cmp(&b.file).then_with(|| pointer_order(&a.pointer, &b.pointer)).then_with(|| tie_break(a, b)));
     out
 }
 
@@ -161,6 +161,7 @@ fn finding_json(f: &Finding) -> Value {
         Value::String(f.severity.as_str().to_owned()),
     );
     map.insert("path".to_owned(), Value::String(f.pointer.clone()));
+    map.insert("file".to_owned(), f.file.as_ref().map_or(Value::Null, |file| Value::String(file.clone())));
     map.insert("rule".to_owned(), Value::String(f.rule.to_owned()));
     map.insert("message".to_owned(), Value::String(f.message.clone()));
     map.insert("hint".to_owned(), Value::String(f.hint.clone()));
@@ -177,7 +178,8 @@ fn finding_json(f: &Finding) -> Value {
 /// The report of `findings` for the package called `file`.
 pub fn to_json(file: &str, findings: &[Finding]) -> Value {
     let mut map = Map::new();
-    map.insert("lint".to_owned(), Value::from(REPORT_VERSION));
+    map.insert("protocol".to_owned(), Value::from(REPORT_VERSION));
+    map.insert("package_sha256".to_owned(), Value::Null);
     map.insert("file".to_owned(), Value::String(file.to_owned()));
     map.insert(
         "findings".to_owned(),
@@ -189,6 +191,18 @@ pub fn to_json(file: &str, findings: &[Finding]) -> Value {
 /// [`to_json`] as printed: pretty, with one trailing newline.
 pub fn json_text(file: &str, findings: &[Finding]) -> String {
     format!("{:#}\n", to_json(file, findings))
+}
+
+pub fn digest_hex(digest: [u8; 32]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Bind a report to complete artifact bytes. A source/IO limit failure keeps a null digest.
+pub fn with_digest(mut report: Value, digest: Option<[u8; 32]>) -> Value {
+    if let Value::Object(fields) = &mut report {
+        fields.insert("package_sha256".to_owned(), digest.map_or(Value::Null, |digest| Value::String(digest_hex(digest))));
+    }
+    report
 }
 
 /// A cost's four terms as the JSON object the report prints.
@@ -266,6 +280,7 @@ pub fn text_with_costs(file: &str, findings: &[Finding], costs: &[StateCostLine]
 
 /// One line of a finding, with no line break in it: a control character of the message becomes a space.
 fn line(file: &str, f: &Finding) -> String {
+    let file = f.file.as_deref().unwrap_or(file);
     let mut out = format!(
         "{file}#{}: {} {} {}: {}",
         f.pointer,
@@ -322,9 +337,9 @@ mod tests {
             "unknown command skip_back",
         )
         .with_nearest(nearest("seeq", ["seek", "next"]));
-        let json = to_json("my.plxhud.json", &[f]);
-        assert_eq!(json["lint"], 1);
-        assert_eq!(json["file"], "my.plxhud.json");
+        let json = to_json("my.plxhud", &[f]);
+        assert_eq!(json["protocol"], 1);
+        assert_eq!(json["file"], "my.plxhud");
         let found = &json["findings"][0];
         let keys: Vec<&str> = found
             .as_object()
@@ -334,7 +349,7 @@ mod tests {
             .collect();
         assert_eq!(
             keys,
-            ["code", "hint", "message", "nearest", "path", "rule", "severity"]
+            ["code", "file", "hint", "message", "nearest", "path", "rule", "severity"]
         );
         assert_eq!(found["code"], "HUD-E0301");
         assert_eq!(found["severity"], "error");
@@ -342,7 +357,7 @@ mod tests {
         assert_eq!(found["rule"], "command-known");
         assert_eq!(found["hint"], "write it right");
         assert_eq!(found["nearest"], serde_json_array(&["seek", "next"]));
-        assert_eq!(json.as_object().unwrap().len(), 3, "{json:#}");
+        assert_eq!(json.as_object().unwrap().len(), 4, "{json:#}");
     }
 
     fn serde_json_array(names: &[&str]) -> Value {
@@ -382,8 +397,8 @@ mod tests {
         let at = crate::hud_format::lint_cost::MAX_COMPACT_BLENDED_PX;
         let costs = [cost_line_of(None, at), cost_line_of(Some("de"), at + 1)];
         let json = to_json_with_costs("f", &[], &costs);
-        assert_eq!(json.as_object().unwrap().len(), 4, "{json:#}");
-        assert_eq!(to_json("f", &[]).as_object().unwrap().len(), 3, "findings alone: lint, file, findings");
+        assert_eq!(json.as_object().unwrap().len(), 5, "{json:#}");
+        assert_eq!(to_json("f", &[]).as_object().unwrap().len(), 4, "findings alone: lint, file, findings");
         let [shared, de] = json["costs"].as_array().unwrap().as_slice() else { panic!("two lines: {json:#}") };
         fn keys(v: &Value) -> Vec<&str> {
             v.as_object().unwrap().keys().map(String::as_str).collect()
@@ -479,7 +494,7 @@ mod tests {
         let mut f = finding(&codes::E0102, "/layout/blok", "unknown key\nblok");
         f.nearest = vec!["block".to_owned()];
         let out = text(
-            "p.plxhud.json",
+            "p.plxhud",
             &[f, finding(&codes::E0103, "", "no format")],
         );
         let lines: Vec<&str> = out.lines().collect();
@@ -487,11 +502,11 @@ mod tests {
         assert!(out.ends_with('\n'));
         assert_eq!(
             lines[0],
-            "p.plxhud.json#: error HUD-E0103 key-required: no format | hint: write it right"
+            "p.plxhud#: error HUD-E0103 key-required: no format | hint: write it right"
         );
         assert_eq!(
             lines[1],
-            "p.plxhud.json#/layout/blok: error HUD-E0102 key-known: unknown key blok | hint: write it right | nearest: block"
+            "p.plxhud#/layout/blok: error HUD-E0102 key-known: unknown key blok | hint: write it right | nearest: block"
         );
     }
 
@@ -515,13 +530,13 @@ mod tests {
                 "a and b overlap",
             ),
         ];
-        let out = text("p.plxhud.json", &found);
+        let out = text("p.plxhud", &found);
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines.len(), 2, "{out:?}");
         assert_ne!(lines[0], lines[1]);
         assert_eq!(
             lines[0],
-            "p.plxhud.json#/layout/block/0: error HUD-E1001 z-overlap: a and b overlap [de, compact, discs] | hint: h"
+            "p.plxhud#/layout/block/0: error HUD-E1001 z-overlap: a and b overlap [de, compact, discs] | hint: h"
         );
         assert!(lines[1].contains("[fr, compact, discs]"), "{}", lines[1]);
         // a finding that is the same in every language has no language to print, and one with no context
@@ -581,7 +596,7 @@ mod tests {
     #[test]
     fn a_finding_without_context_prints_exactly_the_seven_keys() {
         let json = to_json("f", &[finding(&codes::E0104, "/a", "m")]);
-        assert_eq!(keys(&json["findings"][0]), ["code", "hint", "message", "nearest", "path", "rule", "severity"]);
+        assert_eq!(keys(&json["findings"][0]), ["code", "file", "hint", "message", "nearest", "path", "rule", "severity"]);
         // An empty context is no context.
         let empty = Finding::new(&codes::E0104, "/a", "m", "h").with(Context::default());
         assert_eq!(to_json("f", &[empty])["findings"][0].get("context"), None);
@@ -593,7 +608,7 @@ mod tests {
             .with(Context { lang: Some("de".to_owned()), ..Context::default() });
         let json = to_json("f", &[lang_only]);
         let found = &json["findings"][0];
-        assert_eq!(keys(found), ["code", "context", "hint", "message", "nearest", "path", "rule", "severity"]);
+        assert_eq!(keys(found), ["code", "context", "file", "hint", "message", "nearest", "path", "rule", "severity"]);
         assert_eq!(keys(&found["context"]), ["lang"]);
         assert_eq!(found["context"]["lang"], "de");
 

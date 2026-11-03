@@ -1,328 +1,253 @@
-//! **`plxnative-sim` HUD tools**: the HUD plugin tools that run without
-//! opening a window (`docs/hud-plugins.md`, "LLM authoring" item 2 and "Schema").
-//!
-//! ```text
-//! plxnative-sim --hud-lint <file> [--format text|json] [--lang all|<tag>] [--text-skew <profile>]
-//! plxnative-sim --hud-schema
-//! plxnative-sim --hud-export builtin:classic
-//! plxnative-sim --hud-info
-//! plxnative-sim --hud-text-metrics [--lang all|<tag>]
-//! plxnative-sim --hud-inspect <file> [--lang all|<tag>]
-//! ```
-//!
-//! **Exit codes.** `--hud-lint`: 0 when the package has no finding, 1 when it has any (a warning is a
-//! finding: the registry's CI treats `HUD-W0602` as an error; a state over its class's cost ceiling,
-//! `HUD-E1401`, is an error), 2 for a usage error. **Cost lines** (one per state, against its class's
-//! ceiling: `docs/hud-plugins.md` "Cost") follow the findings in text and are the report's `costs` array in
-//! JSON; they are information, so a clean package prints them and exits 0. A usage error is
-//! a bad command line, a file that cannot be read as UTF-8 text, or fonts that cannot be loaded; each
-//! is ONE line on stderr and nothing on stdout. A package that does not parse is not a usage error: its
-//! parse findings are the report, so the exit code is 1. `--hud-schema` and `--hud-export` exit 0, or 2
-//! for a usage error (an unknown export id included).
-//!
-//! **Everything that decides is [`run`]**, a pure function: the file read, font identities and the two text measurers are
-//! INJECTED (`read_file`, `measure`, `price`, `fonts`) and the output goes into two strings, so the exit codes and
-//! the bytes are unit-tested without a file, a font or a process. A measurer is a FACTORY and is called
-//! only by lint, metrics or inspection and only once the command line and the file have been accepted: `--hud-schema`
-//! and `--hud-export` never touch a font. [`main_from`] is the thin process shell and the ONLY IO here:
-//! it wires `std::fs`, the real measurers and the two standard streams.
-//!
-//! **Two measurers, one per question; the lint is two passes** (`plx_appkit::hud_format::lint`). Text FIT
-//! (`HUD-E0601` and the geometry: the fit pass, `lint_fit`) is measured by [`plx_gfx::text::TtfMeasure`] over
-//! the shipped `appfont*.ttf` faces from `PLXNATIVE_APP_DIR` (the simulator's `plx_base::paths::app_dir`),
-//! opened by [`plx_gfx::text::init_fonts_headless`] with no window and no GL context. The host's SDL_ttf sums
-//! fractional advances, where the television's 2.0.x sums whole-pixel ones (`plx_base::fontcov::advances`), so
-//! a width here can be a few pixels off the television's: for text fit the TV's own compile decides
-//! (`docs/hud-plugins.md`, "Text fit"). The COST (`HUD-E1401` and the cost lines: the price pass, `lint_price`)
-//! is another matter. Its ceilings are numbers taken with ONE model, the whole-pixel advances of `appfont.ttf`
-//! and `appfont-bold.ttf` and a line height of 1.21 x the size, on every side: priced by the host's SDL_ttf the
-//! classic's Up Next and Info states and every two-section state of the reference would read over a ceiling
-//! that the same bytes, which the television ran, pass (4 of the 12 terms). So the cost is priced by
-//! [`WholePixelMeasure`](plx_base::fontcov::advances::WholePixelMeasure), a pure value over the two faces, which `plx_gfx::text::read_price_model` builds from
-//! the two files `plx_gfx::text::app_font_path` returns (`appfont.ttf` and `appfont-bold.ttf`, the files the text
-//! fit's measurer opens; the player-HUD driver reads the same model the same way): the read is the only IO,
-//! [`price_measure`]'s, and the simulator and every other side print one number. The fallback faces (CJK, emoji, Arabic, Hebrew) are neither read nor priced: a
-//! character only one of them draws is priced at the base face's `.notdef` advance. There is no unmeasured
-//! fallback: when the two files cannot be opened or read the run is a usage error, `cannot load fonts: ...`.
+//! Native HUD authoring tools. The process shell snapshots files and publishes output artifacts.
+//! The command runner takes injected IO and measurers, and every renderer consumes the same verified
+//! bundle representation used by installation and the player.
 
-use plx_appkit::hud_format::lint::{lint_report_priced, Linted, LintLang, LintOptions};
+use plx_appkit::hud_format::bundle::{self, Decoded};
+use plx_appkit::hud_format::lint::{lint_decoded, LintLang, LintOptions};
 use plx_appkit::hud_format::{report, schema, schema_emit, BUILTIN_CLASSIC};
 use plx_machine::machine::Measure;
+use crate::app::hud_source::{self, Source};
 
-/// The mode flags that make the simulator binary run a HUD tool instead of the application.
 const LINT: &str = "--hud-lint";
 const SCHEMA: &str = "--hud-schema";
 const EXPORT: &str = "--hud-export";
+const PACK: &str = "--hud-pack";
 const INFO: &str = "--hud-info";
 const METRICS: &str = "--hud-text-metrics";
 const INSPECT: &str = "--hud-inspect";
-
-/// The packages `--hud-export` can print: id and bytes. One entry today; PR6's examples add theirs.
-const EXPORTS: &[(&str, &str)] = &[("builtin:classic", BUILTIN_CLASSIC)];
-
-/// Every finding of the linted package is reported on stdout, then its cost lines; 0 means there was no finding.
 const EXIT_CLEAN: i32 = 0;
-/// The package has at least one finding.
 const EXIT_FINDINGS: i32 = 1;
-/// The command line, the file or the fonts were not usable; nothing was linted.
 const EXIT_USAGE: i32 = 2;
+const USAGE: &str = "usage: plxnative-sim --hud-lint <file|directory> [--format text|json] [--lang all|<tag>] [--text-skew <profile>] | --hud-pack <directory> --out <file> [--format text|json] | --hud-schema manifest|hud --version 1.0 | --hud-export builtin:classic --out <file> | --hud-info | --hud-text-metrics [--lang all|<tag>] | --hud-inspect <file|directory> [--lang all|<tag>]";
 
-/// The shape of a usage error, one line: the reason, then (for an argument error) the usage.
-const USAGE: &str = "usage: plxnative-sim --hud-lint <file> [--format text|json] [--lang all|<tag>] [--text-skew <profile>] \
-                     | --hud-schema | --hud-export <id> | --hud-info | --hud-text-metrics [--lang all|<tag>] \
-                     | --hud-inspect <file> [--lang all|<tag>]";
-
-/// Does the command line ask for a HUD tool? True when any mode flag is an argument, so the
-/// binary hands the whole line to [`main_from`] before it reads a PMS host from it.
 pub fn wants(args: &[String]) -> bool {
-    args.iter().any(|a| matches!(a.as_str(), LINT | SCHEMA | EXPORT | INFO | METRICS | INSPECT))
+    args.iter().any(|arg| matches!(arg.as_str(), LINT | SCHEMA | EXPORT | PACK | INFO | METRICS | INSPECT))
 }
 
-/// How a lint report is printed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Format {
-    Text,
-    Json,
-}
+enum Format { Text, Json }
 
-/// What the command line asked for.
 enum Command {
     Lint { file: String, format: Format, langs: Vec<LintLang>, skew: Option<String> },
+    Pack { directory: String, output: String, format: Format },
+    Inspect { file: String, langs: Vec<LintLang> },
+    Schema { manifest: bool },
+    Export { id: String, output: String },
     Info,
     Metrics { langs: Vec<LintLang> },
-    Inspect { file: String, langs: Vec<LintLang> },
-    Schema,
-    Export(String),
 }
 
-/// The value after `flag`: the next argument unless it is missing or is itself a flag.
 fn value<'a>(it: &mut std::slice::Iter<'a, String>, flag: &str, what: &str) -> Result<&'a str, String> {
     match it.next() {
-        Some(v) if !v.starts_with("--") => Ok(v),
+        Some(value) if !value.starts_with("--") => Ok(value),
         _ => Err(format!("{flag} needs {what}")),
     }
-}
-
-/// Parse the command line. The first mode flag decides the command; a second one, an option that
-/// belongs to another mode, a repeated option and an argument no mode takes are usage errors.
-fn parse(args: &[String]) -> Result<Command, String> {
-    enum Mode {
-        Lint(String),
-        Schema,
-        Export(String),
-        Info,
-        Metrics,
-        Inspect(String),
-    }
-    let mut mode: Option<Mode> = None;
-    let mut format: Option<Format> = None;
-    let mut lang: Option<String> = None;
-    let mut skew: Option<String> = None;
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        let next_mode = match arg.as_str() {
-            LINT => Some(Mode::Lint(value(&mut it, LINT, "a file")?.to_owned())),
-            SCHEMA => Some(Mode::Schema),
-            INFO => Some(Mode::Info),
-            METRICS => Some(Mode::Metrics),
-            INSPECT => Some(Mode::Inspect(value(&mut it, INSPECT, "a file")?.to_owned())),
-            "--text-skew" => {
-                if skew.replace(value(&mut it, "--text-skew", "a measured profile")?.to_owned()).is_some() {
-                    return Err("--text-skew given twice".into());
-                }
-                None
-            },
-            EXPORT => Some(Mode::Export(value(&mut it, EXPORT, "a package id")?.to_owned())),
-            "--format" => {
-                let v = value(&mut it, "--format", "text or json")?;
-                let parsed = match v {
-                    "text" => Format::Text,
-                    "json" => Format::Json,
-                    other => return Err(format!("--format is text or json, not {other:?}")),
-                };
-                if format.replace(parsed).is_some() {
-                    return Err("--format given twice".to_owned());
-                }
-                None
-            }
-            "--lang" => {
-                let v = value(&mut it, "--lang", "all or a language tag")?;
-                if lang.replace(v.to_owned()).is_some() {
-                    return Err("--lang given twice".to_owned());
-                }
-                None
-            }
-            other => return Err(format!("unknown argument {other:?}")),
-        };
-        if let Some(next_mode) = next_mode {
-            if mode.replace(next_mode).is_some() {
-                return Err("only one of the HUD tool modes may be given".into());
-            }
-        }
-    }
-    let command = match mode {
-        None => return Err("nothing to do: give a HUD tool mode".into()),
-        Some(Mode::Schema) => Command::Schema,
-        Some(Mode::Info) => Command::Info,
-        Some(Mode::Inspect(file)) => {
-            if format.is_some() || skew.is_some() { return Err("inspect accepts only --lang".into()); }
-            return Ok(Command::Inspect { file, langs: languages(lang.as_deref())? });
-        },
-        Some(Mode::Metrics) => {
-            if format.is_some() || skew.is_some() { return Err("metrics accepts only --lang".into()); }
-            return Ok(Command::Metrics { langs: languages(lang.as_deref())? });
-        },
-        Some(Mode::Export(id)) => Command::Export(id),
-        Some(Mode::Lint(file)) => {
-            let langs = languages(lang.as_deref())?;
-            return Ok(Command::Lint { file, format: format.unwrap_or(Format::Text), langs, skew });
-        }
-    };
-    if format.is_some() || lang.is_some() || skew.is_some() {
-        return Err("options are not accepted by this HUD tool mode".into());
-    }
-    Ok(command)
 }
 
 fn languages(tag: Option<&str>) -> Result<Vec<LintLang>, String> {
     match tag {
         None | Some("all") => Ok(LintLang::shipped()),
-        Some(tag) => LintLang::for_tag(tag).map(|one| vec![one]).ok_or_else(|| {
-            let tags: Vec<&str> = LintLang::shipped().iter().map(|l| l.tag).collect();
-            format!("--lang is all or one of {}, not {tag:?}", tags.join(" "))
+        Some(tag) => LintLang::for_tag(tag).map(|lang| vec![lang]).ok_or_else(|| {
+            format!("--lang is all or one of {}, not {tag:?}", LintLang::shipped().iter().map(|lang| lang.tag).collect::<Vec<_>>().join(" "))
         }),
     }
 }
 
-/// Run one HUD tool. `args` is the command line after the program name. `read_file` reads a package
-/// as UTF-8 text (the error is the reason, without the path), `measure` builds the text measurer and
-/// `price` the one that prices the cost (see the module doc); the price factory is used only by lint. `fonts` reads font identities only for metrics.
-/// `read_file` is also used for an optional lint margin profile. The report goes to `out`, the one-line reason of a usage error to `err`. Returns the process exit
-/// code (see the module doc).
-pub fn run(
-    args: &[String],
-    read_file: &dyn Fn(&str) -> Result<String, String>,
+fn parse(args: &[String]) -> Result<Command, String> {
+    let mut mode: Option<(&str, String)> = None;
+    let mut format = None;
+    let mut lang = None;
+    let mut skew = None;
+    let mut output = None;
+    let mut version = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        let flag = arg.as_str();
+        if matches!(flag, LINT | PACK | INSPECT | SCHEMA | EXPORT | INFO | METRICS) {
+            let operand = if matches!(flag, INFO | METRICS) { String::new() } else {
+                value(&mut it, flag, if flag == SCHEMA { "manifest or hud" } else if flag == EXPORT { "a package id" } else { "an input path" })?.to_owned()
+            };
+            if mode.replace((flag, operand)).is_some() { return Err("only one HUD tool mode is allowed".into()); }
+            continue;
+        }
+        let target = match flag {
+            "--format" => &mut format,
+            "--lang" => &mut lang,
+            "--text-skew" => &mut skew,
+            "--out" => &mut output,
+            "--version" => &mut version,
+            _ => return Err(format!("unknown argument {arg:?}")),
+        };
+        if target.replace(value(&mut it, flag, "a value")?.to_owned()).is_some() {
+            return Err(format!("{flag} given twice"));
+        }
+    }
+    let (mode, operand) = mode.ok_or("nothing to do: give a HUD tool mode")?;
+    if format.is_some() && !matches!(mode, LINT | PACK)
+        || lang.is_some() && !matches!(mode, LINT | INSPECT | METRICS)
+        || skew.is_some() && mode != LINT
+        || output.is_some() && !matches!(mode, PACK | EXPORT)
+        || version.is_some() && mode != SCHEMA
+    { return Err("options are not accepted by this HUD tool mode".into()); }
+    let format = match format.as_deref() {
+        None | Some("text") => Format::Text,
+        Some("json") => Format::Json,
+        Some(other) => return Err(format!("--format is text or json, not {other:?}")),
+    };
+    match mode {
+        LINT => Ok(Command::Lint { file: operand, format, langs: languages(lang.as_deref())?, skew }),
+        PACK => Ok(Command::Pack { directory: operand, output: output.ok_or("--hud-pack requires --out")?, format }),
+        INSPECT => Ok(Command::Inspect { file: operand, langs: languages(lang.as_deref())? }),
+        METRICS => Ok(Command::Metrics { langs: languages(lang.as_deref())? }),
+        INFO => Ok(Command::Info),
+        EXPORT => Ok(Command::Export { id: operand, output: output.ok_or("--hud-export requires --out")? }),
+        SCHEMA => {
+            if version.as_deref() != Some("1.0") { return Err("--hud-schema requires --version 1.0".into()); }
+            match operand.as_str() {
+                "manifest" => Ok(Command::Schema { manifest: true }),
+                "hud" => Ok(Command::Schema { manifest: false }),
+                _ => Err("--hud-schema needs manifest or hud".into()),
+            }
+        }
+        _ => unreachable!("mode was checked"),
+    }
+}
+
+pub(crate) struct Io<'a> {
+    pub read: &'a dyn Fn(&str) -> Result<Source, String>,
+    pub text: &'a dyn Fn(&str) -> Result<String, String>,
+    pub write: &'a dyn Fn(&str, &[u8]) -> Result<(), String>,
+}
+
+fn prepared(source: Source) -> (Option<Vec<u8>>, Decoded) {
+    match source {
+        Source::Archive(bytes) => {
+            let decoded = bundle::read(&bytes, None);
+            (Some(bytes), decoded)
+        }
+        Source::Directory(files) => match bundle::pack(&files) {
+            Ok((bytes, decoded)) => (Some(bytes), decoded),
+            Err(decoded) => (None, decoded),
+        },
+        Source::Rejected(decoded) => (None, decoded),
+    }
+}
+
+fn usage(err: &mut String, reason: &str, help: bool) -> i32 {
+    err.push_str("plxnative-sim: ");
+    err.push_str(reason);
+    if help { err.push_str(" ("); err.push_str(USAGE); err.push(')'); }
+    err.push('\n');
+    EXIT_USAGE
+}
+
+fn emit(out: &mut String, value: &serde_json::Value) {
+    out.push_str(&format!("{value:#}\n"));
+}
+
+/// Run over immutable inputs. The shell injects filesystem operations and the real measurers.
+pub(crate) fn run(
+    args: &[String], io: &Io<'_>,
     measure: &dyn Fn() -> Result<Box<dyn Measure>, String>,
     price: &dyn Fn() -> Result<Box<dyn Measure>, String>,
     fonts: &dyn Fn() -> Result<std::collections::BTreeMap<String, String>, String>,
-    out: &mut String,
-    err: &mut String,
+    out: &mut String, err: &mut String,
 ) -> i32 {
-    let mut usage = |reason: &str, with_usage: bool| {
-        err.push_str("plxnative-sim: ");
-        err.push_str(reason);
-        if with_usage {
-            err.push_str(" (");
-            err.push_str(USAGE);
-            err.push(')');
-        }
-        err.push('\n');
-        EXIT_USAGE
-    };
-    let command = match parse(args) {
-        Ok(command) => command,
-        Err(reason) => return usage(&reason, true),
-    };
+    let command = match parse(args) { Ok(command) => command, Err(reason) => return usage(err, &reason, true) };
     match command {
-        Command::Inspect { file, langs } => {
-            let text = match read_file(&file) { Ok(t) => t, Err(reason) => return usage(&reason, false) };
-            let measure = match measure() { Ok(m) => m, Err(reason) => return usage(&reason, false) };
-            let result = match crate::hud_tools::inspect(&text, measure.as_ref(), &langs) {
-                Ok(v) => v, Err(reason) => return usage(&reason, false),
-            };
-            out.push_str(&result.to_string()); out.push('\n'); EXIT_CLEAN
-        },
-        Command::Info => {
-            out.push_str(&crate::hud_tools::info().to_string()); out.push('\n'); EXIT_CLEAN
-        },
-        Command::Metrics { langs } => {
-            let measure = match measure() { Ok(m) => m, Err(reason) => return usage(&reason, false) };
-            let fonts = match fonts() { Ok(f) => f, Err(reason) => return usage(&reason, false) };
-            out.push_str(&crate::hud_tools::metrics(measure.as_ref(), &langs, &fonts).to_string()); out.push('\n'); EXIT_CLEAN
-        },
-        Command::Schema => {
-            out.push_str(&schema_emit::emit_text(schema::CURRENT));
+        Command::Info => { emit(out, &crate::hud_tools::info()); EXIT_CLEAN }
+        Command::Schema { manifest } => {
+            emit(out, &if manifest { schema_emit::emit_manifest(bundle::CURRENT) } else { schema_emit::emit(schema::CURRENT) });
             EXIT_CLEAN
         }
-        Command::Export(id) => match EXPORTS.iter().find(|(known, _)| *known == id) {
-            Some((_, text)) => {
-                out.push_str(text);
-                EXIT_CLEAN
+        Command::Export { id, output } => {
+            if id != "builtin:classic" { return usage(err, &format!("unknown package {id:?} to export; known: builtin:classic"), false); }
+            match (io.write)(&output, BUILTIN_CLASSIC) { Ok(()) => EXIT_CLEAN, Err(reason) => usage(err, &reason, false) }
+        }
+        Command::Metrics { langs } => {
+            let measure = match measure() { Ok(value) => value, Err(reason) => return usage(err, &reason, false) };
+            let fonts = match fonts() { Ok(value) => value, Err(reason) => return usage(err, &reason, false) };
+            emit(out, &crate::hud_tools::metrics(measure.as_ref(), &langs, &fonts));
+            EXIT_CLEAN
+        }
+        Command::Pack { directory, output, format } => {
+            let source = match (io.read)(&directory) { Ok(source) => source, Err(reason) => return usage(err, &format!("cannot read {directory}: {reason}"), false) };
+            if matches!(source, Source::Archive(_)) { return usage(err, "--hud-pack requires a source directory", false); }
+            let (bytes, decoded) = prepared(source);
+            if decoded.package.is_some() {
+                if let Some(bytes) = &bytes {
+                    if let Err(reason) = (io.write)(&output, bytes) { return usage(err, &reason, false); }
+                }
             }
-            None => {
-                let ids: Vec<&str> = EXPORTS.iter().map(|(known, _)| *known).collect();
-                usage(&format!("unknown package {id:?} to export; known: {}", ids.join(" ")), false)
+            let mut json = report::with_digest(report::to_json(&directory, &decoded.findings), decoded.sha256);
+            json["bytes"] = bytes.as_ref().map_or(serde_json::Value::Null, |bytes| serde_json::Value::from(bytes.len()));
+            json["manifest"] = decoded.manifest.as_ref().map_or(serde_json::Value::Null, |manifest| manifest.json().clone());
+            match format {
+                Format::Json => emit(out, &json),
+                Format::Text => {
+                    out.push_str(&report::text(&directory, &decoded.findings));
+                    if let Some(bytes) = bytes.filter(|_| decoded.package.is_some()) {
+                        out.push_str(&format!("Wrote {output} ({} bytes, SHA256 {})\n", bytes.len(), report::digest_hex(decoded.sha256.expect("packed artifact digest"))));
+                    }
+                }
             }
-        },
+            if decoded.findings.is_empty() { EXIT_CLEAN } else { EXIT_FINDINGS }
+        }
+        Command::Inspect { file, langs } => {
+            let source = match (io.read)(&file) { Ok(source) => source, Err(reason) => return usage(err, &format!("cannot read {file}: {reason}"), false) };
+            let (_, decoded) = prepared(source);
+            let Some(package) = &decoded.package else {
+                let mut json = report::with_digest(report::to_json(&file, &decoded.findings), decoded.sha256);
+                json["manifest"] = decoded.manifest.as_ref().map_or(serde_json::Value::Null, |manifest| manifest.json().clone());
+                json["languages"] = serde_json::json!([]);
+                emit(out, &json);
+                return EXIT_FINDINGS;
+            };
+            let measure = match measure() { Ok(value) => value, Err(reason) => return usage(err, &reason, false) };
+            let mut json = crate::hud_tools::inspect(package, measure.as_ref(), &langs);
+            let mut findings = report::to_json(&file, &decoded.findings);
+            json["findings"] = findings["findings"].take();
+            emit(out, &json);
+            if decoded.findings.is_empty() { EXIT_CLEAN } else { EXIT_FINDINGS }
+        }
         Command::Lint { file, format, langs, skew } => {
-            let text = match read_file(&file) {
-                Ok(text) => text,
-                Err(reason) => return usage(&format!("cannot read {file}: {reason}"), false),
-            };
-            let measure = match measure() {
-                Ok(measure) => measure,
-                Err(reason) => return usage(&reason, false),
-            };
-            let price = match price() {
-                Ok(price) => price,
-                Err(reason) => return usage(&reason, false),
-            };
-            let mut opts = LintOptions::default();
-            if let Some(file) = skew {
-                let profile = match read_file(&file) { Ok(p) => p, Err(reason) => return usage(&reason, false) };
-                opts.text_skew_by_size = match crate::hud_tools::skew_profile(&profile) {
-                    Ok(profile) => profile, Err(reason) => return usage(&reason, false),
-                };
+            let source = match (io.read)(&file) { Ok(source) => source, Err(reason) => return usage(err, &format!("cannot read {file}: {reason}"), false) };
+            let (_, decoded) = prepared(source);
+            let (findings, costs) = if decoded.has_layout() {
+                let measure = match measure() { Ok(value) => value, Err(reason) => return usage(err, &reason, false) };
+                let price = match price() { Ok(value) => value, Err(reason) => return usage(err, &reason, false) };
+                let mut opts = LintOptions::default();
+                if let Some(path) = skew {
+                    let text = match (io.text)(&path) { Ok(text) => text, Err(reason) => return usage(err, &reason, false) };
+                    opts.text_skew_by_size = match crate::hud_tools::skew_profile(&text) { Ok(value) => value, Err(reason) => return usage(err, &reason, false) };
+                }
+                let linted = lint_decoded(&decoded, measure.as_ref(), price.as_ref(), &langs, &opts);
+                (linted.findings, linted.costs)
+            } else { (decoded.findings, Vec::new()) };
+            match format {
+                Format::Text => out.push_str(&report::text_with_costs(&file, &findings, &costs)),
+                Format::Json => emit(out, &report::with_digest(report::to_json_with_costs(&file, &findings, &costs), decoded.sha256)),
             }
-            let Linted { findings, costs } =
-                lint_report_priced(&text, measure.as_ref(), price.as_ref(), &langs, &opts);
-            out.push_str(&match format {
-                Format::Text => report::text_with_costs(&file, &findings, &costs),
-                Format::Json => report::json_text_with_costs(&file, &findings, &costs),
-            });
-            // the exit code is the findings' alone: a cost line is information, `HUD-E1401` is the verdict
-            if findings.is_empty() {
-                EXIT_CLEAN
-            } else {
-                EXIT_FINDINGS
-            }
+            if findings.is_empty() { EXIT_CLEAN } else { EXIT_FINDINGS }
         }
     }
 }
 
-/// The real text measurer: the shipped faces opened without a window, then [`TtfMeasure`] over them.
-///
-/// [`TtfMeasure`]: plx_gfx::text::TtfMeasure
 fn ttf_measure() -> Result<Box<dyn Measure>, String> {
     plx_gfx::text::init_fonts_headless().map_err(|reason| format!("cannot load fonts: {reason}"))?;
     Ok(Box::new(plx_gfx::text::TtfMeasure))
 }
 
-/// **The pricing measurer**: `plx_base::fontcov::advances::WholePixelMeasure`, the cost model every side prices with, over the two files
-/// `app_font_path` returns, `appfont.ttf` and `appfont-bold.ttf`, read by `plx_gfx::text::read_price_model`
-/// (the driver on the television reads it the same way). The reads are the simulator's IO; the model is a pure
-/// value from `plx_base`. Needs no SDL.
 fn price_measure() -> Result<Box<dyn Measure>, String> {
     plx_gfx::text::read_price_model(&plx_gfx::text::app_font_path(false), &plx_gfx::text::app_font_path(true))
-        .map(|model| Box::new(model) as Box<dyn Measure>)
-        .map_err(|reason| format!("cannot load fonts: {reason}"))
+        .map(|model| Box::new(model) as Box<dyn Measure>).map_err(|reason| format!("cannot load fonts: {reason}"))
 }
 
-/// A package file as UTF-8 text, with the reason as a short string when it is not one.
-fn read_package(path: &str) -> Result<String, String> {
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    String::from_utf8(bytes).map_err(|_| "not valid UTF-8 (a package is a UTF-8 JSON file)".to_owned())
-}
-
-/// The process shell of the HUD tools: [`run`] over the real file system, the real measurer and the
-/// two standard streams. Returns the exit code for the binary to end the process with. The only IO of
-/// this module.
 pub fn main_from(args: &[String]) -> i32 {
     use std::io::Write;
     let (mut out, mut err) = (String::new(), String::new());
-    let code = run(args, &read_package, &ttf_measure, &price_measure, &crate::hud_tools::font_hashes, &mut out, &mut err);
-    // Written whole and flushed here, not by `exit_now` alone: a closed pipe (`| head`) is the
-    // reader's choice and must not turn the exit code into a panic.
+    let io = Io { read: &hud_source::read_source, text: &|path| std::fs::read_to_string(path).map_err(|error| error.to_string()), write: &hud_source::write_artifact };
+    let code = run(args, &io, &ttf_measure, &price_measure, &crate::hud_tools::font_hashes, &mut out, &mut err);
     let _ = std::io::stdout().lock().write_all(out.as_bytes());
     let _ = std::io::stdout().lock().flush();
     let _ = std::io::stderr().lock().write_all(err.as_bytes());
@@ -332,16 +257,18 @@ pub fn main_from(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use plx_appkit::hud_format::lint::{lint_report_priced, Linted};
+    use plx_appkit::hud_format::lint::Linted;
+    use plx_appkit::hud_format::lint_cost::StateCostLine;
     use plx_appkit::hud_format::Finding;
     use plx_base::fontcov::advances::ShippedMeasure;
     use std::cell::Cell;
     use std::ffi::CStr;
     use std::rc::Rc;
 
-    const SCHEMA_GOLDEN: &str = include_str!("../../site/hud/schema/1.0.json");
-    const CLASSIC_FIXTURE: &str = include_str!("../appkit/src/hud_format/fixtures/classic.plxhud.json");
-    const REFERENCE_FIXTURE: &str = include_str!("../appkit/src/hud_format/fixtures/reference.plxhud.json");
+    const BUILTIN_CLASSIC: &str = plx_appkit::hud_format::CLASSIC_HUD;
+    #[cfg(feature = "hostsim")]
+    const CLASSIC_FIXTURE: &str = include_str!("../appkit/src/hud_format/fixtures/classic/hud.json");
+    const REFERENCE_FIXTURE: &str = include_str!("../appkit/src/hud_format/fixtures/reference/hud.json");
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|a| (*a).to_owned()).collect()
@@ -349,7 +276,15 @@ mod tests {
 
     /// The whole lint with the tests' one measure, `ShippedMeasure`, for both passes.
     fn lint_report(text: &str, langs: &[LintLang], opts: &LintOptions) -> Linted {
-        lint_report_priced(text, &ShippedMeasure, &ShippedMeasure, langs, opts)
+        let bytes = plx_appkit::hud_format::fixtures::with_hud_resources("reference", text);
+        let decoded = bundle::read(&bytes, None);
+        lint_decoded(&decoded, &ShippedMeasure, &ShippedMeasure, langs, opts)
+    }
+
+    fn expected_json(file: &str, hud: &str, findings: &[Finding], costs: &[StateCostLine]) -> String {
+        let bytes = plx_appkit::hud_format::fixtures::with_hud_resources("reference", hud);
+        let digest = bundle::read(&bytes, None).sha256;
+        format!("{:#}\n", report::with_digest(report::to_json_with_costs(file, findings, costs), digest))
     }
 
     /// The findings of [`lint_report`] in every language, with the default options.
@@ -405,7 +340,9 @@ mod tests {
         price: &dyn Fn() -> Result<Box<dyn Measure>, String>,
     ) -> (i32, String, String) {
         let (mut out, mut err) = (String::new(), String::new());
-        let code = run(&args(list), read, measure, price, &|| panic!("font identities requested outside metrics"), &mut out, &mut err);
+        let source = |path: &str| read(path).map(|text| Source::Archive(plx_appkit::hud_format::fixtures::with_hud_resources("reference", &text)));
+        let io = Io { read: &source, text: read, write: &|_, _| Ok(()) };
+        let code = run(&args(list), &io, measure, price, &|| panic!("font identities requested outside metrics"), &mut out, &mut err);
         (code, out, err)
     }
 
@@ -427,11 +364,35 @@ mod tests {
     }
 
     #[test]
+    fn inspect_retains_bundle_warnings_alongside_the_admitted_manifest_and_languages() {
+        let before = r#""face": "fwd30" }"#;
+        let after = r#""face": "fwd30" },
+          { "id": "skip_back", "command": "seek", "by": "setting", "dir": "back", "widget": "disc", "size": 52,
+            "face": { "default": "back10", "by_interval": { "10": "back10", "30": "fwd30" } } }"#;
+        assert_eq!(REFERENCE_FIXTURE.matches(before).count(), 1);
+        let hud = REFERENCE_FIXTURE.replacen(before, after, 1);
+        let read = |_: &str| Ok(hud.clone());
+        let bytes = plx_appkit::hud_format::fixtures::with_hud_resources("reference", &hud);
+        let decoded = bundle::read(&bytes, None);
+        assert!(decoded.package.is_some(), "a warning does not prevent typed bundle admission");
+        assert_eq!(decoded.findings.len(), 1);
+        assert_eq!(decoded.findings[0].code, "HUD-W0903");
+        let (code, out, err) = go(&["--hud-inspect", "warning.plxhud", "--lang", "en"], &read, &shipped);
+        assert_eq!((code, err.as_str()), (1, ""));
+        let report: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(report["findings"], report::to_json("warning.plxhud", &decoded.findings)["findings"]);
+        assert_eq!(report["findings"][0]["file"], "hud.json");
+        assert_eq!(report["package_sha256"], report::digest_hex(decoded.sha256.unwrap()));
+        assert_eq!(report["manifest"]["hud"]["format"], "1.0");
+        assert_eq!(report["languages"][0]["lang"], "en");
+    }
+
+    #[test]
     fn registry_metrics_inject_font_identity_and_never_load_the_price_model() {
         let (mut out,mut err) = (String::new(),String::new());
         let fonts = std::collections::BTreeMap::from([("appfont.ttf".into(),"identity".into())]);
         let code = run(&args(&["--hud-text-metrics","--lang","en"]),
-            &|_| panic!("metrics read a package"),&shipped,&never,&|| Ok(fonts.clone()),&mut out,&mut err);
+            &Io { read: &|_| panic!("metrics read a package"), text: &|_| panic!("metrics read text"), write: &|_, _| panic!("metrics wrote a file") },&shipped,&never,&|| Ok(fonts.clone()),&mut out,&mut err);
         assert_eq!((code,err.as_str()),(0,""));
         let value: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(value["font_hashes"]["appfont.ttf"],"identity");
@@ -445,7 +406,7 @@ mod tests {
             let calls = Rc::clone(&calls);
             move || -> Result<Box<dyn Measure>, String> { Ok(Box::new(Counting(Rc::clone(&calls)))) }
         };
-        let mut list = vec!["--hud-lint", "classic.plxhud.json"];
+        let mut list = vec!["--hud-lint", "classic.plxhud"];
         list.extend_from_slice(lang_args);
         let (code, _, err) = go(&list, &serve(BUILTIN_CLASSIC), &factory);
         assert_eq!((code, err.as_str()), (0, ""), "{list:?}");
@@ -459,20 +420,20 @@ mod tests {
 
     #[test]
     fn hud_lint_exits_0_for_the_builtin_classic_and_prints_its_cost_lines_and_nothing_else() {
-        let (code, out, err) = go(&["--hud-lint", "classic.plxhud.json"], &serve(BUILTIN_CLASSIC), &shipped);
+        let (code, out, err) = go(&["--hud-lint", "classic.plxhud"], &serve(BUILTIN_CLASSIC), &shipped);
         assert_eq!((code, err.as_str()), (0, ""));
         let lines = cost_lines(&out);
         assert!(!lines.is_empty(), "{out}");
         assert_eq!(lines.len(), out.lines().count(), "a clean package prints cost lines and no finding: {out}");
-        assert!(lines.iter().all(|l| l.starts_with("classic.plxhud.json: cost ")), "{out}");
+        assert!(lines.iter().all(|l| l.starts_with("classic.plxhud: cost ")), "{out}");
         let (code, out, err) = go(
-            &["--hud-lint", "classic.plxhud.json", "--format", "json", "--lang", "all"],
+            &["--hud-lint", "classic.plxhud", "--format", "json", "--lang", "all"],
             &serve(BUILTIN_CLASSIC),
             &shipped,
         );
         assert_eq!((code, err.as_str()), (0, ""));
         let costs = lint_report(BUILTIN_CLASSIC, &LintLang::shipped(), &LintOptions::default()).costs;
-        assert_eq!(out, report::json_text_with_costs("classic.plxhud.json", &[], &costs));
+        assert_eq!(out, expected_json("classic.plxhud", BUILTIN_CLASSIC, &[], &costs));
         assert!(out.contains("\"findings\": []"), "{out}");
         assert!(out.contains("\"costs\": ["), "{out}");
     }
@@ -491,9 +452,9 @@ mod tests {
 
     #[test]
     fn hud_lint_exits_1_for_a_text_that_fails_to_parse() {
-        let (code, out, err) = go(&["--hud-lint", "broken.plxhud.json"], &serve("{"), &shipped);
+        let (code, out, err) = go(&["--hud-lint", "broken.plxhud"], &serve("{"), &shipped);
         assert_eq!((code, err.as_str()), (1, ""));
-        assert!(out.starts_with("broken.plxhud.json#"), "{out}");
+        assert!(out.starts_with("hud.json#"), "{out}");
         assert!(out.contains(" error HUD-E"), "{out}");
         assert!(out.ends_with('\n'), "{out}");
     }
@@ -503,7 +464,7 @@ mod tests {
         // Well-formed JSON that is no package: it fails to PARSE (the required keys are missing), so the
         // report is parse findings and no crash. The converse, a package that parses and compiles and
         // fails a geometric check, is the next test.
-        let (code, out, _) = go(&["--hud-lint", "empty.plxhud.json"], &serve("{}"), &shipped);
+        let (code, out, _) = go(&["--hud-lint", "empty.plxhud"], &serve("{}"), &shipped);
         assert_eq!(code, 1, "{out}");
         assert!(!out.is_empty());
     }
@@ -524,7 +485,7 @@ mod tests {
 
         // the base is clean through `run`, so the exit 1 below is the edit's
         let (code, out, err) = go(
-            &["--hud-lint", "ref.plxhud.json", "--lang", "en"],
+            &["--hud-lint", "ref.plxhud", "--lang", "en"],
             &reads(REFERENCE_FIXTURE.to_owned()),
             &shipped,
         );
@@ -533,23 +494,23 @@ mod tests {
 
         let linted = lint_report(&edited, &en, &LintOptions::default());
         let expected = linted.findings.clone();
-        assert_eq!(expected.len(), 1, "{}", report::text("small-disc.plxhud.json", &expected));
+        assert_eq!(expected.len(), 1, "{}", report::text("small-disc.plxhud", &expected));
         assert_eq!(expected[0].code, "HUD-E0603");
         let (code, out, err) = go(
-            &["--hud-lint", "small-disc.plxhud.json", "--format", "json", "--lang", "en"],
+            &["--hud-lint", "small-disc.plxhud", "--format", "json", "--lang", "en"],
             &reads(edited.clone()),
             &shipped,
         );
         assert_eq!((code, err.as_str()), (1, ""));
-        assert_eq!(out, report::json_text_with_costs("small-disc.plxhud.json", &expected, &linted.costs));
+        assert_eq!(out, expected_json("small-disc.plxhud", &edited, &expected, &linted.costs));
         assert!(out.contains("\"context\""), "a geometric finding carries its context: {out}");
         assert!(out.contains("\"code\": \"HUD-E0603\""), "{out}");
-        assert!(out.contains("\"lint\": 1"), "{out}");
+        assert!(out.contains("\"protocol\": 1"), "{out}");
 
         let (code, text, err) =
-            go(&["--hud-lint", "small-disc.plxhud.json", "--lang", "en"], &reads(edited), &shipped);
+            go(&["--hud-lint", "small-disc.plxhud", "--lang", "en"], &reads(edited), &shipped);
         assert_eq!((code, err.as_str()), (1, ""));
-        assert_eq!(text, report::text_with_costs("small-disc.plxhud.json", &expected, &linted.costs));
+        assert_eq!(text, report::text_with_costs("small-disc.plxhud", &expected, &linted.costs));
         assert!(text.contains(" error HUD-E0603"), "{text}");
     }
 
@@ -558,23 +519,23 @@ mod tests {
         let unreadable = |_: &str| -> Result<String, String> { Err("No such file or directory".to_owned()) };
         let cases: &[(&[&str], &str)] = &[
             (&[], "nothing to do"),
-            (&["--hud-lint"], "--hud-lint needs a file"),
-            (&["--hud-lint", "--format", "json"], "--hud-lint needs a file"),
+            (&["--hud-lint"], "--hud-lint needs an input path"),
+            (&["--hud-lint", "--format", "json"], "--hud-lint needs an input path"),
             (&["--hud-lint", "p.json", "--bogus"], "unknown argument \"--bogus\""),
             (&["--hud-lint", "p.json", "extra.json"], "unknown argument \"extra.json\""),
-            (&["--hud-lint", "p.json", "--format"], "--format needs text or json"),
+            (&["--hud-lint", "p.json", "--format"], "--format needs a value"),
             (&["--hud-lint", "p.json", "--format", "xml"], "--format is text or json, not \"xml\""),
             (&["--hud-lint", "p.json", "--format", "json", "--format", "text"], "--format given twice"),
-            (&["--hud-lint", "p.json", "--lang"], "--lang needs all or a language tag"),
+            (&["--hud-lint", "p.json", "--lang"], "--lang needs a value"),
             (&["--hud-lint", "p.json", "--lang", "xx"], "--lang is all or one of en es be fr it pt de hu ru pl nl, not"),
             (&["--hud-lint", "p.json", "--lang", "system"], "not \"system\""),
             (&["--hud-lint", "p.json", "--lang", "de", "--lang", "fr"], "--lang given twice"),
             (&["--hud-export"], "--hud-export needs a package id"),
-            (&["--hud-export", "nope"], "unknown package \"nope\" to export; known: builtin:classic"),
-            (&["--hud-schema", "--hud-export", "builtin:classic"], "only one of"),
-            (&["--hud-lint", "p.json", "--hud-schema"], "only one of"),
-            (&["--hud-schema", "extra"], "unknown argument \"extra\""),
-            (&["--hud-schema", "--format", "json"], "options are not accepted by this HUD tool mode"),
+            (&["--hud-export", "nope", "--out", "out.plxhud"], "unknown package \"nope\" to export; known: builtin:classic"),
+            (&["--hud-schema", "hud", "--version", "1.0", "--hud-export", "builtin:classic", "--out", "out.plxhud"], "only one HUD tool mode"),
+            (&["--hud-lint", "p.json", "--hud-schema", "hud", "--version", "1.0"], "only one HUD tool mode"),
+            (&["--hud-schema", "extra", "--version", "1.0"], "--hud-schema needs manifest or hud"),
+            (&["--hud-schema", "hud", "--format", "json", "--version", "1.0"], "options are not accepted by this HUD tool mode"),
             (&["--hud-export", "builtin:classic", "--lang", "de"], "options are not accepted by this HUD tool mode"),
         ];
         for (list, reason) in cases {
@@ -591,9 +552,9 @@ mod tests {
     #[test]
     fn an_unreadable_file_is_exit_2_and_names_the_path_and_the_reason() {
         let unreadable = |_: &str| -> Result<String, String> { Err("No such file or directory".to_owned()) };
-        let (code, out, err) = go(&["--hud-lint", "gone.plxhud.json"], &unreadable, &never);
+        let (code, out, err) = go(&["--hud-lint", "gone.plxhud"], &unreadable, &never);
         assert_eq!((code, out.as_str()), (2, ""));
-        assert_eq!(err, "plxnative-sim: cannot read gone.plxhud.json: No such file or directory\n");
+        assert_eq!(err, "plxnative-sim: cannot read gone.plxhud: No such file or directory\n");
     }
 
     #[test]
@@ -626,7 +587,7 @@ mod tests {
     #[test]
     fn the_cost_is_priced_by_the_price_measurer_and_the_text_is_fitted_by_the_other() {
         let wider = || -> Result<Box<dyn Measure>, String> { Ok(Box::new(Wider)) };
-        let list = ["--hud-lint", "classic.plxhud.json", "--lang", "all"];
+        let list = ["--hud-lint", "classic.plxhud", "--lang", "all"];
         // the television's own prices, from a run that measures everything with its advances
         let (code, tv, _) = go_priced(&list, &serve(BUILTIN_CLASSIC), &shipped, &shipped);
         assert_eq!(code, 0, "{tv}");
@@ -680,54 +641,98 @@ mod tests {
         let bytes = "{\n  \"format\": \"1.0\" ,}";
         let expected = lint(bytes, &LintLang::shipped());
         assert!(!expected.is_empty());
-        let (code, out, err) = go(&["--hud-lint", "bad.plxhud.json", "--format", "json"], &serve(bytes), &shipped);
+        let (code, out, err) = go(&["--hud-lint", "bad.plxhud", "--format", "json"], &serve(bytes), &shipped);
         assert_eq!((code, err.as_str()), (1, ""));
         // a package that does not parse has no states: an empty `costs`
-        assert_eq!(out, report::json_text_with_costs("bad.plxhud.json", &expected, &[]));
+        assert_eq!(out, expected_json("bad.plxhud", bytes, &expected, &[]));
         assert!(out.contains("\"costs\": []"), "{out}");
         assert!(out.starts_with("{\n"), "{out}");
-        assert!(out.contains("\"file\": \"bad.plxhud.json\""), "{out}");
-        assert!(out.contains("\"lint\": 1"), "{out}");
+        assert!(out.contains("\"file\": \"bad.plxhud\""), "{out}");
+        assert!(out.contains("\"protocol\": 1"), "{out}");
         assert!(out.ends_with("}\n"), "{out}");
-        let (code, text, _) = go(&["--hud-lint", "bad.plxhud.json", "--format", "text"], &serve(bytes), &shipped);
+        let (code, text, _) = go(&["--hud-lint", "bad.plxhud", "--format", "text"], &serve(bytes), &shipped);
         assert_eq!(code, 1);
-        assert_eq!(text, report::text("bad.plxhud.json", &expected), "no cost line without a package");
-        let (_, default, _) = go(&["--hud-lint", "bad.plxhud.json"], &serve(bytes), &shipped);
+        assert_eq!(text, report::text("bad.plxhud", &expected), "no cost line without a package");
+        let (_, default, _) = go(&["--hud-lint", "bad.plxhud"], &serve(bytes), &shipped);
         assert_eq!(default, text, "text is the default format");
     }
 
     #[test]
-    fn hud_schema_output_is_byte_identical_to_the_site_golden() {
-        let (code, out, err) = go(&["--hud-schema"], &|_| Err("no file".to_owned()), &never);
+    fn pack_publishes_once_and_inspection_identifies_the_same_archive_and_manifest() {
+        let reads = Cell::new(0);
+        let source = |path: &str| {
+            assert_eq!(path, "my-source");
+            reads.set(reads.get() + 1);
+            Ok(Source::Directory(plx_appkit::hud_format::fixtures::files("minimal")))
+        };
+        let written = std::cell::RefCell::new(Vec::new());
+        let writer = |path: &str, bytes: &[u8]| {
+            written.borrow_mut().push((path.to_owned(), bytes.to_vec()));
+            Ok(())
+        };
+        let (mut out, mut err) = (String::new(), String::new());
+        let io = Io { read: &source, text: &|_| panic!("pack read text profile"), write: &writer };
+        let code = run(&args(&["--hud-pack", "my-source", "--out", "result.plxhud", "--format", "json"]), &io, &never, &never, &|| panic!("pack read font identities"), &mut out, &mut err);
+        assert_eq!((code, err.as_str(), reads.get()), (0, "", 1));
+        let packed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let written = written.into_inner();
+        assert_eq!(written.len(), 1);
+        assert_eq!(written[0].0, "result.plxhud");
+        let bytes = &written[0].1;
+        assert_eq!(packed["protocol"], 1);
+        assert_eq!(packed["bytes"], bytes.len());
+        assert_eq!(packed["package_sha256"], report::digest_hex(plx_base::sha256::sha256(bytes)));
+        assert_eq!(packed["findings"], serde_json::json!([]));
+        let inspect = |path: &str| { assert_eq!(path, "result.plxhud"); Ok(Source::Archive(bytes.clone())) };
+        let io = Io { read: &inspect, text: &|_| panic!("inspect read text"), write: &|_, _| panic!("inspect wrote an archive") };
+        out.clear();
+        let code = run(&args(&["--hud-inspect", "result.plxhud", "--lang", "en"]), &io, &shipped, &never, &|| panic!("inspect read font identities"), &mut out, &mut err);
         assert_eq!((code, err.as_str()), (0, ""));
-        assert_eq!(out, SCHEMA_GOLDEN);
-        assert_eq!(out, schema_emit::emit_text(schema::CURRENT));
+        let inspected: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(inspected["manifest"], packed["manifest"]);
+        assert_eq!(inspected["package_sha256"], packed["package_sha256"]);
+        assert_eq!(inspected["languages"][0]["lang"], "en");
     }
 
     #[test]
-    fn hud_export_classic_is_byte_identical_to_the_fixture() {
-        let (code, out, err) = go(&["--hud-export", "builtin:classic"], &|_| Err("no file".to_owned()), &never);
-        assert_eq!((code, err.as_str()), (0, ""));
-        assert_eq!(out, CLASSIC_FIXTURE);
-    }
-
-    #[test]
-    fn schema_and_export_never_build_a_measurer_or_read_a_file() {
-        let built = Cell::new(0);
-        let factory = || -> Result<Box<dyn Measure>, String> {
-            built.set(built.get() + 1);
-            Ok(Box::new(ShippedMeasure))
-        };
-        let read = Cell::new(0);
-        let reader = |_: &str| -> Result<String, String> {
-            read.set(read.get() + 1);
-            Err("unreachable".to_owned())
-        };
-        for list in [&["--hud-schema"][..], &["--hud-export", "builtin:classic"]] {
-            let (code, _, _) = go_priced(list, &reader, &factory, &factory);
-            assert_eq!(code, 0, "{list:?}");
+    fn malformed_archive_reports_its_complete_digest_without_loading_fonts_or_writing_output() {
+        let bytes = b"a complete malformed archive";
+        let io = Io { read: &|_| Ok(Source::Archive(bytes.to_vec())), text: &|_| panic!("read text"), write: &|_, _| panic!("wrote output") };
+        for mode in [LINT, INSPECT] {
+            let mut flags = vec![mode, "broken.plxhud"];
+            if mode == LINT { flags.extend(["--format", "json"]); }
+            let (mut out, mut err) = (String::new(), String::new());
+            let code = run(&args(&flags), &io, &never, &never, &|| panic!("font identity"), &mut out, &mut err);
+            assert_eq!((code, err.as_str()), (1, ""));
+            let report: serde_json::Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(report["package_sha256"], report::digest_hex(plx_base::sha256::sha256(bytes)));
+            let finding = &report["findings"][0];
+            assert!(finding["file"].is_null());
+            assert_eq!(finding["path"], "");
         }
-        assert_eq!((built.get(), read.get()), (0, 0));
+    }
+
+    #[test]
+    fn each_document_schema_uses_the_native_emitter_without_loading_files_or_fonts() {
+        for (kind, expected) in [("manifest", schema_emit::emit_manifest(bundle::CURRENT)), ("hud", schema_emit::emit(schema::CURRENT))] {
+            let (code, out, err) = go(&["--hud-schema", kind, "--version", "1.0"], &|_| panic!("schema read input"), &never);
+            assert_eq!((code, err.as_str()), (0, ""));
+            assert_eq!(out, format!("{expected:#}\n"));
+        }
+    }
+
+    #[test]
+    fn export_writes_the_exact_embedded_archive_without_reading_files_or_loading_fonts() {
+        let written = std::cell::RefCell::new(Vec::new());
+        let writer = |path: &str, bytes: &[u8]| {
+            written.borrow_mut().push((path.to_owned(), bytes.to_vec()));
+            Ok(())
+        };
+        let io = Io { read: &|_| panic!("export read input"), text: &|_| panic!("export read text"), write: &writer };
+        let (mut out, mut err) = (String::new(), String::new());
+        let code = run(&args(&["--hud-export", "builtin:classic", "--out", "classic.plxhud"]), &io, &never, &never, &|| panic!("font identity"), &mut out, &mut err);
+        assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
+        assert_eq!(written.into_inner(), [("classic.plxhud".to_owned(), super::BUILTIN_CLASSIC.to_vec())]);
     }
 
     /// **The real measurer, run: the shipped faces opened with no window and no GL context.** Every other
@@ -764,11 +769,11 @@ mod tests {
         let (regular, bold) = (measure.width(&c, 28, false), measure.width(&c, 28, true));
         assert!(regular > 0.0 && bold > regular, "real widths, bold wider: {regular}, {bold}");
         // and the whole tool over it: one language of the classic, from the file, exit 0, nothing printed
-        let classic = concat!(env!("CARGO_MANIFEST_DIR"), "/appkit/src/hud_format/fixtures/classic.plxhud.json");
+        let classic = concat!(env!("CARGO_MANIFEST_DIR"), "/appkit/src/hud_format/fixtures/classic.plxhud");
         let (mut out, mut err) = (String::new(), String::new());
         let code = run(
             &args(&["--hud-lint", classic, "--lang", "de"]),
-            &read_package,
+            &Io { read: &hud_source::read_source, text: &|_| panic!("no text profile"), write: &|_, _| panic!("lint wrote output") },
             &ttf_measure,
             &price_measure,
             &crate::hud_tools::font_hashes,
@@ -790,10 +795,12 @@ mod tests {
         // and the whole tool over both real measurers: the classic and the reference in all eleven languages
         // are not rejected, and the cost lines are the television's (`ShippedMeasure`'s), not SDL_ttf's
         for (name, text) in [("classic", CLASSIC_FIXTURE), ("reference", REFERENCE_FIXTURE)] {
-            let file = format!("{name}.plxhud.json");
+            let file = format!("{name}.plxhud");
             let read = move |_: &str| -> Result<String, String> { Ok(text.to_owned()) };
             let (mut out, mut err) = (String::new(), String::new());
-            let code = run(&args(&["--hud-lint", &file, "--lang", "all"]), &read, &ttf_measure, &price_measure, &crate::hud_tools::font_hashes, &mut out, &mut err);
+            let source = |path: &str| read(path).map(|text| Source::Archive(plx_appkit::hud_format::fixtures::with_hud_resources("reference", &text)));
+            let io = Io { read: &source, text: &read, write: &|_, _| Ok(()) };
+            let code = run(&args(&["--hud-lint", &file, "--lang", "all"]), &io, &ttf_measure, &price_measure, &crate::hud_tools::font_hashes, &mut out, &mut err);
             assert_eq!((code, err.as_str()), (0, ""), "{name}: {out}");
             let tv = lint_report(text, &LintLang::shipped(), &LintOptions::default()).costs;
             assert_eq!(out, report::text_with_costs(&file, &[], &tv), "{name}: the cost lines are the television's");
@@ -801,8 +808,11 @@ mod tests {
     }
 
     #[test]
-    fn wants_is_true_for_each_of_the_three_flags_and_for_nothing_else() {
-        assert!(wants(&args(&["--hud-lint", "p.json"])));
+    fn wants_is_true_for_every_hud_tool_flag_and_for_nothing_else() {
+        for mode in [LINT, PACK, SCHEMA, EXPORT, INFO, METRICS, INSPECT] {
+            assert!(wants(&args(&[mode])), "{mode}");
+        }
+        assert!(wants(&args(&["--hud-lint", "p.plxhud"])));
         assert!(wants(&args(&["--hud-schema"])));
         assert!(wants(&args(&["--hud-export", "builtin:classic"])));
         assert!(wants(&args(&["--format", "json", "--hud-schema"])));
