@@ -2609,6 +2609,8 @@ pub struct PlayingItem {
     /// The played item's own Plex type (`movie` | `episode` | `track` | `clip` | ...), empty when
     /// the server sent none. Read from the same `type` the detail page's [`Detail::kind`] reads.
     pub kind: String,
+    /// Positive PMS item duration for the selected leaf, in milliseconds. Missing stays unknown.
+    pub duration_ms: Option<u64>,
     pub audio: Vec<Stream>,
     pub subs: Vec<Stream>,
     pub video_fps: f64, // the played leaf's video fps (0 = unknown) — feeds the Load esInfo
@@ -2647,6 +2649,7 @@ impl PlayingItem {
             rk: "rk".into(),
             show_rk: String::new(),
             kind: String::new(),
+            duration_ms: None,
             audio: Vec::new(),
             subs,
             video_fps: 0.0,
@@ -2695,6 +2698,7 @@ fn cached_playing(state: &MetadataState, sid: plx_plex::plex::ServerId, rk: &str
             rk: rk.to_string(),
             show_rk: d.show_rk.clone(),
             kind: d.kind.clone(),
+            duration_ms: u64::try_from(d.dur_ms).ok().filter(|ms| *ms > 0),
             audio: d.audio.clone(),
             subs: d.subs.clone(),
             video_fps: d.video_fps,
@@ -2805,6 +2809,7 @@ fn playing_item_of(
         rk: rk.to_string(),
         show_rk,
         kind,
+        duration_ms: it.and_then(|it| u64::try_from(it.duration).ok()).filter(|ms| *ms > 0),
         audio,
         subs,
         video_fps,
