@@ -4396,7 +4396,6 @@ mod lifecycle_regression_tests {
         publish_feed_fixture_facts(&mut app.player.session, |facts| {
             facts.duration_ns = Some(100_000_000_000);
             facts.position_ns = Some(0);
-            facts.started = Some(true);
         });
         for (index, input) in std::mem::take(&mut app.inputs).into_iter().enumerate() {
             super::super::bridge::frame(&mut app.pages, &mut app.bridge,
@@ -4895,7 +4894,6 @@ mod lifecycle_regression_tests {
             publish_feed_fixture_facts(&mut app.player.session, |facts| {
                 facts.position_ns = Some(playpos_ns);
                 facts.duration_ns = Some(duration_ns);
-                facts.started = Some(true);
             });
             let (shared, tx) = (&plx_media::player::SHARED, &plx_media::player::TX);
             let saved = [
@@ -9002,7 +9000,6 @@ mod lifecycle_regression_tests {
         publish_feed_fixture_facts(&mut rig.app.player.session, |facts| {
             facts.position_ns = Some(30_000_000_000);
             facts.duration_ns = Some(60_000_000_000);
-            facts.started = Some(true);
             facts.status = Some(plx_media::player::PlaybackState::Playing);
         });
         let mut t = 16;
