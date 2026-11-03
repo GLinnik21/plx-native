@@ -1581,6 +1581,7 @@ fn skew(d: &plx_media::player::Diag) -> String {
 
 /// A lane trailing by more than this is starving rather than merely interleaved. Real containers
 /// interleave a fraction of a second either way; whole seconds mean one lane has stopped.
+#[cfg(feature = "play-feed")]
 const SKEW_FAULT_MS: i64 = 3_000;
 
 #[cfg(any(feature = "play-feed", test))]

@@ -69,10 +69,12 @@ pub(crate) fn intended_pos(ps: &plx_media::route::PlaybackSession) -> i64 {
     plx_media::player::intended_pos_ns(ps)
 }
 #[inline]
+#[cfg(feature = "play-feed")]
 pub(crate) fn frames(ps: &plx_media::route::PlaybackSession) -> Option<i32> {
     plx_media::player::frames(ps)
 }
 #[inline]
+#[cfg(feature = "play-feed")]
 pub(crate) fn seek_pending(ps: &plx_media::route::PlaybackSession) -> Option<i64> {
     plx_media::player::seek_pending(ps)
 }
@@ -94,6 +96,7 @@ pub(crate) fn commit_seek(ps: &mut plx_media::route::PlaybackSession,
     request_seek(ps, pa, target);
 }
 #[inline]
+#[cfg(feature = "play-feed")]
 pub(crate) fn is_started(ps: &plx_media::route::PlaybackSession) -> Option<bool> {
     plx_media::player::is_started(ps)
 }
