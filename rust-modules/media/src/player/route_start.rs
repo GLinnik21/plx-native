@@ -1,7 +1,10 @@
 //! Common native route-start orchestration. The route owns the transaction and exact attempt;
 //! the feed constructor only runs after admission and source preparation.
 
-use super::{adapter::PlayerAdapter, engine, SHARED, TX};
+use super::adapter::PlayerAdapter;
+#[cfg(feature = "play-feed")]
+use super::{engine, SHARED, TX};
+#[cfg(feature = "play-feed")]
 use std::sync::atomic::Ordering;
 use plx_base::eventlog::log;
 
@@ -52,6 +55,7 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
     ps.native_start_refused = None;
     // A fresh play (not a `reload_at`, which reaches `start_bufferfeed_for` directly) is a new
     // playback: it gets to try the native Seek again.
+    #[cfg(feature = "play-feed")]
     if !pa.is_live() {
         super::set_native_seek_refused(false);
     }
@@ -92,6 +96,7 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
             }
         }
     }
+    #[cfg(feature = "play-feed")]
     if let Some(existing) = pa.active_feed_attempt() {
         match crate::route::classify_live_engine_start(existing) {
             crate::route::LiveEngineStartRelation::CurrentAttempt => {
@@ -126,6 +131,7 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
     // The refusal for an outstanding abandoned Load builds no Engine, so no pump will ever publish
     // why the player is empty. Record it where `player::state` derives the read-out from; the start
     // itself stays refused.
+    #[cfg(feature = "play-feed")]
     if outcome == BufferfeedStartOutcome::Failed && pa.has_abandoned_load() {
         ps.native_start_refused = Some(crate::route::StartRefusal::LoadTimeout);
     }
@@ -146,16 +152,22 @@ pub(super) fn start_bufferfeed_for(
     // The last real stop's object may still be inside its off-frame `Unload`. A tail that is ready
     // runs now; one that is not defers this start into the release machine (never a blocking join:
     // PLX-NATIVE-1Q), which starts it the frame the tail has run or refuses it at the deadline.
+    #[cfg(feature = "play-feed")]
     if pa.release_busy() {
         poll_release(ps, pa, std::time::Instant::now());
     }
+    #[cfg(feature = "play-feed")]
     let mut fx = Vec::new();
+    #[cfg(feature = "play-feed")]
     pa.release_step(
         &super::release::ReleaseEvent::StartRequested(super::release::QueuedStart { route_start }),
         &mut fx,
     );
+    #[cfg(feature = "play-feed")]
     let mut go = false;
+    #[cfg(feature = "play-feed")]
     let mut refused = false;
+    #[cfg(feature = "play-feed")]
     for effect in fx {
         match effect {
             super::release::ReleaseEffect::Start(_) => go = true,
@@ -171,9 +183,11 @@ pub(super) fn start_bufferfeed_for(
             _ => {}
         }
     }
+    #[cfg(feature = "play-feed")]
     if refused {
         return BufferfeedStartOutcome::Failed;
     }
+    #[cfg(feature = "play-feed")]
     if !go {
         log("start_bufferfeed: the previous Unload is still running; start deferred");
         return BufferfeedStartOutcome::Deferred;
@@ -186,10 +200,20 @@ pub(super) fn start_bufferfeed_for(
             if offer.backend == plx_playback_contract::BackendKind::Uri) {
         start_qualified_uri_inner(ps, pa, route_start)
     } else {
+        #[cfg(feature = "play-feed")]
+        {
         start_bufferfeed_inner(ps, pa, route_start)
+        }
+        #[cfg(not(feature = "play-feed"))]
+        {
+            Err(crate::route::RouteStartResult::StartFailed)
+        }
     };
-    #[cfg(not(feature = "play-uri"))]
+    #[cfg(all(not(feature = "play-uri"), feature = "play-feed"))]
     let start = start_bufferfeed_inner(ps, pa, route_start);
+    #[cfg(not(any(feature = "play-uri", feature = "play-feed")))]
+    let start: Result<crate::route::RouteStartAttempt, crate::route::RouteStartResult> =
+        Err(crate::route::RouteStartResult::StartFailed);
     match start {
         Ok(attempt) => {
             // Every start funnels through here (fresh, reload and the rollback's reload alike), so
@@ -271,6 +295,7 @@ fn start_qualified_uri_inner(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
 }
 
 
+#[cfg(feature = "play-feed")]
 pub(super) fn start_bufferfeed_inner(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
@@ -408,12 +433,14 @@ pub(super) fn start_bufferfeed_inner(
 
 /// What one pass of the effects did.
 #[derive(Default)]
+#[cfg(feature = "play-feed")]
 pub(super) struct ReleasePass {
     pub(super) tail_ran: bool,
     pub(super) exit: Option<super::release::ReleaseEffect>,
 }
 
 
+#[cfg(feature = "play-feed")]
 pub(super) fn run_release_effects(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
@@ -467,6 +494,7 @@ pub(super) fn run_release_effects(
 
 /// The deadline passed over a start: settle its transaction as failed and record where
 /// `player::state` derives the `release_timeout` read-out from. No Engine, no second object.
+#[cfg(feature = "play-feed")]
 pub(super) fn refuse_start_for_release(ps: &mut crate::route::PlaybackSession, q: super::release::QueuedStart) {
     log("native lifecycle: the previous Unload is overdue (refusing native start)");
     let _ = crate::route::abort_route_start(q.route_start, crate::route::RouteStartResult::StartFailed);
@@ -479,6 +507,7 @@ pub(super) fn refuse_start_for_release(ps: &mut crate::route::PlaybackSession, q
 /// failures which leave an `OriginalTrial` waiting forever.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[must_use = "a reload is an external state-machine effect and its result must be settled"]
+#[cfg(feature = "play-feed")]
 pub enum ReloadOutcome {
     Started,
     NoRoute,
@@ -493,12 +522,14 @@ pub enum ReloadOutcome {
 /// caller ever used would publish `Failed` for a route that never had a `Load` to lose. Every
 /// phase that really does own one (`Preparing`/`Prepared`/`Starting`, ordinary or Original) is
 /// exactly the set `pending_route_start` returns without minting, so nothing leaks.
+#[cfg(feature = "play-feed")]
 fn settle_missing_route_start() {
     if let Some(ticket) = crate::route::pending_route_start() {
         let _ = crate::route::abort_route_start(ticket, crate::route::RouteStartResult::NoRoute);
     }
 }
 
+#[cfg(feature = "play-feed")]
 fn prepare_reload_transaction() -> Option<crate::route::RouteStartTransaction> {
     let ticket = crate::route::begin_route_start()?;
     if crate::route::prepare_route_start(ticket) {
@@ -509,6 +540,7 @@ fn prepare_reload_transaction() -> Option<crate::route::RouteStartTransaction> {
     }
 }
 
+#[cfg(feature = "play-feed")]
 fn reload_start_outcome(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
@@ -522,6 +554,7 @@ fn reload_start_outcome(
 }
 
 
+#[cfg(feature = "play-feed")]
 fn reload_transcode_start(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, offset_ns: i64) -> Option<BufferfeedStartOutcome> {
     let ticket = prepare_reload_transaction()?;
     log(&format!(
@@ -545,20 +578,21 @@ fn reload_transcode_start(ps: &mut crate::route::PlaybackSession, pa: &mut super
 /// path, which never wedges. Heavier than a flush (a ~1 s re-preroll) but correct.
 /// Every target `reload_at` was asked for (test probe, #568): proves a refused native Seek reloads
 /// exactly once, at the user's target.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
 pub(super) static RELOAD_AT_LOG: std::sync::Mutex<Vec<i64>> = std::sync::Mutex::new(Vec::new());
 
 /// Whether the paused-seek preroll was open as each `reload_at` / `reload_transcode` was entered,
 /// before its teardown (test probe): the reload keeps it, so what the fresh session's feed gate and
 /// prime see is whatever the dispatcher left open here.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
 pub(super) static RELOAD_PREROLL_LOG: std::sync::Mutex<Vec<bool>> = std::sync::Mutex::new(Vec::new());
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
 fn note_reload_preroll() {
     RELOAD_PREROLL_LOG.lock().unwrap_or_else(|e| e.into_inner()).push(TX.seek_preroll_active());
 }
 
+#[cfg(feature = "play-feed")]
 pub fn reload_at(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, target_ns: i64) -> ReloadOutcome {
     #[cfg(any(test, feature = "test-support"))]
     {
@@ -587,6 +621,7 @@ pub fn reload_at(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter
 /// was already set to the chosen track's codec, so the fresh Load configures the right audio
 /// decoder). desired_audio_idx persists across the reload, so the demuxer keeps feeding the
 /// chosen stream and the choice survives later seeks.
+#[cfg(feature = "play-feed")]
 pub fn switch_audio_native(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, audio_idx: i32, pos_ns: i64) -> ReloadOutcome {
     SHARED.desired_audio_idx.store(audio_idx, Ordering::Relaxed);
     log(&format!(
@@ -601,6 +636,7 @@ pub fn switch_audio_native(ps: &mut crate::route::PlaybackSession, pa: &mut supe
 /// (feeding H264 into the H265-configured pipeline stalls). Unlike reload_at, the transcode
 /// start.mkv is already 0-based at `&offset`, so no av_seek — just set disp_base to the offset.
 /// route::retranscode has already set the URL + session + STREAM_VCODEC=h264 before this call.
+#[cfg(feature = "play-feed")]
 pub fn reload_transcode(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, offset_ns: i64) -> ReloadOutcome {
     #[cfg(any(test, feature = "test-support"))]
     note_reload_preroll();
@@ -627,6 +663,7 @@ pub fn reload_transcode(ps: &mut crate::route::PlaybackSession, pa: &mut super::
 /// The same reload edge as [`reload_transcode`], retaining the exact physical Load token for the
 /// foreground state machine. Used only after a synchronous Original-open failure has restored its
 /// HLS candidate; ordinary callers keep the coarser [`ReloadOutcome`].
+#[cfg(feature = "play-feed")]
 pub fn reload_transcode_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, offset_ns: i64) -> BufferfeedStartOutcome {
     if crate::route::url(ps).is_empty() {
         crate::player::abandon_seek();
@@ -700,6 +737,7 @@ fn resume_prelude(ps: &mut crate::route::PlaybackSession, resume_ns: i64) -> Res
         return ResumePrelude::Settled(ResumeOutcome::NoRoute);
     }
     if !crate::route::is_transcoding(ps) {
+        #[cfg(feature = "play-feed")]
         engine::arm_seek(resume_ns); // direct-play: av_seek the file at the first open
         return ResumePrelude::Settled(ResumeOutcome::Prepared);
     }
@@ -708,6 +746,7 @@ fn resume_prelude(ps: &mut crate::route::PlaybackSession, resume_ns: i64) -> Res
 
 /// The transcode half of a resume, once its encode restarts at the offset (0-based): `disp_base`
 /// carries the offset so the HUD reads content time.
+#[cfg(feature = "play-feed")]
 fn note_transcode_resumed(resume_ns: i64) {
     SHARED.disp_base.store(resume_ns, Ordering::Relaxed);
     SHARED.playpos_ns.store(resume_ns, Ordering::Relaxed);
@@ -750,7 +789,10 @@ pub fn land_resume(ps: &mut crate::route::PlaybackSession) -> Option<ResumeOutco
     let landing = crate::route::take_ready_recovery_flight(ps)?;
     Some(match landing.verdict {
         crate::route::RecoveryVerdict::Install => {
+            #[cfg(feature = "play-feed")]
             note_transcode_resumed(landing.offset_ns);
+            #[cfg(not(feature = "play-feed"))]
+            let _ = landing.offset_ns;
             ResumeOutcome::Prepared
         }
         crate::route::RecoveryVerdict::Refused => ResumeOutcome::RebuildRejected,
@@ -761,6 +803,7 @@ pub fn land_resume(ps: &mut crate::route::PlaybackSession) -> Option<ResumeOutco
 /// join the `Unload` worker only if it has returned (so the join cannot block), feed that and the
 /// clock to the machine, and execute what it asks: the main-thread tail, the start that was queued
 /// behind the release, or the typed refusal once the release is overdue. `true` when a tail ran.
+#[cfg(feature = "play-feed")]
 pub fn poll_release(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
@@ -771,17 +814,20 @@ pub fn poll_release(
 }
 
 /// [`poll_release`] at the wall clock: the per-frame entry `app::run` calls.
+#[cfg(feature = "play-feed")]
 pub fn poll_release_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> bool {
     poll_release(ps, pa, std::time::Instant::now())
 }
 
 /// Reap one completed native Load parked by an earlier attempt, on the app's main thread.
+#[cfg(feature = "play-feed")]
 pub fn reap_abandoned_load(pa: &mut super::adapter::PlayerAdapter) -> bool {
     pa.reap_abandoned_load()
 }
 
 /// Join a returned worker, then step the machine with its return, the clock and (at the exit) the
 /// exit request. Returns the effects and the joined release, whose tail the effects may run.
+#[cfg(feature = "play-feed")]
 fn drive_release(
     pa: &mut super::adapter::PlayerAdapter,
     now: std::time::Instant,
@@ -833,6 +879,7 @@ pub(super) fn exit_native_with(
             if pa.uri_acb_exit_quarantine() || clock().saturating_duration_since(started) >= super::release::RELEASE_DEADLINE {
                 log("exit: URI ownership unresolved; the display is left to the OS");
                 if let Some(session) = pa.take_uri() { std::mem::forget(session); }
+                #[cfg(feature = "play-feed")]
                 leak_parked_for_exit(pa);
                 return NativeExit::WorkerInFirmware;
             }
@@ -860,19 +907,26 @@ pub(super) fn exit_native_with(
             if clock().saturating_duration_since(started) >= super::release::RELEASE_DEADLINE {
                 log("exit: URI ownership unresolved; the display is left to the OS");
                 pa.park_uri_backend_for_exit();
+                #[cfg(feature = "play-feed")]
                 leak_parked_for_exit(pa);
                 return NativeExit::WorkerInFirmware;
             }
             idle();
         }
     }
+    #[cfg(feature = "play-feed")]
     reap_abandoned_load(pa);
+    #[cfg(feature = "play-feed")]
     if pa.has_abandoned_load() {
         log("exit: a timed-out Load is still inside firmware; the display is left to the OS");
         leak_parked_for_exit(pa);
         return NativeExit::WorkerInFirmware;
     }
+    #[cfg(not(feature = "play-feed"))]
+    { return NativeExit::Clean; }
+    #[cfg(feature = "play-feed")]
     let mut ps = crate::route::PlaybackSession::IDLE;
+    #[cfg(feature = "play-feed")]
     loop {
         let now = clock();
         let (fx, joined) = drive_release(pa, now, Some(now));
@@ -895,6 +949,7 @@ pub(super) fn exit_native_with(
 /// handle set, the AU queues) and the parked [`AbandonedLoad`] (the payload its `media` thread
 /// reads) would be freed under the live call. They are leaked instead, for the life of the process
 /// (`release.rs`: the `_exit` that follows skips their destructors). Only `exit_native` calls this, and only on that outcome.
+#[cfg(feature = "play-feed")]
 fn leak_parked_for_exit(pa: &mut super::adapter::PlayerAdapter) {
     if let Some(p) = pa.take_pending_release_any() {
         std::mem::forget(p);
@@ -905,7 +960,7 @@ fn leak_parked_for_exit(pa: &mut super::adapter::PlayerAdapter) {
 }
 
 /// Test helper: finish the pending release the way the exit does, with no deadline concerns.
-#[cfg(all(test, feature = "hostsim"))]
+#[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
 pub(crate) fn finish_release_for_test(pa: &mut super::adapter::PlayerAdapter) {
     let mut ps = crate::route::PlaybackSession::IDLE;
     while pa.release_busy() {
@@ -927,6 +982,7 @@ pub(crate) fn finish_release_for_test(pa: &mut super::adapter::PlayerAdapter) {
 /// Try again, Play automatically and a quality pick start a new playback from scratch, and Back
 /// ends the session with a real stop, so none of them needs the loaded pipeline.
 /// Returns whether an Engine was released.
+#[cfg(feature = "play-feed")]
 pub fn release_failed_engine(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> bool {
     if !engine::failed_engine_release_armed() {
         return false;
@@ -959,6 +1015,7 @@ pub fn release_failed_engine(ps: &mut crate::route::PlaybackSession, pa: &mut su
 /// Retire a failed foreground Engine only if it still owns the exact Load the foreground reducer
 /// observed. A later route action may have replaced it between `player::pump` and the app poll;
 /// tearing down unconditionally there would destroy the healthy replacement.
+#[cfg(feature = "play-feed")]
 pub fn suspend_bufferfeed_if_attempt(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
@@ -975,6 +1032,7 @@ pub fn suspend_bufferfeed_if_attempt(
 /// from now on the Load call's own synchronous refusal is the lifecycle's to settle
 /// (`PlayerAdapter::mark_foreground_follows_feed_load`). True when the live Engine owns that exact attempt; a
 /// replaced Engine (a different attempt) is not marked.
+#[cfg(feature = "play-feed")]
 pub fn foreground_follows_load(pa: &mut super::adapter::PlayerAdapter, attempt: crate::route::RouteStartAttempt) -> bool {
     pa.mark_foreground_follows_feed_load(attempt)
 }
@@ -983,6 +1041,7 @@ pub fn foreground_follows_load(pa: &mut super::adapter::PlayerAdapter, attempt: 
 /// stop owns the Engine, worker joins, transport close, native release and AU destruction.
 pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAdapter,
     for_reload: bool, reason: plx_playback_contract::StopReason) {
+    #[cfg(feature = "play-feed")]
     engine::clear_failed_engine_release_arm();
     #[cfg(feature = "play-uri")]
     if let Some(route_attempt) = pa.active_uri_attempt() {
@@ -996,6 +1055,7 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
         let _ = pa.backend_poll_session_at(ps, at);
         return;
     }
+    #[cfg(feature = "play-feed")]
     if let Some(route_attempt) = pa.active_feed_attempt() {
         let attempt = route_attempt.contract_id();
         let at = pa.backend_tick();
@@ -1011,6 +1071,8 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
         let _ = pa.take_backend_feed_stop();
     }
     if !begin_teardown(ps, pa, for_reload) { return; }
+    #[cfg(feature = "play-feed")]
+    {
     // An abandoned preview Load is never joined on the frame while native Load is in flight.
     if crate::route::is_preview(ps) {
         if let Some((loading, finished)) = pa.preview_load_join_state() {
@@ -1050,6 +1112,9 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
     pa.note_backend_feed_release(route_attempt.contract_id(), release_status);
     let at = pa.backend_tick();
     let _ = pa.backend_poll_at(at);
+    }
+    #[cfg(not(feature = "play-feed"))]
+    let _ = reason;
 }
 
 
@@ -1065,6 +1130,7 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
     // A start still queued behind the previous object's `Unload` is the playback this stop ends.
     // Always sent: the machine owns whether anything is queued (a no-op otherwise), and no copy of
     // that fact in the session can go stale across a landing that replaced the session.
+    #[cfg(feature = "play-feed")]
     {
         let mut fx = Vec::new();
         pa.release_step(&super::release::ReleaseEvent::CancelQueued, &mut fx);
@@ -1073,7 +1139,11 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
     // A prepared route whose native start failed has no Engine but still owns its exact PMS
     // resource and Session projection. A real stop must retire that ownership exactly once;
     // returning here used to leak the candidate forever while the reducer remained Failed.
-    if !pa.is_live() {
+    #[cfg(feature = "play-feed")]
+    let feed_live = pa.is_live();
+    #[cfg(not(feature = "play-feed"))]
+    let feed_live = false;
+    if !feed_live {
         #[cfg(feature = "play-uri")]
         let uri_attempt = (ps.attempt_view().backend() == Some(super::attempt_view::Backend::Uri))
             .then(|| ps.attempt_view().attempt()).flatten();
@@ -1102,14 +1172,17 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
                 let rk = crate::route::cur_rk(ps);
                 final_report = (!rk.is_empty() && dur > 0)
                     .then(|| (rk, pos / 1_000_000, dur / 1_000_000));
-            } else if crate::route::engine_failure(ps).is_some() {
+            } else if cfg!(feature = "play-feed") && crate::route::engine_failure(ps).is_some() {
+                #[cfg(feature = "play-feed")]
+                {
                 let dur = SHARED.duration_ns.load(Ordering::Relaxed);
                 let pos = crate::route::unpresented_resume_ns(ps);
                 crate::player::report::ended(ps, pos, dur);
                 let rk = crate::route::cur_rk(ps);
                 final_report = (!rk.is_empty() && dur > 0).then(|| (rk, pos / 1_000_000, dur / 1_000_000));
+                }
             }
-            #[cfg(not(feature = "play-uri"))]
+            #[cfg(all(not(feature = "play-uri"), feature = "play-feed"))]
             if crate::route::engine_failure(ps).is_some() {
                 let dur = SHARED.duration_ns.load(Ordering::Relaxed);
                 let pos = crate::route::unpresented_resume_ns(ps);
@@ -1124,7 +1197,9 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
             crate::route::begin_engine_teardown(false);
             crate::route::drop_original_recovery(ps);
             crate::route::clear_url(ps);
+            #[cfg(feature = "play-feed")]
             SHARED.reset_session();
+            #[cfg(feature = "play-feed")]
             TX.reset();
             mark_attempt_stopped(ps);
             super::claim_hold::clear();
@@ -1152,6 +1227,7 @@ fn mark_attempt_stopped(ps: &mut crate::route::PlaybackSession) {
 }
 
 /// Capture final reporting facts before native teardown resets position and duration.
+#[cfg(feature = "play-feed")]
 pub(super) fn final_report(ps: &mut crate::route::PlaybackSession, for_reload: bool) -> Option<(String, i64, i64)> {
     // capture the final-position report BEFORE teardown zeroes playpos/duration (a reload is
     // not a stop — don't scrobble "stopped", it would falsely pause/mark-watched the item)
@@ -1186,6 +1262,7 @@ pub(super) fn final_report(ps: &mut crate::route::PlaybackSession, for_reload: b
 
 /// Finish the route's final report after the demux reader has joined and its transport is closed.
 /// The reporter handle stays owned until scrobble_stop orders its last playing write before stop.
+#[cfg(feature = "play-feed")]
 pub(super) fn after_physical_close(
     ps: &mut crate::route::PlaybackSession,
     for_reload: bool,
@@ -1198,12 +1275,14 @@ pub(super) fn after_physical_close(
 }
 
 /// Fence late route workers before any physical worker is interrupted.
+#[cfg(feature = "play-feed")]
 pub(super) fn begin_feed_teardown(for_reload: bool) {
     crate::route::begin_engine_teardown(for_reload);
 }
 
 /// Stop the exact reporter before the feed workers are unblocked; keep its handle for the
 /// final scrobble ordering decision after those workers have joined.
+#[cfg(feature = "play-feed")]
 pub(super) fn stop_feed_timeline(
     pa: &mut PlayerAdapter,
     attempt: crate::route::RouteStartAttempt,
@@ -1212,6 +1291,7 @@ pub(super) fn stop_feed_timeline(
 }
 
 /// Finish route ownership only after physical release and the shared facts have reset.
+#[cfg(feature = "play-feed")]
 pub(super) fn finish_feed_teardown(
     ps: &mut crate::route::PlaybackSession,
     for_reload: bool,
