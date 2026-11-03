@@ -223,7 +223,7 @@ pub(super) fn prepare_source(
 
 }
 
-fn install_synthetic_playurl(
+pub(super) fn install_synthetic_playurl(
     ps: &mut crate::route::PlaybackSession,
     play: &crate::player::playurl::PlayUrl,
 ) -> Result<String, crate::route::RouteStartResult> {
