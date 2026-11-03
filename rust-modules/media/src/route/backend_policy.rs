@@ -57,6 +57,10 @@ pub struct BackendPolicy {
 }
 
 impl BackendPolicy {
+    pub fn offer(&self, backend: BackendKind, id: OfferId) -> Option<Offer> {
+        self.offers.iter().copied().find(|offer| offer.backend == backend && offer.id == id)
+    }
+
     /// Finite recipes for one selected source and its selected streams. The URI offer begins
     /// unknown: a feed declaration, PMS decision, or native queue answer cannot qualify it.
     /// A resolve qualifies only the Feed recipe it actually prepared.

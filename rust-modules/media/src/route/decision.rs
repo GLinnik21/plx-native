@@ -577,6 +577,13 @@ impl PlaybackSession {
         self.planned_feed_offer
     }
 
+    pub fn planned_feed_fidelity(&self) -> Option<(plx_playback_contract::Fidelity,
+        plx_playback_contract::Fidelity)> {
+        let id = self.planned_feed_offer?;
+        let offer = self.backend_policy.as_ref()?.offer(plx_playback_contract::BackendKind::Feed, id)?;
+        Some((offer.video, offer.audio))
+    }
+
     /// A normal seek/foreground reload reuses its admitted source recipe. A changed recovery
     /// plan must be the next qualified catalog choice before it may acquire another native owner.
     pub fn backend_planned_feed_allowed(&self) -> bool {
@@ -9228,7 +9235,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
     // These IDs name the route transformation class for this request's selected streams.
     // A later recovery plan can qualify another fixed recipe; a seek/reload keeps its spent
     // history. URI remains Unknown until the IO composition qualifies the exact source.
-    let planned_feed_offer = if plan.url.is_empty() { None }
+    let planned_feed_offer = if plan.url.is_empty() || !cfg!(feature = "play-feed") { None }
         else if plan.tsession.is_empty() {
             Some(if plan.acodec != plan.src_acodec {
                 super::backend_policy::OfferId::FEED_APP_AUDIO
