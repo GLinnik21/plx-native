@@ -2,6 +2,7 @@
 //! Payload builders take resolved facts; the physical Load worker reads sound output and logs.
 
 pub mod aq;
+pub mod era_callbacks;
 pub mod hls;
 pub mod native_gate;
 pub mod native_load;
