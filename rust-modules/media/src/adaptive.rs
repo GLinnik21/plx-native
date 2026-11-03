@@ -295,7 +295,6 @@ impl Coordinator {
 
     pub(crate) fn current(&self) -> abr::Rung { self.controller.current() }
     pub(crate) fn delivery(&self) -> abr::CapacityEstimate { self.controller.delivery() }
-    pub(crate) fn buffer(&self) -> abr::BufferEstimate { self.controller.buffer() }
     pub(crate) fn prime_runway_ms(&self) -> Option<i64> { self.controller.prime_runway_ms() }
     pub(crate) fn worst_overhead_us(&self) -> u64 { self.controller.worst_overhead_us() }
     pub(crate) fn candidate_wire_kbps(&self, rung: abr::Rung) -> u32 {

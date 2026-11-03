@@ -8139,9 +8139,6 @@ pub(crate) fn demux(
                             watch.seek(state.body_bytes, state.body_active_us)
                         });
                         if ticket_refreshed {
-                            let watch = original_watch
-                                .as_mut()
-                                .expect("an Auto Original context has its controller");
                             // A PARTIAL reset, and the split is the point: the link did not change
                             // because the viewer jumped, so the delivery estimate survives — while the
                             // buffer, the deficit history and the byte counters all describe a position

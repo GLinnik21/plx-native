@@ -2233,7 +2233,7 @@ fn start_bufferfeed_inner(
             // A clock-only reader (a sidecar) reads no subtitle: the demuxer keeps what it enumerates.
             SHARED.side_subs_owner.store(side_target.as_ref().is_some_and(|t| !t.clock_only()), Ordering::Release);
             stream_th = plx_base::task::spawn_off_frame_keeping("demux", move |off| {
-                crate::ff::demux(off, origin, path, acodec, abr, auto_original, aqp, aqap, hsp)
+                crate::ff::demux(off, origin, path, acodec, abr.map(Into::into), auto_original.map(Into::into), aqp, aqap, hsp)
             });
             if stream_th.is_none() {
                 SHARED.side_subs_owner.store(false, Ordering::Release);

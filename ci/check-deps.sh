@@ -956,7 +956,7 @@ while IFS= read -r line; do
   case "$p" in "$SRC_MEDIA"/player/*|"$SRC_PLAY_URI"/*|"$SRC_PLATFORM"/tv/*|"$SRC_PLATFORM"/tv.rs|"$SRC"/port.rs) continue ;; esac
   if is_wholly_test "$p"; then continue; fi
   echo "    $line"; sink_bad=$((sink_bad+1))
-done < <(grep_code 'tv::sink::installed|\bVideoSink\b' "$SRC" "$SRC_PLATFORM" "$SRC_UI" "$SRC_MEDIA" "$SRC_PLAYBACK_CONTRACT" "$SRC_PLAY_URI" "$SRC_MEDIA_CODECS" "$SRC_APPKIT" "$SRC_SCREENS")
+done < <(grep_code 'tv::sink::installed|\b(VideoSink|DisplaySink)\b' "$SRC" "$SRC_PLATFORM" "$SRC_UI" "$SRC_MEDIA" "$SRC_PLAYBACK_CONTRACT" "$SRC_PLAY_URI" "$SRC_MEDIA_CODECS" "$SRC_APPKIT" "$SRC_SCREENS")
 if [ "$sink_bad" -eq 0 ]; then ok "sink"
 else fail "sink: $sink_bad line(s) naming the video sink outside player/, port.rs, tv.rs and tv/"; fi
 
