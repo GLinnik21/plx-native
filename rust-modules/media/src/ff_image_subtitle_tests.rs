@@ -7,8 +7,8 @@
 //! through both the main subtitle ingestion and the HTTP side reader). So they load the host build of
 //! that same FFmpeg (`HOST=1 ci/build-ffmpeg.sh`, staged into `pkg/` by `make check-ffmpeg`), and the
 //! ASS ones also need the staged libass; all are `#[ignore]`d everywhere else — an honest "not run" in
-//! `make check`, never a pass that executed nothing. `bind_host_ffmpeg` is shared with the `ff` tests
-//! that run a real demux (`ff_subside`, `ff_late_audio_tests`).
+//! `make check`, never a pass that executed nothing. `plx_media_codecs::host_test_support`
+//! owns the host binding guard shared with real-demux fixtures (`ff_subside`, `ff_late_audio_tests`).
 
 use super::*;
 use crate::player::subtitle_cue::{SideTracks, SubCue};
@@ -387,14 +387,6 @@ fn ass_header_terminators_do_not_weaken_validation() {
     }
 }
 
-/// Where the host FFmpeg was staged: `PLX_FFMPEG_DIR` (what `make check-ffmpeg` passes), else the
-/// checkout's own `pkg/`.
-pub(super) fn host_ffmpeg_dir() -> std::path::PathBuf {
-    std::env::var_os("PLX_FFMPEG_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../pkg"))
-}
-
 #[test]
 #[ignore = "requires the bundled host FFmpeg; run make check-ffmpeg"]
 fn host_ffmpeg_binding_restores_the_abi_gate() {
@@ -412,48 +404,12 @@ fn host_ffmpeg_binding_restores_the_abi_gate() {
     assert!(!abi_ok(), "the next host test must start with a closed ABI gate");
 }
 
-pub(crate) struct HostFfmpeg {
-    previous_abi_ok: bool,
-}
+pub(crate) use plx_media_codecs::host_test_support::HostFfmpeg;
 
-impl Drop for HostFfmpeg {
-    fn drop(&mut self) {
-        swap_abi_for_test(self.previous_abi_ok);
-    }
-}
-
-/// Bind the host libraries in dependency order and check their ABI majors.
-/// Keep the guard until all readers stop so the next test gets the previous ABI state.
-#[must_use]
+/// Compatibility delegate for existing feed integration fixtures. The codec
+/// crate owns the one host loader and restores the ABI gate on guard drop.
 pub(crate) fn bind_host_ffmpeg() -> HostFfmpeg {
-    plx_base::testlock::assert_held("bind_host_ffmpeg");
-    let dir = host_ffmpeg_dir();
-    for (what, verdict) in [
-        ("avutil", avutil::load(Some(&dir))),
-        ("avcodec", avcodec::load(Some(&dir))),
-        ("avformat", avformat::load(Some(&dir))),
-    ] {
-        assert!(
-            matches!(verdict, plx_base::dynlib::Loaded::Ok(_)),
-            "{what}: no host FFmpeg in {} — run `make check-ffmpeg`",
-            dir.display()
-        );
-    }
-    let majors = unsafe {
-        (
-            avformat_version() >> 16,
-            avcodec_version() >> 16,
-            avutil_version() >> 16,
-        )
-    };
-    assert_eq!(
-        majors,
-        (63, 63, 61),
-        "the staged FFmpeg is not the one ff.rs is built for"
-    );
-    HostFfmpeg {
-        previous_abi_ok: swap_abi_for_test(true),
-    }
+    plx_media_codecs::host_test_support::bind_host_ffmpeg()
 }
 
 /// **A subtitle track muxed by mkvmerge is zlib-compressed, and the bundled FFmpeg must undo it.**

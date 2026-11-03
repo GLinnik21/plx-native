@@ -513,8 +513,6 @@ pub(crate) fn read_once(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[allow(unused_imports)]
-    use crate::ff::test_support::*;
     use crate::player::SHARED;
 
     /// A one-pixel image set on `track` stamped `pts` (Part time).
@@ -802,7 +800,7 @@ mod tests {
     #[ignore = "needs the bundled host FFmpeg and a system ffmpeg; run make check-ffmpeg"]
     fn side_reader_draws_a_shifted_cue_from_a_generated_mkv() {
         let _g = plx_base::testlock::serial();
-        let _ffmpeg = crate::ff::image_subtitle_tests::bind_host_ffmpeg();
+        let _ffmpeg = plx_media_codecs::host_test_support::bind_host_ffmpeg();
         let dir = std::env::temp_dir().join(format!("plx-subside-e2e-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("t.srt"), "1\n00:00:01,000 --> 00:00:02,500\nHello\n\n").unwrap();

@@ -1,6 +1,8 @@
 //! Bundled FFmpeg codec ABI and jobs. Transport and player state stay in `plx_media`.
 
 pub mod ffi;
+#[cfg(any(test, feature = "test-support"))]
+pub mod host_test_support;
 pub mod pcm;
 pub mod speed_audio;
 pub mod subtitle;
