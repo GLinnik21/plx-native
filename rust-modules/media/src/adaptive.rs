@@ -605,6 +605,43 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
         StagedCandidate::Ready { final_acquisition, final_buffer, verdict, grade }
     }
 
+    /// Settle a staged trial that cannot reach publication. The physical feed
+    /// reports only the failed operation; the owner chooses the rejection and
+    /// retires the candidate before the active cursor can resume.
+    pub(crate) fn settle_staged(
+        &mut self, coordinator: &mut Coordinator, primed: &route::PrimedHls,
+        proposal: abr::Proposal, staged: StagedCandidate, now_ms: impl Fn() -> u64,
+        mut on_trace: impl FnMut(TrialTrace, &mut P),
+    ) -> StagedCandidate {
+        match staged {
+            StagedCandidate::Unfunded => {
+                self.trace(&mut on_trace, TrialTrace::Decided);
+                let refreshing = coordinator.fund_followup(proposal, false, now_ms())
+                    .expect_err("an unfunded follow-up must reject the proposal");
+                self.observe(TrialObservation::Ended)
+                    .expect("unfunded follow-up has not entered the queue");
+                coordinator.abandon(&primed.encoder_session);
+                self.trace(&mut on_trace, TrialTrace::Rejected { refreshing });
+                self.trace(&mut on_trace, TrialTrace::Finish("repeatable_unfunded"));
+                self.trace(&mut on_trace, TrialTrace::Log(
+                    "abr: setup-bearing candidate exhausted its original exploration budget".to_string(),
+                ));
+                StagedCandidate::Settled(FirstPhase::Stay)
+            }
+            StagedCandidate::Failed { step, failure } => StagedCandidate::Settled(
+                self.settle_first_failure(
+                    coordinator, primed, proposal, step, failure, &now_ms, &mut on_trace,
+                ),
+            ),
+            StagedCandidate::Protocol(message) => {
+                coordinator.abandon(&primed.encoder_session);
+                self.trace(&mut on_trace, TrialTrace::Finish("feed_protocol"));
+                StagedCandidate::Settled(FirstPhase::Failed(message))
+            }
+            ready => ready,
+        }
+    }
+
     fn read_repeatable(
         &mut self, remaining_ms: Option<u64>,
         on_followup: &mut impl FnMut(Option<u64>),
@@ -1181,6 +1218,7 @@ pub(crate) enum StagedCandidate {
     Unfunded,
     Failed { step: TrialStep, failure: FeedFailure },
     Protocol(&'static str),
+    Settled(FirstPhase),
 }
 
 pub(crate) enum FirstPhase {

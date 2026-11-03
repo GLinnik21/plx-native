@@ -5442,92 +5442,6 @@ fn reject_hls_abr_after_transaction(
     publish_hls_abr_action(proposal, refreshing_same_request, Some(false));
 }
 
-/// Apply the common trial policy to physical cleanup and trace publication.
-/// Every rejection discards the candidate encoder exactly once before the
-/// controller records the cause; a fatal response leaves no resumable cursor.
-fn settle_trial_failure(
-    state: &mut adaptive::Coordinator, encoder: &str,
-    proposal: crate::abr::Proposal, tx: &mut TxTrace,
-    step: adaptive::TrialStep, failure: FeedFailure,
-    now_ms: impl FnOnce() -> u64,
-) -> Result<(), HlsExit> {
-    use adaptive::{TrialFailureAction as A, TrialRejectReason as R, TrialStep as S};
-    let action = adaptive::trial_failure_action(step, failure);
-    state.abandon(encoder);
-    match action {
-        A::Abort => {
-            tx.finish("aborted");
-            Err(HlsExit::Aborted)
-        }
-        A::Protocol => {
-            tx.finish("feed_protocol");
-            Err(HlsExit::Failed(match step {
-                S::Open => "adaptive feed open protocol violation",
-                S::FirstRead => "adaptive feed read protocol violation",
-                S::FirstAcquire => "adaptive feed acquisition protocol violation",
-                S::FollowupRead => "adaptive feed follow-up protocol violation",
-                S::FollowupAcquire => "adaptive feed follow-up acquisition protocol violation",
-            }))
-        }
-        A::TimelineOverflow => {
-            reject_hls_abr_after_transaction(
-                state, proposal, crate::abr::RejectCause::Circumstance, tx, now_ms(),
-            );
-            tx.finish(if step == S::FollowupAcquire {
-                "repeatable_timeline_overflow"
-            } else {
-                "timeline_overflow"
-            });
-            Err(HlsExit::Failed("HLS candidate timeline overflow"))
-        }
-        A::Reject { cause, reason } => {
-            reject_hls_abr_after_transaction(state, proposal, cause, tx, now_ms());
-            let deadline = reason == R::Deadline;
-            tx.finish(match (step, reason) {
-                (S::Open, R::SourceMoved) => "origin_changed",
-                (S::Open, _) if deadline => "master_deadline",
-                (S::Open, _) => "no_master_playlist",
-                (S::FirstRead, R::Ended) => "candidate_ended",
-                (S::FirstRead, _) if deadline => "playlist_deadline",
-                (S::FirstRead, _) => "no_media_playlist",
-                (S::FirstAcquire, _) if deadline => "warmup_deadline",
-                (S::FirstAcquire, _) => "warmup_failed",
-                (S::FollowupRead, R::Ended) => "candidate_ended_after_setup",
-                (S::FollowupRead, _) if deadline => "repeatable_playlist_deadline",
-                (S::FollowupRead, _) => "repeatable_playlist_failed",
-                (S::FollowupAcquire, _) if deadline => "repeatable_deadline",
-                (S::FollowupAcquire, _) => "repeatable_failed",
-            });
-            match (step, reason) {
-                (S::Open, R::SourceMoved) => crate::player::log(
-                    "abr: candidate changed origin; rejected",
-                ),
-                (S::Open, _) => crate::player::log(
-                    "abr: candidate master failed; staying on current rung",
-                ),
-                (S::FirstRead, R::Ended) => crate::player::log(
-                    "abr: candidate stream ended before media; staying",
-                ),
-                (S::FirstRead, _) => crate::player::log(
-                    "abr: candidate produced no segment; staying on current rung",
-                ),
-                (S::FirstAcquire, R::Deadline) => crate::player::log(&format!(
-                    "abr: {:?} candidate warm-up exceeded deadline; staying on current rung",
-                    proposal.direction,
-                )),
-                (S::FirstAcquire, _) => crate::player::log(
-                    "abr: candidate segment failed; staying on current rung",
-                ),
-                (S::FollowupAcquire, _) => crate::player::log(
-                    "abr: candidate produced no complete repeatable object; staying current",
-                ),
-                (S::FollowupRead, _) => {}
-            }
-            Ok(())
-        }
-    }
-}
-
 /// **One shared reducer for a `StallAbort` returned against the ACTIVE cursor.** The ordinary
 /// fetch and the same-encoder lookahead observe the identical terminal boundary and must handle
 /// it identically: log it, requeue the segment (exactly once — it is put back here, and nowhere
@@ -6325,38 +6239,27 @@ fn hls_demux(
                 }
             },
         );
+        let staged = runner.settle_staged(
+            state, &primed, proposal, staged, || now_ms(),
+            |event, _| match event {
+                adaptive::TrialTrace::Decided => tx.mark_decided(),
+                adaptive::TrialTrace::Rejected { refreshing } =>
+                    publish_hls_abr_action(proposal, refreshing, Some(false)),
+                adaptive::TrialTrace::Finish(outcome) => tx.finish(outcome),
+                adaptive::TrialTrace::Log(line) => crate::player::log(&line),
+                _ => unreachable!("settling staged media cannot emit acquisition timing"),
+            },
+        );
         let (final_acquisition, candidate_buffer, verdict, grade) = match staged {
             adaptive::StagedCandidate::Ready {
                 final_acquisition, final_buffer, verdict, grade,
             } => (final_acquisition, final_buffer, verdict, grade),
-            adaptive::StagedCandidate::Unfunded => {
-                tx.mark_decided();
-                let refreshing = state.fund_followup(proposal, false, now_ms())
-                    .expect_err("an unfunded follow-up must reject the proposal");
-                runner.observe(TrialEvent::Ended)
-                    .expect("unfunded follow-up has not entered the queue");
-                state.abandon(&primed.encoder_session);
-                publish_hls_abr_action(proposal, refreshing, Some(false));
-                tx.finish("repeatable_unfunded");
-                crate::player::log(
-                    "abr: setup-bearing candidate exhausted its original exploration budget",
-                );
-                continue;
-            }
-            adaptive::StagedCandidate::Failed { step, failure } => {
-                match settle_trial_failure(
-                    state, &primed.encoder_session, proposal, &mut tx,
-                    step, failure, || now_ms(),
-                ) {
-                    Ok(()) => continue 'segments,
-                    Err(error) => return Err(error),
-                }
-            }
-            adaptive::StagedCandidate::Protocol(message) => {
-                state.abandon(&primed.encoder_session);
-                tx.finish("feed_protocol");
-                return Err(HlsExit::Failed(message));
-            }
+            adaptive::StagedCandidate::Settled(adaptive::FirstPhase::Stay) => continue 'segments,
+            adaptive::StagedCandidate::Settled(adaptive::FirstPhase::Aborted) =>
+                return Err(HlsExit::Aborted),
+            adaptive::StagedCandidate::Settled(adaptive::FirstPhase::Failed(message)) =>
+                return Err(HlsExit::Failed(message)),
+            _ => return Err(HlsExit::Failed("adaptive staged trial unsettled")),
         };
         let staged_count = runner.physical().staged.len();
         let candidate_sample = adaptive::candidate_sample(
