@@ -1,9 +1,11 @@
-//! Buffer-feed Load declarations and byte-preserving payload construction.
-//! Device queries and logs stay with the media adapter; all inputs here are resolved facts.
+//! Buffer-feed Load declarations, native worker and byte-preserving payload construction.
+//! Payload builders take resolved facts; the physical Load worker reads sound output and logs.
 
 pub mod aq;
 pub mod hls;
 pub mod native_gate;
+pub mod native_load;
+pub mod pcm_lead;
 
 // BUFFERSTREAM Load payloads (ss4s shape). Video-only for the local sample path;
 // video+AC3 for streaming. Copied VERBATIM from playback.c.
