@@ -781,6 +781,7 @@ fn demux_against_when(
         curl: None,
         range: crate::curlio::range_factory(),
         credential_gate: crate::curlio::CREDENTIAL_GATE,
+        observer: super::test_support::demux_observer(),
     };
     let result = unsafe {
         hls_demux_segment(
@@ -1331,6 +1332,7 @@ fn at_the_floor_the_open_asks_for_the_hold_once_and_keeps_its_connection() {
         curl: None,
         range: crate::curlio::range_factory(),
         credential_gate: crate::curlio::CREDENTIAL_GATE,
+        observer: super::test_support::demux_observer(),
     };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     let opened = hls_open_source(
@@ -1976,6 +1978,7 @@ fn avio_state_for(
     let (reserve_deadline, mut runtime) = acquisition.begin(aq);
     runtime.enter(Phase::Body);
     AvioState {
+        observer: super::test_support::demux_observer(),
         src,
         range: crate::curlio::range_factory(),
         credential_gate: crate::curlio::CREDENTIAL_GATE,

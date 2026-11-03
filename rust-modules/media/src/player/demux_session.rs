@@ -4,10 +4,14 @@
 
 use super::{HlsAutomaticTransition, HlsClockFenceError, UserPauseCursor, SHARED, TX};
 use plx_playback_contract::adaptive::{AutomaticTransition, BufferFact, FenceHandle, FenceSettlement, LeaseHandle, PhysicalFailure};
-use plx_playback_contract::demux::{DemuxAdaptive, DemuxClock, DemuxEffect, DemuxMedia, DemuxSession, PauseClock, PauseEvent, PauseLane};
+use plx_playback_contract::demux::{DemuxAdaptive, DemuxCallbackEffect, DemuxClock, DemuxEffect, DemuxFault, DemuxMedia, DemuxObserver, DemuxSession, PauseClock, PauseEvent, PauseLane};
+use plx_playback_contract::AttemptId;
+use plx_telemetry::telemetry::classes::DemuxExitClass;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 pub struct PlayerDemuxSession {
+    observer: Arc<PlayerDemuxObserver>,
     hls_pause: Option<UserPauseCursor>,
     original_pause: Option<UserPauseCursor>,
 }
@@ -15,8 +19,11 @@ pub struct PlayerDemuxSession {
 impl PlayerDemuxSession {
     /// Safe to capture on the main thread: pause cursors and the native clock
     /// are sampled only after the worker explicitly begins a lane.
-    pub fn capture() -> Box<dyn DemuxSession> {
-        Box::new(Self { hls_pause: None, original_pause: None })
+    pub fn capture(attempt: AttemptId, native_epoch: u32) -> Box<dyn DemuxSession> {
+        Box::new(Self {
+            observer: Arc::new(PlayerDemuxObserver { attempt, native_epoch }),
+            hls_pause: None, original_pause: None,
+        })
     }
 
     fn cursor(&mut self, lane: PauseLane) -> &mut UserPauseCursor {
@@ -30,6 +37,7 @@ impl PlayerDemuxSession {
 }
 
 impl DemuxSession for PlayerDemuxSession {
+    fn observer(&self) -> Arc<dyn DemuxObserver> { self.observer.clone() }
     fn clock(&self) -> &dyn DemuxClock { self }
     fn clock_mut(&mut self) -> &mut dyn DemuxClock { self }
     fn adaptive_ref(&self) -> &dyn DemuxAdaptive { self }
@@ -37,10 +45,58 @@ impl DemuxSession for PlayerDemuxSession {
     fn media(&mut self) -> &mut dyn DemuxMedia { self }
 }
 
+struct PlayerDemuxObserver {
+    attempt: AttemptId,
+    native_epoch: u32,
+}
+
+impl DemuxObserver for PlayerDemuxObserver {
+    fn attempt(&self) -> AttemptId { self.attempt }
+    fn playpos_ns(&self) -> Option<i64> {
+        SHARED.with_active_demux_epoch(self.native_epoch, || SHARED.playpos_ns.load(Ordering::Relaxed))
+    }
+    fn hold_epoch(&self) -> Option<u64> {
+        SHARED.with_active_demux_epoch(self.native_epoch, || SHARED.hls_internal_hold_epoch.load(Ordering::Acquire))
+    }
+    fn rebuffering(&self) -> Option<bool> {
+        SHARED.with_active_demux_epoch(self.native_epoch, || SHARED.hls_rebuffering.load(Ordering::Acquire))
+    }
+    fn paused(&self) -> Option<bool> {
+        SHARED.with_active_demux_epoch(self.native_epoch, || TX.paused.load(Ordering::Acquire))
+    }
+    fn pause_clock(&self) -> Option<PauseClock> {
+        SHARED.with_active_demux_epoch(self.native_epoch, || {
+            let (at, elapsed) = TX.pause_clock_sample();
+            PauseClock { at, elapsed }
+        })
+    }
+    fn publish(&self, effect: DemuxCallbackEffect) -> bool {
+        SHARED.with_active_demux_epoch(self.native_epoch, || match effect {
+            DemuxCallbackEffect::NetworkBytes(bytes) => {
+                SHARED.dg_net_rx.fetch_add(bytes, Ordering::Relaxed);
+            }
+            DemuxCallbackEffect::HttpStatus(status) =>
+                SHARED.dg_http_status.store(status, Ordering::Relaxed),
+            DemuxCallbackEffect::FileSize(size) =>
+                SHARED.file_size.store(size, Ordering::Release),
+            DemuxCallbackEffect::TransportFailure { rc, age_ms, reopen_failed } => {
+                SHARED.dg_transport_rc.store(rc, Ordering::Release);
+                SHARED.dg_transport_age_ms.store(age_ms, Ordering::Release);
+                SHARED.dg_transport_reopen_failed.store(reopen_failed, Ordering::Release);
+                SHARED.demux_io_failed.store(true, Ordering::Release);
+            }
+            DemuxCallbackEffect::IoFailed =>
+                SHARED.demux_io_failed.store(true, Ordering::Release),
+        }).is_some()
+    }
+}
+
 impl DemuxClock for PlayerDemuxSession {
     fn playpos_ns(&self) -> i64 { SHARED.playpos_ns.load(Ordering::Relaxed) }
     fn display_base_ns(&self) -> i64 { SHARED.disp_base.load(Ordering::Relaxed) }
     fn duration_ns(&self) -> i64 { SHARED.duration_ns.load(Ordering::Relaxed) }
+    fn video_tail_ns(&self) -> i64 { SHARED.hls_video_tail_ns.load(Ordering::Acquire) }
+    fn audio_tail_ns(&self) -> i64 { SHARED.hls_audio_tail_ns.load(Ordering::Acquire) }
     fn hold_epoch(&self) -> u64 { SHARED.hls_internal_hold_epoch.load(Ordering::Acquire) }
     fn rebuffering(&self) -> bool { SHARED.hls_rebuffering.load(Ordering::Acquire) }
     fn rebuffer_requested(&self) -> bool { SHARED.hls_rebuffer_requested.load(Ordering::Acquire) }
@@ -76,6 +132,8 @@ impl DemuxClock for PlayerDemuxSession {
         || SHARED.playpos_ns.load(Ordering::Relaxed).max(0)
     }
     fn hls_buffer_sampler(&self) -> fn() -> Option<i64> { hls_buffered_ms }
+    fn remaining_playback_sampler(&self) -> fn() -> i64 { remaining_playback_ms }
+    fn user_sequence_sampler(&self) -> fn() -> u64 { || SHARED.hls_user_sequence() }
 }
 
 fn hls_buffered_ms() -> Option<i64> {
@@ -91,6 +149,12 @@ fn hls_buffered_ms() -> Option<i64> {
         ),
         audio_expected: audio >= 0,
     }.buffered_ms()
+}
+
+fn remaining_playback_ms() -> i64 {
+    let duration = SHARED.duration_ns.load(Ordering::Relaxed);
+    if duration <= 0 { return 0; }
+    (duration - SHARED.playpos_ns.load(Ordering::Relaxed).max(0)).max(0) / 1_000_000
 }
 
 struct AutomaticLease(u64);
@@ -163,7 +227,39 @@ impl DemuxAdaptive for PlayerDemuxSession {
 impl DemuxMedia for PlayerDemuxSession {
     fn publish(&mut self, effect: DemuxEffect) {
         match effect {
+            DemuxEffect::AbrHlsStart { kbps } => {
+                SHARED.dg_abr_mode.store(super::ABR_MODE_HLS, Ordering::Relaxed);
+                SHARED.dg_abr_kbps.store(kbps, Ordering::Relaxed);
+                SHARED.dg_abr_declared_kbps.store(-1, Ordering::Relaxed);
+                SHARED.dg_abr_media_kbps.store(-1, Ordering::Relaxed);
+                SHARED.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
+                SHARED.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
+                SHARED.dg_abr_ratio_pm.store(-1, Ordering::Relaxed);
+                SHARED.dg_abr_action.store(super::ABR_ACTION_STEADY, Ordering::Relaxed);
+                SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
+                SHARED.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
+            }
+            DemuxEffect::AbrHlsDeclared { kbps } =>
+                SHARED.dg_abr_declared_kbps.store(kbps, Ordering::Relaxed),
+            DemuxEffect::AbrOriginalStart { kbps } => {
+                SHARED.dg_abr_mode.store(super::ABR_MODE_ORIGINAL, Ordering::Relaxed);
+                SHARED.dg_abr_kbps.store(kbps, Ordering::Relaxed);
+                SHARED.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
+                SHARED.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
+                SHARED.dg_abr_ratio_pm.store(-1, Ordering::Relaxed);
+                SHARED.dg_abr_action.store(super::ABR_ACTION_STEADY, Ordering::Relaxed);
+                SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
+                SHARED.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
+            }
+            DemuxEffect::NoteFault(fault) => SHARED.note_demux_exit(demux_exit_class(fault)),
+            DemuxEffect::FailFault(fault) => SHARED.fail_demux(demux_exit_class(fault)),
+            DemuxEffect::IoFailed => SHARED.demux_io_failed.store(true, Ordering::Release),
+            DemuxEffect::Failed => SHARED.demux_failed.store(true, Ordering::Release),
+            DemuxEffect::NoVideo => SHARED.demux_no_video.store(true, Ordering::Release),
             DemuxEffect::HttpStatus(status) => SHARED.dg_http_status.store(status, Ordering::Relaxed),
+            DemuxEffect::TrackNames { audio, subs } => {
+                *SHARED.track_names.lock().unwrap() = super::TrackNames { audio, subs };
+            }
             DemuxEffect::FileSize(size) => SHARED.file_size.store(size, Ordering::Release),
             DemuxEffect::TransportRc(rc) => SHARED.dg_transport_rc.store(rc, Ordering::Release),
             DemuxEffect::NetworkBytes(bytes) => { SHARED.dg_net_rx.fetch_add(bytes, Ordering::Relaxed); }
@@ -172,9 +268,31 @@ impl DemuxMedia for PlayerDemuxSession {
             DemuxEffect::VideoTailNs(ns) => SHARED.hls_video_tail_ns.store(ns, Ordering::Release),
             DemuxEffect::AudioTailNs(ns) => SHARED.hls_audio_tail_ns.store(ns, Ordering::Release),
             DemuxEffect::AudioExpected(expected) => SHARED.hls_audio_expected.store(expected, Ordering::Release),
+            DemuxEffect::PrimeRunwayMax(runway_ms) => { SHARED.hls_prime_runway_ms.fetch_max(runway_ms, Ordering::AcqRel); }
             DemuxEffect::RecoverySegment { total_us, duration } => SHARED.observe_hls_recovery(total_us, duration),
         }
     }
 
     fn record(&self, line: &str) { super::log(line); }
+}
+
+fn demux_exit_class(fault: DemuxFault) -> DemuxExitClass {
+    match fault {
+        DemuxFault::HttpsReserveFailed => DemuxExitClass::HttpsReserveFailed,
+        DemuxFault::HttpsOpenFailed => DemuxExitClass::HttpsOpenFailed,
+        DemuxFault::HttpOpenFailed => DemuxExitClass::HttpOpenFailed,
+        DemuxFault::OpenInputFailed => DemuxExitClass::OpenInputFailed,
+        DemuxFault::FindStreamInfoFailed => DemuxExitClass::FindStreamInfoFailed,
+        DemuxFault::NoVideoStream => DemuxExitClass::NoVideoStream,
+        DemuxFault::NoFraming => DemuxExitClass::NoFraming,
+        DemuxFault::LoadMismatch => DemuxExitClass::LoadMismatch,
+        DemuxFault::NoAudioAu => DemuxExitClass::NoAudioAu,
+        DemuxFault::NoUsableVideo => DemuxExitClass::NoUsableVideo,
+        DemuxFault::DtsCoreMissing => DemuxExitClass::DtsCoreMissing,
+        DemuxFault::HlsFailed => DemuxExitClass::HlsFailed,
+        DemuxFault::HlsNotReady => DemuxExitClass::HlsNotReady,
+        DemuxFault::DemuxPanicked => DemuxExitClass::DemuxPanicked,
+        DemuxFault::NoAccessUnits => DemuxExitClass::NoAccessUnits,
+        DemuxFault::Other => DemuxExitClass::Other,
+    }
 }

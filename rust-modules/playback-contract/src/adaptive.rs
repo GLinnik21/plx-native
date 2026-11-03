@@ -410,7 +410,7 @@ pub trait OriginalSession: Send {
     fn source_kbps(&self) -> u32;
     fn begin_on_worker(&mut self);
     fn seek(&mut self, bytes: u64, active_us: u64) -> bool;
-    fn observe(&mut self, quantum: OriginalQuantum, position_ns: fn() -> i64)
+    fn observe(&mut self, quantum: OriginalQuantum, position_ns: &dyn Fn() -> i64)
         -> OriginalProgress;
 }
 

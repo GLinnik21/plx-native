@@ -205,6 +205,7 @@ fn pattern() -> Vec<u8> {
 
 fn avio_over(src: Src, size: i64, aq: *mut AuQueue) -> AvioState {
     AvioState {
+        observer: super::test_support::demux_observer(),
         src,
         range: crate::curlio::range_factory(),
         credential_gate: crate::curlio::CREDENTIAL_GATE,

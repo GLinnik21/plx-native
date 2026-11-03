@@ -2,6 +2,50 @@
 
 use super::*;
 
+struct FixtureDemuxObserver;
+
+impl DemuxObserver for FixtureDemuxObserver {
+    fn attempt(&self) -> plx_playback_contract::AttemptId {
+        plx_playback_contract::AttemptId::new(0, 0)
+    }
+    fn playpos_ns(&self) -> Option<i64> { Some(SHARED.playpos_ns.load(Ordering::Relaxed)) }
+    fn hold_epoch(&self) -> Option<u64> {
+        Some(SHARED.hls_internal_hold_epoch.load(Ordering::Acquire))
+    }
+    fn rebuffering(&self) -> Option<bool> {
+        Some(SHARED.hls_rebuffering.load(Ordering::Acquire))
+    }
+    fn paused(&self) -> Option<bool> { Some(crate::player::TX.paused.load(Ordering::Acquire)) }
+    fn pause_clock(&self) -> Option<plx_playback_contract::demux::PauseClock> {
+        let (at, elapsed) = crate::player::TX.pause_clock_sample();
+        Some(plx_playback_contract::demux::PauseClock { at, elapsed })
+    }
+    fn publish(&self, effect: DemuxCallbackEffect) -> bool {
+        match effect {
+            DemuxCallbackEffect::NetworkBytes(bytes) => {
+                SHARED.dg_net_rx.fetch_add(bytes, Ordering::Relaxed);
+            }
+            DemuxCallbackEffect::HttpStatus(status) =>
+                SHARED.dg_http_status.store(status, Ordering::Relaxed),
+            DemuxCallbackEffect::FileSize(size) =>
+                SHARED.file_size.store(size, Ordering::Release),
+            DemuxCallbackEffect::TransportFailure { rc, age_ms, reopen_failed } => {
+                SHARED.dg_transport_rc.store(rc, Ordering::Release);
+                SHARED.dg_transport_age_ms.store(age_ms, Ordering::Release);
+                SHARED.dg_transport_reopen_failed.store(reopen_failed, Ordering::Release);
+                SHARED.demux_io_failed.store(true, Ordering::Release);
+            }
+            DemuxCallbackEffect::IoFailed =>
+                SHARED.demux_io_failed.store(true, Ordering::Release),
+        }
+        true
+    }
+}
+
+pub(super) fn demux_observer() -> Arc<dyn DemuxObserver> {
+    Arc::new(FixtureDemuxObserver)
+}
+
 /// Build a length-prefixed (AVCC-style) packet: 4-byte big-endian length + payload, repeated.
 pub(super) fn avcc(nals: &[&[u8]]) -> Vec<u8> {
     let mut v = Vec::new();

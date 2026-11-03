@@ -1050,6 +1050,14 @@ impl Shared {
         self.native_session.reject_native_presentation_probe(epoch)
     }
 
+    /// Sample or publish one demux observer's facts under the existing retirement barrier.
+    /// The closure must contain only bounded state work: no IO, native calls, or nested epoch gate.
+    pub fn with_active_demux_epoch<R>(&self, epoch: u32, read: impl FnOnce() -> R) -> Option<R> {
+        let mut result = None;
+        self.native_session.with_active_epoch(epoch, || result = Some(read()));
+        result
+    }
+
     pub fn with_native_session<R>(
         &self,
         epoch: u32,
@@ -2357,6 +2365,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn demux_observer_cannot_publish_or_sample_a_successors_native_epoch() {
+        let shared = Shared::new();
+        let first = shared.begin_native_session().expect("first native epoch");
+        assert_eq!(shared.with_active_demux_epoch(first, || {
+            shared.playpos_ns.store(17, Ordering::Relaxed);
+            17
+        }), Some(17));
+        assert!(shared.retire_native_session(first));
+        let second = shared.begin_native_session().expect("successor native epoch");
+        shared.playpos_ns.store(29, Ordering::Relaxed);
+        assert_eq!(shared.with_active_demux_epoch(first, || {
+            shared.playpos_ns.store(99, Ordering::Relaxed);
+            99
+        }), None);
+        assert_eq!(shared.with_active_demux_epoch(first, || {
+            shared.playpos_ns.load(Ordering::Relaxed)
+        }), None);
+        assert_eq!(shared.with_active_demux_epoch(second, || {
+            shared.playpos_ns.load(Ordering::Relaxed)
+        }), Some(29));
+        assert!(shared.retire_native_session(second));
+    }
+
+    #[test]
     fn a_worker_consumes_a_complete_hidden_pause_cycle_as_one_event() {
         let transport = Transport::new();
         let mut cursor = UserPauseCursor::new(transport.pause_state_sample());
@@ -3035,13 +3067,14 @@ mod tests {
         // ff.rs is the THIRD writer of this block — the demux thread stamps the HTTP status and
         // the bytes it received. A writer file missing from this list reads exactly like a field
         // with no writer, so adding one here is part of adding one there.
-        const WRITERS: [&str; 6] = [
+        const WRITERS: [&str; 7] = [
             include_str!("pump.rs"),
             include_str!("feed_pump.rs"),
             include_str!("engine.rs"),
             include_str!("mod.rs"),
             include_str!("../ff.rs"),
             include_str!("../adaptive.rs"),
+            include_str!("demux_session.rs"),
         ];
 
         let declared: Vec<&str> = SHARED_SRC

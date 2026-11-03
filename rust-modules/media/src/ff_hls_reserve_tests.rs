@@ -6,6 +6,21 @@ use super::*;
 use super::test_support::*;
 use crate::abr::Direction;
 
+// These fixtures exercise the native generation fence directly. Production
+// ownership lives in PlayerDemuxSession and is reached through DemuxSession.
+struct HlsCandidateTransition(u64);
+
+impl HlsCandidateTransition {
+    fn arm_unowned_for_test() -> Result<Self, crate::player::HlsClockFenceError> {
+        SHARED.begin_hls_candidate_transition(None).map(Self)
+    }
+
+    fn settle(self) {
+        let settled = SHARED.settle_hls_candidate_transition(self.0);
+        assert!(settled, "candidate generation changed inside its sole writer");
+    }
+}
+
 #[test]
 fn fractional_hls_duration_is_rounded_up_as_a_reserve_obligation() {
     assert_eq!(
