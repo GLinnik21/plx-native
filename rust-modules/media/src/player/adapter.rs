@@ -55,6 +55,10 @@ struct PendingUriAudio {
     memo: Option<plx_plex::plex::session::prefs::AudioMemo>,
 }
 
+#[cfg(all(test, feature = "play-uri"))]
+#[path = "adapter_track_tests.rs"]
+mod track_tests;
+
 #[cfg(feature = "play-uri")]
 struct PendingUriSubtitle {
     attempt: AttemptId,
