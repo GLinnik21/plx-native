@@ -30,8 +30,39 @@ pub enum RuntimeFailure {
     ResolveFailed,
 }
 
+/// How the pipeline refused a Load, for the `playback.failed` event: the Load call itself returned
+/// 0 (`Sync`, `threads::load_thread` via `publish_native_load_failure`), or the call returned and
+/// a `type=18` error callback arrived before any picture (`Async`, `sf_on_event`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum RefusalPath {
+    None = 0,
+    Sync = 1,
+    Async = 2,
+}
+
+impl RefusalPath {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::Sync,
+            2 => Self::Async,
+            _ => Self::None,
+        }
+    }
+
+    /// The stable wire code.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Sync => "sync",
+            Self::Async => "async",
+        }
+    }
+}
 #[derive(Clone, Copy, Default)]
 pub struct AttemptFacts {
+    pub requested_kbps: Option<i64>,
+    pub refusal_path: Option<RefusalPath>,
     pub runtime_failure: Option<RuntimeFailure>,
     pub no_video: Option<bool>,
     pub position_ns: Option<i64>,
@@ -62,7 +93,7 @@ pub struct AttemptView<A> {
 
 impl<A: Copy + Eq> AttemptView<A> {
     pub const EMPTY: Self = Self { attempt: None, backend: None, facts: AttemptFacts {
-        runtime_failure: None, no_video: None,
+        runtime_failure: None, no_video: None, requested_kbps: None, refusal_path: None,
         position_ns: None, duration_ns: None, playable_buffer_ms: None,
         reported_frame: None, frames: None, raster: None, pipeline_stage: None,
         pipeline_error: None, http_status: None, demux_exit: None,

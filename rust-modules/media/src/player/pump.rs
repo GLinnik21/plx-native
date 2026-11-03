@@ -356,7 +356,10 @@ fn publish_attempt_view(ps: &mut crate::route::PlaybackSession, attempt: crate::
         SHARED.load_failed.load(Relaxed),
         SHARED.load_timed_out.load(Relaxed),
     );
+    let requested_kbps = SHARED.dg_abr_kbps.load(Relaxed);
     let facts = AttemptFacts {
+        requested_kbps: (requested_kbps > 0).then_some(requested_kbps),
+        refusal_path: Some(SHARED.refusal_path()),
         runtime_failure: (failure != super::RuntimeFailure::Unknown).then_some(failure),
         no_video: SHARED.demux_no_video.load(Relaxed).then_some(true),
         position_ns: reported_frame.then_some(position.max(0)),
