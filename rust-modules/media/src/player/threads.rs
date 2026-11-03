@@ -1,4 +1,4 @@
-//! player::threads — the media-side Load receipt and SendPtr spawn seam. The physical Load
+//! player::threads — the media-side Load receipt and worker spawn seam. The physical Load
 //! worker lives in `plx_play_feed::native_load`. The demux thread body is `ff::demux` (libavformat over a custom
 //! AVIO on stream.rs); its HttpStream box lives in the Engine (main owns it, closes it
 //! to interrupt, and outlives the threads).
@@ -6,13 +6,10 @@ use super::SHARED;
 use std::os::raw::{c_char, c_int};
 use plx_play_feed::native_load::{self, NativeLoadPort};
 use plx_play_feed::pcm_lead::PcmLead;
+pub use plx_play_feed::SendPtr;
 #[cfg(test)]
 use plx_play_feed::native_load::load_alone;
 use std::sync::atomic::Ordering;
-
-/// raw ptr we assert is Send for the spawn (the boxes/queue outlive the thread).
-pub struct SendPtr<T>(pub *mut T);
-unsafe impl<T> Send for SendPtr<T> {}
 
 /// Main-thread owned load correlation. The worker sees only this token and its return channel;
 /// the adapter maps it back to the exact route attempt after Engine installation.

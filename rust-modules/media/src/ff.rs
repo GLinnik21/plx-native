@@ -7,7 +7,7 @@ use crate::aq::AuQueue;
 use crate::adaptive;
 use plx_playback_contract::adaptive::{Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, RoundId, TrialActuatorPort, TrialClock, TrialId};
 use plx_playback_contract::SourceKey;
-use crate::player::threads::SendPtr;
+use plx_play_feed::SendPtr;
 use crate::player::SHARED;
 use plx_net::stream::HttpStream;
 use plx_telemetry::telemetry::classes::DemuxExitClass;
@@ -119,8 +119,8 @@ unsafe fn dovi_conf(cp: *const AVCodecParameters) -> Option<AVDOVIDecoderConfigu
 /// `AVCodecParameters`, plus the mastering display and content light level from the stream's coded
 /// side data when the demuxer found them (Matroska's `Colour` element fills them; each only when the
 /// file states it). Read for VP9, whose bitstream cannot carry the transfer function.
-unsafe fn container_hdr(cp: *const AVCodecParameters) -> crate::player::vp9_hdr::ContainerHdr {
-    use crate::player::vp9_hdr::{parse_cll, parse_mastering, ContainerHdr};
+unsafe fn container_hdr(cp: *const AVCodecParameters) -> plx_play_feed::vp9_hdr::ContainerHdr {
+    use plx_play_feed::vp9_hdr::{parse_cll, parse_mastering, ContainerHdr};
     let mut h = ContainerHdr {
         trc: (*cp).color_trc,
         pri: (*cp).color_primaries,
@@ -2020,8 +2020,8 @@ impl VideoFraming {
     /// The Load declaration this framing belongs with. The Load is sent before the demuxer opens the
     /// file, so a disagreement can only abort and say so afterwards; that still beats the black
     /// screen it would otherwise be.
-    pub(crate) fn load_video(self) -> crate::player::engine::LoadVideo {
-        use crate::player::engine::LoadVideo;
+    pub(crate) fn load_video(self) -> plx_play_feed::LoadVideo {
+        use plx_play_feed::LoadVideo;
         match self {
             Self::AnnexB { hevc: false } => LoadVideo::H264,
             Self::AnnexB { hevc: true } => LoadVideo::H265,
