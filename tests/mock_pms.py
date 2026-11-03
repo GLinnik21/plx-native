@@ -75,6 +75,21 @@ part-way through, which is also the newest Continue Watching entry; 970002 has 3
 `OnDeck`. `OnDeck` rides `/library/metadata/<show>?includeOnDeck=1`, as one object, like PMS's.
 Boot with `plxnative-detail=970001` (or `970002`), or onto Home for the Continue Watching card.
 
+Range terms on `/library/sections/{k}/all` (`rating>>=9.49`, `addedAt<<=E`, `episode.addedAt>>=E`, ...), the
+sorts `duration`, `audienceRating`, `unviewedLeafCount`, `episode.addedAt` and `mediaHeight`, `:nullsLast`
+and the count-only probe (`Container-Start: 0` AND `Container-Size: 0`; a Size alone is ignored) answer
+as a real PMS 1.43.5 was measured to (`docs/pms-api.md`, "Count probes at band edges"); the "band
+queries" block above `Library` says which rules, in every mode. `--band-fixture` (seeded library only,
+default off) is the data and the menus for them: movie, show and episode dates spread over 2019-2024,
+unrated movies and movies with no release date, movies and shows nobody viewed, shows with every
+number of watched episodes, and the per-type `Sort[]` lists a real PMS offers (a movie list, a show
+list, the two sorts of a seasons listing and the seven of an episodes listing, whose Title key is the
+composite `show.titleSort,...`), which the short default list is not. The seasons and episodes
+listings (`type=3|4`) are ordered by that Title key when it is asked for or no sort is, and
+`/firstCharacter?type=3|4` counts them by their SHOW's title, as a real PMS does (`docs/pms-api.md`,
+"Count probes for seasons and episodes"). Episodes also get a critic and an audience rating (some
+missing) and an air date (some missing). Without it every answer is byte-identical.
+
     python3 tests/mock_pms.py --port 32499              # serve until Ctrl-C
     python3 tests/mock_pms.py --port 32499 --selftest   # prove the shapes without an app
     python3 tests/mock_pms.py --port 32499 --movies 321 --rail-fixture  # multi-page A–Z rail
@@ -192,6 +207,13 @@ also be flipped live, mid-run, with `POST /_mock/config` — JSON body
 `{"refuse_enhancements": true, "ignore_enhancements": false, "plex_pass": false}` — so one test
 case can resolve once, then refuse only from the next decision on.
 
+`--refuse-conversions` makes the server decline every request that asks it to CONVERT: a
+`/decision` with `directPlay=0` (the remux and transcode shapes: a refused audio conversion, the HLS
+rung) answers `generalDecisionCode=2000`, the shape `route/plan.rs::refusal` reads, while the
+direct-play probe (`directPlay=1`) is answered as ever. It is how the app's last rung (the in-app
+audio decode after every conversion was refused, S4) is reached on a television; flippable live
+through `POST /_mock/config` (`{"refuse_conversions": true}`).
+
 Five fixed fixture movies (own section id 3, so ordinary section/rail counts and hashes over
 sections 1/2 are untouched, but each is reachable directly at its ratingKey) exercise the offering
 and fallback rules:
@@ -225,8 +247,11 @@ two to see the refusal on a TV: the cut is reopened, the reopen answers 200, pla
 transport error instead of continuing from the wrong bytes.
 """
 import argparse
+import calendar
+import datetime
 import hashlib
 import json
+import math
 import os
 import pathlib
 import queue
@@ -315,9 +340,36 @@ PLEX_DIRECT_HASH = "0123456789abcdef0123456789abcdef"
 
 def pms_audio_codec(name):
     """PMS's spelling of an audio codec: FFmpeg and the fixtures say `dts`, PMS says `dca` (every
-    DTS entry in its shipped profiles does). The mock speaks PMS's vocabulary so the synthetic
-    tier cannot hide a spelling gap the way an echoed `dts` once did."""
+    DTS entry in its shipped profiles does). LPCM is `pcm` whatever the flavour: every LPCM entry in
+    PMS's shipped client profiles is `pcm` (79 of them), never FFmpeg's `pcm_s24le`; the width
+    travels as `bitDepth`. The mock speaks PMS's vocabulary so the synthetic tier cannot hide a
+    spelling gap the way an echoed `dts` once did."""
+    if name.startswith("pcm_"):
+        return "pcm"
     return {"dts": "dca"}.get(name, name)
+
+
+# Width in bits of an ffprobe `sample_fmt` (planar variants carry a trailing `p`).
+_SAMPLE_FMT_BITS = {"u8": 8, "s16": 16, "s32": 32, "flt": 32, "dbl": 64}
+
+
+def audio_bit_depth(stream):
+    """The `bitDepth` PMS reports for a lossless or PCM audio stream, from ffprobe's JSON: the raw
+    sample width when it states one (a 24-bit FLAC or `pcm_s24le` is `bits_per_raw_sample` 24 over
+    a 32-bit sample format), else a `pcm_s24*` name's own width, else the sample format's. `None`
+    for lossy audio, which PMS gives no bit depth."""
+    name = stream.get("codec_name", "")
+    if not (name in ("flac", "alac") or name.startswith("pcm_")):
+        return None
+    try:
+        raw = int(stream.get("bits_per_raw_sample") or 0)
+    except (TypeError, ValueError):
+        raw = 0
+    if raw > 0:
+        return raw
+    if name.startswith("pcm_s24"):
+        return 24
+    return _SAMPLE_FMT_BITS.get(str(stream.get("sample_fmt", "")).removesuffix("p"))
 
 
 def sname(rng):
@@ -357,6 +409,191 @@ def search_matcher(query):
     return hits
 
 
+# ---------------------------------------------------------------- band queries ----
+#
+# The value-sort rail asks the server for COUNTS at band edges (`rating>>=9.49` with Start 0 and
+# Size 0) instead of loading the listing. Everything below is what a real PMS 1.43.5 was MEASURED
+# to do with such a request (docs/pms-api.md, "Count probes at band edges"), on one small library:
+#
+# * a range term `<field><op>=<E>` on `/all` keeps the items whose value satisfies it, with the
+#   numbers compared as floats; `>>=` is greater, `>=` greater-or-equal, `<<=` less, `<=`
+#   less-or-equal, `=` equal. Through `parse_qs` the key arrives without its trailing `=`: `rating>>`,
+#   `rating>`, `rating<<`, `rating<`, `rating`.
+# * an item with NO value fails `>>=`, `>=` and `=` and passes `<<=` and `<=`; in a sort it is the
+#   smallest value (first ascending, last descending), or last either way under `:nullsLast`.
+# * a key the table below does not name (`leafCount`, a typo) is IGNORED and answers the whole
+#   library, as the server does, and so is a value that is not a number (relative dates such as
+#   `-3w` are not modelled: the mock has no clock).
+# * `episode.addedAt` (shows) holds one value per episode: a term keeps a show when ANY episode
+#   satisfies it, so `>>=` means "has a newer episode" and `<<=` "has an older one"; `:desc` orders
+#   by the newest episode and `:asc` by the OLDEST, which is why that sort is not its own mirror.
+# * `originallyAvailableAt` is compared as the epoch of UTC midnight of the day it names.
+#
+# Not modelled: `!=`, the `/year` and `/decade` directories (they answer an empty `Directory`) and
+# a `decade=` term. The leaf-count fields exist for shows and seasons only, as on the server.
+
+BAND_KINDS = ("movie", "show", "season", "episode")
+BAND_SUFFIXES = (">>", "<<", ">", "<")  # the longer spelling first: `>>` ends with `>`
+BAND_COMPARE = {
+    ">>": lambda value, edge: value > edge,
+    ">": lambda value, edge: value >= edge,
+    "<<": lambda value, edge: value < edge,
+    "<": lambda value, edge: value <= edge,
+    "": lambda value, edge: value == edge,
+}
+BAND_LOW_SIDE = ("<<", "<")  # the operators that pass an item with no value
+
+
+def _numbers(name):
+    def values(it, _episodes):
+        v = it.get(name)
+        return [v] if isinstance(v, (int, float)) else []
+    return values
+
+
+def _release_day(it, _episodes):
+    """`originallyAvailableAt` ("YYYY-MM-DD") as the epoch of that day's UTC midnight."""
+    try:
+        day = datetime.date.fromisoformat(str(it.get("originallyAvailableAt"))[:10])
+    except ValueError:
+        return []
+    return [calendar.timegm(day.timetuple())]
+
+
+def _unviewed_leaves(it, _episodes):
+    if "leafCount" in it and "viewedLeafCount" in it:
+        return [it["leafCount"] - it["viewedLeafCount"]]
+    return []
+
+
+def _episode_added(it, episodes):
+    return episodes.of(it)
+
+
+def _media_height(it, _episodes):
+    media = it.get("Media") or []
+    return [media[0]["height"]] if media and isinstance(media[0].get("height"), int) else []
+
+
+# field -> (the kinds it means something for, values(item, episodes) -> every number the item holds)
+BAND_FIELDS = {
+    "rating": (BAND_KINDS, _numbers("rating")),
+    "audienceRating": (BAND_KINDS, _numbers("audienceRating")),
+    "duration": (BAND_KINDS, _numbers("duration")),
+    "addedAt": (BAND_KINDS, _numbers("addedAt")),
+    "lastViewedAt": (BAND_KINDS, _numbers("lastViewedAt")),
+    "year": (BAND_KINDS, _numbers("year")),
+    "originallyAvailableAt": (BAND_KINDS, _release_day),
+    "viewCount": (BAND_KINDS, _numbers("viewCount")),
+    "viewedLeafCount": (("show", "season"), _numbers("viewedLeafCount")),
+    "unviewedLeafCount": (("show", "season"), _unviewed_leaves),
+    "episode.addedAt": (("show",), _episode_added),
+}
+# Accepted as a sort, never as a term (nothing measured says the server filters on it).
+BAND_SORT_ONLY = {"mediaHeight": (("movie", "episode"), _media_height)}
+
+
+class Episodes:
+    """The `addedAt` of every episode of each show, built the first time a query asks."""
+
+    def __init__(self, items):
+        self.items = items
+        self.by_show = None
+
+    def of(self, show):
+        if self.by_show is None:
+            self.by_show = {}
+            for x in self.items.values():
+                if x["type"] == "episode":
+                    self.by_show.setdefault(x["grandparentRatingKey"], []).append(x["addedAt"])
+        return self.by_show.get(show["ratingKey"], [])
+
+
+def band_terms(kind, q):
+    """The range terms of query `q` that mean something for a listing of `kind`, as
+    (values, suffix, edge). Every other key is left to the caller (or ignored)."""
+    terms = []
+    for key, raw in q.items():
+        suffix = next((s for s in BAND_SUFFIXES if key.endswith(s)), "")
+        name = key[:len(key) - len(suffix)]
+        if kind == "show" and name.startswith("show."):
+            name = name[len("show."):]
+        spec = BAND_FIELDS.get(name)
+        if spec is None or kind not in spec[0]:
+            continue
+        try:
+            edge = float(raw)
+        except ValueError:
+            continue
+        if math.isfinite(edge):
+            terms.append((spec[1], suffix, edge))
+    return terms
+
+
+def band_keeps(values, suffix, edge):
+    """Whether an item holding `values` (empty: no value) passes `<field><suffix>=<edge>`."""
+    if not values:
+        return suffix in BAND_LOW_SIDE
+    compare = BAND_COMPARE[suffix]
+    return any(compare(v, edge) for v in values)
+
+
+def band_order(rows, values, desc, nulls_last):
+    """`rows` ordered by `values(item)`: the largest value of an item when descending and the
+    smallest when ascending (the whole of the `episode.addedAt` asymmetry), no-value items first
+    ascending and last descending, or last either way when `nulls_last`. Ties keep library order."""
+    valued, bare = [], []
+    for it in rows:
+        held = values(it)
+        if held:
+            valued.append((max(held) if desc else min(held), it))
+        else:
+            bare.append(it)
+    valued.sort(key=lambda pair: pair[0], reverse=desc)
+    ordered = [it for _, it in valued]
+    return ordered + bare if desc or nulls_last else bare + ordered
+
+
+# The `Sort[]` a real PMS lists per type (docs/pms-api.md): (key, defaultDirection, title). The
+# menus are served from here only under `--band-fixture`; the default library keeps its short list.
+BAND_SORT_MENUS = {
+    "movie": (("titleSort", "asc", "Title"), ("originallyAvailableAt", "desc", "Release Date"),
+              ("rating", "desc", "Critic Rating"), ("audienceRating", "desc", "Audience Rating"),
+              ("duration", "desc", "Duration"), ("addedAt", "desc", "Date Added"),
+              ("lastViewedAt", "desc", "Date Viewed"), ("mediaHeight", "desc", "Resolution"),
+              ("random", "asc", "Randomly")),
+    "show": (("titleSort", "asc", "Title"), ("originallyAvailableAt", "desc", "Release Date"),
+             ("rating", "desc", "Critic Rating"), ("audienceRating", "desc", "Audience Rating"),
+             ("unviewedLeafCount", "desc", "Unplayed"),
+             ("episode.addedAt", "desc", "Last Episode Added"),
+             ("lastViewedAt", "desc", "Date Viewed"), ("random", "asc", "Randomly")),
+}
+# The `Sort[]` of a show library's SEASONS (type 3) and EPISODES (type 4) listings, as PMS 1.43.5 was
+# measured to declare them (docs/pms-api.md, "Count probes for seasons and episodes"): (key, descKey,
+# defaultDirection, title), and ONLY these (seasons: two; episodes: seven, the audience score among them).
+# The Title key is a COMPOSITE (the show's title, then the season, then the episode) and its `descKey`
+# reverses the show alone; neither is the literal `titleSort`. Served under `--band-fixture` only.
+BAND_TV_TITLE = "show.titleSort"
+BAND_TV_SORT_MENUS = {
+    "season": (("show.titleSort,index", "show.titleSort:desc,index", "asc", "Title"),
+               ("random", "random:desc", "desc", "Randomly")),
+    "episode": (("show.titleSort,season.index:nullsLast,episode.index:nullsLast,"
+                 "episode.originallyAvailableAt:nullsLast,episode.titleSort,episode.id",
+                 "show.titleSort:desc,season.index:nullsLast,episode.index:nullsLast,"
+                 "episode.originallyAvailableAt:nullsLast,episode.titleSort,episode.id", "asc", "Title"),
+                ("originallyAvailableAt", "originallyAvailableAt:desc", "desc", "Release Date"),
+                ("rating", "rating:desc", "desc", "Critic Rating"),
+                ("audienceRating", "audienceRating:desc", "desc", "Audience Rating"),
+                ("addedAt", "addedAt:desc", "desc", "Date Added"),
+                ("lastViewedAt", "lastViewedAt:desc", "desc", "Date Viewed"),
+                ("random", "random:desc", "desc", "Randomly")),
+}
+# `--band-fixture` spreads dates over these years (UTC): addedAt, lastViewedAt and episode dates.
+BAND_FIXTURE_FROM = 1_546_300_800  # 2019-01-01
+BAND_FIXTURE_TO = 1_735_689_600  # 2025-01-01
+BAND_FIXTURE_SEED = 20_261_031
+
+
 # ---------------------------------------------------------------- the generated library ----
 
 class Library:
@@ -380,11 +617,16 @@ class Library:
     # `--media-forced-subtitle` (module doc): the verification episodes' English subtitle is flagged
     # forced on the wire. A class default, for the same reason.
     media_forced_subtitle = False
+    # `--band-fixture` (module doc): dates, ratings and watch state spread for the value-sort rail's
+    # band probes, and the per-type `Sort[]` lists a real PMS offers. A class default, so the default
+    # library's `__dict__` is unchanged.
+    band_fixture = False
 
     def __init__(self, seed=1, movies=48, shows=6, seasons=2, episodes=6, rail_fixture=False,
                  media=None, extra_media=None, loudness_analysis=True, extras=0,
                  resume_fixture=False, media_next_episode=False, next_episode_remux=False,
-                 media_forced_subtitle=False, caption_edge_cases=False, multi_version=False):
+                 media_forced_subtitle=False, caption_edge_cases=False, multi_version=False,
+                 band_fixture=False):
         if media_next_episode and media is None:
             raise ValueError("--media-next-episode needs --media")
         if media_forced_subtitle and media is None:
@@ -443,6 +685,7 @@ class Library:
                     part += 1
                     self.items[erk] = self._episode(rng, erk, season, show, e, part)
         self._add_empty_collection(sname(rng))
+        generated = set(self.items) if band_fixture else ()
         # watch state: a third watched, a sixth in progress (the Continue Watching deck)
         for i, it in enumerate(sorted(self.items.values(), key=lambda x: x["ratingKey"])):
             if it["type"] not in ("movie", "episode"):
@@ -460,6 +703,9 @@ class Library:
         if multi_version:
             self._add_second_versions()
         self._roll_up()
+        if band_fixture:
+            self.band_fixture = True
+            self._add_band_fixture(generated)
         self._add_enhancement_fixtures()
         if media is not None or extra_media:
             self.media_files = {}
@@ -487,6 +733,104 @@ class Library:
                                and it["type"] in ("movie", "show")), key=lambda it: it["ratingKey"])
                 for index, it in enumerate(rows):
                     it["titleSort"] = "ACFMZ"[index % 5] + " " + it["titleSort"]
+
+    def _add_band_fixture(self, generated):
+        """`--band-fixture`: spread what the value-sort rail's bands are cut from, over the GENERATED
+        movies, shows and episodes only (the opt-in fixtures keep their own values). From its own
+        `random.Random`, so no other generated byte moves, and after `_roll_up`, which it repeats so
+        the shows' `viewedLeafCount` follows the watch state it rewrites.
+
+        - `addedAt` of every movie, show and episode somewhere in 2019-2024 (UTC), so the date bands
+          have months and years to cut; a show's episodes are spread independently of each other, so
+          its newest and its oldest episode differ;
+        - movies: every fourth is unrated (no `rating`), every fifth has no release date (no
+          `originallyAvailableAt`, no `year`); the rest get a rating in tenths and a release date of
+          1950-2024; every one gets an audience rating in tenths; the viewed ones get a
+          `lastViewedAt` spread like `addedAt` and a play count of 1-4, the unviewed ones have none
+          of the three;
+        - shows: every fifth has no release date; every fourth has not been watched at all, and the
+          others have their first `k` episodes watched with `k` anywhere from 1 to all of them, so
+          `unviewedLeafCount` takes many values, and a show's `lastViewedAt` is its latest watched
+          episode's (a show nobody watched has none)."""
+        rng = random.Random(BAND_FIXTURE_SEED + self.seed)
+        span = BAND_FIXTURE_TO - BAND_FIXTURE_FROM
+
+        def instant():
+            return BAND_FIXTURE_FROM + rng.randrange(span)
+
+        def release(it, any_day):
+            it["year"] = 1950 + rng.randrange(75)
+            month, day = (1 + rng.randrange(12), 1 + rng.randrange(28)) if any_day else (9, 21)
+            it["originallyAvailableAt"] = "%d-%02d-%02d" % (it["year"], month, day)
+
+        movies = sorted((it for rk, it in self.items.items() if rk in generated
+                         and it["type"] == "movie"), key=lambda it: int(it["ratingKey"]))
+        for i, it in enumerate(movies):
+            it["addedAt"] = it["updatedAt"] = instant()
+            if i % 4 == 3:
+                it.pop("rating", None)
+            else:
+                it["rating"] = round(2.0 + rng.randrange(80) / 10.0, 1)
+            it["audienceRating"] = round(2.0 + rng.randrange(80) / 10.0, 1)
+            if i % 5 == 4:
+                it.pop("originallyAvailableAt", None)
+                it.pop("year", None)
+            else:
+                release(it, True)
+            if "lastViewedAt" in it:
+                it["lastViewedAt"] = instant()
+            if it.get("viewCount", 0) > 0:
+                it["viewCount"] = 1 + rng.randrange(4)
+        shows = sorted((it for rk, it in self.items.items() if rk in generated
+                        and it["type"] == "show"), key=lambda it: int(it["ratingKey"]))
+        for i, show in enumerate(shows):
+            show["addedAt"] = show["updatedAt"] = instant()
+            if i % 5 == 4:
+                show.pop("originallyAvailableAt", None)
+                show.pop("year", None)
+            else:
+                release(show, False)
+            episodes = sorted((it for rk, it in self.items.items() if rk in generated
+                               and it["type"] == "episode"
+                               and it["grandparentRatingKey"] == show["ratingKey"]),
+                              key=lambda it: (it["parentIndex"], it["index"]))
+            watched = 0 if i % 4 == 3 else 1 + rng.randrange(len(episodes))
+            latest = None
+            for n, ep in enumerate(episodes):
+                ep["addedAt"] = ep["updatedAt"] = instant()
+                for key in ("viewCount", "viewOffset", "lastViewedAt"):
+                    ep.pop(key, None)
+                if n < watched:
+                    ep["viewCount"] = 1
+                    ep["lastViewedAt"] = instant()
+                    latest = max(latest or 0, ep["lastViewedAt"])
+            show.pop("lastViewedAt", None)
+            if latest is not None:
+                show["lastViewedAt"] = latest
+        # The EPISODES listing's own values (a real PMS lists seven sorts for it, `BAND_TV_SORT_MENUS`),
+        # from a second `random.Random` so nothing above moves: every fourth episode is unrated, every
+        # sixth has no audience rating (the others one in tenths, as the listing prints it), every
+        # seventh has no air date and the rest one of 1998-2024 (a day, rendered as UTC midnight by the
+        # range terms). An episode's `addedAt` and `lastViewedAt` are the ones set above.
+        # MOCK MODEL, NOT MEASURED: a real PMS 1.43.5 was measured with NO value in an episode's critic
+        # `rating` or `lastViewedAt` (docs/pms-api.md, "Count probes for seasons and episodes"; the
+        # filters were accepted, never checked at an edge). The values here exist so the simulator has
+        # bands to draw; the mock compares them with the same rules as every other field, which is a
+        # model of the server, not an observation of it. `addedAt` and `originallyAvailableAt` of an
+        # episode were verified.
+        tv = random.Random(BAND_FIXTURE_SEED + self.seed + 1)
+        for i, ep in enumerate(sorted((it for rk, it in self.items.items() if rk in generated
+                                       and it["type"] == "episode"), key=lambda it: int(it["ratingKey"]))):
+            if i % 4 != 3:
+                ep["rating"] = round(2.0 + tv.randrange(80) / 10.0, 1)
+            if i % 6 != 5:
+                ep["audienceRating"] = round(2.0 + tv.randrange(80) / 10.0, 1)
+            if i % 7 == 6:
+                ep.pop("originallyAvailableAt", None)
+            else:
+                ep["originallyAvailableAt"] = "%d-%02d-%02d" % (
+                    1998 + tv.randrange(27), 1 + tv.randrange(12), 1 + tv.randrange(28))
+        self._roll_up()
 
     def _add_resume_fixture(self):
         """`--resume-fixture`: the data behind a show page that opens at the resume point.
@@ -710,6 +1054,13 @@ class Library:
             out.update(channels=int(stream.get("channels", 0)),
                        audioChannelLayout=stream.get("channel_layout", ""),
                        displayTitle=f"{lang or 'und'} ({codec.upper()})")
+            # PMS also states the rate, and the bit depth of lossless audio; the app declares the
+            # PCM it feeds from them (`route::stream_pcm`).
+            if int(stream.get("sample_rate") or 0) > 0:
+                out["samplingRate"] = int(stream["sample_rate"])
+            depth = audio_bit_depth(stream)
+            if depth:
+                out["bitDepth"] = depth
             self._maybe_loudness(out)
         else:
             out["displayTitle"] = f"{lang or 'und'} ({codec.upper()})"
@@ -1089,8 +1440,19 @@ class Library:
             kind = {"1": "movie", "2": "show", "3": "season", "4": "episode"}.get(t, kind)
         rows = [it for it in self.items.values() if it["type"] == kind
                 and it["librarySectionID"] == int(key)]
-        if q.get("unwatched") == "1":
+        # Two keys, not one. `unwatchedLeaves=1` is the key the app sends for shows and seasons: a row
+        # whose leaves are not all watched. A real PMS answers `unwatched=1` on such a row differently
+        # (30 of 33 shows against 24, docs/pms-api.md "Unwatched"; its rule is not documented), so the
+        # mock models only that the two DIFFER: `unwatched=1` reads the row's own `viewCount`, which a
+        # show or season never carries here. An app sending the wrong key for a show gets an unnarrowed
+        # listing instead of passing by luck. Movies and episodes have no leaves: `unwatched` as usual.
+        if q.get("unwatchedLeaves") == "1":
             rows = [it for it in rows if not self._watched(it)]
+        if q.get("unwatched") == "1":
+            if kind in ("show", "season"):
+                rows = [it for it in rows if not it.get("viewCount", 0) > 0]
+            else:
+                rows = [it for it in rows if not self._watched(it)]
         g = q.get("genre")
         if g:
             rows = [it for it in rows if any(str(t["id"]) == g for t in it.get("Genre", []))]
@@ -1103,31 +1465,68 @@ class Library:
         c = q.get("collection") or q.get("tagId")
         if c:
             rows = [it for it in rows if any(str(t["id"]) == c for t in it.get("Collection", []))]
-        sort = q.get("sort", "titleSort")
-        field, _, direction = sort.partition(":")
+        # Range terms (`BAND_FIELDS`, the module's "band queries"); any other key is ignored.
+        episodes = Episodes(self.items)
+        for values, suffix, edge in band_terms(kind, q):
+            rows = [it for it in rows if band_keeps(values(it, episodes), suffix, edge)]
+        sort = q.get("sort")
+        if self.band_fixture and kind in ("season", "episode") and (sort is None or sort.startswith(BAND_TV_TITLE)):
+            return self._tv_title_order(rows, kind, sort is not None and sort.startswith(BAND_TV_TITLE + ":desc"))
+        field, _, rest = (sort or "titleSort").partition(":")
+        direction, _, modifier = rest.partition(":")
+        desc = direction == "desc"
+        band = BAND_FIELDS.get(field) or BAND_SORT_ONLY.get(field)
+        if band is not None and kind in band[0]:
+            return band_order(rows, lambda it: band[1](it, episodes), desc,
+                              modifier == "nullsLast")
         keyf = {
             "titleSort": lambda it: it["titleSort"],
-            "addedAt": lambda it: it["addedAt"],
-            "originallyAvailableAt": lambda it: it.get("originallyAvailableAt", ""),
-            "year": lambda it: it.get("year", 0),
-            "rating": lambda it: it.get("rating", 0.0),
-            "lastViewedAt": lambda it: it.get("lastViewedAt", 0),
             "random": lambda it: hashlib.md5(it["ratingKey"].encode()).hexdigest(),
         }.get(field, lambda it: it["titleSort"])
-        rows.sort(key=keyf, reverse=(direction == "desc"))
+        rows.sort(key=keyf, reverse=desc)
         return rows
 
     def first_characters(self, key, q=None):
-        """Counts in the unfiltered ascending titleSort order, exactly the rail's query —
-        of the section's collections for `type=18`, as PMS answers `firstCharacter?type=18`."""
+        """Counts in ascending titleSort order (the rail's order; by the SHOW's title for seasons and
+        episodes under `--band-fixture`) of the listing `q` describes: the
+        terms that scope `/all` (`type`, `unwatched`, `unwatchedLeaves`, `genre`, ...) scope the counts
+        the same way, as PMS does, so the sum is the filtered `totalSize` and prefix sums are the
+        offsets of each letter in that listing. `type=18` counts the section's collections."""
+        q = q or {}
         counts = {}
         rows = (sorted(self.collection_metadata(key), key=lambda c: c["titleSort"].lower())
-                if (q or {}).get("type") == "18" else self.section_items(key, {}))
+                if q.get("type") == "18"
+                else self.section_items(key, {k: v for k, v in q.items()
+                                              if k != "sort" and not k.startswith("X-Plex-")}))
+        # Seasons and episodes are counted by their SHOW's title under `--band-fixture`, as a real PMS
+        # counts them (docs/pms-api.md, "Count probes for seasons and episodes"): the order of the
+        # listing is the show's title first, so the counts laid end to end land on its letters.
+        by_show = self.band_fixture and q.get("type") in ("3", "4")
         for item in rows:
-            letter = item["titleSort"][0].upper()
+            letter = (self._show_of(item) if by_show else item)["titleSort"][0].upper()
             counts[letter] = counts.get(letter, 0) + 1
         return [{"key": letter.lower(), "title": letter, "size": count}
                 for letter, count in counts.items()]
+
+    def _show_of(self, it):
+        """The show a season or an episode belongs to."""
+        return self.items[int(it["grandparentRatingKey"] if it["type"] == "episode" else it["parentRatingKey"])]
+
+    def _tv_title_order(self, rows, kind, show_desc):
+        """`rows` (seasons or episodes) in the order of the Title entry a real PMS declares for them
+        (`BAND_TV_SORT_MENUS`): the show's title, then the season, then the episode (a missing index
+        and a missing air date last, then the episode's own title and id). The entry's `descKey`
+        reverses the show alone, so the rest of the key keeps its ascending order inside each show;
+        a stable sort on the show alone, descending, after the ascending one is exactly that."""
+        def inner(it):
+            if kind == "season":
+                return (it["index"],)
+            return (it.get("parentIndex", 1 << 30), it.get("index", 1 << 30),
+                    it.get("originallyAvailableAt") is None, it.get("originallyAvailableAt") or "",
+                    it["titleSort"], int(it["ratingKey"]))
+        ordered = sorted(rows, key=inner)
+        ordered.sort(key=lambda it: self._show_of(it)["titleSort"], reverse=show_desc)
+        return ordered
 
     def _watched(self, it):
         if it["type"] in ("movie", "episode"):
@@ -2397,6 +2796,9 @@ class MockPms:
         # only then start refusing/ignoring.
         self.refuse_enhancements = False
         self.ignore_enhancements = False
+        # `--refuse-conversions`: every /decision asking the server to convert (`directPlay=0`) is
+        # refused with generalDecisionCode=2000; a direct-play probe is unaffected.
+        self.refuse_conversions = False
         # `--transcode-fixture PATH`: serve this file (Range/206 supported) for every
         # /video/:/transcode/universal/start* request instead of the plain 404.
         self.transcode_fixture = None
@@ -2516,7 +2918,32 @@ class MockPms:
                 mc["size"] = len(mc[k])
         return {"MediaContainer": mc}
 
-    def sort_meta(self, kind=None):
+    def sort_meta(self, kind=None, lib=None, section=None):
+        if kind != "18" and lib is not None and lib.band_fixture:
+            # `--band-fixture`: the lists a real PMS offers, one per type (a movie list and a show
+            # list differ). A request with no `type` takes its section's type. A seasons or episodes
+            # listing (types 3 and 4) gets the show, season and episode entries with `active` on its
+            # own alone, as the server lists them, and the two TV lists are `BAND_TV_SORT_MENUS`.
+            if kind in ("3", "4"):
+                active = {"3": "season", "4": "episode"}[kind]
+                entries = [{"key": f"/library/sections/{section}/all?type=2", "type": "show", "title": "show",
+                            "active": False,
+                            "Sort": [{"key": key, "defaultDirection": direction, "title": title}
+                                     for key, direction, title in BAND_SORT_MENUS["show"]]}]
+                entries += [{"key": f"/library/sections/{section}/all?type={type_id}", "type": name,
+                             "title": name, "active": name == active,
+                             "Sort": [{"key": key, "descKey": desc_key, "defaultDirection": direction, "title": title}
+                                      for key, desc_key, direction, title in BAND_TV_SORT_MENUS[name]]}
+                            for name, type_id in (("season", 3), ("episode", 4))]
+                return {"Type": entries}
+            name = {"1": "movie", "2": "show"}.get(kind) if kind is not None else \
+                next((s["type"] for s in lib.sections if s["key"] == section), None)
+            if name in BAND_SORT_MENUS:
+                type_id = 1 if name == "movie" else 2
+                return {"Type": [{"key": f"/library/sections/{section}/all?type={type_id}",
+                                  "type": name, "title": name, "active": True,
+                                  "Sort": [{"key": key, "defaultDirection": direction, "title": title}
+                                           for key, direction, title in BAND_SORT_MENUS[name]]}]}
         if kind == "18":
             # PMS's collection listing declares ONE sort (probed on 1.43): titleSort.
             return {"Type": [{"key": "/library/sections/1/all?type=18", "type": "collection",
@@ -2653,7 +3080,7 @@ class MockPms:
                 return j({"error": "invalid JSON body"}, 400)
             if not isinstance(patch, dict):
                 return j({"error": "body must be a JSON object"}, 400)
-            allowed = {"refuse_enhancements", "ignore_enhancements", "plex_pass"}
+            allowed = {"refuse_enhancements", "ignore_enhancements", "refuse_conversions", "plex_pass"}
             unknown = set(patch) - allowed
             if unknown:
                 return j({"error": f"unknown config key(s): {sorted(unknown)}"}, 400)
@@ -2793,7 +3220,7 @@ class MockPms:
                 rows = lib.section_items(segs[2], q)
             page, extra = paged(rows)
             if q.get("includeMeta") == "1":
-                extra["Meta"] = self.sort_meta(q.get("type"))
+                extra["Meta"] = self.sort_meta(q.get("type"), lib, segs[2])
             return j(self.container(Metadata=page, **extra))
         if len(segs) == 4 and segs[:2] == ["library", "sections"] and segs[3] == "recentlyAdded":
             kind = {"1": "movie", "2": "episode"}.get(segs[2], "movie")
@@ -3107,6 +3534,15 @@ class MockPms:
             item = lib.items.get(rk)
             part_id = (item.get("Media", [{}])[0].get("Part", [{}])[0].get("id")
                        if item else None)
+            # `--refuse-conversions`: the server will not convert anything (same refusal shape as
+            # `--refuse-enhancements`; `route/plan.rs::refusal` reads generalDecisionCode 2000).
+            if self.refuse_conversions and q.get("directPlay") == "0":
+                return j(self.container(
+                    generalDecisionCode=2000,
+                    generalDecisionText="Neither direct play nor conversion is available.",
+                    transcodeDecisionCode=4020,
+                    transcodeDecisionText="Server declined the conversion.",
+                    mdeDecisionCode=2000, Metadata=[]))
             # #266: a LIVE boostDialog=1 or normalizeLoudness=1 — a `0` or absent param is
             # byte-identical to the branches below, untouched. Measured against PMS 1.43.4 with
             # Plex Pass (design plan M1/M2): whether the request shape was the remux one
@@ -3496,12 +3932,12 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
           plaintext_only_lan=False, advertise_ip=None, advertise_port=None, insecure_fail_mode="handshake",
           authorize_after=None, plex_pass=True, loudness_analysis=True,
           refuse_enhancements=False, ignore_enhancements=False, transcode_fixture=None,
-          cut_part_after=None, part_range_answers_200=False,
+          refuse_conversions=False, cut_part_after=None, part_range_answers_200=False,
           home_hubs=0, home_seasons=False, section_hubs=0, section_hubs_linked=0, decision_delay_ms=0,
           home_users=1, second_account=False, link=(), link_faults=(), shows=6, seasons=2, episodes=6,
           resume_fixture=False, media_next_episode=False, next_episode_remux=False,
           media_forced_subtitle=False, smart_collections=False,
-          caption_edge_cases=False, multi_version=False):
+          caption_edge_cases=False, multi_version=False, band_fixture=False):
     """Start a mock PMS in a daemon thread; returns (server, pms). Loopback only by default: the
     app on the simulator is on this machine, and a LAN-facing listener would be one more thing
     the outbound guard has to reason about. `catalog` serves the demo library instead of a seed.
@@ -3535,7 +3971,9 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
     library only). `media_next_episode` adds the verification show's second episode (module doc;
     needs `media`); `next_episode_remux` makes it a copy remux at a high bitrate (needs
     `media_next_episode`); `media_forced_subtitle` flags the English subtitle of the verification
-    episodes forced (module doc; needs `media`)."""
+    episodes forced (module doc; needs `media`). `band_fixture` spreads dates, ratings and watch
+    state for the value-sort rail's band probes and serves the per-type `Sort[]` lists (module doc;
+    seeded library only)."""
     if transcode_fixture is not None and not pathlib.Path(transcode_fixture).is_file():
         raise ValueError(f"--transcode-fixture file is missing: {transcode_fixture}")
     if catalog is not None:
@@ -3548,7 +3986,8 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
                       media_next_episode=media_next_episode,
                       next_episode_remux=next_episode_remux,
                       media_forced_subtitle=media_forced_subtitle,
-                      caption_edge_cases=caption_edge_cases, multi_version=multi_version)
+                      caption_edge_cases=caption_edge_cases, multi_version=multi_version,
+                      band_fixture=band_fixture)
     lib.smart_collections = smart_collections
     pms = MockPms(lib)
     pms.link = link_conditioner.Conditioner(seed=seed)
@@ -3563,6 +4002,7 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
     pms.section_hubs_linked = section_hubs_linked
     pms.refuse_enhancements = refuse_enhancements
     pms.ignore_enhancements = ignore_enhancements
+    pms.refuse_conversions = refuse_conversions
     pms.transcode_fixture = pathlib.Path(transcode_fixture) if transcode_fixture else None
     pms.cut_part_after = cut_part_after
     pms.part_range_answers_200 = part_range_answers_200
@@ -3941,6 +4381,7 @@ def selftest():
         s_.server_close()
     tmp.cleanup()
 
+    _selftest_audio_stream_wire()
     _selftest_plaintext_only_lan()
     _selftest_section_hubs()
     _selftest_notifications()
@@ -3955,6 +4396,44 @@ def _teardown(srv):
     srv.server_close()
     if srv.insecure_fail_listener is not None:
         srv.insecure_fail_listener.close()
+
+
+def _selftest_audio_stream_wire():
+    """An audio stream is described the way PMS does: `samplingRate` always, `bitDepth` for lossless
+    and PCM audio, and every LPCM flavour spelled `pcm` (PMS's profiles never name a flavour). The app's
+    PCM declaration (`route::stream_pcm`) reads the first two; a mock that omitted them made every
+    ALAC/LPCM file take the server route."""
+    lib = Library(movies=1)
+
+    def wire(**kw):
+        return lib._stream_wire({"codec_type": "audio", "index": 1, **kw}, 11)
+
+    s = wire(codec_name="alac", sample_rate="44100", sample_fmt="s16p", bits_per_raw_sample="16", channels=2)
+    assert (s["codec"], s["samplingRate"], s["bitDepth"]) == ("alac", 44100, 16), s
+    s = wire(codec_name="flac", sample_rate="48000", sample_fmt="s32", bits_per_raw_sample="24", channels=2)
+    assert (s["samplingRate"], s["bitDepth"]) == (48000, 24), s
+    # ffprobe's width for pcm_s24le: raw bits 24 (the sample format says 32)
+    s = wire(codec_name="pcm_s24le", sample_rate="48000", sample_fmt="s32", bits_per_raw_sample="24", channels=2)
+    assert (s["codec"], s["bitDepth"]) == ("pcm", 24), s
+    # no raw-bits field: a pcm_s24* name still reads 24, an s16/s32 sample format its own width
+    s = wire(codec_name="pcm_s24be", sample_rate="48000", sample_fmt="s32", channels=2)
+    assert (s["codec"], s["bitDepth"]) == ("pcm", 24), s
+    s = wire(codec_name="pcm_s16le", sample_rate="44100", sample_fmt="s16", bits_per_raw_sample="0", channels=2)
+    assert (s["codec"], s["bitDepth"], s["samplingRate"]) == ("pcm", 16, 44100), s
+    s = wire(codec_name="pcm_s32le", sample_rate="48000", sample_fmt="s32", channels=2)
+    assert (s["codec"], s["bitDepth"]) == ("pcm", 32), s
+    # float and 8-bit LPCM are `pcm` on the wire too (that is what PMS does); the width survives
+    s = wire(codec_name="pcm_f32le", sample_rate="48000", sample_fmt="flt", channels=2)
+    assert (s["codec"], s["bitDepth"]) == ("pcm", 32), s
+    s = wire(codec_name="pcm_u8", sample_rate="48000", sample_fmt="u8", channels=2)
+    assert (s["codec"], s["bitDepth"]) == ("pcm", 8), s
+    # lossy audio: a rate, no bit depth; no rate in ffprobe's output: none on the wire
+    s = wire(codec_name="ac3", sample_rate="48000", sample_fmt="fltp", channels=6)
+    assert s["samplingRate"] == 48000 and "bitDepth" not in s, s
+    s = wire(codec_name="aac", channels=2)
+    assert "samplingRate" not in s and "bitDepth" not in s, s
+    assert pms_audio_codec("dts") == "dca" and pms_audio_codec("pcm") == "pcm"
+    assert all(pms_audio_codec(n) == "pcm" for n in ("pcm_s16le", "pcm_s24be", "pcm_s32le", "pcm_f32le", "pcm_u8", "pcm_bluray"))
 
 
 def _selftest_notifications():
@@ -4401,6 +4880,10 @@ def main():
                     help="#266: a live boostDialog=1/normalizeLoudness=1 on /decision gets the "
                          "server-refusal shape (generalDecisionCode=2000) instead of a transcode "
                          "decision; also flippable live via POST /_mock/config")
+    ap.add_argument("--refuse-conversions", action="store_true",
+                    help="S4: every /decision that asks the server to convert (directPlay=0) gets the "
+                         "server-refusal shape (generalDecisionCode=2000); the direct-play probe is "
+                         "answered as ever; also flippable live via POST /_mock/config")
     ap.add_argument("--ignore-enhancements", action="store_true",
                     help="#266: a live boostDialog=1/normalizeLoudness=1 is accepted but the "
                          "audio decision stays \"copy\" — an old server that does not act on the "
@@ -4456,6 +4939,11 @@ def main():
                          "on-deck episode (S12E14, part-way through, the newest Continue Watching "
                          "entry); 970002 has 3 seasons and no on-deck. Default off: every other "
                          "answer is byte-identical")
+    ap.add_argument("--band-fixture", action="store_true",
+                    help="dates, ratings and watch state spread over several years, with items that "
+                         "have no rating, no release date or no view, and the per-type Sort[] lists "
+                         "a real PMS offers (seeded library only), for the value-sort rail's band "
+                         "probes. Default off: every other answer is byte-identical")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
@@ -4467,6 +4955,8 @@ def main():
         ap.error("--multi-version is for the seeded library, not --catalog")
     if a.caption_edge_cases and a.catalog is not None:
         ap.error("--caption-edge-cases is for the seeded library, not --catalog")
+    if a.band_fixture and a.catalog is not None:
+        ap.error("--band-fixture is for the seeded library, not --catalog")
     if a.home_hubs < 0:
         ap.error("--home-hubs must not be negative")
     if a.section_hubs < 0 or a.section_hubs_linked < 0:
@@ -4511,6 +5001,7 @@ def main():
                          loudness_analysis=not a.no_loudness_analysis,
                          refuse_enhancements=a.refuse_enhancements,
                          ignore_enhancements=a.ignore_enhancements,
+                         refuse_conversions=a.refuse_conversions,
                          transcode_fixture=a.transcode_fixture,
                          cut_part_after=a.cut_part_after,
                          part_range_answers_200=a.part_range_answers_200, home_hubs=a.home_hubs,
@@ -4524,7 +5015,8 @@ def main():
                          next_episode_remux=a.media_next_episode_remux,
                          media_forced_subtitle=a.media_forced_subtitle,
                          smart_collections=a.smart_collections,
-                         caption_edge_cases=a.caption_edge_cases, multi_version=a.multi_version)
+                         caption_edge_cases=a.caption_edge_cases, multi_version=a.multi_version,
+                         band_fixture=a.band_fixture)
     except ValueError as e:
         ap.error(str(e))
     what = f"catalog={a.catalog}" if a.catalog else f"seed={a.seed}"

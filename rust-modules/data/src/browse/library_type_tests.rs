@@ -41,9 +41,10 @@ mod tests {
     }
 
     /// The Collections page borrows the section's one listing. The grid's sort and genre are
-    /// its view, not the page's: they must be there when the loan is repaid.
+    /// its view, not the page's: they must be there when the loan is repaid. The letter counts are
+    /// not: they describe what the section lists, which can change while Collections is shown.
     #[test]
-    fn the_collections_loan_gives_the_grids_sort_and_genre_back() {
+    fn the_collections_loan_hands_back_no_letters_and_the_other_view_fields_still_come_back() {
         let _guard = plx_base::testlock::serial();
         let mut state = BrowseState::default();
         seed_two_source_table_for_owner_test(&mut state);
@@ -68,8 +69,8 @@ mod tests {
         current.genre = Some(Arc::new(GenreEntry { id: "7".into(), title: "Drama".into() }));
         current.genres = Arc::new(vec![GenreEntry { id: "7".into(), title: "Drama".into() }]);
         current.genres_done = true;
-        current.letters = Arc::new(vec![("A".into(), 1)]);
-        current.letters_done = true;
+        let key = current.letters_key();
+        current.land_letters(key, vec![("A".into(), 1)]);
 
         switch(&mut state, LibraryType::Collections);
         let on_loan = &state.states[1];
@@ -80,7 +81,9 @@ mod tests {
         assert_eq!((back.sort_idx, back.sort_desc), (1, true), "the sort comes back");
         assert_eq!(back.genre.as_ref().map(|genre| genre.id.as_str()), Some("7"), "the genre comes back");
         assert_eq!(back.sorts.len(), 2);
-        assert!(back.genres_done && back.letters_done && back.loaned.is_none());
+        assert!(back.genres_done && back.loaned.is_none());
+        assert!(back.letters.is_empty() && !back.letters_current(),
+            "the loan holds no counts: what the section lists can change while Collections is shown");
         assert_eq!(state.listing_snapshot().view().library_type(), LibraryType::Primary);
     }
 
@@ -105,8 +108,8 @@ mod tests {
         current.sort_desc = true;
         current.genre = Some(Arc::new(GenreEntry { id: "7".into(), title: "Drama".into() }));
         current.genres_done = true;
-        current.letters = Arc::new(vec![("A".into(), 1), ("B".into(), 1)]);
-        current.letters_done = true;
+        let key = current.letters_key();
+        current.land_letters(key, vec![("A".into(), 1), ("B".into(), 1)]);
         current.cursor = Some(Arc::new(Cursor { at: CursorAt::SlotIndex(0), scroll: 12.0 }));
         current.unwatched = true;
 
@@ -126,7 +129,7 @@ mod tests {
         assert!(listing.view().letters().is_empty());
         assert!(listing.view().cursor().is_none());
         assert!(listing.view().unwatched());
-        assert!(!state.states[1].genres_done && !state.states[1].letters_done);
+        assert!(!state.states[1].genres_done && state.states[1].letters_for.is_none());
         assert!(!state.set_genre_by_id(Some("7")));
         assert_eq!(state.states[1].query_filters(SecKind::Show),
             vec![("type".into(), "4".into()), ("unwatched".into(), "1".into())]);
@@ -201,15 +204,13 @@ mod tests {
         fetch.post(DirectoryResult {
             epoch: browse.state.table_epoch(), sec: 0, client, token_gen: client.token_gen(),
             library_type: captured_type, list: vec![("S".into(), 99)],
+            ok: true, letters: Some(browse.state.states[0].letters_key()),
         }, |_| true);
         fetch.claim(0);
-        assert!(!browse.state.land_directory_owned(&fetch, |state, list| {
-            state.letters = Arc::new(list);
-            state.letters_done = true;
-        }));
+        assert!(!browse.state.land_letters_for_test(&fetch));
         assert!(!fetch.busy());
         assert!(browse.state.states[0].letters.is_empty());
-        assert!(!browse.state.states[0].letters_done);
+        assert!(browse.state.states[0].letters_for.is_none());
     }
 
     #[cfg(feature = "devtriggers")]
@@ -259,7 +260,7 @@ mod tests {
         assert_eq!(descending, "show.titleSort:desc,episode.index");
         let reversed = SectionQuery { start: 0, sort: &descending, ..next };
         assert_eq!(fetch_listing_page(client, sid, &reversed, true, None).items[0].rk, "91");
-        assert_eq!(client.section_directory(2, "firstCharacter", Some(4)).unwrap().directory[0].size, 121);
+        assert_eq!(client.section_directory(2, "firstCharacter", &[("type".to_owned(), "4".to_owned())]).unwrap().directory[0].size, 121);
         let requests: Vec<String> = (0..5).map(|_| rx.recv().unwrap()).collect();
         for request in &requests[..4] {
             assert!(request.contains("type=4"), "{request}");

@@ -119,8 +119,8 @@
 # would fight a human who muted the set on purpose before handing it to a lane.
 #
 # THE TV LOCK: every subcommand that DRIVES the set (up, key, click, shot, down) requires the
-# television's lock and refuses when another lane holds it; `status` and `log` are read-only and
-# only name the holder. Take one for a whole session rather than letting each command take its own
+# television's lock and refuses when another lane holds it; `status`, `log` and `fg` are read-only
+# and only name the holder. Take one for a whole session rather than letting each command take its own
 # 10-minute implicit lease — the gap between two of your own commands is exactly where another
 # job lands:  tools/tv-lock.sh acquire --why "…"  …  tools/tv-lock.sh release.
 #
@@ -259,7 +259,7 @@ app_pids() {
 # One television, no OS-level mutex: two jobs on it do not fail cleanly, they produce plausible
 # WRONG data (an fps number measured while somebody else's binary was deployed underneath, a
 # capture of a screen the other job navigated away from). Every subcommand here that DRIVES the
-# set goes through the lock; the two read-only ones only say who is on it. tools/tv-lock.sh is the
+# set goes through the lock; the three read-only ones (log, status, fg) only name the holder. tools/tv-lock.sh is the
 # mechanism and .agents/skills/tv-lock/SKILL.md is the workflow.
 LOCKTOOL="$REPO/tools/tv-lock.sh"
 require_lock() {  # $1 = what this session is for, for the holder read-out
@@ -1259,7 +1259,8 @@ cmd_screen() {
 # the foreground app. `foreground` launches THIS flavour's own id again -- the same call `up` makes,
 # but with NO close-first, so the pid must be unchanged (a changed pid means the app died, which is
 # a finding, not a relaunch) -- and asserts the app is the foreground app again. No setting is
-# changed and nothing is injected; `fg` only reads the foreground app (read-only, advisory lock).
+# changed and nothing is injected; `fg` only reads the foreground app (read-only: advisory lock, no lease,
+# and an asleep set is never woken: it reports that nothing was read, which is not "idle").
 fg_app() {
   tvq "script -qc \"luna-send -n 1 -f luna://com.webos.applicationManager/getForegroundAppInfo '{}'\" /dev/null" \
     | tr -d '\r\n' | tr -s ' ' | sed -En 's/.*"appId": *"([^"]*)".*/\1/p'
@@ -1271,7 +1272,18 @@ launch_app() {  # $1 = app id. -i keeps the subscriber open for the launch to ta
 cmd_lifecycle() {
   local what="${1:-}" target pid before after
   case "$what" in
-    fg) advise_lock "tv-session fg"; ensure_awake || exit 1; info "foreground app: $(fg_app)"; return 0 ;;
+    fg)
+      # The one lifecycle word that is a pure read, and tv-lock-guard.py lets it through with no
+      # lease for that reason: so it must stay one. `ensure_awake` would send Wake-on-LAN to a
+      # sleeping set (a mutation, and the exact thing a person in the next room notices); a set
+      # that does not answer is left alone and the line says so: nothing was read and no wake was
+      # sent (tv-lock.sh's idle_verdict calls an unread foreground UNKNOWN unless the panel reads Active
+      # Standby, and `fg` never reads the panel, so it says "nothing read", not "idle").
+      # advise_lock is `tv-lock.sh require --advisory`: it only names a holder (and renews a lease
+      # THIS lane already holds), takes nothing and wakes nothing.
+      tvq true || { info "TV unreachable or asleep (nothing read, no wake sent)"; return 0; }
+      advise_lock "tv-session fg"
+      ok "TV reachable"; info "foreground app: $(fg_app)"; return 0 ;;
     background) target="${2:-${PLX_BG_APP:-org.webosbrew.hbchannel}}" ;;
     foreground) target="$APPID" ;;
     *) echo "usage: tv-session.sh background [APPID] | foreground | fg" >&2; exit 2 ;;

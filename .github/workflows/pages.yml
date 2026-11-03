@@ -85,6 +85,8 @@ jobs:
           cp site/robots.txt _site/robots.txt
           cp site/sitemap.xml _site/sitemap.xml
           cp site/404.html _site/404.html
+          # Publish the app-generated schema and golden examples at their authored URLs.
+          cp -R site/hud _site/
           # The live CI build-time page: noindex, not in sitemap.xml, not linked from the landing
           # page. It reads its data (ci-history.json, build-history.json, ci-summary.json) from the
           # ci-metrics branch at runtime (ci-metrics.yml, build-bench.yml); nothing else is staged.

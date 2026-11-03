@@ -140,6 +140,13 @@ pub enum DiagEvent {
         playback_id: i64,
         mode: &'static str,
         kind: &'static str,
+        /// The same codec classes `PlaybackStarted` sends, for the stream the attempt carried.
+        video: &'static str,
+        audio: &'static str,
+        /// `PipelineErrorClass::code`: the first `type=18` number as `0`/`100`/`200`/`601`/`other`.
+        pipeline_error: &'static str,
+        /// `RefusalPath::code`: `sync` / `async` / `none`.
+        refusal: &'static str,
     },
     /// A real teardown — the viewer stopped, or the item ran out. **Not** a seek, a reload or an
     /// app-switch suspend, all of which end an ENGINE without ending a playback.
@@ -597,12 +604,20 @@ pub fn serialize(e: DiagEvent) -> (&'static str, Vec<(&'static str, Value)>) {
             playback_id,
             mode,
             kind,
+            video,
+            audio,
+            pipeline_error,
+            refusal,
         } => (
             "playback.failed",
             vec![
                 ("playback_id", Value::Int(playback_id)),
                 ("mode", Value::Str(mode)),
                 ("kind", Value::Str(kind)),
+                ("video", Value::Str(video)),
+                ("audio", Value::Str(audio)),
+                ("pipeline_error", Value::Str(pipeline_error)),
+                ("refusal", Value::Str(refusal)),
             ],
         ),
         DiagEvent::PlaybackEnded {
@@ -715,7 +730,11 @@ pub const EVENT_SPECS: &[EventSpec] = &[
         fields: &[
             F { key: "playback_id", domain: PLAYBACK_ID },
             F { key: "mode", domain: MODE },
-            F { key: "kind", domain: "`decision_refused` / `playback_policy` / `no_video_transcode_target` / `no_video_track` / `media_source` / `playback_interrupted` / `tv_pipeline` / `original_rollback` / `jail_missing_rtkmem` / `load_timeout` / `unspecified`" },
+            F { key: "kind", domain: "`decision_refused` / `playback_policy` / `no_video_transcode_target` / `no_video_track` / `media_source` / `playback_interrupted` / `tv_pipeline` / `original_rollback` / `jail_missing_rtkmem` / `load_timeout` / `release_timeout` / `resolve_failed` / `preview_not_direct` / `unspecified`" },
+            F { key: "video", domain: "a codec name from a fixed table; anything else is `other`" },
+            F { key: "audio", domain: "a codec name from a fixed table; anything else is `other`" },
+            F { key: "pipeline_error", domain: "the TV pipeline's first error number as a class: `0` (none) / `100` / `200` / `601` / `other`" },
+            F { key: "refusal", domain: "`sync` (the TV's Load call itself refused) / `async` (the pipeline refused it before the first picture) / `none`" },
         ],
     },
     EventSpec {
@@ -893,6 +912,10 @@ mod tests {
                 playback_id: 7,
                 mode: "transcode",
                 kind: "no_video_track",
+                video: "h264",
+                audio: "dts",
+                pipeline_error: "601",
+                refusal: "async",
             },
             DiagEvent::PlaybackEnded {
                 playback_id: 7,

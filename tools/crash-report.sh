@@ -13,6 +13,8 @@
 # The C tracer (src/main.c) writes, per crash:
 #     *** SIGNAL <n> (<name>) addr=0x… pc=0x… lr=0x…
 #     time: <unix seconds>                                    (wall clock; the fallback event's timestamp)
+#     thread: tid=<n> main=<0|1> name=<comm>                  (newer builds: which thread faulted)
+#     phase: <running|shutdown|exiting> uptime=<secs>         (newer builds: how far the process had got)
 #     reg: sp=0x… fp=0x… ip=0x… cpsr=0x… r0=0x… … r10=0x…     (2026-08-29 and later builds)
 #     at:  <the /proc/self/maps line containing pc or lr>     (which library faulted)
 #     bin: <the maps line for our own binary>                 (our load base)
@@ -193,6 +195,8 @@ else
   pc=$(echo "$block"   | sed -n 's/.*pc=0x\([0-9a-f]*\).*/\1/p' | head -1)
   lr=$(echo "$block"   | sed -n 's/.*lr=0x\([0-9a-f]*\).*/\1/p' | head -1)
   at=$(echo "$block"   | sed -n 's/^at: *//p' | head -1)
+  # Newer builds only; an older record has neither line and this prints nothing for it.
+  echo "$block" | grep -E '^(thread|phase): ' | sed 's/^/  /'
   # WHICH `bin:` line. The tracer emits one per maps line naming our executable, and that path
   # carries the app directory — so the match has to be ANCHORED on `/<id>/`. A bare substring test
   # would not do: `com.beb.plxnative` is a PREFIX of `com.beb.plxnative.debug`, so triaging the

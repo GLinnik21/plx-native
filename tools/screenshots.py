@@ -18,6 +18,12 @@ driver:
   5. crops, scales and encodes each output with ffmpeg (Lanczos, `-bitexact`, one thread) into a
      staging directory.
 
+Registry scenes can select a frame from the existing virtual-clock frame writer through
+`virtual`: `preroll`, `frames`, `select`, optional `keys`, `clicks` and `overlay`. This replaces
+the settled-shot environment. The complete frame stream must finish with zero debt, no failure
+and no unconverted landings before one selected RGB frame is encoded. `prepare` supplies synthetic
+fixture changes inside the same mock/runtime lifecycle; `assets` selects a relocated bundle.
+
 A scene may render SUPERSAMPLED: `render_scale` (1..4, default 1) sets `PLXNATIVE_RENDER_SCALE`,
 so the simulator draws the 1920x1080 canvas at that multiple (glyphs, icons and artwork rasterised
 to match) and the capture comes out that many times larger. An output may take a `crop`
@@ -157,22 +163,72 @@ def resolve_output(scene, out, canvas):
     return card_spec(scene, out) if "card" in out else output_spec(scene, out, canvas)
 
 
-def clean_env(rt, shot, scene, defaults):
+def clean_env(rt, shot, scene, defaults, assets=None):
     """The simulator's environment: this machine's, minus every PLXNATIVE_* variable (a developer's
     own session settings must not leak into a published figure), plus the scene's."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("PLXNATIVE_")}
     env.update({
         "PLXNATIVE_RUNTIME_DIR": str(rt),
-        "PLXNATIVE_APP_DIR": str(ROOT / "pkg"),
+        "PLXNATIVE_APP_DIR": str(assets or ROOT / "pkg"),
         "PLXNATIVE_WIN": defaults["canvas"],
         "PLXNATIVE_SHOT": str(shot),
         "PLXNATIVE_SHOT_EXIT": "1",
         "PLXNATIVE_SHOT_SETTLE": str(scene.get("settle_ms", defaults["settle_ms"])),
         "PLXNATIVE_SHOT_AFTER": str(scene.get("after_ms", defaults["after_ms"])),
     })
+    if "lang" in scene:
+        env["PLXNATIVE_LOCALE"] = scene["lang"]
+    if "virtual" in scene:
+        cfg = virtual_spec(scene)
+        env = {k: v for k, v in env.items() if not k.startswith("PLXNATIVE_SHOT")}
+        env.update({"PLXNATIVE_DUMP": str(rt), "PLXNATIVE_DUMP_OUT": str(rt / "frames.rgb"),
+                    "PLXNATIVE_DUMP_FRAMES": str(cfg["frames"]),
+                    "PLXNATIVE_DUMP_PREROLL": str(cfg["preroll"]),
+                    "PLXNATIVE_DUMP_KEYS": cfg.get("keys", ""),
+                    "PLXNATIVE_DUMP_CLICKS": cfg.get("clicks", "")})
+        if cfg.get("overlay"):
+            env["PLXNATIVE_DUMP_ALLOW_OVERLAY"] = "1"
     if render_scale(scene) > 1:
         env["PLXNATIVE_RENDER_SCALE"] = str(render_scale(scene))
     return env
+
+
+def virtual_spec(scene):
+    """A virtual-clock capture selects one written frame; all input still releases before exit."""
+    cfg = {"frames": 1, "select": 0, "preroll": 900, **scene["virtual"]}
+    if set(cfg) - {"frames", "select", "preroll", "keys", "clicks", "overlay"}:
+        raise ValueError("unknown virtual capture option")
+    for key in ("frames", "select", "preroll"):
+        if not isinstance(cfg[key], int) or isinstance(cfg[key], bool):
+            raise ValueError(f"virtual {key} must be an integer")
+    if not 1 <= cfg["frames"] <= 120 or not 0 <= cfg["select"] < cfg["frames"] or not 0 <= cfg["preroll"] <= 3600:
+        raise ValueError("virtual capture frame bounds are invalid")
+    if render_scale(scene) != 1:
+        raise ValueError("virtual captures use the native 1920x1080 canvas")
+    return cfg
+
+
+def virtual_png(rt, scene, defaults):
+    """Check the frame writer's debt/provenance contract before encoding the selected RGB frame."""
+    cfg = virtual_spec(scene)
+    width, height = size_of(defaults["canvas"])
+    summary = json.loads((rt / "dump.json").read_text())
+    expected = {"frames": cfg["frames"], "preroll": cfg["preroll"], "width": width, "height": height,
+                "failed": None, "frames_with_debt": 0, "unconverted_takes": []}
+    for key, value in expected.items():
+        if key not in summary or summary[key] != value:
+            raise RuntimeError(f"virtual capture {key}: expected {value!r}, got {summary.get(key)!r}")
+    path = rt / "frames.rgb"
+    frame_bytes = width * height * 3
+    if path.stat().st_size != frame_bytes * cfg["frames"]:
+        raise RuntimeError("virtual capture has an incomplete RGB frame stream")
+    with path.open("rb") as source:
+        source.seek(cfg["select"] * frame_bytes)
+        rgb = source.read(frame_bytes)
+    return subprocess.run(["ffmpeg", "-v", "error", "-threads", "1", "-f", "rawvideo",
+                           "-pixel_format", "rgb24", "-video_size", f"{width}x{height}", "-i", "pipe:0",
+                           "-frames:v", "1", "-bitexact", "-f", "image2pipe", "-c:v", "png", "pipe:1"],
+                          input=rgb, capture_output=True, check=True).stdout
 
 
 def png_size(png):
@@ -199,12 +255,14 @@ def fit_capture(png, w, h):
                           input=png, capture_output=True, check=True).stdout
 
 
-def capture(binary, scene, defaults, hero, keep):
+def capture(binary, scene, defaults, hero, keep, *, prepare=None, assets=None):
     """Boot one scene and return (png bytes, log text). Raises RuntimeError on any failure."""
     srv, pms = mock_pms.serve(0, catalog=CATALOG, hero=hero)
     port = srv.server_address[1]
     rt = pathlib.Path(tempfile.mkdtemp(prefix=f"plxnative-shot-{scene['name']}-"))
     try:
+        if prepare is not None:
+            prepare(pms, rt)
         triggers = {"plextv": f"http://127.0.0.1:{port}", "discover": f"http://127.0.0.1:{port}", "stillclock": str(defaults["stillclock_ms"])}
         if not scene.get("no_token"):
             triggers["token"] = PLACEHOLDER_TOKEN
@@ -212,11 +270,13 @@ def capture(binary, scene, defaults, hero, keep):
         for name, value in triggers.items():
             (rt / f"plxnative-{name}").write_text(value)
         shot = rt / "shot.png"
+        if "virtual" in scene:
+            (rt / "frames.rgb").touch()
         out = open(rt / "sim.out", "w")
         timeout = scene.get("timeout_s", defaults["timeout_s"])
         t0 = time.monotonic()
         try:
-            rc = subprocess.run([str(binary), "127.0.0.1", str(port)], env=clean_env(rt, shot, scene, defaults),
+            rc = subprocess.run([str(binary), "127.0.0.1", str(port)], env=clean_env(rt, shot, scene, defaults, assets),
                                 stdout=out, stderr=subprocess.STDOUT, timeout=timeout).returncode
         except subprocess.TimeoutExpired:
             rc = None
@@ -230,11 +290,22 @@ def capture(binary, scene, defaults, hero, keep):
             problems.append(f"no settled frame within {timeout}s (the screen never came to rest)")
         elif rc != 0:
             problems.append(f"simulator exited {rc}")
+        if "virtual" in scene and rc == 0:
+            try:
+                shot.write_bytes(virtual_png(rt, scene, defaults))
+            except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as exc:
+                problems.append(f"invalid virtual capture: {exc}")
         if not shot.exists():
             problems.append("no capture written")
         for line in scene.get("expect", []):
             if line not in log:
                 problems.append(f"expected log line missing: {line!r}")
+        if scene.get("expect_focus"):
+            focus = [line.split("focus route=player ",1)[1] for line in log.splitlines() if "focus route=player " in line]
+            fields = dict(word.split("=",1) for word in focus[-1].split() if "=" in word) if focus else {}
+            for key, value in scene["expect_focus"].items():
+                if fields.get(key) != value:
+                    problems.append(f"final player focus {key}: expected {value!r}, got {fields.get(key)!r}")
         # The boot line proves the person-page and Watchlist reads reach the mock, not the real provider.
         stand_in = mock_pms.discover_stand_in_problem(log)
         if stand_in:

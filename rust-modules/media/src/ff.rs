@@ -43,20 +43,38 @@ pub fn set_feed_audio(on: bool) {
     FEED_AUDIO.store(on, Ordering::Relaxed);
 }
 
-/// The PCM the current Load declared for app-decoded audio (`route::stream_pcm`), packed
-/// `rate << 16 | bits << 8 | channels`; 0 = this Load declares no PCM.
+/// The PCM the current Load declared for app-decoded audio (`route::stream_pcm`), packed into one word:
+/// channels in bits 0-7, sample bits in 8-15, the declared rate in 16-31, [`PCM_LOSSY_BIT`] at 32 and the
+/// track's own rate ([`ff_pcm::PcmOut::source_rate`](crate::ff_pcm::PcmOut), at most `i32::MAX`: 31 bits) in
+/// 33-63; 0 = this Load declares no PCM.
 static PCM_OUT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-/// Set by `start_bufferfeed` beside the Load, before the demuxer is spawned.
-pub fn set_pcm_out(f: Option<(u32, u32, u32)>) {
-    let v = f.map_or(0, |(rate, bits, ch)| u64::from(rate) << 16 | u64::from(bits) << 8 | u64::from(ch));
+/// Bit set in [`PCM_OUT`] when the Load's PCM is the LOSSY app decode's (a lossy codec the attempt decodes in the app).
+const PCM_LOSSY_BIT: u64 = 1 << 32;
+/// Where [`PCM_OUT`] keeps the track's own rate.
+const PCM_SOURCE_SHIFT: u32 = 33;
+/// Set by `start_bufferfeed` beside the Load, before the demuxer is spawned. `lossy`: the Load
+/// declared the lossy decode's shape (`route::stream_pcm_is_lossy`), so a lossy stream is the app's
+/// to decode only then, never because some lossless PCM Load happens to be 48 kHz stereo.
+pub fn set_pcm_out(f: Option<crate::ff_pcm::PcmOut>, lossy: bool) {
+    let v = f.map_or(0, |o| {
+        u64::from(o.channels & 0xff)
+            | u64::from(o.bits & 0xff) << 8
+            | u64::from(o.rate & 0xffff) << 16
+            | u64::from(o.source_rate & 0x7fff_ffff) << PCM_SOURCE_SHIFT
+            | if lossy { PCM_LOSSY_BIT } else { 0 }
+    });
     PCM_OUT.store(v, Ordering::Relaxed);
+}
+fn pcm_lossy() -> bool {
+    PCM_OUT.load(Ordering::Relaxed) & PCM_LOSSY_BIT != 0
 }
 fn pcm_out() -> Option<crate::ff_pcm::PcmOut> {
     let v = PCM_OUT.load(Ordering::Relaxed);
     (v != 0).then(|| crate::ff_pcm::PcmOut {
-        rate: (v >> 16) as u32,
-        bits: ((v >> 8) & 0xff) as u32,
         channels: (v & 0xff) as u32,
+        bits: ((v >> 8) & 0xff) as u32,
+        rate: ((v >> 16) & 0xffff) as u32,
+        source_rate: (v >> PCM_SOURCE_SHIFT) as u32,
     })
 }
 
@@ -128,6 +146,11 @@ const OFF_STREAM_METADATA: usize = 80;
 const OFF_FMT_DURATION: usize = 64;
 #[cfg(target_pointer_width = "64")]
 const OFF_FMT_DURATION: usize = 104;
+/// `AVFormatContext.start_time`, in AV_TIME_BASE units: the `int64` right before `duration`.
+#[cfg(target_pointer_width = "32")]
+const OFF_FMT_START_TIME: usize = 56;
+#[cfg(target_pointer_width = "64")]
+const OFF_FMT_START_TIME: usize = 96;
 
 /// `AVDictionaryEntry` — two `char *`. Modelled rather than opaque because the whole point of the
 /// call is to read both halves; `ci/ffabi-assert.c` holds the layout.
@@ -137,10 +160,17 @@ pub struct AVDictionaryEntry {
     value: *const c_char,
 }
 
-/// The only field this app reads past `AVFormatContext.streams`.
+/// `AVFormatContext.duration`, one of the two fields this app reads past `AVFormatContext.streams`.
 #[inline]
 unsafe fn fmt_duration(fmt: *const AVFormatContext) -> i64 {
     *((fmt as *const u8).add(OFF_FMT_DURATION) as *const i64)
+}
+
+/// `AVFormatContext.start_time` (the other): where the earliest stream's clock starts, or
+/// `AV_NOPTS_VALUE`. Valid once `avformat_find_stream_info` has returned.
+#[inline]
+unsafe fn fmt_start_time(fmt: *const AVFormatContext) -> i64 {
+    *((fmt as *const u8).add(OFF_FMT_START_TIME) as *const i64)
 }
 
 // ---- structs (exact n3.3 field order; 32-bit ARM/AAPCS sizes) ----
@@ -270,9 +300,9 @@ pub struct AVChannelLayout {
 //
 // It STOPS at `filename` because that is where the two majors stop agreeing: FFmpeg 4.0 inserted
 // `char *url` at +1056, pushing start_time to +1064 and duration to +1072. Everything above is
-// identical on 3.3 and 4.x. `duration` — the only field past that point this app reads — is
-// reached through [`fmt_duration`] at the offset the runtime ABI table gives, rather than by
-// declaring it here at an offset that is right on exactly one of the two.
+// identical on 3.3 and 4.x. `duration` and `start_time` — the only fields past that point this app
+// reads — are reached through [`fmt_duration`] and [`fmt_start_time`] at the offsets the runtime ABI
+// table gives, rather than by declaring them here at offsets that are right on exactly one of the two.
 #[repr(C)]
 pub struct AVFormatContext {
     pub av_class: *const AVClass,    // +0
@@ -285,9 +315,10 @@ pub struct AVFormatContext {
     pub streams: *mut *mut AVStream, // +28
                                      // STOPS HERE. Everything past `streams` shifts between majors — `duration` is at +48 on
                                      // FFmpeg 6, +64 on 9, and +1064 on the n3.3 the televisions ship, because 5.0 deleted
-                                     // `filename[1024]` and later releases kept rearranging what replaced it. It is the only field
-                                     // beyond this point the app reads, so it is read at OFF_FMT_DURATION rather than declared at
-                                     // a position that would be quietly wrong after a version bump.
+                                     // `filename[1024]` and later releases kept rearranging what replaced it. It and `start_time`
+                                     // are the only fields beyond this point the app reads, so they are read at OFF_FMT_DURATION
+                                     // and OFF_FMT_START_TIME rather than declared at a position that would be quietly wrong
+                                     // after a version bump.
 }
 
 // AVBSFContext is NOT modelled. The app does its own AVCC->Annex-B conversion in Rust, so the
@@ -453,9 +484,16 @@ plx_base::dynlib! {
     fn avcodec_receive_packet(ctx: *mut AVCodecContext, pkt: *mut AVPacket) -> c_int;
     fn avcodec_parameters_from_context(par: *mut AVCodecParameters, ctx: *const AVCodecContext) -> c_int;
     fn av_packet_rescale_ts(pkt: *mut AVPacket, tb_src: AVRational, tb_dst: AVRational);
-    // Audio decode, send/receive API: playback speed (`SpeedDecoder`) and FLAC → PCM (`ff_pcm`).
+    // Audio decode, send/receive API: playback speed (`SpeedDecoder`) and lossless → PCM (`ff_pcm`).
     fn avcodec_send_packet(ctx: *mut AVCodecContext, pkt: *const AVPacket) -> c_int;
     fn avcodec_receive_frame(ctx: *mut AVCodecContext, frame: *mut c_void) -> c_int;
+    // A seek: drop what the decoder carries from before it. Public libavcodec API since the
+    // 1.x series and in the bundled `libavcodec-plx` (the library `dynlib!` opens is OUR build,
+    // not the television's): an export of both the ARM and the host build, checked by hand with
+    // `readelf --dyn-syms`. No CI step compares a `dynlib!` table with the bundled library's
+    // exports (`ci/check-elf.sh` reads only the app binary): a name the build did not export would
+    // leave this whole table `Incomplete` at start-up and refuse playback on every firmware.
+    fn avcodec_flush_buffers(ctx: *mut AVCodecContext);
     fn avcodec_find_decoder_by_name(name: *const c_char) -> *const AVCodec;
 }}
 plx_base::dynlib! {
@@ -823,24 +861,50 @@ const OFF_AFRAME_EXTENDED_DATA: usize = 64; // u8**
 #[cfg(target_pointer_width = "32")]
 pub(crate) const OFF_AFRAME_NB_SAMPLES: usize = 76;
 #[cfg(target_pointer_width = "32")]
-const OFF_AFRAME_SAMPLE_RATE: usize = 132;
+pub(crate) const OFF_AFRAME_SAMPLE_RATE: usize = 132;
 #[cfg(target_pointer_width = "32")]
-const OFF_AFRAME_NB_CHANNELS: usize = 256 + 4;
+pub(crate) const OFF_AFRAME_NB_CHANNELS: usize = 256 + 4;
+// The layout's `order` (offset 0 of the AVChannelLayout) and its `u.mask` (8-aligned after
+// `nb_channels`); `mask` is only meaningful when `order` is native (`CH_ORDER_NATIVE`).
+#[cfg(target_pointer_width = "32")]
+const OFF_AFRAME_CH_ORDER: usize = 256;
+#[cfg(target_pointer_width = "32")]
+const OFF_AFRAME_CH_MASK: usize = 264;
 #[cfg(target_pointer_width = "64")]
 const OFF_AFRAME_EXTENDED_DATA: usize = 96;
 #[cfg(target_pointer_width = "64")]
 pub(crate) const OFF_AFRAME_NB_SAMPLES: usize = 112;
 #[cfg(target_pointer_width = "64")]
-const OFF_AFRAME_SAMPLE_RATE: usize = 180;
+pub(crate) const OFF_AFRAME_SAMPLE_RATE: usize = 180;
 #[cfg(target_pointer_width = "64")]
-const OFF_AFRAME_NB_CHANNELS: usize = 384 + 4;
+pub(crate) const OFF_AFRAME_NB_CHANNELS: usize = 384 + 4;
+#[cfg(target_pointer_width = "64")]
+const OFF_AFRAME_CH_ORDER: usize = 384;
+#[cfg(target_pointer_width = "64")]
+const OFF_AFRAME_CH_MASK: usize = 392;
+
+/// `AV_CHANNEL_ORDER_NATIVE`: the layout is a bit mask, channels in ascending bit order
+/// (`ci/ffabi-assert.c` proves the value).
+const CH_ORDER_NATIVE: c_int = 1;
+
+/// The native channel mask of a decoded audio frame (`frame` points at the `AVFrame`), or 0 when the
+/// layout is not a mask (the union then holds a pointer, or nothing): the caller mixes by count.
+/// The ONE reader of `OFF_AFRAME_CH_ORDER` / `OFF_AFRAME_CH_MASK`, for the lossy app decode
+/// (`ff_pcm`) and the speed decoder alike.
+pub(crate) unsafe fn frame_channel_mask(frame: *const u8) -> u64 {
+    if *(frame.add(OFF_AFRAME_CH_ORDER) as *const c_int) == CH_ORDER_NATIVE {
+        std::ptr::read_unaligned(frame.add(OFF_AFRAME_CH_MASK) as *const u64)
+    } else {
+        0
+    }
+}
 
 /// **The audio decoder a playback-speed session runs** (`crate::speed_audio`): the selected audio
 /// stream decoded in software, downmixed to stereo and time-stretched to `permille`, then fed as
 /// PCM AUs. Exists only while the speed is not 1x; at 1x the compressed audio goes to the TV as it
-/// always has, except FLAC, which `ff_pcm::PcmDecoder` decodes and feeds as PCM. At a speed this
-/// decoder takes FLAC too and `PcmDecoder` is not opened. Opened per demux run from the stream's
-/// own codec parameters.
+/// always has, except the app-decoded set (FLAC, ALAC, LPCM, and the lossy codecs an attempt decodes in
+/// the app, `Caps::app_decodes_lossy_track`), which `ff_pcm::PcmDecoder` decodes and feeds as PCM. At a speed this decoder takes those too and `PcmDecoder` is not
+/// opened. Opened per demux run from the stream's own codec parameters.
 pub(crate) struct SpeedDecoder {
     ctx: *mut AVCodecContext,
     frame: *mut c_void,
@@ -909,7 +973,8 @@ impl SpeedDecoder {
                     } else {
                         vec![std::slice::from_raw_parts(*ext, nb * width * channels)]
                     };
-                    let stereo = crate::speed_audio::downmix(sf, planar, channels, nb, &planes);
+                    let mask = frame_channel_mask(f);
+                    let stereo = crate::speed_audio::downmix_by_mask(sf, planar, mask, channels, nb, &planes);
                     aus.extend(self.audio.push(pts_ns, rate, &stereo));
                 }
             }
@@ -1899,6 +1964,8 @@ fn arm_active_stall_guard(
 mod acquisition;
 #[path = "ff_subs.rs"]
 mod subs;
+#[path = "ff_native_audio.rs"]
+pub(crate) mod native_audio;
 #[path = "ff_subside.rs"]
 pub(crate) mod subside;
 use subs::{SubKind, SubTracks};
@@ -3307,8 +3374,9 @@ fn av1_packet_to_tu(pkt: &[u8], key: bool, cfg: &[u8], f: Av1Framing, out: &mut 
 /// decoder rejects with nothing in the log naming the cause).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum VideoFraming {
-    /// Length-prefixed NAL units rewritten to Annex-B with the parameter sets prepended at each
-    /// keyframe (`packet_to_annexb`).
+    /// NAL units rewritten to Annex-B with the parameter sets prepended at each keyframe. How the
+    /// packet delimits them is [`NalInput`]: a length before each NAL (`packet_to_annexb`), or start
+    /// codes already (`annexb_h264_access_unit`, H.264 only).
     AnnexB { hevc: bool },
     /// Section-5 temporal units with the av1C configuration in-band (`av1_packet_to_tu`).
     Av1,
@@ -3339,6 +3407,66 @@ impl VideoFraming {
             Self::Vp9 => LoadVideo::Vp9,
         }
     }
+}
+
+/// How the NAL units inside one demuxed H.264/HEVC packet are delimited, decided once per stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NalInput {
+    /// A big-endian length before each NAL (avcC / hvcC): Matroska and MP4.
+    LengthPrefixed,
+    /// Start codes between the NALs and the parameter sets in-band: MPEG-TS, a raw elementary stream.
+    StartCodes,
+}
+
+impl NalInput {
+    /// FFmpeg's own rule (`ff_h264_decode_extradata`): extradata that is an avcC / hvcC record
+    /// (its first byte is the version, 1) means length-prefixed packets; none, or parameter sets
+    /// that kept their start codes, means the packets carry start codes too. Anything else keeps the
+    /// length walk, so only a stream with NO config record changes behaviour. **Never decided from
+    /// a packet:** a length-prefixed NAL of 256..=511 bytes begins `00 00 01 xx`, a valid 3-byte
+    /// start code, and a small P-slice is exactly that.
+    pub(crate) fn of_extradata(extradata: &[u8]) -> Self {
+        if extradata.is_empty() || extradata.starts_with(&[0, 0, 1]) || extradata.starts_with(&[0, 0, 0, 1]) {
+            Self::StartCodes
+        } else {
+            Self::LengthPrefixed
+        }
+    }
+}
+
+/// The clock a start-code stream's packet timestamps are rebased by, in ns: its `start_time`
+/// (`AV_TIME_BASE` units, µs). The engine takes a fresh play's first keyframe to be near 0 and
+/// `seek_to_ns` to be content time, and a broadcast capture's clock starts wherever the
+/// transmitter's did (the report's first audio unit was at 45171.69 s). **Only a stream with no
+/// config record is moved**: Matroska and MP4 keep the clock they have always had. An unknown
+/// (`AV_NOPTS_VALUE`, `i64::MIN`) or negative start moves nothing; a stream is never moved forward.
+fn stream_origin_ns(start_time_us: i64, input: NalInput) -> i64 {
+    if input == NalInput::StartCodes && start_time_us > 0 {
+        start_time_us.saturating_mul(1_000)
+    } else {
+        0
+    }
+}
+
+/// A packet timestamp moved back by `by` ticks; "no value" stays no value.
+fn rebase_ts(t: i64, by: i64) -> i64 {
+    if t == AV_NOPTS_VALUE {
+        t
+    } else {
+        t.saturating_sub(by)
+    }
+}
+
+/// Move a demuxed packet onto the rebased clock ([`stream_origin_ns`]), in its stream's time base,
+/// so everything downstream (the lanes' pts, subtitle cues, the side reader's anchor) reads 0-based
+/// time without knowing about it. `origin_ns == 0` is a no-op.
+unsafe fn rebase_packet(pkt: *mut AVPacket, st: *mut AVStream, origin_ns: i64) {
+    if origin_ns == 0 {
+        return;
+    }
+    let by = av_rescale_q(origin_ns, NS_TB, stream_time_base(st));
+    (*pkt).pts = rebase_ts((*pkt).pts, by);
+    (*pkt).dts = rebase_ts((*pkt).dts, by);
 }
 
 /// Hand one demuxed VP9 packet to the decoder as it came, returning `key` unchanged.
@@ -3625,9 +3753,56 @@ fn nal_end(i: usize, nl: usize, size: usize) -> Option<usize> {
     Some(end as usize)
 }
 
-/// Convert one length-prefixed video packet to Annex-B (4-byte start codes) into `out`,
-/// prepending `param` (VPS/SPS/PPS) when the AU is a keyframe (H264 IDR type 5 / HEVC IRAP
-/// types 16-23). Returns true if it is a keyframe. Mirrors mkv_handle_block.
+/// Is this H.264 non-IDR slice NAL (header byte included) an I-slice? Reads the slice header's
+/// first two Exp-Golomb fields, `first_mb_in_slice` and `slice_type` (I is 2 or 7); a header too
+/// short to hold them is not one. Both fields sit in the first bytes, ahead of any emulation-
+/// prevention byte a valid header can need there.
+fn h264_slice_is_intra(nal: &[u8]) -> bool {
+    let bits = nal.get(1..).unwrap_or(&[]);
+    let mut pos = 0usize;
+    let mut ue = || -> Option<u32> {
+        let bit = |p: usize| bits.get(p / 8).map(|b| (b >> (7 - p % 8)) & 1);
+        let mut zeros = 0;
+        while bit(pos)? == 0 {
+            zeros += 1;
+            pos += 1;
+            if zeros > 31 {
+                return None;
+            }
+        }
+        pos += 1;
+        let mut v = 0u32;
+        for _ in 0..zeros {
+            v = (v << 1) | u32::from(bit(pos)?);
+            pos += 1;
+        }
+        Some((1u32 << zeros) - 1 + v)
+    };
+    ue().and_then(|_| ue()).is_some_and(|t| t == 2 || t == 7)
+}
+
+/// Does this H.264 NAL open a random access point: an IDR slice, or, when `intra_ok`, a non-IDR
+/// I-slice. `intra_ok` is the caller's evidence that one is a keyframe here (the container flagged
+/// the packet, or an SPS came ahead of the slice); both framings ask the same question.
+fn h264_is_rap(nal: &[u8], intra_ok: bool) -> bool {
+    match nal.first().map(|b| b & 0x1f) {
+        Some(5) => true,
+        Some(1) => intra_ok && h264_slice_is_intra(nal),
+        _ => false,
+    }
+}
+
+/// Convert one length-prefixed video packet to Annex-B (4-byte start codes) into `out` (a packet
+/// that carries start codes already is `annexb_h264_access_unit`'s: see [`NalInput`]),
+/// prepending `param` (VPS/SPS/PPS) when the AU is a keyframe (H264 IDR type 5, or a non-IDR
+/// I-slice at a random access point, see `container_key`; HEVC IRAP types 16-23). Returns true if
+/// it is a keyframe. Mirrors mkv_handle_block.
+///
+/// `container_key`: the demuxer flagged the packet a keyframe (`AV_PKT_FLAG_KEY`). For H.264 that,
+/// or an SPS ahead of the slice in the same AU, also makes a non-IDR I-slice one: a Blu-ray remux's
+/// random access points after its first frame are I-slices behind a recovery point (with the
+/// parameter sets repeated in band), and its Cues index them, so a seek lands on one and counting
+/// only IDR left the post-seek rebase waiting for a keyframe that never came.
 ///
 /// `dv_p7`: the stream is a Dolby Vision Profile 7 converted to 8.1 on the way to the pipeline
 /// ([`dovi_converts_to_p81`]). Every enhancement-layer NAL ([`is_dv_enhancement_layer`]) is
@@ -3639,6 +3814,7 @@ unsafe fn packet_to_annexb(
     nls: usize,
     is_hevc: bool,
     dv_p7: bool,
+    container_key: bool,
     param: &[u8],
     out: &mut Vec<u8>,
 ) -> bool {
@@ -3649,6 +3825,7 @@ unsafe fn packet_to_annexb(
     let d = std::slice::from_raw_parts(data, size);
     // pass 1: is this AU a keyframe?
     let mut is_key = false;
+    let mut in_band_sps = false;
     let mut i = 0usize;
     while i + nls <= size {
         let mut nl = 0usize;
@@ -3663,7 +3840,8 @@ unsafe fn packet_to_annexb(
         let key = if is_hevc {
             (16..=23).contains(&((b0 >> 1) & 0x3f))
         } else {
-            (b0 & 0x1f) == 5
+            in_band_sps |= (b0 & 0x1f) == 7;
+            h264_is_rap(&d[i..i + nl], container_key || in_band_sps)
         };
         if key {
             is_key = true;
@@ -3813,6 +3991,46 @@ mod dts_core_tests {
         frame
     }
 
+    /// The lossy bit travels with the declared PCM and never leaks into its shape: a lossless PCM
+    /// Load of the same 48 kHz stereo S16 does not make a DTS stream the app's.
+    #[test]
+    fn the_lossy_bit_is_the_loads_own_and_does_not_change_the_shape() {
+        use crate::ff_pcm::PcmOut;
+        let _g = plx_base::testlock::serial();
+        let shape = Some(PcmOut::exact(48_000, 16, 2));
+        super::set_pcm_out(shape, true);
+        assert!(super::pcm_lossy());
+        let lossy = super::pcm_out().unwrap();
+        super::set_pcm_out(shape, false);
+        assert!(!super::pcm_lossy(), "a lossless PCM Load of the same shape");
+        assert_eq!(super::pcm_out().unwrap(), lossy);
+        super::set_pcm_out(None, true);
+        assert!(!super::pcm_lossy() && super::pcm_out().is_none(), "no PCM declared, nothing lossy");
+    }
+
+    /// The declared PCM roundtrips through its one word, with the track's own rate in its 31 high bits: the
+    /// largest rate FFmpeg can state (`i32::MAX`) comes back whole, and the lossy flag, which sits just below it,
+    /// neither clobbers it nor is clobbered by it.
+    #[test]
+    fn the_declared_pcm_roundtrips_with_the_source_rate_and_the_lossy_flag_beside_it() {
+        use crate::ff_pcm::PcmOut;
+        let _g = plx_base::testlock::serial();
+        for out in [
+            PcmOut::exact(48_000, 16, 2),
+            PcmOut { rate: 48_000, bits: 32, channels: 2, source_rate: 96_000 },
+            PcmOut { rate: 44_100, bits: 32, channels: 1, source_rate: i32::MAX as u32 },
+            PcmOut { rate: 48_000, bits: 32, channels: 2, source_rate: 1 << 30 },
+        ] {
+            for lossy in [false, true] {
+                super::set_pcm_out(Some(out), lossy);
+                assert_eq!(super::pcm_out(), Some(out), "{out:?} lossy={lossy}");
+                assert_eq!(super::pcm_lossy(), lossy, "{out:?}");
+            }
+        }
+        super::set_pcm_out(None, false);
+        assert!(super::pcm_out().is_none());
+    }
+
     #[test]
     fn preserves_the_generated_dts_5_1_access_unit() {
         let frame = include_bytes!("../../../tests/fixtures/dts-core-frame.dts");
@@ -3954,11 +4172,42 @@ fn annexb_start(data: &[u8], from: usize) -> Option<(usize, usize)> {
     None
 }
 
-/// Validate an MPEG-TS H.264 packet as Annex-B, retain its in-band SPS/PPS and prepend whichever
-/// set is missing on an IDR. The progressive demuxer cannot be reused here: it interprets the
-/// first `00 00 00 01` as an AVCC length of one and corrupts the access unit.
+/// An HLS segment's access unit: [`annexb_h264_access_unit`] where only an IDR is a keyframe, which
+/// is how PMS's x264 opens every segment.
 fn ts_h264_access_unit(
     data: &[u8],
+    params: &mut H264ParamSets,
+    out: &mut Vec<u8>,
+) -> Result<bool, &'static str> {
+    annexb_h264_access_unit(data, Rap::IdrOnly, params, out)
+}
+
+/// What makes an H.264 slice a random access point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Rap {
+    /// An IDR slice only.
+    IdrOnly,
+    /// An IDR slice, or a non-IDR I-slice: one the container flagged (`container_key`), or one
+    /// behind an in-band SPS. The rule `packet_to_annexb` applies to a length-prefixed packet
+    /// ([`h264_is_rap`]).
+    IdrOrIntra { container_key: bool },
+}
+
+impl Rap {
+    /// Whether a non-IDR I-slice counts, `has_sps` being an SPS already seen in this unit.
+    fn intra_ok(self, has_sps: bool) -> bool {
+        matches!(self, Rap::IdrOrIntra { container_key } if container_key || has_sps)
+    }
+}
+
+/// Validate an H.264 packet that already carries start codes (MPEG-TS, a raw elementary stream),
+/// retain its in-band SPS/PPS and prepend whichever set is missing on a keyframe. `packet_to_annexb`
+/// cannot take such a packet: it reads the first `00 00 00 01` as a NAL length of one and the next
+/// four bytes as a length past the end, leaving every unit as `00 00 00 01 09` (#1084). Which of the
+/// two a stream needs is [`NalInput`]'s decision. `Err` names why the packet is not a usable unit.
+fn annexb_h264_access_unit(
+    data: &[u8],
+    rap: Rap,
     params: &mut H264ParamSets,
     out: &mut Vec<u8>,
 ) -> Result<bool, &'static str> {
@@ -3982,7 +4231,7 @@ fn ts_h264_access_unit(
         let end = annexb_start(data, payload).map_or(data.len(), |(next, _)| next);
         let nal_type = data[payload] & 0x1f;
         match nal_type {
-            5 => is_key = true,
+            5 | 1 if h264_is_rap(&data[payload..end], rap.intra_ok(has_sps)) => is_key = true,
             7 => {
                 params.sps.clear();
                 params.sps.extend_from_slice(&[0, 0, 0, 1]);
@@ -4019,6 +4268,22 @@ fn ts_h264_access_unit(
     }
     out.extend_from_slice(data);
     Ok(is_key)
+}
+
+/// One AAC access unit as the pipeline wants it: ADTS-framed, with exactly one header. Matroska and
+/// MP4 carry RAW AAC and need one added (`params`: the frequency index and channel configuration);
+/// MPEG-TS carries ADTS itself, libavformat leaves the header on the packet, and a second one ahead
+/// of it would put `FF F1` where the raw data block begins (#1084). `None`: raw AAC and nothing to
+/// frame it with.
+fn adts_framed(raw: &[u8], params: Option<(u8, u8)>) -> Option<std::borrow::Cow<'_, [u8]>> {
+    if packet_has_adts(raw) {
+        return Some(std::borrow::Cow::Borrowed(raw));
+    }
+    let (freq_idx, chan_cfg) = params?;
+    let mut framed = Vec::with_capacity(7 + raw.len());
+    framed.extend_from_slice(&adts_header(freq_idx, chan_cfg, raw.len()));
+    framed.extend_from_slice(raw);
+    Some(std::borrow::Cow::Owned(framed))
 }
 
 fn packet_has_adts(data: &[u8]) -> bool {
@@ -5089,14 +5354,7 @@ unsafe fn hls_demux_segment(
             let duration_ns = packet_duration
                 .or_else(|| adts_duration_ns(raw))
                 .or(aac_duration);
-            let data = if packet_has_adts(raw) {
-                raw.to_vec()
-            } else if let Some((freq_idx, chan_cfg)) = aac_adts {
-                let mut framed = Vec::with_capacity(7 + raw.len());
-                framed.extend_from_slice(&adts_header(freq_idx, chan_cfg, raw.len()));
-                framed.extend_from_slice(raw);
-                framed
-            } else {
+            let Some(data) = adts_framed(raw, aac_adts).map(std::borrow::Cow::into_owned) else {
                 av_packet_unref(input.pkt);
                 return Err(HlsExit::Failed("AAC packet is neither ADTS nor reframable"));
             };
@@ -8602,6 +8860,47 @@ mod audio_codec_name_tests {
     }
 }
 
+/// PURE: whether the demuxer would hand the TV this stream's packets RAW although the Load declared
+/// PCM. `pcm_declared`: `pcm_out()` is set (1x, an app-decoded codec was planned); `audio_fed`:
+/// audio goes to the TV at all; `app_decoded`: the stream's own FFmpeg codec has an app decoder
+/// (`devcaps::app_decoded_by_ffmpeg_name`, and for a lossy one the Load's lossy claim).
+///
+/// The planner's `pcm` is PMS's spelling and covers LPCM flavours the app cannot decode (float,
+/// 8-bit); the TV reads raw bytes under a PCM Load as the declared S16/S32, which is full-scale
+/// noise or the wrong speed with no error. Such a stream must be refused, never fed.
+fn pcm_load_feeds_raw(pcm_declared: bool, audio_fed: bool, app_decoded: bool) -> bool {
+    pcm_declared && audio_fed && !app_decoded
+}
+
+#[cfg(test)]
+mod pcm_load_guard_tests {
+    use super::pcm_load_feeds_raw;
+
+    /// Every FFmpeg codec name a track PMS calls `pcm` (or any other planned-as-PCM track) can
+    /// open as, under a PCM Load: only the ones with an app decoder may go on.
+    #[test]
+    fn a_pcm_load_never_feeds_a_stream_the_app_cannot_decode() {
+        for (name, decodable) in [
+            ("flac", true), ("alac", true), ("pcm_s16le", true), ("pcm_s24be", true), ("pcm_s32le", true),
+            ("pcm_f32le", false), ("pcm_f64le", false), ("pcm_s8", false), ("pcm_u8", false),
+            ("pcm_bluray", false), ("pcm_dvd", false), ("ac3", false), ("eac3", false), ("aac", false),
+            ("dts", false), // lossy: the app's only when the Load itself claimed the lossy decode
+            ("mp3", false), ("vorbis", false), ("truehd", false), // likewise
+        ] {
+            let app_decoded = plx_platform::devcaps::app_decoded_by_ffmpeg_name(name).is_some_and(|c| !c.lossy);
+            assert_eq!(app_decoded, decodable, "{name}: the table the guard reads");
+            assert_eq!(pcm_load_feeds_raw(true, true, app_decoded), !decodable, "{name}");
+        }
+    }
+
+    #[test]
+    fn only_a_pcm_load_that_feeds_audio_is_guarded() {
+        assert!(!pcm_load_feeds_raw(false, true, false), "a native Load feeds compressed audio as it always did");
+        assert!(!pcm_load_feeds_raw(true, false, false), "no audio fed (the dev video-only switch)");
+        assert!(!pcm_load_feeds_raw(true, true, true), "decoded in the app");
+    }
+}
+
 #[cfg(test)]
 mod averror_errno_tests {
     use super::*;
@@ -9208,7 +9507,9 @@ pub fn demux(
                 } else {
                     None
                 };
-                let dts_audio = ai >= 0 && std::ffi::CStr::from_ptr(avcodec_get_name(
+                // Native DTS: the set's own decoder takes the core. Not when the Load declared the lossy PCM,
+                // which is the app decoding DTS itself (`pcm_dec` below, `Caps::app_decodes_lossy_track`).
+                let dts_audio = ai >= 0 && !pcm_lossy() && std::ffi::CStr::from_ptr(avcodec_get_name(
                     (*stream_codecpar(*streams.add(ai as usize))).codec_id
                 )).to_bytes() == b"dts";
                 if dts_audio {
@@ -9218,32 +9519,60 @@ pub fn demux(
                 // stretched and fed as PCM. A stream with no bundled decoder cannot honour it — the
                 // engine refused the speed at Load (`player::session_rate`), so this is a guard.
                 let speed_permille = SHARED.applied_rate_permille.load(Ordering::Relaxed);
-                // App-decoded audio (FLAC): decode to the PCM the Load declared, or refuse the
-                // stream — the Load and the file must agree, or the panel plays the wrong pitch.
-                // Not at a speed: that session's Load declares the speed decoder's own PCM
-                // (`engine::app_pcm_for_rate`), `SpeedDecoder` below decodes the FLAC too, and the
-                // two must never both decode one stream.
-                let flac_audio = ai >= 0 && std::ffi::CStr::from_ptr(avcodec_get_name(
-                    (*stream_codecpar(*streams.add(ai as usize))).codec_id
-                )).to_bytes() == b"flac";
+                // App-decoded audio (FLAC, ALAC, LPCM, and the lossy rows of `devcaps::APP_DECODED` the attempt decodes in the app): decode to the PCM the
+                // Load declared, or refuse the stream — the Load and the file must agree, or the
+                // panel plays the wrong pitch. Not at a speed: that session's Load declares the
+                // speed decoder's own PCM (`engine::app_pcm_for_rate`), `SpeedDecoder` below decodes
+                // it too, and the two must never both decode one stream.
+                let app_decoded = if ai >= 0 {
+                    let name = std::ffi::CStr::from_ptr(avcodec_get_name(
+                        (*stream_codecpar(*streams.add(ai as usize))).codec_id
+                    )).to_string_lossy();
+                    // A lossy codec is the app's only when the Load declared PCM for it (the attempt
+                    // decodes it in the app); otherwise it is native audio and the set's decoder takes it.
+                    plx_platform::devcaps::app_decoded_by_ffmpeg_name(&name)
+                        .filter(|c| !c.lossy || pcm_lossy())
+                        .map(|_| name.into_owned())
+                } else {
+                    None
+                };
+                // The Load said PCM but this stream has no app decoder (float or 8-bit LPCM under
+                // PMS's `pcm`): refuse it the way an open refusal ends. Fed raw, the TV would play
+                // it as the declared S16/S32 — noise, with no error to recover from.
+                if ai >= 0 && pcm_load_feeds_raw(
+                    pcm_out().is_some(), FEED_AUDIO.load(Ordering::Relaxed), app_decoded.is_some(),
+                ) {
+                    let name = std::ffi::CStr::from_ptr(avcodec_get_name(
+                        (*stream_codecpar(*streams.add(ai as usize))).codec_id
+                    )).to_string_lossy();
+                    crate::player::log(&format!(
+                        "ff: {name} refused — the Load declared PCM but the app has no {name} decoder"
+                    ));
+                    SHARED.demux_failed.store(true, Ordering::Release);
+                    avformat_close_input(&mut fmt);
+                    free_avio(avio);
+                    break;
+                }
                 let mut pcm_dec: Option<crate::ff_pcm::PcmDecoder> = None;
-                if flac_audio
-                    && FEED_AUDIO.load(Ordering::Relaxed)
-                    && speed_permille == crate::player::RATE_NORMAL
-                {
+                if let Some(name) = app_decoded.as_deref().filter(|_| {
+                    FEED_AUDIO.load(Ordering::Relaxed) && speed_permille == crate::player::RATE_NORMAL
+                }) {
                     let opened = match pcm_out() {
                         Some(out) => crate::ff_pcm::PcmDecoder::open(
                             stream_codecpar(*streams.add(ai as usize)), out,
                         ),
-                        None => Err("the Load declared no PCM for a FLAC track".to_string()),
+                        None => Err(format!("the Load declared no PCM for a {name} track")),
                     };
                     match opened {
                         Ok(d) => {
-                            crate::player::log("ff: FLAC -> PCM decoding on");
+                            crate::player::log(&format!(
+                                "ff: {name} -> PCM decoding on{}",
+                                if d.core_only() { " (core only)" } else { "" }
+                            ));
                             pcm_dec = Some(d);
                         }
                         Err(why) => {
-                            crate::player::log(&format!("ff: FLAC refused — {why}"));
+                            crate::player::log(&format!("ff: {name} refused — {why}"));
                             SHARED.demux_failed.store(true, Ordering::Release);
                             avformat_close_input(&mut fmt);
                             free_avio(avio);
@@ -9251,6 +9580,9 @@ pub fn demux(
                         }
                     }
                 }
+                // Decoded blocks shorter than 10 ms (TrueHD's 1/1200 s access units) go to the lane
+                // gathered into AUs of about that length (`ff_pcm::AuBatcher`).
+                let mut pcm_batch = pcm_dec.as_ref().map(|d| d.au_batcher());
                 if let Some((fi, ch)) = aac_adts {
                     crate::player::log(&format!(
                         "ff: AAC → ADTS reframing on (freq_idx={fi} ch={ch})"
@@ -9266,6 +9598,21 @@ pub fn demux(
                 } else {
                     None
                 };
+                // Opus goes to the television's own decoder (`ff_native_audio.rs`; its header travels
+                // in the Load). What is fed natively is recorded for the player, which learns a
+                // refusal from it. FLAC, ALAC and LPCM are decoded in the app (`pcm_dec`) and are not native.
+                if ai >= 0 && FEED_AUDIO.load(Ordering::Relaxed) && speed_dec.is_none() {
+                    let acp = stream_codecpar(*streams.add(ai as usize));
+                    let aname = std::ffi::CStr::from_ptr(avcodec_get_name((*acp).codec_id)).to_string_lossy().into_owned();
+                    if let Some(kind) = native_audio::Kind::from_ffmpeg_name(&aname) {
+                        let channels = u32::try_from((*acp).ch_layout.nb_channels).unwrap_or(0);
+                        crate::player::log(&format!(
+                            "ff: {aname} fed to the TV's own decoder (channels={channels} rate={})",
+                            (*acp).sample_rate
+                        ));
+                        native_audio::publish_fed(kind, channels);
+                    }
+                }
                 let dur = fmt_duration(fmt);
                 if dur > 0 {
                     SHARED
@@ -9297,6 +9644,38 @@ pub fn demux(
                     free_avio(avio);
                     break;
                 };
+                // How the stream delimits its NAL units, from its extradata (`NalInput`). The route
+                // trusts the part's file NAME, so a transport or elementary stream called `.mp4`
+                // arrives here with no avcC/hvcC record and start codes in every packet; walked by
+                // length, each access unit came out as the five bytes `00 00 00 01 09` (#1084).
+                // H.264 is framed in place (`annexb_h264_access_unit`); HEVC has no such framing, so
+                // it is refused here, like a codec with no framing, rather than misframed.
+                let extradata: &[u8] = if (*vcp).extradata.is_null() || (*vcp).extradata_size <= 0 {
+                    &[]
+                } else {
+                    std::slice::from_raw_parts((*vcp).extradata, (*vcp).extradata_size as usize)
+                };
+                let nal_input = match framing {
+                    VideoFraming::AnnexB { .. } => NalInput::of_extradata(extradata),
+                    VideoFraming::Av1 | VideoFraming::Vp9 => NalInput::LengthPrefixed,
+                };
+                // Such a stream's clock is moved to 0 here, once (`stream_origin_ns`).
+                let origin_ns = stream_origin_ns(fmt_start_time(fmt), nal_input);
+                if origin_ns != 0 {
+                    crate::player::log(&format!(
+                        "ff: the stream's clock starts at {}ms; rebased to 0",
+                        origin_ns / 1_000_000
+                    ));
+                }
+                if nal_input == NalInput::StartCodes && framing == (VideoFraming::AnnexB { hevc: true }) {
+                    crate::player::log(
+                        "ff: HEVC with start codes and no hvcC record (a transport or elementary stream) has no framing here; refusing the stream",
+                    );
+                    SHARED.fail_demux(DemuxExitClass::NoFraming);
+                    avformat_close_input(&mut fmt);
+                    free_avio(avio);
+                    break;
+                }
                 // What the Load declared (`dg_load_v`, 0 when this start sent a static payload) must
                 // be what the file is: a Load that says one codec over another codec's bitstream is a
                 // black screen, so stop and name both.
@@ -9392,18 +9771,9 @@ pub fn demux(
                 let (param_blob, nal_len_size) = if is_av1 || is_vp9 {
                     (Vec::new(), 0)
                 } else {
-                    parse_extradata(
-                        (*vcp).extradata,
-                        (*vcp).extradata_size.max(0) as usize,
-                        is_hevc,
-                    )
+                    parse_extradata(extradata.as_ptr(), extradata.len(), is_hevc)
                 };
-                let av1_ed: &[u8] = if (*vcp).extradata.is_null() || (*vcp).extradata_size <= 0 {
-                    &[]
-                } else {
-                    std::slice::from_raw_parts((*vcp).extradata, (*vcp).extradata_size as usize)
-                };
-                let av1_cfg = if is_av1 { parse_av1c(av1_ed) } else { Vec::new() };
+                let av1_cfg = if is_av1 { parse_av1c(extradata) } else { Vec::new() };
                 let av1_framing = if is_av1 {
                     Av1Framing::from_trigger(plx_base::devtrig::read("av1obu").as_deref())
                 } else {
@@ -9423,15 +9793,26 @@ pub fn demux(
                 // cannot outlive it.
                 *SHARED.container_hdr.lock().unwrap() = if is_vp9 { Some(container_hdr(vcp)) } else { None };
                 crate::player::log(&format!(
-                    "ff: param_sets={} bytes nal_len={} is_hevc={} is_av1={} is_vp9={} av1_cfg={}B",
+                    "ff: param_sets={} bytes nal_len={} is_hevc={} is_av1={} is_vp9={} av1_cfg={}B nal_input={:?}",
                     param_blob.len(),
                     nal_len_size,
                     is_hevc,
                     is_av1,
                     is_vp9,
-                    av1_cfg.len()
+                    av1_cfg.len(),
+                    nal_input
                 ));
                 let mut aubuf: Vec<u8> = Vec::with_capacity(4 * 1024 * 1024);
+                // A start-code stream's own parameter sets, cached from the units that carry them so
+                // a keyframe without its own can take them (`annexb_h264_access_unit`).
+                let mut annexb_params = H264ParamSets::default();
+                // Such a stream can open mid-GOP (a capture cut where it was): pictures that need
+                // parameter sets the pipeline has not been given are held back until the first
+                // keyframe, here and after every seek, where the file is not a length-prefixed one
+                // whose first packet is a keyframe by construction. `Some(n)`: still waiting, `n`
+                // pictures held back so far.
+                let mut annexb_wait_key = (nal_input == NalInput::StartCodes).then_some(0u32);
+                let mut annexb_rejected = 0u32;
 
                 let pkt = av_packet_alloc();
                 if pkt.is_null() {
@@ -9494,7 +9875,9 @@ pub fn demux(
                             // adopt that ownership; teardown will replace it.
                             original_watch = None;
                         }
-                        let ts = av_rescale_q(seek_ns, NS_TB, stream_time_base(vst));
+                        // Content time to the stream's own clock: a rebased stream's clock starts at
+                        // `origin_ns`, so a seek to 0 lands on its first packet, not before it.
+                        let ts = av_rescale_q(seek_ns.saturating_add(origin_ns), NS_TB, stream_time_base(vst));
                         // Fence completed renders from the old position before new packets arrive.
                         crate::player::ass_source::seek(ass_generation);
                         crate::player::log(&format!("ff: seek begin {}s", seek_ns / 1_000_000_000));
@@ -9506,6 +9889,13 @@ pub fn demux(
                             seek_began.elapsed().as_millis()
                         ));
                         headroom.restart(aq_p);
+                        annexb_wait_key = (nal_input == NalInput::StartCodes).then_some(0u32);
+                        if let Some(dec) = pcm_dec.as_mut() {
+                            dec.reset_stream();
+                        }
+                        if let Some(batch) = pcm_batch.as_mut() {
+                            batch.clear();
+                        }
                         SHARED.first_audio_pts.store(i64::MIN, Ordering::Release);
                     }
                     let r = av_read_frame(fmt, pkt);
@@ -9513,9 +9903,24 @@ pub fn demux(
                         // Genuine end of stream, teardown, or an unrecovered I/O error published by
                         // `frame_read_failed`. NOT an app seek — that is serviced at the top of this
                         // loop and never surfaces as a read error.
+                        if let Some((au_pts, au)) = pcm_batch.as_mut().and_then(|b| b.take()) {
+                            crate::aq::aq_push_gated(
+                                aqa_p, au.as_ptr(), au.len() as c_int, au_pts, 1, 2, audio_push_gate(aq_p, headroom.video_reach_ns()),
+                                || state.drain_wire(),
+                            );
+                        }
                         break;
                     }
                     let si = (*pkt).stream_index;
+                    // The array is read LIVE, with its bound: a transport stream can grow new streams
+                    // while it is read (`AVFMTCTX_NOHEADER`), which reallocates `streams`, so the
+                    // pointer taken at open is not the one the live `nb_streams` describes.
+                    if origin_ns != 0 {
+                        let live = (*fmt).streams;
+                        if si >= 0 && (si as c_uint) < (*fmt).nb_streams && !live.is_null() {
+                            rebase_packet(pkt, *live.add(si as usize), origin_ns);
+                        }
+                    }
                     if si == vi {
                         // The side subtitle reader's clock anchor: the first keyframe this run reads,
                         // fingerprinted BEFORE the Annex-B conversion rewrites it.
@@ -9525,12 +9930,12 @@ pub fn demux(
                             *SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) =
                                 Some(subside::Anchor::of(pts_ns(pkt, vst), raw));
                         }
+                        let pkt_bytes: &[u8] = if (*pkt).data.is_null() {
+                            &[]
+                        } else {
+                            std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize)
+                        };
                         let is_key = if is_av1 {
-                            let pkt_bytes: &[u8] = if (*pkt).data.is_null() {
-                                &[]
-                            } else {
-                                std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize)
-                            };
                             av1_packet_to_tu(
                                 pkt_bytes,
                                 (*pkt).flags & AV_PKT_FLAG_KEY != 0,
@@ -9539,12 +9944,24 @@ pub fn demux(
                                 &mut aubuf,
                             )
                         } else if is_vp9 {
-                            let pkt_bytes: &[u8] = if (*pkt).data.is_null() {
-                                &[]
-                            } else {
-                                std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize)
-                            };
                             vp9_packet_to_frame(pkt_bytes, (*pkt).flags & AV_PKT_FLAG_KEY != 0, &mut aubuf)
+                        } else if nal_input == NalInput::StartCodes {
+                            let rap = Rap::IdrOrIntra { container_key: (*pkt).flags & AV_PKT_FLAG_KEY != 0 };
+                            match annexb_h264_access_unit(pkt_bytes, rap, &mut annexb_params, &mut aubuf) {
+                                Ok(key) => key,
+                                Err(why) => {
+                                    // An empty unit is the signal below: nothing is pushed for it.
+                                    aubuf.clear();
+                                    annexb_rejected += 1;
+                                    if annexb_rejected <= 3 {
+                                        crate::player::log(&format!(
+                                            "ff: dropped a start-code video packet ({} bytes): {why}",
+                                            pkt_bytes.len()
+                                        ));
+                                    }
+                                    false
+                                }
+                            }
                         } else {
                             packet_to_annexb(
                                 (*pkt).data,
@@ -9552,11 +9969,36 @@ pub fn demux(
                                 nal_len_size,
                                 is_hevc,
                                 dv_p7,
+                                (*pkt).flags & AV_PKT_FLAG_KEY != 0,
                                 &param_blob,
                                 &mut aubuf,
                             )
                         };
                         let pts = pts_ns(pkt, vst);
+                        if nal_input == NalInput::StartCodes {
+                            // Neither a packet the framing refused (`aubuf` is empty) nor a picture
+                            // ahead of the first keyframe reaches the lane. A skipped packet also
+                            // skips this iteration's Auto Original bookkeeping below, which the next
+                            // packet runs; the run is bounded by a GOP, or by the audio lane's ceiling
+                            // (`NoUsableVideo`) for a stream with no keyframe at all.
+                            if aubuf.is_empty() {
+                                av_packet_unref(pkt);
+                                continue;
+                            }
+                            if let Some(held_back) = annexb_wait_key.as_mut() {
+                                if !is_key {
+                                    *held_back += 1;
+                                    av_packet_unref(pkt);
+                                    continue;
+                                }
+                                if *held_back > 0 {
+                                    crate::player::log(&format!(
+                                        "ff: start-code stream: first keyframe after {held_back} video packets that needed parameter sets not yet seen"
+                                    ));
+                                }
+                                annexb_wait_key = None;
+                            }
+                        }
                         if DIAG_FIRST.swap(false, Ordering::Relaxed) {
                             let n = aubuf.len().min(40);
                             let head: String = aubuf[..n]
@@ -9646,12 +10088,11 @@ pub fn demux(
                                 }
                             }
                             rv
-                        } else if let Some((freq_idx, chan_cfg)) = aac_adts {
-                            // prepend a 7-byte ADTS header so LG's decoder can frame the raw AAC
-                            let plen = (*pkt).size as usize;
-                            let mut framed = Vec::with_capacity(7 + plen);
-                            framed.extend_from_slice(&adts_header(freq_idx, chan_cfg, plen));
-                            framed.extend_from_slice(std::slice::from_raw_parts((*pkt).data, plen));
+                        } else if aac_adts.is_some() {
+                            // one 7-byte ADTS header so LG's decoder can frame the AAC: added to the raw
+                            // frames of Matroska/MP4, not stacked on a transport stream's own (#1084)
+                            let raw = std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize);
+                            let framed = adts_framed(raw, aac_adts).unwrap_or(std::borrow::Cow::Borrowed(raw));
                             crate::aq::aq_push_gated(
                                 aqa_p,
                                 framed.as_ptr(),
@@ -9663,23 +10104,25 @@ pub fn demux(
                                 || state.drain_wire(),
                             )
                         } else if let Some(dec) = pcm_dec.as_mut() {
-                            let pcm = match dec.decode(pkt) {
-                                Ok(pcm) => pcm,
+                            let (pcm_pts, pcm) = match dec.decode(pkt, pts) {
+                                Ok(decoded) => decoded,
                                 Err(why) => {
-                                    crate::player::log(&format!("ff: FLAC decode failed — {why}; refusing audio feed"));
+                                    crate::player::log(&format!(
+                                        "ff: {} decode failed — {why}; refusing audio feed",
+                                        app_decoded.as_deref().unwrap_or("audio")
+                                    ));
                                     SHARED.demux_failed.store(true, Ordering::Release);
                                     SHARED.demux_io_failed.store(true, Ordering::Release);
                                     av_packet_unref(pkt);
                                     break;
                                 }
                             };
-                            if pcm.is_empty() {
-                                0
-                            } else {
-                                crate::aq::aq_push_gated(
-                                    aqa_p, pcm.as_ptr(), pcm.len() as c_int, pts, 1, 2, gate,
+                            match pcm_batch.as_mut().and_then(|b| b.push(pcm_pts, pcm)) {
+                                None => 0,
+                                Some((au_pts, au)) => crate::aq::aq_push_gated(
+                                    aqa_p, au.as_ptr(), au.len() as c_int, au_pts, 1, 2, gate,
                                     || state.drain_wire(),
-                                )
+                                ),
                             }
                         } else if dts_audio {
                             let raw = std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize);
@@ -9971,6 +10414,10 @@ mod subtitle_charset_tests;
 #[cfg(test)]
 #[path = "ff_redirect_tests.rs"]
 mod redirect_tests;
+
+#[cfg(test)]
+#[path = "ff_pcm_decode_tests.rs"]
+mod pcm_decode_tests;
 
 #[cfg(test)]
 #[path = "ff_late_audio_tests.rs"]

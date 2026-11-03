@@ -40,6 +40,12 @@ header row for sort & filter (including unwatched-only), a Collections page and 
 page. The shelves live on Recommended: what you're partway through, with the time left under
 the focused card, and what just landed
 ([pictured here](docs/screenshots/ux-library-grid.jpg)).
+Settings → Libraries → Under posters also has a **Sort value** switch (on by default, per
+profile). In a movie or TV show library sorted by something other than Title or Random (its movies, shows, seasons or
+episodes), every card shows the value it is sorted by on one line under it (a score, a length, a date as Today,
+Yesterday, 27 Oct or Oct 2024), in place of the title and details line; a sort with no value to show, such as
+the Show order of Seasons and Episodes, keeps the usual captions. It uses the existing sort menu; other poster
+surfaces keep their usual captions.
 
 ![Search](docs/screenshots/search.jpg)
 
@@ -86,7 +92,7 @@ Owners' reports, set by set, are in the [compatibility list](docs/compatibility.
 |---|---|
 | **Some 2019 sets on LG's k5lp or k3lp chip**, installed through Developer Mode | Video won't play. On these sets LG's Developer Mode sandbox can withhold a device the video path needs — Kodi and Moonlight hit the same wall. The app checks for it and says so instead of crashing; other sets on the same chip play normally. On a rooted TV with Homebrew Channel, the failure screen offers **Repair**, which applies the Homebrew Channel fix to the sandbox (one owner fixed it this way from a root shell; the button itself hasn't been run on an affected set yet). Without root there is no fix. |
 | **2018 sets on firmware that reports platform release 3.9.3** | Sign-in and browsing work. The prebuilt **v0.8.0** holds a strong ELF reference to the cxx11 `StarfishMediaAPIs::Feed` symbol, which 3.x `libplayerAPIs` does not export, so on the prebuilt video never starts and no error is reported: [#249](https://github.com/GLinnik21/plx-native/issues/249). A source build at or after [`60f99c7`](https://github.com/GLinnik21/plx-native/commit/60f99c7) resolves Feed with a dual-ABI `dlsym` and plays direct play on a 2018 C7 (W17H chassis, 3.9.3). |
-| **webOS 3.x** | Seeking restarts the stream at the new position instead of jumping in place, so each seek takes a moment longer. In-place seek depends on the internal layout of LG's 4.x media player, and on 3.4 that layout differs. Menus can drop frames at 1920x1080 on these sets; **Settings → System → Interface resolution** trades sharper text for smoother menus. |
+| **webOS 3.x** | Seeking jumps in place through LG's public `Seek`, as on webOS 5 and newer (tested on platform release 3.9.3 only). The in-place path webOS 4 uses depends on the internal layout of LG's 4.x media player, which differs on 3.x, so it is not used there. A set that refuses `Seek` falls back to restarting the stream at the new position, as all 3.x sets did before. Menus can drop frames at 1920x1080 on these sets; **Settings → System → Interface resolution** trades sharper text for smoother menus. |
 | **Sets on LG's k6hp chip** | A crash seen in opt-in crash reports and not reproduced here, because I have no such set: [#174](https://github.com/GLinnik21/plx-native/issues/174). |
 
 ### Rooted or not

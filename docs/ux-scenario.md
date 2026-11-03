@@ -192,7 +192,7 @@ just the page.
 DOWN from the hero enters the shelves; DOWN again steps between them; LEFT/RIGHT walks the cards.
 The focused card grows, and what Settings → Libraries → Under posters asks for appears
 beneath it (a title line when its Title switch is On; a line the setting turns on is never left empty, so a season, which has no length, says *"Season 6"* under its show's name, and a film the server told us nothing about says *"Movie"*; the setting is the same under every poster in the app: Search results, a person's filmography, a title's Related and collection shelves and a collection's members, though not under a landscape still or a cast headshot) — a Continue Watching card always shows its status line, under every Details setting, Nothing included, here *"S3 · E4 · 8m
-left"* (*"8m left"* for a film), which is the resume state. A watched item carries a check mark in its corner.
+left"* (*"8m left"* for a film), which is the resume state. A watched item carries a check mark in its corner. In a library whose grid is sorted by something that has a value (Settings → Libraries → Under posters → Sort value, on by default), every card of its movies, shows, seasons or episodes shows that value on one line instead, in place of the title and details line: a score beside its provider's mark, a length, a count of plays, a date as *"Today"*, *"Yesterday"*, *"27 Oct"* or *"Oct 2024"*; the Episodes view's wide cards say the same thing under each still (sorted by Audience score, *"TMDB 84%"*). A sort with no value to show, such as the Show order Seasons and Episodes default to, keeps the usual captions.
 
 **OK on a card in *Continue Watching* opens its page by default** (Settings → Playback →
 Continue Watching: *Open details*); set to *Play*, OK plays it directly and the amber ▶ before the first line the card draws is
@@ -282,28 +282,28 @@ pad back to the roster.
 
 Reached from any library pill in the top strip. A poster grid, four-way navigable, with:
 
-- **Sort** and **Filter** pills above the grid (left), each reading its current choice;
-- an **A–Z rail** down the right edge, which jumps the grid to a letter;
+- one **sort** control at the right of the header row, reading its current choice (the sort icon, the criterion and a down chevron; its Sort & Filter menu also holds the filters), beside the **Collections** and **Recommended** places;
+- an **A–Z rail** down the right edge, which jumps the grid to a letter, or on a value sort (Score, Duration, Unplayed, Plays, Date added, Date viewed, Release date, and Last episode added when sorted newest first) to a band: a date sort's bands are `Today`, the months of this year, then each earlier year, and Release date's are the year then the decades;
 - watched check marks on the cards.
 
 **CH ▲ / CH ▼ page the grid**, which is the fast way through a large library.
 
-**BACK here climbs one region a press, and from the bar it leaves for Home.** From the A–Z rail BACK
-returns to the grid; from deep in the grid it returns to the top of the page — a deep shelf is as far
-from the head as a deep grid row is; from the top it steps to the Sort/Filter header, from the header
+**BACK here climbs one region a press, and from the bar it leaves for Home.** From the A–Z rail (or a
+value sort's band rail) BACK returns to the grid; from deep in the grid it returns to the top of the page — a deep shelf is as far
+from the head as a deep grid row is; from the top it steps to the header row, from the header
 to the tab bar, and from the bar it hands the screen back. UP is still the one-press route to the
 strip; the header and bar steps exist so that BACK can never loop between them. The Collections and
 Recommended pages pop to the page that opened them from the top of their content, from their header or
 from the bar. (This said "two steps: to the tab row, then Home" until 2026-09-05, and "ONE step to the
 head of the library, and a second leaves for Home" after it.)
 
-Sort and Filter open as **popovers over the live grid**, never as full-screen sheets:
+The Sort & Filter menu opens as a **popover over the live grid**, never as a full-screen sheet:
 
 ![Library sort menu](screenshots/ux-library-sort.jpg)
 
 The options are the ones the **server** reports for that section, not a hardcoded list; the current
 choice carries a check and its direction as a word ("A–Z", "Newest first"), and OK on the current choice reverses the direction.
-BACK closes the popover and returns focus to the pill.
+BACK closes the popover and returns focus to the sort control.
 
 ### 5.5 Search
 
@@ -828,7 +828,7 @@ The needed captures are all reachable on the bench with the boot triggers docume
 
 - Key codes: LG's evdev→scancode table in the television's own `libSDL2-2.0.so.0.4.1`, plus 336
   captured key lines. Settled 2026-08-22.
-- Transport state-mark rule: `rust-modules/src/ui/player_hud.rs::transport_mark`.
+- Transport state-mark rule: `rust-modules/appkit/src/player_hud/state.rs::transport_mark`.
 - Key dispatch: `rust-modules/src/ui/consts.rs::classify` and `rust-modules/src/app.rs`'s ladder.
 - Screen map: the `Route` enum in `rust-modules/src/app.rs` and `ui::trail`.
 - Audio: `Makefile` `LIBS_REAL`, and `SDL_Init(SDL_INIT_VIDEO)` in `rust-modules/src/app.rs`.

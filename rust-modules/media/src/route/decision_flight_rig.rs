@@ -36,6 +36,13 @@ enum Shape {
     /// A progressive-MKV Original (a remux) the Auto watchdog is watching, under an applied Auto
     /// contract: the route an automatic Original-to-HLS fallback leaves.
     AutoOriginal,
+    /// A direct play of the Part itself: the Part URL, no transcode session (`tsession` empty, so the
+    /// route is not `is_transcoding`) and the direct-play contract. What a refused DTS track of a
+    /// direct play is, which the app-decode rung re-opens.
+    Direct,
+    /// [`Shape::Direct`] that the Auto watchdog watches, under an applied Auto contract: a cold Auto
+    /// Original which is a direct play.
+    DirectAutoOriginal,
 }
 
 pub(crate) struct FlightRig {
@@ -50,7 +57,17 @@ pub(crate) struct FlightRig {
     held: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// How many answers (to anything but an encoder stop) the server has written.
     answered: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// [`FlightRig::begin_attempt`] ran, so the drop gives the report its idle state back.
+    attempt_begun: bool,
+    /// The body a live `/decision` is answered with: video copied, audio transcoded, until
+    /// [`FlightRig::answer_decisions_with`] says otherwise.
+    decision_body: std::sync::Arc<std::sync::Mutex<&'static [u8]>>,
 }
+
+/// A `/decision` body with BOTH lanes `transcode` ([`FlightRig::answer_decisions_with`]): the server
+/// re-encoded the video as well as the audio, so a conversion built from it changed more than the
+/// refused facet.
+pub(crate) const DECISION_TRANSCODES_BOTH_LANES: &[u8] = br#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"transcode","Stream":[{"streamType":1,"decision":"transcode"},{"streamType":2,"decision":"transcode"}]}]}]}]}}"#;
 
 /// The longest the server keeps a held answer if nobody releases it, so a test that fails
 /// while holding cannot park a worker for ever. Far longer than any frame, far shorter than a hang.
@@ -76,6 +93,18 @@ impl FlightRig {
         Self::start_shaped(ps, delay, Shape::AutoOriginal)
     }
 
+    /// [`FlightRig::start`] on a direct play of the Part (`rig-1` is the logical session; no encoder
+    /// runs), the shape the in-app audio decode re-opens ([`Shape::Direct`]).
+    pub(crate) fn start_direct(ps: &mut PlaybackSession, delay: std::time::Duration) -> FlightRig {
+        Self::start_shaped(ps, delay, Shape::Direct)
+    }
+
+    /// [`FlightRig::start_direct`] that the Auto watchdog watches, the quality preference at Auto
+    /// ([`Shape::DirectAutoOriginal`]). The drop restores Original.
+    pub(crate) fn start_direct_auto_original(ps: &mut PlaybackSession, delay: std::time::Duration) -> FlightRig {
+        Self::start_shaped(ps, delay, Shape::DirectAutoOriginal)
+    }
+
     fn start_shaped(ps: &mut PlaybackSession, delay: std::time::Duration, shape: Shape) -> FlightRig {
         let serial = fresh_registry(ps);
         assert!(plx_net::net::global_init() && crate::curlio::available());
@@ -91,6 +120,8 @@ impl FlightRig {
         let hold = held.clone();
         let answered: std::sync::Arc<std::sync::atomic::AtomicUsize> = Default::default();
         let count_answers = answered.clone();
+        let decision_body: std::sync::Arc<std::sync::Mutex<&'static [u8]>> = std::sync::Arc::new(std::sync::Mutex::new(MDE_TRANSCODE_COPY));
+        let serve_body = decision_body.clone();
         let server = std::thread::spawn(move || loop {
             match plx_base::testnet::accept(&listener) {
                 Ok((mut socket, _)) => {
@@ -114,7 +145,8 @@ impl FlightRig {
                         let refuse = owed
                             .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
                             .is_ok();
-                        write_json(&mut socket, if refuse { DECISION_REFUSED } else { MDE_TRANSCODE_COPY });
+                        let body = *serve_body.lock().unwrap_or_else(|e| e.into_inner());
+                        write_json(&mut socket, if refuse { DECISION_REFUSED } else { body });
                     } else {
                         // The selection PUT and any other worker request take `delay` too, as the
                         // `/decision` does, so the flight they belong to stays in the air.
@@ -151,6 +183,12 @@ impl FlightRig {
                     enhanced_remux_contract(plx_plex::plex::AudioEnhancements::NONE, false),
                 )
             }
+            Shape::Direct | Shape::DirectAutoOriginal => {
+                if matches!(shape, Shape::DirectAutoOriginal) {
+                    restore_quality(Quality::Auto);
+                }
+                (format!("http://127.0.0.1:{port}/library/parts/960001/1/file.mkv"), Default::default())
+            }
             Shape::Hls => {
                 restore_quality(Quality::Auto);
                 (
@@ -163,12 +201,18 @@ impl FlightRig {
                 )
             }
         };
+        // The play request that planned this route would have begun the attempt on the device's
+        // capability value; `apply_plan` alone begins none, and the session would plan from
+        // `devcaps::assumed_shared()` rather than the table the thread installed. The rig begins
+        // it on this thread's answer, so a rig test plans from the same table it installs
+        // ([`FlightRig::plan_on`] re-begins on another value, for a set installed after the rig).
+        ps.begin_attempt(plx_platform::devcaps::caps());
         apply_plan(
             ps,
             Plan {
                 sid,
                 url,
-                tsession: "rig-1".to_owned(),
+                tsession: if matches!(shape, Shape::Direct | Shape::DirectAutoOriginal) { String::new() } else { "rig-1".to_owned() },
                 sess: "rig-logical".into(),
                 part_id: 960001,
                 vcodec: "hevc".into(),
@@ -182,11 +226,26 @@ impl FlightRig {
             },
             "960001",
         );
-        if matches!(shape, Shape::AutoOriginal) {
+        if matches!(shape, Shape::AutoOriginal | Shape::DirectAutoOriginal) {
             ps.cur_auto_original_watched = true;
             ps.cur_src = (28_000, 1_920, 1_080);
         }
-        FlightRig { _serial: Some(serial), done, server: Some(server), log, refusals, held, answered }
+        FlightRig { _serial: Some(serial), done, server: Some(server), log, refusals, held, answered, attempt_begun: false, decision_body }
+    }
+
+    /// Begin the report attempt a Play begins ([`crate::player::report::requested`]) and make it the
+    /// playback in force, as the Play's landing does. A rig route installed by `apply_plan` alone
+    /// belongs to no attempt (trace generation 0), and the ledger ignores a note from generation 0
+    /// that the engine was reopened: a test that reads `attempt_origin` / `attempt_ordinal` back
+    /// calls this first. The drop puts the generation and the report's latches back.
+    pub(crate) fn begin_attempt(&mut self, ps: &PlaybackSession) {
+        let generation = crate::player::report::requested(
+            ps,
+            plx_plex::plex::ServerId::UNSET,
+            crate::player::report::AttemptOrigin::Fresh,
+        );
+        ACTIVE_TRACE_GENERATION.store(generation, Ordering::SeqCst);
+        self.attempt_begun = true;
     }
 
     /// The rung the Auto bootstrap chose for a source that never opens (what the unopened-source
@@ -195,11 +254,73 @@ impl FlightRig {
         ps.auto_bootstrap_rung = Some(rung);
     }
 
+    /// Begin the playing route's attempt on `caps`, as the play request that planned the rig's route
+    /// would have ([`PlaybackSession::begin_attempt`]). The rig already began it on the thread's
+    /// `devcaps::caps()` when it started; a test that installs its set AFTER the rig (a
+    /// `firmware_on_this_thread_for_test` guard taken once the route is up) re-begins on that set.
+    pub(crate) fn plan_on(ps: &mut PlaybackSession, caps: std::sync::Arc<plx_platform::devcaps::Caps>) {
+        ps.begin_attempt(caps);
+    }
+
+    /// Declare the audio the playing route feeds the pipeline, as the plan of a direct play of
+    /// `codec` with `channels` channels would have: `stream_acodec` and the carried track, which the
+    /// failed-open ladder's facts read ([`stream_audio`]). The rig's own route declares AC3.
+    pub(crate) fn declare_audio(ps: &mut PlaybackSession, codec: &str, channels: i64) {
+        ps.stream_acodec = codec.into();
+        ps.cur_audio = Some(CarriedAudio { codec: codec.into(), channels, ..CarriedAudio::named(960_002, 1) });
+    }
+
+    /// Declare the video the playing route feeds the pipeline, as the plan of a direct play of a
+    /// `width`x`height` `codec` stream would have: `stream_vcodec`, `src_vcodec` and the source
+    /// raster in `cur_src`, which the failed-open ladder's facts read ([`stream_video`]). The rig's
+    /// own route declares HEVC at an unmeasured (0x0) raster, which names no video facet.
+    pub(crate) fn declare_video(ps: &mut PlaybackSession, codec: &str, width: i64, height: i64) {
+        ps.stream_vcodec = codec.into();
+        ps.src_vcodec = codec.into();
+        ps.cur_src.1 = width;
+        ps.cur_src.2 = height;
+    }
+
     /// Offer the Original the playing route can be restored to. A REMUX candidate (`direct ==
     /// false`) makes the recovery's PMS half a real `/decision`, which is what a frame must not
     /// wait on.
     pub(crate) fn offer_original(ps: &mut PlaybackSession, direct: bool) {
         ps.auto_original = Some(AutoOriginalCandidate { direct, ..test_original_candidate(None) });
+    }
+
+    /// [`FlightRig::offer_original`] whose candidate carries `codec` with `channels` channels (the
+    /// audio of the stream the Original would feed), where the offer's own default is E-AC-3 5.1.
+    pub(crate) fn offer_original_carrying(ps: &mut PlaybackSession, direct: bool, codec: &str, channels: i64) {
+        let audio = CarriedAudio { codec: codec.into(), channels, ..CarriedAudio::named(960_002, 1) };
+        ps.auto_original = Some(AutoOriginalCandidate { direct, audio: Some(audio), ..test_original_candidate(None) });
+    }
+
+    /// [`FlightRig::offer_original`] whose candidate carries the source video `vcodec` (the offer's
+    /// own default is HEVC): the video the Original would feed, which the climb re-checks against
+    /// the attempt after a recovery took a refused video raster out of it.
+    pub(crate) fn offer_original_of_video(ps: &mut PlaybackSession, direct: bool, vcodec: &str) {
+        ps.auto_original = Some(AutoOriginalCandidate { direct, vcodec: vcodec.into(), ..test_original_candidate(None) });
+    }
+
+    /// Why the Original candidate is not stored, when a recovery or a pick recorded a reason (the
+    /// menu's decline line): a candidate dropped because its video needs converting reads
+    /// [`OriginalDeclined::VideoNeedsConverting`].
+    pub(crate) fn original_declined(ps: &PlaybackSession) -> Option<OriginalDeclined> {
+        ps.original_declined
+    }
+
+    /// Whether the stored Original candidate would feed the Part itself on a recovery (`None` when
+    /// none is stored): the climb's DIRECT question, which a refused audio must answer no.
+    pub(crate) fn original_feeds_part(ps: &PlaybackSession) -> Option<bool> {
+        ps.auto_original.as_ref().map(AutoOriginalCandidate::feeds_part)
+    }
+
+    /// Whether an Original recovery from the stored candidate plans the codec-preserving remux
+    /// ([`RecoveryFlavour::Remux`]) rather than the Part (`None` when no candidate is stored).
+    pub(crate) fn original_recovery_is_remux(ps: &PlaybackSession) -> Option<bool> {
+        ps.auto_original.as_ref().map(|candidate| {
+            matches!(recovery_flavour(candidate, plx_plex::plex::AudioEnhancements::NONE), RecoveryFlavour::Remux(_))
+        })
     }
 
     /// Arm the Original REMUX trial the viewer's Original pick leaves on the playing route: the
@@ -273,6 +394,12 @@ impl FlightRig {
         self.held.store(true, Ordering::SeqCst);
     }
 
+    /// Answer every later live `/decision` with `body` (one of `decision_test_support`'s `MDE_*`
+    /// fixtures) instead of the default (video copied, audio transcoded).
+    pub(crate) fn answer_decisions_with(&self, body: &'static [u8]) {
+        *self.decision_body.lock().unwrap_or_else(|e| e.into_inner()) = body;
+    }
+
     /// Let the held answers go (each is written after `delay`, as usual).
     pub(crate) fn release_answers(&self) {
         self.held.store(false, Ordering::SeqCst);
@@ -288,9 +415,14 @@ impl FlightRig {
         self.log.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// The live `/decision` request lines (not the `hasMDE=1` probe) the server has been asked, in order.
+    pub(crate) fn decision_requests(&self) -> Vec<String> {
+        self.requests().into_iter().filter(|r| r.contains("/decision?") && !r.contains("hasMDE=1")).collect()
+    }
+
     /// How many live `/decision` calls (not the `hasMDE=1` probe) the server has been asked.
     pub(crate) fn decisions(&self) -> usize {
-        self.requests().iter().filter(|r| r.contains("/decision?") && !r.contains("hasMDE=1")).count()
+        self.decision_requests().len()
     }
 
     /// The transcode session ids the server has been asked to stop.
@@ -339,6 +471,10 @@ impl FlightRig {
         // A landing a failed test left in the mailbox belongs to no later test.
         drop(take_claim_landing());
         crate::player::claim_hold::clear();
+        if std::mem::take(&mut self.attempt_begun) {
+            ACTIVE_TRACE_GENERATION.store(0, Ordering::SeqCst);
+            crate::player::report::reset_latches_for_test();
+        }
         // The HLS and Auto-Original shapes set the quality preference; the lock is still held (fields drop after this).
         restore_quality(Quality::Original);
     }

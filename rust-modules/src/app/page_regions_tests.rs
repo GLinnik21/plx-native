@@ -254,7 +254,7 @@ fn watchlist() -> Rig {
     let script = super::watchlist_press_tests::Script::new(&(1..=40).collect::<Vec<u8>>());
     let (d, bridge) = super::watchlist_press_tests::rig_over(&script);
     let mut r = Rig { d, bridge, frame: 1, feed: Some(|d, bridge| {
-        bridge.watchlist_for_test().pump();
+        bridge.watchlist_pump();
         bridge.watchlist_feed(d);
     }), _script: Some(script), performed: Vec::new() };
     super::nav_tab(&mut r.d, &mut r.bridge, HomeTab::Watchlist, None, None);

@@ -78,3 +78,37 @@ fn a_refetch_then_discovery_in_one_frame_record_hubs_then_discovery() {
     bridge.assert_no_store_jobs_left_for_test();
 }
 
+
+/// The counts request that follows a sections landing records the same bytes as before the
+/// discovery read became a store job: the sections request's identity with `sections:false`, the
+/// keys of the landed sections as `counts`, and `name:false` once the landing named the server.
+/// Pinned as a literal, beside the sections request above, because the first request of a
+/// recording is the only one the replay fixtures' counts requests are compared with.
+#[test]
+fn a_sections_landing_then_discovery_records_the_counts_request() {
+    let _serial = plx_base::testlock::serial();
+    let _reset = Reset;
+    let (mut bridge, _sid, client) = recording_home();
+
+    deliver(&mut bridge, StoreId::Browse, AppMsg::StoreWork(StoreWork::BrowseDiscovery));
+    let epoch = bridge.stores.browse.borrow().table_epoch_for_test();
+    let landing = plx_data::browse::record::decode(serde_json::json!({
+        "kind": "discovery", "version": 1, "epoch": epoch, "source": 0, "sid": client.id().raw(),
+        "client": client.instance_gen(), "token_gen": client.token_gen(), "name": "home",
+        "what": { "Sections": [[1, "Movies", "movie"], [2, "Shows", "show"]] },
+    }), |instance| (instance == client.instance_gen()).then_some(client)).expect("a well-formed landing");
+    deliver(&mut bridge, StoreId::Browse,
+        AppMsg::Store(StoreCmd::Browse(plx_data::stores::browse::BrowseCmd::Discovery(landing))));
+    deliver(&mut bridge, StoreId::Browse, AppMsg::StoreWork(StoreWork::BrowseDiscovery));
+
+    let (instance, token) = (client.instance_gen(), client.token_gen());
+    let requests = bridge.take_resource_requests();
+    assert_eq!(requests, vec![
+        serde_json::json!({"epoch":0,"source":0,"sid":0,"client":instance,"token_gen":token,
+            "name":true,"sections":true,"counts":[],"admitted":true}),
+        serde_json::json!({"epoch":0,"source":0,"sid":0,"client":instance,"token_gen":token,
+            "name":false,"sections":false,"counts":[1,2],"admitted":true}),
+    ], "sections, then the counts of the landed sections");
+    assert_eq!(bridge.controlled_failure(), None);
+    bridge.assert_no_store_jobs_left_for_test();
+}

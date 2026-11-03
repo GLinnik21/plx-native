@@ -22,6 +22,17 @@ fn controlled_hubs(io: &mut HomeIo, runner: &mut StoreRunner, hubs: &mut plx_dat
     outcome
 }
 
+/// One controlled discovery step as the Bridge's controlled arm runs it: the registry's keys, the
+/// store's step, then every job it emitted started through the run's admission ledger.
+fn controlled_discovery(io: &mut HomeIo, runner: &mut StoreRunner, stores: &mut plx_data::stores::Stores) {
+    let mut keys = plx_plex::plex::ClientKeys::default();
+    crate::app::adapters::stores::refill_client_keys(&mut keys);
+    stores.browse_controlled_discover(&keys);
+    for job in stores.take_jobs_of(plx_data::stores::StoreId::Browse) {
+        runner.start_admitted(job, Some(io));
+    }
+}
+
 #[test]
 fn filmography_initial_requires_complete_typed_inputs() {
     let mut value = serde_json::to_value(Initial::synthetic_home(1, 32498, None).unwrap()).unwrap();
@@ -327,8 +338,11 @@ fn controlled_admission_records_real_discovery_spawn_refusal() {
     let publisher = plx_plex::plex::session::ProfilePublisher::scoped(&mt);
     let mut io = HomeIo { replay:false,preferences:Default::default(),requests:Vec::new(),admissions:Default::default(),
         failure:None,profile:publisher.snapshot() };
-    let stores = plx_data::stores::Stores::default();
-    io.discovery_owned_with(&stores, &mut |_| false);
+    let mut stores = plx_data::stores::Stores::default();
+    let mut runner = StoreRunner::live();
+    crate::app::adapters::stores::with_refused_hubs_launches_for_test(|| {
+        controlled_discovery(&mut io, &mut runner, &mut stores);
+    });
     assert_eq!(io.requests.len(), 1);
     assert_eq!(io.requests[0]["admitted"], serde_json::json!(false), "real refusal must be recorded");
     plx_plex::plex::reset_servers_for_test();
@@ -464,10 +478,10 @@ fn controlled_discovery_replays_refusal_retry_and_success_with_exact_identity() 
     assert!(plx_plex::plex::set_current(sid));
     let _cleanup = ResetServers;
     let client = plx_plex::plex::client_for(sid).unwrap();
-    let stores = plx_data::stores::Stores::default();
+    let mut stores = plx_data::stores::Stores::default();
     // Two independent executions start from this pre-request store value (the epoch a freshly
-    // reset table starts from). No worker is running: only the OS executor is substituted, below
-    // the real discovery policy.
+    // reset table starts from). No worker is running: the test runner parks the one admitted launch
+    // and the OS refusing the first thread is substituted, below the real discovery policy.
     let initial_epoch = stores.browse.borrow().table_epoch_for_test().wrapping_add(1);
     let mt = unsafe { plx_base::task::MainThread::assume() };
     let mut transcript: Vec<std::collections::VecDeque<serde_json::Value>> = Vec::new();
@@ -487,7 +501,8 @@ fn controlled_discovery_replays_refusal_retry_and_success_with_exact_identity() 
             failure: None,
             profile: publisher.snapshot(),
         };
-        let mut attempts = 0;
+        let mut runner = StoreRunner::held_all();
+        let mut parked = 0;
         let sink = plx_ui::rec::MemSink::default();
         let bytes = sink.segments.clone();
         let header = plx_ui::rec::Header::new(17, &plx_ui::press::Press::new());
@@ -500,17 +515,25 @@ fn controlled_discovery_replays_refusal_retry_and_success_with_exact_identity() 
                     .map(|effect| effect["payload"].clone())
                     .collect();
             }
-            io.discovery_owned_with(&stores, &mut |request| {
+            if frame == 0 {
+                // the system refuses the first launch: the recorded answer is `admitted:false`
+                crate::app::adapters::stores::with_refused_hubs_launches_for_test(|| {
+                    controlled_discovery(&mut io, &mut runner, &mut stores);
+                });
+            } else {
+                controlled_discovery(&mut io, &mut runner, &mut stores);
+            }
+            for job in runner.take_held() {
                 assert!(!replay, "replay must never execute live admission");
-                attempts += 1;
-                if attempts == 1 { return false; }
-                let descriptor = request.descriptor();
+                let plx_data::stores::StoreJob::BrowseDiscovery(job, _port) = job
+                    else { panic!("only the discovery read is parked") };
+                parked += 1;
+                let descriptor = job.req.admission();
                 successful_result = Some(serde_json::json!({"kind":"discovery","version":1,
                     "epoch":descriptor["epoch"],"source":descriptor["source"],"sid":descriptor["sid"],
                     "client":descriptor["client"],"token_gen":descriptor["token_gen"],
                     "name":"s00000001","what":{"Sections":[]}}));
-                true
-            });
+            }
             if frame == 600 {
                 let result =
                     plx_data::browse::record::decode(successful_result.clone().expect("retry admitted"), |id| {
@@ -562,7 +585,7 @@ fn controlled_discovery_replays_refusal_retry_and_success_with_exact_identity() 
             stores.browse.borrow().discovery_policy_for_test().2,
             "admitted retry delivers its real result"
         );
-        assert_eq!(attempts, if replay { 0 } else { 2 });
+        assert_eq!(parked, if replay { 0 } else { 1 }, "one admitted launch is parked, and none in replay");
         writer.finish().unwrap();
         if !replay {
             let bytes = bytes.borrow();

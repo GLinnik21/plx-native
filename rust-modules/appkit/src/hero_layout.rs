@@ -21,13 +21,12 @@ use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::widgets::CircleButton;
 use plx_ui::{theme, Rect};
 
-/// How many controls the hero row can hold at most: Play + bookmark + Play Version + Restart +
-/// Trailer + Alt + one watch face + More. [`row_rect`] sizes its stack storage by it.
-pub const MAX_CTLS: usize = 8;
+/// Maximum row: Play, bookmark, Go to Show, Version, Restart, Trailer, Alt, watch face and More.
+pub const MAX_CTLS: usize = 9;
 
 /// How many of the row's controls are discs that unfurl to a verb on focus: Restart, Trailer, the
-/// watch toggle and Play Version (the bookmark disc never unfurls).
-pub const DISCS: usize = 4;
+/// watch toggle, Play Version and Go to Show (the bookmark disc never unfurls).
+pub const DISCS: usize = 5;
 
 /// The Play/Resume pill's minimum width: a pathologically short label still gets a pill.
 pub const PW: f32 = theme::hero::PLAY_MIN_W;
@@ -141,6 +140,11 @@ pub fn row_rect(widths: &[f32], i: usize, y: f32) -> Rect {
     Rect::new(x + leading_air, y, w, CD)
 }
 
+/// Reserved right edge, including a capsule's focus expansion, for the unfurl budget.
+pub fn row_right(widths: &[f32]) -> f32 {
+    row_rect(widths, widths.len(), 0.0).x - if widths.is_empty() { 0.0 } else { CGAP }
+}
+
 /// Reserve the capsule's horizontal focus pop, opening continuously from a plain disc.
 /// The excess-width bound avoids a jump on the first frame of the unfurl spring.
 fn capsule_focus_air(w: f32) -> f32 {
@@ -151,7 +155,7 @@ fn capsule_focus_air(w: f32) -> f32 {
 /// control when the `N` discs are `disc` wide; `label_w` is each disc's measured verb and
 /// `unfurl` its 0..1 open fraction.
 ///
-/// The widest verb must fit wholly before the People column as a single extra, and the last
+/// Every active verb must fit wholly before the People column as a single extra, and the last
 /// control of the trial layout must still sit at or before [`FACTS_R`], otherwise every disc
 /// remains a circle. Every disc can be mid-unfurl at once (one opening while another closes), so a
 /// pair-wide budget is not enough: two extras that each fit can still push a third across the
@@ -162,7 +166,7 @@ pub fn disc_caps_with<const N: usize>(
     last_right: impl Fn([f32; N]) -> f32,
 ) -> [f32; N] {
     let budget = CircleButton::label_budget(CD, FACTS_R - last_right([CD; N]));
-    if label_w.iter().copied().fold(0.0f32, f32::max) > budget {
+    if label_w.iter().zip(unfurl).any(|(label, open)| open > 0.0 && *label > budget) {
         return [CD; N];
     }
     let open = std::array::from_fn(|i| CircleButton::cap_w(CD, unfurl[i], label_w[i]));

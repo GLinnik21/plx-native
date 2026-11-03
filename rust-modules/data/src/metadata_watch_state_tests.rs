@@ -658,7 +658,7 @@ fn the_servers_facts_and_offset_patch_related_and_collection_tiles_only_where_th
     }));
     let adapter = std::sync::Arc::new(MetadataAdapter::default());
     let run = |rk: &str, sid, edit| super::run(test_state(), &adapter, MetadataCmd::ApplyView { at: ViewAt::leaf(sid, rk), edit });
-    let facts = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0 };
+    let facts = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0, sort: None };
     assert!(run("r1", SRV_A, facts));
     assert!(!run("r1", SRV_A, facts), "facts that agree with the tile change nothing");
     assert!(!run("r0", SRV_B, facts), "another server's r0 names nothing here");

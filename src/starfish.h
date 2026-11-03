@@ -64,8 +64,14 @@ void vp_destroy_window(void);
 /* ACB (App Common Binding) — VP_ACB only; every verb is a no-op in the other modes, so callers
  * need not branch. On webOS 5 this whole sequence has no replacement: it is deleted outright. */
 long acb_create(const char *appId, int playerType);        /* create+initialize; 0 = failed */
+int acb_probe_initialized(void);
+int acb_probe_dass_available(void);
+int acb_probe_media_id(const char *mediaId);
+int acb_probe_loaded(void);
+int acb_probe_connect_dass(void);
+int acb_probe_finish(void);
 void acb_bind(const char *mediaId);                        /* setSinkType(MAIN)+setMediaId+setState(LOADED) */
-int  acb_send_video_data(const char *sourceInfo);  /* setMediaVideoData; the pipeline's own envelope (vp9_hdr may have added HDR keys); -1 = rejected */
+int  acb_send_video_data(const char *sourceInfo);  /* setMediaVideoData; normal playback forwards the native envelope; explicit developer fixture descriptor is experimental. -1 = rejected */
 void acb_start(long x, long y, long w, long h);            /* setDisplayWindow + setState(PLAYING) */
 void acb_unload(void);                                     /* setState(UNLOADED) */
 

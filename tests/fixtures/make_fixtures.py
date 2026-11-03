@@ -661,7 +661,7 @@ CH_MAP = {2: "0.0-FL|1.0-FR",
           6: "0.0-FL|1.0-FR|2.0-FC|3.0-LFE|4.0-BL|5.0-BR"}
 
 
-def audio_graph(channels, base_hz, duration, segs=None):
+def audio_graph(channels, base_hz, duration, segs=None, rate=48000):
     """A lavfi graph: one sine per channel, joined into a real multichannel layout.
 
     NB the graph ends on the bare `join` — the lavfi DEMUXER rejects a named output pad
@@ -674,20 +674,23 @@ def audio_graph(channels, base_hz, duration, segs=None):
     a shared intro melody, a per-episode body pitch, a distinct credits bed. Plex's marker
     detector fingerprints audio, so this — not the picture — is the modality the intro has
     to be identical in and the body has to differ in.
+
+    `rate` is the sample rate of every sine (an audio spec's `sample_rate`, 48000 unless it says
+    otherwise): the graph is where a hi-res track gets its rate, because the encoder only converts.
     """
     ratios = CH_RATIOS[channels]
     segs = segs or [(1.0, duration)]
     parts = []
     for i, r in enumerate(ratios):
         if len(segs) == 1:
-            parts.append("sine=frequency=%d:sample_rate=48000:duration=%s[c%d]"
-                         % (round(base_hz * r * segs[0][0]), _g(segs[0][1]), i))
+            parts.append("sine=frequency=%d:sample_rate=%d:duration=%s[c%d]"
+                         % (round(base_hz * r * segs[0][0]), rate, _g(segs[0][1]), i))
             continue
         labs = []
         for j, (mult, secs) in enumerate(segs):
             labs.append("c%ds%d" % (i, j))
-            parts.append("sine=frequency=%d:sample_rate=48000:duration=%s[%s]"
-                         % (round(base_hz * r * mult), _g(secs), labs[-1]))
+            parts.append("sine=frequency=%d:sample_rate=%d:duration=%s[%s]"
+                         % (round(base_hz * r * mult), rate, _g(secs), labs[-1]))
         parts.append("".join("[%s]" % x for x in labs)
                      + "concat=n=%d:v=0:a=1[c%d]" % (len(segs), i))
     parts.append("".join("[c%d]" % i for i in range(channels))
@@ -757,6 +760,23 @@ def venc_args(v):
     raise Fail("no encoder recipe for video codec %r" % c)
 
 
+def audio_depth_args(n, a):
+    """The encoder arguments of an audio spec's hi-res keys: `sample_rate` (Hz) and `bits`.
+
+    Both are optional and absent from every shape that is not a hi-res one, which is what keeps those
+    byte-identical (this returns nothing for them). FLAC takes 16 or 24 bits: `-sample_fmt s32` with
+    `-bits_per_raw_sample 24` is how ffmpeg's encoder is told 24 (the default is the input's, 16).
+    """
+    args = []
+    if a.get("sample_rate"):
+        args += ["-ar:a:%d" % n, str(a["sample_rate"])]
+    if a.get("bits"):
+        if a["codec"] != "flac" or a["bits"] != 24:
+            raise Fail("audio spec bits=%r: only 24-bit FLAC has an encoder recipe here" % a["bits"])
+        args += ["-sample_fmt:a:%d" % n, "s32", "-bits_per_raw_sample:a:%d" % n, "24"]
+    return args
+
+
 AENC = {
     "ac3": ["ac3"], "eac3": ["eac3"], "aac": ["aac"], "truehd": ["truehd"],
     "dts": ["dca"], "vorbis": ["vorbis"], "opus": ["libopus"], "flac": ["flac"],
@@ -801,8 +821,10 @@ def layout_lines(key, spec, dur, ep=None):
     lines.append("V0 %s %s %s %gFPS %ds" % (v["codec"].upper(), sizes, hdr,
                                             v.get("fps", FPS), picture_secs(spec, dur)))
     for i, a in enumerate(spec.get("audio", [])):
-        lines.append("A%d %s %s %s%s"
+        lines.append("A%d %s %s %s%s%s"
                      % (i, a["codec"].upper(), CH_LAYOUT[a["ch"]].upper(), a["lang"].upper(),
+                        " %gK %dBIT" % (a.get("sample_rate", 48000) / 1000, a.get("bits", 16))
+                        if a.get("sample_rate") or a.get("bits") else "",
                         " DEFAULT" if a.get("default") else ""))
     for i, s in enumerate(spec.get("subs", [])):
         lines.append("S%d %s %s%s%s"
@@ -1086,6 +1108,24 @@ PIPE_SHAPES = {
         "video": {"codec": "h264", "size": "1920x1080", "crf": 20},
         "audio": [{"codec": "dts", "ch": 6, "lang": "eng", "br": "1411k", "pitch": 440,
                    "default": True, "title": "DTS core 5.1 English"}],
+        "subs": [],
+    },
+    "pipe_h264_flac_96k_24": {
+        # **Hi-res lossless**: a stereo 96 kHz / 24-bit FLAC track, the shape the app decodes itself
+        # and resamples to 48 kHz S32 (`devcaps::pcm_load_rate`, `ff_pcm::PcmConverter`). It is the
+        # first audio spec with `sample_rate` / `bits`; the sines are generated AT 96 kHz (a rate
+        # change in the encoder would hide the content above 24 kHz), and verify() reads the rate
+        # and `bits_per_raw_sample` back from ffprobe. The real-FFmpeg host test
+        # (`ff_pcm_decode_tests.rs`) holds the decode itself; no `pipeline_cases` entry names this clip
+        # yet: the synthetic tier's `plxnative-playurl` declares a codec but carries no track facts
+        # (`route::stream_pcm` needs the rate, depth and channels of the playing track and refuses
+        # a PCM Load without them), so a case would fail at the Load before it graded anything.
+        "kind": "clip", "ext": "mkv",
+        "duration": PIPE_SECS, "rate": 0.06,
+        "declare": {"vcodec": "h264", "acodec": "flac", "fps": float(FPS), "atmos": False},
+        "video": {"codec": "h264", "size": "1920x1080", "crf": 20},
+        "audio": [{"codec": "flac", "ch": 2, "lang": "eng", "pitch": 440, "sample_rate": 96000, "bits": 24,
+                   "default": True, "title": "FLAC 2.0 96 kHz 24-bit English"}],
         "subs": [],
     },
     "pipe_hevc_eac3_4k_hdr10": {
@@ -1654,6 +1694,7 @@ MBIT = {
 # disk-space warning.
 PIPE_MBIT = {
     "pipe_h264_dts_1080p": 8.20,        # baseline picture + 1.4 Mbit/s DTS 5.1
+    "pipe_h264_flac_96k_24": 7.50,      # baseline picture + a stereo FLAC of sines (not measured)
     "pipe_h264_ac3_1080p": 7.24,        # measured, from a full 60 s build
     "pipe_hevc_eac3_4k_hdr10": 8.80,    # = episode_hevc_4k_hdr10_eac3 (hevc 4K crf 30 HDR)
     "pipe_hevc_eac3_4k_dovi_p8": 9.80,  # = movie_hevc_4k_dovi_p8
@@ -1822,7 +1863,7 @@ def build_generic(ctx, key, spec, dur, ep, dest, work, video_only=False):
             if a.get("delay"):
                 argv += ["-itsoffset", _g(a["delay"])]
             argv += ["-t", str(dur), "-f", "lavfi",
-                     "-i", audio_graph(a["ch"], a["pitch"], dur, segs)]
+                     "-i", audio_graph(a["ch"], a["pitch"], dur, segs, a.get("sample_rate", 48000))]
             a_idx.append(idx)
             idx += 1
         for i, s in enumerate(spec.get("subs", [])):
@@ -1888,6 +1929,7 @@ def build_generic(ctx, key, spec, dur, ep, dest, work, video_only=False):
         if a.get("br"):
             argv += ["-b:a:%d" % n, a["br"]]
         argv += ["-ac:a:%d" % n, str(a["ch"])]
+        argv += audio_depth_args(n, a)
         argv += ["-metadata:s:a:%d" % n, "language=" + a["lang"]]
         argv += ["-metadata:s:a:%d" % n, "title=" + a.get("title", "")]
         # Dispositions are set EXPLICITLY on every track, including the zeros: ffmpeg marks
@@ -2782,6 +2824,13 @@ def verify(key, spec, dur, path, ep=None):
                                 "track-menu cases" % (i, got.get("codec_name"), want_name))
             if got.get("channels") != w["ch"]:
                 problems.append("audio[%d] %r channels, wanted %d" % (i, got.get("channels"), w["ch"]))
+            if w.get("sample_rate") or w.get("bits"):
+                rate, bits = int(got.get("sample_rate") or 0), int(got.get("bits_per_raw_sample") or 0)
+                rec["audio"][i].update(sample_rate=rate, bits_per_raw_sample=bits)
+                if rate != w.get("sample_rate", 48000):
+                    problems.append("audio[%d] %d Hz, wanted %d" % (i, rate, w.get("sample_rate", 48000)))
+                if bits != w.get("bits", 16):
+                    problems.append("audio[%d] %d bits per raw sample, wanted %d" % (i, bits, w.get("bits", 16)))
             lang = (got.get("tags") or {}).get("language")
             if lang != w["lang"]:
                 problems.append("audio[%d] language %r, wanted %r" % (i, lang, w["lang"]))

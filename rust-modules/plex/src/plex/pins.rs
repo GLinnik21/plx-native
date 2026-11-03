@@ -39,7 +39,7 @@ use super::session::{HomePins, PinnedLib};
 
 /// One library as the rules see it — the join key plus the one fact the default turns on.
 ///
-/// Borrowed rather than owned strings: the caller (`browse::resolve_pins`) already holds the
+/// Borrowed rather than owned strings: the caller (`browse::resolve_pins_from`) already holds the
 /// section table and this is re-derived on every append, so a `String` per library per landing
 /// would be an allocation for nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,7 +100,7 @@ pub fn default_on(lib: LibRef<'_>) -> bool {
 /// every library of its kind on every other source at once, so there is no such thing as
 /// re-resolving the row that changed.
 ///
-/// The fourth is the editor's own commit (`browse::apply_pins`), and it is the floor's case rather
+/// The fourth is the editor's own commit (`browse::apply_pins_from`), and it is the floor's case rather
 /// than the classification's: a commit that records only the rows somebody answered leaves every
 /// other row living on a default — including one the floor had RAISED, whose reason to be raised
 /// the new record may well have just removed. Re-running this is how what the table SHOWS after a
@@ -217,7 +217,7 @@ pub fn answers(
 /// (the key is the machine, never the roster position, which reshuffles), so recording it would
 /// write a row that can only ever match the *other* nameless ones. It keeps its RESOLVED value —
 /// which is its default, not the answer, from the moment the commit's own reconcile runs
-/// (`browse::apply_pins`) rather than only from the next landing — and is asked about again next
+/// (`browse::apply_pins_from`) rather than only from the next landing — and is asked about again next
 /// boot. Showing an answer that provably cannot be saved is the same disagreement between the
 /// screen and the record that reconcile exists to end; it is simply one nothing can record away.
 ///

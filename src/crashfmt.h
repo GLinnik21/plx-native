@@ -197,6 +197,59 @@ static inline size_t plx_fmt_time(char *out, size_t cap, unsigned long secs) {
     return b.n;
 }
 
+/* The record's thread line: WHICH thread took the fault.
+ *
+ *     thread: tid=4242 main=1 name=plxnative
+ *
+ * `tid` is `gettid()`, `main` is 1 when it equals the process id (the main thread), and `name` is
+ * the kernel's `comm` (`prctl(PR_GET_NAME)`, at most 15 bytes) keeping only `[A-Za-z0-9_.-]`: any
+ * other byte becomes `?`, so a name set by a library cannot put a space, a newline or a second
+ * record into the log. An empty name is written as `?`. Thread names are the application's and its
+ * libraries' own identifiers, never user data. The line sits under `time:` and repeats neither
+ * `pc=` nor `lr=`, like `time:` and `reg:`; `crashreport::parse_thread` reads it back. */
+static inline size_t plx_fmt_thread(char *out, size_t cap, unsigned long tid, int is_main,
+                                    const char *name) {
+    struct plx_sbuf b = { out, 0, cap };
+    plx_s_str(&b, "thread: tid=");
+    plx_s_dec(&b, tid);
+    plx_s_str(&b, " main=");
+    plx_s_ch(&b, is_main ? '1' : '0');
+    plx_s_str(&b, " name=");
+    size_t k = 0;
+    for (; name && name[k] && k < 15; k++) {
+        char c = name[k];
+        int ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+                 c == '_' || c == '.' || c == '-';
+        plx_s_ch(&b, ok ? c : '?');
+    }
+    if (k == 0) plx_s_ch(&b, '?');
+    plx_s_ch(&b, '\n');
+    return b.n;
+}
+
+/* The process phase values Rust stores in `plx_crash_phase` (`plx_base::task::watchdog`). */
+#define PLX_PHASE_RUNNING  0u   /* the main loop, or before it */
+#define PLX_PHASE_SHUTDOWN 1u   /* the loop has ended and the teardown is running */
+#define PLX_PHASE_EXITING  2u   /* the teardown is over; the process is ending (exit_now) */
+
+/* The record's phase line: how far the process had got, and how long it had lived.
+ *
+ *     phase: running uptime=57
+ *
+ * `uptime` is whole seconds of CLOCK_MONOTONIC since `plx_crash_install`. An unknown phase value
+ * is written as `running`'s neighbour `unknown` rather than guessed. */
+static inline size_t plx_fmt_phase(char *out, size_t cap, unsigned int phase, unsigned long uptime) {
+    struct plx_sbuf b = { out, 0, cap };
+    plx_s_str(&b, "phase: ");
+    plx_s_str(&b, phase == PLX_PHASE_RUNNING ? "running" :
+                  phase == PLX_PHASE_SHUTDOWN ? "shutdown" :
+                  phase == PLX_PHASE_EXITING ? "exiting" : "unknown");
+    plx_s_str(&b, " uptime=");
+    plx_s_dec(&b, uptime);
+    plx_s_ch(&b, '\n');
+    return b.n;
+}
+
 /* ---------------------------------------------------------------------------------------------
  * The FREEZE record: what the main thread was doing when the watchdog saw it stand still.
  *

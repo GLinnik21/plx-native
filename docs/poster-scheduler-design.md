@@ -2,6 +2,8 @@
 
 Design proposal, 2026-09-21. Source observations below are from this live worktree, not from the historical filenames in the July audit. No implementation or performance verification accompanies this document. The reported TV sequence—visible art queued 47th and dropped frames increasing from 68 to 247—is the task's supplied incident evidence, not a measurement reproduced here.
 
+> Written for two workers. The pool is now `workers_for` in [poster.rs](../rust-modules/src/app/adapters/poster.rs): two, or three on a set with at least four cores and 2 GiB. Read every "two workers" below, `POSTER_WORKERS` and `WorkerId` (0 or 1) as that count: the typed sketch must take the count, not fix it. The one-speculative-obligation rule (§3, rule 2) is what keeps capacity for visible work, and it holds for any count of two or more.
+
 ## 1. Problem and scope
 
 Replace the poster adapter's implicit work protocol with a small, poster-specific request state machine. Keep two ordinary worker threads, the existing thread-spawn seam, and the SDL loop's ownership of application scheduling and result application. Make urgency and arrival order explicit data, independently of cache allocation. Do not migrate working one-shot mailboxes, playback services, or persistence into a common scheduler.
@@ -17,7 +19,7 @@ All paths in this table are relative to `rust-modules/src/`. `small` means `spaw
 | Source location(s) | Calls / labels | Shape and disposition |
 |---|---|---|
 | `app/adapters/poster.rs:992` | normal `poster`, called twice | Two interchangeable long-lived workers competing for images. **This proposal's scheduling domain.** |
-| `browse/mod.rs:3644` | small `sources` | One-shot source discovery, adapter mailboxes and caller-owned epochs/latches. Leave alone. |
+| `app/adapters/stores.rs` (`launch_browse_discovery`) | small `sources` | One-shot source discovery, started by the app's runner for `StoreJob::BrowseDiscovery` (no longer in `browse/mod.rs`). Adapter mailbox behind a `Fetch` claim, caller-owned epochs. Leave alone. |
 | `app/adapters/stores.rs` (`launch_browse_directory`, `launch_browse_page`) | small `directory`, `page` | The Library's value-list and listing-page reads, started by the app's runner for `StoreJob::BrowseDirectory` / `BrowsePage` (no longer in `browse/mod.rs`). One-shot results behind each read's own claim and mailbox. Leave alone. `directory` serves genres and letters. |
 | `app/adapters/stores.rs` (`launch_browse_hubs`) | small `libhubs` | The section hubs' list/row read, started by the app's runner for `StoreJob::BrowseHubs` (no longer in `browse/section_hubs.rs`). One-shot result with section/table/client validity checks. Leave alone. |
 | `metadata.rs:2753,3188,3582` | small `detail`, `altsrc`, `season` | Distinct request/landing protocols; season failure is separate from an empty answer. Leave alone. |
@@ -41,7 +43,7 @@ All paths in this table are relative to `rust-modules/src/`. `small` means `spaw
 
 Excluded fixtures: `browse/mod.rs:2992` (`browse-owner-test`) and `app/run.rs:3038` (`lifecycle-fixture`). Calls inside `task.rs`'s own tests are unqualified helper calls, not production launch sites.
 
-Two further corrections matter. [metadata.rs](../rust-modules/data/src/metadata.rs)'s `fetch_full` uses `Builder::spawn_scoped` for `detail-extras` around line 2565, and [player/ffi_host.rs](../rust-modules/media/src/player/ffi_host.rs)'s `Clock::start_ticker` uses `Builder::spawn` for the host clock sink around line 328. Both inspect the `Result`; neither is a `task::spawn*` call. Thus “every spawn site uses task.rs” is too broad for this snapshot. This proposal introduces no further exception and does not repair those unrelated sites.
+Two further corrections matter. [metadata.rs](../rust-modules/data/src/metadata.rs)'s `fetch_full` asks for its sibling requests through `task::beside` (scoped threads joined before the function returns, which is not a detached `task::spawn*` worker), and [player/ffi_host.rs](../rust-modules/media/src/player/ffi_host.rs)'s `Clock::start_ticker` uses `Builder::spawn` for the host clock sink around line 328, inspecting the `Result`; neither is a `task::spawn*` call. Thus “every spawn site uses task.rs” is too broad for this snapshot. This proposal introduces no further exception and does not repair those unrelated sites.
 
 Also, [storage_worker.rs](../rust-modules/base/src/storage_worker.rs) already calls its serial persistence wrapper `Executor` and its boxed closure `Job`. That is existing blocking FIFO infrastructure, not permission to introduce an async executor here. Posters remain the surveyed **multi-worker interchangeable pool**; they are not the only background queue. A single abstraction covering all these shapes would discard important semantics.
 
@@ -290,7 +292,7 @@ Before each behavior piece, audit prose made false by the change: `P_READY` term
 
 ## 5. What this does not fix
 
-**Two workers remain two workers. Their count is frozen until per-image imgtrace measurement exists.** The agreed order supplied for this task is **resident-eviction bug → imgtrace → lookahead/worker-count tuning from measurements → disk cache**. This design is preparation for that measured work, not permission to skip ahead or bundle those projects together.
+**Two workers remain two workers. Their count is frozen until per-image imgtrace measurement exists.** (Overtaken: that measurement now exists, and `workers_for` in `poster.rs` gives a set with at least four cores and 2 GiB three workers, every other set two.) The agreed order supplied for this task is **resident-eviction bug → imgtrace → lookahead/worker-count tuning from measurements → disk cache**. This design is preparation for that measured work, not permission to skip ahead or bundle those projects together.
 
 A scheduler cannot make two workers decode faster, shorten a slow server response, remove texture-upload stalls, or make 64 logical identities fit under the texture byte budget. `Delivered` does not repair the source/cache residency contract: `TexCache::evict_for` can drop residency independently of the adapter slot. That boundary is why resident-eviction work comes first. The scheduler also does not add transport cancellation, cure playback's blocking control paths, or establish a process-wide network budget.
 

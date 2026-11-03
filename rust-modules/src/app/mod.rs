@@ -239,6 +239,16 @@ pub(crate) struct App {
     #[cfg(feature = "devtools")]
     fps_shown: i32,
     play_prev: Option<(i64, u32)>,
+    /// The compiled HUD the player page draws from (`player_hud::loaded`), in the language the process
+    /// started in (a label's width sets a pill's width; the language cannot change while it runs). Compiled at boot (`boot::enter_application`), outside any frame, and handed to
+    /// the mount through the mounter's seed (`Bridge::seed_player_compiled`); `None` only in a controlled
+    /// replay or record run, which measures nothing outside a frame and compiles on its first player frame
+    /// (`run::refresh_hud`, inside the frame iteration). It is replaced by the package the seated profile chose when
+    /// that one fits the language and the cost ceilings (`Bridge::huds_tick`, in the frame's prepare window, never in the draw), and a
+    /// `plxnative-hud=<path>` package replaces whatever is chosen.
+    hud: Option<plx_appkit::player_hud::loaded::LoadedHud>,
+    /// the `plxnative-hud=<path>` package, read once on the first player frame (`run::refresh_hud`)
+    dev_hud: plx_appkit::player_hud::loaded::DevHud,
     running: bool,
     window_activity: window_activity::WindowActivity,
     #[cfg(feature = "devtools")]
@@ -283,6 +293,10 @@ pub(crate) struct App {
     /// The playing session is parked because the pipeline took its video decoder back, not
     /// because the app left the screen; the next press restores it (`run::park_on_decoder_release`).
     decoder_parked: bool,
+    /// The foreground Load was refused while the plaintext grants were still being re-proven (the
+    /// DID edge withdraws them), as `(grant revision at the refusal, retries left)`; the frame
+    /// step claims again once the revision moves (`run::retry_refused_foreground`).
+    foreground_retry: Option<(u64, u8)>,
     pub(crate) ok_armed: bool,
     last_route_reported: &'static str,
     pub(crate) ptr: Pointer,
@@ -514,15 +528,21 @@ fn pre_boot_diagnostics() -> plx_telemetry::telemetry::native::Guard {
 /// The run+teardown sequence `run_application` hands the mounted `App` to, split out for the same
 /// reason as [`pre_boot_diagnostics`] (D4): `run_application` stays a ten-line skeleton naming only
 /// the THREE real phases (pre-boot diagnostics, `boot`, this), never the steps inside any one of them.
-unsafe fn run_and_shutdown(app: &mut App) -> c_int {
+unsafe fn run_and_shutdown(app: &mut App) -> ! {
     run::run(app);
+    // The crash record's phase (`src/crashtrace.c`): from here a fault is in the teardown.
+    plx_base::task::watchdog::set_crash_phase(plx_base::task::watchdog::CrashPhase::Shutdown);
     // Quit: the last screen's visit has not been reported, and no route change will.
     run::end_route_visit(app, false);
     let failed = finish_recording(&mut app.rec, app.bridge.landgate())
         || app.bridge.controlled_failure().is_some();
     app.glass.sources.borrow_mut().clear();
+    let code = i32::from(failed);
     run::shutdown(&mut app.player.session, &mut app.adapters.player);
-    i32::from(failed)
+    // The crash-channel guard is the one `Drop` that persists something (it closes the capture
+    // backend and removes its database), so it runs here explicitly: nothing drops the `App`.
+    drop(app.telemetry_guard.take());
+    plx_base::process::exit_now(code)
 }
 
 fn finish_recording(rec: &mut recorder::Recplay, gate: &plx_machine::landgate::Gate) -> bool {
@@ -588,8 +608,10 @@ fn enter_application(pms_host: *const c_char, pms_port: c_int) -> Result<App,c_i
 }
 
 /// The ten-line public skeleton: preflight/construction, then the ordinary loop and teardown.
-pub(crate) fn run_application(pms_host: *const c_char, pms_port: c_int) -> c_int {
-    let mut app = match enter_application(pms_host,pms_port) { Ok(app) => app, Err(code) => return code };
+pub(crate) fn run_application(pms_host: *const c_char, pms_port: c_int) -> ! {
+    // An early-boot refusal ends the same way: the workers it has already started (diagnostics,
+    // capability probe, telemetry) are as live as after a played session.
+    let mut app = match enter_application(pms_host,pms_port) { Ok(app) => app, Err(code) => plx_base::process::exit_now(code) };
     unsafe { run_and_shutdown(&mut app) }
 }
 

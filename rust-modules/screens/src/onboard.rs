@@ -64,7 +64,7 @@ pub struct OnboardScreen {
     /// [`toggle_row`](Self::toggle_row) rather than derived from any comparison.
     ///
     /// It was `draft != entry_pins` until 2026-09-20, which is the same inference the store
-    /// removed from `browse::apply_pins` and it survived here. The comparison needs a baseline
+    /// removed from `browse::apply_pins_from` and it survived here. The comparison needs a baseline
     /// that stays true, and [`draft_rows`](Self::draft_rows) can only keep one for a row NOBODY
     /// has touched — so once a row was edited its baseline froze, and a Plex Home roster landing
     /// while the editor was open left it stale: toggle a row Off, let the live default drift Off
@@ -952,7 +952,7 @@ mod tests {
         let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
         browse.stores.browse.borrow_mut().queue_discovery_for_test(
             client, client.token_gen(), false);
-        let outcome = browse.stores.browse_discover_pump();
+        let outcome = browse.stores.browse_discover_pump_for_test();
         assert_eq!(outcome.endpoints.iter().map(|request| request.sid).collect::<Vec<_>>(), [sid]);
         let directory = browse.capture();
         let source_list_gen = directory.source_list_gen();

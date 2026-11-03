@@ -110,6 +110,11 @@ pub(super) fn fresh_registry(ps: &mut PlaybackSession) -> plx_base::testlock::Se
     g
 }
 
+/// The demuxer ordinal the next native audio reload will feed (`-1`: none staged).
+pub(super) fn desired_audio_idx() -> i32 {
+    crate::player::SHARED.desired_audio_idx.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// A `ServerId` naming a slot nothing is registered in — so `client_for` answers `None` and
 /// `build_stream` takes its no-client exit without opening a socket.
 pub(super) fn unregistered_sid() -> ServerId {

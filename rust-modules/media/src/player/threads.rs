@@ -10,16 +10,45 @@ use std::sync::atomic::Ordering;
 pub struct SendPtr<T>(pub *mut T);
 unsafe impl<T> Send for SendPtr<T> {}
 
+/// The time Starfish `Load` itself took: `since_issued` (what `Shared::mark_native_load_returned`
+/// reports, measured from `begin_native_session`) less `settings_read`, the sound-output read this
+/// thread did in front of `Load`. That read is not Load time, so the "native: Load returned after
+/// Nms" line, `native_load_elapsed_ms` and the `LoadElapsedClass` telemetry exclude it.
+///
+/// `NATIVE_LOAD_BUDGET` is NOT measured this way: the pump compares it with `native_load_elapsed`,
+/// the wall clock from `begin_native_session`, so the budget still counts the read (a registration
+/// that wedges must fail the Load, not leave it Connecting). PURE.
+fn load_alone(since_issued: std::time::Duration, settings_read: std::time::Duration) -> std::time::Duration {
+    since_issued.saturating_sub(settings_read)
+}
+
 /// media/load thread: construct + Load (uid=NULL). The library owns its own GMainContext + loop,
 /// and callbacks arrive on its thread — but Load itself is SYNCHRONOUS here and on some chassis
 /// blocks for a long time inside video-output init (issue #74, k5lp/k3lp), which is why the C seam
 /// refuses every other verb until it returns (`g_load_returned`) and the pump bounds the wait
 /// with `NATIVE_LOAD_BUDGET`.
-pub fn load_thread(
+pub(super) fn load_thread(
     payload: SendPtr<c_char>,
     native_epoch: u32,
     route_start: Option<crate::route::RouteStartAttempt>,
+    pcm_lead: super::engine::PcmLead,
 ) {
+    load_thread_with(payload, native_epoch, route_start, pcm_lead, super::engine::resolve_pcm_lead_on_load_thread);
+}
+
+/// [`load_thread`] with the sound-output read passed in, so a test can make it take a known time.
+fn load_thread_with(
+    payload: SendPtr<c_char>,
+    native_epoch: u32,
+    route_start: Option<crate::route::RouteStartAttempt>,
+    pcm_lead: super::engine::PcmLead,
+    resolve_lead: impl FnOnce(super::engine::PcmLead) -> Option<i64>,
+) {
+    // The sound output's lead is read HERE, before `Load` and off the frame thread, and goes back
+    // with the Load's return: nothing is fed before that return (`engine::settle_pcm_lead`).
+    let read_started = std::time::Instant::now();
+    let pcm_lead_ns = resolve_lead(pcm_lead);
+    let read_took = read_started.elapsed();
     super::log("SMP: calling Load (uid=NULL)");
     let ok = unsafe { super::sink().load(payload.0, native_epoch) };
     super::log(&format!("SMP: Load returned ok={ok}"));
@@ -38,7 +67,7 @@ pub fn load_thread(
     // verb) must never observe "Load has returned" any later than this. Route tickets are a
     // SEPARATE mechanism (a ticket can be rejected as stale independent of this gate) and are
     // published after, not before, on purpose.
-    if let Some(elapsed) = SHARED.mark_native_load_returned(native_epoch) {
+    if let Some(elapsed) = SHARED.mark_native_load_returned(native_epoch, pcm_lead_ns) {
         // Captured HERE, at the moment the flag actually flips, so the "native: Load returned
         // after Nms" log measures the real in-flight duration rather than however long it took
         // the main-thread pump to next run and notice. Logged unconditionally, right at the gate
@@ -47,7 +76,7 @@ pub fn load_thread(
         // never does, the old placement left this line unlogged forever, with no way to tell
         // "Load is still on the stack" from "Load returned and the pipeline went quiet". See
         // finding `load-returned-log-is-conditional-on-loadcompleted-and-unbounded-after`.
-        let elapsed_ms = elapsed.as_millis() as u64;
+        let elapsed_ms = load_alone(elapsed, read_took).as_millis() as u64;
         SHARED
             .native_load_elapsed_ms
             .store(elapsed_ms, Ordering::Relaxed);
@@ -177,5 +206,56 @@ pub fn timeline_thread(
             t / 1000,
             d / 1000
         ));
+    }
+}
+
+#[cfg(test)]
+mod load_timing_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn the_settings_read_is_taken_out_of_the_load_time_and_never_below_zero() {
+        let ms = Duration::from_millis;
+        assert_eq!(load_alone(ms(900), ms(300)), ms(600));
+        assert_eq!(load_alone(ms(900), ms(0)), ms(900), "a Load with no read reports what it took");
+        assert_eq!(load_alone(ms(100), ms(300)), ms(0), "a clock that disagrees never goes negative");
+    }
+
+    /// A read that takes 400 ms in front of a Load that returns at once: the figures the Load-timing
+    /// log and telemetry are made from say the Load was quick, while the wall clock the pump's
+    /// `NATIVE_LOAD_BUDGET` reads still counts the read.
+    #[cfg(feature = "hostsim")]
+    #[test]
+    fn a_slow_read_is_not_counted_as_load_time_but_is_counted_by_the_budget_clock() {
+        const READ: Duration = Duration::from_millis(400);
+        let _serial = plx_base::testlock::serial();
+        SHARED.reset_session();
+        crate::player::ffi_host::force_clocksink_for_test(true);
+        let epoch = SHARED.begin_native_session().expect("native session");
+        let payload = c"{}";
+        load_thread_with(
+            SendPtr(payload.as_ptr() as *mut c_char),
+            epoch,
+            None,
+            super::super::engine::PcmLead::FromOutput(plx_platform::devcaps::AudioStack::Liblxa),
+            |_| {
+                std::thread::sleep(READ);
+                Some(400_000_000)
+            },
+        );
+        let reported = SHARED.native_load_elapsed_ms.load(Ordering::Relaxed);
+        let budget_clock = SHARED.native_load_elapsed(epoch).expect("the epoch is still Active");
+        crate::player::ffi_host::force_clocksink_for_test(false);
+        SHARED.test_force_native_idle();
+        SHARED.reset_session();
+        assert!(
+            reported < READ.as_millis() as u64 / 2,
+            "the Load returned at once, but its reported time is {reported} ms: the {READ:?} read is in it"
+        );
+        assert!(
+            budget_clock >= READ,
+            "NATIVE_LOAD_BUDGET's clock ({budget_clock:?}) must still count the read it waited behind"
+        );
     }
 }

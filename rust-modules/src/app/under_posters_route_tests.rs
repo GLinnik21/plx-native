@@ -43,7 +43,7 @@ fn the_under_posters_setting_changes_the_caption_under_the_library_grids_posters
     open_settings_at(&mut w.d, plx_screens::family::SettingsPage::UnderPosters);
     w.frames(40);
     assert_eq!(w.elem(), Some(1), "premise: the page is seated on the Title switch");
-    plx_media::route::restore_under_posters(UnderPosters { title: true, details: UnderPostersDetails::YearLength });
+    plx_media::route::restore_under_posters(UnderPosters { title: true, details: UnderPostersDetails::YearLength, sort_value: false });
     w.frames(30);
     w.press(Key::Back);
     w.frames(60);
@@ -54,7 +54,7 @@ fn the_under_posters_setting_changes_the_caption_under_the_library_grids_posters
     plx_media::route::restore_under_posters(UnderPosters::DEFAULT);
     w.frames(30);
     assert_eq!(caption_under_focused_poster(&mut w), ["Movie"], "switching the title off takes the name from under the poster");
-    plx_media::route::restore_under_posters(UnderPosters { title: false, details: UnderPostersDetails::None });
+    plx_media::route::restore_under_posters(UnderPosters { title: false, details: UnderPostersDetails::None, sort_value: false });
     w.frames(30);
     assert_eq!(caption_under_focused_poster(&mut w), Vec::<String>::new(), "Nothing opens no band and draws no line");
 }
@@ -87,7 +87,7 @@ fn a_name_the_face_cuts_rides_the_caption_by_the_one_collection_rule() {
     for (i, (name, count, cut)) in tiles.into_iter().enumerate() {
         for (title, details) in [(false, UnderPostersDetails::YearLength), (false, UnderPostersDetails::None),
             (true, UnderPostersDetails::YearLength), (true, UnderPostersDetails::None)] {
-            plx_media::route::restore_under_posters(UnderPosters { title, details });
+            plx_media::route::restore_under_posters(UnderPosters { title, details, sort_value: false });
             w.frames(60);
             let want: Vec<String> = match (title, details) {
                 (_, UnderPostersDetails::None) => title.then(|| name.to_owned()).into_iter().collect(),

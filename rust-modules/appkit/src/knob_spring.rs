@@ -2,7 +2,7 @@
 //!
 //! PURE — a value of time in, a number out — so the choreography is tested without a GL context,
 //! like [`crate::scrub_preview::Motion`] (whose [`Ramp`] and [`Ease`] it reuses rather than growing
-//! a second easing). `TransportRow` owns one; the HUD draws what it answers.
+//! a second easing). `HudMotion` owns one; the HUD draws what it answers.
 //!
 //! A cancelled scrub ends with the published preview position gone and the playhead where it
 //! always was, so the knob would jump. [`KnobSpring`] remembers where the preview last was and

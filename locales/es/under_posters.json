@@ -1,19 +1,32 @@
 {
   "under_posters.title": "Bajo los carteles",
-  "under_posters.detail": "Lo que se ve bajo el cartel en el que estás.",
-  "under_posters.copy": "La mayoría de los carteles ya muestran su título. Elige qué aparece bajo el cartel en el que estás.",
+  "under_posters.detail": "Bajo los carteles, para películas y series.",
+  "under_posters.copy": "La mayoría de los carteles ya muestran su título. Elige qué aparece debajo, tanto para películas como para series. La vista previa usa la biblioteca que abriste por última vez.",
   "under_posters.title_row": "Título",
   "under_posters.title_detail": "El nombre, en negrita.",
   "under_posters.details_row": "Detalles",
-  "under_posters.details_detail": "Una línea de información.",
-  "under_posters.details_copy": "Los títulos empezados, próximos o las colecciones muestran eso en su lugar: tiempo restante, fecha de estreno, número de películas.",
+  "under_posters.details_detail": "Una línea para película o serie.",
+  "under_posters.details_copy": "Cada opción se adapta al cartel: una película muestra 2019 · 2h 14min, una serie 2019 · 6 temporadas o 4 episodios nuevos si ya la empezaste. Empezados, próximos y colecciones muestran en su lugar el tiempo restante, el estreno o el número de títulos.",
   "under_posters.year_length": "Año · Duración",
   "under_posters.genre": "Género",
   "under_posters.video": "Vídeo",
+  "under_posters.video_detail": "Sin calidad de vídeo única, una serie muestra su año.",
   "under_posters.age_rating_score": "Clasificación · Nota",
   "under_posters.none": "Nada",
   "under_posters.reset": "Restablecer",
-  "under_posters.reset_detail": "Año y duración, sin título.",
+  "under_posters.reset_detail": "Año y duración, valor de orden activado, sin título.",
   "under_posters.sample_title": "Película",
-  "under_posters.sample_genre": "Drama"
+  "under_posters.sample_genre": "Drama",
+  "under_posters.sort_value": "Valor de orden",
+  "under_posters.sort_value_detail": "Sustituye la línea de detalles al ordenar.",
+  "under_posters.value_today": "Hoy",
+  "under_posters.value_yesterday": "Ayer",
+  "under_posters.value_never": "Nunca",
+  "under_posters.value_plays": {
+    "one": "{count} reproducción",
+    "many": "{count} reproducciones",
+    "other": "{count} reproducciones"
+  },
+  "under_posters.sorted_by": "Ordenado por año",
+  "under_posters.last_opened": "La biblioteca que abriste por última vez"
 }

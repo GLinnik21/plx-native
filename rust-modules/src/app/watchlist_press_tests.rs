@@ -95,17 +95,6 @@ impl Reach for Script {
 }
 
 impl WatchlistIo for Script {
-    fn capture_auth(&self) -> Option<WatchlistAuth> {
-        Some(WatchlistAuth {
-            client_id: "synthetic-client".into(),
-            credential: "synthetic-credential".into(),
-            user: Default::default(),
-            generation: 1,
-        })
-    }
-    fn is_current(&self, auth: &WatchlistAuth) -> bool {
-        auth.generation == 1
-    }
     fn page(&self, _: &WatchlistAuth, start: u32, size: u32, _: Option<&str>) -> Result<WatchPage, WatchlistError> {
         if self.fail_reads.load(Ordering::SeqCst) {
             return Err(WatchlistError::Transport);
@@ -149,17 +138,6 @@ impl WatchlistIo for Script {
 struct Discover;
 
 impl CatalogIo for Discover {
-    fn capture_auth(&self) -> Option<WatchlistAuth> {
-        Some(WatchlistAuth {
-            client_id: "synthetic-client".into(),
-            credential: "synthetic-credential".into(),
-            user: Default::default(),
-            generation: 1,
-        })
-    }
-    fn is_current(&self, auth: &WatchlistAuth) -> bool {
-        auth.generation == 1
-    }
     fn fetch(&self, _: &WatchlistAuth, hex: &str) -> Result<CatalogItem, WatchlistError> {
         Ok(CatalogItem {
             item: WatchItem {
@@ -201,7 +179,7 @@ pub(super) fn hold_reads(rig: &mut Bridge) {
 pub(super) fn release_reads(rig: &mut Bridge) {
     let store = std::mem::take(rig.watchlist_for_test());
     *rig.watchlist_for_test() = store.with_spawn_for_test(inline);
-    rig.watchlist_for_test().run(plx_data::stores::watchlist::WatchlistCmd::Open);
+    rig.watchlist_for_test().run_with_input(plx_data::stores::watchlist::WatchlistCmd::Open, &Bridge::watchlist_input());
 }
 
 /// A rig on Home, the Watchlist store over `script` and the catalog store over [`Discover`].
@@ -209,6 +187,7 @@ pub(super) fn rig_over(script: &Arc<Script>) -> (Dispatcher<AppHost>, Bridge) {
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     *rig.watchlist_for_test() = WatchlistStore::with_io(script.clone()).with_spawn_for_test(inline);
+    rig.seat_watchlist_account_for_test(true);
     rig.stores.catalog = CatalogStore::with_io(Arc::new(Discover));
     super::nav_root(&mut d, AppArg::Home);
     super::frame(&mut d, &mut rig, tick(0), vec![]);
@@ -226,7 +205,7 @@ pub(super) fn feed_catalog(rig: &mut Bridge, d: &mut Dispatcher<AppHost>) {
 /// Land what the workers brought and feed the pages, a few frames.
 pub(super) fn settle(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, from: u32) {
     for i in 0..6 {
-        rig.watchlist_for_test().pump();
+        rig.watchlist_pump();
         rig.watchlist_feed(d);
         feed_catalog(rig, d);
         super::frame(d, rig, tick(from + i), vec![]);
@@ -235,7 +214,7 @@ pub(super) fn settle(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, from: u32) {
 
 /// Read the list once, as the tab or a page that needs membership does.
 fn read_list(d: &mut Dispatcher<AppHost>, rig: &mut Bridge) {
-    rig.watchlist_for_test().run(plx_data::stores::watchlist::WatchlistCmd::Open);
+    rig.watchlist_for_test().run_with_input(plx_data::stores::watchlist::WatchlistCmd::Open, &Bridge::watchlist_input());
     settle(d, rig, 1);
 }
 

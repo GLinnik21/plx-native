@@ -891,5 +891,85 @@ class LifecycleSubcommand(unittest.TestCase):
         self.assertIn("app pid changed", out)
 
 
+class ForegroundIsReadOnly(unittest.TestCase):
+    """`fg` is the advisory read: it never wakes the set and never needs a lease.
+
+    The guard (.claude/hooks/tv-lock-guard.py) lets `tv-session.sh fg` through with no lease on the
+    strength of this, so an asleep or unreachable television must report "nothing read" and exit 0
+    WITHOUT a Wake-on-LAN packet (a decoy wake-tv.sh records any attempt). The real `ensure_awake` runs, so a
+    change that put the wake back would fail here rather than at the next dark living room.
+    """
+
+    def _run(self, call, *, reachable, fg="com.webos.app.youtube"):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "tools").mkdir()
+            script_link = root / "tools" / "tv-session.sh"
+            script_link.symlink_to(SCRIPT)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            SoundSubcommand._fake_make(bin_dir)
+            woke = root / "woke"
+            wake_dir = root / ".agents" / "skills" / "wake-tv"
+            wake_dir.mkdir(parents=True)
+            wake = wake_dir / "wake-tv.sh"
+            wake.write_text(f"#!/bin/sh\n: > {woke}\n", encoding="utf-8")
+            wake.chmod(0o755)
+            up = "1" if reachable else "0"
+            body = textwrap.dedent(
+                f"""\
+                require_lock() {{ return 0; }}
+                advise_lock() {{ return 0; }}
+                tvq() {{
+                  case "$1" in
+                    true) [ {up} = 1 ] ;;
+                    *getForegroundAppInfo*) printf '{{"appId": "{fg}", "returnValue": true}}\\n' ;;
+                    fuser*) echo 4242 ;;
+                  esac
+                }}
+                tv() {{ :; }}
+                cmd_lifecycle {call}
+                echo "RC:$?"
+                """
+            )
+            harness = 'source "$1" selftest\n' + body
+            environment = os.environ.copy()
+            environment["PATH"] = f"{bin_dir}:{environment['PATH']}"
+            result = subprocess.run(
+                ["bash", "-c", harness, "lifecycle", str(script_link)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=environment,
+                check=False,
+                timeout=20,
+            )
+            return result.stdout, woke.exists()
+
+    def test_fg_reads_the_foreground_app(self):
+        out, woke = self._run("fg", reachable=True)
+        self.assertIn("RC:0", out)
+        self.assertIn("foreground app: com.webos.app.youtube", out)
+        self.assertFalse(woke)
+
+    def test_fg_on_an_asleep_set_reads_nothing_and_sends_no_wake_packet(self):
+        out, woke = self._run("fg", reachable=False)
+        self.assertIn("RC:0", out)
+        # Not "idle": nothing was read. tools/tv-lock.sh's idle_verdict calls an unread foreground
+        # UNKNOWN unless the panel reads Active Standby, and `fg` never reads the panel, so it says
+        # "nothing read", not "idle". The wording says what is true (nothing read, no wake sent).
+        self.assertIn("TV unreachable or asleep (nothing read, no wake sent)", out)
+        self.assertNotIn("idle", out)
+        self.assertNotIn("foreground app:", out)
+        self.assertNotIn("waking", out)
+        self.assertFalse(woke, "fg sent a wake packet to a sleeping set")
+
+    def test_the_other_lifecycle_subcommands_still_wake_an_asleep_set(self):
+        # Pinned so "fg never wakes" is not widened to the subcommands that drive the set.
+        out, woke = self._run("foreground", reachable=False)
+        self.assertIn("TV asleep", out)
+        self.assertTrue(woke)
+
+
 if __name__ == "__main__":
     unittest.main()

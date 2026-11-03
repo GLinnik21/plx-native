@@ -6,6 +6,9 @@
 # Sans-IO lifecycle PR B: the three `lifecycle.rs` `player::TX` lines (`commit_viewer_resume_for_load`, `paused`, `set_paused`) left with the transport
 # contract, which is `player/transport.rs` now (the IO layer, not scanned). That is a relocation, so it lowers nothing by itself: the same diff widened the
 # `globals` spellings to the transport's readers and seeded what they found in `screens.txt`. `lifecycle.rs` keeps its `player::TX` spelling check, at zero.
+# Attempt-caps PR (#1044): the spellings widened again, to `devcaps::caps(` and the zero-argument `is_dp_audio(` / `is_dp_audio_track(`. That is a coverage
+# expansion, not a shrink: `plan.rs` plans from the attempt's `&Caps` (`ResolveEnv::caps`) and read none of them after the PR, and no other machine reads
+# them, so nothing was seeded and the three `build_stream` lines below are unchanged.
 rust-modules/media/src/route/plan.rs::build_stream::client_for
 rust-modules/media/src/route/plan.rs::build_stream::current_snapshot
 rust-modules/media/src/route/plan.rs::build_stream::session::peek

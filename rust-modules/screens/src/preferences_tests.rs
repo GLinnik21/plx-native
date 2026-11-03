@@ -109,7 +109,7 @@ fn every_field_row_pushes_its_picker_and_nothing_else() {
     let mut playback = PreferencesPage::new(EntryId(0), Kind::Playback);
     let mut audio = loaded_audio_page(&account);
     for (page, fields) in [
-        (&mut playback, vec![PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking]),
+        (&mut playback, vec![PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::DolbyVision]),
         (&mut audio, vec![PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles]),
     ] {
         for field in fields {
@@ -263,7 +263,7 @@ fn playback_rows_are_read_only_while_no_profile_is_seated() {
     let mut page = PreferencesPage::new(EntryId(0), Kind::Playback);
     assert_eq!(page.copy, plx_platform::i18n::msg::settings_playback_unseated(), "the page says to choose a profile");
     for field in [PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition,
-        PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking] {
+        PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::DolbyVision] {
         let key = RowId::Field(field).key().0;
         let row = page.form.index_of(&RowId::Field(field)).expect("the row is still listed");
         assert!(dims(&page)[row], "{field:?}: dimmed");
@@ -276,6 +276,28 @@ fn playback_rows_are_read_only_while_no_profile_is_seated() {
     let audio = loaded_audio_page(&account);
     assert!(!dims(&audio).is_empty() && dims(&audio).iter().all(|dim| !dim),
         "the account fields are not read-only");
+}
+
+/// **The Player HUD row is read-only with the rest of the Profile rows while nobody is seated**: the row stays on the
+/// page, dimmed, and OK / RIGHT on it open nothing (the choice it opens is a pick the data layer would refuse).
+/// With a profile seated the same row opens the Player HUD page.
+#[test]
+fn the_player_hud_row_is_read_only_while_no_profile_is_seated() {
+    let _serial = plx_base::testlock::serial();
+    let session = plx_plex::plex::session::TempSession::new("pref-hud-row-unseated");
+    let mut page = PreferencesPage::new(EntryId(0), Kind::Playback);
+    let key = RowId::PlayerHud.key().0;
+    let row = page.form.index_of(&RowId::PlayerHud).expect("the Player HUD row is listed while unseated");
+    assert!(dims(&page)[row], "dimmed");
+    let ok = drive(&mut page, ScreenEvent::Activate(key), key);
+    let right = drive(&mut page, right_at_edge(), key);
+    assert!(pushed(&ok).is_empty() && pushed(&right).is_empty(), "OK and RIGHT open nothing with no seat");
+
+    seat_named(&session, "maya", "Maya");
+    drive(&mut page, tick(), 0);
+    let row = page.form.index_of(&RowId::PlayerHud).expect("the row is still listed once a profile is seated");
+    assert!(!dims(&page)[row], "a seated profile's row is not dimmed");
+    assert_eq!(pushed(&drive(&mut page, ScreenEvent::Activate(key), key)), vec![SettingsPage::PlayerHud], "and OK opens the page");
 }
 
 /// **The Playback page names the profile whose settings it shows, and follows a seat change.** The

@@ -22,10 +22,11 @@
 //! detail pages, each warming a backdrop and a logo, then a shelf of posters) reached ≈68 MB
 //! resident with slots still free, which breached `RenderSet` rule (c) (§8.3,
 //! `ui/frame/render_set.rs`) on every `make sim` debug build while a release build only logged.
-//! [`TEX_RESIDENT_BYTES_MAX`] is the second, independent ceiling `evict_for` enforces: LRU by
-//! `last_used`, oldest first, exactly as the count cap already did — the two ceilings share one
-//! eviction loop and either can fire first — **but LRU alone is not the whole policy**: see the
-//! next paragraph.
+//! [`TEX_RESIDENT_BYTES_MAX`] is the second, independent ceiling `evict_for` enforces — the two
+//! ceilings share one eviction loop and either can fire first. That loop takes the heavy entries
+//! (a [`Class::Residency`] upload: a backdrop or logo a page left behind) before the light ones,
+//! oldest `last_used` first within each class, so one backdrop goes before dozens of older
+//! posters. **Eviction order is not the whole policy either**: see the next paragraph.
 //!
 //! **On-screen art stays; arrivals lose.** `resolve` stamps each [`Entry`] with the draw-frame
 //! serial it was resolved on ([`TexCache::frame`], advanced once per [`prepare`] call, always
@@ -161,7 +162,7 @@ const CACHE_CAP: usize = 64;
 ///
 /// The subtracted per-screen term is the larger of the two `RenderReport`s this file's own
 /// screens can produce: the login QR (`screens/login.rs`, 400×400×4 = 640,000 B) and the
-/// player's image-subtitle display set (`appkit/player_hud.rs`'s `SubtitleBitmaps::bytes`). Neither
+/// player's image-subtitle display set (`appkit/player_hud/mod.rs`'s `SubtitleBitmaps::bytes`). Neither
 /// screen owns a texture from THIS pool (a QR code and a subtitle bitmap are each their own GL
 /// resource, not a `ui::tex` key), but both count toward the SAME `RENDER_BYTES_MAX` ceiling this
 /// pool shares, so the pool's own budget has to leave them room. The subtitle bound is not a
@@ -650,11 +651,12 @@ impl<K: Copy + Eq + Hash> TexCache<K> {
     }
 
     /// Make `room` more slots fit under `cap` and `incoming` more bytes fit under `bytes_max` by
-    /// evicting [`TexCache::victim_ok`] entries, oldest `last_used` first. Returns `true` if the
+    /// evicting [`TexCache::victim_ok`] entries, the heavy ones (a [`Class::Residency`] upload) before
+    /// the light, oldest `last_used` first within each. Returns `true` if the
     /// caller may upload now, `false` if it must not: arrivals lose to on-screen art.
     ///
-    /// Nothing is freed until it is known to be worth it: eligible entries are taken in LRU order
-    /// only in a simulation first, and the real removals happen only if that reaches both
+    /// Nothing is freed until it is known to be worth it: eligible entries are taken in eviction order
+    /// (heavy first, then oldest) only in a simulation first, and the real removals happen only if that reaches both
     /// ceilings. If it does not, and some OTHER resident entry (not `protect`) failed
     /// [`TexCache::victim_ok`] only because it was drawn a moment ago, this returns `false` and
     /// frees nothing — on-screen art stays, and the incoming upload retries after its cooldown.
@@ -673,15 +675,18 @@ impl<K: Copy + Eq + Hash> TexCache<K> {
         if fits(self.resident.len(), self.bytes) {
             return true;
         }
-        // Victims, oldest `last_used` first — the exact order the removal loop below frees them
-        // in, so the simulation below matches the real eviction exactly.
+        // Victims, heavy (Residency) entries first and oldest `last_used` first within each
+        // class — the exact order the removal loop below frees them in, so the simulation below
+        // matches the real eviction exactly.
         let mut victims: Vec<(K, u64, usize)> = self
             .resident
             .iter()
             .filter(|&(&k, e)| self.victim_ok(k, e, protect))
             .map(|(&k, e)| (k, e.last_used, e.bytes))
             .collect();
-        victims.sort_unstable_by_key(|&(_, last_used, _)| last_used);
+        // One backdrop left behind by a page frees what dozens of posters would, and comes back
+        // from the disk tier; losing a poster costs a tile a visible blink.
+        victims.sort_unstable_by_key(|&(_, last_used, bytes)| (class_for(bytes) != Class::Residency, last_used));
 
         let mut count = self.resident.len();
         let mut bytes = self.bytes;
@@ -781,6 +786,14 @@ mod tests {
         }
         fn free(&mut self, t: Tex) {
             self.freed.push(t.id);
+        }
+    }
+
+    /// A decoded picture of exactly `bytes` pixel bytes, for tests that need a weight.
+    fn sized(k: u32, bytes: usize) -> PosterReady<u32> {
+        PosterReady {
+            key: k,
+            result: Ok(Decoded { w: 1, h: 1, rgba: vec![0; bytes].into_boxed_slice() }),
         }
     }
 
@@ -940,14 +953,6 @@ mod tests {
     /// consulted, all four eventually land and `resident_bytes()` reaches ~4x the budget.
     #[test]
     fn residency_is_bounded_by_bytes_not_only_by_slots() {
-        let sized = |k: u32, bytes: usize| PosterReady {
-            key: k,
-            result: Ok(Decoded {
-                w: 1,
-                h: 1,
-                rgba: vec![0; bytes].into_boxed_slice(),
-            }),
-        };
         const IMG: usize = 1_000_000; // under RESIDENCY_BYTES, so every upload is a Poster take
         const BUDGET: usize = 2_500_000; // room for two IMGs, not three
 
@@ -998,6 +1003,28 @@ mod tests {
              refusal — both keys were genuinely resident before eviction"
         );
         assert!(!c.has_pending());
+    }
+
+    /// A heavy entry no longer on screen (a backdrop of a page that was left) is the first
+    /// victim, even when a light one is older: it frees the most per refetch it costs.
+    #[test]
+    fn a_heavy_entry_is_evicted_before_an_older_light_one() {
+        const LIGHT: usize = 900_000; // under RESIDENCY_BYTES
+        const HEAVY: usize = 2_000_000; // over it: a Residency take
+        let mut c: TexCache<u32> = TexCache::with_budget(8, 3_500_000);
+        let mut up = StubUp { next: 0, freed: vec![], warmed: vec![] };
+        let mut present = Present::new();
+        let mut b = Budget::new();
+        for (at, key, bytes) in [(0, 1, LIGHT), (20_000, 2, HEAVY), (40_000, 3, LIGHT)] {
+            c.accept(sized(key, bytes));
+            b.begin_frame(at);
+            let mut ph = PresentHandle(&mut present);
+            assert_eq!(c.prepare(&mut b, &mut up, &mut ph, || at), 1, "key {key} lands");
+        }
+        assert!(c.resolve(1).is_some(), "the older light entry stays");
+        assert!(c.resolve(3).is_some(), "the arrival is resident");
+        assert!(c.resolve(2).is_none(), "the heavy entry went first");
+        assert_eq!(c.take_unresident().collect::<Vec<_>>(), vec![(2, false)]);
     }
 
     /// F2: an image bigger than the whole byte budget, with nothing on screen blocking it, is

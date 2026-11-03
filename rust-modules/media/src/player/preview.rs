@@ -613,6 +613,12 @@ pub fn set_phase_for_test(phase: Phase) {
     with_mut(|m| m.phase = phase);
 }
 
+/// Test-only: the singleton machine's phase.
+#[cfg(any(test, feature = "test-support"))]
+pub fn phase_for_test() -> Phase {
+    with_mut(|m| m.phase)
+}
+
 /// Test-only: while set, [`retire`] finds the preview's Load not yet returned, as it does for a
 /// real trailer abandoned mid-Load, so a halt leaves the machine `Abandoning` (`occupies()` true)
 /// without an installed engine. Cleared by [`reset_for_test`].

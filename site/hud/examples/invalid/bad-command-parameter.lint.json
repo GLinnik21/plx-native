@@ -1,0 +1,18 @@
+{
+  "file": "bad-command-parameter.plxhud.json",
+  "findings": [
+    {
+      "code": "HUD-E0304",
+      "hint": "write one of: subtitles, audio",
+      "message": "`video` is not a known name",
+      "nearest": [
+        "audio",
+        "subtitles"
+      ],
+      "path": "/layout/block/1/cells/0/segment/items/0/tab",
+      "rule": "command-param-value",
+      "severity": "error"
+    }
+  ],
+  "lint": 1
+}

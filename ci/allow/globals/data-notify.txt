@@ -1,4 +1,4 @@
-# count: 4
+# count: 8
 # Process-global reads inside machines (docs/sans-io.md), area `data-notify`: one line per production read of a registry in a machine —
 # (the spellings are ci/check-deps.sh's `globals` rule) — keyed `<path>::<enclosing fn>::<spelling>`.
 # A machine reads no registry: the value arrives in an event or an argument. Spec: ci/check-deps.sh `globals`.
@@ -7,3 +7,7 @@ rust-modules/data/src/stores/notify.rs::connect::client_for
 rust-modules/data/src/stores/notify.rs::pump::client_for
 rust-modules/data/src/stores/notify.rs::sync_roster::client_for
 rust-modules/data/src/stores/notify.rs::sync_roster::client_for
+rust-modules/data/src/stores/notify.rs::sync_roster::server_facts_gen
+rust-modules/data/src/stores/notify.rs::sync_roster::server_ids
+rust-modules/data/src/stores/notify.rs::sync_roster::server_ids
+rust-modules/data/src/stores/notify.rs::sync_roster::server_roster_gen

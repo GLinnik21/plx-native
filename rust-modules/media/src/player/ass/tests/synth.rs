@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::player::text_ass::{self, TextDialect};
-use crate::player::text_style::{self, TextStyle};
+use crate::player::text_style::{self, HudBand, TextStyle};
 use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
 
 fn text_key() -> Key {
@@ -151,7 +151,7 @@ fn native_the_ink_baseline_of_a_one_line_cue_is_todays_at_every_position_and_siz
         for position in POSITIONS {
             let picks = style(size, position);
             let rects = text_frame(&picks, &[cue("Hxg")]);
-            let today = text_style::today_ink_baseline(position, picks.scale(), false);
+            let today = text_style::today_ink_baseline(position, picks.scale(), false, HudBand::CLASSIC);
             near(&format!("{size:?} {position:?}"), first_glyph_baseline(&rects) as f32, today, 2.0);
             // The descender of the "g" stays inside the line box libass anchors at the margin.
             let anchor = text_style::bottom_anchor_y(position);
@@ -420,34 +420,38 @@ fn native_escapes_show_what_the_subtitle_says() {
     assert!(!pixels(&frame("x")).any(|(_, _, px)| solid(px, true, false, false)));
 }
 
-/// Plan §2.4 (amended by PR 5b): with the transport up, a text caption lifts by `HUD_LIFT`, and its
-/// deepest ink (Devanagari below-base signs, Arabic descenders, outline included) must still end
-/// above the HUD's control row, `HUD_CONTROLS_TOP_Y`. The plan's first wording, "entirely above
-/// `SUB_CEIL_Y`", cannot hold: at Low the anchor is 983 and `SUB_CEIL_Y` 780, so even Latin "Hxg"
-/// ends past it. The row is what the lift has to clear; the corpus ends 3 px above it at Low.
+/// Plan §2.4 (amended by PR 5b): with the transport up, a text caption lifts by the band's `lift`,
+/// and its deepest ink (Devanagari below-base signs, Arabic descenders, outline included) must still
+/// end above the HUD's control row, the band's `controls_top_y`. The plan's first wording, "entirely
+/// above the ceiling", cannot hold: at Low the anchor is 983 and classic's ceiling 780, so even Latin
+/// "Hxg" ends past it. The row is what the lift has to clear; the corpus ends 3 px above it at Low.
+/// The lift is `SUB_BASE_Y - ceil_y` and the ceiling sits a fixed clearance above the row, so the
+/// margin is the same for every band: the test runs for classic's and for one that is not.
 #[test]
 #[ignore = "requires the pinned native host libass artifact and packaged fonts"]
 fn native_hud_up_deep_marks_clear_the_transport_controls() {
-    for position in POSITIONS {
-        for size in SIZES {
-            let picks = style(size, position);
-            // Non-vacuity: the corpus reaches below what plain Latin with a descender does.
-            let latin = ink_bottom(&text_frame(&picks, &[cue("Hxg")]));
-            for (script, text) in [
-                ("Devanagari", "कृ दु ह्रू"),
-                ("Devanagari prose", "कृपया दुकान ह्रूँ गुरु"),
-                ("Arabic", "مجموعة الجيم والعين"),
-                ("Arabic descenders", "ليج جحخ عغ ڤ"),
-            ] {
-                let depth = ink_bottom(&text_frame(&picks, &[cue(text)]));
-                let lifted = depth as f32 - text_style::HUD_LIFT;
-                assert!(
-                    lifted <= text_style::HUD_CONTROLS_TOP_Y,
-                    "{script} {size:?} {position:?}: lifted ink ends at {lifted}, controls start at {}",
-                    text_style::HUD_CONTROLS_TOP_Y
-                );
-                if position == SubtitlePosition::Low && size == SubtitleSize::ExtraLarge {
-                    assert!(depth > latin, "{script}: no deeper than Latin \"Hxg\" ({depth} vs {latin})");
+    for band in [HudBand::CLASSIC, HudBand::from_controls_top(700.0)] {
+        for position in POSITIONS {
+            for size in SIZES {
+                let picks = style(size, position);
+                // Non-vacuity: the corpus reaches below what plain Latin with a descender does.
+                let latin = ink_bottom(&text_frame(&picks, &[cue("Hxg")]));
+                for (script, text) in [
+                    ("Devanagari", "कृ दु ह्रू"),
+                    ("Devanagari prose", "कृपया दुकान ह्रूँ गुरु"),
+                    ("Arabic", "مجموعة الجيم والعين"),
+                    ("Arabic descenders", "ليج جحخ عغ ڤ"),
+                ] {
+                    let depth = ink_bottom(&text_frame(&picks, &[cue(text)]));
+                    let lifted = depth as f32 - band.lift;
+                    assert!(
+                        lifted <= band.controls_top_y,
+                        "{script} {size:?} {position:?}: lifted ink ends at {lifted}, controls start at {}",
+                        band.controls_top_y
+                    );
+                    if position == SubtitlePosition::Low && size == SubtitleSize::ExtraLarge {
+                        assert!(depth > latin, "{script}: no deeper than Latin \"Hxg\" ({depth} vs {latin})");
+                    }
                 }
             }
         }

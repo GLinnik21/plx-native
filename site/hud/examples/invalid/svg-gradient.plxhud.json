@@ -1,0 +1,36 @@
+{
+  "format": "1.0",
+  "id": "com.plxnative.examples.minimal",
+  "version": "1.0.0",
+  "name": "Minimal",
+  "author": "PlxNative",
+  "license": "CC0-1.0",
+  "assets": { "mark": "<svg viewBox='0 0 24 24'><linearGradient id='g'/><path d='M3 4h18v12H3z'/></svg>" },
+  "layout": {
+    "anchor": "bottom",
+    "inset": "MD",
+    "x_inset": "LG",
+    "band": "controls",
+    "sections": "modal",
+    "block": [
+      { "id": "bar", "cells": [
+        { "align": "start", "playbar": { "w": "fill", "fill": "ACCENT", "track": "RAIL_TRACK", "thickness": 6, "clock_size": "CAPTION" } }
+      ] },
+      { "id": "row", "gap_before": "SM", "cells": [
+        { "align": "end", "segment": { "id": "right", "items": [
+          { "id": "more", "command": "open_more", "widget": "disc", "size": 52, "face": "mark" }
+        ] } }
+      ] }
+    ],
+    "up_next": {
+      "replaces": [ "right" ],
+      "band": "row",
+      "align": "end",
+      "still": false,
+      "caption": false,
+      "watch_credits": {},
+      "play_next": {},
+      "countdown": "fill_sweep"
+    }
+  }
+}

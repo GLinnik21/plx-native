@@ -510,7 +510,9 @@ impl Dial {
         }
         // A surface met while the page is being drawn as a blur SOURCE must not draw, record a need
         // or take a capture — `gfx::draw_blur_backdrop` refuses anyway, but the frost quad would
-        // still land in the source target. See `widgets::tab_glass_on`.
+        // still land in the source target. (The tab track needs no such guard: its scrim and rim
+        // ride inside the glass surface as a `GlassFace`, so it has no second quad to withhold, and
+        // `widgets::tab_glass_on` is the `flattabs` experiment and nothing else.)
         if plx_gfx::gfx::blur_source_pass() {
             return;
         }

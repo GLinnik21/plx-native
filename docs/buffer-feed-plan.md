@@ -1,11 +1,15 @@
 # Buffer-feed playback plan (Starfish BUFFERSTREAM)
 
-Why we pivoted here: URI-mode (`com.webos.media/load type:"media"`) runs the pipeline
-**out-of-process** in uMS; ACB cannot bind that video plane (`tv.display/setMediaVideoData`
-→ ERROR_06 unconditionally — payload content, playerType, display-window all ruled out on
-this webOS 4.5). The Kodi/Moonlight approach runs the pipeline **in-process** via
+Why we pivoted here: the earlier URI-mode (`com.webos.media/load type:"media"`) experiments ran
+the pipeline **out-of-process** in uMS and failed to bind its video plane
+(`tv.display/setMediaVideoData` → ERROR_06 in those attempts). That result did not establish
+an architectural prohibition: the [2026-11-02 controlled experiment](measurements/uri-acb-dass-2026-11-02.md)
+displayed its SDR720p24 fixture through ACB on the webOS 4.5 dev set, both with and without
+`connectDass`. The individual contribution of its shared setup changes remains undetermined.
+The Kodi/Moonlight approach runs the pipeline **in-process** via
 `StarfishMediaAPIs` (libplayerAPIs), so ACB binds the app-owned sink. Audio already works
-via ACB today; only the video-plane half fails in URI mode.
+via ACB in the earlier experiments; the video-plane failure was the reason for that pivot.
+The firmware inventories and URI-mode findings are recorded in `docs/uri-mode.md`.
 
 ## Components to build
 

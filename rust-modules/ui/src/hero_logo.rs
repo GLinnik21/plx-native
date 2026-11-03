@@ -127,7 +127,7 @@ pub fn fit(rung: LogoRung, src_w: f32, src_h: f32, col_w: f32) -> (f32, f32) {
 /// the same optical line. Overflow is upward and is paint, never layout.
 pub fn place(band: Rect, w: f32, h: f32, align: HAlign) -> Rect {
     let x = match align {
-        HAlign::Left => band.x,
+        HAlign::Left | HAlign::Start => band.x,
         HAlign::Center => band.x + (band.w - w) * 0.5,
         HAlign::Right => band.x + band.w - w,
     };
@@ -178,9 +178,10 @@ impl<'a> HeroLogo<'a> {
         // its replay need the same measurement census even when the logo happened to be resident
         // in only one run; texture residency is paint state, not logical replay state.
         let (_, _, _, _, sz) = self.rung.bounds();
+        let align = self.align.resolve(self.title);
         let lines = if sz > theme::size::TITLE { theme::hero::TITLE_LINES } else { 1 };
         let fallback = TextView::new(self.title, sz, theme::TEXT_PRIMARY)
-            .bold().leading(sz as f32 * theme::hero::TITLE_LEAD / theme::size::DISPLAY as f32).max_lines(lines).h(self.align).with_measure(measure);
+            .bold().leading(sz as f32 * theme::hero::TITLE_LEAD / theme::size::DISPLAY as f32).max_lines(lines).h(align).with_measure(measure);
         let fallback_h = fallback.measure_h(band.w)
             - (sz as f32 * theme::hero::TITLE_LEAD / theme::size::DISPLAY as f32) + measure.cap_h(sz);
         // The hero draws the item the shelf under it has focused, and that shelf is the server
@@ -190,7 +191,7 @@ impl<'a> HeroLogo<'a> {
             let (w, h) = fit(self.rung, sw, sh, band.w);
             // NOT pixel-snapped: a logo is SCALED content, and the crispness contract snaps
             // 1:1-texel content only (see the note above `theme.rs`'s size ladder).
-            p.tex(tex, place(band, w, h, self.align), 0.0, theme::TEXT_PRIMARY);
+            p.tex(tex, place(band, w, h, align), 0.0, theme::TEXT_PRIMARY);
             return;
         }
         // An item with a ratingKey whose logo has not resolved draws its title as text, and that is
@@ -213,7 +214,7 @@ impl<'a> HeroLogo<'a> {
             crate::placeholder::ink(p, crate::placeholder::Reason::HeroLogoText, self.rk, theme::TEXT_PRIMARY)
         };
         TextView::new(self.title, sz, ink).bold().leading(sz as f32 * theme::hero::TITLE_LEAD / theme::size::DISPLAY as f32)
-            .max_lines(lines).h(self.align).with_measure(measure)
+            .max_lines(lines).h(align).with_measure(measure)
             .draw(p, Rect::new(band.x, band.y + band.h - fallback_h, band.w, fallback_h));
     }
 }

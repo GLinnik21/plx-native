@@ -150,8 +150,8 @@ from two different namespaces (§1, §4), so "make them consistent" is not the t
 **`Left`/`Right` carry an `alt` flag, and the two horizontal tests accept different sets.** `alt`
 is `false` for a press that arrived as the plain `SDLK_LEFT`/`SDLK_RIGHT` sym and `true` for one
 that arrived only as `WCODE_REWIND`/`WCODE_FASTFORWARD`. The non-player four-way nav dispatch
-matches `alt: false` alone, so a transport key does nothing on Home; the player's scrub arm and the
-Chapters strip match both. A press carrying BOTH stays plain — `classify` asks `sym` first — which
+matches `alt: false` alone, so a transport key does nothing on Home; the player's scrub arm matches
+both (an open MODAL section page swallows them: the bar they drive is not on screen). A press carrying BOTH stays plain — `classify` asks `sym` first — which
 is what keeps Home's navigation answering an ordinary arrow that happens to ride beside a transport
 code.
 

@@ -36,12 +36,15 @@ def elem(eid, payload):
 def children(b, p, end):
     while p < end:
         eid, q = rd_id(b, p); sz, q = rd_size(b, q)
-        e = end if sz is None else q + sz
+        # Never past the parent: a child of a small element (a CRC-32's four checksum bytes parsed as
+        # EBML) must not claim a size that runs on into its siblings.
+        e = end if sz is None else min(q + sz, end)
         yield eid, p, q, e
         p = e
 
 SEGMENT, CLUSTER, TIMESTAMP, SIMPLEBLOCK, BLOCKGROUP, BLOCK = 0x18538067, 0x1F43B675, 0xE7, 0xA3, 0xA0, 0xA1
-KEEP_TOP = {0x1549A966: "Info", 0x1654AE6B: "Tracks", 0x1043A770: "Chapters", 0x1941A469: "Attachments"}
+TRACKS, TRACK_ENTRY = 0x1654AE6B, 0xAE
+KEEP_TOP = {0x1549A966: "Info", TRACKS: "Tracks", 0x1043A770: "Chapters", 0x1941A469: "Attachments"}
 
 def block_track_rel(b, q):  # q = start of Block payload
     tr, r = rd_size(b, q)
@@ -61,8 +64,11 @@ def main(src, dst, lead_s, skew=False):
         for cid, cp, cq, ce in children(b, q, e):
             if cid in KEEP_TOP:
                 out += b[cp:ce]
-                if cid == 0x1654AE6B:  # TrackEntry: TrackNumber 0xD7, TrackType 0x83
+                if cid == TRACKS:  # TrackEntry: TrackNumber 0xD7, TrackType 0x83
                     for tid, tp, tq, te in children(b, cq, ce):
+                        # Tracks also holds a CRC-32 (0xBF) when ffmpeg wrote it: its checksum bytes
+                        # are not EBML, and read as fields they can look like a number of any size.
+                        if tid != TRACK_ENTRY: continue
                         num = typ = None
                         for fid, fp, fq, fe in children(b, tq, te):
                             if fid == 0xD7: num = int.from_bytes(b[fq:fe], "big")

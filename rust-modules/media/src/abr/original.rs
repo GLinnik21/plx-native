@@ -67,8 +67,11 @@ pub fn original_fallback_rung(
 /// not capacity; turning a 28 Mbps file into a 28 Mbps connection claim would repeat the modelling
 /// error this seam exists to remove.
 ///
-/// The carried rung is still checked against the live catalog.  A stale/impossible value falls
-/// back to the ordinary unknown-link bootstrap selection instead of bypassing device/source bounds.
+/// The carried rung is still held to the live catalog, never bypassing device/source bounds.  When
+/// a bound tightened since [`bootstrap`] chose it (a refused video's raster taken out of the
+/// attempt removes `Uhd`), the highest feasible rung under it is taken: the evidence that carried a
+/// rung covers every cheaper one.  Only with no carried rung, or none feasible at or under it,
+/// does it fall back to the ordinary unknown-link bootstrap selection.
 pub fn original_open_fallback_rung(
     bootstrap_rung: Option<Rung>,
     catalog: &HlsActuatorCatalog,
@@ -80,8 +83,13 @@ pub fn original_open_fallback_rung(
         .map(|candidate| candidate.rung)
         .unwrap_or(Rung::P480);
     bootstrap_rung
-        .and_then(|rung| catalog.feasible().find(|candidate| candidate.rung == rung))
-        .map(|candidate| candidate.rung)
+        .and_then(|carried| {
+            catalog
+                .feasible()
+                .map(|candidate| candidate.rung)
+                .filter(|rung| *rung <= carried)
+                .max()
+        })
         .unwrap_or(fallback)
 }
 

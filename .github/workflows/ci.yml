@@ -35,8 +35,10 @@ on:
     #     packaged), and `LICENSING.md`, `TRADEMARKS.md`, `THIRD-PARTY-NOTICES.md` (ci/check-package.py
     #     grades the packaged payload against them; the Makefile ships them in the .ipk);
     #   * `docs/screenshots/CREDITS.md` and `site/credits.html` (tests/test_demo_library.py
-    #     cross-checks the two), `site/index.html` (same file, footer link) and `site/ci/**`
-    #     (tools/test_ci_history.py reads the CI page), and `docs/measurements/*-logs/*.log` (the tools/test_abr_*.py and
+    #     cross-checks the two), `site/index.html` (same file, footer link), `site/ci/**`
+    #     (tools/test_ci_history.py reads the CI page), `site/hud/**` (rust-modules/src/hud_cli.rs
+    #     `include_str!`s the schema golden; rust-modules/appkit/src/hud_format/site_tests.rs reads the
+    #     examples and lint reports), and `docs/measurements/*-logs/*.log` (the tools/test_abr_*.py and
     #     tools/test_scrub_logs.py suites replay them).
     # What is NOT read, and is excluded below, with the evidence on each line.
     #
@@ -83,6 +85,8 @@ on:
       # tools/test_ci_history.py (make check) reads the CI page's index.html and asserts that
       # milestones.json stays gone, so the whole directory is a trigger
       - 'site/ci/**'
+      # hud_cli.rs include_str!s the schema golden; appkit's site_tests.rs reads the examples and lint reports
+      - 'site/hud/**'
       # Site-build tooling: run only by pages.yml, which exercises it on every deploy. No gate
       # here (make check, ci/, tests/) reads or imports these. NOT .github/workflows/pages.yml:
       # ci/test_ci_timeouts.py reads every workflow file, so that one must stay a trigger.
@@ -518,7 +522,7 @@ jobs:
         # rust-src, no `-Z build-std`.
         uses: ./.github/actions/rust-toolchain
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: rust-modules
           # The prebuilt armv7 std needs no build-std, so everything the build compiles caches.

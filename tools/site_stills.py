@@ -67,6 +67,7 @@ TREE_PATHS = (
     "rust-modules", "assets", "locales", "src",
     "tests/screenshots", "tests/demo_library", "tests/mock_pms.py", "site/og",
     "pkg/appfont.ttf", "pkg/appfont-bold.ttf", "pkg/appfont-cjk.ttf", "pkg/appfont-emoji.ttf",
+    "pkg/appfont-arabic.ttf", "pkg/appfont-arabic-bold.ttf", "pkg/appfont-hebrew.ttf", "pkg/appfont-hebrew-bold.ttf",
     "tools/screenshots.py", "tools/render-og-card.sh", "tools/render-site-variants.py",
     "tools/render-site-glows.py", "tools/site_stills.py",
 )

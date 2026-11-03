@@ -1366,6 +1366,7 @@ impl<H: ContentLike + PersonLike> Screen<H> for PersonScreen {
     fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>) {
         self.stack.view(&self.page).redraw_focused(f, focus);
     }
+    fn glides(&self) -> bool { true }
     fn name(&self) -> &'static str {
         // Filmography deliberately returns the same word: the manifest records that opaque modal
         // as the Person route with a separate `filmography=1` state bit.
@@ -3157,7 +3158,7 @@ mod tests {
         use crate::registry::captions::TEST_UNDER_POSTERS;
         use plx_plex::plex::session::{UnderPosters, UnderPostersDetails as Details};
         let _serial = plx_base::testlock::serial();
-        TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title: true, details: Details::YearLength })));
+        TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title: true, details: Details::YearLength, sort_value: false })));
         let (mut store, mut s) = shelved_page(PORTRAIT_EXP);
         let (movies, shows) = (focus_of(&s, &store, 0, 0), focus_of(&s, &store, 1, 0));
         settle_shelves(&mut s, &store, movies, 120);

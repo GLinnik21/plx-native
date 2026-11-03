@@ -1,8 +1,9 @@
 //! **Settings > Libraries > Under posters**: what the focused poster shows beneath it.
 //!
 //! One global setting, saved per profile (`plx_plex::plex::session::UnderPosters`). The page holds
-//! three rows: a Title switch, a Details row that opens [`DetailsPage`] (its pushed picker, one
-//! checked choice per details line, each with a sample of what it shows) and Reset. Both pages carry
+//! four rows: a Title switch, a Details row that opens [`DetailsPage`] (its pushed picker, one
+//! checked choice per details line, each with a sample of what it shows), a Sort value
+//! switch and Reset. Both pages carry
 //! a framed preview: a still row of three posters from the library the Library last showed, drawn by
 //! the shelves' own tile painters ([`plx_ui::cards::SampleRow`]), the middle one lifted and captioned
 //! by the SAME policy the Library, Collections, the Watchlist, Home and
@@ -11,11 +12,19 @@
 //! never drawn empty, for any kind of tile: a details kind a tile has no facts for (a season has no
 //! length, often no genre) says the tile's identity instead ("Season 6", "S1 · E8", its year, and
 //! for a film, show or collection with not even that, what it is: "Movie", "Show", "Collection").
-//! The setting is the same under every POSTER in the app (Search results, a person's filmography,
+//! Except a movie or TV show library grid showing its sort value (one value line under every card),
+//! the policy is the same under every POSTER in the app (Search results, a person's filmography,
 //! Detail's Related and collection shelves and a collection's members included); a landscape still
 //! or a headshot is not a poster and wears none of it. The preview is built from the value
 //! the rows show, so a change moves it in the frame the row changes; the picker's preview follows
-//! the focused choice.
+//! the focused choice. With Sort value On, the value lines (on every tile, as the Movies and TV Shows grids
+//! wear them, illustrating a library sorted by Year: each sample's own year, the lifted one bold)
+//! preview only while the Sort value row has focus, under a "Sorted by Year" caption at the frame's
+//! foot, and never in the picker: Title and Details still govern every other poster surface, so
+//! their preview stays the page's default. The frame is the board's (660 x 556, Library cards
+//! 35 px apart so the outer two are clipped by it and shown at 35%, their value lines with them);
+//! the picker's frame says "The library you last opened" at its foot, and its Video choice carries
+//! the one detail line ("A TV show has no single video quality, so it shows its year.").
 //!
 //! The write goes through the one door every live setting uses (`PreferenceCmd::Choose`, Confirm):
 //! the row shows the pick at once, the stored value settles it when the receipt answers, and a
@@ -26,7 +35,7 @@ use plx_plex::plex::session::{UnderPosters, UnderPostersDetails};
 use plx_ui::caption_policy::{band_h, CaptionPolicy, DetailsKind};
 use plx_data::pms::PmsMovie;
 use plx_ui::caption_policy::CaptionFacts;
-use plx_ui::cards::{RowStyle, SampleRow, TileLabel};
+use plx_ui::cards::{RowStyle, SampleFrame, SampleRow, TileLabel};
 use plx_ui::widgets::Art;
 use crate::registry::tile_facts;
 
@@ -75,6 +84,7 @@ pub(super) fn summary(v: UnderPosters) -> String {
 enum UpId {
     Title,
     Details,
+    SortValue,
     Reset,
 }
 
@@ -83,6 +93,7 @@ impl FormId for UpId {
         RowKey(match self {
             UpId::Title => 1,
             UpId::Details => 2,
+            UpId::SortValue => 3,
             UpId::Reset => 30,
         })
     }
@@ -93,6 +104,7 @@ enum UpAction {
     Title,
     /// The Details row is a push (`RowKind::Nav`): the form answers it with the page, never with this.
     Details,
+    SortValue,
     Reset,
 }
 
@@ -115,6 +127,8 @@ fn under_posters_form(v: UnderPosters) -> Form<UpId, UpAction, SettingsPage> {
                 .value(details_label(v.details))
                 .chevron(true),
         );
+    let rows = rows.item(UpId::SortValue, RowKind::Toggle, UpAction::SortValue,
+        Row::new(msg::under_posters_sort_value()).detail(msg::under_posters_sort_value_detail()).toggle(v.sort_value));
     let reset = FormSection::new("").item(
         UpId::Reset,
         RowKind::Button,
@@ -145,8 +159,8 @@ impl LogicalState for UpState {
     }
     fn probe(&self, out: &mut String) {
         out.push_str(&format!(
-            "under_posters sel={} title={} details={} busy={}",
-            self.sel.0, self.value.title, self.value.details.index(), self.busy
+            "under_posters sel={} title={} details={} busy={} sort_value={}",
+            self.sel.0, self.value.title, self.value.details.index(), self.busy, self.value.sort_value
         ));
     }
 }
@@ -201,9 +215,19 @@ impl UnderPostersPage {
         let next = match action {
             UpAction::Title => UnderPosters { title: !v.title, ..v },
             UpAction::Details => return,
+            UpAction::SortValue => UnderPosters { sort_value: !v.sort_value, ..v },
             UpAction::Reset => UnderPosters::DEFAULT,
         };
         self.send(next, fx);
+    }
+
+    /// The value the preview words: the rows' own, except that the sort captions (which replace the
+    /// Title and Details words under every poster) show only while the Sort row has focus. Title
+    /// and Details still govern Home, Search, the Watchlist and Collections, so the preview of their
+    /// rows stays the caption they set.
+    fn previewed(&self) -> UnderPosters {
+        let v = self.state.value;
+        UnderPosters { sort_value: v.sort_value && self.state.sel == UpId::SortValue.key(), ..v }
     }
 
     /// With no write of its own in flight, the rows read the stored value: the Details picker
@@ -246,27 +270,27 @@ impl UnderPostersPage {
 const PREVIEW_TILES: usize = 3;
 /// The tile the row lifts and captions when the library supplied enough posters to fill it.
 const PREVIEW_LIFTED: usize = 1;
-/// The Library's tile proportions at a size that fits three across the frame, a lifted one among them.
-const PREVIEW_TILE_W: f32 = 160.0;
-const PREVIEW_TILE_H: f32 = PREVIEW_TILE_W * plx_ui::consts::CARD_H / plx_ui::consts::CARD_W;
-const PREVIEW_STYLE: RowStyle = RowStyle { w: PREVIEW_TILE_W, h: PREVIEW_TILE_H, gap: 28.0, ..RowStyle::HOME };
+/// The Library's own card (250 x 375) with the board's 35 px between tiles: three of them are 820 px
+/// wide, so centred in the 660 px frame the outer two stand 80 px past its edges and the frame clips them.
+const PREVIEW_STYLE: RowStyle = RowStyle { gap: 35.0, ..RowStyle::HOME };
+/// The board's frame: 660 x 556, resting on the narrative column's floor.
+const PREVIEW_FRAME_W: f32 = 660.0;
+const PREVIEW_FRAME_H: f32 = 556.0;
 /// The air between the frame's top edge and the row.
-const PREVIEW_PAD: f32 = 32.0;
-/// The room under the row: the label's drop plus the tallest band.
-const PREVIEW_UNDER: f32 = 30.0 + plx_ui::caption_policy::BAND_TWO_LINES;
-/// The frame's height: the row and its caption band with air above and below.
-const PREVIEW_FRAME_H: f32 = PREVIEW_PAD + PREVIEW_TILE_H + PREVIEW_UNDER + PREVIEW_PAD;
+const PREVIEW_PAD: f32 = 40.0;
+/// How much of a tile that is not the lifted one shows (the board's 35%).
+const PREVIEW_REST_ALPHA: f32 = 0.35;
 
 /// The preview's frame: the whole block rests on the narrative column's floor.
 fn preview_frame() -> Rect {
     let narrative = RouteLayout::screen().narrative;
-    Rect::new(narrative.x, narrative.y + narrative.h - PREVIEW_FRAME_H, narrative.w, PREVIEW_FRAME_H)
+    Rect::new(narrative.x, narrative.y + narrative.h - PREVIEW_FRAME_H, PREVIEW_FRAME_W, PREVIEW_FRAME_H)
 }
 
 /// Where the row of tiles stands: the frame less its top air, one tile tall.
 fn preview_row() -> Rect {
     let frame = preview_frame();
-    Rect::new(frame.x, frame.y + PREVIEW_PAD, frame.w, PREVIEW_TILE_H)
+    Rect::new(frame.x, frame.y + PREVIEW_PAD, frame.w, PREVIEW_STYLE.h)
 }
 
 /// The tile the row lifts: the middle one, or the last real poster when the library has fewer.
@@ -294,12 +318,15 @@ fn lifted_facts(posters: &[&PmsMovie]) -> CaptionFacts {
     caption_facts_of(lifted_poster(posters))
 }
 
+/// The year of the sample a preview with no poster behind it shows.
+const SAMPLE_YEAR: i32 = 2019;
+
 /// The sample facts a preview with no poster behind it is captioned from.
 fn sample_facts() -> CaptionFacts {
     use plx_platform::i18n::msg;
     CaptionFacts {
         title: Some(msg::under_posters_sample_title().to_string()),
-        year: Some(2019),
+        year: Some(SAMPLE_YEAR),
         duration_min: Some(134),
         genre: Some(msg::under_posters_sample_genre().to_string()),
         video_resolution: Some("4k".to_string()),
@@ -332,19 +359,32 @@ fn lines_of(v: UnderPosters, facts: &CaptionFacts) -> [Option<String>; 2] {
 }
 
 /// The preview: a frame holding the row of posters, the lifted one wearing the caption the policy
-/// gives it. A face with no artwork is a blank face and carries no word, so the title is only ever
-/// the caption.
-fn draw_preview(p: Painter, v: UnderPosters, posters: &[&PmsMovie], measure: &dyn plx_machine::machine::Measure) {
-    let frame = preview_frame();
-    p.rect(frame, theme::CARD_RING_RAD, theme::scrim_black(0.30), theme::scrim_black(0.30), 0.0);
+/// gives it and the others dimmed. A face with no artwork is a blank face and carries no word, so the
+/// title is only ever the caption. `foot` is the frame's own caption (the Sort value state's "Sorted
+/// by Year", the picker's "The library you last opened"), `None` for none.
+fn draw_preview(p: Painter, v: UnderPosters, posters: &[&PmsMovie], foot: Option<&str>,
+    measure: &dyn plx_machine::machine::Measure) {
+    let frame = SampleFrame { rect: preview_frame(), row: preview_row(), rest_alpha: PREVIEW_REST_ALPHA, foot };
     let lifted = lifted_tile(posters.len());
-    let label = if band_h(&caption_policy_of(v)) > 0.0 {
-        label_of(v, &caption_facts_of(lifted_poster(posters)))
-    } else {
-        TileLabel::default()
-    };
     let tiles = (0..PREVIEW_TILES).map(|i| Art::Poster(posters.get(i).map(|m| tile_facts::of(m))));
-    SampleRow::draw(p, preview_row(), &PREVIEW_STYLE, tiles, lifted, &label, measure);
+    if v.sort_value {
+        // The Sort value row has focus: the row as a library sorted by Year draws it, every poster
+        // wearing its own year (through the one year formatter), the lifted one bold. The preview
+        // illustrates a Year-sorted library whatever kind the last-opened listing held (a TV show
+        // library, its Seasons or Episodes, a Collections page), while the value table is per kind
+        // (a season has no `year` term, so `label` would draw nothing under a season sample, and a
+        // collection has no terms at all), so each sample is worded from its bare year through
+        // `year_value`, not from the item.
+        SampleRow::draw_values(p, &frame, &PREVIEW_STYLE, tiles, lifted,
+            |i| crate::registry::sort_info::year_value(posters.get(i).map_or(SAMPLE_YEAR, |item| item.year)), measure);
+    } else {
+        let label = if band_h(&caption_policy_of(v)) > 0.0 {
+            label_of(v, &caption_facts_of(lifted_poster(posters)))
+        } else {
+            TileLabel::default()
+        };
+        SampleRow::draw(p, &frame, &PREVIEW_STYLE, tiles, lifted, &label, measure);
+    }
 }
 
 /// The posters a page's preview shows: the current library's first cached ones.
@@ -407,7 +447,11 @@ impl Screen<InnerHost> for UnderPostersPage {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
         plx_ui::screen::Part::<InnerHost>::draw(&mut self.view(), f, Rect::FULL);
-        draw_preview(f.painter, self.state.value, &preview_posters(f.cx), f.cx.measure);
+        let previewed = self.previewed();
+        // Sort value On illustrates a library sorted by Year and says so; Off draws the Title/Details
+        // caption and no footing.
+        let foot = previewed.sort_value.then(plx_platform::i18n::msg::under_posters_sorted_by);
+        draw_preview(f.painter, previewed, &preview_posters(f.cx), foot, f.cx.measure);
     }
     fn render(&self) -> RenderStrategy { RenderStrategy::Page }
     fn focus_source(&self) -> FocusSource { FocusSource::Engine }
@@ -432,7 +476,7 @@ impl FormId for DetailsId {
 /// row's sample on the right. `None` for Nothing; a kind the poster has no fact for samples the identity
 /// line the tile says instead (its year), as the preview draws it.
 fn details_sample(d: UnderPostersDetails, facts: &CaptionFacts) -> Option<String> {
-    lines_of(UnderPosters { title: false, details: d }, facts)[1].clone()
+    lines_of(UnderPosters { title: false, details: d, sort_value: false }, facts)[1].clone()
 }
 
 /// The picker's order: Nothing first, then the lines in the ladder's order (the board's list).
@@ -449,6 +493,11 @@ fn details_form(current: UnderPostersDetails, facts: &CaptionFacts) -> Form<Deta
         let mut row = Row::new(details_label(d));
         if let Some(sample) = details_sample(d, facts) {
             row = row.value(sample);
+        }
+        // The one choice a TV show cannot honour says what it does instead, as the board's copy rule
+        // asks. The table has no focus-only detail (a detail line makes a row tall), so the row wears it always.
+        if d == UnderPostersDetails::Video {
+            row = row.detail(plx_platform::i18n::msg::under_posters_video_detail());
         }
         section = section.choice(DetailsId(d), d, row, |id| id.0 == current);
     }
@@ -631,7 +680,10 @@ impl Screen<InnerHost> for DetailsPage {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
         plx_ui::screen::Part::<InnerHost>::draw(&mut self.view(), f, Rect::FULL);
-        draw_preview(f.painter, UnderPosters { details: self.state.focused(), ..self.state.value }, &preview_posters(f.cx), f.cx.measure);
+        // The picker chooses the Details line, so its preview words that line: the sort caption would
+        // hide every choice behind the same words.
+        let previewed = UnderPosters { details: self.state.focused(), sort_value: false, ..self.state.value };
+        draw_preview(f.painter, previewed, &preview_posters(f.cx), Some(plx_platform::i18n::msg::under_posters_last_opened()), f.cx.measure);
     }
     fn render(&self) -> RenderStrategy { RenderStrategy::Page }
     fn focus_source(&self) -> FocusSource { FocusSource::Engine }

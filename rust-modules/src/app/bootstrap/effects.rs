@@ -116,6 +116,7 @@ pub(crate) fn input(event: &plx_machine::machine::InputEvent<u32>) -> Result<Val
             json!({"kind":match event.kind { InputKind::Pointer {..} => "pointer", InputKind::Click {..} => "click", _ => "drag" },
                 "x_bits":x.to_bits(),"y_bits":y.to_bits(),"hit":hit}),
         InputKind::Wheel { dy } => json!({"wheel_bits":dy.to_bits()}),
+        InputKind::Pan { dx, x, y } => json!({"pan_bits":[dx.to_bits(),x.to_bits(),y.to_bits()]}),
         InputKind::PointerHidden => json!({"pointer_hidden":true}),
         InputKind::SystemKeyboard(up) => json!({"keyboard":up}),
         InputKind::Text(_) => return Err("unsupported Home text input"),
@@ -198,6 +199,7 @@ pub(crate) fn app(effect: &AppFx) -> Result<Value, &'static str> {
     Ok(match effect {
         AppFx::Session(command) => json!({"session":wire(command)?}),
         AppFx::SessionEffect(effect) => json!({"session_effect":wire(effect)?}),
+        AppFx::PlaybackTrace(plx_platform::playback_trace::Command::Status) => json!({"playback_trace":"status"}),
         AppFx::Preferences(_) => return Err("unsupported controlled preferences effect"),
         AppFx::Store(id, command) => json!({"store":id.ord().0,"command":store(command)?}),
         AppFx::StoreWork(work) => json!({"work":work_value(work)?}),
@@ -274,6 +276,7 @@ pub(crate) fn message(message: &AppMsg) -> Result<Value, &'static str> {
             SessionEvent::Pump => json!("pump"),
             _ => return Err("unsupported Home Session delivery"),
         },
+        AppMsg::PlaybackTrace(plx_platform::playback_trace::Status::Off) => json!({"playback_trace":"off"}),
         AppMsg::Store(command) => store(command)?,
         AppMsg::StoreWork(work) => work_value(work)?,
         AppMsg::HubsResult(result) => plx_data::pms::record::encode(result),
@@ -368,6 +371,16 @@ mod tests {
     use super::encode;
     use plx_screens::registry::AppArg;
     use plx_machine::machine::{Fx, NavOp};
+
+    #[test]
+    fn controlled_diagnostics_only_records_the_deterministic_off_query() {
+        use plx_platform::playback_trace::{Command, Status};
+        use plx_screens::registry::{AppFx, AppMsg};
+        assert_eq!(super::app(&AppFx::PlaybackTrace(Command::Status)), Ok(serde_json::json!({"playback_trace":"status"})));
+        assert_eq!(super::message(&AppMsg::PlaybackTrace(Status::Off)), Ok(serde_json::json!({"playback_trace":"off"})));
+        assert!(super::app(&AppFx::PlaybackTrace(Command::Start)).is_err());
+        assert!(super::message(&AppMsg::PlaybackTrace(Status::Recording)).is_err());
+    }
 
     #[test]
     fn controlled_content_records_preview_and_panel_payloads() {

@@ -163,16 +163,25 @@ impl Stores {
     /// `keys` is the registry's answer as of this call. A command may leave a
     /// [`StoreJob::BrowseHubs`] or a [`StoreJob::BrowseDirectory`] on Browse's outbox: the caller that
     /// returns without [`Stores::take_jobs_of`] and handing it to a runner has stranded the read. The one
-    /// production caller is `Bridge::browse_run`, which drains in the same call.
-    pub fn browse_run(&self, cmd: browse::BrowseCmd, keys: &plx_plex::plex::ClientKeys) -> bool {
-        self.browse.borrow_mut().run(cmd, keys)
+    /// production caller is `Bridge::browse_run`, which drains in the same call. `session` is the
+    /// one it read after Browse observed its pin write (`Bridge::browse_session`).
+    pub fn browse_run(
+        &self,
+        cmd: browse::BrowseCmd,
+        keys: &plx_plex::plex::ClientKeys,
+        session: &plx_plex::plex::session::Session,
+    ) -> bool {
+        self.browse.borrow_mut().run_with_session(cmd, keys, session)
     }
 
     /// [`Stores::browse_run`] on a registry that holds no client (no section-hubs or directory read leaves): the
-    /// command of a test about something else.
+    /// command of a test about something else. The session is the registry's as of now, read after
+    /// the pin write was observed.
     #[cfg(any(test, feature = "test-support"))]
     pub fn browse_run_for_test(&self, cmd: browse::BrowseCmd) -> bool {
-        self.browse_run(cmd, &plx_plex::plex::ClientKeys::default())
+        self.browse.borrow().observe_pin_write();
+        let session = plx_plex::plex::session::peek();
+        self.browse_run(cmd, &plx_plex::plex::ClientKeys::default(), &session)
     }
 
     /// Is any shelf of the addressed section committed? (The Library pages' publication gate asks.)
@@ -180,8 +189,23 @@ impl Stores {
         self.browse.borrow().hubs_committed(target)
     }
 
-    pub fn browse_discover_pump(&self) -> StoreOutcome {
-        self.browse.borrow_mut().discover_pump_with_gate(&self.landgate)
+    /// The Library's discovery pass: land the answer waiting and step the discovery. A read the
+    /// step asks for is left on Browse's outbox for the caller to start (`Bridge::browse_discover_pump`).
+    pub fn browse_discover_pump(
+        &self,
+        keys: &plx_plex::plex::ClientKeys,
+        session: &plx_plex::plex::session::Session,
+    ) -> StoreOutcome {
+        self.browse.borrow_mut().discover_pump_with_gate(&self.landgate, keys, session)
+    }
+
+    /// [`Stores::browse_discover_pump`] on a registry that holds no client (no discovery read
+    /// leaves): the pass of a test about something else.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn browse_discover_pump_for_test(&self) -> StoreOutcome {
+        self.browse.borrow().observe_pin_write();
+        let session = plx_plex::plex::session::peek();
+        self.browse_discover_pump(&plx_plex::plex::ClientKeys::default(), &session)
     }
 
     pub fn person_run(&mut self, cmd: person::PersonCmd) -> bool {
@@ -335,12 +359,10 @@ impl Stores {
         self.search.snapshot_with_directory(directory, household)
     }
 
-    /// Controlled discovery against this aggregate's Browse owner.
-    pub fn browse_controlled_discover(
-        &self,
-        launch: &mut dyn FnMut(crate::browse::DiscoveryRequest) -> bool,
-    ) {
-        self.browse.borrow_mut().controlled_discover(launch);
+    /// Controlled discovery against this aggregate's Browse owner: the read it asks for is left on
+    /// Browse's outbox, for the controlled Home arm to admit through the run's ledger.
+    pub fn browse_controlled_discover(&self, keys: &plx_plex::plex::ClientKeys) {
+        self.browse.borrow_mut().controlled_discover(keys);
     }
 
     /// The outboxes [`Stores::viewstate_run`] and [`Stores::viewstate_pump`] can fill, in drain
@@ -733,6 +755,12 @@ pub enum StoreJob {
     /// page claim). Not on the tape.
     BrowsePage(plx_machine::job::Job<crate::browse::listing_jobs::BrowsePageReq>,
         crate::browse::listing_jobs::BrowsePagePort),
+    /// One source's discovery: its section list, or the item count of each of its sections, emitted
+    /// by the Browse discovery step and addressed by the request id the step minted. One is out at a
+    /// time (the discovery claim, `BrowseAdapter::src_fetching`). On the tape only through a
+    /// controlled run ([`Admission::Home`]).
+    BrowseDiscovery(plx_machine::job::Job<crate::browse::discovery_job::BrowseDiscoveryReq>,
+        crate::browse::discovery_job::BrowseDiscoveryPort),
     /// One search fetch of one source: its first `/hubs/search` answer, or a read of depths of one
     /// result lane, emitted by the Search pump and addressed by the query's generation. Several are
     /// out at once, one per source, each answering into its own mailbox slot (the port names it).
@@ -756,6 +784,11 @@ pub enum StoreJob {
     /// `EP_JOB_PAGES` pages, read in order and posted to the port page by page as they are read.
     /// Not on the tape.
     MetaEpisodes(plx_machine::job::Job<crate::metadata::MetaEpisodesReq>, crate::metadata::MetaEpisodesPort),
+    /// One window of the Related row's tail (`MetadataCmd::WantRelated` or `SeekRelated`), addressed
+    /// by a sequence of its own. One is out at a time (the single-flight claim in `rel_pages`). The
+    /// runner resolves the loaded item's server to its client at the launch; a server with none
+    /// answers the failure without a GET. Not on the tape.
+    MetaRelated(plx_machine::job::Job<crate::metadata::MetaRelatedReq>, crate::metadata::MetaRelatedPort),
 }
 
 /// How the runner admits a job before it starts it: the policy a job kind belongs to, stated on
@@ -792,6 +825,12 @@ impl StoreJob {
             // `work_value()` refuses, so no controlled run or replay emits one and the launch is
             // the whole decision. Pinned beside the directory read, in the same file.
             Self::BrowsePage(..) => Admission::Direct,
+            // Recorded only when drained from the controlled `StoreWork::BrowseDiscovery` arm
+            // (`Bridge::admit_home_jobs`), which is where a controlled run asks for it and writes
+            // its descriptor in the order it asked. Every other sender (`Bridge::browse_discover_pump`,
+            // `frame_ingest`, the Browse pump's own discovery step) starts it through
+            // `StoreRunner::start` as `Direct`, byte for byte as its unrecorded spawn was.
+            Self::BrowseDiscovery(..) => Admission::Home,
             Self::Catalog(..)
             | Self::SubtitleSearch(..)
             | Self::ViewReconcile(..)
@@ -800,19 +839,24 @@ impl StoreJob {
             | Self::ViewWrite(..)
             | Self::MetaSeason(..)
             | Self::MetaEpisodes(..) => Admission::Direct,
+            // A Related window is asked for by `MetadataCmd::WantRelated` / `SeekRelated`, which
+            // `bootstrap/effects.rs` has no arm for (it rejects them as "unsupported controlled
+            // metadata command"), so no controlled run or replay emits one and the launch is the
+            // whole decision (as for the season switch and the episode pages beside it).
+            Self::MetaRelated(..) => Admission::Direct,
         }
     }
 
     pub fn store(&self) -> StoreId {
         match self {
-            Self::Detail(..) | Self::MetaSeason(..) | Self::MetaEpisodes(..) => StoreId::Metadata,
+            Self::Detail(..) | Self::MetaSeason(..) | Self::MetaEpisodes(..) | Self::MetaRelated(..) => StoreId::Metadata,
             Self::Collection(..) => StoreId::Collection,
             Self::Person(..) => StoreId::Person,
             Self::Catalog(..) => StoreId::Catalog,
             Self::SubtitleSearch(..) => StoreId::SubtitleSearch,
             Self::ViewReconcile(..) => StoreId::ViewReconcile,
             Self::Hubs(..) => StoreId::Hubs,
-            Self::BrowseHubs(..) | Self::BrowseDirectory(..) | Self::BrowsePage(..) => StoreId::Browse,
+            Self::BrowseHubs(..) | Self::BrowseDirectory(..) | Self::BrowsePage(..) | Self::BrowseDiscovery(..) => StoreId::Browse,
             Self::Search(..) | Self::SaveRecents(..) => StoreId::Search,
             Self::ViewWrite(..) => StoreId::ViewState,
         }

@@ -164,7 +164,7 @@ fn the_deck_title_carries_the_play_glyph_only_while_the_press_plays() {
     let prior = plx_media::route::deck_press();
     // The play mark leads the title line, so the Title switch is on for this test's thread.
     crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(Some(
-        plx_plex::plex::session::UnderPosters { title: true, details: plx_plex::plex::session::UnderPostersDetails::YearLength })));
+        plx_plex::plex::session::UnderPosters { title: true, details: plx_plex::plex::session::UnderPostersDetails::YearLength, sort_value: false })));
     let glyph = |mode, is_continue| {
         plx_media::route::restore_deck_press(mode);
         let shelf = plx_data::browse::section_hubs::Shelf {
@@ -312,7 +312,7 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
         poster.landscape = false;
         assert_eq!(title(&shelf_label(&poster, 0)), "", "the default setting wears no title");
         crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(Some(
-            plx_plex::plex::session::UnderPosters { title: true, details: plx_plex::plex::session::UnderPostersDetails::YearLength })));
+            plx_plex::plex::session::UnderPosters { title: true, details: plx_plex::plex::session::UnderPostersDetails::YearLength, sort_value: false })));
         let l = shelf_label(&poster, 0);
         crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(None));
         assert_eq!((title(&l).as_str(), caption(&l).as_str()), ("Violet", "S3 \u{b7} E4"));

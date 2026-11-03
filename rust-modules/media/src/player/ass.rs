@@ -852,8 +852,9 @@ pub struct NativeStats {
 }
 
 /// The facade ABI this file is written against (`PLX_ASS_ABI_VERSION` in `include/ass.h`); a
-/// library reporting any other number is not loaded.
-const NATIVE_ABI: u32 = 3;
+/// library reporting any other number is not loaded. ABI 4 added only the UI text surface
+/// (`plx_ass_text_*`, bound by `plx_gfx::rtl`); every function this file calls is unchanged.
+const NATIVE_ABI: u32 = 4;
 
 /// libass's glyph-count and bitmap-MiB cache bounds for every renderer.
 const CACHE_GLYPHS: i32 = 1000;

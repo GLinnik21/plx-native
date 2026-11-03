@@ -36,18 +36,19 @@ hazards, to buy parallelism that isn't there.
 |---|---|---|
 | files touched | lanes touch **disjoint files** | one file, or one module everyone edits |
 | dependencies | lanes compile independently | B needs a symbol A is writing (see [base](#3-cut-each-worktree-from-a-named-base)) |
-| verification | host — `make check`, the simulator | **all of it needs the television** |
+| verification | host — `make test-crate`, the PR's CI, the simulator | **all of it needs the television** |
 | shape known | the partition is obvious now | still exploring; you'd be guessing the split |
 
 That third row is the one people talk themselves past. The TV is a mutex, so N lanes that all need
 it finish **no faster than one** — they queue on `tools/tv-lock.sh` — while each still pays a
-worktree, a build tree and a merge. `make check` is now ALSO a bounded resource, machine-wide
-(`tools/check-lock.py`, TWO slots): N lanes each running it finish no faster than two `make check`s
+worktree, a build tree and a merge. The host gate is ALSO a bounded resource, machine-wide:
+`make check` takes one of TWO slots (`tools/check-lock.py`), so N of them finish no faster than two
 at a time (a pair takes 0.67-0.76 of the back-to-back time, not half), they just queue on a different
-lock than the TV's, and each lane's wait is announced (every holder's pid/worktree/start time)
-rather than silent. "Host-verifiable" still means no TV contention; it no
-longer means no contention at all. Three lanes of genuinely independent, host-verifiable work is
-where this starts paying.
+lock than the TV's, and each wait is announced (every holder's pid/worktree/start time)
+rather than silent. A lane does not run it: it iterates with `make test-crate` and the PR's CI is the
+gate (item 3 of [the worker-prompt block](#the-worker-prompt-block)). "Host-verifiable" still means no
+TV contention; it never meant no contention at all. Three lanes of genuinely independent,
+host-verifiable work is where this starts paying.
 
 ## 1. Give the television to AT MOST ONE lane
 
@@ -59,7 +60,7 @@ rather than by anything failing loudly. `tools/tv-lock.sh` came out of a second 
 lock schedules; it does not plan.** Two lanes that both want the set still run in series, and that
 queue is invisible in the plan you wrote.
 
-- **A LANE IS A CHECKOUT** — `tools/tv-lock.sh:62`, `LANE="${PLX_TV_LOCK_LANE:-$REPO}"`. What that
+- **A LANE IS A CHECKOUT** — `tools/tv-lock.sh`, `LANE="${PLX_TV_LOCK_LANE:-$REPO}"`. What that
   means for planning: **a second worktree on the same Mac is a second lane**, however the prompt
   describes it. Do not set `PLX_TV_LOCK_LANE` to make two worktrees share one lease — that is
   spelling "we are one lane" at the mechanism whose entire job is to disagree.
@@ -148,12 +149,12 @@ git merge-base --is-ancestor <BASE> HEAD && echo "base ok"
 ```
 
 **The symptom of a wrong base is a compile error naming something the prompt promised exists** —
-`cannot find function … in this scope`, an unresolved import, a `make check` failure in tests the
-lane never touched. The expensive reaction is the natural one: the agent writes the missing symbol
+`cannot find function … in this scope`, an unresolved import, a `make test-crate` or CI failure in
+tests the lane never touched. The expensive reaction is the natural one: the agent writes the missing symbol
 itself, and the integrator gets two definitions of it. Hence "refuse to start", not "work around
 it".
 
-## 4. `make check` only — a full build fills the disk
+## 4. `make test-crate` / `make test-hostsim` only — a full build fills the disk
 
 Every worktree gets its own cargo target dir per feature set — `RUST_TDIR` = `target` /
 `target-release`, `SIM_TDIR` = `target-sim`, `MACAPP_TDIR` = `target-macapp`, all under
@@ -193,11 +194,13 @@ What keeps that in check:
 - **A fresh lane's first build is seeded with an APFS clone of the third-party output**
   (`tools/cargo-seed.py`, called from the Makefile in linked worktrees only). The registry crates and
   (once also the build-std sysroot) are the same bytes in every lane — cargo's hash for them does not depend on
-  the checkout's path — and are about 40% of a lane's target bytes (0.9 GB for a `make check`-only
-  lane, 1.3 GB with the ARM release tree as well; the storage helper's tree and `make sim`'s are not
-  seeded: the helper's absolute linker path is part of every unit's fingerprint, and the simulator
-  has not been proven). The seed lives under `$PLX_BUILD_CACHE/cargo-seed/`, is filled at the end of
-  a green `make check` or an ARM build, and is cloned into a target dir only when that dir does not exist yet. The app
+  the checkout's path — and are about 40% of a lane's target bytes (0.9 GB for a lane whose only
+  tree was `make check`'s, 1.3 GB with the ARM release tree as well; the storage helper's tree and
+  `make sim`'s are not seeded: the helper's absolute linker path is part of every unit's fingerprint,
+  and the simulator has not been proven; `target-fast` and `target-hostsim`, the trees a lane's
+  `make test-crate` / `make test-hostsim` build, are not seeded either, because `tools/cargo-seed.py`
+  handles only `target` and `target-release`, so those start cold). The seed lives under
+  `$PLX_BUILD_CACHE/cargo-seed/`, is filled at the end of a green `make check` or an ARM build, and is cloned into a target dir only when that dir does not exist yet. The app
   crate is never in it (cargo judges a path package by mtime alone, so a cloned app artifact could
   be linked silently), and it clones or does nothing: on another volume, off APFS, with
   `PLX_CARGO_SEED=off`, or when the toolchain, `Cargo.lock` or a cargo config differ from the
@@ -210,12 +213,13 @@ What keeps that in check:
 - **The FFmpeg build tree is machine-wide and keyed by its configure flags**, under
   `$PLX_BUILD_CACHE` (default `~/.cache/plxnative`); see the vendor bullet below.
 
-**The rule: workers run `make check` and nothing that cross-compiles. ONE integrator does the
-cross-build, once, at the end.** Because `make check` is bounded to two slots machine-wide, several lanes
-running it "at once" actually run at most two at a time; that is fine (it is the same total CPU
-time whether it overlaps or queues, and queued is faster in aggregate — see the check-lock comment
-in the Makefile) but do not expect N lanes' `make check` calls to finish in parallel. A
-`make build-bench*` takes every slot and so waits for them all.
+**The rule: workers run `make test-crate` / `make test-hostsim` on the crates they touch and nothing
+that cross-compiles; the PR's CI is the gate. ONE integrator does the cross-build, once, at the end,
+for what CI cannot do: TV work and the `make build-bench` tables.** Because `make check` is bounded
+to two slots machine-wide, several started "at once" actually run at most two at a time; that
+is fine (it is the same total CPU time whether it overlaps or queues, and queued is faster in
+aggregate — see the check-lock comment in the Makefile) but do not expect N `make check` calls to
+finish in parallel. A `make build-bench*` takes every slot and so waits for them all.
 `make check` is `make lint` (three named clippy lints) plus
 `cargo test --lib`, `ci/flavor.py --selftest` and `tests/test_harness.py` — all four invoke their
 tool directly, so none of them enters `ci/build-ffmpeg.sh`. The FFmpeg build is reached down exactly
@@ -224,32 +228,25 @@ one chain — `pkg/plxnative` → the Rust staticlib → `pkg/.ffabi-ok` → the
 all build it and `make check` cannot. (`make macapp` does **not**: `ci/mkmacapp.py` never mentions
 FFmpeg. It costs a fourth cargo target dir, 125 MB, and nothing else.)
 
-Keep each lane's build trees **outside** the worktree:
+**A lane's build trees stay INSIDE its checkout** — `rust-modules/target-fast` (`make test-crate`),
+`target-hostsim` (`make test-hostsim`), `target-sim` (`make sim`) — and a lane exports neither
+`CARGO_TARGET_DIR` nor `SIM_TDIR`, least of all to a path under `~/plx-fleet`. Inside the checkout
+they are gitignored, `make disk` and `tools/build-gc.sh` see them (they match
+`rust-modules/target*`), and they go with the worktree; they are per-lane by construction, where one dir shared between
+lanes would make concurrent cargo runs block on the target lock and re-fingerprint each other's
+sources. Trees outside the checkout are how this advice used to fail: a tree under
+`$HOME/plx-fleet/<lane>` outlived its worktree by construction, owned by nobody, named for a branch
+that no longer exists and invisible to a `du` at the repo root (36 GB of it, ten lanes' worth,
+measured 2026-09-03), so `tools/build-gc.sh --worktrees` and `--orphans` still reap any an older
+fleet left behind, and `make disk` lists them with an ORPHAN marker.
 
-```sh
-export CARGO_TARGET_DIR=$HOME/plx-fleet/<lane>/target       # governs `make check` — it passes no --target-dir
-export SIM_TDIR=$HOME/plx-fleet/<lane>/target-sim           # `make sim` DOES pass --target-dir, which wins
-```
-
-Give each lane its **own** path: one shared dir makes concurrent cargo runs block on the target
-lock and re-fingerprint each other's sources.
-
-**Moving the dir does not save disk by itself** — the bytes move, they do not vanish (the seed above
-is what saves some, and it follows an exported `CARGO_TARGET_DIR` for `make check` when it is on the
-same volume). What moving buys is that **`git worktree remove` stays meaningful.**
-
-**And moving them is how they become permanent, which is the failure this advice caused.** A tree
-under `$HOME/plx-fleet/<lane>` outlives its worktree by construction: remove the lane and the
-gigabytes stay, owned by nobody, named for a branch that no longer exists, and invisible to a `du`
-at the repo root. So: **`tools/build-gc.sh --orphans` after every fleet**, which deletes exactly the
-external trees whose worktree is gone and touches no live lane. `make disk` lists them with an
-ORPHAN marker. Build output is
-untracked, so a lane with a target dir inside it always needs `--force` — and `--force` deletes
-uncommitted *source* changes just as happily (verified 2026-08-23: a plain `remove` refuses with
-`contains modified or untracked files`; `--force` took the tree, modified tracked file and all).
-With the build trees elsewhere, a bare `git worktree remove` is a free assertion that the lane
-committed everything. `Makefile:850` has a second reason: a checkout on a network or external
-volume cannot be a cargo target dir at all, because those filesystems have no `flock`.
+Because the build output is ignored, a clean lane goes with a bare `git worktree remove`, which is
+a free assertion that the lane committed everything; `--force` deletes uncommitted *source* changes
+just as happily (verified 2026-08-23: a plain `remove` refuses with `contains modified or untracked
+files`; `--force` took the tree, modified tracked file and all). The one case for moving a tree is
+the checkout's own volume: one on a network or external volume cannot be a cargo target dir at all,
+because those filesystems have no `flock` (the comment on `SIM_TDIR` in the Makefile) — a reason to
+point `SIM_TDIR` at a local path there, not a convention for lanes.
 
 ## Seed each lane with the gitignored files it needs
 
@@ -314,9 +311,12 @@ cannot be reached once they are running — a hazard you meant to mention is a h
    ssh/scp/sshpass, no `make deploy|run|test|kill|install`, no `tests/run.py`, no
    `tools/tv-session.sh`, no `tools/capture-screen.sh` (a PreToolUse hook refuses them). Verify on
    the simulator — the `ui-sim` skill — with your own root: `make sim-shot SIM_DIR=/tmp/sim-<lane>`.
-3. DISK. `make check` ONLY. Never bare `make`, `make all`, `make deploy`, `make ipk` — each
-   cross-builds FFmpeg into this worktree (a built lane here measures 1.2–4.8 GB). First:
-   `export CARGO_TARGET_DIR=$HOME/plx-fleet/<lane>/target SIM_TDIR=$HOME/plx-fleet/<lane>/target-sim`
+3. GATES. Iterate with `make test-crate C=<crate> [T=filter]` (and `make test-hostsim [C=<crate>]
+   T=<filter>` for `hostsim` tests) on the crates you touch, and nothing wider: no local
+   `make check`, `make check-nodef` or `make check-replay`. Commit and push; the PR's CI is the gate,
+   and it merges only on a fully green CI. Never bare `make`, `make all`, `make deploy`, `make ipk`
+   — each cross-builds FFmpeg into this worktree (a built lane here measures 1.2–4.8 GB). Still
+   local, because CI cannot do them: `make build-bench` tables, live simulator proofs and TV work.
 4. NEVER `git stash` — the stack is SHARED across worktrees and another lane's pop takes your work.
    Use `git add -A && git commit -m wip`. If you already stashed, pin it and drop it:
    `git update-ref refs/rescue/<lane> "$(git rev-parse stash@{0})" && git stash drop`

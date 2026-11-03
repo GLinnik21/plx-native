@@ -66,8 +66,10 @@ pub(crate) mod framedump;
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 42] = [
+const DIAG: [&str; 48] = [
     "plxnative-diag.log",
+    "plxnative-hud-text-metrics",
+    "plxnative-hud-text-metrics.json",
     "plxnative-events.log",
     "plxnative-stderr.log",
     "plxnative-crash.log",
@@ -101,6 +103,11 @@ const DIAG: [&str; 42] = [
     "plxnative-overdraw",
     "plxnative-drawmask",
     "plxnative-nocardsplit",
+    // The Under posters preview's texture cache ([`plx_gfx::gfx::region_paint`]): off draws the
+    // preview live every frame again, snap puts the cached quad on whole pixels. The same A/B
+    // control-leg argument as the card split above: both legs must boot to the SAME screen.
+    "plxnative-nopreviewcache",
+    "plxnative-previewsnap",
     "plxnative-heroground",
     // The FRAME BUDGET's A/B control leg (`ui/frame/budget.rs`, spec §8.1): admission as it was
     // before phase 11 — quota only, no time ceiling, no solo rule. DIAG for exactly the argument
@@ -114,6 +121,7 @@ const DIAG: [&str; 42] = [
     // from under the very session being measured.
     "plxnative-gstlog",
     "plxnative-gst.log",
+    "plxnative-playback.log",
     // The forced Stats-for-nerds overlay. It only changes presentation, and grading a playback
     // case without the read-out risks a failure whose evidence was never put on screen.
     "plxnative-stats",
@@ -175,6 +183,12 @@ const DIAG: [&str; 42] = [
     // The side subtitle reader (`media::player::subside`): content = the 0-based position of the
     // embedded subtitle stream to draw over a plain remux, read at each playback start.
     "plxnative-subside",
+    // The URI-mode probe (`media::player::uriprobe_drive`, issue #1064): content = `load`, `late`
+    // or `none` (empty = `load`), read at each playback start. It changes how ONE play is carried
+    // out and nothing about the boot: the tester signs in and picks a profile as always, then
+    // plays a title. A non-DIAG trigger would suppress the who's-watching picker and move that
+    // boot away from the one the probe is meant to run on.
+    "plxnative-uriprobe",
 ];
 
 /// **Turn on the TELEVISION'S OWN GStreamer logging** — `/tmp/plxnative-gstlog`.
@@ -1294,6 +1308,17 @@ mod tests {
     #[test]
     fn servers_trigger_is_not_diagnostic() {
         assert!(!super::DIAG.contains(&"plxnative-servers"));
+    }
+
+    // ---- plxnative-uriprobe (the URI-mode probe, issue #1064) ----
+
+    /// The probe changes how one play is carried out, never which screen the app boots to: a tester
+    /// signs in through the normal boot, then plays. Out of DIAG, the file would suppress the
+    /// who's-watching picker and the probe would run on a different boot than the one it is meant
+    /// to be run on.
+    #[test]
+    fn uriprobe_trigger_is_diagnostic() {
+        assert!(super::DIAG.contains(&"plxnative-uriprobe"));
     }
 
     // ---- plxnative-playurl (the pipeline test tier's one trigger) ----

@@ -31,8 +31,12 @@
 //!   iterations, held repeats included, so the virtual frame a probe re-reads on was the number of
 //!   boot holds modulo 30 and the Resume pill's ground differed by 1/255 between runs. In dump mode
 //!   it is SYNCHRONOUS and PER CALL (`gfx::probe_mode`): copy the tap boxes, `glReadPixels`, return;
-//!   no cadence, no fence. The refusal paths (`may_read == false`, a blur-source pass, a frozen
-//!   page) still answer with the last latched value.
+//!   no cadence, no fence. The copy reads the SAME source as the product (the bar's band image,
+//!   the Hero row's framebuffer), now, instead of at the next frame boundary, so the answer is a
+//!   function of the frame being drawn: a direct band's image is final before the visible page
+//!   draws (a band under a lower glass captures inline, during the walk; the chrome band does only
+//!   under the dev `plxnative-tileglass` trigger). The refusal paths (`may_read == false`, a
+//!   blur-source pass, a frozen page) still answer with the last latched value.
 //! * **Held repeats** ([`held_repeat`]). A page image's capture step and a page dip's
 //!   floor frame advance once per virtual frame, not once per held iteration.
 //!
@@ -65,7 +69,8 @@
 //! present at mount, an order a television rarely has) and is answered there, not patched here one
 //! branch at a time. `ci/check-dump-consumers.py` (in `make check`) holds the list of files that may
 //! name the switch to `ci/allow/dump.txt`; a new file naming it fails the gate until this rule has
-//! been read and the file's branch fits it (and is listed below).
+//! been read and the file's branch fits it (and is listed below). `ci/check-ledger-ratchet.py` also
+//! fails a PR that adds a line to that list, so a new consumer is the owner's call.
 //!
 //! # Every consumer, and which kind it is
 //!

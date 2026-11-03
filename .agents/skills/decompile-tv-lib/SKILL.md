@@ -44,6 +44,7 @@ $D str  playerAPIs dolby         # .rodata strings   — always start here, it i
 $D syms playerAPIs getHdrType    # exported symbols  — dynsym only, see "stripped" below
 $D fn   libpf DolbyHdrInfo 4     # DECOMPILE matching functions
 $D xref libpf "immersive"        # which functions reference a string literal
+$D filter < raw.log              # a saved Ghidra headless log -> only the scripts' own output (what fn/xref print)
 $D clean                         # drop the analysis cache, keep the binaries
 ```
 

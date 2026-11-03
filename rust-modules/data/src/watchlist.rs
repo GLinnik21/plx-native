@@ -17,13 +17,14 @@ pub mod order;
 use ledger::{Intent, PendingWrite, WriteOutcome};
 use model::{Asked, Kind, Reach, ServerMatch, WatchRow};
 use plx_plex::plex::account::AccountClient;
-use plx_plex::plex::session::UserRef;
+use plx_plex::plex::session::{CurrentProfile, UserRef};
 use plx_plex::plex::watchlist::{WatchItem, WatchKind, WatchPage, WatchlistError, MAX_PAGE};
 use plx_plex::plex::{GuidKind, GuidLookupError, GuidMatch, ServerId, GUIDS_PER_REQUEST};
 use std::collections::HashSet;
+use std::sync::Arc;
 
-/// Who a worker acts for, captured on the MAIN thread at spawn (`session::plex_tv_credential`) and
-/// owned by the worker: it never reads the session itself. `generation` is the profile generation
+/// Who a worker acts for, built from the [`WatchlistInput`] the app read on the MAIN thread
+/// (`session::plex_tv_credential`) and owned by the worker: it never reads the session itself. `generation` is the profile generation
 /// at capture; a landing tagged with an older one is dropped.
 #[derive(Clone)]
 pub struct WatchlistAuth {
@@ -40,22 +41,9 @@ impl std::fmt::Debug for WatchlistAuth {
 }
 
 impl WatchlistAuth {
-    /// MAIN THREAD. The active profile's account-service credential, or `None` when there is none
-    /// (signed out, or a managed profile with no plex.tv token): the page then has no list to read.
-    pub fn capture() -> Option<WatchlistAuth> {
-        let current = plx_plex::plex::session::current_snapshot();
-        let user = current.user.clone()?;
-        let credential = plx_plex::plex::session::plex_tv_credential(&user)?;
-        let client_id = plx_plex::plex::session::peek().client_id.clone();
-        if client_id.is_empty() {
-            return None;
-        }
-        Some(WatchlistAuth { client_id, credential, user, generation: current.generation })
-    }
-
-    /// Is this still the seated profile? Compared by id and uuid and the profile generation.
-    pub fn is_current(&self) -> bool {
-        let now = plx_plex::plex::session::current_snapshot();
+    /// Is this still the seated profile? Compared by id and uuid and the profile generation, against
+    /// the profile the app read for this pass ([`WatchlistInput`]).
+    pub fn is_current(&self, now: &CurrentProfile) -> bool {
         now.generation == self.generation
             && now.user.as_ref().is_some_and(|u| u.id == self.user.id && u.uuid == self.user.uuid)
     }
@@ -65,13 +53,62 @@ impl WatchlistAuth {
     }
 }
 
+/// **What the app reads from the session for the two plex.tv stores (docs/sans-io.md S5):** the
+/// seated profile and, when a capture can happen, the identity to act as. The Bridge reads the
+/// registry (`Bridge::watchlist_input`) and hands this to a step; nothing here reads it. Built per
+/// call, never kept: a capture reads the credential at the moment it is made.
+pub struct WatchlistInput {
+    profile: Arc<CurrentProfile>,
+    auth: Option<WatchlistAuth>,
+}
+
+impl WatchlistInput {
+    /// The input for `profile`, whose plex.tv `credential` and the install's `client_id` the caller
+    /// read. `auth` is `None` when there is no profile, no credential or no client id: the page then
+    /// has no list to read.
+    pub fn new(profile: Arc<CurrentProfile>, credential: Option<String>, client_id: &str) -> Self {
+        let auth = match (profile.user.clone(), credential) {
+            (Some(user), Some(credential)) if !client_id.is_empty() => Some(WatchlistAuth {
+                client_id: client_id.to_owned(),
+                credential,
+                user,
+                generation: profile.generation,
+            }),
+            _ => None,
+        };
+        Self { profile, auth }
+    }
+
+    pub fn profile(&self) -> &CurrentProfile {
+        &self.profile
+    }
+
+    pub fn auth(&self) -> Option<&WatchlistAuth> {
+        self.auth.as_ref()
+    }
+
+    /// A seated profile of `generation` with a credential: what a signed-in test hands a step.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn for_test(generation: u32) -> Self {
+        Self::new(Self::profile_for_test(generation), Some("test-credential".into()), "test-client")
+    }
+
+    /// The same seat with no plex.tv credential: the page has no account to read.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn signed_out_for_test(generation: u32) -> Self {
+        Self::new(Self::profile_for_test(generation), None, "test-client")
+    }
+
+    /// The profile a frame pass is handed: the default user seated at `generation`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn profile_for_test(generation: u32) -> Arc<CurrentProfile> {
+        Arc::new(CurrentProfile { user: Some(UserRef::default()), generation, stamp: String::new() })
+    }
+}
+
 /// Everything a worker (and the store's frame pass) asks of the outside world. Production is
 /// [`LiveIo`]; tests script it. `Reach` carries the roster and the reachability facts.
 pub trait WatchlistIo: Reach + Send + Sync {
-    /// MAIN THREAD: capture the identity for a new epoch.
-    fn capture_auth(&self) -> Option<WatchlistAuth>;
-    /// MAIN THREAD: is `auth` still the seated profile?
-    fn is_current(&self, auth: &WatchlistAuth) -> bool;
     /// One page of the list. `if_none_match` is the `ETag` of the last COMPLETE read, handed over
     /// for page 0 only; an answer of `Err(WatchlistError::NotModified)` is the service saying the
     /// list is unchanged.
@@ -119,12 +156,6 @@ impl Reach for LiveIo {
 }
 
 impl WatchlistIo for LiveIo {
-    fn capture_auth(&self) -> Option<WatchlistAuth> {
-        WatchlistAuth::capture()
-    }
-    fn is_current(&self, auth: &WatchlistAuth) -> bool {
-        auth.is_current()
-    }
     fn page(&self, auth: &WatchlistAuth, start: u32, size: u32, if_none_match: Option<&str>)
         -> Result<WatchPage, WatchlistError>
     {

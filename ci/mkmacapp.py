@@ -278,7 +278,9 @@ def main():
 
     # paths::app_dir resolves Contents/Resources: both fonts and the dynamically
     # loaded native subtitle renderer must be placed there.
-    for f in ("appfont.ttf", "appfont-bold.ttf", "appfont-cjk.ttf", "appfont-emoji.ttf", "OFL.txt", "le-roots.pem", "libass-plx.0.dylib"):
+    for f in ("appfont.ttf", "appfont-bold.ttf", "appfont-cjk.ttf", "appfont-emoji.ttf",
+              "appfont-arabic.ttf", "appfont-arabic-bold.ttf", "appfont-hebrew.ttf", "appfont-hebrew-bold.ttf",
+              "OFL.txt", "le-roots.pem", "libass-plx.0.dylib"):
         shutil.copy2(REPO / "pkg" / f, res / f)
     # The subtitle faces (tools/cut-noto-subs.py): paths::app_dir/fonts/subs, read by player::ass::fonts.
     shutil.copytree(REPO / "pkg" / "fonts" / "subs", res / "fonts" / "subs")

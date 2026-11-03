@@ -1,19 +1,31 @@
 {
   "under_posters.title": "Unter den Postern",
-  "under_posters.detail": "Was unter dem aktiven Poster steht.",
-  "under_posters.copy": "Die meisten Poster zeigen ihren Titel schon. Wähle, was unter dem Poster steht, auf dem du bist.",
+  "under_posters.detail": "Für Filme und Serien.",
+  "under_posters.copy": "Die meisten Poster zeigen ihren Titel schon. Wähle, was darunter steht, für Filme und Serien gleichermaßen. Die Vorschau nutzt die zuletzt geöffnete Bibliothek.",
   "under_posters.title_row": "Titel",
   "under_posters.title_detail": "Der Name, fett.",
   "under_posters.details_row": "Details",
-  "under_posters.details_detail": "Eine Zeile mit Informationen.",
-  "under_posters.details_copy": "Begonnene oder bald erscheinende Titel und Sammlungen zeigen stattdessen: Restzeit, Erscheinungsdatum, Anzahl der Filme.",
+  "under_posters.details_detail": "Eine Zeile für Film oder Serie.",
+  "under_posters.details_copy": "Jede Auswahl passt zum Poster: Ein Film zeigt 2019 · 2 h 14 min, eine Serie 2019 · 6 Staffeln oder 4 neue Episoden, sobald begonnen. Begonnene, kommende Titel und Sammlungen zeigen stattdessen Restzeit, Erscheinungsdatum oder Titelanzahl.",
   "under_posters.year_length": "Jahr · Länge",
   "under_posters.genre": "Genre",
   "under_posters.video": "Video",
+  "under_posters.video_detail": "Serien ohne einheitliche Videoqualität zeigen ihr Jahr.",
   "under_posters.age_rating_score": "Altersfreigabe · Wertung",
   "under_posters.none": "Nichts",
   "under_posters.reset": "Zurücksetzen",
-  "under_posters.reset_detail": "Jahr und Länge, ohne Titel.",
+  "under_posters.reset_detail": "Jahr und Länge, Sortierwert an, ohne Titel.",
   "under_posters.sample_title": "Film",
-  "under_posters.sample_genre": "Drama"
+  "under_posters.sample_genre": "Drama",
+  "under_posters.sort_value": "Sortierwert",
+  "under_posters.sort_value_detail": "Ersetzt die Detailzeile, solange eine Bibliothek sortiert ist.",
+  "under_posters.value_today": "Heute",
+  "under_posters.value_yesterday": "Gestern",
+  "under_posters.value_never": "Nie",
+  "under_posters.value_plays": {
+    "one": "{count} Wiedergabe",
+    "other": "{count} Wiedergaben"
+  },
+  "under_posters.sorted_by": "Sortiert nach Jahr",
+  "under_posters.last_opened": "Die zuletzt geöffnete Bibliothek"
 }

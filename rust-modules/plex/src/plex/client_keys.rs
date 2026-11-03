@@ -22,17 +22,21 @@ use super::{Client, ServerId};
 /// `instance` is the client OBJECT: immutable, drawn once from the process-wide generation
 /// sequence when the client is built, and every client is leaked and never freed, so two keys
 /// with equal `instance` name the same object. `token` is the credential the client held then
-/// ([`Client::token_gen`]), which moves on a retoken without replacing the object. Equal keys
-/// therefore say "the same client, asking with the same credential".
+/// ([`Client::token_gen`]), which moves on a retoken without replacing the object. `grant` is
+/// WHOSE credential it was ([`Client::grant_epoch`]): it survives a live token replaced by another
+/// live one and moves across a revocation, so a step that keeps what a server served through a
+/// refresh can tell a refresh from a change of identity. Every `grant` move also moves `token`, so
+/// equal keys still say "the same client, asking with the same credential".
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ClientKey {
     pub instance: u32,
     pub token: u32,
+    pub grant: u32,
 }
 
 impl ClientKey {
     pub fn of(client: &Client) -> Self {
-        Self { instance: client.instance_gen(), token: client.token_gen() }
+        Self { instance: client.instance_gen(), token: client.token_gen(), grant: client.grant_epoch() }
     }
 }
 
@@ -65,6 +69,11 @@ impl ClientKeys {
     /// The key of the client `sid` held, `None` when it held none.
     pub fn key(&self, sid: ServerId) -> Option<ClientKey> {
         self.0.iter().find(|(slot, _)| *slot == sid).map(|&(_, key)| key)
+    }
+
+    /// Every slot that held a client, with its key, in fill order.
+    pub fn iter(&self) -> impl Iterator<Item = (ServerId, ClientKey)> + '_ {
+        self.0.iter().copied()
     }
 }
 
@@ -122,7 +131,11 @@ mod tests {
         let after = ClientKey::of(&a);
         assert_eq!(after.instance, before.instance, "a token swap does not replace the client");
         assert_ne!(after.token, before.token, "…but it moves the credential");
+        assert_eq!(after.grant, before.grant, "…not whose it is: a live token replaced by a live one");
         assert_ne!(after, before);
+
+        a.set_token("");
+        assert_ne!(ClientKey::of(&a).grant, after.grant, "a revocation changes whose credential it is");
     }
 
     #[test]
@@ -138,14 +151,14 @@ mod tests {
 
     #[test]
     fn a_key_given_for_a_slot_is_answered_as_given_and_the_first_entry_wins() {
-        let (first, second) = (ClientKey { instance: 2, token: 1 }, ClientKey { instance: 3, token: 1 });
+        let (first, second) = (ClientKey { instance: 2, token: 1, grant: 1 }, ClientKey { instance: 3, token: 1, grant: 1 });
         let keys = ClientKeys::from_keys([(ServerId::UNSET, first), (ServerId::UNSET, second)]);
         assert_eq!(keys.key(ServerId::UNSET), Some(first), "from_keys does not special-case any slot");
     }
 
     #[test]
     fn a_refill_replaces_the_contents_in_place() {
-        let (old, new) = (ClientKey { instance: 1, token: 1 }, ClientKey { instance: 2, token: 5 });
+        let (old, new) = (ClientKey { instance: 1, token: 1, grant: 1 }, ClientKey { instance: 2, token: 5, grant: 1 });
         let mut keys = ClientKeys::from_keys((0..8).map(|i| (ServerId::from_raw(i), old)));
         let capacity = keys.0.capacity();
         keys.refill([(ServerId::from_raw(0), new)]);

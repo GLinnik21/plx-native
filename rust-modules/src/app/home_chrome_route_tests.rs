@@ -177,7 +177,8 @@ fn present_home_stops(w: &mut World) {
 /// rests the focused shelf at one fixed line, so the shelf above it stands off the top and the one
 /// below it stands cut by the bottom margin. The wheel is the direction key it stands for
 /// (`bridge::wheel_input`) and moves focus a shelf at a time; the pointer takes focus onto the
-/// poster of the shelf below, which is in view (the shelf above has nothing on screen to point at).
+/// poster of the shelf below, which is in view, without moving the page (the pointer scrolls by the
+/// screen's edges, `input::EdgeScroll`), and a click brings that shelf to the rest line.
 #[test]
 fn a_pointer_user_reaches_the_shelves_either_side_of_a_resting_shelf() {
     for (setting, title, details, _) in SETTINGS {
@@ -218,8 +219,16 @@ fn a_pointer_user_reaches_the_shelves_either_side_of_a_resting_shelf() {
             w.step(vec![super::pointer_input(px, py, at)]);
         }
         w.frames(150);
+        assert_eq!(w.focus().map(|k| k.elem), Some(below.key.elem), "{setting}: pointing at a poster of shelf 4 takes focus");
+        // (its heading only gives up the lift a focused shelf's heading wears, `HEADING_LIFT_MAX`)
+        assert!((heading_y(&mut w, 2).unwrap_or(f32::NAN) - rest).abs() <= HEADING_LIFT_MAX,
+            "{setting}: a hover moves focus, not the page: shelf 3 stays on the rest line {rest} ({:?})", heading_y(&mut w, 2));
+        // a click on it brings shelf 4 to the rest line
+        let at = super::test_support::tick(w.frame + 1);
+        w.step(vec![super::click_input(x, y, at)]);
+        w.frames(150);
         assert!((heading_y(&mut w, 3).unwrap_or(f32::NAN) - rest).abs() < 1.0,
-            "{setting}: pointing at a poster of shelf 4 brought it to the rest line ({:?})", heading_y(&mut w, 3));
+            "{setting}: clicking a poster of shelf 4 brought it to the rest line ({:?})", heading_y(&mut w, 3));
     }
 }
 

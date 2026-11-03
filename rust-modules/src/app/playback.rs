@@ -56,7 +56,7 @@ pub(crate) fn playpos() -> i64 {
 /// so anything that snapshots "where are we?" inside that window snapshots the position the user
 /// just left. The rule — an in-flight seek target wins, else the published position — was open-coded
 /// at each reader that remembered it (the scrub seed below; the HUD's frozen playhead in
-/// `appkit/player_hud.rs`) and simply MISSING at the one that did not: the OS-background save took a bare
+/// `appkit/player_hud/state.rs`) and simply MISSING at the one that did not: the OS-background save took a bare
 /// `playpos()`, so backgrounding right after a seek stored the pre-seek spot and the foreground
 /// restore replayed from there — and teardown clears the pending target, so nothing self-corrected.
 /// Use this at every reader that means "where the user is"; keep the raw `playpos()` only where the
@@ -131,7 +131,9 @@ pub(crate) fn apply_more_action(ps: &mut plx_media::route::PlaybackSession, pa: 
         // Lab builds only. Nothing about playback changes: the snapshot is taken and the toast
         // reports, over whatever the player is doing.
         plx_appkit::more_menu::Action::SendDiagnostics => crate::lab::request_upload("menu", ps),
-        plx_appkit::more_menu::Action::None => {}
+        // A folded row is a HUD command, and the overlay asks for it as `PlayerReq::Command` (the one performer,
+        // `perform_hud_command`), never as `PlayerReq::More`.
+        plx_appkit::more_menu::Action::Hud(_) | plx_appkit::more_menu::Action::None => {}
     }
 }
 
@@ -324,13 +326,34 @@ pub(crate) fn warm_up_next_still(sid: plx_plex::plex::ServerId, thumb: &str) {
     plx_ui::widgets::warm_tex_on(sid.raw(), thumb, 480, 270, 0);
 }
 
+/// **The play start's capability value** (S0's edge, S2b): devcaps' write-once boot snapshot less the
+/// install's stored refusals in force (`devcaps::start_caps`). One session read per play; route plans
+/// from the value it is handed and reads no process-wide answer itself. A refusal learned during a
+/// play reaches the NEXT play's value once the learner's write has landed (the request in flight
+/// narrowed its own attempt).
+pub(crate) fn start_caps() -> std::sync::Arc<plx_platform::devcaps::Caps> {
+    let stored = plx_plex::plex::session::peek().applied_refusals();
+    let start = plx_platform::devcaps::start_caps(&stored);
+    if !std::sync::Arc::ptr_eq(&start, &plx_platform::devcaps::caps()) {
+        plx_base::eventlog::log(&format!(
+            "devcaps: play start less learned refusals ({} stored) -> audio={} channels={:?}",
+            stored.len(),
+            start.audio,
+            start.audio_channels
+        ));
+    }
+    start
+}
+
 pub(super) struct LivePlaybackResources;
 
 impl PlaybackResources for LivePlaybackResources {
     fn request_movie(&mut self, ps: &mut plx_media::route::PlaybackSession,
         meta: &mut plx_data::stores::metadata::MetadataStore, item: &plx_data::pms::PmsMovie,
         version: Option<plx_plex::plex::MediaId>) -> bool {
-        plx_media::route::request_play_movie(ps, meta, item, &movie_ctx(item), version)
+        // The play start is where the attempt's capability value is derived, once: route plans from
+        // the value it is handed and reads no process-wide answer itself.
+        plx_media::route::request_play_movie(ps, meta, start_caps(), item, &movie_ctx(item), version)
     }
     fn request_episode(&mut self, ps: &mut plx_media::route::PlaybackSession,
         meta: &mut plx_data::stores::metadata::MetadataStore, rk: &str,
@@ -424,12 +447,20 @@ pub(super) fn start_playback_with<R: PlaybackResources>(
     // resolve above, so a load longer than the 4.5 s linger expired the HUD before it was ever
     // drawn and the user got a blank screen instead of a transport.
     bridge.seed_player_hud(hud_ms);
+    // An open section goes with the old film; the engine is on one of its stops, so it is told where the reset put
+    // the cursor (`reseat_player_focus`, the write-then-reseat rule every app-side `hud.nav` write follows).
+    let mut sections_were_open = false;
     if let Some(player) = super::bridge::player_mut(pages) {
+        sections_were_open = player.hud.sections.any();
         player.hud = HudState::IDLE;
         player.scrub = Scrub::IDLE;
         player.up_next.reset();
+        player.row.drop_strip();
         player.hud.extend(clock::now(), hud_ms);
         player.publish();
+    }
+    if sections_were_open {
+        super::bridge::reseat_player_focus(pages);
     }
     set_paused(false);
     entering
@@ -446,7 +477,7 @@ pub(crate) fn request_loaded_hero(ps: &mut plx_media::route::PlaybackSession, me
             .clone();
         request_episode(ps, meta, &d, &ep, None).then(|| plx_data::metadata::resume_ns(ep.resume_ms, ep.dur_ms))
     } else {
-        plx_media::route::request_play(ps, meta, plx_media::route::item_sid(d.sid), &d.rk, &d.part,
+        plx_media::route::request_play(ps, meta, start_caps(), plx_media::route::item_sid(d.sid), &d.rk, &d.part,
             &d.vcodec, &d.acodec, &d.title, "", None)
             .then(|| plx_data::metadata::resume_ns(d.resume_ms, d.dur_ms))
     }
@@ -469,7 +500,7 @@ fn request_episode(ps: &mut plx_media::route::PlaybackSession, meta: &mut plx_da
     })));
     let title = if ep.title.is_empty() { &d.title } else { &ep.title };
     let context = plx_ui::fmt::episode_context(&d.title, ep.season, ep.index);
-    plx_media::route::request_play(ps, meta, plx_media::route::item_sid(d.sid), &ep.rk, &ep.part,
+    plx_media::route::request_play(ps, meta, start_caps(), plx_media::route::item_sid(d.sid), &ep.rk, &ep.part,
         &ep.vcodec, &ep.acodec, title, &context, version)
 }
 
@@ -486,28 +517,6 @@ fn request_episode(ps: &mut plx_media::route::PlaybackSession, meta: &mut plx_da
 pub(crate) fn close_player_overlays(pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>) {
     super::bridge::dismiss_player_overlays(pages);
     crate::app::diagnostics::close(); // a diagnostics panel must not survive into the next session
-}
-
-/// **The Info card's tvOS press, committed on the spring-back.** The card's own OK arm cannot
-/// perform this: `InfoAction` reaches a detail page or a seek, which needs the route, the trail and
-/// the player adapter, and — the reason it is DEFERRED at all — the dip has to be on screen
-/// before the card goes away. So the surface arms `PlayerReq::ArmInfoPress`, the loop's press
-/// machine holds the frame, and this reads the decision back out of the panel that is still up.
-pub(crate) unsafe fn commit_info_press(
-    player: &mut plx_media::player::machine::Player,
-    pa: &mut plx_media::player::adapter::PlayerAdapter,
-    repause_at: &mut i64,
-    refresh_hubs: &mut bool,
-    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
-    bridge: &mut super::bridge::Bridge,
-) {
-    let Some(action) = super::bridge::player_overlay_mut(pages)
-        .and_then(|o| o.info_press_action(bridge.metadata_view()))
-    else {
-        return;
-    };
-    close_player_overlays(pages);
-    apply_info_action(player, pa, repause_at, action, refresh_hubs, pages, bridge);
 }
 
 /// **Perform the track menu's pick.**
@@ -579,8 +588,9 @@ pub(crate) fn player_requests(
     bridge: &mut super::bridge::Bridge,
     ok_armed: &mut bool,
     press: &mut plx_ui::press::Press,
-) {
+) -> bool {
     use plx_screens::registry::PlayerReq;
+    let mut slot_refresh = false;
     for req in reqs {
         match req {
             PlayerReq::RetryPlayback => {
@@ -602,49 +612,47 @@ pub(crate) fn player_requests(
                     player.publish();
                 }
             }
-            PlayerReq::FocusTabs => {
-                if let Some(player) = super::bridge::player_mut(pages) {
-                    player.hud.nav.focus = 2;
-                }
-            }
             // The fall-through a surface cannot perform (`screens::player::overlay`'s module doc):
             // the same toggle the bare transport reaches, with the panel left untouched.
-            PlayerReq::Transport(play) => {
-                set_transport_paused(pa, super::lifecycle::transport_target(play, super::lifecycle::viewer_paused()));
-                if let Some(player) = super::bridge::player_mut(pages) {
-                    player.hud.extend(now, HUD_LINGER_MS);
-                    player.publish();
-                }
-            }
-            PlayerReq::SeekTo(ns) => {
-                request_seek(ns);
-                resume_if_paused(pa);
-            }
+            PlayerReq::Transport(play) => apply_transport(pa, play, now, pages),
+            PlayerReq::SeekTo(ns) => apply_seek_to(pa, ns),
             // …and its twin, which does NOT resume: the scrub bar is how a paused film is moved.
             // The pump keeps the pause across it (see `commit_seek`).
             PlayerReq::CommitSeek(ns) => commit_seek(ns),
             PlayerReq::More(action) => apply_more_action(&mut player.session, pa, bridge, action),
             PlayerReq::CommitTrack(commit) => commit_track(&mut player.session, commit),
-            PlayerReq::ArmInfoPress => {
-                press.begin_ctl(now);
-                *ok_armed = true;
-            }
-            PlayerReq::Info(action) => {
-                apply_info_action(player, pa, repause_at, action, refresh_hubs, pages, bridge)
-            }
-            // The old `key_ok`'s tabs-row (`focus == 2`) and failure-read-out (`ChooseQuality`)
-            // arms, both of which presented a panel immediately rather than through the deferred
-            // press `ArmControlRow`/`ArmInfoPress` use.
+            // The failure-read-out's recovery escape (`ChooseQuality`) and the Tracks->Timing hand-off, which
+            // present a panel immediately rather than through the deferred press `ArmControlRow` uses. The
+            // tabs row is not an asker: it asks `ToggleSection` (Info and Chapters are sections).
             PlayerReq::OpenOverlay(kind) => {
+                seed_menu_anchor(pages, bridge, kind);
                 super::bridge::open_player_overlay(&mut player.session, bridge.metadata_view(), pages, kind);
             }
-            // The old `key_ok`'s `focus == 1` arm: dip the same tvOS press `ArmInfoPress` does,
-            // for the transport's OWN control row rather than a panel's action column. The loop's
+            // A pointer click on the control row: dip a tvOS press for the transport's OWN control
+            // row, not a panel's. The loop's
             // existing commit-frame dispatch (`Route::Player => activate_player_row(...)`, below
             // in this same call chain) is unchanged and performs whatever the row decides.
             PlayerReq::ArmControlRow => {
                 press.begin_ctl(now);
                 *ok_armed = true;
+            }
+            // The engine's press on the control row, committed on its spring-back: the dip
+            // already played, so this performs at once (the pointer's `ArmControlRow` above dips
+            // here and performs from the loop's commit frame, through the same two functions).
+            PlayerReq::Command(command) => {
+                perform_hud_command(command, player, pa, repause_at, now, refresh_hubs, pages, bridge)
+            }
+            PlayerReq::StandIn => {
+                if let Some(ctrl) = super::bridge::player(pages).map(|screen| screen.slot) {
+                    activate_stand_in(player, pa, repause_at, ctrl, now, refresh_hubs, pages, bridge);
+                }
+            }
+            // BACK over an offer: retire the segment in the store that resolves offers. The
+            // store's `skipped` set is read by `active_marker` and `synthesized_tail_marker`, so
+            // the row becomes the discs on the next resolve.
+            PlayerReq::DismissOffer(marker) => {
+                bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::MarkSkipped(marker));
+                slot_refresh = true;
             }
             // The STOP key, a BACK with nothing else open and the failure read-out's own BACK
             // escape all reach the same ritual.
@@ -653,6 +661,7 @@ pub(crate) fn player_requests(
             }
         }
     }
+    slot_refresh
 }
 
 // (`reveal_played_episode` stood here. It answered one question — "is the page this session was
@@ -945,6 +954,7 @@ pub(crate) fn activate_ctrl_row(
                 }
                 // a `final` credits segment: skipping it IS finishing the item
                 SkipAction::Finish => {
+                    player.session.finished = true;
                     let _ = finish_playback(player, pa, repause_at, refresh_hubs, pages, bridge);
                     true
                 }
@@ -961,9 +971,11 @@ pub(crate) fn activate_ctrl_row(
 /// paths reach here (EOS, Skip Credits on a `final` marker, and OK on the HUD tile while
 /// the credits are still rolling) and in all three an Engine is live — `start_bufferfeed`
 /// no-ops while one is, so skipping the stop would silently fail to advance. The stop is
-/// also what posts the `state=stopped` timeline that commits the watched state, and it
-/// must happen BEFORE requesting the replacement through `queue_transport`:  teardown reads the outgoing item's session
-/// ids and clears the URL, both of which the new plan is about to overwrite.
+/// also what posts the `state=stopped` timeline, which the server commits the watched state from
+/// only when the stop lands past its own threshold; below it the stop also scrobbles the item
+/// (`PlaybackSession::finished`, armed here). It must happen BEFORE requesting the replacement
+/// through `queue_transport`: teardown reads the outgoing item's session ids and clears the URL,
+/// both of which the new plan is about to overwrite.
 pub(crate) fn play_up_next(
     ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
@@ -980,6 +992,10 @@ pub(crate) fn play_up_next(
     // category this app's Data Safety declaration answers "Not collected" to. `eventlog::scrub` is a
     // backstop for shapes like this; not writing it is the mechanism.
     log(&format!("up next: S{}E{} rk={}", u.season, u.index, u.rk));
+    // Leaving for the next episode is finishing this one: a stop below the server's watched
+    // threshold scrobbles it, one past the threshold is the server's to count. `queue_transport::play`'s
+    // stop takes the flag (`route::scrobble_stop`).
+    ps.finished = true;
     if let Some(row) = plx_media::route::queue_neighbor(ps, plx_media::route::QueueStep::Next)
         .filter(|row| row.rk == u.rk) {
         return queue_transport::play(ps, pa, row, hud_ms, pages, bridge);
@@ -1087,70 +1103,196 @@ pub(super) fn play_item_now_with<R: PlaybackResources>(
 /// adapter, the route and the trail in scope arrive back here as `PlayerReq`, drained by
 /// [`player_requests`].)
 
-/// **Perform the Info card's chosen action** — the half of the old `commit_info_panel` that needs
-/// the player adapter, the route and the trail. The card itself decided (its own `on_ok`) and
-/// is already dismissing; this is what the loop does about it.
-fn apply_info_action(
+/// Start the playing item over, playing: the Info card's *From beginning* and the
+/// `from_beginning` command.
+fn from_beginning(pa: &mut plx_media::player::adapter::PlayerAdapter) {
+    request_seek(0);
+    resume_if_paused(pa);
+}
+
+/// Leave playback for the page of `rk`, the Info card's *Go to Show/Movie* and the `go_to_detail`
+/// command. An empty `rk` does nothing.
+fn go_to_detail(
     player: &mut plx_media::player::machine::Player,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
     repause_at: &mut i64,
-    action: plx_appkit::info_panel::InfoAction,
+    refresh_hubs: &mut bool,
+    rk: &str,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    bridge: &mut super::bridge::Bridge,
+) {
+    // Leave playback through THE exit ritual, then override where it landed. This arm used
+    // to hand-roll the exit — overlays + stop_bufferfeed — which is three quarters of
+    // `exit_player` and silently dropped the other quarter: `route::cancel_play()` (a jump
+    // taken while a play resolve was still in flight left it to land later on Detail,
+    // starting audio the user cannot reach) and the armed hub refresh (Continue Watching
+    // kept the resume point from BEFORE this session — exactly the stale-CW bug
+    // `exit_player`'s doc warns a new exit path re-introduces). The override is the one
+    // real difference: the Info card's "Go to Show/Movie" always lands on THIS rk's page,
+    // whatever origin route the ritual would otherwise have chosen.
+    if rk.is_empty() {
+        return;
+    }
+    // The played leaf's server, read BEFORE the exit ritual — `detail_rk` is that
+    // item's own show, so it is on the same machine, and the store this reads is torn
+    // down below.
+    let sid = bridge.metadata_view().playing()
+        .map(|p| p.sid)
+        .unwrap_or_else(plx_plex::plex::current_server);
+    exit_player(player, pa, repause_at, refresh_hubs, pages);
+    // A LANDING, not a navigation, so the page is SHOWN rather than pushed blindly:
+    // the exit above has usually already put this very page on top (the show playback
+    // started from), and `show_page` is a no-op there. It is also strictly better than
+    // the flag it replaces — a Library -> detail -> play -> "Go to Show" returns to
+    // the Library instead of to Home.
+    super::bridge::show_page(pages, AppArg::Content(
+        plx_screens::registry::ContentArg::Detail { sid, rk: rk.to_owned() },
+    ));
+}
+
+// (`key_player_updown` stood here — UP/DOWN walking the HUD's ring, or spending the press on
+// REVEALING a hidden transport. Ported to the page in phase 9 (now `Screen::links`, the groups' edge rules and `answer_edge`) and DELETED with
+// its caller in phase 12 (PX-PLAYER): the loop kept calling this on the screen's own `hud`/`scrub`
+// while the screen answered the same key through the dispatcher.)
+
+/// **Hand the player menu about to open the rect it hangs from**, before `open_player_overlay` asks for it:
+/// the compiled package's anchor for the opener that is asking (`PlayerScreen::menu_anchor`). The mount
+/// consumes it (`AppMounter::player_menu_anchor`). A press that RE-ADDRESSES a menu already up mounts nothing,
+/// and a page with no package or a panel that is not a menu has no anchor: both clear the seed, so a later
+/// mount never inherits an earlier press's rect.
+fn seed_menu_anchor(
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    bridge: &mut super::bridge::Bridge,
+    kind: plx_screens::player::overlay::OverlayKind,
+) {
+    let readdress = super::bridge::player_overlay_kind(pages).is_some_and(|up| up.slot() == kind.slot());
+    let anchor = (!readdress)
+        .then(|| {
+            let chapters = plx_appkit::chapters_panel::has_chapters(bridge.metadata_view());
+            super::bridge::player(pages)?.menu_anchor(kind, chapters)
+        })
+        .flatten();
+    bridge.seed_player_menu_anchor(anchor);
+    // The More menu's folded rows (R2) ride the same press, and are cleared by every other open for the same reason.
+    let folded = (!readdress && matches!(kind, plx_screens::player::overlay::OverlayKind::More { .. }))
+        .then(|| super::bridge::player(pages).map(|screen| screen.more_folds(bridge.metadata_view())))
+        .flatten()
+        .unwrap_or_default();
+    bridge.seed_player_more_folds(folded);
+}
+
+/// **THE performer of a [`HudCommand`](plx_appkit::player_hud::command::HudCommand)**: one `match` over the closed vocabulary, which every route to
+/// a command ends in. A disc pressed with OK (`PlayerReq::Command`), one clicked
+/// ([`activate_player_row`]) and a More-menu row folded from a package (the overlay closes More and asks
+/// `PlayerReq::Command`) all end in this function, so a command can never mean one thing from a control and another from a menu.
+///
+/// It performs and does not decide: whether the command is enabled is the caller's, from
+/// `HudCommand::enabled` over the frame's `HudModel` (the screen's stops are absent for a control
+/// that is not). The commands that reach the media layer do so through the same functions their
+/// keys and panels use: `toggle_play` is the Play/Pause key's own `toggle_play` and
+/// [`apply_transport`], a `seek` is the burst of [`PlayerScreen::jump_by`](plx_screens::player::PlayerScreen::jump_by) then [`commit_seek`],
+/// the Info card's two actions are [`from_beginning`] and [`go_to_detail`].
+///
+/// Except Previous and Next, which hand the queue to the transport and leave the HUD as it is, a
+/// performed command keeps the transport up and extends its linger.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn perform_hud_command(
+    command: plx_appkit::player_hud::command::HudCommand,
+    player: &mut plx_media::player::machine::Player,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
+    repause_at: &mut i64,
+    now: u32,
     refresh_hubs: &mut bool,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) {
-    match action {
-        plx_appkit::info_panel::InfoAction::FromBeginning => {
-            request_seek(0);
-            resume_if_paused(pa);
-        }
-        plx_appkit::info_panel::InfoAction::GoToDetail(rk) => {
-            // Leave playback through THE exit ritual, then override where it landed. This arm used
-            // to hand-roll the exit — overlays + stop_bufferfeed — which is three quarters of
-            // `exit_player` and silently dropped the other quarter: `route::cancel_play()` (a jump
-            // taken while a play resolve was still in flight left it to land later on Detail,
-            // starting audio the user cannot reach) and the armed hub refresh (Continue Watching
-            // kept the resume point from BEFORE this session — exactly the stale-CW bug
-            // `exit_player`'s doc warns a new exit path re-introduces). The override is the one
-            // real difference: the Info card's "Go to Show/Movie" always lands on THIS rk's page,
-            // whatever origin route the ritual would otherwise have chosen.
-            if !rk.is_empty() {
-                // The played leaf's server, read BEFORE the exit ritual — `detail_rk` is that
-                // item's own show, so it is on the same machine, and the store this reads is torn
-                // down below.
-                let sid = bridge.metadata_view().playing()
-                    .map(|p| p.sid)
-                    .unwrap_or_else(plx_plex::plex::current_server);
-                exit_player(player, pa, repause_at, refresh_hubs, pages);
-                // A LANDING, not a navigation, so the page is SHOWN rather than pushed blindly:
-                // the exit above has usually already put this very page on top (the show playback
-                // started from), and `show_page` is a no-op there. It is also strictly better than
-                // the flag it replaces — a Library -> detail -> play -> "Go to Show" returns to
-                // the Library instead of to Home.
-                super::bridge::show_page(pages, AppArg::Content(
-                    plx_screens::registry::ContentArg::Detail { sid, rk: rk.clone() },
-                ));
+    use plx_appkit::player_hud::command::HudCommand;
+    use plx_media::route::QueueStep;
+    use plx_screens::player::overlay::OverlayKind;
+    use plx_screens::registry::PlayerReq;
+    match command {
+        HudCommand::TogglePlay => {
+            match super::bridge::player_mut(pages).map(|screen| screen.toggle_play(None, now)) {
+                Some(PlayerReq::SeekTo(ns)) => apply_seek_to(pa, ns),
+                Some(PlayerReq::Transport(play)) => apply_transport(pa, play, now, pages),
+                _ => {}
             }
         }
-        plx_appkit::info_panel::InfoAction::None => {}
+        HudCommand::Seek(by) => {
+            let step = by.step_ns(plx_appkit::player_hud::scrub_step_ns());
+            let target = super::bridge::player_mut(pages)
+                .and_then(|screen| screen.jump_by(&player.session, step, true, now));
+            if let Some(target) = target {
+                commit_seek(target);
+            }
+        }
+        HudCommand::Previous => {
+            queue_transport::step(&mut player.session, pa, QueueStep::Previous, pages, bridge);
+            return;
+        }
+        HudCommand::Next => {
+            queue_transport::step(&mut player.session, pa, QueueStep::Next, pages, bridge);
+            return;
+        }
+        HudCommand::OpenTracks(tab) => {
+            let kind = OverlayKind::Tracks { tab: tab.index() };
+            seed_menu_anchor(pages, bridge, kind);
+            super::bridge::open_player_overlay(&mut player.session, bridge.metadata_view(), pages, kind);
+        }
+        HudCommand::OpenMore(page) => {
+            let kind = OverlayKind::More { page: page.page() };
+            seed_menu_anchor(pages, bridge, kind);
+            super::bridge::open_player_overlay(&mut player.session, bridge.metadata_view(), pages, kind);
+        }
+        // A section is the player page's own state: the performer addresses the page with the toggle, and the
+        // page opens or closes it under the package's policy and seats its own focus.
+        HudCommand::ToggleSection(section) => super::bridge::toggle_player_section(pages, section),
+        HudCommand::FromBeginning => from_beginning(pa),
+        HudCommand::GoToDetail => {
+            if let Some(rk) = plx_appkit::info_panel::detail_rk(bridge.metadata_view()).map(str::to_owned) {
+                go_to_detail(player, pa, repause_at, refresh_hubs, &rk, pages, bridge);
+            }
+        }
+        HudCommand::ToggleStats => crate::app::diagnostics::toggle(),
+    }
+    if let Some(player) = super::bridge::player_mut(pages) {
+        player.hud.extend(now, HUD_LINGER_MS);
+        player.publish();
     }
 }
 
-// (`key_player_updown` stood here — UP/DOWN walking the HUD's ring, or spending the press on
-// REVEALING a hidden transport. Ported to `PlayerScreen::key_updown` in phase 9 and DELETED with
-// its caller in phase 12 (PX-PLAYER): the loop kept calling this on the screen's own `hud`/`scrub`
-// while the screen answered the same key through the dispatcher.)
+/// Perform a [`PlayerReq::Transport`](plx_screens::registry::PlayerReq::Transport): the play/pause toggle (or a one-way PLAY or PAUSE), then keep the
+/// transport up. The one path the keys, OK on the picture, a panel's fall-through and the
+/// `toggle_play` command share.
+fn apply_transport(
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
+    play: Option<bool>,
+    now: u32,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
+) {
+    set_transport_paused(pa, super::lifecycle::transport_target(play, super::lifecycle::viewer_paused()));
+    if let Some(player) = super::bridge::player_mut(pages) {
+        player.hud.extend(now, HUD_LINGER_MS);
+        player.publish();
+    }
+}
 
-/// OK, on every screen that has not already `continue`d above.
-/// Activate the player transport's focused CONTROL ROW item — the deferred half of [`key_ok`]'s
-/// player arm, run from the per-frame loop once the press spring-back has played.
+/// Perform a [`PlayerReq::SeekTo`](plx_screens::registry::PlayerReq::SeekTo): seek, and resume a paused film.
+fn apply_seek_to(pa: &mut plx_media::player::adapter::PlayerAdapter, ns: i64) {
+    request_seek(ns);
+    resume_if_paused(pa);
+}
+
+/// Activate the player transport's focused CONTROL ROW item — the deferred half of a pointer
+/// click, run from the per-frame loop once the press spring-back has played (OK reaches
+/// [`perform_hud_command`] and [`activate_stand_in`] through the engine's own press instead).
 ///
-/// Two arms, in the order they were written in `key_ok`: a STAND-IN owns the row (Skip, Up Next) and
-/// performs its own action, or the row holds the three discs and OK opens that disc's panel. `ctrl`
-/// is re-resolved by the caller on the committing frame rather than captured at the press, so the
-/// activation acts on the row that is DRAWN — the slot is resolved once per loop iteration for input,
-/// update and draw alike (see the `let ctrl` at the top of the loop), and an offer that arrived
-/// mid-press has already changed what the user is looking at.
+/// Two arms: a STAND-IN owns the row (Skip, Up Next) and performs its own action, or the row holds
+/// the discs, whose focused item is a [`HudCommand`](plx_appkit::player_hud::command::HudCommand) for the one performer. `ctrl` is re-resolved by
+/// the caller on the committing frame rather than captured at the press, so the activation acts on
+/// the row that is DRAWN — the slot is resolved once per loop iteration for input, update and draw
+/// alike (see the `let ctrl` at the top of the loop), and an offer that arrived mid-press has
+/// already changed what the user is looking at.
 #[allow(clippy::too_many_arguments)]
 pub(crate) unsafe fn activate_player_row(
     player: &mut plx_media::player::machine::Player,
@@ -1165,39 +1307,36 @@ pub(crate) unsafe fn activate_player_row(
     // The cursor is the instance's; read the one field this dispatch turns on, so the container
     // is borrowed once and the arms below are free to present a panel on it.
     let btn = super::bridge::player(pages).map_or(0, |player| player.hud.nav.btn);
-    if let plx_appkit::player_hud::ControlSlot::Discs(controls) = ctrl {
-        // The discs are what row 1 holds — the complement of the stand-in arm below, and the
-        // row's only other occupant. OK on a control disc PRESENTS its panel on this page's own
-        // stack; Previous/Next hand the queue to the transport instead.
-        use plx_appkit::player_hud::Action;
-        use plx_media::route::QueueStep;
-        use plx_screens::player::overlay::OverlayKind;
-        let overlay = match controls.action(btn) {
-            Some(Action::Previous) => { queue_transport::step(&mut player.session, pa, QueueStep::Previous, pages, bridge); return; }
-            Some(Action::Next) => { queue_transport::step(&mut player.session, pa, QueueStep::Next, pages, bridge); return; }
-            Some(Action::Subtitles) => OverlayKind::Tracks { tab: 1 },
-            Some(Action::Audio) => OverlayKind::Tracks { tab: 0 },
-            Some(Action::More) => OverlayKind::More { quality: false },
-            None => return,
-        };
-        super::bridge::open_player_overlay(&mut player.session, bridge.metadata_view(), pages, overlay);
+    if let plx_appkit::player_hud::ControlSlot::Discs(_) = ctrl {
+        // the command of the control the PACKAGE placed at the cursor's index, as a press of it asks for
+        let command = super::bridge::player(pages).and_then(|screen| screen.row_command(btn));
+        if let Some(command) = command {
+            perform_hud_command(command, player, pa, repause_at, now, refresh_hubs, pages, bridge);
+        }
     } else {
-        // A stand-in owns row 1 — activate it. Same value the draw used. (Its `true` answer used
-        // to clear the loop's client-side hold-repeat sym as well, so an async route flip could
-        // not repeat a held key into the next screen. That timer is gone with phase 10 — see
-        // `App::down_sym` — and the discrete lists it drove pace their own `Edge::Repeat`, which
-        // a route change ends by retiring the surface that was receiving them.)
-        activate_ctrl_row(
-            player,
-            pa,
-            repause_at,
-            ctrl,
-            refresh_hubs,
-            btn,
-            pages,
-            bridge,
-        );
+        activate_stand_in(player, pa, repause_at, ctrl, now, refresh_hubs, pages, bridge);
     }
+}
+
+/// Activate the Skip pill or the Up Next item the cursor is on, then keep the transport up. Same
+/// value the draw used: the slot is the page's own. (Its `true` answer used to clear the loop's
+/// client-side hold-repeat sym as well, so an async route flip could not repeat a held key into
+/// the next screen. That timer is gone with phase 10 — see `App::down_sym` — and the discrete
+/// lists it drove pace their own `Edge::Repeat`, which a route change ends by retiring the
+/// surface that was receiving them.)
+#[allow(clippy::too_many_arguments)]
+fn activate_stand_in(
+    player: &mut plx_media::player::machine::Player,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
+    repause_at: &mut i64,
+    ctrl: plx_appkit::player_hud::ControlSlot,
+    now: u32,
+    refresh_hubs: &mut bool,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    bridge: &mut super::bridge::Bridge,
+) {
+    let btn = super::bridge::player(pages).map_or(0, |screen| screen.hud.nav.btn);
+    activate_ctrl_row(player, pa, repause_at, ctrl, refresh_hubs, btn, pages, bridge);
     if let Some(player) = super::bridge::player_mut(pages) {
         player.hud.extend(now, HUD_LINGER_MS);
         player.publish();
@@ -1783,5 +1922,48 @@ mod player_return_tests {
             assert!(matches!(p.top(), AppArg::Home));
         }
         plx_plex::plex::reset_servers_for_test();
+    }
+}
+
+#[cfg(test)]
+mod play_start_caps_tests {
+    //! **The app's play-start edge** ([`start_caps`]): every play, retry, queue item and next
+    //! episode hands route this value, so a wrapper that returned the boot snapshot would let a
+    //! learned refusal reach the Forced gate unapplied (S3 of the playback-refusal series). The
+    //! route tier injects its own `devcaps::start_caps` value; this is the test of the wrapper
+    //! that produces it from the install's session.
+    use super::*;
+
+    /// **#1048:** a set that announces DTS 5.1 and whose install has watched the pipeline refuse it.
+    /// The start value lacks the combination, and the boot snapshot (write-once) is untouched.
+    #[test]
+    fn the_play_start_value_lacks_an_applied_refusal() {
+        let _serial = plx_base::testlock::serial();
+        let _session = plx_plex::plex::session::TempSession::new("play-start-value");
+        let _set = plx_platform::devcaps::firmware_on_this_thread_for_test(
+            "fw",
+            "B",
+            plx_platform::devcaps::Caps {
+                audio: "aac,ac3,eac3,dts".into(),
+                audio_channels: [("dts".into(), 6)].into(),
+                ..plx_platform::devcaps::Caps::assumed()
+            },
+        );
+        let boot = plx_platform::devcaps::caps();
+        assert!(
+            std::sync::Arc::ptr_eq(&start_caps(), &boot),
+            "sanity: no row stored, so the start value is the boot snapshot itself"
+        );
+
+        let dts6 = plx_platform::devcaps::Facet::Audio { codec: "dca".into(), channels: 6 };
+        assert!(plx_plex::plex::session::record_named_refusal(&dts6), "the write is queued");
+        plx_base::storage_worker::drain_for_test();
+        assert_eq!(plx_plex::plex::session::peek().native_audio_refused().len(), 1, "the row is stored");
+
+        let start = start_caps();
+        assert!(!std::sync::Arc::ptr_eq(&start, &plx_platform::devcaps::caps()), "a row in force makes a new value");
+        assert!(!start.audio_supports("dts", 6), "the start value lost DTS 5.1");
+        assert!(!start.forced_feeds_audio_track("dca", 6), "and Force Direct Play will not feed it");
+        assert!(plx_platform::devcaps::caps().audio_supports("dts", 6), "the boot value is untouched");
     }
 }

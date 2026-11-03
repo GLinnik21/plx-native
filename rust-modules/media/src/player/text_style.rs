@@ -4,7 +4,7 @@
 //!
 //! Media cannot use appkit and the synthesized header needs these values, so the mapping lives
 //! here and appkit reads it (plan `libass-text-subs` §2.5). [`today_baseline`] and its companions
-//! mirror the maths `player_hud::caption_geometry`/`caption_layout` use, kept with hard-coded
+//! mirror the maths `player_hud::caption_geometry_for`/`caption_layout` use, kept with hard-coded
 //! constants so a tie test in appkit can pin that the two cannot drift apart.
 
 use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
@@ -42,30 +42,100 @@ pub const BOTTOM_GAP: f32 = 100.0;
 /// sat 3.56 / 3 / 2 / 2 px ABOVE today's at the four sizes (971 / 968 / 966 / 963 against
 /// 974.56 / 971 / 968 / 965 at Low), because the two layouts put the line on different boxes;
 /// shifting every size down by 3 px leaves each within 1. It costs 3 px of the clearance the HUD
-/// lift leaves under `SUB_CEIL_Y` (the lifted ink of "Hxg" ends about 2 px past it, today's "g"
-/// about 1).
+/// lift leaves under the band's ceiling (the lifted ink of "Hxg" ends about 2 px past it, today's
+/// "g" about 1).
 pub const INK_TRIM: f32 = 3.0;
 
 /// The inset the bespoke caption draw adds under a line's top (`player_hud::draw_caption_block`
 /// draws at `line_top + 4`).
 pub const CAPTION_TEXT_INSET: f32 = 4.0;
 
-/// The top of the transport HUD's control row (`player_hud::BTN_Y`, which is this constant). A
-/// text caption lifted with the HUD up must end above it, deep marks included (plan §2.4, as
-/// amended: the golden's criterion is this row, not `SUB_CEIL_Y`).
-pub const HUD_CONTROLS_TOP_Y: f32 = SCR_H - 288.0;
+/// The top of classic's control row, the one input of [`HudBand::CLASSIC`]: a text caption lifted
+/// with the HUD up must end above it, deep marks included (plan §2.4, as amended: the golden's
+/// criterion is this row, not the ceiling above it). Nothing else reads it; every reader takes the
+/// band as an argument.
+const HUD_CONTROLS_TOP_Y: f32 = SCR_H - 288.0;
+
+/// The gap between a HUD's control row and the ceiling a lifted caption is held under: classic's own
+/// 792 - 780. The lifted ink of "Hxg" overhangs that ceiling by about 2 px ([`INK_TRIM`]).
+pub const CAPTION_INK_CLEARANCE: f32 = 12.0;
+
+/// The top of the safe area (`plx_ui::consts::SAFE`'s y, which media cannot name): a caption lifted
+/// clear of a section never rises past it ([`HudBand::clear_rise`]).
+pub const CAPTION_SAFE_TOP_Y: f32 = 54.0;
 
 /// The `MarginV` of the top-aligned styles: independent of the Position setting.
 pub const TOP_MARGIN_V: f32 = BOTTOM_GAP;
 
-/// Where the caption block sits with the transport DOWN, and the ceiling it lifts to with the
-/// transport UP (clear of the scrubber, buttons and tabs), before the Position pick.
+/// Where the caption block sits with the transport DOWN, before the Position pick. With the
+/// transport UP it lifts to the ceiling of the HUD's [`HudBand`].
 pub const SUB_BASE_Y: f32 = SCR_H - BOTTOM_GAP;
-pub const SUB_CEIL_Y: f32 = SCR_H - 300.0;
 
-/// The fixed distance a text caption moves up while the transport HUD is up: exactly today's
-/// motion at every Position and size (plan §2.4).
-pub const HUD_LIFT: f32 = SUB_BASE_Y - SUB_CEIL_Y;
+/// **The band a HUD occupies at the bottom of the screen**, as the numbers every caption reader
+/// needs: the top of the control row (`controls_top_y`), the ceiling a lifted caption is held
+/// under (`ceil_y`, clear of the row's top by [`CAPTION_INK_CLEARANCE`]), the fixed distance a
+/// text caption moves up while the HUD is up (`lift`, `SUB_BASE_Y - ceil_y`, the same at every
+/// Position and size: plan §2.4) and, while a player section is open, how much further a caption
+/// has risen to clear it (`rise`). It is a value the layout reports, never a global: the readers
+/// (`caption_geometry_for`, `hud_lift`, `today_baseline`, the libass lift) take it as an argument.
+///
+/// **The rise** (`docs/hud-plugins.md`, "Captions"): a caption's bottom limit is the HUD-up limit P of
+/// the viewer's Position (`ceil_y - position_lift`) while no section is open, and
+/// `min(P, S - CAPTION_INK_CLEARANCE)` while one is, `S` being the resting top of everything the HUD
+/// has open. `rise[i]` is `P - limit` for Position `i` in [`SubtitlePosition::LADDER`] order (Low,
+/// Middle, High), so a Position that already clears the section has none, and the limit is `P - rise`
+/// exactly: a band with every `rise` zero leaves every reader's arithmetic as it was. The rise is
+/// motion (a spring the HUD steps, `player_hud::motion`), which is why it is a field of the value
+/// the readers take and not something they compute.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HudBand {
+    pub ceil_y: f32,
+    pub controls_top_y: f32,
+    pub lift: f32,
+    pub rise: [f32; 3],
+}
+
+impl HudBand {
+    /// The one constructor: `ceil_y` and `lift` follow from the control row's top; nothing is open.
+    pub const fn from_controls_top(controls_top_y: f32) -> Self {
+        let ceil_y = controls_top_y - CAPTION_INK_CLEARANCE;
+        Self { ceil_y, controls_top_y, lift: SUB_BASE_Y - ceil_y, rise: [0.0; 3] }
+    }
+
+    /// Classic's band: control row at 792, ceiling 780, lift 200 (`text_style::tests` pins them).
+    pub const CLASSIC: Self = Self::from_controls_top(HUD_CONTROLS_TOP_Y);
+
+    /// This band with the rise a section has lifted the captions by (one entry per Position).
+    pub const fn with_rise(self, rise: [f32; 3]) -> Self {
+        Self { rise, ..self }
+    }
+
+    /// P: where the HUD-up limit of `position` sits with no section open.
+    pub fn rest_limit(&self, position: SubtitlePosition) -> f32 {
+        self.ceil_y - position_lift(position)
+    }
+
+    /// The rise of `position`'s limit, before the safe-area clamp ([`clear_rise`](Self::clear_rise)).
+    pub fn rise_for(&self, position: SubtitlePosition) -> f32 {
+        self.rise.get(position.index() as usize).copied().unwrap_or(0.0)
+    }
+
+    /// The rise each Position takes to stand `CAPTION_INK_CLEARANCE` above a block whose top edge is
+    /// `block_top`: `max(0, P - (block_top - CAPTION_INK_CLEARANCE))`. A Position already above that
+    /// takes none (Position gives way first).
+    pub fn rise_to_clear(&self, block_top: f32) -> [f32; 3] {
+        SubtitlePosition::LADDER.map(|p| (self.rest_limit(p) - (block_top - CAPTION_INK_CLEARANCE)).max(0.0))
+    }
+
+    /// **The safe-area clamp**: of the `rise` a caption of `height` px was given, the part that keeps
+    /// its top at or under [`CAPTION_SAFE_TOP_Y`] when its bottom stands on `rest - rise`. A caption
+    /// that would cross it stops there and overlaps the section instead (captions are drawn above
+    /// sections); its size never gives way. A caption already past the safe top at `rest` (P itself) is
+    /// not moved further, and a zero rise stays exactly zero.
+    pub fn clear_rise(rise: f32, rest: f32, height: f32) -> f32 {
+        rise.min((rest - CAPTION_SAFE_TOP_Y - height).max(0.0))
+    }
+}
 
 /// The Timing capsule's bottom y: [`SUB_BASE_Y`] cleared by the tallest caption block that stays
 /// bottom-anchored, so a three-line caption never overlaps the capsule.
@@ -179,7 +249,7 @@ pub fn generation() -> u32 {
     TextStyle::current().generation()
 }
 
-/// What `player_hud::caption_geometry` computes today: the viewer's scale, the y the caption
+/// What `player_hud::caption_geometry_for` computes today: the viewer's scale, the y the caption
 /// block's bottom is placed at, and the lowest y the block may reach.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TodayBaseline {
@@ -188,10 +258,11 @@ pub struct TodayBaseline {
     pub floor: f32,
 }
 
-/// Port of `player_hud::caption_geometry(hud_up)` for a given `scale` and `position`.
-pub fn today_baseline(position: SubtitlePosition, scale: f32, hud_up: bool) -> TodayBaseline {
-    let baseline = (if hud_up { SUB_CEIL_Y } else { SUB_BASE_Y }) - position_lift(position);
-    let floor = if hud_up { SUB_CEIL_Y } else { CAPTION_FLOOR_Y };
+/// Port of `player_hud::caption_geometry_for` (with `hud_up` and a zero-height block) for a given `scale`, `position` and HUD `band`.
+pub fn today_baseline(position: SubtitlePosition, scale: f32, hud_up: bool, band: HudBand) -> TodayBaseline {
+    let rise = if hud_up { band.rise_for(position) } else { 0.0 };
+    let baseline = (if hud_up { band.ceil_y } else { SUB_BASE_Y }) - position_lift(position) - rise;
+    let floor = if hud_up { band.ceil_y } else { CAPTION_FLOOR_Y };
     TodayBaseline { scale, baseline, floor }
 }
 
@@ -202,8 +273,8 @@ pub fn today_baseline(position: SubtitlePosition, scale: f32, hud_up: bool) -> T
 /// [`TodayBaseline::baseline`] at the four sizes. A port of that draw: `draw_caption_block`
 /// (appkit) takes its inset from [`CAPTION_TEXT_INSET`], and the ascent is
 /// SDL_ttf's `ceil(hhea ascender)` as `gfx::text` documents it, not measured on a television.
-pub fn today_ink_baseline(position: SubtitlePosition, scale: f32, hud_up: bool) -> f32 {
-    let lay = today_layout(1, scale, today_baseline(position, scale, hud_up).baseline);
+pub fn today_ink_baseline(position: SubtitlePosition, scale: f32, hud_up: bool, band: HudBand) -> f32 {
+    let lay = today_layout(1, scale, today_baseline(position, scale, hud_up, band).baseline);
     lay.top + CAPTION_TEXT_INSET + (INTER_BOLD_HHEA_ASCENT_EM * lay.face as f32).ceil()
 }
 
@@ -291,8 +362,42 @@ mod tests {
         assert_eq!(scales, [0.78, 1.0, 1.25, 1.5, 1.8]);
         let lifts: Vec<f32> = SubtitlePosition::LADDER.iter().map(|p| position_lift(*p)).collect();
         assert_eq!(lifts, [0.0, 160.0, 320.0]);
-        assert_eq!((SUB_BASE_Y, SUB_CEIL_Y, HUD_LIFT), (980.0, 780.0, 200.0));
+        assert_eq!(SUB_BASE_Y, 980.0);
         assert_eq!(CAPSULE_BOTTOM_Y, 836.0);
+    }
+
+    /// `CLASSIC` is the constructor's value for today's control row, and today's three numbers.
+    #[test]
+    fn classic_band_is_todays_constants() {
+        assert_eq!(HUD_CONTROLS_TOP_Y, 792.0);
+        assert_eq!(HudBand::CLASSIC, HudBand::from_controls_top(HUD_CONTROLS_TOP_Y));
+        assert_eq!(
+            HudBand::CLASSIC,
+            HudBand { ceil_y: 780.0, controls_top_y: 792.0, lift: 200.0, rise: [0.0; 3] }
+        );
+        let band = HudBand::from_controls_top(700.0);
+        assert_eq!(band, HudBand { ceil_y: 688.0, controls_top_y: 700.0, lift: 292.0, rise: [0.0; 3] });
+        assert_eq!(band.ceil_y, band.controls_top_y - CAPTION_INK_CLEARANCE);
+        assert_eq!(band.lift, SUB_BASE_Y - band.ceil_y);
+    }
+
+    /// The rise a section asks of each Position: `max(0, P - (S - 12))`, so a Position that already clears
+    /// the block takes none, and the safe-area clamp leaves a zero rise at zero.
+    #[test]
+    fn the_rise_clears_the_block_and_gives_way_by_position() {
+        let band = HudBand::CLASSIC;
+        let rise = |top: f32| band.rise_to_clear(top);
+        assert_eq!(rise(1080.0), [0.0; 3], "no block");
+        assert_eq!(rise(668.0), [124.0, 0.0, 0.0], "built-in Info: only Low is in the way");
+        assert_eq!(rise(684.0), [108.0, 0.0, 0.0], "built-in Chapters");
+        assert_eq!(rise(600.0), [192.0, 32.0, 0.0], "a taller block reaches Middle too");
+        assert_eq!(rise(480.0), [312.0, 152.0, 0.0]);
+        assert_eq!(rise(300.0), [492.0, 332.0, 172.0], "…and High");
+        assert_eq!(band.with_rise(rise(668.0)).rise_for(SubtitlePosition::Low), 124.0);
+        assert_eq!(HudBand::clear_rise(0.0, 780.0, 1000.0), 0.0, "no rise stays none, whatever the block");
+        assert_eq!(HudBand::clear_rise(124.0, 780.0, 144.0), 124.0, "a block that fits keeps its rise");
+        assert_eq!(HudBand::clear_rise(592.0, 780.0, 259.2), 780.0 - CAPTION_SAFE_TOP_Y - 259.2, "top stops on the safe area");
+        assert_eq!(CAPTION_SAFE_TOP_Y, 54.0);
     }
 
     #[test]
@@ -325,25 +430,55 @@ mod tests {
     fn today_baseline_is_the_old_geometry() {
         for position in SubtitlePosition::LADDER {
             let lift = position_lift(position);
-            let down = today_baseline(position, 1.0, false);
+            let down = today_baseline(position, 1.0, false, HudBand::CLASSIC);
             assert_eq!((down.baseline, down.floor), (980.0 - lift, 1026.0));
-            let up = today_baseline(position, 1.0, true);
+            let up = today_baseline(position, 1.0, true, HudBand::CLASSIC);
             assert_eq!((up.baseline, up.floor), (780.0 - lift, 780.0));
             // The HUD moves the baseline by the same 200 px at every position.
-            assert_eq!(down.baseline - up.baseline, HUD_LIFT);
+            assert_eq!(down.baseline - up.baseline, HudBand::CLASSIC.lift);
         }
+    }
+
+    /// A band that is not classic's moves the lifted baseline, floor and ink by exactly the
+    /// band's difference, and leaves the HUD-down placement alone.
+    #[test]
+    fn a_non_classic_band_moves_the_lifted_caption_by_its_difference() {
+        let band = HudBand::from_controls_top(700.0);
+        let shift = HudBand::CLASSIC.controls_top_y - band.controls_top_y;
+        assert_eq!(shift, 92.0);
+        for position in SubtitlePosition::LADDER {
+            for size in SubtitleSize::LADDER {
+                let scale = size_scale(size);
+                let classic_up = today_baseline(position, scale, true, HudBand::CLASSIC);
+                let up = today_baseline(position, scale, true, band);
+                assert_eq!(classic_up.baseline - up.baseline, shift, "{position:?} {size:?}");
+                assert_eq!(classic_up.floor - up.floor, shift, "{position:?} {size:?}");
+                // The ink row goes through the block's top, one more f32 subtraction.
+                let ink = today_ink_baseline(position, scale, true, HudBand::CLASSIC)
+                    - today_ink_baseline(position, scale, true, band);
+                assert!((ink - shift).abs() < 1e-3, "{position:?} {size:?}: {ink} vs {shift}");
+                assert_eq!(
+                    today_baseline(position, scale, false, band),
+                    today_baseline(position, scale, false, HudBand::CLASSIC),
+                    "the HUD down ignores the band"
+                );
+            }
+        }
+        let down = today_baseline(SubtitlePosition::Low, 1.0, false, band).baseline;
+        let up = today_baseline(SubtitlePosition::Low, 1.0, true, band).baseline;
+        assert_eq!(down - up, band.lift);
     }
 
     #[test]
     fn today_ink_baseline_sits_under_the_block_top() {
         // 36 px face: line top 932, drawn at 936, baseline ceil(34.875) = 35 rows down.
-        assert_eq!(today_ink_baseline(SubtitlePosition::Low, 1.0, false), 971.0);
-        assert_eq!(today_ink_baseline(SubtitlePosition::Low, 1.0, true), 771.0);
-        assert_eq!(today_ink_baseline(SubtitlePosition::High, 1.0, false), 651.0);
+        assert_eq!(today_ink_baseline(SubtitlePosition::Low, 1.0, false, HudBand::CLASSIC), 971.0);
+        assert_eq!(today_ink_baseline(SubtitlePosition::Low, 1.0, true, HudBand::CLASSIC), 771.0);
+        assert_eq!(today_ink_baseline(SubtitlePosition::High, 1.0, false, HudBand::CLASSIC), 651.0);
         // 28 / 45 / 54 px faces, pitch 37.44 / 60 / 72.
-        assert!((today_ink_baseline(SubtitlePosition::Low, 0.78, false) - 974.56).abs() < 1e-3);
-        assert_eq!(today_ink_baseline(SubtitlePosition::Low, 1.25, false), 968.0);
-        assert_eq!(today_ink_baseline(SubtitlePosition::Low, 1.5, false), 965.0);
+        assert!((today_ink_baseline(SubtitlePosition::Low, 0.78, false, HudBand::CLASSIC) - 974.56).abs() < 1e-3);
+        assert_eq!(today_ink_baseline(SubtitlePosition::Low, 1.25, false, HudBand::CLASSIC), 968.0);
+        assert_eq!(today_ink_baseline(SubtitlePosition::Low, 1.5, false, HudBand::CLASSIC), 965.0);
     }
 
     #[test]

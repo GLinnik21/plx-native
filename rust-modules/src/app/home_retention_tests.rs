@@ -231,7 +231,11 @@ fn hero_edge_keys_page_without_seating_a_pager_or_leaving_the_control() {
         rig.with_home(&d, |home, cx, _| {
             let mut draw = DrawFrame::new(cx, plx_ui::Painter::root());
             home.record_stops(&mut draw, cx.views.hubs);
-            let mut keys: Vec<_> = draw.into_stops().into_iter().map(|s| s.key.elem).collect();
+            // the first shelf peeking under the hero has its cards' stops (a click there brings
+            // the page down to it); what is asked here is the hero's own row
+            let mut keys: Vec<_> = draw.into_stops().into_iter()
+                .filter(|s| home.grid_position::<AppHost>(Some(s.key), cx).is_none())
+                .map(|s| s.key.elem).collect();
             keys.sort();
             assert_eq!(keys, vec![0, 1], "pager chevron/dots are not hit stops");
         }).unwrap();

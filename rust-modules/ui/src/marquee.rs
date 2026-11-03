@@ -19,6 +19,10 @@
 //! the window — the follower is what makes the wrap seamless instead of a visible pop back to the
 //! start: by the time `offset` reaches the full travel distance the follower has arrived exactly
 //! where the primary run started, so the loop boundary is invisible.
+//!
+//! **A right-to-left run (Arabic, Hebrew) is the mirror image** ([`placements`]): it reads from
+//! its right edge, so it rests with that edge flush with the window's, glides right, and its
+//! follower trails one gap behind on the left.
 
 use crate::{Painter, Rect};
 use std::cell::{Cell, RefCell};
@@ -100,6 +104,21 @@ impl Marquee {
             .min((text_w - budget).max(0.0))
     }
 
+    /// [`Self::reveal_once`] as the run's placement from the window's left edge. A left-to-right
+    /// run starts there and moves left; a right-to-left one starts with its RIGHT edge on the
+    /// window's (its first words) and moves right until its left edge (its end) is flush. A run
+    /// that fits never moves: `0`, and the caller aligns it as it would any fitting line.
+    pub fn reveal_once_at(&self, t_ms: f32, text_w: f32, budget: f32, rtl: bool) -> f32 {
+        let off = self.reveal_once(t_ms, text_w, budget);
+        if !rtl {
+            -off
+        } else if text_w <= budget {
+            0.0
+        } else {
+            budget - text_w + off
+        }
+    }
+
     /// One full cycle in ms — the rest beat plus the glide that carries the run and its [`GAP`]
     /// fully past. The ONE place the period is spelled.
     pub fn period(&self, text_w: f32) -> f32 {
@@ -141,10 +160,12 @@ impl Marquee {
     ///
     /// `key` is the run's text (the [`Clock`]'s identity), `run_w` its drawn width, `window` the
     /// clip it glides inside (taller than the glyphs by the caller's descender allowance; its
-    /// width is the budget). `paint(dx)` draws the run shifted by `dx` from where it rests; it is
-    /// called twice, for the run and for its follower [`GAP`] behind. Call it only for a run that
-    /// does NOT fit (`run_w > window.w`) — a fitting focused run should
-    /// [`Clock::release`] instead, which is the caller's branch to take.
+    /// width is the budget). `paint(dx)` draws the run with its left edge `dx` from the window's
+    /// left edge; it is called twice, for the run and for its follower [`GAP`] behind. `rtl`: the
+    /// run reads right to left ([`plx_gfx::text::is_rtl_paragraph`]) and glides mirrored
+    /// ([`placements`]). Call it only for a run that does NOT fit (`run_w > window.w`) — a fitting
+    /// focused run should [`Clock::release`] instead, which is the caller's branch to take.
+    #[allow(clippy::too_many_arguments)]
     pub fn glide(
         &self,
         clock: &Clock,
@@ -152,9 +173,10 @@ impl Marquee {
         key: &str,
         run_w: f32,
         window: Rect,
+        rtl: bool,
         paint: impl Fn(f32),
     ) {
-        self.glide_in(clock, p, key, run_w, run_w, window, paint);
+        self.glide_in(clock, p, key, run_w, run_w, window, rtl, paint);
     }
 
     /// **[`Self::glide`] for one line of a block of lines that move together** — a tile's title
@@ -173,16 +195,34 @@ impl Marquee {
         run_w: f32,
         cycle_w: f32,
         window: Rect,
+        rtl: bool,
         paint: impl Fn(f32),
     ) {
         let cycle_w = cycle_w.max(run_w);
         let t_ms = self.phase(clock.read(key), cycle_w, window.w);
         self.report_in(t_ms, run_w, window.w, cycle_w);
         let off = self.x_in(t_ms, run_w, window.w, cycle_w);
+        let (run, follower) = placements(run_w, window.w, off, rtl);
         p.clip(window);
-        paint(-off);
-        paint(-off + run_w + GAP);
+        paint(run);
+        paint(follower);
         p.clip_clear();
+    }
+}
+
+/// **Where a gliding run and its follower stand**, `off` px into the glide ([`Marquee::x_in`]):
+/// each one's left edge, measured from the window's left edge. A left-to-right run rests at the
+/// window's left edge and moves left, its follower [`GAP`] after its right end; a right-to-left run
+/// rests with its RIGHT edge on the window's and moves right, its follower [`GAP`] before its left
+/// end. Either way the follower arrives exactly where the run rested when `off` reaches
+/// `run_w + GAP`, which is what makes the loop seamless. The one placement rule every marquee
+/// shares, including the menu row that clips and draws its two copies itself.
+pub fn placements(run_w: f32, window_w: f32, off: f32, rtl: bool) -> (f32, f32) {
+    if rtl {
+        let run = window_w - run_w + off;
+        (run, run - run_w - GAP)
+    } else {
+        (-off, -off + run_w + GAP)
     }
 }
 
@@ -303,6 +343,36 @@ mod tests {
             assert!(!m.moving(1e6, 100.0, 300.0));
             assert_eq!(m.phase(1e6, 100.0, 300.0), 0.0);
         }
+    }
+
+    /// **A right-to-left run reads from its right edge**, so it is the mirror image of a
+    /// left-to-right one: at rest its RIGHT edge is flush with the window's (its first words show),
+    /// it glides RIGHT, and its follower trails one gap behind on the LEFT. Placements are from the
+    /// window's left edge, for the run and then its follower.
+    #[test]
+    fn a_right_to_left_run_rests_flush_right_and_glides_right() {
+        let (run_w, window_w) = (500.0, 200.0);
+        assert_eq!(placements(run_w, window_w, 0.0, false), (0.0, run_w + GAP));
+        assert_eq!(placements(run_w, window_w, 40.0, false), (-40.0, run_w + GAP - 40.0));
+        let (rest, follower) = placements(run_w, window_w, 0.0, true);
+        assert_eq!(rest + run_w, window_w, "the run's right edge on the window's");
+        assert_eq!(follower, rest - run_w - GAP);
+        let (moved, _) = placements(run_w, window_w, 40.0, true);
+        assert_eq!(moved, rest + 40.0, "it glides right");
+        // a full glide lands the follower exactly where the run rested: the loop is seamless
+        let (_, follower_end) = placements(run_w, window_w, run_w + GAP, true);
+        assert_eq!(follower_end, rest);
+        // a paused title reveals its END: for right-to-left text that is to the left, so the run
+        // moves right by the same distance a left-to-right one moves left
+        let m = TITLE;
+        let t = m.hold_ms + 2000.0;
+        assert_eq!(m.reveal_once_at(t, run_w, window_w, false), -m.reveal_once(t, run_w, window_w));
+        assert_eq!(
+            m.reveal_once_at(t, run_w, window_w, true),
+            window_w - run_w + m.reveal_once(t, run_w, window_w)
+        );
+        assert_eq!(m.reveal_once_at(1e9, run_w, window_w, true), 0.0, "and stops with its left edge flush");
+        assert_eq!(m.reveal_once_at(1e9, 100.0, window_w, true), 0.0, "a fitting run never moves");
     }
 
     /// Two clocks are independent: one user restarting never restarts the other.

@@ -194,6 +194,18 @@ pub struct StopRecord {
     pub was_watched: bool,
 }
 
+/// Sort facts carried by the existing authoritative watch-state read-back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WatchSortFacts {
+    pub count: Option<i64>,
+    pub viewed_at: Option<i64>,
+}
+impl WatchSortFacts {
+    pub fn of(m: &crate::pms::PmsMovie) -> Option<Self> {
+        m.sort_info.as_ref().map(|f| Self { count: f.view_count, viewed_at: f.last_viewed_at })
+    }
+}
+
 /// What became true about the item.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewFact {
@@ -203,7 +215,7 @@ pub enum ViewFact {
     LeftDeck,
     /// What the server SAID about the item when the read-back asked ([`crate::stores::viewreconcile`]):
     /// the three fields of its watch state, as `pms::parse_item` reads them.
-    Facts { watched: bool, unwatched: bool, resume_ms: i64 },
+    Facts { watched: bool, unwatched: bool, resume_ms: i64, sort: Option<WatchSortFacts> },
     /// A stopped playback reported this position (`ms` of `dur_ms`) for the item: the resume point
     /// the server was just told. Our own word, not the server's: a read-back corrects it when the server
     /// took the stop, and a refused or abandoned stop leaves it until the item is next read.
@@ -225,6 +237,13 @@ pub struct ViewChange {
 /// client stops OFFERING a resume.
 const WATCHED_PERCENT: i64 = 90;
 
+/// Is a position `ms` into an item `dur_ms` long past [`WATCHED_PERCENT`], so that the server marks
+/// the item watched from a `playing`/`stopped` report there? False for an unknown duration. Integer
+/// math with saturating products: no overflow whatever the server reported.
+pub fn past_watched_threshold(ms: i64, dur_ms: i64) -> bool {
+    dur_ms > 0 && ms.saturating_mul(100) >= dur_ms.saturating_mul(WATCHED_PERCENT)
+}
+
 /// The edit a store applies to the rows a [`ViewAt`] names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewEdit {
@@ -234,7 +253,7 @@ pub enum ViewEdit {
     LeftDeck,
     /// Set the three watch-state fields to what the server answered. Never recorded in the
     /// [`crate::viewledger::ViewLedger`]: it is the server's word, not a press.
-    Facts { watched: bool, unwatched: bool, resume_ms: i64 },
+    Facts { watched: bool, unwatched: bool, resume_ms: i64, sort: Option<WatchSortFacts> },
     /// Set the resume point and nothing else: a stop below the server's watched threshold leaves
     /// `viewCount` alone (so `watched`/`unwatched` stand), and one past it is corrected by the
     /// read-back that follows every stop the server TOOK (`StopRecord::ok`; a refused or abandoned
@@ -259,17 +278,13 @@ impl ViewChange {
         match self.fact {
             ViewFact::Watched(on) => ViewEdit::Watched(on),
             ViewFact::LeftDeck => ViewEdit::LeftDeck,
-            ViewFact::Facts { watched, unwatched, resume_ms } => {
-                ViewEdit::Facts { watched, unwatched, resume_ms }
+            ViewFact::Facts { watched, unwatched, resume_ms, sort } => {
+                ViewEdit::Facts { watched, unwatched, resume_ms, sort }
             }
             // never past the end of what was playing; at the watched threshold PMS clears
             // `viewOffset` (docs/pms-api.md, "Client behavior expected by PMS"), so there is no point
             ViewFact::Offset { ms, dur_ms } => ViewEdit::Offset {
-                ms: if dur_ms > 0 && ms.saturating_mul(100) >= dur_ms.saturating_mul(WATCHED_PERCENT) {
-                    0
-                } else {
-                    ms.max(0)
-                },
+                ms: if past_watched_threshold(ms, dur_ms) { 0 } else { ms.max(0) },
             },
         }
     }
@@ -316,8 +331,9 @@ impl ViewEdit {
     /// edit rebuilds nothing.
     pub fn changes(self, m: &crate::pms::PmsMovie) -> bool {
         match self {
-            ViewEdit::Facts { watched, unwatched, resume_ms } => {
+            ViewEdit::Facts { watched, unwatched, resume_ms, sort } => {
                 m.watched != watched || m.unwatched != unwatched || m.resume_ms != resume_ms
+                    || sort.is_some_and(|value| WatchSortFacts::of(m) != Some(value))
             }
             ViewEdit::Offset { ms } => m.resume_ms != ms,
             ViewEdit::Watched(_) | ViewEdit::LeftDeck => true,
@@ -327,11 +343,21 @@ impl ViewEdit {
     /// the deck is a membership change the deck's owner makes.
     pub fn apply(self, m: &mut crate::pms::PmsMovie) {
         match self {
-            ViewEdit::Watched(on) => crate::pms::set_watched(m, on),
-            ViewEdit::Facts { watched, unwatched, resume_ms } => {
+            ViewEdit::Watched(on) => {
+                crate::pms::set_watched(m, on);
+                if let Some(facts) = &mut m.sort_info {
+                    facts.view_count = None; facts.last_viewed_at = None;
+                }
+            },
+            ViewEdit::Facts { watched, unwatched, resume_ms, sort } => {
                 m.watched = watched;
                 m.unwatched = unwatched;
                 m.resume_ms = resume_ms;
+                if let Some(sort) = sort {
+                    let facts = m.sort_info.get_or_insert_with(Default::default);
+                    facts.view_count = sort.count;
+                    facts.last_viewed_at = sort.viewed_at;
+                }
             }
             ViewEdit::Offset { ms } => m.resume_ms = ms,
             ViewEdit::LeftDeck => {}
@@ -1065,7 +1091,7 @@ pub fn take_reread(&mut self) -> Vec<(ServerId, String)> {
 
 /// The key a hand-built [`Req`] of a fixture carries: no registry stands behind it.
 #[cfg(any(test, feature = "test-support"))]
-const UNKEYED: ClientKey = ClientKey { instance: 0, token: 0 };
+const UNKEYED: ClientKey = ClientKey { instance: 0, token: 0, grant: 0 };
 
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, PartialEq, Eq)]
@@ -1469,7 +1495,7 @@ mod tests {
         let run = |stores: &mut crate::stores::Stores, rk: &str, edit| {
             stores.search_run(crate::stores::search::SearchCmd::ApplyView { at: ViewAt::leaf(sid, rk), edit }, directory.view())
         };
-        let facts = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0 };
+        let facts = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0, sort: None };
         assert!(run(&mut stores, "other", facts), "the server says watched: the row changes");
         assert!(!run(&mut stores, "other", facts), "the same facts again change nothing, so raise nothing");
         let marks = search_marks(&stores);
@@ -1782,7 +1808,7 @@ mod tests {
 
     const PROFILE: u32 = 4;
 
-    fn key(instance: u32, token: u32) -> ClientKey { ClientKey { instance, token } }
+    fn key(instance: u32, token: u32) -> ClientKey { ClientKey { instance, token, grant: 0 } }
 
     fn keys_of(entries: &[(ServerId, ClientKey)]) -> ClientKeys {
         ClientKeys::from_keys(entries.iter().copied())
@@ -2308,8 +2334,8 @@ mod tests {
                 &mut |cmd| { if let MetadataCmd::ApplyView { edit, .. } = cmd { m.push(edit) } false });
             (p, c, s, m)
         };
-        let facts = ViewFact::Facts { watched: true, unwatched: false, resume_ms: 0 };
-        let edit = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0 };
+        let facts = ViewFact::Facts { watched: true, unwatched: false, resume_ms: 0, sort: None };
+        let edit = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0, sort: None };
         assert_eq!(reached(facts), (vec![edit], vec![edit], vec![edit], vec![edit]), "Facts reach all four");
         let offset = ViewFact::Offset { ms: 42, dur_ms: 1_000_000 };
         let edit = ViewEdit::Offset { ms: 42 };
@@ -2526,5 +2552,28 @@ mod tests {
         for (case, scope, sid, rk, kind, show_rk, idx, want) in table {
             assert_eq!(at(scope.clone()).covers_parts(*sid, rk, *kind, show_rk, *idx), *want, "{case}");
         }
+    }
+}
+
+#[cfg(test)]
+mod sort_caption_reconcile_tests {
+    use super::*;
+    #[test]
+    fn optimistic_watch_changes_hide_unknown_counts_until_authoritative_readback() {
+        let mut row = crate::pms::PmsMovie { sort_info: Some(crate::pms::SortInfo {
+            view_count: Some(3), last_viewed_at: Some(1700000000),
+            ..Default::default() }), ..Default::default() };
+        ViewEdit::Watched(true).apply(&mut row);
+        assert!(row.sort_info.as_ref().unwrap().view_count.is_none());
+        assert!(row.sort_info.as_ref().unwrap().last_viewed_at.is_none());
+        let sort = WatchSortFacts { count: Some(4), viewed_at: Some(1700000100) };
+        let facts = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0, sort: Some(sort) };
+        assert!(facts.changes(&row), "equal watch flags must not hide a changed play count");
+        facts.apply(&mut row);
+        assert_eq!(WatchSortFacts::of(&row), Some(sort));
+        assert!(!facts.changes(&row));
+        row.sort_info = None;
+        facts.apply(&mut row);
+        assert_eq!(WatchSortFacts::of(&row), Some(sort), "a legacy cached row can receive the new facts");
     }
 }

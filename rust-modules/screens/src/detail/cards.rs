@@ -51,6 +51,11 @@ pub(super) struct Cards<'a> {
 }
 
 impl<'a> Cards<'a> {
+    /// How many cards the shelf holds (`CardSource::len`, for a caller with no host type at hand).
+    pub(super) fn count(&self) -> usize {
+        self.len
+    }
+
     pub(super) fn new(
         which: Which,
         d: &'a Detail,

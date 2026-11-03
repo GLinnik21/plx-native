@@ -166,6 +166,7 @@ fn input_label<K>(kind: &InputKind<K>) -> &'static str {
         InputKind::Click { .. } => "click",
         InputKind::Drag { .. } => "drag",
         InputKind::Wheel { .. } => "wheel",
+        InputKind::Pan { .. } => "pan",
         InputKind::Text(_) => "text",
         InputKind::PointerHidden => "pointer_hidden",
         InputKind::SystemKeyboard(_) => "keyboard",

@@ -13,19 +13,12 @@
 use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
-use plx_ui::containers::transition::{PageDip, PageImage, PagePaint};
+use plx_ui::containers::transition::{PageDip, PagePaint};
 use plx_ui::screen::At;
 
 /// The pop is a multiple of the card's resting size: the Recommended page's shelves are `HOME`
 /// shelves (`hub_style`), so the style's own focus scale is the card whole in its lift.
 const FULL_LIFT: f32 = plx_ui::cards::RowStyle::HOME.focus_scale;
-
-/// The page image a test leaves behind must not be the next test's (`PAGE_IMAGE_HELD` is a
-/// thread-local the dispatcher sets and the screens read on their next tick).
-struct ImageHeld;
-impl Drop for ImageHeld {
-    fn drop(&mut self) { plx_ui::containers::transition::set_page_image_held(false); }
-}
 
 /// One frame of an entry: the dip's phase, what the image decision made of the page, what the
 /// focused card was drawn at and what the first shelf's heading was drawn at.
@@ -38,40 +31,29 @@ struct Frame {
     scale: Option<f32>,
     /// The alpha the first shelf's heading ("One") was drawn at, the cascade folded in.
     heading: Option<f32>,
+    /// The y the SECOND shelf's heading ("Two") was drawn at: the shelf under the focused one, which
+    /// moves by the focused shelf's caption band whenever that opens or shuts.
+    below: Option<f32>,
 }
 
 /// The product's frame loop plus its page-image decision, recorded.
 struct Entry {
-    image: PageImage,
-    valid: bool,
+    dip: DipImage,
     frames: Vec<Frame>,
 }
 
 impl Entry {
-    fn new() -> Self { Entry { image: PageImage::default(), valid: false, frames: Vec::new() } }
+    fn new() -> Self { Entry { dip: DipImage::default(), frames: Vec::new() } }
 
-    /// One World frame, then the dispatcher's image decision on it (`Dispatcher::draw_with`: plan
-    /// from the transition and the page's quiescence, state `page_image_held` for the NEXT tick),
-    /// then the frame read. `draw` also runs the page's draw through a recording painter.
+    /// One World frame, then the dispatcher's image decision on it (`World::step_dip`), then the
+    /// frame read. `draw` also runs the page's draw through a recording painter.
     fn step(&mut self, w: &mut World, inputs: Vec<InputEvent<u32>>, draw: bool) {
-        w.step(inputs);
-        let quiescent = !plx_machine::idle::page_layout_moving();
-        let transition = &w.d.nav.tabs.stack.transition;
-        let (phase, alpha, flight) = (transition.phase_word(), transition.page_alpha(), transition.in_flight());
-        let Some(entry) = w.d.nav.top_page().map(|e| e.id) else { return };
-        let paint = self.image.plan(entry, flight, alpha, w.frame * 16, self.valid, quiescent);
-        match paint {
-            PagePaint::Capture => { self.image.captured(entry); self.valid = true; }
-            PagePaint::ReplacementCapture => { self.image.replacement_captured(entry); self.valid = true; }
-            PagePaint::Live => { self.image = PageImage::default(); self.valid = false; }
-            PagePaint::Held(_) => {}
-        }
-        let held = !matches!(paint, PagePaint::Live);
-        plx_ui::containers::transition::set_page_image_held(held);
-        let heading = draw.then(|| heading_alpha(w)).flatten();
+        let Some(paint) = w.step_dip(&mut self.dip, inputs) else { return };
+        let phase = w.d.nav.tabs.stack.transition.phase_word();
+        let (heading, below) = if draw { heading_runs(w) } else { (None, None) };
         // The test's draw is not the product's image pass: it must not undo the plan above.
-        plx_ui::containers::transition::set_page_image_held(held);
-        self.frames.push(Frame { phase, paint, scale: drawn_scale(w), heading });
+        plx_ui::containers::transition::set_page_image_held(!matches!(paint, PagePaint::Live));
+        self.frames.push(Frame { phase, paint, scale: drawn_scale(w), heading, below });
     }
 
     fn frames(&mut self, w: &mut World, n: u32, draw: bool) { for _ in 0..n { self.step(w, vec![], draw); } }
@@ -128,12 +110,13 @@ fn drawn_scale(w: &World) -> Option<f32> {
     Some(drawn.w / settled.w * FULL_LIFT)
 }
 
-/// The alpha the page drew the first shelf's heading at (`None` when it drew none): the page
-/// draw through a recording painter, the cascade (the dip's page alpha, the page's own fades)
-/// folded into the ink.
-fn heading_alpha(w: &mut World) -> Option<f32> {
+/// What the page drew the first and second shelves' headings at, from one draw (`None` for a
+/// heading it drew none of): the first one's alpha, the cascade (the dip's page alpha, the page's own
+/// fades) folded into the ink, and the second one's y. The page draw runs through a recording painter.
+fn heading_runs(w: &mut World) -> (Option<f32>, Option<f32>) {
     let drawn = w.drawn();
-    drawn.runs.iter().filter(|run| run.text == "One").min_by(|a, b| a.at.y.total_cmp(&b.at.y)).map(|run| run.ink[3])
+    let first = |text: &str| drawn.runs.iter().filter(|run| run.text == text).min_by(|a, b| a.at.y.total_cmp(&b.at.y));
+    (first("One").map(|run| run.ink[3]), first("Two").map(|run| run.at.y))
 }
 
 /// The Library with its hubs published, OK on the header's Recommended control, and the frames
@@ -197,19 +180,24 @@ fn assert_grows_from_rest(scales: &[f32]) {
 
 /// A warm Recommended page that has been left for a card's Detail and returned from it: the frames
 /// before the BACK are the entry's (header OK, 120 frames, 60 more settled), the Detail's dip and
-/// its settle; the returned entry's `from` is the first frame of the BACK.
-fn warm_return(name: &str) -> (World, Entry, usize) {
+/// its settle; the returned entry's `from` is the first frame of the BACK, and the last value is
+/// where the second shelf's heading stood while the page was settled with its first card lifted
+/// (`draw`: the frames from the BACK on are also run through the page's draw, so their `below` is
+/// read).
+fn warm_return(name: &str, draw: bool) -> (World, Entry, usize, f32) {
     let (mut w, mut entry) = warm_entry(name, false);
     entry.frames(&mut w, 60, false);
     assert!(w.on(&AppArg::LibraryRecommended { section: 0 }), "premise: the Recommended page is on top");
+    let (_, stood) = heading_runs(&mut w);
+    let stood = stood.expect("premise: the page draws its second shelf's heading");
     entry.key(&mut w, Key::Ok);
     entry.frames(&mut w, 60, false);
     assert!(!w.on(&AppArg::LibraryRecommended { section: 0 }), "premise: OK on the first card opened its Detail");
     let from = entry.frames.len();
     entry.key(&mut w, Key::Back);
-    entry.frames(&mut w, 120, false);
+    entry.frames(&mut w, 120, draw);
     assert!(w.on(&AppArg::LibraryRecommended { section: 0 }), "premise: BACK returned to the Recommended page");
-    (w, entry, from)
+    (w, entry, from, stood)
 }
 
 /// **BACK onto a Recommended page that kept its body releases the dip's image when the dissolve
@@ -218,11 +206,12 @@ fn warm_return(name: &str) -> (World, Entry, usize) {
 /// the BACK dip's image, and the layout animation it set moving (the heading, the caption band) held
 /// the image ~25 frames past the dissolve until the replacement capture snapped from mid-ease to
 /// rest. Nothing steps under an image that hides it (`transition::page_image_held`): a dormant
-/// shelf under one is at rest on its first tick.
+/// shelf under one is at rest on its first tick, and the shelf that returns with the seat is already
+/// where it goes.
 #[test]
 fn a_recommended_page_returning_from_detail_lets_the_dip_image_go_when_its_dissolve_ends() {
     let _held = ImageHeld;
-    let (_w, entry, from) = warm_return("rec-return-release");
+    let (_w, entry, from, _) = warm_return("rec-return-release", false);
     let (in_end, release) = (entry.in_end_after(from), entry.release_after(from));
     assert!(
         release - in_end <= 2,
@@ -231,23 +220,28 @@ fn a_recommended_page_returning_from_detail_lets_the_dip_image_go_when_its_disso
     );
 }
 
-/// **The returned page's focused card grows from rest after the image, where it can be seen.** The
-/// card was drawn mid-ease (not at rest) under the image, so the replacement capture snapped it to
-/// rest and the awake tick grew it back; it must be at rest under the image and rise to the full
-/// lift on the standard spring once the page is live.
+/// **The returned page's seat comes back lifted, and the shelf under it does not bounce.** BACK from
+/// a card's Detail restores the focus to the card it left, and the card stood lifted with its
+/// caption band open when the Detail covered the page. The page's shelves are dormant under the BACK
+/// dip's image, which used to put the restored seat to rest under it and grow it back once the image
+/// was gone: the card regrew, and the caption band with it, moving the next shelf down the page by
+/// the band's height. A shelf that RETURNS keeps its seat as it stood (the Library's grid does the
+/// same). Read off the page's own placement of the card and the y it drew the second shelf's heading
+/// at, every frame from the dip's floor on, the image's release included.
 #[test]
-fn a_recommended_page_returning_from_detail_grows_its_focused_card_from_rest_after_the_image() {
+fn a_recommended_page_returning_from_detail_keeps_its_focused_card_lifted_and_the_shelf_below_still() {
     let _held = ImageHeld;
-    let (_w, entry, from) = warm_return("rec-return-grow");
+    let (_w, entry, from, stood) = warm_return("rec-return-lifted", true);
     let (floor, release) = (entry.floor_after(from), entry.release_after(from));
-    // Nothing eases under the image: from the floor's second frame on (the page wakes on the first
-    // tick after its Uncover) the card the page draws stands exactly at rest until the image goes.
-    let held: Vec<Option<f32>> = entry.frames[floor + 2..release].iter().map(|f| f.scale).collect();
-    assert!(held.len() >= 6, "premise: the image stands past the floor for a few frames ({} read)", held.len());
-    assert!(held.iter().all(|scale| scale.is_some_and(|scale| (scale - 1.0).abs() < 1e-5)),
-        "the card is still moving under the held image (floor + 2 .. release): {held:.4?}");
-    let scales: Vec<f32> = entry.frames[release..].iter().map_while(|f| f.scale).collect();
-    assert_grows_from_rest(&scales);
+    let frames = &entry.frames[floor..];
+    assert!(release > floor + 6, "premise: the image stands past the floor for a few frames ({} read)", release - floor);
+    let scales: Vec<Option<f32>> = frames.iter().map(|f| f.scale).collect();
+    assert!(scales.iter().all(|scale| scale.is_some_and(|scale| scale > FULL_LIFT - 0.002)),
+        "the focused card is not whole in its lift on every frame of the return (floor ..): {scales:.4?}");
+    let below: Vec<f32> = frames.iter().filter_map(|f| f.below).collect();
+    assert!(below.len() > 40, "premise: the page's second heading was drawn after the floor ({} frames)", below.len());
+    assert!(below.iter().all(|y| (y - stood).abs() < 0.5),
+        "the shelf under the focused one moved from y {stood:.1} on the return: {below:.1?}");
 }
 
 /// **Cold: the shelves dissolve in instead of cutting in.** The section's hubs are still on their

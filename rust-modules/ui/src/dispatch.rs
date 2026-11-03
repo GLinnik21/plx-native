@@ -1585,7 +1585,8 @@ where
         let mut set = RenderSet {
             // the shared poster/logo residency (ui/tex.rs) is the one pool rule (c) sums beside
             // the screens' own renders and the FrameCache
-            extra_bytes: super::tex::resident_bytes() + glass.as_ref().map_or(0, |g|g.sources.borrow().resident_bytes()),
+            extra_bytes: super::tex::resident_bytes() + plx_gfx::gfx::region_resident_bytes()
+                + glass.as_ref().map_or(0, |g|g.sources.borrow().resident_bytes()),
             ..Default::default()
         };
         // A PageDip keeps the committed top as the visible/input page throughout its OUT half.
@@ -1729,7 +1730,7 @@ where
                         let _chrome_layer = backdrop::layer(Z::CHROME, true);
                         // **A band that is fully faded is not drawn: by rule, not by where the lift
                         // put it.** The tuck lifts the bar off canvas, which clips its glass away,
-                        // but its draw still queued `sample_ground` framebuffer copies and a glass
+                        // but its draw still queued a `sample_ground` reading and a glass
                         // declaration at alpha 0; with the lift gone it would source every scrolled
                         // frame, invisibly. The same rule withdraws the strip's pointer stops below
                         // (`chrome_presented`), and a skipped frame publishes no material, so the
@@ -1882,7 +1883,8 @@ where
             self.input.hit.swap();
         }
         if plx_gfx::gfx::blur_source_pass() { report.render_set = set; return; }
-        set.extra_bytes = super::tex::resident_bytes() + glass.as_ref().map_or(0, |g|g.sources.borrow().resident_bytes());
+        set.extra_bytes = super::tex::resident_bytes() + plx_gfx::gfx::region_resident_bytes()
+            + glass.as_ref().map_or(0, |g|g.sources.borrow().resident_bytes());
         if let Err(breach) = set.check() {
             // The policy itself is `frame::on_breach` — assert on the host, log once on a
             // television — so that both halves are reachable from a test.

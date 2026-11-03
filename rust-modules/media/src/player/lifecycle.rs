@@ -662,7 +662,7 @@ impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
                 fx.push(ForegroundEffect::Launched { id });
             }
             // The claimed `Load`'s Original rollback is a flight: park until its landing.
-            ForegroundLoadStart::Pending => {
+            ForegroundLoadStart::Pending | ForegroundLoadStart::Deferred => {
                 self.state = ForegroundState::RecoveryPending {
                     id,
                     resume_ns,
@@ -823,6 +823,9 @@ impl<Attempt> ForegroundEffect<Attempt> {
 pub enum ForegroundLoadStart<Attempt> {
     /// A rollback flight owns the way forward ([`super::foreground::ForegroundActuator::land_recovery`]).
     Pending,
+    /// The start is queued behind the previous native object's `Unload`
+    /// ([`super::release::NativeRelease`]): parked like `Pending`, landed by the same poll.
+    Deferred,
     AlreadyRunning,
     Launched(Attempt),
     Failed,
@@ -1277,6 +1280,38 @@ mod foreground_resume_tests {
                     assert_eq!(lifecycle.state, ForegroundState::Idle);
                 }
                 FlightLanding::Waiting => unreachable!(),
+            }
+        }
+    }
+
+    /// A start deferred behind the previous object's `Unload` parks the machine like a rollback
+    /// flight and lands through the same poll; a cancelled one lets go.
+    #[test]
+    fn a_deferred_start_parks_and_lands_through_the_flight_poll() {
+        for (landing, expected_attempt) in [
+            (FlightLanding::Landed(ForegroundLoadStart::Launched(5)), Some(5)),
+            (FlightLanding::Landed(ForegroundLoadStart::Failed), None),
+            (FlightLanding::Stale, None),
+        ] {
+            let mut ps = crate::route::PlaybackSession::IDLE;
+            let mut lifecycle = ForegroundLifecycle::IDLE;
+            suspend(&mut lifecycle, 63_000_000_000, ForegroundClock::Playing);
+            let mut actuator = FakeActuator {
+                prepare: vec![crate::player::ResumeOutcome::Prepared],
+                loads: vec![ForegroundLoadStart::Deferred],
+                land_recoveries: vec![FlightLanding::Waiting, landing],
+                ..FakeActuator::default()
+            };
+            let _ = drive_foreground(&mut lifecycle, &mut ps, ForegroundInput::DidForeground, &mut actuator);
+            assert!(matches!(lifecycle.state, ForegroundState::RecoveryPending { id: 1, .. }), "{:?}", lifecycle.state);
+            assert!(lifecycle.awaiting_load(), "the deferred start holds playback");
+            let _ = poll_foreground_flight(&mut lifecycle, &mut ps, &mut actuator);
+            assert!(lifecycle.flight_pending(), "Waiting changes nothing");
+            let _ = poll_foreground_flight(&mut lifecycle, &mut ps, &mut actuator);
+            assert!(!lifecycle.flight_pending());
+            match expected_attempt {
+                Some(a) => assert!(matches!(lifecycle.state, ForegroundState::LoadPending { attempt, .. } if attempt == a)),
+                None => assert!(!matches!(lifecycle.state, ForegroundState::LoadPending { .. }), "{:?}", lifecycle.state),
             }
         }
     }

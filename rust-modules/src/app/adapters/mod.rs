@@ -3,6 +3,7 @@
 //! and `sys` arrive with the stores that emit to them (phase 4).
 
 pub(crate) mod consent;
+pub(crate) mod huds;
 pub(crate) mod poster;
 pub(crate) mod session;
 pub(crate) mod stores;

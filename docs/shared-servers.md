@@ -342,8 +342,10 @@ machine name (`nas-home`) only in the Sources list and the failure read-out.
   once/sec heartbeat's `route=` field no longer reads `onboard` for the Settings-opened case — only
   for the first-run one. A picker that could
   turn into an editor would let a library be un-favourited from inside the list of favourites and
-  then vanish out of it under the cursor. **Browse** is a picker — one tick, OK closes, scoped to
-  the FAVOURITES of the type being browsed. **On Home** is a toggle — the word `On`/`Off` at the
+  then vanish out of it under the cursor. **Browse** is a picker — one tick, OK closes. The "+N"
+  panel scopes it to the favourites the header fold hid; the Library's Sort & Filter menu draws the
+  same level over every library of the type that is a favourite or sits on a server the list would
+  open. **On Home** is a toggle — the word `On`/`Off` at the
   trailing edge, OK flips, the list stays open.
   Grouped by server: header = machine, accessory = person. The last favourite library uses `value_dim`;
   an unreachable server's whole group dims at .52, header included. "Check for shared libraries" sits last
@@ -390,7 +392,9 @@ not move with the words: `BrowseSection::pinned`, `HomePins`, `plex/pins.rs` and
 `home_pins` key are all unchanged, deliberately — renaming the persisted key breaks ROLLBACK rather
 than upgrade. What still comes from the GRANT and not from the setting: access itself, the grid,
 sort, the A–Z rail, and Search, which stays grant-wide and only RANKS favourite-library hits first.
-The grant decides what you can reach; the favourite decides what the app offers.
+The grant decides what you can reach; the favourite decides what the app offers, with one
+exception: the Library's Sort & Filter menu lists every reachable library of the viewed type, favourite
+or not, and the header names a non-favourite while it is on view.
 
 **Two divergences between the canvas and main, both because main moved while it was drawn**, neither
 requiring the design to change: its toolbar frames include an `Unwatched` chip that `0d9a4f6f`
@@ -741,7 +745,7 @@ writes for retry when the worker queue cannot admit them. `browse.rs` is the plu
 around them, and a selection PERSISTS: every flip was in-memory before 2026-08-21, so a selection
 made in the Sources panel was gone by the next boot and the default came back, which reads as the
 switch not working. Since 2026-09-04 the write
-is `browse::apply_pins`, once, when the Home editor's `Done`/`Start watching` commits its draft — a
+is `browse::apply_pins_from`, once, when the Home editor's `Done`/`Start watching` commits its draft — a
 flip edits the in-memory draft and nothing is written until then (`toggle_pin`, the old per-press
 write, is a test-only fixture now).
 
@@ -809,7 +813,7 @@ Two halves close it, both in `browse.rs`, and both keyed on the machine id becau
 name a record has:
 
 - **`RECORDED`** — the current profile's persisted answer, kept in memory from the read
-  `resolve_pins` already makes, and joined into `library_pins()` for every roster source the section
+  `resolve_pins_from` already makes, and joined into `library_pins()` for every roster source the section
   table does NOT hold. The record is on disk keyed by machine; that is exactly the join that was
   missing. It is a snapshot rather than a per-call read because `library_pins` is reached from
   Home's own pump, and `session.rs` forbids a per-frame file read.

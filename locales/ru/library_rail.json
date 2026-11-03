@@ -1,0 +1,6 @@
+{
+  "library_rail.decade": "{decade}-е",
+  "library_rail.hours": "{hours} ч",
+  "library_rail.hours_or_more": "{hours} ч+",
+  "library_rail.today": "Сегодня"
+}

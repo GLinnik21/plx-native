@@ -248,7 +248,7 @@ fn dv_declared_p8_usable_base_is_enhanced_remux_that_keeps_dv() {
             item.dovi = p8();
             item
         },
-        |env, _| env.dv_capability = Some(plx_platform::devcaps::dv::DvCapability::Supported));
+        |env, _| env.dv_capability = plx_platform::devcaps::dv::DvCapability::Supported);
     let direct = r.plan.auto_original.as_ref().map(|c| c.dv_decision);
     assert!(
         direct.is_some_and(|d| d.presentation.declared().is_some()),
@@ -889,10 +889,10 @@ fn aac51_source_outcome_unverified() {
     ).unwrap();
     let copyable = CarriedAudio::from_stream(&track(1, "ac3", 2, true), 0);
     let not_copyable = CarriedAudio::from_stream(&track(1, "truehd", 8, true), 0);
-    assert_eq!(classify_outcome(Some(&mc), Some(&copyable), PREF), EnhancementOutcome::Applied);
-    assert_eq!(classify_outcome(Some(&mc), Some(&not_copyable), PREF), EnhancementOutcome::Unverified);
-    assert_eq!(classify_outcome(None, Some(&copyable), PREF), EnhancementOutcome::Unverified);
-    assert_eq!(classify_outcome(Some(&mc), Some(&copyable), plx_plex::plex::AudioEnhancements::NONE), EnhancementOutcome::Off);
+    assert_eq!(classify_outcome(&plx_platform::devcaps::caps(), Some(&mc), Some(&copyable), PREF), EnhancementOutcome::Applied);
+    assert_eq!(classify_outcome(&plx_platform::devcaps::caps(), Some(&mc), Some(&not_copyable), PREF), EnhancementOutcome::Unverified);
+    assert_eq!(classify_outcome(&plx_platform::devcaps::caps(), None, Some(&copyable), PREF), EnhancementOutcome::Unverified);
+    assert_eq!(classify_outcome(&plx_platform::devcaps::caps(), Some(&mc), Some(&copyable), plx_plex::plex::AudioEnhancements::NONE), EnhancementOutcome::Off);
 }
 
 // ---- Q-TOP (b) beside the enhancement: a remembered subtitle on the forced burn ------------------

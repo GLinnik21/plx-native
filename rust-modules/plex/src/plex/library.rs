@@ -156,19 +156,46 @@ impl Client {
     /// lists (`genre`/`year`/`decade`/`collection`/…, rows carry the tag id in `key` + a
     /// ready-made `fastKey` listing URL) and the `firstCharacter` per-letter index.
     /// → `.directory[]`.
-    /// `metadata_type` scopes genre values and letter counts to the same flat listing as
-    /// `/all?type=`. Without it a TV library's counts describe shows even in episode view.
+    /// `filters` are the wire terms of the flat listing the values describe, in the order its
+    /// `/all` request sends them (`type=`, `unwatched`/`unwatchedLeaves`, `genre`, see
+    /// [`section_items_query`](Self::section_items_query)): `type=` scopes genre values and letter
+    /// counts to the same flat listing as `/all?type=` (without it a TV library's counts describe
+    /// shows even in episode view), and the filters scope the counts to what the grid shows, so a
+    /// letter's running sum is the offset of that letter's first title in the filtered listing.
     pub fn section_directory(
         &self,
         section_key: i64,
         directory: &str,
-        metadata_type: Option<i64>,
+        filters: &[(String, String)],
     ) -> Option<MediaContainer> {
-        let mut query = QueryBuilder::new(format!("/library/sections/{section_key}/{directory}"));
-        if let Some(metadata_type) = metadata_type {
-            query = query.int("type", metadata_type);
-        }
-        self.get_json(&query.build())
+        self.get_json(&section_directory_path(section_key, directory, filters))
+    }
+
+    /// How many items of a section satisfy `terms`: one count-only read, `GET
+    /// /library/sections/{key}/all?<terms>` with `X-Plex-Container-Start: 0` and `X-Plex-Container-Size:
+    /// 0`, which answers no rows and the number as `totalSize`. `terms` are the wire terms in the
+    /// order `/all` sends them: the listing's own filters ([`section_items_query`](Self::section_items_query),
+    /// `type=`, `unwatched`/`unwatchedLeaves`, `genre`) and, for a band edge, the range term after them
+    /// (`rating>>` and `9.49`). Every key is percent-encoded (`rating%3E%3E=9.49`; a filter's key comes
+    /// out unchanged), so the grid's terms are byte for byte the page request's. `None` when the read
+    /// did not answer; [`SectionTotal::Ignored`] when it answered ROWS (the window was ignored, and
+    /// will be again). Docs: `docs/pms-api.md`, "Count probes at band edges".
+    pub fn section_total(&self, section_key: i64, terms: &[(String, String)]) -> Option<SectionTotal> {
+        total_of_probe(&self.get_json(&section_total_path(section_key, terms))?)
+    }
+
+    /// The OLDEST value a date field holds among the items of a listing: one read of `GET
+    /// /library/sections/{key}/all?<terms>&sort=<field>:asc:nullsLast` with `Start=0, Size=1`, the
+    /// first row's `field` as a number ([`Oldest`]). `nullsLast` is what makes the first row the oldest
+    /// VALUE: a plain `:asc` sorts the items with no value first, so the first row would say nothing.
+    /// `terms` are the wire terms of the listing, as for [`section_total`](Self::section_total), and
+    /// `field` is one of `addedAt`, `lastViewedAt` and `originallyAvailableAt`: the dates a row of the
+    /// listing carries itself. `None` when the read did not answer; [`Oldest::Nothing`] when it did and
+    /// no item of the listing has a value, the answer to a listing of nothing included. The A-Z rail
+    /// reads it to know how far back its year bands go. Docs: `docs/pms-api.md`, "Count probes at band
+    /// edges".
+    pub fn section_oldest(&self, section_key: i64, terms: &[(String, String)], field: &str) -> Option<Oldest> {
+        Some(oldest_of_page(&self.get_json(&section_oldest_path(section_key, terms, field))?, field))
     }
 
     /// A SHOW's language settings (its Advanced dialog in Plex Web: `audioLanguage`,
@@ -421,6 +448,88 @@ fn guid_lookup_paths(kind: GuidKind, guids: &[String]) -> Vec<(String, Vec<Strin
         .collect()
 }
 
+/// The path of a section's secondary directory, `filters` appended the way
+/// [`Client::section_items_query`] appends its own (one `QueryBuilder::str` per pair, in order), so
+/// the grid page and the directory it is read against are built by the same call shape.
+fn section_directory_path(section_key: i64, directory: &str, filters: &[(String, String)]) -> String {
+    let mut query = QueryBuilder::new(format!("/library/sections/{section_key}/{directory}"));
+    for (k, v) in filters {
+        query = query.str(k, v);
+    }
+    query.build()
+}
+
+/// The path of [`Client::section_total`]: `/all` with `terms` (every key and value encoded) and the
+/// count-only window, which `paged_path` spells (`Start=0`, `Size=0`: `Size` alone is ignored).
+fn section_total_path(section_key: i64, terms: &[(String, String)]) -> String {
+    let mut query = QueryBuilder::new(format!("/library/sections/{section_key}/all"));
+    for (k, v) in terms {
+        query = query.range(k, v);
+    }
+    paged_path(&query.build(), PageReq::window(0, 0))
+}
+
+/// The path of [`Client::section_oldest`]: the listing's `terms` as [`section_total_path`] writes them,
+/// the sort that puts the oldest value first and the items with none last, and a window of one row.
+fn section_oldest_path(section_key: i64, terms: &[(String, String)], field: &str) -> String {
+    let mut query = QueryBuilder::new(format!("/library/sections/{section_key}/all"));
+    for (k, v) in terms {
+        query = query.range(k, v);
+    }
+    paged_path(&query.str("sort", &format!("{field}:asc:nullsLast")).build(), PageReq::window(0, 1))
+}
+
+/// The oldest value a date field holds, as [`Client::section_oldest`] found it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Oldest {
+    /// No item of the listing has a value in the field (or the listing is empty).
+    Nothing,
+    /// A moment, in Unix seconds: `addedAt` and `lastViewedAt` are instants.
+    Instant(i64),
+    /// The calendar year of a date: `originallyAvailableAt` is a date (`YYYY-MM-DD`), with no zone.
+    Year(i32),
+}
+
+/// The oldest value in the first row of a `:asc:nullsLast` page: `Nothing` for a page with no row, or a
+/// first row that has no value (`nullsLast` puts those last, so every row has none). A zero stamp is the
+/// lenient parse's "not sent" ([`Metadata::added_at`]), and a text that is no date is no value.
+fn oldest_of_page(container: &MediaContainer, field: &str) -> Oldest {
+    let Some(row) = container.metadata.first() else { return Oldest::Nothing };
+    let instant = |stamp: i64| if stamp > 0 { Oldest::Instant(stamp) } else { Oldest::Nothing };
+    match field {
+        "addedAt" => instant(row.added_at),
+        "lastViewedAt" => instant(row.last_viewed_at),
+        "originallyAvailableAt" => {
+            let digits = row.originally_available_at.get(..4).filter(|year| year.bytes().all(|b| b.is_ascii_digit()));
+            digits.and_then(|year| year.parse().ok()).map_or(Oldest::Nothing, Oldest::Year)
+        }
+        other => {
+            debug_assert!(false, "no oldest value is read from {other}");
+            Oldest::Nothing
+        }
+    }
+}
+
+/// What a count-only read ([`Client::section_total`]) found, when the server answered at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SectionTotal {
+    /// The number of items that match: `totalSize`.
+    Count(i64),
+    /// The reply carried rows and no count: the server ignored the `Size=0` window. It answers the
+    /// same to every such read, so a caller does not ask again for another answer.
+    Ignored,
+}
+
+/// The count a `Size=0` probe answered: `totalSize`, or [`SectionTotal::Ignored`] for a reply with
+/// rows (read with no `totalSize` as 0 by the lenient parse, which is no count). A negative
+/// `totalSize` is no answer.
+fn total_of_probe(container: &MediaContainer) -> Option<SectionTotal> {
+    if container.total_size < 0 {
+        return None;
+    }
+    Some(if container.metadata.is_empty() { SectionTotal::Count(container.total_size) } else { SectionTotal::Ignored })
+}
+
 /// PMS's numeric `type` for a `plex://<kind>/<id>` guid — the metadata provider's own kind, which is
 /// the one thing about an item a guid states outright.
 ///
@@ -445,6 +554,100 @@ mod library_guid_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn terms(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+    }
+
+    /// A directory read without terms is byte-identical to what it always was, and the terms
+    /// follow in the order given, as `/all` sends them.
+    #[test]
+    fn a_directory_path_carries_the_listings_terms_in_order() {
+        assert_eq!(section_directory_path(1, "firstCharacter", &[]), "/library/sections/1/firstCharacter");
+        assert_eq!(section_directory_path(2, "genre", &terms(&[("type", "2")])), "/library/sections/2/genre?type=2");
+        assert_eq!(section_directory_path(1, "firstCharacter", &terms(&[("unwatched", "1"), ("genre", "7")])),
+            "/library/sections/1/firstCharacter?unwatched=1&genre=7");
+        assert_eq!(
+            section_directory_path(2, "firstCharacter", &terms(&[("type", "3"), ("unwatchedLeaves", "1")])),
+            "/library/sections/2/firstCharacter?type=3&unwatchedLeaves=1");
+    }
+
+    /// A count probe is `/all` with the listing's terms, then the range term, then the count-only
+    /// window; the operator in the key is encoded and the listing's own terms are not changed.
+    #[test]
+    fn a_total_probe_is_the_listings_terms_then_the_encoded_range_then_the_count_window() {
+        let window = "X-Plex-Container-Start=0&X-Plex-Container-Size=0";
+        assert_eq!(section_total_path(1, &[]), format!("/library/sections/1/all?{window}"));
+        let grid = terms(&[("type", "2"), ("unwatchedLeaves", "1"), ("genre", "7")]);
+        let mut probe = grid.clone();
+        probe.push(("rating>>".into(), "9.49".into()));
+        assert_eq!(section_total_path(4, &probe),
+            format!("/library/sections/4/all?type=2&unwatchedLeaves=1&genre=7&rating%3E%3E=9.49&{window}"));
+        // the filters come out as the page request sends them, byte for byte
+        let page = section_directory_path(4, "all", &grid);
+        assert!(section_total_path(4, &grid).starts_with(&page), "{page}");
+        // a date edge's inclusive operator, a scoped field and a negative value
+        assert_eq!(section_total_path(2, &terms(&[("addedAt>", "1793422800")])),
+            format!("/library/sections/2/all?addedAt%3E=1793422800&{window}"));
+        assert_eq!(section_total_path(2, &terms(&[("episode.addedAt>", "-315619200")])),
+            format!("/library/sections/2/all?episode.addedAt%3E=-315619200&{window}"));
+    }
+
+    fn container(json: &str) -> MediaContainer {
+        serde_json::from_str(json).expect("a container")
+    }
+
+    /// The extent read is the listing's own terms, then the sort that puts the oldest VALUE first
+    /// (`nullsLast`: a plain ascending sort leads with the items that have none), then a window of ONE.
+    #[test]
+    fn an_oldest_read_sorts_ascending_nulls_last_and_asks_for_one_row() {
+        let grid = terms(&[("type", "2"), ("unwatchedLeaves", "1"), ("genre", "7")]);
+        assert_eq!(section_oldest_path(4, &grid, "addedAt"),
+            "/library/sections/4/all?type=2&unwatchedLeaves=1&genre=7&sort=addedAt%3Aasc%3AnullsLast\
+             &X-Plex-Container-Start=0&X-Plex-Container-Size=1");
+        let counted = section_total_path(4, &grid);
+        let page = counted.split("&X-Plex").next().unwrap();
+        assert!(section_oldest_path(4, &grid, "lastViewedAt").starts_with(page), "the listing's terms, byte for byte");
+        assert!(section_oldest_path(1, &[], "originallyAvailableAt").contains("sort=originallyAvailableAt%3Aasc%3AnullsLast"));
+    }
+
+    /// An instant stays one, a date is read as its year, and a first row with no value, no row or no
+    /// date is "nothing": never a year 0 or an instant at the epoch.
+    #[test]
+    fn the_oldest_value_is_the_first_rows_field_or_nothing() {
+        let page = |row: &str| container(&format!(r#"{{"size":1,"totalSize":9,"Metadata":[{row}]}}"#));
+        assert_eq!(oldest_of_page(&page(r#"{"ratingKey":"1","addedAt":1700000000}"#), "addedAt"), Oldest::Instant(1_700_000_000));
+        assert_eq!(oldest_of_page(&page(r#"{"ratingKey":"1","lastViewedAt":"1650000000"}"#), "lastViewedAt"), Oldest::Instant(1_650_000_000));
+        assert_eq!(oldest_of_page(&page(r#"{"ratingKey":"1","originallyAvailableAt":"1931-04-02"}"#), "originallyAvailableAt"), Oldest::Year(1931));
+        assert_eq!(oldest_of_page(&page(r#"{"ratingKey":"1","originallyAvailableAt":"0999-12-31"}"#), "originallyAvailableAt"), Oldest::Year(999),
+            "the year is read as it stands: the caller judges it");
+        // the field asked for is the one read: a row's other dates are not it
+        assert_eq!(oldest_of_page(&page(r#"{"ratingKey":"1","addedAt":1700000000}"#), "lastViewedAt"), Oldest::Nothing);
+        for field in ["addedAt", "lastViewedAt", "originallyAvailableAt"] {
+            assert_eq!(oldest_of_page(&page(r#"{"ratingKey":"1"}"#), field), Oldest::Nothing, "{field}: no value");
+            assert_eq!(oldest_of_page(&container(r#"{"size":0,"totalSize":0}"#), field), Oldest::Nothing, "{field}: no row");
+        }
+        for text in ["", "n/a", "19", "-001-01-01", "20x6-01-01"] {
+            let row = format!(r#"{{"ratingKey":"1","originallyAvailableAt":"{text}"}}"#);
+            assert_eq!(oldest_of_page(&page(&row), "originallyAvailableAt"), Oldest::Nothing, "{text:?}");
+        }
+        assert_eq!(oldest_of_page(&page(r#"{"ratingKey":"1","addedAt":0}"#), "addedAt"), Oldest::Nothing, "a zero stamp");
+    }
+
+    /// The count is `totalSize`, however the server spells the number; an answer that carries rows
+    /// is a read whose window was ignored, and is no count.
+    #[test]
+    fn a_total_probe_reads_total_size_and_refuses_an_answer_with_rows() {
+        let count = |n| Some(SectionTotal::Count(n));
+        assert_eq!(total_of_probe(&container(r#"{"size":0,"totalSize":38,"offset":0}"#)), count(38));
+        assert_eq!(total_of_probe(&container(r#"{"size":0,"totalSize":"38"}"#)), count(38));
+        assert_eq!(total_of_probe(&container(r#"{"size":0,"totalSize":0}"#)), count(0), "a real zero");
+        assert_eq!(total_of_probe(&container(r#"{"size":2,"Metadata":[{"ratingKey":"1"},{"ratingKey":"2"}]}"#)),
+            Some(SectionTotal::Ignored), "rows and no totalSize: the window was ignored");
+        assert_eq!(total_of_probe(&container(r#"{"size":1,"totalSize":9,"Metadata":[{"ratingKey":"1"}]}"#)),
+            Some(SectionTotal::Ignored), "rows are never a count-only answer");
+        assert_eq!(total_of_probe(&container(r#"{"totalSize":-1}"#)), None);
+    }
 
     #[cfg(feature = "devtriggers")]
     #[test]

@@ -70,8 +70,10 @@ outside one add/check/remove/check pair on that profile.
 
 The Watchlist is written and read with **the active profile's own plex.tv token**, never the owner's
 `account_token` and never a per-server PMS access token (a PMS token is refused on plex.tv, 401). It
-comes from `session::plex_tv_credential(&UserRef)`, captured on the MAIN thread at spawn into a
-`WatchlistAuth { client_id, credential, user, generation }` that the worker owns. New sessions carry
+comes from `session::plex_tv_credential(&UserRef)`, read on the MAIN thread by the Bridge (`Bridge::watchlist_input`,
+from one snapshot of the published profile) and handed to the store's `Open`, which builds the
+`WatchlistAuth { client_id, credential, user, generation }` that the worker owns. The store reads no registry:
+the frame pass is handed the seated profile (`Bridge::seated_profile`) to notice a switch. New sessions carry
 the profile's token explicitly; the one fallback is a proven legacy owner session. A managed or
 unknown legacy profile therefore has **no credential**: the page shows the account read-out
 (`Status::NoAccount`), `CatalogStore` reports `Unreachable`, and nothing is fetched.
@@ -195,8 +197,14 @@ row is omitted when there is no face to offer, and a press flips then reverts. R
 `/tmp/plxnative-nowan` or the failing-closure tests.
 
 **The count (Q7, decided: option D; reshaped onto the Library's header row).** The page header is the
-Library's one row (`plx_ui::page_header::PageHeader`; `watchlist/header.rs`): the title "Watchlist" on
-the selected plate at the left, and at the right the control "Sort & Filter · <value> ▾". The list's
+Library's one row (`plx_ui::page_header::PageHeader`; `watchlist/header.rs`): the title "Watchlist" as
+plain text at the left, and at the right the Library's own sort control (`HeaderItem::sort_control`):
+the sort icon, the chosen sort ("Date added") and a quiet down chevron, with "Sort & Filter" as its
+name (the item carries it; it is never drawn). The criterion is the SORT alone, a Type or Show filter
+never changes it (the read-out below says "N of M"), and it has no reserved slot: the control ends on the
+row's right text edge, x 1771, and a changed sort swaps on the page's `HeaderSwap` (the old criterion
+fades out at its own place and the new one in at its own, in the page's pass and in the opener lift
+alike, begun from the row's rebuild with `SharedRow::get_replacing`) as the Library's does. The list's
 count is a filter read-out and nothing else: "{shown} of {total}" (the Library's sentence,
 `library.header.filtered_of`, numbers grouped as it groups them) stands ahead of the control while a
 Type or Show filter narrows the list (Sort alone does not), including "0 of N" beside the
@@ -209,7 +217,7 @@ tiles move on one frame. It stays under the Sort & Filter menu's scrim; only the
 The row's pills are the Library's, one component. With one focus stop the focus pill has nowhere to
 travel from: it lands on the control and fades in on the top bar's alpha spring, then pops on the
 page's `CtlPop`; the title is plain text, no plate (`HeaderItem::title`, design review S10; `plx_ui::page_header`; the page holds
-the row's `TabStrip` and `CtlPop`, which `WatchlistScreen::SHAPE` carries and its tick steps), and the Sort & Filter
+the row's `TabStrip` and `CtlPop`, which `WatchlistScreen::SHAPE` carries and its tick steps; the `HeaderSwap` is decoration beside them and is not in `SHAPE`), and the Sort & Filter
 panel is as wide as its longest label or as the control's focused pill, whichever is wider
 (`TableView::menu_panel_width_from`, the rule the Library's Sort & Filter hangs by too).
 
@@ -266,7 +274,7 @@ card, the Sort & Filter pill) is not in the lens.
 `CatalogScreen` (`ContentArg::Catalog { hex }`) is the page for a Discover-only title. It is not a
 Detail mode: it never reads `metadata::current()`, so it has no Play, Restart, Also available, Mark
 watched, extras, seasons, cast or Related. `CatalogStore` owns the one `GET discover
-/library/metadata/<hex>`, captures the same `WatchlistAuth`, and reads membership from the
+/library/metadata/<hex>`, takes the same `WatchlistAuth` from the Bridge's input, and reads membership from the
 WatchlistStore, keeping no copy. It draws the art ground (proxied through a reachable server's photo
 transcoder, since `metadata-static.plex.tv` art needs a PMS; else the neutral ground), title, meta,
 a line-clamped summary, genres, a status line (clock for coming soon, circle-slash for not on your servers,

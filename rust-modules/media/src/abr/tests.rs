@@ -1144,6 +1144,29 @@ fn a_long_pause_turns_the_estimate_into_a_weak_prior() {
     assert_eq!(mode.delivery.samples, 1);
 }
 
+/// **A carried rung the live catalog no longer admits keeps the carried evidence under it.** A cold
+/// Auto Original whose 4K H.264 the pipeline refused narrows the attempt to 1080p, which takes the
+/// Uhd rung `bootstrap` carried out of the catalog. The link evidence that carried Uhd covers every
+/// rung under it, so the rescue asks for the best 1080p rung, not the unknown-link startup rung.
+#[test]
+fn an_unopened_original_whose_carried_rung_was_narrowed_away_keeps_the_best_rung_under_it() {
+    let policy = AbrPolicy::measured();
+    let hd_only = HlsActuatorCatalog::measured().limited_to((1920, 1088), (3840, 2160));
+    assert!(hd_only.feasible().all(|c| c.rung != Rung::Uhd), "sanity: the narrowed catalog has no Uhd");
+    assert_eq!(original_open_fallback_rung(Some(Rung::Uhd), &hd_only, &policy), Rung::P1080High);
+    assert_eq!(
+        original_open_fallback_rung(Some(Rung::Uhd), &uhd_catalog(), &policy),
+        Rung::Uhd,
+        "a carried rung still admitted is reused as is"
+    );
+    assert_eq!(original_open_fallback_rung(Some(Rung::P720), &hd_only, &policy), Rung::P720);
+    assert_eq!(
+        original_open_fallback_rung(None, &hd_only, &policy),
+        hd_only.best_for_budget(policy_startup_floor_kbps(&policy)).unwrap().rung,
+        "no carried rung is the unknown-link bootstrap selection"
+    );
+}
+
 #[test]
 fn measured_runtime_fallback_avoids_an_unnecessarily_low_bootstrap() {
     let policy = AbrPolicy::measured();

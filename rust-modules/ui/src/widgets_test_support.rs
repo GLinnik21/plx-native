@@ -3,34 +3,6 @@
 use super::*;
 use crate::tile::Resume;
 
-/// The band's blurred region, in authored px^2, for a track `w` wide with the chip unfurled
-/// beside it — through **`gfx`'s own `blur_region` and `blur_region_union`**, not a copy of them.
-///
-/// The copy is the thing to avoid here and there is a measurement to prove it: this test's
-/// predecessor modelled the region inline and left the screen CLAMP out, which priced the tab
-/// track at `(940+176) x 252` = 281k px^2 where the rising region is `1116 x 200` = 223k — a 26%
-/// over-estimate that sat under a passing assertion for as long as the limit existed, and the
-/// reason the old limit read as if it had only ~7% of headroom when it had far more. Both
-/// surfaces are grown `gfx::BLUR_MARGIN` a side (`blur_region` is the rising, upper-bound region; a band that never rises is grabbed only `BLUR_REACH`) and then clamped to the screen, so the capsule
-/// at x=96 puts the union's left edge at 8 (`BAND_REGION_X0`), the band at y=36 puts its top on 0
-/// and makes it 200 tall
-/// rather than 252. That is `blur_region`'s business, and it is now asked rather than restated.
-///
-/// The rects are the DRAWN ones: `chip_cap` at rest with a name at its budget, and the centred
-/// track `draw_tab_row` builds. Only the chip's left edge reaches the union — the capsule grows
-/// rightward and the clearance keeps its right edge inside the track's — so the pair prices the
-/// same at every point of the unfurl, which is why one number can stand for the band.
-pub(super) fn band_region(w: f32) -> f32 {
-    let (h, y) = (TAB_PILL_H + 2.0 * TAB_TRACK_PAD, TOP_BAR_Y - TAB_TRACK_PAD);
-    let track = plx_gfx::gfx::blur_region((crate::consts::SCR_W - w) * 0.5, y, w, h);
-    let cap = chip_cap(1.0, CHIP_NAME_MAX);
-    let chip = plx_gfx::gfx::blur_region(cap.x, cap.y, cap.w, cap.h);
-    let u = plx_gfx::gfx::blur_region_union(track, chip);
-    u[2] * u[3]
-}
-
-
-
 // ── The poster's state mark: one vocabulary, one mark at a time ───────────────────────────
 //
 // `card` needs a GL context, so the CHOICE is what a host test can reach — and the choice is

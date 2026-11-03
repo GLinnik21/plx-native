@@ -1658,9 +1658,9 @@ impl HeaderLayout {
 /// Two consequences, and both REMOVE code rather than adding it. The video stays visible around it,
 /// which is the point of a stats overlay you watch playback under — the first version was a
 /// full-screen opaque card that made "is anything on screen?" unanswerable while the panel was up.
-/// And it sits entirely ABOVE the transport (`player_hud::CTRL_Y`), so a pointer click can never
-/// land on the scrubber's rects THROUGH an opaque card — which was the only reason the click path
-/// needed a close-on-click arm at all.
+/// And it sits entirely ABOVE the transport (the row's top, `HudGeometry::row_anchor.top`), so a
+/// pointer click can never land on the scrubber's rects THROUGH an opaque card — which was the only
+/// reason the click path needed a close-on-click arm at all.
 impl Diagnostics {
 fn panel_width(&self) -> f32 {
     if self.idle { FIELD_COL_W + 2.0 * PAD } else { PANEL_W }
@@ -1951,6 +1951,12 @@ mod tests {
     use super::*;
     use plx_media::route::{reset_player_control_for_test, EnhTestFixture};
 
+    /// The top of the transport's control row, as the layout reports it (`HudGeometry`): the line the
+    /// panel must stay above.
+    fn transport_top() -> f32 {
+        plx_appkit::player_hud::audit_geometry().row_anchor.top
+    }
+
     /// The Audio row's speed suffix says nothing at 1x, names the speed and the pipeline's verdict
     /// on the PCM during a speed session, and says so once the safety net has turned speed off.
     #[test]
@@ -2098,7 +2104,7 @@ mod tests {
                     + panel.head_lines[1].len().max(1) as f32 * HEAD_LINE_H);
                 assert!(layout.fields_y >= layout.sections_y + HEAD_LINE_H);
                 assert!(plx_ui::consts::inside_safe(frame));
-                assert!(frame.y + frame.h < plx_appkit::player_hud::CTRL_Y);
+                assert!(frame.y + frame.h < transport_top());
             }
         }
     }
@@ -2116,7 +2122,7 @@ mod tests {
         for panel in [&short, &long] {
             let chart_top = panel.header_layout().fields_y + FieldList::height(RIGHT_ROWS);
             assert_eq!(panel.panel_rect().h - PAD - chart_top, FieldList::height(CHART_ROWS));
-            assert!(panel.panel_rect().y + panel.panel_rect().h < plx_appkit::player_hud::CTRL_Y);
+            assert!(panel.panel_rect().y + panel.panel_rect().h < transport_top());
         }
         assert_eq!(long.head_lines[0].concat(), long.head[0], "opaque build IDs must never lose a suffix");
     }
@@ -2671,9 +2677,9 @@ mod tests {
     fn the_panel_clears_the_transport() {
         let bottom = MARGIN + HEAD_H + FieldList::height(LEFT_ROWS) + PAD;
         assert!(
-            bottom < plx_appkit::player_hud::CTRL_Y,
+            bottom < transport_top(),
             "panel bottom {bottom} overlaps the control row at {}",
-            plx_appkit::player_hud::CTRL_Y
+            transport_top()
         );
         // through `panel_rect` itself, not a restatement of its arithmetic: its x is `MARGIN_X`
         // (the overscan side margin) while its y is `MARGIN`, and a copy here would have kept
@@ -3326,6 +3332,37 @@ mod tests {
         assert!(video.contains("declare (supported)"), "{video}");
     }
 
+    /// Settings > Playback > Dolby Vision Off plays the base layer on a set that reports support.
+    /// The Video row still names what the set reported: `unsupported` there would be a false
+    /// statement about the television and read like a failed probe.
+    #[test]
+    fn an_off_profile_on_a_supported_set_reads_the_sets_answer_in_the_video_row() {
+        use plx_plex::plex::session::DolbyVisionMode;
+        let mut ps = plx_media::route::PlaybackSession::IDLE;
+        let dovi = plx_data::metadata::Dovi {
+            present: true,
+            profile: 8,
+            bl_compat: 1,
+            el_present: false,
+            ..plx_data::metadata::Dovi::NONE
+        };
+        let decision = plx_media::route::frozen_dv_decision(
+            DolbyVisionMode::Off,
+            plx_platform::devcaps::dv::DvCapability::Supported,
+            dovi,
+            "hevc",
+        );
+        assert!(plx_media::route::set_stream_declaration_decided_for_test(
+            &mut ps, "hevc", "eac3", 23.976, dovi, false, decision,
+        ));
+        let video = rows(&ps, &plx_media::player::Diag::default(), (0, 0, 0), 1_000)
+            .into_iter()
+            .find(|field| field.key == "Video")
+            .and_then(|field| field.val)
+            .expect("Video row");
+        assert!(video.contains("base-layer (supported)"), "{video}");
+    }
+
     /// Row keys are right-aligned into a [`FIELD_KEY_W`] gutter at the dense diagnostic size, so a
     /// key that grows past about a dozen characters runs into the panel's edge. The keys are
     /// English-only (no translation can widen them), so the English wording is the whole budget:
@@ -3402,14 +3439,21 @@ mod tests {
         // refused Load/Play — without restoring it. Establish the state this test asserts about,
         // and hand back whatever was there (see `[[test-suite-global-pollution]]`).
         //
-        // `state()` ranks four more inputs above `pb_state` (a seek in flight, the claim hold, a
-        // pending resolve, an Engine-less flight); the first two are plain globals a bystander can
-        // leave set, so they are established here too and handed back.
+        // `state()` ranks five more inputs above `pb_state` (a seek in flight, the claim hold, a
+        // pending resolve, an Engine-less flight, a queued start); every one is a plain global a
+        // bystander can leave set, so each is established here and, where it has a value to give
+        // back, handed back. A resolve a test started and never consumed (`menu_play_season_tests`
+        // did, until its rig withdrew it) read `Resolving` here: `cancel_play` withdraws it, and
+        // `reset_player_control_for_test` retires the Engine-less flight's control state.
         let prev = plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Idle);
         let was_seeking = plx_media::player::SHARED.seeking.swap(false, std::sync::atomic::Ordering::Relaxed);
+        let was_queued = plx_media::player::SHARED.start_queued.swap(false, std::sync::atomic::Ordering::Relaxed);
         plx_media::player::claim_hold::clear();
+        plx_media::route::cancel_play(&mut ps);
+        plx_media::route::reset_player_control_for_test(&ps);
         plx_media::route::clear_play_verdict_for_test(&mut ps);
         let head = header(&ps, &plx_media::player::Diag::default(), 1_000);
+        plx_media::player::SHARED.start_queued.store(was_queued, std::sync::atomic::Ordering::Relaxed);
         plx_media::player::SHARED.seeking.store(was_seeking, std::sync::atomic::Ordering::Relaxed);
         plx_media::player::restore_state_for_test(prev);
         // The firmware rides the IDENTITY line now (head[0]); head[1] is the verdict, and the two

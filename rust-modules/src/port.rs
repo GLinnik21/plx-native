@@ -21,6 +21,7 @@ static PORT: plx_platform::tv::Port = plx_platform::tv::Port {
     open: plx_platform::keymanager::open,
     remove: plx_platform::keymanager::remove,
     system_locale: plx_platform::webos::system_locale,
+    sound_output: plx_platform::webos::sound_output,
     go_home: plx_platform::webos::go_home,
     poll_home: plx_platform::webos::poll_home,
     deliver_toast: plx_platform::webos::toast::deliver,
@@ -38,6 +39,8 @@ static PORT: plx_platform::tv::Port = plx_platform::tv::Port {
     frame_probe_acquired: crate::system::frame_probe_acquired,
     frame_probe_fields: crate::system::frame_probe_fields,
     sink: SINK,
+    #[cfg(feature = "devtriggers")]
+    uri_media: plx_platform::webos::URI_MEDIA,
 };
 
 /// The C shim's entry (`src/main.c`) and the simulator's (`src/bin/sim.rs`): install the port, then

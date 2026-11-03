@@ -514,3 +514,89 @@ fn a_window_of_only_hidden_copies_keeps_the_row() {
     assert!(shown.iter().all(|key| key.starts_with("s0-")), "never the other server's copy: {shown:?}");
     plx_plex::plex::reset_servers_for_test();
 }
+
+/// A loopback PMS for one source's refresh: `/hubs` answers per `hubs_ok`, the dedicated Continue
+/// Watching hub holds twenty cards with more behind them (so a read-ahead is owed), and its
+/// `/items` page is the read-ahead. Records every path asked.
+fn serve_refresh(hubs_ok: bool) -> (i32, Arc<std::sync::Mutex<Vec<String>>>, Arc<std::sync::atomic::AtomicBool>, std::thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+    use std::sync::atomic::Ordering;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = i32::from(listener.local_addr().unwrap().port());
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (record, quit) = (Arc::clone(&seen), Arc::clone(&stop));
+    let thread = std::thread::spawn(move || {
+        let mut handlers = Vec::new();
+        while !quit.load(Ordering::Acquire) {
+            let Ok((mut stream, _)) = listener.accept() else {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                continue;
+            };
+            let record = Arc::clone(&record);
+            handlers.push(std::thread::spawn(move || {
+                let _ = stream.set_nonblocking(false);
+                let mut head = Vec::new();
+                let mut chunk = [0u8; 1024];
+                while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match stream.read(&mut chunk) { Ok(0) | Err(_) => return, Ok(n) => head.extend_from_slice(&chunk[..n]) }
+                }
+                let line = String::from_utf8_lossy(&head);
+                let target = line.split_whitespace().nth(1).unwrap_or("");
+                let path = target.split('?').next().unwrap_or(target).to_owned();
+                record.lock().unwrap_or_else(|e| e.into_inner()).push(path.clone());
+                let card = |i: usize| serde_json::json!({"ratingKey": format!("c{i}"), "type": "movie", "title": "Movie", "thumb": "/poster"});
+                let ok = |body: serde_json::Value| {
+                    let body = body.to_string();
+                    format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+                };
+                let reply = if path == "/hubs/continueWatching/items" {
+                    ok(serde_json::json!({"MediaContainer": {"offset": 20, "totalSize": 40,
+                        "Metadata": (20..40).map(card).collect::<Vec<_>>()}}))
+                } else if path == "/hubs/continueWatching" {
+                    ok(serde_json::json!({"MediaContainer": {"Hub": [{"hubIdentifier": "continueWatching", "more": true,
+                        "totalSize": 40, "Metadata": (0..20).map(card).collect::<Vec<_>>()}]}}))
+                } else if hubs_ok {
+                    ok(serde_json::json!({"MediaContainer": {"Hub": []}}))
+                } else {
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned()
+                };
+                let _ = stream.write_all(reply.as_bytes());
+            }));
+        }
+        for h in handlers { let _ = h.join(); }
+    });
+    (port, seen, stop, thread)
+}
+
+/// The deck is asked for beside the hub list, and its read-ahead only once the hub list answered:
+/// a source whose `/hubs` fails costs the deck's own request, not the read-ahead pages as well on
+/// every retry.
+#[test]
+fn a_failing_hub_list_costs_no_read_ahead() {
+    let _guard = plx_base::testlock::serial();
+    for hubs_ok in [false, true] {
+        assert!(plx_net::net::global_init() && plx_net::net::available() && plx_net::net::threaded_tls_ready());
+        plx_plex::plex::reset_servers_for_test();
+        let (port, seen, stop, thread) = serve_refresh(hubs_ok);
+        let sid = plx_plex::plex::register_for_test("refresh-deck", "127.0.0.1", port, "synthetic", "fixture");
+        let client = plx_plex::plex::client_for(sid).unwrap();
+        client.set_link(plx_plex::plex::probe::Location::Local);
+        let build = fetch_source(client, sid, &[]);
+        stop.store(true, std::sync::atomic::Ordering::Release);
+        thread.join().unwrap();
+        plx_plex::plex::reset_servers_for_test();
+        let paths = seen.lock().unwrap().clone();
+        let read_ahead = paths.iter().filter(|p| *p == "/hubs/continueWatching/items").count();
+        assert!(paths.iter().any(|p| p == "/hubs/continueWatching"), "the deck is asked for either way: {paths:?}");
+        if hubs_ok {
+            let build = build.expect("both answered");
+            assert_eq!(build.cw.len(), 20, "the preview");
+            assert_eq!(read_ahead, 1, "the read-ahead follows the hub list that answered: {paths:?}");
+        } else {
+            assert!(build.is_none(), "a source whose hub list failed does not commit");
+            assert_eq!(read_ahead, 0, "and pays no read-ahead pages for it: {paths:?}");
+        }
+    }
+}

@@ -3,6 +3,7 @@
 //! key-driven route-test [`World`] (the one harness the route lanes share).
 
 use super::*;
+use plx_ui::containers::transition::{PageImage, PagePaint};
 
 /// **Put `route` on top, then run one frame** — the TEST driver that replaced `sync_page`.
 ///
@@ -47,7 +48,12 @@ pub(super) fn frame_with_results(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, 
 /// supply the identity. The fold puts the identity ON the argument, which is what makes the
 /// trail seeding this helper used to do unnecessary.
 pub(super) fn detail_arg(rk: &str) -> AppArg {
-    AppArg::Content(ContentArg::Detail { sid: plx_plex::plex::ServerId::UNSET, rk: rk.into() })
+    detail_arg_for(plx_plex::plex::ServerId::UNSET, rk)
+}
+
+/// [`detail_arg`] for an item of server `sid` (the argument carries the pair, `ContentArg::Detail`).
+pub(super) fn detail_arg_for(sid: plx_plex::plex::ServerId, rk: &str) -> AppArg {
+    AppArg::Content(ContentArg::Detail { sid, rk: rk.into() })
 }
 
 /// …and a person page's.
@@ -283,6 +289,46 @@ impl Drop for World {
     }
 }
 
+/// **The page-image half of a route dip, as the dispatcher plans it.** `Dispatcher::draw_with` plans
+/// the top page with `PageImage::plan` from the transition and the page's quiescence, records what
+/// it captured, and states `page_image_held` for the screens' NEXT tick; a host has no GL to run the
+/// draw, so a test steps this after every frame (`World::step_dip` for a [`World`]) and every
+/// screen reads the same answer the product gives it. The stated fact is a thread-local: hold an
+/// [`ImageHeld`] for as long as a test drives a dip, so it does not outlive the test.
+#[derive(Default)]
+pub(super) struct DipImage {
+    image: PageImage,
+    valid: bool,
+}
+
+impl DipImage {
+    /// The paint the frame `d` just ran (at `ms`) gets, and `page_image_held` for the next tick.
+    /// `None` when no page is on top.
+    pub(super) fn plan(&mut self, d: &Dispatcher<AppHost>, ms: u32) -> Option<PagePaint> {
+        let quiescent = !plx_machine::idle::page_layout_moving();
+        let transition = &d.nav.tabs.stack.transition;
+        let (alpha, flight) = (transition.page_alpha(), transition.in_flight());
+        let entry = d.nav.top_page().map(|e| e.id)?;
+        let paint = self.image.plan(entry, flight, alpha, ms, self.valid, quiescent);
+        match paint {
+            PagePaint::Capture => { self.image.captured(entry); self.valid = true; }
+            PagePaint::ReplacementCapture => { self.image.replacement_captured(entry); self.valid = true; }
+            PagePaint::Live => { self.image = PageImage::default(); self.valid = false; }
+            PagePaint::Held(_) => {}
+        }
+        plx_ui::containers::transition::set_page_image_held(!matches!(paint, PagePaint::Live));
+        Some(paint)
+    }
+}
+
+/// The page image a test leaves behind must not be the next test's (`PAGE_IMAGE_HELD` is a
+/// thread-local the dispatcher sets and the screens read on their next tick).
+pub(super) struct ImageHeld;
+
+impl Drop for ImageHeld {
+    fn drop(&mut self) { plx_ui::containers::transition::set_page_image_held(false); }
+}
+
 /// How many collections the rig's probe stands in for on every section it seeds (a server the rig
 /// has no network to ask): enough that the Library header's Collections control is on the row.
 pub(crate) const RIG_COLLECTIONS: u32 = 4;
@@ -464,7 +510,7 @@ impl World {
         if held { super::watchlist_press_tests::hold_reads(&mut bridge); }
         let mut w = World { d, bridge, frame: 1, pump: Pump::new(), performed: Vec::new(), own: plx_plex::plex::ServerId::UNSET,
             script: Some(script), _session: session, _serial: serial, feed: Some(|d, bridge| {
-                bridge.watchlist_for_test().pump();
+                bridge.watchlist_pump();
                 bridge.watchlist_feed(d);
             }) };
         super::nav_tab(&mut w.d, &mut w.bridge, HomeTab::Watchlist, None, None);
@@ -514,14 +560,44 @@ impl World {
     /// The Detail page of record `movie` holding `detail` (its `related` shelf, its collection), pushed
     /// over Home over the same scripted plex.tv, settled.
     pub(super) fn detail_page(name: &str, detail: plx_data::metadata::Detail) -> World {
+        Self::detail_page_at(name, detail_arg("movie"), detail)
+    }
+
+    /// An episode's Detail page (record `rk` of server `sid`, the `season` of the show `show_rk`)
+    /// pushed over Home over the same scripted plex.tv, settled. Nothing is watched, so the hero
+    /// row is Play and the watch disc, plus whatever the page adds for an episode.
+    pub(super) fn detail_episode(name: &str, sid: plx_plex::plex::ServerId, rk: &str, show_rk: &str, season: i64) -> World {
+        Self::detail_page_at(name, detail_arg_for(sid, rk), Self::episode_detail(sid, rk, show_rk, season))
+    }
+
+    /// The Detail [`Self::detail_episode`] installs, for a test that re-lands it (a page that left
+    /// and came back asks its server again).
+    pub(super) fn episode_detail(sid: plx_plex::plex::ServerId, rk: &str, show_rk: &str, season: i64) -> plx_data::metadata::Detail {
+        plx_data::metadata::Detail {
+            sid,
+            rk: rk.into(),
+            kind: "episode".into(),
+            title: "Episode".into(),
+            show_rk: show_rk.into(),
+            show_title: "Show".into(),
+            season,
+            index: 5,
+            part: format!("/library/parts/{rk}"),
+            ..Default::default()
+        }
+    }
+
+    /// [`Self::detail_page`] for the page `arg` names: the argument is the identity the page mounts
+    /// under, `detail` is what the store holds for it.
+    fn detail_page_at(name: &str, arg: AppArg, detail: plx_data::metadata::Detail) -> World {
         let mut w = Self::scripted(name);
         super::show_page(&mut w.d, AppArg::Home);
         w.frames(20);
         // Installed BEFORE the mount: the page keys its element identities from the item it finds current.
         plx_data::metadata::set_current_for_test(w.bridge.stores.metadata.state_mut(), Some(detail));
-        super::nav_push_with_return(&mut w.d, detail_arg("movie"), Default::default());
+        super::nav_push_with_return(&mut w.d, arg.clone(), Default::default());
         w.frames(60);
-        assert!(w.on(&detail_arg("movie")), "premise: the Detail page is on top");
+        assert!(w.on(&arg), "premise: the Detail page is on top");
         w
     }
 
@@ -557,7 +633,7 @@ impl World {
         let (d, bridge) = super::watchlist_press_tests::rig_over(&script);
         World { d, bridge, frame: 1, pump: Pump::new(), performed: Vec::new(), own: plx_plex::plex::ServerId::UNSET,
             script: Some(script), _session: session, _serial: serial, feed: Some(|d, bridge| {
-                bridge.watchlist_for_test().pump();
+                bridge.watchlist_pump();
                 bridge.watchlist_feed(d);
                 super::watchlist_press_tests::feed_catalog(bridge, d);
             }) }
@@ -583,9 +659,27 @@ impl World {
         for _ in 0..n { self.step(vec![]); }
     }
 
-    /// `n` idle frames; returns what the pump performed meanwhile (a navigation a press began and
-    /// the loop finishes a few frames on).
+    /// [`Self::step`] and then the route dip's image decision on the frame it made (`dip`): the
+    /// product's `Dispatcher::draw_with` plan, which a host test has no GL to run. `None` when no
+    /// page is on top.
+    pub(super) fn step_dip(&mut self, dip: &mut DipImage, inputs: Vec<InputEvent<u32>>) -> Option<PagePaint> {
+        self.step(inputs);
+        dip.plan(&self.d, self.frame * 16)
+    }
+
+    /// `n` idle frames, after the store workers the press started have finished; returns what the
+    /// pump performed meanwhile (a navigation a press began and the loop finishes a few frames on).
+    ///
+    /// **The join comes first because the rig's server is a closed port whose fetch fails at once, but
+    /// on a REAL worker** (`launch_browse_page`'s `page`): a page opened over a listing that is not
+    /// held reads Failed, and seats focus on its Retry, only once that worker has returned and a frame
+    /// has applied its landing. Counting frames alone races the worker's wall-clock: under load a
+    /// graded step saw the Collections page still Loading, focus on nothing
+    /// (`the_crumb_root_pops_to_the_library…`, `the_rail_is_entered_only_from_the_last_column…`,
+    /// 4 whole-binary runs of 37). The join is `Serial`'s own (`task::drain_workers_for_test`): a
+    /// worker that outlives its bound is reported and left, never waited on forever.
     pub(super) fn settle(&mut self, n: u32) -> Vec<String> {
+        plx_base::task::drain_workers_for_test();
         self.performed.clear();
         self.frames(n);
         std::mem::take(&mut self.performed)
@@ -876,6 +970,16 @@ pub(crate) struct Pms {
 
 impl Pms {
     pub(crate) fn serve(respond: fn(&str) -> (&'static str, String)) -> Pms {
+        Self::spawn(move |path, _| respond(path))
+    }
+
+    /// [`Pms::serve`] for a read that pages: `respond` is also handed the request's query string
+    /// (`X-Plex-Container-Start=..&X-Plex-Container-Size=..`), empty when there is none.
+    pub(crate) fn serve_query(respond: fn(&str, &str) -> (&'static str, String)) -> Pms {
+        Self::spawn(respond)
+    }
+
+    fn spawn(respond: impl Fn(&str, &str) -> (&'static str, String) + Send + 'static) -> Pms {
         use std::io::{Read, Write};
         use std::sync::atomic::Ordering;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -892,8 +996,9 @@ impl Pms {
                 let mut buf = [0u8; 4096];
                 let n = conn.read(&mut buf).unwrap_or(0);
                 let head = String::from_utf8_lossy(&buf[..n]);
-                let path = head.split_whitespace().nth(1).unwrap_or("");
-                let (status, body) = respond(path.split('?').next().unwrap_or(""));
+                let target = head.split_whitespace().nth(1).unwrap_or("");
+                let (path, query) = target.split_once('?').unwrap_or((target, ""));
+                let (status, body) = respond(path, query);
                 let _ = write!(
                     conn,
                     "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -911,5 +1016,23 @@ impl Drop for Pms {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
+    }
+}
+
+impl Bridge {
+    /// Seat the plex.tv account a Watchlist rig scripts: the Bridge reads the registry for the identity
+    /// it hands the stores (`Bridge::watchlist_input`), so the rig publishes a profile (with the
+    /// plex.tv credential when `credential`) and, where the test holds no scratch session of its own,
+    /// seats one for the client id. The session lives as long as the rig. The caller holds the test lock.
+    pub(crate) fn seat_watchlist_account_for_test(&mut self, credential: bool) {
+        use plx_plex::plex::session;
+        if session::peek().client_id.is_empty() {
+            self.watchlist_session = Some(session::TempSession::new("watchlist-account"));
+        }
+        let user = session::UserRef {
+            plex_tv_token: credential.then(|| "synthetic-credential".to_owned()),
+            ..Default::default()
+        };
+        session::publish_profile_for_test(Some(user), session::current_gen().wrapping_add(1));
     }
 }

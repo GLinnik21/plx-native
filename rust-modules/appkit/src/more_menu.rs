@@ -6,10 +6,10 @@
 //! # Why an overflow menu exists at all
 //!
 //! **Stats for nerds**, the diagnostics overlay (`crate::app::diagnostics`), needs a home a stranger can
-//! find, because it is how this app gets bug reports off televisions nobody here owns — every other
-//! diagnostic surface in the codebase (the `/tmp/plxnative-*` triggers, the remote FIFO, the
-//! capture stream) is compiled out of RELEASE builds by the `devtriggers` feature, which is what a
-//! user installs. "Press `…`, turn Stats for nerds on, photograph the screen" is a sentence that
+//! find, because it is how this app gets bug reports off televisions nobody here owns. Stats for
+//! nerds and the opt-in playback diagnostics in Settings ship in release builds. Developer triggers,
+//! the remote FIFO and capture stream require the `devtriggers` feature. "Press `…`, turn Stats
+//! for nerds on, photograph the screen" is a sentence that
 //! fits in a GitHub reply and needs no ssh, no root and no rebuild.
 //!
 //! It held that one row for a while, and a menu with one row is not a mistake either: the
@@ -46,6 +46,12 @@
 //! `On`/`Off` at the row's trailing edge. It is a STATE, not a destination: a chevron would promise
 //! a page behind the row and there is none.
 //!
+//! **Folded rows** sit between Speed and Options on a root whose HUD package places a command in no reachable
+//! state (`docs/hud-plugins.md`, R2): Previous, Next, the track menu, the two sections and the Info actions, each
+//! listed only when the item playing can use it ([`folded_rows`]). They are headerless buttons that report
+//! [`Action::Hud`], and the container closes the menu and hands the command to the app's one performer. Classic
+//! folds nothing, so its root has none.
+//!
 //! `docs/parity-gaps.md`'s standing decision is that this app has **no full-screen menu sheets** —
 //! the reference clients put playback quality in one and we do not. Quality drills in INSIDE the
 //! popover instead, on the same [`plx_ui::page_stack::PageStack`] the Subtitles tab of
@@ -77,6 +83,7 @@ use plx_ui::geom::IndexElem;
 use plx_machine::machine::{Cx, EntryId, FocusKey, GroupId, Host, Measure};
 use plx_ui::screen::{At, Dir, DrawFrame, Focusable, GroupSpec, Part, Placed, Step};
 use plx_ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
+use crate::player_hud::command::HudCommand;
 use plx_ui::page_stack::{
     self, popover_group_of, popover_groups, popover_neighbour, popover_place,
     popover_register_stops, popover_seat, PageStack, PopoverPanel,
@@ -100,6 +107,51 @@ pub enum Action {
     /// as in `account_menu` because the account menu is unreachable during playback, and playback
     /// is what a Cloud Test Lab session is usually reproducing.
     SendDiagnostics,
+    /// **A folded row**: a command the HUD package places in no reachable state, listed here so the viewer
+    /// can still reach it (`docs/hud-plugins.md`, R2). The row is the same [`HudCommand`] a placed control
+    /// would carry, and the container hands it to the app's one performer (`PlayerReq::Command`,
+    /// `app::playback::perform_hud_command`) after closing the menu, so a row can never mean something a
+    /// control does not. Never produced by [`rows_for`]: [`FoldedRow`]s carry it.
+    Hud(HudCommand),
+}
+
+/// **One row of More's root for a folded command**, with the label it reads: the label is chosen in
+/// [`folded_rows`] from the playing item's metadata through `info_panel::actions`, since `go_to_detail` reads Go to
+/// Show for an episode and Go to Movie otherwise.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FoldedRow {
+    pub command: HudCommand,
+    pub label: &'static str,
+}
+
+/// **The folded rows to list for the content playing**, from the compiled package's folds
+/// ([`crate::hud_format::compile::Compiled::folds`], R2) in the order the compiler reports. A row is listed
+/// only when the app's own predicate for its command holds for this frame's content
+/// ([`HudCommand::enabled`]): a movie gets no Previous or Next row rather than a dead one. `open_tracks`
+/// folds as one row, which opens the track menu on its Subtitles tab (the menu holds both tabs).
+pub fn folded_rows(
+    folds: &[crate::hud_format::Fold],
+    model: &crate::player_hud::model::HudModel,
+    meta: plx_data::metadata::MetadataView<'_>,
+) -> Vec<FoldedRow> {
+    use crate::player_hud::command::{Section, TrackTab};
+    use plx_platform::i18n::msg;
+    folds
+        .iter()
+        .filter_map(|fold| {
+            let (command, label) = match (fold.command, fold.section) {
+                ("previous", _) => (HudCommand::Previous, msg::widgets_menu_previous_episode()),
+                ("next", _) => (HudCommand::Next, msg::widgets_next_episode()),
+                ("open_tracks", _) => (HudCommand::OpenTracks(TrackTab::Subtitles), msg::settings_audio_title()),
+                ("toggle_section", Some("chapters")) => (HudCommand::ToggleSection(Section::Chapters), msg::widgets_player_chapters()),
+                ("toggle_section", Some("info")) => (HudCommand::ToggleSection(Section::Info), msg::widgets_player_info()),
+                ("from_beginning", _) => (HudCommand::FromBeginning, crate::info_panel::actions(meta)[0]),
+                ("go_to_detail", _) => (HudCommand::GoToDetail, crate::info_panel::actions(meta)[1]),
+                _ => return None,
+            };
+            command.enabled(model).then_some(FoldedRow { command, label })
+        })
+        .collect()
 }
 
 /// **A drill-in page of the More menu** — the form's `Dest`. The root is the empty page stack, not
@@ -182,6 +234,9 @@ pub struct MoreMenuState {
     speed: i32,
     /// The speeds this playback offers ([`plx_media::player::speed_offer`]); empty hides the row.
     speeds: Vec<i32>,
+    /// The folded rows listed between Speed and Options ([`folded_rows`]), fixed when the menu opened: a
+    /// command's predicate holds for the item playing, which does not change under an open menu.
+    folded: Vec<FoldedRow>,
     /// The pages pushed above the root, outermost first (empty = the root): each remembers the row
     /// that opened it and the scroll it was left at ([`page_stack`]).
     pages: PageStack<MorePage, MoreRow>,
@@ -189,6 +244,52 @@ pub struct MoreMenuState {
     /// menu uses: a row set that changes height animates the top edge, bottom and right stay on the
     /// anchor, and a push or pop slides the two pages.
     motion: PanelMotion,
+    /// The opener's rect, handed in when the menu opened ([`Self::with_anchor`]) and never read from
+    /// anywhere again: a stand-in taking the HUD row cannot move an open panel.
+    anchor: Rect,
+    /// The side of [`Self::anchor`] the panel took, as of the last placement: where its rise comes from.
+    side: std::cell::Cell<plx_ui::popover::Side>,
+}
+
+/// **The tallest page this menu shows with app-owned rows** — the Quality page, its title band,
+/// seven rungs (Auto first) and the table's padding: 536 px in English. It decides the SIDE of the
+/// opener the panel opens on (`plx_ui::popover::anchor_panel`'s `need_h`) for a root with up to three folded
+/// rows; [`need_h`] decides it beyond that. The number is the same on every page. 600 leaves room for a longer label that wraps. Classic's room above its row is 710,
+/// which this stays under, so classic opens upward. `pub(crate)` because the HUD lint places this
+/// menu with it (`hud_format::lint_menus`, M2), through [`place_panel`].
+pub(crate) const NEED_H: f32 = 600.0;
+
+/// **The height the root asks of its room when it lists `folded` rows**: the root at its tallest standard shape
+/// (Quality and Speed, Options with Stats for nerds and Send diagnostics) plus the folded section, which is
+/// [`FOLDED_SECTION_H`] and a [`FOLDED_ROW_H`] per row. Never below [`NEED_H`], the tallest page, so a menu with
+/// no folded rows (classic) asks what it always asked and opens where it always opened. A fixed function of
+/// the count, not of what is on screen: the side must not change between pages or with the rows a language or
+/// a playback happens to offer, and the HUD lint (`hud_format::lint_menus`, M2) asks the same function for
+/// the most rows a package can fold. `root_height_is_the_tables` pins the three numbers to the real table.
+pub(crate) fn need_h(folded: usize) -> f32 {
+    let root = if folded == 0 { ROOT_BASE_H } else { ROOT_BASE_H + FOLDED_SECTION_H + FOLDED_ROW_H * folded as f32 };
+    NEED_H.max(root)
+}
+
+/// The root's height with Quality, Speed, Stats for nerds and Send diagnostics and no folded row.
+const ROOT_BASE_H: f32 = 344.0;
+/// One folded row: a compact table row.
+const FOLDED_ROW_H: f32 = 60.0;
+/// The gap the folded section adds between Speed and Options.
+const FOLDED_SECTION_H: f32 = 24.0;
+
+/// **The one call of the shared placer for this menu**: a panel of `size` beside `anchor`, on the side
+/// `need_h` ([`need_h`] of the folded rows, [`NEED_H`] for none) decides, `PLAYER_MENU_GAP` away, inside `SAFE`.
+/// The live panel ([`MoreMenuState::panel_rect`]), the overscan audit ([`overscan_rects`]) and the HUD lint
+/// (`hud_format::lint_menus`) all place through it, so none can drift from another.
+pub(crate) fn place_panel(anchor: Rect, size: (f32, f32), need_h: f32) -> plx_ui::popover::Anchored {
+    plx_ui::popover::anchor_panel(
+        anchor,
+        size,
+        need_h,
+        theme::layout::PLAYER_MENU_GAP,
+        plx_ui::popover::Placement::PLAYER_MENU,
+    )
 }
 
 /// The hand-assigned focus key of each row. `SetQuality` rungs are an exhaustive match, so a new
@@ -201,6 +302,21 @@ impl FormId for Action {
             Action::None => 0,
             Action::ToggleStats => 1,
             Action::SendDiagnostics => 2,
+            // 30..=43: the folded commands, one key each (the four a package can never fold are listed so a
+            // new command cannot compile without claiming one)
+            Action::Hud(command) => match command {
+                HudCommand::Previous => 30,
+                HudCommand::Next => 31,
+                HudCommand::OpenTracks(_) => 32,
+                HudCommand::ToggleSection(crate::player_hud::command::Section::Chapters) => 33,
+                HudCommand::ToggleSection(crate::player_hud::command::Section::Info) => 34,
+                HudCommand::FromBeginning => 35,
+                HudCommand::GoToDetail => 36,
+                HudCommand::TogglePlay => 40,
+                HudCommand::Seek(_) => 41,
+                HudCommand::OpenMore(_) => 42,
+                HudCommand::ToggleStats => 43,
+            },
             Action::SetQuality(Quality::Auto) => 10,
             Action::SetQuality(Quality::Original) => 11,
             Action::SetQuality(Quality::P1080High) => 12,
@@ -244,6 +360,7 @@ fn root_form(
     current: plx_media::route::Quality,
     speed: i32,
     speeds: &[i32],
+    folded: &[FoldedRow],
 ) -> MoreForm {
     let mut options = FormSection::new(plx_platform::i18n::msg::widgets_menu_options());
     for a in rows.iter().copied().filter(|a| !matches!(a, Action::SetQuality(_))) {
@@ -266,7 +383,17 @@ fn root_form(
         Action::None,
         Row::new(plx_platform::i18n::msg::widgets_menu_speed()).value(speed_label(speed)),
     );
-    Form::new().section(quality).section(options)
+    let mut form = Form::new().section(quality);
+    // The commands the package places nowhere: after Quality and Speed, before Options, in the compiler's order.
+    // No section at all for none, so a package that folds nothing (classic) builds the root it always did.
+    if !folded.is_empty() {
+        let rows = folded.iter().fold(FormSection::new(""), |section, row| {
+            let act = Action::Hud(row.command);
+            section.item(MoreRow::Act(act), RowKind::Button, act, Row::new(row.label))
+        });
+        form = form.section(rows);
+    }
+    form.section(options)
 }
 
 /// The Speed PAGE: one checked row per offered speed (Plex Web's seven, in its order, less any this
@@ -338,7 +465,7 @@ fn quality_form(
 }
 
 impl MoreMenuState {
-    fn open_focused(ps: &plx_media::route::PlaybackSession, quality: Option<plx_media::route::Quality>) -> Self {
+    fn open_focused(ps: &plx_media::route::PlaybackSession, page: Option<MorePage>, folded: Vec<FoldedRow>) -> Self {
         let forced = plx_media::route::forced_direct_play(ps);
         let rows = rows_for(forced);
         let current = plx_media::route::quality();
@@ -347,7 +474,7 @@ impl MoreMenuState {
         let mut form = FormTable::new(plx_ui::table_screen::BAND_BASE);
         form.table.compact = true; // a short action list — BODY labels, like the profile menu
         form.table.min_panel_w = theme::layout::PLAYER_MENU_MIN_W;
-        form.set_or_open(root_form(ps, &rows, forced, current, speed, &speeds), None);
+        form.set_or_open(root_form(ps, &rows, forced, current, speed, &speeds, &folded), None);
         let mut st = MoreMenuState {
             form,
             rows,
@@ -355,14 +482,28 @@ impl MoreMenuState {
             current,
             speed,
             speeds,
+            folded,
             pages: PageStack::new(),
             motion: PanelMotion::new(),
+            anchor: crate::player_hud::classic::ctrl_row_hit_rect(),
+            side: std::cell::Cell::new(plx_ui::popover::Side::Above),
         };
-        // A quality entry (the failure screen's OK) opens straight on the Quality page with the
-        // active rung focused, no slide: the viewer is fixing a bad decision, not browsing. Under
-        // Force Direct Play there is no ladder, so it is the ordinary root.
-        if quality.is_some() && quality_offered(&st.rows, st.forced) {
-            st.push(ps, MorePage::Quality);
+        // A page entry opens straight on that page, no slide. Quality (the failure screen's OK)
+        // lands on the active rung: the viewer is fixing a bad decision, not browsing. A page that
+        // is not offered (no ladder under Force Direct Play, no choice of speed) is the ordinary
+        // root, as the page-vanished refresh below does.
+        let offered = match page {
+            None => false,
+            Some(MorePage::Quality) => quality_offered(&st.rows, st.forced),
+            Some(MorePage::Speed) => st.speeds.len() > 1,
+        };
+        if let Some(page) = page.filter(|_| offered) {
+            // the page is pushed from its opener's row, so BACK lands where a viewer would have
+            // pressed to get here
+            if page == MorePage::Speed {
+                st.focus_key(MoreRow::OpenSpeed.key().0);
+            }
+            st.push(ps, page);
             st.motion.cancel_slide();
         }
         st
@@ -417,7 +558,7 @@ impl MoreMenuState {
         let Some(saved) = self.pages.pop() else { return false };
         let leaving = page_stack::leave_page(&mut self.form);
         self.motion.begin_slide(leaving, -1.0);
-        let form = root_form(ps, &self.rows, self.forced, self.current, self.speed, &self.speeds);
+        let form = root_form(ps, &self.rows, self.forced, self.current, self.speed, &self.speeds, &self.folded);
         self.form.restore(form, Some(&saved.return_id), saved.scroll);
         self.form.table.set_title(None);
         true
@@ -503,20 +644,35 @@ impl MoreMenuState {
                 // the ladder is gone under the viewer: back to the root, restoring the opener and
                 // scroll the stack saved at its first push
                 self.pages.clear();
-                let form = root_form(ps, &self.rows, self.forced, self.current, self.speed, &self.speeds);
+                let form = root_form(ps, &self.rows, self.forced, self.current, self.speed, &self.speeds, &self.folded);
                 self.form.restore(form, Some(&first.return_id), first.scroll);
                 self.form.table.set_title(None);
                 self.motion.cancel_slide();
             }
         } else {
             let keep = self.form.selected_id().copied();
-            self.form.set_or_open(root_form(ps, &self.rows, self.forced, self.current, self.speed, &self.speeds), keep.as_ref());
+            self.form.set_or_open(root_form(ps, &self.rows, self.forced, self.current, self.speed, &self.speeds, &self.folded), keep.as_ref());
         }
         true
     }
 
     pub fn new(ps: &plx_media::route::PlaybackSession) -> Self {
-        Self::open_focused(ps, None)
+        Self::new_on(ps, None)
+    }
+
+    /// Open beside `anchor`, the rect of the control (widened to the end of its segment) that
+    /// opened the menu, as the player screen hands it over. Without it the menu opens where classic
+    /// does: the control row's rect, whose right edge is `CTRL_RIGHT`. Called once, on the freshly
+    /// built menu and before its first frame: the placement is cached against the table's layout,
+    /// and the anchor is latched for the menu's whole life.
+    pub fn with_anchor(mut self, anchor: Rect) -> Self {
+        self.anchor = anchor;
+        self
+    }
+
+    /// The anchor the menu was opened with ([`Self::with_anchor`]).
+    pub fn anchor(&self) -> Rect {
+        self.anchor
     }
 
     /// The existing overflow menu, opened on the Quality page with the ACTIVE rung focused.
@@ -529,7 +685,20 @@ impl MoreMenuState {
     /// Under Force Direct Play the menu has no Quality section (see [`rows_for`]), and this is the
     /// same menu as [`Self::new`]; `screens::player::overlay` does not route here then.
     pub fn new_quality(ps: &plx_media::route::PlaybackSession) -> Self {
-        Self::open_focused(ps, Some(plx_media::route::quality()))
+        Self::new_on(ps, Some(MorePage::Quality))
+    }
+
+    /// The menu opened on `page`: the root for `None`, else the drill-in, focused on its checked
+    /// row. A page that is not offered for this playback (Quality under Force Direct Play, Speed
+    /// when the playback takes only one) opens the root instead.
+    pub fn new_on(ps: &plx_media::route::PlaybackSession, page: Option<MorePage>) -> Self {
+        Self::open_focused(ps, page, Vec::new())
+    }
+
+    /// [`Self::new_on`] with the folded rows ([`folded_rows`]) listed on the root between Speed and Options.
+    /// A page opened directly still pops to that root, so its folded rows are there on BACK.
+    pub fn new_folded(ps: &plx_media::route::PlaybackSession, page: Option<MorePage>, folded: Vec<FoldedRow>) -> Self {
+        Self::open_focused(ps, page, folded)
     }
 
     /// Every row's focus key, in drawn order (for a test that walks the rows).
@@ -572,37 +741,26 @@ impl MoreMenuState {
         }
     }
 
-    /// Bottom-right, above the control row — anchored to the `…` disc that opened it, the way the
-    /// track menu is anchored to the pair beside it. Shares the track menu's right margin
-    /// (`player_hud::CTRL_RIGHT`, the discs' own edge) and its bottom edge, so opening one after the
-    /// other does not make the panel hop. This is the NATURAL (layout) rect, cached against the
-    /// table's `layout_rev`; [`Self::shown_rect`] is what is on screen while the card resizes.
+    /// Beside the control that opened it, the way the track menu is: both are placed by the one
+    /// shared placer from the same kind of anchor, so the openers of one segment share the panel's
+    /// edge and opening one menu after the other does not make the panel hop. This is the NATURAL
+    /// (layout) rect, cached against the table's `layout_rev`; [`Self::shown_rect`] is what is on
+    /// screen while the card resizes.
+    ///
+    /// The height is the table's own, and the placer cuts it to the room on the side the panel took.
+    /// The Quality page is 536 tall with Auto's rung (its title band plus seven rungs AND the
+    /// table's own top/bottom padding): a 320 cap put four of nine rows on screen and silently
+    /// scrolled the rest, which is a picker whose options you cannot see, and a `bottom - <margin>`
+    /// literal put a later version 4px UNDER the content for the same reason. A cap that is the
+    /// room itself has no margin to forget. Past it the table scrolls, which is what `TableView` is for.
     fn panel_rect(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
         self.motion.natural(self.form.table.layout_rev(), || {
             let pw = self.form.table.menu_panel_width(measure);
-            let px = crate::player_hud::CTRL_RIGHT - pw;
-            let bottom = theme::layout::PLAYER_MENU_BOTTOM; // ~28px above the discs, as track_menu
-            let ph = self.panel_h();
-            Rect::new(px, bottom - ph, pw, ph)
+            let ph = self.form.table.measured_height().max(120.0);
+            let placed = place_panel(self.anchor, (pw, ph), need_h(self.folded.len()));
+            self.side.set(placed.side);
+            placed.rect
         })
-    }
-
-    /// The panel's height alone. The ceiling was 320 while this menu held one row, and it was
-    /// invisible then. With the Quality ladder beside it `measured_height()` can reach 600 when
-    /// Auto is enabled — the tallest page is the Quality page: its title band plus seven
-    /// rungs, AND the table's own top/bottom padding — so a 320 cap put four of nine rows on screen and silently scrolled the rest,
-    /// which is a picker whose options you cannot see.
-    ///
-    /// The cap is a FRACTION of the room the panel has rather than a subtraction from it: the panel
-    /// is anchored at `bottom` and grows upward, so `bottom` IS the space, and 0.86 of it leaves a
-    /// clear margin at the top of the frame while comfortably clearing 600. Reaching for a
-    /// `bottom - <margin>` literal is what put the first version of this line 4px UNDER the content
-    /// — the margin was derived from the 560 of content and forgot the 40 of padding, so the last
-    /// rung was clipped until you scrolled: the same symptom, one row deep instead of five. Past
-    /// the cap it scrolls, which is what `TableView` is for.
-    fn panel_h(&self) -> f32 {
-        let bottom = theme::layout::PLAYER_MENU_BOTTOM;
-        self.form.table.measured_height().clamp(120.0, bottom * 0.86)
     }
 
     /// The card as drawn this frame: top and left on their springs toward [`Self::panel_rect`].
@@ -632,13 +790,13 @@ impl MoreMenuState {
     }
 
     pub fn draw(&mut self, appear: f32, measure: &dyn plx_machine::machine::Measure) {
-        // rises INTO place from below, toward the disc that opened it. The dim under it is the
-        // container's (`PlayerOverlayScreen::scrim`, `theme::underlay::DIM_SHEET`), painted at the
-        // end of the player's page pass — not here.
-        let p = plx_ui::Painter::root()
-            .alpha(appear)
-            .translate(0.0, 16.0 * (1.0 - appear));
-        self.motion.draw(p, self.panel_rect(measure), 24.0, &self.form.table, measure);
+        // rises INTO place from the side of the disc that opened it, the shared entry distance. The
+        // dim under it is the container's (`PlayerOverlayScreen::scrim`, `theme::underlay::DIM_SHEET`),
+        // painted at the end of the player's page pass — not here.
+        let natural = self.panel_rect(measure);
+        let (dx, dy) = plx_ui::popover::Popover::rise_offset(self.side.get(), plx_ui::popover::Popover::RISE, appear);
+        let p = plx_ui::Painter::root().alpha(appear).translate(dx, dy);
+        self.motion.draw(p, natural, 24.0, &self.form.table, measure);
     }
 }
 
@@ -768,6 +926,8 @@ fn label(a: Action) -> std::borrow::Cow<'static, str> {
         Action::SetSpeed(r) => speed_label(r).into(),
         Action::SendDiagnostics => plx_platform::i18n::msg::widgets_menu_diagnostics().into(),
         Action::None => "".into(),
+        // a folded row is labelled by its `FoldedRow`, which knows the content
+        Action::Hud(_) => "".into(),
     }
 }
 
@@ -798,7 +958,7 @@ fn is_on(a: Action) -> bool {
     match a {
         Action::ToggleStats => stats_on(),
         // a rung is not a switch — see `row_for`, which gives it the leading mark instead
-        Action::SetQuality(_) | Action::SetSpeed(_) | Action::SendDiagnostics | Action::None => false,
+        Action::SetQuality(_) | Action::SetSpeed(_) | Action::SendDiagnostics | Action::Hud(_) | Action::None => false,
     }
 }
 
@@ -845,15 +1005,18 @@ fn row_for(ps: &plx_media::route::PlaybackSession, a: Action) -> Row {
     }
 }
 
-/// The panel at its TALLEST, for the overscan audit ([`plx_ui::consts::SAFE`]).
+/// The panel at its WIDEST ([`plx_ui::table::MENU_MAX_W`]) and TALLEST, for the overscan audit
+/// ([`plx_ui::consts::SAFE`]), placed by the same placer as the live panel beside the anchor of the compiled classic (`player_hud::audit_geometry`):
+/// asked for the whole screen's height it gets the whole room, which is what a list longer than
+/// the room fills (the track menu's audit asks the same).
 #[cfg(any(test, feature = "test-support"))]
 pub fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
-    let (pw, ph) = (plx_ui::table::MENU_MAX_W, 320.0f32);
-    let bottom = theme::layout::PLAYER_MENU_BOTTOM;
-    out.push((
-        "… overflow menu panel",
-        Rect::new(crate::player_hud::CTRL_RIGHT - pw, bottom - ph, pw, ph),
-    ));
+    let placed = place_panel(
+        crate::player_hud::audit_geometry().row,
+        (plx_ui::table::MENU_MAX_W, plx_ui::consts::SCR_H),
+        NEED_H,
+    );
+    out.push(("… overflow menu panel", placed.rect));
 }
 
 /// The index→action mapping, which is the only part of a popover that is testable off the main
@@ -947,8 +1110,8 @@ mod tests {
         let rows = rows_for(forced);
         let mut form = FormTable::new(plx_ui::table_screen::BAND_BASE);
         form.table.compact = true;
-        form.set_or_open(root_form(&ps, &rows, forced, current, plx_media::player::RATE_NORMAL, &plx_media::player::PLAY_RATES), None);
-        MoreMenuState { form, rows, forced, current, speed: plx_media::player::RATE_NORMAL, speeds: plx_media::player::PLAY_RATES.to_vec(), pages: PageStack::new(), motion: PanelMotion::new() }
+        form.set_or_open(root_form(&ps, &rows, forced, current, plx_media::player::RATE_NORMAL, &plx_media::player::PLAY_RATES, &[]), None);
+        MoreMenuState { form, rows, forced, current, speed: plx_media::player::RATE_NORMAL, speeds: plx_media::player::PLAY_RATES.to_vec(), folded: Vec::new(), pages: PageStack::new(), motion: PanelMotion::new(), anchor: crate::player_hud::classic::ctrl_row_hit_rect(), side: std::cell::Cell::new(plx_ui::popover::Side::Above) }
     }
 
     /// The same menu with the Quality page pushed (and its slide skipped).
@@ -1127,7 +1290,7 @@ mod tests {
         let ps = plx_media::route::PlaybackSession::default();
         for forced in [false, true] {
             let mut root = MoreMenuState::new(&ps);
-            let form = root_form(&ps, &rows_for(forced), forced, plx_media::route::Quality::Auto, 1000, &plx_media::player::PLAY_RATES);
+            let form = root_form(&ps, &rows_for(forced), forced, plx_media::route::Quality::Auto, 1000, &plx_media::player::PLAY_RATES, &[]);
             root.form.set(form, None);
             assert!(
                 root.form.index_of(&MoreRow::OpenSpeed).is_some(),
@@ -1158,6 +1321,29 @@ mod tests {
         assert_eq!(st.form.selected_id(), Some(&MoreRow::OpenSpeed), "on the row that opened it");
     }
 
+    /// **`open_more {page: speed}` opens the Speed page itself** — no drill-in press, no slide —
+    /// on the current speed, and BACK returns to the root on the row that would have opened it. A
+    /// playback that takes one speed only has no Speed page to open, so it is the ordinary root
+    /// (`speed_offer`'s own tests grade when that is).
+    #[test]
+    fn the_menu_opens_straight_on_the_speed_page_when_it_is_offered() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        let ps = plx_media::route::PlaybackSession::default();
+        let mut st = MoreMenuState::new_on(&ps, Some(MorePage::Speed));
+        assert_eq!(st.speeds.len(), plx_media::player::PLAY_RATES.len(), "the fixture offers every speed");
+        assert_eq!(st.page(), Some(MorePage::Speed));
+        assert_eq!(st.form.table.title(), Some("Playback speed"));
+        assert_eq!(
+            st.form.selected_id(),
+            Some(&MoreRow::Act(Action::SetSpeed(st.speed))),
+            "on the current speed"
+        );
+        assert!(st.pop(&ps), "BACK returns to the root");
+        assert_eq!(st.form.selected_id(), Some(&MoreRow::OpenSpeed), "on the row that opens Speed");
+
+        assert_eq!(MoreMenuState::new_on(&ps, None).page(), None, "the root is the root");
+    }
+
     /// **No offer, no row**: where a playback can play only 1x (segmented HLS, an undecodable audio
     /// codec, a television that failed PCM — `player::speed_offer`), the root has no Playback speed
     /// row, and an open Speed page goes back to the root when the offer goes away under it.
@@ -1168,7 +1354,7 @@ mod tests {
         let rows = rows_for(false);
         for offer in [vec![], vec![1000]] {
             let mut root = MoreMenuState::new(&ps);
-            root.form.set(root_form(&ps, &rows, false, Quality::Auto, 1000, &offer), None);
+            root.form.set(root_form(&ps, &rows, false, Quality::Auto, 1000, &offer, &[]), None);
             assert!(root.form.index_of(&MoreRow::OpenSpeed).is_none(), "offer {offer:?}");
         }
         let mut st = MoreMenuState::new(&ps);
@@ -1221,8 +1407,11 @@ mod tests {
             current: Quality::Auto,
             speed: plx_media::player::RATE_NORMAL,
             speeds: plx_media::player::PLAY_RATES.to_vec(),
+            folded: Vec::new(),
             pages: PageStack::new(),
             motion: PanelMotion::new(),
+            anchor: crate::player_hud::classic::ctrl_row_hit_rect(),
+            side: std::cell::Cell::new(plx_ui::popover::Side::Above),
         };
         for a in rows_for(false).into_iter().filter(|a| matches!(a, Action::SetQuality(_))) {
             let i = st.form.index_of_key(a.key()).expect("every row keeps its key");
@@ -1523,8 +1712,11 @@ mod focus_tests {
             current: plx_media::route::Quality::Auto,
             speed: plx_media::player::RATE_NORMAL,
             speeds: plx_media::player::PLAY_RATES.to_vec(),
+            folded: Vec::new(),
             pages: PageStack::new(),
             motion: PanelMotion::new(),
+            anchor: crate::player_hud::classic::ctrl_row_hit_rect(),
+            side: std::cell::Cell::new(plx_ui::popover::Side::Above),
         }
     }
 
@@ -1628,7 +1820,7 @@ mod focus_tests {
             let _guard = language_on_this_thread_for_test(language);
             for q in plx_media::route::QUALITY_LADDER {
                 let mut root = MoreMenuState::new(&ps);
-                root.form.set(root_form(&ps, &rows, false, q, plx_media::player::RATE_NORMAL, &plx_media::player::PLAY_RATES), None);
+                root.form.set(root_form(&ps, &rows, false, q, plx_media::player::RATE_NORMAL, &plx_media::player::PLAY_RATES, &[]), None);
                 check(language.tag(), &root.form);
                 let mut page = MoreMenuState::new(&ps);
                 page.current = q;
@@ -1643,13 +1835,42 @@ mod focus_tests {
             // the Speed page, and the root reading out the longest speed name
             for r in plx_media::player::PLAY_RATES {
                 let mut root = MoreMenuState::new(&ps);
-                root.form.set(root_form(&ps, &rows, false, plx_media::route::Quality::Auto, r, &plx_media::player::PLAY_RATES), None);
+                root.form.set(root_form(&ps, &rows, false, plx_media::route::Quality::Auto, r, &plx_media::player::PLAY_RATES, &[]), None);
                 check(language.tag(), &root.form);
             }
             let mut page = MoreMenuState::new(&ps);
             page.focus_key(MoreRow::OpenSpeed.key().0);
             page.push(&ps, MorePage::Speed);
             check(language.tag(), &page.form);
+            // the root with every command folded, which no package can exceed, under both readings of Go to
+            // (a show's and a movie's) and the longest quality readout
+            let fold = |command, section| crate::hud_format::Fold { command, section };
+            let every = [
+                fold("previous", None),
+                fold("next", None),
+                fold("open_tracks", None),
+                fold("toggle_section", Some("chapters")),
+                fold("toggle_section", Some("info")),
+                fold("from_beginning", None),
+                fold("go_to_detail", None),
+            ];
+            let full = crate::player_hud::model::HudModel {
+                controls: crate::player_hud::Controls::for_item(true, true, true, false),
+                chapters: true,
+                detail: true,
+                ..Default::default()
+            };
+            let meta = plx_data::stores::metadata::MetadataStore::default();
+            let mut folded = folded_rows(&every, &full, meta.view());
+            assert_eq!(folded.len(), every.len(), "{}: every command offers a row", language.tag());
+            for go in [plx_platform::i18n::msg::widgets_info_go_show(), plx_platform::i18n::msg::widgets_info_go_movie()] {
+                folded[6].label = go;
+                for q in plx_media::route::QUALITY_LADDER {
+                    let mut root = MoreMenuState::new(&ps);
+                    root.form.set(root_form(&ps, &rows, false, q, plx_media::player::RATE_NORMAL, &plx_media::player::PLAY_RATES, &folded), None);
+                    check(language.tag(), &root.form);
+                }
+            }
         }
         plx_ui::table::assert_no_fit_failures(&out);
     }
@@ -1763,5 +1984,326 @@ mod focus_tests {
         plx_plex::plex::reset_servers_for_test();
         plx_media::route::restore_quality(plx_media::route::Quality::Original);
         plx_ui::table::assert_no_fit_failures(&out);
+    }
+}
+
+/// **Classic's settled More panel does not move** when its placement comes from an anchor: right
+/// edge `CTRL_RIGHT`, bottom edge 764, from the root and from the Quality page, however it was
+/// opened (the `…` disc or the failure read-out's quality entry).
+#[cfg(test)]
+mod classic_placement_tests {
+    use super::*;
+    use plx_base::fontcov::advances::ShippedMeasure;
+
+    fn settled() -> Vec<(&'static str, [f32; 4])> {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        let _g = plx_base::testlock::serial();
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let rect = |st: &MoreMenuState| {
+            let r = st.panel_rect(&ShippedMeasure);
+            [r.x + r.w, r.y + r.h, r.w, r.h]
+        };
+        let mut root = MoreMenuState::new(&ps);
+        let mut out = vec![("root", rect(&root))];
+        root.focus_key(MoreRow::OpenQuality.key().0);
+        assert_eq!(root.on_ok(&ps), MoreOk::Navigated);
+        out.push(("quality page", rect(&root)));
+        out.push(("quality entry", rect(&MoreMenuState::new_quality(&ps))));
+        out
+    }
+
+    #[test]
+    fn classic_more_panels_settle_where_they_always_did() {
+        // captured from the constants-placed panels (`CTRL_RIGHT - pw`, bottom 764): (right, bottom, width, height)
+        assert_eq!(
+            settled(),
+            [
+                ("root", [1824.0, 764.0, 470.0, 284.0]),
+                ("quality page", [1824.0, 764.0, 440.0, 536.0]),
+                ("quality entry", [1824.0, 764.0, 440.0, 536.0]),
+            ],
+        );
+    }
+
+    fn menu_at(anchor: Rect) -> MoreMenuState {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        MoreMenuState::new(&plx_media::route::PlaybackSession::IDLE).with_anchor(anchor)
+    }
+
+    /// The panel opens beside the anchor it was handed, whichever side that is: the same placer and
+    /// the same rules as the track menu's.
+    #[test]
+    fn the_panel_opens_beside_the_anchor_it_was_handed() {
+        use plx_ui::popover::Side;
+        let _g = plx_base::testlock::serial();
+        let gap = theme::layout::PLAYER_MENU_GAP;
+        let high = Rect::new(1500.0, 120.0, 324.0, 64.0);
+        let st = menu_at(high);
+        let r = st.panel_rect(&ShippedMeasure);
+        assert_eq!(st.side.get(), Side::Below);
+        assert_eq!((r.y, r.x + r.w), (high.y + high.h + gap, high.x + high.w));
+
+        let mid = Rect::new(1700.0, 560.0, 64.0, 64.0);
+        let st = menu_at(mid);
+        let r = st.panel_rect(&ShippedMeasure);
+        assert_eq!(st.side.get(), Side::Start, "neither 478 above nor 374 below holds NEED_H");
+        assert_eq!(r.x + r.w, mid.x - gap);
+    }
+
+    /// **The anchor is latched**: a push changes the panel's size, not its side or its edge by the opener.
+    #[test]
+    fn the_panel_does_not_move_off_its_anchor_while_it_is_open() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        let _g = plx_base::testlock::serial();
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let mut st = menu_at(Rect::new(1500.0, 300.0, 324.0, 64.0));
+        let first = st.panel_rect(&ShippedMeasure);
+        let side = st.side.get();
+        assert_eq!(side, plx_ui::popover::Side::Below, "the opener is high: the panel hangs under it");
+        st.focus_key(MoreRow::OpenQuality.key().0);
+        assert_eq!(st.on_ok(&ps), MoreOk::Navigated);
+        let pushed = st.panel_rect(&ShippedMeasure);
+        assert_ne!((pushed.w, pushed.h), (first.w, first.h), "the page changed the panel's size");
+        assert_eq!(st.side.get(), side);
+        assert_eq!((pushed.x + pushed.w, pushed.y), (first.x + first.w, first.y));
+    }
+
+    /// `NEED_H` covers the tallest page, the Quality page with its whole ladder, Auto included
+    /// (`route::auto_quality_ready` is a const `true`, so the shipping ladder has Auto and the page
+    /// is the seven-rung 536 px one), and fits classic's room above the row, so classic opens
+    /// upward. A page that outgrew `NEED_H` (a longer label that wraps, an eighth rung) would scroll
+    /// an app-owned row on a side with less room.
+    #[test]
+    fn need_h_covers_the_quality_page_with_auto_and_fits_classics_room() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        let _g = plx_base::testlock::serial();
+        let st = MoreMenuState::new_quality(&plx_media::route::PlaybackSession::IDLE);
+        assert_eq!(st.page(), Some(MorePage::Quality));
+        let auto = Action::SetQuality(plx_media::route::Quality::Auto);
+        assert!(st.form.index_of_key(auto.key()).is_some(), "the page measured has the Auto row");
+        let tallest = st.form.table.measured_height();
+        assert!(tallest > 400.0, "the Quality page was measured: {tallest}");
+        assert!(tallest <= NEED_H, "the Quality page is {tallest} px, taller than NEED_H {NEED_H}");
+        assert!(NEED_H <= 764.0 - plx_ui::consts::SAFE.y);
+    }
+
+    /// The overscan audit's rect is the placer's whole room, the same extent the track menu's audit
+    /// takes, and sits inside SAFE.
+    #[test]
+    fn the_overscan_rect_comes_from_the_placer() {
+        let mut out = Vec::new();
+        overscan_rects(&mut out);
+        let r = out[0].1;
+        assert_eq!((r.x + r.w, r.y + r.h, r.w), (1824.0, 764.0, plx_ui::table::MENU_MAX_W));
+        assert_eq!(r.y, plx_ui::consts::SAFE.y, "the whole room above the row");
+    }
+}
+
+/// **The folded rows** (`docs/hud-plugins.md`, R2): which commands More's root lists for a package, in which order,
+/// for which content, and what pressing one asks.
+#[cfg(test)]
+mod folded_tests {
+    use super::*;
+    use crate::player_hud::command::{Section, TrackTab};
+    use crate::player_hud::loaded::{classic_for_test, load, reference_for_test};
+    use crate::player_hud::model::HudModel;
+    use crate::player_hud::Controls;
+    use plx_media::route::PlaybackSession;
+    use std::sync::Arc;
+
+    const MINIMAL: &str = include_str!("hud_format/fixtures/minimal.plxhud.json");
+    const REFERENCE: &str = include_str!("hud_format/fixtures/reference.plxhud.json");
+
+    fn compiled(text: &str) -> Arc<crate::hud_format::compile::Compiled> {
+        load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &plx_ui::fixture::FixtureMeasure).expect("the fixture loads").compiled
+    }
+
+    /// A frame's model for an episode with both neighbours (or a movie with none), chapters and a detail page.
+    fn model(episode: bool) -> HudModel {
+        HudModel { controls: Controls::for_item(episode, true, true, false), chapters: true, detail: true, ..HudModel::default() }
+    }
+
+    fn rows_of(package: &Arc<crate::hud_format::compile::Compiled>, model: &HudModel) -> Vec<FoldedRow> {
+        folded_rows(package.folds(), model, plx_data::stores::metadata::MetadataStore::default().view())
+    }
+
+    fn commands(rows: &[FoldedRow]) -> Vec<HudCommand> {
+        rows.iter().map(|r| r.command).collect()
+    }
+
+    /// The commands of the Hud rows showing, in table order, off a built menu.
+    fn hud_order(st: &MoreMenuState) -> Vec<HudCommand> {
+        (0..st.form.table.n_rows() as usize)
+            .filter_map(|i| match st.form.id_at(i) {
+                Some(MoreRow::Act(Action::Hud(command))) => Some(*command),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// **Classic folds nothing, and its root is the one it always had**: no folded row for an episode or a movie,
+    /// and the menu built with the (empty) list shows the same rows, in the same order with the same keys and
+    /// labels, as the one built without any.
+    #[test]
+    fn classic_folds_nothing_and_its_root_is_unchanged() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        let ps = PlaybackSession::default();
+        let classic = classic_for_test();
+        for episode in [true, false] {
+            let rows = rows_of(&classic, &model(episode));
+            assert!(rows.is_empty(), "episode {episode}: {rows:?}");
+            let mut with = MoreMenuState::new_folded(&ps, None, rows);
+            let mut without = MoreMenuState::new(&ps);
+            assert_eq!(with.keys(), without.keys(), "the same rows in the same order");
+            assert!(with.keys().iter().all(|k| !(30..=43).contains(k)), "no folded key on classic's root");
+            let labels = |st: &mut MoreMenuState| (0..st.form.table.n_rows()).map(|i| st.form.table.row_mut(i).map(|r| r.label.clone())).collect::<Vec<_>>();
+            assert_eq!(labels(&mut with), labels(&mut without));
+            assert_eq!(with.form.table.measured_height(), without.form.table.measured_height());
+        }
+    }
+
+    /// **A package with no previous or next folds both, a movie shows neither**: the rows are the app's own
+    /// predicate (`HudCommand::enabled`), so a movie gets no dead pair.
+    #[test]
+    fn the_pair_folds_for_an_episode_and_a_movie_gets_neither() {
+        let minimal = compiled(MINIMAL);
+        let episode = commands(&rows_of(&minimal, &model(true)));
+        assert!(episode.starts_with(&[HudCommand::Previous, HudCommand::Next]), "{episode:?}");
+        let movie = commands(&rows_of(&minimal, &model(false)));
+        assert!(!movie.contains(&HudCommand::Previous) && !movie.contains(&HudCommand::Next), "{movie:?}");
+        assert!(movie.contains(&HudCommand::OpenTracks(TrackTab::Subtitles)), "the rest still folds: {movie:?}");
+        // an episode with only a previous neighbour has no Next row either
+        let only_previous = HudModel { controls: Controls::for_item(true, true, false, false), ..model(true) };
+        let rows = commands(&rows_of(&minimal, &only_previous));
+        assert!(rows.contains(&HudCommand::Previous) && !rows.contains(&HudCommand::Next), "{rows:?}");
+    }
+
+    /// **The reference folds `from_beginning` and `go_to_detail`**, labelled with the Info card's own button
+    /// strings, and nothing else; `open_tracks` does not fold because its Subtitles tab is placed.
+    #[test]
+    fn the_reference_folds_the_two_info_actions() {
+        let reference = reference_for_test();
+        let meta = plx_data::stores::metadata::MetadataStore::default();
+        let rows = rows_of(&reference, &model(true));
+        assert_eq!(commands(&rows), [HudCommand::FromBeginning, HudCommand::GoToDetail]);
+        let actions = crate::info_panel::actions(meta.view());
+        assert_eq!(rows.iter().map(|r| r.label).collect::<Vec<_>>(), actions, "the Info actions' own strings");
+        // a playing item with no page to go to has no Go to row
+        let no_page = HudModel { detail: false, ..model(true) };
+        assert_eq!(commands(&rows_of(&reference, &no_page)), [HudCommand::FromBeginning]);
+    }
+
+    /// **The rows sit after Quality and Speed and before Options**, in the compiler's order, and Stats for nerds
+    /// is the Options row it always was (a command with its own row never folds).
+    #[test]
+    fn the_rows_follow_quality_and_speed_and_precede_options() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        let ps = PlaybackSession::default();
+        let rows = rows_of(&compiled(MINIMAL), &model(true));
+        let st = MoreMenuState::new_folded(&ps, None, rows.clone());
+        assert_eq!(hud_order(&st), commands(&rows), "the compiler's order");
+        let keys = st.keys();
+        let at = |key: u32| keys.iter().position(|k| *k == key).unwrap_or_else(|| panic!("no row {key} in {keys:?}"));
+        let (first, last) = (at(Action::Hud(rows[0].command).key().0), at(Action::Hud(rows[rows.len() - 1].command).key().0));
+        assert!(at(MoreRow::OpenSpeed.key().0) < first, "after Speed");
+        assert!(last < at(Action::ToggleStats.key().0), "before Options");
+        assert_eq!(keys.iter().filter(|k| **k == Action::ToggleStats.key().0).count(), 1, "Stats for nerds is not folded twice");
+        assert!(commands(&rows).iter().all(|c| *c != HudCommand::ToggleStats));
+    }
+
+    /// **A folded row commits its own command**, addressed by identity: OK on each reports `Action::Hud(command)`
+    /// and the container performs that command.
+    #[test]
+    fn a_folded_row_reports_its_own_command() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        let ps = PlaybackSession::default();
+        let mut st = MoreMenuState::new_folded(&ps, None, rows_of(&compiled(MINIMAL), &model(true)));
+        let wanted = hud_order(&st);
+        assert!(wanted.len() >= 5, "{wanted:?}");
+        for command in wanted {
+            assert!(st.focus_key(Action::Hud(command).key().0));
+            assert_eq!(st.on_ok(&ps), MoreOk::Action(Action::Hud(command)), "{command:?}");
+        }
+    }
+
+    /// **BACK from a page opened directly lands on the root with its folded rows**, as it lands on the root today:
+    /// the page is pushed from its opener's row, so popping it restores the root the menu would have shown.
+    #[test]
+    fn back_from_a_page_opened_directly_shows_the_folded_root() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        let ps = PlaybackSession::default();
+        let rows = rows_of(&compiled(MINIMAL), &model(true));
+        let mut st = MoreMenuState::new_folded(&ps, Some(MorePage::Speed), rows.clone());
+        assert_eq!(st.page(), Some(MorePage::Speed));
+        assert!(st.pop(&ps), "the page pops");
+        assert_eq!(st.page(), None);
+        assert_eq!(hud_order(&st), commands(&rows));
+        assert_eq!(st.sel_id(), Some(MoreRow::OpenSpeed), "focus is back on the row that opened the page");
+    }
+
+    /// Every row keeps its own focus key: no two actions of any kind share one (the replay canon writes the key).
+    #[test]
+    fn every_action_has_its_own_key() {
+        use plx_media::route::QUALITY_LADDER;
+        let mut all: Vec<Action> = vec![Action::None, Action::ToggleStats, Action::SendDiagnostics];
+        all.extend(QUALITY_LADDER.iter().map(|q| Action::SetQuality(*q)));
+        all.extend(plx_media::player::PLAY_RATES.iter().map(|r| Action::SetSpeed(*r)));
+        all.extend([
+            HudCommand::Previous,
+            HudCommand::Next,
+            HudCommand::OpenTracks(TrackTab::Subtitles),
+            HudCommand::OpenTracks(TrackTab::Audio),
+            HudCommand::ToggleSection(Section::Chapters),
+            HudCommand::ToggleSection(Section::Info),
+            HudCommand::FromBeginning,
+            HudCommand::GoToDetail,
+            HudCommand::TogglePlay,
+            HudCommand::OpenMore(crate::player_hud::command::MorePage::Root),
+            HudCommand::ToggleStats,
+        ].map(Action::Hud));
+        let mut keys: Vec<(u32, Action)> = all.iter().map(|a| (a.key().0, *a)).collect();
+        keys.push((MoreRow::OpenQuality.key().0, Action::None));
+        keys.push((MoreRow::OpenSpeed.key().0, Action::None));
+        // the two tab addresses of `open_tracks` are one row, so one key
+        keys.retain(|(_, a)| *a != Action::Hud(HudCommand::OpenTracks(TrackTab::Audio)));
+        let mut seen = std::collections::BTreeMap::new();
+        for (key, action) in keys {
+            if let Some(other) = seen.insert(key, action) {
+                panic!("key {key} is {other:?} and {action:?}");
+            }
+        }
+    }
+
+    /// The three numbers [`need_h`] is built from are the real table's: the root at its tallest standard shape, with
+    /// zero to seven folded rows (the most a package can fold), is as tall as the formula says.
+    #[test]
+    fn root_height_is_the_tables() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        let ps = PlaybackSession::default();
+        let all = [
+            HudCommand::Previous,
+            HudCommand::Next,
+            HudCommand::OpenTracks(TrackTab::Subtitles),
+            HudCommand::ToggleSection(Section::Chapters),
+            HudCommand::ToggleSection(Section::Info),
+            HudCommand::FromBeginning,
+            HudCommand::GoToDetail,
+        ];
+        let rows = vec![
+            Action::SetQuality(plx_media::route::Quality::Auto),
+            Action::SetQuality(plx_media::route::Quality::P720),
+            Action::ToggleStats,
+            Action::SendDiagnostics,
+        ];
+        for n in 0..=all.len() {
+            let folded: Vec<FoldedRow> = all[..n].iter().map(|&command| FoldedRow { command, label: "Previous Episode" }).collect();
+            let mut form = FormTable::new(plx_ui::table_screen::BAND_BASE);
+            form.table.compact = true;
+            let root = root_form(&ps, &rows, false, plx_media::route::Quality::Auto, plx_media::player::RATE_NORMAL, &plx_media::player::PLAY_RATES, &folded);
+            form.set_or_open(root, None);
+            let formula = if n == 0 { ROOT_BASE_H } else { ROOT_BASE_H + FOLDED_SECTION_H + FOLDED_ROW_H * n as f32 };
+            assert_eq!(form.table.measured_height(), formula, "{n} folded rows");
+            assert_eq!(need_h(n), NEED_H.max(formula), "{n}");
+        }
     }
 }

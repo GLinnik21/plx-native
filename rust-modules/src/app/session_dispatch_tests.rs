@@ -94,7 +94,7 @@ fn production_bridges_do_not_share_browse_state_or_landings() {
     // The pump the frame's `StoreWork::Browse` runs: the keys the step decides from, the step, and
     // the page read it left, started by the runner (which resolves the key and starts the worker).
     crate::app::adapters::stores::refill_client_keys(&mut first.client_keys);
-    let _ = first.stores.browse.borrow_mut().pump_with_gate(&first.stores.landgate, &first.client_keys);
+    let _ = first.stores.browse.borrow_mut().pump_with_gate(&first.stores.landgate, &first.client_keys, &plx_plex::plex::session::peek());
     first.start_store_jobs_of(StoreId::Browse);
     accepted_rx.recv_timeout(std::time::Duration::from_secs(2))
         .expect("production page request reached loopback");
@@ -603,7 +603,7 @@ fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
         assert_eq!(out.len(), 1);
         assert!(matches!(out[0].fx, Fx::App(AppFx::Session(
             plx_session::auth::SessionCmd::RequestEndpoint { sid })) if sid == b));
-        plx_data::browse::with_refused_discovery_for_test(|| {
+        {
             let client = plx_plex::plex::client_for(a).unwrap();
             rig.stores.browse.borrow_mut().queue_discovery_for_test(
                 client, client.token_gen(), false);
@@ -638,7 +638,7 @@ fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
                 Fx::App(AppFx::Session(plx_session::auth::SessionCmd::RequestEndpoint { sid })) => *sid,
                 _ => panic!("the settled refusals were not translated into Session commands"),
             }).collect::<Vec<_>>(), expected);
-        });
+        }
     });
     plx_plex::plex::reset_servers_for_test();
 }

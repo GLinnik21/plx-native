@@ -19,11 +19,9 @@ enum Case { First, Revisit, OtherKind }
 fn push_trace(case: Case) -> Vec<Row> {
     let revisit = case == Case::Revisit;
     struct Cleanup;
-    impl Drop for Cleanup { fn drop(&mut self) {
-        plx_ui::containers::transition::set_page_image_held(false);
-        plx_plex::plex::reset_servers_for_test();
-    } }
+    impl Drop for Cleanup { fn drop(&mut self) { plx_plex::plex::reset_servers_for_test(); } }
     let _cleanup = Cleanup;
+    let _held = ImageHeld;
     let session = plx_plex::plex::session::TempSession::new("library-push-capture");
     session.watching("u-library-push-capture");
     plx_plex::plex::reset_servers_for_test();
@@ -47,29 +45,16 @@ fn push_trace(case: Case) -> Vec<Row> {
     }
     let tab = HomeTab::Movies;
     // The page pass is GL, which a host test has none of, so the frame's draw is not run: its
-    // image decision is. `Dispatcher::draw_with` plans the top page with `PageImage::plan` and
-    // records a capture with `PageImage::captured`; this is those two calls on the same inputs
-    // (quiescence is layout motion only: no upload queue here).
-    let mut image = plx_ui::containers::transition::PageImage::default();
-    let mut valid = false;
+    // image decision is (`DipImage`; quiescence is layout motion only: no upload queue here).
+    let mut dip = DipImage::default();
     let mut ms = 0u32;
     let mut step = |d: &mut Dispatcher<AppHost>, rig: &mut Bridge, rows: Option<&mut Vec<Row>>| {
         ms += 16;
         plx_machine::idle::frame_begin(0.016);
         super::frame(d, rig, Tick { ms, dt_us: 16_000 }, vec![]);
         use plx_ui::containers::transition::PagePaint;
+        let Some(paint) = dip.plan(d, ms) else { return };
         let transition = &d.nav.tabs.stack.transition;
-        let Some(entry) = d.nav.top_page().map(|e| e.id) else { return };
-        let quiescent = !plx_machine::idle::page_layout_moving();
-        let paint = image.plan(entry, transition.in_flight(), transition.page_alpha(), ms, valid, quiescent);
-        // What the dispatcher states after planning: the Library reads it to hold its seat at rest.
-        plx_ui::containers::transition::set_page_image_held(!matches!(paint, PagePaint::Live));
-        match paint {
-            PagePaint::Capture => { image.captured(entry); valid = true; }
-            PagePaint::ReplacementCapture => { image.replacement_captured(entry); valid = true; }
-            PagePaint::Live => { image = Default::default(); valid = false; }
-            PagePaint::Held(_) => {}
-        }
         if let Some(rows) = rows {
             rows.push(Row {
                 top: d.top_screen().map_or("", |s| s.name()),

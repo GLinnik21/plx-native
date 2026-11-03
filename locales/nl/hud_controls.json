@@ -1,0 +1,6 @@
+{
+  "player.hud.play_pause": "Afspelen / Pauzeren",
+  "player.hud.skip_back": "Terugspringen",
+  "player.hud.skip_forward": "Vooruitspringen",
+  "player.up_next.seconds_left": "Volgende aflevering · {seconds} s"
+}

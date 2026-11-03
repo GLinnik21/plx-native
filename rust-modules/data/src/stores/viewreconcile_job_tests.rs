@@ -6,7 +6,7 @@
 use super::*;
 use plx_machine::landgate::Gate;
 
-const KEY: ClientKey = ClientKey { instance: 7, token: 3 };
+const KEY: ClientKey = ClientKey { instance: 7, token: 3, grant: 3 };
 
 fn sid(n: u16) -> ServerId { ServerId::from_raw(n) }
 

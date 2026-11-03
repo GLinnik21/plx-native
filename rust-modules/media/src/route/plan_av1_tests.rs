@@ -89,3 +89,18 @@ fn vp9_direct_plays_with_the_row_and_is_bounded_by_it() {
     // and VP9 never loosens another codec's gate
     assert!(!video_direct_plays("av1", 1920, 1080, dp, &roomy_row));
 }
+
+/// A recovery that took a refused 4K H.264 out of the attempt ([`plx_platform::devcaps::Facet::Video`])
+/// holds ONLY that codec to the 1080p floor: the direct-play gate, which the planner, the remux flag
+/// and the detail Preview share, reads the attempt's bound, so the rebuilt request converts the video.
+#[test]
+fn video_direct_plays_honours_the_attempts_codec_ceiling() {
+    let dp = plx_data::metadata::DvPresentation::NotDv;
+    let assumed = plx_platform::devcaps::Caps::assumed();
+    let facet = plx_platform::devcaps::Facet::Video { codec: "h264".into(), width: 3840, height: 2160 };
+    assert!(video_direct_plays("h264", 3840, 2160, dp, &assumed));
+    let narrowed = assumed.without(&facet);
+    assert!(!video_direct_plays("h264", 3840, 2160, dp, &narrowed), "the refused raster is no longer direct played");
+    assert!(video_direct_plays("h264", 1920, 1080, dp, &narrowed), "1080p H.264 still is");
+    assert!(video_direct_plays("hevc", 3840, 2160, dp, &narrowed), "another codec keeps its bound");
+}

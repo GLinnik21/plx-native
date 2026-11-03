@@ -8,7 +8,7 @@ description: >
   "audit the docs against this diff", "what does this change make stale", "I renamed X, what says
   the old name", or a review turns up a doc that contradicts the code. Takes a diff (or derives
   one), greps the prose surfaces that actually exist here — AGENTS.md,
-  docs/agent-reference.md, the three nested module guides, the READMEs, the notes under docs/,
+  docs/agent-reference.md, the nested module guides, the READMEs, the notes under docs/,
   the skills, and the `//!` module doc on every Rust file —
   and reports contradictions ONLY. NOT for writing or extending documentation, and not for
   "consider documenting X": a doc that fails to mention your new thing is out of scope by
@@ -94,8 +94,10 @@ Ranked by blast radius, which is also the order to report findings in:
 
 1. **`AGENTS.md`** (root). Loaded into every Codex session and imported by Claude, so a false claim
    here is repeated to every agent. A finding here outranks the identical finding anywhere else.
-2. **`docs/agent-reference.md` and the three nested `docs/agent-reference.md` guides** under
-   `rust-modules/ui/src/`, `rust-modules/plex/src/plex/`, and `rust-modules/media/src/player/`. The long-form
+2. **`docs/agent-reference.md` and the nested module guides**: a `CLAUDE.md` under
+   `rust-modules/ui/src/`, `rust-modules/screens/src/`, `rust-modules/plex/src/plex/` and
+   `rust-modules/media/src/player/`, and `rust-modules/data/src/AGENTS.md` (its `CLAUDE.md` imports it
+   and `docs/sans-io-guide.md`). The long-form
    reference is imported by Claude and routed from `AGENTS.md`; each nested guide is the "read this
    before touching X" file for its directory,
    and the root file delegates whole subjects to them (the Starfish/ACB ABI and bind-order rules

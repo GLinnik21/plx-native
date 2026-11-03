@@ -9,7 +9,8 @@
 //! because that is what the certificate is issued for — so the whole PMS control plane comes
 //! through here too whenever the origin is TLS. `crate::http` is the door that decides which of
 //! the two transports a request takes; this module is only ever the https half of it. Direct
-//! callers are `plex::account`, auth's public headerless QR-image fetch, and — since the telemetry
+//! callers include `plex::account`, auth's public headerless QR-image fetch, the HUD-package adapter's
+//! bounded public fetch, and — since the telemetry
 //! work — `plx_telemetry::telemetry::sender`, which is the first traffic in this app's history to a host
 //! that is neither Plex nor the user's own server. It goes through [`post_ca`]: CA-verified,
 //! unpinned, bounded sink. **This list has stood here while becoming untrue before**, which is why
@@ -589,6 +590,41 @@ struct BodySink {
     overflowed: bool,
     /// The `ETag` of the response being read (see [`header_cb`]); the last hop's, never a redirect's.
     etag: Option<String>,
+    /// A public transfer's protocol floor survives response/status resets across redirect hops.
+    redirect: Option<RedirectFloor>,
+}
+
+/// libcurl's redirect mask is fixed at the request's start. A plaintext entry may upgrade, so its
+/// mask allows both protocols; this per-transfer latch then rejects any downgrade after that upgrade.
+/// Relative and protocol-relative locations inherit the current scheme and do not change the floor.
+struct RedirectFloor {
+    tls: bool,
+    response_redirects: bool,
+}
+
+impl RedirectFloor {
+    fn new(url: &[u8]) -> Self {
+        Self { tls: allowed_redirect_protocols(url) == CURLPROTO_HTTPS, response_redirects: false }
+    }
+
+    fn accepts(&mut self, line: &[u8]) -> bool {
+        if line.starts_with(b"HTTP/") {
+            self.response_redirects = line.split(|b| b.is_ascii_whitespace()).nth(1)
+                .is_some_and(|code| code.len() == 3 && code[0] == b'3');
+        } else if self.response_redirects {
+            if let Some(colon) = line.iter().position(|&b| b == b':') {
+                if line[..colon].eq_ignore_ascii_case(b"location") {
+                    let target = line[colon + 1..].trim_ascii();
+                    if target.get(..6).is_some_and(|s| s.eq_ignore_ascii_case(b"https:")) {
+                        self.tls = true;
+                    } else if self.tls && target.get(..5).is_some_and(|s| s.eq_ignore_ascii_case(b"http:")) {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
 }
 
 impl BodySink {
@@ -598,6 +634,7 @@ impl BodySink {
             max,
             overflowed: false,
             etag: None,
+            redirect: None,
         }
     }
 
@@ -642,10 +679,10 @@ extern "C" fn write_cb(
     }
 }
 
-/// libcurl `CURLOPT_HEADERFUNCTION`: keep the one response header this client reads, `ETag`.
+/// libcurl `CURLOPT_HEADERFUNCTION`: keep the final `ETag` and enforce the public redirect floor.
 /// libcurl hands over each header line whole (CRLF included) and each hop's status line, so a
-/// status line forgets the previous hop's validator and the final response's wins. Always takes the
-/// line (returning anything else aborts the transfer); a line that is not UTF-8 text is ignored.
+/// status line forgets the previous hop's validator and the final response's wins. A forbidden
+/// downgrade returns zero to abort before libcurl follows it; non-UTF-8 validators are ignored.
 /// Infallible code, so nothing can unwind across the C frame. The line is not capped here: libcurl
 /// bounds a header line itself, and a validator is kept verbatim (weak `W/` prefix and quotes too).
 extern "C" fn header_cb(
@@ -660,20 +697,22 @@ extern "C" fn header_cb(
     }
     let sink = unsafe { &mut *(userdata as *mut BodySink) };
     let line = unsafe { std::slice::from_raw_parts(ptr as *const u8, n) };
-    sink.note_header(line);
-    n
+    if sink.note_header(line) { n } else { 0 }
 }
 
 impl BodySink {
-    /// One raw header line: a status line clears the validator, an `ETag:` line sets it.
-    fn note_header(&mut self, line: &[u8]) {
+    /// One raw header line: enforce the redirect floor, then retain the final validator.
+    fn note_header(&mut self, line: &[u8]) -> bool {
+        if self.redirect.as_mut().is_some_and(|floor| !floor.accepts(line)) {
+            return false;
+        }
         if line.starts_with(b"HTTP/") {
             self.etag = None;
-            return;
+            return true;
         }
-        let Some(colon) = line.iter().position(|&b| b == b':') else { return };
+        let Some(colon) = line.iter().position(|&b| b == b':') else { return true };
         if !line[..colon].eq_ignore_ascii_case(b"etag") {
-            return;
+            return true;
         }
         if let Ok(value) = std::str::from_utf8(&line[colon + 1..]) {
             let value = value.trim();
@@ -681,6 +720,7 @@ impl BodySink {
                 self.etag = Some(value.to_owned());
             }
         }
+        true
     }
 }
 
@@ -761,6 +801,17 @@ impl From<RequestError> for RequestFailure {
 }
 
 impl RequestFailure {
+    /// `true` when the transfer was aborted because the body ran past the `max_body` bound: the
+    /// bound a caller passed is echoed in [`Self::body_limit`] only for that failure, and no partial
+    /// body ever comes back with it.
+    pub fn too_large(&self) -> bool { self.body_limit.is_some() }
+
+    /// `true` when libcurl refused the server's certificate: `60` (the chain did not verify: an issuer
+    /// this trust store lacks, a self-signed certificate, a wrong clock) or `51` (the name check, on the
+    /// television's 7.53.1). [`Self::untrusted_chain`] and [`Self::verify`] say which; this says only
+    /// that the television's certificate check, and not the network, is what failed.
+    pub fn certificate_refused(&self) -> bool { matches!(self.curl_rc, Some(keypin::TLS_VERIFY_FAILED | 51)) }
+
     /// The verify result when this failure is a certificate chain the television's trust store could
     /// not verify — see [`keypin::untrusted_chain_verify`] for the closed set — and `None` for
     /// everything else, the clock cases (9, 10) and a name mismatch included.
@@ -857,8 +908,8 @@ pub const BULK: Timeouts = Timeouts {
     low_speed_s: 30,
 };
 
-/// Protocol floor for a public redirect. A TLS request may remain TLS only; a plaintext request
-/// may stay plaintext or upgrade. Pure so the no-downgrade rule is host-testable.
+/// Initial protocol mask for a public redirect. A TLS start may remain TLS only; a plaintext
+/// start may upgrade. [`RedirectFloor`] retains that upgrade for the remainder of the transfer.
 fn allowed_redirect_protocols(url: &[u8]) -> c_long {
     if url
         .get(..8)
@@ -2097,8 +2148,8 @@ fn request_tls_sink(
     // re-sends custom headers to a redirect's target (it strips only `Authorization` and `Cookie`
     // when the host changes, and the television's 7.53.1 predates even that), so a `X-Plex-Token:`
     // line on a request that follows `Location:` would reach whatever host the answer names. The
-    // one caller that follows redirects (`https_get_public`, the QR fetch) sends none; this is what
-    // keeps it so for the next one.
+    // callers that follow redirects (`https_get_public`, the QR fetch, and `https_get_public_bounded`,
+    // the HUD install-from-address fetch) send none; this is what keeps it so for the next one.
     if follow_redirects && !headers.is_empty() {
         plx_base::eventlog::log("net: request refused: a request that follows redirects carries no caller headers");
         return Err(RequestError::Transport.into());
@@ -2178,6 +2229,7 @@ fn request_tls_sink(
             curl_easy_setopt_ptr(easy.0, CURLOPT_URL, url_c.as_ptr() as *const c_void);
             // In stream mode `sink` stays empty: the body goes through `stream`'s callbacks instead.
             let mut sink = BodySink::new(max_body);
+            sink.redirect = follow_redirects.then(|| RedirectFloor::new(url.as_bytes()));
             match stream {
                 None => {
                     curl_easy_setopt_ptr(easy.0, CURLOPT_WRITEFUNCTION, write_cb as *const c_void);
@@ -2188,7 +2240,11 @@ fn request_tls_sink(
                     );
                     // HEADERDATA without a HEADERFUNCTION would send header bytes to the write
                     // callback (into the body), so the data is set only once the function took.
-                    if curl_easy_setopt_ptr(easy.0, CURLOPT_HEADERFUNCTION, header_cb as *const c_void) == 0 {
+                    let header_rc = curl_easy_setopt_ptr(easy.0, CURLOPT_HEADERFUNCTION, header_cb as *const c_void);
+                    if follow_redirects {
+                        require_setopt!(header_rc, "CURLOPT_HEADERFUNCTION");
+                        require_setopt!(curl_easy_setopt_ptr(easy.0, CURLOPT_HEADERDATA, (&mut sink as *mut BodySink).cast()), "CURLOPT_HEADERDATA");
+                    } else if header_rc == 0 {
                         curl_easy_setopt_ptr(
                             easy.0,
                             CURLOPT_HEADERDATA,
@@ -2215,8 +2271,9 @@ fn request_tls_sink(
                     }
                 }
             }
-            // No curl call in this module may escape HTTP(S). The public QR fetch is the only one that
-            // follows redirects; it is capped, and an HTTPS start may never downgrade to plaintext.
+            // No curl call in this module may escape HTTP(S). The public fetches (the QR image and the HUD-package
+            // install-from-address) are the only ones that follow redirects; they are capped. The mask
+            // forbids a downgrade from an HTTPS start, and the header callback latches any later upgrade.
             require_setopt!(
                 curl_easy_setopt_long(easy.0, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS),
                 "CURLOPT_PROTOCOLS"
@@ -2833,11 +2890,28 @@ fn shipped_ca_bundle(dir: &std::path::Path) -> Option<String> {
 /// debugging a 400 and guessing at one.
 const TELEMETRY_MAX_REPLY: usize = 4096;
 
-/// Redirect-following HTTPS GET for a PUBLIC, credential-free resource. The QR image fetch is the
-/// only caller: at most five HTTP(S)-only redirects are followed, and an HTTPS request may never
-/// downgrade. Account/PMS requests keep redirects off because replayed headers/URLs carry tokens.
+/// Redirect-following HTTPS GET for a PUBLIC, credential-free resource. The QR image fetch
+/// (`session::auth`) calls it, and [`https_get_public_bounded`] is its body-bounded twin for the
+/// HUD-package install-from-address fetch: at most five HTTP(S)-only redirects are followed, and an
+/// HTTPS request may never downgrade. Account/PMS requests keep redirects off because replayed
+/// headers/URLs carry tokens.
 pub fn https_get_public(url: &str) -> Option<Resp> {
     request(url, &[], "GET", None, API, true, None, None)
+}
+
+/// [`https_get_public`] with a body bound, answering the whole [`RequestFailure`] instead of folding
+/// it to `None`: the address a viewer typed (`hudpacks::address`) can be a 404, a host that does not
+/// answer, a certificate this television's trust store cannot verify
+/// ([`RequestFailure::untrusted_chain`]) or a body past `max_body`, and each is told apart on the
+/// page. The same headerless, redirect-following request as [`https_get_public`] through the same
+/// entry: [`allowed_redirect_protocols`] restricts the initial scheme and [`RedirectFloor`] retains
+/// any later HTTPS upgrade. No curl option is added.
+///
+/// A body over `max_body` is never returned truncated: the transfer is aborted and the failure
+/// carries `body_limit` ([`RequestFailure::too_large`]). A reply that completed within the bound is
+/// `Ok` whatever its status, so a `404` is a value here, not an error.
+pub fn https_get_public_bounded(url: &str, max_body: usize) -> Result<Resp, RequestFailure> {
+    request_result_evidence(url, &[], "GET", None, API, true, Some(max_body), None, false)
 }
 
 /// The `nowan` gate shared by the three resolver doors ([`request_tls_result`],
@@ -3023,7 +3097,8 @@ pub mod resolve {
 /// doomed strict handshake, and a refusal by the bundle ([`roots_failed`]) ends it.
 ///
 /// **Redirects.** No mode crosses a redirect. The control plane never enters either mode for a request
-/// that follows one (the public QR fetch is the only such request), and the media plane follows
+/// that follows one (the public fetches, [`https_get_public`] and its bounded twin, are the only such
+/// requests), and the media plane follows
 /// redirects itself, one easy handle per hop, so each hop enters this module under its own `host:port`
 /// and begins where `begin` puts that host. Nothing a hop's handshake says is recorded against the
 /// host that redirected to it.
@@ -4126,6 +4201,58 @@ mod request_tests {
                 });
             }
         }
+    }
+
+    /// The install-from-address door: a body over the bound is a typed "too large" and never a
+    /// truncated `Ok`, a body within it (the bound itself included) is delivered, and a `404` is
+    /// a value the caller maps, not a transport failure.
+    #[test]
+    fn bounded_public_get_refuses_over_the_bound_and_delivers_under_it() {
+        let _serial = plx_base::testlock::serial();
+        assert!(global_init() && available());
+        for len in [31usize, 32, 33, 65536] {
+            let mut reply = format!("HTTP/1.1 200 OK\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n").into_bytes();
+            reply.extend(vec![b'x'; len]);
+            with_response(reply, false, |url| {
+                let got = https_get_public_bounded(url, 32);
+                if len <= 32 {
+                    let resp = got.ok().expect("a body within the bound is delivered");
+                    assert_eq!((resp.status, resp.body.len()), (200, len));
+                } else {
+                    let failure = got.err().expect("a body over the bound is refused, never truncated");
+                    assert!(failure.too_large(), "{failure:?}");
+                    assert_eq!(failure.body_limit, Some(32));
+                }
+            });
+        }
+        // The same over-bound answer without a Content-Length: the bound is enforced on the bytes
+        // that arrive, not on a header a server may omit or understate.
+        let mut chunked = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".to_vec();
+        chunked.extend(vec![b'x'; 64]);
+        with_response(chunked, false, |url| {
+            let failure = https_get_public_bounded(url, 32).err().expect("unframed over-bound body");
+            assert!(failure.too_large(), "{failure:?}");
+        });
+        with_response(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec(), false, |url| {
+            let resp = https_get_public_bounded(url, 32).ok().expect("a 404 completes");
+            assert_eq!((resp.status, resp.body.len()), (404, 0));
+        });
+    }
+
+    /// A host that answers nothing is a failure without a status or a bound, so the page says "could
+    /// not connect" and not "not found" or "too large".
+    #[test]
+    fn bounded_public_get_names_a_refused_connection() {
+        let _serial = plx_base::testlock::serial();
+        assert!(global_init() && available());
+        let failure = https_get_public_bounded(&format!("http://127.0.0.1:{}/", dead_port()), 32)
+            .err()
+            .expect("nothing listens");
+        assert!(!failure.too_large());
+        assert!(!failure.certificate_refused());
+        assert_eq!(failure.status, None);
+        assert_eq!(failure.untrusted_chain(), None);
+        assert_eq!(failure.curl_rc, Some(7), "CURLE_COULDNT_CONNECT");
     }
 
     #[test]

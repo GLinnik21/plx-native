@@ -319,7 +319,7 @@ impl AccountMenuScreen {
             Action::ChangeProfile => LoopReq::AccountChangeProfile,
             Action::SignIn => LoopReq::AccountSignIn,
             Action::SignOut => LoopReq::AccountSignOut,
-            Action::Settings => LoopReq::AccountSettings,
+            Action::Settings => LoopReq::OpenSettings(crate::registry::SettingsPage::Root),
             Action::SendDiagnostics => LoopReq::AccountSendDiagnostics,
         });
         if let Some(req) = req {
@@ -591,6 +591,7 @@ mod tests {
             flow_epoch: 0, phase: plx_session::auth::Phase::Ready, qr_generation: 0,
             code: std::sync::Arc::from(""), png: std::sync::Arc::from(Vec::<u8>::new()),
             code_replaced: false, users: std::sync::Arc::from(Vec::new()),
+            seated: std::sync::Arc::from(""),
             error: std::sync::Arc::from(""), pin_denied: false, profile: None,
             scope: plx_session::auth::owner::ProfileScope(0), delete_leftovers: 0,
             persistence_warning: None, incident: None, link_trouble: false,

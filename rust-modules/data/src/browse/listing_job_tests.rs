@@ -13,6 +13,8 @@ fn a_grid_step_emits_a_job_and_starts_no_worker_of_its_own() {
     let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, _sid, _client) = loopback_page_source();
     let _ = browse.pump();
+    // the pump's discovery step may have asked for its own read too: it is not this test's subject
+    browse.refuse_discovery_jobs();
     assert_eq!(browse.jobs.len(), 1, "the grid step left its first page as a job: {:?}", browse.jobs);
     assert!(adapter_fetching_for_test(&browse.adapter), "the step claimed the page fetch");
     plx_base::task::drain_workers_for_test();
@@ -28,7 +30,7 @@ fn a_filter_menu_step_emits_a_job_and_starts_no_worker_of_its_own() {
     let (_cleanup, mut browse, sid, _client) = loopback_page_source();
     browse.refill();
     let target = SectionAddress { epoch: browse.state.table_epoch(), sid, section: 1 };
-    for work in [crate::stores::browse::LibraryWork::Genres, crate::stores::browse::LibraryWork::Letters] {
+    for work in [crate::stores::browse::LibraryWork::Genres, crate::stores::browse::LibraryWork::Letters { today: None }] {
         assert!(browse.state.addressed_with_adapter(&browse.adapter, target, work, &browse.keys, &mut browse.jobs));
     }
     assert_eq!(browse.jobs.len(), 2, "one read per directory: {:?}", browse.jobs);

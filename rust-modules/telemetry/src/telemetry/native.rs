@@ -284,7 +284,11 @@ const TOP_FIELDS: &[&str] = &[
 const USER_FIELDS: &[&str] = &["id"];
 const SDK_FIELDS: &[&str] = &["name", "version"];
 pub(super) const OS_FIELDS: &[&str] = &["type", "name", "version", "build", "kernel_version"];
-pub(super) const WEBOS_FIELDS: &[&str] = &["type", "name", "release", "codename", "api"];
+/// `build` (the exact firmware build) is allowlisted but never set by the SDK's scope, like
+/// `probe` below: it rides the HANDLED events and both fallback reports that
+/// `sentry::attach_hardware_context` builds, and [`preview_event`] leaves it out because a real
+/// native crash event does not carry it.
+pub(super) const WEBOS_FIELDS: &[&str] = &["type", "name", "release", "build", "codename", "api"];
 /// issue #74: `rtkmem` (`ok`/`missing`/`n/a`, from [`plx_platform::tv::sandbox::context`]) and `install`
 /// (`devmode`/`homebrew`/`unknown`, from [`plx_base::paths::install_kind`]) ride on every native
 /// crash report beside the existing hardware compatibility class — the same two closed-enum
@@ -1210,7 +1214,9 @@ mod tests {
         assert_keys(&value, "/user", USER_FIELDS);
         assert_eq!(value["user"]["id"], PREVIEW_USER_ID);
         assert_keys(&value, "/contexts/os", OS_FIELDS);
-        assert_keys(&value, "/contexts/webos", WEBOS_FIELDS);
+        let shown: Vec<&str> = WEBOS_FIELDS.iter().copied().filter(|key| *key != "build").collect();
+        assert_keys(&value, "/contexts/webos", &shown);
+        assert!(value.pointer("/contexts/webos/build").is_none());
         // `probe` is allowlisted but never set by the SDK's scope, so a real native crash event (and
         // therefore this preview) has no such key; the handled and fallback reports show it.
         let shown: Vec<&str> =

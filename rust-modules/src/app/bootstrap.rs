@@ -42,16 +42,6 @@ impl HomeIo {
         self.requests.push(recorded);
         admitted
     }
-    pub(crate) fn discovery_owned(&mut self, stores: &plx_data::stores::Stores) {
-        self.discovery_owned_with(stores, &mut plx_data::browse::execute_discovery);
-    }
-
-    pub(crate) fn discovery_owned_with(&mut self, stores: &plx_data::stores::Stores,
-        launch: &mut dyn FnMut(plx_data::browse::DiscoveryRequest) -> bool) {
-        stores.browse_controlled_discover(&mut |request| {
-            self.admit(request.descriptor(), || launch(request))
-        });
-    }
 }
 
 pub(crate) const ADMISSION_SHAPE: &str = "HomeAdmissionV1{frame:u64,ordered_request:Home|Discovery,epoch:u32,sid:u16,client:u32,token_gen:u32,page:Option<{id:str,key:str,start:u64,before:bool,hidden:[i64]}>,admitted:bool}";

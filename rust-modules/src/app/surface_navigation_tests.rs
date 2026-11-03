@@ -363,7 +363,7 @@ fn leaving_the_player_with_a_panel_up_returns_the_page_in_the_route_s_own_frame(
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     let home = d.nav.top_page().map(|e| e.id);
     assert_eq!(frame(&mut d, &mut rig, AppArg::Player, tick(1), vec![]).0, "player");
-    open_player_overlay(plx_media::route::idle_session_for_test(), plx_data::stores::metadata::MetadataStore::default().view(), &mut d, OverlayKind::Info);
+    open_player_overlay(plx_media::route::idle_session_for_test(), plx_data::stores::metadata::MetadataStore::default().view(), &mut d, OverlayKind::More { page: None });
     frame(&mut d, &mut rig, AppArg::Player, tick(2), vec![]);
     assert!(player_overlay_up(&d), "the panel is on the player page's own ModalStack");
     // …`exit_player`'s own order: the panels are dismissed, then the route is the origin's.
@@ -378,8 +378,8 @@ fn leaving_the_player_with_a_panel_up_returns_the_page_in_the_route_s_own_frame(
 /// answers to, so a viewer who turned Stats on from `More` had no way back to the control that
 /// turns it off. `bridge::player_diagnostics_visible` is the decision `app/run.rs`'s player
 /// branch gates `app.diagnostics.draw()` on; this exercises it directly against the real
-/// `ModalStack`, across all four overlay kinds — the bug generalizes to `Tracks`/`Info`/
-/// `Chapters` too, since each is anchored well inside the panel's near-full-width rect.
+/// `ModalStack`, across every overlay kind — the bug generalizes to `Tracks` too, since each is
+/// anchored well inside the panel's near-full-width rect.
 #[test]
 fn player_diagnostics_hide_behind_any_open_player_overlay() {
     use plx_screens::player::overlay::OverlayKind;
@@ -398,9 +398,7 @@ fn player_diagnostics_hide_behind_any_open_player_overlay() {
     );
     for kind in [
         OverlayKind::Tracks { tab: 0 },
-        OverlayKind::Info,
-        OverlayKind::Chapters,
-        OverlayKind::More { quality: false },
+        OverlayKind::More { page: None },
     ] {
         open_player_overlay(
             plx_media::route::idle_session_for_test(),
@@ -429,6 +427,43 @@ fn player_diagnostics_hide_behind_any_open_player_overlay() {
             "{kind:?} closed — the panel draws again once the dismiss fade settles"
         );
     }
+}
+
+/// **The Stats panel stays behind an open HUD section too.** On `main` the Info card and the Chapters strip were
+/// `PlayerOverlay` surfaces, so `player_diagnostics_visible` held the panel back while either was up (and while one
+/// faded out); a section is the page's own state, not a surface, so the gate reads the page's sections as well. The
+/// rows are the ones `player_diagnostics_hide_behind_any_open_player_overlay` had before the switch: open, and
+/// closed once the fade has settled.
+#[test]
+fn player_diagnostics_hide_behind_an_open_hud_section() {
+    use plx_appkit::player_hud::command::Section;
+    let _g = plx_base::testlock::serial();
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    let mut t = 0u32;
+    let mut next = |d: &mut Dispatcher<AppHost>| {
+        t += 1;
+        frame(d, &mut rig, AppArg::Player, tick(t * 16), vec![])
+    };
+    next(&mut d);
+    assert!(player_diagnostics_visible(&d), "nothing is open yet");
+    toggle_player_section(&mut d, Section::Info);
+    for _ in 0..4 {
+        next(&mut d);
+    }
+    assert!(player(&d).is_some_and(|p| p.hud.sections.contains(Section::Info)), "premise: the section opened");
+    assert!(!player_diagnostics_visible(&d), "Info is open: the panel stays clear of it");
+    toggle_player_section(&mut d, Section::Info);
+    next(&mut d);
+    assert!(player(&d).is_some_and(|p| !p.hud.sections.any()), "premise: the section is closed");
+    assert!(!player_diagnostics_visible(&d), "a section fading out still counts, as a fading panel did");
+    for _ in 0..200 {
+        next(&mut d);
+        if player_diagnostics_visible(&d) {
+            break;
+        }
+    }
+    assert!(player_diagnostics_visible(&d), "closed: the panel draws again once the fade has settled");
 }
 
 /// Phase 5b: the Settings surface is PRESENTED on the tree, owns input from its first frame,
@@ -822,7 +857,7 @@ fn a_card_menus_commit_reports_one_request_carrying_the_row_it_captured() {
 /// **The Settings row hands one surface to another without ever un-freezing the host** (§16.5).
 ///
 /// The two ops are parked one frame apart — the screen's own `NavOp::Dismiss` commits on the
-/// press frame, and `LoopReq::AccountSettings` is drained after `bridge::frame` returns, so
+/// press frame, and `LoopReq::OpenSettings` is drained after `bridge::frame` returns, so
 /// `open_settings`' `Present` commits on the next one. The window between them is the risk: if
 /// the account sheet let go of the host on its press frame, the page would be re-rendered in
 /// full for one frame and re-snapshotted for the next, under a panel nobody can see, on the
@@ -841,7 +876,7 @@ fn a_card_menus_commit_reports_one_request_carrying_the_row_it_captured() {
 /// Red first, simulated: with the screen's `Dismiss` removed from `activate`, the account
 /// sheet stays `Open` `(Frozen, Cached)` under the Settings surface and this passes — so the
 /// discriminating half is the `Closing` assertion below, which fails without it. With
-/// `LoopReq::AccountSettings` mapped to `dismiss_surfaces` + `open_settings` in the WRONG
+/// `LoopReq::OpenSettings` mapped to `dismiss_surfaces` + `open_settings` in the WRONG
 /// order (present first, then dismiss all) the fold reads `(Frozen, Cached)` throughout and
 /// the Settings surface is dismissed with the sheet — caught by the `settings_up` assertion.
 #[test]
@@ -888,7 +923,11 @@ fn account_to_settings_never_unfreezes_the_host() {
 
     // …and the loop's drain performs the request on the next frame.
     let reqs = rig.take_reqs();
-    assert_eq!(reqs, vec![LoopReq::AccountSettings], "one request, and it is the Settings row's");
+    assert_eq!(
+        reqs,
+        vec![LoopReq::OpenSettings(plx_screens::family::SettingsPage::Root)],
+        "one request, and it is the Settings row's"
+    );
     open_settings(&mut d);
     for i in 0..12u32 {
         frame(&mut d, &mut rig, AppArg::Home, tick(20 + i), vec![]);
@@ -956,6 +995,93 @@ fn a_player_panel_is_a_surface_on_the_players_own_page_and_leaves_the_instance_a
     }
 }
 
+/// **The rect the app seeds the mounter with is the rect the menu mounts with, once.** The canonical
+/// `PlayerOverlayArg` is the panel's KIND, so the opener's anchor rides on the mounter
+/// (`Bridge::seed_player_menu_anchor`), is taken by the mount of the next menu, and is gone for the one after:
+/// a press that seeds nothing mounts the menu's own default, not the previous press's rect.
+#[test]
+fn a_seeded_menu_anchor_is_mounted_into_the_next_menu_and_only_that_one() {
+    use plx_screens::player::overlay::{OverlayKind, Panel};
+    let ps = plx_media::route::PlaybackSession::IDLE;
+    let meta = || plx_data::stores::metadata::MetadataStore::default();
+    let _g = plx_base::testlock::serial();
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    frame(&mut d, &mut rig, AppArg::Player, tick(0), vec![]);
+    let anchor_of = |d: &mut Dispatcher<AppHost>| match player_overlay_mut(d).expect("a panel is up").panel() {
+        Panel::Tracks(p) => p.anchor(),
+        Panel::More(p) => p.anchor(),
+        _ => panic!("a menu"),
+    };
+    let seeded = plx_ui::Rect::new(333.0, 222.0, 111.0, 55.0);
+    let own_default = plx_appkit::player_hud::audit_geometry().row;
+    assert_ne!(seeded, own_default);
+    for (kind, tick_at) in [(OverlayKind::Tracks { tab: 1 }, 1), (OverlayKind::More { page: None }, 5)] {
+        rig.seed_player_menu_anchor(Some(seeded));
+        open_player_overlay(&ps, meta().view(), &mut d, kind);
+        frame(&mut d, &mut rig, AppArg::Player, tick(tick_at), vec![]);
+        assert_eq!(anchor_of(&mut d), seeded, "{kind:?} mounts with the rect it was handed");
+        dismiss_player_overlays(&mut d);
+        frame(&mut d, &mut rig, AppArg::Player, tick(tick_at + 1), vec![]);
+        frame(&mut d, &mut rig, AppArg::Player, tick(tick_at + 2), vec![]);
+        // the seed is spent: an open that seeds nothing keeps the menu's own default
+        open_player_overlay(&ps, meta().view(), &mut d, kind);
+        frame(&mut d, &mut rig, AppArg::Player, tick(tick_at + 3), vec![]);
+        assert_eq!(anchor_of(&mut d), own_default, "{kind:?} with no seed mounts at its default");
+        dismiss_player_overlays(&mut d);
+        frame(&mut d, &mut rig, AppArg::Player, tick(tick_at + 4), vec![]);
+        frame(&mut d, &mut rig, AppArg::Player, tick(tick_at + 5), vec![]);
+    }
+}
+
+/// **The folded rows the app seeds are mounted into the next More menu, once, and into no other panel.** Like the
+/// opener's rect they ride the mounter (`Bridge::seed_player_more_folds`): a press that seeds nothing mounts the root
+/// More always had, and a Tracks menu opened with a seed pending ignores it (and leaves none for a later More).
+#[test]
+fn seeded_folded_rows_are_mounted_into_the_next_more_menu_and_only_that_one() {
+    use plx_appkit::more_menu::{Action, FoldedRow, MoreRow};
+    use plx_appkit::player_hud::command::HudCommand;
+    use plx_screens::player::overlay::{OverlayKind, Panel};
+    use plx_ui::form::FormId;
+    let ps = plx_media::route::PlaybackSession::IDLE;
+    let meta = || plx_data::stores::metadata::MetadataStore::default();
+    let _g = plx_base::testlock::serial();
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    frame(&mut d, &mut rig, AppArg::Player, tick(0), vec![]);
+    let seeded = || vec![FoldedRow { command: HudCommand::FromBeginning, label: "From Beginning" }];
+    let folded_key = MoreRow::Act(Action::Hud(HudCommand::FromBeginning)).key().0;
+    let has_row = |d: &mut Dispatcher<AppHost>| match player_overlay_mut(d).expect("a panel is up").panel() {
+        Panel::More(p) => p.keys().contains(&folded_key),
+        _ => false,
+    };
+    let at = std::cell::Cell::new(1);
+    let next = || at.replace(at.get() + 1);
+    let open = |d: &mut Dispatcher<AppHost>, rig: &mut Bridge, kind| {
+        open_player_overlay(&ps, meta().view(), d, kind);
+        frame(d, rig, AppArg::Player, tick(next()), vec![]);
+    };
+    let close = |d: &mut Dispatcher<AppHost>, rig: &mut Bridge| {
+        dismiss_player_overlays(d);
+        for _ in 0..2 {
+            frame(d, rig, AppArg::Player, tick(next()), vec![]);
+        }
+    };
+    plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+    rig.seed_player_more_folds(seeded());
+    open(&mut d, &mut rig, OverlayKind::More { page: None });
+    assert!(has_row(&mut d), "More mounts with the rows it was handed");
+    close(&mut d, &mut rig);
+    open(&mut d, &mut rig, OverlayKind::More { page: None });
+    assert!(!has_row(&mut d), "the seed is spent: the next More is the root it always was");
+    close(&mut d, &mut rig);
+    rig.seed_player_more_folds(seeded());
+    open(&mut d, &mut rig, OverlayKind::Tracks { tab: 1 });
+    close(&mut d, &mut rig);
+    open(&mut d, &mut rig, OverlayKind::More { page: None });
+    assert!(!has_row(&mut d), "a Tracks menu spent the seed");
+}
+
 /// **`ScreenArg::same_instance` compares the PLAYBACK, never the panel** (§16.9), and the two
 /// arguments are different KINDS: a panel is `AppArg::PlayerOverlay`, so it can never be
 /// mistaken for the page it stands on. Two panels of different kinds are two instances —
@@ -975,9 +1101,9 @@ fn same_instance_reads_the_playback_and_not_the_overlay() {
         );
         assert!(panel.same_instance(&AppArg::PlayerOverlay(PlayerOverlayArg { kind })));
     }
-    assert!(!AppArg::PlayerOverlay(PlayerOverlayArg { kind: OverlayKind::Info })
+    assert!(!AppArg::PlayerOverlay(PlayerOverlayArg { kind: OverlayKind::Tracks { tab: 0 } })
         .same_instance(&AppArg::PlayerOverlay(PlayerOverlayArg {
-            kind: OverlayKind::Chapters
+            kind: OverlayKind::More { page: None }
         })));
     // The panel that carries a parameter is still ONE panel: reopening the track menu on the
     // other tab reuses the entry rather than stacking a second one, exactly as

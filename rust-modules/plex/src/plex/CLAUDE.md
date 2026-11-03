@@ -354,7 +354,11 @@ The whole shared-source feature rests on keeping these apart:
   RANKS favourites first, because a browsing preference is not an authorization boundary and
   removing results would invent a false negative for a film the user owns and can play. The
   unscoped list survives as `browse::all_source_rows`, which is the Favorite libraries editor's, and
-  is the only way a non-favourite comes back. The rules are `pins.rs` (pure); the store is keyed by
+  is the only place a library is switched back on. It is no longer the only way to BROWSE a
+  non-favourite: the Library's Sort & Filter menu lists every reachable library of the viewed type,
+  favourite or not, and its header pill shows while that library is on view. Such a pick is not
+  remembered as the profile's last library (`remembered_section` restores favourites only). The
+  `+N` Sources picker and the tab strip stay favourites-only. The rules are `pins.rs` (pure); the store is keyed by
   the profile's `uuid`; the page that asks once is `AppArg::Onboard` (`Route::Onboard` before
   restructure phase 12 (D1) retired `enum Route`), first-run *Favorite
   libraries* — `ui::onboard` through phase 4, `screens::onboard`'s owned `OnboardScreen` since
@@ -508,8 +512,9 @@ a dead source is **absent** from Home and states itself in its own library secti
   in `profile_prefs` (`[{user, account, prefs}]`, `account` the `grant::account_key` stamp, the owner
   `user: ""`), and what a profile reads is `stored_effective` = its own value, else the frozen
   top-level key (`Setting::get`, a garbage own value included), else the default. The top-level keys
-  are never copied and never written by a pick (`persist_profile_pref` is the only writer; it
-  refuses without a seat, across a tenure or credential change and with an empty stamp, and prunes
+  are never copied and never written by a pick (`persist_profile_pref`, for a `Copy` `Setting`, and `persist_profile_hud`, for the HUD package id string,
+  are the only writers and share `persist_profile_with`; they
+  refuse without a seat, across a tenure or credential change and with an empty stamp, and prunes
   records of other accounts). `profile_prefs` is account-bound (`ACCOUNT_BOUND_PREFERENCES`, so
   sign-out drops it and the legacy keys stay). Who is seated is `session::Seat`
   (`Seat::of(profile, stamp)`, `current_seat()`); the live cells follow it in `plx_media::route`.

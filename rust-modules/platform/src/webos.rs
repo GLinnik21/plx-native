@@ -63,8 +63,13 @@ fn parse(s: &str) -> Info {
         .next()
         .and_then(|m| m.parse::<u32>().ok())
         .unwrap_or(0);
+    let build = match get("core_os_release") {
+        b if b.is_empty() => release.clone(),
+        b => b,
+    };
     Info {
         release,
+        build,
         codename: get("webos_release_codename"),
         api: get("webos_api_version"),
         name: get("webos_name"),
@@ -425,29 +430,59 @@ pub fn activate_storage_helper(_service: &str) -> crate::storage::wire::failure:
     Detail::new(Stage::Unsupported, None)
 }
 
+/// One `getSystemSettings` round trip on a fresh anonymous registration (any thread: the
+/// registration owns its glib context). `None` when the bus refused or timed out. `budget` bounds
+/// the call only: registration and unregistration are not bounded by it (`ls2`'s own doc says so).
+#[cfg(all(not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
+fn settings_reply(payload: &str, budget: std::time::Duration) -> Option<String> {
+    ls2::register()
+        .map_err(ls2::Fail::from)
+        .and_then(|client| client.call("luna://com.webos.settingsservice/getSystemSettings", payload, budget))
+        .ok()
+}
+
 /// What the platform's settings service says about the locale; `i18n` owns the parse and the log
 /// lines. The same 600 ms bus budget as a root press, and for the same reason: the caller is the
 /// main thread at boot.
 #[cfg(all(not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
 pub fn system_locale() -> crate::tv::LocaleReply {
-    let result = ls2::register()
-        .map_err(ls2::Fail::from)
-        .and_then(|client| {
-            client.call(
-                "luna://com.webos.settingsservice/getSystemSettings",
-                r#"{"keys":["localeInfo"]}"#,
-                std::time::Duration::from_millis(600),
-            )
-        });
-    match result {
-        Ok(raw) => crate::tv::LocaleReply::Reply(raw),
-        Err(_) => crate::tv::LocaleReply::Unavailable,
+    match settings_reply(r#"{"keys":["localeInfo"]}"#, std::time::Duration::from_millis(600)) {
+        Some(raw) => crate::tv::LocaleReply::Reply(raw),
+        None => crate::tv::LocaleReply::Unavailable,
     }
 }
 
 #[cfg(any(feature = "hostsim", test, feature = "test-support"))]
 pub fn system_locale() -> crate::tv::LocaleReply {
     crate::tv::LocaleReply::NoPlatform
+}
+
+/// What the settings service says about the active sound output; `tv::sound` owns the parse and the
+/// log line. The caller is the player's Load thread (never the frame thread), once per PCM Load, only on
+/// a stack whose lead follows the output (`liblxa`, `audiosink_new`; see `player::engine::pcm_lead_plan`);
+/// other stacks never ask. The Load waits for it.
+///
+/// **What 300 ms bounds, and what it does not.** It bounds the call: a healthy round trip is tens of
+/// milliseconds (not yet measured on the set; `tv::sound::output` logs it per read), so 300 ms has
+/// room to spare, and the answer moves the lead by at most 150 ms (400 to 250), so a longer wait is
+/// not worth a later start. It does NOT bound the registration in front of the call or the unregistration
+/// behind it (`ls2`'s own doc: they sit outside the budget), and no bounded registration exists in
+/// `ls2` to use instead. On a wedged luna hub the Load thread therefore blocks in `ls2::register()`
+/// before `Load` is ever called, for as long as the hub takes: this Load is delayed by that, and is
+/// failed by the pump's `NATIVE_LOAD_BUDGET` if the wait outlasts it. A hub that answers the
+/// registration and then stays silent costs the call's 300 ms and keeps the 400 ms default.
+#[cfg(all(not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
+pub fn sound_output() -> crate::tv::sound::Reply {
+    use crate::tv::sound::Reply;
+    match settings_reply(r#"{"category":"sound","keys":["soundOutput"]}"#, std::time::Duration::from_millis(300)) {
+        Some(raw) => Reply::Reply(raw),
+        None => Reply::Unavailable,
+    }
+}
+
+#[cfg(any(feature = "hostsim", test, feature = "test-support"))]
+pub fn sound_output() -> crate::tv::sound::Reply {
+    crate::tv::sound::Reply::NoPlatform
 }
 
 #[cfg(all(not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
@@ -525,12 +560,22 @@ pub fn bind_window(win: *mut std::os::raw::c_void) {
 #[cfg(any(feature = "hostsim", test, feature = "test-support"))]
 pub fn bind_window(_win: *mut std::os::raw::c_void) {}
 
+/// The URI-mode media pipe the port installs (`tv::Port::uri_media`, the developer probe of issue
+/// #1064): the bus worker on the television, nothing in the simulator and in tests, like
+/// [`bind_window`].
+#[cfg(all(feature = "devtriggers", not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
+pub const URI_MEDIA: &dyn crate::tv::uri::UriMedia = &ls2::uri::Transport;
+
+#[cfg(all(feature = "devtriggers", any(feature = "hostsim", test, feature = "test-support")))]
+pub const URI_MEDIA: &dyn crate::tv::uri::UriMedia = &crate::tv::uri::NoUriMedia;
+
 /// One LS2 request/reply, on the calling thread.
 ///
-/// **The one LS2 client this process has**, shared by every caller that speaks to the bus from
-/// this application: [`super::launch_home`] (one 600 ms call on the SDL main thread) and
-/// `keymanager::platform::Client` (a registration kept alive across begin → finish, 4 s budget).
-/// Until 2026-09-04 it was two private copies, both registering with
+/// **The one LS2 client the frame-thread callers share**, [`super::launch_home`] (one 600 ms call
+/// on the SDL main thread) and `keymanager::platform::Client` (a registration kept alive across
+/// begin → finish, 4 s budget). A `devtriggers` build's URI-mode probe runs a separate client on
+/// its own thread (`ls2::uri`).
+/// Until 2026-09-04 that client was two private copies, both registering with
 /// `LSRegisterApplicationService(NULL, app_id)`, and on this set that registration is REFUSED:
 /// `ls-hubd LSHUB_ROLE_FILE: Can not find service "" permissions for executable ".../plxnative"`
 /// once per root press, the app logging `stage=register after 2ms` having freed the LSError
@@ -547,10 +592,13 @@ pub fn bind_window(_win: *mut std::os::raw::c_void) {}
 /// | `LSRegisterApplicationService(NULL, app_id)` | `-1027 Invalid permissions for (null)` — the `""` name has no permissions entry |
 /// | **`LSRegister(NULL)`** | registered, and `com.webos.applicationManager/getForegroundAppInfo` answered it |
 ///
-/// So every caller registers as a plain anonymous client, [`register`]. The role file still
-/// decides what such a client may CALL — the probe proves SAM's read-only method; `launch_home`
-/// grades the reply of the one that matters — and the hub's refusal, when there is one, travels
-/// in [`RegisterFail`] to the caller's log line instead of being freed. Anonymous clients do not
+/// Every production caller registers as a plain anonymous client, [`register`]. The one exception
+/// is the `devtriggers` URI-mode probe's worker (`ls2::uri`): it owns its own handle and thread
+/// and tries the named shape `com.webos.media.client.plxprobe` first, because whether the hub
+/// accepts that is what the probe measures. The role file still decides what such a client may
+/// CALL — the probe proves SAM's read-only method; `launch_home` grades the reply of the one that
+/// matters — and the hub's refusal, when there is one, travels in [`RegisterFail`] to the
+/// caller's log line instead of being freed. Anonymous clients do not
 /// collide with each other, so nothing here is serialised; a registration lives for one caller's
 /// use and is unregistered on drop, as both copies always did.
 #[cfg(all(not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
@@ -558,6 +606,10 @@ pub mod ls2 {
     use std::ffi::{CStr, CString};
     use std::os::raw::{c_char, c_int, c_void};
     use std::time::{Duration, Instant};
+
+    /// The URI-mode probe's transport (issue #1064): a worker that owns its own bus handle.
+    #[cfg(feature = "devtriggers")]
+    pub(super) mod uri;
 
     /// How long [`call_once`] waits for SAM's reply.
     ///
@@ -598,6 +650,18 @@ pub mod ls2 {
         fn LSGmainContextAttach(
             handle: *mut c_void,
             context: *mut c_void,
+            error: *mut LSError,
+        ) -> bool;
+        /// `LSCall`: the call that keeps its token and delivers EVERY message the callee sends on
+        /// it. The URI-mode probe's subscription needs that; every other caller wants one reply.
+        #[cfg(feature = "devtriggers")]
+        fn LSCall(
+            handle: *mut c_void,
+            uri: *const c_char,
+            payload: *const c_char,
+            callback: extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> bool,
+            context: *mut c_void,
+            token: *mut libc::c_ulong,
             error: *mut LSError,
         ) -> bool;
         fn LSCallOneReply(
@@ -671,13 +735,25 @@ pub mod ls2 {
         }
     }
 
-    /// Why there is no registration: the STAGE (`app-id`, `glib-context`, `register`, `attach`)
-    /// and, when the hub gave one, its own message.
+    /// Registration failure and its stage. `register-unregister` / `attach-unregister` retain
+    /// unresolved handles and contexts; other stages have confirmed cleanup.
     #[derive(Debug)]
     pub enum RegisterFail {
         Setup { stage: &'static str, detail: String,
             #[allow(dead_code)] // Numeric diagnostics are consumed by the ARM helper activation path.
             code: Option<i32> },
+    }
+
+    impl RegisterFail {
+        #[cfg(feature = "devtriggers")]
+        fn uri_diagnostic(&self) -> (&'static str, Option<i32>) {
+            match self { Self::Setup {stage, code, ..} => (*stage, *code) }
+        }
+
+        #[cfg(feature = "devtriggers")]
+        fn release_confirmed(&self) -> bool {
+            !matches!(self, Self::Setup { stage: "attach-unregister" | "register-unregister", .. })
+        }
     }
 
     impl std::fmt::Display for RegisterFail {
@@ -704,6 +780,12 @@ pub mod ls2 {
     /// Register as a plain anonymous client — the one shape the hub accepts from this process
     /// (module doc) — on a private glib context.
     pub fn register() -> Result<Registration, RegisterFail> {
+        register_as(None)
+    }
+
+    /// [`register`] under `name`, or anonymously for `None`. The named shape is the developer
+    /// probe's (`uri`): a name the Developer Mode role file grants outbound permission to.
+    pub fn register_as(name: Option<&CStr>) -> Result<Registration, RegisterFail> {
         let mut error: LSError = unsafe { std::mem::zeroed() };
         unsafe { LSErrorInit(&mut error) };
         let context = unsafe { g_main_context_new() };
@@ -715,16 +797,16 @@ pub mod ls2 {
             });
         }
         let mut handle = std::ptr::null_mut();
-        let registered = unsafe { LSRegister(std::ptr::null(), &mut handle, &mut error) };
+        let registered = unsafe { LSRegister(name.map_or(std::ptr::null(), CStr::as_ptr), &mut handle, &mut error) };
         if !registered || handle.is_null() {
             let code = Some(error.error_code);
             let detail = error_text(&error);
-            unsafe {
-                LSErrorFree(&mut error);
-                g_main_context_unref(context);
-            }
+            reset(&mut error);
+            let released = handle.is_null() || unsafe { LSUnregister(handle, &mut error) };
+            unsafe { LSErrorFree(&mut error) };
+            if released { unsafe { g_main_context_unref(context) }; }
             return Err(RegisterFail::Setup {
-                stage: "register",
+                stage: if released { "register" } else { "register-unregister" },
                 detail, code,
             });
         }
@@ -733,13 +815,12 @@ pub mod ls2 {
             let code = Some(error.error_code);
             let detail = error_text(&error);
             reset(&mut error);
-            unsafe {
-                LSUnregister(handle, &mut error);
-                LSErrorFree(&mut error);
-                g_main_context_unref(context);
-            }
+            let released = unsafe { LSUnregister(handle, &mut error) };
+            unsafe { LSErrorFree(&mut error) };
+            if released { unsafe { g_main_context_unref(context) }; }
+            // Failed cleanup leaves the handle and context alive. URI ownership must quarantine.
             return Err(RegisterFail::Setup {
-                stage: "attach",
+                stage: if released { "attach" } else { "attach-unregister" },
                 detail, code,
             });
         }
@@ -747,23 +828,35 @@ pub mod ls2 {
         Ok(Registration { handle, context })
     }
 
-    impl Drop for Registration {
-        fn drop(&mut self) {
+    impl Registration {
+        /// Unregister and free the context. `false` when the hub refused: the handle is then still
+        /// attached to the context, which is leaked rather than freed under it, so anything its
+        /// callbacks point at must stay valid too. Idempotent: once it has succeeded, a second
+        /// call (and the drop after it) does nothing.
+        fn unregister(&mut self) -> bool {
+            if self.handle.is_null() {
+                return true;
+            }
             let mut error: LSError = unsafe { std::mem::zeroed() };
             unsafe { LSErrorInit(&mut error) };
             let unregistered = unsafe { LSUnregister(self.handle, &mut error) };
             if unregistered {
                 unsafe { g_main_context_unref(self.context) };
+                self.handle = std::ptr::null_mut();
             } else {
                 // A handle that would not unregister is still attached to this context, so the
                 // context is leaked rather than freed under it — a bounded leak, once per failed
                 // teardown, against a use-after-free (Codex review, 2026-09-04).
-                plx_base::eventlog::log(&format!(
-                    "ls2: unregister refused — leaking its glib context ({})",
-                    error_text(&error)
-                ));
+                plx_base::eventlog::log("ls2: unregister refused — retaining its glib context");
             }
             unsafe { LSErrorFree(&mut error) };
+            unregistered
+        }
+    }
+
+    impl Drop for Registration {
+        fn drop(&mut self) {
+            self.unregister();
         }
     }
 
@@ -1022,6 +1115,9 @@ mod tests {
 
     #[test]
     fn reads_the_dev_sets_real_os_info() {
+        assert_eq!(parse(REAL).build, "4.10.2-31", "the build is nyx's core_os_release");
+        assert_eq!(parse(r#"{"webos_release": "4.10.2"}"#).build, "4.10.2", "without the key the release stands in");
+        assert_eq!(parse("").build, "");
         assert_eq!(field(REAL, "webos_release"), Some("4.10.2"));
         assert_eq!(
             field(REAL, "webos_release_codename"),

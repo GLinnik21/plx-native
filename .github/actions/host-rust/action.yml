@@ -42,7 +42,7 @@ runs:
       # is byte-for-byte the one `make check` ran against, and the ARM cross-build's.
       uses: ./.github/actions/rust-toolchain
 
-    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       # The cache key already carries the calling job's id, so the three Rust jobs each keep their
       # own `target/` instead of racing to save one.
       with:

@@ -1,12 +1,12 @@
 //! A read-back that patches a row of a listing whose MEMBERSHIP depends on viewing (the Unwatched
-//! switch, ordering by last viewed) marks that section stale; the stale listing is re-run exactly
+//! switch, ordering by last viewed, plays or the unplayed count) marks that section stale; the stale listing is re-run exactly
 //! once, on request, and never by the patch itself.
 
 use super::test_support::*;
 use super::*;
 use crate::viewstate::{ViewAt, ViewEdit};
 
-const WATCHED_FACTS: ViewEdit = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0 };
+const WATCHED_FACTS: ViewEdit = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0, sort: None };
 
 fn resident(sid: ServerId, browse: &mut TestBrowse) {
     let state = browse.state.state_mut(0).unwrap();
@@ -18,7 +18,7 @@ fn resident(sid: ServerId, browse: &mut TestBrowse) {
 
 fn apply(browse: &mut TestBrowse, sid: ServerId, edit: ViewEdit) -> bool {
     browse.state.run_owned(&browse.adapter, crate::stores::browse::BrowseCmd::ApplyView {
-        at: ViewAt::leaf(sid, "7"), edit }, &ClientKeys::default(), &mut Vec::new())
+        at: ViewAt::leaf(sid, "7"), edit }, &ClientKeys::default(), &plx_plex::plex::session::peek(), &mut Vec::new())
 }
 
 fn stale(browse: &mut TestBrowse) -> bool {
@@ -69,6 +69,28 @@ fn ordering_by_last_viewed_makes_a_facts_patch_stale() {
         key: "lastViewedAt".into(), desc_key: "lastViewedAt:desc".into(), title: "Last Viewed".into(), default_desc: true }]);
     assert!(apply(&mut browse, sid, WATCHED_FACTS));
     assert!(stale(&mut browse));
+}
+
+/// The plays and the unplayed count are values a watch changes, as the last-viewed date is: the grid
+/// sorted by either is out of order after a read-back, and the rail's counts (made after the watch)
+/// would not describe the pages on screen. Sorts a watch does not move stay current.
+#[test]
+fn ordering_by_plays_or_the_unplayed_count_makes_a_facts_patch_stale_and_other_sorts_do_not() {
+    for (key, stale_after_a_watch) in [
+        ("viewCount", true), ("unviewedLeafCount", true), ("lastViewedAt", true),
+        ("rating", false), ("duration", false), ("addedAt", false), ("titleSort", false),
+    ] {
+        let _g = plx_base::testlock::serial();
+        let (_cleanup, mut browse, sid, _) = registered_page_source();
+        resident(sid, &mut browse);
+        browse.state.state_mut(0).unwrap().sorts = Arc::new(vec![SortEntry {
+            key: key.into(), desc_key: format!("{key}:desc"), title: key.into(), default_desc: true }]);
+        assert!(apply(&mut browse, sid, WATCHED_FACTS), "{key}: the row is patched where it stands");
+        assert_eq!(stale(&mut browse), stale_after_a_watch, "{key}");
+        if stale_after_a_watch {
+            assert!(browse.state.requery_stale(), "{key}: the grid is asked again, keeping the reader's place");
+        }
+    }
 }
 
 #[test]
@@ -149,7 +171,7 @@ fn an_agreeing_read_back_resets_a_stale_section_that_is_not_showing() {
 
 fn listings_changed(browse: &mut TestBrowse, sid: ServerId, library_on_stack: bool) -> bool {
     browse.state.run_owned(&browse.adapter, crate::stores::browse::BrowseCmd::ListingsChanged { sid, library_on_stack },
-        &ClientKeys::default(), &mut Vec::new())
+        &ClientKeys::default(), &plx_plex::plex::session::peek(), &mut Vec::new())
 }
 
 #[test]

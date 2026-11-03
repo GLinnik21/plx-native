@@ -18,6 +18,9 @@
 //! word (§2.1).
 
 use plx_appkit::held_key::HeldKey;
+use plx_appkit::player_hud::command::Section;
+use plx_appkit::player_hud::geometry::{GROUP_ROW, GROUP_SCRUB, GROUP_SECTION, GROUP_STRIP, GROUP_TABS};
+use plx_machine::machine::GroupId;
 use std::os::raw::c_int;
 
 /// Is the transport HUD on screen? Its timer is live, OR playback is paused, OR the pipeline is
@@ -152,6 +155,67 @@ impl Scrub {
         plx_appkit::player_hud::scrub_clamp_target(ns, duration_ns)
     }
 }
+/// **Which sections are open**, most recent first: at most the package's two ([`Section`]), a `Copy` value the
+/// screen's state machine edits and the draw reads as the `open` bits of the compiled state.
+///
+/// The policy is the PACKAGE's ([`plx_appkit::hud_format::compile::Compiled::sections_modal`], D6): a **modal**
+/// section replaces whichever is open, an **inline** one opens beside it. BACK closes the latest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sections {
+    open: [Option<Section>; 2],
+}
+
+impl Sections {
+    pub const NONE: Sections = Sections { open: [None, None] };
+
+    pub fn any(self) -> bool {
+        self.open[0].is_some()
+    }
+
+    pub fn contains(self, section: Section) -> bool {
+        self.open.contains(&Some(section))
+    }
+
+    /// The section opened last: the one BACK closes and the one the keys travel into.
+    pub fn latest(self) -> Option<Section> {
+        self.open[0]
+    }
+
+    /// The open sections, latest first.
+    pub fn iter(self) -> impl Iterator<Item = Section> {
+        self.open.into_iter().flatten()
+    }
+
+    /// The `open` key of the compiled state these sections select.
+    pub fn bits(self) -> u8 {
+        self.iter().fold(0, |bits, s| bits | s.open_bit())
+    }
+
+    /// `section` toggled under the package's policy: an open one closes; a closed one opens as the latest,
+    /// replacing the others when the policy is modal.
+    pub fn toggled(self, section: Section, modal: bool) -> Sections {
+        if self.contains(section) {
+            return self.closed(section);
+        }
+        let older = if modal { None } else { self.open[0] };
+        Sections { open: [Some(section), older] }
+    }
+
+    /// `section` closed, the others kept in order.
+    pub fn closed(self, section: Section) -> Sections {
+        let mut it = self.iter().filter(|s| *s != section);
+        Sections { open: [it.next(), it.next()] }
+    }
+
+    /// The group that holds the keys of `section`'s page.
+    pub fn group_of(section: Section) -> GroupId {
+        match section {
+            Section::Chapters => GROUP_STRIP,
+            Section::Info => GROUP_SECTION,
+        }
+    }
+}
+
 /// The player HUD's focus cursor: WHICH row owns focus, plus the index WITHIN each of the
 /// two indexed rows. One cursor, not three settings — the three are drawn together every
 /// frame (`draw_hud`), moved together by UP/DOWN, and, the reason they are bundled here,
@@ -159,12 +223,18 @@ impl Scrub {
 ///
 /// As three loose `plex_run` locals they were never reset at all: `start_playback` sets the
 /// route, the resume point and the HUD timer, but the focus cursor survived from the
-/// PREVIOUS session — leave one movie with the Subtitles button focused (`focus == 1`),
+/// PREVIOUS session — leave one movie with the Subtitles button focused (`focus == GROUP_ROW`),
 /// start another, and the first OK opened the track menu instead of pausing. Bundling makes
 /// "reset the HUD focus" one assignment that `start_playback` cannot half-do.
 #[derive(Clone, Copy)]
 pub struct HudNav {
-    pub focus: i32, // 0 = scrubber, 1 = right buttons (Subtitles/Audio/More), 2 = bottom tabs
+    /// Which of the HUD's FocusEngine groups holds focus: [`GROUP_SCRUB`] (the scrubber),
+    /// [`GROUP_ROW`] (the control row: Subtitles/Audio/More, the Skip pill or the Up Next pair),
+    /// [`GROUP_TABS`] (the bottom tabs) or, while a section is open, [`GROUP_SECTION`] (the Info buttons) or
+    /// [`GROUP_STRIP`] (the Chapters cards). It MIRRORS the engine's focus, which is the authority:
+    /// `PlayerScreen::step` writes it on `FocusMoved` and every other write is paired with a
+    /// re-seat. The canon hash writes its `.0`, where the integer used to be.
+    pub focus: GroupId,
     pub btn: i32,   // 0 = Previous, 1 = Next, 2 = Subtitles, 3 = Audio, 4 = More
     pub tab: i32,   // 0 = Info, 1 = Chapters (within the tabs row)
 }
@@ -172,7 +242,7 @@ impl HudNav {
     /// Focus parked on the scrubber, both indexed rows on their first item — where a fresh
     /// session starts and where an auto-hidden HUD is re-parked.
     pub const HOME: HudNav = HudNav {
-        focus: 0,
+        focus: GROUP_SCRUB,
         btn: 0,
         tab: 0,
     };
@@ -240,6 +310,10 @@ pub struct HudState {
     /// stand-in vanishing under the focus ring — see `player_hud::standin_left_the_ring`,
     /// which is where that rule is written down and tested.
     pub was_standin: bool,
+    /// **The sections open on the transport** (Chapters, Info): the package's own pages, drawn from the compiled
+    /// state their bits select and opened, travelled, pressed and closed by this screen (PR8). The screen is
+    /// their one owner; the app asks for a toggle with `AppMsg::HudSection`.
+    pub sections: Sections,
 }
 impl HudState {
     /// Focus at rest, no timer, nothing dismissed, no segment seen yet, discs in the control row.
@@ -252,12 +326,14 @@ impl HudState {
         back_leaves_at_press: false,
         last_offer: None,
         was_standin: false,
+        sections: Sections::NONE,
     };
 
     /// Is the transport on screen right now, by this HUD's own state?
     #[inline]
     pub fn visible(&self, ps: &plx_media::route::PlaybackSession, now: u32, is_paused: bool) -> bool {
-        hud_visible(ps, now, self.until, is_paused, self.dismissed)
+        // an open section is the transport's own page: it stays up for as long as it is open
+        self.sections.any() || hud_visible(ps, now, self.until, is_paused, self.dismissed)
     }
 
     /// Raise the HUD to at least `now + ms`, never PULLING IN a deadline already further out.
@@ -351,8 +427,8 @@ impl HudState {
     pub fn raise_for_offer(&mut self, now: u32, primary: c_int) {
         self.extend(now, HUD_LINGER_MS);
         self.dismissed = false;
-        if self.nav.focus == 0 {
-            self.nav.focus = 1;
+        if self.nav.focus == GROUP_SCRUB {
+            self.nav.focus = GROUP_ROW;
             self.nav.btn = primary;
         }
     }
@@ -388,13 +464,16 @@ pub enum ScrubPress {
 }
 
 /// The decision above, written once so the key arm and its test cannot disagree.
-pub fn scrub_press(hud_vis: bool, focus: i32, seekable: bool) -> ScrubPress {
+pub fn scrub_press(hud_vis: bool, focus: GroupId, seekable: bool) -> ScrubPress {
     if !hud_vis {
         return ScrubPress::Reveal;
     }
     match focus {
-        1 => ScrubPress::Row,
-        2 => ScrubPress::Tabs,
+        // the chapters strip is walked sideways by the engine like the row
+        GROUP_ROW | GROUP_STRIP => ScrubPress::Row,
+        GROUP_TABS => ScrubPress::Tabs,
+        // an open section's buttons are a column: a sideways key has nowhere to go and must not scrub
+        GROUP_SECTION => ScrubPress::Nothing,
         _ if seekable => ScrubPress::Jump,
         _ => ScrubPress::Nothing,
     }
@@ -434,6 +513,44 @@ pub fn failed_key_action(key: FailedKey, sel: usize, n: usize) -> FailedKeyActio
         FailedKey::Left if sel > 0 => FailedKeyAction::Focus(sel - 1),
         FailedKey::Right if sel < last => FailedKeyAction::Focus(sel + 1),
         _ => FailedKeyAction::Ignore,
+    }
+}
+
+/// **The sections-open value** (PR8): what a toggle does under each policy, and what BACK sees.
+#[cfg(test)]
+mod sections_tests {
+    use super::*;
+
+    #[test]
+    fn a_modal_section_replaces_the_one_open_and_an_inline_one_opens_beside_it() {
+        let chapters = Sections::NONE.toggled(Section::Chapters, true);
+        assert_eq!((chapters.latest(), chapters.bits()), (Some(Section::Chapters), Section::Chapters.open_bit()));
+        let modal = chapters.toggled(Section::Info, true);
+        assert_eq!(modal.iter().collect::<Vec<_>>(), vec![Section::Info], "modal: Info replaced Chapters");
+        let inline = chapters.toggled(Section::Info, false);
+        assert_eq!(
+            inline.iter().collect::<Vec<_>>(),
+            vec![Section::Info, Section::Chapters],
+            "inline: Info opened beside Chapters, as the latest"
+        );
+        assert_eq!(inline.bits(), Section::Chapters.open_bit() | Section::Info.open_bit());
+    }
+
+    #[test]
+    fn toggling_an_open_section_closes_it_and_keeps_the_others_in_order() {
+        let both = Sections::NONE.toggled(Section::Chapters, false).toggled(Section::Info, false);
+        assert_eq!(both.latest(), Some(Section::Info), "BACK closes the one opened last");
+        let rest = both.toggled(Section::Info, false);
+        assert_eq!(rest.iter().collect::<Vec<_>>(), vec![Section::Chapters]);
+        assert_eq!(both.closed(Section::Chapters).iter().collect::<Vec<_>>(), vec![Section::Info]);
+        assert!(!rest.closed(Section::Chapters).any());
+        assert_eq!(Sections::NONE.bits(), 0);
+    }
+
+    #[test]
+    fn a_section_is_a_group_of_its_own_page() {
+        assert_eq!(Sections::group_of(Section::Chapters), GROUP_STRIP);
+        assert_eq!(Sections::group_of(Section::Info), GROUP_SECTION);
     }
 }
 
@@ -516,27 +633,27 @@ mod hud_visibility_tests {
     /// The pairing is the point: whatever the cursor is parked on, an invisible transport takes the
     /// press for itself, and the SAME cursor acts normally the moment the transport is on screen.
     /// Focus survives an auto-hide (`HudNav::HOME` is re-parked one block down in the loop), so
-    /// "hidden but focus == 1" is an ordinary state, not a corner.
+    /// "hidden but focus == GROUP_ROW" is an ordinary state, not a corner.
     #[test]
     fn a_hidden_hud_spends_the_press_on_itself() {
-        for focus in [0, 1, 2] {
+        for focus in [GROUP_SCRUB, GROUP_ROW, GROUP_TABS] {
             for seekable in [false, true] {
                 assert_eq!(
                     scrub_press(false, focus, seekable),
                     ScrubPress::Reveal,
-                    "hidden HUD, focus {focus}: the press raises it and moves nothing"
+                    "hidden HUD, focus {focus:?}: the press raises it and moves nothing"
                 );
             }
         }
         // …and visible, the same three cursors act — this is what the reveal DEFERS to, one press later
-        assert_eq!(scrub_press(true, 0, true), ScrubPress::Jump);
-        assert_eq!(scrub_press(true, 1, true), ScrubPress::Row);
-        assert_eq!(scrub_press(true, 2, true), ScrubPress::Tabs);
+        assert_eq!(scrub_press(true, GROUP_SCRUB, true), ScrubPress::Jump);
+        assert_eq!(scrub_press(true, GROUP_ROW, true), ScrubPress::Row);
+        assert_eq!(scrub_press(true, GROUP_TABS, true), ScrubPress::Tabs);
         // Duration belongs only to the scrubber. Indexed rows remain live without one.
-        assert_eq!(scrub_press(true, 1, false), ScrubPress::Row);
-        assert_eq!(scrub_press(true, 2, false), ScrubPress::Tabs);
+        assert_eq!(scrub_press(true, GROUP_ROW, false), ScrubPress::Row);
+        assert_eq!(scrub_press(true, GROUP_TABS, false), ScrubPress::Tabs);
         // the scrubber itself with nothing to move through is still not a Jump
-        assert_eq!(scrub_press(true, 0, false), ScrubPress::Nothing);
+        assert_eq!(scrub_press(true, GROUP_SCRUB, false), ScrubPress::Nothing);
     }
 
     /// Sample a hand dismissal before the fresh bound press clears it, or the press would drive
@@ -639,11 +756,11 @@ mod hud_visibility_tests {
             hud.raise_for_offer(now, plx_appkit::up_next::PRIMARY_BTN);
             assert!(hud.visible(&ps, now, false), "an offer clears a hand dismissal");
             assert_eq!(
-                hud.nav.focus, 1,
+                hud.nav.focus, GROUP_ROW,
                 "on the control row, so the auto-hide re-park leaves it"
             );
             assert!(
-                plx_appkit::up_next::countdown_may_run(true, hud.nav.focus == 1, hud.nav.btn),
+                plx_appkit::up_next::countdown_may_run(true, hud.nav.focus == GROUP_ROW, hud.nav.btn == plx_appkit::up_next::BTN_NEXT),
                 "…and RESTING on the primary, which is what the next frame's cancel rule asks"
             );
         });
@@ -661,7 +778,7 @@ mod hud_visibility_tests {
             // parked on the Chapters tab, which is only reachable by pressing DOWN twice
             let mut hud = HudState {
                 nav: HudNav {
-                    focus: 2,
+                    focus: GROUP_TABS,
                     btn: 0,
                     tab: 1,
                 },
@@ -669,9 +786,9 @@ mod hud_visibility_tests {
             };
             hud.raise_for_offer(now, plx_appkit::up_next::PRIMARY_BTN);
             assert!(hud.visible(&ps, now, false), "the offer is still shown");
-            assert_eq!((hud.nav.focus, hud.nav.tab), (2, 1), "their spot is theirs");
+            assert_eq!((hud.nav.focus, hud.nav.tab), (GROUP_TABS, 1), "their spot is theirs");
             assert!(
-                !plx_appkit::up_next::countdown_may_run(true, hud.nav.focus == 1, hud.nav.btn),
+                !plx_appkit::up_next::countdown_may_run(true, hud.nav.focus == GROUP_ROW, hud.nav.btn == plx_appkit::up_next::BTN_NEXT),
                 "engaging the transport is not consent to be pulled into the next episode"
             );
         });

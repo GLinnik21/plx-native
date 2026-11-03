@@ -1,7 +1,7 @@
 //! **What a scrolled card page does with the chrome around it** — ONE rule for the pages that
 //! scroll a long grid under the tucking top chrome (the Library, its Collections page, the
 //! Watchlist): the chrome tucks away once the first row has gone, a fade of the page's ground takes
-//! the top edge, and a capsule restating the library's name and size appears only where the page's
+//! the top edge, and a capsule restating the library's name and size (and the sort it is read in, "Films 1,284 · Date viewed") appears only where the page's
 //! header names libraries ([`capsule_shown`]).
 //!
 //! **Home keeps its chrome and uses only the spatial half.** Its tab bar and profile chip are the
@@ -73,7 +73,7 @@
 //!
 //! The module lives here, not in `plx_screens`, because a screen family may not name a sibling
 //! module of the crate (`ci/check-deps.sh`, "sibling").
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 
 use plx_machine::machine::{Canon, LogicalState};
 
@@ -248,11 +248,63 @@ pub fn capsule_shown(selectable: usize) -> bool {
     selectable >= 2
 }
 
-/// The capsule's two runs: the library's whole name (never shortened: the capsule grows to hold
-/// it) and the count.
-pub fn capsule_parts(name: &str, total: i64) -> (CString, CString) {
+/// The capsule's runs: the library's whole name (never shortened: the capsule grows to hold it),
+/// the count, and the sort `criterion` the page carries ("Date viewed"; `None` for a page that
+/// carries none, which draws the plain capsule).
+pub fn capsule_parts(name: &str, total: i64, criterion: Option<&str>) -> (CString, CString, Option<CString>) {
     let count = plx_platform::i18n::current().number(total);
-    (CString::new(name).unwrap_or_default(), CString::new(count).unwrap_or_default())
+    (
+        CString::new(name).unwrap_or_default(),
+        CString::new(count).unwrap_or_default(),
+        criterion.map(|criterion| CString::new(criterion).unwrap_or_default()),
+    )
+}
+
+/// **The capsule's strings, kept while their text stays the same.** A page asks for the three C
+/// strings ([`capsule_parts`]) on every frame the capsule is up, but the library's name, the
+/// listing's size and the sort change only when the reader does something; this holds the last
+/// answer and rebuilds it when the name, the total or the criterion differs, or the interface
+/// language does (the count is spelled in it). The page owns one beside its handoff, so a library
+/// switch builds the next library's strings once.
+#[derive(Default)]
+pub struct CapsuleText {
+    /// What `parts` was built for: the pieces the name is made of, the total, the criterion and
+    /// the language.
+    key: Option<(Vec<String>, i64, Option<String>, usize)>,
+    parts: (CString, CString, Option<CString>),
+    /// How many times the strings were built: the probe that says "built when the text changes,
+    /// not every frame" without reading addresses.
+    builds: u32,
+}
+
+impl CapsuleText {
+    /// The strings for `name`, `total` and the sort `criterion`: the held ones when nothing
+    /// changed, else [`capsule_parts`] of them.
+    pub fn get(&mut self, name: &str, total: i64, criterion: Option<&str>) -> (&CStr, &CStr, Option<&CStr>) {
+        self.get_keyed(&[name], || name.to_owned(), total, criterion)
+    }
+
+    /// [`Self::get`] for a name that costs a heap string to put together: `key` is the borrowed
+    /// pieces the name is made of (a library's title and its owner's handle), compared as they
+    /// are, and `build` makes the name from them only when they, the total, the criterion or the
+    /// language differ. A `build` must read nothing the key does not name, or the held strings go
+    /// stale: it takes the pieces by capture, never the page.
+    pub fn get_keyed(&mut self, key: &[&str], build: impl FnOnce() -> String, total: i64, criterion: Option<&str>) -> (&CStr, &CStr, Option<&CStr>) {
+        let language = std::ptr::from_ref(plx_platform::i18n::current()) as usize;
+        let held = self.key.as_ref().is_some_and(|(pieces, t, c, l)| {
+            pieces.len() == key.len() && pieces.iter().zip(key).all(|(piece, now)| piece == now)
+                && *t == total && c.as_deref() == criterion && *l == language
+        });
+        if !held {
+            self.parts = capsule_parts(&build(), total, criterion);
+            self.key = Some((key.iter().map(|piece| (*piece).to_owned()).collect(), total, criterion.map(str::to_owned), language));
+            self.builds += 1;
+        }
+        (&self.parts.0, &self.parts.1, self.parts.2.as_deref())
+    }
+
+    /// How many times the strings have been built (see the field).
+    pub fn builds(&self) -> u32 { self.builds }
 }
 
 #[cfg(test)]
@@ -540,14 +592,76 @@ mod tests {
     }
 
     #[test]
-    fn the_capsule_runs_are_the_whole_name_then_the_count() {
-        let (name, count) = capsule_parts("Films", 1284);
+    fn the_capsule_runs_are_the_whole_name_then_the_count_then_the_criterion_it_carries() {
+        let (name, count, criterion) = capsule_parts("Films", 1284, None);
         assert_eq!(name.to_str().unwrap(), "Films");
         assert!(count.to_str().unwrap().contains("284"), "{count:?}");
+        assert!(criterion.is_none(), "a page that carries no sort has no third run");
         let long = "Documentaries and Concerts of the Century, Remastered In Full";
-        let (name, count) = capsule_parts(long, 1284);
+        let (name, count, _) = capsule_parts(long, 1284, None);
         assert_eq!(name.to_str().unwrap(), long, "never shortened, no ellipsis");
         assert!(count.to_str().unwrap().contains('1'));
+        let (_, _, criterion) = capsule_parts("Films", 1284, Some("Date viewed"));
+        assert_eq!(criterion.unwrap().to_str().unwrap(), "Date viewed", "the criterion as the header shows it");
+    }
+
+    /// **The capsule's strings are built when their text changes, not every frame**: asked again with
+    /// the same name, total and criterion, `CapsuleText` hands back the very same C strings (same
+    /// addresses); a different name, total or criterion (or none) builds them again, and what it
+    /// builds is what [`capsule_parts`] says.
+    #[test]
+    fn the_capsule_strings_are_kept_while_the_name_the_total_and_the_criterion_stand() {
+        let _g = plx_base::testlock::serial();
+        let mut text = CapsuleText::default();
+        let at = |parts: (&CStr, &CStr, Option<&CStr>)| (parts.0.as_ptr(), parts.1.as_ptr(), parts.2.map(CStr::as_ptr));
+        let first = at(text.get("Films", 1284, Some("Date viewed")));
+        for _ in 0..3 { assert_eq!(at(text.get("Films", 1284, Some("Date viewed"))), first, "nothing changed: nothing rebuilt"); }
+        let (name, count, criterion) = text.get("Films", 1284, Some("Date viewed"));
+        let want = capsule_parts("Films", 1284, Some("Date viewed"));
+        assert_eq!((name, count, criterion), (want.0.as_c_str(), want.1.as_c_str(), want.2.as_deref()));
+        for (label, name, total, criterion) in [("name", "Shows", 1284, Some("Date viewed")), ("total", "Films", 1285, Some("Date viewed")),
+            ("criterion", "Films", 1284, Some("Year")), ("no criterion", "Films", 1284, None)] {
+            let mut text = CapsuleText::default();
+            let before = text.get("Films", 1284, Some("Date viewed")).0.to_owned();
+            let parts = text.get(name, total, criterion);
+            let want = capsule_parts(name, total, criterion);
+            assert_eq!((parts.0, parts.1, parts.2), (want.0.as_c_str(), want.1.as_c_str(), want.2.as_deref()), "{label}: rebuilt for the new text");
+            assert_eq!(before.to_str().unwrap(), "Films");
+        }
+    }
+
+    /// **A name made of pieces is built only when a piece changes**: the pieces are compared as
+    /// they stand, `build` does not run while they, the total and the criterion are the same, and it
+    /// runs once for a changed title, a changed owner, a different split of the same text, a new
+    /// total or a new criterion.
+    #[test]
+    fn a_name_made_of_pieces_is_built_when_a_piece_changes() {
+        let _g = plx_base::testlock::serial();
+        let mut text = CapsuleText::default();
+        let built = std::cell::Cell::new(0);
+        let ask = |text: &mut CapsuleText, key: &[&str], total: i64, criterion: Option<&str>| {
+            let name = key.join(" ");
+            let parts = text.get_keyed(key, || { built.set(built.get() + 1); name }, total, criterion);
+            (parts.0.to_owned(), parts.1.to_owned(), parts.2.map(CStr::to_owned))
+        };
+        let first = ask(&mut text, &["Films", "friend"], 1284, Some("Year"));
+        assert_eq!(first.0.to_str().unwrap(), "Films friend");
+        for _ in 0..3 { assert_eq!(ask(&mut text, &["Films", "friend"], 1284, Some("Year")), first); }
+        assert_eq!((built.get(), text.builds()), (1, 1), "the same pieces: nothing built again");
+        for (label, key, total, criterion) in [
+            ("title", &["Movies", "friend"][..], 1284, Some("Year")), ("owner", &["Movies", "pal"][..], 1284, Some("Year")),
+            ("split", &["Movies pal"][..], 1284, Some("Year")), ("no owner", &["Movies", ""][..], 1284, Some("Year")),
+            ("total", &["Movies", ""][..], 1285, Some("Year")), ("criterion", &["Movies", ""][..], 1285, Some("Plays")),
+        ] {
+            let before = built.get();
+            let parts = ask(&mut text, key, total, criterion);
+            assert_eq!(built.get(), before + 1, "{label}: built once for the change");
+            assert_eq!(text.builds(), built.get(), "{label}: the probe counts the same builds");
+            let want = capsule_parts(&key.join(" "), total, criterion);
+            assert_eq!((parts.0.as_c_str(), parts.1.as_c_str(), parts.2.as_deref()), (want.0.as_c_str(), want.1.as_c_str(), want.2.as_deref()), "{label}");
+            assert_eq!(ask(&mut text, key, total, criterion), parts, "{label}: and then held");
+            assert_eq!(built.get(), before + 1);
+        }
     }
 
     /// One predicate for every page: a header that names no library (the Watchlist, a one-library

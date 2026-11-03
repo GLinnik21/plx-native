@@ -1,0 +1,18 @@
+# count: 13
+# Test/production forks (docs/sans-io.md), area `ui`: one line per production-visible `#[cfg(..)]` / `cfg!(..)` whose predicate reads `test` or `feature = "test-support"`
+# (`not(test)`, `not(any(test, feature = "test-support"))`, ...) in every machine crate (data/, plex/, media/, session/, screens/, ui/, appkit/ and machine/), keyed `<path>::<item name>` (an attribute on an item), `<path>::<enclosing fn>` (a statement or an inline `cfg!`) or `<path>::<struct>` (a field).
+# Logic is one thing in production and tests deliver it events: there is no cfg(test) fork. Spec: ci/check-deps.sh `forks`.
+# The gate compares this list to the tree as an exact multiset: a new site fails it, and so does a line whose site is gone, so it only shrinks. A migration lands by deleting its lines; do not add one to make a new site pass.
+rust-modules/ui/src/card_motion.rs::enforced_limit
+rust-modules/ui/src/containers/modal.rs::kick
+rust-modules/ui/src/containers/transition.rs::PageImage
+rust-modules/ui/src/containers/transition.rs::plan
+rust-modules/ui/src/containers/transition.rs::plan
+rust-modules/ui/src/icons.rs::upload
+rust-modules/ui/src/popover.rs::use plx_gfx::gfx::FrameCache
+rust-modules/ui/src/screen.rs::gl_scissor
+rust-modules/ui/src/screen.rs::stops_in_recording_walk
+rust-modules/ui/src/tex.rs::bytes_used_since
+rust-modules/ui/src/tex.rs::use_clock
+rust-modules/ui/src/underlay.rs::upload
+rust-modules/ui/src/widgets.rs::diagnostic_lines

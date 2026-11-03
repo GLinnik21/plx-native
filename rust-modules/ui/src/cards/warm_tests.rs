@@ -15,7 +15,7 @@ use crate::screen::{By, ScreenEvent};
 use crate::tex::{self, Source, Warm};
 use crate::widgets::{self, Art};
 use plx_machine::machine::{
-    Cx, Effects, EntryId, FocusKey, FocusRead, InputOwner, InstanceId, MachineId, PosterKey, PressRead, Tick,
+    Cx, Effects, Enter, EntryId, FocusKey, FocusRead, InputOwner, InstanceId, MachineId, PosterKey, PressRead, Tick,
 };
 use plx_machine::present::Present;
 
@@ -140,7 +140,7 @@ impl Rig {
     fn new(n: usize) -> Self {
         tex::install(&Spy);
         LOG.with(|l| *l.borrow_mut() = Log::default());
-        Self { shelf: Shelf::new(ENTRY, &STYLE), src: Cards::new(n), view: FixtureView::default(), focus: None, ms: 0 }
+        Self { shelf: Shelf::new(ENTRY, STYLE), src: Cards::new(n), view: FixtureView::default(), focus: None, ms: 0 }
     }
 
     fn feed(&mut self, ev: ScreenEvent<FixtureHost>) {
@@ -314,6 +314,31 @@ fn a_shelf_that_is_not_focused_asks_for_nothing() {
         r.land_all();
     }
     assert!(log(|l| l.asked.is_empty()), "an unfocused shelf warmed {:?}", log(|l| l.asked.clone()));
+}
+
+/// A dormant shelf asks for nothing (its page is not seen, its seat lies at rest), except the seat of
+/// a page that RETURNS: that card stays lifted under the dip's image, so the cards around it are
+/// warmed as they are on any focused shelf.
+#[test]
+fn a_dormant_shelf_warms_only_while_it_keeps_a_returning_seat() {
+    let mut r = Rig::new(60);
+    r.shelf.dormant(true);
+    r.focus_on(5, By::Restore);
+    for _ in 0..10 {
+        r.frame();
+        r.land_all();
+    }
+    assert!(log(|l| l.asked.is_empty()), "a dormant shelf warmed {:?}", log(|l| l.asked.clone()));
+
+    let mut r = Rig::new(60);
+    r.shelf.dormant(true);
+    r.feed(ScreenEvent::Enter(Enter::Restored));
+    r.focus_on(5, By::Restore);
+    for _ in 0..10 {
+        r.frame();
+        r.land_all();
+    }
+    assert!(log(|l| !l.asked.is_empty()), "a returning seat warmed nothing");
 }
 
 #[test]

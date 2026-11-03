@@ -109,6 +109,15 @@ impl GridBands {
         self.slots[at] = Slot { row: Some(row), card: None, spring: Spring::at(0.0) };
     }
 
+    /// Close every band at once and name no focused row: what was opening and what was closing
+    /// behind a move are gone, with no spring left to step. [`focus`](Self::focus)`(None, false)`
+    /// cannot say it when the focus has already left (`None`): it returns early, and the band a
+    /// move off the grid left closing goes on closing.
+    pub fn shut(&mut self) {
+        self.focus = None;
+        self.slots = [Slot::EMPTY; MAX_GRID_BANDS];
+    }
+
     /// Note which card of the focused row `row` the focus is on, so the band, once it closes behind
     /// a move, still knows whose caption it carries ([`closing`](Self::closing)). A card outside the
     /// focused row is not noted.
@@ -395,18 +404,30 @@ pub struct Geom {
     pub w: f32,
     pub h: f32,
     pub gap: f32,
+    /// The grid shows a sort value under every poster ([`card_row::SortValue`]): a collapsed row
+    /// keeps [`card_row::SORT_VALUE_ROW_GAP`] under its posters instead of 40 px.
+    pub value_line: bool,
 }
 
 impl Geom {
     #[cfg(test)]
-    pub const DEFAULT: Self = Self { cols: COLS, left: MARGIN_X, w: CARD_W, h: CARD_H, gap: GAP };
+    pub const DEFAULT: Self = Self { cols: COLS, left: MARGIN_X, w: CARD_W, h: CARD_H, gap: GAP, value_line: false };
 
     pub const fn of(cols: usize, left: f32, style: &RowStyle) -> Self {
-        Self { cols, left, w: style.w, h: style.h, gap: style.gap }
+        Self { cols, left, w: style.w, h: style.h, gap: style.gap, value_line: false }
     }
 
     /// A COLLAPSED row's pitch.
-    pub fn pitch(&self) -> f32 { self.h + LABEL_BAND_COLLAPSED + UNDER_LABEL_AIR }
+    pub fn pitch(&self) -> f32 {
+        self.h + if self.value_line { card_row::SORT_VALUE_ROW_GAP }
+            else { LABEL_BAND_COLLAPSED + UNDER_LABEL_AIR }
+    }
+
+    /// How far under a card's unscaled bottom the focused row's caption reaches for a band of
+    /// `band_h`: what the page must keep on screen, and what paging counts back from.
+    fn under_reach(&self, band_h: f32) -> f32 {
+        if self.value_line { card_row::SORT_VALUE_REACH } else { shown_band(band_h) }
+    }
 }
 
 #[cfg(test)]
@@ -495,7 +516,7 @@ pub fn snap_row_in_for(band_h: f32, g: &Geom, current: f32, row: usize, len: usi
     if row == 0 || len == 0 { return 0.0; }
     let bands = settled(Some(row));
     let focused_top = row_top_in_for(band_h, g, row, top, &bands);
-    let min = card_row::reveal(current, focused_top + g.h + shown_band(band_h) - (SCR_H - MARGIN_Y),
+    let min = card_row::reveal(current, focused_top + g.h + g.under_reach(band_h) - (SCR_H - MARGIN_Y),
         focused_top - edge, f32::INFINITY);
     if min <= 0.0 { return 0.0; }
     (0..=row).map(|k| row_top_in_for(band_h, g, k, top, &bands) - edge).find(|&at| at >= min - 0.5)
@@ -551,7 +572,7 @@ pub fn visible_in(g: &Geom, len: usize, top: f32, scroll: f32) -> std::ops::Rang
 pub fn visible_in_for(band_h: f32, g: &Geom, len: usize, top: f32, scroll: f32) -> std::ops::Range<usize> {
     if len == 0 { return 0..0; }
     let pitch = g.pitch();
-    let first = ((scroll - top - g.h - shown_band(band_h)) / pitch).floor().max(0.0) as usize;
+    let first = ((scroll - top - g.h - g.under_reach(band_h)) / pitch).floor().max(0.0) as usize;
     let last = ((scroll + SCR_H - top) / pitch).ceil().max(0.0) as usize + 1;
     first.saturating_mul(g.cols)..last.saturating_mul(g.cols).min(len)
 }

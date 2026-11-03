@@ -593,7 +593,7 @@ impl ViewReconcileStore {
                             sid: m.sid,
                             rk: m.rk.clone(),
                             scope: Scope::Leaf,
-                            fact: ViewFact::Facts { watched: m.watched, unwatched: m.unwatched, resume_ms: m.resume_ms },
+                            fact: ViewFact::Facts { watched: m.watched, unwatched: m.unwatched, resume_ms: m.resume_ms, sort: crate::viewstate::WatchSortFacts::of(&m) },
                         });
                         applied += 1;
                     }

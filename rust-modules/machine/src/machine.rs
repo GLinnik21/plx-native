@@ -200,6 +200,14 @@ pub trait Measure {
         fit_line_by(self, s, budget, sz, bold)
     }
 
+    /// A fitted drawable and its advance. Native measurement caches both; replay keeps querying
+    /// its supplied metrics. Use when an inline mark must be centred together with the text.
+    fn fit_line_measured(&self, s: &str, budget: f32, sz: i32, bold: bool) -> (std::rc::Rc<CStr>, f32) {
+        let run = self.fit_line(s, budget, sz, bold);
+        let width = self.width(&run, sz, bold);
+        (run, width)
+    }
+
     /// `width` for a borrowed `&str` (spec §4.3, phase 12 D4): builds the transient `CString` so
     /// a draw-time call site measures a `String`/`&str` slice without hand-rolling one — the exact
     /// conversion every `plx_gfx::text::text_width(c.as_ptr(), …)` call site already did, moved
@@ -672,6 +680,7 @@ impl<K> InputEvent<K> {
             }
             InputKind::PointerHidden => { c.u32(6); }
             InputKind::SystemKeyboard(up) => { c.u32(7).bool(*up); }
+            InputKind::Pan { dx, x, y } => { c.u32(8).f32(*dx).f32(*x).f32(*y); }
         }
     }
 }
@@ -734,6 +743,14 @@ pub enum InputKind<K> {
     },
     Wheel {
         dy: f32,
+    },
+    /// **A sideways glide of the row under the pointer** (the application's pointer edge glide):
+    /// `dx` px (+ shows more on the right), for whatever scrolls sideways at screen `(x, y)`. A
+    /// page with nothing there ignores it.
+    Pan {
+        dx: f32,
+        x: f32,
+        y: f32,
     },
     Text(TextEdit),
     PointerHidden,
@@ -798,6 +815,8 @@ pub enum MachineId {
     Store(StoreOrd),
     Instance(InstanceId),
     Cache,
+    /// The player-HUD package store (`plx_data::hudpacks`), owned by the Bridge: the address its commands are delivered to.
+    Huds,
 }
 
 impl MachineId {
@@ -813,6 +832,7 @@ impl MachineId {
             Self::Store(id) => { c.u32(6).u32(id.0); }
             Self::Instance(id) => { c.u32(7).u32(id.0); }
             Self::Cache => { c.u32(8); }
+            Self::Huds => { c.u32(9); }
         }
     }
 }
@@ -1096,6 +1116,21 @@ impl Measure for BareMeasure {
     }
 }
 
+/// **The HUD cost model**: whole-pixel advances of the two shipped faces and a line height of
+/// `LINE_HEIGHT` x size ([`plx_base::fontcov::advances`]). The type is `fontcov`'s (base) and the trait is this
+/// module's, so the impl lives here, beside [`ShippedMeasure`]'s.
+impl Measure for plx_base::fontcov::advances::WholePixelMeasure {
+    fn width(&self, s: &CStr, sz: i32, bold: bool) -> f32 {
+        self.face(bold).width(&s.to_string_lossy(), sz)
+    }
+    fn cap_h(&self, sz: i32) -> f32 {
+        sz as f32 * plx_base::fontcov::advances::CAP_HEIGHT
+    }
+    fn line_h(&self, sz: i32) -> f32 {
+        sz as f32 * plx_base::fontcov::advances::LINE_HEIGHT
+    }
+}
+
 /// The host-test text measure over the shipped faces' real advances. The type is `fontcov`'s (base)
 /// and the trait is this module's, so the impl lives here: the lowest layer that names both, and
 /// the one place the orphan rule lets it sit once the layers are crates.
@@ -1105,9 +1140,9 @@ impl Measure for plx_base::fontcov::advances::ShippedMeasure {
         plx_base::fontcov::advances::shipped(bold).width(&s.to_string_lossy(), sz)
     }
     fn cap_h(&self, sz: i32) -> f32 {
-        sz as f32 * 0.73
+        sz as f32 * plx_base::fontcov::advances::CAP_HEIGHT
     }
     fn line_h(&self, sz: i32) -> f32 {
-        sz as f32 * 1.21
+        sz as f32 * plx_base::fontcov::advances::LINE_HEIGHT
     }
 }

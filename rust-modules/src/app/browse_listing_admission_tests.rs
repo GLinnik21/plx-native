@@ -143,7 +143,7 @@ fn the_controlled_encoder_refuses_every_way_to_ask_for_a_page_or_a_directory() {
     let landing = discovery_landing(&bridge, client);
     assert!(encode(StoreCmd::Browse(BrowseCmd::Discovery(landing))).is_ok(), "so is a discovery landing");
 
-    for work in [LibraryWork::Genres, LibraryWork::Letters, LibraryWork::Want { lo: 0, hi: 12, focus: None },
+    for work in [LibraryWork::Genres, LibraryWork::Letters { today: None }, LibraryWork::Want { lo: 0, hi: 12, focus: None },
         LibraryWork::Retry, LibraryWork::Requery] {
         assert_eq!(encode(StoreCmd::Browse(BrowseCmd::Addressed { target, work: work.clone() })),
             Err("unsupported Home store command"), "{work:?} is not a controlled command");

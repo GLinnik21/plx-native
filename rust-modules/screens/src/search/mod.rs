@@ -382,7 +382,12 @@ impl<H: SearchLike> Machine<H> for SearchScreen {
                 InputKind::Wheel { dy } => {
                     if !self.editing && dy.is_finite() {
                         let max = self.stack.max_scroll(&*self, cx);
-                        self.stack.scroll_to((self.stack.target() - dy * plx_ui::table::ROW_H).clamp(0.0, max));
+                        // A notch of the remote's wheel (a whole step) moves a table row, as it
+                        // always has; the pointer's edge glide (a fraction every frame, in rows a
+                        // second) moves the page's poster rows, the unit every other page glides
+                        // by. By a table row it crawled at a seventh of their speed.
+                        let unit = if dy.fract() == 0.0 { plx_ui::table::ROW_H } else { plx_ui::consts::ROW_PITCH };
+                        self.stack.scroll_to((self.stack.target() - dy * unit).clamp(0.0, max));
                         fx.invalidate(Provenance::Input);
                     }
                 }
@@ -776,6 +781,7 @@ impl<H: SearchLike> Screen<H> for SearchScreen {
     fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>) {
         SearchScreen::redraw_focused::<H>(self, f, focus)
     }
+    fn glides(&self) -> bool { true }
     fn name(&self) -> &'static str { "search" }
     fn state(&self) -> &dyn LogicalState { self }
     fn crumb(&self, _: &Cx<'_, H>) -> Option<Cow<'_, str>> { None }

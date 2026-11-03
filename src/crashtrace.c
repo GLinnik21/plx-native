@@ -39,6 +39,17 @@
 #include <string.h>   /* memset, in install only — NOT in the handler */
 #include <sys/resource.h>
 #include <time.h>     /* time(): async-signal-safe, used by the handler for the record's time: line */
+#if defined(__linux__)
+#include <sys/prctl.h>
+#include <sys/syscall.h>
+#endif
+
+/* The process phase, stored by Rust (`plx_base::task::watchdog::plx_crash_phase`, a `#[no_mangle]`
+ * static like `plx_freeze_seq`, so this file links without Rust and Rust without this file). The
+ * handler only reads it. */
+extern volatile unsigned int plx_crash_phase;
+/* CLOCK_MONOTONIC at install, for the record's uptime. -1 until `plx_crash_install` ran. */
+static volatile long install_mono_secs = -1;
 
 /* ---------------------------------------------------------------------------------------------
  * The tracer proper.
@@ -288,6 +299,26 @@ static void crash_handler(int sig, siginfo_t *si, void *uc) {
         b.n = plx_fmt_time(crash_bufs.rec, sizeof crash_bufs.rec, (unsigned long)now);
         emit(&b);
     }
+    /* Which thread, and how far the process had got. `gettid` and `prctl(PR_GET_NAME)` are plain
+     * syscalls and `clock_gettime(CLOCK_MONOTONIC)` is a vDSO read or one, so all of it is
+     * async-signal-safe and formats into the same static buffer. Off Linux (the host test on a Mac)
+     * there is no gettid: the pid stands in, which also reads as the main thread. */
+    {
+        unsigned long tid = (unsigned long)getpid();
+        char tname[16] = {0};
+#if defined(__linux__)
+        tid = (unsigned long)syscall(SYS_gettid);
+        prctl(PR_GET_NAME, (unsigned long)tname, 0, 0, 0);
+#endif
+        b.n = plx_fmt_thread(crash_bufs.rec, sizeof crash_bufs.rec, tid, tid == (unsigned long)getpid(), tname);
+        emit(&b);
+        struct timespec ts;
+        long up = 0;
+        if (install_mono_secs >= 0 && clock_gettime(CLOCK_MONOTONIC, &ts) == 0 && ts.tv_sec >= install_mono_secs)
+            up = (long)ts.tv_sec - install_mono_secs;
+        b.n = plx_fmt_phase(crash_bufs.rec, sizeof crash_bufs.rec, plx_crash_phase, (unsigned long)up);
+        emit(&b);
+    }
 #if defined(__arm__)
     emit_regs(&crash_bufs, &c->uc_mcontext);
 #endif
@@ -495,6 +526,15 @@ void plx_crash_install(int ev_fd, int cr_fd) {
      * crash. One call here resolves it at startup; the handler's own use is unchanged and
      * `time()` stays async-signal-safe. */
     (void)time(NULL);
+    {
+        struct timespec ts;
+        if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) install_mono_secs = (long)ts.tv_sec;
+#if defined(__linux__)
+        (void)syscall(SYS_gettid);
+        char nm[16];
+        prctl(PR_GET_NAME, (unsigned long)nm, 0, 0, 0);   /* bind both before a fault needs them */
+#endif
+    }
     /* The freeze probe's own first-use bindings, for the reason above and one more: it runs on a
      * thread that is by definition stuck, possibly inside `dlopen` holding the loader lock. Each
      * libc entry it uses is called once here, and the stack bound is read while this is still the
