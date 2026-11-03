@@ -8,9 +8,12 @@
 //! [`crate::player::adapter::PlayerAdapter`] that consumes a [`MainThread`] at construction, so a
 //! `&mut PlayerAdapter` borrow is what confines it now (see `player::adapter`). Which is also the
 //! rule for the rest of this file — a function here takes the token **iff** it reaches the slot
-//! or the ACB/Starfish seam, so the parameter carries information. `arm_seek` and `begin_resume`
-//! run on the main thread too and deliberately do not take one: they only publish to `SHARED`.
-use super::feed_open::FeedOpenRequest;
+//! or the ACB/Starfish seam, so the parameter carries information. `arm_seek` runs on the main
+//! thread too and deliberately does not take one: it only publishes to `SHARED`.
+use plx_play_feed::open::{OriginalDvFacts, PhysicalOpen};
+#[cfg(all(test, feature = "hostsim"))]
+use super::route_start::{exit_native, exit_native_with, finish_release_for_test, poll_release,
+    reap_abandoned_load, NativeExit};
 #[cfg(test)]
 use super::feed_open::PayloadFacts;
 #[cfg(test)]
@@ -216,6 +219,8 @@ pub struct Engine {
     pub source: Source,
     pub stream_th: Option<std::thread::JoinHandle<()>>,
     pub load_th: Option<std::thread::JoinHandle<()>>,
+    /// Attempt-scoped common reader IO; its stop runs before the paired demux join.
+    pub side_reader: Box<dyn plx_play_feed::side_reader::SideReaderPort>,
     /// Preview Load that must land unbound. The media join waits until the thread has returned.
     pub preview_abandon: bool,
     /// The foreground lifecycle follows this Engine's Load attempt ([`foreground_follows_load`]).
@@ -344,7 +349,7 @@ fn native_object_disposition(
 /// while the load thread is still inside is the issue #74 race — and joining the media thread on
 /// the SDL main thread froze the whole app on exactly the set where the Load was hung. So teardown
 /// parks the thread, the payload it reads and the epoch here instead, and
-/// [`reap_abandoned_load`] runs the ordinary native release (`Unload` → callback gate → epoch
+/// [`reap_abandoned_load_resource`] runs the ordinary native release (`Unload` → callback gate → epoch
 /// retirement → D1 or quarantine) on the main thread once the thread has finished. Until then every
 /// start is refused rather than handed the same object; if the `Load` never returns the object is
 /// leaked for the life of the process, which is what the C seam would have to do anyway.
@@ -359,15 +364,16 @@ pub struct AbandonedLoad {
 /// Release a parked [`AbandonedLoad`] if its `Load` has returned. Cheap when there is nothing to
 /// do; called once per app frame and at the top of every native start. `true` when the parked
 /// object was released by this call.
-pub fn reap_abandoned_load(pa: &mut super::adapter::PlayerAdapter) -> bool {
-    let finished = match pa.abandoned_load_mut() {
+pub(super) fn reap_abandoned_load_resource(feed: &mut super::feed_resources::FeedResources,
+    mt: &MainThread) -> bool {
+    let finished = match feed.abandoned_load_mut() {
         Some(parked) => parked.load_th.is_finished(),
         None => return false,
     };
     if !finished {
         return false;
     }
-    let parked = pa.take_abandoned_load().expect("checked above");
+    let parked = feed.take_abandoned_load().expect("checked above");
     // The thread has already returned, so this join cannot block.
     plx_base::task::join("media", parked.load_th);
     log(&format!(
@@ -375,7 +381,7 @@ pub fn reap_abandoned_load(pa: &mut super::adapter::PlayerAdapter) -> bool {
         parked.epoch,
         parked.abandoned_at.elapsed().as_millis(),
     ));
-    release_native_object(pa.mt(), parked.epoch);
+    release_native_object(mt, parked.epoch);
     // `parked._payload` drops here, after the thread that read it has been joined.
     true
 }
@@ -418,6 +424,13 @@ impl PendingRelease {
     pub(crate) fn is_finished(&self) -> bool {
         self.unload_th.as_ref().is_none_or(|t| t.is_finished())
     }
+
+    /// The release machine has observed this worker return; joining it cannot block the frame.
+    pub(super) fn join_returned_worker(&mut self) {
+        if let Some(thread) = self.unload_th.take() {
+            plx_base::task::join("sf-unload", thread);
+        }
+    }
 }
 
 /// Test seam: make [`release_off_frame`] see the OS refuse the `sf-unload` thread.
@@ -459,47 +472,6 @@ fn release_off_frame(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) -> Opt
     th
 }
 
-/// **The runner of [`super::release::NativeRelease`].** Once a frame (and at the head of a start):
-/// join the `Unload` worker only if it has returned (so the join cannot block), feed that and the
-/// clock to the machine, and execute what it asks: the main-thread tail, the start that was queued
-/// behind the release, or the typed refusal once the release is overdue. `true` when a tail ran.
-pub fn poll_release(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut super::adapter::PlayerAdapter,
-    now: std::time::Instant,
-) -> bool {
-    let (fx, joined) = drive_release(pa, now, None);
-    super::route_start::run_release_effects(ps, pa, fx, joined, true).tail_ran
-}
-
-/// [`poll_release`] at the wall clock: the per-frame entry `app::run` calls.
-pub fn poll_release_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> bool {
-    poll_release(ps, pa, std::time::Instant::now())
-}
-
-/// Join a returned worker, then step the machine with its return, the clock and (at the exit) the
-/// exit request. Returns the effects and the joined release, whose tail the effects may run.
-fn drive_release(
-    pa: &mut super::adapter::PlayerAdapter,
-    now: std::time::Instant,
-    exit: Option<std::time::Instant>,
-) -> (Vec<super::release::ReleaseEffect>, Option<PendingRelease>) {
-    use super::release::ReleaseEvent as V;
-    let mut fx = Vec::new();
-    let joined = pa.take_finished_release().map(|mut p| {
-        if let Some(th) = p.unload_th.take() {
-            plx_base::task::join("sf-unload", th);
-        }
-        pa.release_step(&V::UnloadReturned { epoch: p.epoch }, &mut fx);
-        p
-    });
-    pa.release_step(&V::Tick { now }, &mut fx);
-    if let Some(at) = exit {
-        pa.release_step(&V::Exit { now: at }, &mut fx);
-    }
-    (fx, joined)
-}
-
 /// The main-thread tail of a finished off-frame release: gate, epoch, ACB, D1, window.
 pub(super) fn run_release_tail(mt: &MainThread, p: PendingRelease) {
     let mut sp = TeardownSpans::new();
@@ -513,93 +485,6 @@ pub(super) fn run_release_tail(mt: &MainThread, p: PendingRelease) {
         p.handed_off_at.elapsed().as_millis(),
     ));
     // `p._engine` drops here, after the object it belonged to is gone.
-}
-
-/// Whether the process may tear the display down.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NativeExit {
-    Clean,
-    /// Native ownership is unresolved: a worker may still be inside firmware, or a URI
-    /// registration may remain quarantined after its worker ended. Skip `SDL_Quit` and the
-    /// Wayland window destroy until the OS reclaims that ownership.
-    WorkerInFirmware,
-}
-
-/// The native half of `app::run::shutdown`, after the final stop. Waits for the native Unload or
-/// URI registration release up to the release deadline, then preserves unresolved display ownership.
-pub fn exit_native(pa: &mut super::adapter::PlayerAdapter) -> NativeExit {
-    exit_native_with(pa, std::time::Instant::now, || std::thread::sleep(std::time::Duration::from_millis(2)))
-}
-
-pub(super) fn exit_native_with(
-    pa: &mut super::adapter::PlayerAdapter,
-    mut clock: impl FnMut() -> std::time::Instant,
-    mut idle: impl FnMut(),
-) -> NativeExit {
-    #[cfg(feature = "devtriggers")]
-    if pa.uri_live() {
-        let started = clock();
-        let mut ps = crate::route::PlaybackSession::IDLE;
-        super::uriprobe_drive::stop(&mut ps, pa);
-        while pa.uri_live() {
-            super::uriprobe_drive::drive(&mut ps, pa);
-            if !pa.uri_live() { break; }
-            if pa.uri_acb_exit_quarantine() || clock().saturating_duration_since(started) >= super::release::RELEASE_DEADLINE {
-                log("exit: URI ownership unresolved; the display is left to the OS");
-                if let Some(session) = pa.take_uri() { std::mem::forget(session); }
-                leak_parked_for_exit(pa);
-                return NativeExit::WorkerInFirmware;
-            }
-            idle();
-        }
-    }
-    reap_abandoned_load(pa);
-    if pa.has_abandoned_load() {
-        log("exit: a timed-out Load is still inside firmware; the display is left to the OS");
-        leak_parked_for_exit(pa);
-        return NativeExit::WorkerInFirmware;
-    }
-    let mut ps = crate::route::PlaybackSession::IDLE;
-    loop {
-        let now = clock();
-        let (fx, joined) = drive_release(pa, now, Some(now));
-        match super::route_start::run_release_effects(&mut ps, pa, fx, joined, false).exit {
-            Some(super::release::ReleaseEffect::ExitClean) => return NativeExit::Clean,
-            Some(super::release::ReleaseEffect::ExitWorkerInFirmware) => {
-                log("exit: the native Unload is overdue; the display is left to the OS");
-                leak_parked_for_exit(pa);
-                return NativeExit::WorkerInFirmware;
-            }
-            _ => idle(),
-        }
-    }
-}
-
-/// **A worker still in firmware reads memory its owner is about to drop.** The caller skips
-/// `SDL_Quit` and `app::run_and_shutdown` ends the process with `_exit` (no `App` drop, no libc
-/// finalizers), but the stack above it may still unwind, so the parked
-/// [`PendingRelease`] (its Engine: the Load payload Starfish holds a raw pointer into, the
-/// handle set, the AU queues) and the parked [`AbandonedLoad`] (the payload its `media` thread
-/// reads) would be freed under the live call. They are leaked instead, for the life of the process
-/// (`release.rs`: the `_exit` that follows skips their destructors). Only `exit_native` calls this, and only on that outcome.
-fn leak_parked_for_exit(pa: &mut super::adapter::PlayerAdapter) {
-    if let Some(p) = pa.take_pending_release_any() {
-        std::mem::forget(p);
-    }
-    if let Some(l) = pa.take_abandoned_load() {
-        std::mem::forget(l);
-    }
-}
-
-/// Test helper: finish the pending release the way the exit does, with no deadline concerns.
-#[cfg(all(test, feature = "hostsim"))]
-pub(crate) fn finish_release_for_test(pa: &mut super::adapter::PlayerAdapter) {
-    let mut ps = crate::route::PlaybackSession::IDLE;
-    while pa.release_busy() {
-        let (fx, joined) = drive_release(pa, std::time::Instant::now(), None);
-        let _ = super::route_start::run_release_effects(&mut ps, pa, fx, joined, false);
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
 }
 
 /// Unload and retire the native object of `epoch`, then destroy it only with complete evidence.
@@ -832,16 +717,6 @@ pub(crate) fn speed_fps_ceiling(
     (f64::from(row_fps) + 0.5).min(super::SPEED_MAX_FPS)
 }
 
-/// [`speed_fps_ceiling`] for the playback on screen, from the live caps the way
-/// [`sink_envelope_now`] reads them.
-pub(crate) fn speed_fps_ceiling_now(ps: &crate::route::PlaybackSession) -> f64 {
-    speed_fps_ceiling(
-        LoadVideo::of_stream(&crate::route::stream_vcodec(ps)),
-        &plx_platform::devcaps::caps(),
-        plx_platform::devcaps::measured() && !crate::route::forced_direct_play(ps),
-    )
-}
-
 /// The sink envelope for THIS Load, from the route (main thread), with the dev override applied.
 fn sink_envelope_now(facts: &plx_play_feed::PayloadFacts, video: LoadVideo, rate: i32) -> SinkEnvelope {
     if let Some(spec) = plx_base::devtrig::read("sinkmax") {
@@ -933,7 +808,7 @@ fn force_open_refusal(
     requested_rate: i32,
     audio_codec: &str,
     no_audio: bool,
-    original_dovi: super::feed_open::OriginalDvFacts,
+    original_dovi: OriginalDvFacts,
 ) -> Option<ForceOpenRefusal> {
     // The payload decision describes the *converted* presentation. Force keeps the source
     // bytes, so a known Profile 7 or enhancement layer cannot truthfully use that declaration.
@@ -965,7 +840,7 @@ mod force_video_wire_tests {
         );
         assert_eq!(declared.declared().expect("Auto can convert P7").profile_id, 8);
         assert!(matches!(
-            force_open_refusal(super::super::RATE_NORMAL, "ac3", false, original.into()),
+            force_open_refusal(super::super::RATE_NORMAL, "ac3", false, crate::player::feed_open::original_dv(original)),
             Some(ForceOpenRefusal::OriginalEnhancementLayer),
         ), "Force preserves original P7 bytes, so a converted P8 Load declaration is untrue");
         assert!(original.presentation(
@@ -981,12 +856,12 @@ mod force_video_wire_tests {
         };
         for source in [original(7, false), original(8, true)] {
             assert!(matches!(
-                force_open_refusal(super::super::RATE_NORMAL, "ac3", false, source.into()),
+                force_open_refusal(super::super::RATE_NORMAL, "ac3", false, crate::player::feed_open::original_dv(source)),
                 Some(ForceOpenRefusal::OriginalEnhancementLayer),
             ));
         }
         for source in [plx_data::metadata::Dovi::NONE, original(8, false)] {
-            assert!(force_open_refusal(super::super::RATE_NORMAL, "ac3", false, source.into()).is_none());
+            assert!(force_open_refusal(super::super::RATE_NORMAL, "ac3", false, crate::player::feed_open::original_dv(source)).is_none());
         }
     }
 }
@@ -995,10 +870,6 @@ mod force_video_wire_tests {
 #[cfg(test)]
 fn with_pcm_info(p: &str, audio: &str, pcm: Option<crate::route::PcmFormat>) -> String {
     plx_play_feed::with_pcm_info(p, audio, pcm.map(Into::into))
-}
-
-fn pcm_decode_line(codec: &str, f: &crate::route::PcmFormat) -> String {
-    plx_play_feed::pcm_decode_line(codec, &(*f).into())
 }
 
 /// The pipeline reads the true dimensions from the SPS (Phase 0 HEVC probe), so mw/mh are only
@@ -1015,23 +886,15 @@ fn build_av_payload_at(
     ps: &crate::route::PlaybackSession, video: &str, audio: &str, env: SinkEnvelope, rate: i32,
 ) -> String {
     let facts = PayloadFacts::capture(ps).to_feed();
-    build_av_payload_from_facts(&facts, video, audio, env, rate)
+    build_av_payload_from_facts(&facts, video, audio, env, rate, super::feed_open::payload_options(&facts))
 }
 
 fn build_av_payload_from_facts(
     facts: &plx_play_feed::PayloadFacts, video: &str, audio: &str, env: SinkEnvelope, rate: i32,
+    options: plx_play_feed::PayloadOptions,
 ) -> String {
-    let with_fps = !plx_base::devtrig::flag("nofps");
-    if !with_fps {
-        #[cfg(feature = "devtriggers")]
-        log("esInfo: videoFps WITHHELD by /tmp/plxnative-nofps");
-    }
     let built = plx_play_feed::build_av_payload(
-        facts, video, audio, env, rate,
-        plx_play_feed::PayloadOptions {
-            with_fps,
-            suppress_dv_node: facts.dv.is_some() && plx_data::metadata::dv_node_suppressed(),
-        },
+        facts, video, audio, env, rate, options,
     );
     for line in built.notices {
         log(&line);
@@ -1193,18 +1056,10 @@ fn stream_open_log_line(origin_log_form: &str, path: &str) -> String {
     format!("stream: {origin_log_form} path={path}")
 }
 
-#[cfg(test)]
-pub(super) fn start_bufferfeed_inner(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut super::adapter::PlayerAdapter,
-    route_start: crate::route::RouteStartTransaction,
-) -> Result<crate::route::RouteStartAttempt, crate::route::RouteStartResult> {
-    super::route_start::start_bufferfeed_inner(ps, pa, route_start)
-}
-
-pub(super) fn begin_native_open(pa: &mut super::adapter::PlayerAdapter) -> bool {
-    reap_abandoned_load(pa);
-    if pa.has_abandoned_load() {
+pub(super) fn begin_native_open(feed: &mut super::feed_resources::FeedResources,
+    mt: &MainThread) -> bool {
+    reap_abandoned_load_resource(feed, mt);
+    if feed.has_abandoned_load() {
         log("start_bufferfeed: an abandoned Load has not returned yet (refusing native start)");
         return false;
     }
@@ -1230,10 +1085,11 @@ pub(super) enum NativeOpenError { Refused }
 /// has already frozen its URL, codec declaration, playback rate, and trace identity.
 pub(super) fn prepare_native_open(
     mt: &MainThread,
-    open: Option<FeedOpenRequest>,
+    open: Option<PhysicalOpen>,
     sample: Option<super::feed_open::SampleSource>,
     is_h265: bool,
     session_rate: i32,
+    side_reader: Box<dyn plx_play_feed::side_reader::SideReaderPort>,
 ) -> Result<NativePrepared, NativeOpenError> {
     let stream = sample.is_none();
     let sample = sample.map(|sample| Box::new(SampleBuf {
@@ -1381,7 +1237,7 @@ pub(super) fn prepare_native_open(
             // path and is false here for every streamed HEVC playback (device-measured 2026-09-03:
             // three HEVC cells declared FHD before this read the right flag).
             sink_env = sink_envelope_now(&open.feed_payload, lv, session_rate);
-            let av = build_av_payload_from_facts(&open.feed_payload, lv.payload_name(), ac, sink_env, session_rate);
+            let av = build_av_payload_from_facts(&open.feed_payload, lv.payload_name(), ac, sink_env, session_rate, open.payload_options);
             stream_payload = if ac == "OPUS" {
                 let channels = open.audio_channels;
                 let Some(p) = with_opus_info(&av, channels) else {
@@ -1455,19 +1311,32 @@ pub(super) fn prepare_native_open(
         }
     };
 
-    Ok(NativePrepared { open, sample, stream, payload_c, audio_lead, clock_start, native_start })
+    Ok(NativePrepared { open, sample, stream, payload_c, audio_lead, clock_start, native_start, side_reader })
 }
 
 /// One physical Load declaration and its native callback guards, prepared before the route owner
 /// mints an attempt. Dropping it on a superseded route retracts both guards automatically.
 pub(super) struct NativePrepared {
-    open: Option<FeedOpenRequest>,
+    open: Option<PhysicalOpen>,
     sample: Option<Box<SampleBuf>>,
     stream: bool,
     payload_c: std::ffi::CString,
     audio_lead: PcmLead,
     clock_start: ClockStartGuard,
     native_start: NativeSessionStartGuard,
+    side_reader: Box<dyn plx_play_feed::side_reader::SideReaderPort>,
+}
+
+impl NativePrepared {
+    /// The route claim supplies the canonical attempt only after native preflight succeeds.
+    /// Attach the observer while this prepared source is still owned on the main thread.
+    pub(super) fn bind_demux_session(&mut self, attempt: plx_playback_contract::AttemptId) {
+        let epoch = self.native_start.epoch();
+        if let Some(open) = self.open.as_mut() {
+            debug_assert!(open.session.is_none());
+            open.session = Some(super::demux_session::PlayerDemuxSession::capture(attempt, epoch));
+        }
+    }
 }
 
 /// Launch workers against the route's exact attempt; this owns no route/session policy.
@@ -1476,7 +1345,7 @@ pub(super) fn launch_native_open(
     attempt: plx_playback_contract::AttemptId,
     prepared: NativePrepared,
 ) -> Result<(), NativeOpenError> {
-    let NativePrepared { mut open, sample, stream, payload_c, audio_lead, clock_start, native_start } = prepared;
+    let NativePrepared { mut open, sample, stream, payload_c, audio_lead, clock_start, native_start, mut side_reader } = prepared;
     // fd = -1 (CLOSED) so a teardown before/without http_open doesn't close(0)
     let mut hs = plx_net::stream::http_stream_boxed();
     let mut aqv_box: Option<Box<AuQueue>> = None;
@@ -1486,7 +1355,6 @@ pub(super) fn launch_native_open(
     // Whether the side subtitle reader will run for this engine run, decided BEFORE the demuxer is
     // spawned: the demuxer reads `side_subs_owner` once, as it opens the stream, and must never
     // also open subtitle decoders or ASS sources the reader replaces.
-    let side_target = open.as_mut().and_then(|request| request.side_reader.take());
 
     if stream {
         let open = open.as_mut().expect("stream request was captured");
@@ -1527,7 +1395,7 @@ pub(super) fn launch_native_open(
             // Before the demuxer exists, so what it publishes is this session's.
             crate::ff::native_audio::reset();
             // A clock-only reader (a sidecar) reads no subtitle: the demuxer keeps what it enumerates.
-            SHARED.side_subs_owner.store(side_target.as_ref().is_some_and(|t| !t.clock_only), Ordering::Release);
+            SHARED.side_subs_owner.store(side_reader.embedded_owner(), Ordering::Release);
             stream_th = plx_base::task::spawn_off_frame_keeping("demux", move |off| {
                 crate::ff::demux(off, origin, path, acodec, force_original, demux_transport, session, abr, auto_original, aqp, aqap, hsp)
             });
@@ -1568,7 +1436,7 @@ pub(super) fn launch_native_open(
         if !p.is_null() {
             plx_net::stream::http_shutdown(p);
         }
-        super::subside::stop("start-failed"); // before the demux join, like teardown
+        side_reader.stop_before_demux_join("start-failed"); // before the demux join, like teardown
         crate::curlio::abort_active(); // the https demuxer's equivalent — see teardown
         if let Some(t) = stream_th.take() {
             plx_base::task::join("demux", t);
@@ -1581,9 +1449,7 @@ pub(super) fn launch_native_open(
     // The side subtitle reader (dev trigger `plxnative-subside`), started once the demuxer is
     // spawned and the media thread exists: it waits for the demuxer's first keyframe before it
     // reads anything. (Its ownership flag was set before the demux spawn, below.)
-    if let Some(target) = side_target {
-        start_side_reader(target);
-    }
+    side_reader.start_after_load_spawn();
 
     let (lead_at_start, lead_pending) = audio_lead.at_engine_start();
     let eng = Engine {
@@ -1621,6 +1487,7 @@ pub(super) fn launch_native_open(
         source,
         stream_th,
         load_th,
+        side_reader,
         preview_abandon: false,
         foreground_follows_load: false,
         era_watch: super::era_callbacks::Watch::new(),
@@ -1663,140 +1530,8 @@ pub fn arm_seek(target_ns: i64) {
     SHARED.playpos_ns.store(t, Ordering::Relaxed); // instant HUD feedback until frames land
 }
 
-/// Resume/seek AT the first Load. A direct-play item seeks the demuxer (av_seek via arm_seek).
-/// A TRANSCODE item's stream is 0-based and NOT seekable (no byte-index, Content-Length=-1), so
-/// av_seek fails — instead restart the encode at `&offset=secs` and display content time via
-/// disp_base. Call BEFORE start_bufferfeed, AFTER route::play_movie has run the decision (so the
-/// transcode session + flavor are set). Used for viewOffset resume.
-///
-/// **There is one entry point, [`begin_resume`] / [`land_resume`], and it is a flight** (the cold
-/// resume of a freshly resolved play, and the foreground restore of a parked one): a transcode's
-/// rebuild at the saved position is planned on the frame thread and its PMS half runs on a worker.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[must_use = "resume preparation is an external route effect and must be settled"]
-pub enum ResumeOutcome {
-    Prepared,
-    NoRoute,
-    RebuildRejected,
-}
-
-/// What [`begin_resume`] did.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[must_use = "a pending resume owes a start when it lands"]
-pub enum ResumeStart {
-    /// Decided on the spot (no rebuild is owed): the caller starts the Load (or fails the start)
-    /// now.
-    Settled(ResumeOutcome),
-    /// A flight owns the rebuild at the saved position (`route::dispatch_resume_rebase`): the start
-    /// stays owed, `player::state` answers `Resolving` (via `route::resume_flight_outstanding`), and [`land_resume`] delivers the
-    /// outcome the caller starts the Load on.
-    Pending,
-}
-
-/// The part of a resume that never reaches PMS.
-enum ResumePrelude {
-    Settled(ResumeOutcome),
-    /// A transcode with a saved position: its encode must restart at the offset.
-    Rebuild,
-}
-
-fn resume_prelude(ps: &mut crate::route::PlaybackSession, resume_ns: i64) -> ResumePrelude {
-    if resume_ns <= 0 {
-        return ResumePrelude::Settled(ResumeOutcome::Prepared);
-    }
-    if crate::route::url(ps).is_empty() {
-        return ResumePrelude::Settled(ResumeOutcome::NoRoute);
-    }
-    if !crate::route::is_transcoding(ps) {
-        arm_seek(resume_ns); // direct-play: av_seek the file at the first open
-        return ResumePrelude::Settled(ResumeOutcome::Prepared);
-    }
-    ResumePrelude::Rebuild
-}
-
-/// The transcode half of a resume, once its encode restarts at the offset (0-based): `disp_base`
-/// carries the offset so the HUD reads content time.
-fn note_transcode_resumed(resume_ns: i64) {
-    SHARED.disp_base.store(resume_ns, Ordering::Relaxed);
-    SHARED.playpos_ns.store(resume_ns, Ordering::Relaxed);
-    log(&format!(
-        "resume(transcode): restart at offset {}s",
-        resume_ns / 1_000_000_000
-    ));
-}
-
-/// Prepare a resume at `resume_ns`: a cold start (a play whose plan just landed) or a foreground
-/// restore (the parked session's start transaction is `Stable`/`Prepared`/`Failed`, or an Original
-/// trial's own `Prepared` one for a session suspended mid-trial, which the flight flies over without
-/// touching the trial's rollback; an `Idle` one has no URL and answers `NoRoute` here, never
-/// reaching the rebuild). No Engine exists. Everything but a transcode settles on the spot; a transcode's
-/// rebuild at the saved position is a FLIGHT — planned here on the frame thread, the PMS half on a
-/// worker — and answers [`ResumeStart::Pending`]. The frame never reaches the server.
-pub fn begin_resume(ps: &mut crate::route::PlaybackSession, resume_ns: i64) -> ResumeStart {
-    match resume_prelude(ps, resume_ns) {
-        ResumePrelude::Settled(outcome) => ResumeStart::Settled(outcome),
-        ResumePrelude::Rebuild => match crate::route::dispatch_resume_rebase(ps, resume_ns) {
-            crate::route::RecoveryDispatch::Flying { .. } => ResumeStart::Pending,
-            // Nothing to rebuild or the worker could not start: a refusal.
-            crate::route::RecoveryDispatch::Refused => ResumeStart::Settled(ResumeOutcome::RebuildRejected),
-        },
-    }
-}
-
-/// Drain a pending resume's landing, once a frame while [`crate::route::resume_flight_outstanding`].
-/// `None` while the worker is still running, or when the flight went stale (a Back, a teardown, a
-/// newer play request: the landing is discarded and its replacement stopped — here, by the stale
-/// reap this runs first, since a flight with no Engine has no pump to do it — and whoever ended the
-/// flight owns what happens next). `Some` is the outcome of the rebuild: the
-/// route is installed and `Prepared` (the caller starts the Load), or the rebuild was refused and
-/// the transaction is `Failed`.
-pub fn land_resume(ps: &mut crate::route::PlaybackSession) -> Option<ResumeOutcome> {
-    crate::route::discard_stale_flight_landing();
-    if !crate::route::resume_flight_outstanding() {
-        return None;
-    }
-    let landing = crate::route::take_ready_recovery_flight(ps)?;
-    Some(match landing.verdict {
-        crate::route::RecoveryVerdict::Install => {
-            note_transcode_resumed(landing.offset_ns);
-            ResumeOutcome::Prepared
-        }
-        crate::route::RecoveryVerdict::Refused => ResumeOutcome::RebuildRejected,
-    })
-}
-
-/// Direct-play seek = tear down the pipeline and start a FRESH Load at `target_ns`. The old
-/// flush()+refeed path left a STALE GStreamer segment (decompiled ground truth: the no-arg
-/// StarfishMediaAPIs::flush() → CustomPipeline::flush() is a degenerate gst_element_seek to
-/// GST_CLOCK_TIME_NONE with NO FLUSH_START/STOP and NO fresh SEGMENT; the HW sink/decoder
-/// only re-anchor their segment/basetime on a real SEGMENT/FLUSH event). Post-seek buffers
-/// were then scheduled against the pre-seek segment, the sink stopped draining, and the fixed
-/// ~14.7 MB of upstream buffers filled in ~48 s → permanent BufferFull + "Playing error". A
-/// fresh Load re-establishes a correct segment by construction — the known-good fresh-play
-/// path, which never wedges. Heavier than a flush (a ~1 s re-preroll) but correct.
-/// Start the side subtitle reader for the live remux this engine run plays, drawing the track
-/// the route's target names (or, for a sidecar, measuring the clock only).
-fn start_side_reader(target: super::feed_open::SideReaderOpen) {
-    let clock_only = target.clock_only;
-    let started = target.spec.is_some_and(super::subside::start);
-    if !started {
-        // One place decides the label and the burn, so the two roles can never drift: a
-        // clock-only reader that cannot start — no client for the running server, or a refused
-        // thread — never raises the failure that rebuilds the stream.
-        super::subside::failed_reading(clock_only, "subside: could not start the reader thread");
-        if clock_only {
-            // The app fetches that subtitle itself and no reader owns it: the sidecar is drawn on
-            // the remux's clock, as it was before the reader measured it.
-            return;
-        }
-        // Nothing reads beside the stream: the demuxer must not leave the subtitle to a reader
-        // that is not there.
-        SHARED.side_subs_owner.store(false, Ordering::Release);
-    }
-}
-
 /// Set where the pump ends an Engine for good under the failure read-out; spent by
-/// [`release_failed_engine`] or by any teardown.
+/// [`super::route_start::release_failed_engine`] or by any teardown.
 static FAILED_ENGINE_RELEASE_ARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The pump just failed the Engine for good ([`crate::route::fail_current_engine`] and the Error
@@ -1805,253 +1540,134 @@ pub(super) fn arm_failed_engine_release() {
     FAILED_ENGINE_RELEASE_ARMED.store(true, Ordering::Release);
 }
 
-/// **A terminal playback error lets go of the pipeline.** The failure read-out stands on the
-/// session, but an Engine left loaded behind it keeps the native pipeline and the video plane,
-/// which the television reads as playback still going: its screensaver never starts.
-///
-/// Releases them the frame after the Engine failed, the same teardown an app switch uses
-/// ([`suspend_bufferfeed`]: the session, URL and transcode session stay, nothing is reported as
-/// stopped). What the read-out and its actions need survives it, in the session: the cause
-/// ([`crate::route::note_engine_failure`], so `state()` and `error_now` still answer) and the
-/// playhead a retry resumes from (the unpresented-resume slot `retry_failed_playback` reads).
-/// Try again, Play automatically and a quality pick start a new playback from scratch, and Back
-/// ends the session with a real stop, so none of them needs the loaded pipeline.
-/// Returns whether an Engine was released.
-pub fn release_failed_engine(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> bool {
-    if !FAILED_ENGINE_RELEASE_ARMED.load(Ordering::Acquire) {
-        return false;
-    }
-    // Armed by an Engine that has since been replaced (an automatic retry started a new playback
-    // in the same frame): not this Engine's end, and nothing left to release.
-    if !pa.is_live() {
-        FAILED_ENGINE_RELEASE_ARMED.store(false, Ordering::Release);
-        return false;
-    }
-    // Not this Engine's end: a preview, one a recovery is still flying for, or one that never put
-    // a picture up (a Load that failed, an open that never produced a frame) and so holds nothing
-    // the television mistakes for playback.
-    if crate::route::is_preview(ps)
-        || SHARED.pb_state.load(Ordering::Relaxed) != super::shared::PlaybackState::Error as u8
-        || SHARED.frames.load(Ordering::Relaxed) == 0
-        || crate::route::recovery_flight_outstanding()
-        || crate::route::engineless_flight_outstanding()
-    {
-        return false;
-    }
+pub(super) fn failed_engine_release_armed() -> bool {
+    FAILED_ENGINE_RELEASE_ARMED.load(Ordering::Acquire)
+}
+
+pub(super) fn clear_failed_engine_release_arm() {
     FAILED_ENGINE_RELEASE_ARMED.store(false, Ordering::Release);
-    let cause = super::live_runtime_failure(ps);
-    crate::route::note_engine_failure(ps, cause, super::intended_pos_ns(ps));
-    log("player: the failed Engine's pipeline is released under the failure read-out");
-    teardown(ps, pa, true);
-    true
 }
 
-/// Retire a failed foreground Engine only if it still owns the exact Load the foreground reducer
-/// observed. A later route action may have replaced it between `player::pump` and the app poll;
-/// tearing down unconditionally there would destroy the healthy replacement.
-pub fn suspend_bufferfeed_if_attempt(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut super::adapter::PlayerAdapter,
-    attempt: crate::route::RouteStartAttempt,
-) -> bool {
-    let owns_attempt = pa.active_feed_attempt() == Some(attempt);
-    if owns_attempt {
-        teardown(ps, pa, true);
+/// Owns a removed Engine through worker joins, native release and queue destruction. Common
+/// route/report work may run between its phases without receiving the Engine or native handles.
+pub(super) struct NativeStop {
+    eng: Engine,
+    stream: bool,
+    spans: TeardownSpans,
+    abandoned_load: Option<std::thread::JoinHandle<()>>,
+    unload_th: Option<std::thread::JoinHandle<()>>,
+}
+
+impl NativeStop {
+    pub(super) fn take(feed: &mut super::feed_resources::FeedResources) -> Self {
+        let eng = feed.take().expect("main-thread live check and take are one transaction");
+        feed.retire_load_attempt(eng.attempt);
+        let stream = matches!(eng.source, Source::Stream { .. });
+        Self { eng, stream, spans: TeardownSpans::new(), abandoned_load: None, unload_th: None }
     }
-    owns_attempt
-}
 
-/// The foreground lifecycle follows `attempt` (it launched that Load, or took over following it):
-/// from now on the Load call's own synchronous refusal is the lifecycle's to settle
-/// ([`Engine::foreground_follows_load`]). True when the live Engine owns that exact attempt; a
-/// replaced Engine (a different attempt) is not marked.
-pub fn foreground_follows_load(pa: &mut super::adapter::PlayerAdapter, attempt: crate::route::RouteStartAttempt) -> bool {
-    pa.mark_foreground_follows_feed_load(attempt)
-}
+    /// The side reader must stop before the paired demux reader is joined.
+    pub(super) fn stop_side_reader(&mut self, for_reload: bool) {
+        self.spans.mark("begin");
+        self.eng.side_reader.stop_before_demux_join(if for_reload { "reload" } else { "stop" });
+        self.spans.mark("subside");
+    }
 
-/// The teardown body. `for_reload` = this is a direct-play seek reload (reload_at), NOT a real
-/// stop: preserve the playback session so start_bufferfeed can restart the SAME item — skip
-/// the "stopped" timeline scrobble, the server transcode stop, and the URL clear.
-pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, for_reload: bool) {
-    FAILED_ENGINE_RELEASE_ARMED.store(false, Ordering::Release);
-    if !super::route_start::begin_teardown(ps, pa, for_reload) { return; }
-    // A preview Load that has not returned yet must not be joined on this frame. Bind is skipped
-    // while the flag is set, so the picture never reaches the plane. The next halt joins once
-    // the thread has already finished.
-    if crate::route::is_preview(ps) {
-        if let Some((loading, finished)) = pa.feed.preview_load_join_state() {
-            if crate::player::preview::defer_media_join(loading, finished) {
-                pa.feed.abandon_preview();
-                return;
+    /// Wake both transports and queues before either worker join; close the socket only after
+    /// the demux reader no longer owns its fd. A timed-out Load remains parked and unjoined.
+    pub(super) fn unblock_join_close(&mut self) {
+        if self.stream {
+            for q in [self.eng.aq_video.as_mut(), self.eng.aq_audio.as_mut()].into_iter().flatten() {
+                crate::aq::aq_abort(&mut **q);
+            }
+            let p = SHARED.hs_ptr.load(Ordering::Acquire);
+            if !p.is_null() { plx_net::stream::http_shutdown(p); }
+            crate::curlio::abort_active();
+        }
+        self.spans.mark("unblock");
+        if let Some(thread) = self.eng.stream_th.take() {
+            plx_base::task::join("demux", thread);
+        }
+        self.spans.mark("join_demux");
+        self.abandoned_load = match self.eng.load_th.take() {
+            Some(thread) if !thread.is_finished() && SHARED.load_timed_out.load(Ordering::Acquire) => Some(thread),
+            Some(thread) => {
+                plx_base::task::join("media", thread);
+                None
+            }
+            None => None,
+        };
+        self.spans.mark("join_media");
+        if self.stream {
+            let p = SHARED.hs_ptr.load(Ordering::Acquire);
+            if !p.is_null() { plx_net::stream::http_close(p); }
+        }
+        self.spans.mark("http_close");
+    }
+
+    /// The stopped Engine still owns this attempt after its workers join. Capture physical
+    /// mailboxes before the common owner resets them and addresses the final readout.
+    pub(super) fn terminal_facts(&self) -> plx_playback_contract::readout::AttemptFacts {
+        super::feed_pump::native_attempt_facts()
+    }
+
+    pub(super) fn report_dispatched(&mut self) { self.spans.mark("scrobble"); }
+
+    /// Release only after common reporting has handed its final write to the off-frame worker.
+    pub(super) fn release_and_drain(&mut self, mt: &MainThread,
+        feed: &mut super::feed_resources::FeedResources, for_reload: bool) {
+        if let Some(load_th) = self.abandoned_load.take() {
+            if !SHARED.abandon_native_session(self.eng.native_epoch) {
+                log(&format!(
+                    "native lifecycle: abandoned Load epoch={} no longer owned the Active phase",
+                    self.eng.native_epoch,
+                ));
+            }
+            log(&format!(
+                "native lifecycle: Load epoch={} still in flight at teardown — not joining; the \
+                 object stays parked (and native playback refused) until Load returns",
+                self.eng.native_epoch,
+            ));
+            feed.park_abandoned_load(AbandonedLoad {
+                epoch: self.eng.native_epoch,
+                load_th,
+                _payload: std::mem::take(&mut self.eng.payload),
+                abandoned_at: std::time::Instant::now(),
+            });
+        } else if !for_reload {
+            self.unload_th = release_off_frame(mt, self.eng.native_epoch, &mut self.spans);
+        } else {
+            release_native_object_timed(mt, self.eng.native_epoch, &mut self.spans);
+        }
+        if self.stream {
+            drain_aq(&mut self.eng);
+            for q in [self.eng.aq_video.as_mut(), self.eng.aq_audio.as_mut()].into_iter().flatten() {
+                crate::aq::aq_destroy(&mut **q);
             }
         }
+        self.spans.mark("drain_aq");
     }
-    // Revoke every worker ticket before asking those workers to stop. This is the synchronization
-    // boundary that makes a late HLS candidate/fallback an ordinary stale event instead of a
-    // mutation of the route the next Load is about to own.
-    let mut sp = TeardownSpans::new();
-    let mut unload_th = None;
-    super::route_start::begin_feed_teardown(for_reload);
-    SHARED.stop_hls_clock();
-    let route_attempt = pa.active_feed_attempt().expect("live feed has a route owner");
-    let mut eng = pa.feed.take().expect("main-thread live check and take are one transaction");
-    pa.clear_feed_attempt();
-    pa.retire_load_attempt(eng.attempt);
-    let stream = matches!(eng.source, Source::Stream { .. });
 
-    let final_report = super::route_start::final_report(ps, for_reload);
-
-    // The side subtitle reader first: it reads the original Part over its own transport and must
-    // be gone (its socket shut, its cues cleared) before the demux it was paired with is joined.
-    sp.mark("begin");
-    super::subside::stop(if for_reload { "reload" } else { "stop" });
-    sp.mark("subside");
-    // 1. unblock every thread (abort queues, close the demux socket)
-    let mut report_th = super::route_start::stop_feed_timeline(pa, route_attempt);
-    if stream {
-        // abort BOTH lanes: unblock the demux if it's parked in aq_push on a full lane
-        for q in [eng.aq_video.as_mut(), eng.aq_audio.as_mut()]
-            .into_iter()
-            .flatten()
-        {
-            crate::aq::aq_abort(&mut **q);
-        }
-        let p = SHARED.hs_ptr.load(Ordering::Acquire);
-        if !p.is_null() {
-            // shutdown, not close: the demux thread is still inside recv here and is joined
-            // below. Closing now would free the fd number for another thread to claim while
-            // this one is still reading it. The real close happens after the join.
-            plx_net::stream::http_shutdown(p);
-        }
-        // …and the same interrupt for the OTHER transport. An https demux is parked in
-        // `curl_multi_wait`, where no `shutdown(2)` of ours can reach it — this writes a byte to
-        // the wake pipe it is polling. A no-op when the live source is a plaintext socket, or when
-        // there is none; exactly one of these two lines ever has anything to do. `curlio`'s module
-        // doc explains why the handle lives in a registry rather than being passed up to here.
-        crate::curlio::abort_active();
-    }
-    sp.mark("unblock");
-    // 2. JOIN every worker before freeing anything they hold raw ptrs into
-    // Through `task::join` so a stall leaves a number behind: this is the main thread, and every
-    // teardown freeze the engine has had was one of these three.
-    if let Some(t) = eng.stream_th.take() {
-        plx_base::task::join("demux", t);
-    }
-    sp.mark("join_demux");
-    // A Load the D.1.4 budget already gave up on, still inside `sf_load`: do NOT join it here.
-    // This is the main thread, and on the set where the budget fires the call may never return —
-    // BACK from the timeout read-out used to freeze the app on this line. The native object is
-    // parked instead and released by `reap_abandoned_load` once the thread has returned; nothing
-    // below may touch it before then (issue #74). Every other Load keeps the ordinary ordering:
-    // one that has returned joins at once, and one that is merely slow is still joined.
-    let abandoned_load = match eng.load_th.take() {
-        Some(t) if !t.is_finished() && SHARED.load_timed_out.load(Ordering::Acquire) => Some(t),
-        Some(t) => {
-            plx_base::task::join("media", t);
-            None
-        }
-        None => None,
-    };
-    sp.mark("join_media");
-    // 2b. every reader is now joined, so this thread is the sole owner: do the real close.
-    // (Before the join it could only shutdown — see step 1.)
-    if stream {
-        let p = SHARED.hs_ptr.load(Ordering::Acquire);
-        if !p.is_null() {
-            plx_net::stream::http_close(p);
-        }
-    }
-    // Final position report (state=stopped, so the server commits the resume point) + the
-    // server-side transcode stop, both dispatched to a worker. They used to run inline HERE and
-    // twelve lines below — two blocking PMS round trips on the SDL thread, ~17 s each worst case,
-    // on 100% of real stops. `scrobble_stop` reads and clears route's session statics on THIS
-    // thread and hands the worker owned copies; `plex_run` drains it at exit so the report still
-    // lands. Skipped for a reload, which is not a stop.
-    // The reporter is NOT joined here. Its handle rides out with the scrobble worker, which
-    // joins it before posting `stopped` — so the last `playing` report still lands first, but the
-    // MAIN thread stops paying for it. It parked the frame loop for the remainder of SO_RCVTIMEO
-    // whenever that POST had stalled (measured: `THREADJOIN timeline 6974ms`, tools/netcond.py in
-    // `stall@/:/timeline` — whose scope was broken until 2026-08-23, so that run stalled EVERY
-    // connection. The named `THREADJOIN` line is what keeps the attribution good, and step 1 above
-    // is why: demux and the AU lanes are woken before they are joined, so `timeline` was the only
-    // one that could park). Safe to outlive the Engine: the adapter-owned reporter keeps its own
-    // stop and samples; the route reducer revalidates its lease
-    // before each network effect.
-    sp.mark("http_close");
-    super::route_start::after_physical_close(ps, for_reload, final_report, &mut report_th);
-    sp.mark("scrobble");
-    // 3. Release the native object (see `release_native_object` for the proof chain), unless its
-    // Load is still in flight — then hand it, its thread and its payload to the adapter.
-    if let Some(load_th) = abandoned_load {
-        if !SHARED.abandon_native_session(eng.native_epoch) {
-            log(&format!(
-                "native lifecycle: abandoned Load epoch={} no longer owned the Active phase",
-                eng.native_epoch,
-            ));
-        }
-        log(&format!(
-            "native lifecycle: Load epoch={} still in flight at teardown — not joining; the \
-             object stays parked (and native playback refused) until Load returns",
-            eng.native_epoch,
-        ));
-        pa.park_abandoned_load(AbandonedLoad {
-            epoch: eng.native_epoch,
-            load_th,
-            _payload: std::mem::take(&mut eng.payload),
-            abandoned_at: std::time::Instant::now(),
-        });
-    } else if !for_reload {
-        unload_th = release_off_frame(pa.mt(), eng.native_epoch, &mut sp);
-    } else {
-        release_native_object_timed(pa.mt(), eng.native_epoch, &mut sp);
-    }
-    // 4. drain + destroy both queues (drain_aq also clears both pendings)
-    if stream {
-        drain_aq(&mut eng);
-        for q in [eng.aq_video.as_mut(), eng.aq_audio.as_mut()]
-            .into_iter()
-            .flatten()
-        {
-            crate::aq::aq_destroy(&mut **q);
-        }
-    }
-    sp.mark("drain_aq");
-    // 5. reset shared + transport. On a real stop also stop the server transcode + clear the
-    // URL; on a reload KEEP them so start_bufferfeed restarts the same item (a direct-play
-    // reload has no transcode session anyway, so the skip only matters for the URL).
-    // The DURATION is a fact about the FILE, and a reload plays the same file: keep it across
-    // the reset so the playbar has a denominator while the demuxer reopens. Without this every
-    // reload-based seek (a refused native Seek, a speed seek, a transcode seek) drew
-    // the playhead at position ÷ 0, i.e. the far left, for the few hundred ms until `ff.rs`
-    // re-published it, while the clock beside it (position alone, seeded by `arm_seek`) read
-    // correctly. Reported on an LG C3 (webOS 23). A real stop still zeroes it: the next item is
-    // a new file.
-    if for_reload {
-        SHARED.reset_session_for_reload();
-        TX.reset_for_reload();
-    } else {
-        SHARED.reset_session();
-        TX.reset();
-        super::claim_hold::clear();
-    }
-    super::route_start::finish_feed_teardown(ps, for_reload, report_th);
-    sp.mark("reset");
-    sp.emit(if for_reload { "reload" } else { "stop" });
-    match unload_th {
-        Some(unload_th) => {
+    /// Keep the Engine and payload alive under an off-frame Unload; otherwise drop only after
+    /// every worker has joined and the queues are destroyed.
+    pub(super) fn finish(mut self, for_reload: bool) -> Option<PendingRelease> {
+        self.spans.mark("reset");
+        self.spans.emit(if for_reload { "reload" } else { "stop" });
+        if let Some(unload_th) = self.unload_th.take() {
             log(&format!(
                 "stop_bufferfeed: torn down (native Unload epoch={} continues off-frame)",
-                eng.native_epoch,
+                self.eng.native_epoch,
             ));
-            pa.park_release(PendingRelease {
-                epoch: eng.native_epoch,
+            Some(PendingRelease {
+                epoch: self.eng.native_epoch,
                 unload_th: Some(unload_th),
                 handed_off_at: std::time::Instant::now(),
-                _engine: eng,
-            });
+                _engine: self.eng,
+            })
+        } else {
+            log("stop_bufferfeed: torn down");
+            None
         }
-        // Engine (hs/aq boxes, payload) drops here — after all joins
-        None => log("stop_bufferfeed: torn down"),
     }
 }
 
@@ -4110,6 +3726,7 @@ mod prime_livelock_tests {
             source: Source::Stream,
             stream_th: None,
             load_th: None,
+            side_reader: Box::new(super::super::feed_open::SideReaderOpen::empty()),
             preview_abandon: false,
             foreground_follows_load: false,
             era_watch: crate::player::era_callbacks::Watch::new(),
@@ -6146,7 +5763,7 @@ mod load_in_flight_tests {
         let start = crate::route::begin_route_start().expect("a completed stop grants a start owner");
         // No URL is set, so an unguarded start would answer `NoRoute`; `StartFailed` is the refusal.
         assert_eq!(
-            start_bufferfeed_inner(&mut ps, &mut pa, start).err(),
+            crate::player::route_start::start_bufferfeed_inner(&mut ps, &mut pa, start).err(),
             Some(crate::route::RouteStartResult::StartFailed),
             "a later playback must not be handed the object an abandoned Load still owns"
         );
@@ -6436,11 +6053,14 @@ mod pcm_info_tests {
     /// The diagnostics line names the track's own rate only where the app resamples it.
     #[test]
     fn the_decode_log_line_names_the_source_rate_only_when_it_is_resampled() {
+        let line = |codec: &str, format: &PcmFormat| {
+            plx_play_feed::pcm_decode_line(codec, &(*format).into())
+        };
         let exact = PcmFormat { sample_rate: 48_000, bits: 16, channels: 2, source_rate: 48_000 };
-        assert_eq!(pcm_decode_line("flac", &exact), "pcm: flac decoded in-app -> 48000Hz 16-bit 2ch");
+        assert_eq!(line("flac", &exact), "pcm: flac decoded in-app -> 48000Hz 16-bit 2ch");
         let hires = PcmFormat { sample_rate: 48_000, bits: 32, channels: 2, source_rate: 96_000 };
-        assert_eq!(pcm_decode_line("flac", &hires), "pcm: flac decoded in-app -> 48000Hz 32-bit 2ch (resampled from 96000Hz)");
-        assert_eq!(pcm_decode_line("dca", &PcmFormat::STEREO_48K), "pcm: dca decoded in-app -> 48000Hz 16-bit 2ch");
+        assert_eq!(line("flac", &hires), "pcm: flac decoded in-app -> 48000Hz 32-bit 2ch (resampled from 96000Hz)");
+        assert_eq!(line("dca", &PcmFormat::STEREO_48K), "pcm: dca decoded in-app -> 48000Hz 16-bit 2ch");
     }
 
     /// Every rate the PCM path admits is declared in kilohertz, the unit libpf's table is in. In

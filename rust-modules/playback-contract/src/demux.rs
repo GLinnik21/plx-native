@@ -3,6 +3,9 @@
 //! clocks, accepted pause events, native transition leases and published state.
 
 use crate::adaptive::{AutomaticTransition, FenceHandle, LeaseHandle, PhysicalFailure};
+use crate::AttemptId;
+use crate::subtitle::Anchor;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -17,6 +20,51 @@ pub struct PauseEvent {
 
 #[derive(Clone, Copy, Debug)]
 pub struct PauseClock { pub at: Instant, pub elapsed: Duration }
+
+/// One ordered physical HLS clock read. The feed combines these published
+/// tails with a staged segment only after the captured epoch has been checked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HlsBufferClocks {
+    pub playhead_ns: i64,
+    pub video_tail_ns: i64,
+    pub audio_tail_ns: i64,
+    pub display_base_ns: i64,
+}
+
+/// The C AVIO callbacks retain this captured view while the worker retains
+/// mutable cursor and lease ownership. A retired native epoch returns `None`
+/// or refuses an effect, so a late callback cannot write the next session.
+pub trait DemuxObserver: Send + Sync {
+    fn attempt(&self) -> AttemptId;
+    fn playpos_ns(&self) -> Option<i64>;
+    fn hold_epoch(&self) -> Option<u64>;
+    fn rebuffering(&self) -> Option<bool>;
+    fn audio_expected(&self) -> Option<bool>;
+    fn duration_ns(&self) -> Option<i64>;
+    fn declared_video_code(&self) -> Option<u8>;
+    fn paused(&self) -> Option<bool>;
+    fn pause_clock(&self) -> Option<PauseClock>;
+    fn hls_buffer_ms(&self) -> Option<Option<i64>>;
+    fn hls_buffer_clocks(&self) -> Option<HlsBufferClocks>;
+    fn remaining_playback_ms(&self) -> Option<i64>;
+    fn user_sequence(&self) -> Option<u64>;
+    fn publish(&self, effect: DemuxCallbackEffect) -> bool;
+}
+
+/// A late read bound to the worker's captured native epoch. `None` retires the read.
+pub type AddressedSampler<T> = Arc<dyn Fn() -> Option<T> + Send + Sync>;
+
+/// Only callback-safe atomics. Neither logs, queue operations nor native
+/// calls run while the native epoch retirement barrier is held.
+pub enum DemuxCallbackEffect {
+    NetworkBytes(i64),
+    HttpStatus(i32),
+    FileSize(i64),
+    DurationNs(i64),
+    TransportFailure { rc: i32, age_ms: i64, reopen_failed: bool },
+    IoFailed,
+    RequestTerminalHold,
+}
 
 /// Each read is made at the call site. A cached all-fields snapshot would
 /// change the playhead and pause linearization around blocking AVIO and AQ.
@@ -38,10 +86,11 @@ pub trait DemuxClock {
     fn user_sequence(&self) -> u64;
     fn desired_audio_idx(&self) -> i32;
     fn applied_rate_permille(&self) -> i32;
-    fn playpos_sampler(&self) -> fn() -> i64;
-    fn hls_buffer_sampler(&self) -> fn() -> Option<i64>;
-    fn remaining_playback_sampler(&self) -> fn() -> i64;
-    fn user_sequence_sampler(&self) -> fn() -> u64;
+    fn side_subtitle_owner(&self) -> bool;
+    fn playpos_sampler(&self) -> AddressedSampler<i64>;
+    fn hls_buffer_sampler(&self) -> AddressedSampler<Option<i64>>;
+    fn remaining_playback_sampler(&self) -> AddressedSampler<i64>;
+    fn user_sequence_sampler(&self) -> AddressedSampler<u64>;
 }
 
 /// A move-only physical lease is returned with its exact Drop action. The
@@ -83,6 +132,9 @@ pub enum DemuxEffect {
     NoVideo,
     HttpStatus(i32),
     TrackNames { audio: Vec<String>, subs: Vec<String> },
+    SideAnchor(Option<Anchor>),
+    ContainerHdr(Option<crate::video::ContainerHdr>),
+    FirstAudioPts(i64),
     FileSize(i64),
     TransportRc(i32),
     NetworkBytes(i64),
@@ -102,6 +154,7 @@ pub trait DemuxMedia {
 
 /// One move-only adapter follows the media open into its existing feed worker.
 pub trait DemuxSession: Send {
+    fn observer(&self) -> Arc<dyn DemuxObserver>;
     fn clock(&self) -> &dyn DemuxClock;
     fn clock_mut(&mut self) -> &mut dyn DemuxClock;
     fn adaptive_ref(&self) -> &dyn DemuxAdaptive;

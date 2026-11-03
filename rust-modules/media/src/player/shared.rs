@@ -240,7 +240,7 @@ pub enum HlsPlayCompletion {
 
 #[derive(Clone, Copy, Debug)]
 struct AbrSeed {
-    estimate: crate::abr::CapacityEstimate,
+    estimate: plx_playback_contract::adaptive::SeedReadout,
     observed_at: Instant,
 }
 
@@ -506,8 +506,6 @@ pub struct Shared {
     /// picker's rows are the only place this reaches, and only on DIRECT PLAY: a transcode is a
     /// remux the server built, and its tags are whatever the server put there.
     pub track_names: Mutex<TrackNames>,
-    pub ass_sources: Mutex<super::ass_source::Store>,
-    pub ass_renderer: super::ass::Runtime,
     pub sub_bitmaps: Mutex<Vec<SubBitmap>>, // image-sub cues (every image track while subs are on)
 
     /// The main demuxer's FIRST video keyframe of this engine run (stream time + a payload
@@ -912,8 +910,6 @@ impl Shared {
             native_load_elapsed_ms: AtomicU64::new(0),
             desired_sub_idx: AtomicI32::new(-1),
             track_names: Mutex::new(TrackNames::new()),
-            ass_sources: Mutex::new(super::ass_source::Store::new()),
-            ass_renderer: super::ass::Runtime::new(),
             sub_bitmaps: Mutex::new(Vec::new()),
             file_size: AtomicI64::new(0),
             video_w: AtomicI32::new(0),
@@ -1050,6 +1046,14 @@ impl Shared {
         self.native_session.reject_native_presentation_probe(epoch)
     }
 
+    /// Sample or publish one demux observer's facts under the existing retirement barrier.
+    /// The closure must contain only bounded state work: no IO, native calls, or nested epoch gate.
+    pub fn with_active_demux_epoch<R>(&self, epoch: u32, read: impl FnOnce() -> R) -> Option<R> {
+        let mut result = None;
+        self.native_session.with_active_epoch(epoch, || result = Some(read()));
+        result
+    }
+
     pub fn with_native_session<R>(
         &self,
         epoch: u32,
@@ -1079,38 +1083,25 @@ impl Shared {
         *self.abr_seed.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
-    pub fn publish_abr_seed(&self, estimate: crate::abr::CapacityEstimate) {
-        self.publish_abr_seed_at(estimate, Instant::now());
-    }
-
     pub fn publish_abr_seed_readout(
         &self, readout: plx_playback_contract::adaptive::SeedReadout,
     ) {
-        self.publish_abr_seed(crate::abr::CapacityEstimate {
-            fast_kbps: readout.fast_kbps,
-            slow_kbps: readout.slow_kbps,
-            uncertainty_pm: readout.uncertainty_pm,
-            samples: readout.samples,
-        });
+        self.publish_abr_seed_at(readout, Instant::now());
     }
 
-    fn publish_abr_seed_at(&self, estimate: crate::abr::CapacityEstimate, observed_at: Instant) {
+    fn publish_abr_seed_at(
+        &self, estimate: plx_playback_contract::adaptive::SeedReadout, observed_at: Instant,
+    ) {
         let mut seed = self.abr_seed.lock().unwrap_or_else(|e| e.into_inner());
-        *seed = (estimate.samples > 0).then_some(AbrSeed {
-            estimate,
-            observed_at,
-        });
+        *seed = (estimate.samples > 0).then_some(AbrSeed { estimate, observed_at });
     }
 
-    /// Delivery evidence carried across an engine reload, aged by every wall interval for which
-    /// no segment could refresh it. This includes accepted Pause, app background and teardown —
-    /// all three are the same epistemic fact: the old link observation was not repeated.
-    pub fn abr_seed(&self) -> Option<crate::abr::CapacityEstimate> {
+    /// Return captured delivery evidence and its unobserved interval. Aging belongs to the
+    /// common adaptive policy; the physical transport neither chooses nor copies that policy.
+    pub fn abr_seed(&self) -> Option<(plx_playback_contract::adaptive::SeedReadout, u64)> {
         let seed = (*self.abr_seed.lock().unwrap_or_else(|e| e.into_inner()))?;
-        let mut estimate = seed.estimate;
         let elapsed_ms = u64::try_from(seed.observed_at.elapsed().as_millis()).unwrap_or(u64::MAX);
-        estimate.age_ms(elapsed_ms, &crate::abr::AbrPolicy::measured());
-        Some(estimate)
+        Some((seed.estimate, elapsed_ms))
     }
 
     /// Clear a playback's sticky Original failure. Kept separate from [`Shared::reset_session`]
@@ -1153,7 +1144,15 @@ impl Shared {
     fn reset_session_inner(&self, for_reload: bool) {
         // Preserve the callback/reset barrier across every mirror write below. Abandoned and
         // releasing objects keep their native phase while their old callbacks drain.
-        self.native_session.reset_session_with(|| self.reset_session_mirrors(for_reload));
+        self.reset_session_with(for_reload, || {});
+    }
+
+    /// Keep common resource retirement inside the existing callback/reset barrier.
+    pub fn reset_session_with(&self, for_reload: bool, reset_common: impl FnOnce()) {
+        self.native_session.reset_session_with(|| {
+            self.reset_session_mirrors(for_reload);
+            reset_common();
+        });
     }
 
     fn reset_session_mirrors(&self, for_reload: bool) {
@@ -1258,15 +1257,6 @@ impl Shared {
         self.load_timed_out.store(false, Ordering::Relaxed);
         self.decoder_revoked.store(false, Ordering::Relaxed);
         self.native_audio_refused.store(false, Ordering::Relaxed);
-        // NB: desired_sub_idx is NOT reset here — like desired_audio_idx it persists across
-        // seeks/reloads so a reload-based seek keeps the chosen subtitle. It is reset on a new
-        // item (player::reset_subtitle). ASS packets are immutable file facts, not
-        // rendered frames: a reload must keep long signs that a seek will not resend.
-        // A fresh playback clears them; a reopen additionally revalidates URL + headers.
-        {
-            let mut sources = self.ass_sources.lock().unwrap_or_else(|e| e.into_inner());
-            if for_reload { sources.retain_for_reload(); } else { sources.reset(); }
-        }
         // The decoded bitmap store is transient render state and refills on read.
         self.sub_bitmaps.lock().unwrap().clear();
         // Cleared with them, and for the same reason: they describe the FILE the last demuxer had
@@ -2357,6 +2347,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn demux_observer_cannot_publish_or_sample_a_successors_native_epoch() {
+        let shared = Shared::new();
+        let first = shared.begin_native_session().expect("first native epoch");
+        assert_eq!(shared.with_active_demux_epoch(first, || {
+            shared.playpos_ns.store(17, Ordering::Relaxed);
+            17
+        }), Some(17));
+        assert!(shared.retire_native_session(first));
+        let second = shared.begin_native_session().expect("successor native epoch");
+        shared.playpos_ns.store(29, Ordering::Relaxed);
+        assert_eq!(shared.with_active_demux_epoch(first, || {
+            shared.playpos_ns.store(99, Ordering::Relaxed);
+            99
+        }), None);
+        assert_eq!(shared.with_active_demux_epoch(first, || {
+            shared.playpos_ns.load(Ordering::Relaxed)
+        }), None);
+        assert_eq!(shared.with_active_demux_epoch(second, || {
+            shared.playpos_ns.load(Ordering::Relaxed)
+        }), Some(29));
+        assert!(shared.retire_native_session(second));
+    }
+
+    #[test]
     fn a_worker_consumes_a_complete_hidden_pause_cycle_as_one_event() {
         let transport = Transport::new();
         let mut cursor = UserPauseCursor::new(transport.pause_state_sample());
@@ -3035,13 +3049,14 @@ mod tests {
         // ff.rs is the THIRD writer of this block — the demux thread stamps the HTTP status and
         // the bytes it received. A writer file missing from this list reads exactly like a field
         // with no writer, so adding one here is part of adding one there.
-        const WRITERS: [&str; 6] = [
+        const WRITERS: [&str; 7] = [
             include_str!("pump.rs"),
             include_str!("feed_pump.rs"),
             include_str!("engine.rs"),
             include_str!("mod.rs"),
             include_str!("../ff.rs"),
             include_str!("../adaptive.rs"),
+            include_str!("demux_session.rs"),
         ];
 
         let declared: Vec<&str> = SHARED_SRC
@@ -3084,16 +3099,17 @@ mod tests {
     #[test]
     fn the_carried_link_estimate_survives_a_reload_and_not_a_stop() {
         let s = Shared::new();
-        let estimate = crate::abr::CapacityEstimate::from_snapshot(40_000, 41_000, 200, 19)
-            .expect("valid measured estimate");
-        s.publish_abr_seed(estimate);
+        let estimate = plx_playback_contract::adaptive::SeedReadout {
+            slow_kbps: 40_000, fast_kbps: 41_000, uncertainty_pm: 200, samples: 19,
+        };
+        s.publish_abr_seed_readout(estimate);
 
         s.reset_session();
         let carried = s
             .abr_seed()
             .expect("a reload tears the engine down and keeps the link; this is the seek path");
-        assert_eq!(carried.samples, 19);
-        assert_eq!(carried.slow_kbps, 40_000);
+        assert_eq!(carried.0.samples, 19);
+        assert_eq!(carried.0.slow_kbps, 40_000);
 
         s.clear_abr_seed();
         assert!(
@@ -3103,21 +3119,18 @@ mod tests {
     }
 
     #[test]
-    fn a_carried_link_estimate_ages_across_an_unobserved_reload_gap() {
+    fn carried_link_evidence_preserves_its_unobserved_interval() {
         let s = Shared::new();
-        let estimate = crate::abr::CapacityEstimate::from_snapshot(40_000, 42_000, 100, 19)
-            .expect("valid measured estimate");
-        let half_life = crate::abr::AbrPolicy::measured().stale_half_life_ms;
-        let observed_at = Instant::now()
-            .checked_sub(Duration::from_millis(u64::from(half_life) * 2))
+        let estimate = plx_playback_contract::adaptive::SeedReadout {
+            slow_kbps: 40_000, fast_kbps: 42_000, uncertainty_pm: 100, samples: 19,
+        };
+        let observed_at = Instant::now().checked_sub(Duration::from_millis(5_000))
             .expect("test instant");
         s.publish_abr_seed_at(estimate, observed_at);
-
-        let aged = s.abr_seed().expect("a reload carries the estimate");
-        assert!(
-            aged.uncertainty_pm > estimate.uncertainty_pm,
-            "pause/background/reload wall time must widen carried evidence",
-        );
+        s.reset_session();
+        let (carried, elapsed_ms) = s.abr_seed().expect("a reload carries the estimate");
+        assert_eq!(carried, estimate);
+        assert!(elapsed_ms >= 5_000);
     }
 
     /// A failed HLS→Original transaction immediately tears down the failed Engine and reloads

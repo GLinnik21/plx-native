@@ -60,6 +60,8 @@ mod foreground_flight_tests;
 #[cfg(all(test, feature = "hostsim"))]
 mod resume_tests;
 mod shared;
+mod shared_resources;
+use shared_resources::Shared;
 pub mod sidecar;
 pub mod sub_charset; // legacy-encoding text subtitles (GBK, Big5, Shift_JIS, ...) read as UTF-8; decided once per track
 pub mod subside; // the side subtitle reader's thread and state (dev trigger `plxnative-subside`)
@@ -84,7 +86,7 @@ pub use shared::SubRect;
 pub use plx_data::metadata::track_names::TrackNames;
 pub use shared::UserPauseCursor;
 use shared::{
-    HlsPauseCompletion, HlsPlayCompletion, HlsUserPause, HlsUserResume, Shared, SubBitmap,
+    HlsPauseCompletion, HlsPlayCompletion, HlsUserPause, HlsUserResume, SubBitmap,
     Transport,
 };
 
@@ -407,9 +409,12 @@ pub fn clock_user_held_for_test() -> bool {
 }
 
 pub use engine::{
-    acb_init, begin_resume, foreground_follows_load, land_resume, start_bufferfeed, start_bufferfeed_tracked, stop_bufferfeed,
-    suspend_bufferfeed, suspend_bufferfeed_if_attempt, BufferfeedStartOutcome, ResumeOutcome, ResumeStart,
+    acb_init, start_bufferfeed, start_bufferfeed_tracked, stop_bufferfeed,
+    suspend_bufferfeed, BufferfeedStartOutcome,
 };
+pub use route_start::{begin_resume, exit_native, foreground_follows_load, land_resume,
+    poll_release_frame, reap_abandoned_load, suspend_bufferfeed_if_attempt, NativeExit,
+    ResumeOutcome, ResumeStart};
 
 pub use pump::{
     drain_engineless_rollback, land_engineless_rollback, pump, recover_failed_foreground_original, ForegroundOriginalRecovery,
@@ -711,9 +716,6 @@ pub fn video_viewport(ps: &crate::route::PlaybackSession, width: i32, height: i3
         .map(|aspect| aspect.fit(width, height))
 }
 
-pub(crate) fn feed_playpos_ns() -> i64 {
-    SHARED.playpos_ns.load(Relaxed)
-}
 pub fn playpos_ns(ps: &crate::route::PlaybackSession) -> Option<i64> {
     ps.attempt_view().facts().position_ns
 }
@@ -1546,13 +1548,8 @@ pub use ffi_host::stop_clock_at as stop_sim_clock_at;
 /// The video codec a `dg_load_v` code names (video 1 = H264, 2 = H265, 3 = AV1, 4 = VP9; 0 = not built).
 /// The codes are written from `engine::LoadVideo::diag_code`, the names from its `payload_name`.
 pub fn load_v_name(code: u8) -> &'static str {
-    match code {
-        1 => "H264",
-        2 => "H265",
-        3 => "AV1",
-        4 => "VP9",
-        _ => "—",
-    }
+    plx_play_feed::LoadVideo::from_diag_code(code)
+        .map_or("—", plx_play_feed::LoadVideo::payload_name)
 }
 
 /// One consistent read of everything the on-screen diagnostics overlay shows (`app::diagnostics`).
@@ -1930,7 +1927,7 @@ plx_base::devtrig::latched_flag!(
 /// a trailer preview, Force Direct Play (speed requires PCM conversion), segmented HLS (not wired), audio the bundled FFmpeg cannot decode
 /// (`ff::speed_decoder_available`), a television that has already failed a PCM session
 /// ([`speed_unsupported`]), or a stream whose fed rate would pass the frame rate the Load can
-/// declare ([`engine::speed_fps_ceiling_now`]). The menu offers exactly these, and a Load plays
+/// declare ([`feed_open::speed_fps_ceiling_now`]). The menu offers exactly these, and a Load plays
 /// only one of them.
 pub fn speed_offer(ps: &crate::route::PlaybackSession) -> Vec<i32> {
     if crate::route::forced_direct_play(ps) || crate::route::is_preview(ps) || crate::route::is_segmented_hls(ps) || speed_unsupported() {
@@ -1940,7 +1937,7 @@ pub fn speed_offer(ps: &crate::route::PlaybackSession) -> Vec<i32> {
     if !no_audio_armed() && !crate::ff::speed_decoder_available(&codec) {
         return Vec::new();
     }
-    speeds_within(crate::route::stream_fps(ps), engine::speed_fps_ceiling_now(ps))
+    speeds_within(crate::route::stream_fps(ps), feed_open::speed_fps_ceiling_now(ps))
 }
 
 /// The most frames per second a speed may ask the decoder to show: at speed `r` a `fps` source is
@@ -3017,7 +3014,7 @@ mod tests {
         TX.started.store(true, Relaxed);
         let attempt = crate::route::RouteStartAttempt::fixture();
         ps.begin_attempt_view(attempt, attempt_view::Backend::Feed);
-        assert!(ps.ingest_attempt_facts(attempt, attempt_view::AttemptFacts {
+        assert!(ps.ingest_attempt_facts(attempt, crate::player::attempt_view::Backend::Feed, attempt_view::AttemptFacts {
             position_ns: Some(42_000_000_000), ..Default::default()
         }));
         assert!(set_play_rate(&ps, 1500));

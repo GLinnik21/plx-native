@@ -559,9 +559,10 @@ impl PlaybackSession {
     pub fn ingest_attempt_facts(
         &mut self,
         attempt: RouteStartAttempt,
+        backend: crate::player::attempt_view::Backend,
         facts: crate::player::attempt_view::AttemptFacts,
     ) -> bool {
-        self.attempt_view.ingest(attempt, facts)
+        self.attempt_view.ingest(attempt, backend, facts)
     }
 
     /// Nothing playing: what the module holds before the first play, and the value the static is
@@ -3708,11 +3709,33 @@ fn note_visible_switch(ps: &mut PlaybackSession, now_ms: u32) {
 /// Only the DELIVERY estimate crosses. The buffer, the risk history and any pending transaction
 /// describe a position that no longer exists and are reset by the new `Controller`'s construction.
 fn auto_prior(ps: &PlaybackSession) -> Option<crate::abr::CapacityEstimate> {
-    let carried = crate::player::SHARED.abr_seed();
+    let carried = crate::player::SHARED.abr_seed().map(|(readout, elapsed_ms)| {
+        age_carried_estimate(readout, elapsed_ms)
+    });
     carried.or_else(|| {
         let kbps = ps.auto_prior_kbps;
         (kbps > 0).then(|| crate::abr::CapacityEstimate::from_prior(kbps))
     })
+}
+
+fn age_carried_estimate(
+    readout: plx_playback_contract::adaptive::SeedReadout, elapsed_ms: u64,
+) -> crate::abr::CapacityEstimate {
+    let mut estimate = crate::abr::CapacityEstimate {
+        fast_kbps: readout.fast_kbps, slow_kbps: readout.slow_kbps,
+        uncertainty_pm: readout.uncertainty_pm, samples: readout.samples,
+    };
+    estimate.age_ms(elapsed_ms, &crate::abr::AbrPolicy::measured());
+    estimate
+}
+
+#[test]
+fn carried_link_estimate_ages_across_unobserved_reload_gap() {
+    let readout = plx_playback_contract::adaptive::SeedReadout {
+        slow_kbps: 40_000, fast_kbps: 42_000, uncertainty_pm: 100, samples: 19,
+    };
+    let elapsed = u64::from(crate::abr::AbrPolicy::measured().stale_half_life_ms) * 2;
+    assert!(age_carried_estimate(readout, elapsed).uncertainty_pm > readout.uncertainty_pm);
 }
 
 /// Does this playback's source carry something a transcode cannot give back? Dolby Vision and

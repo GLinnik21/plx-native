@@ -530,7 +530,7 @@ fn confirm_refusal(
 }
 
 /// The Engine fails for good: any flight ends, the viewer gets the read-out, and the Engine's
-/// pipeline is released next frame ([`super::engine::release_failed_engine`]).
+/// pipeline is released next frame ([`super::route_start::release_failed_engine`]).
 fn fail_engine_for_good() {
     crate::route::fail_current_engine();
     set_state(super::shared::PlaybackState::Error);
@@ -1018,7 +1018,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
     }
     settle_paused_seek(pa, now);
     // An Engine that failed for good last frame: let go of its pipeline and the video plane.
-    if super::engine::release_failed_engine(ps, pa) {
+    if super::route_start::release_failed_engine(ps, pa) {
         return;
     }
     if !pa.is_live() {
@@ -3602,7 +3602,7 @@ mod flight_tests {
     /// frames between its dispatch and its landing kept the Engine and its spinner), the refusal
     /// asked for no further rung (a manual Original has no HLS contingency), and the route is still
     /// the one the pipeline refused. A failure before any picture holds nothing the television
-    /// mistakes for playback, so [`release_failed_engine`](super::super::engine::release_failed_engine)
+    /// mistakes for playback, so [`release_failed_engine`](super::super::route_start::release_failed_engine)
     /// leaves the Engine to the viewer's Back.
     #[test]
     fn a_refused_conversion_ends_on_the_read_out_and_keeps_the_engine() {
@@ -5452,7 +5452,7 @@ mod end_of_film_tests {
                 SHARED.duration_ns.load(Relaxed) / 1_000_000,
                 self.eng().eos_pushed,
                 SHARED.pipeline_eos.load(Relaxed),
-                crate::player::ended(),
+                crate::player::feed_ended(),
                 clock_ns / 1_000_000,
                 TX.feed_allowed(),
                 TX.seek_to_ns.load(Relaxed),
@@ -5488,12 +5488,12 @@ mod end_of_film_tests {
              (the prime, the feed or the sink did not run): {}",
             rig.facts()
         );
-        assert!(crate::player::seen_frame(), "PRECONDITION FAILED, not the defect: no picture was reported");
+        assert!(crate::player::feed_seen_frame(), "PRECONDITION FAILED, not the defect: no picture was reported");
         for _ in 0..10 {
             rig.step();
         }
         assert!(
-            !rig.eng().eos_pushed && !SHARED.pipeline_eos.load(Relaxed) && !crate::player::ended(),
+            !rig.eng().eos_pushed && !SHARED.pipeline_eos.load(Relaxed) && !crate::player::feed_ended(),
             "the sink reported an end of stream nobody pushed: {}",
             rig.facts()
         );
@@ -5514,7 +5514,7 @@ mod end_of_film_tests {
              duration, so the arithmetic would end this film"
         );
         assert!(
-            rig.run_until(|_| crate::player::ended()),
+            rig.run_until(|_| crate::player::feed_ended()),
             "the film never ended: video ran to {}s, audio to {}s, and the pipeline's clock stopped \
              at the last picture: {}",
             VIDEO_END_NS / S,

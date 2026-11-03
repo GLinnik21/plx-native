@@ -2,6 +2,97 @@
 
 use super::*;
 
+struct FixtureDemuxObserver;
+
+impl DemuxObserver for FixtureDemuxObserver {
+    fn attempt(&self) -> plx_playback_contract::AttemptId {
+        plx_playback_contract::AttemptId::new(0, 0)
+    }
+    fn playpos_ns(&self) -> Option<i64> { Some(SHARED.playpos_ns.load(Ordering::Relaxed)) }
+    fn hold_epoch(&self) -> Option<u64> {
+        Some(SHARED.hls_internal_hold_epoch.load(Ordering::Acquire))
+    }
+    fn rebuffering(&self) -> Option<bool> {
+        Some(SHARED.hls_rebuffering.load(Ordering::Acquire))
+    }
+    fn audio_expected(&self) -> Option<bool> {
+        Some(SHARED.hls_audio_expected.load(Ordering::Acquire))
+    }
+    fn duration_ns(&self) -> Option<i64> {
+        Some(SHARED.duration_ns.load(Ordering::Relaxed))
+    }
+    fn declared_video_code(&self) -> Option<u8> {
+        Some(SHARED.dg_load_v.load(Ordering::Relaxed))
+    }
+    fn paused(&self) -> Option<bool> { Some(crate::player::TX.paused.load(Ordering::Acquire)) }
+    fn pause_clock(&self) -> Option<plx_playback_contract::demux::PauseClock> {
+        let (at, elapsed) = crate::player::TX.pause_clock_sample();
+        Some(plx_playback_contract::demux::PauseClock { at, elapsed })
+    }
+    fn hls_buffer_ms(&self) -> Option<Option<i64>> {
+        Some(hls_buffer_fact_at(self.hls_buffer_clocks()?, None).buffered_ms())
+    }
+    fn hls_buffer_clocks(&self) -> Option<plx_playback_contract::demux::HlsBufferClocks> {
+        Some(plx_playback_contract::demux::HlsBufferClocks {
+            playhead_ns: SHARED.playpos_ns.load(Ordering::Relaxed),
+            video_tail_ns: SHARED.hls_video_tail_ns.load(Ordering::Acquire),
+            audio_tail_ns: SHARED.hls_audio_tail_ns.load(Ordering::Acquire),
+            display_base_ns: SHARED.disp_base.load(Ordering::Relaxed),
+        })
+    }
+    fn remaining_playback_ms(&self) -> Option<i64> {
+        let duration = SHARED.duration_ns.load(Ordering::Relaxed);
+        Some(if duration <= 0 { 0 } else {
+            (duration - SHARED.playpos_ns.load(Ordering::Relaxed).max(0)).max(0) / 1_000_000
+        })
+    }
+    fn user_sequence(&self) -> Option<u64> { Some(SHARED.hls_user_sequence()) }
+    fn publish(&self, effect: DemuxCallbackEffect) -> bool {
+        match effect {
+            DemuxCallbackEffect::NetworkBytes(bytes) => {
+                SHARED.dg_net_rx.fetch_add(bytes, Ordering::Relaxed);
+            }
+            DemuxCallbackEffect::HttpStatus(status) =>
+                SHARED.dg_http_status.store(status, Ordering::Relaxed),
+            DemuxCallbackEffect::FileSize(size) =>
+                SHARED.file_size.store(size, Ordering::Release),
+            DemuxCallbackEffect::DurationNs(ns) =>
+                SHARED.duration_ns.store(ns, Ordering::Relaxed),
+            DemuxCallbackEffect::TransportFailure { rc, age_ms, reopen_failed } => {
+                SHARED.dg_transport_rc.store(rc, Ordering::Release);
+                SHARED.dg_transport_age_ms.store(age_ms, Ordering::Release);
+                SHARED.dg_transport_reopen_failed.store(reopen_failed, Ordering::Release);
+                SHARED.demux_io_failed.store(true, Ordering::Release);
+            }
+            DemuxCallbackEffect::IoFailed =>
+                SHARED.demux_io_failed.store(true, Ordering::Release),
+            DemuxCallbackEffect::RequestTerminalHold => {
+                SHARED.hls_rebuffer_request_tail_ns.store(
+                    SHARED.hls_video_tail_ns.load(Ordering::Acquire), Ordering::Release,
+                );
+                SHARED.hls_rebuffer_requested.store(true, Ordering::Release);
+            }
+        }
+        true
+    }
+}
+
+pub(super) fn demux_observer() -> Arc<dyn DemuxObserver> {
+    Arc::new(FixtureDemuxObserver)
+}
+
+pub(super) fn with_demux_session<R>(run: impl FnOnce(Box<dyn DemuxSession>) -> R) -> R {
+    let epoch = SHARED.begin_native_session().expect("fixture owns native epoch");
+    struct Retire(u32);
+    impl Drop for Retire {
+        fn drop(&mut self) { SHARED.retire_native_session(self.0); }
+    }
+    let _retire = Retire(epoch);
+    run(crate::player::demux_session::PlayerDemuxSession::capture(
+        plx_playback_contract::AttemptId::new(0, u64::from(epoch)), epoch,
+    ))
+}
+
 /// Build a length-prefixed (AVCC-style) packet: 4-byte big-endian length + payload, repeated.
 pub(super) fn avcc(nals: &[&[u8]]) -> Vec<u8> {
     let mut v = Vec::new();

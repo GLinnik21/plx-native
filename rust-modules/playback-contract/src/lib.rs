@@ -11,6 +11,7 @@ pub mod adaptive;
 pub mod subtitle;
 pub mod readout;
 pub mod tracks;
+pub mod video;
 pub use state::{BackendState, Event, Fx, Intent, Phase, Snapshot, TrackFact};
 
 /// The selected physical executor. An attempt and every result carry this identity separately;

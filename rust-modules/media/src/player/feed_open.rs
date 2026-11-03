@@ -7,42 +7,60 @@ use plx_base::eventlog::log;
 use plx_play_feed::bf_split;
 
 pub(super) struct FeedOpenRequest {
-    pub origin: plx_net::net::origin::Origin,
-    pub path: String,
-    pub video_codec: String,
-    pub audio_codec: String,
-    pub pcm_is_lossy: bool,
-    pub audio_channels: i64,
-    /// Backend-owned Load facts, with route and metadata types mapped at capture time.
-    pub feed_payload: plx_play_feed::PayloadFacts,
-    pub original_dv: OriginalDvFacts,
-    pub side_reader: Option<SideReaderOpen>,
-    pub session: Option<Box<dyn plx_playback_contract::demux::DemuxSession>>,
-    pub hls_abr: Option<Box<dyn plx_playback_contract::adaptive::AdaptiveSession>>,
-    pub auto_original: Option<Box<dyn plx_playback_contract::adaptive::OriginalSession>>,
+    pub physical: plx_play_feed::open::PhysicalOpen,
 }
 
 /// Original wire evidence for Force preflight and the declaration log. The converted sink
 /// presentation is separately represented by `feed_payload.dv`.
-#[derive(Clone, Copy)]
-pub(super) struct OriginalDvFacts {
-    pub present: bool,
-    pub profile: i64,
-    pub bl_compat: i64,
-    pub el_present: bool,
-}
-
-impl From<plx_data::metadata::Dovi> for OriginalDvFacts {
-    fn from(dv: plx_data::metadata::Dovi) -> Self {
-        Self { present: dv.present, profile: dv.profile,
-            bl_compat: dv.bl_compat, el_present: dv.el_present }
+pub(super) fn original_dv(dv: plx_data::metadata::Dovi) -> plx_play_feed::open::OriginalDvFacts {
+    plx_play_feed::open::OriginalDvFacts {
+        present: dv.present, profile: dv.profile,
+        bl_compat: dv.bl_compat, el_present: dv.el_present,
     }
 }
 
-/// A resolved side reader that the physical open can start without route or Plex lookups.
+/// Common reader IO for one feed attempt. It remains attached to the Engine through teardown,
+/// so a failed Load spawn and a later dynamic track switch get the same stop-before-join barrier.
 pub(super) struct SideReaderOpen {
-    pub clock_only: bool,
-    pub spec: Option<super::subside::Spec>,
+    selected: bool,
+    clock_only: bool,
+    spec: Option<super::subside::Spec>,
+}
+
+impl SideReaderOpen {
+    pub fn capture(ps: &route::PlaybackSession, stream: bool) -> Self {
+        let Some(target) = stream.then(|| route::side_reader_target(ps)).flatten() else {
+            return Self::empty();
+        };
+        Self {
+            selected: true,
+            clock_only: target.clock_only(),
+            spec: super::subside::spec_for(&target),
+        }
+    }
+
+    pub fn empty() -> Self {
+        Self { selected: false, clock_only: false, spec: None }
+    }
+}
+
+impl plx_play_feed::side_reader::SideReaderPort for SideReaderOpen {
+    fn embedded_owner(&self) -> bool { self.selected && !self.clock_only }
+
+    fn start_after_load_spawn(&mut self) {
+        if !self.selected { return; }
+        let started = self.spec.take().is_some_and(super::subside::start);
+        if !started {
+            super::subside::failed_reading(self.clock_only, "subside: could not start the reader thread");
+            if !self.clock_only {
+                super::SHARED.side_subs_owner.store(false, std::sync::atomic::Ordering::Release);
+            }
+        }
+    }
+
+    fn stop_before_demux_join(&mut self, reason: &str) {
+        super::subside::stop(reason);
+    }
 }
 
 /// The presentation facts consumed by the native Load declaration. These come from the
@@ -103,39 +121,67 @@ impl FeedOpenRequest {
     pub fn capture(ps: &route::PlaybackSession, url: String) -> Self {
         let payload = PayloadFacts::capture(ps);
         let feed_payload = payload.to_feed();
-        let original_dv = payload.dovi.into();
+        let payload_options = payload_options(&feed_payload);
+        let original_dv = original_dv(payload.dovi);
         let source = plx_plex::plex::StreamUrl::parse(&url);
-        let side_reader = route::side_reader_target(ps).map(|target| SideReaderOpen {
-            clock_only: target.clock_only(),
-            spec: super::subside::spec_for(&target),
-        });
         Self {
-            origin: source.origin,
-            path: source.path,
-            video_codec: route::stream_vcodec(ps),
-            audio_codec: route::stream_acodec(ps),
-            pcm_is_lossy: route::stream_pcm_is_lossy(ps),
-            audio_channels: route::stream_achannels(ps),
-            feed_payload,
-            original_dv,
-            side_reader,
-            session: Some(super::demux_session::PlayerDemuxSession::capture()),
-            hls_abr: route::hls_abr_control(ps).map(|control| {
-                crate::adaptive::boxed_session(
-                    crate::adaptive::Start::from(control),
-                    Box::new(crate::adaptive::PlayerAdaptiveEffects),
-                )
-            }),
-            auto_original: route::auto_original_watch(ps).map(|watch| {
-                crate::adaptive::boxed_original_session(crate::adaptive::OriginalStart::from(watch))
-            }),
+            physical: plx_play_feed::open::PhysicalOpen {
+                origin: source.origin,
+                path: source.path,
+                video_codec: route::stream_vcodec(ps),
+                audio_codec: route::stream_acodec(ps),
+                pcm_is_lossy: route::stream_pcm_is_lossy(ps),
+                audio_channels: route::stream_achannels(ps),
+                feed_payload,
+                payload_options,
+                original_dv,
+                // The exact route attempt and native epoch do not exist until after claim. The
+                // common owner attaches their addressed observer before launching the worker.
+                session: None,
+                hls_abr: route::hls_abr_control(ps).map(|control| {
+                    crate::adaptive::boxed_session(
+                        crate::adaptive::Start::from(control),
+                        Box::new(crate::adaptive::PlayerAdaptiveEffects),
+                    )
+                }),
+                auto_original: route::auto_original_watch(ps).map(|watch| {
+                    crate::adaptive::boxed_original_session(crate::adaptive::OriginalStart::from(watch))
+                }),
+            },
         }
     }
 
     /// The common owner checks the credential policy before claiming the native attempt.
     pub fn credential_transport_allowed(&self) -> bool {
-        plx_plex::http::credential_transport_allowed(&self.origin, &self.path, &[])
+        plx_plex::http::credential_transport_allowed(&self.physical.origin, &self.physical.path, &[])
     }
+
+    pub fn into_physical(self) -> plx_play_feed::open::PhysicalOpen {
+        self.physical
+    }
+}
+
+/// The developer switches are read once by the common open runner. The physical payload builder
+/// receives resolved values and never consults route metadata or trigger files.
+pub(super) fn payload_options(facts: &plx_play_feed::PayloadFacts) -> plx_play_feed::PayloadOptions {
+    let with_fps = !plx_base::devtrig::flag("nofps");
+    if !with_fps {
+        #[cfg(feature = "devtriggers")]
+        log("esInfo: videoFps WITHHELD by /tmp/plxnative-nofps");
+    }
+    plx_play_feed::PayloadOptions {
+        with_fps,
+        suppress_dv_node: facts.dv.is_some() && plx_data::metadata::dv_node_suppressed(),
+    }
+}
+
+/// Apply the current route's selected codec and Force policy to the native speed ceiling.
+pub(crate) fn speed_fps_ceiling_now(ps: &route::PlaybackSession) -> f64 {
+    super::engine::speed_fps_ceiling(
+        plx_play_feed::LoadVideo::of_stream(&route::stream_vcodec(ps)),
+        &plx_platform::devcaps::caps(),
+        plx_platform::devcaps::measured() && !route::forced_direct_play(ps),
+    )
 }
 
 #[cfg(test)]
@@ -149,10 +195,10 @@ mod tests {
         route::set_stream_codecs(&mut ps, "h264", "aac");
         let open = FeedOpenRequest::capture(&ps, "https://example.invalid/first".into());
         route::set_stream_codecs(&mut ps, "hevc", "eac3");
-        assert_eq!(open.origin.base(), "https://example.invalid:32400");
-        assert_eq!(open.path, "/first");
-        assert_eq!(open.video_codec, "h264");
-        assert_eq!(open.audio_codec, "aac");
+        assert_eq!(open.physical.origin.base(), "https://example.invalid:32400");
+        assert_eq!(open.physical.path, "/first");
+        assert_eq!(open.physical.video_codec, "h264");
+        assert_eq!(open.physical.audio_codec, "aac");
     }
 }
 

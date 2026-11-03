@@ -216,10 +216,10 @@ pub(crate) unsafe fn run(app: &mut App) {
         }
         // A timed-out native Load parked by teardown is released here, on the main thread, the
         // first frame after its media thread returns (`player::engine::AbandonedLoad`).
-        plx_media::player::engine::reap_abandoned_load(&mut app.adapters.player);
+        plx_media::player::reap_abandoned_load(&mut app.adapters.player);
         // …and a real stop's off-frame `Unload` gets its main-thread tail (gate, epoch, ACB,
         // D1) the first frame after it returns (`player::engine::PendingRelease`).
-        plx_media::player::engine::poll_release_frame(&mut app.player.session, &mut app.adapters.player);
+        plx_media::player::poll_release_frame(&mut app.player.session, &mut app.adapters.player);
         app.player.session.repair_status = app.player.repair.state();
         publish_frame(&mut app.bridge, &app.player.session, was_player);
         // The container runs its frame: the pending navigation's commit (at `PageDip`'s floor),
@@ -3584,11 +3584,11 @@ pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
 /// Whether [`shutdown`] quits SDL before the process ends. EVERY exit ends the process with `_exit`
 /// (`plx_base::process::exit_now`), never by returning into libc's `exit` (#1115); this is the one decision
 /// left in the teardown.
-pub(crate) fn quits_sdl(native_exit: plx_media::player::engine::NativeExit) -> bool {
+pub(crate) fn quits_sdl(native_exit: plx_media::player::NativeExit) -> bool {
     match native_exit {
-        plx_media::player::engine::NativeExit::Clean => true,
+        plx_media::player::NativeExit::Clean => true,
         // A native worker is still inside firmware: the display must not be torn down under it.
-        plx_media::player::engine::NativeExit::WorkerInFirmware => false,
+        plx_media::player::NativeExit::WorkerInFirmware => false,
     }
 }
 
@@ -3608,7 +3608,7 @@ pub(crate) unsafe fn shutdown(
     // firmware (an overdue `Unload`, or a timed-out Load's media thread) means the display must not
     // be torn down under it, and nothing may run the firmware libraries' destructors either: the
     // caller (`app::run_and_shutdown`) ends the process with `_exit`.
-    let native_exit = plx_media::player::engine::exit_native(pa);
+    let native_exit = plx_media::player::exit_native(pa);
     // The stop scrobble is posted off-thread now, and this process is about to die with any
     // worker still running — so THIS is the one place its result has to be waited for, or the
     // resume point the user just earned is silently dropped. Same cost the old inline call
@@ -3741,7 +3741,7 @@ mod lifecycle_regression_tests {
 
     #[test]
     fn shutdown_quits_sdl_only_when_no_worker_is_in_firmware() {
-        use plx_media::player::engine::NativeExit;
+        use plx_media::player::NativeExit;
         assert!(!quits_sdl(NativeExit::WorkerInFirmware));
         assert!(quits_sdl(NativeExit::Clean));
     }
@@ -4528,7 +4528,7 @@ mod lifecycle_regression_tests {
         shared.desired_sub_idx.store(3, Relaxed);
         let attempt = plx_media::route::RouteStartAttempt::fixture();
         app.player.session.begin_attempt_view(attempt, plx_media::player::attempt_view::Backend::Feed);
-        assert!(app.player.session.ingest_attempt_facts(attempt, plx_media::player::attempt_view::AttemptFacts {
+        assert!(app.player.session.ingest_attempt_facts(attempt, plx_media::player::attempt_view::Backend::Feed, plx_media::player::attempt_view::AttemptFacts {
             position_ns: Some(7_000_000_000), seek_display_ns: Some(9_000_000_000),
             duration_ns: Some(100_000_000_000), ..Default::default()
         }));

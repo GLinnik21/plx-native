@@ -5,7 +5,9 @@ pub mod aq;
 pub mod hls;
 pub mod native_gate;
 pub mod native_load;
+pub mod open;
 pub mod pcm_lead;
+pub mod side_reader;
 pub mod vp9_hdr;
 mod send_ptr;
 pub use send_ptr::SendPtr;
@@ -119,6 +121,17 @@ pub enum LoadVideo {
 }
 
 impl LoadVideo {
+    /// Decode the diagnostic code written alongside a successful Load.
+    pub fn from_diag_code(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(Self::H264),
+            2 => Some(Self::H265),
+            3 => Some(Self::Av1),
+            4 => Some(Self::Vp9),
+            _ => None,
+        }
+    }
+
     /// The route's stream vcodec -> what the Load declares, case-insensitively (PMS emits lowercase;
     /// the route's own comparisons elsewhere are case-insensitive too). **An unknown codec is `None`,
     /// not H.264**: the old catch-all declared an H.264 Load for whatever the route held, so a codec

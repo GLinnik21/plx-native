@@ -156,6 +156,7 @@ fn with_sized_source<R>(port: u16, size: i64, f: impl FnOnce(*mut c_void) -> R) 
     let mut hs = plx_net::stream::http_stream_boxed();
     let mut aq = crate::aq::aq_new(1 << 20);
     let mut state = AvioState {
+        observer: super::test_support::demux_observer(),
         src: Src::Socket {
             hs: &mut *hs,
             host: CString::new("127.0.0.1").unwrap(),
@@ -171,7 +172,7 @@ fn with_sized_source<R>(port: u16, size: i64, f: impl FnOnce(*mut c_void) -> R) 
         body_active_us: 0,
         body_bytes: 0,
         first_byte_at: None,
-        reserve_deadline: ReserveDeadlineState::new(None, false),
+        reserve_deadline: ReserveDeadlineState::new(None, false, super::test_support::demux_observer()),
         transport_watchdog: None,
         acquisition: None,
         bounce: Vec::new(),

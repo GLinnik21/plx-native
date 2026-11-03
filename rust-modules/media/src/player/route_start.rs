@@ -121,7 +121,7 @@ pub(super) fn start_bufferfeed_for(
     // runs now; one that is not defers this start into the release machine (never a blocking join:
     // PLX-NATIVE-1Q), which starts it the frame the tail has run or refuses it at the deadline.
     if pa.release_busy() {
-        engine::poll_release(ps, pa, std::time::Instant::now());
+        poll_release(ps, pa, std::time::Instant::now());
     }
     let mut fx = Vec::new();
     pa.release_step(
@@ -184,7 +184,7 @@ pub(super) fn start_bufferfeed_inner(
     // A timed-out Load from an earlier Engine may still own the one native object the C seam
     // holds. Release it now if it has returned; otherwise refuse before anything below (the
     // exported window in particular) can touch state that object is still using.
-    if !engine::begin_native_open(pa) {
+    if !pa.begin_native_open() {
         return Err(crate::route::RouteStartResult::StartFailed);
     }
     // Guard a double-start: overwriting a live ENGINE slot would DROP the running
@@ -226,6 +226,7 @@ pub(super) fn start_bufferfeed_inner(
     }
     // The prepared route has finished choosing the stream. Freeze the values the native Load,
     // payload and demux worker will use before any of those physical resources are constructed.
+    let side_reader = Box::new(super::feed_open::SideReaderOpen::capture(ps, stream));
     let open = stream.then(|| super::feed_open::FeedOpenRequest::capture(ps, url));
     if open.as_ref().is_some_and(|request| !request.credential_transport_allowed()) {
         plx_base::eventlog::log("stream: refused insecure credential transport");
@@ -236,7 +237,7 @@ pub(super) fn start_bufferfeed_inner(
     // aborts it; a later supersession drops both guards without launching a worker.
     let session_rate = if stream { super::session_rate_for(ps) } else { super::RATE_NORMAL };
     let trace_generation = crate::route::playback_trace_generation();
-    let prepared_native = engine::prepare_native_open(pa.mt(), open, sample, is_h265, session_rate)
+    let mut prepared_native = engine::prepare_native_open(pa.mt(), open.map(super::feed_open::FeedOpenRequest::into_physical), sample, is_h265, session_rate, side_reader)
         .map_err(|_| crate::route::RouteStartResult::StartFailed)?;
     // The route reducer alone mints the physical attempt. The native constructor consumes this
     // identity; no backend-owned logical counter can alias a later route.
@@ -244,10 +245,14 @@ pub(super) fn start_bufferfeed_inner(
         log("start_bufferfeed: prepared route lost before native construction");
         return Err(crate::route::RouteStartResult::StartFailed);
     };
+    prepared_native.bind_demux_session(route_attempt.contract_id());
     ps.begin_attempt_view(route_attempt, super::attempt_view::Backend::Feed);
     pa.launch_native_feed(route_attempt.contract_id(), prepared_native)
         .map_err(|_| crate::route::RouteStartResult::StartFailed)?;
     pa.bind_feed_attempt(route_attempt, trace_generation);
+    // The app gates its first pump on this readout. Publish after physical start and exact
+    // attempt binding, before the caller returns to that gate.
+    pa.publish_feed_attempt_view(ps);
     if stream { pa.start_timeline(ps, route_attempt); }
     Ok(route_attempt)
 }
@@ -371,12 +376,21 @@ fn reload_transcode_start(ps: &mut crate::route::PlaybackSession, pa: &mut super
         "reload_transcode: fresh Load at offset {}s",
         offset_ns / 1_000_000_000
     ));
-    engine::teardown(ps, pa, true); // keep the session; reload mode
+    teardown(ps, pa, true); // keep the session; reload mode
     SHARED.disp_base.store(offset_ns, Ordering::Relaxed); // transcode is 0-based at content=offset
     SHARED.playpos_ns.store(offset_ns, Ordering::Relaxed);
     Some(start_bufferfeed_for(ps, pa, ticket))
 }
 
+/// Direct-play seek = tear down the pipeline and start a FRESH Load at `target_ns`. The old
+/// flush()+refeed path left a STALE GStreamer segment (decompiled ground truth: the no-arg
+/// StarfishMediaAPIs::flush() → CustomPipeline::flush() is a degenerate gst_element_seek to
+/// GST_CLOCK_TIME_NONE with NO FLUSH_START/STOP and NO fresh SEGMENT; the HW sink/decoder
+/// only re-anchor their segment/basetime on a real SEGMENT/FLUSH event). Post-seek buffers
+/// were then scheduled against the pre-seek segment, the sink stopped draining, and the fixed
+/// ~14.7 MB of upstream buffers filled in ~48 s → permanent BufferFull + "Playing error". A
+/// fresh Load re-establishes a correct segment by construction — the known-good fresh-play
+/// path, which never wedges. Heavier than a flush (a ~1 s re-preroll) but correct.
 /// Every target `reload_at` was asked for (test probe, #568): proves a refused native Seek reloads
 /// exactly once, at the user's target.
 #[cfg(any(test, feature = "test-support"))]
@@ -411,7 +425,7 @@ pub fn reload_at(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter
         "reload_at: fresh Load at {}s",
         target_ns / 1_000_000_000
     ));
-    engine::teardown(ps, pa, true); // reload mode: preserve the session (no url-clear / stop-scrobble)
+    teardown(ps, pa, true); // reload mode: preserve the session (no url-clear / stop-scrobble)
     engine::arm_seek(target_ns);
     reload_start_outcome(ps, pa, ticket)
 }
@@ -477,7 +491,7 @@ pub fn reload_transcode_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
 /// [`poll_release`] (`PendingRelease`), so the object may still exist when this returns; anything
 /// that needs it gone is queued behind it in the release machine (`Deferred`), never waited for.
 pub fn stop_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
-    engine::teardown(ps, pa, false);
+    teardown(ps, pa, false);
 }
 
 /// Suspend for an app-switch: tear the pipeline down (webOS reclaims the video plane while we're
@@ -485,7 +499,348 @@ pub fn stop_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut super::a
 /// don't scrobble "stopped". This makes the foreground restore a clean same-item reload
 /// (begin_resume + start_bufferfeed), the known-good path, instead of resurrecting a stopped session.
 pub fn suspend_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
-    engine::teardown(ps, pa, true);
+    teardown(ps, pa, true);
+}
+
+
+/// Resume/seek AT the first Load. A direct-play item seeks the demuxer (av_seek via arm_seek).
+/// A TRANSCODE item's stream is 0-based and NOT seekable (no byte-index, Content-Length=-1), so
+/// av_seek fails — instead restart the encode at `&offset=secs` and display content time via
+/// disp_base. Call BEFORE start_bufferfeed, AFTER route::play_movie has run the decision (so the
+/// transcode session + flavor are set). Used for viewOffset resume.
+///
+/// **There is one entry point, [`begin_resume`] / [`land_resume`], and it is a flight** (the cold
+/// resume of a freshly resolved play, and the foreground restore of a parked one): a transcode's
+/// rebuild at the saved position is planned on the frame thread and its PMS half runs on a worker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use = "resume preparation is an external route effect and must be settled"]
+pub enum ResumeOutcome {
+    Prepared,
+    NoRoute,
+    RebuildRejected,
+}
+
+/// What [`begin_resume`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use = "a pending resume owes a start when it lands"]
+pub enum ResumeStart {
+    /// Decided on the spot (no rebuild is owed): the caller starts the Load (or fails the start)
+    /// now.
+    Settled(ResumeOutcome),
+    /// A flight owns the rebuild at the saved position (`route::dispatch_resume_rebase`): the start
+    /// stays owed, `player::state` answers `Resolving` (via `route::resume_flight_outstanding`), and [`land_resume`] delivers the
+    /// outcome the caller starts the Load on.
+    Pending,
+}
+
+/// The part of a resume that never reaches PMS.
+enum ResumePrelude {
+    Settled(ResumeOutcome),
+    /// A transcode with a saved position: its encode must restart at the offset.
+    Rebuild,
+}
+
+fn resume_prelude(ps: &mut crate::route::PlaybackSession, resume_ns: i64) -> ResumePrelude {
+    if resume_ns <= 0 {
+        return ResumePrelude::Settled(ResumeOutcome::Prepared);
+    }
+    if crate::route::url(ps).is_empty() {
+        return ResumePrelude::Settled(ResumeOutcome::NoRoute);
+    }
+    if !crate::route::is_transcoding(ps) {
+        engine::arm_seek(resume_ns); // direct-play: av_seek the file at the first open
+        return ResumePrelude::Settled(ResumeOutcome::Prepared);
+    }
+    ResumePrelude::Rebuild
+}
+
+/// The transcode half of a resume, once its encode restarts at the offset (0-based): `disp_base`
+/// carries the offset so the HUD reads content time.
+fn note_transcode_resumed(resume_ns: i64) {
+    SHARED.disp_base.store(resume_ns, Ordering::Relaxed);
+    SHARED.playpos_ns.store(resume_ns, Ordering::Relaxed);
+    log(&format!(
+        "resume(transcode): restart at offset {}s",
+        resume_ns / 1_000_000_000
+    ));
+}
+
+/// Prepare a resume at `resume_ns`: a cold start (a play whose plan just landed) or a foreground
+/// restore (the parked session's start transaction is `Stable`/`Prepared`/`Failed`, or an Original
+/// trial's own `Prepared` one for a session suspended mid-trial, which the flight flies over without
+/// touching the trial's rollback; an `Idle` one has no URL and answers `NoRoute` here, never
+/// reaching the rebuild). No Engine exists. Everything but a transcode settles on the spot; a transcode's
+/// rebuild at the saved position is a FLIGHT — planned here on the frame thread, the PMS half on a
+/// worker — and answers [`ResumeStart::Pending`]. The frame never reaches the server.
+pub fn begin_resume(ps: &mut crate::route::PlaybackSession, resume_ns: i64) -> ResumeStart {
+    match resume_prelude(ps, resume_ns) {
+        ResumePrelude::Settled(outcome) => ResumeStart::Settled(outcome),
+        ResumePrelude::Rebuild => match crate::route::dispatch_resume_rebase(ps, resume_ns) {
+            crate::route::RecoveryDispatch::Flying { .. } => ResumeStart::Pending,
+            // Nothing to rebuild or the worker could not start: a refusal.
+            crate::route::RecoveryDispatch::Refused => ResumeStart::Settled(ResumeOutcome::RebuildRejected),
+        },
+    }
+}
+
+/// Drain a pending resume's landing, once a frame while [`crate::route::resume_flight_outstanding`].
+/// `None` while the worker is still running, or when the flight went stale (a Back, a teardown, a
+/// newer play request: the landing is discarded and its replacement stopped — here, by the stale
+/// reap this runs first, since a flight with no Engine has no pump to do it — and whoever ended the
+/// flight owns what happens next). `Some` is the outcome of the rebuild: the
+/// route is installed and `Prepared` (the caller starts the Load), or the rebuild was refused and
+/// the transaction is `Failed`.
+pub fn land_resume(ps: &mut crate::route::PlaybackSession) -> Option<ResumeOutcome> {
+    crate::route::discard_stale_flight_landing();
+    if !crate::route::resume_flight_outstanding() {
+        return None;
+    }
+    let landing = crate::route::take_ready_recovery_flight(ps)?;
+    Some(match landing.verdict {
+        crate::route::RecoveryVerdict::Install => {
+            note_transcode_resumed(landing.offset_ns);
+            ResumeOutcome::Prepared
+        }
+        crate::route::RecoveryVerdict::Refused => ResumeOutcome::RebuildRejected,
+    })
+}
+
+/// **The runner of [`super::release::NativeRelease`].** Once a frame (and at the head of a start):
+/// join the `Unload` worker only if it has returned (so the join cannot block), feed that and the
+/// clock to the machine, and execute what it asks: the main-thread tail, the start that was queued
+/// behind the release, or the typed refusal once the release is overdue. `true` when a tail ran.
+pub fn poll_release(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    now: std::time::Instant,
+) -> bool {
+    let (fx, joined) = drive_release(pa, now, None);
+    super::route_start::run_release_effects(ps, pa, fx, joined, true).tail_ran
+}
+
+/// [`poll_release`] at the wall clock: the per-frame entry `app::run` calls.
+pub fn poll_release_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> bool {
+    poll_release(ps, pa, std::time::Instant::now())
+}
+
+/// Reap one completed native Load parked by an earlier attempt, on the app's main thread.
+pub fn reap_abandoned_load(pa: &mut super::adapter::PlayerAdapter) -> bool {
+    pa.reap_abandoned_load()
+}
+
+/// Join a returned worker, then step the machine with its return, the clock and (at the exit) the
+/// exit request. Returns the effects and the joined release, whose tail the effects may run.
+fn drive_release(
+    pa: &mut super::adapter::PlayerAdapter,
+    now: std::time::Instant,
+    exit: Option<std::time::Instant>,
+) -> (Vec<super::release::ReleaseEffect>, Option<engine::PendingRelease>) {
+    use super::release::ReleaseEvent as V;
+    let mut fx = Vec::new();
+    let joined = pa.take_finished_release().map(|mut p| {
+        p.join_returned_worker();
+        pa.release_step(&V::UnloadReturned { epoch: p.epoch() }, &mut fx);
+        p
+    });
+    pa.release_step(&V::Tick { now }, &mut fx);
+    if let Some(at) = exit {
+        pa.release_step(&V::Exit { now: at }, &mut fx);
+    }
+    (fx, joined)
+}
+
+/// Whether the process may tear the display down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeExit {
+    Clean,
+    /// Native ownership is unresolved: a worker may still be inside firmware, or a URI
+    /// registration may remain quarantined after its worker ended. Skip `SDL_Quit` and the
+    /// Wayland window destroy until the OS reclaims that ownership.
+    WorkerInFirmware,
+}
+
+/// The native half of `app::run::shutdown`, after the final stop. Waits for the native Unload or
+/// URI registration release up to the release deadline, then preserves unresolved display ownership.
+pub fn exit_native(pa: &mut super::adapter::PlayerAdapter) -> NativeExit {
+    exit_native_with(pa, std::time::Instant::now, || std::thread::sleep(std::time::Duration::from_millis(2)))
+}
+
+pub(super) fn exit_native_with(
+    pa: &mut super::adapter::PlayerAdapter,
+    mut clock: impl FnMut() -> std::time::Instant,
+    mut idle: impl FnMut(),
+) -> NativeExit {
+    #[cfg(feature = "devtriggers")]
+    if pa.uri_live() {
+        let started = clock();
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        super::uriprobe_drive::stop(&mut ps, pa);
+        while pa.uri_live() {
+            super::uriprobe_drive::drive(&mut ps, pa);
+            if !pa.uri_live() { break; }
+            if pa.uri_acb_exit_quarantine() || clock().saturating_duration_since(started) >= super::release::RELEASE_DEADLINE {
+                log("exit: URI ownership unresolved; the display is left to the OS");
+                if let Some(session) = pa.take_uri() { std::mem::forget(session); }
+                leak_parked_for_exit(pa);
+                return NativeExit::WorkerInFirmware;
+            }
+            idle();
+        }
+    }
+    reap_abandoned_load(pa);
+    if pa.has_abandoned_load() {
+        log("exit: a timed-out Load is still inside firmware; the display is left to the OS");
+        leak_parked_for_exit(pa);
+        return NativeExit::WorkerInFirmware;
+    }
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    loop {
+        let now = clock();
+        let (fx, joined) = drive_release(pa, now, Some(now));
+        match super::route_start::run_release_effects(&mut ps, pa, fx, joined, false).exit {
+            Some(super::release::ReleaseEffect::ExitClean) => return NativeExit::Clean,
+            Some(super::release::ReleaseEffect::ExitWorkerInFirmware) => {
+                log("exit: the native Unload is overdue; the display is left to the OS");
+                leak_parked_for_exit(pa);
+                return NativeExit::WorkerInFirmware;
+            }
+            _ => idle(),
+        }
+    }
+}
+
+/// **A worker still in firmware reads memory its owner is about to drop.** The caller skips
+/// `SDL_Quit` and `app::run_and_shutdown` ends the process with `_exit` (no `App` drop, no libc
+/// finalizers), but the stack above it may still unwind, so the parked
+/// [`PendingRelease`] (its Engine: the Load payload Starfish holds a raw pointer into, the
+/// handle set, the AU queues) and the parked [`AbandonedLoad`] (the payload its `media` thread
+/// reads) would be freed under the live call. They are leaked instead, for the life of the process
+/// (`release.rs`: the `_exit` that follows skips their destructors). Only `exit_native` calls this, and only on that outcome.
+fn leak_parked_for_exit(pa: &mut super::adapter::PlayerAdapter) {
+    if let Some(p) = pa.take_pending_release_any() {
+        std::mem::forget(p);
+    }
+    if let Some(l) = pa.take_abandoned_load() {
+        std::mem::forget(l);
+    }
+}
+
+/// Test helper: finish the pending release the way the exit does, with no deadline concerns.
+#[cfg(all(test, feature = "hostsim"))]
+pub(crate) fn finish_release_for_test(pa: &mut super::adapter::PlayerAdapter) {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    while pa.release_busy() {
+        let (fx, joined) = drive_release(pa, std::time::Instant::now(), None);
+        let _ = super::route_start::run_release_effects(&mut ps, pa, fx, joined, false);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+/// **A terminal playback error lets go of the pipeline.** The failure read-out stands on the
+/// session, but an Engine left loaded behind it keeps the native pipeline and the video plane,
+/// which the television reads as playback still going: its screensaver never starts.
+///
+/// Releases them the frame after the Engine failed, the same teardown an app switch uses
+/// ([`suspend_bufferfeed`]: the session, URL and transcode session stay, nothing is reported as
+/// stopped). What the read-out and its actions need survives it, in the session: the cause
+/// ([`crate::route::note_engine_failure`], so `state()` and `error_now` still answer) and the
+/// playhead a retry resumes from (the unpresented-resume slot `retry_failed_playback` reads).
+/// Try again, Play automatically and a quality pick start a new playback from scratch, and Back
+/// ends the session with a real stop, so none of them needs the loaded pipeline.
+/// Returns whether an Engine was released.
+pub fn release_failed_engine(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> bool {
+    if !engine::failed_engine_release_armed() {
+        return false;
+    }
+    // Armed by an Engine that has since been replaced (an automatic retry started a new playback
+    // in the same frame): not this Engine's end, and nothing left to release.
+    if !pa.is_live() {
+        engine::clear_failed_engine_release_arm();
+        return false;
+    }
+    // Not this Engine's end: a preview, one a recovery is still flying for, or one that never put
+    // a picture up (a Load that failed, an open that never produced a frame) and so holds nothing
+    // the television mistakes for playback.
+    if crate::route::is_preview(ps)
+        || SHARED.pb_state.load(Ordering::Relaxed) != super::shared::PlaybackState::Error as u8
+        || SHARED.frames.load(Ordering::Relaxed) == 0
+        || crate::route::recovery_flight_outstanding()
+        || crate::route::engineless_flight_outstanding()
+    {
+        return false;
+    }
+    engine::clear_failed_engine_release_arm();
+    let cause = super::live_runtime_failure(ps);
+    crate::route::note_engine_failure(ps, cause, super::intended_pos_ns(ps));
+    log("player: the failed Engine's pipeline is released under the failure read-out");
+    teardown(ps, pa, true);
+    true
+}
+
+/// Retire a failed foreground Engine only if it still owns the exact Load the foreground reducer
+/// observed. A later route action may have replaced it between `player::pump` and the app poll;
+/// tearing down unconditionally there would destroy the healthy replacement.
+pub fn suspend_bufferfeed_if_attempt(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    attempt: crate::route::RouteStartAttempt,
+) -> bool {
+    let owns_attempt = pa.active_feed_attempt() == Some(attempt);
+    if owns_attempt {
+        teardown(ps, pa, true);
+    }
+    owns_attempt
+}
+
+/// The foreground lifecycle follows `attempt` (it launched that Load, or took over following it):
+/// from now on the Load call's own synchronous refusal is the lifecycle's to settle
+/// (`PlayerAdapter::mark_foreground_follows_feed_load`). True when the live Engine owns that exact attempt; a
+/// replaced Engine (a different attempt) is not marked.
+pub fn foreground_follows_load(pa: &mut super::adapter::PlayerAdapter, attempt: crate::route::RouteStartAttempt) -> bool {
+    pa.mark_foreground_follows_feed_load(attempt)
+}
+
+/// Common teardown owns the route fence, final report and scrobble ordering. The opaque native
+/// stop owns the Engine, worker joins, transport close, native release and AU destruction.
+pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAdapter,
+    for_reload: bool) {
+    engine::clear_failed_engine_release_arm();
+    if !begin_teardown(ps, pa, for_reload) { return; }
+    // An abandoned preview Load is never joined on the frame while native Load is in flight.
+    if crate::route::is_preview(ps) {
+        if let Some((loading, finished)) = pa.preview_load_join_state() {
+            if super::preview::defer_media_join(loading, finished) {
+                pa.abandon_preview_load();
+                return;
+            }
+        }
+    }
+    begin_feed_teardown(for_reload);
+    SHARED.stop_hls_clock();
+    let route_attempt = pa.active_feed_attempt().expect("live feed has a route owner");
+    let mut native = pa.take_native_stop();
+    let final_report = final_report(ps, for_reload);
+    native.stop_side_reader(for_reload);
+    let mut report_th = stop_feed_timeline(pa, route_attempt);
+    native.unblock_join_close();
+    let mut terminal_facts = native.terminal_facts();
+    terminal_facts.started = Some(false);
+    let _ = ps.ingest_attempt_facts(route_attempt, crate::player::attempt_view::Backend::Feed, terminal_facts);
+    after_physical_close(ps, for_reload, final_report, &mut report_th);
+    native.report_dispatched();
+    pa.release_native_stop(&mut native, for_reload);
+    // A reload preserves the file's duration and viewer transport, then restarts the same item.
+    // A real stop retires both along with the current claim hold.
+    if for_reload {
+        SHARED.reset_session_for_reload();
+        TX.reset_for_reload();
+    } else {
+        SHARED.reset_session();
+        TX.reset();
+        super::claim_hold::clear();
+    }
+    finish_feed_teardown(ps, for_reload, report_th);
+    pa.finish_native_stop(native, for_reload);
 }
 
 
@@ -535,6 +890,7 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
             crate::route::clear_url(ps);
             SHARED.reset_session();
             TX.reset();
+            mark_attempt_stopped(ps);
             super::claim_hold::clear();
             // Nothing here is asynchronous, so the fence `begin_engine_teardown` just raised is
             // already spent. Publish the completed stop rather than latching `Stopping` — see
@@ -544,6 +900,15 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
         return false;
     }
     true
+}
+
+/// A logical stop leaves the last addressed evidence available for the next report tick. The
+/// next physical start calls `begin_attempt_view` and clears it to Unknown for the new attempt.
+fn mark_attempt_stopped(ps: &mut crate::route::PlaybackSession) {
+    let Some(attempt) = ps.attempt_view().attempt() else { return; };
+    let mut facts = *ps.attempt_view().facts();
+    facts.started = Some(false);
+    let _ = ps.ingest_attempt_facts(attempt, crate::player::attempt_view::Backend::Feed, facts);
 }
 
 /// Capture final reporting facts before native teardown resets position and duration.
@@ -640,5 +1005,31 @@ pub(super) fn finish_feed_teardown(
     // (`Prepared`/`OriginalTrial`), which is the transaction the caller is about to start.
     if !for_reload {
         crate::route::finish_engine_teardown();
+    }
+}
+
+#[cfg(test)]
+mod readout_stop_tests {
+    use super::*;
+
+    #[test]
+    fn logical_stop_retains_failure_evidence_until_next_attempt() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let attempt = crate::route::RouteStartAttempt::fixture();
+        ps.begin_attempt_view(attempt, super::super::attempt_view::Backend::Feed);
+        assert!(ps.ingest_attempt_facts(attempt, crate::player::attempt_view::Backend::Feed, super::super::attempt_view::AttemptFacts {
+            started: Some(true),
+            runtime_failure: Some(super::super::attempt_view::RuntimeFailure::TvPipeline),
+            ..Default::default()
+        }));
+
+        mark_attempt_stopped(&mut ps);
+        assert_eq!(ps.attempt_view().facts().started, Some(false));
+        assert!(matches!(ps.attempt_view().facts().runtime_failure,
+            Some(super::super::attempt_view::RuntimeFailure::TvPipeline)));
+
+        ps.begin_attempt_view(attempt, super::super::attempt_view::Backend::Feed);
+        assert_eq!(ps.attempt_view().facts().started, None);
+        assert!(ps.attempt_view().facts().runtime_failure.is_none());
     }
 }

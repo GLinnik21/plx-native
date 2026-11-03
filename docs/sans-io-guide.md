@@ -14,7 +14,7 @@ step then has no seam to fake: a test and a replay feed it the events the produc
 - `rust-modules/data/src`, `session/src`, `screens/src`, `ui/src`, `appkit/src`, `machine/src`;
 - `rust-modules/plex/src/plex/session.rs` (the session owner's state);
 - `rust-modules/media/src/player/{lifecycle,attempt_metrics,attempt_view,backend_startup,backend_metrics,recovery,release}.rs` and
-  `media/src/route/{plan,plan_memory}.rs`;
+  `media/src/route/{backend_policy,plan,plan_memory}.rs`;
 - `rust-modules/playback-contract/src` and the extracted pure
   `play-uri/src/{uriprobe,uri_protocol,uri_lifecycle}.rs` modules.
 

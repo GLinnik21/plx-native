@@ -756,7 +756,7 @@ pub fn after_pump(
         return;
     }
     let live = pa.is_live();
-    let seen_frame = crate::player::seen_frame();
+    let seen_frame = crate::player::feed_seen_frame();
     if preview && live && occupies() {
         if seen_frame {
             note_picture(now_ms);
@@ -769,7 +769,7 @@ pub fn after_pump(
         preview,
         live,
         resolving: crate::route::play_pending(),
-        ended: crate::player::ended(),
+        ended: crate::player::feed_ended(),
         failed: super::SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
         seen_frame,
     };

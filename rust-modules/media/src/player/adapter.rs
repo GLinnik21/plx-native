@@ -261,11 +261,30 @@ impl PlayerAdapter {
         self.feed_attempt = None;
     }
 
+    pub(super) fn take_native_stop(&mut self) -> super::engine::NativeStop {
+        let stop = super::engine::NativeStop::take(&mut self.feed);
+        self.clear_feed_attempt();
+        stop
+    }
+
+    pub(super) fn release_native_stop(&mut self, stop: &mut super::engine::NativeStop,
+        for_reload: bool) {
+        stop.release_and_drain(&self.mt, &mut self.feed, for_reload);
+    }
+
+    pub(super) fn finish_native_stop(&mut self, stop: super::engine::NativeStop,
+        for_reload: bool) {
+        if let Some(release) = stop.finish(for_reload) {
+            // This event is the release machine's admission fence for the next start.
+            self.park_release(release);
+        }
+    }
+
     /// Address the physical callback snapshot to the current route-owned attempt.
     pub(super) fn publish_feed_attempt_view(&self, ps: &mut crate::route::PlaybackSession) {
         let Some(attempt) = self.active_feed_attempt() else { return; };
         let Some(facts) = super::feed_pump::attempt_facts(&self.feed) else { return; };
-        let _ = ps.ingest_attempt_facts(attempt, facts);
+        let _ = ps.ingest_attempt_facts(attempt, crate::player::attempt_view::Backend::Feed, facts);
     }
 
     pub(super) fn feed_uses_stream_queues(&self) -> bool { self.feed.uses_stream_queues() }
@@ -275,6 +294,10 @@ impl PlayerAdapter {
 
     /// Whether the current physical feed has yet to leave its Load stage.
     pub(super) fn feed_loading(&self) -> bool { self.feed.loading() }
+    pub(super) fn preview_load_join_state(&self) -> Option<(bool, bool)> {
+        self.feed.preview_load_join_state()
+    }
+    pub(super) fn abandon_preview_load(&mut self) { self.feed.abandon_preview(); }
     pub(super) fn foreground_follows_feed_load(&self) -> bool {
         self.feed.foreground_follows_load()
     }
@@ -376,11 +399,6 @@ impl PlayerAdapter {
     /// A refused thread spawn cannot return a receipt; retire its mapping immediately.
     #[cfg(test)]
     pub(super) fn cancel_load_receipt(&mut self, token: u64) { self.feed.cancel_load_receipt(token); }
-
-    /// Teardown retires the whole physical attempt before a still-blocked Load can return.
-    pub(super) fn retire_load_attempt(&mut self, attempt: plx_playback_contract::AttemptId) {
-        self.feed.retire_load_attempt(attempt);
-    }
 
     /// The main-thread coordinator's only Load-result landing. Late outcomes from an abandoned
     /// or replaced Engine cannot settle a successor's route, even if a worker returns afterward.
@@ -510,11 +528,15 @@ impl PlayerAdapter {
         self.feed.has_abandoned_load()
     }
 
-    /// The parked Load, borrowed mutably (its once-only log latch), or taken once it returned.
-    pub fn abandoned_load_mut(&mut self) -> Option<&mut super::engine::AbandonedLoad> {
-        self.feed.abandoned_load_mut()
+    pub(super) fn begin_native_open(&mut self) -> bool {
+        super::engine::begin_native_open(&mut self.feed, &self.mt)
     }
 
+    pub fn reap_abandoned_load(&mut self) -> bool {
+        super::engine::reap_abandoned_load_resource(&mut self.feed, &self.mt)
+    }
+
+    /// The parked Load, borrowed mutably (its once-only log latch), or taken once it returned.
     pub fn take_abandoned_load(&mut self) -> Option<super::engine::AbandonedLoad> {
         self.feed.take_abandoned_load()
     }

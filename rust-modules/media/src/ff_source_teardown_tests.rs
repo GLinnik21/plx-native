@@ -27,6 +27,7 @@ fn a_seek_after_teardown_fails_instead_of_opening_a_second_connection() {
             "fixture: exactly one connection so far"
         );
         let mut st = AvioState {
+            observer: super::test_support::demux_observer(),
             src: Src::Socket {
                 hs: &mut *hs,
                 host: ip,
@@ -42,7 +43,7 @@ fn a_seek_after_teardown_fails_instead_of_opening_a_second_connection() {
             body_active_us: 0,
             body_bytes: 0,
             first_byte_at: None,
-            reserve_deadline: ReserveDeadlineState::new(None, false),
+            reserve_deadline: ReserveDeadlineState::new(None, false, super::test_support::demux_observer()),
             transport_watchdog: None,
             acquisition: None,
             bounce: Vec::new(),
@@ -86,6 +87,7 @@ fn an_aborted_read_and_seek_cannot_ping_pong_into_new_connections() {
     with_counting_listener(|port, accepts, _| {
         let (mut hs, mut aq, ip, path) = opened_stream_with_aborted_lane(port);
         let mut st = AvioState {
+            observer: super::test_support::demux_observer(),
             src: Src::Socket {
                 hs: &mut *hs,
                 host: ip,
@@ -101,7 +103,7 @@ fn an_aborted_read_and_seek_cannot_ping_pong_into_new_connections() {
             body_active_us: 0,
             body_bytes: 0,
             first_byte_at: None,
-            reserve_deadline: ReserveDeadlineState::new(None, false),
+            reserve_deadline: ReserveDeadlineState::new(None, false, super::test_support::demux_observer()),
             transport_watchdog: None,
             acquisition: None,
             bounce: Vec::new(),
@@ -140,6 +142,7 @@ fn an_aborted_read_and_seek_cannot_ping_pong_into_new_connections() {
 fn an_expired_candidate_deadline_stops_before_touching_its_transport() {
     let mut aq = crate::aq::aq_new(1 << 20);
     let mut st = AvioState {
+        observer: super::test_support::demux_observer(),
         // A null stream would crash if dispatch were reached; the deadline must settle first.
         src: Src::Socket {
             hs: std::ptr::null_mut(),
@@ -156,7 +159,8 @@ fn an_expired_candidate_deadline_stops_before_touching_its_transport() {
         body_active_us: 0,
         body_bytes: 0,
         first_byte_at: None,
-        reserve_deadline: ReserveDeadlineState::new(Some(std::time::Instant::now()), false),
+        reserve_deadline: ReserveDeadlineState::new(Some(std::time::Instant::now()), false,
+            super::test_support::demux_observer()),
         transport_watchdog: None,
         acquisition: None,
         bounce: Vec::new(),
@@ -224,6 +228,7 @@ fn a_stalled_candidate_body_ends_at_transport_liveness_not_recursive_reserve_ret
     let old_paused = crate::player::TX.paused.swap(false, Ordering::AcqRel);
     let mut aq = crate::aq::aq_new(1 << 20);
     let mut state = AvioState {
+        observer: super::test_support::demux_observer(),
         src: Src::Socket {
             hs: &mut *hs,
             host,
@@ -243,6 +248,7 @@ fn a_stalled_candidate_body_ends_at_transport_liveness_not_recursive_reserve_ret
             start_ns,
             std::time::Duration::from_millis(2),
             false,
+            super::test_support::demux_observer(),
         ),
         transport_watchdog: Some(TransportWatchdog::with_inactivity(
             std::time::Duration::from_millis(35),
@@ -340,6 +346,7 @@ fn abort_while_a_playlist_body_is_blocked_wins_over_the_transport_result() {
             &mut *aq,
             &mut dst,
             Some(std::time::Instant::now() + std::time::Duration::from_secs(1)),
+            super::test_support::demux_observer().as_ref(),
         )
     });
 
@@ -368,8 +375,9 @@ fn a_prefetched_segment_does_not_move_the_published_buffer() {
         video_tail_ns: 2_000_000_000,
         audio_tail_ns: Some(2_000_000_000),
     };
-    let published = hls_buffer_fact(None).buffered_ms();
-    let if_counted = hls_buffer_fact(Some(&held)).buffered_ms();
+    let observer = super::test_support::demux_observer();
+    let published = hls_buffer_fact(observer.as_ref(), None).unwrap().buffered_ms();
+    let if_counted = hls_buffer_fact(observer.as_ref(), Some(&held)).unwrap().buffered_ms();
     SHARED
         .hls_video_tail_ns
         .store(prev_video, Ordering::Release);
@@ -438,6 +446,7 @@ fn io_failed_after_drain_surfaces_once_bounce_is_empty() {
 
     let mut aq = crate::aq::aq_new(1 << 20);
     let mut st = AvioState {
+        observer: super::test_support::demux_observer(),
         src: Src::Idle,
         range: crate::curlio::range_factory(),
         credential_gate: crate::curlio::CREDENTIAL_GATE,
@@ -448,7 +457,7 @@ fn io_failed_after_drain_surfaces_once_bounce_is_empty() {
         body_active_us: 0,
         body_bytes: 0,
         first_byte_at: None,
-        reserve_deadline: ReserveDeadlineState::new(None, false),
+        reserve_deadline: ReserveDeadlineState::new(None, false, super::test_support::demux_observer()),
         transport_watchdog: None,
         acquisition: None,
         bounce: b"ABCD".to_vec(),
@@ -484,6 +493,7 @@ fn take_curl_leaves_idle_and_seek_on_idle_does_not_open() {
 
     let mut aq = crate::aq::aq_new(1 << 20);
     let mut st = AvioState {
+        observer: super::test_support::demux_observer(),
         src: Src::Idle,
         range: crate::curlio::range_factory(),
         credential_gate: crate::curlio::CREDENTIAL_GATE,
@@ -494,7 +504,7 @@ fn take_curl_leaves_idle_and_seek_on_idle_does_not_open() {
         body_active_us: 0,
         body_bytes: 0,
         first_byte_at: None,
-        reserve_deadline: ReserveDeadlineState::new(None, false),
+        reserve_deadline: ReserveDeadlineState::new(None, false, super::test_support::demux_observer()),
         transport_watchdog: None,
         acquisition: None,
         bounce: Vec::new(),
@@ -547,6 +557,7 @@ fn a_curl_seek_after_teardown_fails_instead_of_opening_a_second_connection() {
             "fixture: and exactly one request"
         );
         let mut st = AvioState {
+            observer: super::test_support::demux_observer(),
             src: Src::Curl(cs),
             range: crate::curlio::range_factory(),
             credential_gate: crate::curlio::CREDENTIAL_GATE,
@@ -557,7 +568,7 @@ fn a_curl_seek_after_teardown_fails_instead_of_opening_a_second_connection() {
             body_active_us: 0,
             body_bytes: 0,
             first_byte_at: None,
-            reserve_deadline: ReserveDeadlineState::new(None, false),
+            reserve_deadline: ReserveDeadlineState::new(None, false, super::test_support::demux_observer()),
             transport_watchdog: None,
             acquisition: None,
             bounce: Vec::new(),
@@ -599,6 +610,7 @@ fn an_aborted_curl_read_and_seek_cannot_ping_pong_into_new_connections() {
     with_counting_listener(|port, accepts, requests| {
         let (cs, mut aq) = opened_curl_with_aborted_lane(port);
         let mut st = AvioState {
+            observer: super::test_support::demux_observer(),
             src: Src::Curl(cs),
             range: crate::curlio::range_factory(),
             credential_gate: crate::curlio::CREDENTIAL_GATE,
@@ -609,7 +621,7 @@ fn an_aborted_curl_read_and_seek_cannot_ping_pong_into_new_connections() {
             body_active_us: 0,
             body_bytes: 0,
             first_byte_at: None,
-            reserve_deadline: ReserveDeadlineState::new(None, false),
+            reserve_deadline: ReserveDeadlineState::new(None, false, super::test_support::demux_observer()),
             transport_watchdog: None,
             acquisition: None,
             bounce: Vec::new(),
@@ -670,6 +682,7 @@ fn a_curl_transport_failure_crosses_avio_as_io_error_not_eof() {
         cs.fail_multi_for_test();
         let mut aq = crate::aq::aq_new(1 << 20);
         let mut st = AvioState {
+            observer: super::test_support::demux_observer(),
             src: Src::Curl(cs),
             range: crate::curlio::range_factory(),
             credential_gate: crate::curlio::CREDENTIAL_GATE,
@@ -680,7 +693,7 @@ fn a_curl_transport_failure_crosses_avio_as_io_error_not_eof() {
             body_active_us: 0,
             body_bytes: 0,
             first_byte_at: None,
-            reserve_deadline: ReserveDeadlineState::new(None, false),
+            reserve_deadline: ReserveDeadlineState::new(None, false, super::test_support::demux_observer()),
             transport_watchdog: None,
             acquisition: None,
             bounce: Vec::new(),
@@ -758,6 +771,7 @@ fn a_frame_read_failure_names_the_curl_rc_and_publishes_it_for_the_report() {
 
         fn state(src: Src, aq: *mut crate::aq::AuQueue) -> AvioState {
             AvioState {
+                observer: super::test_support::demux_observer(),
                 src,
                 range: crate::curlio::range_factory(),
                 credential_gate: crate::curlio::CREDENTIAL_GATE,
@@ -768,7 +782,7 @@ fn a_frame_read_failure_names_the_curl_rc_and_publishes_it_for_the_report() {
                 body_active_us: 0,
                 body_bytes: 0,
                 first_byte_at: None,
-                reserve_deadline: ReserveDeadlineState::new(None, false),
+                reserve_deadline: ReserveDeadlineState::new(None, false, super::test_support::demux_observer()),
                 transport_watchdog: None,
                 acquisition: None,
                 bounce: Vec::new(),
@@ -828,6 +842,7 @@ fn a_cut_transfer_is_reopened_at_its_offset_before_the_read_fails() {
         let before = requests.load(Ordering::Acquire);
         let mut aq = crate::aq::aq_new(1 << 20);
         let mut st = AvioState {
+            observer: super::test_support::demux_observer(),
             src: Src::Curl(cs),
             range: crate::curlio::range_factory(),
             credential_gate: crate::curlio::CREDENTIAL_GATE,
@@ -838,7 +853,7 @@ fn a_cut_transfer_is_reopened_at_its_offset_before_the_read_fails() {
             body_active_us: 0,
             body_bytes: 0,
             first_byte_at: None,
-            reserve_deadline: ReserveDeadlineState::new(None, false),
+            reserve_deadline: ReserveDeadlineState::new(None, false, super::test_support::demux_observer()),
             transport_watchdog: None,
             acquisition: None,
             bounce: Vec::new(),
@@ -908,6 +923,7 @@ fn read_all_through_read_cb(port: u16) -> (Vec<u8>, c_int, bool, Option<c_int>) 
     let size = cs.size();
     let mut aq = crate::aq::aq_new(1 << 20);
     let mut st = AvioState {
+        observer: super::test_support::demux_observer(),
         src: Src::Curl(cs),
         range: crate::curlio::range_factory(),
         credential_gate: crate::curlio::CREDENTIAL_GATE,
@@ -918,7 +934,7 @@ fn read_all_through_read_cb(port: u16) -> (Vec<u8>, c_int, bool, Option<c_int>) 
         body_active_us: 0,
         body_bytes: 0,
         first_byte_at: None,
-        reserve_deadline: ReserveDeadlineState::new(None, false),
+        reserve_deadline: ReserveDeadlineState::new(None, false, super::test_support::demux_observer()),
         transport_watchdog: None,
         acquisition: None,
         bounce: Vec::new(),
@@ -997,8 +1013,9 @@ fn a_cut_hls_segment_read_is_not_reopened_by_the_read_callback() {
     let size = cs.size();
     let mut aq = crate::aq::aq_new(1 << 20);
     let (reserve_deadline, runtime) =
-        SegmentAcquisition::for_test(None, false, false).begin(&mut *aq);
+        SegmentAcquisition::for_test(None, false, false, super::test_support::demux_observer()).begin(&mut *aq);
     let mut st = AvioState {
+        observer: super::test_support::demux_observer(),
         src: Src::Curl(cs),
         range: crate::curlio::range_factory(),
         credential_gate: crate::curlio::CREDENTIAL_GATE,
