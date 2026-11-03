@@ -3,6 +3,8 @@
 //! clocks, accepted pause events, native transition leases and published state.
 
 use crate::adaptive::{AutomaticTransition, FenceHandle, LeaseHandle, PhysicalFailure};
+use crate::AttemptId;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -17,6 +19,29 @@ pub struct PauseEvent {
 
 #[derive(Clone, Copy, Debug)]
 pub struct PauseClock { pub at: Instant, pub elapsed: Duration }
+
+/// The C AVIO callbacks retain this captured view while the worker retains
+/// mutable cursor and lease ownership. A retired native epoch returns `None`
+/// or refuses an effect, so a late callback cannot write the next session.
+pub trait DemuxObserver: Send + Sync {
+    fn attempt(&self) -> AttemptId;
+    fn playpos_ns(&self) -> Option<i64>;
+    fn hold_epoch(&self) -> Option<u64>;
+    fn rebuffering(&self) -> Option<bool>;
+    fn paused(&self) -> Option<bool>;
+    fn pause_clock(&self) -> Option<PauseClock>;
+    fn publish(&self, effect: DemuxCallbackEffect) -> bool;
+}
+
+/// Only callback-safe atomics. Neither logs, queue operations nor native
+/// calls run while the native epoch retirement barrier is held.
+pub enum DemuxCallbackEffect {
+    NetworkBytes(i64),
+    HttpStatus(i32),
+    FileSize(i64),
+    TransportFailure { rc: i32, age_ms: i64, reopen_failed: bool },
+    IoFailed,
+}
 
 /// Each read is made at the call site. A cached all-fields snapshot would
 /// change the playhead and pause linearization around blocking AVIO and AQ.
@@ -102,6 +127,7 @@ pub trait DemuxMedia {
 
 /// One move-only adapter follows the media open into its existing feed worker.
 pub trait DemuxSession: Send {
+    fn observer(&self) -> Arc<dyn DemuxObserver>;
     fn clock(&self) -> &dyn DemuxClock;
     fn clock_mut(&mut self) -> &mut dyn DemuxClock;
     fn adaptive_ref(&self) -> &dyn DemuxAdaptive;

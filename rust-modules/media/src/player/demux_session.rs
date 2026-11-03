@@ -4,11 +4,14 @@
 
 use super::{HlsAutomaticTransition, HlsClockFenceError, UserPauseCursor, SHARED, TX};
 use plx_playback_contract::adaptive::{AutomaticTransition, BufferFact, FenceHandle, FenceSettlement, LeaseHandle, PhysicalFailure};
-use plx_playback_contract::demux::{DemuxAdaptive, DemuxClock, DemuxEffect, DemuxFault, DemuxMedia, DemuxSession, PauseClock, PauseEvent, PauseLane};
+use plx_playback_contract::demux::{DemuxAdaptive, DemuxCallbackEffect, DemuxClock, DemuxEffect, DemuxFault, DemuxMedia, DemuxObserver, DemuxSession, PauseClock, PauseEvent, PauseLane};
+use plx_playback_contract::AttemptId;
 use plx_telemetry::telemetry::classes::DemuxExitClass;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 pub struct PlayerDemuxSession {
+    observer: Arc<PlayerDemuxObserver>,
     hls_pause: Option<UserPauseCursor>,
     original_pause: Option<UserPauseCursor>,
 }
@@ -16,8 +19,11 @@ pub struct PlayerDemuxSession {
 impl PlayerDemuxSession {
     /// Safe to capture on the main thread: pause cursors and the native clock
     /// are sampled only after the worker explicitly begins a lane.
-    pub fn capture() -> Box<dyn DemuxSession> {
-        Box::new(Self { hls_pause: None, original_pause: None })
+    pub fn capture(attempt: AttemptId, native_epoch: u32) -> Box<dyn DemuxSession> {
+        Box::new(Self {
+            observer: Arc::new(PlayerDemuxObserver { attempt, native_epoch }),
+            hls_pause: None, original_pause: None,
+        })
     }
 
     fn cursor(&mut self, lane: PauseLane) -> &mut UserPauseCursor {
@@ -31,11 +37,58 @@ impl PlayerDemuxSession {
 }
 
 impl DemuxSession for PlayerDemuxSession {
+    fn observer(&self) -> Arc<dyn DemuxObserver> { self.observer.clone() }
     fn clock(&self) -> &dyn DemuxClock { self }
     fn clock_mut(&mut self) -> &mut dyn DemuxClock { self }
     fn adaptive_ref(&self) -> &dyn DemuxAdaptive { self }
     fn adaptive(&mut self) -> &mut dyn DemuxAdaptive { self }
     fn media(&mut self) -> &mut dyn DemuxMedia { self }
+}
+
+struct PlayerDemuxObserver {
+    attempt: AttemptId,
+    native_epoch: u32,
+}
+
+impl DemuxObserver for PlayerDemuxObserver {
+    fn attempt(&self) -> AttemptId { self.attempt }
+    fn playpos_ns(&self) -> Option<i64> {
+        SHARED.with_active_demux_epoch(self.native_epoch, || SHARED.playpos_ns.load(Ordering::Relaxed))
+    }
+    fn hold_epoch(&self) -> Option<u64> {
+        SHARED.with_active_demux_epoch(self.native_epoch, || SHARED.hls_internal_hold_epoch.load(Ordering::Acquire))
+    }
+    fn rebuffering(&self) -> Option<bool> {
+        SHARED.with_active_demux_epoch(self.native_epoch, || SHARED.hls_rebuffering.load(Ordering::Acquire))
+    }
+    fn paused(&self) -> Option<bool> {
+        SHARED.with_active_demux_epoch(self.native_epoch, || TX.paused.load(Ordering::Acquire))
+    }
+    fn pause_clock(&self) -> Option<PauseClock> {
+        SHARED.with_active_demux_epoch(self.native_epoch, || {
+            let (at, elapsed) = TX.pause_clock_sample();
+            PauseClock { at, elapsed }
+        })
+    }
+    fn publish(&self, effect: DemuxCallbackEffect) -> bool {
+        SHARED.with_active_demux_epoch(self.native_epoch, || match effect {
+            DemuxCallbackEffect::NetworkBytes(bytes) => {
+                SHARED.dg_net_rx.fetch_add(bytes, Ordering::Relaxed);
+            }
+            DemuxCallbackEffect::HttpStatus(status) =>
+                SHARED.dg_http_status.store(status, Ordering::Relaxed),
+            DemuxCallbackEffect::FileSize(size) =>
+                SHARED.file_size.store(size, Ordering::Release),
+            DemuxCallbackEffect::TransportFailure { rc, age_ms, reopen_failed } => {
+                SHARED.dg_transport_rc.store(rc, Ordering::Release);
+                SHARED.dg_transport_age_ms.store(age_ms, Ordering::Release);
+                SHARED.dg_transport_reopen_failed.store(reopen_failed, Ordering::Release);
+                SHARED.demux_io_failed.store(true, Ordering::Release);
+            }
+            DemuxCallbackEffect::IoFailed =>
+                SHARED.demux_io_failed.store(true, Ordering::Release),
+        }).is_some()
+    }
 }
 
 impl DemuxClock for PlayerDemuxSession {

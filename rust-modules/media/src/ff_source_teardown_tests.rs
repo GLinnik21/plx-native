@@ -27,6 +27,7 @@ fn a_seek_after_teardown_fails_instead_of_opening_a_second_connection() {
             "fixture: exactly one connection so far"
         );
         let mut st = AvioState {
+            observer: super::test_support::demux_observer(),
             src: Src::Socket {
                 hs: &mut *hs,
                 host: ip,
@@ -86,6 +87,7 @@ fn an_aborted_read_and_seek_cannot_ping_pong_into_new_connections() {
     with_counting_listener(|port, accepts, _| {
         let (mut hs, mut aq, ip, path) = opened_stream_with_aborted_lane(port);
         let mut st = AvioState {
+            observer: super::test_support::demux_observer(),
             src: Src::Socket {
                 hs: &mut *hs,
                 host: ip,
@@ -140,6 +142,7 @@ fn an_aborted_read_and_seek_cannot_ping_pong_into_new_connections() {
 fn an_expired_candidate_deadline_stops_before_touching_its_transport() {
     let mut aq = crate::aq::aq_new(1 << 20);
     let mut st = AvioState {
+        observer: super::test_support::demux_observer(),
         // A null stream would crash if dispatch were reached; the deadline must settle first.
         src: Src::Socket {
             hs: std::ptr::null_mut(),
@@ -224,6 +227,7 @@ fn a_stalled_candidate_body_ends_at_transport_liveness_not_recursive_reserve_ret
     let old_paused = crate::player::TX.paused.swap(false, Ordering::AcqRel);
     let mut aq = crate::aq::aq_new(1 << 20);
     let mut state = AvioState {
+        observer: super::test_support::demux_observer(),
         src: Src::Socket {
             hs: &mut *hs,
             host,
@@ -438,6 +442,7 @@ fn io_failed_after_drain_surfaces_once_bounce_is_empty() {
 
     let mut aq = crate::aq::aq_new(1 << 20);
     let mut st = AvioState {
+        observer: super::test_support::demux_observer(),
         src: Src::Idle,
         range: crate::curlio::range_factory(),
         credential_gate: crate::curlio::CREDENTIAL_GATE,
@@ -484,6 +489,7 @@ fn take_curl_leaves_idle_and_seek_on_idle_does_not_open() {
 
     let mut aq = crate::aq::aq_new(1 << 20);
     let mut st = AvioState {
+        observer: super::test_support::demux_observer(),
         src: Src::Idle,
         range: crate::curlio::range_factory(),
         credential_gate: crate::curlio::CREDENTIAL_GATE,
@@ -547,6 +553,7 @@ fn a_curl_seek_after_teardown_fails_instead_of_opening_a_second_connection() {
             "fixture: and exactly one request"
         );
         let mut st = AvioState {
+            observer: super::test_support::demux_observer(),
             src: Src::Curl(cs),
             range: crate::curlio::range_factory(),
             credential_gate: crate::curlio::CREDENTIAL_GATE,
@@ -599,6 +606,7 @@ fn an_aborted_curl_read_and_seek_cannot_ping_pong_into_new_connections() {
     with_counting_listener(|port, accepts, requests| {
         let (cs, mut aq) = opened_curl_with_aborted_lane(port);
         let mut st = AvioState {
+            observer: super::test_support::demux_observer(),
             src: Src::Curl(cs),
             range: crate::curlio::range_factory(),
             credential_gate: crate::curlio::CREDENTIAL_GATE,
@@ -670,6 +678,7 @@ fn a_curl_transport_failure_crosses_avio_as_io_error_not_eof() {
         cs.fail_multi_for_test();
         let mut aq = crate::aq::aq_new(1 << 20);
         let mut st = AvioState {
+            observer: super::test_support::demux_observer(),
             src: Src::Curl(cs),
             range: crate::curlio::range_factory(),
             credential_gate: crate::curlio::CREDENTIAL_GATE,
@@ -758,6 +767,7 @@ fn a_frame_read_failure_names_the_curl_rc_and_publishes_it_for_the_report() {
 
         fn state(src: Src, aq: *mut crate::aq::AuQueue) -> AvioState {
             AvioState {
+                observer: super::test_support::demux_observer(),
                 src,
                 range: crate::curlio::range_factory(),
                 credential_gate: crate::curlio::CREDENTIAL_GATE,
@@ -828,6 +838,7 @@ fn a_cut_transfer_is_reopened_at_its_offset_before_the_read_fails() {
         let before = requests.load(Ordering::Acquire);
         let mut aq = crate::aq::aq_new(1 << 20);
         let mut st = AvioState {
+            observer: super::test_support::demux_observer(),
             src: Src::Curl(cs),
             range: crate::curlio::range_factory(),
             credential_gate: crate::curlio::CREDENTIAL_GATE,
@@ -908,6 +919,7 @@ fn read_all_through_read_cb(port: u16) -> (Vec<u8>, c_int, bool, Option<c_int>) 
     let size = cs.size();
     let mut aq = crate::aq::aq_new(1 << 20);
     let mut st = AvioState {
+        observer: super::test_support::demux_observer(),
         src: Src::Curl(cs),
         range: crate::curlio::range_factory(),
         credential_gate: crate::curlio::CREDENTIAL_GATE,
@@ -999,6 +1011,7 @@ fn a_cut_hls_segment_read_is_not_reopened_by_the_read_callback() {
     let (reserve_deadline, runtime) =
         SegmentAcquisition::for_test(None, false, false).begin(&mut *aq);
     let mut st = AvioState {
+        observer: super::test_support::demux_observer(),
         src: Src::Curl(cs),
         range: crate::curlio::range_factory(),
         credential_gate: crate::curlio::CREDENTIAL_GATE,

@@ -126,6 +126,7 @@ fn hls_open_plain(
         curl: None,
         range: crate::curlio::range_factory(),
         credential_gate: crate::curlio::CREDENTIAL_GATE,
+        observer: super::test_support::demux_observer(),
     };
     let opened = hls_open_source(
         &hls_resource(port),
@@ -224,6 +225,7 @@ fn a_seek_reopen_follows_a_relative_302_and_keeps_its_range() {
     let mut hs = plx_net::stream::http_stream_boxed();
     let mut aq = crate::aq::aq_new(1 << 20);
     let mut state = AvioState {
+        observer: super::test_support::demux_observer(),
         src: Src::Socket {
             hs: &mut *hs,
             host: CString::new("127.0.0.1").unwrap(),
@@ -399,6 +401,7 @@ fn a_redirected_master_playlist_resolves_its_children_against_the_redirect_targe
         curl: None,
         range: crate::curlio::range_factory(),
         credential_gate: crate::curlio::CREDENTIAL_GATE,
+        observer: super::test_support::demux_observer(),
     };
     let origin = plx_plex::plex::Origin::http("127.0.0.1", pms.port as i32);
     let cursor = hls_cursor_open(
