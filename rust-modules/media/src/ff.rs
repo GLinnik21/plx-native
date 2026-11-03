@@ -6494,33 +6494,22 @@ fn hls_demux(
         // owners on one decoder timeline, forced cursor-by-count repair, and produced the observed
         // raster/A-V excursion. A candidate now has exactly two outcomes: commit then feed every
         // staged object, or discard all of them while the old cursor remains untouched.
-        let first_raster_ready = adaptive::hls_raster_within(
-            candidate_outputs[0].0.video_width,
-            candidate_outputs[0].0.video_height,
-            proposal.rung,
-        );
-        let first_quality_improves = proposal.direction != crate::abr::Direction::Up
-            || adaptive::hls_upshift_strictly_improves(
-                output.video_width,
-                output.video_height,
-                cursor.declared_bps,
-                candidate_outputs[0].0.video_width,
-                candidate_outputs[0].0.video_height,
-                candidate.declared_bps,
-            );
+        let current_variant = adaptive::VariantFacts {
+            width: output.video_width, height: output.video_height,
+            declared_bps: cursor.declared_bps,
+        };
+        let first_variant = adaptive::VariantFacts {
+            width: candidate_outputs[0].0.video_width,
+            height: candidate_outputs[0].0.video_height,
+            declared_bps: candidate.declared_bps,
+        };
         let first_sample = hls_segment_sample(&candidate_outputs[0].0, candidate_outputs[0].2);
-        let mut verdict = first_sample.map_or(crate::abr::CandidateVerdict::Incomplete, |sample| {
-            if proposal.direction == crate::abr::Direction::Up {
-                state.candidate_verdict(proposal, sample, candidate.declared_bps, true)
-            } else {
-                state.candidate_verdict(proposal, sample, candidate.declared_bps, false)
-            }
-        });
+        let first_grade = state.first_candidate_grade(
+            proposal, current_variant, first_variant, first_sample,
+        );
+        let mut verdict = first_grade.verdict;
 
-        if first_raster_ready
-            && first_quality_improves
-            && verdict == crate::abr::CandidateVerdict::SetupBearing
-        {
+        if first_grade.needs_followup {
             if exploration_reserve.is_none() || exploration_expired(&mut exploration_reserve) {
                 state.abandon(&primed.encoder_session);
                 reject_hls_abr_after_transaction(
@@ -6651,24 +6640,22 @@ fn hls_demux(
                 });
         }
 
-        let raster_ready = !adaptive::hls_candidate_requires_rung_box(proposal, reserve_policy)
-            || candidate_outputs.iter().all(|(output, _, _)| {
-                adaptive::hls_raster_within(output.video_width, output.video_height, proposal.rung)
-            });
+        let outputs_inside_rung = candidate_outputs.iter().all(|(output, _, _)| {
+            adaptive::hls_raster_within(output.video_width, output.video_height, proposal.rung)
+        });
         let (candidate_output, _, candidate_duration) =
             candidate_outputs.last().expect("candidate output");
-        let quality_improves = proposal.direction != crate::abr::Direction::Up
-            || adaptive::hls_upshift_strictly_improves(
-                output.video_width,
-                output.video_height,
-                cursor.declared_bps,
-                candidate_output.video_width,
-                candidate_output.video_height,
-                candidate.declared_bps,
-            );
+        let candidate_variant_facts = adaptive::VariantFacts {
+            width: candidate_output.video_width, height: candidate_output.video_height,
+            declared_bps: candidate.declared_bps,
+        };
         tx.mark_candidate_evidence(candidate_output, *candidate_duration);
         let candidate_sample = hls_segment_sample(candidate_output, *candidate_duration);
-        let disposition = adaptive::hls_candidate_disposition(raster_ready, quality_improves, verdict);
+        let grade = state.final_candidate_grade(
+            proposal, reserve_policy, current_variant, candidate_variant_facts,
+            outputs_inside_rung, verdict,
+        );
+        let adaptive::FinalCandidateGrade { raster_ready, quality_improves, disposition } = grade;
         if let adaptive::HlsCandidateDisposition::Discard { cause, outcome } = disposition {
             trial_protocol.observe(trial_id, TrialEvent::Ended)
                 .expect("a rejected candidate has not entered the queue");

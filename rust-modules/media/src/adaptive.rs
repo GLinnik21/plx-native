@@ -281,6 +281,24 @@ pub(crate) struct ProbeGrade {
     pub(crate) probes: u8,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct VariantFacts {
+    pub(crate) width: i32,
+    pub(crate) height: i32,
+    pub(crate) declared_bps: u64,
+}
+
+pub(crate) struct FirstCandidateGrade {
+    pub(crate) verdict: abr::CandidateVerdict,
+    pub(crate) needs_followup: bool,
+}
+
+pub(crate) struct FinalCandidateGrade {
+    pub(crate) raster_ready: bool,
+    pub(crate) quality_improves: bool,
+    pub(crate) disposition: HlsCandidateDisposition,
+}
+
 impl Coordinator {
     pub(crate) fn start(start: Start, pin: Option<abr::Rung>) -> Self {
         let Start { control, ticket } = start;
@@ -357,6 +375,45 @@ impl Coordinator {
             self.controller.candidate_boundary_verdict(proposal, sample, declared_bps)
         } else {
             self.controller.candidate_verdict(proposal, sample, declared_bps)
+        }
+    }
+    pub(crate) fn first_candidate_grade(
+        &self, proposal: abr::Proposal, current: VariantFacts,
+        candidate: VariantFacts, sample: Option<abr::SegmentSample>,
+    ) -> FirstCandidateGrade {
+        let raster_ready = hls_raster_within(candidate.width, candidate.height, proposal.rung);
+        let quality_improves = proposal.direction != abr::Direction::Up
+            || hls_upshift_strictly_improves(
+                current.width, current.height, current.declared_bps,
+                candidate.width, candidate.height, candidate.declared_bps,
+            );
+        let verdict = sample.map_or(abr::CandidateVerdict::Incomplete, |sample| {
+            self.candidate_verdict(
+                proposal, sample, candidate.declared_bps,
+                proposal.direction == abr::Direction::Up,
+            )
+        });
+        FirstCandidateGrade {
+            verdict,
+            needs_followup: raster_ready && quality_improves
+                && verdict == abr::CandidateVerdict::SetupBearing,
+        }
+    }
+    pub(crate) fn final_candidate_grade(
+        &self, proposal: abr::Proposal, reserve_policy: abr::ReservePolicy,
+        current: VariantFacts, candidate: VariantFacts,
+        outputs_inside_rung: bool, verdict: abr::CandidateVerdict,
+    ) -> FinalCandidateGrade {
+        let raster_ready = !hls_candidate_requires_rung_box(proposal, reserve_policy)
+            || outputs_inside_rung;
+        let quality_improves = proposal.direction != abr::Direction::Up
+            || hls_upshift_strictly_improves(
+                current.width, current.height, current.declared_bps,
+                candidate.width, candidate.height, candidate.declared_bps,
+            );
+        FinalCandidateGrade {
+            raster_ready, quality_improves,
+            disposition: hls_candidate_disposition(raster_ready, quality_improves, verdict),
         }
     }
     pub(crate) fn abandon(&self, encoder: &str) { self.control.abandon(encoder); }
