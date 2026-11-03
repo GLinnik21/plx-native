@@ -124,6 +124,14 @@ pub enum StartRefusal {
 pub struct PlaybackSession {
     /// Main-thread observation for the exact physical attempt currently shown by this session.
     attempt_view: crate::player::attempt_view::AttemptView<RouteStartAttempt>,
+    /// Finite source recipes for this logical request. A plan can refresh qualification but
+    /// cannot reset spent opens or the cross-backend handoff budget.
+    backend_policy: Option<super::backend_policy::BackendPolicy>,
+    /// The exact Feed recipe the latest resolved plan prepared, if it produced a source.
+    planned_feed_offer: Option<super::backend_policy::OfferId>,
+    /// A seek or foreground reload can reopen the already admitted recipe without buying a
+    /// new recovery rung. A changed recipe still has to pass the finite policy.
+    admitted_feed_offer: Option<super::backend_policy::OfferId>,
     /// Frozen for one logical playback, including its retries and track changes.
     direct_play_mode: DirectPlayMode,
     /// This playback was refused by the cached device sandbox preflight. No Engine exists.
@@ -556,6 +564,52 @@ impl PlaybackSession {
         &self.attempt_view
     }
 
+    /// The route's next qualified physical recipe. Unknown URI evidence never vetoes a
+    /// prepared Feed source, and a native ACK cannot qualify a source recipe.
+    pub fn backend_offer(&self) -> super::backend_policy::Selection {
+        self.backend_policy.as_ref().map_or(
+            super::backend_policy::Selection::Unqualified,
+            super::backend_policy::BackendPolicy::choose,
+        )
+    }
+
+    pub fn planned_feed_offer(&self) -> Option<super::backend_policy::OfferId> {
+        self.planned_feed_offer
+    }
+
+    /// A normal seek/foreground reload reuses its admitted source recipe. A changed recovery
+    /// plan must be the next qualified catalog choice before it may acquire another native owner.
+    pub fn backend_planned_feed_allowed(&self) -> bool {
+        let Some(id) = self.planned_feed_offer else { return false };
+        self.admitted_feed_offer == Some(id)
+            || matches!(self.backend_offer(), super::backend_policy::Selection::Open(offer)
+                if offer.backend == plx_playback_contract::BackendKind::Feed && offer.id == id)
+    }
+
+    /// Admit only the current catalog choice after the common backend owner accepted Start.
+    pub fn backend_offer_admitted(&mut self, backend: plx_playback_contract::BackendKind,
+        id: super::backend_policy::OfferId) -> bool {
+        if backend == plx_playback_contract::BackendKind::Feed {
+            if self.planned_feed_offer != Some(id) { return false; }
+            if self.admitted_feed_offer == Some(id) { return true; }
+        }
+        let admitted = self.backend_policy.as_mut().is_some_and(|policy| policy.admitted(backend, id));
+        if admitted && backend == plx_playback_contract::BackendKind::Feed {
+            self.admitted_feed_offer = Some(id);
+        }
+        admitted
+    }
+
+    /// Source-specific qualification supplied by the IO composition. A server capability
+    /// response or codec table is not evidence for a URI display/transport binding.
+    pub fn qualify_backend_offer(&mut self, backend: plx_playback_contract::BackendKind,
+        id: super::backend_policy::OfferId,
+        evidence: super::backend_policy::Qualification) {
+        if let Some(policy) = self.backend_policy.as_mut() {
+            policy.qualify(backend, id, evidence);
+        }
+    }
+
     pub fn ingest_attempt_facts(
         &mut self,
         attempt: RouteStartAttempt,
@@ -569,6 +623,9 @@ impl PlaybackSession {
     /// born as. Every String empty, every id 0 or `UNSET`, both HUD buffers NUL.
     pub const IDLE: PlaybackSession = PlaybackSession {
         attempt_view: crate::player::attempt_view::AttemptView::EMPTY,
+        backend_policy: None,
+        planned_feed_offer: None,
+        admitted_feed_offer: None,
         direct_play_mode: DirectPlayMode::Auto,
         jail_load_blocked: false,
         native_start_refused: None,
@@ -659,6 +716,9 @@ impl PlaybackSession {
     pub fn publication(&self) -> PlaybackSession {
         let PlaybackSession {
             attempt_view,
+            backend_policy: _,
+            planned_feed_offer,
+            admitted_feed_offer: _,
             direct_play_mode,
             jail_load_blocked,
             native_start_refused,
@@ -731,6 +791,9 @@ impl PlaybackSession {
         } = self;
         PlaybackSession {
             attempt_view: *attempt_view,
+            backend_policy: None,
+            planned_feed_offer: *planned_feed_offer,
+            admitted_feed_offer: None,
             direct_play_mode: *direct_play_mode,
             jail_load_blocked: *jail_load_blocked,
             native_start_refused: *native_start_refused,
@@ -823,6 +886,9 @@ impl PlaybackSession {
     /// starts from it; the previous request's, and whatever it had narrowed, is dropped.
     pub(super) fn begin_attempt(&mut self, caps: std::sync::Arc<plx_platform::devcaps::Caps>) {
         self.recovery = Some(crate::player::recovery::OpenRecovery::new(caps));
+        self.backend_policy = None;
+        self.planned_feed_offer = None;
+        self.admitted_feed_offer = None;
     }
 
     /// The request's failed-open ladder, for the pump to step. A session that has not begun an
@@ -9159,6 +9225,23 @@ pub fn pump_play(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata
 /// plan learned no id, and the codec quartet when the plan resolved no video codec — and each says
 /// below why it stays.
 fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::MetadataStore, plan: Plan, rk: &str) -> Option<RouteStartTransaction> {
+    // These IDs name the route transformation class for this request's selected streams.
+    // A later recovery plan can qualify another fixed recipe; a seek/reload keeps its spent
+    // history. URI remains Unknown until the IO composition qualifies the exact source.
+    let planned_feed_offer = if plan.url.is_empty() { None }
+        else if plan.tsession.is_empty() {
+            Some(if plan.acodec != plan.src_acodec {
+                super::backend_policy::OfferId::FEED_APP_AUDIO
+            } else {
+                super::backend_policy::OfferId::FEED_ORIGINAL
+            })
+        } else if matches!(plan.contract.delivery, plx_plex::plex::TranscodeDelivery::FixedHls { .. }) {
+            Some(super::backend_policy::OfferId::FEED_PMS_HLS)
+        } else if plan.contract.remux {
+            Some(super::backend_policy::OfferId::FEED_PMS_REMUX)
+        } else {
+            Some(super::backend_policy::OfferId::FEED_PMS_ENCODE)
+        };
     // ACTIVE_ENCODER is the final server-resource owner, even when there is no encoder. A raw
     // Part URL opens/adopts its Streaming Resource under the logical playback id; retaining that
     // id lets scrobble_stop exact-close it while PlaybackSession::tsession stays empty and Direct remains
@@ -9199,6 +9282,15 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
         // refusing plan needs it most, and has no URL from which it could be reconstructed.
         let request = std::mem::take(&mut s.request);
         let requested_resume_ns = s.requested_resume_ns;
+        let same_selection = s.cur_sid == plan.sid && s.cur_part_id == plan.part_id
+            && s.cur_audio.as_ref().map(|audio| audio.sid)
+                == plan.audio.as_ref().map(|audio| audio.sid)
+            && s.cur_sub_sid == plan.sub_sid;
+        let mut backend_policy = if same_selection { s.backend_policy.take() } else { None }
+            .unwrap_or_else(|| super::backend_policy::BackendPolicy::for_request(
+                plan.direct_play_mode == DirectPlayMode::Forced));
+        if let Some(id) = planned_feed_offer { backend_policy.qualify_planned_feed(id); }
+        let admitted_feed_offer = if same_selection { s.admitted_feed_offer } else { None };
         // "" = this plan fetched no id — either one was already known, or it never got as far as
         // asking — so leave the cache alone (`Plan::machine_id` says the same). What IS cached is
         // cached AGAINST its server: the next playback only reuses it when it is playing from the
@@ -9237,6 +9329,9 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
         let preview = request.as_ref().is_some_and(|r| r.preview);
         *s = PlaybackSession {
             attempt_view: crate::player::attempt_view::AttemptView::EMPTY,
+            backend_policy: Some(backend_policy),
+            planned_feed_offer,
+            admitted_feed_offer,
             direct_play_mode: plan.direct_play_mode,
             jail_load_blocked: false,
             native_start_refused: None,
