@@ -17,7 +17,7 @@ pub use plx_playback_contract::readout::RefusalPath;
 use std::time::{Duration, Instant};
 
 /// Physical 1x transport rate and its unknown speed-audio readout.
-pub const RATE_NORMAL: i32 = 1000;
+pub use plx_playback_contract::RATE_NORMAL;
 pub const SPEED_AUDIO_UNKNOWN: u8 = 0;
 
 /// Exact conservation certificate accumulated while the native media clock is held.

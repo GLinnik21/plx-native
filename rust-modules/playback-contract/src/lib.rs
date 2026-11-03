@@ -44,6 +44,9 @@ impl ContentTime {
     pub const fn as_millis(self) -> u64 { self.0 }
 }
 
+/// Normal playback speed in the per-mille units shared by route policy and feed timing.
+pub const RATE_NORMAL: i32 = 1000;
+
 /// A driver-owned locator. It is deliberately a number: the reducer never holds or prints a URL.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SourceKey(u64);

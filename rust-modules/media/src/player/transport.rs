@@ -10,14 +10,17 @@
 //!
 //! Moved out of `lifecycle.rs` verbatim in the Sans-IO lifecycle PR B (a pure move).
 
+#[cfg(feature = "play-feed")]
 use std::sync::atomic::Ordering::Relaxed;
 
 // transport state — was the C playback globals; now crate::player (atomics)
 #[inline]
+#[cfg(feature = "play-feed")]
 pub fn paused() -> bool {
     crate::player::TX.paused.load(Relaxed)
 }
 #[inline]
+#[cfg(feature = "play-feed")]
 pub fn set_paused(v: bool) {
     crate::player::TX.commit_paused(v)
 }
@@ -30,6 +33,7 @@ pub fn set_paused(v: bool) {
 /// half of [`set_transport_paused`] alone; the new Load's own first Play is the native half. The
 /// caller guarantees there is no Engine (`PlayerForegroundActuator::before_load` checks
 /// `is_live`): over a live one this would leave its pause standing while `TX` reads Playing.
+#[cfg(feature = "play-feed")]
 pub fn commit_viewer_resume_for_load() {
     crate::player::claim_hold::note_user_transport();
     crate::player::TX.commit_paused(false);
@@ -56,6 +60,7 @@ pub fn transport_target(play: Option<bool>, paused: bool) -> bool {
 /// hold's loan, not the viewer's: while it stands the viewer sees a spinner over a playing intent,
 /// so the toggle means Pause (their intent, which the hold's restore then honours) and a seek's
 /// resume leaves the stream held until the landing.
+#[cfg(feature = "play-feed")]
 pub fn viewer_paused() -> bool {
     paused() && !crate::player::claim_hold::owns_pause()
 }
@@ -63,7 +68,11 @@ pub fn viewer_paused() -> bool {
 /// During common startup, the viewer's desired pause can differ from the native pause hold.
 /// Read the addressed goal first so a toggle never mistakes that hold for a viewer Pause.
 pub fn viewer_paused_for(pa: &crate::player::adapter::PlayerAdapter) -> bool {
-    pa.backend_viewer_paused().unwrap_or_else(viewer_paused)
+    if let Some(goal) = pa.backend_viewer_paused() { return goal; }
+    #[cfg(feature = "play-feed")]
+    { viewer_paused() }
+    #[cfg(not(feature = "play-feed"))]
+    { false }
 }
 
 /// Ask the synchronized player clock to commit a user Pause/Resume. The player publishes the feed
@@ -75,26 +84,32 @@ pub fn set_transport_paused(
     pa: &mut crate::player::adapter::PlayerAdapter,
     value: bool,
 ) -> bool {
+    #[cfg(not(feature = "play-feed"))]
+    if !matches!(pa.backend_snapshot().phase,
+        plx_playback_contract::Phase::Starting | plx_playback_contract::Phase::Active) {
+        return false;
+    }
     // PLAY while a hold owns the pause: the viewer sees a spinner over a playing intent, so Play is
     // already satisfied. Resuming here would run the OLD stream mid-flight and replay its seconds
     // after the landing, which still owes the play-back. Not a press that outranks the hold.
+    #[cfg(feature = "play-feed")]
     if !value && crate::player::claim_hold::owns_pause() {
         return true;
     }
     // A viewer press outranks a claim's presentation hold (`player::claim_hold`), including the
     // press that finds the transport already in the state it asks for.
+    #[cfg(feature = "play-feed")]
     crate::player::claim_hold::note_user_transport();
-    if pa.backend_viewer_paused().unwrap_or_else(paused) == value {
+    if viewer_paused_for(pa) == value {
         return true;
     }
     if let Some(accepted) = pa.backend_transport_control(value) {
         return accepted;
     }
-    if value {
-        crate::player::pause(pa)
-    } else {
-        crate::player::resume(pa)
-    }
+    #[cfg(feature = "play-feed")]
+    { if value { crate::player::pause(pa) } else { crate::player::resume(pa) } }
+    #[cfg(not(feature = "play-feed"))]
+    { false }
 }
 
 /// Resume if a seek landed while paused. Its stay-paused counterpart is the pump's
@@ -108,7 +123,7 @@ pub fn resume_if_paused(pa: &mut crate::player::adapter::PlayerAdapter) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "play-feed"))]
 mod transport_target_tests {
     /// The three keys, both ways round. A PLAY key on an already-playing transport is a no-op
     /// rather than a pause, and a PAUSE key on an already-paused one likewise — the property a
