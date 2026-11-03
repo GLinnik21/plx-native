@@ -291,6 +291,10 @@ impl PlayerAdapter {
 
     /// Whether the current physical feed has yet to leave its Load stage.
     pub(super) fn feed_loading(&self) -> bool { self.feed.loading() }
+    pub(super) fn preview_load_join_state(&self) -> Option<(bool, bool)> {
+        self.feed.preview_load_join_state()
+    }
+    pub(super) fn abandon_preview_load(&mut self) { self.feed.abandon_preview(); }
     pub(super) fn foreground_follows_feed_load(&self) -> bool {
         self.feed.foreground_follows_load()
     }

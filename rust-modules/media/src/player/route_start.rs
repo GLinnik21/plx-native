@@ -501,9 +501,9 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
     if !begin_teardown(ps, pa, for_reload) { return; }
     // An abandoned preview Load is never joined on the frame while native Load is in flight.
     if crate::route::is_preview(ps) {
-        if let Some((loading, finished)) = pa.feed.preview_load_join_state() {
+        if let Some((loading, finished)) = pa.preview_load_join_state() {
             if super::preview::defer_media_join(loading, finished) {
-                pa.feed.abandon_preview();
+                pa.abandon_preview_load();
                 return;
             }
         }
