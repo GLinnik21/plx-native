@@ -4581,15 +4581,15 @@ impl AdaptivePhysicalPort for HlsRoundPort<'_> {
             .checked_add(self.timeline.end_ns()).map(|ns| ns / 1_000)
     }
 
-    fn buffer_sampler(&self) -> fn() -> Option<i64> {
+    fn buffer_sampler(&self) -> plx_playback_contract::demux::AddressedSampler<Option<i64>> {
         self.session.clock().hls_buffer_sampler()
     }
 
-    fn remaining_playback_sampler(&self) -> fn() -> i64 {
+    fn remaining_playback_sampler(&self) -> plx_playback_contract::demux::AddressedSampler<i64> {
         self.session.clock().remaining_playback_sampler()
     }
 
-    fn user_sequence_sampler(&self) -> fn() -> u64 {
+    fn user_sequence_sampler(&self) -> plx_playback_contract::demux::AddressedSampler<u64> {
         self.session.clock().user_sequence_sampler()
     }
 }
@@ -4898,7 +4898,7 @@ impl TrialActuatorPort for HlsRoundPort<'_> {
 }
 
 impl AdaptiveRoundPort for HlsRoundPort<'_> {
-    fn position_sampler(&self) -> fn() -> i64 {
+    fn position_sampler(&self) -> plx_playback_contract::demux::AddressedSampler<i64> {
         self.session.clock().playpos_sampler()
     }
 
@@ -6919,7 +6919,7 @@ pub(crate) fn demux(
                             } else {
                                 let audio_expected = ai >= 0 && FEED_AUDIO.load(Ordering::Relaxed);
                                 (progressive_buffered_ms(session.clock(), audio_expected),
-                                 Some(session.clock().remaining_playback_sampler()()))
+                                 session.clock().remaining_playback_sampler()())
                             };
                             let quantum = plx_playback_contract::adaptive::OriginalQuantum {
                                 bytes: state.body_bytes,
@@ -6929,9 +6929,8 @@ pub(crate) fn demux(
                                 paused: pause_state.paused,
                                 completed_pause_ms,
                             };
-                            match watch.observe(quantum, &|| {
-                                session.clock().playpos_ns().max(0)
-                            }) {
+                            let position_ns = session.clock().playpos_sampler();
+                            match watch.observe(quantum, &|| position_ns()) {
                                 plx_playback_contract::adaptive::OriginalProgress::Continue => {}
                                 plx_playback_contract::adaptive::OriginalProgress::Published => break,
                                 plx_playback_contract::adaptive::OriginalProgress::Retired => {

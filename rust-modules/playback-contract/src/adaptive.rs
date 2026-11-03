@@ -2,6 +2,7 @@
 //! this contract carries only identities, normalized measurements, and ordering.
 
 use crate::{AttemptId, SourceKey};
+use crate::demux::AddressedSampler;
 use std::time::Duration;
 
 /// A worker-local trial serial under the route owner's existing playback attempt.
@@ -202,7 +203,7 @@ pub trait TrialActuatorPort: AutomaticPort {
 /// worker. The playhead sampler remains callable inside the AQ publication
 /// closure without borrowing the actuator port through its gate.
 pub trait AdaptiveRoundPort: TrialActuatorPort {
-    fn position_sampler(&self) -> fn() -> i64;
+    fn position_sampler(&self) -> AddressedSampler<i64>;
     fn transition_permitted(&self, kind: AutomaticTransition) -> bool;
     fn rebuffer_state(&self) -> (bool, bool);
     fn buffer_snapshot(&self) -> (Option<i64>, i64);
@@ -365,9 +366,9 @@ pub trait AdaptivePhysicalPort:
     fn finish_active(&mut self) -> Option<VariantFact>;
     fn begin_trial(&mut self, trial: TrialId, exploration: Option<ExplorationFact>);
     fn candidate_offset_micros(&self) -> Option<i64>;
-    fn buffer_sampler(&self) -> fn() -> Option<i64>;
-    fn remaining_playback_sampler(&self) -> fn() -> i64;
-    fn user_sequence_sampler(&self) -> fn() -> u64;
+    fn buffer_sampler(&self) -> AddressedSampler<Option<i64>>;
+    fn remaining_playback_sampler(&self) -> AddressedSampler<i64>;
+    fn user_sequence_sampler(&self) -> AddressedSampler<u64>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -410,7 +411,7 @@ pub trait OriginalSession: Send {
     fn source_kbps(&self) -> u32;
     fn begin_on_worker(&mut self);
     fn seek(&mut self, bytes: u64, active_us: u64) -> bool;
-    fn observe(&mut self, quantum: OriginalQuantum, position_ns: &dyn Fn() -> i64)
+    fn observe(&mut self, quantum: OriginalQuantum, position_ns: &dyn Fn() -> Option<i64>)
         -> OriginalProgress;
 }
 

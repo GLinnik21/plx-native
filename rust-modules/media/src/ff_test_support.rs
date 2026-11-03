@@ -20,6 +20,16 @@ impl DemuxObserver for FixtureDemuxObserver {
         let (at, elapsed) = crate::player::TX.pause_clock_sample();
         Some(plx_playback_contract::demux::PauseClock { at, elapsed })
     }
+    fn hls_buffer_ms(&self) -> Option<Option<i64>> {
+        Some(hls_buffer_snapshot_with_playhead(None).0)
+    }
+    fn remaining_playback_ms(&self) -> Option<i64> {
+        let duration = SHARED.duration_ns.load(Ordering::Relaxed);
+        Some(if duration <= 0 { 0 } else {
+            (duration - SHARED.playpos_ns.load(Ordering::Relaxed).max(0)).max(0) / 1_000_000
+        })
+    }
+    fn user_sequence(&self) -> Option<u64> { Some(SHARED.hls_user_sequence()) }
     fn publish(&self, effect: DemuxCallbackEffect) -> bool {
         match effect {
             DemuxCallbackEffect::NetworkBytes(bytes) => {

@@ -4,7 +4,7 @@
 
 use super::{HlsAutomaticTransition, HlsClockFenceError, UserPauseCursor, SHARED, TX};
 use plx_playback_contract::adaptive::{AutomaticTransition, BufferFact, FenceHandle, FenceSettlement, LeaseHandle, PhysicalFailure};
-use plx_playback_contract::demux::{DemuxAdaptive, DemuxCallbackEffect, DemuxClock, DemuxEffect, DemuxFault, DemuxMedia, DemuxObserver, DemuxSession, PauseClock, PauseEvent, PauseLane};
+use plx_playback_contract::demux::{AddressedSampler, DemuxAdaptive, DemuxCallbackEffect, DemuxClock, DemuxEffect, DemuxFault, DemuxMedia, DemuxObserver, DemuxSession, PauseClock, PauseEvent, PauseLane};
 use plx_playback_contract::AttemptId;
 use plx_telemetry::telemetry::classes::DemuxExitClass;
 use std::sync::Arc;
@@ -69,6 +69,15 @@ impl DemuxObserver for PlayerDemuxObserver {
             let (at, elapsed) = TX.pause_clock_sample();
             PauseClock { at, elapsed }
         })
+    }
+    fn hls_buffer_ms(&self) -> Option<Option<i64>> {
+        SHARED.with_active_demux_epoch(self.native_epoch, hls_buffered_ms)
+    }
+    fn remaining_playback_ms(&self) -> Option<i64> {
+        SHARED.with_active_demux_epoch(self.native_epoch, remaining_playback_ms)
+    }
+    fn user_sequence(&self) -> Option<u64> {
+        SHARED.with_active_demux_epoch(self.native_epoch, || SHARED.hls_user_sequence())
     }
     fn publish(&self, effect: DemuxCallbackEffect) -> bool {
         SHARED.with_active_demux_epoch(self.native_epoch, || match effect {
@@ -139,12 +148,22 @@ impl DemuxClock for PlayerDemuxSession {
     fn side_subtitle_owner(&self) -> bool {
         SHARED.side_subs_owner.load(Ordering::Acquire)
     }
-    fn playpos_sampler(&self) -> fn() -> i64 {
-        || SHARED.playpos_ns.load(Ordering::Relaxed).max(0)
+    fn playpos_sampler(&self) -> AddressedSampler<i64> {
+        let observer = self.observer.clone();
+        Arc::new(move || observer.playpos_ns().map(|ns| ns.max(0)))
     }
-    fn hls_buffer_sampler(&self) -> fn() -> Option<i64> { hls_buffered_ms }
-    fn remaining_playback_sampler(&self) -> fn() -> i64 { remaining_playback_ms }
-    fn user_sequence_sampler(&self) -> fn() -> u64 { || SHARED.hls_user_sequence() }
+    fn hls_buffer_sampler(&self) -> AddressedSampler<Option<i64>> {
+        let observer = self.observer.clone();
+        Arc::new(move || observer.hls_buffer_ms())
+    }
+    fn remaining_playback_sampler(&self) -> AddressedSampler<i64> {
+        let observer = self.observer.clone();
+        Arc::new(move || observer.remaining_playback_ms())
+    }
+    fn user_sequence_sampler(&self) -> AddressedSampler<u64> {
+        let observer = self.observer.clone();
+        Arc::new(move || observer.user_sequence())
+    }
 }
 
 fn hls_buffered_ms() -> Option<i64> {
@@ -398,6 +417,37 @@ mod tests {
             .expect("successor still owns clock");
         assert!(matches!(first.adaptive().arm_candidate(current.token()), Err(PhysicalFailure::Aborted)));
         drop(current);
+    }
+
+    #[test]
+    fn retained_clock_samplers_do_not_read_successor() {
+        let _serial = plx_base::testlock::serial();
+        let _reset = ResetSession;
+        SHARED.reset_session();
+        let first_epoch = SHARED.begin_native_session().expect("first native epoch");
+        let first = PlayerDemuxSession::capture(AttemptId::new(7, 1), first_epoch);
+        SHARED.playpos_ns.store(11_000_000, Ordering::Release);
+        SHARED.duration_ns.store(100_000_000, Ordering::Release);
+        let position = first.clock().playpos_sampler();
+        let buffer = first.clock().hls_buffer_sampler();
+        let remaining = first.clock().remaining_playback_sampler();
+        let sequence = first.clock().user_sequence_sampler();
+        assert_eq!(position(), Some(11_000_000));
+        assert_eq!(remaining(), Some(89));
+        assert!(buffer().is_some());
+        assert!(sequence().is_some());
+
+        SHARED.reset_session();
+        let next_epoch = SHARED.begin_native_session().expect("successor native epoch");
+        let next = PlayerDemuxSession::capture(AttemptId::new(7, 2), next_epoch);
+        SHARED.playpos_ns.store(22_000_000, Ordering::Release);
+        SHARED.duration_ns.store(200_000_000, Ordering::Release);
+        assert_eq!(position(), None);
+        assert_eq!(buffer(), None);
+        assert_eq!(remaining(), None);
+        assert_eq!(sequence(), None);
+        assert_eq!(next.clock().playpos_sampler()(), Some(22_000_000));
+        assert_eq!(next.clock().remaining_playback_sampler()(), Some(178));
     }
 
     #[test]

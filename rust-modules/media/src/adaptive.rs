@@ -354,7 +354,7 @@ impl OriginalSession for ProgressiveOriginalSession {
     }
 
     fn observe(
-        &mut self, quantum: OriginalQuantum, position_ns: &dyn Fn() -> i64,
+        &mut self, quantum: OriginalQuantum, position_ns: &dyn Fn() -> Option<i64>,
     ) -> OriginalProgress {
         self.begin_on_worker();
         let watch = self.coordinator.as_mut()
@@ -394,8 +394,11 @@ impl OriginalSession for ProgressiveOriginalSession {
                 observation.unsafe_deficit_ms,
                 observation.target.map(|r| r.kbps()).unwrap_or(0),
             ));
+            let Some(position_ns) = position_ns() else {
+                return OriginalProgress::Retired;
+            };
             match watch.request_hls_fallback(
-                observation.conservative_kbps.max(1), position_ns(),
+                observation.conservative_kbps.max(1), position_ns,
             ) {
                 OriginalFallbackResult::Published => return OriginalProgress::Published,
                 OriginalFallbackResult::Busy => crate::player::log(
@@ -1281,19 +1284,22 @@ pub(crate) fn publish_original(
     control: &route::HlsAbrControl,
     ticket: &route::WorkerTicket,
     recover_kbps: u32,
-    position_ns: impl FnOnce() -> i64,
+    position_ns: impl FnOnce() -> Option<i64>,
     on_published: impl FnOnce(),
 ) -> OriginalPublication {
     if !authorized { return OriginalPublication::ClockMoved; }
-    inside_publication_gate(port, || match control.request_original_recovery(
-        ticket, recover_kbps, position_ns(),
-    ) {
-        route::AutomaticIntentResult::Accepted => {
-            on_published();
-            OriginalPublication::Published
+    inside_publication_gate(port, || {
+        let Some(position_ns) = position_ns() else {
+            return OriginalPublication::RouteMoved;
+        };
+        match control.request_original_recovery(ticket, recover_kbps, position_ns) {
+            route::AutomaticIntentResult::Accepted => {
+                on_published();
+                OriginalPublication::Published
+            }
+            route::AutomaticIntentResult::Busy => OriginalPublication::Busy,
+            route::AutomaticIntentResult::Stale => OriginalPublication::RouteMoved,
         }
-        route::AutomaticIntentResult::Busy => OriginalPublication::Busy,
-        route::AutomaticIntentResult::Stale => OriginalPublication::RouteMoved,
     }).unwrap_or(OriginalPublication::Aborted)
 }
 
@@ -1356,7 +1362,7 @@ pub(crate) struct RoundDecision {
 /// `min_buf_ms` computed from `abr: sample` cannot see the transaction's cost at all; that is a
 /// property of where the samples are taken, not evidence that the cost is small.
 pub(crate) struct TxTrace {
-    buffered_ms: fn() -> Option<i64>,
+    buffered_ms: plx_playback_contract::demux::AddressedSampler<Option<i64>>,
     record: fn(&str),
     started: std::time::Instant,
     /// The control plane is THREE requests, not one near-zero-byte transfer: PMS session
@@ -1424,7 +1430,7 @@ impl TxTrace {
         from: abr::Rung,
         sample: abr::SegmentSample,
         delivery: &abr::CapacityEstimate,
-        buffered_ms: fn() -> Option<i64>, record: fn(&str),
+        buffered_ms: plx_playback_contract::demux::AddressedSampler<Option<i64>>, record: fn(&str),
     ) -> Self {
         Self {
             started: std::time::Instant::now(),
@@ -1437,7 +1443,7 @@ impl TxTrace {
             warmup_dl_ms: None,
             // The injected physical sampler reads only what has actually been FED;
             // staged candidate tails cannot credit the reserve before publication.
-            buf_start_ms: buffered_ms(),
+            buf_start_ms: buffered_ms().flatten(),
             cur_acq_before_ms: i64::from(sample.production_ratio_pm())
                 * i64::from(sample.media_duration_ms())
                 / 1_000,
@@ -1489,7 +1495,7 @@ impl TxTrace {
     pub(crate) fn mark_feed(&mut self, started: std::time::Instant) {
         let elapsed = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
         self.feed_ms = Some(self.feed_ms.unwrap_or(0).saturating_add(elapsed));
-        self.buf_fed_ms = (self.buffered_ms)();
+        self.buf_fed_ms = (self.buffered_ms)().flatten();
     }
 
     /// Acquisition of one candidate media segment, measured the same way production measures the
@@ -1520,7 +1526,7 @@ impl TxTrace {
     pub(crate) fn mark_decided(&mut self) {
         if self.decided_ms.is_none() {
             self.decided_ms = Some(self.elapsed_ms());
-            self.buf_decided_ms = (self.buffered_ms)();
+            self.buf_decided_ms = (self.buffered_ms)().flatten();
         }
     }
 
@@ -1574,7 +1580,7 @@ impl Drop for TxTrace {
             opt(self.buf_decided_ms),
             opt(self.feed_ms),
             opt(self.buf_fed_ms),
-            opt((self.buffered_ms)()),
+            opt((self.buffered_ms)().flatten()),
             self.cur_acq_before_ms,
             self.net_kbps,
             self.fast_kbps,
@@ -1862,8 +1868,8 @@ fn active_step<P: ActiveFeedPort + ?Sized>(
 /// lookup, and both accepted-pause samples precede the policy decision.
 pub(crate) fn run_active_round<P: ActiveFeedPort + ?Sized>(
     coordinator: &mut Coordinator, port: &mut P, round: RoundId,
-    now_ms: impl Fn() -> u64, remaining_ms: impl Fn() -> i64,
-    user_sequence: impl Fn() -> u64, session_boundary_pending: &mut bool,
+    now_ms: impl Fn() -> u64, remaining_ms: impl Fn() -> Option<i64>,
+    user_sequence: impl Fn() -> Option<u64>, session_boundary_pending: &mut bool,
     diagnostics: &mut impl ActiveDiagnostics,
 ) -> Result<ActiveRun, ActiveRunError<P::Error>> {
     let read = active_step(port, round, ActiveAction::Read {
@@ -1918,9 +1924,13 @@ pub(crate) fn run_active_round<P: ActiveFeedPort + ?Sized>(
         coordinator.on_resume(elapsed_ms);
         diagnostics.accepted_pause(true, after.1, elapsed_ms);
     }
-    let expected_user_sequence = user_sequence();
+    let Some(expected_user_sequence) = user_sequence() else {
+        return Err(ActiveRunError::Protocol("adaptive active session retired"));
+    };
     diagnostics.sample(SampleReadout::from_sample(active.sample()));
-    let remaining_ms = remaining_ms();
+    let Some(remaining_ms) = remaining_ms() else {
+        return Err(ActiveRunError::Protocol("adaptive active session retired"));
+    };
     let boundary = *session_boundary_pending && delivered && active.sample().completed();
     if boundary {
         *session_boundary_pending = false;
@@ -3113,7 +3123,7 @@ impl Coordinator {
     }
     pub(crate) fn publish_original(
         &self, port: &mut dyn PublicationGate, authorized: bool,
-        kbps: u32, position_ns: impl FnOnce() -> i64,
+        kbps: u32, position_ns: impl FnOnce() -> Option<i64>,
         on_published: impl FnOnce(),
     ) -> OriginalPublication {
         publish_original(port, authorized, &self.control, &self.ticket,
@@ -3123,7 +3133,7 @@ impl Coordinator {
     pub(crate) fn publish_probed_original(
         &mut self, port: &mut dyn PublicationGate, authorized: bool,
         kbps: u32, measured_kbps: u32,
-        position_ns: impl FnOnce() -> i64, on_published: impl FnOnce(),
+        position_ns: impl FnOnce() -> Option<i64>, on_published: impl FnOnce(),
     ) -> OriginalPublication {
         let publication = self.publish_original(
             port, authorized, kbps, position_ns, on_published,

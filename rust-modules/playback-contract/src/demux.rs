@@ -31,8 +31,14 @@ pub trait DemuxObserver: Send + Sync {
     fn rebuffering(&self) -> Option<bool>;
     fn paused(&self) -> Option<bool>;
     fn pause_clock(&self) -> Option<PauseClock>;
+    fn hls_buffer_ms(&self) -> Option<Option<i64>>;
+    fn remaining_playback_ms(&self) -> Option<i64>;
+    fn user_sequence(&self) -> Option<u64>;
     fn publish(&self, effect: DemuxCallbackEffect) -> bool;
 }
+
+/// A late read bound to the worker's captured native epoch. `None` retires the read.
+pub type AddressedSampler<T> = Arc<dyn Fn() -> Option<T> + Send + Sync>;
 
 /// Only callback-safe atomics. Neither logs, queue operations nor native
 /// calls run while the native epoch retirement barrier is held.
@@ -66,10 +72,10 @@ pub trait DemuxClock {
     fn desired_audio_idx(&self) -> i32;
     fn applied_rate_permille(&self) -> i32;
     fn side_subtitle_owner(&self) -> bool;
-    fn playpos_sampler(&self) -> fn() -> i64;
-    fn hls_buffer_sampler(&self) -> fn() -> Option<i64>;
-    fn remaining_playback_sampler(&self) -> fn() -> i64;
-    fn user_sequence_sampler(&self) -> fn() -> u64;
+    fn playpos_sampler(&self) -> AddressedSampler<i64>;
+    fn hls_buffer_sampler(&self) -> AddressedSampler<Option<i64>>;
+    fn remaining_playback_sampler(&self) -> AddressedSampler<i64>;
+    fn user_sequence_sampler(&self) -> AddressedSampler<u64>;
 }
 
 /// A move-only physical lease is returned with its exact Drop action. The
