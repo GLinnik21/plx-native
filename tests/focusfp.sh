@@ -74,7 +74,7 @@ if [ -n "$REPLAY" ]; then
 elif [ -z "$PMS" ]; then
   python3 "$ROOT/tests/mock_pms.py" --port "$PORT" --seed "$SEED" > "$OUT/mock_pms.log" 2>&1 &
   MOCK_PID=$!
-  for _ in $(seq 1 30); do
+  for _ in $(seq 1 $((BOOT_WAIT * 5))); do
     grep -q 'serving' "$OUT/mock_pms.log" 2>/dev/null && break
     sleep 0.2
   done
