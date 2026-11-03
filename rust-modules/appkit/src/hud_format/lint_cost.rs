@@ -30,7 +30,7 @@
 //! aim) at the 99th percentile of -4.0 to -9.8 ms (`docs/hud-plugins.md`, "The ceilings (PR19)", has them). What makes the
 //! compositor late is not determined; it is not specific to a HUD state. Every constant says which state and language it came from, and
 //! `the_ceilings_are_the_maximum_over_every_state_of_classic_and_the_reference_in_every_language` recomputes
-//! all twelve from `classic.plxhud.json` and `reference.plxhud.json` over all eleven languages, every state and
+//! all twelve from `classic.plxhud` and `reference.plxhud` over all eleven languages, every state and
 //! slot (330 rows), and asserts each is attained by the pair the constant names, so a layout change that moves
 //! one fails until someone re-measures.
 //!
@@ -405,15 +405,15 @@ mod tests {
     use super::*;
     use crate::hud_format::compile::{compile, CompileCtx, Compiled, DrawOp, OPEN_CHAPTERS, OPEN_INFO};
     use crate::hud_format::lint::LintLang;
-    use crate::hud_format::{parse, Finding};
+    use crate::hud_format::Finding;
     use crate::hud_format::reach::Slot;
 
-    const CLASSIC: &str = include_str!("fixtures/classic.plxhud.json");
-    const REFERENCE: &str = include_str!("fixtures/reference.plxhud.json");
+    const CLASSIC: &str = include_str!("fixtures/classic/hud.json");
+    const REFERENCE: &str = include_str!("fixtures/reference/hud.json");
 
     /// `text` compiled the way the television compiles it in the language `lang`: the television's advances.
     fn compile_in(text: &str, lang: &LintLang) -> Compiled {
-        let package = parse::parse(text.as_bytes()).package.expect("a package");
+        let package = crate::hud_format::fixtures::parse(text.as_bytes()).package.expect("a package");
         compile(&package, &ShippedMeasure, CompileCtx { labels: lang.labels.clone() })
     }
 
@@ -821,11 +821,11 @@ mod tests {
     #[test]
     fn the_fixtures_every_state_of_which_fits_its_class_have_no_finding() {
         for (name, text) in [
-            ("minimal", include_str!("fixtures/minimal.plxhud.json")),
-            ("hero-center", include_str!("fixtures/hero-center.plxhud.json")),
-            ("palette", include_str!("fixtures/palette.plxhud.json")),
-            ("tabs", include_str!("fixtures/tabs.plxhud.json")),
-            ("rising-tabs", include_str!("fixtures/rising-tabs.plxhud.json")),
+            ("minimal", include_str!("fixtures/minimal/hud.json")),
+            ("hero-center", include_str!("fixtures/hero-center/hud.json")),
+            ("palette", include_str!("fixtures/palette/hud.json")),
+            ("tabs", include_str!("fixtures/tabs/hud.json")),
+            ("rising-tabs", include_str!("fixtures/rising-tabs/hud.json")),
         ] {
             let found = e1401(text, &[]);
             assert!(found.is_empty(), "{name}: {:?}", found.iter().map(|f| &f.message).collect::<Vec<_>>());

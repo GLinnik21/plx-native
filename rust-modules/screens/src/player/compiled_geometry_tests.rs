@@ -18,7 +18,7 @@ use super::*;
 use crate::player::overlay_tests::TestHost;
 use plx_appkit::hud_format::compile::{Compiled, SkipKind};
 use plx_appkit::hud_format::reach::Slot;
-use plx_appkit::hud_format::CLASSIC_PACKAGE;
+use plx_appkit::hud_format::{fixtures, CLASSIC_HUD, CLASSIC_PACKAGE};
 use plx_appkit::player_hud::loaded::load;
 use plx_machine::machine::{InputOwner, Tick};
 use plx_ui::fixture::FixtureMeasure;
@@ -43,11 +43,11 @@ fn moved() -> Arc<Compiled> {
         assert!(text.matches(from).count() == 1, "the fixture has exactly one `{from}`");
         text.replace(from, to)
     };
-    let text = edit(CLASSIC_PACKAGE.to_owned(), r#""id": "bar", "when": "!sections", "chrome": "steady", "gap_before": 26"#, r#""id": "bar", "when": "!sections", "chrome": "steady", "gap_before": 90"#);
+    let text = edit(CLASSIC_HUD.to_owned(), r#""id": "bar", "when": "!sections", "chrome": "steady", "gap_before": 26"#, r#""id": "bar", "when": "!sections", "chrome": "steady", "gap_before": 90"#);
     let text = edit(text, r#""x_inset": 0"#, r#""x_inset": 100"#);
     let more = r#"{ "id": "more", "command": "open_more", "widget": "disc", "size": 64, "rest": "film", "focus": "accent" }"#;
     let text = edit(text, more, &format!(r#"{more}, {}"#, more.replace(r#""id": "more""#, r#""id": "extra""#)));
-    load(text.as_bytes(), "test", plx_platform::i18n::english(), &FixtureMeasure).expect("the edited package loads").compiled
+    load(&fixtures::with_hud("classic", &text), "test", plx_platform::i18n::english(), &FixtureMeasure).expect("the edited package loads").compiled
 }
 
 /// The state the default page (`Discs`, no chapters, not paused) is in, as the compile reports it.
@@ -165,7 +165,7 @@ fn a_package_with_no_state_for_the_frame_answers_the_empty_report() {
 
 /// `builtin:classic`, the package the app hands the page today.
 fn classic() -> Arc<Compiled> {
-    load(CLASSIC_PACKAGE.as_bytes(), "test", plx_platform::i18n::english(), &FixtureMeasure).expect("classic loads").compiled
+    load(CLASSIC_PACKAGE, "test", plx_platform::i18n::english(), &FixtureMeasure).expect("classic loads").compiled
 }
 
 /// The three openers (the Subtitles, Audio and `…` discs) and the failure read-out's quality entry, which
@@ -228,8 +228,7 @@ fn the_menu_anchor_is_the_compiled_openers_and_follows_the_held_control() {
 // ---------------------------------------------------------------------------------------------------
 
 fn reference() -> Arc<Compiled> {
-    let text = include_str!("../../../appkit/src/hud_format/fixtures/reference.plxhud.json");
-    load(text.as_bytes(), "test", plx_platform::i18n::english(), &FixtureMeasure).expect("the reference loads").compiled
+    load(include_bytes!("../../../appkit/src/hud_format/fixtures/reference.plxhud"), "test", plx_platform::i18n::english(), &FixtureMeasure).expect("the reference loads").compiled
 }
 
 /// The row's stable index of the control `id` in the reference's movie form.
@@ -307,7 +306,7 @@ fn the_row_parks_on_the_primary_control_of_the_package() {
 fn a_failed_playback_seeds_no_folded_rows_into_more() {
     let _g = plx_base::testlock::serial();
     let minimal = load(
-        include_str!("../../../appkit/src/hud_format/fixtures/minimal.plxhud.json").as_bytes(),
+        include_bytes!("../../../appkit/src/hud_format/fixtures/minimal.plxhud"),
         "test",
         plx_platform::i18n::english(),
         &FixtureMeasure,

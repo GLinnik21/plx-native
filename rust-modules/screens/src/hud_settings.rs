@@ -348,7 +348,6 @@ impl HudPage {
             Some(Notice::NotWritten { .. }) => 3,
             Some(Notice::Removed { .. }) => 4,
             Some(Notice::RemoveIncomplete { .. }) => 5,
-            Some(Notice::ReplacedUnreadable { .. }) => 6,
             Some(Notice::FetchFailed { .. }) => 7,
         };
         self.state.selected = self.form.key_at(self.form.table.sel.max(0) as usize).map_or(0, |k| k.0);

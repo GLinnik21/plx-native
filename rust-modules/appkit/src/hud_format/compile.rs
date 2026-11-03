@@ -867,7 +867,7 @@ pub struct Compiled {
     folds: Vec<Fold>,
     findings: Vec<CompileFinding>,
     /// `(id, svg source)`: the package's declared assets, which a [`FaceRef::Asset`] and a [`DrawOp::Icon`] name
-    assets: Vec<(String, String)>,
+    assets: Vec<(String, std::sync::Arc<str>)>,
 }
 
 /// Which dimensions of a compile the package names.
@@ -960,7 +960,7 @@ impl Compiled {
     /// keys no number or gap on a strip card's `item.*` term.
     /// The SVG source of the asset `id` the package declares.
     pub fn asset(&self, id: &str) -> Option<&str> {
-        self.assets.iter().find(|(name, _)| name == id).map(|(_, svg)| svg.as_str())
+        self.assets.iter().find(|(name, _)| name == id).map(|(_, svg)| svg.as_ref())
     }
 
     /// The asset `id` as a glyph the shared icon cache can draw, keyed by its source.
@@ -2541,9 +2541,9 @@ mod content_axis_tests {
 
     #[test]
     fn loader_totality_rejects_a_missing_off_diagonal_state() {
-        let text = include_str!("fixtures/reference.plxhud.json").replace(r#"{ "id": "title", "cells": ["#,
+        let text = include_str!("fixtures/reference/hud.json").replace(r#"{ "id": "title", "cells": ["#,
             r#"{ "id": "title", "when": "title.is_episode", "cells": ["#);
-        let package = super::super::parse::parse(text.as_bytes()).package.unwrap();
+        let package = crate::hud_format::fixtures::parse(text.as_bytes()).package.unwrap();
         let mut compiled = compile(&package, &plx_ui::fixture::FixtureMeasure,
             CompileCtx { labels: AppLabels::in_language(plx_platform::i18n::english()) });
         assert!(crate::player_hud::loaded::answers_every_frame(&compiled));

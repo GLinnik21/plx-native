@@ -298,7 +298,7 @@ fn a_folded_row_closes_more_first_and_asks_the_one_performer() {
     let ps = plx_media::route::PlaybackSession::IDLE;
     let meta = plx_data::stores::metadata::MetadataStore::default();
     let minimal = plx_appkit::player_hud::loaded::load(
-        include_str!("../../../appkit/src/hud_format/fixtures/minimal.plxhud.json").as_bytes(),
+        &plx_appkit::hud_format::fixtures::bytes("minimal"),
         "0.0.0-test",
         plx_platform::i18n::english(),
         &FixtureMeasure,

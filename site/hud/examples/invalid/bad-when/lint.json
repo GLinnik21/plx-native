@@ -1,0 +1,22 @@
+{
+  "costs": [],
+  "file": "examples/invalid/bad-when",
+  "findings": [
+    {
+      "code": "HUD-E0501",
+      "file": "hud.json",
+      "hint": "write one of: panel.chapters, panel.info, sections, chapters.present, title.is_episode, transport.paused, slot.discs, slot.up_next, slot.skip",
+      "message": "`panel.infos` is not a known condition",
+      "nearest": [
+        "panel.info",
+        "panel.chapters",
+        "sections"
+      ],
+      "path": "/layout/block/1/when",
+      "rule": "condition-known",
+      "severity": "error"
+    }
+  ],
+  "package_sha256": "8eeaa540f242a23575cf4d7c5d0d437e11b0ad1b315eba29845eee07bfda7ea6",
+  "protocol": 1
+}

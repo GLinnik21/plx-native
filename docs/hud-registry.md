@@ -6,7 +6,8 @@ the registry's `IMPLEMENTATION.md`; this document describes the app-side interfa
 
 `hud-simulator.yml` builds an optimized `plxnative-sim` with the existing `site-video-sim`
 target and the repository's host FFmpeg. `tools/hud_bundle.py` packages explicit tracked fonts,
-licenses, native dependencies, schema, fixture corpus, synthetic mock and capture tools. The
+licenses, native dependencies, both document schemas, an indexed source/archive fixture corpus,
+synthetic mock and capture tools. The
 archive and its manifest have SHA-256 pins, the full source commit and the reported app version.
 An unreleased build reports `-dev` and is explicitly marked development. A manual CI run with
 `publish_development=true` publishes a prerelease utility under `hud-simulator-<full source SHA>`
@@ -15,8 +16,12 @@ attaches its own simulator once; uploads do not overwrite existing assets. The L
 needs Ubuntu 24.04-compatible glibc, the system Mesa driver, Xvfb and ffmpeg/Pillow for previews.
 It relocates independently of the source/build checkout. No real Plex configuration is included.
 
-Headless commands are `--hud-info`, `--hud-text-metrics`, `--hud-inspect FILE`, `--hud-schema`,
-`--hud-export builtin:classic`, and `--hud-lint FILE --format json --lang all`. Inspection expands
+Headless commands are `--hud-info`, `--hud-text-metrics`, `--hud-inspect FILE_OR_DIRECTORY`,
+`--hud-schema manifest|hud --version 1.0`, `--hud-export builtin:classic --out FILE`,
+`--hud-pack DIRECTORY --out FILE`, and `--hud-lint FILE_OR_DIRECTORY --format json --lang all`.
+The native packer freezes manifest.json, hud.json and declared resource/notice files into a
+canonical `.plxhud` archive. Preview tools pack a directory once, then use the same archive bytes
+and complete SHA-256 for inspection and every capture. Inspection expands
 the compiler's collapsed states through its actual lookup into content, transport and section
 valuations, with native control and scrub hit rectangles. Preview tools click those hit areas
 through the shared frame writer's input queue. `tools/screenshots.py` owns the mock, runtime,

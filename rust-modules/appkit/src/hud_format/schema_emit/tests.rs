@@ -9,8 +9,7 @@ use std::collections::BTreeSet;
 
 use plx_ui::rec::strict_json::Value;
 
-use super::{emit, emit_current, emit_text, schema_id, SCHEMA_DRAFT};
-use crate::hud_format::parse;
+use super::{emit_manifest, emit, emit_current, emit_text, schema_id, SCHEMA_DRAFT};
 use crate::hud_format::schema::{self, Cmd, Field, Node, NodeKind, Pattern, Ty};
 use crate::hud_format::schema_check::{
     accepts, assert_only_listed_keywords, check, is_prefix, regex_matches,
@@ -18,12 +17,12 @@ use crate::hud_format::schema_check::{
 use crate::hud_format::tests::{corpus, valid};
 use crate::hud_format::{codes, Finding};
 
-const REFERENCE: &str = include_str!("../fixtures/reference.plxhud.json");
-const MINIMAL: &str = include_str!("../fixtures/minimal.plxhud.json");
-const CLASSIC: &str = crate::hud_format::CLASSIC_PACKAGE;
-const HERO_CENTER: &str = include_str!("../fixtures/hero-center.plxhud.json");
-const TABS: &str = include_str!("../fixtures/tabs.plxhud.json");
-const PALETTE: &str = include_str!("../fixtures/palette.plxhud.json");
+const REFERENCE: &str = include_str!("../fixtures/reference/hud.json");
+const MINIMAL: &str = include_str!("../fixtures/minimal/hud.json");
+const CLASSIC: &str = crate::hud_format::CLASSIC_HUD;
+const HERO_CENTER: &str = include_str!("../fixtures/hero-center/hud.json");
+const TABS: &str = include_str!("../fixtures/tabs/hud.json");
+const PALETTE: &str = include_str!("../fixtures/palette/hud.json");
 
 fn json(text: &str) -> Value {
     text.parse()
@@ -131,14 +130,14 @@ fn the_schema_names_its_draft_and_its_published_address() {
         "https://json-schema.org/draft/2020-12/schema"
     );
     assert_eq!(root["$schema"], SCHEMA_DRAFT);
-    assert_eq!(root["$id"], "https://plxnative.com/hud/schema/1.0.json");
+    assert_eq!(root["$id"], "https://plxnative.com/hud/schema/hud/1.0.json");
     assert_eq!(
         schema_id((1, 0)),
-        "https://plxnative.com/hud/schema/1.0.json"
+        "https://plxnative.com/hud/schema/hud/1.0.json"
     );
     assert_eq!(
         schema_id((2, 13)),
-        "https://plxnative.com/hud/schema/2.13.json"
+        "https://plxnative.com/hud/schema/hud/2.13.json"
     );
     assert_eq!(root["type"], "object");
 }
@@ -162,7 +161,7 @@ fn an_earlier_format_leaves_out_what_arrived_after_it() {
     // Nothing of the table is older than 1.0, so format 0.9 holds none of it: the proof that `since` filters.
     let old = emit((0, 9));
     assert!(keys(&old["properties"]).is_empty());
-    assert_eq!(old["$id"], "https://plxnative.com/hud/schema/0.9.json");
+    assert_eq!(old["$id"], "https://plxnative.com/hud/schema/hud/0.9.json");
     assert!(strs(&old["$defs"]["when"]["oneOf"][0]["enum"]).is_empty());
     assert!(old["$defs"]["item"]["oneOf"].as_array().unwrap().is_empty());
     assert_only_listed_keywords(&old);
@@ -195,7 +194,9 @@ fn the_defs_are_the_nodes_of_the_table_and_the_shared_vocabularies() {
     let root = emit_current();
     let defs = keys(&root["$defs"]);
     for node in schema::all_nodes() {
-        if node.name != schema::ROOT.name {
+        let manifest = emit_manifest(schema::CURRENT);
+        let defs = if matches!(node.name, "hud_entry" | "app") { keys(&manifest["$defs"]) } else { defs.clone() };
+        if !matches!(node.name, "hud" | "manifest") {
             assert!(
                 defs.contains(node.name),
                 "no definition of node `{}`",
@@ -308,9 +309,9 @@ fn expect_ty(root: &Value, ty: &Ty, cmd: Option<&Cmd>, got: &Value, what: &str) 
                 "{what}"
             );
         }
-        Ty::Assets => {
+        Ty::Resources => {
             assert_eq!(s["type"], "object", "{what}");
-            assert_eq!(s["additionalProperties"]["type"], "string", "{what}");
+            assert_eq!(s["additionalProperties"]["pattern"], Pattern::PackagePath.regex(), "{what}");
         }
         Ty::Command => {
             let commands: Vec<String> =
@@ -412,7 +413,7 @@ fn expect_field(root: &Value, field: &Field, cmd: Option<&Cmd>, got: &Value, wha
 }
 
 fn node_def<'a>(root: &'a Value, node: &Node) -> &'a Value {
-    if node.name == schema::ROOT.name {
+    if matches!(node.name, "hud" | "manifest") {
         root
     } else {
         &root["$defs"][node.name]
@@ -427,6 +428,7 @@ fn every_key_of_every_plain_node_is_in_the_schema_with_its_type_range_default_an
         if matches!(node.kind, NodeKind::CommandDispatched) {
             continue;
         }
+        let root = if matches!(node.name, "manifest" | "hud_entry" | "app") { emit_manifest(schema::CURRENT) } else { root.clone() };
         let def = node_def(&root, node);
         let at = format!("node `{}`", node.name);
         assert_eq!(def["type"], "object", "{at}");
@@ -644,7 +646,7 @@ fn a_keyed_value_is_admitted_exactly_where_the_table_says_it_is_keyable() {
 // ---------------------------------------------------------------------------------------------------
 
 fn parsed(text: &str) -> Vec<Finding> {
-    parse::parse(text.as_bytes()).findings
+    super::super::tests::document_findings(text.as_bytes())
 }
 
 /// The JSON text of a string, escaped.
@@ -722,7 +724,7 @@ fn every_pattern_regex_gives_the_parsers_answer() {
         |s| {
             !refused_at(
                 &parsed(&edit(
-                    MINIMAL,
+                    include_str!("../fixtures/minimal/manifest.json"),
                     r#""id": "com.plxnative.examples.minimal""#,
                     &format!("\"id\": {}", quoted(s)),
                 )),
@@ -753,7 +755,7 @@ fn every_pattern_regex_gives_the_parsers_answer() {
         |s| {
             !refused_at(
                 &parsed(&edit(
-                    MINIMAL,
+                    include_str!("../fixtures/minimal/manifest.json"),
                     r#""version": "1.0.0""#,
                     &format!("\"version\": {}", quoted(s)),
                 )),
@@ -772,12 +774,12 @@ fn every_pattern_regex_gives_the_parsers_answer() {
         |s| {
             !refused_at(
                 &parsed(&edit(
-                    MINIMAL,
+                    include_str!("../fixtures/minimal/manifest.json"),
                     r#""format": "1.0""#,
                     &format!("\"format\": {}", quoted(s)),
                 )),
                 "HUD-E0401",
-                "/format",
+                "/hud/format",
             )
         },
     );
@@ -785,7 +787,7 @@ fn every_pattern_regex_gives_the_parsers_answer() {
         "schema URL",
         Pattern::SchemaUrl.regex(),
         &[
-            "https://plxnative.com/hud/schema/1.0.json",
+            "https://plxnative.com/hud/schema/hud/1.0.json",
             "https://",
             "http://x",
             "https:/x",
@@ -800,8 +802,8 @@ fn every_pattern_regex_gives_the_parsers_answer() {
             !refused_at(
                 &parsed(&edit(
                     MINIMAL,
-                    r#""format": "1.0","#,
-                    &format!("\"format\": \"1.0\", \"$schema\": {},", quoted(s)),
+                    r#""layout": {"#,
+                    &format!(r#""$schema": {}, "layout": {{"#, quoted(s)),
                 )),
                 "HUD-E0105",
                 "/$schema",
@@ -844,9 +846,9 @@ fn every_pattern_regex_gives_the_parsers_answer() {
 fn palette_package(name: &str, value: &str) -> String {
     edit(
         MINIMAL,
-        r#""license": "CC0-1.0","#,
+        r#""layout": {"#,
         &format!(
-            r#""license": "CC0-1.0", "palette": {{ {}: {} }},"#,
+            r#""palette": {{ {}: {} }}, "layout": {{"#,
             quoted(name),
             quoted(value)
         ),
@@ -968,6 +970,7 @@ fn the_schema_accepts_every_valid_package_of_the_corpus() {
     assert!(texts.len() > 25, "{}", texts.len());
     for (label, text) in &texts {
         assert!(is_json_object(text), "{label}");
+        let root = if text.contains("\"hud\":") { emit_manifest(schema::CURRENT) } else { root.clone() };
         let found = check(&root, &json(text));
         assert!(
             found.is_empty(),
@@ -1056,13 +1059,14 @@ fn every_invalid_row_the_schema_rejects_is_rejected_where_the_parser_agrees() {
             continue;
         };
         checked += 1;
-        let parser = parse::parse(&row.bytes).findings;
+        let parser = super::super::tests::document_findings(&row.bytes);
+        let root = if text.contains("\"hud\":") { emit_manifest(schema::CURRENT) } else { root.clone() };
         let failures = check(&root, &instance);
         // The version gate answers alone, before any key is judged, so the parser says nothing else about a
         // package of another format; the schema, which has no gate, still reads the rest.
         let gated = parser
             .iter()
-            .all(|f| f.pointer == "/format" && f.code.starts_with("HUD-E04"));
+            .all(|f| f.pointer == "/hud/format" && f.code.starts_with("HUD-E04"));
         for failure in failures.iter().filter(|_| !gated) {
             assert!(
                 parser.iter().any(|f| is_prefix(&failure.pointer, &f.pointer)),
