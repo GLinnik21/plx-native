@@ -230,6 +230,10 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
         sample: Option<abr::SegmentSample>,
     ) -> FirstCandidateAction {
         let grade = coordinator.first_candidate_grade(proposal, current, candidate, sample);
+        self.after_first_grade(grade)
+    }
+
+    fn after_first_grade(&mut self, grade: FirstCandidateGrade) -> FirstCandidateAction {
         if !grade.needs_followup {
             return FirstCandidateAction::Finalize { verdict: grade.verdict };
         }
@@ -1177,6 +1181,46 @@ mod trial_runner_tests {
         assert_eq!(protocol.phase(), TrialPhase::Ended);
         assert_eq!(protocol.observe(current, TrialObservation::Published),
             Err(TrialProtocolError::OutOfOrder));
+    }
+
+    #[test]
+    fn setup_bearing_followup_checks_the_original_reserve_once() {
+        struct ReservePort { reply: FeedObservation, checks: usize }
+        impl FeedPort for ReservePort {
+            type Locator = ();
+            fn bind_source(&mut self, _source: SourceKey, _locator: ()) {}
+            fn step(&mut self, action: FeedAction) -> FeedObservation {
+                assert!(matches!(action, FeedAction::CheckFollowupReserve { .. }));
+                self.checks += 1;
+                self.reply
+            }
+        }
+        let trial = TrialId::new(AttemptId::new(5, 11), 3);
+        let mut protocol = TrialProtocol::new(trial);
+        protocol.observe(trial, TrialObservation::Prepared).unwrap();
+        protocol.observe(trial, TrialObservation::FirstAcquired).unwrap();
+        let mut port = ReservePort {
+            reply: FeedObservation::FollowupReserve {
+                trial, funded: false, remaining_ms: Some(0),
+            },
+            checks: 0,
+        };
+        let mut runner = TrialRunner::new(&mut port, &mut protocol);
+        assert!(matches!(runner.after_first_grade(FirstCandidateGrade {
+            verdict: abr::CandidateVerdict::Ready, needs_followup: false,
+        }), FirstCandidateAction::Finalize { .. }));
+        assert_eq!(runner.physical().checks, 0);
+        assert!(matches!(runner.after_first_grade(FirstCandidateGrade {
+            verdict: abr::CandidateVerdict::SetupBearing, needs_followup: true,
+        }), FirstCandidateAction::Unfunded));
+        assert_eq!(runner.physical().checks, 1);
+        runner.physical().reply = FeedObservation::FollowupReserve {
+            trial, funded: true, remaining_ms: Some(750),
+        };
+        assert!(matches!(runner.after_first_grade(FirstCandidateGrade {
+            verdict: abr::CandidateVerdict::SetupBearing, needs_followup: true,
+        }), FirstCandidateAction::ReadFollowup { remaining_ms: Some(750), .. }));
+        assert_eq!(runner.physical().checks, 2);
     }
 }
 
