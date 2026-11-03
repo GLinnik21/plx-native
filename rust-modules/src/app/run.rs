@@ -1977,7 +1977,10 @@ fn pointer_on_bar(app: &App, x: f32, y: f32) -> bool {
 
 pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         park_on_decoder_release(app);
-        if playback_may_run(app) {
+        let foreground = playback_may_run(app);
+        let backend_at = app.adapters.player.backend_tick();
+        let _ = app.adapters.player.backend_set_foreground_at(foreground, backend_at);
+        if foreground {
             if is_started(&app.player.session) == Some(true) {
                 plx_media::player::pump(&mut app.player.session, &mut app.adapters.player, fr.now);
             }

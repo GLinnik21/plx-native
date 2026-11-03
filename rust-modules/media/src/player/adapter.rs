@@ -1,8 +1,8 @@
 //! **The Player ADAPTER** — the main-thread token and the owned backend resources it confines
 //! (restructure spec §2.2, phase 9).
 //!
-//! An adapter holds OS/FFI resources and never logical state; the decisions live one field away in
-//! [`crate::player::machine::Player`]. Buffer-feed ownership is grouped in [`FeedResources`]:
+//! The adapter owns the one backend attempt runner beside its OS/FFI resources; route and viewer
+//! decisions live one field away in [`crate::player::machine::Player`]. Buffer-feed ownership is grouped in [`FeedResources`]:
 //! the [`Engine`] slot, native Load receipts, abandoned Load and parked release. The adapter
 //! retains the [`MainThread`] token, periodic Plex reporter, release policy, and URI admission.
 //!
@@ -52,7 +52,12 @@ impl DriverSet for PhysicalDrivers<'_> {
 
     fn capabilities(&self, backend: BackendKind) -> Option<Capabilities> {
         match backend {
-            BackendKind::Feed => Some(self.feed_driver.capabilities()),
+            BackendKind::Feed => {
+                #[cfg(feature = "play-feed")]
+                { Some(self.feed_driver.capabilities()) }
+                #[cfg(not(feature = "play-feed"))]
+                { None }
+            }
             BackendKind::Uri => {
                 #[cfg(feature = "play-uri")]
                 { self.uri.as_ref().and_then(|driver| driver.capabilities(BackendKind::Uri)) }
@@ -269,8 +274,8 @@ impl PlayerAdapter {
         at: super::attempt_metrics::Tick) -> backend::RunResult {
         while let Some(action) = self.feed_driver.take_transport_action() {
             let accepted = match action {
-                FeedTransportAction::Play(_) => super::resume(self),
-                FeedTransportAction::Pause(_) => super::pause(self),
+                FeedTransportAction::Play { .. } => super::resume(self),
+                FeedTransportAction::Pause { .. } => super::pause(self),
             };
             self.feed_driver.note_transport_result(action, accepted);
             let mut drivers = PhysicalDrivers {
@@ -297,6 +302,30 @@ impl PlayerAdapter {
             return ExitDisposition::PreserveNativeOwnership;
         }
         ExitDisposition::Clean
+    }
+
+    /// Install only an explicitly configured URI transport/display pair while no physical
+    /// attempt owns the player. Installation supplies no source-specific qualification and
+    /// therefore does not change the route's default Feed choice.
+    #[cfg(feature = "play-uri")]
+    pub fn install_uri_backend(&mut self, config: UriConfig) -> Result<(), UriConfig> {
+        if self.uri_backend.is_some()
+            || self.backend_exit_disposition() != ExitDisposition::Clean {
+            return Err(config);
+        }
+        self.uri_backend = Some(UriBackend::new(config));
+        Ok(())
+    }
+
+    /// Escrow an exact resolved URL and its source-specific native track map. The route owner
+    /// still has to supply a qualified offer and send an addressed Start through the runner.
+    #[cfg(feature = "play-uri")]
+    pub fn stage_uri_source(&mut self, attempt: AttemptId, source: UriSource)
+        -> Result<SourceKey, Failure> {
+        let key = self.next_source_key();
+        self.uri_backend.as_mut().ok_or(Failure::Unavailable)?
+            .stage_source(attempt, key, source)?;
+        Ok(key)
     }
 
     /// A locator is only an escrow key, never another playback attempt identity.
