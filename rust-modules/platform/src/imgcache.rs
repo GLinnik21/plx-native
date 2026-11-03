@@ -18,7 +18,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const REFRESH_AFTER: Duration = Duration::from_secs(24 * 3600);
 const TOUCH_AFTER: Duration = Duration::from_secs(3600);
-const MAX_FILE: usize = 4 * 1024 * 1024;
+/// Compressed image-body bound shared by durable storage and public-content fetches.
+pub const MAX_FILE: usize = 4 * 1024 * 1024;
 const MAX_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_ENTRIES: usize = 8192;
 const MAGIC: &[u8; 8] = b"PLXIMG02";
@@ -119,6 +120,13 @@ pub fn classify(server_namespace: &str, built_key: &str) -> Option<DiskKey> {
         name: format!("image-{}.img", hex_digest(&identity)),
         legacy,
     })
+}
+
+/// Credential-free immutable content uses the same disk LRU and sign-out generation as transcodes.
+/// A caller must verify the compressed bytes against this digest before decode or persistence.
+pub fn classify_content(sha256: &str) -> Option<DiskKey> {
+    if sha256.len() != 64 || !sha256.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) { return None }
+    Some(DiskKey { name: format!("content-{sha256}.img"), legacy: None })
 }
 
 /// The durable key of an image the APP rendered (a collection fan), not one the server sent.

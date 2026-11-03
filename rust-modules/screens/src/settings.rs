@@ -482,6 +482,8 @@ fn mount_page(
         SettingsPage::LibraryFavourites => Box::new(super::onboard::OnboardScreen::library(entry, cx.views)),
         SettingsPage::Picker(kind) => Box::new(super::preferences::PickerPage::new(entry, kind)),
         SettingsPage::PlayerHud => Box::new(super::hud_settings::HudPage::new(entry)),
+        page @ (SettingsPage::HudGallery(_) | SettingsPage::HudDetail(..) | SettingsPage::HudAbout(..) | SettingsPage::HudPreview(..)) =>
+            Box::new(super::hud_settings::HudPage::at(entry, page)),
     }
 }
 

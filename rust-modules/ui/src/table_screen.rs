@@ -63,6 +63,8 @@ pub struct Header<'a> {
     /// [BACK] to close PlxNative"). Never elided: a screen that sets one owns a fit test for it
     /// against [`RouteLayout`]'s narrative width.
     pub hint: Option<KeyHint<'a>>,
+    /// Display-only landscape artwork after the narrative. It contributes no focus or hit stop.
+    pub preview: Option<super::widgets::Art<'a>>,
 }
 
 impl<'a> Header<'a> {
@@ -74,7 +76,13 @@ impl<'a> Header<'a> {
             copy,
             copy_size: theme::size::LABEL,
             hint: None,
+            preview: None,
         }
+    }
+
+    pub fn with_preview(mut self, art: super::widgets::Art<'a>) -> Self {
+        self.preview = Some(art);
+        self
     }
 
     pub fn with_hint(mut self, hint: KeyHint<'a>) -> Self {
@@ -90,6 +98,15 @@ impl<'a> Header<'a> {
     /// The one drawing routine, for both loops.
     pub fn paint(&self, p: Painter, measure: &dyn Measure) {
         let copy_end = self.layout.draw_narrative(p, self.crumb, self.title, self.copy, self.copy_size, measure);
+        if let Some(art) = self.preview {
+            let top = copy_end + theme::space::XL;
+            let width = self.layout.narrative.w;
+            let height = (width * 9.0 / 16.0).min((self.layout.action.y - top).max(0.0));
+            if height > 0.0 {
+                super::widgets::card(p, Rect::new(self.layout.narrative.x, top, width, height), art,
+                    theme::CARD_RING_RAD, false, 1.0, 0.0);
+            }
+        }
         if let Some(hint) = &self.hint {
             // The copy's end, then the hint one MD under it: a two-item run from `copy_end`.
             let run = [Item::new(0.0), Item::new(KeyHint::height())];

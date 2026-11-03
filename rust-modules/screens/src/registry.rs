@@ -88,8 +88,14 @@ pub enum HudCmd {
     /// The page opened: read every candidate directory again, and publish the list (now and whenever it
     /// changes) down this channel until the page drops its end.
     Open(std::sync::mpsc::Sender<crate::hud_settings::HudList>),
+    /// A child gallery view subscribes without cancelling an installation or rescanning files.
+    Watch(std::sync::mpsc::Sender<crate::hud_settings::HudList>),
     /// Pick a package id (or `builtin:classic`) for the seated profile.
     Select(String),
+    /// Download the exact package from the checked registry index, pending confirmation.
+    FetchRegistry(plx_data::hudpacks::Sha),
+    /// The initiating detail view went away before confirming its offer.
+    CancelRegistry(plx_data::hudpacks::Sha),
     /// Delete an installed package.
     Remove(String),
     /// Install the drop file listed under this hash; the viewer has confirmed it.
@@ -1538,6 +1544,10 @@ pub mod word {
     pub const PICKER: &str = "picker";
     /// The Player HUD page (`screens::hud_settings`), a page of the Settings family's inner stack.
     pub const PLAYER_HUD: &str = "player-hud";
+    pub const HUD_GALLERY: &str = "hud-gallery";
+    pub const HUD_DETAIL: &str = "hud-detail";
+    pub const HUD_ABOUT: &str = "hud-about";
+    pub const HUD_PREVIEW: &str = "hud-preview";
     pub const CONSENT: &str = "consent";
     pub const ONBOARD: &str = "onboard";
     /// The QR sign-in (`screens::login::LoginScreen`). Same spelling as `app::words::route_word`'s

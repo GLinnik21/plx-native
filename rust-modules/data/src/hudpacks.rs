@@ -21,7 +21,7 @@
 //!
 //! **Layout** per candidate directory: `packs/<sha256>.plxhud` (content-addressed, so an update is
 //! a new file), `installed.json` (id -> sha, source, installed-at), `drop/` (the sideload drop folder).
-//! `index-cache.json` belongs to the registry gallery (PR13) and is neither read nor written here.
+//! `index-cache.json` is the registry gallery's dated conditional-GET cache ([`catalog`]); only a settings visit opens it.
 //! A listing reads every candidate; one sha found in two of them is one package; for one id the higher
 //! `version` wins, and on a tie the earlier candidate.
 //!
@@ -37,8 +37,9 @@
 //! potentially referenced archives stay on disk. Current records bind the archive SHA and both format
 //! axes, which are checked against the manifest returned by the validator.
 //!
-//! **Work is sequential**: at most one request is in flight, so a runner may execute effects in the
-//! order they are pushed and memory stays bounded by one file, with no cap on how many packages exist.
+//! **Package work is sequential**: at most one package request is in flight, so a runner may execute its effects in
+//! order and memory stays bounded by one package, with no cap on how many packages exist. The independent catalog
+//! machine may read or fetch concurrently; its response and cache have their own byte bounds and generation.
 //! A `Refresh` replaces work in flight, so it ends an install, a fetch, a held offer or a removal it displaces with a notice and,
 //! once the indexes are read again, deletes the packs that work may have left that no index names (an
 //! unreadable index shields its candidate). A process that dies mid-install is not covered: the store
@@ -61,6 +62,7 @@
 //! changes nothing. A runner that loses an answer is recovered by the next `Refresh`.
 
 pub mod address;
+pub mod catalog;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
@@ -230,6 +232,8 @@ pub enum Unloadable {
     OlderFormat,
     /// Outside the package's own `app.min`/`app.max`.
     AppRange,
+    /// This exact archive was withdrawn by the registry, regardless of its install source.
+    Revoked,
 }
 
 /// The runner's answer to a [`HudEffect::Validate`]: `admit`'s strict parse, invariants and app-range check, reduced to what
@@ -358,6 +362,13 @@ pub enum Notice {
 /// The events [`HudStore::step`] takes.
 #[derive(Debug)]
 pub enum HudEvent {
+    /// A registry settings visit or an addressed cache/HTTP result. Never emitted at boot.
+    Catalog(catalog::Event),
+    /// Fetch a compatible catalog package. The hash is looked up again in the checked index.
+    FetchRegistry { sha: Sha, app: String, language: String },
+    /// The initiating detail page was destroyed. Pending download/validation/offers may be abandoned;
+    /// an already-confirmed atomic installation continues.
+    CancelRegistry { sha: Sha },
     /// HUD settings opened (or the store started): forget the listing and read every candidate. Always
     /// taken, and it replaces whatever is in flight. A listing is dropped silently. An install ends
     /// with [`Notice::NotWritten`] and a removal with [`Notice::RemoveIncomplete`] (the listing that
@@ -396,6 +407,10 @@ pub enum HudEvent {
 /// The work the store asks of the runner.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HudEffect {
+    /// Registry cache IO or a conditional, redirect-free index request.
+    Catalog(catalog::Effect),
+    /// A catalog-bound package GET; no redirects and no account headers.
+    FetchRegistry { tag: Tag, package: catalog::Package, max_bytes: usize },
     /// List a directory: [`HudEvent::Scanned`].
     ScanDir { tag: Tag, at: Loc },
     /// Read a file, at most `max_bytes`: [`HudEvent::Read`].
@@ -442,7 +457,7 @@ pub struct Entry {
 pub struct OfferView {
     pub sha: Sha,
     pub meta: Meta,
-    /// Always [`Source::Address`] today; carried so the prompt reads the trust tier from the source.
+    /// The verified fetch source; the prompt distinguishes registry review from an address install.
     pub source: Source,
     /// The address the bytes came from.
     pub from: Option<address::Address>,
@@ -559,6 +574,7 @@ struct Offer {
     /// Where the bytes came from, for the prompt: the address of a fetch.
     from: Option<address::Address>,
     bytes: Arc<[u8]>,
+    expected: Option<catalog::Package>,
 }
 
 enum Write {
@@ -572,7 +588,7 @@ enum Step {
     /// A drop file is being read again so that what is installed is what was listed.
     Reading { sha: Sha, now: u64 },
     /// A fetch is in flight.
-    Fetching { address: address::Address },
+    Fetching { address: address::Address, expected: Option<catalog::Package> },
     Validating(Offer),
     /// A validated fetch waits for the viewer to confirm or decline (`offer.now` is `None`).
     Offered { offer: Offer, meta: Meta },
@@ -619,6 +635,7 @@ pub struct HudStore {
     selected: String,
     op: Op,
     tags: u32,
+    catalog: catalog::Catalog,
 }
 
 impl Default for HudStore {
@@ -637,12 +654,15 @@ impl HudStore {
             selected: BUILTIN_CLASSIC.to_string(),
             op: Op::Idle,
             tags: 0,
+            catalog: catalog::Catalog::default(),
         }
     }
 
     // -------- readers --------
 
     /// Whether a listing, install or removal is running (installing and removing wait for the idle).
+    pub fn catalog(&self) -> &catalog::Snapshot { &self.catalog.snapshot() }
+
     pub fn busy(&self) -> bool {
         !matches!(self.op, Op::Idle)
     }
@@ -655,7 +675,7 @@ impl HudStore {
     /// What a playback starts with: the selection when it is listed and loadable, else the built-in.
     pub fn resolved(&self) -> &str {
         if self.selected != BUILTIN_CLASSIC
-            && self.winners().get(self.selected.as_str()).is_some_and(|w| w.loaded.loadable.is_ok())
+            && self.winners().get(self.selected.as_str()).is_some_and(|w| w.loaded.loadable.is_ok() && self.catalog.snapshot().revoked(w.record.sha).is_none())
         {
             &self.selected
         } else {
@@ -682,7 +702,7 @@ impl HudStore {
                 sha: Some(win.record.sha),
                 source: Some(win.record.source),
                 trust: win.record.source.trust(),
-                loadable: win.loaded.loadable,
+                loadable: if self.catalog.snapshot().revoked(win.record.sha).is_some() { Err(Unloadable::Revoked) } else { win.loaded.loadable },
                 until_restart: win.loaded.volatile,
                 selected: self.selected == id,
             });
@@ -753,7 +773,42 @@ impl HudStore {
     /// The one writer. The table is in the module doc; a pair it does not list answers
     /// [`Handled::No`] and changes nothing.
     pub fn step(&mut self, ev: HudEvent, fx: &mut Vec<HudEffect>) -> Handled {
+        let handled = self.reduce(ev, fx);
+        // The cache can land before the installed-pack listing: apply the same rule after either.
+        if self.winners().get(self.selected.as_str()).is_some_and(|w| self.catalog.snapshot().revoked(w.record.sha).is_some()) {
+            self.selected = BUILTIN_CLASSIC.into();
+            fx.push(HudEffect::Selection { id: self.selected.clone() });
+        }
+        handled
+    }
+
+    fn reduce(&mut self, ev: HudEvent, fx: &mut Vec<HudEffect>) -> Handled {
         match ev {
+            HudEvent::Catalog(event) => {
+                let mut work = Vec::new();
+                let handled = self.catalog.step(event, &mut work);
+                fx.extend(work.into_iter().map(HudEffect::Catalog));
+                if handled { Handled::Yes } else { Handled::No }
+            }
+            HudEvent::CancelRegistry { sha } => {
+                let cancels = match &self.op {
+                    Op::Installing(Installing { step: Step::Fetching { expected: Some(p), .. }, .. }) => p.sha() == sha,
+                    Op::Installing(Installing { step: Step::Validating(offer) | Step::Offered { offer, .. }, .. }) =>
+                        offer.source == Source::Registry && offer.sha == sha && offer.now.is_none(),
+                    _ => false,
+                };
+                if cancels { self.op = Op::Idle; Handled::Yes } else { Handled::No }
+            }
+            HudEvent::FetchRegistry { sha, app, language } => {
+                if self.busy() || self.catalog.snapshot().revoked(sha).is_some() { return Handled::No }
+                let Some(package) = self.catalog.snapshot().index.as_ref().and_then(|i| i.entries.iter().find(|p| p.sha() == sha))
+                    .filter(|p| p.compatible(&app, &language, self.setup.max_pack_bytes)).cloned() else { return Handled::No };
+                let Ok(address) = address::parse(&package.url) else { return Handled::No };
+                let tag = self.tag();
+                fx.push(HudEffect::FetchRegistry { tag, package: package.clone(), max_bytes: self.setup.max_pack_bytes });
+                self.op = Op::Installing(Installing { tag, step: Step::Fetching { address, expected: Some(package) } });
+                Handled::Yes
+            }
             HudEvent::Refresh { setup, selected } => {
                 // Always taken: it is how a store whose runner lost an answer recovers. Whatever it
                 // displaces wrote atomically and put the index last, so disk is consistent, and the
@@ -770,7 +825,7 @@ impl HudStore {
                 if bytes.len() > self.setup.max_pack_bytes {
                     fx.push(HudEffect::Notice(Notice::Refused { sha, reason: Refusal::TooLarge }));
                 } else {
-                    self.op = self.validate(Offer { sha, source, now: Some(now), from: None, bytes: bytes.into() }, fx);
+                    self.op = self.validate(Offer { sha, source, now: Some(now), from: None, bytes: bytes.into(), expected: None }, fx);
                 }
                 Handled::Yes
             }
@@ -780,11 +835,15 @@ impl HudStore {
                 }
                 let tag = self.tag();
                 fx.push(HudEffect::Fetch { tag, address: address.clone(), max_bytes: self.setup.max_pack_bytes });
-                self.op = Op::Installing(Installing { tag, step: Step::Fetching { address } });
+                self.op = Op::Installing(Installing { tag, step: Step::Fetching { address, expected: None } });
                 Handled::Yes
             }
             HudEvent::InstallOffer { sha, now } => match std::mem::replace(&mut self.op, Op::Idle) {
                 Op::Installing(Installing { step: Step::Offered { mut offer, meta }, .. }) if offer.sha == sha => {
+                    if self.catalog.snapshot().revoked(sha).is_some() {
+                        Self::notice(fx, Notice::Refused { sha, reason: Refusal::Unloadable(Unloadable::Revoked) });
+                        return Handled::Yes;
+                    }
                     offer.now = Some(now);
                     self.op = self.write_pack(offer, meta, 0, fx);
                     Handled::Yes
@@ -855,7 +914,7 @@ impl HudStore {
 
     fn select(&mut self, id: String, fx: &mut Vec<HudEffect>) -> Handled {
         let allowed = id == BUILTIN_CLASSIC
-            || self.winners().get(id.as_str()).is_some_and(|w| w.loaded.loadable.is_ok());
+            || self.winners().get(id.as_str()).is_some_and(|w| w.loaded.loadable.is_ok() && self.catalog.snapshot().revoked(w.record.sha).is_none());
         if !allowed {
             return Handled::No;
         }
@@ -889,6 +948,7 @@ impl HudStore {
 
     /// Whether `verdict` for `sha` may be installed now, and the package it describes.
     fn judge(&self, sha: Sha, verdict: &Verdict) -> Result<Meta, Refusal> {
+        if self.catalog.snapshot().revoked(sha).is_some() { return Err(Refusal::Unloadable(Unloadable::Revoked)) }
         let (meta, unloadable) = match verdict {
             Verdict::Invalid => return Err(Refusal::Invalid),
             Verdict::Loadable(meta) => (meta, None),
@@ -1136,31 +1196,39 @@ impl HudStore {
         let op = match (step, ev) {
             (Step::Reading { sha, now }, HudEvent::Read { result, .. }) => match result {
                 Ok(bytes) if Sha::of(&bytes) == sha => {
-                    self.validate(Offer { sha, source: Source::Drop, now: Some(now), from: None, bytes: bytes.into() }, fx)
+                    self.validate(Offer { sha, source: Source::Drop, now: Some(now), from: None, bytes: bytes.into(), expected: None }, fx)
                 }
                 _ => {
                     Self::notice(fx, Notice::Refused { sha, reason: Refusal::Changed });
                     Op::Idle
                 }
             },
-            (Step::Fetching { address }, HudEvent::Fetched { result, .. }) => match result {
+            (Step::Fetching { address, expected }, HudEvent::Fetched { result, .. }) => match result {
                 Err(reason) => {
                     Self::notice(fx, Notice::FetchFailed { reason });
                     Op::Idle
                 }
                 Ok(bytes) => {
                     let sha = Sha::of(&bytes);
-                    if bytes.len() > self.setup.max_pack_bytes {
+                    if expected.as_ref().is_some_and(|p| p.sha() != sha || p.bytes != bytes.len()) {
+                        Self::notice(fx, Notice::Refused { sha, reason: Refusal::Changed });
+                        Op::Idle
+                    } else if bytes.len() > self.setup.max_pack_bytes {
                         Self::notice(fx, Notice::Refused { sha, reason: Refusal::TooLarge });
                         Op::Idle
                     } else {
-                        let offer = Offer { sha, source: Source::Address, now: None, from: Some(address), bytes: bytes.into() };
+                        let source = if expected.is_some() { Source::Registry } else { Source::Address };
+                        let offer = Offer { sha, source, now: None, from: Some(address), bytes: bytes.into(), expected };
                         self.validate(offer, fx)
                     }
                 }
             },
             (Step::Validating(offer), HudEvent::Validated { sha, verdict, .. }) if sha == offer.sha => {
-                match self.judge(offer.sha, &verdict) {
+                let checked = self.judge(offer.sha, &verdict).and_then(|meta| {
+                    if offer.expected.as_ref().is_some_and(|p| p.id != meta.id || p.name != meta.name || p.version != meta.version
+                        || p.package_format != meta.package_format || p.hud_format != meta.hud_format) { Err(Refusal::Changed) } else { Ok(meta) }
+                });
+                match checked {
                     Err(reason) => {
                         Self::notice(fx, Notice::Refused { sha: offer.sha, reason });
                         Op::Idle

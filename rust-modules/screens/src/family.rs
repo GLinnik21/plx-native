@@ -11,7 +11,7 @@
 
 use plx_ui::form::{Activation, FormTable, RowKey};
 use plx_machine::machine::{
-    Canon, Chrome, Cx, Effects, Fx, GroupId, Host, LogicalState, NavOp, ScreenId,
+    Canon, Chrome, Cx, EntryId, Effects, Fx, GroupId, Host, LogicalState, NavOp, ScreenId,
 };
 use plx_ui::screen::ScreenArg;
 use plx_ui::widgets::ControlPalette;
@@ -55,6 +55,10 @@ pub enum SettingsPage {
     Picker(PickerKind),
     /// The Player HUD page: the installed packages, the drop folder and the chosen HUD (`hud_settings`).
     PlayerHud,
+    HudGallery(EntryId),
+    HudDetail(plx_data::hudpacks::Sha, EntryId),
+    HudAbout(plx_data::hudpacks::Sha, EntryId),
+    HudPreview(plx_data::hudpacks::Sha, EntryId),
 }
 
 /// Which preference a [`SettingsPage::Picker`] edits. The parent page (`Playback` for the local ones,
@@ -133,6 +137,10 @@ impl ScreenArg for SettingsPage {
             SettingsPage::ConsentStage(_) => 107,
             SettingsPage::Picker(_) => 112,
             SettingsPage::PlayerHud => 115,
+            SettingsPage::HudGallery(_) => 117,
+            SettingsPage::HudDetail(..) => 118,
+            SettingsPage::HudAbout(..) => 119,
+            SettingsPage::HudPreview(..) => 120,
         })
     }
     fn title(&self) -> Option<&str> {
@@ -159,6 +167,13 @@ impl ScreenArg for SettingsPage {
 impl LogicalState for SettingsPage {
     fn write(&self, w: &mut Canon) {
         w.discriminant(ScreenArg::id(self).0);
+        match self {
+            SettingsPage::HudGallery(owner) => { w.u32(owner.0); return; }
+            SettingsPage::HudDetail(sha, owner) | SettingsPage::HudAbout(sha, owner) | SettingsPage::HudPreview(sha, owner) => {
+                w.str(&sha.hex()).u32(owner.0); return;
+            }
+            _ => (),
+        }
         w.u8(match self {
             SettingsPage::Root
             | SettingsPage::Language
@@ -175,6 +190,7 @@ impl LogicalState for SettingsPage {
             | SettingsPage::About => 0,
             SettingsPage::Document(i) | SettingsPage::Preview(i) | SettingsPage::ConsentStage(i) => *i,
             SettingsPage::Picker(kind) => *kind as u8,
+            SettingsPage::HudGallery(_) | SettingsPage::HudDetail(..) | SettingsPage::HudAbout(..) | SettingsPage::HudPreview(..) => unreachable!("written above"),
         });
     }
     fn probe(&self, out: &mut String) {
@@ -196,6 +212,10 @@ impl LogicalState for SettingsPage {
             SettingsPage::ConsentStage(_) => "stage",
             SettingsPage::Picker(_) => "picker",
             SettingsPage::PlayerHud => "player-hud",
+            SettingsPage::HudGallery(_) => "hud-gallery",
+            SettingsPage::HudDetail(..) => "hud-detail",
+            SettingsPage::HudAbout(..) => "hud-about",
+            SettingsPage::HudPreview(..) => "hud-preview",
         });
         if let SettingsPage::Document(i) | SettingsPage::Preview(i) | SettingsPage::ConsentStage(i) = self {
             out.push_str(&format!("[{i}]"));
@@ -358,6 +378,10 @@ mod tests {
             SettingsPage::ConsentStage(0),
             SettingsPage::Picker(PickerKind::Quality),
             SettingsPage::PlayerHud,
+            SettingsPage::HudGallery(EntryId(0)),
+            SettingsPage::HudDetail(plx_data::hudpacks::Sha::of(b"test"), EntryId(0)),
+            SettingsPage::HudAbout(plx_data::hudpacks::Sha::of(b"test"), EntryId(0)),
+            SettingsPage::HudPreview(plx_data::hudpacks::Sha::of(b"test"), EntryId(0)),
         ];
         let mut ids: Vec<u32> = pages.iter().map(|p| plx_ui::screen::ScreenArg::id(p).0).collect();
         ids.sort_unstable();

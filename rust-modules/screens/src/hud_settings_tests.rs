@@ -90,6 +90,7 @@ fn list() -> HudList {
         notice: None,
         offer: None,
         fetching: false,
+        ..HudList::default()
     }
 }
 
@@ -277,12 +278,12 @@ fn the_notice_replaces_the_line_under_the_title_only_while_there_is_one() {
 
 /// Every refusal the store can give a file, for the tests that must cover each: the match has no wildcard, so a
 /// refusal added to the store does not compile here until it is listed (and so is measured).
-fn every_refusal() -> [Refusal; 9] {
+fn every_refusal() -> [Refusal; 10] {
     fn listed(refusal: Refusal) -> bool {
         match refusal {
             Refusal::BuiltinId
             | Refusal::Invalid
-            | Refusal::Unloadable(Unloadable::NewerFormat | Unloadable::OlderFormat | Unloadable::AppRange)
+            | Refusal::Unloadable(Unloadable::NewerFormat | Unloadable::OlderFormat | Unloadable::AppRange | Unloadable::Revoked)
             | Refusal::AlreadyInstalled
             | Refusal::NotNewer
             | Refusal::TooLarge
@@ -291,6 +292,7 @@ fn every_refusal() -> [Refusal; 9] {
     }
     let all = [
         Refusal::BuiltinId,
+        Refusal::Unloadable(Unloadable::Revoked),
         Refusal::Invalid,
         Refusal::Unloadable(Unloadable::NewerFormat),
         Refusal::Unloadable(Unloadable::OlderFormat),
@@ -556,4 +558,84 @@ fn the_address_caret_follows_an_interior_correction() {
     assert_eq!(address_row(&page).1, "gh:owner/rep|o");
     let emitted = drive(&mut page, press(Key::Ok), key);
     assert!(matches!(huds(&emitted).as_slice(), [HudCmd::Fetch(address)] if address.url() == "https://github.com/owner/repo/releases/latest/download/hud.plxhud"));
+}
+
+fn gallery_list() -> HudList {
+    let index=plx_data::hudpacks::catalog::parse(include_bytes!("../../../tests/fixtures/hud-gallery/index.json")).unwrap();
+    HudList {catalog:plx_data::hudpacks::catalog::Snapshot {index:Some(std::sync::Arc::new(index)),checked_at:Some(10),..Default::default()},
+        gallery_enabled:true,app_version:"0.10.0".into(),language_tag:"en".into(),entries:vec![builtin(true)],..HudList::default()}
+}
+
+fn gallery_page(page: SettingsPage) -> HudPage {
+    let mut out=HudPage::at(EntryId(0),page);out.list=gallery_list();out.rebuild(None);out
+}
+
+#[test]
+fn gallery_is_shared_navigation_and_hides_incompatible_or_unfit_packages() {
+    let mut root=gallery_page(SettingsPage::PlayerHud);
+    let browse=root.form.key_at(root.form.index_of(&HudId::Browse).unwrap()).unwrap().0;
+    let fx=drive(&mut root,ScreenEvent::Activate(browse),browse);
+    assert!(fx.iter().any(|e| matches!(e.fx,Fx::Nav(NavOp::Push(SettingsPage::HudGallery(EntryId(0)))))));
+    let mut page=gallery_page(SettingsPage::HudGallery(EntryId(0)));
+    assert_eq!(page.form.table.n_rows(),2);
+    let mut index=page.list.catalog.index.as_deref().unwrap().clone();
+    index.entries[0].package_format="2.0".into();
+    index.entries[1].unfit=vec![plx_data::hudpacks::catalog::FitChange {from:"0.9.0".into(),langs:vec!["en".into()]}];
+    page.list.catalog.index=Some(std::sync::Arc::new(index));page.rebuild(None);
+    assert_eq!(page.form.table.n_rows(),0);
+    assert_eq!(page.copy,plx_platform::i18n::msg::settings_hud_empty());
+}
+
+#[test]
+fn gallery_install_and_use_are_separate_and_about_owns_package_metadata() {
+    let list=gallery_list();let package=&list.catalog.index.as_ref().unwrap().entries[0];let sha=package.sha();
+    let mut page=gallery_page(SettingsPage::HudDetail(sha,EntryId(42)));
+    drive(&mut page,ScreenEvent::Enter(Enter::Fresh {focus:FocusTarget::FirstInGroup(GroupId(0))}),0);
+    let fx=drive(&mut page,ScreenEvent::Activate(1),1);
+    assert!(matches!(huds(&fx).as_slice(),[HudCmd::FetchRegistry(s)] if *s == sha));
+    assert!(page.form.index_of(&HudId::Use).is_none());
+    let mut entry=pack(&package.id,&package.name,1,false);entry.sha=Some(sha);
+    page.list.entries.push(entry);page.list.notice=Some(Notice::Installed {id:package.id.clone(),version:package.version.clone(),sha,until_restart:false});
+    page.rebuild(Some(HudId::Use));
+    let fx=drive(&mut page,ScreenEvent::Activate(1),1);
+    assert!(matches!(huds(&fx).as_slice(),[HudCmd::Select(id)] if *id == package.id));
+    assert!(fx.iter().any(|e|matches!(e.fx,Fx::Nav(NavOp::PopTo(EntryId(42))))));
+    let about=gallery_page(SettingsPage::HudAbout(sha,EntryId(42)));
+    assert!(about.form.index_of(&HudId::Fact(0)).is_some());
+    assert!(page.form.index_of(&HudId::Fact(0)).is_none(),"metadata is secondary");
+}
+
+#[test]
+fn preview_focus_and_back_never_choose_a_different_scene() {
+    let list=gallery_list();let package=list.catalog.index.as_ref().unwrap().entries.iter().find(|p|p.name=="Reference").unwrap();
+    let mut page=gallery_page(SettingsPage::HudPreview(package.sha(),EntryId(9)));
+    drive(&mut page,tick(),1);assert_eq!(page.scenes().len(),3);
+    drive(&mut page,ScreenEvent::Activate(2),2);assert_eq!(page.state.scene,1);
+    let controls=page.controls.as_ref().unwrap();
+    assert!(matches!(controls.neighbour(FocusKey{entry:EntryId(0),elem:0},Dir::Left),Step::Edge));
+    assert!(matches!(controls.neighbour(FocusKey{entry:EntryId(0),elem:0},Dir::Right),Step::Move(FocusKey{elem:1,..})));
+    assert_eq!(page.state.scene,1,"moving focus from Back does not select Compact");
+    let fx=drive(&mut page,ScreenEvent::Activate(0),0);
+    assert!(fx.iter().any(|e|matches!(e.fx,Fx::Nav(NavOp::Pop))));
+    assert_eq!(page.state.scene,1);
+}
+
+#[test]
+fn gallery_forms_and_preview_controls_fit_every_shipped_language() {
+    let mut failures=Vec::new();
+    for language in SHIPPED {
+        let _guard=language_on_this_thread_for_test(language);
+        let list=gallery_list();let sha=list.catalog.index.as_ref().unwrap().entries[1].sha();
+        for dest in [SettingsPage::PlayerHud,SettingsPage::HudGallery(EntryId(0)),SettingsPage::HudDetail(sha,EntryId(0)),SettingsPage::HudAbout(sha,EntryId(0))] {
+            let page=gallery_page(dest);
+            failures.extend(page.form.table.app_fit_failures(RouteLayout::screen().sectioned_table().w,language.tag()));
+        }
+        let page=gallery_page(SettingsPage::HudPreview(sha,EntryId(0)));
+        let controls=plx_ui::preview_controls::PreviewControls::new(page.scenes().iter().map(|(label,_)|(*label).into()),&ShippedMeasure);
+        for elem in 0..controls.len() as u32 {
+            let r=controls.place(elem).unwrap().rect;
+            assert!(plx_ui::consts::inside_safe(r),"{} preview control {elem}: {r:?}",language.tag());
+        }
+    }
+    plx_ui::table::assert_no_fit_failures(&failures);
 }

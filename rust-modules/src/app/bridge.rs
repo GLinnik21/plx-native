@@ -396,7 +396,7 @@ pub(crate) struct Bridge {
     /// The player-HUD package store, its runner and the compile of the selection ([`super::adapters::huds`]). Off until boot starts it.
     huds: super::adapters::huds::HudDriver,
     /// The open Player HUD page's channel and what it was last sent ([`Bridge::huds_publish`]).
-    huds_page: Option<(std::sync::mpsc::Sender<plx_screens::hud_settings::HudList>, u64)>,
+    huds_pages: Vec<(std::sync::mpsc::Sender<plx_screens::hud_settings::HudList>, u64)>,
     /// What the last install or removal said, for the page, until it is opened again.
     huds_notice: Option<plx_data::hudpacks::Notice>,
     trace_save: Option<(MachineId, u64, plx_base::storage_worker::TypedTicket<plx_platform::playback_trace::Status>)>,
@@ -671,7 +671,7 @@ impl Bridge {
             session_ready: None,
             seat_watch: SeatWatch::new(),
             huds: super::adapters::huds::HudDriver::off(),
-            huds_page: None,
+            huds_pages: Vec::new(),
             huds_notice: None,
             trace_save: None,
             consent_adapter,
@@ -995,8 +995,17 @@ impl Bridge {
         match command {
             HudCmd::Open(page) => {
                 self.huds_notice = None;
-                self.huds_page = Some((page, u64::MAX));
+                self.huds_watch(page);
                 self.huds_refresh();
+                if !self.playback_live && (plx_base::paths::ENV_STEERABLE || plx_base::paths::flavour().is_some()) {
+                    self.huds.open_catalog(plx_telemetry::telemetry::crashreport::now_secs());
+                }
+            }
+            HudCmd::Watch(page) => self.huds_watch(page),
+            HudCmd::CancelRegistry(sha) => self.huds.cancel_registry(sha),
+            HudCmd::FetchRegistry(sha) => {
+                self.huds_notice = None;
+                self.huds.fetch_registry(sha, plx_plex::plex::identity::version(), plx_platform::i18n::current().language().tag());
             }
             HudCmd::Select(id) => self.huds.select(id),
             HudCmd::Remove(id) => {
@@ -1018,6 +1027,12 @@ impl Bridge {
             HudCmd::DeclineOffer(sha) => self.huds.decline_offer(sha),
         }
         self.huds_settle();
+    }
+
+    fn huds_watch(&mut self, page: std::sync::mpsc::Sender<plx_screens::hud_settings::HudList>) {
+        // Re-probe older subscribers when a page opens so dead receivers do not accumulate at an idle revision.
+        for (_, sent) in &mut self.huds_pages { *sent = u64::MAX; }
+        self.huds_pages.push((page, u64::MAX));
     }
 
     /// Persist the picks the store made and log what the driver reports: the two things the driver
@@ -1050,14 +1065,21 @@ impl Bridge {
     /// Send the open page the store's listing when anything it draws changed since the last send; a page that
     /// closed (its end of the channel dropped) is forgotten.
     fn huds_publish(&mut self) {
-        let Some((_, sent)) = &self.huds_page else { return };
+        if self.huds_pages.is_empty() { return }
         let (revision, notice) = (self.huds.revision(), self.huds_notice.as_ref().map_or(0, |_| 1));
         let stamp = revision * 2 + notice;
-        if *sent == stamp {
+        if self.huds_pages.iter().all(|(_, sent)| *sent == stamp) {
             return;
         }
         let tag = plx_platform::i18n::current().language().tag();
         let list = plx_screens::hud_settings::HudList {
+            catalog: self.huds.store().catalog().clone(),
+            catalog_date: self.huds.store().catalog().checked_at.and_then(|s| i64::try_from(s).ok())
+                .and_then(plx_platform::i18n::local_calendar_date)
+                .and_then(|[y,m,d]| plx_platform::i18n::current().date_medium(y, m as u8, d as u8)).unwrap_or_default(),
+            gallery_enabled: plx_base::paths::ENV_STEERABLE || plx_base::paths::flavour().is_some(),
+            app_version: plx_plex::plex::identity::version().into(),
+            language_tag: tag.into(),
             entries: self.huds.store().entries(),
             drops: self.huds.store().drops(),
             unfit: self.huds.unfit_shas(tag),
@@ -1069,15 +1091,15 @@ impl Bridge {
             offer: self.huds.store().offer(),
             fetching: self.huds.store().fetching(),
         };
-        let delivered = self.huds_page.as_mut().is_some_and(|(page, sent)| {
+        let mut delivered = false;
+        self.huds_pages.retain_mut(|(page, sent)| {
+            if *sent == stamp { return true }
             *sent = stamp;
-            page.send(list).is_ok()
+            let sent = page.send(list.clone()).is_ok();
+            delivered |= sent;
+            sent
         });
-        if delivered {
-            plx_machine::idle::invalidate();
-        } else {
-            self.huds_page = None;
-        }
+        if delivered { plx_machine::idle::invalidate(); }
     }
 
     /// The rect the next player menu hangs from — see [`AppMounter::player_menu_anchor`]. `None` clears it,
