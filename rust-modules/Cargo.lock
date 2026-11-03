@@ -818,6 +818,7 @@ dependencies = [
  "plx_base",
  "plx_platform",
  "plx_play_uri",
+ "plx_playback_contract",
  "serde",
  "serde_json",
 ]
