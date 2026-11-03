@@ -29,6 +29,17 @@ use super::decision::{
     ENCODER_GENERATION,
 };
 
+/// The selected source Part and streams before any executor chooses a playable wire recipe.
+/// Feed may substitute or convert a stream; URI qualification still addresses this intent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceSelection {
+    pub server: ServerId,
+    pub part_id: i64,
+    pub audio_sid: i64,
+    pub subtitle_sid: i64,
+    pub audio_contract: plx_plex::plex::AudioEnhancements,
+}
+
 /// One worker's right to observe or replace the active route. Both fields are required: `encoder`
 /// addresses PMS, while `epoch` distinguishes semantic routes which intentionally reuse that
 /// exact Streaming Resource.
