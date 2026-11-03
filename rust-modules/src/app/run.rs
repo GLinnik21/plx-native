@@ -4393,7 +4393,11 @@ mod lifecycle_regression_tests {
         app.pages.input.hit.fill(vec![Stop { key, rect, rest_rect: rect, clip: Rect::FULL,
             hover: Hover::Ignore, activate: Activate::Direct }]);
         app.pages.input.hit.swap();
-        plx_media::player::SHARED.duration_ns.store(100_000_000_000, Ordering::Relaxed);
+        publish_feed_fixture_facts(&mut app.player.session, |facts| {
+            facts.duration_ns = Some(100_000_000_000);
+            facts.position_ns = Some(0);
+            facts.started = Some(true);
+        });
         for (index, input) in std::mem::take(&mut app.inputs).into_iter().enumerate() {
             super::super::bridge::frame(&mut app.pages, &mut app.bridge,
                 Tick { ms: 1_000 + index as u32 * 500, dt_us: 16_000 }, vec![input]);
@@ -4861,18 +4865,40 @@ mod lifecycle_regression_tests {
         );
     }
 
-    /// The media globals the performer's seeks write, set for one test and put back after it, so a
-    /// failed assertion does not leak a seek target into the next test.
+    /// Publish one addressed Feed readout through the same session owner the UI reads. A fixture
+    /// with no Engine uses the route's test attempt identity; a live rig keeps its claimed one.
+    fn publish_feed_fixture_facts(
+        ps: &mut plx_media::route::PlaybackSession,
+        update: impl FnOnce(&mut plx_media::player::attempt_view::AttemptFacts),
+    ) {
+        use plx_media::player::attempt_view::Backend;
+        let attempt = if let Some(attempt) = ps.attempt_view().attempt() {
+            assert_eq!(ps.attempt_view().backend(), Some(Backend::Feed));
+            attempt
+        } else {
+            let attempt = plx_media::route::RouteStartAttempt::fixture();
+            ps.begin_attempt_view(attempt, Backend::Feed);
+            attempt
+        };
+        let mut facts = *ps.attempt_view().facts();
+        update(&mut facts);
+        assert!(ps.ingest_attempt_facts(attempt, Backend::Feed, facts));
+    }
+
+    /// The Feed seek mailbox the performer's seeks write, restored even after an assertion.
     struct SeekGlobals {
-        saved: [i64; 5],
+        saved: [i64; 3],
     }
     impl SeekGlobals {
-        fn set(playpos_ns: i64, duration_ns: i64) -> Self {
+        fn set(app: &mut App, playpos_ns: i64, duration_ns: i64) -> Self {
             use std::sync::atomic::Ordering::Relaxed;
+            publish_feed_fixture_facts(&mut app.player.session, |facts| {
+                facts.position_ns = Some(playpos_ns);
+                facts.duration_ns = Some(duration_ns);
+                facts.started = Some(true);
+            });
             let (shared, tx) = (&plx_media::player::SHARED, &plx_media::player::TX);
             let saved = [
-                shared.playpos_ns.swap(playpos_ns, Relaxed),
-                shared.duration_ns.swap(duration_ns, Relaxed),
                 shared.seek_display_ns.swap(-1, Relaxed),
                 tx.seek_to_ns.swap(-1, Relaxed),
                 tx.scrub_ns.swap(-1, Relaxed),
@@ -4887,11 +4913,9 @@ mod lifecycle_regression_tests {
         fn drop(&mut self) {
             use std::sync::atomic::Ordering::Relaxed;
             let (shared, tx) = (&plx_media::player::SHARED, &plx_media::player::TX);
-            shared.playpos_ns.store(self.saved[0], Relaxed);
-            shared.duration_ns.store(self.saved[1], Relaxed);
-            shared.seek_display_ns.store(self.saved[2], Relaxed);
-            tx.seek_to_ns.store(self.saved[3], Relaxed);
-            tx.scrub_ns.store(self.saved[4], Relaxed);
+            shared.seek_display_ns.store(self.saved[0], Relaxed);
+            tx.seek_to_ns.store(self.saved[1], Relaxed);
+            tx.scrub_ns.store(self.saved[2], Relaxed);
         }
     }
 
@@ -4916,7 +4940,7 @@ mod lifecycle_regression_tests {
         use plx_appkit::player_hud::command::HudCommand;
         let _serial = plx_base::testlock::serial();
         let mut app = app();
-        let globals = SeekGlobals::set(40_000_000_000, 100_000_000_000);
+        let globals = SeekGlobals::set(&mut app, 40_000_000_000, 100_000_000_000);
         super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
         frame(&mut app, 16);
         perform_on_a_mounted_player(&mut app, HudCommand::Next, 100);
@@ -5072,7 +5096,7 @@ mod lifecycle_regression_tests {
         use plx_appkit::player_hud::command::HudCommand;
         let _serial = plx_base::testlock::serial();
         let mut app = self::app();
-        let globals = SeekGlobals::set(40_000_000_000, 100_000_000_000);
+        let globals = SeekGlobals::set(&mut app, 40_000_000_000, 100_000_000_000);
         super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
         frame(&mut app, 16);
         perform_on_a_mounted_player(&mut app, HudCommand::FromBeginning, 100);
@@ -5088,7 +5112,7 @@ mod lifecycle_regression_tests {
         use plx_appkit::player_hud::command::HudCommand;
         let _serial = plx_base::testlock::serial();
         let mut app = app();
-        let globals = SeekGlobals::set(40_000_000_000, 100_000_000_000);
+        let globals = SeekGlobals::set(&mut app, 40_000_000_000, 100_000_000_000);
         super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
         frame(&mut app, 16);
         super::super::bridge::player_mut(&mut app.pages).expect("mounted").scrub.ns = 60_000_000_000;
@@ -5106,7 +5130,7 @@ mod lifecycle_regression_tests {
         use std::num::NonZeroI32;
         let _serial = plx_base::testlock::serial();
         let mut app = app();
-        let globals = SeekGlobals::set(40_000_000_000, 100_000_000_000);
+        let globals = SeekGlobals::set(&mut app, 40_000_000_000, 100_000_000_000);
         super::super::bridge::nav_push(&mut app.pages, AppArg::Player);
         frame(&mut app, 16);
         let seek = HudCommand::Seek(SeekBy::Secs(NonZeroI32::new(10).unwrap()));
@@ -6330,7 +6354,9 @@ mod lifecycle_regression_tests {
         rig.accept_start();
         assert!(rig.app.adapters.player.is_live(), "fixture must create the actual Engine");
         // The measured decoder-release case: a paused video behind the screensaver.
-        set_paused(true);
+        assert!(plx_media::player::transport::set_transport_paused(
+            &mut rig.app.adapters.player, true,
+        ));
         let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
 
         plx_media::player::note_decoder_revoked_for_test();
@@ -6386,7 +6412,9 @@ mod lifecycle_regression_tests {
         rig.resolve();
         rig.accept_start();
         assert!(rig.app.adapters.player.is_live(), "fixture must create the actual Engine");
-        set_paused(paused);
+        assert!(plx_media::player::transport::set_transport_paused(
+            &mut rig.app.adapters.player, paused,
+        ));
         let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
 
         plx_media::player::note_decoder_revoked_for_test();
@@ -6663,7 +6691,7 @@ mod lifecycle_regression_tests {
             plx_media::player::transport::set_transport_paused(&mut rig.app.adapters.player, true),
             "the fixture's pause is accepted"
         );
-        assert!(paused(), "the Engine is under the viewer's pause");
+        assert!(viewer_paused_for(&rig.app.adapters.player), "the common owner holds the viewer's pause goal");
         // Prepared after a refused foreground Load, with the pump's replacement Engine live. (The
         // `PlayClock` that follows a CurrentAttempt landing is not driven here: the host rig arms
         // the Engine's initial hold from the pause at its START, so a pause pressed afterwards
@@ -6697,7 +6725,7 @@ mod lifecycle_regression_tests {
             },
         );
         assert!(
-            paused(),
+            viewer_paused_for(&rig.app.adapters.player),
             "a Load that builds no Engine must not publish the viewer's resume over the live Engine's pause"
         );
     }
@@ -7262,6 +7290,9 @@ mod lifecycle_regression_tests {
                 && plx_media::player::state(&app.player.session) == plx_media::player::PlaybackState::Error
         });
         plx_media::player::SHARED.ended.store(true, std::sync::atomic::Ordering::Relaxed);
+        publish_feed_fixture_facts(&mut app.player.session, |facts| {
+            facts.ended = Some(true);
+        });
     }
 
     /// `settle` for the frames after BACK from the player to Home: the page dip may wait dark at its
@@ -8968,9 +8999,12 @@ mod lifecycle_regression_tests {
             }],
         );
         plx_media::player::restore_state_for_test(plx_media::player::PlaybackState::Playing as u8);
-        plx_media::player::SHARED
-            .playpos_ns
-            .store(30_000_000_000, std::sync::atomic::Ordering::Relaxed);
+        publish_feed_fixture_facts(&mut rig.app.player.session, |facts| {
+            facts.position_ns = Some(30_000_000_000);
+            facts.duration_ns = Some(60_000_000_000);
+            facts.started = Some(true);
+            facts.status = Some(plx_media::player::PlaybackState::Playing);
+        });
         let mut t = 16;
         // The slot reaches the screen in `update`, which runs after the frame that ticks the
         // countdown — so it takes two frames for the countdown to see it.
@@ -9003,6 +9037,9 @@ mod lifecycle_regression_tests {
 
         // No engine in this rig (the state is forced), so nothing recovers under the end.
         plx_media::player::SHARED.ended.store(true, std::sync::atomic::Ordering::Relaxed);
+        publish_feed_fixture_facts(&mut rig.app.player.session, |facts| {
+            facts.ended = Some(true);
+        });
         let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
         fr.now = t;
         unsafe { playback_tick(&mut rig.app, &mut fr); }
@@ -9079,6 +9116,11 @@ mod lifecycle_regression_tests {
         assert!(rig.app.adapters.player.is_live(), "fixture must create the actual Engine");
         plx_media::player::SHARED.duration_ns.store(60_000_000_000, Ordering::Relaxed);
         plx_media::player::SHARED.playpos_ns.store(pos_ms * 1_000_000, Ordering::Relaxed);
+        publish_feed_fixture_facts(&mut rig.app.player.session, |facts| {
+            facts.duration_ns = Some(60_000_000_000);
+            facts.position_ns = Some(pos_ms * 1_000_000);
+            facts.started = Some(true);
+        });
     }
 
     /// Where E1's `state=stopped` report and its `/:/scrobble` sit in the fixture's request log,
