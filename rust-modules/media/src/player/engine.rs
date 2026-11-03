@@ -1174,7 +1174,7 @@ fn with_window_id(mt: &MainThread, p: &str) -> String {
 
 pub use super::route_start::{reload_at, reload_transcode, reload_transcode_tracked,
     stop_bufferfeed, suspend_bufferfeed, switch_audio_native, ReloadOutcome};
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub(super) use super::route_start::{RELOAD_AT_LOG, RELOAD_PREROLL_LOG};
 
 pub use super::route_start::{start_bufferfeed, start_bufferfeed_tracked, BufferfeedStartOutcome};
@@ -1861,58 +1861,7 @@ pub fn foreground_follows_load(pa: &mut super::adapter::PlayerAdapter, attempt: 
 /// the "stopped" timeline scrobble, the server transcode stop, and the URL clear.
 pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, for_reload: bool) {
     FAILED_ENGINE_RELEASE_ARMED.store(false, Ordering::Release);
-    // A URI-mode probe session (dev trigger `plxnative-uriprobe`) ends with the playback it stands
-    // in for, whatever ended it (Back, an app switch, the next Play): its machine settles a start
-    // still pending and requests unload/close; the adapter retains its window until release. It owns no Engine, so the
-    // Engine-less ritual below then finishes the stop (the transcode session, the route) as it does
-    // for a start which failed before an Engine existed.
-    #[cfg(feature = "devtriggers")]
-    super::uriprobe_drive::stop(ps, pa);
-    // A start still queued behind the previous object's `Unload` is the playback this stop ends.
-    // Always sent: the machine owns whether anything is queued (a no-op otherwise), and no copy of
-    // that fact in the session can go stale across a landing that replaced the session.
-    {
-        let mut fx = Vec::new();
-        pa.release_step(&super::release::ReleaseEvent::CancelQueued, &mut fx);
-        let _ = super::route_start::run_release_effects(ps, pa, fx, None, false);
-    }
-    // A prepared route whose native start failed has no Engine but still owns its exact PMS
-    // resource and Session projection. A real stop must retire that ownership exactly once;
-    // returning here used to leak the candidate forever while the reducer remained Failed.
-    if !pa.is_live() {
-        // An Engine-less flight (a resume, or a rollback no Engine waits on) has no Engine to take down with it, and an app-switch suspend
-        // keeps the session for the foreground restore, which reserves its own start transaction:
-        // drop the flight as a live Engine's suspend would (`Stable`, landing discarded, only its
-        // replacement stopped). A full stop below clears it itself.
-        if for_reload && crate::route::engineless_flight_outstanding() {
-            crate::route::begin_engine_teardown(true);
-        }
-        if !for_reload {
-            // A real stop under the failure read-out whose Engine was released
-            // ([`release_failed_engine`]) ends the playback the Engine would have ended: the
-            // position it stopped at is the one the server keeps.
-            let mut final_report = None;
-            if crate::route::engine_failure(ps).is_some() {
-                let dur = SHARED.duration_ns.load(Ordering::Relaxed);
-                let pos = crate::route::unpresented_resume_ns(ps);
-                crate::player::report::ended(ps, pos, dur);
-                let rk = crate::route::cur_rk(ps);
-                final_report = (!rk.is_empty() && dur > 0).then(|| (rk, pos / 1_000_000, dur / 1_000_000));
-            }
-            crate::route::scrobble_stop(ps, final_report, None);
-            crate::route::begin_engine_teardown(false);
-            crate::route::drop_original_recovery(ps);
-            crate::route::clear_url(ps);
-            SHARED.reset_session();
-            TX.reset();
-            super::claim_hold::clear();
-            // Nothing here is asynchronous, so the fence `begin_engine_teardown` just raised is
-            // already spent. Publish the completed stop rather than latching `Stopping` — see
-            // `route::finish_engine_teardown`.
-            crate::route::finish_engine_teardown();
-        }
-        return;
-    }
+    if !super::route_start::begin_teardown(ps, pa, for_reload) { return; }
     // A preview Load that has not returned yet must not be joined on this frame. Bind is skipped
     // while the flag is set, so the picture never reaches the plane. The next halt joins once
     // the thread has already finished.
@@ -1931,41 +1880,13 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::a
     // mutation of the route the next Load is about to own.
     let mut sp = TeardownSpans::new();
     let mut unload_th = None;
-    crate::route::begin_engine_teardown(for_reload);
+    super::route_start::begin_feed_teardown(for_reload);
     SHARED.stop_hls_clock();
     let mut eng = pa.take().expect("main-thread live check and take are one transaction");
     pa.retire_load_attempt(eng.route_start);
     let stream = matches!(eng.source, Source::Stream { .. });
 
-    // capture the final-position report BEFORE teardown zeroes playpos/duration (a reload is
-    // not a stop — don't scrobble "stopped", it would falsely pause/mark-watched the item)
-    // **The one place a playback really ENDS.** `for_reload` covers a direct-play seek reload, an
-    // ABR rung change and an app-switch suspend — each of which destroys an ENGINE and keeps the
-    // playback — so reporting an ending on any of them would turn the completion rate into a
-    // measure of how often people scrub. Read before the teardown below zeroes both values, for
-    // the same reason `final_report` is.
-    if !for_reload {
-        crate::player::report::ended(
-            ps,
-            SHARED.playpos_ns.load(Ordering::Relaxed),
-            SHARED.duration_ns.load(Ordering::Relaxed),
-        );
-    }
-    let final_report = if for_reload {
-        None
-    } else {
-        let rk = crate::route::cur_rk(ps);
-        let dur = SHARED.duration_ns.load(Ordering::Relaxed);
-        if !rk.is_empty() && dur > 0 {
-            Some((
-                rk,
-                SHARED.playpos_ns.load(Ordering::Relaxed) / 1_000_000,
-                dur / 1_000_000,
-            ))
-        } else {
-            None
-        }
-    };
+    let final_report = super::route_start::final_report(ps, for_reload);
 
     // The side subtitle reader first: it reads the original Part over its own transport and must
     // be gone (its socket shut, its cues cleared) before the demux it was paired with is joined.
@@ -1973,7 +1894,7 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::a
     super::subside::stop(if for_reload { "reload" } else { "stop" });
     sp.mark("subside");
     // 1. unblock every thread (abort queues, close the demux socket)
-    let mut report_th = pa.stop_timeline(eng.route_start);
+    let mut report_th = super::route_start::stop_feed_timeline(pa, eng.route_start);
     if stream {
         // abort BOTH lanes: unblock the demux if it's parked in aq_push on a full lane
         for q in [eng.aq_video.as_mut(), eng.aq_audio.as_mut()]
@@ -2044,9 +1965,7 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::a
     // stop and samples; the route reducer revalidates its lease
     // before each network effect.
     sp.mark("http_close");
-    if !for_reload {
-        crate::route::scrobble_stop(ps, final_report, report_th.take());
-    }
+    super::route_start::after_physical_close(ps, for_reload, final_report, &mut report_th);
     sp.mark("scrobble");
     // 3. Release the native object (see `release_native_object` for the proof chain), unless its
     // Load is still in flight — then hand it, its thread and its payload to the adapter.
@@ -2102,35 +2021,7 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::a
         TX.reset();
         super::claim_hold::clear();
     }
-    if !for_reload {
-        // **The carried link estimate dies with the PLAYBACK, not with the engine** (I8). A reload
-        // is the same item on the same link at a new position — a seek, a quality pick, an
-        // app-switch resume — and re-measuring the link from nothing across one is what made every
-        // skip re-ramp the ladder for ten to twenty seconds.
-        SHARED.clear_abr_seed();
-        // The failure is retained across the rollback reload only; a new playback must not carry
-        // another item's PMS response into its diagnostics.
-        SHARED.clear_abr_failure();
-        // A deferred Original recovery outlives nothing: the playback it belonged to is over, so
-        // there is no frame left that could confirm it and no route left to roll back to. The
-        // encoder it was holding is still running on the server, which is why this RETIRES rather
-        // than forgets — see `route::drop_original_recovery`.
-        crate::route::drop_original_recovery(ps);
-        crate::route::clear_url(ps); // the transcode stop rode out with `scrobble_stop` above
-    } else if let Some(t) = report_th {
-        // A reload posts no `stopped`, so there is nothing to order against: detach. Its own
-        // ReportStop is already set, so it exits after its current POST and cannot be revived by
-        // the next session — which is exactly what the shared flag could not guarantee.
-        drop(t);
-    }
-    // Every worker `begin_engine_teardown` fenced is joined and the URL is gone: the stop is
-    // COMPLETE as far as the route is concerned, so retire the fence too. The native object may
-    // still be inside its off-frame `Unload`; that is the adapter's fence (`PendingRelease`), not
-    // the route's, and every native start finishes it first. A reload keeps its own phase
-    // (`Prepared`/`OriginalTrial`), which is the transaction the caller is about to start.
-    if !for_reload {
-        crate::route::finish_engine_teardown();
-    }
+    super::route_start::finish_feed_teardown(ps, for_reload, report_th);
     sp.mark("reset");
     sp.emit(if for_reload { "reload" } else { "stop" });
     match unload_th {
