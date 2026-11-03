@@ -5,7 +5,8 @@
 #![deny(clippy::debug_assert_with_mut_call)]
 use crate::aq::AuQueue;
 use plx_playback_contract::adaptive::{Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, AdaptivePhysicalPort, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, ExplorationFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, RoundId, TrialActuatorPort, TrialClock, TrialId, VariantFact};
-use plx_playback_contract::demux::{DemuxClock, DemuxEffect, DemuxSession, PauseLane};
+use plx_playback_contract::demux::{DemuxCallbackEffect, DemuxClock, DemuxEffect, DemuxObserver, DemuxSession, PauseLane};
+use std::sync::Arc;
 use plx_playback_contract::SourceKey;
 use plx_play_feed::SendPtr;
 use crate::player::SHARED;
@@ -488,9 +489,14 @@ impl Src {
 /// multi handle reused across playlist and segment URLs.
 struct HlsNet {
     hs: *mut HttpStream,
+<<<<<<< HEAD
     curl: Option<Box<dyn RangeReader>>,
     range: Arc<dyn RangeFactory>,
     credential_gate: plx_net::stream::redirect::CredentialGate,
+=======
+    curl: Option<Box<crate::curlio::CurlSource>>,
+    observer: Arc<dyn DemuxObserver>,
+>>>>>>> ce0daaf51 (Sample demux duration before mutable diagnostic sink)
 }
 
 /// **The live-transfer terminal rule.** A partial response is right-censored evidence.  PMS may
@@ -1027,8 +1033,12 @@ fn exploration_timeout_is_final(
 /// byte offset. Boxed so its address is stable for the C callbacks.
 struct AvioState {
     src: Src,
+<<<<<<< HEAD
     range: Arc<dyn RangeFactory>,
     credential_gate: plx_net::stream::redirect::CredentialGate,
+=======
+    observer: Arc<dyn DemuxObserver>,
+>>>>>>> ce0daaf51 (Sample demux duration before mutable diagnostic sink)
     aq: *mut AuQueue,
     off: i64,
     size: i64,
@@ -1281,7 +1291,10 @@ impl AvioState {
                 if self.first_byte_at.is_none() {
                     self.first_byte_at = Some(std::time::Instant::now());
                 }
-                SHARED.dg_net_rx.fetch_add(n as i64, Ordering::Relaxed);
+                if !self.observer.publish(DemuxCallbackEffect::NetworkBytes(n as i64)) {
+                    self.io_failed = true;
+                    return false;
+                }
                 continue;
             }
             self.bounce.truncate(start);
@@ -1604,7 +1617,10 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
             }
             s.body_bytes = s.body_bytes.saturating_add(r as u64);
             s.off += r as i64;
-            SHARED.dg_net_rx.fetch_add(r as i64, Ordering::Relaxed);
+            if !s.observer.publish(DemuxCallbackEffect::NetworkBytes(r as i64)) {
+                s.io_failed = true;
+                return -1;
+            }
             return r;
         }
     }
@@ -1783,15 +1799,13 @@ fn frame_read_failed(state: &mut AvioState, result: c_int) -> bool {
             "ff: media transport failed during av_read_frame r={result}{cause}"
         ));
         if let Some(f) = failure {
-            SHARED.dg_transport_rc.store(f.rc, Ordering::Release);
-            SHARED
-                .dg_transport_age_ms
-                .store(f.age_ms.min(i64::MAX as u64) as i64, Ordering::Release);
-            SHARED
-                .dg_transport_reopen_failed
-                .store(f.reopen_failed, Ordering::Release);
+            state.observer.publish(DemuxCallbackEffect::TransportRc(f.rc));
+            state.observer.publish(DemuxCallbackEffect::TransportAgeMs(
+                f.age_ms.min(i64::MAX as u64) as i64,
+            ));
+            state.observer.publish(DemuxCallbackEffect::TransportReopenFailed(f.reopen_failed));
         }
-        SHARED.demux_io_failed.store(true, Ordering::Release);
+        state.observer.publish(DemuxCallbackEffect::IoFailed);
     }
     true
 }
@@ -3637,6 +3651,7 @@ unsafe fn log_hls_video_change(fmt: *mut AVFormatContext) {
 
 unsafe fn hls_input(
     src: Src,
+    observer: Arc<dyn DemuxObserver>,
     size: i64,
     aq: *mut AuQueue,
     reserve_deadline: ReserveDeadlineState,
@@ -3649,8 +3664,12 @@ unsafe fn hls_input(
     let mut input = HlsInput {
         state: Box::new(AvioState {
             src,
+<<<<<<< HEAD
             range: Arc::clone(&net.range),
             credential_gate: net.credential_gate,
+=======
+            observer,
+>>>>>>> ce0daaf51 (Sample demux duration before mutable diagnostic sink)
             aq,
             off: 0,
             size,
@@ -3968,7 +3987,11 @@ unsafe fn hls_demux_segment(
         }
     };
     let body_started = std::time::Instant::now();
+<<<<<<< HEAD
     let mut input = hls_input(src, size, aq, reserve_deadline, transport_watchdog, runtime, net)?;
+=======
+    let mut input = hls_input(src, net.observer.clone(), size, aq, reserve_deadline, transport_watchdog, runtime)?;
+>>>>>>> ce0daaf51 (Sample demux duration before mutable diagnostic sink)
     let probe_done = std::time::Instant::now();
     let streams = (*input.fmt).streams;
     let vi = av_find_best_stream(
@@ -5177,7 +5200,11 @@ fn hls_demux(
             kbps: i64::from(start.initial_kbps()),
         });
     }
+<<<<<<< HEAD
     let mut net = HlsNet { hs, curl: None, range: transport.range, credential_gate: transport.credential_gate };
+=======
+    let mut net = HlsNet { hs, curl: None, observer: session.observer() };
+>>>>>>> ce0daaf51 (Sample demux duration before mutable diagnostic sink)
     let mut cursor = hls_cursor_open(origin, path, aq, &mut net, true, None)?;
     if abr.is_some() {
         session.media().publish(DemuxEffect::AbrHlsDeclared {
@@ -5977,8 +6004,12 @@ pub(crate) fn demux(
 
                 let mut state = Box::new(AvioState {
                     src,
+<<<<<<< HEAD
                     range: Arc::clone(&transport.range),
                     credential_gate: transport.credential_gate,
+=======
+                    observer: session.observer(),
+>>>>>>> ce0daaf51 (Sample demux duration before mutable diagnostic sink)
                     aq: aq_p,
                     off: 0,
                     size,
@@ -6366,7 +6397,12 @@ pub(crate) fn demux(
                     ),
                     None => String::new(),
                 };
+<<<<<<< HEAD
                 let line = format!(
+=======
+                let duration_ns = session.clock().duration_ns();
+                session.media().record(&format!(
+>>>>>>> ce0daaf51 (Sample demux duration before mutable diagnostic sink)
                     "ff: v=#{vi} codec={cname} codec_id={} {}x{} trc={} pri={} spc={}{dv} a=#{ai} dur_ns={}",
                     (*vcp).codec_id,
                     (*vcp).width,
@@ -6374,9 +6410,14 @@ pub(crate) fn demux(
                     (*vcp).color_trc,
                     (*vcp).color_primaries,
                     (*vcp).color_space,
+<<<<<<< HEAD
                     session.clock().duration_ns()
                 );
                 session.media().record(&line);
+=======
+                    duration_ns
+                ));
+>>>>>>> ce0daaf51 (Sample demux duration before mutable diagnostic sink)
                 if force_original && dovi_conf(vcp).is_some_and(|d| {
                     force_original_dovi_unsupported(&d)
                 }) {
