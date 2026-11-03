@@ -670,10 +670,17 @@ struct SecState {
     items: SecItems,
     cursor: Option<Arc<Cursor>>,
     /// A read-back changed a row this section's QUERY depends on (see
-    /// [`BrowseState::apply_view_local`]), or the server created or removed items
-    /// ([`BrowseState::listings_changed`]): what it lists is out of date though every row on
+    /// [`BrowseState::apply_view_local`]): what it lists is out of date though every row on
     /// screen is right. Cleared by any re-query.
     membership_stale: bool,
+    /// Items were created or removed on the server ([`BrowseState::listings_changed`]): the rows
+    /// on screen stay until the re-list covers the wanted window, then swap together.
+    relist: bool,
+    /// The replacement listing, unpublished until every wanted page has landed.
+    relist_items: Option<SecItems>,
+    /// More was created or removed while the re-list was out: its answer may predate that, so
+    /// one more re-list follows it rather than dropping it (a long scan never starves the grid).
+    relist_again: bool,
 }
 
 /// What the Collections page borrows the section's single query from: the grid's sort, genre and
@@ -881,6 +888,9 @@ impl Default for SecState {
             items: SecItems::default(),
             cursor: None,
             membership_stale: false,
+            relist: false,
+            relist_items: None,
+            relist_again: false,
         }
     }
 }
@@ -900,10 +910,25 @@ impl SecState {
         self.cursor = None;
         // A stale flag spent here is what the letters hear of a membership change that was
         // flagged rather than reset at once (`apply_view_local`, `listings_changed`).
-        if self.membership_stale {
+        if self.membership_stale || self.relist {
             self.letters_gen = self.letters_gen.wrapping_add(1);
         }
         self.membership_stale = false;
+        self.relist = false;
+        self.relist_items = None;
+        self.relist_again = false;
+    }
+    /// The next replacement page needed by the reader, including a focus outside the window.
+    /// A shrinking listing first loads its new tail when the old window is past the end.
+    fn relist_next(&self, want: (usize, usize), focus: Option<usize>) -> Option<usize> {
+        let Some(items) = &self.relist_items else { return Some(want.0 / PAGE * PAGE) };
+        if items.len == 0 { return None; }
+        let lo = want.0.min(items.len - 1);
+        let hi = want.1.min(items.len).max(lo + 1);
+        (lo / PAGE..hi.div_ceil(PAGE))
+            .chain(focus.map(|i| i.min(items.len - 1) / PAGE))
+            .find(|&page| items.page_missing(page))
+            .map(|page| page * PAGE)
     }
     fn query_filters(&self, section_kind: SecKind) -> Vec<(String, String)> {
         let mut filters = self.library_type.type_terms(section_kind);
@@ -1187,6 +1212,9 @@ impl BrowseState {
         if state.total < 0 {
             return true;
         }
+        if state.relist {
+            return true;
+        }
         let (lo, hi) = self.want;
         let first = lo / PAGE;
         let last = hi.saturating_sub(1) / PAGE;
@@ -1292,7 +1320,7 @@ impl BrowseState {
             if section == self.cur {
                 continue;
             }
-            if state.membership_stale {
+            if state.membership_stale || state.relist {
                 state.reset_listing();
                 continue;
             }
@@ -1506,6 +1534,9 @@ impl BrowseState {
         for (i, state) in self.states.iter_mut().enumerate() {
             let (covered, changed) = state.items.apply_view(at, edit);
             hit |= changed;
+            if let Some(items) = &mut state.relist_items {
+                items.apply_view(at, edit);
+            }
             if covered && facts && state.membership_depends_on_viewing() {
                 if i == current {
                     hit |= !state.membership_stale;
@@ -1548,20 +1579,13 @@ impl BrowseState {
         self.requery_gen = Some(self.gen);
         true
     }
-    /// Items were created or removed on `sid` (a notification, never a press).
-    ///
-    /// Every other section of the server forgets its pages AND its cursor (`reset_listing`): its
-    /// next visit fetches afresh. The current section, when it is one of the server's and lists
-    /// something, is only marked stale, as a read-back that moved a row's membership marks it: the
-    /// grid on screen is never listed again under the reader, and the Library page re-queries it
-    /// (keeping the reader's place, [`Self::requery_stale`]) when a page is pushed over it. With no
-    /// Library page on the stack nobody is looking (`library_on_stack` is false), so the re-query
-    /// starts at once and `requery_owed` has the store pumped to land its first page.
-    /// True when a section was marked or reset, or a re-query was started.
-    fn listings_changed(&mut self, sid: ServerId, library_on_stack: bool) -> bool {
+    /// Items were created or removed on `sid`: re-list the current section without emptying it
+    /// (its rows stay on screen until the replacement window is ready, so the grid absorbs the
+    /// change in place) and make every other section of the server forget its pages.
+    fn listings_changed(&mut self, sid: ServerId, _library_on_stack: bool) -> bool {
         let current = self.cur();
+        let mut relist = false;
         let mut hit = false;
-        let mut marked = false;
         for i in 0..self.states.len() {
             if self.section_sid(i) != Some(sid) {
                 continue;
@@ -1570,21 +1594,30 @@ impl BrowseState {
             if i != current {
                 state.membership_changed();
                 hit = true;
-            } else if state.total >= 0 || state.fetch == SecFetch::Loading {
-                hit |= !state.membership_stale;
-                state.membership_stale = true;
-                marked = true;
+            } else if state.relist {
+                // One is owed already: the one out is kept, and one more follows it.
+                state.relist_again = true;
+            } else if state.total >= 0 {
+                state.relist = true;
+                relist = true;
+            } else if state.fetch == SecFetch::Loading {
+                // Keep the initial read, but do not let its pre-notification answer be final.
+                state.relist = true;
+                state.relist_again = true;
+                hit = true;
             }
         }
-        if marked && !library_on_stack {
-            hit |= self.requery_stale();
+        if relist {
+            // A page still out for the old listing is dropped when it lands.
+            self.refetch_gen();
         }
-        hit
+        relist || hit
     }
     /// Is a membership re-query's first page still owed, so that the store must be pumped even
     /// though no Library page is on top to do it?
     pub fn requery_owed(&self) -> bool {
         self.requery_gen == Some(self.gen) && self.cur_state().is_some_and(|s| s.fetch == SecFetch::Loading)
+            || self.cur_state().is_some_and(|s| s.relist)
     }
     fn note_library_choice(&mut self, i: usize) {
         let (Some(kind), Some(section)) = (self.section_kind(i), self.sections.get(i)) else {
@@ -3001,8 +3034,13 @@ impl BrowseState {
         let current = self.cur();
         let Some(state) = self.states.get(current) else { return };
         let Some(section) = self.sections.get(current) else { return };
-        let start = if state.total < 0 {
+        // A staged replacement already knows its total, even if the published initial
+        // listing is still unknown. Continue its window rather than re-reading page zero.
+        let start = if state.total < 0 && state.relist_items.is_none() {
             0
+        } else if state.relist {
+            let Some(page) = state.relist_next(self.want, self.focus) else { return };
+            page
         } else {
             let (lo, hi) = self.want;
             let hi = hi.min(state.total as usize);
@@ -3124,7 +3162,7 @@ impl BrowseState {
                             self.retry_cd = 120;
                             if result.gen == self.query_gen() {
                                 if let Some(state) = self.state_mut(result.sec) {
-                                    if state.fetch != SecFetch::Failed {
+                                    if !state.relist && state.fetch != SecFetch::Failed {
                                         state.fetch = SecFetch::Failed;
                                         changed = true;
                                     }
@@ -3170,7 +3208,7 @@ impl BrowseState {
                                         state.genre_resolved = result.resolved.genre;
                                     }
                                 }
-                                if state.total != result.total {
+                                if !state.relist && state.total != result.total {
                                     state.total = result.total;
                                     state.items.resize(state.total as usize);
                                 }
@@ -3185,7 +3223,21 @@ impl BrowseState {
                                 // edit published since (a press while it was out) is made again.
                                 let mut items = result.items;
                                 ledger.patch(stamp, items.iter_mut());
-                                state.items.land(result.start, items, &keep);
+                                if state.relist {
+                                    let pending = state.relist_items.get_or_insert_with(SecItems::default);
+                                    pending.resize(result.total as usize);
+                                    pending.land(result.start, items, &keep);
+                                    if state.relist_next(wanted, focus).is_none() {
+                                        state.items = state.relist_items.take().unwrap();
+                                        state.total = result.total;
+                                        state.letters_gen = state.letters_gen.wrapping_add(1);
+                                        state.relist = std::mem::take(&mut state.relist_again);
+                                        plx_base::eventlog::log(&format!(
+                                            "browse: re-list landed total={} again={}", result.total, state.relist));
+                                    }
+                                } else {
+                                    state.items.land(result.start, items, &keep);
+                                }
                                 changed = true;
                             }
                         }
@@ -3385,7 +3437,7 @@ fn fetch_listing_page(
             }
         }
     }
-    let total = if container.total_size > 0 { container.total_size }
+    let total = if container.total_size > 0 || container.metadata.is_empty() { container.total_size }
         else { query.start + container.metadata.len() as i64 };
     let items = container.metadata.iter().map(|item| parse_item(item, sid)).collect();
     ListingPage { items, total, sorts, restored, genres, genre, resolved }

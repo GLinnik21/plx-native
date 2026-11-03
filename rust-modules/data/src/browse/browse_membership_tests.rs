@@ -175,39 +175,22 @@ fn listings_changed(browse: &mut TestBrowse, sid: ServerId, library_on_stack: bo
 }
 
 #[test]
-fn created_or_removed_items_mark_the_open_section_stale_while_a_library_page_is_up() {
-    let _g = plx_base::testlock::serial();
-    let (_cleanup, mut browse, sid, _) = registered_page_source();
-    resident(sid, &mut browse);
-    let gen = browse.state.query_gen();
-
-    assert!(listings_changed(&mut browse, sid, true), "marking the listing stale is a change the store must publish");
-    assert!(stale(&mut browse));
-    assert_eq!(browse.state.query_gen(), gen, "nothing is fetched under the reader: the Library page re-queries it when covered");
-    let state = &browse.state.states()[0];
-    assert_eq!((state.fetch, state.total), (SecFetch::Ready, 1));
-    assert!(state.items.get(0).is_some());
-    assert!(!browse.state.requery_owed());
-
-    assert!(!listings_changed(&mut browse, sid, true), "a second report changes nothing");
-}
-
-#[test]
-fn created_or_removed_items_re_query_at_once_when_no_library_page_is_up() {
+fn created_or_removed_items_re_list_the_open_section_without_emptying_it() {
     let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, _) = registered_page_source();
     resident(sid, &mut browse);
     let gen = browse.state.query_gen();
     let shown = browse.state.listing_snapshot().view().id().unwrap().query;
 
-    assert!(listings_changed(&mut browse, sid, false));
-    assert_eq!(browse.state.query_gen(), gen.wrapping_add(1), "exactly one re-fetch: a late page of the old fetch is dropped");
+    assert!(listings_changed(&mut browse, sid, true));
+    assert_eq!(browse.state.query_gen(), gen.wrapping_add(1), "a page still out for the old listing is dropped");
     assert_eq!(browse.state.listing_snapshot().view().id().unwrap().query, shown, "not a query edit");
     assert!(!stale(&mut browse), "the flag is spent");
     let state = &browse.state.states()[0];
-    assert_eq!((state.fetch, state.total), (SecFetch::Loading, -1));
-    assert!(state.cursor.is_some(), "nobody is looking, but the reader's place stands for their return");
-    assert!(browse.state.requery_owed(), "the first page is owed with no Library page ticking the store");
+    assert_eq!((state.fetch, state.total), (SecFetch::Ready, 1), "the rows on screen stay until the re-list lands");
+    assert!(state.items.get(0).is_some());
+    assert!(state.relist && state.cursor.is_some());
+    assert!(browse.state.requery_owed(), "the re-list is owed with no Library page ticking the store");
 }
 
 #[test]
@@ -242,7 +225,7 @@ fn a_stale_section_that_is_left_forgets_its_pages_and_a_current_one_keeps_its_wi
     resident(sid, &mut browse);
     browse.state.want(0, PAGE, None);
     assert!(listings_changed(&mut browse, sid, true));
-    assert!(stale(&mut browse));
+    assert!(browse.state.states()[0].relist, "the open section is being re-listed");
     browse.state.set_cur(1);
     let first = &browse.state.states()[0];
     assert_eq!((first.fetch, first.total), (SecFetch::Loading, -1), "coming back fetches afresh, not the list from before the change");

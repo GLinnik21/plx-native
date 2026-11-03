@@ -39,10 +39,9 @@
 //! Home refetch and one section-shelf invalidate (coalesced and spaced like a `stopped`'s), and its
 //! library listings one `BrowseCmd::ListingsChanged`, spent at most once per
 //! [`LIBRARY_SPACING_FRAMES`] per server (a change inside the spacing stays owed, coalesced, until
-//! it is due). The open grid is never listed again while it is visible: it is marked stale and
-//! re-queried, keeping the reader's place, when a page covers it (at once when no Library page is
-//! on the navigation stack, `Shown::library`); the server's other sections forget their pages, and
-//! a section left while stale forgets its pages too.
+//! it is due). The open grid keeps its rows while a replacement wanted window is read, then
+//! swaps in place. A change during that read owes one more re-list. The server's other sections,
+//! and a section left while a re-list is outstanding, forget their pages.
 //!
 //! **Owed work is spent only when [`Stores::reread_allowed`]** (not under the player, not while a
 //! recording or replay is armed). Until then it is queued, not dropped, and coalesced.

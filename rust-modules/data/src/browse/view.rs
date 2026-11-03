@@ -40,6 +40,7 @@ struct ListingData {
     genre: Option<Arc<GenreEntry>>,
     unwatched: bool,
     membership_stale: bool,
+    relist: bool,
     cursor: Option<Arc<super::Cursor>>,
 }
 
@@ -56,6 +57,13 @@ impl ListingSnapshot {
     pub fn with_cursor(mut self, cursor: super::Cursor) -> Self {
         if let Some(data) = &mut self.data {
             data.cursor = Some(Arc::new(cursor));
+        }
+        self
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_relist(mut self) -> Self {
+        if let Some(data) = &mut self.data {
+            data.relist = true;
         }
         self
     }
@@ -212,6 +220,7 @@ impl ListingSnapshot {
                 genre: None,
                 unwatched: false,
                 membership_stale: false,
+                relist: false,
                 cursor: None,
             }),
         }
@@ -317,6 +326,11 @@ impl<'a> ListingView<'a> {
     pub fn membership_stale(self) -> bool {
         self.0.data.as_ref().is_some_and(|s| s.membership_stale)
     }
+    /// The server created or removed items and the re-list is out: the rows shown are the old
+    /// listing's, which the replacement wanted window replaces in place (`BrowseCmd::ListingsChanged`).
+    pub fn relisting(self) -> bool {
+        self.0.data.as_ref().is_some_and(|s| s.relist)
+    }
     pub fn library_type(self) -> super::LibraryType {
         self.0.data.as_ref().map_or(super::LibraryType::default(), |s| s.library_type)
     }
@@ -415,6 +429,7 @@ impl super::BrowseState {
                     genre: state.genre.clone(),
                     unwatched: state.unwatched,
                     membership_stale: state.membership_stale,
+                    relist: state.relist,
                     cursor: state.cursor.clone(),
                 }),
         }
