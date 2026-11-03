@@ -416,7 +416,7 @@ fn run(spec: Spec, stop: Arc<SideStop>) {
                 seek_target_ns: (seeking && target >= 0).then_some(target),
             }
         };
-        let end = read_once(&cfg, &stop, &anchor, &mut delta, &resume, &playpos, &clock, &retention);
+        let end = read_once(&cfg, &stop, &anchor, &mut delta, &resume, &playpos, &clock, &retention, &publish_exact);
         save(delta);
         match end {
             RunEnd::Stopped | RunEnd::Measured => return,

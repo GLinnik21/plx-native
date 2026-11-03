@@ -431,7 +431,8 @@ impl Delivery {
 /// staying [`plx_playback_contract::subtitle::WINDOW_NS`] ahead of the playhead. Returns when stopped or on failure; a Part that
 /// simply ends idles until the stop.
 ///
-/// `playpos` is the remux playhead, `clock` its `(pts_shift, disp_base)`. A
+/// `playpos` is the remux playhead, `clock` its `(pts_shift, disp_base)`, and
+/// `on_exact_delta` publishes only a byte-exact keyframe match to the caller. A
 /// [`ReadCfg::clock_only`] pass returns [`RunEnd::Measured`] after the keyframe scan (or at once if
 /// handed a delta) instead of decoding anything. Never panics on bad input: every FFmpeg value is
 /// checked before use.
@@ -444,6 +445,7 @@ pub(crate) fn read_once(
     playpos: &dyn Fn() -> i64,
     clock: &dyn Fn() -> (i64, i64),
     retention: &dyn Fn() -> CaptionRetention,
+    on_exact_delta: &dyn Fn(i64),
 ) -> RunEnd {
     let (mut job, tracks, generation) = match open_side(cfg, stop) {
         Ok(v) => v,
@@ -469,7 +471,7 @@ pub(crate) fn read_once(
         *delta = Some(chosen);
         if scan.matched.is_some() {
             // Only byte-exact matching gives the sidecar's render clock a correction.
-            crate::player::subside::publish_exact(chosen);
+            on_exact_delta(chosen);
         }
         if cfg.clock_only { return RunEnd::Measured; }
     }
@@ -517,6 +519,7 @@ mod tests {
     use super::*;
     use crate::http_test_support::{serve_file, with_counting_listener};
     use crate::player::SHARED;
+    use std::sync::atomic::AtomicI64;
 
     /// A one-pixel image set on `track` stamped `pts` (Part time).
     fn set(track: i32, pts: i64) -> SubCue<'static> {
@@ -826,11 +829,12 @@ mod tests {
 
         crate::player::ass_source::reset();
         crate::player::request_subtitle(0);
-        crate::player::subside::stop("fixture: start from no measurement");
+        let exact_delta = Arc::new(AtomicI64::new(i64::MIN));
         let stop = SideStop::new();
         let url = format!("http://127.0.0.1:{port}/library/parts/1/out.mkv");
         let reader = {
             let stop = Arc::clone(&stop);
+            let exact_delta = Arc::clone(&exact_delta);
             std::thread::spawn(move || {
                 let cfg = ReadCfg { url: &url, offset_ns: 2_000_000_000, ordinal: 0, kbps: 0, clock_only: false };
                 let anchor = Anchor::of(0, &[0]); // matches no real keyframe: the assumed mapping
@@ -844,6 +848,7 @@ mod tests {
                     &|| 0,
                     &|| (0, 1_000_000_000),
                     &|| retention(0),
+                    &|ns| exact_delta.store(ns, Ordering::Release),
                 );
                 (end, delta)
             })
@@ -867,9 +872,9 @@ mod tests {
         let (end, delta) = reader.join().expect("the reader must not panic");
         assert_eq!(delta, Some(1_000_000_000), "assumed delta = keyframe at 2 s - (0 + disp_base 1 s)");
         assert_eq!(
-            crate::player::subside::exact_delta_ns(),
-            None,
-            "the assumed delta must never reach the sidecar draw's mirror"
+            exact_delta.load(Ordering::Acquire),
+            i64::MIN,
+            "the assumed delta must never be published"
         );
 
         // A clock-only pass over the same Part (what a sidecar over this remux gets): it scans for
@@ -888,6 +893,7 @@ mod tests {
             &|| 0,
             &|| (0, 1_000_000_000),
             &|| retention(0),
+            &|ns| exact_delta.store(ns, Ordering::Release),
         );
         assert_eq!(clock_end, RunEnd::Measured, "a clock-only pass ends after its scan");
         assert_eq!(clock_delta, Some(1_000_000_000), "the same mapping the track reader measured");
@@ -895,7 +901,7 @@ mod tests {
             crate::player::ass_source::selected(0).is_none(),
             "a clock-only pass installs no ASS source: nothing of it is drawn"
         );
-        assert_eq!(crate::player::subside::exact_delta_ns(), None, "no byte-exact match here: nothing is published");
+        assert_eq!(exact_delta.load(Ordering::Acquire), i64::MIN, "no byte-exact match here: nothing is published");
 
         STOP_SERVER.store(true, Ordering::Release);
         let _ = server.join();

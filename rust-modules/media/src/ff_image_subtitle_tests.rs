@@ -234,7 +234,7 @@ fn terminated_ass_header_and_packets_render_through_http_side_reader() {
             };
             let anchor = Anchor::of(0, &[0]);
             let mut delta = Some(0);
-            super::subside::read_once(&cfg, &stop, &anchor, &mut delta, &|_| 0, &|| 0, &|| (0, 0), &fixture_retention)
+            super::subside::read_once(&cfg, &stop, &anchor, &mut delta, &|_| 0, &|| 0, &|| (0, 0), &fixture_retention, &|_| {})
         })
     };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);

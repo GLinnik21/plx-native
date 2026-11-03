@@ -79,6 +79,7 @@ mod subtitle_bitmap;
 use shared_resources::{AudioSwitch, Shared, Transport, AUDIO_PICK_WINDOW_MS};
 pub mod sidecar;
 pub mod sub_charset; // legacy-encoding text subtitles (GBK, Big5, Shift_JIS, ...) read as UTF-8; decided once per track
+#[cfg(feature = "play-feed")]
 pub mod subside; // the side subtitle reader's thread and state (dev trigger `plxnative-subside`)
 pub(crate) mod subtitle_cue; // shared text/ASS/bitmap cue publication for main and side readers
 #[cfg(all(feature = "hostsim", feature = "play-feed"))]
@@ -2383,9 +2384,9 @@ pub fn subtitle_draw(ps: &crate::route::PlaybackSession) -> Option<(std::sync::A
 /// the content time actually on screen. The viewer's timing offset is subtracted after this, by the
 /// caller, and composes with it.
 ///
-/// Moved only when ALL hold: the selection is a sidecar, the app draws it over a live remux
+/// Moved only when ALL hold: the attempt uses Feed, the selection is a sidecar, the app draws it over a live remux
 /// ([`crate::route::SubtitlePresenter::ClientOverRemux`]) and the reader matched this run's first
-/// keyframe byte for byte ([`subside::exact_delta_ns`]). Never for an embedded track — the reader
+/// keyframe byte for byte (`subside::exact_delta_ns` on Feed). Never for an embedded track — the reader
 /// has moved its cues by `-delta` already, so adding it here too would correct them twice — and
 /// never from an ASSUMED delta, which was measured 2.002 s wrong (see `ff_subside`'s
 /// `sidecar_clock_at_917…` test). **Off the reader's gate** (a remote link, a Part above the
@@ -2399,7 +2400,12 @@ pub fn sidecar_clock_ns(ps: &crate::route::PlaybackSession, playhead_ns: i64) ->
     if !crate::route::sidecar_over_remux(ps) {
         return playhead_ns;
     }
-    subside::exact_delta_ns().map_or(playhead_ns, |delta| playhead_ns.saturating_add(delta))
+    #[cfg(feature = "play-feed")]
+    if ps.attempt_view().backend() == Some(attempt_view::Backend::Feed) {
+        return subside::exact_delta_ns().map_or(playhead_ns, |delta| playhead_ns.saturating_add(delta));
+    }
+    // A URI attempt has no side reader measurement; its source clock is used as observed.
+    playhead_ns
 }
 
 /// The oldest cue end a store must still hold: the LATEST delay ([`SUBTITLE_OFFSET_LATEST_MS`])
