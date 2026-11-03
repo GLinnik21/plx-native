@@ -11305,16 +11305,17 @@ pub fn enhancement_test_session(route: EnhTestFixture) -> (PlaybackSession, Serv
 // what row was picked; whether that means a native stream switch, a server re-transcode, or a
 // burn refresh is decided HERE, next to the codec sets and the transcode state it depends on. ----
 
-/// Commit an audio-track pick: NATIVE switch (feed the chosen stream from the same direct-play
-/// file — no transcode, keeps 4K HEVC) when the item direct-plays AND the target codec is
-/// direct-playable; else a server re-transcode with that stream selected. `audio.ordinal` is the
+/// Commit an audio-track pick. Auto switches within a direct-play file when the target codec is
+/// direct-playable, otherwise it asks the server to convert with that stream selected. Force keeps
+/// the exact selected source track for the physical backend to attempt; a later native refusal
+/// never turns this pick into a server conversion. `audio.ordinal` is the
 /// CONTAINER audio ordinal (the menu converts its row via metadata::audio_ordinal); `audio` itself
 /// is the frozen `CarriedAudio` snapshot (issue #266) the menu built via `CarriedAudio::from_stream`.
 ///
-/// **Returns whether the route accepted the pick**, which is what the track memory is written on: it
-/// is `false` only for the Forced refusal (the pick is not played and the verdict says so). A pick
-/// deferred behind a pending Original handoff, or one the enhancement reconcile re-routes, is
-/// accepted.
+/// **Returns whether the route accepted the pick**, which is what the track memory is written on.
+/// Force accepts the original selection even when a physical backend may later refuse its wire
+/// format. A pick deferred behind a pending Original handoff, or one the enhancement reconcile
+/// re-routes, is accepted.
 ///
 /// **While the subtitle mode is Forced only the pick also re-points it** (FO): the forced
 /// track in the language of the audio just chosen is committed as a derived selection
