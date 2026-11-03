@@ -6,7 +6,7 @@
 use crate::aq::AuQueue;
 use crate::adaptive;
 use plx_playback_contract::adaptive::TrialObservation as TrialEvent;
-use plx_playback_contract::adaptive::{Acquisition, BufferFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock, TrialId};
+use plx_playback_contract::adaptive::{Acquisition, AutomaticTransition, BufferFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock, TrialId};
 use plx_playback_contract::SourceKey;
 use crate::player::threads::SendPtr;
 use crate::player::SHARED;
@@ -5887,21 +5887,19 @@ fn hls_demux(
                     }
                 }
         }
-        let automatic_permitted = match decision {
-            crate::abr::Decision::Stay => true,
-            crate::abr::Decision::Prime(proposal) => {
-                let kind = match proposal.direction {
-                    crate::abr::Direction::Up => crate::player::HlsAutomaticTransition::QualityUp,
-                    crate::abr::Direction::Down => crate::player::HlsAutomaticTransition::QualityDown,
-                };
-                SHARED.hls_automatic_transition_permitted(kind)
-            }
-        };
-        let action = state.next_action(
-            decision, &telemetry, sample, rollback_media_ms, remaining_ms, now_ms(),
-            paused_now, encoder_cleanup_ready, automatic_permitted,
-            SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
-            SHARED.hls_rebuffering.load(Ordering::Acquire),
+        let action = state.next_round_action(
+            &round, sample, rollback_media_ms, remaining_ms, || now_ms(),
+            paused_now, encoder_cleanup_ready,
+            |kind| SHARED.hls_automatic_transition_permitted(match kind {
+                AutomaticTransition::QualityUp =>
+                    crate::player::HlsAutomaticTransition::QualityUp,
+                AutomaticTransition::QualityDown =>
+                    crate::player::HlsAutomaticTransition::QualityDown,
+            }),
+            || (
+                SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
+                SHARED.hls_rebuffering.load(Ordering::Acquire),
+            ),
         );
         // The coordinator has already chosen the policy edge. This feed handles only
         // the measured acquisition, queue work, and diagnostics for that edge.

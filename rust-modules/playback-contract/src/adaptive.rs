@@ -33,6 +33,9 @@ pub enum FeedAction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrialClock { Playhead, UnpausedElapsed }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AutomaticTransition { QualityUp, QualityDown }
+
 /// Physical transfer and output geometry before a candidate policy verdict.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Acquisition {

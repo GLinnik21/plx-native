@@ -5,7 +5,7 @@
 use crate::{abr, route};
 use plx_playback_contract::adaptive::PublicationGate;
 use plx_playback_contract::adaptive::{
-    Acquisition, ActiveQuantum, BufferFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
+    Acquisition, ActiveQuantum, AutomaticTransition, BufferFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
     TrialObservation, TrialPhase, TrialProtocol, TrialProtocolError,
 };
 use plx_playback_contract::SourceKey;
@@ -922,7 +922,30 @@ impl Coordinator {
     /// Called after the higher-priority latched source switch had its publication
     /// opportunity. A probe spends its permit only on a Stay boundary; a quality
     /// transaction receives its pending reserve policy from the same controller.
-    pub(crate) fn next_action(
+    pub(crate) fn next_round_action(
+        &mut self, round: &RoundDecision, sample: abr::SegmentSample,
+        rollback_media_ms: Option<u32>, remaining_ms: i64,
+        now_ms: impl FnOnce() -> u64, paused: bool, cleanup_ready: bool,
+        permission: impl FnOnce(AutomaticTransition) -> bool,
+        rebuffer: impl FnOnce() -> (bool, bool),
+    ) -> RoundAction {
+        let automatic_permitted = match round.decision {
+            abr::Decision::Stay => true,
+            abr::Decision::Prime(proposal) => permission(match proposal.direction {
+                abr::Direction::Up => AutomaticTransition::QualityUp,
+                abr::Direction::Down => AutomaticTransition::QualityDown,
+            }),
+        };
+        let now_ms = now_ms();
+        let (rebuffer_requested, rebuffering) = rebuffer();
+        self.next_action(
+            round.decision, &round.telemetry, sample, rollback_media_ms,
+            remaining_ms, now_ms, paused, cleanup_ready, automatic_permitted,
+            rebuffer_requested, rebuffering,
+        )
+    }
+
+    fn next_action(
         &mut self, decision: abr::Decision, telemetry: &abr::ControllerTelemetry,
         sample: abr::SegmentSample, rollback_media_ms: Option<u32>, remaining_ms: i64,
         now_ms: u64, paused: bool, cleanup_ready: bool,
