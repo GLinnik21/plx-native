@@ -7,35 +7,15 @@ use plx_base::eventlog::log;
 use plx_play_feed::bf_split;
 
 pub(super) struct FeedOpenRequest {
-    pub origin: plx_net::net::origin::Origin,
-    pub path: String,
-    pub video_codec: String,
-    pub audio_codec: String,
-    pub pcm_is_lossy: bool,
-    pub audio_channels: i64,
-    /// Backend-owned Load facts, with route and metadata types mapped at capture time.
-    pub feed_payload: plx_play_feed::PayloadFacts,
-    pub payload_options: plx_play_feed::PayloadOptions,
-    pub original_dv: OriginalDvFacts,
-    pub session: Option<Box<dyn plx_playback_contract::demux::DemuxSession>>,
-    pub hls_abr: Option<Box<dyn plx_playback_contract::adaptive::AdaptiveSession>>,
-    pub auto_original: Option<Box<dyn plx_playback_contract::adaptive::OriginalSession>>,
+    pub physical: plx_play_feed::open::PhysicalOpen,
 }
 
 /// Original wire evidence for Force preflight and the declaration log. The converted sink
 /// presentation is separately represented by `feed_payload.dv`.
-#[derive(Clone, Copy)]
-pub(super) struct OriginalDvFacts {
-    pub present: bool,
-    pub profile: i64,
-    pub bl_compat: i64,
-    pub el_present: bool,
-}
-
-impl From<plx_data::metadata::Dovi> for OriginalDvFacts {
-    fn from(dv: plx_data::metadata::Dovi) -> Self {
-        Self { present: dv.present, profile: dv.profile,
-            bl_compat: dv.bl_compat, el_present: dv.el_present }
+pub(super) fn original_dv(dv: plx_data::metadata::Dovi) -> plx_play_feed::open::OriginalDvFacts {
+    plx_play_feed::open::OriginalDvFacts {
+        present: dv.present, profile: dv.profile,
+        bl_compat: dv.bl_compat, el_present: dv.el_present,
     }
 }
 
@@ -142,36 +122,42 @@ impl FeedOpenRequest {
         let payload = PayloadFacts::capture(ps);
         let feed_payload = payload.to_feed();
         let payload_options = payload_options(&feed_payload);
-        let original_dv = payload.dovi.into();
+        let original_dv = original_dv(payload.dovi);
         let source = plx_plex::plex::StreamUrl::parse(&url);
         Self {
-            origin: source.origin,
-            path: source.path,
-            video_codec: route::stream_vcodec(ps),
-            audio_codec: route::stream_acodec(ps),
-            pcm_is_lossy: route::stream_pcm_is_lossy(ps),
-            audio_channels: route::stream_achannels(ps),
-            feed_payload,
-            payload_options,
-            original_dv,
-            // The exact route attempt and native epoch do not exist until after claim. The
-            // common owner attaches their addressed observer before launching the worker.
-            session: None,
-            hls_abr: route::hls_abr_control(ps).map(|control| {
-                crate::adaptive::boxed_session(
-                    crate::adaptive::Start::from(control),
-                    Box::new(crate::adaptive::PlayerAdaptiveEffects),
-                )
-            }),
-            auto_original: route::auto_original_watch(ps).map(|watch| {
-                crate::adaptive::boxed_original_session(crate::adaptive::OriginalStart::from(watch))
-            }),
+            physical: plx_play_feed::open::PhysicalOpen {
+                origin: source.origin,
+                path: source.path,
+                video_codec: route::stream_vcodec(ps),
+                audio_codec: route::stream_acodec(ps),
+                pcm_is_lossy: route::stream_pcm_is_lossy(ps),
+                audio_channels: route::stream_achannels(ps),
+                feed_payload,
+                payload_options,
+                original_dv,
+                // The exact route attempt and native epoch do not exist until after claim. The
+                // common owner attaches their addressed observer before launching the worker.
+                session: None,
+                hls_abr: route::hls_abr_control(ps).map(|control| {
+                    crate::adaptive::boxed_session(
+                        crate::adaptive::Start::from(control),
+                        Box::new(crate::adaptive::PlayerAdaptiveEffects),
+                    )
+                }),
+                auto_original: route::auto_original_watch(ps).map(|watch| {
+                    crate::adaptive::boxed_original_session(crate::adaptive::OriginalStart::from(watch))
+                }),
+            },
         }
     }
 
     /// The common owner checks the credential policy before claiming the native attempt.
     pub fn credential_transport_allowed(&self) -> bool {
-        plx_plex::http::credential_transport_allowed(&self.origin, &self.path, &[])
+        plx_plex::http::credential_transport_allowed(&self.physical.origin, &self.physical.path, &[])
+    }
+
+    pub fn into_physical(self) -> plx_play_feed::open::PhysicalOpen {
+        self.physical
     }
 }
 
@@ -209,10 +195,10 @@ mod tests {
         route::set_stream_codecs(&mut ps, "h264", "aac");
         let open = FeedOpenRequest::capture(&ps, "https://example.invalid/first".into());
         route::set_stream_codecs(&mut ps, "hevc", "eac3");
-        assert_eq!(open.origin.base(), "https://example.invalid:32400");
-        assert_eq!(open.path, "/first");
-        assert_eq!(open.video_codec, "h264");
-        assert_eq!(open.audio_codec, "aac");
+        assert_eq!(open.physical.origin.base(), "https://example.invalid:32400");
+        assert_eq!(open.physical.path, "/first");
+        assert_eq!(open.physical.video_codec, "h264");
+        assert_eq!(open.physical.audio_codec, "aac");
     }
 }
 

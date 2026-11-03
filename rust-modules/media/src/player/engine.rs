@@ -10,7 +10,7 @@
 //! rule for the rest of this file — a function here takes the token **iff** it reaches the slot
 //! or the ACB/Starfish seam, so the parameter carries information. `arm_seek` runs on the main
 //! thread too and deliberately does not take one: it only publishes to `SHARED`.
-use super::feed_open::FeedOpenRequest;
+use plx_play_feed::open::{OriginalDvFacts, PhysicalOpen};
 #[cfg(all(test, feature = "hostsim"))]
 use super::route_start::{exit_native, exit_native_with, finish_release_for_test, poll_release,
     reap_abandoned_load, NativeExit};
@@ -808,7 +808,7 @@ fn force_open_refusal(
     requested_rate: i32,
     audio_codec: &str,
     no_audio: bool,
-    original_dovi: super::feed_open::OriginalDvFacts,
+    original_dovi: OriginalDvFacts,
 ) -> Option<ForceOpenRefusal> {
     // The payload decision describes the *converted* presentation. Force keeps the source
     // bytes, so a known Profile 7 or enhancement layer cannot truthfully use that declaration.
@@ -840,7 +840,7 @@ mod force_video_wire_tests {
         );
         assert_eq!(declared.declared().expect("Auto can convert P7").profile_id, 8);
         assert!(matches!(
-            force_open_refusal(super::super::RATE_NORMAL, "ac3", false, original.into()),
+            force_open_refusal(super::super::RATE_NORMAL, "ac3", false, crate::player::feed_open::original_dv(original)),
             Some(ForceOpenRefusal::OriginalEnhancementLayer),
         ), "Force preserves original P7 bytes, so a converted P8 Load declaration is untrue");
         assert!(original.presentation(
@@ -856,12 +856,12 @@ mod force_video_wire_tests {
         };
         for source in [original(7, false), original(8, true)] {
             assert!(matches!(
-                force_open_refusal(super::super::RATE_NORMAL, "ac3", false, source.into()),
+                force_open_refusal(super::super::RATE_NORMAL, "ac3", false, crate::player::feed_open::original_dv(source)),
                 Some(ForceOpenRefusal::OriginalEnhancementLayer),
             ));
         }
         for source in [plx_data::metadata::Dovi::NONE, original(8, false)] {
-            assert!(force_open_refusal(super::super::RATE_NORMAL, "ac3", false, source.into()).is_none());
+            assert!(force_open_refusal(super::super::RATE_NORMAL, "ac3", false, crate::player::feed_open::original_dv(source)).is_none());
         }
     }
 }
@@ -1085,7 +1085,7 @@ pub(super) enum NativeOpenError { Refused }
 /// has already frozen its URL, codec declaration, playback rate, and trace identity.
 pub(super) fn prepare_native_open(
     mt: &MainThread,
-    open: Option<FeedOpenRequest>,
+    open: Option<PhysicalOpen>,
     sample: Option<super::feed_open::SampleSource>,
     is_h265: bool,
     session_rate: i32,
@@ -1317,7 +1317,7 @@ pub(super) fn prepare_native_open(
 /// One physical Load declaration and its native callback guards, prepared before the route owner
 /// mints an attempt. Dropping it on a superseded route retracts both guards automatically.
 pub(super) struct NativePrepared {
-    open: Option<FeedOpenRequest>,
+    open: Option<PhysicalOpen>,
     sample: Option<Box<SampleBuf>>,
     stream: bool,
     payload_c: std::ffi::CString,
