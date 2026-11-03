@@ -1,11 +1,10 @@
-//! **The Player ADAPTER** — the native session object and the main-thread token that confines it
+//! **The Player ADAPTER** — the main-thread token and the owned backend resources it confines
 //! (restructure spec §2.2, phase 9).
 //!
 //! An adapter holds OS/FFI resources and never logical state; the decisions live one field away in
-//! [`crate::player::machine::Player`]. What this one holds is the [`Engine`] — the Starfish/ACB
-//! session, its HTTP stream box, its AU queues and the handles of its native/demux workers —
-//! together with the [`MainThread`] token. The adapter separately owns the periodic Plex
-//! reporter and the addressed native-Load result inbox.
+//! [`crate::player::machine::Player`]. Buffer-feed ownership is grouped in [`FeedResources`]:
+//! the [`Engine`] slot, native Load receipts, abandoned Load and parked release. The adapter
+//! retains the [`MainThread`] token, periodic Plex reporter, release policy, and URI admission.
 //!
 //! # Why the slot moved here, and what replaced the token argument
 //!
@@ -19,45 +18,27 @@
 //! construction** ([`PlayerAdapter::new`] takes it by value, and `plex_run` is the only place that
 //! can mint one), so holding a `&mut PlayerAdapter` IS the proof the old argument stood in for —
 //! and it is a proof the borrow checker keeps rather than one a caller could satisfy twice. Two
-//! live `&mut` to the engine no longer requires a convention: it does not compile.
+//! live `&mut` to the engine no longer requires a convention: it does not compile. The current
+//! `engine()`/`split()` accessors remain an intermediate bridge for the existing feed pump.
 //!
 //! The rest of `player/engine.rs` keeps its `mt: &MainThread` parameters unchanged. They gate a
 //! DIFFERENT thing — the ACB/Starfish seam (`tv::sink::VideoSink`'s methods, whose bind order is a
 //! sequence of calls with no locking behind it) — and that surface is not this module's.
 
 use super::engine::Engine;
-use super::{threads, timeline};
+use super::{feed_resources::FeedResources, threads, timeline};
 use plx_base::task::MainThread;
 
-/// The `ENGINE` slot and its confinement, as one owned value (`App.adapters.player`).
+/// Common coordinator and main-thread proof, as one owned value (`App.adapters.player`).
 pub struct PlayerAdapter {
     /// Proof, held rather than passed: see the module doc. It is a ZST, so this costs nothing and
     /// is what makes `&mut PlayerAdapter` mean "the main thread, exclusively".
     mt: MainThread,
-    /// The live native session, or `None` between playbacks.
-    engine: Option<Engine>,
+    /// The native feed slot and its Load/release worker resources.
+    feed: FeedResources,
     /// Backend-independent periodic reporting resource for the current physical attempt.
     timeline: Option<timeline::TimelineRunner>,
-    /// The Load worker returns only a token and native verdict; the main thread owns the route
-    /// attempt mapping and settles it only after the matching Engine occupies this adapter.
-    load_tx: std::sync::mpsc::Sender<threads::LoadOutcome>,
-    load_rx: std::sync::mpsc::Receiver<threads::LoadOutcome>,
-    load_tickets: std::collections::BTreeMap<u64, (crate::route::RouteStartAttempt, u32)>,
-    next_load_token: u64,
     repair: Option<(u64, std::sync::mpsc::Receiver<Result<(), plx_platform::tv::sandbox::Failure>>)>,
-    /// A timed-out native `Load` whose media thread had not returned when its Engine was torn
-    /// down. Owned here, not by a static, for the same reason the Engine is: releasing it calls
-    /// the Starfish seam, which only the main thread may do. See `engine::AbandonedLoad`.
-    abandoned_load: Option<super::engine::AbandonedLoad>,
-    /// A real stop's native object whose `Unload` is still running on its worker
-    /// (`engine::PendingRelease`): the worker's handle and the Engine it keeps alive. What may
-    /// happen to it is decided by [`release`](Self::release), the pure machine this holds beside it.
-    /// **The fence the off-frame release relies on is `player::sink()`:** while the object is
-    /// `Releasing` the main thread's verbs reach the `RefusingSink` fence (`player::FENCE`), so [`mt`](Self::mt) and
-    /// [`split`](Self::split) hand out the token without waiting for the worker (PLX-NATIVE-1Q: that
-    /// wait had no bound). A `RefCell` because `take_finished_release` takes `&self`; the adapter is
-    /// `!Send` (it holds the token), so the cell never crosses a thread.
-    pending_release: std::cell::RefCell<Option<super::engine::PendingRelease>>,
     release: super::release::NativeRelease,
     /// What became of the start the FOREGROUND restore queued behind the release
     /// ([`watch_queued_start`](Self::watch_queued_start)); the lifecycle machine polls it.
@@ -102,18 +83,11 @@ pub enum QueuedLanding {
 impl PlayerAdapter {
     /// Take the token. `app::boot` calls this once, with the token `plex_run` minted.
     pub fn new(mt: MainThread) -> Self {
-        let (load_tx, load_rx) = std::sync::mpsc::channel();
         Self {
             mt,
-            engine: None,
+            feed: FeedResources::new(),
             timeline: None,
-            load_tx,
-            load_rx,
-            load_tickets: std::collections::BTreeMap::new(),
-            next_load_token: 0,
             repair: None,
-            abandoned_load: None,
-            pending_release: std::cell::RefCell::new(None),
             release: super::release::NativeRelease::new(),
             queued_watch: QueuedWatch::Unwatched,
             preview_admission: None,
@@ -185,17 +159,13 @@ impl PlayerAdapter {
     /// Park a real stop's off-frame release. At most one exists: a start over it is deferred.
     pub fn park_release(&mut self, release: super::engine::PendingRelease) {
         let (epoch, at) = (release.epoch(), release.handed_off_at());
-        {
-            let mut slot = self.pending_release.borrow_mut();
-            debug_assert!(slot.is_none(), "a second off-frame release cannot exist");
-            *slot = Some(release);
-        }
+        self.feed.park_release(release);
         self.release_step(&super::release::ReleaseEvent::UnloadHandedOff { epoch, at }, &mut Vec::new());
     }
 
     /// Is a stopped native object's `Unload` still owed its main-thread tail?
     pub fn has_pending_release(&self) -> bool {
-        self.pending_release.borrow().is_some()
+        self.feed.has_pending_release()
     }
 
     /// The release machine's verdict on one event; the effects are the caller's to run.
@@ -219,18 +189,13 @@ impl PlayerAdapter {
 
     /// The parked release, taken only once its worker has returned (so joining it cannot block).
     pub(super) fn take_finished_release(&self) -> Option<super::engine::PendingRelease> {
-        let mut slot = self.pending_release.borrow_mut();
-        if slot.as_ref().is_some_and(|p| p.is_finished()) {
-            slot.take()
-        } else {
-            None
-        }
+        self.feed.take_finished_release()
     }
 
     /// The parked release whether or not its worker returned: only the exit, which leaks it
     /// (`engine::leak_parked_for_exit`), takes it that way.
     pub(super) fn take_pending_release_any(&self) -> Option<super::engine::PendingRelease> {
-        self.pending_release.borrow_mut().take()
+        self.feed.take_pending_release_any()
     }
 
     /// UI-thread resource effect. The owner spends the attempt before the worker can run.
@@ -262,44 +227,35 @@ impl PlayerAdapter {
     /// The live session, borrowed mutably.
     #[inline]
     pub fn engine(&mut self) -> Option<&mut Engine> {
-        self.engine.as_mut()
+        self.feed.engine()
     }
 
     /// Is a session live? Distinct from [`engine`](Self::engine) because it answers without taking
     /// the exclusive borrow — `start_bufferfeed`'s double-start guard only needs to ask.
     #[inline]
     pub fn is_live(&self) -> bool {
-        self.engine.is_some()
+        self.feed.is_live()
     }
 
     /// Address one Load verdict without handing route state to the native worker.
     pub(super) fn load_receipt(&mut self, attempt: crate::route::RouteStartAttempt, native_epoch: u32,
         trace_generation: u32) -> threads::LoadReceipt {
-        self.next_load_token = self.next_load_token.checked_add(1).expect("Load receipt IDs exhausted");
-        let token = self.next_load_token;
-        self.load_tickets.insert(token, (attempt, native_epoch));
-        threads::LoadReceipt::new(token, trace_generation, self.load_tx.clone())
+        self.feed.load_receipt(attempt, native_epoch, trace_generation)
     }
 
     /// A refused thread spawn cannot return a receipt; retire its mapping immediately.
-    pub(super) fn cancel_load_receipt(&mut self, token: u64) { self.load_tickets.remove(&token); }
+    pub(super) fn cancel_load_receipt(&mut self, token: u64) { self.feed.cancel_load_receipt(token); }
 
     /// Teardown retires the whole physical attempt before a still-blocked Load can return.
     pub(super) fn retire_load_attempt(&mut self, attempt: crate::route::RouteStartAttempt) {
-        self.load_tickets.retain(|_, (owned, _)| *owned != attempt);
+        self.feed.retire_load_attempt(attempt);
     }
 
     /// The main-thread coordinator's only Load-result landing. Late outcomes from an abandoned
     /// or replaced Engine cannot settle a successor's route, even if a worker returns afterward.
     pub(super) fn drain_load_outcomes(&mut self, ps: &mut crate::route::PlaybackSession) {
-        let outcomes: Vec<_> = self.load_rx.try_iter().collect();
-        for outcome in outcomes {
-            let Some((attempt, native_epoch)) = self.load_tickets.remove(&outcome.token) else { continue; };
-            if native_epoch != outcome.native_epoch
-                || !self.engine.as_ref().is_some_and(|engine| engine.route_start == attempt && engine.native_epoch == native_epoch) {
-                continue;
-            }
-            let result = if outcome.ok { crate::route::RouteStartResult::Started }
+        for (attempt, ok) in self.feed.take_load_outcomes() {
+            let result = if ok { crate::route::RouteStartResult::Started }
                 else { crate::route::RouteStartResult::StartFailed };
             let _ = crate::route::settle_route_start(ps, attempt, result);
         }
@@ -335,13 +291,13 @@ impl PlayerAdapter {
     /// [`is_live`](Self::is_live) first.
     #[inline]
     pub fn install(&mut self, e: Engine) {
-        self.engine = Some(e);
+        self.feed.install(e);
     }
 
     /// Take the session out of the slot; the caller then joins its workers and drops it.
     #[inline]
     pub fn take(&mut self) -> Option<Engine> {
-        self.engine.take()
+        self.feed.take()
     }
 
     /// Is a URI-mode probe session running? `start_bufferfeed`'s double-start guard asks this beside
@@ -400,22 +356,21 @@ impl PlayerAdapter {
     /// Park a still-in-flight Load for a later main-thread release. At most one can exist: the
     /// C seam owns one object at a time and every start is refused while this slot is full.
     pub fn park_abandoned_load(&mut self, load: super::engine::AbandonedLoad) {
-        debug_assert!(self.abandoned_load.is_none(), "a second abandoned Load cannot exist");
-        self.abandoned_load = Some(load);
+        self.feed.park_abandoned_load(load);
     }
 
     /// Is a native object still parked behind a Load that has not been released?
     pub fn has_abandoned_load(&self) -> bool {
-        self.abandoned_load.is_some()
+        self.feed.has_abandoned_load()
     }
 
     /// The parked Load, borrowed mutably (its once-only log latch), or taken once it returned.
     pub fn abandoned_load_mut(&mut self) -> Option<&mut super::engine::AbandonedLoad> {
-        self.abandoned_load.as_mut()
+        self.feed.abandoned_load_mut()
     }
 
     pub fn take_abandoned_load(&mut self) -> Option<super::engine::AbandonedLoad> {
-        self.abandoned_load.take()
+        self.feed.take_abandoned_load()
     }
 
     /// The token, for the ACB/Starfish seam. `tv::sink::VideoSink`'s methods still take one — see the
@@ -439,7 +394,7 @@ impl PlayerAdapter {
     /// which was a COMMENT for as long as the slot handed out `&'static mut`.
     #[inline]
     pub fn split(&mut self) -> (Option<&mut Engine>, &MainThread) {
-        (self.engine.as_mut(), &self.mt)
+        (self.feed.engine(), &self.mt)
     }
 }
 

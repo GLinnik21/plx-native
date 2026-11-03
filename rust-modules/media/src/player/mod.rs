@@ -29,6 +29,7 @@ pub mod ass_script; // a sidecar script fed in windows around the playhead
 pub mod ass_source; // bounded embedded scripts and subtitle presentation clock
 pub mod engine;
 mod feed_open; // one resolved request for the prepared route's physical feed open
+mod feed_resources; // private ownership of the native feed slot and worker receipts
 pub mod foreground;
 pub mod lifecycle;
 pub mod machine;
