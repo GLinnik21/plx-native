@@ -469,7 +469,7 @@ impl MoreMenuState {
         let forced = plx_media::route::forced_direct_play(ps);
         let rows = rows_for(forced);
         let current = plx_media::route::quality();
-        let speed = plx_media::player::play_rate_permille();
+        let speed = plx_media::player::selected_rate(ps).unwrap_or(plx_media::player::RATE_NORMAL);
         let speeds = plx_media::player::speed_offer(ps);
         let mut form = FormTable::new(plx_ui::table_screen::BAND_BASE);
         form.table.compact = true; // a short action list — BODY labels, like the profile menu
@@ -600,7 +600,7 @@ impl MoreMenuState {
             forced,
             rows_for(forced),
             plx_media::route::quality(),
-            plx_media::player::play_rate_permille(),
+            plx_media::player::selected_rate(ps).unwrap_or(plx_media::player::RATE_NORMAL),
             plx_media::player::speed_offer(ps),
         )
     }

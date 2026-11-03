@@ -8,9 +8,12 @@ use std::os::raw::{c_char, c_int};
 
 #[cfg(all(not(feature = "hostsim"), not(test), feature = "play-feed"))]
 const SINK: &dyn plx_platform::tv::sink::VideoSink = &plx_platform::webos::video_sink::StarfishSink;
-#[cfg(feature = "hostsim")]
+#[cfg(all(feature = "hostsim", feature = "play-feed"))]
 const SINK: &dyn plx_platform::tv::sink::VideoSink = &plx_media::player::ffi_host::HostSink;
-#[cfg(all(not(feature = "hostsim"), any(test, not(feature = "play-feed"))))]
+#[cfg(any(
+    all(feature = "hostsim", not(feature = "play-feed")),
+    all(not(feature = "hostsim"), any(test, not(feature = "play-feed"))),
+))]
 const SINK: &dyn plx_platform::tv::sink::VideoSink = &plx_platform::tv::sink::NoSink;
 
 // URI-only native builds retain the display vtable without the packet-feed vtable.
