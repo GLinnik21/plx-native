@@ -1929,6 +1929,17 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     preview: env.preview,
                 };
                 if let super::uri_preflight::Verdict::Known(known) = port.qualify(off, request) {
+                    // These describe the *source* for a possible later viewer-requested Feed
+                    // conversion. They are not URI admission gates: the native certificate has
+                    // already qualified the original bytes independently of Feed declarations.
+                    let dovi = plan.playing.as_ref().map_or(plx_data::metadata::Dovi::NONE,
+                        |item| item.dovi);
+                    let dv_decision = frozen_dv_decision(env.dolby_vision_mode,
+                        env.dv_capability, dovi, vcodec);
+                    plan.source_decodable = video_direct_plays(vcodec, width, height,
+                        dv_decision.presentation, &env.caps);
+                    plan.src_dovi = dovi;
+                    plan.src_dv_decision = dv_decision;
                     plan.vcodec = vcodec.to_owned();
                     plan.acodec = source_audio.as_ref().map_or_else(|| acodec.to_owned(), |(_, codec, _)| codec.clone());
                     plan.fps = plan.src_fps;

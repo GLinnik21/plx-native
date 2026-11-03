@@ -321,6 +321,8 @@ fn a_qualified_dts_original_lands_from_the_real_resolve_worker_before_feed_decis
         std::thread::sleep(std::time::Duration::from_millis(5));
     };
     assert!(start.uri_offer.is_some(), "the addressed landing carries the owned URI source");
+    assert!(source_decodable(&ps),
+        "a qualified URI original still retains the source's separate Feed conversion feasibility");
     assert!(ps.source_selection().is_some_and(|selection| selection.audio_sid == 31342));
     assert_eq!(ps.source_selection().expect("source intent").subtitle_sid, 0,
         "a file with no subtitle streams has no native track to disable");
