@@ -1551,36 +1551,36 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     if super::engine::release_failed_engine(ps, pa) {
         return;
     }
+    if !pa.is_live() {
+        // A worker registered a replacement for a flight that has since ended: stop it now,
+        // not whenever the next playback's Engine drains it.
+        crate::route::discard_stale_flight_landing();
+        set_state(PlaybackState::Idle);
+        return;
+    }
+    // Preserve the old per-frame ordering: diagnostic mirror, side-reader failure, then Load
+    // settlement. Borrowing the Engine only for each step lets the adapter land its owned inbox.
+    if let Some(eng) = pa.engine() { publish_diag(eng, now); }
+    if super::subside::take_failure() { crate::route::side_subtitles_failed(ps); }
+    // The native Load may return before its Engine is installed. Only this main-thread landing
+    // maps its worker token to the current attempt and settles the route, after installation.
+    pa.drain_load_outcomes(ps);
+    if let Some(attempt) = pa.engine().map(|engine| engine.route_start) {
+        let snapshot = super::timeline::TimelineSnapshot::from_content_ns(
+            SHARED.playpos_ns.load(Relaxed),
+            SHARED.duration_ns.load(Relaxed),
+            TX.paused.load(Relaxed),
+        );
+        pa.publish_timeline(attempt, snapshot);
+    }
     // ONE `&mut PlayerAdapter`, split into the live session and the seam token. Everything below
     // that replaces the session (`reload_*`) takes `pa` back, which the borrow checker only allows
     // where neither half is read afterwards — the "`eng` dangles after it, return immediately"
     // rule this function used to state in three comments and enforce by hand.
     let (eng, mut mt) = pa.split();
-    let mut eng = match eng {
-        Some(e) => e,
-        None => {
-            // A worker registered a replacement for a flight that has since ended: stop it now,
-            // not whenever the next playback's Engine drains it.
-            crate::route::discard_stale_flight_landing();
-            set_state(PlaybackState::Idle);
-            return;
-        }
-    };
-    // Republish the Engine-confined values the diagnostics read-out needs, BEFORE the early
-    // returns below. Placed here, immediately after the borrow, for two reasons: it is the one
-    // spot that cannot be forgotten as the pump grows, and it therefore keeps reporting through
-    // the `sf_ready` and producer-died bail-outs — which is precisely when a stalled user is
-    // looking at the panel. See `Shared`'s diagnostics-mirror block for the one-way rule.
-    publish_diag(eng, now);
-    // The side subtitle reader gave up: the route burns the subtitle instead (a rebuild, queued
-    // here and run by the route's own worker machinery, not on this thread).
-    if super::subside::take_failure() {
-        crate::route::side_subtitles_failed(ps);
-    }
-    // The media thread may have returned from sf_load immediately, but it is not allowed to make
-    // the route Stable before this Engine exists in the main-thread slot. Drain its exact-token
-    // result here, after installation and before any worker publication can be accepted.
-    crate::route::drain_route_start_results(ps);
+    let mut eng = eng.expect("live adapter checked before splitting it");
+    // The addressed Load inbox was drained before splitting the adapter above. Route settlement
+    // still precedes every failure/recovery branch below and every foreground result read.
     inject_refuse601(ps, eng);
     // A failed open's recovery flight (the Original rollback's rebase, the unopened source's HLS
     // fallback, the refused native audio's conversion): land it, or wait for it. Ahead of every

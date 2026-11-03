@@ -1,4 +1,4 @@
-//! player::threads — the worker threads beside the demuxer (load / timeline) + the
+//! player::threads — the Load worker beside the demuxer + the
 //! SendPtr spawn seam. The demux thread body is `ff::demux` (libavformat over a custom
 //! AVIO on stream.rs); its HttpStream box lives in the Engine (main owns it, closes it
 //! to interrupt, and outlives the threads).
@@ -9,6 +9,27 @@ use std::sync::atomic::Ordering;
 /// raw ptr we assert is Send for the spawn (the boxes/queue outlive the thread).
 pub struct SendPtr<T>(pub *mut T);
 unsafe impl<T> Send for SendPtr<T> {}
+
+/// Main-thread owned load correlation. The worker sees only this token and its return channel;
+/// the adapter maps it back to the exact route attempt after Engine installation.
+#[derive(Clone)]
+pub(super) struct LoadReceipt {
+    token: u64,
+    pub trace_generation: u32,
+    sender: std::sync::mpsc::Sender<LoadOutcome>,
+}
+impl LoadReceipt {
+    pub fn new(token: u64, trace_generation: u32, sender: std::sync::mpsc::Sender<LoadOutcome>) -> Self {
+        Self { token, trace_generation, sender }
+    }
+    pub fn token(&self) -> u64 { self.token }
+    pub(super) fn deliver(self, native_epoch: u32, ok: bool) {
+        let _ = self.sender.send(LoadOutcome { token: self.token, native_epoch, ok });
+    }
+}
+
+/// The native Load call's synchronous verdict, addressed without reading route state on-worker.
+pub(super) struct LoadOutcome { pub token: u64, pub native_epoch: u32, pub ok: bool }
 
 /// The time Starfish `Load` itself took: `since_issued` (what `Shared::mark_native_load_returned`
 /// reports, measured from `begin_native_session`) less `settings_read`, the sound-output read this
@@ -30,17 +51,17 @@ fn load_alone(since_issued: std::time::Duration, settings_read: std::time::Durat
 pub(super) fn load_thread(
     payload: SendPtr<c_char>,
     native_epoch: u32,
-    route_start: Option<crate::route::RouteStartAttempt>,
+    receipt: Option<LoadReceipt>,
     pcm_lead: super::engine::PcmLead,
 ) {
-    load_thread_with(payload, native_epoch, route_start, pcm_lead, super::engine::resolve_pcm_lead_on_load_thread);
+    load_thread_with(payload, native_epoch, receipt, pcm_lead, super::engine::resolve_pcm_lead_on_load_thread);
 }
 
 /// [`load_thread`] with the sound-output read passed in, so a test can make it take a known time.
 fn load_thread_with(
     payload: SendPtr<c_char>,
     native_epoch: u32,
-    route_start: Option<crate::route::RouteStartAttempt>,
+    receipt: Option<LoadReceipt>,
     pcm_lead: super::engine::PcmLead,
     resolve_lead: impl FnOnce(super::engine::PcmLead) -> Option<i64>,
 ) {
@@ -84,128 +105,21 @@ fn load_thread_with(
         // issue #74 item 3: the Load-returned gate opening, bucketed — never the millisecond
         // count. This is the ordinary path; `pump.rs`'s two D.1.4 budget arms record the other
         // half, for a Load that never returns at all.
-        super::report::note_load_gate_for(
-            crate::route::playback_trace_generation(),
-            super::report::LoadElapsedClass::from_ms(elapsed_ms as i64),
-        );
+        if let Some(receipt) = receipt.as_ref() {
+            super::report::note_load_gate_for(
+                receipt.trace_generation,
+                super::report::LoadElapsedClass::from_ms(elapsed_ms as i64),
+            );
+        }
     }
-    if let Some(ticket) = route_start {
-        crate::route::publish_route_start_result(
-            ticket,
-            if ok != 0 {
-                crate::route::RouteStartResult::Started
-            } else {
-                crate::route::RouteStartResult::StartFailed
-            },
-        );
+    if let Some(receipt) = receipt {
+        receipt.deliver(native_epoch, ok != 0);
     }
     if ok == 0 {
         // Publish it. This used to be logged and discarded, so a refused payload was
         // indistinguishable from a slow one and the pump waited on a `loadCompleted` that could
         // never come.
         SHARED.publish_native_load_failure(native_epoch);
-    }
-}
-
-/// How long the progress reporter waits between /:/timeline posts.
-const REPORT_INTERVAL_S: u64 = 10;
-
-/// One reporter's stop signal — **owned by that reporter and its Engine**, not shared.
-///
-/// It used to be `SHARED.report_stop` + `SHARED.report_wake`, which `reset_session` clears at the
-/// END of teardown. So a reporter still alive at that moment — parked in its POST — came back to a
-/// cleared flag and looped forever, which is precisely why teardown had to JOIN it before letting
-/// the session reset. That join is on the MAIN thread, and `stream`'s one-shot wrappers box their
-/// socket privately, so nothing could interrupt the POST: against a server that accepts and then
-/// goes quiet the frame loop parked for the rest of `SO_RCVTIMEO`. **Measured at 6974 ms** with
-/// `tools/netcond.py` in `stall@/:/timeline` mode.
-///
-/// That proxy's SCOPE was broken until 2026-08-23 (`relay` discarded it), so the run actually
-/// stalled every connection rather than only the reporter's. The number survives: it was recorded
-/// as `THREADJOIN timeline 6974ms`, one NAMED line per join, and `timeline` is the only join that
-/// could have parked whatever else was stalled — `engine::teardown` wakes the demux socket and
-/// both AU lanes before joining them, while this POST had no such wake, which is the whole reason
-/// this type exists.
-///
-/// Per-session ownership makes the stop unambiguous: a detached reporter always sees ITS OWN flag
-/// set and exits, no matter what the next session does to `SHARED`. That is what lets the join
-/// move off the main thread.
-pub struct ReportStop {
-    flag: std::sync::Mutex<bool>,
-    cv: std::sync::Condvar,
-}
-
-impl ReportStop {
-    pub fn new() -> std::sync::Arc<Self> {
-        std::sync::Arc::new(ReportStop {
-            flag: std::sync::Mutex::new(false),
-            cv: std::sync::Condvar::new(),
-        })
-    }
-
-    /// Tell this reporter to exit, and wake it so it notices now rather than up to 10 s from now.
-    pub fn stop(&self) {
-        *self.flag.lock().unwrap_or_else(|e| e.into_inner()) = true;
-        self.cv.notify_all();
-    }
-
-    /// Wait up to `secs`, returning `true` as soon as [`stop`](Self::stop) has been called.
-    ///
-    /// The loop re-checks the predicate because `wait_timeout` may wake spuriously, and a spurious
-    /// wake must not shorten the interval into an early extra POST.
-    fn wait_or_stop(&self, secs: u64) -> bool {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
-        let mut g = self.flag.lock().unwrap_or_else(|e| e.into_inner());
-        loop {
-            if *g {
-                return true;
-            }
-            let now = std::time::Instant::now();
-            if now >= deadline {
-                return false;
-            }
-            g = self
-                .cv
-                .wait_timeout(g, deadline - now)
-                .unwrap_or_else(|e| e.into_inner())
-                .0;
-        }
-    }
-}
-
-/// The ~10 s `/:/timeline` progress reporter.
-///
-/// The lease names one exact Engine. Route identity, server, PlayQueue and track projection are
-/// sampled together under `PlayerControl`; no field of the main-thread `Session` is touched here.
-pub fn timeline_thread(
-    lease: crate::route::TimelineLease,
-    stop: std::sync::Arc<ReportStop>,
-) {
-    use plx_plex::plex::TimelineState;
-    loop {
-        if stop.wait_or_stop(REPORT_INTERVAL_S) {
-            return;
-        }
-        let dur = SHARED.duration_ns.load(Ordering::Relaxed);
-        if dur <= 0 {
-            continue;
-        }
-        let t = SHARED.playpos_ns.load(Ordering::Relaxed) / 1_000_000;
-        let d = dur / 1_000_000;
-        let state = if super::TX.paused.load(Ordering::Relaxed) {
-            TimelineState::Paused
-        } else {
-            TimelineState::Playing
-        };
-        if !crate::route::report_timeline(&lease, state, t, d) {
-            return;
-        }
-        super::log(&format!(
-            "timeline {} t={}s/{}s",
-            state.as_str(),
-            t / 1000,
-            d / 1000
-        ));
     }
 }
 

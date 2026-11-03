@@ -249,8 +249,6 @@ pub struct Engine {
     pub source: Source,
     pub stream_th: Option<std::thread::JoinHandle<()>>,
     pub load_th: Option<std::thread::JoinHandle<()>>,
-    pub report_th: Option<std::thread::JoinHandle<()>>, // /:/timeline progress reporter
-    pub report_stop: Option<std::sync::Arc<threads::ReportStop>>, // ITS stop signal, not SHARED's
     /// Preview Load that must land unbound. The media join waits until the thread has returned.
     pub preview_abandon: bool,
     /// The foreground lifecycle follows this Engine's Load attempt ([`foreground_follows_load`]).
@@ -2256,10 +2254,13 @@ fn start_bufferfeed_inner(
     // the media thread constructs + loads + runs the loop (owns the GMainContext)
     let payload_ptr = threads::SendPtr(payload_c.as_ptr() as *mut c_char);
     let native_epoch = native_start.epoch();
+    let receipt = pa.load_receipt(route_attempt, native_epoch, crate::route::playback_trace_generation());
+    let receipt_token = receipt.token();
     let load_th = plx_base::task::spawn("media", move || {
-        threads::load_thread(payload_ptr, native_epoch, Some(route_attempt), audio_lead)
+        threads::load_thread(payload_ptr, native_epoch, Some(receipt), audio_lead)
     });
     if load_th.is_none() {
+        pa.cancel_load_receipt(receipt_token);
         // Without the media thread nothing is ever Loaded and nothing drains the AU queues, so the
         // demuxer would park in aq_push forever holding raw pointers into locals this return is
         // about to drop. Stop it exactly the way teardown's stream branch does — abort both lanes,
@@ -2287,24 +2288,6 @@ fn start_bufferfeed_inner(
     if let Some(target) = side_target {
         start_side_reader(&target);
     }
-
-    // progress reporter: post the play position to /:/timeline (updates resume + watched).
-    // The complete report projection and Engine epoch are captured atomically now. The reporter
-    // never reads route::Session: a stale lease stops at teardown, while active encoder changes
-    // remain synchronized with the projection under PlayerControl.
-    let report_stop = threads::ReportStop::new();
-    // `begin_timeline_reporting` is the gate: it refuses any session resolved for a preview.
-    let report_th = if stream {
-        if let Some(lease) = crate::route::begin_timeline_reporting(ps) {
-            // best-effort: refused, the only loss is that the resume point stops being posted
-            let st = report_stop.clone();
-            plx_base::task::spawn("timeline", move || threads::timeline_thread(lease, st))
-        } else {
-            None
-        }
-    } else {
-        None
-    };
 
     let (lead_at_start, lead_pending) = audio_lead.at_engine_start();
     let eng = Engine {
@@ -2342,8 +2325,6 @@ fn start_bufferfeed_inner(
         source,
         stream_th,
         load_th,
-        report_th,
-        report_stop: Some(report_stop),
         preview_abandon: false,
         foreground_follows_load: false,
         era_watch: super::era_callbacks::Watch::new(),
@@ -2362,6 +2343,7 @@ fn start_bufferfeed_inner(
     log(&format!("seek mode: {mode:?} (layout_known={layout_known} old_abi_seek={old_abi_seek})"));
     super::set_seek_mode(mode);
     pa.install(eng);
+    if stream { pa.start_timeline(ps, route_attempt); }
     native_start.commit();
     clock_start.commit();
     TX.started.store(true, Ordering::Relaxed);
@@ -2867,6 +2849,7 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     crate::route::begin_engine_teardown(for_reload);
     SHARED.stop_hls_clock();
     let mut eng = pa.take().expect("main-thread live check and take are one transaction");
+    pa.retire_load_attempt(eng.route_start);
     let stream = matches!(eng.source, Source::Stream { .. });
 
     // capture the final-position report BEFORE teardown zeroes playpos/duration (a reload is
@@ -2905,9 +2888,7 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     super::subside::stop(if for_reload { "reload" } else { "stop" });
     sp.mark("subside");
     // 1. unblock every thread (abort queues, close the demux socket)
-    if let Some(st) = eng.report_stop.take() {
-        st.stop(); // this reporter's own signal — unaffected by the reset_session below
-    }
+    let report_th = pa.stop_timeline(eng.route_start);
     if stream {
         // abort BOTH lanes: unblock the demux if it's parked in aq_push on a full lane
         for q in [eng.aq_video.as_mut(), eng.aq_audio.as_mut()]
@@ -2974,12 +2955,12 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     // `stall@/:/timeline` — whose scope was broken until 2026-08-23, so that run stalled EVERY
     // connection. The named `THREADJOIN` line is what keeps the attribution good, and step 1 above
     // is why: demux and the AU lanes are woken before they are joined, so `timeline` was the only
-    // one that could park). Safe to outlive the Engine: the reporter owns `ReportStop` and a
-    // `TimelineLease`, samples only SHARED clock state, and the route reducer revalidates the lease
+    // one that could park). Safe to outlive the Engine: the adapter-owned reporter keeps its own
+    // stop and samples; the route reducer revalidates its lease
     // before each network effect.
     sp.mark("http_close");
     if !for_reload {
-        crate::route::scrobble_stop(ps, final_report, eng.report_th.take());
+        crate::route::scrobble_stop(ps, final_report, report_th);
     }
     sp.mark("scrobble");
     // 3. Release the native object (see `release_native_object` for the proof chain), unless its
@@ -3051,7 +3032,7 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         // than forgets — see `route::drop_original_recovery`.
         crate::route::drop_original_recovery(ps);
         crate::route::clear_url(ps); // the transcode stop rode out with `scrobble_stop` above
-    } else if let Some(t) = eng.report_th.take() {
+    } else if let Some(t) = report_th {
         // A reload posts no `stopped`, so there is nothing to order against: detach. Its own
         // ReportStop is already set, so it exits after its current POST and cannot be revived by
         // the next session — which is exactly what the shared flag could not guarantee.
@@ -5382,8 +5363,6 @@ mod prime_livelock_tests {
             source: Source::Stream,
             stream_th: None,
             load_th: None,
-            report_th: None,
-            report_stop: None,
             preview_abandon: false,
             foreground_follows_load: false,
             era_watch: crate::player::era_callbacks::Watch::new(),

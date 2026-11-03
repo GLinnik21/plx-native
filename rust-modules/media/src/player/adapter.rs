@@ -25,6 +25,7 @@
 //! sequence of calls with no locking behind it) — and that surface is not this module's.
 
 use super::engine::Engine;
+use super::{threads, timeline};
 use plx_base::task::MainThread;
 
 /// The `ENGINE` slot and its confinement, as one owned value (`App.adapters.player`).
@@ -34,6 +35,14 @@ pub struct PlayerAdapter {
     mt: MainThread,
     /// The live native session, or `None` between playbacks.
     engine: Option<Engine>,
+    /// Backend-independent periodic reporting resource for the current physical attempt.
+    timeline: Option<timeline::TimelineRunner>,
+    /// The Load worker returns only a token and native verdict; the main thread owns the route
+    /// attempt mapping and settles it only after the matching Engine occupies this adapter.
+    load_tx: std::sync::mpsc::Sender<threads::LoadOutcome>,
+    load_rx: std::sync::mpsc::Receiver<threads::LoadOutcome>,
+    load_tickets: std::collections::BTreeMap<u64, (crate::route::RouteStartAttempt, u32)>,
+    next_load_token: u64,
     repair: Option<(u64, std::sync::mpsc::Receiver<Result<(), plx_platform::tv::sandbox::Failure>>)>,
     /// A timed-out native `Load` whose media thread had not returned when its Engine was torn
     /// down. Owned here, not by a static, for the same reason the Engine is: releasing it calls
@@ -92,9 +101,15 @@ pub enum QueuedLanding {
 impl PlayerAdapter {
     /// Take the token. `app::boot` calls this once, with the token `plex_run` minted.
     pub fn new(mt: MainThread) -> Self {
+        let (load_tx, load_rx) = std::sync::mpsc::channel();
         Self {
             mt,
             engine: None,
+            timeline: None,
+            load_tx,
+            load_rx,
+            load_tickets: std::collections::BTreeMap::new(),
+            next_load_token: 0,
             repair: None,
             abandoned_load: None,
             pending_release: std::cell::RefCell::new(None),
@@ -256,6 +271,64 @@ impl PlayerAdapter {
         self.engine.is_some()
     }
 
+    /// Address one Load verdict without handing route state to the native worker.
+    pub(super) fn load_receipt(&mut self, attempt: crate::route::RouteStartAttempt, native_epoch: u32,
+        trace_generation: u32) -> threads::LoadReceipt {
+        self.next_load_token = self.next_load_token.checked_add(1).expect("Load receipt IDs exhausted");
+        let token = self.next_load_token;
+        self.load_tickets.insert(token, (attempt, native_epoch));
+        threads::LoadReceipt::new(token, trace_generation, self.load_tx.clone())
+    }
+
+    /// A refused thread spawn cannot return a receipt; retire its mapping immediately.
+    pub(super) fn cancel_load_receipt(&mut self, token: u64) { self.load_tickets.remove(&token); }
+
+    /// Teardown retires the whole physical attempt before a still-blocked Load can return.
+    pub(super) fn retire_load_attempt(&mut self, attempt: crate::route::RouteStartAttempt) {
+        self.load_tickets.retain(|_, (owned, _)| *owned != attempt);
+    }
+
+    /// The main-thread coordinator's only Load-result landing. Late outcomes from an abandoned
+    /// or replaced Engine cannot settle a successor's route, even if a worker returns afterward.
+    pub(super) fn drain_load_outcomes(&mut self, ps: &mut crate::route::PlaybackSession) {
+        let outcomes: Vec<_> = self.load_rx.try_iter().collect();
+        for outcome in outcomes {
+            let Some((attempt, native_epoch)) = self.load_tickets.remove(&outcome.token) else { continue; };
+            if native_epoch != outcome.native_epoch
+                || !self.engine.as_ref().is_some_and(|engine| engine.route_start == attempt && engine.native_epoch == native_epoch) {
+                continue;
+            }
+            let result = if outcome.ok { crate::route::RouteStartResult::Started }
+                else { crate::route::RouteStartResult::StartFailed };
+            let _ = crate::route::settle_route_start(ps, attempt, result);
+        }
+    }
+
+    /// A preview has no route lease, hence no periodic PMS writes. This follows the existing
+    /// begin_timeline_reporting gate and keeps the reporter outside the Engine resource set.
+    pub(super) fn start_timeline(&mut self, ps: &crate::route::PlaybackSession,
+        attempt: crate::route::RouteStartAttempt) {
+        debug_assert!(self.timeline.is_none(), "one reporter per player adapter");
+        if self.timeline.is_some() { return; }
+        if let Some(lease) = crate::route::begin_timeline_reporting(ps) {
+            self.timeline = timeline::TimelineRunner::start(attempt, lease);
+        }
+    }
+
+    pub(super) fn publish_timeline(&self, attempt: crate::route::RouteStartAttempt,
+        snapshot: Option<timeline::TimelineSnapshot>) {
+        if let Some(runner) = self.timeline.as_ref() { runner.publish(attempt, snapshot); }
+    }
+
+    /// Stop and detach without joining on the main thread. Real stop passes this handle to
+    /// route::scrobble_stop; reload simply drops it after the stop signal became sticky.
+    pub(super) fn stop_timeline(&mut self, attempt: crate::route::RouteStartAttempt)
+        -> Option<std::thread::JoinHandle<()>> {
+        let runner = self.timeline.take()?;
+        debug_assert_eq!(runner.attempt(), attempt, "reporter must belong to the Engine being torn down");
+        Some(runner.stop())
+    }
+
     /// Install the freshly-built session. Overwriting a live slot would DROP an Engine whose
     /// workers hold raw pointers into the boxes it owns; `start_bufferfeed` guards on
     /// [`is_live`](Self::is_live) first.
@@ -386,5 +459,49 @@ mod repair_receipt_tests {
         assert_eq!(owner.state(), State::Failed(Failure::Timeout));
         assert!(!adapter.poll_repair(&mut owner));
         assert_eq!(owner.begin(true), None);
+    }
+}
+
+#[cfg(all(test, feature = "hostsim"))]
+mod load_outcome_tests {
+    use super::*;
+
+    #[test]
+    fn load_outcome_waits_for_its_engine_and_refuses_late_epoch() {
+        let _serial = plx_base::testlock::serial();
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        crate::route::reset_player_control_for_test(&ps);
+        let transaction = crate::route::begin_route_start().expect("start transaction");
+        assert!(crate::route::prepare_route_start(transaction));
+        let attempt = crate::route::claim_route_start_attempt(transaction).expect("physical attempt");
+        let mut pa = PlayerAdapter::new(unsafe { MainThread::assume() });
+
+        // A worker may answer before construction finishes, but its route cannot become Stable
+        // without an installed Engine. This was the original Load-return race.
+        let early = pa.load_receipt(attempt, 7, 0);
+        early.deliver(7, true);
+        pa.drain_load_outcomes(&mut ps);
+        assert_eq!(crate::route::route_start_status(attempt), crate::route::RouteStartStatus::Pending);
+
+        let mut eng = crate::player::engine::streaming_engine_for_test(8);
+        eng.route_start = attempt;
+        pa.install(eng);
+        let late = pa.load_receipt(attempt, 7, 0);
+        late.deliver(7, true);
+        pa.drain_load_outcomes(&mut ps);
+        assert_eq!(crate::route::route_start_status(attempt), crate::route::RouteStartStatus::Pending,
+            "an older native epoch cannot settle the same route attempt");
+
+        let current = pa.load_receipt(attempt, 8, 0);
+        current.deliver(8, true);
+        pa.drain_load_outcomes(&mut ps);
+        assert_eq!(crate::route::route_start_status(attempt), crate::route::RouteStartStatus::Started);
+        pa.drain_load_outcomes(&mut ps);
+        assert_eq!(crate::route::route_start_status(attempt), crate::route::RouteStartStatus::Started,
+            "one Load result settles at most once");
+        drop(pa.take());
+        crate::player::SHARED.reset_session();
+        crate::player::TX.reset();
+        crate::route::reset_player_control_for_test(&ps);
     }
 }
