@@ -98,9 +98,10 @@ fn the_disc_has_no_label_and_never_widens() {
     let r = hero_btn_rect_at(s, 1, 0.0, widths);
     assert_eq!((r.w, r.h), (CD, CD));
     let play = hero_btn_rect_at(s, 0, 0.0, widths);
-    assert_eq!(r.x, play.x + play.w + CGAP, "the disc sits one gap after Play");
-    let next = hero_btn_rect_at(s, 2, 0.0, widths);
-    assert_eq!(next.x, r.x + r.w + CGAP);
+    let play = play.scaled(plx_ui::widgets::CTRL_FOCUS_SCALE);
+    assert!((r.x - (play.x + play.w) - CGAP).abs() < 0.001, "focus keeps one clear gap after Play");
+    let next = hero_btn_rect_at(s, 2, 0.0, widths).scaled(plx_ui::widgets::CTRL_FOCUS_SCALE);
+    assert!((next.x - (r.x + r.w) - CGAP).abs() < 0.001);
 }
 
 /// Membership x press: Add from Off and Unknown, Remove from On; no usable guid, no press.

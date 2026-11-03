@@ -117,12 +117,19 @@ pub struct HeroWidths {
 pub fn row_rect(widths: &[f32], i: usize, y: f32) -> Rect {
     debug_assert!(widths.len() <= MAX_CTLS);
     let n = widths.len().min(MAX_CTLS);
+    // A dense translated row may already spend nearly all the room before People. Give up
+    // decorative air before letting the existing controls cross that boundary.
+    let base_w = widths[..n].iter().sum::<f32>() + CGAP * n.saturating_sub(1) as f32;
+    let air_w = widths[..n].iter().enumerate()
+        .map(|(k, w)| capsule_focus_air(*w) * if k == 0 { 1.0 } else { 2.0 }).sum::<f32>();
+    let room = (FACTS_R - plx_ui::consts::MARGIN_X - base_w).max(0.0);
+    let air_scale = if air_w > 0.0 { (room / air_w).min(1.0) } else { 1.0 };
     // Fixed storage: this runs ~10-16 times a frame on Detail, so it allocates nothing. One extra,
     // zero-wide item (the sentinel) stands in for "past the end": the stack puts it one gap after
     // the last control, exactly where the old accumulation left `x`.
     let mut items = [Item::absent(); MAX_CTLS + 1];
     for (k, (slot, w)) in items.iter_mut().zip(&widths[..n]).enumerate() {
-        let air = capsule_focus_air(*w);
+        let air = capsule_focus_air(*w) * air_scale;
         *slot = Item::new(*w + air + if k == 0 { 0.0 } else { air });
     }
     items[n] = Item::new(0.0);
@@ -130,7 +137,7 @@ pub fn row_rect(widths: &[f32], i: usize, y: f32) -> Rect {
     let at = i.min(n);
     let (x, _) = stack.span(at).unwrap_or((plx_ui::consts::MARGIN_X, 0.0));
     let w = widths.get(i).or(widths.last()).copied().unwrap_or(0.0);
-    let leading_air = if at == 0 || at == n { 0.0 } else { capsule_focus_air(w) };
+    let leading_air = if at == 0 || at == n { 0.0 } else { capsule_focus_air(w) * air_scale };
     Rect::new(x + leading_air, y, w, CD)
 }
 

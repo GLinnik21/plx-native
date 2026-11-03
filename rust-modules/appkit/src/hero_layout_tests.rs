@@ -162,3 +162,15 @@ fn focused_hero_capsules_keep_twenty_pixels_clear_on_both_sides() {
     let barely_open = row_rect(&[224.0, CD + 0.001, CD], 2, 0.0).x;
     assert!((barely_open - circle).abs() < 0.01, "unfurl must not jump its neighbours");
 }
+
+#[test]
+fn a_dense_translated_row_gives_up_focus_air_before_crossing_people() {
+    let widths = [224.0, CD, CD, FACTS_R - plx_ui::consts::MARGIN_X - 224.0 - 2.0 * CD - 3.0 * CGAP - 1.0];
+    let last = row_rect(&widths, 3, 0.0);
+    assert!(last.x + last.w <= FACTS_R + 0.001);
+    for i in 1..widths.len() {
+        let previous = row_rect(&widths, i - 1, 0.0);
+        let next = row_rect(&widths, i, 0.0);
+        assert!(next.x - (previous.x + previous.w) >= CGAP - 0.001);
+    }
+}

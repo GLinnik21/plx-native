@@ -1574,12 +1574,11 @@ mod tests {
         for i in 1..n {
             let previous = hero_btn_rect_at(set, i - 1, 0.0, widths);
             let current = hero_btn_rect_at(set, i, 0.0, widths);
-            assert_eq!(
-                current.x,
-                previous.x + previous.w + CGAP,
-                "{:?}",
-                controls[i]
-            );
+            let paint = |r: Rect| if r.w > CD { r.scaled(plx_ui::widgets::CTRL_FOCUS_SCALE) } else { r };
+            let previous = paint(previous);
+            let current = paint(current);
+            assert!((current.x - (previous.x + previous.w) - CGAP).abs() < 0.001,
+                "{:?}", controls[i]);
         }
     }
 
