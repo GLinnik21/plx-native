@@ -205,6 +205,7 @@ asserts all three out of the finished files rather than trusting the filter grap
 
 import argparse
 import json
+import math
 import os
 import pathlib
 import re
@@ -1152,13 +1153,16 @@ PIPE_SHAPES = {
         # The `option.externalStreamingInfo.contents.DolbyHdrInfo` splice, end to end on the
         # hardware. Profile 8.1 is the one DV shape that can be synthesized at all (see
         # build_dovi), and the DECLARATION is what puts the node in the payload, so this is
-        # the only fixture in the repo that reaches that code with no PMS decision behind it.
+        # a fixture that reaches that code with no PMS decision behind it. Its IDR-only control
+        # below varies GOP mode for issue1166's CRA seek comparison.
         "kind": "clip", "ext": "mkv",
         "duration": PIPE_SECS, "rate": 0.60, "builder": "dovi", "dovi": True,
         "tools": ["dovi_tool", "mkvmerge"],
         "declare": {"vcodec": "hevc", "acodec": "eac3", "fps": float(FPS), "atmos": False,
                     "dovi": {"profile": 8, "bl_compat": 1, "el_present": False}},
-        "video": {"codec": "hevc", "size": "3840x2160", "crf": 30, "hdr": True},
+        "video": {"codec": "hevc", "size": "3840x2160", "crf": 30, "hdr": True,
+                  "x265_extra": "open-gop=1"},
+        "random_access": "cra",
         "audio": [{"codec": "eac3", "ch": 6, "lang": "eng", "br": "384k", "pitch": 262,
                    "default": True, "title": "E-AC-3 5.1 English"}],
         "subs": [],
@@ -1698,6 +1702,7 @@ PIPE_MBIT = {
     "pipe_h264_ac3_1080p": 7.24,        # measured, from a full 60 s build
     "pipe_hevc_eac3_4k_hdr10": 8.80,    # = episode_hevc_4k_hdr10_eac3 (hevc 4K crf 30 HDR)
     "pipe_hevc_eac3_4k_dovi_p8": 9.80,  # = movie_hevc_4k_dovi_p8
+    "pipe_hevc_eac3_4k_dovi_idr": 9.80, # same encoding settings, closed GOP (estimate)
     "pipe_hevc_aac_mp4": 5.00,          # = movie_hevc_aac_mp4         (hevc 1080p crf 26)
     "pipe_h264_aac_mp4": 6.40,          # measured, from a full 60 s build
     "pipe_vp9_aac_1080p": 6.10,         # measured, from a full 60 s build (vp9 1080p crf 33)
@@ -1735,6 +1740,13 @@ PIPE_MBIT = {
 # `pipe_` names and the Plex trees could share a root without a filename collision, but
 # fixtures.json could not, and that document is read as ground truth by everything
 # downstream.
+# Issue1166's public A/B pair: the existing DV shape starts on IDR and seeks on CRA. The
+# control retains the codec/audio/metadata recipe with closed GOPs. Each clip's banner names
+# its shape; no NAL is relabeled and no commercial donor is used.
+PIPE_SHAPES["pipe_hevc_eac3_4k_dovi_idr"] = dict(
+    PIPE_SHAPES["pipe_hevc_eac3_4k_dovi_p8"], random_access="idr",
+    video=dict(PIPE_SHAPES["pipe_hevc_eac3_4k_dovi_p8"]["video"], x265_extra="open-gop=0"))
+
 TIERS = {
     "integration": {"shapes": SHAPES, "mbit": MBIT, "subdir": None},
     "pipeline": {"shapes": PIPE_SHAPES, "mbit": PIPE_MBIT, "subdir": "pipeline"},
@@ -2138,7 +2150,9 @@ def build_dovi(ctx, key, spec, dur, ep, dest, work):
     guard for. x265 needs aud/hrd/vbv here so the injected RPU NALs land in a conformant
     access-unit structure.
     """
-    v = dict(spec["video"], x265_extra="aud=1:hrd=1:vbv-maxrate=50000:vbv-bufsize=50000")
+    extra = spec["video"].get("x265_extra", "")
+    v = dict(spec["video"], x265_extra=":".join(filter(None, (
+        extra, "aud=1:hrd=1:vbv-maxrate=50000:vbv-bufsize=50000"))))
     bl = work / ("%s_bl.hevc" % key)
     lines = build_generic(ctx, key, dict(spec, video=v), dur, ep, bl, work, video_only=True)
 
@@ -2269,8 +2283,11 @@ def _ffprobe_data_bytes(text):
     return bytes(out)
 
 
-def h264_nal_types(data):
-    """NAL types from either Annex-B or the generated Matroska's 4-byte AVCC packets."""
+def _packet_nal_types(data, hevc):
+    """NAL headers from Annex-B or this generator's four-byte length-prefixed packets."""
+    def kind(offset):
+        return (data[offset] >> 1) & 0x3f if hevc else data[offset] & 0x1f
+
     types = []
     if b"\x00\x00\x01" in data[:8]:
         starts = []
@@ -2284,16 +2301,57 @@ def h264_nal_types(data):
                 i += 3
             else:
                 i += 1
-        return [data[p] & 0x1f for p in starts if p < len(data)]
+        return [kind(p) for p in starts if p + int(hevc) < len(data)]
     i = 0
     while i + 4 <= len(data):
         size = int.from_bytes(data[i:i + 4], "big")
         i += 4
-        if size <= 0 or i + size > len(data):
+        if size < (2 if hevc else 1) or i + size > len(data):
             break
-        types.append(data[i] & 0x1f)
+        types.append(kind(i))
         i += size
     return types
+
+
+def h264_nal_types(data):
+    """H264 NAL types, retaining the existing boundary/HLS verifier's wire formats."""
+    return _packet_nal_types(data, False)
+
+
+def hevc_random_access_packets(packets):
+    """Read the actual NAL types in key packets; a container key flag alone cannot distinguish CRA."""
+    points = []
+    for packet in packets:
+        if "K" not in (packet.get("flags") or ""):
+            continue
+        try:
+            pts = float(packet["pts_time"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not math.isfinite(pts):
+            continue
+        nals = _packet_nal_types(_ffprobe_data_bytes(packet.get("data")), True)
+        points.append({"pts": pts, "nals": nals})
+    return points
+
+
+def random_access_problems(points, mode, duration):
+    """The A/B contract: both begin on IDR and carry RPU; later keys distinguish the modes."""
+    if mode not in ("cra", "idr"):
+        return ["unknown DV random-access mode"]
+    if not points or not {19, 20}.intersection(points[0]["nals"]):
+        return ["DV random-access clip does not begin with an IDR"]
+    problems = []
+    if any(62 not in p["nals"] for p in points):
+        problems.append("DV random-access key packet lacks an RPU")
+    later = [p for p in points if p["pts"] > points[0]["pts"]]
+    if duration >= 3 and not later:
+        problems.append("DV random-access clip has no inspected later key packet")
+    if mode == "cra" and later and any(21 not in p["nals"] for p in later):
+        problems.append("DV CRA clip has a later key packet without CRA")
+    if mode == "idr" and any(not {19, 20}.intersection(p["nals"]) or 21 in p["nals"] for p in later):
+        problems.append("DV IDR control has a later key packet that is not IDR-only")
+    return problems
 
 
 def boundary_packet_nals(path, boundary_s):
@@ -2799,6 +2857,18 @@ def verify(key, spec, dur, path, ep=None):
             if "Dolby Vision RPU Data" not in sd:
                 problems.append("no in-band Dolby Vision RPU Data on the first frame "
                                 "(dovi_tool inject-rpu did not land)")
+        if spec.get("random_access"):
+            try:
+                packets = json.loads(run([
+                    "ffprobe", "-v", "error", "-select_streams", "v:0",
+                    "-read_intervals", "%+5", "-show_packets", "-show_data",
+                    "-show_entries", "packet=pts_time,flags,data", "-of", "json", str(path),
+                ]))
+                points = hevc_random_access_packets(packets.get("packets", []))
+                rec["video"]["random_access"] = points
+                problems.extend(random_access_problems(points, spec["random_access"], dur))
+            except (Fail, ValueError, TypeError):
+                problems.append("could not inspect DV random-access key packets")
         if spec.get("resolution_spike"):
             verify_resolution_spike(path, spec, dur, rec, problems)
         if spec.get("hls_segment"):
