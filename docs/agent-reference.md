@@ -89,7 +89,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   static libraries and out-of-process handler (`ci/build-sentry-native.sh`; CMake, patched for the
   webOS glibc-2.12/ARM32 ABI). Also compiles `ci/ffabi-assert.c` against
   `vendor/ffmpeg-prefix/include` — **the headers the shipped libraries were built from**, installed
-  by the same invocation that produced them — which is what proves `ff.rs`'s ABI table. **One**
+  by the same invocation that produced them — which is what proves `media-codecs/src/ffi.rs`'s ABI table. **One**
   header tree per target, **one** FFmpeg. This line long said BOTH vendored trees (n3.3 and n4.0)
   and *two* tables, which was true while the app read the television's FFmpeg and had to select a
   table per firmware; bundling collapsed that into a single equality (`ffabi-assert.c` opens by
@@ -983,7 +983,7 @@ its own and PINS it.** This doc used to file FFmpeg beside curl and ACB as "SONA
 `ci/build-ffmpeg.sh` cross-compiles FFmpeg **9.0** with the NDK — shared, LGPL-clean (no
 `--enable-gpl`), under a `-plx` build suffix: `libavutil-plx.so.61`, `libavcodec-plx.so.63`,
 `libavformat-plx.so.63`, plus `libswscale-plx.so.10` in dev builds only. `make deploy`/`make ipk`
-ship those `.so` files **beside the binary**, and `ff.rs::load_libraries` opens them by **absolute
+ship those `.so` files **beside the binary**, and `media-codecs/src/ffi.rs::load_libraries` opens them by **absolute
 path out of `paths::app_dir()`**, in dependency order under `RTLD_GLOBAL` (they carry no rpath —
 FFmpeg's configure evals its flags and `$ORIGIN` does not survive), after which `boot()` refuses to
 demux unless the majors are exactly **63/63/61**. Both the suffix and the absolute path are
@@ -997,7 +997,7 @@ both halves compile-time facts, and it is also webosbrew's published guidance.
 **One consequence settles a question that keeps getting re-opened: our FFmpeg has NO network.** It
 is configured `--disable-network` with `--enable-protocol=file` as the *only* protocol, so it
 cannot open a URL — http or https, on any firmware. Every byte reaches the demuxer through **the
-custom AVIO**, whichever transport happens to be under it (`stream.rs` for http, `curlio.rs` for
+custom AVIO**, whichever transport happens to be under it (`stream.rs` for http, `net::range_io` through media's credential facade for
 https), and that is not an accident of the current pipeline but a build-time fact you cannot route
 around. "Does the TV's FFmpeg have https?" is therefore not
 something to go and probe on a device; it is decided, and the answer is that no FFmpeg in this app
@@ -1102,16 +1102,16 @@ through ACB on the webOS 4.5 dev set, with and without `connectDass`. The normal
 is all Rust: `PMS HTTP GET` → demux (**`ff.rs`, over a custom AVIO on the
 FFmpeg the app BUNDLES** — not the television's; see the linking section, and note ours is built
 `--disable-network`, so the AVIO is the *only* way bytes reach it) → AU queues with backpressure
-(`aq.rs`) → the pump `Feed()`s the Starfish
+(`play-feed/src/aq.rs`) → the pump `Feed()`s the Starfish
 pipeline. Worker threads (demux, media/load, and `sf-unload` for a real stop's `Unload`) sit
 beside the main loop, which owns every other ACB/Starfish control call
 (`rust-modules/media/src/player/CLAUDE.md`, threading model). **That GET has TWO transports and the part URL's SCHEME picks one**,
 once, in `ff::demux`: `http` reads through `stream.rs`'s raw socket, `https` through
-**`curlio.rs`** — libcurl's *multi* interface behind a `read`/`seek`/`size`/`status`/`abort` pull
+**`net::range_io`** (through media's credential facade) — libcurl's *multi* interface behind a `read`/`seek`/`size`/`status`/`abort` pull
 source, so `ff.rs` never learns curl-multi mechanics. It exists because LG's reviewers have no PMS
 on their LAN and stream from the public internet, which `stream.rs` cannot reach: it speaks
 cleartext. So **libcurl is used by two modules for two jobs** — `net.rs` for plex.tv plus HTTPS PMS
-control calls, `curlio.rs` for the media bytes — and each binds its own `dynlib!` table,
+control calls, `net::range_io` for the media bytes — and each binds its own `dynlib!` table,
 which the linking section explains is load-bearing rather than tidy.
 
 **Subtitles (summary — `docs/ass-subtitles.md` is the deep-dive; `rust-modules/media/src/player/CLAUDE.md`
@@ -1184,10 +1184,11 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
 - `rust-modules/src/` — the app core (Rust): `app/` (`mod.rs` the `run_application` shim + `struct App`, `boot.rs` the bring-up, `run.rs` the frame loop and its phase functions, `events.rs`/`input.rs` the input decode and key ladders, `lifecycle.rs`, `playback.rs`, `content.rs`, `bridge.rs` the seam onto the container and the ONE navigation vocabulary, `words.rs` the heartbeat's `route=`/`overlay=` alphabet — `nav.rs` is gone with `enum Route` since restructure phase 12), `system.rs` (wayland),
   and, in the media layer (`rust-modules/media/`, crate `plx_media`, which the application links),
   `player/` (buffer-feed engine + worker threads — **`rust-modules/media/src/player/CLAUDE.md` is the
-  playback deep-dive; read it before touching playback**), `ff.rs` (THE demuxer — the **bundled,
-  pinned** libavformat shipped beside the binary, *not* the TV's), `aq.rs` (the AU pipeline behind
-  `plx_net`'s HTTP socket, `rust-modules/net/src/stream.rs`; libcurl/TLS is `rust-modules/net/src/net.rs`),
-  `curlio.rs`, `hls.rs`, `abr/` and `route/`; and the Plex layer (`rust-modules/plex/`, crate `plx_plex`: `plex/` and `http.rs` — **its own
+  playback deep-dive; read it before touching playback**), `ff.rs` (the feed demuxer over the **bundled,
+  pinned** libavformat shipped beside the binary, *not* the TV's), `abr/` and `route/`.
+  `play-feed` owns the AU queues and HLS parser; `media-codecs` owns the FFmpeg ABI and encoder;
+  `net::range_io` owns interruptible HTTPS byte ranges while media supplies credential authorization.
+  The Plex layer (`rust-modules/plex/`, crate `plx_plex`: `plex/` and `http.rs` — **its own
   `rust-modules/plex/src/plex/CLAUDE.md`**, which the rest of this file never pointed at: read it before
   adding a PMS query, and before assuming there is one server. There is a REGISTRY behind
   `client()` now — the app can hold a friend's shared server beside your own, each with its own
@@ -1281,12 +1282,12 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
 - `rust-modules/base/src/dynlib.rs` — the runtime library binder (`dlopen`, by SONAME candidate list or
   by absolute path). **Six** callers in a lab build and five in every other, each for its own
   reason: `net.rs` binds **curl** by candidate list because its SONAME moves between releases;
-  `ff.rs` binds the **bundled FFmpeg** by absolute path because ours ships beside the binary, on
+  `media-codecs/src/ffi.rs` binds the **bundled FFmpeg** by absolute path because ours ships beside the binary, on
   no library search path — not because any
   version varies; `player/ass.rs` and `gfx/src/rtl.rs` bind the **bundled libass-plx** the same way,
   the subtitle surface and the UI text surface in two tables, each checking the facade ABI against
   its own `NATIVE_ABI`, so a facade bump edits both;
-  and `curlio.rs` binds **`curl_multi_*` in a SECOND table of its own**, from the
+  and `net::range_io` binds **`curl_multi_*` in a SECOND table of its own**, from the
   same candidate list, because `load_into` is all-or-nothing and a set missing one multi symbol
   must still be able to SIGN IN. That table is frozen to the oldest supported set:
   `curl_multi_poll`/`curl_multi_wakeup` resolve on the dev Mac, are absent on the dev television,
@@ -1947,7 +1948,7 @@ navigation, every screen, and the whole Plex data layer.
 **On macOS, since 2026-08-28 it STREAMS — real HTTP, real demux, real HLS, the real adaptive
 controller.** `make sim-macos` builds a HOST copy of the same bundled FFmpeg 9.0 from the same
 `ci/build-ffmpeg.sh` component list (`HOST=1`, into `vendor/ffmpeg-prefix-host`, staged into
-`pkg/` as `libavformat-plx.63.dylib` beside the ARM `.so.63`), and `ff.rs` carries a second ABI
+`pkg/` as `libavformat-plx.63.dylib` beside the ARM `.so.63`), and `media-codecs/src/ffi.rs` carries a second ABI
 table selected on `target_pointer_width` with `ci/ffabi-assert.c` holding both. Arm
 `plxnative-clocksink` (`player/ffi_host.rs` — AUs accepted and discarded, a presentation clock
 clamped to the last fed PTS, position reported at the television's measured 5 Hz) and the whole
@@ -2056,20 +2057,20 @@ resume, the `/:/timeline` reporter — which is also why it needs somebody's lib
 It needs a TV address and nothing else — no token, no ratingKey, no `manifest.local.json`, no
 sharing — so it is the only tier a stranger can run, and it is what separates "the player is
 broken" from "the library layer is broken" when a server case fails. **What it covers, precisely:**
-the player feeds `{h264,hevc}` (plus `av1` / `vp9` on a set whose codec table lists that decoder's row) × `{aac,ac3,eac3,dts}` (plus `flac`, `alac` and `pcm`, decoded in the app and fed as PCM) in mkv/mp4/m4v. Auto intersects this
+the feed player accepts `{h264,hevc,av1,vp9}` video and native `{aac,ac3,eac3,dts,opus}` audio wire formats (plus `flac`, `alac` and `pcm`, decoded in the app and fed as PCM under Auto) in mkv/mp4/m4v. Auto intersects this
 software set with the device table, per-codec channel ceilings and a 48 kHz sample-rate ceiling on the
 codecs `devcaps::audio_rate_bounded` names (`devcaps::AUDIO_RATE_CEILING`, #951; not DTS, TrueHD, nor FLAC, ALAC and LPCM,
-which the app resamples to 48 or 44.1 kHz itself, `devcaps::pcm_load_rate`; a 5.1 hi-res track still converts on the server); DTS requires a measured
+which the app resamples to 48 or 44.1 kHz itself, `devcaps::pcm_load_rate`; a 5.1 hi-res track still converts on the server); native DTS under Auto requires a measured
 DTS row and feeds only the DTS core when an HD extension is present. PMS names DTS `dca`:
 `devcaps::audio_codec_id` folds it (and `ec-3`) onto the pipeline's `dts` at membership and at
 the Load payload, and the profile sends `dca` (`transcoder.rs::profile_codec_name`). Force
-Direct Play admits DTS natively only when the table has a DTS row with channels (`Caps::forced_admits_dts`)
-but skips the channel ceiling; where the set has no native path for a lossy track whose row has TV evidence
-(`devcaps::AppDecoded::measured`: DTS), Force Direct Play decodes it in the app instead, as stereo, for a track
-of at most two channels only: the app never mixes a source of more than two channels down to stereo by default, so a
-surround track there is refused like any unplayable one (`Caps::app_decodes_lossy_track`, `Caps::app_may_mix_down`,
-`devcaps::app_decode_mixes_down`). The implemented Load
-strings are `H264`/`H265`/`AV1`/`VP9` (AV1 and VP9 only on a set whose table lists that decoder; elsewhere the Load is refused) and `AC3`/`AC3 PLUS`/`AAC`/`DTS`, plus `PCM` for FLAC, ALAC and LPCM decoded in the app (and for the lossy rows the attempt decodes in the app: DTS where Force Direct Play has no native path (a stereo track only) or the failed-open ladder's last rung asks for it (a surround track only after the server conversions, the manual encode included, were refused), and every lossy row, MP3, Vorbis and TrueHD included, on a debug build with `/tmp/plxnative-appdecodelossy`; those three have no TV measurement, so a release build does not offer them); these are not the firmware's whole
+Direct Play keeps the original selected stream despite missing device codec rows or learned
+refusals. Its feed profile advertises native wire formats without device bounds; the physical
+open may still refuse a wire shape it cannot represent. Force neither extracts a DTS-HD core
+nor app-decodes, downmixes, resamples or switches to a sibling track. The implemented Load
+strings are `H264`/`H265`/`AV1`/`VP9` and `AC3`/`AC3 PLUS`/`AAC`/`DTS`/`OPUS`, plus `PCM`
+for FLAC, ALAC and LPCM decoded in the app under Auto (and for lossy rows Auto's failed-open
+ladder puts in force, or a debug build's `/tmp/plxnative-appdecodelossy`); these are not the firmware's whole
 vocabulary. The six AC3/EAC3/AAC combinations and H264/DTS are covered
 here, plus DV 8.1, both containers, in-place seek in each, and the FRAME-RATE axis added the same
 day (`pipe_h264_1080p5994` is the only fixture that reaches `fps_rational`'s 1001-denominator
@@ -2607,7 +2608,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   modes, **MPEG1-in-TS** (default) and **JPEG/PXFR** (fallback); `stream-screen.py --source
   app|auto` consumes either and its page switches itself. Both encoders and the measured numbers
   are documented where they live — `capture.rs`'s module doc (slots, wire formats, fd ownership)
-  and `ff.rs`'s `venc` section (the device-verified FFmpeg ABI offsets + the RGBA→NV12-NEON
+  and `media-codecs/src/venc.rs` (using `media-codecs/src/ffi.rs`'s verified FFmpeg ABI offsets and the RGBA→NV12-NEON
   colorspace path). `make deploy` also ships the NDK's NEON libjpeg-turbo next to the binary
   best-effort, which JPEG mode dlopen's).
   **Any `plxnative-*` file in the install's runtime root marks the boot as automated and suppresses

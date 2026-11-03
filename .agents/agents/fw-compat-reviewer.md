@@ -3,7 +3,9 @@ name: fw-compat-reviewer
 description: >
   Review a change that touches FFI, linkage, or the runtime library seam and answer one
   question — can this binary still START on every firmware this project claims to support?
-  Use before pushing anything that edits `rust-modules/base/src/dynlib.rs`, `ff.rs`, `net.rs`,
+  Use before pushing anything that edits `rust-modules/base/src/dynlib.rs`,
+  `rust-modules/media-codecs/src/ffi.rs`, `rust-modules/media-codecs/src/venc.rs`,
+  `rust-modules/net/src/net.rs`, `rust-modules/net/src/curlio.rs`,
   `src/starfish.c`, `ci/expected-dt-needed.txt`, the Makefile's `LIBS_REAL`, or that adds any
   `extern "C"` block, `#[link]` directive, `dlopen`, mangled-symbol declaration or new FFmpeg /
   curl / Starfish / ACB call. Also use when a reviewer asks "does this still load on webOS 5?",
@@ -46,8 +48,10 @@ In scope if the diff touches any of:
 | path / edit | why it can move the answer |
 |---|---|
 | `rust-modules/base/src/dynlib.rs` | the one door for runtime-bound libraries; the macro's shape *is* the calling convention |
-| `rust-modules/media/src/ff.rs` | the four bundled-FFmpeg `dynlib!` blocks + the pinned-major gate |
+| `rust-modules/media-codecs/src/ffi.rs` | the four bundled-FFmpeg `dynlib!` blocks + the pinned-major gate |
+| `rust-modules/media-codecs/src/venc.rs` | the moved encoder ABI self-check and its FFmpeg calls |
 | `rust-modules/net/src/net.rs` | the libcurl `dynlib!` block — variadic wrappers over two C symbols, plus the candidate list |
+| `rust-modules/net/src/curlio.rs` | the byte-range `curl_multi_*` `dynlib!` table, exposed as `net::range_io` |
 | `src/starfish.c` | 15 mangled C++ externs against real libraries, plus its own `dlopen` of ACB |
 | any new `extern "C"` block, `#[link]`, or `__asm__("<mangled>")` declaration | each one adds an undefined symbol, or a whole `DT_NEEDED` entry |
 | `Makefile`'s `LIBS_REAL` / the link line (currently line 256 / 444) | a new `-l` is a new hard `DT_NEEDED` |
@@ -78,7 +82,7 @@ crossing 5→4 at exactly the same release.
 **3 — FFmpeg: the app BUNDLES its own and PINS it.** This one is *not* a version question, and
 treating it as one ("FFmpeg SONAMEs drift, 55→57→58→59→60") is the stale mental model. `make`
 cross-compiles FFmpeg 9.0 under a `-plx` build suffix (`ci/build-ffmpeg.sh`, `--build-suffix=-plx`),
-ships the `.so` files beside the binary, and `ff.rs::load_libraries` opens them by **absolute path
+ships the `.so` files beside the binary, and `media-codecs/src/ffi.rs::load_libraries` opens them by **absolute path
 out of `paths::app_dir()`** — because they sit on no library search path, and because webOS 11.2.0
 ships an FFmpeg 6 of its own that a bare SONAME could open instead. Both halves of that guarantee
 are load-bearing; `tools/fwcompat.py --inventory libavformat-plx` returns `-` on all 14 releases,
@@ -146,9 +150,9 @@ grade an ELF at all.
 
 ```sh
 git -C <repo> diff --stat HEAD          # or the range under review
-git -C <repo> diff HEAD -- rust-modules/base/src/dynlib.rs rust-modules/media/src/ff.rs \
-    rust-modules/net/src/net.rs src/starfish.c Makefile ci/expected-dt-needed.txt
-grep -rn '#\[link\|extern "C"\|__asm__("' rust-modules/src rust-modules/media/src rust-modules/net/src src   # against the diff, not the tree
+git -C <repo> diff HEAD -- rust-modules/base/src/dynlib.rs rust-modules/media-codecs/src/ffi.rs rust-modules/media-codecs/src/venc.rs \
+    rust-modules/net/src/net.rs rust-modules/net/src/curlio.rs src/starfish.c Makefile ci/expected-dt-needed.txt
+rg -n '#\[link|extern "C"|__asm__\("' rust-modules/src rust-modules/media/src rust-modules/media-codecs/src rust-modules/net/src src   # against the diff, not the tree
 ```
 
 ### 1. Decide, out loud, whether you are grading an ELF or grading source

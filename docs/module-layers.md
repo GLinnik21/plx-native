@@ -282,7 +282,9 @@ shipping build that reaches it logs `tv: port not installed - using the no-port 
 Only `tv`'s own modules read the table. Two things leave it: the sink, through
 `tv::sink::installed()` (rule `sink` of `ci/check-deps.sh` fences it to `player/`, `tv/`, `tv.rs`
 and `port.rs`), and, in a `devtriggers` build only, the developer URI-mode probe's
-`tv::uri::installed()`, read by `player::uriprobe_drive`.
+`tv::uri::installed()`, read by the media wrapper `player::uriprobe_drive`. The independent
+`play-uri` driver receives that transport and a shared `DisplaySink` as injected ports; it
+does not read the webOS port registry or the feed-only `VideoSink` itself.
 Lazily computed facts (device identity, the sandbox verdict, the Dolby Vision capability) are
 published values rather than hooks: the webOS code writes them into `tv::device`, `tv::sandbox` and
 `devcaps::dv` at the same boot moment as before, so readers keep their `OnceLock` semantics.

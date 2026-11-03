@@ -25,7 +25,8 @@ impl<D: BackendDriver> BackendRunner<D> {
         self.feed(ctx, Event::Intent(intent))
     }
 
-    /// Called by the app's normal player poll. Accepted evidence and release outcomes are
+    /// Intended for a future app player poll; no production driver is wired yet. Accepted
+    /// evidence and release outcomes are
     /// returned in driver order, including observations before a release that resets Snapshot.
     pub fn poll(&mut self, ctx: &D::Context) -> Vec<Fx> {
         let mut notices = Vec::new();
