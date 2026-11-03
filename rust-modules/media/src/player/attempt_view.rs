@@ -59,8 +59,60 @@ impl RefusalPath {
         }
     }
 }
+/// Common transport readout. Native state and clock reports do not establish independent picture evidence.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum PlaybackState {
+    /// no engine
+    Idle = 0,
+    /// the route/plan resolve is in flight — DERIVED in `player::state()` from `route::play_pending()`,
+    /// and held through a cold resume's rebuild (`route::resume_flight_outstanding()`) after the plan landed
+    Resolving = 1,
+    /// engine started, pipeline not yet loaded — the HTTP GET + Starfish `Load` window
+    Connecting = 2,
+    /// loaded and fed, but no frame has been presented yet
+    Buffering = 3,
+    /// a seek is resolving (reopen → prime → Play)
+    Seeking = 4,
+    /// the backend reports active playback
+    Playing = 5,
+    /// the producer died (a failed open / no video stream). Terminal until teardown.
+    Error = 6,
+    /// the viewer is paused on a session that has no picture yet and the pump has no work in
+    /// flight for one (`pump::paused_and_idle`): not `Buffering` (nothing is being waited on, so
+    /// no spinner) and not `Playing` (no frame is on the panel, so no `is_playing`, no
+    /// `PlaybackStarted`). The HUD draws its ordinary paused transport.
+    Paused = 7,
+}
+
+impl PlaybackState {
+    pub fn from_u8(v: u8) -> PlaybackState {
+        match v {
+            1 => PlaybackState::Resolving,
+            2 => PlaybackState::Connecting,
+            3 => PlaybackState::Buffering,
+            4 => PlaybackState::Seeking,
+            5 => PlaybackState::Playing,
+            6 => PlaybackState::Error,
+            7 => PlaybackState::Paused,
+            _ => PlaybackState::Idle,
+        }
+    }
+    /// "something is happening and the user should see a spinner, not a dead transport".
+    pub fn is_busy(self) -> bool {
+        matches!(
+            self,
+            PlaybackState::Resolving
+                | PlaybackState::Connecting
+                | PlaybackState::Buffering
+                | PlaybackState::Seeking
+        )
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct AttemptFacts {
+    pub status: Option<PlaybackState>,
     pub requested_kbps: Option<i64>,
     pub refusal_path: Option<RefusalPath>,
     pub runtime_failure: Option<RuntimeFailure>,
@@ -93,7 +145,7 @@ pub struct AttemptView<A> {
 
 impl<A: Copy + Eq> AttemptView<A> {
     pub const EMPTY: Self = Self { attempt: None, backend: None, facts: AttemptFacts {
-        runtime_failure: None, no_video: None, requested_kbps: None, refusal_path: None,
+        status: None, runtime_failure: None, no_video: None, requested_kbps: None, refusal_path: None,
         position_ns: None, duration_ns: None, playable_buffer_ms: None,
         reported_frame: None, frames: None, raster: None, pipeline_stage: None,
         pipeline_error: None, http_status: None, demux_exit: None,

@@ -414,7 +414,24 @@ pub use pump::{
     drain_engineless_rollback, land_engineless_rollback, pump, recover_failed_foreground_original, ForegroundOriginalRecovery,
     RollbackLanding,
 };
-pub use shared::PlaybackState;
+pub use attempt_view::PlaybackState;
+
+impl PlaybackState {
+    /// The one-line status the HUD shows beside the spinner. A `&'static CStr` (the house idiom
+    /// for UI strings) so the draw path allocates nothing — this is read 60x/second for the whole
+    /// load window, and indefinitely in `Error`.
+    pub fn caption(self) -> &'static std::ffi::CStr {
+        match self {
+            PlaybackState::Resolving => plx_platform::i18n::msg::widgets_status_preparing_c(),
+            PlaybackState::Connecting => plx_platform::i18n::msg::widgets_status_connecting_c(),
+            PlaybackState::Buffering => plx_platform::i18n::msg::widgets_status_buffering_c(),
+            PlaybackState::Seeking => plx_platform::i18n::msg::widgets_status_seeking_c(),
+            PlaybackState::Error => plx_platform::i18n::msg::widgets_status_failed_c(),
+            _ => c"",
+        }
+    }
+}
+
 
 /// The viewer picked an audio track and the stream is being rebuilt for it: `route::
 /// commit_audio_selection` calls this once its rebuild is queued. See [`shared::Shared::audio_switch`].
@@ -831,6 +848,11 @@ pub fn state(ps: &crate::route::PlaybackSession) -> shared::PlaybackState {
     // reader between the two still saw Playing: the HUD, which freezes the playhead at the
     // target only while busy, drew one frame of the PRE-seek position between the scrub preview
     // and the frozen target — a visible jump back and forth on every seek.
+    if ps.attempt_view().backend() == Some(attempt_view::Backend::Uri) {
+        let facts = ps.attempt_view().facts();
+        return if facts.runtime_failure.is_some() { PlaybackState::Error }
+            else { facts.status.unwrap_or(PlaybackState::Connecting) };
+    }
     if SHARED.seeking.load(Relaxed) {
         return shared::PlaybackState::Seeking;
     }
