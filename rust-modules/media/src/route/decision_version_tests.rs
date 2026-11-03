@@ -159,6 +159,14 @@ const URI_DTS_SELECTED_SUBTITLE: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ra
      {"id":31343,"streamType":3,"codec":"srt","index":2,"languageCode":"eng","selected":true}]}]}]}]}}"#;
 
 #[cfg(feature = "play-uri")]
+const URI_DTS_EXTERNAL_SUBTITLE: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-v","type":"movie","duration":600000,"Media":[
+  {"id":3086,"duration":450000,"bitrate":2372,"width":1920,"height":1080,"videoCodec":"h264","audioCodec":"dca","container":"mkv",
+   "Part":[{"id":3134,"duration":450000,"key":"/library/parts/3134/1/file.mkv","container":"mkv","Stream":[
+     {"id":31341,"streamType":1,"codec":"h264","index":0},
+     {"id":31342,"streamType":2,"codec":"dca","channels":6,"index":1,"languageCode":"eng","default":true,"selected":true},
+     {"id":31343,"streamType":3,"codec":"srt","index":2,"languageCode":"eng","selected":true,"key":"/library/streams/31343"}]}]}]}]}}"#;
+
+#[cfg(feature = "play-uri")]
 const URI_AV1: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-v","type":"movie","duration":450000,"Media":[
   {"id":3086,"bitrate":2372,"width":1920,"height":1080,"videoCodec":"av1","audioCodec":"aac","container":"mkv",
    "Part":[{"id":3134,"duration":450000,"key":"/library/parts/3134/1/file.mkv","container":"mkv","Stream":[
@@ -249,6 +257,26 @@ fn remembered_subtitle_off_remains_off_during_uri_source_qualification() {
     assert_eq!(selected.source_selection.expect("selected source intent").subtitle_sid, 31343);
     assert!(requests.iter().any(|line| line.contains("/decision?")),
         "the unsupported native Off intent falls through to Feed MDE: {requests:?}");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
+#[cfg(feature = "play-uri")]
+fn selected_external_subtitle_remains_common_source_intent_across_resolve() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    assert!(plx_net::net::global_init());
+    let (port, done, server) = versions_pms_with(URI_DTS_EXTERNAL_SUBTITLE, MDE_TRANSCODE_VIDEO);
+    let sid = plx_plex::plex::register_for_test("external-source", "127.0.0.1", port,
+        "token", "external-source-client");
+    let env = ResolveEnv::snapshot(&ps,
+        plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-v");
+    let plan = build_stream(&plx_base::task::OffFrame::for_test(), "rk-v",
+        "/library/parts/3134/1/file.mkv", "h264", "dca", &env);
+    done.send(()).unwrap();
+    let _ = server.join().unwrap();
+    assert_eq!(plan.source_selection.expect("source intent").subtitle_sid, 31343,
+        "a client-drawn sidecar is still the viewer's selected source track");
     plx_plex::plex::reset_servers_for_test();
 }
 
