@@ -308,3 +308,23 @@ fn relist_regression_a_shrinking_listing_loads_its_new_tail() {
     assert_eq!(browse.state.states()[0].items.get(1).unwrap().rk, "last-b");
     assert!(!browse.state.states()[0].relist);
 }
+
+#[test]
+fn relist_regression_initial_load_can_continue_past_the_first_page() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, client) = loopback_page_source();
+    browse.state.want(PAGE, 2 * PAGE, Some(PAGE + 5));
+    browse.maybe_spawn();
+    browse.jobs.clear();
+    browse.state.listings_changed(sid, true);
+    browse.adapter.page.post(PageResult {
+        client, token_gen: client.token_gen(), gen: browse.state.query_gen(), sec: 0, start: 0,
+        items: (0..PAGE).map(|i| row(sid, &i.to_string())).collect(), total: (2 * PAGE) as i64,
+        sorts: None, restored: None, genres: None, genre: None, resolved: Default::default(),
+    }, |_| true);
+    let _ = browse.state.pump_owned(&browse.adapter);
+    browse.maybe_spawn();
+    assert_eq!(browse.jobs.len(), 1);
+    assert!(format!("{:?}", browse.jobs[0]).contains(&format!("start: {PAGE},")),
+        "the pending window must read page two, not loop on the initial page: {:?}", browse.jobs);
+}

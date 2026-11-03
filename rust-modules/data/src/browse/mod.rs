@@ -3035,7 +3035,9 @@ impl BrowseState {
         let current = self.cur();
         let Some(state) = self.states.get(current) else { return };
         let Some(section) = self.sections.get(current) else { return };
-        let start = if state.total < 0 {
+        // A staged replacement already knows its total, even if the published initial
+        // listing is still unknown. Continue its window rather than re-reading page zero.
+        let start = if state.total < 0 && state.relist_items.is_none() {
             0
         } else if state.relist {
             let Some(page) = state.relist_next(self.want, self.focus) else { return };
