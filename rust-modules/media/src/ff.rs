@@ -5843,20 +5843,21 @@ fn hls_demux(
         // Re-score here before either an HLS proposal or the source latch is acted on; no source
         // request and no probe counter are spent. From the same terminal state, a downward commit
         // clears its old-regime source evidence instead and therefore never enters this branch.
-        if delivered && sample.completed() {
-            if let Some(reconsidered) = state.reconsider_original(&telemetry, remaining_ms) {
-                last_probe_block = None;
-                if let Some(cmp) = reconsidered.comparison {
-                    log_original_mode_comparison(cmp);
-                }
-                crate::player::log(&format!(
-                    "abr: retained Original probe reconsidered after HLS commit measured={}kbps \
-                     verdict={:?}",
-                    reconsidered.measured_kbps, reconsidered.verdict,
-                ));
+        let after_prefetch = state.after_active_prefetch(
+            &round, sample, delivered, remaining_ms, paused_now, encoder_cleanup_ready,
+        );
+        if let Some(reconsidered) = after_prefetch.reconsidered {
+            last_probe_block = None;
+            if let Some(cmp) = reconsidered.comparison {
+                log_original_mode_comparison(cmp);
             }
+            crate::player::log(&format!(
+                "abr: retained Original probe reconsidered after HLS commit measured={}kbps \
+                 verdict={:?}",
+                reconsidered.measured_kbps, reconsidered.verdict,
+            ));
         }
-        if matches!(decision, crate::abr::Decision::Stay) {
+        if after_prefetch.steady {
             // Action and Reason are one current decision in the diagnostics panel. Leaving the
             // previous commit sticky while publishing this segment's RejectBackoff reason produced
             // the impossible photographed pair "changed up to 20 Mbps · retrying shortly". A
@@ -5872,11 +5873,7 @@ fn hls_demux(
         // A `Prime` answer here has not started its transaction yet; the already-latched source
         // decision therefore cancels that pending rung explicitly instead of becoming stale
         // across a new operating point.
-        if !paused_now {
-            if let adaptive::LatchedOriginalRecovery::Switch { kbps, cancel } = state.source_switch(
-                None, decision, encoder_cleanup_ready, sample.buffer.buffered_ms(),
-                sample.media_duration_ms(),
-            ) {
+        if let adaptive::LatchedOriginalRecovery::Switch { kbps, cancel } = after_prefetch.source {
                 if let Some(lease) = HlsAutomaticLease::begin(
                     crate::player::HlsAutomaticTransition::Original,
                     expected_user_sequence,
@@ -5916,7 +5913,6 @@ fn hls_demux(
                         | adaptive::OriginalPublication::RouteMoved => return Err(HlsExit::Aborted),
                     }
                 }
-            }
         }
         let automatic_permitted = match decision {
             crate::abr::Decision::Stay => true,

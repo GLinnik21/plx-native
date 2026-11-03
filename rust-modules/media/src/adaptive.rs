@@ -486,6 +486,12 @@ pub(crate) struct RoundDecision {
     pub(crate) prime_runway_ms: Option<i64>,
 }
 
+pub(crate) struct ActiveAfterPrefetch {
+    pub(crate) reconsidered: Option<Reconsideration>,
+    pub(crate) steady: bool,
+    pub(crate) source: LatchedOriginalRecovery,
+}
+
 pub(crate) struct ActiveQuantumResult {
     sample: abr::SegmentSample,
     pub(crate) cleanup_ready: bool,
@@ -797,7 +803,7 @@ impl Coordinator {
         if let Some(gate) = self.recovery.as_mut() { gate.on_hls_commit(direction); }
         self.recover_kbps = 0;
     }
-    pub(crate) fn reconsider_original(
+    fn reconsider_original(
         &mut self, telemetry: &abr::ControllerTelemetry, remaining_ms: i64,
     ) -> Option<Reconsideration> {
         let current = self.controller.catalog().candidate(self.controller.current());
@@ -837,6 +843,33 @@ impl Coordinator {
             self.recover_kbps, fresh_probe_kbps, decision, cleanup_ready,
             buffered_ms, media_duration_ms,
         )
+    }
+
+    /// The active observation is complete and any same-encoder lookahead has
+    /// finished. Reconsider a retained Original verdict before choosing the
+    /// higher-priority source switch or the next quality action.
+    pub(crate) fn after_active_prefetch(
+        &mut self, round: &RoundDecision, sample: abr::SegmentSample,
+        delivered: bool, remaining_ms: i64, paused: bool, cleanup_ready: bool,
+    ) -> ActiveAfterPrefetch {
+        let reconsidered = if delivered && sample.completed() {
+            self.reconsider_original(&round.telemetry, remaining_ms)
+        } else {
+            None
+        };
+        let source = if paused {
+            LatchedOriginalRecovery::Wait
+        } else {
+            self.source_switch(
+                None, round.decision, cleanup_ready,
+                sample.buffer.buffered_ms(), sample.media_duration_ms(),
+            )
+        };
+        ActiveAfterPrefetch {
+            reconsidered,
+            steady: matches!(round.decision, abr::Decision::Stay),
+            source,
+        }
     }
 
     /// Called after the higher-priority latched source switch had its publication
