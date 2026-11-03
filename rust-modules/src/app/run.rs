@@ -127,9 +127,7 @@ pub(crate) unsafe fn run(app: &mut App) {
         // the input. Eight phases between the nine stamps, named after the frame algorithm
         // the restructure moves this loop onto (spec §3.3/§8.4); on THIS loop navcommit
         // precedes tick_drain, and the FRAMEDROP line prints them in the algorithm's order.
-        app.bridge.publish_marker_preferences(clock::now());
-        let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
-        fr.ctrl = plx_appkit::player_hud::slot_with_preferences(&app.player.session, app.bridge.metadata_view(), app.bridge.marker_preferences());
+        let mut fr = begin_product_frame(app);
         let first_controlled_frame = app.boot_initial.is_some() && app.prev == 0;
         let fr = &mut fr;
         app.instr.mark(plx_base::diag::heartbeat::Phase::Top); // also starts the visit's hang interval
@@ -222,14 +220,7 @@ pub(crate) unsafe fn run(app: &mut App) {
         // …and a real stop's off-frame `Unload` gets its main-thread tail (gate, epoch, ACB,
         // D1) the first frame after it returns (`player::engine::PendingRelease`).
         plx_media::player::engine::poll_release_frame(&mut app.player.session, &mut app.adapters.player);
-        app.player.session.repair_status = app.player.repair.state();
-        publish_frame(&mut app.bridge, &app.player.session, was_player);
-        // The timer receives this frame's playback facts before input and Tick; the draw refreshes
-        // the same model later, after native actions have been drained.
-        let mut model = hud_model(&app.player.session, app.bridge.metadata_view());
-        model.marker_prefs = app.bridge.marker_preferences();
-        model.covered = app.pages.surface_up();
-        if let Some(screen) = super::bridge::player_mut(&mut app.pages) { screen.model = model; }
+        publish_product_frame(app, was_player);
         // The container runs its frame: the pending navigation's commit (at `PageDip`'s floor),
         // then the owned screens' inputs, ticks, timers and effects. `app/bridge.rs` is the seam.
         let supplied = match app.rec.replay_results(|id| app.bridge.recorded_client(id)) {
@@ -504,17 +495,13 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
     // draws, is written by the page's `Tick` and its keys, and a snapshot taken before them would
     // draw it a frame late. Ahead of everything that reads the model: the clock fingerprint just
     // below (the present gate's input) and, on a presenting frame, the draw (`draw`). The
-    // dispatcher's own `prepare` pass runs earlier, inside `bridge::frame_with_tap`, and so reads
-    // the PREVIOUS frame's snapshot exactly as it reads the previous frame's `busy` and `transport` —
-    // except `scrub_ns`, which the page's `prepare` takes from its own scrub (a held scrub moves the
-    // target by seconds a frame, and the clock prewarm warms only the displayed second and the next).
+    // dispatcher receives the current transport and marker facts before its input/Tick from
+    // `publish_player_model`; this refresh includes the changes that turn made. The scrub's clock
+    // prewarm takes its target from the screen's own scrub, which may have moved during that Tick.
     if fr.player {
-        let mut model = hud_model(&app.player.session, app.bridge.metadata_view());
-        model.marker_prefs = app.bridge.marker_preferences();
-        model.covered = app.pages.surface_up();
+        publish_player_model(app);
         refresh_hud(app);
         if let Some(player) = super::bridge::player_mut(&mut app.pages) {
-            player.model = model;
             if let Some(hud) = app.hud.as_ref() {
                 if !std::sync::Arc::ptr_eq(&player.compiled, &hud.compiled) {
                     player.compiled = std::sync::Arc::clone(&hud.compiled);
@@ -680,6 +667,30 @@ fn hud_model(
         bitmap_key: plx_media::player::active_bitmap_key(playpos_ns),
         bitmap_by_key: plx_media::player::bitmap_by_key,
     }
+}
+
+/// The frame publication phase: native repair state, retained views, then the player's input model.
+fn publish_product_frame(app: &mut App, was_player: bool) {
+    app.player.session.repair_status = app.player.repair.state();
+    publish_frame(&mut app.bridge, &app.player.session, was_player);
+    publish_player_model(app);
+}
+
+/// Frame-boundary runner inputs, captured before the event pump.
+fn begin_product_frame(app: &mut App) -> Frame {
+    app.bridge.publish_marker_preferences(clock::now());
+    let mut frame = Frame::begin(&app.player.session, app.bridge.metadata_view());
+    frame.ctrl = plx_appkit::player_hud::slot_with_preferences(&app.player.session,
+        app.bridge.metadata_view(), app.bridge.marker_preferences());
+    frame
+}
+
+/// Current transport/marker facts before the dispatcher's input/Tick, refreshed again for draw.
+fn publish_player_model(app: &mut App) {
+    let mut model = hud_model(&app.player.session, app.bridge.metadata_view());
+    model.marker_prefs = app.bridge.marker_preferences();
+    model.covered = app.pages.surface_up();
+    if let Some(screen) = super::bridge::player_mut(&mut app.pages) { screen.model = model; }
 }
 
 /// **The `Rig`-delegated privileged primitives** (spec §15.2, D4). `Bridge`'s `Rig` impl
@@ -9440,12 +9451,7 @@ mod frame_publication_tests {
         )
         .expect("read run.rs");
         const CALL: &str = "        publish_frame(&mut app.bridge, &app.player.session, was_player);
-        // The timer receives this frame's playback facts before input and Tick; the draw refreshes
-        // the same model later, after native actions have been drained.
-        let mut model = hud_model(&app.player.session, app.bridge.metadata_view());
-        model.marker_prefs = app.bridge.marker_preferences();
-        model.covered = app.pages.surface_up();
-        if let Some(screen) = super::bridge::player_mut(&mut app.pages) { screen.model = model; }";
+        publish_player_model(app);";
         assert_eq!(
             src.lines().filter(|l| *l == CALL).count(),
             1,
