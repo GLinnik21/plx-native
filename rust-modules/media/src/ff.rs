@@ -3401,6 +3401,7 @@ fn hls_source_read(
     aq: *mut AuQueue,
     dst: &mut [u8],
     deadline: Option<std::time::Instant>,
+    observer: &dyn DemuxObserver,
 ) -> Result<usize, HlsExit> {
     if unsafe { crate::aq::aq_is_aborted(aq) } {
         if let Src::Curl(cs) = src {
@@ -3438,7 +3439,7 @@ fn hls_source_read(
         // while visibly downloading playlists and segments. Count at the shared source seam so
         // socket and curl HLS mean the same thing: bytes actually handed to the demux fetcher.
         if read > 0 {
-            SHARED.dg_net_rx.fetch_add(read as i64, Ordering::Relaxed);
+            observer.publish(DemuxCallbackEffect::NetworkBytes(read as i64));
         }
         Ok(read as usize)
     }
@@ -3519,7 +3520,8 @@ fn hls_fetch_text(
             .as_deref_mut()
             .and_then(|reserve| reserve.active(false));
         let effective = watchdog.effective(reserve_snapshot);
-        let n = match hls_source_read(&mut src, aq, &mut chunk, Some(effective.at)) {
+        let n = match hls_source_read(&mut src, aq, &mut chunk, Some(effective.at),
+            net.observer.as_ref()) {
             Ok(n) => n,
             Err(HlsExit::PrimeExpired) => {
                 let wake =

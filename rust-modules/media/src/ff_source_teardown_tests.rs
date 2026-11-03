@@ -344,6 +344,7 @@ fn abort_while_a_playlist_body_is_blocked_wins_over_the_transport_result() {
             &mut *aq,
             &mut dst,
             Some(std::time::Instant::now() + std::time::Duration::from_secs(1)),
+            super::test_support::demux_observer().as_ref(),
         )
     });
 
