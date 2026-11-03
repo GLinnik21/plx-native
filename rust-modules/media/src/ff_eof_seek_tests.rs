@@ -683,19 +683,20 @@ fn demux_video_aus(file: Virtual, want: usize) -> (usize, Vec<(Option<u64>, u16)
     let origin = plx_plex::plex::Origin::http("127.0.0.1", i32::from(server.port));
     let thread = std::thread::spawn(move || {
         let off = plx_base::task::OffFrame::for_test();
-        demux(
+        super::test_support::with_demux_session(|session| demux(
             &off,
             origin,
             "/library/parts/1/file.mp4".into(),
             "aac".into(),
             false,
             DemuxTransport::new(crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE),
+            session,
             None,
             None,
             vp,
             ap,
             hp,
-        )
+        ))
     });
     let until = Instant::now() + Duration::from_secs(10);
     let mut aus = 0;

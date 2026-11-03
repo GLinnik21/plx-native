@@ -84,6 +84,7 @@ fn a_fetch_the_playhead_is_not_consuming_never_aborts() {
         .playpos_ns
         .store(pos, std::sync::atomic::Ordering::Relaxed);
     let guard = StallGuard {
+        observer: super::test_support::demux_observer(),
         reserve_ms_at_start: 2_000,
         playhead_at_start_ns: pos,
         hold_epoch_at_arm: SHARED
@@ -104,6 +105,7 @@ fn a_fetch_the_playhead_is_consuming_still_aborts() {
     let _serial = plx_base::testlock::serial();
     let pos = 5_000_000_000i64;
     let guard = StallGuard {
+        observer: super::test_support::demux_observer(),
         reserve_ms_at_start: 2_000,
         playhead_at_start_ns: pos,
         hold_epoch_at_arm: SHARED
