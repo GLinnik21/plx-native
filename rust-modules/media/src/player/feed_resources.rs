@@ -54,6 +54,13 @@ impl FeedResources {
     pub fn foreground_follows_load(&self) -> bool {
         self.engine.as_ref().is_some_and(|e| e.foreground_follows_load)
     }
+    pub fn route_actions_ready(&self) -> bool {
+        self.engine.as_ref().is_some_and(|e| {
+            matches!(e.source, engine::Source::Stream)
+                && e.stage >= super::shared::Stage::Playing
+                && !(e.flushed && e.rebase_pending)
+        })
+    }
     pub fn install(&mut self, value: engine::Engine) { self.engine = Some(value); }
     pub fn take(&mut self) -> Option<engine::Engine> { self.engine.take() }
 
