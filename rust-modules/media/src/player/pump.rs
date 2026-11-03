@@ -4,7 +4,7 @@
 use super::engine::{
     arm_live_clock_prime, feed_both_lanes, feed_sample, Engine, Source,
 };
-use super::shared::{HlsPauseCompletion, HlsPrimeKind, Stage};
+use super::shared::{HlsPauseCompletion, Stage};
 use super::{seek_mode, SeekMode, ACB_OK, SHARED, TX};
 use plx_base::task::MainThread;
 use std::os::raw::c_char;

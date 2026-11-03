@@ -342,8 +342,6 @@ impl<'a, P: FeedPort + ?Sized> TrialRunner<'a, P> {
         Self { port, protocol }
     }
 
-    pub(crate) fn physical(&mut self) -> &mut P { &mut *self.port }
-
     pub(crate) fn prime(
         &mut self, coordinator: &Coordinator, off: &plx_base::task::OffFrame,
         proposal: abr::Proposal, offset_micros: i64,
@@ -3636,18 +3634,18 @@ mod trial_runner_tests {
         assert!(matches!(runner.after_first_grade(FirstCandidateGrade {
             verdict: abr::CandidateVerdict::Ready, needs_followup: false,
         }), FirstCandidateAction::Finalize { .. }));
-        assert_eq!(runner.physical().checks, 0);
+        assert_eq!(runner.port.checks, 0);
         assert!(matches!(runner.after_first_grade(FirstCandidateGrade {
             verdict: abr::CandidateVerdict::SetupBearing, needs_followup: true,
         }), FirstCandidateAction::Unfunded));
-        assert_eq!(runner.physical().checks, 1);
-        runner.physical().reply = FeedObservation::FollowupReserve {
+        assert_eq!(runner.port.checks, 1);
+        runner.port.reply = FeedObservation::FollowupReserve {
             trial, funded: true, remaining_ms: Some(750),
         };
         assert!(matches!(runner.after_first_grade(FirstCandidateGrade {
             verdict: abr::CandidateVerdict::SetupBearing, needs_followup: true,
         }), FirstCandidateAction::ReadFollowup { remaining_ms: Some(750), .. }));
-        assert_eq!(runner.physical().checks, 2);
+        assert_eq!(runner.port.checks, 2);
     }
 
     #[test]
