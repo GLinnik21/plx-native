@@ -45,7 +45,6 @@ pub mod lifecycle;
 pub mod machine;
 #[cfg(feature = "play-feed")]
 pub mod playurl; // the `plxnative-playurl` dev trigger: a stream and its Load declaration, parsed beside the engine that acts on it
-#[cfg(feature = "play-feed")]
 pub mod preview;
 pub mod recovery; // the failed-open ladder (pure machine); `pump` drives it
 pub mod release; // the native object's off-frame release lifecycle (pure machine); `engine` runs it
