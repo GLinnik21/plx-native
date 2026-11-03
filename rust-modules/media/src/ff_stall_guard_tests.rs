@@ -605,10 +605,6 @@ impl ScriptedPms {
         }
     }
 
-    fn release(&self) {
-        self.released.store(true, Ordering::Release);
-    }
-
     fn requests(&self) -> usize {
         self.requests.load(Ordering::Acquire)
     }

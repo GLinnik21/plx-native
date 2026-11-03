@@ -14,8 +14,6 @@ pub use ff::native_audio;
 /// callback state is exported by the shipping feed crate.
 #[cfg(feature = "test-support")]
 pub mod ff_test_support {
-    pub use crate::ff::test_support::{avcc, dovi_bytes, rpu_fixture_nal, to_annexb,
-        to_annexb_flagged, to_annexb_p7};
     pub mod acquisition {
         pub use crate::ff::acquisition::{AcquisitionRuntime, Phase, SegmentAcquisition,
             CHECK_SLICE};

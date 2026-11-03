@@ -4361,7 +4361,7 @@ pub struct HlsCursor {
     /// `SHARED.duration_ns`, and on a reject nothing ever restores it: the remaining-playback
     /// estimate, the HUD's total and the scrobble all inherit the truncated number for the rest
     /// of the playback. The candidate is promoted to publishing at the moment it is committed.
-    publishes_duration: bool,
+    pub publishes_duration: bool,
     /// **The rate this rendition's master playlist DECLARED**, bit/s, `#EXT-X-STREAM-INF:BANDWIDTH`.
     ///
     /// Retained rather than logged and dropped, which is what happened to it until now. It is the
@@ -4374,14 +4374,14 @@ pub struct HlsCursor {
     /// Available at VALIDATION and nowhere else: a rung's `BANDWIDTH` cannot be read without first
     /// creating a PMS encoder session for it, so selection over the ladder still has no per-rung
     /// rate. That asymmetry is the specification's, not this field's.
-    declared_bps: u64,
-    auth: crate::hls::InheritedAuth,
+    pub declared_bps: u64,
+    pub auth: crate::hls::InheritedAuth,
     pub media: crate::hls::Resource,
-    tracker: crate::hls::MediaTracker,
+    pub tracker: crate::hls::MediaTracker,
     pub pending: std::collections::VecDeque<crate::hls::Segment>,
-    ended: bool,
-    target_duration_secs: u64,
-    start_applied: bool,
+    pub ended: bool,
+    pub target_duration_secs: u64,
+    pub start_applied: bool,
 }
 
 /// One worker-local physical owner for the active object and any candidate

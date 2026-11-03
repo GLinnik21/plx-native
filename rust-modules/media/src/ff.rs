@@ -17,8 +17,7 @@ use crate::aq::AuQueue;
 #[cfg(test)]
 use plx_playback_contract::adaptive::TrialClock;
 #[cfg(test)]
-use plx_playback_contract::demux::{DemuxCallbackEffect, DemuxObserver, DemuxSession,
-    HlsBufferClocks};
+use plx_playback_contract::demux::{DemuxCallbackEffect, DemuxObserver, DemuxSession};
 #[cfg(test)]
 use plx_play_feed::SendPtr;
 #[cfg(test)]
@@ -26,11 +25,9 @@ use plx_net::stream::HttpStream;
 #[cfg(test)]
 use plx_net::net::origin::Origin;
 #[cfg(test)]
-use plx_net::range_io;
-#[cfg(test)]
 use std::ffi::CString;
 #[cfg(test)]
-use std::os::raw::{c_int, c_long, c_void};
+use std::os::raw::{c_int, c_void};
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
