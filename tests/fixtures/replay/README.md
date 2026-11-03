@@ -607,3 +607,14 @@ against tests/mock_pms.py with tests/focusfp.sh --rec --only 1,6,12 (350 ms key 
 halved settle waits). The busy host needed a longer mock startup wait. They were checked and
 installed with tools/plxnative-rec rerecord, preserving anchor flags; the synthetic alphabet
 adds only the new English labels and the deterministic status/off codec vocabulary.
+
+The approved Home/Detail hero proposal changes metadata weight and size, title fallback size,
+facts wording, and the shared hero geometry. CI observed all three anchors refusing with
+`replay measurement table miss`. The wider hero column also exposed an accidental dependency
+in route-page layout; `theme::layout::ROUTE_COPY_W` now preserves the route family's 660 px
+column independently of the hero's 943 px reading column. All three flows were recorded afresh
+against the synthetic mock on the integrated tree with `tests/focusfp.sh --rec --only 1,6,12`
+(350 ms keys, 1 s boot settle, 1.5 s final settle). Each passed the synthetic vocabulary check;
+only its recording segment was replaced, with the identical manifests and anchor flags retained.
+The alphabet adds source-backed Movie/TV Show labels, remaining minutes and medium-format
+English dates. Both Targets and Resolve must pass the complete recordings before landing.
