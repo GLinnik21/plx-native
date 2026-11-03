@@ -145,8 +145,11 @@ impl From<DriverEvent> for Event {
 }
 
 /// The backend-specific IO lives here; native correlation and close rules stay behind this trait.
+/// `Context` is borrowed on every IO call so a concrete driver can require its owner's
+/// main-thread token without placing platform types or a thread bound in this contract.
 pub trait BackendDriver {
+    type Context;
     fn capabilities(&self) -> Capabilities;
-    fn dispatch(&mut self, attempt: AttemptId, command: CommandId, operation: Operation) -> DispatchResult;
-    fn poll(&mut self) -> Vec<DriverEvent>;
+    fn dispatch(&mut self, ctx: &Self::Context, attempt: AttemptId, command: CommandId, operation: Operation) -> DispatchResult;
+    fn poll(&mut self, ctx: &Self::Context) -> Vec<DriverEvent>;
 }
