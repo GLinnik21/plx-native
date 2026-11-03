@@ -574,7 +574,7 @@ impl StallGuard {
     /// Mid-playback a genuinely drained reserve declines the guard too, and that is the
     /// conservative direction rather than a gap: by then the picture has already stopped, the
     /// abort can no longer prevent anything, and `starving()` is the predicate that owns it.
-    fn arm(reserve_ms_at_start: i64, observer: Arc<dyn DemuxObserver>) -> Option<Self> {
+    pub fn arm(reserve_ms_at_start: i64, observer: Arc<dyn DemuxObserver>) -> Option<Self> {
         if reserve_ms_at_start <= 0 { return None; }
         Some(Self {
             playhead_at_start_ns: observer.playpos_ns()?,
@@ -587,14 +587,14 @@ impl StallGuard {
 
     /// At the terminal actuator the same observed boundary may stop presentation, but it must not
     /// discard the only response capable of producing more media.
-    fn arm_clock_hold(reserve_ms_at_start: i64, observer: Arc<dyn DemuxObserver>) -> Option<Self> {
+    pub fn arm_clock_hold(reserve_ms_at_start: i64, observer: Arc<dyn DemuxObserver>) -> Option<Self> {
         Self::arm(reserve_ms_at_start, observer).map(|mut guard| {
             guard.action = StallAction::HoldClock;
             guard
         })
     }
 
-    fn aborts_fetch(&self) -> bool {
+    pub fn aborts_fetch(&self) -> bool {
         self.action == StallAction::AbortFetch
     }
 
@@ -611,7 +611,7 @@ impl StallGuard {
     /// below the reserve and the hold has to come from the main thread. Device-measured
     /// 2026-09-02 (`pipe_abr_down_collapse`): reserve 5668 ms, playhead spent 5410 ms, then 77 s
     /// of `vtick=0` with neither branch firing. Neither branch predicts an unseen byte.
-    fn should_abort(&self, body_complete: bool, terminal_hold_started: bool) -> bool {
+    pub fn should_abort(&self, body_complete: bool, terminal_hold_started: bool) -> bool {
         if body_complete {
             return false;
         }
@@ -620,7 +620,7 @@ impl StallGuard {
             || self.spent_ms() >= self.reserve_ms_at_start
     }
 
-    fn spent_ms(&self) -> i64 {
+    pub fn spent_ms(&self) -> i64 {
         self.observer.playpos_ns().unwrap_or(i64::MAX)
             .saturating_sub(self.playhead_at_start_ns)
             .max(0)
@@ -629,7 +629,7 @@ impl StallGuard {
 
     /// The wall instant at which the playhead, at one speed, would spend what remains. A wake-up
     /// only: a paused or stopped playhead makes it stale, and the next check simply re-projects.
-    fn projected_boundary(&self) -> std::time::Instant {
+    pub fn projected_boundary(&self) -> std::time::Instant {
         let left_ms = self
             .reserve_ms_at_start
             .saturating_sub(self.spent_ms())
@@ -710,7 +710,7 @@ enum ReserveDeadlineClock {
 }
 
 impl ReserveDeadlineState {
-    fn new(at: Option<std::time::Instant>, yields_to_rebuffer: bool,
+    pub fn new(at: Option<std::time::Instant>, yields_to_rebuffer: bool,
         observer: Arc<dyn DemuxObserver>) -> Self {
         let hold_epoch_at_start = observer.hold_epoch();
         Self {
@@ -728,7 +728,7 @@ impl ReserveDeadlineState {
 
     /// A media-reserve deadline spends presentation time, not wall time. User Pause, an internal
     /// rebuffer hold and a genuinely starved native clock all freeze the same physical balance.
-    fn from_playhead(budget: std::time::Duration, yields_to_rebuffer: bool,
+    pub fn from_playhead(budget: std::time::Duration, yields_to_rebuffer: bool,
         observer: Arc<dyn DemuxObserver>) -> Self {
         let Some(started_ns) = observer.playpos_ns() else {
             return Self {
@@ -742,7 +742,7 @@ impl ReserveDeadlineState {
         Self::from_playhead_at(started_ns, budget, yields_to_rebuffer, observer)
     }
 
-    fn from_playhead_at(
+    pub fn from_playhead_at(
         started_ns: i64,
         budget: std::time::Duration,
         yields_to_rebuffer: bool,
@@ -761,7 +761,7 @@ impl ReserveDeadlineState {
         }
     }
 
-    fn from_unpaused_elapsed(budget: std::time::Duration, yields_to_rebuffer: bool,
+    pub fn from_unpaused_elapsed(budget: std::time::Duration, yields_to_rebuffer: bool,
         observer: Arc<dyn DemuxObserver>) -> Self {
         let pause = observer.pause_clock();
         let hold_epoch_at_start = observer.hold_epoch();
@@ -783,7 +783,7 @@ impl ReserveDeadlineState {
     /// still returns the balance while the user is paused: callers use it to carry one fixed
     /// end-to-end exploration budget from the control plane into the media leg without turning a
     /// pause into either spent reserve or a newly granted budget.
-    fn remaining(&self) -> Option<std::time::Duration> {
+    pub fn remaining(&self) -> Option<std::time::Duration> {
         match self.clock {
             ReserveDeadlineClock::Retired => None,
             ReserveDeadlineClock::Wall(at) => {
@@ -810,7 +810,7 @@ impl ReserveDeadlineState {
         }
     }
 
-    fn release_to_rebuffer(&mut self, rebuffering: bool) {
+    pub fn release_to_rebuffer(&mut self, rebuffering: bool) {
         if matches!(self.clock, ReserveDeadlineClock::Retired) { return; }
         let Some(hold_epoch) = self.observer.hold_epoch() else {
             self.clock = ReserveDeadlineClock::Retired;
@@ -825,7 +825,7 @@ impl ReserveDeadlineState {
     /// Whether the conservation clock itself is spent. A wall projection returned by `active`
     /// is only a wake-up mechanism; it is never evidence for a playhead-funded budget, because
     /// wall time may pass while the native presentation clock is stopped.
-    fn clock_is_spent(&self) -> bool {
+    pub fn clock_is_spent(&self) -> bool {
         match self.clock {
             ReserveDeadlineClock::Retired => true,
             ReserveDeadlineClock::Wall(at) => at.is_some_and(|at| std::time::Instant::now() >= at),
@@ -846,7 +846,7 @@ impl ReserveDeadlineState {
         }
     }
 
-    fn active(&mut self, rebuffering: bool) -> Option<std::time::Instant> {
+    pub fn active(&mut self, rebuffering: bool) -> Option<std::time::Instant> {
         self.release_to_rebuffer(rebuffering);
         match self.clock {
             ReserveDeadlineClock::Retired => Some(std::time::Instant::now()),
@@ -874,7 +874,7 @@ impl ReserveDeadlineState {
         }
     }
 
-    fn expire_if_due(&mut self, rebuffering: bool) -> bool {
+    pub fn expire_if_due(&mut self, rebuffering: bool) -> bool {
         self.release_to_rebuffer(rebuffering);
         if self.expired || self.clock_is_spent() {
             self.expired = true;
@@ -889,7 +889,7 @@ impl ReserveDeadlineState {
     /// have made the projection stale; a floor rebuffer hold may instead have released that clock.
     /// The caller retries with whatever reserve remains armed, composed with the unchanged
     /// transport-liveness epoch.
-    fn note_transport_deadline(
+    pub fn note_transport_deadline(
         &mut self,
         _attempted_deadline: Option<std::time::Instant>,
         rebuffering: bool,
@@ -933,7 +933,7 @@ pub struct BlockingDeadline {
 }
 
 impl TransportWatchdog {
-    fn for_origin(origin: &Origin) -> Self {
+    pub fn for_origin(origin: &Origin) -> Self {
         let inactivity = if origin.is_tls() {
             range_io::media_stall_budget()
         } else {
@@ -942,7 +942,7 @@ impl TransportWatchdog {
         Self::with_inactivity(inactivity)
     }
 
-    fn with_inactivity(inactivity: std::time::Duration) -> Self {
+    pub fn with_inactivity(inactivity: std::time::Duration) -> Self {
         Self {
             inactivity,
             deadline: std::time::Instant::now()
@@ -951,13 +951,13 @@ impl TransportWatchdog {
         }
     }
 
-    fn reset(&mut self) {
+    pub fn reset(&mut self) {
         self.deadline = std::time::Instant::now()
             .checked_add(self.inactivity)
             .unwrap_or_else(std::time::Instant::now);
     }
 
-    fn effective(&self, reserve: Option<std::time::Instant>) -> BlockingDeadline {
+    pub fn effective(&self, reserve: Option<std::time::Instant>) -> BlockingDeadline {
         match reserve {
             Some(at) if at <= self.deadline => BlockingDeadline {
                 at,
@@ -970,7 +970,7 @@ impl TransportWatchdog {
         }
     }
 
-    fn expired(&self) -> bool {
+    pub fn expired(&self) -> bool {
         std::time::Instant::now() >= self.deadline
     }
 }
@@ -1142,7 +1142,7 @@ pub struct HealBudget {
 
 impl HealBudget {
     /// Charge one reopen at byte `at`, or `false` when the budget there is spent.
-    fn take(&mut self, at: i64) -> bool {
+    pub fn take(&mut self, at: i64) -> bool {
         if self.at != at {
             *self = HealBudget { at, spent: 0 };
         }
@@ -4352,7 +4352,7 @@ fn hls_feed_segment(
     Ok(())
 }
 
-struct HlsCursor {
+pub struct HlsCursor {
     /// Whether this cursor's media playlist is the one describing WHAT IS PLAYING.
     ///
     /// A candidate cursor opened during a quality transaction reads a freshly created encoder
@@ -4376,7 +4376,7 @@ struct HlsCursor {
     /// rate. That asymmetry is the specification's, not this field's.
     declared_bps: u64,
     auth: crate::hls::InheritedAuth,
-    media: crate::hls::Resource,
+    pub media: crate::hls::Resource,
     tracker: crate::hls::MediaTracker,
     pending: std::collections::VecDeque<crate::hls::Segment>,
     ended: bool,

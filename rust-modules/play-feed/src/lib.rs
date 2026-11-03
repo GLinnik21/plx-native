@@ -42,7 +42,7 @@ pub mod ff_test_support {
         stream_origin_ns, strip_hdr10plus_sei, ts_h264_access_unit,
         unproductive_exit_failed, vp9_packet_to_frame, walk_obus, write_leb128,
         Av1Framing, AvioState, BlockingDeadline, BlockingDeadlineOwner, BlockingWake,
-        H264ParamSets, HealBudget, HlsAu, HlsExit, HlsNet, HlsSegmentOutput,
+        H264ParamSets, HealBudget, HlsAu, HlsCursor, HlsExit, HlsNet, HlsSegmentOutput,
         MediaOpenFail, NalInput, Rap, ReserveDeadlineState, SegmentTransfer,
         SeiStrip, Src, StallAction, StallGuard, TransportWatchdog, VideoFraming,
         AUDIO_AHEAD_HEADROOM, AV1_TD, AVSEEK_SIZE, BODY_HEAL_ATTEMPTS, BODY_SILENCE,
