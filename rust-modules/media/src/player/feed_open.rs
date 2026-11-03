@@ -13,13 +13,29 @@ pub(super) struct FeedOpenRequest {
     pub audio_codec: String,
     pub pcm_is_lossy: bool,
     pub audio_channels: i64,
-    pub payload: PayloadFacts,
     /// Backend-owned Load facts, with route and metadata types mapped at capture time.
     pub feed_payload: plx_play_feed::PayloadFacts,
+    pub original_dv: OriginalDvFacts,
     pub side_reader: Option<SideReaderOpen>,
     pub hls_abr: Option<Box<dyn plx_playback_contract::adaptive::AdaptiveSession>>,
     pub auto_original: Option<Box<dyn plx_playback_contract::adaptive::OriginalSession>>,
-    pub trace_generation: u32,
+}
+
+/// Original wire evidence for Force preflight and the declaration log. The converted sink
+/// presentation is separately represented by `feed_payload.dv`.
+#[derive(Clone, Copy)]
+pub(super) struct OriginalDvFacts {
+    pub present: bool,
+    pub profile: i64,
+    pub bl_compat: i64,
+    pub el_present: bool,
+}
+
+impl From<plx_data::metadata::Dovi> for OriginalDvFacts {
+    fn from(dv: plx_data::metadata::Dovi) -> Self {
+        Self { present: dv.present, profile: dv.profile,
+            bl_compat: dv.bl_compat, el_present: dv.el_present }
+    }
 }
 
 /// A resolved side reader that the physical open can start without route or Plex lookups.
@@ -86,6 +102,7 @@ impl FeedOpenRequest {
     pub fn capture(ps: &route::PlaybackSession, url: String) -> Self {
         let payload = PayloadFacts::capture(ps);
         let feed_payload = payload.to_feed();
+        let original_dv = payload.dovi.into();
         let source = plx_plex::plex::StreamUrl::parse(&url);
         let side_reader = route::side_reader_target(ps).map(|target| SideReaderOpen {
             clock_only: target.clock_only(),
@@ -98,8 +115,8 @@ impl FeedOpenRequest {
             audio_codec: route::stream_acodec(ps),
             pcm_is_lossy: route::stream_pcm_is_lossy(ps),
             audio_channels: route::stream_achannels(ps),
-            payload,
             feed_payload,
+            original_dv,
             side_reader,
             hls_abr: route::hls_abr_control(ps).map(|control| {
                 crate::adaptive::boxed_session(
@@ -110,7 +127,6 @@ impl FeedOpenRequest {
             auto_original: route::auto_original_watch(ps).map(|watch| {
                 crate::adaptive::boxed_original_session(crate::adaptive::OriginalStart::from(watch))
             }),
-            trace_generation: route::playback_trace_generation(),
         }
     }
 
