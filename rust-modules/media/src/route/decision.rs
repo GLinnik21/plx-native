@@ -9680,7 +9680,10 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
     let start = prepare_playback_landing(ps, !ps.url.is_empty());
     // SHARED.desired_audio_idx is read by the DEMUX THREAD on every reopen — main thread only.
     if let Some(ord) = plan.feed_audio_ordinal {
+        #[cfg(feature = "play-feed")]
         crate::player::set_audio_track(ord);
+        #[cfg(not(feature = "play-feed"))]
+        let _ = ord;
     }
     // `request_play` turned subtitles off; apply the resolved part/show selection
     // AFTER that reset (this lands a frame or more later, on the main thread, before the engine
@@ -11741,6 +11744,7 @@ fn commit_audio_route(ps: &mut PlaybackSession, audio: CarriedAudio) -> bool {
     }
     let stream_id = audio.sid;
     let native = family == RouteFamily::Direct && direct_plays;
+    #[cfg(feature = "play-feed")]
     let (ordinal, codec) = (audio.ordinal, audio.codec.clone());
     { let s = &mut *ps; s.cur_audio = Some(audio); s.selection_known = true };
     if native {

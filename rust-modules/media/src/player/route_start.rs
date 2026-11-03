@@ -1213,6 +1213,7 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
             #[cfg(feature = "play-feed")]
             TX.reset();
             mark_attempt_stopped(ps);
+            #[cfg(feature = "play-feed")]
             super::claim_hold::clear();
             // Nothing here is asynchronous, so the fence `begin_engine_teardown` just raised is
             // already spent. Publish the completed stop rather than latching `Stopping` — see

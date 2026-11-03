@@ -1997,6 +1997,9 @@ mod flight_tests {
             let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
             let epoch = SHARED.begin_native_session().expect("native session");
             let engine = super::super::engine::streaming_engine_for_test(epoch);
+            assert!(ps.qualify_installed_feed_offer(crate::route::CandidatePurpose::NewCandidate));
+            let offer = ps.planned_feed_offer().expect("installed Feed recipe");
+            assert!(ps.backend_offer_admitted(plx_playback_contract::BackendKind::Feed, offer));
             ps.begin_attempt_view(crate::route::RouteStartAttempt::fixture(), super::super::attempt_view::Backend::Feed);
             pa.install(engine);
             SHARED.duration_ns.store(7_200_000_000_000, Relaxed);
