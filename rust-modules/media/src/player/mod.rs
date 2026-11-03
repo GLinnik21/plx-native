@@ -2075,19 +2075,25 @@ pub fn speed_offer(ps: &crate::route::PlaybackSession) -> Vec<i32> {
         return Vec::new();
     }
     #[cfg(feature = "play-feed")]
-    {
-        if crate::route::forced_direct_play(ps) || crate::route::is_preview(ps)
-            || crate::route::is_segmented_hls(ps) || speed_unsupported() {
-            return Vec::new();
-        }
-        let codec = crate::route::stream_acodec(ps);
-        if !no_audio_armed() && !plx_media_codecs::ffi::speed_decoder_available(&codec) {
-            return Vec::new();
-        }
-        speeds_within(crate::route::stream_fps(ps), feed_open::speed_fps_ceiling_now(ps))
-    }
+    { feed_speed_offer(ps) }
     #[cfg(not(feature = "play-feed"))]
     { Vec::new() }
+}
+
+/// Feasibility of the *resolved Feed candidate*, independent of the outgoing attempt's backend.
+/// Start admission uses this after URI→Feed reconfiguration, while the visible speed menu still
+/// asks [`speed_offer`] about the current executor. It does not certify native application.
+#[cfg(feature = "play-feed")]
+pub(crate) fn feed_speed_offer(ps: &crate::route::PlaybackSession) -> Vec<i32> {
+    if crate::route::forced_direct_play(ps) || crate::route::is_preview(ps)
+        || crate::route::is_segmented_hls(ps) || speed_unsupported() {
+        return Vec::new();
+    }
+    let codec = crate::route::stream_acodec(ps);
+    if !no_audio_armed() && !plx_media_codecs::ffi::speed_decoder_available(&codec) {
+        return Vec::new();
+    }
+    speeds_within(crate::route::stream_fps(ps), feed_open::speed_fps_ceiling_now(ps))
 }
 
 /// The most frames per second a speed may ask the decoder to show: at speed `r` a `fps` source is
@@ -2114,7 +2120,7 @@ pub(crate) fn session_rate_for(ps: &crate::route::PlaybackSession) -> i32 {
     if want == RATE_NORMAL || crate::route::is_preview(ps) {
         return RATE_NORMAL;
     }
-    let offer = speed_offer(ps);
+    let offer = feed_speed_offer(ps);
     let rate = session_rate(want, &offer);
     if rate != want {
         SHARED.play_rate_permille.store(RATE_NORMAL, Relaxed);
