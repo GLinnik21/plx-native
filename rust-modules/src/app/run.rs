@@ -2795,6 +2795,18 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                 }
                 if let Some(r) = plx_media::route::pump_play(&mut app.player.session, app.bridge.metadata_mut()) {
                     plx_machine::idle::invalidate();
+                    // The resolved URI locator is an owned IO result. Install it against the
+                    // route ticket before the common start door chooses a physical backend.
+                    #[cfg(feature = "play-uri")]
+                    if let Some(offer) = r.uri_offer {
+                        if app.adapters.player.offer_qualified_uri(&mut app.player.session, offer).is_err() {
+                            if let Some(ticket) = r.route_start {
+                                let _ = plx_media::route::retry_uri_source_as_feed(
+                                    &mut app.player.session, app.bridge.metadata_mut(), ticket);
+                            }
+                            return;
+                        }
+                    }
                     // A preview landing nobody is waiting for any more (the page halted it while
                     // the resolve was in flight) must not start an engine: nothing would track
                     // it, so nothing would stop it at its end or hand the engine to a later Play.
@@ -2812,10 +2824,10 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                     // A transcode with a saved position rebuilds at that offset on a worker (`begin_resume`):
                     // the play stays pending, the spinner stays up, and the drain at the top of this landing
                     // starts the Load when the flight lands.
-                    match if r <= 0 {
+                    match if r.resume_ns <= 0 {
                         plx_media::player::ResumeStart::Settled(plx_media::player::ResumeOutcome::Prepared)
                     } else {
-                        plx_media::player::begin_resume(&mut app.player.session, r)
+                        plx_media::player::begin_resume(&mut app.player.session, r.resume_ns)
                     } {
                         plx_media::player::ResumeStart::Pending => {}
                         plx_media::player::ResumeStart::Settled(outcome) => finish_landed_play(
