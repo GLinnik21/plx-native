@@ -6275,8 +6275,15 @@ fn hls_demux(
             .checked_add(timeline.end_ns())
             .ok_or(HlsExit::Failed("HLS candidate content offset overflow"))?;
         let offset_micros = offset_ns / 1_000;
-        let prime_deadline = exploration_snapshot(&mut exploration_reserve);
-        let primed = match state.prime(off, proposal, offset_micros, prime_deadline) {
+        let mut port = HlsTrialPort {
+            trial: trial_id, origin, aq, aqa, net: &mut net, acodec,
+            reserve: &mut exploration_reserve, source: None,
+            candidate: None, segment: None, timeline: None,
+            clock: None, output: None, staged: Vec::new(),
+        };
+        let mut runner = adaptive::TrialRunner::new(&mut port, &mut trial_protocol);
+        let prime_deadline = exploration_snapshot(&mut *runner.physical().reserve);
+        let primed = match runner.prime(state, off, proposal, offset_micros, prime_deadline) {
             Ok(primed) => primed,
             Err(refusal) => {
                 if unsafe { crate::aq::aq_is_aborted(aq) } {
@@ -6292,7 +6299,7 @@ fn hls_demux(
                 // A stale snapshot after Pause or hold is not a spent candidate reserve.
                 // The physical clock supplies that fact; policy classifies the refusal.
                 let deadline_final = !matches!(refusal, adaptive::PrimeFailure::Deadline)
-                    || exploration_timeout_is_final(&mut exploration_reserve, prime_deadline);
+                    || exploration_timeout_is_final(&mut *runner.physical().reserve, prime_deadline);
                 let (cause, why) = adaptive::classify_prime_failure(refusal, deadline_final);
                 reject_hls_abr_after_transaction(state, proposal, cause, &mut tx, now_ms());
                 tx.finish(why);
@@ -6301,14 +6308,12 @@ fn hls_demux(
             }
         };
         tx.mark_prime();
-        trial_protocol.observe(trial_id, TrialEvent::Prepared)
-            .expect("a primed trial follows its grant");
         if unsafe { crate::aq::aq_is_aborted(aq) } {
             state.abandon(&primed.encoder_session);
             tx.finish("aborted");
             return Err(HlsExit::Aborted);
         }
-        if exploration_expired(&mut exploration_reserve) {
+        if exploration_expired(&mut *runner.physical().reserve) {
             state.abandon(&primed.encoder_session);
             reject_hls_abr_after_transaction(
                 state,
@@ -6321,13 +6326,6 @@ fn hls_demux(
             crate::player::log("abr: candidate spent its exploration reserve in the control plane");
             continue;
         }
-        let mut port = HlsTrialPort {
-            trial: trial_id, origin, aq, aqa, net: &mut net, acodec,
-            reserve: &mut exploration_reserve, source: None,
-            candidate: None, segment: None, timeline: None,
-            clock: None, output: None, staged: Vec::new(),
-        };
-        let mut runner = adaptive::TrialRunner::new(&mut port, &mut trial_protocol);
         let opened = runner.open(primed.url.clone());
         let opened_declared_bps = match opened {
             FeedObservation::Opened { declared_bps, .. } => {

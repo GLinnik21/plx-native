@@ -165,6 +165,17 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
 
     pub(crate) fn physical(&mut self) -> &mut P { &mut *self.port }
 
+    pub(crate) fn prime(
+        &mut self, coordinator: &Coordinator, off: &plx_base::task::OffFrame,
+        proposal: abr::Proposal, offset_micros: i64,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<route::PrimedHls, PrimeFailure> {
+        let primed = coordinator.prime(off, proposal, offset_micros, deadline)?;
+        self.observe(TrialObservation::Prepared)
+            .expect("a primed trial follows its grant");
+        Ok(primed)
+    }
+
     pub(crate) fn observe(
         &mut self, observation: TrialObservation,
     ) -> Result<TrialPhase, TrialProtocolError> {
