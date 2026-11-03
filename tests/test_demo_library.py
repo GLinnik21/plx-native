@@ -660,7 +660,7 @@ class HeroGeometry(unittest.TestCase):
         by = {z["name"]: z["rect"] for z in zones}
         self.assertEqual(by["home text column"], [96, 206, 1039, 776])
         self.assertEqual(by["home shelf row"], [0, 757, 1920, 1080])
-        self.assertEqual(by["detail text column"], [96, 298, 1039, 1080])
+        self.assertEqual(by["detail text column"], [96, 326, 1039, 1080])
         self.assertEqual(by["detail facts row"], [1039, 714, 1264, 842])
         self.assertEqual(by["detail starring column"], [1264, 702, 1824, 1080])
         self.assertEqual(by["hero scrim"], [0, 162, 1920, 1080])
