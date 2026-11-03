@@ -227,13 +227,7 @@ fn native_object_disposition(
 /// retirement → D1 or quarantine) on the main thread once the thread has finished. Until then every
 /// start is refused rather than handed the same object; if the `Load` never returns the object is
 /// leaked for the life of the process, which is what the C seam would have to do anyway.
-pub struct AbandonedLoad {
-    epoch: u32,
-    load_th: std::thread::JoinHandle<()>,
-    /// The Load payload `sf_load` was handed as a raw pointer. Must outlive the thread.
-    _payload: std::ffi::CString,
-    abandoned_at: std::time::Instant,
-}
+pub use plx_play_feed::feed_state::AbandonedLoad;
 
 /// Release a parked [`AbandonedLoad`] if its `Load` has returned. Cheap when there is nothing to
 /// do; called once per app frame and at the top of every native start. `true` when the parked
@@ -275,37 +269,7 @@ pub(super) fn reap_abandoned_load_resource(feed: &mut super::feed_resources::Fee
 /// While the worker owns the object its epoch is [`Shared::begin_native_release`]'s `Releasing`
 /// phase, which admits only UNLOADCOMPLETED (the main thread has already reset the state any other
 /// callback would write into), and no new native session may begin.
-pub struct PendingRelease {
-    epoch: u32,
-    /// Taken by the join ([`join_finished_release`]); `None` afterwards.
-    unload_th: Option<std::thread::JoinHandle<()>>,
-    handed_off_at: std::time::Instant,
-    /// The Engine the object belonged to. It used to drop at the end of `teardown`, after the
-    /// release; it still drops after it (the Load payload in particular outlives the Unload).
-    _engine: Engine,
-}
-
-impl PendingRelease {
-    pub(crate) fn epoch(&self) -> u32 {
-        self.epoch
-    }
-
-    pub(crate) fn handed_off_at(&self) -> std::time::Instant {
-        self.handed_off_at
-    }
-
-    /// The `Unload` has returned, so joining its worker cannot block.
-    pub(crate) fn is_finished(&self) -> bool {
-        self.unload_th.as_ref().is_none_or(|t| t.is_finished())
-    }
-
-    /// The release machine has observed this worker return; joining it cannot block the frame.
-    pub(super) fn join_returned_worker(&mut self) {
-        if let Some(thread) = self.unload_th.take() {
-            plx_base::task::join("sf-unload", thread);
-        }
-    }
-}
+pub use plx_play_feed::feed_state::PendingRelease;
 
 /// Test seam: make [`release_off_frame`] see the OS refuse the `sf-unload` thread.
 #[cfg(test)]
@@ -3802,7 +3766,7 @@ mod prime_livelock_tests {
         // This fixture holds the presented position fixed. Keep FeedPace's existing anchor
         // ahead of the real clock so host preemption cannot extrapolate that position while
         // the simulated feed clock is testing the slice. FeedPace's run-on has its own tests.
-        eng.feed_pace.last = Some((PRES, u32::MAX));
+        assert_eq!(eng.feed_pace.reference(PRES, u32::MAX), PRES);
         push_segment_at(&mut eng, PRES + lead0 + 1);
 
         tick(&mt, &mut eng);
