@@ -1458,7 +1458,9 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                     return avio_stopped(s);
                 }
             }
-            let rebuffering = SHARED.hls_rebuffering.load(Ordering::Acquire);
+            let Some(rebuffering) = s.observer.rebuffering() else {
+                return AVERROR_EOF;
+            };
             if s.reserve_deadline.expire_if_due(rebuffering) {
                 return AVERROR_EOF;
             }
@@ -1510,7 +1512,9 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
             };
             let wake =
                 if r == plx_net::stream::HTTP_READ_DEADLINE || r == range_io::READ_DEADLINE {
-                    let current_rebuffering = SHARED.hls_rebuffering.load(Ordering::Acquire);
+                    let Some(current_rebuffering) = s.observer.rebuffering() else {
+                        return AVERROR_EOF;
+                    };
                     match (blocking_deadline, s.transport_watchdog.as_ref()) {
                         (Some(attempted), Some(watchdog)) => Some(observe_hls_deadline(
                             Some(&mut s.reserve_deadline),
