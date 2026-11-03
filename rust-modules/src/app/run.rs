@@ -4397,6 +4397,7 @@ mod lifecycle_regression_tests {
             facts.duration_ns = Some(100_000_000_000);
             facts.position_ns = Some(0);
         });
+        super::publish_frame(&mut app.bridge, &app.player.session, true);
         for (index, input) in std::mem::take(&mut app.inputs).into_iter().enumerate() {
             super::super::bridge::frame(&mut app.pages, &mut app.bridge,
                 Tick { ms: 1_000 + index as u32 * 500, dt_us: 16_000 }, vec![input]);
@@ -5974,6 +5975,7 @@ mod lifecycle_regression_tests {
         fr.dt = 0.016;
         let was_player = super::super::bridge::player(&app.pages).is_some();
         unsafe { playback_tick(app, &mut fr); }
+        super::publish_frame(&mut app.bridge, &app.player.session, was_player);
         super::super::bridge::frame(&mut app.pages, &mut app.bridge,
             plx_machine::machine::Tick { ms: *t, dt_us: 16_000 }, std::mem::take(&mut app.inputs));
         if was_player && super::super::bridge::player(&app.pages).is_none() {
