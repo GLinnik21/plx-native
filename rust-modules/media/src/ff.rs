@@ -4219,21 +4219,27 @@ struct HlsCursor {
     start_applied: bool,
 }
 
-/// The feed's private locator and cursor slot for one candidate open. The
-/// adaptive runner addresses it by TrialId and SourceKey; no URL enters the
-/// lower action or a diagnostic formatter.
-struct HlsTrialPort<'a> {
-    trial: TrialId,
+/// One worker-local physical owner for the active object and any candidate
+/// trial in this round. Active and trial commands address separate generations;
+/// the URL, cursor, staged AUs and reserve clock remain private here.
+struct HlsRoundPort<'a> {
+    round: RoundId,
+    trial: Option<TrialId>,
     origin: &'a plx_plex::plex::Origin,
+    cursor: &'a mut HlsCursor,
+    timeline: &'a mut crate::hls::SegmentTimeline,
+    prefetched: &'a mut Option<ActiveMedia>,
+    pause_cursor: &'a mut crate::player::UserPauseCursor,
     aq: *mut AuQueue,
     aqa: *mut AuQueue,
     net: &'a mut HlsNet,
     acodec: &'a str,
-    reserve: &'a mut Option<ReserveDeadlineState>,
+    current: Option<ActiveMedia>,
+    reserve: Option<ReserveDeadlineState>,
     source: Option<(SourceKey, String)>,
     candidate: Option<HlsCursor>,
     segment: Option<crate::hls::Segment>,
-    timeline: Option<crate::hls::SegmentTimeline>,
+    candidate_timeline: Option<crate::hls::SegmentTimeline>,
     clock: Option<crate::hls::SegmentClock>,
     output: Option<HlsSegmentOutput>,
     staged: Vec<(HlsSegmentOutput, crate::hls::SegmentClock, std::time::Duration)>,
@@ -4248,7 +4254,7 @@ fn hls_feed_failure(error: HlsExit) -> FeedFailure {
     }
 }
 
-impl FeedPort for HlsTrialPort<'_> {
+impl FeedPort for HlsRoundPort<'_> {
     type Locator = String;
 
     fn bind_source(&mut self, source: SourceKey, locator: Self::Locator) {
@@ -4267,7 +4273,7 @@ impl FeedPort for HlsTrialPort<'_> {
             | FeedAction::CheckFollowupReserve { trial }
             | FeedAction::QueueStaged { trial } => trial,
         };
-        if trial != self.trial {
+        if Some(trial) != self.trial {
             return FeedObservation::Failed { trial, failure: FeedFailure::Protocol };
         }
         match action {
@@ -4275,7 +4281,7 @@ impl FeedPort for HlsTrialPort<'_> {
                 trial, aborted: unsafe { crate::aq::aq_is_aborted(self.aq) },
             },
             FeedAction::CheckExpired { trial } => FeedObservation::ExpiryStatus {
-                trial, expired: exploration_expired(self.reserve),
+                trial, expired: exploration_expired(&mut self.reserve),
             },
             FeedAction::BudgetSnapshot { trial } => {
                 let (buffer, started_ns) = hls_buffer_snapshot_with_playhead(None);
@@ -4286,10 +4292,10 @@ impl FeedPort for HlsTrialPort<'_> {
                 }
             }
             FeedAction::PrimeDeadline { trial } => FeedObservation::PrimeDeadline {
-                trial, deadline: exploration_snapshot(self.reserve),
+                trial, deadline: exploration_snapshot(&mut self.reserve),
             },
             FeedAction::DeadlineFinal { trial, snapshot } => FeedObservation::DeadlineFinal {
-                trial, final_expiry: exploration_timeout_is_final(self.reserve, snapshot),
+                trial, final_expiry: exploration_timeout_is_final(&mut self.reserve, snapshot),
             },
             FeedAction::Open { trial, source } => self.open(trial, source),
             FeedAction::ReadNext { trial } => self.read_next(trial),
@@ -4306,7 +4312,7 @@ impl FeedPort for HlsTrialPort<'_> {
     }
 }
 
-impl HlsTrialPort<'_> {
+impl HlsRoundPort<'_> {
     fn open(&mut self, trial: TrialId, source: SourceKey) -> FeedObservation {
         let Some((bound, locator)) = self.source.take() else {
             return FeedObservation::Failed { trial, failure: FeedFailure::Protocol };
@@ -4354,20 +4360,20 @@ impl HlsTrialPort<'_> {
         yields_to_rebuffer: bool, started_ns: i64, clock: TrialClock,
     ) -> FeedObservation {
         let deadline = candidate_reserve_deadline(
-            *self.reserve, media_budget, yields_to_rebuffer, started_ns, clock,
+            self.reserve, media_budget, yields_to_rebuffer, started_ns, clock,
         );
         self.acquire(trial, deadline)
     }
 
     fn acquire_followup(&mut self, trial: TrialId) -> FeedObservation {
-        let Some(deadline) = *self.reserve else {
+        let Some(deadline) = self.reserve else {
             return FeedObservation::Failed { trial, failure: FeedFailure::Protocol };
         };
         self.acquire(trial, deadline)
     }
 
     fn check_followup_reserve(&mut self, trial: TrialId) -> FeedObservation {
-        let funded = self.reserve.is_some() && !exploration_expired(&mut *self.reserve);
+        let funded = self.reserve.is_some() && !exploration_expired(&mut self.reserve);
         let remaining_ms = self.reserve.as_ref()
             .and_then(ReserveDeadlineState::remaining)
             .map(|left| u64::try_from(left.as_millis()).unwrap_or(u64::MAX));
@@ -4387,7 +4393,7 @@ impl HlsTrialPort<'_> {
 
     fn acquire(&mut self, trial: TrialId, deadline: ReserveDeadlineState) -> FeedObservation {
         let (Some(candidate), Some(segment), Some(mut timeline)) = (
-            self.candidate.as_ref(), self.segment.as_ref(), self.timeline.take(),
+            self.candidate.as_ref(), self.segment.as_ref(), self.candidate_timeline.take(),
         ) else {
             return FeedObservation::Failed { trial, failure: FeedFailure::Protocol };
         };
@@ -4408,7 +4414,7 @@ impl HlsTrialPort<'_> {
         };
         timeline.commit(clock);
         let acquisition = hls_acquisition(&output, segment.duration, candidate.declared_bps);
-        self.timeline = Some(timeline);
+        self.candidate_timeline = Some(timeline);
         self.clock = Some(clock);
         self.output = Some(output);
         FeedObservation::Acquired { trial, acquisition }
@@ -5231,22 +5237,7 @@ fn hls_read_active(
     }
 }
 
-/// All active-cursor handles stay in this feed worker. The addressed common
-/// runner sees only transfer facts and physical completion acknowledgements.
-struct HlsActivePort<'a> {
-    round: RoundId,
-    cursor: &'a mut HlsCursor,
-    net: &'a mut HlsNet,
-    timeline: &'a mut crate::hls::SegmentTimeline,
-    prefetched: &'a mut Option<ActiveMedia>,
-    pause_cursor: &'a mut crate::player::UserPauseCursor,
-    aq: *mut AuQueue,
-    aqa: *mut AuQueue,
-    acodec: &'a str,
-    current: Option<ActiveMedia>,
-}
-
-impl ActiveFeedPort for HlsActivePort<'_> {
+impl ActiveFeedPort for HlsRoundPort<'_> {
     type Error = HlsExit;
 
     fn step_active(&mut self, action: ActiveAction) -> Result<ActiveObservation, HlsExit> {
@@ -5529,14 +5520,17 @@ fn hls_demux(
         };
         let round_id = state.next_round_id()
             .ok_or(HlsExit::Failed("adaptive active round generation exhausted"))?;
-        let mut active_port = HlsActivePort {
-            round: round_id, cursor: &mut cursor, net: &mut net,
-            timeline: &mut timeline, prefetched: &mut prefetched,
-            pause_cursor: &mut pause_cursor, aq, aqa, acodec, current: None,
+        let mut physical = HlsRoundPort {
+            round: round_id, trial: None, origin,
+            cursor: &mut cursor, timeline: &mut timeline,
+            prefetched: &mut prefetched, pause_cursor: &mut pause_cursor,
+            aq, aqa, net: &mut net, acodec, current: None, reserve: None,
+            source: None, candidate: None, segment: None,
+            candidate_timeline: None, clock: None, output: None, staged: Vec::new(),
         };
         let mut diagnostics = HlsActiveDiagnostics { cleanup_wait_logged: &mut cleanup_wait_logged };
         let cycle = match adaptive::run_active_round(
-            state, &mut active_port, round_id, || now_ms(), remaining_playback_ms,
+            state, &mut physical, round_id, || now_ms(), remaining_playback_ms,
             || SHARED.hls_user_sequence(), &mut session_boundary_pending, &mut diagnostics,
         ) {
             Ok(adaptive::ActiveRun::Ended) => break,
@@ -5548,16 +5542,15 @@ fn hls_demux(
             Err(adaptive::ActiveRunError::Physical(error)) => return Err(error),
             Err(adaptive::ActiveRunError::Protocol(message)) => return Err(HlsExit::Failed(message)),
         };
-        let (_, output, _, _) = active_port.current.take()
+        let (_, output, _, _) = physical.current.take()
             .expect("an active round holds its physical media until after prefetch");
-        drop(active_port);
         let (proposal, reserve_policy, sample, candidate_start) = match state.advance_round(
             cycle, &mut HlsAutomaticPort { gate: AqPublicationPort(aq) }, || now_ms(),
             || {
                 let commit_pause = crate::player::TX.pause_state_sample();
                 PauseFact {
                     paused: commit_pause.paused,
-                    completed_ms: pause_cursor.consume_completed(commit_pause)
+                    completed_ms: physical.pause_cursor.consume_completed(commit_pause)
                         .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)),
                 }
             },
@@ -5588,7 +5581,7 @@ fn hls_demux(
         let mut _trial_reserve = candidate_start.trial_reserve;
         let _automatic_lease = candidate_start.automatic_lease;
         let automatic_token = candidate_start.token;
-        let mut exploration_reserve = candidate_start.exploration.map(|clock| {
+        physical.reserve = candidate_start.exploration.map(|clock| {
             crate::player::log(&format!(
                 "abr: exploration target={}kbps buf={}ms runway={}ms budget={}ms",
                 proposal.rung.kbps(), clock.buffered_ms, clock.runway_ms, clock.budget_ms,
@@ -5620,16 +5613,12 @@ fn hls_demux(
             .disp_base
             .load(Ordering::Relaxed)
             .max(0)
-            .checked_add(timeline.end_ns())
+            .checked_add(physical.timeline.end_ns())
             .ok_or(HlsExit::Failed("HLS candidate content offset overflow"))?;
         let offset_micros = offset_ns / 1_000;
-        let mut port = HlsTrialPort {
-            trial: trial_id, origin, aq, aqa, net: &mut net, acodec,
-            reserve: &mut exploration_reserve, source: None,
-            candidate: None, segment: None, timeline: Some(timeline),
-            clock: None, output: None, staged: Vec::new(),
-        };
-        let mut runner = adaptive::TrialRunner::new(&mut port, &mut trial_protocol);
+        physical.trial = Some(trial_id);
+        physical.candidate_timeline = Some(*physical.timeline);
+        let mut runner = adaptive::TrialRunner::new(&mut physical, &mut trial_protocol);
         let first = runner.run_first(
             state, off, proposal, reserve_policy, offset_micros, || now_ms(),
             |event, physical| match event {
@@ -5671,7 +5660,7 @@ fn hls_demux(
         // staged object, or discard all of them while the old cursor remains untouched.
         let current_variant = adaptive::VariantFacts {
             width: output.video_width, height: output.video_height,
-            declared_bps: cursor.declared_bps,
+            declared_bps: runner.physical().cursor.declared_bps,
         };
         let staged = runner.grade_staged(
             state, proposal, reserve_policy, current_variant, first_acquisition,
@@ -5728,7 +5717,7 @@ fn hls_demux(
             |physical| {
                 let candidate = physical.candidate.take()
                     .expect("queued trial retains its candidate cursor");
-                timeline = physical.timeline.take()
+                *physical.timeline = physical.candidate_timeline.take()
                     .expect("queued trial retains its staged timeline");
                 candidate
             },
@@ -5746,7 +5735,6 @@ fn hls_demux(
             adaptive::QueueAttempt::FenceFailed(error) => return Err(error),
         };
         drop(runner);
-        drop(port);
         // The committed candidate is already the first completed acquisition at the new
         // operating point. Publish its exact replay boundary before the trial lifetime marker and
         // explicit candidate-generation settlement. Leaving the old rung's value here would authorize
@@ -5779,8 +5767,8 @@ fn hls_demux(
         // Promoted: from here this cursor IS the playback, so its playlist is the one that may
         // speak for the film's duration.
         candidate.publishes_duration = true;
-        prefetched = None;
-        cursor = candidate;
+        *physical.prefetched = None;
+        *physical.cursor = candidate;
         // Any terminal source-mode verdict was computed against the previous HLS operating point.
         // Invalidate it explicitly: an Up keeps the completed source evidence for re-scoring on the
         // next ordinary segment, while a safety Down retires evidence from the failed service
