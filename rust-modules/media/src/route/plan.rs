@@ -1752,7 +1752,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 // server-side selection must not turn subtitles back on after the viewer chose Off.
                 for sub in &mut item.subs { sub.selected = id > 0 && sub.id == id; }
             }
-            // Server-adjudicated: the Media Decision Engine decides direct-play vs transcode from our
+            // Feed fallback is server-adjudicated: the Media Decision Engine decides direct-play vs transcode from our
             // capability profile. An unusable / unreachable `/decision` must not Original — the server
             // never adjudicated it against the profile's limits (see the MDE verdict note below for why
             // this is no longer a 503 claim); remux/re-encode still registers via a
