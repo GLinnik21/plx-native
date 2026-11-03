@@ -20,7 +20,9 @@ const TWO_VERSIONS: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-
 
 /// A loopback PMS that serves [`TWO_VERSIONS`] for the item, `mde` for every `/decision`, a
 /// bounded body for `start.mkv`, and records every request line until it is told to stop.
-fn versions_pms_with(body: &'static [u8], mde: &'static [u8]) -> (i32, std::sync::mpsc::Sender<()>, std::thread::JoinHandle<Vec<String>>) {
+fn versions_pms_observed(body: &'static [u8], mde: &'static [u8],
+    observed: Option<std::sync::mpsc::Sender<String>>)
+    -> (i32, std::sync::mpsc::Sender<()>, std::thread::JoinHandle<Vec<String>>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port() as i32;
     listener.set_nonblocking(true).unwrap();
@@ -39,6 +41,7 @@ fn versions_pms_with(body: &'static [u8], mde: &'static [u8]) -> (i32, std::sync
                         EMPTY_MC
                     };
                     write_json(&mut socket, body);
+                    if let Some(observed) = &observed { let _ = observed.send(line.clone()); }
                     requests.push(line);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -53,6 +56,10 @@ fn versions_pms_with(body: &'static [u8], mde: &'static [u8]) -> (i32, std::sync
         requests
     });
     (port, done, handle)
+}
+
+fn versions_pms_with(body: &'static [u8], mde: &'static [u8]) -> (i32, std::sync::mpsc::Sender<()>, std::thread::JoinHandle<Vec<String>>) {
+    versions_pms_observed(body, mde, None)
 }
 
 fn versions_pms(mde: &'static [u8]) -> (i32, std::sync::mpsc::Sender<()>, std::thread::JoinHandle<Vec<String>>) {
@@ -184,6 +191,19 @@ impl crate::route::uri_preflight::OriginalQualifier for QualifiedOriginal {
     }
 }
 
+#[cfg(all(feature = "play-uri", feature = "play-feed", feature = "devtriggers"))]
+struct CountingQualified(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+#[cfg(all(feature = "play-uri", feature = "play-feed", feature = "devtriggers"))]
+impl crate::route::uri_preflight::OriginalQualifier for CountingQualified {
+    fn qualify(&self, off: &plx_base::task::OffFrame,
+        request: crate::route::uri_preflight::OriginalRequest) -> crate::route::uri_preflight::Verdict {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        crate::route::uri_preflight::OriginalQualifier::qualify(
+            &QualifiedOriginal { video: "h264", audio: "dca" }, off, request)
+    }
+}
+
 #[test]
 #[cfg(all(feature = "play-uri", feature = "devtriggers"))]
 fn a_qualified_dts_original_lands_from_the_real_resolve_worker_before_feed_decision() {
@@ -289,6 +309,102 @@ fn unknown_uri_qualification_keeps_the_existing_feed_decision_path() {
         "an Unknown qualifier must not publish a URI offer");
     assert!(requests.iter().any(|line| line.contains("/decision?")),
         "the existing Feed decision must still run: {requests:?}");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
+#[cfg(all(feature = "play-uri", feature = "play-feed", feature = "devtriggers"))]
+fn expired_qualified_landing_retries_feed_once_without_refilling_a_spent_episode() {
+    use plx_play_uri::backend::Binding;
+    use plx_playback_contract::{BackendKind, Capabilities};
+    use super::super::backend_policy::{BackendPolicy, OfferId, Qualification, Selection};
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    assert!(plx_net::net::global_init());
+    let capabilities = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
+        pause: true, seek: true, audio_track: true, subtitle_track: true,
+        audio_off: false, subtitle_off: false };
+    let qualification_calls = std::sync::Arc::new(AtomicUsize::new(0));
+    ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
+        crate::route::uri_preflight::ProductEvidence { display_exported: true,
+            binding: Binding::Exported { canvas: (1920, 1080) }, callable: capabilities,
+            certified: capabilities, preview_rectangle: false },
+        std::sync::Arc::new(CountingQualified(qualification_calls.clone()))));
+    let (seen_tx, seen_rx) = std::sync::mpsc::channel();
+    let (port, done, server) = versions_pms_observed(URI_DTS, MDE_TRANSCODE_VIDEO, Some(seen_tx));
+    let sid = plx_plex::plex::register_for_test("expiring-dts", "127.0.0.1", port,
+        "token", "expiring-dts-client");
+    let mut meta = plx_data::stores::metadata::MetadataStore::default();
+    assert!(request_play(&mut ps, &mut meta, plx_platform::devcaps::caps(), sid,
+        "rk-v", "/library/parts/3134/1/file.mkv", "h264", "dca", "Film", "", None));
+
+    // This is an existing episode, not a fresh catalog: Feed Original was admitted, then
+    // URI Original crossed from Feed, and another URI recipe learned a refusal. Re-resolving
+    // after expiry must preserve all three facts even if Feed chooses a different audio wire.
+    let mut policy = BackendPolicy::for_request(false);
+    policy.qualify_planned_feed(OfferId::FEED_ORIGINAL);
+    assert!(policy.admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+    policy.qualify(BackendKind::Uri, OfferId::URI_ORIGINAL, Qualification::Qualified);
+    assert!(policy.admitted(BackendKind::Uri, OfferId::URI_ORIGINAL));
+    policy.qualify(BackendKind::Uri, OfferId::URI_ORIGINAL, Qualification::Refused);
+    policy.qualify(BackendKind::Uri, OfferId::URI_PMS_REMUX, Qualification::Refused);
+    ps.backend_policy = Some(policy);
+    let source_selection = crate::route::SourceSelection { server: sid, part_id: 3134,
+        audio_sid: 31342, subtitle_sid: 0,
+        audio_contract: plx_plex::plex::AudioEnhancements::NONE };
+    ps.bind_source_selection(source_selection);
+    let recovery_caps = ps.recovery.as_ref().expect("initial recovery").attempt();
+    assert!(wait_resolve_workers_for_test(std::time::Duration::from_secs(15)));
+    let first_session = {
+        let mut slot = PLAY_SLOT.lock().unwrap_or_else(|e| e.into_inner());
+        let landing = slot.as_mut().expect("qualified worker landing");
+        assert_eq!(landing.plan.source_selection, Some(source_selection));
+        landing.plan.uri_original.as_mut().expect("owned URI result").expires_at =
+            std::time::Instant::now() - std::time::Duration::from_secs(1);
+        landing.plan.sess.clone()
+    };
+    assert!(!first_session.is_empty(), "the qualified Part owns a resource identity");
+    assert!(pump_play(&mut ps, &mut meta).is_none(), "expired URI must not start natively");
+    assert!(play_pending(), "the same episode begins a bounded Feed-only re-resolve");
+    assert!(wait_resolve_workers_for_test(std::time::Duration::from_secs(15)));
+    {
+        let slot = PLAY_SLOT.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(slot.as_ref().is_some_and(|landing| landing.plan.uri_original.is_none()),
+            "the Feed retry's captured worker input omits URI qualification");
+    }
+    let _ = pump_play(&mut ps, &mut meta);
+    assert_ne!(ps.sess, first_session, "the Feed retry owns a fresh resource identity");
+    assert_eq!(qualification_calls.load(AtomicOrdering::SeqCst), 1,
+        "the same source episode may not loop through an expired URI offer");
+    assert_eq!(ps.source_selection(), Some(source_selection));
+    assert!(std::sync::Arc::ptr_eq(&recovery_caps,
+        &ps.recovery.as_ref().expect("same recovery episode").attempt()));
+    let policy = ps.backend_policy.as_mut().expect("same finite catalog");
+    assert!(policy.can_reopen(BackendKind::Uri, OfferId::URI_ORIGINAL),
+        "the admitted URI crossing remains in history");
+    assert_eq!(policy.offer(BackendKind::Uri, OfferId::URI_PMS_REMUX)
+        .expect("catalog recipe").qualification, Qualification::Refused);
+    policy.qualify(BackendKind::Feed, OfferId::FEED_PMS_REMUX, Qualification::Qualified);
+    assert!(!policy.admitted(BackendKind::Feed, OfferId::FEED_PMS_REMUX),
+        "crossing back to Feed cannot replenish a spent handoff");
+    assert!(!matches!(policy.choose(), Selection::Open(offer) if offer.backend == BackendKind::Feed));
+
+    scrobble_stop(&mut ps, None, None);
+    drain_scrobble();
+    let old_stop = format!("session={first_session}");
+    loop {
+        let line = seen_rx.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("old URI resource stop");
+        if line.contains("/video/:/transcode/universal/stop?") && line.contains(&old_stop) { break; }
+    }
+    done.send(()).unwrap();
+    let requests = server.join().unwrap();
+    assert_eq!(requests.iter().filter(|line|
+        line.contains("/video/:/transcode/universal/stop?") && line.contains(&old_stop)).count(), 1,
+        "the expired resource closes exactly once: {requests:?}");
+    assert!(requests.iter().any(|line| line.contains("/decision?")),
+        "the bounded retry used the existing Feed resolve: {requests:?}");
     plx_plex::plex::reset_servers_for_test();
 }
 
