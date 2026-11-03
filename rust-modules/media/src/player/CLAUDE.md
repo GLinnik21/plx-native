@@ -99,7 +99,7 @@ and the native feed refuses a source shape it cannot represent.
   it belongs to; never smuggle it through a raw static.
 
 **The main-thread rule is compiler-enforced.** The seam is the `VideoSink` trait in `plx_platform::tv::sink` (`rust-modules/platform/src/tv/sink.rs`)
-(Starfish-shaped: one method per verb, reached through `player::sink()`). `ffi.rs`'s `extern "C"`
+(Starfish-shaped: one method per verb, reached through `player::sink()`). `platform/src/webos/video_sink.rs`'s `extern "C"`
 declarations are private to that module and only `StarfishSink` there implements the trait on the
 television; `ffi_host.rs`'s `HostSink` is the simulator's. Every verb but `load` and `unload`
 takes a `task::MainThread` (the constant queries `feed_abi_is_cow`, `window_mode` and `window_id`

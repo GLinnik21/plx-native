@@ -4716,34 +4716,17 @@ fn hls_round_sample(
     )
 }
 
-fn hls_abr_rate_readout(sample: crate::abr::SegmentSample) -> (i64, i64, i64) {
-    // The compact panel has no `complete=` column. Publishing an abandoned prefix here would
-    // present its mixed PMS-production/network rate as a normal sample even though the controller
-    // correctly discarded it. Keep the forensic prefix on the `abr: sample ... complete=0` log
-    // line and make the unqualified panel values explicitly unknown.
-    if sample.completed() {
-        (
-            i64::from(sample.network_kbps()),
-            i64::from(sample.media_kbps()),
-            i64::from(sample.production_ratio_pm()),
-        )
-    } else {
-        (-1, -1, -1)
-    }
-}
-
-fn publish_hls_abr_sample(sample: crate::abr::SegmentSample) {
-    let (net_kbps, media_kbps, ratio_pm) = hls_abr_rate_readout(sample);
-    SHARED.dg_abr_net_kbps.store(net_kbps, Ordering::Relaxed);
+fn publish_hls_abr_sample(sample: adaptive::SampleReadout) {
+    SHARED.dg_abr_net_kbps.store(sample.network_kbps, Ordering::Relaxed);
     SHARED
         .dg_abr_media_kbps
-        .store(media_kbps, Ordering::Relaxed);
+        .store(sample.media_kbps, Ordering::Relaxed);
     // `-1` is "not knowable this segment", which the gauge has no other way to say. It is a
     // dev read-out with one i64 slot; the decision paths take the `Option` itself.
     SHARED
         .dg_abr_buffer_ms
-        .store(sample.buffer.buffered_ms().unwrap_or(-1), Ordering::Relaxed);
-    SHARED.dg_abr_ratio_pm.store(ratio_pm, Ordering::Relaxed);
+        .store(sample.buffer_ms, Ordering::Relaxed);
+    SHARED.dg_abr_ratio_pm.store(sample.ratio_pm, Ordering::Relaxed);
 }
 
 fn publish_original_probe_failure(failure: crate::adaptive::ProbeFailure) {
@@ -4768,7 +4751,7 @@ fn log_original_mode_comparison(cmp: crate::abr::ModeComparison) {
 /// the values logged are the values used rather than a second reading taken at the log site.
 /// **The model's own state, published on EVERY segment.**
 ///
-/// Split out of [`log_hls_abr_steady`] on 2026-08-26, and the split is the whole point. Both used
+/// Split out of [`crate::adaptive::steady_line`] on 2026-08-26, and the split is the whole point. Both used
 /// to be one function called only on `Decision::Stay` — so the panel's safe budget, uncertainty,
 /// buffer slope, starvation horizon, risk score and reason code were refreshed **only on segments
 /// where the controller decided to do nothing**. Every segment where those numbers were
@@ -4780,189 +4763,55 @@ fn log_original_mode_comparison(cmp: crate::abr::ModeComparison) {
 /// risk" rather than "the panel is only ever shown the quiet samples". The LOG line stays on the
 /// `Stay` path, because it is titled `abr: steady` and a steady line on a segment that primed a
 /// candidate would be a false statement about what happened.
-fn publish_hls_abr_model(t: &crate::abr::ControllerTelemetry) {
+fn publish_hls_abr_model(t: adaptive::ModelReadout) {
     // Bound first and stored on ONE line each, deliberately: `shared.rs`'s writer guard greps the
     // literal `dg_<field>.store(`, so a `SHARED\n    .dg_x\n    .store(` that rustfmt produces
     // reads to it exactly like a field NOTHING writes — which is the bug that guard exists to catch.
     let rel = Ordering::Relaxed;
-    let optimal = t.optimal.map(|c| i64::from(c.rung.kbps())).unwrap_or(-1);
-    let starve = t.risk.starvation_seconds.map(i64::from).unwrap_or(-1);
-    let pred = t.risk.production_ratio_pm.map(i64::from).unwrap_or(-1);
     SHARED
         .dg_abr_safe_kbps
-        .store(i64::from(t.safe_budget_kbps), rel);
-    SHARED.dg_abr_optimal_kbps.store(optimal, rel);
+        .store(t.safe_kbps, rel);
+    SHARED.dg_abr_optimal_kbps.store(t.optimal_kbps, rel);
     SHARED
         .dg_abr_unc_pm
-        .store(i64::from(t.delivery.uncertainty_pm), rel);
+        .store(t.uncertainty_pm, rel);
     SHARED
         .dg_abr_samples
-        .store(i64::from(t.delivery.samples), rel);
+        .store(t.samples, rel);
     SHARED
         .dg_abr_slope_ms_per_s
-        .store(t.buffer.slope_ms_per_s, rel);
-    SHARED.dg_abr_starve_secs.store(starve, rel);
-    SHARED.dg_abr_pred_pm.store(pred, rel);
-    SHARED.dg_abr_risk.store(i64::from(t.risk.score), rel);
+        .store(t.slope_ms_per_s, rel);
+    SHARED.dg_abr_starve_secs.store(t.starvation_secs, rel);
+    SHARED.dg_abr_pred_pm.store(t.production_pm, rel);
+    SHARED.dg_abr_risk.store(t.risk, rel);
     SHARED.dg_abr_why.store(abr_why_code(t.reason), rel);
     // **The seed that survives a seek** (I8). Published every segment rather than at teardown,
     // because a teardown has several paths and one of them (a crash of the demux worker) reaches
     // none of them — and the estimate is worth carrying whatever ended the session. Not a `dg_`
     // field: this coherent estimate is read to DECIDE, by `route::auto_prior` when the next
     // control is built.
-    SHARED.publish_abr_seed(t.delivery);
+    SHARED.publish_abr_seed(t.seed);
 }
 
-/// The once-a-segment event-log line, on the do-nothing path only. Its counterpart is
-/// [`publish_hls_abr_model`]; both read ONE `telemetry()` at the call site, so the line and the
-/// panel can never describe two different segments.
-fn log_hls_abr_steady(t: &crate::abr::ControllerTelemetry, remaining_ms: i64) {
-    crate::player::log(&format!(
-        "abr: steady current={}kbps safe={}kbps pending={}kbps fast={}kbps slow={}kbps unc={}pm n={} \
-         buf={}ms slope={}ms/s prod={}pm/{}pm risk={} starve={} edge={} left={}s \
-         dwell={}ms block={}kbps onrung={} draining={} reason={:?}",
-        t.current.kbps(),
-        t.safe_budget_kbps,
-        t.pending.map(|p| p.rung.kbps()).unwrap_or(0),
-        t.delivery.fast_kbps,
-        t.delivery.slow_kbps,
-        t.delivery.uncertainty_pm,
-        t.delivery.samples,
-        t.buffer.buffered_ms,
-        t.buffer.slope_ms_per_s,
-        t.production.ratio_pm,
-        t.risk.production_ratio_pm.unwrap_or(0),
-        t.risk.score,
-        t.risk
-            .starvation_seconds
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "none".to_string()),
-        // `edge=` beside `starve=`: the same formula on the MEASURED rate rather than the
-        // conservative one, and the one the emergency downshift actually reads. They differ by up
-        // to 2x on the first sample of every rung, where `uncertainty_pm` is at its 500 cap, so a
-        // reader grading a downshift against `starve=` alone is grading a number that decided
-        // nothing.
-        t.emergency_horizon_secs
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "none".to_string()),
-        remaining_ms / 1_000,
-        // `dwell=` is retained in the diagnostics wire shape and is always zero: exploration has
-        // no elapsed-time release. `block=` is the highest rung the per-rung failure frontier is
-        // currently refusing at this exact measured surplus.
-        t.gates.dwell_ms,
-        t.gates.blocked_kbps,
-        t.gates.on_rung,
-        t.gates.draining,
-        t.reason,
-    ));
-}
-
-/// **One line per SEGMENT, whatever was decided** — the decision-independent half of the trace.
-///
-/// `abr: steady` cannot serve this purpose and must not be made to: it is emitted only on
-/// `Decision::Stay`, so the segments it omits are exactly the ones where the reserve was lowest
-/// (a drawdown is what produces a downshift). A minimum-buffer statistic read from `abr: steady`
-/// therefore cannot see the trough, and any statistic derived from those lines is an order
-/// statistic over a sample whose membership the policy under test controls — a policy that commits
-/// more often observes less, and reads as an improvement. Plan I0-A.
-///
-/// Every field is a rate, a duration or a per-mille. No name, address, title or token, so this is
-/// safe to paste into an issue thread.
-///
-/// * `buf` — the controller-visible playable reserve, `min(video, audio) - playback`. **The same
-///   quantity the decision path used**, taken from the same `SegmentSample`, never recomputed.
-/// * `vbuf` / `abuf` — the two lanes separately, because the reserve is the MINIMUM of them and
-///   which one binds moves with the rung: the 8 MiB video queue against a multi-Mbit stream
-///   against a 1 MiB audio queue at ~192 kbps. `buf` alone cannot say which ceiling was hit.
-/// * `media` — what the segment actually WAS on the wire, bytes over content duration. This is
-///   the denominator of the reachable reserve and it is NOT `current`: eleven of the thirteen
-///   catalog entries carry the request as their planning rate. Measurement step M4 reads it.
-/// * `net` — delivered rate over ACTIVE transfer time; `prod` — total acquisition over content
-///   duration, so it includes production and TTFB.
-/// * `dur` — the segment's CONTENT duration. Two things need it and neither can infer it: the
-///   harness places a segment's transfer span on a timeline as `media x dur / net`, which is how a
-///   sample is attributed to an injected shaper leg without asking the controller anything; and
-///   several of the controller's own guards are denominated in multiples of it
-///   (`buffered >= 3 * segment`), so whether the server honoured the client's 2 s request is a
-///   fact about whether those guards are reachable at all.
-fn log_hls_abr_sample(
-    t: &crate::abr::ControllerTelemetry,
-    sample: crate::abr::SegmentSample,
-    decision: crate::abr::Decision,
-) {
-    use crate::abr::{Decision::Prime, Direction};
-    let (action, target) = match decision {
-        Prime(p) if p.direction == Direction::Up && p.rung == t.current => {
-            ("refresh", p.rung.kbps())
-        }
-        Prime(p) if p.direction == Direction::Up => ("prime_up", p.rung.kbps()),
-        Prime(p) => ("prime_down", p.rung.kbps()),
-        _ => ("stay", 0),
-    };
-    crate::player::log(&format!(
-        "abr: sample current={}kbps media={}kbps net={}kbps buf={} vbuf={}ms abuf={} \
-         dur={}ms prod={}pm n={} decision={} target={}kbps complete={} reason={:?}",
-        t.current.kbps(),
-        sample.media_kbps(),
-        sample.network_kbps(),
-        sample
-            .buffer
-            .buffered_ms()
-            .map(|ms| format!("{ms}ms"))
-            .unwrap_or_else(|| "none".to_string()),
-        sample.buffer.video_buffered_ms(),
-        sample
-            .buffer
-            .audio_buffered_ms()
-            .map(|ms| format!("{ms}ms"))
-            .unwrap_or_else(|| "none".to_string()),
-        sample.media_duration_ms(),
-        sample.production_ratio_pm(),
-        t.delivery.samples,
-        action,
-        target,
-        u8::from(sample.completed()),
-        t.reason,
-    ));
-}
-
-/// **One line per segment for exact finite-bag conservation on the current rung.**
-///
-/// It is the arithmetic the controller just used: the full current operating-point bag at actual
-/// response sizes. Candidate validation is logged separately from the candidate's own completed
-/// `(A,D,B_post)` evidence; no current response is rescaled into that candidate.
-///
-/// The formatting itself lives on [`crate::abr::AdmissionReadout::log_line`], beside the numbers
-/// it prints and beside the test that pins the exact wire form — this function is only the
-/// plumbing that decides WHEN it is emitted, which is every segment whatever was decided.
-fn log_hls_abr_window(t: &crate::abr::ControllerTelemetry, sample: crate::abr::SegmentSample) {
-    crate::player::log(&t.window.log_line(
-        t.current.kbps(),
-        sample.bytes(),
-        sample.media_duration_ms(),
-    ));
-}
-
-/// The controller's reason enum as the read-out's code. A `match` rather than a cast, so a new
-/// [`crate::abr::HlsReason`] variant is a compile error here instead of silently reading as one of
-/// the four the panel already names.
-fn abr_why_code(reason: Option<crate::abr::DecisionReason>) -> u8 {
-    use crate::abr::{DecisionReason::Hls, HlsReason as R};
+/// The common owner's diagnostic reason as the panel's code. A `match` rather than a cast makes
+/// any new [`crate::adaptive::WhyReadout`] variant an explicit wire decision here.
+fn abr_why_code(reason: Option<adaptive::WhyReadout>) -> u8 {
+    use adaptive::WhyReadout as R;
     match reason {
         None => crate::player::ABR_WHY_NONE,
-        Some(Hls(R::SafeBudgetIncrease)) => crate::player::ABR_WHY_SAFE_BUDGET,
-        Some(Hls(R::UnsafeCurrentState)) => crate::player::ABR_WHY_UNSAFE_STATE,
-        Some(Hls(R::ProductionConstraint)) => crate::player::ABR_WHY_PRODUCTION,
-        Some(Hls(R::BufferConstraint)) => crate::player::ABR_WHY_BUFFER,
-        Some(Hls(R::LadderFloor)) => crate::player::ABR_WHY_LADDER_FLOOR,
-        Some(Hls(R::RejectBackoff)) => crate::player::ABR_WHY_REJECT_BACKOFF,
-        Some(Hls(R::StarvationHorizon)) => crate::player::ABR_WHY_STARVATION,
-        Some(Hls(R::EvidenceWindow)) => crate::player::ABR_WHY_EVIDENCE,
-        Some(Hls(R::AtBestRung)) => crate::player::ABR_WHY_AT_BEST,
-        Some(Hls(R::ReserveUnknown)) => crate::player::ABR_WHY_RESERVE_UNKNOWN,
-        Some(Hls(R::DeadlineRollback)) => crate::player::ABR_WHY_DEADLINE_ROLLBACK,
-        Some(Hls(R::ResponseLimited)) => crate::player::ABR_WHY_RESPONSE_LIMITED,
-        Some(Hls(R::SwitchCost)) => crate::player::ABR_WHY_SWITCH_COST,
+        Some(R::SafeBudget) => crate::player::ABR_WHY_SAFE_BUDGET,
+        Some(R::UnsafeState) => crate::player::ABR_WHY_UNSAFE_STATE,
+        Some(R::Production) => crate::player::ABR_WHY_PRODUCTION,
+        Some(R::Buffer) => crate::player::ABR_WHY_BUFFER,
+        Some(R::LadderFloor) => crate::player::ABR_WHY_LADDER_FLOOR,
+        Some(R::RejectBackoff) => crate::player::ABR_WHY_REJECT_BACKOFF,
+        Some(R::Starvation) => crate::player::ABR_WHY_STARVATION,
+        Some(R::Evidence) => crate::player::ABR_WHY_EVIDENCE,
+        Some(R::AtBest) => crate::player::ABR_WHY_AT_BEST,
+        Some(R::ReserveUnknown) => crate::player::ABR_WHY_RESERVE_UNKNOWN,
+        Some(R::DeadlineRollback) => crate::player::ABR_WHY_DEADLINE_ROLLBACK,
+        Some(R::ResponseLimited) => crate::player::ABR_WHY_RESPONSE_LIMITED,
+        Some(R::SwitchCost) => crate::player::ABR_WHY_SWITCH_COST,
     }
 }
 
@@ -5724,7 +5573,7 @@ impl adaptive::ActiveDiagnostics for HlsActiveDiagnostics<'_> {
         }
     }
 
-    fn sample(&mut self, sample: crate::abr::SegmentSample) {
+    fn sample(&mut self, sample: adaptive::SampleReadout) {
         publish_hls_abr_sample(sample);
     }
 
@@ -5734,13 +5583,13 @@ impl adaptive::ActiveDiagnostics for HlsActiveDiagnostics<'_> {
         );
     }
 
-    fn observed(&mut self, round: &adaptive::RoundDecision, sample: crate::abr::SegmentSample) {
-        if let Some(runway_ms) = round.prime_runway_ms {
+    fn observed(&mut self, readout: adaptive::ActiveReadout) {
+        if let Some(runway_ms) = readout.prime_runway_ms {
             SHARED.hls_prime_runway_ms.store(runway_ms, Ordering::Release);
         }
-        publish_hls_abr_model(&round.telemetry);
-        log_hls_abr_sample(&round.telemetry, sample, round.decision);
-        log_hls_abr_window(&round.telemetry, sample);
+        publish_hls_abr_model(readout.model);
+        crate::player::log(&readout.sample_line);
+        crate::player::log(&readout.window_line);
     }
 }
 
@@ -5966,7 +5815,7 @@ fn hls_demux(
                 .dg_abr_action
                 .store(crate::player::ABR_ACTION_STEADY, Ordering::Relaxed);
             SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
-            log_hls_abr_steady(&telemetry, remaining_ms);
+            crate::player::log(&adaptive::steady_line(&telemetry, remaining_ms));
         }
 
         // The switch itself needs a quiescent session and one media quantum to tear down against.

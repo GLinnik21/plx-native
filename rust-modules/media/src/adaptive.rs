@@ -1049,6 +1049,195 @@ pub(crate) struct RoundDecision {
     pub(crate) prime_runway_ms: Option<i64>,
 }
 
+/// The exact per-round diagnostic lines are assembled alongside the policy
+/// snapshot that decided them; the physical feed only emits the resulting text.
+pub(crate) fn steady_line(t: &abr::ControllerTelemetry, remaining_ms: i64) -> String {
+    format!(
+        "abr: steady current={}kbps safe={}kbps pending={}kbps fast={}kbps slow={}kbps unc={}pm n={} \
+         buf={}ms slope={}ms/s prod={}pm/{}pm risk={} starve={} edge={} left={}s \
+         dwell={}ms block={}kbps onrung={} draining={} reason={:?}",
+        t.current.kbps(),
+        t.safe_budget_kbps,
+        t.pending.map(|p| p.rung.kbps()).unwrap_or(0),
+        t.delivery.fast_kbps,
+        t.delivery.slow_kbps,
+        t.delivery.uncertainty_pm,
+        t.delivery.samples,
+        t.buffer.buffered_ms,
+        t.buffer.slope_ms_per_s,
+        t.production.ratio_pm,
+        t.risk.production_ratio_pm.unwrap_or(0),
+        t.risk.score,
+        t.risk
+            .starvation_seconds
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        // `edge=` beside `starve=`: the same formula on the MEASURED rate rather than the
+        // conservative one, and the one the emergency downshift actually reads. They differ by up
+        // to 2x on the first sample of every rung, where `uncertainty_pm` is at its 500 cap, so a
+        // reader grading a downshift against `starve=` alone is grading a number that decided
+        // nothing.
+        t.emergency_horizon_secs
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        remaining_ms / 1_000,
+        // `dwell=` is retained in the diagnostics wire shape and is always zero: exploration has
+        // no elapsed-time release. `block=` is the highest rung the per-rung failure frontier is
+        // currently refusing at this exact measured surplus.
+        t.gates.dwell_ms,
+        t.gates.blocked_kbps,
+        t.gates.on_rung,
+        t.gates.draining,
+        t.reason,
+    )
+}
+
+
+fn sample_line(
+    t: &abr::ControllerTelemetry,
+    sample: abr::SegmentSample,
+    decision: abr::Decision,
+) -> String {
+    use abr::{Decision::Prime, Direction};
+    let (action, target) = match decision {
+        Prime(p) if p.direction == Direction::Up && p.rung == t.current => {
+            ("refresh", p.rung.kbps())
+        }
+        Prime(p) if p.direction == Direction::Up => ("prime_up", p.rung.kbps()),
+        Prime(p) => ("prime_down", p.rung.kbps()),
+        _ => ("stay", 0),
+    };
+    format!(
+        "abr: sample current={}kbps media={}kbps net={}kbps buf={} vbuf={}ms abuf={} \
+         dur={}ms prod={}pm n={} decision={} target={}kbps complete={} reason={:?}",
+        t.current.kbps(),
+        sample.media_kbps(),
+        sample.network_kbps(),
+        sample
+            .buffer
+            .buffered_ms()
+            .map(|ms| format!("{ms}ms"))
+            .unwrap_or_else(|| "none".to_string()),
+        sample.buffer.video_buffered_ms(),
+        sample
+            .buffer
+            .audio_buffered_ms()
+            .map(|ms| format!("{ms}ms"))
+            .unwrap_or_else(|| "none".to_string()),
+        sample.media_duration_ms(),
+        sample.production_ratio_pm(),
+        t.delivery.samples,
+        action,
+        target,
+        u8::from(sample.completed()),
+        t.reason,
+    )
+}
+
+
+fn window_line(t: &abr::ControllerTelemetry, sample: abr::SegmentSample) -> String {
+    t.window.log_line(
+        t.current.kbps(),
+        sample.bytes(),
+        sample.media_duration_ms(),
+    )
+}
+
+
+/// The panel's completed-rate projection at the same observation boundary as
+/// the controller sample. Censored prefixes are unknown in this compact wire.
+pub(crate) struct SampleReadout {
+    pub(crate) network_kbps: i64,
+    pub(crate) media_kbps: i64,
+    pub(crate) ratio_pm: i64,
+    pub(crate) buffer_ms: i64,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum WhyReadout {
+    SafeBudget, UnsafeState, Production, Buffer, LadderFloor, RejectBackoff,
+    Starvation, Evidence, AtBest, ReserveUnknown, DeadlineRollback,
+    ResponseLimited, SwitchCost,
+}
+
+fn why_readout(reason: Option<abr::DecisionReason>) -> Option<WhyReadout> {
+    use abr::{DecisionReason::Hls, HlsReason as R};
+    Some(match reason? {
+        Hls(R::SafeBudgetIncrease) => WhyReadout::SafeBudget,
+        Hls(R::UnsafeCurrentState) => WhyReadout::UnsafeState,
+        Hls(R::ProductionConstraint) => WhyReadout::Production,
+        Hls(R::BufferConstraint) => WhyReadout::Buffer,
+        Hls(R::LadderFloor) => WhyReadout::LadderFloor,
+        Hls(R::RejectBackoff) => WhyReadout::RejectBackoff,
+        Hls(R::StarvationHorizon) => WhyReadout::Starvation,
+        Hls(R::EvidenceWindow) => WhyReadout::Evidence,
+        Hls(R::AtBestRung) => WhyReadout::AtBest,
+        Hls(R::ReserveUnknown) => WhyReadout::ReserveUnknown,
+        Hls(R::DeadlineRollback) => WhyReadout::DeadlineRollback,
+        Hls(R::ResponseLimited) => WhyReadout::ResponseLimited,
+        Hls(R::SwitchCost) => WhyReadout::SwitchCost,
+    })
+}
+
+pub(crate) struct ModelReadout {
+    pub(crate) safe_kbps: i64,
+    pub(crate) optimal_kbps: i64,
+    pub(crate) uncertainty_pm: i64,
+    pub(crate) samples: i64,
+    pub(crate) slope_ms_per_s: i64,
+    pub(crate) starvation_secs: i64,
+    pub(crate) production_pm: i64,
+    pub(crate) risk: i64,
+    pub(crate) reason: Option<WhyReadout>,
+    pub(crate) seed: abr::CapacityEstimate,
+}
+
+pub(crate) struct ActiveReadout {
+    pub(crate) prime_runway_ms: Option<i64>,
+    pub(crate) model: ModelReadout,
+    pub(crate) sample_line: String,
+    pub(crate) window_line: String,
+}
+
+impl ActiveReadout {
+    fn new(round: &RoundDecision, sample: abr::SegmentSample) -> Self {
+        let t = &round.telemetry;
+        Self {
+            prime_runway_ms: round.prime_runway_ms,
+            model: ModelReadout {
+                safe_kbps: i64::from(t.safe_budget_kbps),
+                optimal_kbps: t.optimal.map(|c| i64::from(c.rung.kbps())).unwrap_or(-1),
+                uncertainty_pm: i64::from(t.delivery.uncertainty_pm),
+                samples: i64::from(t.delivery.samples),
+                slope_ms_per_s: t.buffer.slope_ms_per_s,
+                starvation_secs: t.risk.starvation_seconds.map(i64::from).unwrap_or(-1),
+                production_pm: t.risk.production_ratio_pm.map(i64::from).unwrap_or(-1),
+                risk: i64::from(t.risk.score),
+                reason: why_readout(t.reason),
+                seed: t.delivery,
+            },
+            sample_line: sample_line(t, sample, round.decision),
+            window_line: window_line(t, sample),
+        }
+    }
+}
+
+impl SampleReadout {
+    pub(crate) fn from_sample(sample: abr::SegmentSample) -> Self {
+        let (network_kbps, media_kbps, ratio_pm) = if sample.completed() {
+            (
+                i64::from(sample.network_kbps()),
+                i64::from(sample.media_kbps()),
+                i64::from(sample.production_ratio_pm()),
+            )
+        } else { (-1, -1, -1) };
+        Self {
+            network_kbps, media_kbps, ratio_pm,
+            buffer_ms: sample.buffer.buffered_ms().unwrap_or(-1),
+        }
+    }
+}
+
 pub(crate) struct ActiveAfterPrefetch {
     pub(crate) reconsidered: Option<Reconsideration>,
     pub(crate) steady: bool,
@@ -1058,9 +1247,9 @@ pub(crate) struct ActiveAfterPrefetch {
 pub(crate) trait ActiveDiagnostics {
     fn cleanup(&mut self, ready: bool);
     fn accepted_pause(&mut self, after_lookup: bool, sequence: u64, elapsed_ms: u64);
-    fn sample(&mut self, sample: abr::SegmentSample);
+    fn sample(&mut self, sample: SampleReadout);
     fn fresh_boundary(&mut self);
-    fn observed(&mut self, round: &RoundDecision, sample: abr::SegmentSample);
+    fn observed(&mut self, readout: ActiveReadout);
 }
 
 pub(crate) enum ActiveRunError<E> { Physical(E), Protocol(&'static str) }
@@ -1155,7 +1344,7 @@ pub(crate) fn run_active_round<P: ActiveFeedPort>(
         diagnostics.accepted_pause(true, after.1, elapsed_ms);
     }
     let expected_user_sequence = user_sequence();
-    diagnostics.sample(active.sample());
+    diagnostics.sample(SampleReadout::from_sample(active.sample()));
     let remaining_ms = remaining_ms();
     let boundary = *session_boundary_pending && delivered && active.sample().completed();
     if boundary {
@@ -1164,7 +1353,7 @@ pub(crate) fn run_active_round<P: ActiveFeedPort>(
     }
     let (sample, round_decision, prefetch_allowed) =
         active.observe(coordinator, rollback_media_ms, now_ms(), boundary);
-    diagnostics.observed(&round_decision, sample);
+    diagnostics.observed(ActiveReadout::new(&round_decision, sample));
     if prefetch_allowed && active_step(port, round, ActiveAction::Prefetch {
         round, at_floor: Some(coordinator.at_floor()),
     })? != (ActiveObservation::Prefetched { round }) {

@@ -16,13 +16,13 @@
 //!
 //! **What stays out of it.** No Engine thread runs, so nothing is reported to Plex. The URL is held by [`UriSession`] for
 //! the `load` payload and nowhere else: no `Debug`, no log line, and the payload is built by
-//! [`build_load`] straight into the transport. Every line the machine writes is complete and printed
+//! [`super::uri_protocol::build_load`] straight into the transport. Every line the machine writes is complete and printed
 //! verbatim; the few lines this driver adds (the window) carry no URL either.
 //!
 //! The caller decides whether to enable the probe.
 
 use super::uri_lifecycle::{Event as LifeEvent, Fx as LifeFx, Lifecycle};
-use super::uriprobe::{build_load, Config, Kind, Scheme, Settle, UriCall, UriEffect, UriEvent, UriProbe, Variant, AcbOp};
+use super::uriprobe::{Config, Kind, Scheme, Settle, UriCall, UriEffect, UriEvent, UriProbe, Variant, AcbOp};
 use plx_base::task::MainThread;
 use plx_platform::tv::sink::{DisplaySink, VP_ACB, VP_EXPORTED};
 use plx_platform::tv::uri::{CloseStatus, UriMedia, UriPoll};
@@ -100,12 +100,11 @@ impl<A: Copy> UriSession<A> {
         let mut window_id = None;
         let mut created = false;
         if !variant.acb() && variant != Variant::NoWindow && sink.window_mode() == VP_EXPORTED {
-            let id = unsafe { sink.create_window(mt) };
-            if id.is_null() {
-                log("uriprobe: t=0 window id=none (the television refused to create one)");
-            } else {
+            if let Some(id) = super::session_io::create_exported_window(sink, mt) {
                 created = true;
-                window_id = Some(unsafe { std::ffi::CStr::from_ptr(id) }.to_string_lossy().into_owned());
+                window_id = Some(id);
+            } else {
+                log("uriprobe: t=0 window id=none (the television refused to create one)");
             }
         }
         let config = Config {
@@ -189,7 +188,7 @@ impl<A: Copy> UriSession<A> {
 
     /// Re-place the exported window for a coded picture of `width` x `height`.
     fn place(&self, mt: &MainThread, width: c_int, height: c_int) {
-        let rv = unsafe { self.sink.place_window(mt, width, height, 0, 0, CANVAS.0, CANVAS.1) };
+        let rv = super::session_io::place_exported_window(self.sink, mt, (width, height), CANVAS);
         (self.log)(&format!("uriprobe: t={} window placed src={width}x{height} rv={rv}", self.now_ms()));
     }
 
@@ -233,23 +232,15 @@ impl<A: Copy> UriSession<A> {
             self.lifecycle.step(event, &mut effects);
             for effect in effects {
                 match effect {
-                    LifeFx::Open { request, shape } => {
-                        let result = self.transport.open(shape).map_err(|text| super::uri_protocol::Message::transport_failure(&text));
-                        events.push_back(LifeEvent::OpenAnswered { request, result });
+                    LifeFx::Open { .. } => {
+                        events.push_back(super::session_io::transport_answer(&effect, self.transport, &self.url, &self.app_id).expect("open answer"));
                     }
-                    LifeFx::Call { session, request, call } => {
+                    LifeFx::Call { request, ref call, .. } => {
                         self.inbox.push_back(UriEvent::Dispatched { method: super::uri_protocol::Method::of(call.method()), kind: match &call { UriCall::SelectTrack {kind,..} => Some(*kind), _ => None }, request });
-                        let payload = match &call {
-                            UriCall::Load { window_id } => build_load(&self.url, &self.app_id, window_id.as_deref()),
-                            other => other.payload().unwrap_or_default(),
-                        };
-                        let result = self.transport.call(session, request, call.method(), &payload);
-                        let message = result.as_ref().err().map(|text| super::uri_protocol::Message::transport_failure(text)).unwrap_or_default();
-                        events.push_back(LifeEvent::CallQueued { session, request, ok: result.is_ok(), message });
+                        events.push_back(super::session_io::transport_answer(&effect, self.transport, &self.url, &self.app_id).expect("call answer"));
                     }
-                    LifeFx::Close { session } => {
-                        let ok = self.transport.close(session).is_ok();
-                        events.push_back(LifeEvent::CloseQueued { session, ok });
+                    LifeFx::Close { .. } => {
+                        events.push_back(super::session_io::transport_answer(&effect, self.transport, &self.url, &self.app_id).expect("close answer"));
                     }
                     LifeFx::Deliver { method, ok, mut message } => {
                         if ok && message.accepted() != Some(false) {
@@ -376,7 +367,7 @@ impl<A: Copy> UriSession<A> {
     /// Destroy the exported window only after the ownership reducer has observed release.
     pub fn release(self, mt: &MainThread) {
         let sink = self.sink;
-        self.release_with(|| unsafe { sink.destroy_window(mt) });
+        self.release_with(|| super::session_io::destroy_exported_window(sink, mt));
     }
 
     fn release_with(mut self, destroy: impl FnOnce()) {

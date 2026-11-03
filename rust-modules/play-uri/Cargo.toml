@@ -22,6 +22,7 @@ test-support = ["plx_base/test-support", "plx_platform/test-support"]
 [dependencies]
 plx_base = { path = "../base" }
 plx_platform = { path = "../platform" }
+plx_playback_contract = { path = "../playback-contract" }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1", default-features = false, features = ["alloc", "std"] }
 
