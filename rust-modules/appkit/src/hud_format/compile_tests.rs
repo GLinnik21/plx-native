@@ -50,6 +50,7 @@ fn labels() -> AppLabels {
         next_seconds: AppLabels::in_language(plx_platform::i18n::current()).next_seconds,
         watch_credits: msg::widgets_next_credits().to_owned(),
         skip_intro: msg::widgets_skip_intro().to_owned(),
+        watch_intro: msg::widgets_watch_intro().to_owned(),
         skip_credits: msg::widgets_skip_credits().to_owned(),
         from_beginning: msg::widgets_info_from_beginning().to_owned(),
         go_to_show: msg::widgets_info_go_show().to_owned(),

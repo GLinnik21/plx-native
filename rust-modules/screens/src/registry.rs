@@ -111,6 +111,10 @@ pub struct AccountPreferenceReply {
 }
 
 pub enum PreferenceCmd {
+    /// Demand viewer features; the app coalesces this profile-scoped read.
+    EnsureMarkerAccess,
+    ChooseMarker { kind: plx_data::metadata::MarkerKind, mode: plx_plex::plex::session::MarkerSkipMode,
+        scope: u64, reply: std::sync::mpsc::Sender<bool> },
     /// Capture the live profile only after admission.
     Load { reply: std::sync::mpsc::Sender<AccountPreferenceReply> },
     Save {
@@ -192,6 +196,8 @@ pub struct ItemMenuReq {
 /// So the panel decides and the loop performs, exactly as `LibraryReq` does for the Library.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlayerReq {
+    AutoSkip { id: plx_appkit::skip_policy::OfferId, reply: plx_machine::machine::MachineId },
+    CancelAutoSkip(plx_appkit::skip_policy::OfferId),
     /// Accepted only after the owned player confirmation. Never emitted by boot or Play.
     RepairSandbox,
     /// The failure read-out's *Try again*: resolve the failed item again, unchanged, at the
@@ -1331,6 +1337,7 @@ pub trait SearchLike: AppLike<Memory = PageMemory> + Sized {
 
 /// A host that publishes all three retained Library views captured at the frame split.
 pub trait LibraryLike: AppLike<Memory = PageMemory> + Sized {
+    fn marker_prefs(_cx: &Cx<'_, Self>) -> plx_appkit::skip_policy::MarkerPrefsView { Default::default() }
     fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a>;
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a>;
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a>;
@@ -1373,10 +1380,12 @@ pub struct Forbidden;
 /// Full Library hosts implement this automatically; the nested Settings host carries only this
 /// one publication so its Onboard child never falls back to the compatibility selector.
 pub trait DirectoryLike: AppLike + Sized {
+    fn marker_prefs(_cx: &Cx<'_, Self>) -> plx_appkit::skip_policy::MarkerPrefsView { Default::default() }
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a>;
 }
 
 impl<H: LibraryLike> DirectoryLike for H {
+    fn marker_prefs(cx: &Cx<'_, Self>) -> plx_appkit::skip_policy::MarkerPrefsView { LibraryLike::marker_prefs(cx) }
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> {
         LibraryLike::directory(cx)
     }
@@ -1398,6 +1407,7 @@ pub enum DetailRefreshPhase {
 
 /// The application's messages (spec §3.1).
 pub enum AppMsg {
+    AutoSkipResolved { id: plx_appkit::skip_policy::OfferId, outcome: plx_appkit::skip_policy::OfferOutcome },
     PlaybackTrace(plx_platform::playback_trace::Status),
     Session(plx_session::auth::owner::SessionEvent),
     Consent(ConsentCmd),

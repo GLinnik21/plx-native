@@ -102,6 +102,7 @@ pub struct AppLabels {
     pub watch_credits: String,
     /// the Skip pill over an intro
     pub skip_intro: String,
+    pub watch_intro: String,
     /// the Skip pill over credits
     pub skip_credits: String,
     /// the Info card's From the Beginning button
@@ -127,6 +128,7 @@ impl AppLabels {
             next_seconds: (0..=crate::up_next::COUNTDOWN_MS / 1000).map(|s| msg::player_up_next_seconds_left_in(cx, i64::from(s))).collect(),
             watch_credits: msg::widgets_next_credits_in(cx).to_owned(),
             skip_intro: msg::widgets_skip_intro_in(cx).to_owned(),
+            watch_intro: msg::widgets_watch_intro_in(cx).to_owned(),
             skip_credits: msg::widgets_skip_credits_in(cx).to_owned(),
             from_beginning: msg::widgets_info_from_beginning_in(cx).to_owned(),
             go_to_show: msg::widgets_info_go_show_in(cx).to_owned(),
@@ -2375,8 +2377,10 @@ impl<'e, 'p> Env<'e, 'p> {
         let still = (up.get("still").and_then(Val::as_bool) == Some(true)).then_some(l.still);
         let caption = (up.get("caption").and_then(Val::as_bool) == Some(true)).then_some(l.caption);
         let up_next = UpNextRects { still, caption, credits: l.credits, next: l.next };
-        let skip = [&self.labels.skip_intro, &self.labels.skip_credits].map(|label| {
-            let w = stand_in_w(self.measure.width_str(label, theme::size::BODY, true), floor.unwrap_or(0.0));
+        let skip = [(&self.labels.skip_intro, &self.labels.watch_intro), (&self.labels.skip_credits, &self.labels.watch_credits)].map(|(label, watch)| {
+            let width = self.measure.width_str(label, theme::size::BODY, true)
+                .max(self.measure.width_str(watch, theme::size::BODY, true));
+            let w = stand_in_w(width, floor.unwrap_or(0.0));
             let x = match align {
                 "start" => union.x,
                 "center" => union.x + union.w * 0.5 - w * 0.5,
@@ -2519,8 +2523,11 @@ fn weigh(op: &DrawOp) -> Contributor {
                 + if extra > 0 { area(rects.next) } else { 0 };
         }
         DrawOp::SkipPill { rects } => {
+            // Automatic's Watch pill may carry the shared progress bar. Budget its worst case
+            // even when this frame uses the Manual label.
+            c.draw_ops += plx_ui::widgets::ButtonProgress::Bar.extra_draw_ops();
             c.glyph_runs = 1;
-            c.blended_px = rects.iter().map(|r| area(*r)).max().unwrap_or(0);
+            c.blended_px = 2 * rects.iter().map(|r| area(*r)).max().unwrap_or(0);
         }
     }
     c

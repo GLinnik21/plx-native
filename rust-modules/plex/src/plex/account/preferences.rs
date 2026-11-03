@@ -12,6 +12,7 @@ const CLIENTS_PLEX_TV: &str = "https://clients.plex.tv";
 
 #[derive(Clone)]
 pub struct PreferenceRequest {
+    stamp: String,
     client_id: String,
     credential: String,
     user: crate::plex::session::UserRef,
@@ -67,11 +68,15 @@ impl PreferenceRequest {
         let credential = crate::plex::session::plex_tv_credential(&user)?;
         let client_id = crate::plex::session::peek().client_id.clone();
         if client_id.is_empty() { return None; }
-        Some(Self { key: AudioPreferencesKey::new(&user, current.generation),
+        Some(Self { stamp: current.stamp.clone(), key: AudioPreferencesKey::new(&user, current.generation),
             client_id, credential, user })
     }
 
     pub fn is_current(&self) -> bool { self.key.is_current() }
+    pub fn matches_profile(&self, profile: &crate::plex::session::CurrentProfile) -> bool {
+        profile.stamp == self.stamp && profile.generation == self.key.generation && profile.user.as_ref().is_some_and(|u|
+            u.id == self.user.id && u.uuid == self.user.uuid)
+    }
 
     /// A fully synthetic receipt for composed UI tests; neither credentials nor preferences are
     /// read from disk or fetched from Plex. The caller publishes this identity under testlock.
@@ -81,7 +86,7 @@ impl PreferenceRequest {
     {
         plx_base::testlock::assert_held("account preference receipt fixture");
         let key = AudioPreferencesKey::new(&user, generation);
-        (Self { client_id: "preference-fixture-client".into(), credential: "synthetic-token".into(),
+        (Self { stamp: String::new(), client_id: "preference-fixture-client".into(), credential: "synthetic-token".into(),
             user, key: key.clone() }, PreferenceSnapshot { preferences, key, revision: 0 })
     }
 
@@ -267,7 +272,7 @@ mod tests {
         let user = crate::plex::session::UserRef { id: 7, uuid: "profile-7".into(),
             token: "pms-only-token".into(), plex_tv_token: Some("account-only-token".into()),
             ..Default::default() };
-        PreferenceRequest { client_id: "fixture-client".into(), credential: "account-only-token".into(),
+        PreferenceRequest { stamp: String::new(), client_id: "fixture-client".into(), credential: "account-only-token".into(),
             key: AudioPreferencesKey::new(&user, 4), user }
     }
     fn response(body: &str) -> plx_net::net::Resp {
@@ -414,5 +419,70 @@ mod tests {
         release_tx.send(()).unwrap();
         assert_eq!(first.join().unwrap().unwrap().preferences.subtitle_mode, 2);
         assert_eq!(second.join().unwrap().unwrap_err(), PreferenceError::Stale);
+    }
+}
+
+/// Viewer capabilities from Plex Web's authenticated `/api/v2/features` collection. A server's
+/// subscription is deliberately absent: a shared server owner cannot grant viewer features.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MarkerAccess {
+    pub intro: bool,
+    pub credits: bool,
+}
+#[derive(serde::Deserialize)]
+struct ViewerFeature { id: String }
+
+impl PreferenceRequest {
+    /// Worker-side read under the same captured profile credential as account preferences.
+    pub fn load_marker_access(&self) -> Result<MarkerAccess, PreferenceError> {
+        self.load_marker_access_with(|| self.matches_profile(&crate::plex::session::current_snapshot()),
+            |path| self.request("GET", path, "").map(|r| r.body))
+    }
+    fn load_marker_access_with(&self, current: impl Fn() -> bool,
+        mut read: impl FnMut(&str) -> Result<Vec<u8>, PreferenceError>) -> Result<MarkerAccess, PreferenceError> {
+        if !current() { return Err(PreferenceError::Stale); }
+        let user: AccountUser = serde_json::from_slice(&read("/api/v2/user")?)
+            .map_err(|_| PreferenceError::InvalidResponse)?;
+        if (self.user.id == 0 && self.user.uuid.is_empty()) || !user.matches_identity(&self.user) {
+            return Err(PreferenceError::Refused);
+        }
+        if !current() { return Err(PreferenceError::Stale); }
+        let features: Vec<ViewerFeature> = serde_json::from_slice(&read("/api/v2/features")?)
+            .map_err(|_| PreferenceError::InvalidResponse)?;
+        if !current() { return Err(PreferenceError::Stale); }
+        Ok(MarkerAccess { intro: features.iter().any(|f| f.id == "intro-markers"),
+            credits: features.iter().any(|f| f.id == "credits-markers") })
+    }
+}
+
+#[cfg(test)]
+mod marker_access_tests {
+    use super::*;
+    #[test]
+    fn viewer_features_are_separate_identity_checked_and_fail_closed() {
+        let _guard = plx_base::testlock::serial();
+        let user = crate::plex::session::UserRef { id: 7, uuid: "viewer".into(), ..Default::default() };
+        let (request, _) = PreferenceRequest::fixture_for_test(user, 1, Default::default());
+        for (features, expected) in [("[]", MarkerAccess::default()),
+            (r#"[{"id":"intro-markers"}]"#, MarkerAccess { intro: true, credits: false }),
+            (r#"[{"id":"credits-markers"}]"#, MarkerAccess { intro: false, credits: true })] {
+            let result = request.load_marker_access_with(|| true, |path| Ok(if path.ends_with("features") {
+                features.as_bytes().to_vec()
+            } else { br#"{"id":7,"uuid":"viewer"}"#.to_vec() }));
+            assert_eq!(result, Ok(expected));
+        }
+        for identity in [r#"{"id":8,"uuid":"viewer"}"#, r#"{"id":7,"uuid":"other"}"#, "{}"] {
+            let result = request.load_marker_access_with(|| true, |path| {
+                assert_eq!(path, "/api/v2/user", "refused identity never asks for features");
+                Ok(identity.as_bytes().to_vec())
+            });
+            assert_eq!(result, Err(PreferenceError::Refused));
+        }
+        for malformed in ["{}", "null", r#"[{"uuid":"feature-without-id"}]"#] {
+            assert_eq!(request.load_marker_access_with(|| true, |path| Ok(if path.ends_with("features") {
+                malformed.as_bytes().to_vec()
+            } else { br#"{"id":7}"#.to_vec() })), Err(PreferenceError::InvalidResponse));
+        }
+        assert_eq!(request.load_marker_access_with(|| false, |_| panic!("stale read")), Err(PreferenceError::Stale));
     }
 }

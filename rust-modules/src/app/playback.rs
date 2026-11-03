@@ -591,8 +591,49 @@ pub(crate) fn player_requests(
 ) -> bool {
     use plx_screens::registry::PlayerReq;
     let mut slot_refresh = false;
+    // Accepted user intent always wins the frame, even if its terminal effect was queued later.
+    let auto_retired = reqs.iter().any(|r| matches!(r, PlayerReq::Exit | PlayerReq::CancelAutoSkip(_)));
+    let auto_blocked = reqs.iter().any(|r| matches!(r, PlayerReq::Exit | PlayerReq::SeekTo(_)
+        | PlayerReq::Transport(_) | PlayerReq::Command(_) | PlayerReq::CancelAutoSkip(_)));
     for req in reqs {
         match req {
+            PlayerReq::CancelAutoSkip(id) => {
+                bridge.publish_marker_preferences(now);
+                if bridge.marker_preferences().scope == id.scope && plx_media::route::playback_trace_generation() == id.playback
+                    && super::bridge::player(pages).is_some_and(|screen| screen.auto_skip_entry() == id.entry) {
+                    bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::MarkSkipped(id.marker));
+                    slot_refresh = true;
+                }
+            }
+            PlayerReq::AutoSkip { id, reply } => {
+                use plx_appkit::skip_policy::OfferOutcome;
+                let mut outcome = OfferOutcome::Retired;
+                bridge.publish_marker_preferences(now);
+                let prefs = bridge.marker_preferences();
+                let active = bridge.metadata_view().active_marker(plx_data::metadata::Playhead {
+                    playing: true, pos_ns: plx_media::player::playpos_ns(), dur_ns: plx_media::player::duration_ns() });
+                let identity_current = prefs.scope == id.scope
+                    && id.playback == plx_media::route::playback_trace_generation()
+                    && prefs.mode(id.marker.kind) == plx_plex::plex::session::MarkerSkipMode::Automatic
+                    && !player.session.finished && !plx_media::player::ended() && !plx_media::route::play_pending()
+                    && active == Some(id.marker);
+                if identity_current && !auto_retired { outcome = OfferOutcome::Deferred; }
+                if !auto_blocked && !pages.surface_up() && prefs.scope == id.scope
+                    && prefs.mode(id.marker.kind) == plx_plex::plex::session::MarkerSkipMode::Automatic
+                    && id.playback == plx_media::route::playback_trace_generation() && !player.session.finished
+                    && !plx_media::player::ended() && !plx_media::route::play_pending()
+                    && !plx_media::player::TX.paused.load(Relaxed) && !plx_media::player::loading(&player.session)
+                    && plx_media::player::seek_pending() < 0 && active == Some(id.marker)
+                    && plx_media::player::is_playing(&player.session)
+                    && super::bridge::player(pages).is_some_and(|screen| screen.accepts_auto_skip(id)) {
+                    perform_skip_prompt(player, pa, repause_at, plx_appkit::skip_pill::prompt_for(id.marker), refresh_hubs, pages, bridge);
+                    slot_refresh = true;
+                    outcome = OfferOutcome::Applied;
+                }
+                pages.emit(plx_machine::machine::MachineId::Nav, plx_machine::machine::Fx::Deliver(reply,
+                    plx_machine::machine::Delivery::Screen(plx_ui::screen::ScreenEvent::App(
+                        plx_screens::registry::AppMsg::AutoSkipResolved { id, outcome }))));
+            }
             PlayerReq::RetryPlayback => {
                 retry_failed_playback(&mut player.session, pa, bridge.metadata_mut(), None, AttemptOrigin::UserRetry);
             }
@@ -915,7 +956,6 @@ pub(crate) fn activate_ctrl_row(
     bridge: &mut super::bridge::Bridge,
 ) -> bool {
     use plx_appkit::player_hud::ControlSlot;
-    use plx_appkit::skip_pill::SkipAction;
     match slot {
         // The row's two items, off the cursor the caller already parked (a click sets it
         // from the hit-test, a key press moved it). *Next Episode* starts the successor;
@@ -933,33 +973,11 @@ pub(crate) fn activate_ctrl_row(
                 false
             }
         }
-        ControlSlot::Skip(pr) => {
-            plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
-                feature: match pr.kind {
-                    plx_data::metadata::MarkerKind::Intro => plx_telemetry::diag::schema::Feature::SkipIntro,
-                    plx_data::metadata::MarkerKind::Credits => {
-                        plx_telemetry::diag::schema::Feature::SkipCredits
-                    }
-                },
-            });
-            match pr.action {
-                SkipAction::Seek(ns) => {
-                    // Retire the segment FIRST: the seek lands on the preceding keyframe, which
-                    // is usually still inside it, so without this the button comes straight back
-                    // (see `metadata::mark_skipped`).
-                    bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::MarkSkipped(pr.marker));
-                    request_seek(ns);
-                    resume_if_paused(pa);
-                    false
-                }
-                // a `final` credits segment: skipping it IS finishing the item
-                SkipAction::Finish => {
-                    player.session.finished = true;
-                    let _ = finish_playback(player, pa, repause_at, refresh_hubs, pages, bridge);
-                    true
-                }
-            }
+        ControlSlot::Skip(pr) if pr.automatic => {
+            bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::MarkSkipped(pr.marker));
+            false
         }
+        ControlSlot::Skip(pr) => perform_skip_prompt(player, pa, repause_at, pr, refresh_hubs, pages, bridge),
         ControlSlot::Discs(_) => false,
     }
 }
@@ -1966,4 +1984,39 @@ mod play_start_caps_tests {
         assert!(!start.forced_feeds_audio_track("dca", 6), "and Force Direct Play will not feed it");
         assert!(plx_platform::devcaps::caps().audio_supports("dts", 6), "the boot value is untouched");
     }
+}
+
+/// Both a manual press and an automatic expiry use this exact native-action path.
+#[allow(clippy::too_many_arguments)]
+fn perform_skip_prompt(player: &mut plx_media::player::machine::Player,
+    pa: &mut plx_media::player::adapter::PlayerAdapter, repause_at: &mut i64,
+    pr: plx_appkit::skip_pill::Prompt, refresh_hubs: &mut bool,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>, bridge: &mut super::bridge::Bridge) -> bool {
+    use plx_appkit::skip_pill::SkipAction;
+    bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::MarkSkipped(pr.marker));
+            plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
+                feature: match pr.kind {
+                    plx_data::metadata::MarkerKind::Intro => plx_telemetry::diag::schema::Feature::SkipIntro,
+                    plx_data::metadata::MarkerKind::Credits => {
+                        plx_telemetry::diag::schema::Feature::SkipCredits
+                    }
+                },
+            });
+            match pr.action {
+                SkipAction::Seek(ns) => {
+                    // Retire the segment FIRST: the seek lands on the preceding keyframe, which
+                    // is usually still inside it, so without this the button comes straight back
+                    // (see `metadata::mark_skipped`).
+                    request_seek(ns);
+                    resume_if_paused(pa);
+                    false
+                }
+                // a `final` credits segment: skipping it IS finishing the item
+                SkipAction::Finish => {
+                    player.session.finished = true;
+                    let _ = finish_playback(player, pa, repause_at, refresh_hubs, pages, bridge);
+                    true
+                }
+            }
+
 }

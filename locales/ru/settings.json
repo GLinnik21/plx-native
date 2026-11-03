@@ -352,5 +352,11 @@
   "settings.trace.exported": "Сохранено",
   "settings.trace.unavailable": "Недоступно",
   "settings.trace.failed": "Ошибка",
-  "settings.trace.saving": "Сохранение"
+  "settings.trace.saving": "Сохранение",
+  "settings.playback.intro_skip": "Пропуск заставок",
+  "settings.playback.credits_skip": "Пропуск титров",
+  "settings.playback.marker.manual": "Вручную",
+  "settings.playback.marker.automatic": "Автоматически",
+  "settings.playback.intro_skip.copy": "Выключено скрывает кнопку пропуска. Вручную предлагает пропустить заставку. Автоматически пропускает через пять секунд, если не выбрать «Смотреть заставку». Сохраняется для этого профиля.",
+  "settings.playback.credits_skip.copy": "Выключено скрывает кнопку пропуска титров. Вручную сохраняет текущие элементы управления. Автоматически пропускает через пять секунд, если не выбрать «Смотреть титры». Следующий эпизод и его отсчёт настраиваются отдельно."
 }

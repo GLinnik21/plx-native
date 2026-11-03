@@ -120,10 +120,10 @@ pub fn metrics(measure: &dyn Measure, langs: &[super::lint::LintLang]) -> Vec<Me
     for lang in langs {
         // Exhaustive destructuring makes a new compiler label require a corpus decision.
         let AppLabels { tab_info, tab_chapters, next_episode, next_seconds, watch_credits,
-            skip_intro, skip_credits, from_beginning, go_to_show, go_to_movie, commands } = &lang.labels;
+            skip_intro, watch_intro, skip_credits, from_beginning, go_to_show, go_to_movie, commands } = &lang.labels;
         let mut strings: Vec<(String, String)> = [
             ("label.info", tab_info), ("label.chapters", tab_chapters), ("next", next_episode),
-            ("credits", watch_credits), ("skip.intro", skip_intro), ("skip.credits", skip_credits),
+            ("credits", watch_credits), ("skip.intro", skip_intro), ("watch.intro", watch_intro), ("skip.credits", skip_credits),
             ("from_beginning", from_beginning), ("go_to_show", go_to_show), ("go_to_movie", go_to_movie),
         ].into_iter().map(|(role, text)| (role.to_owned(), text.clone())).collect();
         strings.extend(commands.iter().map(|(role, text)| (format!("command.{role}"), text.clone())));

@@ -97,6 +97,7 @@ fn refresh_chrome(
 
 #[derive(Clone, Copy)]
 pub(crate) struct AppViews<'a> {
+    pub(crate) marker_prefs: plx_appkit::skip_policy::MarkerPrefsView,
     pub(crate) auth: plx_session::auth::SessionRead<'a>,
     pub(crate) hubs: plx_data::pms::HubsView<'a>,
     pub(crate) listing: plx_data::stores::browse::ListingView<'a>,
@@ -139,7 +140,7 @@ impl Bridge {
     /// [`Self::views`] reading `session` as the playback publication — what a test rig with no
     /// player of its own passes.
     pub(crate) fn views_with<'a>(&'a self, session: &'a plx_media::route::PlaybackSession) -> AppViews<'a> {
-        AppViews { auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
+        AppViews { marker_prefs: self.marker_prefs, auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
             directory: self.directory.view(), section_hubs: self.section_hubs.view(),
             search: self.search.view(), metadata: self.stores.metadata_view(),
             person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session, today: self.today, beneath: None }
@@ -249,6 +250,7 @@ impl plx_screens::registry::SearchLike for AppHost {
 }
 
 impl plx_screens::registry::LibraryLike for AppHost {
+    fn marker_prefs(cx: &Cx<'_, Self>) -> plx_appkit::skip_policy::MarkerPrefsView { cx.views.marker_prefs }
     fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> { cx.views.listing }
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> { cx.views.directory }
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> { cx.views.section_hubs }
@@ -376,6 +378,9 @@ impl SeatWatch {
 
 /// What the bridge lends the dispatcher, and what it collects for the loop.
 pub(crate) struct Bridge {
+    marker_access: super::preferences::MarkerAccessRunner,
+    marker_prefs: plx_appkit::skip_policy::MarkerPrefsView,
+    marker_now: u32,
     /// Endpoint refreshes a store step had no room to emit (`EndpointRefreshSet::emit`).
     endpoint_carry: plx_data::stores::EndpointRefreshSet,
     session_cache_generation: u64,
@@ -662,6 +667,7 @@ impl Bridge {
         Self {
             session_cache_generation: plx_plex::plex::session::visible_generation(),
             cache_refresh_begun: None,
+            marker_access: Default::default(), marker_prefs: Default::default(), marker_now: 0,
             endpoint_carry: Default::default(),
             home_io: None,
             recorded_clients: std::collections::BTreeMap::new(),
@@ -2171,6 +2177,19 @@ impl Bridge {
     /// the loop, beside [`Self::publish_playback`] and before the dispatcher frame and the draw, with
     /// `clock::today()` (the loop is that door's one caller). Time arrives as an input: a screen
     /// that words a date reads it from its views and reads no clock.
+    pub(crate) fn marker_preferences(&self) -> plx_appkit::skip_policy::MarkerPrefsView { self.marker_prefs }
+    /// Runner boundary: capture the seated profile and live choices once, then publish values.
+    pub(crate) fn publish_marker_preferences(&mut self, now: u32) {
+        self.marker_now = now;
+        if self.home_io.is_some() {
+            self.marker_prefs = Default::default(); return;
+        }
+        let view = self.marker_access.poll(&Self::seated_profile(), now,
+            plx_media::route::intro_skip(), plx_media::route::credits_skip());
+        if view != self.marker_prefs { plx_machine::idle::invalidate(); }
+        self.marker_prefs = view;
+    }
+
     pub(crate) fn publish_today(&mut self, today: Option<[i32; 3]>) {
         self.today = today;
     }
@@ -2228,7 +2247,7 @@ impl Bridge {
             // The owner reads its retained publication, not a borrow through its own mutable
             // field. Every other view still comes from this same Bridge frame boundary.
             let publication = self.session.publication();
-            let cx = parts.cx::<AppHost>(AppViews { auth: publication.read(),
+            let cx = parts.cx::<AppHost>(AppViews { marker_prefs: self.marker_prefs, auth: publication.read(),
                 hubs: self.hubs.view(), listing: self.listing.view(), directory: self.directory.view(),
                 section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback, today: self.today, beneath: None,
             }, &self.measure);
@@ -2424,7 +2443,7 @@ impl Rig<AppHost> for Bridge {
     fn split(&mut self) -> Split<'_, AppHost> {
         Split {
             mounter: &mut self.mounter,
-            views: AppViews { auth: self.session.read(),
+            views: AppViews { marker_prefs: self.marker_prefs, auth: self.session.read(),
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
                 directory: self.directory.view(),
@@ -2556,7 +2575,15 @@ impl Bridge {
             AppFx::Session(command) => out.push(Fx::Deliver(MachineId::Session,
                 Delivery::Machine(AppMsg::Session(plx_session::auth::owner::SessionEvent::Command(command))))),
             AppFx::SessionEffect(effect) => self.session_effect(effect, out),
-            AppFx::Preferences(command) => super::preferences::execute(command),
+            AppFx::Preferences(command) => {
+                let profile = Self::seated_profile();
+                self.publish_marker_preferences(self.marker_now);
+                match command {
+                    plx_screens::registry::PreferenceCmd::EnsureMarkerAccess => self.marker_access.ensure(&profile, self.marker_now),
+                    command @ plx_screens::registry::PreferenceCmd::ChooseMarker { .. } => super::preferences::execute_marker(command, self.marker_prefs),
+                    other => super::preferences::execute(other),
+                }
+            },
             AppFx::PlaybackTrace(command) => {
                 let status = self.playback_trace_command(from, command);
                 out.push(Fx::Deliver(from, Delivery::Screen(ScreenEvent::App(AppMsg::PlaybackTrace(status)))));

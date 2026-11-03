@@ -70,7 +70,7 @@ pub const WORD: &str = "player";
 pub const SHAPE: &str =
     "PlayerScreen{hud:{focus:i32,btn:i32,tab:i32,until:u32,dismissed:bool,visible_at_press:bool,\
      exit_armed:bool,back_leaves_at_press:bool,offer:Option<(u32,i64)>,was_standin:bool},scrub:{dir:i32,hold:bool,reveal:bool,drag:bool,\
-     ns:i64},seek_burst:Option<(i64,u32)>,transport_tap:bool,origin:Option<u32>,repair_alert:{open:bool,confirm:bool,scroll:u32}}";
+     ns:i64},seek_burst:Option<(i64,u32)>,auto_skip:{elapsed:u32,consumed:bool,presented:bool,in_flight:bool,offer:Option<(u64,u32,u32,u32,i64,i64,bool)>,drawn:Option<(u64,u32,u32,u32,i64,i64,bool)>},transport_tap:bool,origin:Option<u32>,repair_alert:{open:bool,confirm:bool,scroll:u32}}";
 
 /// **The page this playback was launched from**, as the container's own identity.
 ///
@@ -117,6 +117,8 @@ pub enum HudPolicy {
 }
 
 pub struct PlayerScreen {
+    auto_skip: plx_appkit::skip_policy::OfferTimer,
+    drawn_watch: Option<plx_appkit::skip_policy::OfferId>,
     entry: EntryId,
     /// The transport HUD's timer, cursor, dismissal and control-row edges.
     pub hud: HudState,
@@ -195,6 +197,7 @@ impl PlayerScreen {
             repeat: RepeatGate::IDLE,
             row: HudMotion::new(),
             up_next: Countdown::default(),
+            auto_skip: Default::default(), drawn_watch: None,
             slot: ControlSlot::Discs(player_hud::Controls::NONE),
             busy: plx_appkit::player_hud::Busy::None,
             hud_policy: HudPolicy::Normal,
@@ -253,6 +256,8 @@ impl PlayerScreen {
     /// burst, HUD timer, dismissal and Up Next countdown go with it.
     pub fn transport_reset(&mut self, for_reload: bool) {
         self.transport_tap = false;
+        self.auto_skip.reset();
+        self.drawn_watch = None;
         self.scrub.cancel();
         self.row.reset_title();
         if !for_reload {
@@ -315,10 +320,13 @@ impl PlayerScreen {
         H::Elem: IndexElem,
     {
         let measure = df.measure;
+        let mut model = self.model;
+        model.skip_progress = matches!(self.draw_slot(), ControlSlot::Skip(pr) if pr.automatic)
+            .then(|| self.auto_skip.progress());
         let frame = plx_appkit::player_hud::render::Frame {
             entry: self.entry,
             ps,
-            model: &self.model,
+            model: &model,
             up: &self.up_next,
             open: self.hud.sections.bits(),
             slot: self.draw_slot(),
@@ -331,8 +339,14 @@ impl PlayerScreen {
             measure,
             meta,
         };
-        let drew = plx_appkit::player_hud::render::draw(&self.compiled, &frame, df, &mut self.row, plx_ui::Painter::root());
-        if !drew && !self.render.no_state_logged {
+        let receipt = plx_appkit::player_hud::render::draw_with_receipt(&self.compiled, &frame, df, &mut self.row, plx_ui::Painter::root());
+        self.drawn_watch = if receipt.skip_drawn && self.watch_visible() {
+            self.auto_skip.presented();
+            self.draw_slot().marker().map(|marker| plx_appkit::skip_policy::OfferId {
+                scope: self.model.marker_prefs.scope, entry: self.entry.0,
+                playback: self.model.playback_id, marker })
+        } else { None };
+        if !receipt.state_exists && !self.render.no_state_logged {
             self.render.no_state_logged = true;
             plx_base::eventlog::log("hud: the package has no state for this frame; nothing is drawn or placed for it");
         }
@@ -486,6 +500,9 @@ impl PlayerScreen {
             if self.row.scrub_motion_animating(now) {
                 mix(u64::from(now));
             }
+        }
+        if self.auto_skip.pending() && self.auto_skip_visible() && self.model.advancing && !self.model.paused {
+            mix(u64::from(now));
         }
         mix(u64::from(plx_media::player::TX.paused.load(Relaxed)));
         // …subtitles are NOT conditional: they are drawn on every frame of the route, HUD or no
@@ -684,6 +701,10 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
         let strip_ev = if matches!(ev, ScreenEvent::Tick(_)) { None } else { self.step_strip(ev, cx, fx) };
         match ev {
             // The app performed a `toggle_section` command (a tab's OK or click, a package's disc).
+            ScreenEvent::App(AppMsg::AutoSkipResolved { id, outcome }) => {
+                self.auto_skip.resolve(*id, *outcome);
+                Handled::Yes
+            }
             ScreenEvent::App(AppMsg::HudSection(section)) => {
                 self.toggle_section(*section, cx, fx);
                 Handled::Yes
@@ -745,7 +766,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                     }
                     // an open section's button: its command, and the section closes
                     Some(GROUP_SECTION) => self.section_pressed(focused, cx, fx),
-                    _ => self.row_pressed(focused, fx),
+                    _ => self.row_pressed(focused, cx.tick.ms, fx),
                 }
                 Handled::Yes
             }
@@ -795,6 +816,10 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                 // segment. Stepped for the whole route, not per-overlay: the countdown must keep
                 // running whichever panel is up (`up_next::tick`).
                 self.up_next.tick(self.slot, tick.ms);
+                if self.model.marker_prefs.needs_refresh {
+                    fx.push(Fx::App(AppFx::Preferences(crate::registry::PreferenceCmd::EnsureMarkerAccess)));
+                }
+                self.step_auto_skip(H::metadata(cx), *tick, fx);
                 // The scrub gesture's whole per-frame half — `app/run.rs`'s old
                 // per-loop-iteration block, now on this screen's own Tick: the continuous
                 // accelerating advance with its lost-keyup net. Neither it nor anything else on
@@ -862,6 +887,46 @@ fn continues_seek_burst(key: consts::Key, command: Option<player_hud::command::H
 }
 
 impl PlayerScreen {
+    fn watch_visible(&self) -> bool {
+        !self.model.covered && !self.hud.sections.any() && !self.hud.dismissed
+            && self.middle_up() && matches!(self.draw_slot(), ControlSlot::Skip(pr) if pr.automatic)
+    }
+    fn auto_skip_visible(&self) -> bool {
+        self.watch_visible() && self.hud.nav.focus == GROUP_ROW
+    }
+    fn cancel_watch<H: AppLike>(&mut self, now: u32, fx: &mut Effects<'_, H>) -> bool {
+        let Some(id) = self.drawn_watch else { return false; };
+        self.auto_skip.cancel();
+        // A stale drawn Watch is spent, never reinterpreted as a disc or manual Skip.
+        if id.scope == self.model.marker_prefs.scope && id.playback == self.model.playback_id
+            && self.slot.marker() == Some(id.marker)
+            && self.model.marker_prefs.mode(id.marker.kind) == plx_plex::plex::session::MarkerSkipMode::Automatic
+            && (id.marker.start_ms..id.marker.end_ms).contains(&(self.model.playpos_ns / 1_000_000)) {
+            self.dismiss_offer(id.marker, now, fx);
+        }
+        true
+    }
+    fn step_auto_skip<H: AppLike>(&mut self, meta: plx_data::metadata::MetadataView<'_>, tick: plx_machine::machine::Tick, fx: &mut Effects<'_, H>) {
+        let marker = meta.active_marker(plx_data::metadata::Playhead { playing: true,
+            pos_ns: self.model.playpos_ns, dur_ns: self.model.duration_ns });
+        let id = marker.filter(|m| self.model.marker_prefs.mode(m.kind) == plx_plex::plex::session::MarkerSkipMode::Automatic)
+            .map(|marker| plx_appkit::skip_policy::OfferId { scope: self.model.marker_prefs.scope,
+                entry: self.entry.0, playback: self.model.playback_id, marker });
+        if self.model.seeking || self.scrub.ns >= 0 { self.auto_skip.reset(); }
+        if self.auto_skip.pending() && self.auto_skip_visible() {
+            self.hud.extend(tick.ms, input::HUD_LINGER_MS);
+        }
+        if let Some(id) = self.auto_skip.tick(id, self.model.advancing && !self.model.paused && !self.model.loading,
+            self.auto_skip_visible(), tick.dt_us) {
+            Self::ask(fx, PlayerReq::AutoSkip { id, reply: fx.from() });
+        }
+    }
+    /// The native-action runner validates the exact player entry and logical playback again.
+    pub fn auto_skip_entry(&self) -> u32 { self.entry.0 }
+    pub fn accepts_auto_skip(&self, id: plx_appkit::skip_policy::OfferId) -> bool {
+        id.entry == self.entry.0 && id.playback == self.model.playback_id && self.auto_skip.id() == Some(id)
+            && self.auto_skip_visible() && !self.model.paused && !self.model.loading
+    }
     fn ask<H: AppLike>(fx: &mut Effects<'_, H>, req: PlayerReq) {
         fx.push(Fx::App(AppFx::Player(req)));
     }
@@ -972,6 +1037,7 @@ impl PlayerScreen {
         // reset `hud.nav` to HOME — opening Subtitles for a click on Audio.
         self.hud.extend(now, input::HUD_LINGER_MS);
         self.publish();
+        if player_hud::row_index(elem).is_some() && self.cancel_watch(now, fx) { return Handled::Yes; }
         match elem {
             e if (ELEM_FAILURE_BASE..ELEM_FAILURE_END).contains(&e) => {
                 // the same gate `group_drawn` registers the row behind: a row that is not drawn
@@ -1297,7 +1363,9 @@ impl PlayerScreen {
         let vis = self.hud.visible_at_press;
         let focused = focused.filter(|_| vis);
         let mut handled = Handled::Yes;
-        if self.take_target(now, fx) {
+        if focused.and_then(player_hud::row_index).is_some() && self.cancel_watch(now, fx) {
+            // Watch is intent now, never a deferred press on a row that can change under it.
+        } else if self.take_target(now, fx) {
             // OK confirmed the target and the film plays on from it; that is all this press means
         } else if focused.and_then(player_hud::row_index).is_some() {
             // the press takes the page from the scrubber, so a pending target goes with it
@@ -1347,11 +1415,12 @@ impl PlayerScreen {
     /// ([`PlayerReq::Command`]); a stand-in's meaning is the app's, so it is [`PlayerReq::StandIn`].
     /// Nothing happens when the engine is not on an enabled control of the row any more (the row
     /// changed under the press).
-    fn row_pressed<H: AppLike>(&mut self, focused: Option<u32>, fx: &mut Effects<'_, H>) {
+    fn row_pressed<H: AppLike>(&mut self, focused: Option<u32>, now: u32, fx: &mut Effects<'_, H>) {
         let Some(ordinal) = focused.and_then(player_hud::row_index).filter(|&i| self.row_enabled(i)) else {
             return;
         };
         self.hud.nav.btn = ordinal;
+        if self.cancel_watch(now, fx) { return; }
         match self.row_command(ordinal) {
             Some(command) => Self::ask(fx, PlayerReq::Command(command)),
             None => Self::ask(fx, PlayerReq::StandIn),
@@ -1497,7 +1566,10 @@ impl PlayerScreen {
         now: u32,
         fx: &mut Effects<'_, H>,
     ) {
-        Self::ask(fx, PlayerReq::DismissOffer(marker));
+        self.auto_skip.cancel();
+        if let Some(id) = self.drawn_watch.filter(|id| id.marker == marker) {
+            Self::ask(fx, PlayerReq::CancelAutoSkip(id));
+        } else { Self::ask(fx, PlayerReq::DismissOffer(marker)); }
         self.slot = ControlSlot::Discs(self.model.controls);
         let primary = self.row_primary();
         self.hud.nav.btn = primary;
@@ -2384,6 +2456,12 @@ impl LogicalState for PlayerScreen {
         c.option(self.seek_burst.snapshot().as_ref(), |c, (target, at)| {
             c.u64(*target as u64).u32(*at);
         });
+        let (offer, elapsed, consumed, presented, in_flight) = self.auto_skip.snapshot();
+        c.u32(elapsed).bool(consumed).bool(presented).bool(in_flight);
+        c.option(offer.as_ref(), |c, id| { c.u64(id.scope).u32(id.entry).u32(id.playback)
+            .u32(id.marker.kind as u32).u64(id.marker.start_ms as u64).u64(id.marker.end_ms as u64).bool(id.marker.final_seg); });
+        c.option(self.drawn_watch.as_ref(), |c, id| { c.u64(id.scope).u32(id.entry).u32(id.playback)
+            .u32(id.marker.kind as u32).u64(id.marker.start_ms as u64).u64(id.marker.end_ms as u64).bool(id.marker.final_seg); });
         c.bool(self.transport_tap);
         c.option(self.origin.as_ref(), |c, o| {
             c.u32(o.entry.0);
@@ -5280,5 +5358,71 @@ mod caption_order_tests {
         assert!(over > 2, "it faded over several frames");
         assert!(!last(&mut page), "the first frame the section draws nothing, the caption is back under the transport");
         plx_media::player::sidecar::reset();
+    }
+}
+
+#[cfg(test)]
+mod automatic_marker_tests {
+    use super::*;
+    use super::travel_rig::Rig;
+    use crate::player::overlay_tests::TestHost;
+    use plx_appkit::skip_policy::{MarkerPrefsView, OfferId};
+    use plx_machine::machine::{InputEvent, MachineId, Source, Tick};
+    use plx_plex::plex::session::MarkerSkipMode::Automatic;
+
+    fn page() -> (PlayerScreen, plx_data::stores::metadata::MetadataStore, OfferId) {
+        let mut page = PlayerScreen::new(EntryId(42), plx_appkit::player_hud::loaded::classic_for_test());
+        let marker = plx_data::metadata::Marker { kind: plx_data::metadata::MarkerKind::Intro,
+            start_ms: 1_000, end_ms: 60_000, final_seg: false };
+        let mut meta = plx_data::stores::metadata::MetadataStore::default();
+        plx_data::metadata::set_playing_markers_for_test(meta.state_mut(), vec![marker]);
+        page.model.marker_prefs = MarkerPrefsView { scope: 7, intro_granted: true, intro: Automatic, ..Default::default() };
+        page.model.playback_id = 3; page.model.playpos_ns = 10_000_000_000;
+        page.model.duration_ns = 120_000_000_000; page.model.advancing = true;
+        page.slot = player_hud::slot_for_preferences(Some(marker), true, false,
+            plx_media::route::NextEpisodeMode::Countdown, page.model.marker_prefs);
+        page.hud.nav.focus = GROUP_ROW; page.hud.nav.btn = 0; page.hud.visible_at_press = true;
+        page.hud.until = 10_000;
+        let id = OfferId { scope: 7, entry: 42, playback: 3, marker };
+        assert!(step(&mut page, &meta, 0).is_empty());
+        page.drawn_watch = Some(id);
+        (page, meta, id)
+    }
+    fn step(page: &mut PlayerScreen, meta: &plx_data::stores::metadata::MetadataStore, dt_us: u32) -> Vec<PlayerReq> {
+        let mut out = Vec::new(); let mut present = plx_machine::present::Present::new();
+        page.step_auto_skip::<TestHost>(meta.view(), Tick { ms: 1_000, dt_us },
+            &mut Effects::new(&mut out, MachineId::Instance(InstanceId(3)), &mut present));
+        out.into_iter().filter_map(|e| if let Fx::App(AppFx::Player(req)) = e.fx { Some(req) } else { None }).collect()
+    }
+    #[test]
+    fn automatic_marker_watch_key_pointer_and_back_win_at_the_deadline() {
+        let _guard = plx_base::testlock::serial();
+        for input in 0..3 {
+            let (mut page, meta, id) = page();
+            page.auto_skip.presented(); assert!(step(&mut page, &meta, 4_999_000).is_empty());
+            let mut rig = Rig::on(&page, EntryId(42));
+            rig.seat_on(player_hud::control_elem(0));
+            let (handled, reqs) = match input {
+                0 => rig.key(&mut page, plx_ui::consts::SDLK_RETURN, 0, Edge::Down, 6_000),
+                1 => rig.deliver(&mut page, ScreenEvent::Input(InputEvent { at: Tick { ms: 6_000, dt_us: 0 },
+                    source: Source::Sdl, kind: InputKind::Click { x: 1_600.0, y: 830.0, hit: Some(player_hud::control_elem(0)) } })),
+                _ => rig.key(&mut page, 0, plx_ui::consts::WCODE_BACK, Edge::Down, 6_000),
+            };
+            assert_eq!(handled, Handled::Yes);
+            assert_eq!(reqs, vec![PlayerReq::CancelAutoSkip(id)]);
+            page.auto_skip.presented(); assert!(step(&mut page, &meta, 1_000).is_empty());
+            assert!(!page.auto_skip.pending());
+        }
+    }
+    #[test]
+    fn automatic_marker_fires_once_and_freezes_while_paused_or_covered() {
+        let _guard = plx_base::testlock::serial(); let (mut page, meta, id) = page();
+        page.auto_skip.presented(); assert!(step(&mut page, &meta, 2_000_000).is_empty());
+        page.model.paused = true; page.auto_skip.presented(); assert!(step(&mut page, &meta, 10_000_000).is_empty());
+        page.model.paused = false; page.model.covered = true;
+        page.auto_skip.presented(); assert!(step(&mut page, &meta, 10_000_000).is_empty());
+        page.model.covered = false; page.auto_skip.presented();
+        assert_eq!(step(&mut page, &meta, 3_000_000), vec![PlayerReq::AutoSkip { id, reply: MachineId::Instance(InstanceId(3)) }]);
+        page.auto_skip.presented(); assert!(step(&mut page, &meta, 5_000_000).is_empty());
     }
 }

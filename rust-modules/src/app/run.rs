@@ -127,7 +127,9 @@ pub(crate) unsafe fn run(app: &mut App) {
         // the input. Eight phases between the nine stamps, named after the frame algorithm
         // the restructure moves this loop onto (spec §3.3/§8.4); on THIS loop navcommit
         // precedes tick_drain, and the FRAMEDROP line prints them in the algorithm's order.
+        app.bridge.publish_marker_preferences(clock::now());
         let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+        fr.ctrl = plx_appkit::player_hud::slot_with_preferences(&app.player.session, app.bridge.metadata_view(), app.bridge.marker_preferences());
         let first_controlled_frame = app.boot_initial.is_some() && app.prev == 0;
         let fr = &mut fr;
         app.instr.mark(plx_base::diag::heartbeat::Phase::Top); // also starts the visit's hang interval
@@ -222,6 +224,12 @@ pub(crate) unsafe fn run(app: &mut App) {
         plx_media::player::engine::poll_release_frame(&mut app.player.session, &mut app.adapters.player);
         app.player.session.repair_status = app.player.repair.state();
         publish_frame(&mut app.bridge, &app.player.session, was_player);
+        // The timer receives this frame's playback facts before input and Tick; the draw refreshes
+        // the same model later, after native actions have been drained.
+        let mut model = hud_model(&app.player.session, app.bridge.metadata_view());
+        model.marker_prefs = app.bridge.marker_preferences();
+        model.covered = app.pages.surface_up();
+        if let Some(screen) = super::bridge::player_mut(&mut app.pages) { screen.model = model; }
         // The container runs its frame: the pending navigation's commit (at `PageDip`'s floor),
         // then the owned screens' inputs, ticks, timers and effects. `app/bridge.rs` is the seam.
         let supplied = match app.rec.replay_results(|id| app.bridge.recorded_client(id)) {
@@ -501,7 +509,9 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
     // except `scrub_ns`, which the page's `prepare` takes from its own scrub (a held scrub moves the
     // target by seconds a frame, and the clock prewarm warms only the displayed second and the next).
     if fr.player {
-        let model = hud_model(&app.player.session, app.bridge.metadata_view());
+        let mut model = hud_model(&app.player.session, app.bridge.metadata_view());
+        model.marker_prefs = app.bridge.marker_preferences();
+        model.covered = app.pages.surface_up();
         refresh_hud(app);
         if let Some(player) = super::bridge::player_mut(&mut app.pages) {
             player.model = model;
@@ -651,6 +661,7 @@ fn hud_model(
     let playpos_ns = plx_media::player::playpos_ns();
     plx_appkit::player_hud::model::HudModel {
         paused: plx_media::player::TX.paused.load(Relaxed),
+        marker_prefs: Default::default(), playback_id: plx_media::route::playback_trace_generation(), advancing: plx_media::player::state(ps) == plx_media::player::PlaybackState::Playing, seeking: plx_media::player::state(ps) == plx_media::player::PlaybackState::Seeking || plx_media::player::seek_pending() >= 0, covered: false, skip_progress: None,
         is_episode: meta.now_playing().is_some_and(|n| n.is_real_episode),
         scrub_ns: plx_media::player::TX.scrub_ns.load(Relaxed),
         playpos_ns,
@@ -2087,6 +2098,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // Up Next countdown elapsed → start the queued episode on its own. Beside the EOS
         // handoff so the whole auto-advance chain reads in one place.
         if playback_may_run(app)
+            && matches!(fr.ctrl, plx_appkit::player_hud::ControlSlot::UpNext(_))
             && super::bridge::player(&app.pages).is_some_and(|p| p.up_next.expired(fr.now))
         {
             if !play_up_next(&mut app.player.session,
@@ -4534,7 +4546,9 @@ mod lifecycle_regression_tests {
         shared.seek_display_ns.store(9_000_000_000, Relaxed);
         shared.duration_ns.store(100_000_000_000, Relaxed);
         shared.desired_sub_idx.store(3, Relaxed);
-        let model = hud_model(&app.player.session, app.bridge.metadata_view());
+        let mut model = hud_model(&app.player.session, app.bridge.metadata_view());
+        model.marker_prefs = app.bridge.marker_preferences();
+        model.covered = app.pages.surface_up();
         // restore before grading: a failed assertion must not leak a scrub target into the next test
         plx_media::player::restore_state_for_test(state);
         plx_media::route::restore_subtitle_size(size);
@@ -4686,7 +4700,7 @@ mod lifecycle_regression_tests {
         use plx_data::metadata::{Marker, MarkerKind};
         let _serial = plx_base::testlock::serial();
         let marker = Marker { kind: MarkerKind::Intro, start_ms: 0, end_ms: 60_000, final_seg: false };
-        let skip = ControlSlot::Skip(Prompt { marker, kind: MarkerKind::Intro, action: SkipAction::Seek(60_000_000_000) });
+        let skip = ControlSlot::Skip(Prompt { marker, kind: MarkerKind::Intro, action: SkipAction::Seek(60_000_000_000), automatic: false });
         let (focus, engine, reqs) = depart_and_press_ok(skip, ControlSlot::Discs(Controls::NONE));
         assert_eq!(focus, GROUP_SCRUB, "nav");
         assert_eq!(engine, Some(ELEM_SCRUB), "the engine");
@@ -9425,7 +9439,13 @@ mod frame_publication_tests {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/run.rs"),
         )
         .expect("read run.rs");
-        const CALL: &str = "        publish_frame(&mut app.bridge, &app.player.session, was_player);";
+        const CALL: &str = "        publish_frame(&mut app.bridge, &app.player.session, was_player);
+        // The timer receives this frame's playback facts before input and Tick; the draw refreshes
+        // the same model later, after native actions have been drained.
+        let mut model = hud_model(&app.player.session, app.bridge.metadata_view());
+        model.marker_prefs = app.bridge.marker_preferences();
+        model.covered = app.pages.surface_up();
+        if let Some(screen) = super::bridge::player_mut(&mut app.pages) { screen.model = model; }";
         assert_eq!(
             src.lines().filter(|l| *l == CALL).count(),
             1,

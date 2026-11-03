@@ -1124,5 +1124,9 @@
   "widgets.failure.change_quality": {
     "value": "Change quality",
     "description": "Failed-playback button: opens the quality ladder; picking a rung retries at it."
+  },
+  "widgets.watch.intro": {
+    "value": "Watch Intro",
+    "description": "Playback marker skipping preference or cancellation action."
   }
 }

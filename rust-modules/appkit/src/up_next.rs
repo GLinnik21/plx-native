@@ -83,7 +83,7 @@ pub struct Countdown {
 }
 
 /// Whether this owns the control row this frame. The precedence itself lives in ONE place —
-/// [`crate::player_hud::slot_for`] — so this is just a read of the resolved slot.
+/// [`crate::player_hud::slot_for_preferences`] — so this is just a read of the resolved slot.
 pub fn is_shown(slot: crate::player_hud::ControlSlot) -> bool {
     matches!(slot, crate::player_hud::ControlSlot::UpNext(_))
 }

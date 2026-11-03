@@ -153,3 +153,25 @@ the server first and plays as stereo, labelled the same way. The next request st
 The television remained muted with its panel off. These results do not claim audible output
 verification, and no real Plex account language preferences were written. The throwaway-account
 PMS propagation measurement is still outstanding.
+
+## Intro and credits skipping
+
+Requested in [discussion #826](https://github.com/GLinnik21/plx-native/discussions/826).
+
+Playback settings offers **Skip intros** and **Skip credits** separately for a viewer whose
+Plex account feature list grants the corresponding capability. These are per-profile choices:
+**Manual** is the default, **Disabled** hides the skip button, and **Automatic** offers a
+**Watch Intro** or **Watch Credits** button with a five-second progress bar. Pressing that button
+or BACK keeps watching the segment and withdraws its offer for this playback.
+
+Only time with an actionable, presented Watch button and advancing playback counts. Pause,
+buffering and a covering player panel freeze the remaining opportunity. Seeking or leaving the
+marker resets it. Intro and intermediate credits expiry seek to the marker end; final credits
+use the existing playback-finished path, respecting the Next episode preference. Automatic final
+credits take precedence over the usual ten-second Up Next offer. Disabled and Manual retain
+Next episode's independent policy, and synthetic end-of-item tails never auto-skip.
+
+The app checks the **viewer’s** `intro-markers` and `credits-markers` grants; a shared server
+owner's subscription is not evidence of viewer eligibility. An unavailable, expired or denied
+grant hides the new settings and uses the existing manual controls. Saved choices remain intact.
+No Plex viewing-history write is needed to change these local settings.

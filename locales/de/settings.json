@@ -346,5 +346,11 @@
   "settings.trace.exported": "Gespeichert",
   "settings.trace.unavailable": "Nicht verfügbar",
   "settings.trace.failed": "Fehler",
-  "settings.trace.saving": "Speichern"
+  "settings.trace.saving": "Speichern",
+  "settings.playback.intro_skip": "Vorspann überspringen",
+  "settings.playback.credits_skip": "Abspann überspringen",
+  "settings.playback.marker.manual": "Manuell",
+  "settings.playback.marker.automatic": "Automatisch",
+  "settings.playback.intro_skip.copy": "Deaktiviert blendet die Schaltfläche aus. Manuell bietet das Überspringen an. Automatisch überspringt nach fünf Sekunden, sofern du nicht „Vorspann ansehen“ wählst. Wird für dieses Profil gespeichert.",
+  "settings.playback.credits_skip.copy": "Deaktiviert blendet „Abspann überspringen“ aus. Manuell behält die bisherigen Steuerelemente bei. Automatisch überspringt nach fünf Sekunden, sofern du nicht „Abspann ansehen“ wählst. Die nächste Folge und ihr Countdown werden separat eingestellt."
 }

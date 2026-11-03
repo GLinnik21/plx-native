@@ -1755,3 +1755,27 @@ only `size`.
 - One JSON shape covers movie/show/season/episode; parse the field table in §2 with all-optional semantics.
 - Every image through `/photo/:/transcode` at exact card size; never raw `thumb`.
 - Direct play = `Media[].Part[].key` + token; server supports byte ranges.
+
+## Viewer marker capabilities (`GET /api/v2/features` on plex.tv)
+
+Evidence checked 2026-11-04: Plex Web 4.163.0's
+[public implementation](https://app.plex.tv/desktop/js/main-8792-0fadf59092c873ab638b-plex-4.163.0-8246fd2.js)
+(module 11090, UserFeatureCollection) reads `/api/v2/features` under the active viewer credential.
+Modules 7278 and 77948 select its feature IDs; module 22701 defines `intro-markers` and
+`credits-markers`, which the player uses to filter library markers. The response is a bare
+array of `{ "id": "…", "uuid": "…" }` records. `uuid` identifies the feature, not a viewer.
+A public unauthenticated read with a synthetic client identifier returned a valid list without
+either marker capability. An empty list is a valid denial; a malformed response is unavailable.
+
+[Plex's intro documentation](https://support.plex.tv/articles/skip-content/) and
+[credits documentation](https://support.plex.tv/articles/credits-detection/) tie skipping to the
+player's viewer or that viewer's eligible Plex Home, rather than an unrelated server owner's Pass.
+Do not infer either grant from PMS `myPlexSubscription`, generic account subscription activity,
+or membership in some server owner's Home.
+
+`PreferenceRequest::load_marker_access` first verifies `/api/v2/user` with the captured viewer
+credential, requiring at least one known ID/UUID to match and neither to conflict, then reads
+`/api/v2/features` with the same credential. Profile replacement before or after either read
+refuses its result. The runner coalesces requests per seated identity, uses the account cache's
+five-minute success lifetime and 45-second failure cooldown, and publishes fresh, independent
+intro/credits grants as frame inputs. It never logs a response body or credentials.

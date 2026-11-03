@@ -404,14 +404,26 @@ fn lift<'c>(compiled: &Compiled, state: &'c CompiledState, base: u8, f: &Frame<'
 /// the logical state (the
 /// open bits' own; for an inline package the presented sections' block), each band moved by the table; and each
 /// leaving section of a modal package, as one layer, with the transport bands that only that state holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DrawReceipt {
+    pub state_exists: bool,
+    /// The actual SkipPill op was painted, legible and inside its hit clip.
+    pub skip_drawn: bool,
+}
 pub fn draw<H: Host>(compiled: &Compiled, f: &Frame<'_>, df: &DrawFrame<'_, '_, H>, row: &mut HudMotion, p: Painter) -> bool
+where H::Elem: IndexElem {
+    draw_with_receipt(compiled, f, df, row, p).state_exists
+}
+
+pub fn draw_with_receipt<H: Host>(compiled: &Compiled, f: &Frame<'_>, df: &DrawFrame<'_, '_, H>, row: &mut HudMotion, p: Painter) -> DrawReceipt
 where
     H::Elem: IndexElem,
 {
+    let mut receipt = DrawReceipt { state_exists: true, skip_drawn: false };
     // A FAILURE owns the frame: the read-out is `draw_readout`'s, drawn by the caller AFTER this.
     if readout_owns_frame(f.busy) {
         row.reset_title();
-        return true;
+        return receipt;
     }
     // A MODAL package draws the logical state (the transport comes back the moment a section is put away, as it did
     // under the panels, faded in by the page) and lays a section still fading out over it; an INLINE one draws the
@@ -419,7 +431,7 @@ where
     let presented = row.presented();
     let inline = !compiled.sections_modal();
     let base = if inline { f.open | presented } else { f.open };
-    let Some(state) = state_for(compiled, base, f) else { return false };
+    let Some(state) = state_for(compiled, base, f) else { return DrawReceipt::default() };
     let layers = Layers::of(compiled, state, base, f, inline, row);
     let compact = state_for(compiled, 0, f);
     if inline {
@@ -427,7 +439,7 @@ where
         for source in inline_sources(compiled, base, f).into_iter().filter(|source| source.key.open != base) {
             let fading = owed(source, &layers, |id| held.contains(&id));
             if !fading.is_empty() {
-                walk(compiled, source, f, df, row, p, &layers, Pick::Bands(&fading));
+                receipt.skip_drawn |= walk(compiled, source, f, df, row, p, &layers, Pick::Bands(&fading));
                 held.extend(fading);
             }
         }
@@ -435,11 +447,11 @@ where
         if let Some(compact) = compact {
             let fading = owed(compact, &layers, |id| y_in(state, id).is_some());
             if !fading.is_empty() {
-                walk(compiled, compact, f, df, row, p, &layers, Pick::Bands(&fading));
+                receipt.skip_drawn |= walk(compiled, compact, f, df, row, p, &layers, Pick::Bands(&fading));
             }
         }
     }
-    walk(compiled, state, f, df, row, p, &layers, Pick::All);
+    receipt.skip_drawn |= walk(compiled, state, f, df, row, p, &layers, Pick::All);
     if !inline {
         let mut walked: Vec<&str> = Vec::new();
         for section in [Section::Chapters, Section::Info] {
@@ -451,12 +463,12 @@ where
                 let only_here = owed(leaving, &layers, |id| {
                     y_in(state, id).is_some() || compact.is_some_and(|c| y_in(c, id).is_some()) || walked.contains(&id)
                 });
-                walk(compiled, leaving, f, df, row, p, &layers, Pick::Leaving(bit, &only_here));
+                receipt.skip_drawn |= walk(compiled, leaving, f, df, row, p, &layers, Pick::Leaving(bit, &only_here));
                 walked.extend(only_here);
             }
         }
     }
-    true
+    receipt
 }
 
 /// The ids of the transport bands of `from` that are drawn from it this frame: not held by a state that is walked
@@ -517,10 +529,11 @@ fn walk<H: Host>(
     p: Painter,
     layers: &Layers<'_>,
     pick: Pick<'_>,
-) where
+) -> bool where
     H::Elem: IndexElem,
 {
     let e = hud_env();
+    let mut skip_drawn = false;
     // a panel owning the middle hides the compact state's transport, unless that transport is fading out under it; a
     // section state IS the panel
     let hides_transport = state.key.open == 0 && !f.transport && !layers.moving;
@@ -605,7 +618,10 @@ fn walk<H: Host>(
                 DrawOp::SkipPill { rects } => {
                     if let ControlSlot::Skip(pr) = f.slot {
                         let shown = rects[usize::from(pr.kind == plx_data::metadata::MarkerKind::Credits)];
-                        skip_pill::draw_at(row, q, pr, shown, f.focus == GROUP_ROW);
+                        skip_pill::draw_at(row, q, pr, shown, f.focus == GROUP_ROW, f.model.skip_progress);
+                        let (rect, _, clip) = q.to_screen(shown);
+                        let hit = rect.intersect(clip);
+                        skip_drawn |= q.opacity() >= 0.5 && hit.w > 0.0 && hit.h > 0.0;
                     }
                 }
                 DrawOp::Playbar { track, fill, track_ink, clock_size, knob, clocks, mark, .. } => {
@@ -657,6 +673,7 @@ fn walk<H: Host>(
             }
         }
     }
+    skip_drawn
 }
 
 /// A section tab: the one control that draws while a panel owns the middle.
