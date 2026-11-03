@@ -134,6 +134,14 @@ pub struct CommitReadout {
     pub observed_height: i32,
 }
 
+/// Effects emitted by the adaptive worker after a completed observation or an
+/// accepted publication. The session owns this sink; the feed supplies only
+/// physical media and queue observations.
+pub trait AdaptiveEffects: Send {
+    fn seed(&mut self, readout: SeedReadout);
+    fn committed(&mut self, readout: CommitReadout);
+}
+
 /// Physical automatic-actuator lease and the existing queue abort fence. The
 /// policy owner holds the lease across blocking work and enters `gate` only for
 /// the short route/controller publication closure.

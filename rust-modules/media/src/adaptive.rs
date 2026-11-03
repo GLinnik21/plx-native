@@ -5,10 +5,36 @@
 use crate::{abr, route};
 use plx_playback_contract::adaptive::PublicationGate;
 use plx_playback_contract::adaptive::{
-    ActionReadout, AdaptiveDirection, Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, ActiveQuantum, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, CommitReadout, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
+    ActionReadout, AdaptiveDirection, AdaptiveEffects, Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, ActiveQuantum, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, CommitReadout, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
     RoundId, SeedReadout, TrialActuatorPort, TrialObservation, TrialPhase, TrialProtocol, TrialProtocolError,
 };
 use plx_playback_contract::SourceKey;
+
+/// The player sink for common adaptive effects. Only the common worker invokes
+/// these callbacks; the physical feed does not choose when a seed or committed
+/// route becomes visible.
+pub struct PlayerAdaptiveEffects;
+
+impl AdaptiveEffects for PlayerAdaptiveEffects {
+    fn seed(&mut self, readout: SeedReadout) {
+        crate::player::SHARED.publish_abr_seed_readout(readout);
+    }
+
+    fn committed(&mut self, readout: CommitReadout) {
+        let rung = abr::LADDER.into_iter()
+            .find(|rung| rung.kbps() == readout.target_kbps)
+            .expect("a committed adaptive target belongs to the captured ladder");
+        crate::player::report::note_hls_committed_for(
+            readout.trace_generation,
+            match readout.direction {
+                AdaptiveDirection::Up => abr::Direction::Up,
+                AdaptiveDirection::Down => abr::Direction::Down,
+            },
+            rung,
+            readout.refreshing,
+        );
+    }
+}
 
 /// The route owner's captured inputs at a worker start. No second route identity is
 /// minted here: the ticket remains the route's complete worker-generation fence.
@@ -1042,6 +1068,7 @@ pub(crate) struct Coordinator {
     control: route::HlsAbrControl,
     ticket: route::WorkerTicket,
     controller: abr::Controller,
+    effects: Box<dyn AdaptiveEffects>,
     recovery: Option<abr::OriginalRecovery>,
     recover_kbps: u32,
     last_probe_block: Option<abr::ProbeBlock>,
@@ -1649,7 +1676,10 @@ pub(crate) fn run_active_round<P: ActiveFeedPort>(
     }
     let (sample, round_decision, prefetch_allowed) =
         active.observe(coordinator, rollback_media_ms, now_ms(), boundary);
-    diagnostics.observed(ActiveReadout::new(&round_decision, sample));
+    let readout = ActiveReadout::new(&round_decision, sample);
+    let seed = readout.model.seed;
+    diagnostics.observed(readout);
+    coordinator.effects.seed(seed);
     if prefetch_allowed && active_step(port, round, ActiveAction::Prefetch {
         round, at_floor: Some(coordinator.at_floor()),
     })? != (ActiveObservation::Prefetched { round }) {
@@ -2001,7 +2031,9 @@ impl ExplorationFailure {
 }
 
 impl Coordinator {
-    pub(crate) fn start(start: Start, pin: Option<abr::Rung>) -> Self {
+    pub(crate) fn start(
+        start: Start, pin: Option<abr::Rung>, effects: Box<dyn AdaptiveEffects>,
+    ) -> Self {
         let Start { control, ticket } = start;
         let recovery = control.can_recover_original().then(|| {
             abr::OriginalRecovery::new(
@@ -2025,7 +2057,7 @@ impl Coordinator {
             controller.observe_active_variant(variant, evidence_kbps);
         }
         Self {
-            control, ticket, controller, recovery, recover_kbps: 0,
+            control, ticket, controller, effects, recovery, recover_kbps: 0,
             last_probe_block: None,
             next_trial_serial: 0, next_round_serial: 0,
         }
@@ -2278,6 +2310,11 @@ impl Coordinator {
             target_kbps: proposal.rung.kbps(), refreshing, declared_bps,
             observed_width: observed.width, observed_height: observed.height,
         }
+    }
+    /// Called after the AQ publication and native gauge projection. The sink
+    /// receives the generation captured with this route, never a global lookup.
+    pub(crate) fn emit_committed(&mut self, readout: CommitReadout) {
+        self.effects.committed(readout);
     }
     pub(crate) fn original_source_kbps(&self) -> u32 { self.control.original_source_kbps() }
     pub(crate) fn retain_original_recovery(&mut self, kbps: u32) { self.recover_kbps = kbps; }

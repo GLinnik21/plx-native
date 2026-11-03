@@ -4807,12 +4807,6 @@ fn publish_hls_abr_model(t: adaptive::ModelReadout) {
     SHARED.dg_abr_pred_pm.store(t.production_pm, rel);
     SHARED.dg_abr_risk.store(t.risk, rel);
     SHARED.dg_abr_why.store(abr_why_code(t.reason), rel);
-    // **The seed that survives a seek** (I8). Published every segment rather than at teardown,
-    // because a teardown has several paths and one of them (a crash of the demux worker) reaches
-    // none of them — and the estimate is worth carrying whatever ended the session. Not a `dg_`
-    // field: this coherent estimate is read to DECIDE, by `route::auto_prior` when the next
-    // control is built.
-    SHARED.publish_abr_seed_readout(t.seed);
 }
 
 /// The common owner's diagnostic reason as the panel's code. A `match` rather than a cast makes
@@ -5476,7 +5470,9 @@ fn hls_demux(
             ));
         }
         let pin = crate::abr::abr_pin();
-        let coordinator = crate::adaptive::Coordinator::start(start, pin);
+        let coordinator = crate::adaptive::Coordinator::start(
+            start, pin, Box::new(adaptive::PlayerAdaptiveEffects),
+        );
         if info.original_refused && coordinator.has_recovery() {
             crate::player::log(
                 "abr: Original was refused on this HLS route; not asked again until the route changes",
@@ -5773,12 +5769,7 @@ fn hls_demux(
             direction: committed.direction, target_kbps: committed.target_kbps,
             refreshing: committed.refreshing, committed: Some(true),
         });
-        crate::player::report::note_hls_committed_for(
-            committed.trace_generation,
-            proposal.direction,
-            proposal.rung,
-            refreshing_same_request,
-        );
+        state.emit_committed(committed);
         // Promoted: from here this cursor IS the playback, so its playlist is the one that may
         // speak for the film's duration.
         assert!(physical.promote_candidate(), "published trial promotes its candidate cursor");
