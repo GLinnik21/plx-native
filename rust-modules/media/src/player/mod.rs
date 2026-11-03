@@ -2881,6 +2881,21 @@ pub fn every_failure_row() -> Vec<(FailureKind, FailureContext, Vec<FailureActio
 mod tests {
     use super::*;
 
+    #[test]
+    fn uri_failure_does_not_inherit_retired_feed_worker_flags() {
+        let _serial = plx_base::testlock::serial();
+        SHARED.reset_session();
+        let mut ps = crate::route::PlaybackSession::default();
+        ps.begin_attempt_view(crate::route::RouteStartAttempt::fixture(), attempt_view::Backend::Uri);
+        SHARED.load_failed.store(true, Relaxed);
+        SHARED.demux_no_video.store(true, Relaxed);
+        let cause = live_runtime_failure(&ps);
+        let shape = error_now(&ps).kind;
+        SHARED.reset_session();
+        assert_eq!(cause, RuntimeFailure::Unknown, "a URI attempt has no feed failure evidence");
+        assert_eq!(shape, FailureKind::Unspecified, "retired demux flags cannot diagnose URI media");
+    }
+
     /// The speeds a source can be offered: everything up to 2x for film, nothing above 1x for 60p
     /// (it would ask the decoder for more than 60 fps), and a Load plays only an offered speed.
     #[test]
