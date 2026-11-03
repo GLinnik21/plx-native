@@ -2058,7 +2058,7 @@ pub struct Transport {
 /// that a host test may pin it for its own thread (`pinned_pause_clock`) so a Pause->Resume
 /// cycle can be given an exact length instead of being slept through.
 fn pause_clock_now() -> Instant {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if let Some(pinned) = pinned_pause_clock::read() {
         return pinned;
     }
@@ -2067,8 +2067,8 @@ fn pause_clock_now() -> Instant {
 
 /// A per-thread virtual reading for `pause_clock_now`: time moves only when `advance` is called.
 /// Dropping the guard restores the real clock for the thread.
-#[cfg(test)]
-pub(crate) mod pinned_pause_clock {
+#[cfg(any(test, feature = "test-support"))]
+pub mod pinned_pause_clock {
     use std::cell::Cell;
     use std::time::{Duration, Instant};
 
@@ -2078,16 +2078,16 @@ pub(crate) mod pinned_pause_clock {
 
     pub(super) fn read() -> Option<Instant> { PINNED.with(Cell::get) }
 
-    pub(crate) struct Pinned;
+    pub struct Pinned;
 
     impl Pinned {
         /// Pin this thread's pause clock at the real time now.
-        pub(crate) fn now() -> Self {
+        pub fn now() -> Self {
             PINNED.with(|pinned| pinned.set(Some(Instant::now())));
             Pinned
         }
 
-        pub(crate) fn advance(&self, by: Duration) {
+        pub fn advance(&self, by: Duration) {
             PINNED.with(|pinned| pinned.set(pinned.get().map(|at| at + by)));
         }
     }

@@ -16,6 +16,7 @@ name = "plx_play_feed"
 crate-type = ["rlib"]
 
 [features]
+hostsim = []
 test-support = []
 
 [dependencies]
