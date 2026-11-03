@@ -1513,6 +1513,19 @@ fn inject_refuse601(ps: &crate::route::PlaybackSession, eng: &Engine) {
 }
 
 pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, now: u32) {
+    // Capture before a terminal release can clear the callback mailbox, then capture every
+    // surviving/replacement Engine after the frame, including its early-return paths. A callback
+    // or timeout raised during this tick must reach reports before the app observes Error.
+    if let Some(attempt) = pa.engine().map(|engine| engine.route_start) {
+        publish_attempt_view(ps, attempt);
+    }
+    pump_frame(ps, pa, now);
+    if let Some(attempt) = pa.engine().map(|engine| engine.route_start) {
+        publish_attempt_view(ps, attempt);
+    }
+}
+
+fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, now: u32) {
     use super::shared::PlaybackState;
     // A preroll closed by a path with no adapter in hand (`abandon_seek`) leaves its mute behind;
     // the one place every closer funnels through is the next tick.
@@ -1539,7 +1552,6 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     // maps its worker token to the current attempt and settles the route, after installation.
     pa.drain_load_outcomes(ps);
     if let Some(attempt) = pa.engine().map(|engine| engine.route_start) {
-        publish_attempt_view(ps, attempt);
         let snapshot = super::timeline::TimelineSnapshot::from_content_ns(
             SHARED.playpos_ns.load(Relaxed),
             SHARED.duration_ns.load(Relaxed),
