@@ -2897,13 +2897,18 @@ mod tests {
         SHARED.load_failed.store(true, Relaxed);
         SHARED.demux_no_video.store(true, Relaxed);
         SHARED.pb_state.store(PlaybackState::Error as u8, Relaxed);
+        SHARED.playpos_ns.store(123, Relaxed);
+        SHARED.duration_ns.store(456, Relaxed);
+        SHARED.seen_frame.store(true, Relaxed);
         let cause = live_runtime_failure(&ps);
         let shape = error_now(&ps).kind;
         let status = state(&ps);
+        let readout = (playpos_ns(&ps), duration_ns(&ps), seen_frame(&ps));
         SHARED.reset_session();
         assert_eq!(cause, RuntimeFailure::Unknown, "a URI attempt has no feed failure evidence");
         assert_eq!(shape, FailureKind::Unspecified, "retired demux flags cannot diagnose URI media");
         assert_eq!(status, PlaybackState::Connecting, "retired feed status cannot describe a new URI attempt");
+        assert_eq!(readout, (None, None, None), "retired feed clocks and frame callback cannot describe URI media");
     }
 
     /// The speeds a source can be offered: everything up to 2x for film, nothing above 1x for 60p
