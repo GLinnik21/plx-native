@@ -161,7 +161,7 @@ pub struct Engine {
     pub stream_th: Option<std::thread::JoinHandle<()>>,
     pub load_th: Option<std::thread::JoinHandle<()>>,
     /// Attempt-scoped common reader IO; its stop runs before the paired demux join.
-    pub side_reader: Box<dyn plx_play_feed::side_reader::SideReaderPort>,
+    pub side_reader: Box<dyn crate::side_reader::SideReaderPort>,
     /// Preview Load that must land unbound. The media join waits until the thread has returned.
     pub preview_abandon: bool,
     /// The foreground lifecycle follows this Engine's Load attempt (`foreground_follows_load`).
@@ -202,4 +202,44 @@ impl Drop for Engine {
 #[cfg(any(test, feature = "test-support"))]
 pub fn engines_dropped_for_test() -> usize {
     ENGINES_DROPPED.load(Ordering::SeqCst)
+}
+
+pub struct AbandonedLoad {
+    pub epoch: u32,
+    pub load_th: std::thread::JoinHandle<()>,
+    /// The Load payload `sf_load` was handed as a raw pointer. Must outlive the thread.
+    pub _payload: std::ffi::CString,
+    pub abandoned_at: std::time::Instant,
+}
+
+pub struct PendingRelease {
+    pub epoch: u32,
+    /// Taken by the join ([`join_finished_release`]); `None` afterwards.
+    pub unload_th: Option<std::thread::JoinHandle<()>>,
+    pub handed_off_at: std::time::Instant,
+    /// The Engine the object belonged to. It used to drop at the end of `teardown`, after the
+    /// release; it still drops after it (the Load payload in particular outlives the Unload).
+    pub _engine: Engine,
+}
+
+impl PendingRelease {
+    pub fn epoch(&self) -> u32 {
+        self.epoch
+    }
+
+    pub fn handed_off_at(&self) -> std::time::Instant {
+        self.handed_off_at
+    }
+
+    /// The `Unload` has returned, so joining its worker cannot block.
+    pub fn is_finished(&self) -> bool {
+        self.unload_th.as_ref().is_none_or(|t| t.is_finished())
+    }
+
+    /// The release machine has observed this worker return; joining it cannot block the frame.
+    pub fn join_returned_worker(&mut self) {
+        if let Some(thread) = self.unload_th.take() {
+            plx_base::task::join("sf-unload", thread);
+        }
+    }
 }

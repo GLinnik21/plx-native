@@ -288,7 +288,11 @@ impl PlayerAdapter {
     }
 
     pub(super) fn feed_uses_stream_queues(&self) -> bool { self.feed.uses_stream_queues() }
-    pub(super) fn arm_feed_live_clock_prime(&mut self) -> bool { self.feed.arm_live_clock_prime() }
+    pub(super) fn arm_feed_live_clock_prime(&mut self) -> bool {
+        let Some(engine) = self.feed.engine() else { return false; };
+        super::engine::arm_live_clock_prime(engine);
+        true
+    }
     pub(super) fn feed_stage(&self) -> Option<super::shared::Stage> { self.feed.stage() }
     pub(super) fn feed_load_thread_finished(&self) -> bool { self.feed.load_thread_finished() }
 
