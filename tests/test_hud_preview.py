@@ -1,10 +1,15 @@
 """Coverage of the HUD matrix generated from the compiler's reachable states."""
 import importlib.util
+import hashlib
+import json
+import os
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -70,6 +75,71 @@ class Matrix(unittest.TestCase):
             preview.fixture(spec,hud)(SimpleNamespace(lib=SimpleNamespace(items={102:movie})),root)
         self.assertEqual(movie["Chapter"][0]["tag"],preview.LONG_TITLES["de"])
         self.assertNotIn("title",movie["Chapter"][0])
+
+    def test_directory_is_packed_once_and_capture_is_bound_to_the_frozen_archive(self):
+        archive = b"canonical archive fixture"
+        digest = hashlib.sha256(archive).hexdigest()
+        native_info = {"protocol": 1, "supported_formats": [{"package": "1.0", "hud": "1.0"}],
+                       "limits": {"package": {"1.0": {"artifact_bytes": 2097152}}}}
+        compiled = {**inspection(), "protocol": 1, "package_sha256": digest,
+                    "manifest": {"package_format": "1.0", "hud": {"format": "1.0", "entry": "hud.json"}}}
+        packed = []
+        def native(command, **kwargs):
+            if command[1] == "--hud-info":
+                value = native_info
+            elif command[1] == "--hud-pack":
+                packed.append(command)
+                Path(command[command.index("--out")+1]).write_bytes(archive)
+                value = {"protocol": 1, "package_sha256": digest, "bytes": len(archive),
+                         "manifest": compiled["manifest"], "findings": []}
+            else:
+                self.assertEqual(command[1], "--hud-inspect")
+                self.assertEqual(Path(command[2]).read_bytes(), archive)
+                value = compiled
+            return subprocess.CompletedProcess(command, 0, json.dumps(value), "")
+        def capture(binary, scene, defaults, movie, refresh, **kwargs):
+            # Editing source after snapshot creation cannot change either captured package or SHA.
+            (source / "hud.json").write_text('{"changed_after_pack":true}')
+            (kwargs["prepare"])(SimpleNamespace(lib=SimpleNamespace(items={102:{"Media":[{"Part":[{"id":1020}]}]}})), runtime)
+            self.assertEqual((runtime / "preview.plxhud").read_bytes(), archive)
+            return b"png fixture", "synthetic fixture log"
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);source=root/"source";source.mkdir();(source/"hud.json").write_text("{}")
+            runtime=root/"runtime";runtime.mkdir()
+            # The subprocess interface is intentionally real-shaped; no second Python packer exists.
+            with patch.object(preview.subprocess, "run", side_effect=native), patch.object(preview.screenshots, "capture", side_effect=capture):
+                result=preview.run(Path("/fixture/bin"),source,root/"previews",["frame-bright", "frame-dark"])
+        self.assertEqual(len(packed),1)
+        self.assertEqual(result["package_sha256"],digest)
+
+    def test_cli_rejects_a_symlink_input_before_packing_or_inspecting(self):
+        info = {"protocol": 1, "supported_formats": [{"package": "1.0", "hud": "1.0"}],
+                "limits": {"package": {"1.0": {"artifact_bytes": 2097152}}}}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            linked = root / "linked"
+            linked.symlink_to(source, target_is_directory=True)
+            for mode in ([], ["--plan"]):
+                with self.subTest(mode=mode), patch.object(sys, "argv", ["hud_preview.py", "--bin", "/native", "--hud", str(linked), "--out", str(root / "out"), *mode]):
+                    with patch("hud_package.native_json", return_value=info) as native:
+                        with self.assertRaisesRegex(ValueError, "symlink"):
+                            preview.main()
+                        self.assertEqual(native.call_count, 1)
+                        self.assertEqual(native.call_args.args[1], "--hud-info")
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "requires a POSIX FIFO")
+    def test_special_archive_input_is_rejected_without_opening_it(self):
+        info = {"protocol": 1, "supported_formats": [{"package": "1.0", "hud": "1.0"}],
+                "limits": {"package": {"1.0": {"artifact_bytes": 2097152}}}}
+        with tempfile.TemporaryDirectory() as temporary:
+            fifo = Path(temporary) / "blocked.plxhud"
+            os.mkfifo(fifo)
+            with patch("hud_package.native_json", return_value=info), patch.object(Path, "open", side_effect=AssertionError("special input was opened")):
+                with self.assertRaisesRegex(ValueError, "regular file"):
+                    with preview.snapshot(Path("/native"), fifo):
+                        self.fail("special input admitted")
 
     def test_a_new_shipped_language_requires_a_long_title_sample(self):
         value = inspection()

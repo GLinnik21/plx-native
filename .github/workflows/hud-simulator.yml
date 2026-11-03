@@ -7,6 +7,15 @@ on:
       - 'tools/hud_*.py'
       - 'tools/screenshots.py'
       - 'rust-modules/src/hud_*.rs'
+      - 'rust-modules/appkit/src/hud_format*'
+      - 'rust-modules/appkit/src/hud_format/**'
+      - 'rust-modules/appkit/src/player_hud*'
+      - 'rust-modules/appkit/src/player_hud/**'
+      - 'rust-modules/ui/src/rec/strict_json.rs'
+      - 'rust-modules/appkit/Cargo.toml'
+      - 'rust-modules/Cargo.lock'
+      - 'site/hud/**'
+      - 'tests/test_hud_*.py'
       - 'rust-modules/src/dev/framedump.rs'
   workflow_dispatch:
     inputs:
@@ -70,7 +79,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/relocated simulator"
           tar -xzf out/plxnative-hud-simulator-linux-x86_64.tar.gz -C "$RUNNER_TEMP/relocated simulator"
           "$RUNNER_TEMP/relocated simulator/bin/plxnative-sim" --hud-info
-          "$RUNNER_TEMP/relocated simulator/bin/plxnative-sim" --hud-lint "$RUNNER_TEMP/relocated simulator/corpus/reference.plxhud.json" --lang all --format json > out/reference-lint.json
+          "$RUNNER_TEMP/relocated simulator/bin/plxnative-sim" --hud-lint "$RUNNER_TEMP/relocated simulator/corpus/canonical.plxhud" --lang all --format json > out/reference-lint.json
       - name: Save simulator and measurement evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
