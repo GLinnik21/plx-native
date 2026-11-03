@@ -4,7 +4,6 @@
 //! start/stop cycle and is *reset*, never freed. Native callbacks carry the exact `Load` epoch:
 //! retirement drains an event already inside that epoch and rejects every later event, so stable
 //! storage is not mistaken for permission to mutate the next playback.
-use plx_playback_contract::tracks::TrackNames;
 use plx_net::stream::HttpStream;
 use crate::native_gate::NativeGate;
 pub use crate::native_gate::{EventScope, NativeEventClass};
@@ -433,22 +432,6 @@ pub struct Shared {
     /// after Nms" log, exactly when it observes the deferral epoch marker above matching its own.
     pub native_load_elapsed_ms: AtomicU64,
 
-    // client-rendered subtitles: selected track index (-1 = off) + the demuxed cues.
-    // demux (D) pushes cues; main (M) reads the active one for the current playpos.
-    pub desired_sub_idx: AtomicI32,
-    /// **The container's own per-track names, which PMS does not always send** (D -> M).
-    ///
-    /// `audio` and `subs`, each in FILE order, so position N is the N-th audio / subtitle stream of
-    /// the part — the ordinal `metadata::audio_ordinal` and `metadata::sub_render_ordinal`
-    /// already resolve a track-menu row to. Empty strings for a file that tags nothing, and an
-    /// empty Vec until a demuxer has opened.
-    ///
-    /// It exists because for an **MP4** part PMS sends no `Stream.title` at all, though the file
-    /// names every track (`"Полные Jaskier"`, `"Форс. iTunes"`). See `ff::stream_name`. So the
-    /// picker's rows are the only place this reaches, and only on DIRECT PLAY: a transcode is a
-    /// remux the server built, and its tags are whatever the server put there.
-    pub track_names: Mutex<TrackNames>,
-
     /// The main demuxer's FIRST video keyframe of this engine run (stream time + a payload
     /// fingerprint), published once for the side subtitle reader's clock mapping and cleared when
     /// the demuxer starts. `None` until that packet is read.
@@ -755,13 +738,6 @@ impl Shared {
         self.demux_failed.store(true, Ordering::Release);
     }
 
-    /// The container's track names ([`Shared::track_names`]) for a READER on the main thread. A
-    /// panicked writer cannot leave the names half-built (they are replaced whole), so a poisoned
-    /// lock still holds a usable value and the reader takes it rather than panic.
-    pub fn track_names_lenient(&self) -> std::sync::MutexGuard<'_, TrackNames> {
-        self.track_names.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
     pub const fn new() -> Self {
         Shared {
             native_session: NativeGate::new(),
@@ -854,8 +830,6 @@ impl Shared {
             native_audio_refused: AtomicBool::new(false),
             native_load_deferred_logged_epoch: AtomicU32::new(0),
             native_load_elapsed_ms: AtomicU64::new(0),
-            desired_sub_idx: AtomicI32::new(-1),
-            track_names: Mutex::new(TrackNames::new()),
             file_size: AtomicI64::new(0),
             video_w: AtomicI32::new(0),
             video_h: AtomicI32::new(0),
@@ -1203,11 +1177,6 @@ impl Shared {
         self.load_timed_out.store(false, Ordering::Relaxed);
         self.decoder_revoked.store(false, Ordering::Relaxed);
         self.native_audio_refused.store(false, Ordering::Relaxed);
-        // Cleared with them, and for the same reason: they describe the FILE the last demuxer had
-        // open. A reload-based seek re-opens the same part and re-publishes the same names, but a
-        // session that ends with a transcode reload would otherwise leave the direct-play file's
-        // names sitting under the server's own track list.
-        *self.track_names.lock().unwrap() = TrackNames::new();
         self.file_size.store(0, Ordering::Relaxed);
         self.video_w.store(0, Ordering::Relaxed);
         self.video_h.store(0, Ordering::Relaxed);

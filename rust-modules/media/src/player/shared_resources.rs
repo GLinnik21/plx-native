@@ -2,11 +2,25 @@
 //! The existing process-lifetime owner stays singular; a feed executor receives only `feed`.
 #[cfg(feature = "play-feed")]
 use std::ops::Deref;
-use std::sync::{atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering}, Mutex};
+use std::sync::{atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering}, Mutex};
 
 pub struct Shared {
     #[cfg(feature = "play-feed")]
     pub feed: plx_play_feed::shared::PhysicalShared,
+    /// Selected client-rendered subtitle track; -1 disables the common overlay.
+    pub desired_sub_idx: AtomicI32,
+    /// **The container's own per-track names, which PMS does not always send** (D -> M).
+    ///
+    /// `audio` and `subs`, each in FILE order, so position N is the N-th audio / subtitle stream of
+    /// the part — the ordinal `metadata::audio_ordinal` and `metadata::sub_render_ordinal`
+    /// already resolve a track-menu row to. Empty strings for a file that tags nothing, and an
+    /// empty Vec until a demuxer has opened.
+    ///
+    /// It exists because for an **MP4** part PMS sends no `Stream.title` at all, though the file
+    /// names every track (`"Полные Jaskier"`, `"Форс. iTunes"`). See `ff::stream_name`. So the
+    /// picker's rows are the only place this reaches, and only on DIRECT PLAY: a transcode is a
+    /// remux the server built, and its tags are whatever the server put there.
+    pub track_names: Mutex<plx_playback_contract::tracks::TrackNames>,
     pub ass_sources: Mutex<super::ass_source::Store>,
     pub ass_renderer: super::ass::Runtime,
     pub sub_bitmaps: Mutex<Vec<super::subtitle_bitmap::SubBitmap>>,
@@ -20,11 +34,18 @@ impl Shared {
         Self {
             #[cfg(feature = "play-feed")]
             feed: plx_play_feed::shared::PhysicalShared::new(),
+            desired_sub_idx: AtomicI32::new(-1),
+            track_names: Mutex::new(plx_playback_contract::tracks::TrackNames::new()),
             ass_sources: Mutex::new(super::ass_source::Store::new()),
             ass_renderer: super::ass::Runtime::new(),
             sub_bitmaps: Mutex::new(Vec::new()),
             bitmap_generation: AtomicU64::new(0),
         }
+    }
+
+    /// Container names are common presentation facts, independent of the executor.
+    pub fn track_names_lenient(&self) -> std::sync::MutexGuard<'_, plx_playback_contract::tracks::TrackNames> {
+        self.track_names.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Map common report classification to the physical first-wins diagnostic latch.
@@ -58,6 +79,7 @@ impl Shared {
     }
 
     fn reset_captions(&self, for_reload: bool) {
+        *self.track_names.lock().unwrap_or_else(|e| e.into_inner()) = plx_playback_contract::tracks::TrackNames::new();
         let mut sources = self.ass_sources.lock().unwrap_or_else(|e| e.into_inner());
         if for_reload { sources.retain_for_reload(); } else { sources.reset(); }
         drop(sources);
