@@ -125,9 +125,11 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
         let _ = self.pa.planned_start_backend(ps);
         match clock {
             ForegroundClock::Paused => {
+                // Retain the foreground restore target in the app for the whole attempt;
+                // only Feed needs the native one-frame seek preroll below.
+                *self.repause_at = _resume_ns;
                 #[cfg(feature = "play-feed")]
                 if feed_load {
-                    *self.repause_at = _resume_ns;
                     set_resume_pend(true);
                     // The common runner's paused viewer goal survives the park in `clock`, but
                     // a never-started native Load may have accepted no physical Pause. Prepare
