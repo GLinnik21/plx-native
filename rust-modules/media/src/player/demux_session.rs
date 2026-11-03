@@ -327,6 +327,54 @@ fn demux_exit_class(fault: DemuxFault) -> DemuxExitClass {
 mod tests {
     use super::*;
 
+    struct ResetSession;
+    impl Drop for ResetSession {
+        fn drop(&mut self) { SHARED.reset_session(); }
+    }
+
+    #[test]
+    fn retired_demux_cannot_consume_successors_seek() {
+        let _serial = plx_base::testlock::serial();
+        let _reset = ResetSession;
+        SHARED.reset_session();
+        let first_epoch = SHARED.begin_native_session().expect("first native epoch");
+        let first = PlayerDemuxSession::capture(AttemptId::new(5, 1), first_epoch);
+        SHARED.reset_session();
+        let next_epoch = SHARED.begin_native_session().expect("successor native epoch");
+        let next = PlayerDemuxSession::capture(AttemptId::new(5, 2), next_epoch);
+        SHARED.seek_to_ns.store(222_000_000, Ordering::Release);
+        assert_eq!(first.clock().take_seek_ns(), None, "retired worker consumed next seek");
+        assert_eq!(next.clock().take_seek_ns(), Some(222_000_000));
+    }
+
+    #[test]
+    fn retired_demux_cannot_claim_successors_adaptive_clock() {
+        let _serial = plx_base::testlock::serial();
+        let _reset = ResetSession;
+        SHARED.reset_session();
+        let first_epoch = SHARED.begin_native_session().expect("first native epoch");
+        let mut first = PlayerDemuxSession::capture(AttemptId::new(6, 1), first_epoch);
+        let old = first.adaptive().begin(
+            AutomaticTransition::QualityDown, SHARED.hls_user_sequence(),
+        ).expect("first actuator lease");
+        SHARED.reset_session();
+        let next_epoch = SHARED.begin_native_session().expect("successor native epoch");
+        let mut next = PlayerDemuxSession::capture(AttemptId::new(6, 2), next_epoch);
+        let current = next.adaptive().begin(
+            AutomaticTransition::QualityDown, SHARED.hls_user_sequence(),
+        ).expect("successor actuator lease");
+        drop(old);
+        assert!(next.adaptive().authorize(current.token()), "retired Drop cleared successor lease");
+        drop(current);
+        let sequence = SHARED.hls_user_sequence();
+        assert!(first.adaptive().begin(AutomaticTransition::QualityDown, sequence).is_none());
+        assert!(first.adaptive().arm_trial(1_000, sequence).is_none());
+        let current = next.adaptive().begin(AutomaticTransition::QualityDown, sequence)
+            .expect("successor still owns clock");
+        assert!(matches!(first.adaptive().arm_candidate(current.token()), Err(PhysicalFailure::Aborted)));
+        drop(current);
+    }
+
     #[test]
     fn retired_open_cannot_publish_into_next_sessions_diagnostics() {
         let _serial = plx_base::testlock::serial();
