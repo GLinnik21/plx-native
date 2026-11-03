@@ -5247,12 +5247,12 @@ fn reject_hls_abr_after_transaction(
 /// HTTP and session failures are circumstances; replaying them may be undesirable operationally,
 /// but a larger reserve does not logically validate or invalidate the actuator.
 fn abr_reject_for_hls_exit(exit: HlsExit) -> crate::abr::RejectCause {
-    match exit {
-        HlsExit::PrimeExpired | HlsExit::StallAbort(_) => crate::abr::RejectCause::Censored,
-        HlsExit::Aborted | HlsExit::NotReady | HlsExit::Failed(_) => {
-            crate::abr::RejectCause::Circumstance
-        }
-    }
+    let failure = match exit {
+        HlsExit::PrimeExpired | HlsExit::StallAbort(_) => adaptive::AcquisitionFailure::Deadline,
+        HlsExit::Aborted | HlsExit::NotReady | HlsExit::Failed(_) =>
+            adaptive::AcquisitionFailure::Other,
+    };
+    adaptive::reject_cause_for_acquisition(failure)
 }
 
 /// **One shared reducer for a `StallAbort` returned against the ACTIVE cursor.** The ordinary
@@ -6120,33 +6120,11 @@ fn hls_demux(
                 // other three a full `E_tx` refill debt (up to ~4x `E_tx` of blocked climbing) for
                 // an encoder that moved underneath, a missing client or an unresolved
                 // control-plane result. None is ordinal evidence about the requested rung.
-                let (cause, why) = match refusal {
-                    adaptive::PrimeFailure::Rung => {
-                        (crate::abr::RejectCause::Structural, "prime_refused")
-                    }
-                    adaptive::PrimeFailure::Deadline
-                        if !exploration_timeout_is_final(
-                            &mut exploration_reserve,
-                            prime_deadline,
-                        ) =>
-                    {
-                        // A decision request is not safe to replay blindly: PMS may have
-                        // registered it before the old snapshot fired. `prime` has already
-                        // queued exact cleanup, so retire this attempt without teaching the
-                        // frontier that the rung exhausted a reserve the playhead did not
-                        // spend. Resume can propose it again from fresh completed evidence.
-                        (crate::abr::RejectCause::Circumstance, "control_clock_moved")
-                    }
-                    adaptive::PrimeFailure::Deadline => {
-                        (crate::abr::RejectCause::Censored, "control_deadline")
-                    }
-                    adaptive::PrimeFailure::Control => {
-                        (crate::abr::RejectCause::Circumstance, "control_unresolved")
-                    }
-                    adaptive::PrimeFailure::Session => {
-                        (crate::abr::RejectCause::Circumstance, "prime_session_moved")
-                    }
-                };
+                // A stale snapshot after Pause or hold is not a spent candidate reserve.
+                // The physical clock supplies that fact; policy classifies the refusal.
+                let deadline_final = !matches!(refusal, adaptive::PrimeFailure::Deadline)
+                    || exploration_timeout_is_final(&mut exploration_reserve, prime_deadline);
+                let (cause, why) = adaptive::classify_prime_failure(refusal, deadline_final);
                 reject_hls_abr_after_transaction(state, proposal, cause, &mut tx, now_ms());
                 tx.finish(why);
                 crate::player::log("abr: candidate registration rejected; staying on current rung");

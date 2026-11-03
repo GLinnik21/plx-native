@@ -19,6 +19,24 @@ fn an_expired_candidate_is_a_common_censored_budget_not_an_ordinal_rung_failure(
 }
 
 #[test]
+fn a_control_deadline_after_clock_motion_is_not_candidate_capacity_evidence() {
+    use crate::adaptive::{classify_prime_failure, PrimeFailure};
+    assert_eq!(
+        classify_prime_failure(PrimeFailure::Deadline, false),
+        (crate::abr::RejectCause::Circumstance, "control_clock_moved"),
+    );
+    assert_eq!(
+        classify_prime_failure(PrimeFailure::Deadline, true),
+        (crate::abr::RejectCause::Censored, "control_deadline"),
+    );
+    assert_eq!(
+        classify_prime_failure(PrimeFailure::Rung, true).0,
+        crate::abr::RejectCause::Structural,
+        "only the PMS rung refusal gives ordinal evidence",
+    );
+}
+
+#[test]
 fn a_completed_underfilled_response_is_common_evidence_not_a_structural_rung_failure() {
     assert_eq!(
         crate::adaptive::abr_reject_for_candidate_result(true, false, crate::abr::CandidateVerdict::Ready,),

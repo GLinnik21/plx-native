@@ -132,6 +132,28 @@ impl OriginalCoordinator {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PrimeFailure { Rung, Deadline, Control, Session }
 
+pub(crate) fn classify_prime_failure(
+    failure: PrimeFailure, deadline_final: bool,
+) -> (abr::RejectCause, &'static str) {
+    match failure {
+        PrimeFailure::Rung => (abr::RejectCause::Structural, "prime_refused"),
+        PrimeFailure::Deadline if !deadline_final =>
+            (abr::RejectCause::Circumstance, "control_clock_moved"),
+        PrimeFailure::Deadline => (abr::RejectCause::Censored, "control_deadline"),
+        PrimeFailure::Control => (abr::RejectCause::Circumstance, "control_unresolved"),
+        PrimeFailure::Session => (abr::RejectCause::Circumstance, "prime_session_moved"),
+    }
+}
+
+pub(crate) enum AcquisitionFailure { Deadline, Other }
+
+pub(crate) fn reject_cause_for_acquisition(failure: AcquisitionFailure) -> abr::RejectCause {
+    match failure {
+        AcquisitionFailure::Deadline => abr::RejectCause::Censored,
+        AcquisitionFailure::Other => abr::RejectCause::Circumstance,
+    }
+}
+
 /// The feed's existing abort mutex is the first serialization boundary. Its
 /// implementation must run the callback while holding that mutex and do no IO.
 pub(crate) trait PublicationPort {
