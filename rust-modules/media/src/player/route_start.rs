@@ -34,6 +34,17 @@ pub fn start_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut super::
     ps.jail_load_blocked || outcome.accepted()
 }
 
+/// Start the qualified route through the common attempt owner, regardless of physical backend.
+pub fn start_playback(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAdapter) -> bool {
+    start_bufferfeed(ps, pa)
+}
+
+/// Preserve the exact physical attempt for foreground and release correlation.
+pub fn start_playback_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAdapter)
+    -> BufferfeedStartOutcome {
+    start_bufferfeed_tracked(ps, pa)
+}
+
 /// Start the native Engine while retaining the identity of the exact asynchronous `sf_load`.
 /// Foreground recovery uses this to wait for the media-thread result instead of treating thread
 /// creation as proof that the television accepted the payload.
