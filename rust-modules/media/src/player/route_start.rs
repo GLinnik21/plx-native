@@ -235,10 +235,7 @@ pub(super) fn start_bufferfeed_inner(
     // the original Load path. A refusal here remains a Prepared transaction until the caller
     // aborts it; a later supersession drops both guards without launching a worker.
     let session_rate = if stream { super::session_rate_for(ps) } else { super::RATE_NORMAL };
-    let trace_generation = open.as_ref().map_or_else(
-        crate::route::playback_trace_generation,
-        |request| request.trace_generation,
-    );
+    let trace_generation = crate::route::playback_trace_generation();
     let prepared_native = engine::prepare_native_open(pa.mt(), open, sample, is_h265, session_rate)
         .map_err(|_| crate::route::RouteStartResult::StartFailed)?;
     // The route reducer alone mints the physical attempt. The native constructor consumes this
