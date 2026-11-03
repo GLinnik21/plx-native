@@ -18,8 +18,8 @@
 //! construction** ([`PlayerAdapter::new`] takes it by value, and `plex_run` is the only place that
 //! can mint one), so holding a `&mut PlayerAdapter` IS the proof the old argument stood in for —
 //! and it is a proof the borrow checker keeps rather than one a caller could satisfy twice. Two
-//! live `&mut` to the engine no longer requires a convention: it does not compile. The current
-//! `engine()`/`split()` accessors remain an intermediate bridge for the existing feed pump.
+//! live `&mut` to the engine no longer requires a convention: it does not compile. The native
+//! feed owns that borrow; common callers receive addressed facts or coarse physical actions.
 //!
 //! The rest of `player/engine.rs` keeps its `mt: &MainThread` parameters unchanged. They gate a
 //! DIFFERENT thing — the ACB/Starfish seam (`tv::sink::VideoSink`'s methods, whose bind order is a
@@ -530,14 +530,8 @@ impl PlayerAdapter {
         &self.mt
     }
 
-    /// The session AND the token at once, borrowed from disjoint fields.
-    ///
-    /// `pump` needs both for the whole of its body — it reads the live `Engine` and issues
-    /// `sf_pause`/`sf_flush` against the same session — and two separate accessor calls cannot
-    /// give it that, `engine()` taking `&mut self` and [`mt`](Self::mt) `&self`. One `&mut self`
-    /// split into two field borrows can, and the borrow checker still refuses to let either
-    /// outlive a `reload_*` that replaces the slot: that is the `eng` dangles rule of `pump`,
-    /// which was a COMMENT for as long as the slot handed out `&'static mut`.
+    /// Hostsim fixture access to the session and main-thread token together. Production common
+    /// code uses the feed's typed actions and does not borrow the Engine.
     #[inline]
     #[cfg(test)]
     pub fn split(&mut self) -> (Option<&mut Engine>, &MainThread) {
