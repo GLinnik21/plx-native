@@ -305,6 +305,12 @@ impl PlayerAdapter {
         super::feed_pump::apply_inplace_seek_post(&mut self.feed, target_ns, now);
     }
 
+    pub(super) fn tick_feed_load(&mut self, now: u32, segmented_hls: bool,
+        budget: std::time::Duration, speed_deadline_ms: u32) -> super::feed_pump::LoadTick {
+        super::feed_pump::tick_load(&mut self.feed, &self.mt, now,
+            segmented_hls, budget, speed_deadline_ms)
+    }
+
     /// Is a session live? Distinct from [`engine`](Self::engine) because it answers without taking
     /// the exclusive borrow — `start_bufferfeed`'s double-start guard only needs to ask.
     #[inline]

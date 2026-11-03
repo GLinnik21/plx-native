@@ -84,9 +84,8 @@ fn take_coalesced() -> u32 {
     TX.seek_reqs.swap(0, Relaxed).saturating_sub(1)
 }
 
-fn prime_before_play(rebase_pending: bool, segmented_hls: bool) -> bool {
-    rebase_pending || segmented_hls
-}
+#[cfg(test)]
+use super::feed_pump::prime_before_play;
 
 /// Playable HLS reserve in the same content-time coordinates as the demux controller. The main
 /// thread needs this read for the exact depleted-buffer fallback and for rebuffer diagnostics;
@@ -1837,167 +1836,22 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         pa.apply_inplace_seek_post(t, now);
     }
 
-    // Common route seek decisions are complete. The rest of this tick borrows the physical feed
-    // for native Load, ACB, feeding and EOS; any replacement below returns at once.
+    let load = pa.tick_feed_load(now, crate::route::is_segmented_hls(ps),
+        NATIVE_LOAD_BUDGET, SPEED_AUDIO_DEADLINE_MS);
+    if let Some(timeout) = load.timeout {
+        let class = match timeout {
+            super::feed_pump::LoadTimeout::Elapsed(elapsed) =>
+                super::report::LoadElapsedClass::from_ms(elapsed.as_millis() as i64),
+            super::feed_pump::LoadTimeout::LostEpoch => super::report::LoadElapsedClass::Over20s,
+        };
+        super::report::note_load_gate_for(crate::route::playback_trace_generation(), class);
+    }
+    if let Some(reason) = load.speed_fallback { super::fall_back_from_speed(ps, reason); }
+
+    // Load and speed policy are settled. Borrow the physical feed for ACB, feeding and EOS.
     let (eng, mt) = pa.split();
     let eng = eng.expect("live adapter checked before splitting it");
     let stream = matches!(eng.source, Source::Stream);
-    // ---------- load -> Play (decode fed frames as soon as loaded) ----------
-    // issue #74 D.1: the gate below requires `SHARED.native_load_returned(eng.native_epoch)`
-    // BEFORE this arm may even poll `sf_is_load_completed` — that poll is itself a concurrent
-    // Starfish call, and on v0.6.0 it was the FIRST thing this arm did while `sf_load` was still
-    // executing (synchronously) on the load thread. See `src/starfish.c`'s `g_load_returned` for
-    // the matching seam-side half; `threads::load_thread` flips the Rust side right after the
-    // real, blocking `sf_load` call returns. Gated on `!eng.preview_abandon` too, same as the
-    // completion arm below: an abandoned trailer-preview Load must not drive any of this — no
-    // deferral logging, no budget clock, nothing that reacts to it as if it were live. That is
-    // why the guard is checked BEFORE `native_load_gate_ready` is even called: the helper is
-    // where the deferral logging and D.1.4 budget/telemetry actually live (see its own doc).
-    if eng.stage == Stage::Loading
-        && !eng.preview_abandon
-        && native_load_gate_ready(eng.native_epoch)
-        && (SHARED.load_completed.load(Relaxed) || unsafe { super::sink().is_load_completed(mt) } != 0)
-    {
-        // "native: Load returned after Nms" is logged unconditionally at the gate transition
-        // itself (`threads::load_thread`, right where `mark_native_load_returned` flips it), not
-        // here — see `load-returned-log-is-conditional-on-loadcompleted-and-unbounded-after`. It
-        // used to live in this arm, which meant it only ever appeared paired with the deferral
-        // line above, and never at all on the path this fix is most likely to be read on: Load
-        // eventually returns but `loadCompleted` goes quiet, so this arm never runs.
-        SHARED.load_completed.store(true, Relaxed);
-        // when it completed, so the panel can say how long we have been waiting for a frame since
-        SHARED.dg_load_at.store(now, Relaxed);
-        super::log("SMP loadCompleted");
-        eng.stage = Stage::Playing;
-        // webOS 5+: place the exported window HERE, the instant Load reports success — which is
-        // exactly where ss4s does it (smp_player.c calls StarfishResourcePostLoad synchronously
-        // on the line after StarfishMediaAPIs_load returns true).
-        //
-        // It used to wait for `frames >= 2`, copied from the ACB block below, and that is a
-        // DEADLOCK on this path: the pipeline does not emit frames until its sink is bound, and
-        // the sink is not placed until frames arrive. The symptom is a player stuck in buffering
-        // forever, which is what webOS 6 and 10 reported. The gate is right for ACB and only for
-        // ACB — `setMediaVideoData` there needs the sourceInfo envelope, which cannot exist until
-        // the pipeline has produced something. The exported window has no such dependency: the
-        // BINDING already happened via `option.windowId` in the Load payload, and this call is
-        // pure geometry.
-        super::feed_pump::place_exported(mt, eng);
-        if super::sink().window_mode() == super::VP_EXPORTED {
-            // Playing -> Streaming directly: there is no bind sequence to sit in the middle of.
-            // The transition is load-bearing beyond bookkeeping — `pushEOS` is gated on
-            // `>= Streaming`, so without it the last frames never drain and Up Next never fires.
-            eng.stage = Stage::Streaming;
-        }
-        // A fresh Load for a seek/resume primes before Play so the clock does not free-run through
-        // the demux reopen gap. Segmented HLS needs the same gate even at offset zero: its video
-        // and AAC arrive through independent queues, and starting Starfish's audio-master clock
-        // before AAC is present produced silent initial playback that recovered only after a seek
-        // (the seek path already primed both lanes). Progressive initial play keeps its proven
-        // immediate-start behavior.
-        if prime_before_play(eng.rebase_pending, crate::route::is_segmented_hls(ps)) {
-            eng.prime_play = true;
-            super::log("SMP loadCompleted (priming before Play)");
-        } else {
-            let generation = SHARED.hls_candidate_generation.load(Acquire);
-            let recovery = SHARED.hls_recovery();
-            if let Some((token, _)) =
-                SHARED.reserve_hls_prime_play(HlsPrimeKind::Fresh, generation, recovery)
-            {
-                let accepted = unsafe { super::sink().play(mt) } != 0;
-                match SHARED.complete_hls_prime_play(token, accepted) {
-                    super::shared::HlsPlayCompletion::Accepted { resume_acb } => {
-                        if resume_acb {
-                            super::acb_mirror_playstate_at(mt, eng.stage, true);
-                        }
-                        super::log("SMP Play");
-                    }
-                    super::shared::HlsPlayCompletion::Refused => {
-                        eng.prime_play = true;
-                        super::log("SMP Play refused; priming for retry");
-                    }
-                    super::shared::HlsPlayCompletion::Stale => {
-                        eng.prime_play = true;
-                        super::log("SMP Play result stale; priming for retry");
-                    }
-                }
-            } else {
-                eng.prime_play = true;
-                super::log("SMP Play fenced; priming before retry");
-            }
-        }
-    } else if eng.stage == Stage::Loading
-        && !eng.preview_abandon
-        && SHARED.native_load_returned(eng.native_epoch)
-    {
-        // Load HAS returned here (the first arm's `native_load_gate_ready` failed) and
-        // `loadCompleted` has NOT arrived (the previous arm's condition also failed) — the other
-        // half of issue #74 D.1's budget, and the one `load-returned-log-is-conditional-on-
-        // loadcompleted-and-unbounded-after` found unbounded: on v0.6.0 and unchanged until now,
-        // a Load that returns ok=1 and then never signals `loadCompleted` left the player parked
-        // in Connecting forever, with no counterpart to the D.1.4 timeout above. Gated on
-        // `!eng.preview_abandon` too: an abandoned trailer-preview Load has nobody watching a
-        // failure read-out for, and must not publish `load_failed`/`load_timed_out` either.
-        // Budget it from
-        // the moment Load RETURNED, not from when it was ISSUED — `native_load_elapsed` (used
-        // above) never resets, so a Load that used most of its own budget getting here would
-        // otherwise leave this second wait almost none of its own.
-        match SHARED.native_load_returned_elapsed(eng.native_epoch) {
-            Some(elapsed) if elapsed >= NATIVE_LOAD_BUDGET => {
-                super::log(&format!(
-                    "native: loadCompleted did not arrive within {}s after Load returned — \
-                     publishing load_failed",
-                    NATIVE_LOAD_BUDGET.as_secs()
-                ));
-                SHARED.load_failed.store(true, Release);
-                SHARED.load_timed_out.store(true, Release);
-                super::report::note_load_gate_for(
-                    crate::route::playback_trace_generation(),
-                    super::report::LoadElapsedClass::from_ms(elapsed.as_millis() as i64),
-                );
-            }
-            Some(_) => {}
-            // Same rationale as the `None` arm above: losing `Active` (a synchronous
-            // UnloadCompleted for this epoch) while still waiting on `loadCompleted` must fire
-            // the timeout rather than silently going quiet forever.
-            None => {
-                super::log(
-                    "native: Load epoch left Active while still waiting on loadCompleted after \
-                     Load returned — publishing load_failed",
-                );
-                SHARED.load_failed.store(true, Release);
-                SHARED.load_timed_out.store(true, Release);
-                super::report::note_load_gate_for(
-                    crate::route::playback_trace_generation(),
-                    super::report::LoadElapsedClass::Over20s,
-                );
-            }
-        }
-    }
-
-    // ---------- playback speed: the safety net ----------
-    // A speed session's Load declared PCM. The pipeline reports what it set up (audio-info
-    // callback, `player::note_speed_audio_report`); a report that is not the declared 48 kHz
-    // stereo, or none within SPEED_AUDIO_DEADLINE_MS of loadCompleted, means this television
-    // does not take app-fed PCM the way the 3.9.3 set does — fall back to 1x rather than play
-    // silence or a drifting sound. Video-only Loads (the `noaudio` trigger) have no audio to judge.
-    if super::applied_rate_permille() != super::RATE_NORMAL
-        && eng.stage >= Stage::Playing
-        && !super::no_audio_armed()
-        && TX.seek_to_ns.load(Relaxed) < 0
-    {
-        match SHARED.speed_audio_verdict.load(Relaxed) {
-            super::SPEED_AUDIO_BAD => {
-                super::fall_back_from_speed(ps, "the pipeline set up different audio than the PCM declared");
-            }
-            super::SPEED_AUDIO_UNKNOWN
-                if now.wrapping_sub(SHARED.dg_load_at.load(Relaxed)) > SPEED_AUDIO_DEADLINE_MS =>
-            {
-                super::fall_back_from_speed(ps, "the pipeline never reported its audio");
-            }
-            _ => {}
-        }
-    }
-
     // ---------- ACB bind, Kodi/ss4s order: setSinkType(MAIN)+setMediaId+setState(LOADED) ----------
     if eng.stage == Stage::Playing && ACB_OK.load(Relaxed) {
         let id = SHARED.media_id.lock().unwrap().clone();
