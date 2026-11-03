@@ -487,8 +487,34 @@ pub(crate) struct RoundDecision {
 }
 
 pub(crate) struct ActiveQuantumResult {
-    pub(crate) sample: abr::SegmentSample,
+    sample: abr::SegmentSample,
     pub(crate) cleanup_ready: bool,
+}
+
+pub(crate) struct RefreshedQuantum { sample: abr::SegmentSample }
+
+impl ActiveQuantumResult {
+    /// The rollback playlist may have blocked. It supplies a second buffer
+    /// fact after that wait without changing this acquisition's transfer.
+    pub(crate) fn refresh(self, buffer: BufferFact) -> RefreshedQuantum {
+        RefreshedQuantum {
+            sample: self.sample.with_buffer(buffer_snapshot(buffer)),
+        }
+    }
+}
+
+impl RefreshedQuantum {
+    pub(crate) fn sample(&self) -> abr::SegmentSample { self.sample }
+
+    pub(crate) fn observe(
+        self, coordinator: &mut Coordinator, rollback_media_ms: Option<u32>,
+        now_ms: u64, boundary: bool,
+    ) -> (abr::SegmentSample, RoundDecision) {
+        let round = coordinator.observe(
+            self.sample, rollback_media_ms, now_ms, boundary,
+        );
+        (self.sample, round)
+    }
 }
 
 pub(crate) struct Reconsideration {
@@ -997,6 +1023,7 @@ impl Coordinator {
         Some(ActiveQuantumResult { sample, cleanup_ready })
     }
 
+
     pub(crate) fn on_resume(&mut self, elapsed_ms: u64) {
         self.controller.on_resume(elapsed_ms);
     }
@@ -1004,7 +1031,7 @@ impl Coordinator {
     /// The pure controller step: the caller supplies the completed acquisition,
     /// current rollback obligation, and its monotonic time. No clock or registry
     /// is read here, and candidate media is never counted as active evidence.
-    pub(crate) fn observe(
+    fn observe(
         &mut self, sample: abr::SegmentSample, rollback_media_ms: Option<u32>,
         now_ms: u64, session_boundary: bool,
     ) -> RoundDecision {

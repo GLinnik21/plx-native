@@ -5749,7 +5749,6 @@ fn hls_demux(
             crate::player::log("abr: ignoring invalid segment timing sample");
             continue;
         };
-        let mut sample = active.sample;
         // The route cleanup runner coalesces a physical ping and exact close.
         let encoder_cleanup_ready = active.cleanup_ready;
         if !encoder_cleanup_ready && !cleanup_wait_logged {
@@ -5787,7 +5786,7 @@ fn hls_demux(
         // neither the rung controller nor Original admission spends buffer which elapsed while
         // discovering the obligation.  Include `output`: its exact segment-end tail is newer than
         // the last AU PTS stored in SHARED and must not be rounded back merely by refreshing B.
-        sample = sample.with_buffer(hls_buffer_snapshot(Some(&output)));
+        let active = active.refresh(hls_buffer_fact(Some(&output)));
         // A complete Pause -> Resume may have occurred wholly inside the playlist refresh above.
         // Consume it before this sample can act, and name the synchronized HLS user sequence that
         // every later lease must still match.  Returning to `Running` is not the same boundary.
@@ -5802,16 +5801,16 @@ fn hls_demux(
         }
         let paused_now = pause_state.paused;
         let expected_user_sequence = SHARED.hls_user_sequence();
-        publish_hls_abr_sample(sample);
+        publish_hls_abr_sample(active.sample());
         let remaining_ms = remaining_playback_ms();
-        let boundary = session_boundary_pending && delivered && sample.completed();
+        let boundary = session_boundary_pending && delivered && active.sample().completed();
         if boundary {
             session_boundary_pending = false;
             crate::player::log(
                 "abr: fresh-session boundary buffered; waiting for the first repeatable HLS acquisition",
             );
         }
-        let round = state.observe(sample, rollback_media_ms, now_ms(), boundary);
+        let (sample, round) = active.observe(state, rollback_media_ms, now_ms(), boundary);
         let decision = round.decision;
         if let Some(runway_ms) = round.prime_runway_ms {
             SHARED.hls_prime_runway_ms.store(runway_ms, Ordering::Release);
