@@ -184,7 +184,7 @@ pub(super) fn start_bufferfeed_inner(
     // A timed-out Load from an earlier Engine may still own the one native object the C seam
     // holds. Release it now if it has returned; otherwise refuse before anything below (the
     // exported window in particular) can touch state that object is still using.
-    if !engine::begin_native_open(pa) {
+    if !pa.begin_native_open() {
         return Err(crate::route::RouteStartResult::StartFailed);
     }
     // Guard a double-start: overwriting a live ENGINE slot would DROP the running
@@ -623,6 +623,11 @@ pub fn poll_release_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super
     poll_release(ps, pa, std::time::Instant::now())
 }
 
+/// Reap one completed native Load parked by an earlier attempt, on the app's main thread.
+pub fn reap_abandoned_load(pa: &mut super::adapter::PlayerAdapter) -> bool {
+    pa.reap_abandoned_load()
+}
+
 /// Join a returned worker, then step the machine with its return, the clock and (at the exit) the
 /// exit request. Returns the effects and the joined release, whose tail the effects may run.
 fn drive_release(
@@ -682,7 +687,7 @@ pub(super) fn exit_native_with(
             idle();
         }
     }
-    engine::reap_abandoned_load(pa);
+    reap_abandoned_load(pa);
     if pa.has_abandoned_load() {
         log("exit: a timed-out Load is still inside firmware; the display is left to the OS");
         leak_parked_for_exit(pa);

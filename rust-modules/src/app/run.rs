@@ -216,7 +216,7 @@ pub(crate) unsafe fn run(app: &mut App) {
         }
         // A timed-out native Load parked by teardown is released here, on the main thread, the
         // first frame after its media thread returns (`player::engine::AbandonedLoad`).
-        plx_media::player::engine::reap_abandoned_load(&mut app.adapters.player);
+        plx_media::player::reap_abandoned_load(&mut app.adapters.player);
         // …and a real stop's off-frame `Unload` gets its main-thread tail (gate, epoch, ACB,
         // D1) the first frame after it returns (`player::engine::PendingRelease`).
         plx_media::player::poll_release_frame(&mut app.player.session, &mut app.adapters.player);

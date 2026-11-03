@@ -411,7 +411,8 @@ pub use engine::{
     suspend_bufferfeed, BufferfeedStartOutcome,
 };
 pub use route_start::{begin_resume, exit_native, foreground_follows_load, land_resume,
-    poll_release_frame, suspend_bufferfeed_if_attempt, NativeExit, ResumeOutcome, ResumeStart};
+    poll_release_frame, reap_abandoned_load, suspend_bufferfeed_if_attempt, NativeExit,
+    ResumeOutcome, ResumeStart};
 
 pub use pump::{
     drain_engineless_rollback, land_engineless_rollback, pump, recover_failed_foreground_original, ForegroundOriginalRecovery,
