@@ -777,8 +777,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                 // was open (`HudMotion::step`'s own doc).
                 self.row
                     .step(self.eff_slot(), self.hud.nav.focus, self.hud.nav.btn, tick.dt(), tick.ms,
-                        plx_media::player::is_started(H::session(cx)),
-                        plx_media::player::TX.paused.load(std::sync::atomic::Ordering::Relaxed));
+                        plx_media::player::is_started(H::session(cx)), H::transport_paused(cx));
                 // …and the sections' appear springs, pointed at the sections that are open (a write to
                 // `hud.sections` that did not tell them is caught up here) and stepped once per frame.
                 self.row.follow(self.hud.sections.bits());
@@ -5065,6 +5064,7 @@ mod repair_confirmation_tests {
     }
     impl PlayerLike for TestHost {
         fn session<'a>(cx: &Cx<'a, Self>) -> &'a plx_media::route::PlaybackSession { cx.views }
+        fn transport_paused(_cx: &Cx<'_, Self>) -> bool { false }
     }
     thread_local! {
         static TEST_METADATA: std::cell::UnsafeCell<plx_data::stores::metadata::MetadataStore> =
