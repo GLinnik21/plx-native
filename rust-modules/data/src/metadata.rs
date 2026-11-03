@@ -2765,6 +2765,22 @@ pub fn playing_version_from(
     (playing_item_of(sid, rk, it, media), played)
 }
 
+#[cfg(test)]
+#[test]
+fn selected_part_duration_precedes_item_duration_and_unknown_stays_unknown() {
+    let item: plx_plex::plex::Metadata = serde_json::from_str(
+        r#"{"duration":600000,"Media":[{"id":1,"Part":[{"key":"/first","duration":500000}]},{"id":2,"Part":[{"key":"/second","duration":450000}]}]}"#,
+    ).expect("PMS item fixture");
+    let sid = plx_plex::plex::ServerId::from_raw(0);
+    let (selected, _) = playing_version_from(sid, "item", Some(&item), Some(plx_plex::plex::MediaId(2)));
+    assert_eq!(selected.duration_ms, Some(450_000));
+    let unknown: plx_plex::plex::Metadata = serde_json::from_str(
+        r#"{"Media":[{"id":2,"Part":[{"key":"/second"}]}]}"#,
+    ).expect("PMS item without duration");
+    let (selected, _) = playing_version_from(sid, "item", Some(&unknown), Some(plx_plex::plex::MediaId(2)));
+    assert_eq!(selected.duration_ms, None);
+}
+
 /// The conversion half of [`fetch_playing_item`] for the default version, pure so the parse is
 /// testable without a server.
 #[cfg(test)]
@@ -2809,7 +2825,9 @@ fn playing_item_of(
         rk: rk.to_string(),
         show_rk,
         kind,
-        duration_ms: it.and_then(|it| u64::try_from(it.duration).ok()).filter(|ms| *ms > 0),
+        duration_ms: media.and_then(|m| m.part.first())
+            .and_then(|part| u64::try_from(part.duration).ok()).filter(|ms| *ms > 0)
+            .or_else(|| it.and_then(|it| u64::try_from(it.duration).ok()).filter(|ms| *ms > 0)),
         audio,
         subs,
         video_fps,
