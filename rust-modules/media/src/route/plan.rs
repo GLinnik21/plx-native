@@ -1888,7 +1888,10 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             };
             let source_selection = SourceSelection { server: env.sid, part_id: plan.part_id,
                 audio_sid: source_audio.as_ref().map_or(0, |(_, _, sid)| *sid),
-                subtitle_sid: source_sub_sid,
+                // Common intent keeps an external sidecar's real selected SID. Native URI
+                // eligibility separately uses `source_sub_sid` (embedded only) and the explicit
+                // `requires_client_subtitle` refusal, so executor policy cannot erase the pick.
+                subtitle_sid: source_sub_stream.map_or(0, |sub| sub.id),
                 audio_contract: env.audio_enhancements };
             plan.source_selection = Some(source_selection);
             #[cfg(feature = "play-uri")]

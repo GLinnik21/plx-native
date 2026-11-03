@@ -9492,8 +9492,13 @@ fn current_retry_context(ps: &PlaybackSession, resume_ns: i64) -> RetryContext {
     RetryContext {
         resume_ns: resume_ns.max(0),
         candidate_purpose: CandidatePurpose::ReopenCurrent,
-        selection: ps.source_selection.map(|selection|
-            (selection.audio_sid, selection.subtitle_sid)).or_else(|| {
+        selection: ps.source_selection.map(|selection| {
+            // A session resolved before external sidecars were retained in SourceSelection may
+            // still have a confirmed sidecar selection. Explicit Off has no sidecar flag.
+            let subtitle_sid = if selection.subtitle_sid == 0 && ps.cur_sub_sidecar
+                && ps.cur_sub_sid > 0 { ps.cur_sub_sid } else { selection.subtitle_sid };
+            (selection.audio_sid, subtitle_sid)
+        }).or_else(|| {
             if ps.selection_known { Some((cur_audio_sid(ps), cur_sub_sid(ps))) }
             else { ps.carried_selection }
         }),
