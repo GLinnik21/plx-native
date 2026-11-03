@@ -3216,7 +3216,7 @@ pub struct PrimedHls {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OriginalProbeResult {
-    Measured(crate::curlio::ThroughputSample),
+    Measured(crate::abr::CapacityObservation),
     /// The request reached no usable body. The client-side HLS route remained selected; PMS-side
     /// cursor continuity is not inferred. The outcome is telemetry, not a zero-capacity sample.
     Failed {
@@ -3392,7 +3392,12 @@ impl HlsAbrControl {
                     Phase::SampleSource,
                     source_probe_sample_outcome(sample),
                 );
-                OriginalProbeResult::Measured(sample)
+                OriginalProbeResult::Measured(crate::abr::CapacityObservation {
+                    kbps: u32::try_from(sample.kbps()).unwrap_or(u32::MAX),
+                    bytes: u64::try_from(sample.bytes).unwrap_or(0),
+                    active_us: u64::try_from(sample.elapsed.as_micros()).unwrap_or(u64::MAX),
+                    completed: sample.target_reached,
+                })
             }
             Err(failure) => {
                 let detail = match &failure {

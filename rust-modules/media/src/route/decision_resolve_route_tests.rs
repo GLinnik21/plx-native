@@ -1679,7 +1679,7 @@ fn source_probe_reuses_live_hls_resource_instead_of_entering_adhoc_mde() {
     };
     let result = control.probe_original_while_hls(&active_route, source_plan);
     assert!(
-        matches!(result, OriginalProbeResult::Measured(sample) if sample.target_reached),
+        matches!(result, OriginalProbeResult::Measured(sample) if sample.completed),
         "the finite source response is the measurement: {result:?}",
     );
 

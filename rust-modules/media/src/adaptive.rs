@@ -137,6 +137,7 @@ pub(crate) trait PublicationPort {
     fn if_not_aborted<T>(&mut self, transition: impl FnOnce() -> T) -> Option<T>;
 }
 
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum CandidatePublication {
     Aborted,
@@ -396,14 +397,7 @@ impl Coordinator {
         &self, plan: abr::SourceProbePlan, cancelled: impl FnOnce() -> bool,
     ) -> ProbeResult {
         match self.control.probe_original_while_hls_cancellable(&self.ticket, plan, cancelled) {
-            route::OriginalProbeResult::Measured(sample) => ProbeResult::Measured(
-                abr::CapacityObservation {
-                    kbps: u32::try_from(sample.kbps()).unwrap_or(u32::MAX),
-                    bytes: u64::try_from(sample.bytes).unwrap_or(0),
-                    active_us: u64::try_from(sample.elapsed.as_micros()).unwrap_or(u64::MAX),
-                    completed: sample.target_reached,
-                }
-            ),
+            route::OriginalProbeResult::Measured(sample) => ProbeResult::Measured(sample),
             route::OriginalProbeResult::Failed { outcome, failure } => ProbeResult::Failed {
                 outcome: outcome.code(), failure: failure.into(),
             },
