@@ -1,5 +1,6 @@
 //! Compatibility facade for the bundled FFmpeg physical feed owned by `plx_play_feed`.
 pub use plx_play_feed::ff::*;
+#[cfg(test)]
 pub(crate) use crate::subtitle_job as subside;
 
 // ---------------------------------------------------------------------------------------
