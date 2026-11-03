@@ -15,7 +15,7 @@
 # trick pinned the binary to webOS 4.x: on anything newer the loader killed it at
 # exec(), before main, before the event log existed. Those libraries are now
 # dlopen'd by SONAME candidate list instead — rust-modules/base/src/dynlib.rs, and the
-# video-plane comment at the top of src/starfish.c. `tools/fwcompat.py` grades the
+# video-plane comment in src/video_plane.c. `tools/fwcompat.py` grades the
 # result against 14 real firmware inventories without leaving the desk.
 #
 # make          — build pkg/plxnative
@@ -407,7 +407,7 @@ LIBS_REAL = -lSDL2 -lSDL2_ttf -lGLESv2 -lluna-service2 -lglib-2.0 \
 #   outright at webOS 5.0). A DT_NEEDED entry is a hard requirement for one exact name, cannot say
 #   "either of these", and a name the device lacks kills the process at exec() — before main,
 #   before the event log exists. So they are dlopen'd by SONAME CANDIDATE LIST:
-#   rust-modules/base/src/dynlib.rs, and the video-plane comment at the top of src/starfish.c.
+#   rust-modules/base/src/dynlib.rs, and the video-plane comment in src/video_plane.c.
 #
 #   FFmpeg is not a version question at all any more: we SHIP our own, pinned (the bundled-FFmpeg
 #   section below builds libav*-plx.so.63/63/61 and stages them into pkg/). It is unlinked because
@@ -425,8 +425,8 @@ LIBS_REAL = -lSDL2 -lSDL2_ttf -lGLESv2 -lluna-service2 -lglib-2.0 \
 # open a URL at all. `docs/agent-reference.md`'s "Linking" section carries the same account at length.
 
 # Rust-first build. The app is Rust (rust-modules/, compiled to a staticlib and
-# linked in); C is only main.c (boot shim) + starfish.c (the StarfishMediaAPIs
-# C++/ACB seam) + svg.c (nanosvg rasterizer).
+# linked in); the native playback seam is starfish.c (buffer-feed StarfishMediaAPIs)
+# plus video_plane.c (shared display binding). main.c is the boot shim; svg.c rasterizes SVGs.
 # (src/gpdebug.c is a debug-only guard-page allocator — never in the normal build.)
 # RELEASE=1 drops BOTH default cargo features — `devtools` (the on-screen seven-segment counter,
 # app.rs) and `devtriggers` (the whole /tmp surface, src/dev.rs). Neither may ship to users.
