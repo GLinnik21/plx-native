@@ -2888,7 +2888,7 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     super::subside::stop(if for_reload { "reload" } else { "stop" });
     sp.mark("subside");
     // 1. unblock every thread (abort queues, close the demux socket)
-    let report_th = pa.stop_timeline(eng.route_start);
+    let mut report_th = pa.stop_timeline(eng.route_start);
     if stream {
         // abort BOTH lanes: unblock the demux if it's parked in aq_push on a full lane
         for q in [eng.aq_video.as_mut(), eng.aq_audio.as_mut()]
@@ -2960,7 +2960,7 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     // before each network effect.
     sp.mark("http_close");
     if !for_reload {
-        crate::route::scrobble_stop(ps, final_report, report_th);
+        crate::route::scrobble_stop(ps, final_report, report_th.take());
     }
     sp.mark("scrobble");
     // 3. Release the native object (see `release_native_object` for the proof chain), unless its

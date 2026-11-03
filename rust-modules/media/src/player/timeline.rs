@@ -54,14 +54,15 @@ impl ReportStop {
         self.changed.notify_all();
     }
 
-    /// `None` means stopped; `Some(None)` means the first interval elapsed without a sample.
-    fn wait_sample(&self) -> Option<Option<TimelineSnapshot>> {
-        let deadline = Instant::now() + REPORT_INTERVAL;
+    /// Consume the latest sample once per interval. `None` means stopped; `Some(None)`
+    /// means no fresh evidence arrived, so a stalled pump cannot repeat an old playhead.
+    fn wait_sample(&self, interval: Duration) -> Option<Option<TimelineSnapshot>> {
+        let deadline = Instant::now() + interval;
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         loop {
             if state.stopped { return None; }
             let now = Instant::now();
-            if now >= deadline { return Some(state.latest); }
+            if now >= deadline { return Some(state.latest.take()); }
             state = self.changed.wait_timeout(state, deadline - now).unwrap_or_else(|e| e.into_inner()).0;
         }
     }
@@ -97,7 +98,7 @@ impl TimelineRunner {
 
 fn timeline_thread(lease: TimelineLease, stop: Arc<ReportStop>) {
     loop {
-        let Some(sample) = stop.wait_sample() else { return; };
+        let Some(sample) = stop.wait_sample(REPORT_INTERVAL) else { return; };
         let Some(sample) = sample else { continue; };
         if !crate::route::report_timeline(&lease, sample.state, sample.time_ms, sample.duration_ms) {
             return;
@@ -121,10 +122,14 @@ mod tests {
         mail.publish(None);
         assert!(mail.state.lock().unwrap().latest.is_none(), "missing duration clears the prior sample");
         mail.publish(Some(last));
+        assert!(mail.wait_sample(Duration::ZERO).is_some_and(|sample| sample == Some(last)));
+        assert!(mail.wait_sample(Duration::ZERO).is_some_and(|sample| sample.is_none()),
+            "no new backend evidence must not repeat the prior playhead");
+        mail.publish(Some(last));
         mail.stop();
         mail.publish(Some(first));
         assert!(mail.state.lock().unwrap().latest == Some(last));
-        assert!(mail.wait_sample().is_none());
+        assert!(mail.wait_sample(Duration::ZERO).is_none());
         assert!(TimelineSnapshot::from_content_ns(0, 0, false).is_none());
     }
 }

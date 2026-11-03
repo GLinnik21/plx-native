@@ -82,9 +82,11 @@ and seeks by time via `av_seek_frame` (libavformat's own Cues index).
   X ms after the stop`.
 - `pump.rs` — the **main-thread pump** (was `bufferfeed_pump`): each frame it drives bind → Play →
   feed and services seeks.
-- `threads.rs` — the workers beside the demuxer: **`load_thread`** (construct Starfish + `Load()`,
-  which owns its own GMainContext) and **`timeline_thread`** (the ~10 s `/:/timeline` progress
-  reporter). The **demux thread body is `ff::demux`** (spawned by `engine::start_bufferfeed`): open
+- `threads.rs` — **`load_thread`** constructs Starfish + `Load()` on its own GMainContext and
+  returns an addressed result to the adapter. `timeline.rs` owns the adapter's periodic PMS
+  reporter: it consumes fresh normalized samples, never backend globals. Its stopped handle
+  joins off-frame before the final stopped report. The **demux thread body is `ff::demux`**
+  (spawned by `engine::start_bufferfeed`): open
   the part URL, read+convert packets, push AUs to the two lanes; **and service seeks** — it
   `av_seek_frame`s on `seek_to_ns` between two `av_read_frame` calls, which is the whole seek
   mechanism (nothing interrupts it; see the seek gotcha below).

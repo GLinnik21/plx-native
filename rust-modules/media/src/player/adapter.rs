@@ -3,8 +3,9 @@
 //!
 //! An adapter holds OS/FFI resources and never logical state; the decisions live one field away in
 //! [`crate::player::machine::Player`]. What this one holds is the [`Engine`] — the Starfish/ACB
-//! session, its HTTP stream box, its AU queues and the handles of the three worker threads that
-//! read raw pointers into all three — together with the [`MainThread`] token.
+//! session, its HTTP stream box, its AU queues and the handles of its native/demux workers —
+//! together with the [`MainThread`] token. The adapter separately owns the periodic Plex
+//! reporter and the addressed native-Load result inbox.
 //!
 //! # Why the slot moved here, and what replaced the token argument
 //!
