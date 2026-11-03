@@ -1486,22 +1486,11 @@ pub(super) fn launch_native_open(
 
     if stream {
         let open = open.as_mut().expect("stream request was captured");
-        let su = plx_plex::plex::StreamUrl::parse(&open.url); // the typed layer's URL splitter
-                                                      // **The whole ORIGIN goes down, not a `(host, port)` pair, because the SCHEME chooses the
-                                                      // transport**: `ff::demux` reads http through `plx_net::stream`'s cleartext socket and https
-                                                      // through `crate::curlio`. This used to REFUSE an https origin outright — cleartext to a
-                                                      // TLS port is a hang or a garbage response with nothing in the log — and that refusal is
-                                                      // what a remote QA reviewer, with no PMS on their LAN, would have hit on every Play.
-                                                      // Rebuilding the origin from an address would put the refusal back in a subtler form: the
-                                                      // certificate is issued for the `plex.direct` NAME, so a TLS connection to the dotted quad
-                                                      // behind it fails validation however well the packets flow (`net/origin.rs`).
-        if !plx_plex::http::credential_transport_allowed(&su.origin, &su.path, &[]) {
-            plx_base::eventlog::log("stream: refused insecure credential transport");
-            return Err(crate::route::RouteStartResult::StartFailed);
-        }
-        let path = su.path;
-        log(&stream_open_log_line(&su.origin.log_form(), &path));
-        let origin = su.origin;
+        // The whole origin goes to the demuxer: its scheme chooses the byte transport, and
+        // HTTPS certificate validation needs the original `plex.direct` hostname.
+        let path = std::mem::take(&mut open.path);
+        log(&stream_open_log_line(&open.origin.log_form(), &path));
+        let origin = open.origin.clone();
         // Two-lane feed: the demuxer routes es=1 video to aq_video and es=2 audio to
         // aq_audio, each with its own cap + feeder.
         let mut qv = crate::aq::aq_new(AQ_VIDEO_BYTES);
@@ -1533,7 +1522,7 @@ pub(super) fn launch_native_open(
             // Before the demuxer exists, so what it publishes is this session's.
             crate::ff::native_audio::reset();
             // A clock-only reader (a sidecar) reads no subtitle: the demuxer keeps what it enumerates.
-            SHARED.side_subs_owner.store(side_target.as_ref().is_some_and(|t| !t.clock_only()), Ordering::Release);
+            SHARED.side_subs_owner.store(side_target.as_ref().is_some_and(|t| !t.clock_only), Ordering::Release);
             stream_th = plx_base::task::spawn_off_frame_keeping("demux", move |off| {
                 crate::ff::demux(off, origin, path, acodec, force_original, demux_transport, abr, auto_original, aqp, aqap, hsp)
             });
@@ -1588,7 +1577,7 @@ pub(super) fn launch_native_open(
     // spawned and the media thread exists: it waits for the demuxer's first keyframe before it
     // reads anything. (Its ownership flag was set before the demux spawn, below.)
     if let Some(target) = side_target {
-        start_side_reader(&target);
+        start_side_reader(target);
     }
 
     let (lead_at_start, lead_pending) = audio_lead.at_engine_start();
@@ -1782,9 +1771,9 @@ pub fn land_resume(ps: &mut crate::route::PlaybackSession) -> Option<ResumeOutco
 /// path, which never wedges. Heavier than a flush (a ~1 s re-preroll) but correct.
 /// Start the side subtitle reader for the live remux this engine run plays, drawing the track
 /// the route's target names (or, for a sidecar, measuring the clock only).
-fn start_side_reader(target: &crate::route::SideReaderTarget) {
-    let clock_only = target.clock_only();
-    let started = super::subside::spec_for(target).is_some_and(super::subside::start);
+fn start_side_reader(target: super::feed_open::SideReaderOpen) {
+    let clock_only = target.clock_only;
+    let started = target.spec.is_some_and(super::subside::start);
     if !started {
         // One place decides the label and the burn, so the two roles can never drift: a
         // clock-only reader that cannot start — no client for the running server, or a refused

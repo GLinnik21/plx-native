@@ -227,6 +227,10 @@ pub(super) fn start_bufferfeed_inner(
     // The prepared route has finished choosing the stream. Freeze the values the native Load,
     // payload and demux worker will use before any of those physical resources are constructed.
     let open = stream.then(|| super::feed_open::FeedOpenRequest::capture(ps, url));
+    if open.as_ref().is_some_and(|request| !request.credential_transport_allowed()) {
+        plx_base::eventlog::log("stream: refused insecure credential transport");
+        return Err(crate::route::RouteStartResult::StartFailed);
+    }
     // Payload and native callback guards are resolved before the route mints an attempt, as in
     // the original Load path. A refusal here remains a Prepared transaction until the caller
     // aborts it; a later supersession drops both guards without launching a worker.

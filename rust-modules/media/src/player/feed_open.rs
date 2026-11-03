@@ -7,7 +7,8 @@ use plx_base::eventlog::log;
 use plx_play_feed::bf_split;
 
 pub(super) struct FeedOpenRequest {
-    pub url: String,
+    pub origin: plx_net::net::origin::Origin,
+    pub path: String,
     pub video_codec: String,
     pub audio_codec: String,
     pub pcm_is_lossy: bool,
@@ -15,10 +16,16 @@ pub(super) struct FeedOpenRequest {
     pub payload: PayloadFacts,
     /// Backend-owned Load facts, with route and metadata types mapped at capture time.
     pub feed_payload: plx_play_feed::PayloadFacts,
-    pub side_reader: Option<route::SideReaderTarget>,
+    pub side_reader: Option<SideReaderOpen>,
     pub hls_abr: Option<Box<dyn plx_playback_contract::adaptive::AdaptiveSession>>,
     pub auto_original: Option<Box<dyn plx_playback_contract::adaptive::OriginalSession>>,
     pub trace_generation: u32,
+}
+
+/// A resolved side reader that the physical open can start without route or Plex lookups.
+pub(super) struct SideReaderOpen {
+    pub clock_only: bool,
+    pub spec: Option<super::subside::Spec>,
 }
 
 /// The presentation facts consumed by the native Load declaration. These come from the
@@ -79,15 +86,21 @@ impl FeedOpenRequest {
     pub fn capture(ps: &route::PlaybackSession, url: String) -> Self {
         let payload = PayloadFacts::capture(ps);
         let feed_payload = payload.to_feed();
+        let source = plx_plex::plex::StreamUrl::parse(&url);
+        let side_reader = route::side_reader_target(ps).map(|target| SideReaderOpen {
+            clock_only: target.clock_only(),
+            spec: super::subside::spec_for(&target),
+        });
         Self {
-            url,
+            origin: source.origin,
+            path: source.path,
             video_codec: route::stream_vcodec(ps),
             audio_codec: route::stream_acodec(ps),
             pcm_is_lossy: route::stream_pcm_is_lossy(ps),
             audio_channels: route::stream_achannels(ps),
             payload,
             feed_payload,
-            side_reader: route::side_reader_target(ps),
+            side_reader,
             hls_abr: route::hls_abr_control(ps).map(|control| {
                 crate::adaptive::boxed_session(
                     crate::adaptive::Start::from(control),
@@ -99,6 +112,11 @@ impl FeedOpenRequest {
             }),
             trace_generation: route::playback_trace_generation(),
         }
+    }
+
+    /// The common owner checks the credential policy before claiming the native attempt.
+    pub fn credential_transport_allowed(&self) -> bool {
+        plx_plex::http::credential_transport_allowed(&self.origin, &self.path, &[])
     }
 }
 
@@ -113,7 +131,7 @@ mod tests {
         route::set_stream_codecs(&mut ps, "h264", "aac");
         let open = FeedOpenRequest::capture(&ps, "https://example.invalid/first".into());
         route::set_stream_codecs(&mut ps, "hevc", "eac3");
-        assert_eq!(open.url, "https://example.invalid/first");
+        assert_eq!(format!("{}{}", open.origin.base(), open.path), "https://example.invalid/first");
         assert_eq!(open.video_codec, "h264");
         assert_eq!(open.audio_codec, "aac");
     }
