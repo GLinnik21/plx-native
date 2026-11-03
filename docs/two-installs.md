@@ -231,7 +231,8 @@ inside a bullet already claiming to be separate. It is written out in full below
   all pass through (asserted to match exactly once per payload, in the host suite — a `replace`
   matching twice would leave a second `appId` key for `with_window_id` to splice a duplicate
   `windowId` onto, and one matching nothing would hand LG's parser the placeholder as a literal id;
-  both are silent). `acb_init_acb` passes the same string to `AcbAPI_initialize`. It used to be
+  both are silent). `acb_init_acb` passes the same string to `AcbAPI_initialize`; the developer
+  URI probe also receives `paths::app_id()` through its injected driver configuration. It used to be
   `env::var("APPID")` with a NULL fallback that `starfish.c` turned into the shipped id — a double
   fallback under which a developer install announces itself as the released app on any launch where
   SAM does not export `APPID`. See §7 for what is and is not known about who reads that key.

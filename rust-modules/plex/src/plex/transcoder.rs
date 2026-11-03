@@ -1341,9 +1341,10 @@ mod tests {
         assert!(!profile.contains("truehd"));
     }
 
-    /// FLAC is decoded in the app and fed as PCM: offered for direct play (and Force) on a set
+    /// Under Auto, FLAC is decoded in the app and fed as PCM: offered for direct play on a set
     /// whose table was read, capped at the PCM path's two channels so PMS still converts a 5.1
     /// FLAC — and never named as a transcode TARGET, which is the server's encoder, not ours.
+    /// Force's feed profile excludes FLAC because it cannot declare its original wire format.
     #[test]
     fn flac_is_offered_for_direct_play_up_to_stereo_and_never_as_a_target() {
         // what `devcaps` makes of a READ table (its own tests pin that half)

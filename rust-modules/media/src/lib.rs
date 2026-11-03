@@ -1,11 +1,13 @@
 //! plx_media: the media layer of the PlxNative application core.
 //!
-//! Demux (`ff`, through `plx_media_codecs`), the HTTPS media plane (`curlio`), the strict HLS parser (`hls`),
-//! the adaptive-bitrate controller (`abr`), the access-unit queues (`aq`), the buffer-feed engine
-//! (`player`) and route selection (`route`). It is the `media` layer of `ci/module-layers.ini`: it
-//! uses `base`, `machine`, `platform`, `gfx`, `net`, `plex`, `telemetry` and `data` and nothing
-//! above them. Its seven members call each other in a cycle (`abr`, `curlio`, `ff`, `hls`, `player`
-//! and `route`), which is why they are one crate. The bundled FFmpeg binding, encoder and pure
+//! Feed demux (`ff`, through `plx_media_codecs`), the media credential facade (`curlio` over
+//! `plx_net::range_io`), the adaptive-bitrate controller (`abr`), the buffer-feed engine (`player`)
+//! and route selection (`route`). The HLS parser and access-unit queues live in `plx_play_feed`.
+//! It is the `media` layer of `ci/module-layers.ini`: it
+//! uses `playback-contract`, `play-feed`, `media-codecs`, optional `play-uri`, `base`, `machine`,
+//! `platform`, `gfx`, `net`, `plex`, `telemetry` and `data`, and nothing above them. The remaining
+//! feed orchestration members (`abr`, `curlio`, `ff`, `player` and
+//! `route`) share a crate. The bundled FFmpeg binding, encoder and pure
 //! audio DSP live in `plx_media_codecs` below this layer.
 //!
 //! The Starfish/ACB surface is declared here and nowhere else: `sf_on_event` and `acb_on_event`

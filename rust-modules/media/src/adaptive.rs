@@ -602,7 +602,98 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
         let grade = self.final_action(
             coordinator, proposal, reserve_policy, current, candidate, &acquisitions, verdict,
         );
-        StagedCandidate::Ready { final_acquisition, final_buffer, verdict, grade }
+        StagedCandidate::Ready {
+            final_acquisition, final_buffer, verdict, grade,
+            staged_count: acquisitions.len(),
+        }
+    }
+
+    /// Settle a staged trial that cannot reach publication. The physical feed
+    /// reports only the failed operation; the owner chooses the rejection and
+    /// retires the candidate before the active cursor can resume.
+    pub(crate) fn settle_staged(
+        &mut self, coordinator: &mut Coordinator, primed: &route::PrimedHls,
+        proposal: abr::Proposal, staged: StagedCandidate, current: VariantFacts,
+        opened_declared_bps: u64, now_ms: impl Fn() -> u64,
+        mut on_trace: impl FnMut(TrialTrace, &mut P),
+    ) -> CandidateJudgment {
+        match staged {
+            StagedCandidate::Unfunded => {
+                self.trace(&mut on_trace, TrialTrace::Decided);
+                let refreshing = coordinator.fund_followup(proposal, false, now_ms())
+                    .expect_err("an unfunded follow-up must reject the proposal");
+                self.observe(TrialObservation::Ended)
+                    .expect("unfunded follow-up has not entered the queue");
+                coordinator.abandon(&primed.encoder_session);
+                self.trace(&mut on_trace, TrialTrace::Rejected { refreshing });
+                self.trace(&mut on_trace, TrialTrace::Finish("repeatable_unfunded"));
+                self.trace(&mut on_trace, TrialTrace::Log(
+                    "abr: setup-bearing candidate exhausted its original exploration budget".to_string(),
+                ));
+                CandidateJudgment::Stay
+            }
+            StagedCandidate::Failed { step, failure } => match self.settle_first_failure(
+                    coordinator, primed, proposal, step, failure, &now_ms, &mut on_trace,
+                ) {
+                    FirstPhase::Stay => CandidateJudgment::Stay,
+                    FirstPhase::Aborted => CandidateJudgment::Aborted,
+                    FirstPhase::Failed(message) => CandidateJudgment::Failed(message),
+                    FirstPhase::Ready { .. } => unreachable!("failed acquisition cannot be ready"),
+                },
+            StagedCandidate::Protocol(message) => {
+                coordinator.abandon(&primed.encoder_session);
+                self.trace(&mut on_trace, TrialTrace::Finish("feed_protocol"));
+                CandidateJudgment::Failed(message)
+            }
+            StagedCandidate::Ready {
+                final_acquisition, final_buffer, verdict, grade, staged_count,
+            } => {
+                let FinalCandidateGrade { raster_ready, quality_improves, disposition } = grade;
+                if let HlsCandidateDisposition::Discard { cause, outcome } = disposition {
+                    self.observe(TrialObservation::Ended)
+                        .expect("a rejected candidate has not entered the queue");
+                    coordinator.abandon(&primed.encoder_session);
+                    self.trace(&mut on_trace, TrialTrace::Decided);
+                    let refreshing = coordinator.reject(proposal, cause, now_ms());
+                    self.trace(&mut on_trace, TrialTrace::Rejected { refreshing });
+                    let line = if !raster_ready {
+                        format!(
+                            "abr: candidate raster {}x{} exceeds {}x{}; staying on current rung",
+                            final_acquisition.width, final_acquisition.height,
+                            proposal.rung.raster().0, proposal.rung.raster().1,
+                        )
+                    } else if !quality_improves {
+                        format!(
+                            "abr: candidate request {}kbps produced {}x{} @ {}kbps versus current {}x{} @ {}kbps; no measured quality gain, staying on current rung",
+                            proposal.rung.kbps(), final_acquisition.width,
+                            final_acquisition.height, opened_declared_bps / 1_000,
+                            current.width, current.height, current.declared_bps / 1_000,
+                        )
+                    } else {
+                        format!(
+                            "abr: candidate verdict={verdict:?}; discarded {staged_count} staged segment(s) without changing the active media owner",
+                        )
+                    };
+                    self.trace(&mut on_trace, TrialTrace::Log(line));
+                    self.trace(&mut on_trace, TrialTrace::Finish(outcome));
+                    return CandidateJudgment::Stay;
+                }
+                let sample = candidate_sample(
+                    final_acquisition, buffer_snapshot(final_buffer),
+                ).expect("a ready candidate has a completed segment sample");
+                let Some(variant) = abr::ObservedHlsVariant::new(
+                    final_acquisition.declared_bps,
+                    final_acquisition.width,
+                    final_acquisition.height,
+                ) else {
+                    coordinator.abandon(&primed.encoder_session);
+                    return CandidateJudgment::Failed(
+                        "ABR candidate committed invalid output geometry",
+                    );
+                };
+                CandidateJudgment::Queue { final_acquisition, sample, variant }
+            }
+        }
     }
 
     fn read_repeatable(
@@ -1177,10 +1268,22 @@ pub(crate) enum StagedCandidate {
         final_buffer: BufferFact,
         verdict: abr::CandidateVerdict,
         grade: FinalCandidateGrade,
+        staged_count: usize,
     },
     Unfunded,
     Failed { step: TrialStep, failure: FeedFailure },
     Protocol(&'static str),
+}
+
+pub(crate) enum CandidateJudgment {
+    Queue {
+        final_acquisition: Acquisition,
+        sample: abr::SegmentSample,
+        variant: abr::ObservedHlsVariant,
+    },
+    Stay,
+    Aborted,
+    Failed(&'static str),
 }
 
 pub(crate) enum FirstPhase {

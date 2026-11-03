@@ -1458,7 +1458,11 @@ mod tests {
         for refusal in [SHUT, NATIVE, LoadRefusal::Stalled] {
             let mut m = measured_machine();
             let (handled, fx) = run(&mut m, refused(refusal, base()));
-            assert_eq!((handled, fx, m.phase()), (Handled::Yes, ERROR.to_vec(), Phase::Failed), "{refusal}");
+            assert_eq!(
+                (handled, fx, m.phase()),
+                (Handled::Yes, vec![RecoveryEffect::ShowError { refusal }], Phase::Failed),
+                "{refusal}: the read-out keeps this refusal's cause"
+            );
             assert_eq!(m.flights, 0, "no flight: Forced asks no server");
             assert!(m.in_app.is_none() && !m.attempt().app_lossy_in_force.contains("dts"));
         }
@@ -1492,21 +1496,28 @@ mod tests {
         assert_eq!(fx, ERROR);
     }
 
-    /// **M4. Auto's rung runs once per request.** A second pipeline refusal after it (the app-decoded Load
-    /// refused, or a reload that fed the codec natively again) is the read-out, whatever the facts say.
+    /// **M4. Auto's app-decode rung runs once per request.** A refused app-decoded Load reads out;
+    /// a later native reload may still take the remaining manual encode, never the app rung again.
     #[test]
     fn the_app_decode_rung_runs_once_per_request() {
-        // The native DTS the TV refuses again is named; an app-decoded Load's refusal names no audio.
-        for (second, want) in [
-            (on_dts_ch(facts(false, false, true), 2), forced_dts_error()),
-            (OpenFacts { audio: app_decoded("dca", 2), ..facts(false, false, true) }, ERROR.to_vec()),
+        // The native DTS reload still has an unspent manual encode; the app-decoded Load does not.
+        for (second, has_manual_encode) in [
+            (on_dts_ch(facts(false, false, true), 2), true),
+            (OpenFacts { audio: app_decoded("dca", 2), ..facts(false, false, true) }, false),
         ] {
             let mut m = measured_machine();
             run(&mut m, refused(SHUT, direct(on_dts_ch(facts(false, false, true), 2))));
             run(&mut m, RecoveryEvent::FlightRefused);
             assert_eq!(m.phase(), Phase::Opening);
             let (handled, fx) = run(&mut m, refused(SHUT, direct(second)));
-            assert_eq!((handled, fx, m.phase()), (Handled::Yes, want, Phase::Failed));
+            if has_manual_encode {
+                assert_eq!((handled, fx, m.phase()), (Handled::Yes, vec![RecoveryEffect::ConvertBoth { flight: 2 }], Phase::Flight));
+                let (handled, fx) = run(&mut m, RecoveryEvent::FlightRefused);
+                assert_eq!((handled, fx, m.phase()), (Handled::Yes, ERROR.to_vec(), Phase::Failed));
+            } else {
+                assert_eq!((handled, fx, m.phase()), (Handled::Yes, ERROR.to_vec(), Phase::Failed));
+            }
+            assert!(m.in_app.is_some(), "the one app-decode attempt remains spent");
         }
         // Not Forced: after the rung, the app-decoded Load's refusal names no audio and no video that
         // is still to lower, so the read-out follows.
