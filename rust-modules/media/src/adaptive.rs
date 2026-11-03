@@ -334,15 +334,6 @@ pub(crate) fn active_sample(
     }
 }
 
-/// A physical feed failure is a circumstance unless the candidate's reserve clock expired.
-pub(crate) fn reject_cause_for_feed_failure(failure: FeedFailure) -> abr::RejectCause {
-    if failure == FeedFailure::Deadline {
-        abr::RejectCause::Censored
-    } else {
-        abr::RejectCause::Circumstance
-    }
-}
-
 /// The feed's existing abort mutex is the first serialization boundary. Its
 /// implementation must run the callback while holding that mutex and do no IO.
 fn inside_publication_gate<T>(
@@ -512,7 +503,6 @@ pub(crate) enum ActiveRun {
 pub(crate) struct ActiveCycle {
     pub(crate) sample: abr::SegmentSample,
     pub(crate) round: RoundDecision,
-    pub(crate) delivered: bool,
     pub(crate) rollback_media_ms: Option<u32>,
     pub(crate) remaining_ms: i64,
     pub(crate) paused: bool,
@@ -613,7 +603,7 @@ pub(crate) fn run_active_round<P: ActiveFeedPort>(
         &round_decision, sample, delivered, remaining_ms, after.0, cleanup_ready,
     );
     Ok(ActiveRun::Observed(ActiveCycle {
-        sample, round: round_decision, delivered, rollback_media_ms,
+        sample, round: round_decision, rollback_media_ms,
         remaining_ms, paused: after.0, expected_user_sequence,
         cleanup_ready, after_prefetch,
     }))

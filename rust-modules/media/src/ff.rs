@@ -5921,7 +5921,7 @@ fn hls_demux(
             .expect("an active round holds its physical media until after prefetch");
         drop(active_port);
         let adaptive::ActiveCycle {
-            sample, round, delivered, rollback_media_ms, remaining_ms,
+            sample, round, rollback_media_ms, remaining_ms,
             paused: paused_now, expected_user_sequence,
             cleanup_ready: encoder_cleanup_ready, after_prefetch,
         } = cycle;
