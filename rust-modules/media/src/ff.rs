@@ -5,7 +5,7 @@
 #![deny(clippy::debug_assert_with_mut_call)]
 use crate::aq::AuQueue;
 use crate::adaptive;
-use plx_playback_contract::adaptive::{Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, RoundId, TrialActuatorPort, TrialClock, TrialId};
+use plx_playback_contract::adaptive::{Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, RoundId, TrialActuatorPort, TrialClock, TrialId};
 use plx_playback_contract::SourceKey;
 use crate::player::threads::SendPtr;
 use crate::player::SHARED;
@@ -4741,10 +4741,6 @@ fn publish_original_probe_failure(failure: crate::adaptive::ProbeFailure) {
     crate::player::note_original_failure(kind, status);
 }
 
-fn log_original_mode_comparison(cmp: crate::abr::ModeComparison) {
-    crate::player::log(&adaptive::mode_comparison_line(cmp));
-}
-
 /// One line per steady-state decision, carrying everything the decision was made ON. Nothing here
 /// is a name, an address, a title or a token — it is rates, milliseconds and per-mille — which is
 /// what makes it safe to paste into an issue thread. `abr::Controller::telemetry` assembles it, so
@@ -4827,19 +4823,18 @@ fn remaining_playback_ms() -> i64 {
 }
 
 fn publish_hls_abr_action(
-    proposal: crate::abr::Proposal,
-    refreshing_same_request: bool,
-    committed: Option<bool>,
+    action: adaptive::ActionReadout,
 ) {
-    use crate::abr::Direction::{Down, Up};
-    let action = if refreshing_same_request {
+    use adaptive::ActionDirection::{Down, Up};
+    let adaptive::ActionReadout { direction, target_kbps, refreshing, committed } = action;
+    let action = if refreshing {
         match committed {
             None => crate::player::ABR_ACTION_PRIME_REFRESH,
             Some(true) => crate::player::ABR_ACTION_COMMIT_REFRESH,
             Some(false) => crate::player::ABR_ACTION_REJECT_REFRESH,
         }
     } else {
-        match (proposal.direction, committed) {
+        match (direction, committed) {
             (Down, None) => crate::player::ABR_ACTION_PRIME_DOWN,
             (Up, None) => crate::player::ABR_ACTION_PRIME_UP,
             (Down, Some(true)) => crate::player::ABR_ACTION_COMMIT_DOWN,
@@ -4851,7 +4846,7 @@ fn publish_hls_abr_action(
     SHARED.dg_abr_action.store(action, Ordering::Relaxed);
     SHARED
         .dg_abr_target_kbps
-        .store(i64::from(proposal.rung.kbps()), Ordering::Relaxed);
+        .store(i64::from(target_kbps), Ordering::Relaxed);
 }
 
 /// **One record per candidate transaction, emitted on EVERY exit path.** Increment I2's
@@ -5107,6 +5102,30 @@ impl TrialActuatorPort for HlsAutomaticPort {
     fn lease_token(&self, lease: &Self::Lease) -> u64 { lease.token() }
 
     fn trial_token(&self, reserve: &Self::TrialReserve) -> u64 { reserve.token() }
+}
+
+impl AdaptiveRoundPort for HlsAutomaticPort {
+    fn position_ns() -> i64 { SHARED.playpos_ns.load(Ordering::Relaxed).max(0) }
+
+    fn transition_permitted(kind: AutomaticTransition) -> bool {
+        SHARED.hls_automatic_transition_permitted(match kind {
+            AutomaticTransition::Original => crate::player::HlsAutomaticTransition::Original,
+            AutomaticTransition::QualityUp => crate::player::HlsAutomaticTransition::QualityUp,
+            AutomaticTransition::QualityDown => crate::player::HlsAutomaticTransition::QualityDown,
+        })
+    }
+
+    fn rebuffer_state() -> (bool, bool) {
+        (
+            SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
+            SHARED.hls_rebuffering.load(Ordering::Acquire),
+        )
+    }
+
+    fn buffer_snapshot() -> (Option<i64>, i64) {
+        let (snapshot, started_ns) = hls_buffer_snapshot_with_playhead(None);
+        (snapshot.buffered_ms(), started_ns)
+    }
 }
 
 impl TxTrace {
@@ -5724,10 +5743,6 @@ fn hls_demux(
     // estimate by the exact cumulative interval.
     let mut pause_cursor =
         crate::player::UserPauseCursor::new(crate::player::TX.pause_state_sample());
-    // Last-logged recovery refusal, so a steady one costs one line instead of one per segment.
-    // Lives here rather than on `OriginalRecovery` because it is a property of the LOG, not of the
-    // gate — and the gate is rebuilt on a seek while this loop is not.
-    let mut last_probe_block: Option<crate::abr::ProbeBlock> = None;
     // PMS acknowledges a transcode stop before its worker finishes either half of the lifecycle.
     // The route ledger drives physical ping then exact logical-resource close; this latch keeps a
     // potentially long server cleanup to one waiting line and one release line.
@@ -5788,184 +5803,37 @@ fn hls_demux(
         let (_, output, _, _) = active_port.current.take()
             .expect("an active round holds its physical media until after prefetch");
         drop(active_port);
-        let adaptive::ActiveCycle {
-            sample, round, rollback_media_ms, remaining_ms,
-            paused: paused_now, expected_user_sequence,
-            cleanup_ready: encoder_cleanup_ready, after_prefetch,
-        } = cycle;
-        let decision = round.decision;
-        let telemetry = round.telemetry;
-        if let Some(reconsidered) = after_prefetch.reconsidered {
-            last_probe_block = None;
-            if let Some(cmp) = reconsidered.comparison {
-                log_original_mode_comparison(cmp);
-            }
-            crate::player::log(&format!(
-                "abr: retained Original probe reconsidered after HLS commit measured={}kbps \
-                 verdict={:?}",
-                reconsidered.measured_kbps, reconsidered.verdict,
-            ));
-        }
-        if after_prefetch.steady {
-            // Action and Reason are one current decision in the diagnostics panel. Leaving the
-            // previous commit sticky while publishing this segment's RejectBackoff reason produced
-            // the impossible photographed pair "changed up to 20 Mbps · retrying shortly". A
-            // discrete probe/prime below may replace this again in the same iteration.
-            SHARED
-                .dg_abr_action
-                .store(crate::player::ABR_ACTION_STEADY, Ordering::Relaxed);
-            SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
-            crate::player::log(&adaptive::steady_line(&telemetry, remaining_ms));
-        }
-
-        // The switch itself needs a quiescent session and one media quantum to tear down against.
-        // A `Prime` answer here has not started its transaction yet; the already-latched source
-        // decision therefore cancels that pending rung explicitly instead of becoming stale
-        // across a new operating point.
-        let source_outcome = state.run_latched_original(
-            after_prefetch.source, &mut HlsAutomaticPort { gate: AqPublicationPort(aq) },
-            expected_user_sequence, || now_ms(),
-            || SHARED.playpos_ns.load(Ordering::Relaxed).max(0),
+        let (proposal, reserve_policy, sample, candidate_start) = match state.advance_round(
+            cycle, &mut HlsAutomaticPort { gate: AqPublicationPort(aq) }, || now_ms(),
+            || {
+                let commit_pause = crate::player::TX.pause_state_sample();
+                PauseFact {
+                    paused: commit_pause.paused,
+                    completed_ms: pause_cursor.consume_completed(commit_pause)
+                        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)),
+                }
+            },
             || SHARED.dg_abr_action.store(
                 crate::player::ABR_ACTION_RECOVER_ORIGINAL, Ordering::Relaxed,
             ),
-            |proposal, refreshing| publish_hls_abr_action(proposal, refreshing, Some(false)),
-        );
-        match source_outcome {
-            adaptive::OriginalSwitchOutcome::NoSwitch
-            | adaptive::OriginalSwitchOutcome::LeaseBusy => {}
-            adaptive::OriginalSwitchOutcome::Published { kbps } => {
-                crate::player::log(&format!(
-                    "abr: source sustainable again at {}kbps; requesting Original", kbps,
-                ));
-                break;
-            }
-            adaptive::OriginalSwitchOutcome::Busy => crate::player::log(
-                "abr: Original recovery retained behind another route transition",
-            ),
-            adaptive::OriginalSwitchOutcome::ClockMoved => crate::player::log(
-                "abr: Original recovery retained after playback clock moved",
-            ),
-            adaptive::OriginalSwitchOutcome::Aborted
-            | adaptive::OriginalSwitchOutcome::RouteMoved => return Err(HlsExit::Aborted),
-        }
-        let action = state.next_round_action(
-            &round, sample, rollback_media_ms, remaining_ms, || now_ms(),
-            paused_now, encoder_cleanup_ready,
-            |kind| SHARED.hls_automatic_transition_permitted(match kind {
-                AutomaticTransition::Original =>
-                    crate::player::HlsAutomaticTransition::Original,
-                AutomaticTransition::QualityUp =>
-                    crate::player::HlsAutomaticTransition::QualityUp,
-                AutomaticTransition::QualityDown =>
-                    crate::player::HlsAutomaticTransition::QualityDown,
-            }),
-            || (
-                SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
-                SHARED.hls_rebuffering.load(Ordering::Acquire),
-            ),
-        );
-        // The coordinator has already chosen the policy edge. This feed handles only
-        // the measured acquisition, queue work, and diagnostics for that edge.
-        let (permit, trial) = match action {
-            adaptive::RoundAction::Stay => (None, None),
-            adaptive::RoundAction::ProbeDeferredForCleanup => {
-                last_probe_block = None;
-                (None, None)
-            }
-            adaptive::RoundAction::ProbeBlocked(adaptive::ProbeBlockSummary {
-                reason: block, current_wire_kbps, conservative_kbps,
-            }) => {
-                if last_probe_block != Some(block) {
-                    last_probe_block = Some(block);
-                    crate::player::log(&format!(
-                        "abr: probe withheld reason={} rung={}kbps buf={}ms safe={}kbps",
-                        block.as_str(), current_wire_kbps,
-                        sample.buffer.buffered_ms().unwrap_or(-1), conservative_kbps,
-                    ));
+            publish_hls_abr_action,
+            |diagnostic| match diagnostic {
+                adaptive::RoundDiagnostic::Line(line) => crate::player::log(&line),
+                adaptive::RoundDiagnostic::Steady(line) => {
+                    SHARED.dg_abr_action.store(
+                        crate::player::ABR_ACTION_STEADY, Ordering::Relaxed,
+                    );
+                    SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
+                    crate::player::log(&line);
                 }
-                (None, None)
-            }
-            adaptive::RoundAction::Probe(permit) => {
-                last_probe_block = None;
-                (Some(permit), None)
-            }
-            adaptive::RoundAction::TrialDeferred { proposal, refreshing_same_request, reason } => {
-                publish_hls_abr_action(proposal, refreshing_same_request, Some(false));
-                crate::player::log(match reason {
-                    adaptive::TrialDeferral::EncoderCleanup =>
-                        "abr: quality exploration deferred until PMS confirms prior encoder cleanup",
-                    adaptive::TrialDeferral::PlaybackClock =>
-                        "abr: quality transaction deferred until playback clock is running and recovery completes",
-                });
-                (None, None)
-            }
-            adaptive::RoundAction::Trial { proposal, reserve_policy } => {
-                (None, Some((proposal, reserve_policy)))
-            }
-        };
-        if let Some(permit) = permit {
-            let outcome = state.run_original_probe(
-                permit, &mut HlsAutomaticPort { gate: AqPublicationPort(aq) },
-                expected_user_sequence, &telemetry, remaining_ms, decision,
-                encoder_cleanup_ready, sample.buffer.buffered_ms(),
-                sample.media_duration_ms(),
-                || {
-                    let commit_pause = crate::player::TX.pause_state_sample();
-                    PauseFact {
-                        paused: commit_pause.paused,
-                        completed_ms: pause_cursor.consume_completed(commit_pause)
-                            .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)),
-                    }
-                },
-                || SHARED.playpos_ns.load(Ordering::Relaxed).max(0),
-                &mut HlsOriginalProbeDiagnostics,
-            );
-            match outcome {
-                adaptive::OriginalProbeOutcome::Published => break,
-                adaptive::OriginalProbeOutcome::Aborted => return Err(HlsExit::Aborted),
-                adaptive::OriginalProbeOutcome::LeaseBusy
-                | adaptive::OriginalProbeOutcome::Stale
-                | adaptive::OriginalProbeOutcome::Continue => continue,
-            }
-        }
-        let Some((proposal, reserve_policy)) = trial else { continue; };
-        let candidate_start = match state.begin_candidate(
-            proposal, &mut HlsAutomaticPort { gate: AqPublicationPort(aq) },
-            expected_user_sequence,
-            || {
-                let (snapshot, started_ns) = hls_buffer_snapshot_with_playhead(None);
-                (snapshot.buffered_ms(), started_ns)
             },
-            || now_ms(),
-            |proposal, refreshing| publish_hls_abr_action(proposal, refreshing, Some(false)),
+            &mut HlsOriginalProbeDiagnostics,
         ) {
-            Ok(start) => start,
-            Err(refusal) => {
-                match refusal {
-                    adaptive::CandidateStartRefusal::ReserveUnknown => crate::player::log(
-                        "abr: candidate reserve unreadable before exploration; staying on current rung",
-                    ),
-                    adaptive::CandidateStartRefusal::NoRunway => crate::player::log(
-                        "abr: candidate has no completed current acquisition to preserve; staying",
-                    ),
-                    adaptive::CandidateStartRefusal::NoSurplus => crate::player::log(
-                        "abr: candidate has no reserve above rollback boundary; staying on current rung",
-                    ),
-                    adaptive::CandidateStartRefusal::BudgetMoved { budget_ms, target_kbps } =>
-                        crate::player::log(&format!(
-                            "abr: actual exploration budget {}ms no longer releases {}kbps; staying on current rung",
-                            budget_ms, target_kbps,
-                        )),
-                    adaptive::CandidateStartRefusal::LeaseMoved => crate::player::log(
-                        "abr: recovery transaction superseded before its actuator lease could arm",
-                    ),
-                    adaptive::CandidateStartRefusal::TrialReserveMoved => crate::player::log(
-                        "abr: clock transition superseded exploration before its trial could arm",
-                    ),
-                }
-                continue;
-            }
+            adaptive::RoundCourse::Stay => continue 'segments,
+            adaptive::RoundCourse::OriginalPublished => break,
+            adaptive::RoundCourse::Aborted => return Err(HlsExit::Aborted),
+            adaptive::RoundCourse::Candidate { proposal, reserve_policy, sample, start } =>
+                (proposal, reserve_policy, sample, start),
         };
         // The physical guard stays live through candidate queueing and AQ publication.
         // Dropping it on any early return releases only this generation's actuator slot.
@@ -5997,7 +5865,7 @@ fn hls_demux(
             sample,
             &state.delivery(),
         );
-        publish_hls_abr_action(proposal, refreshing_same_request, None);
+        publish_hls_abr_action(adaptive::ActionReadout::from_proposal(proposal, refreshing_same_request, None));
         let offset_ns = SHARED
             .disp_base
             .load(Ordering::Relaxed)
@@ -6030,7 +5898,7 @@ fn hls_demux(
                 ),
                 adaptive::TrialTrace::Decided => tx.mark_decided(),
                 adaptive::TrialTrace::Rejected { refreshing } =>
-                    publish_hls_abr_action(proposal, refreshing, Some(false)),
+                    publish_hls_abr_action(adaptive::ActionReadout::from_proposal(proposal, refreshing, Some(false))),
                 adaptive::TrialTrace::Finish(outcome) => tx.finish(outcome),
                 adaptive::TrialTrace::Log(line) => crate::player::log(&line),
             },
@@ -6081,7 +5949,7 @@ fn hls_demux(
             |event, _| match event {
                 adaptive::TrialTrace::Decided => tx.mark_decided(),
                 adaptive::TrialTrace::Rejected { refreshing } =>
-                    publish_hls_abr_action(proposal, refreshing, Some(false)),
+                    publish_hls_abr_action(adaptive::ActionReadout::from_proposal(proposal, refreshing, Some(false))),
                 adaptive::TrialTrace::Finish(outcome) => tx.finish(outcome),
                 adaptive::TrialTrace::Log(line) => crate::player::log(&line),
                 _ => unreachable!("settling staged media cannot emit acquisition timing"),
@@ -6149,7 +6017,7 @@ fn hls_demux(
             i64::try_from(candidate.declared_bps / 1_000).unwrap_or(i64::MAX),
             Ordering::Relaxed,
         );
-        publish_hls_abr_action(proposal, refreshing_same_request, Some(true));
+        publish_hls_abr_action(adaptive::ActionReadout::from_proposal(proposal, refreshing_same_request, Some(true)));
         crate::player::report::note_hls_committed_for(
             state.trace_generation(),
             proposal.direction,
@@ -6167,8 +6035,6 @@ fn hls_demux(
         // regime and returns the source gate to a fresh bounded experiment. Non-terminal probe
         // states remain unchanged, and no stale source switch stays actionable.
         state.on_hls_commit(proposal.direction);
-        last_probe_block = None;
-
         // All behavioral projections now name the candidate: controller, global route,
         // worker-local encoder/cursor, runway and recovery policy. Release both main-thread gates
         // before encoder cleanup, whose task-spawn fallback may perform synchronous network I/O.
