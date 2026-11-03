@@ -462,7 +462,7 @@ pub use engine::{
 };
 pub use route_start::{begin_resume, exit_native, foreground_follows_load, land_resume,
     poll_release_frame, reap_abandoned_load, suspend_bufferfeed_if_attempt, NativeExit,
-    ResumeOutcome, ResumeStart};
+    ResumeOutcome, ResumeStart, start_playback, start_playback_tracked};
 
 #[cfg(feature = "play-feed")]
 pub use pump::{
