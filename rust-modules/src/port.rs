@@ -39,6 +39,7 @@ static PORT: plx_platform::tv::Port = plx_platform::tv::Port {
     frame_probe_acquired: crate::system::frame_probe_acquired,
     frame_probe_fields: crate::system::frame_probe_fields,
     sink: SINK,
+    display_sink: SINK,
     uri_media: plx_platform::webos::URI_MEDIA,
 };
 

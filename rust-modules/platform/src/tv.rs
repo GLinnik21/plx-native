@@ -46,6 +46,8 @@ pub struct Port {
     /// The Starfish-shaped verb sink (see `sink::VideoSink`); the OS-neutral sink is step L15b.
     /// Read only by [`sink::installed`], the one way out of `tv` for it.
     pub sink: &'static dyn sink::VideoSink,
+    /// Shared display binding, available independently of a packet-feed executor.
+    pub display_sink: &'static dyn sink::DisplaySink,
     /// The URI media pipe; the absent port and feature-off webOS port provide `NoUriMedia`.
     /// Read only by [`uri::installed`].
     pub uri_media: &'static dyn uri::UriMedia,
@@ -82,6 +84,7 @@ static ABSENT: Port = Port {
     frame_probe_acquired: nothing,
     frame_probe_fields: String::new,
     sink: &sink::NoSink,
+    display_sink: &sink::NoSink,
     uri_media: &uri::NoUriMedia,
 };
 

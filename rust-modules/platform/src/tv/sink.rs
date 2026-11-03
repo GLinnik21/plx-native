@@ -137,6 +137,9 @@ pub trait VideoSink: DisplaySink {
 #[cfg_attr(all(any(test, feature = "test-support"), feature = "hostsim"), allow(dead_code))] // player::sink() answers HostSink there
 pub fn installed() -> &'static dyn VideoSink { super::port().sink }
 
+/// Resolve the shared display interface in composition/IO code, then inject it into a driver.
+pub fn display_installed() -> &'static dyn DisplaySink { super::port().display_sink }
+
 /// Refused native verbs, shared by `NoSink` and `RefusingSink`. Memoized queries
 /// remain each sink's own.
 macro_rules! refuse_video_verbs {

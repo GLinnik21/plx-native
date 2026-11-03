@@ -11,7 +11,7 @@
 use std::sync::Mutex;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Kind {
+pub enum Kind {
     Opus,
 }
 
@@ -25,7 +25,7 @@ impl Kind {
     }
 
     /// The name the learned-refusal list and the exclusion rows spell the codec with.
-    pub(crate) fn ffmpeg_name(self) -> &'static str {
+    pub fn ffmpeg_name(self) -> &'static str {
         match self {
             Kind::Opus => "opus",
         }
@@ -36,19 +36,19 @@ static FED: Mutex<Option<(Kind, u32)>> = Mutex::new(None);
 
 /// A new session is starting: forget the last one's answer. Called on the main thread before the
 /// demuxer is spawned, so no demuxer is alive to answer into the cell.
-pub(crate) fn reset() {
+pub fn reset() {
     *FED.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 /// The demuxer feeds this session's audio natively: the codec and the track's channel count.
-pub(crate) fn publish_fed(kind: Kind, channels: u32) {
+pub fn publish_fed(kind: Kind, channels: u32) {
     *FED.lock().unwrap_or_else(|e| e.into_inner()) = Some((kind, channels));
 }
 
 /// What this session feeds the pipeline natively, once the demuxer has said so. `None` before that
 /// and for any track the TV decodes by name alone (AC3, AAC, DTS) or the app decodes (FLAC as PCM).
 /// The player reads it to tell a native audio refusal from any other.
-pub(crate) fn fed() -> Option<(Kind, u32)> {
+pub fn fed() -> Option<(Kind, u32)> {
     *FED.lock().unwrap_or_else(|e| e.into_inner())
 }
 
