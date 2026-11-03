@@ -487,7 +487,9 @@ impl PlayerAdapter {
     #[cfg(feature = "play-uri")]
     pub fn install_uri_backend(&mut self, settings: UriDriverSettings)
         -> Result<(), UriDriverSettings> {
-        if self.uri_backend.is_some() || self.backend_exit_disposition() != ExitDisposition::Clean {
+        if self.uri_backend.is_some() || self.backend_exit_disposition() != ExitDisposition::Clean
+            || settings.capabilities.packet_feed || settings.capabilities.audio_off
+            || settings.capabilities.subtitle_off {
             return Err(settings);
         }
         let config = UriConfig {
