@@ -2502,7 +2502,9 @@ mod flight_tests {
     fn a_terminal_error_releases_the_pipeline_and_keeps_the_read_out() {
         let mut rig = Rig::new(120);
         SHARED.frames.store(10, Relaxed);
+        SHARED.seen_frame.store(true, Release);
         SHARED.demux_io_failed.store(true, Release);
+        rig.pa.publish_feed_attempt_view(&mut rig.ps);
         let cause_before = crate::player::error_now(&rig.ps).kind;
         rig.frame();
         assert_eq!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
@@ -2589,6 +2591,10 @@ mod flight_tests {
     /// crosses a suspend must leave true: the flight and its hold are over, the restore is
     /// accepted and lands, and no encoder the worker registered runs on unowned.
     fn suspend_across_a_claim(mut rig: Rig, queue: impl FnOnce(&mut Rig), wait_for_request: bool) -> Rig {
+        // This case suspends a watched stream, so publish its reported clock before claiming a
+        // replacement. A seed position without a native report remains unknown in the product.
+        SHARED.seen_frame.store(true, Release);
+        rig.pa.publish_feed_attempt_view(&mut rig.ps);
         rig.frame();
         queue(&mut rig);
         rig.frame();
