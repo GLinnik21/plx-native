@@ -151,6 +151,14 @@ const URI_DTS: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-v","t
      {"id":31342,"streamType":2,"codec":"dca","channels":6,"index":1,"languageCode":"eng","default":true,"selected":true}]}]}]}]}}"#;
 
 #[cfg(feature = "play-uri")]
+const URI_DTS_REMEMBERED_OFF: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-v","type":"episode","grandparentRatingKey":"show-off","duration":600000,"Media":[
+  {"id":3086,"duration":450000,"bitrate":2372,"width":1920,"height":1080,"videoCodec":"h264","audioCodec":"dca","container":"mkv",
+   "Part":[{"id":3134,"duration":450000,"key":"/library/parts/3134/1/file.mkv","container":"mkv","Stream":[
+     {"id":31341,"streamType":1,"codec":"h264","index":0},
+     {"id":31342,"streamType":2,"codec":"dca","channels":6,"index":1,"languageCode":"eng","default":true,"selected":true},
+     {"id":31343,"streamType":3,"codec":"srt","index":2,"languageCode":"eng","selected":true}]}]}]}]}}"#;
+
+#[cfg(feature = "play-uri")]
 const URI_AV1: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-v","type":"movie","duration":450000,"Media":[
   {"id":3086,"bitrate":2372,"width":1920,"height":1080,"videoCodec":"av1","audioCodec":"aac","container":"mkv",
    "Part":[{"id":3134,"duration":450000,"key":"/library/parts/3134/1/file.mkv","container":"mkv","Stream":[
@@ -172,23 +180,70 @@ impl crate::route::uri_preflight::OriginalQualifier for QualifiedOriginal {
         assert_eq!(request.duration_ms, Some(450_000), "the selected Part overrides item duration");
         assert!(request.source_url.contains("/library/parts/3134/1/file.mkv"));
         let selected = request.selection;
+        let subtitle = request.subtitle_source.clone();
+        let mut tracks = vec![plx_play_uri::backend::NativeTrackIndex {
+            selection: plx_playback_contract::TrackSelection {
+                kind: plx_playback_contract::TrackKind::Audio, id: 31342,
+            }, index: 1,
+        }];
+        let subtitle_choice = if selected.subtitle_sid > 0 {
+            tracks.push(plx_play_uri::backend::NativeTrackIndex {
+                selection: plx_playback_contract::TrackSelection {
+                    kind: plx_playback_contract::TrackKind::Subtitle,
+                    id: selected.subtitle_sid as u64,
+                }, index: 2,
+            });
+            TrackChoice::Selected(selected.subtitle_sid as u64)
+        } else { TrackChoice::Unspecified };
         crate::route::uri_preflight::Verdict::Known(crate::route::uri_preflight::KnownSource {
             selection: selected,
-            source: plx_play_uri::backend::UriSource::new(request.source_url, vec![
-                plx_play_uri::backend::NativeTrackIndex {
-                    selection: plx_playback_contract::TrackSelection {
-                        kind: plx_playback_contract::TrackKind::Audio, id: 31342,
-                    }, index: 1,
-                },
-            ]),
+            source: plx_play_uri::backend::UriSource::new(request.source_url, tracks),
             requirements: Requirements { source: SourceKind::ProgressiveUri,
                 video: Fidelity::Exact, audio: Fidelity::Exact,
-                audio_track: TrackChoice::Selected(31342), subtitle_track: TrackChoice::Unspecified },
+                audio_track: TrackChoice::Selected(31342), subtitle_track: subtitle_choice },
             certified_dolby_vision: None,
-            certified_subtitle_source: None,
+            certified_subtitle_source: subtitle,
             expires_at: std::time::Instant::now() + std::time::Duration::from_secs(15),
         })
     }
+}
+
+#[test]
+#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+fn remembered_subtitle_off_remains_off_during_uri_source_qualification() {
+    use plx_play_uri::backend::Binding;
+    use plx_playback_contract::Capabilities;
+    use plx_plex::plex::session::prefs::{SubtitleMemo, TrackMemoryEntry};
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    assert!(plx_net::net::global_init());
+    let capabilities = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
+        pause: true, seek: true, audio_track: true, subtitle_track: true,
+        audio_off: false, subtitle_off: false };
+    ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
+        crate::route::uri_preflight::ProductEvidence { display_exported: true,
+            binding: Binding::Exported { canvas: (1920, 1080) },
+            callable: capabilities, certified: capabilities, preview_rectangle: false },
+        std::sync::Arc::new(QualifiedOriginal { video: "h264", audio: "dca" })));
+    let (port, done, server) = versions_pms_with(URI_DTS_REMEMBERED_OFF, MDE_TRANSCODE_VIDEO);
+    let sid = plx_plex::plex::register_for_test("remembered-off", "127.0.0.1", port,
+        "token", "remembered-off-client");
+    let mut env = ResolveEnv::snapshot(&ps,
+        plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-v");
+    env.memory = vec![TrackMemoryEntry::new("remembered-off", "show-off", None,
+        Some(SubtitleMemo::Off))];
+    let plan = build_stream(&plx_base::task::OffFrame::for_test(), "rk-v",
+        "/library/parts/3134/1/file.mkv", "h264", "dca", &env);
+    done.send(()).unwrap();
+    let requests = server.join().unwrap();
+    assert!(plan.uri_original.is_some(), "the certified source was eligible before Feed work");
+    assert_eq!(plan.source_selection.expect("source intent").subtitle_sid, 0,
+        "remembered Off outranks the PMS-selected embedded subtitle");
+    assert_eq!(plan.sub_sid, 0, "the native route must keep subtitles Off");
+    assert!(!requests.iter().any(|line| line.contains("/decision?")
+        || line.starts_with("PUT /library/parts/")),
+        "URI qualification must not ask Feed MDE or write the remembered selection: {requests:?}");
+    plx_plex::plex::reset_servers_for_test();
 }
 
 #[cfg(all(feature = "play-uri", feature = "play-feed", feature = "devtriggers"))]
