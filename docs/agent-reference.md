@@ -953,6 +953,13 @@ bundled in the NDK), so the Starfish C++ calls get real link-time symbol checkin
 those has the **same SONAME on every webOS release from 2.2.3 to 11.2.0**, which is what makes
 linking them normally the right call — check any of it with `tools/fwcompat.py --inventory`.
 
+`PLAYBACK_BACKENDS=uri` omits the Feed Starfish objects and the `libplayerAPIs` / `libpf-1.0`
+imports. Grade that artifact with `PLAYBACK_BACKENDS=uri ./ci/check-elf.sh pkg/plxnative` (or pass
+`uri` as the script's second argument). The gate requires the Feed callback hook and the full
+`ci/expected-dt-needed.txt` set for the default `both` and explicit `feed` modes; URI mode
+requires the hook and both Feed imports to be absent and matches the exact
+`ci/expected-dt-needed-uri.txt` set. A bare `ci/check-elf.sh` grades the default `both` artifact.
+
 **Two families are deliberately NOT linked because their SONAME MOVES**: `libcurl`
 (`.so.5`→`.so.4`) and `libAcbAPI` (*deleted outright* at webOS 5.0). A `DT_NEEDED` entry is a hard
 requirement for one exact name, which cannot express "either of these", and a name the device lacks

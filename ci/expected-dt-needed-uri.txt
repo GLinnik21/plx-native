@@ -1,0 +1,13 @@
+ld-linux.so.3
+libGLESv2.so.2
+libSDL2-2.0.so.0
+libSDL2_ttf-2.0.so.0
+libc.so.6
+libdl.so.2
+libgcc_s.so.1
+libglib-2.0.so.0
+libluna-service2.so.3
+libm.so.6
+libpthread.so.0
+librt.so.1
+libwayland-client.so.0
