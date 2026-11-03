@@ -139,60 +139,41 @@ mod tests {
     use plx_machine::machine::{InputEvent, InputOwner, MachineId, Source, Tick};
     use plx_plex::plex::session::InstantDpadSeeking;
     use plx_ui::fixture::FixtureMeasure;
-    use std::sync::atomic::Ordering::Relaxed;
 
     struct PlaybackFixture {
-        duration: i64,
-        position: i64,
+        session: plx_media::route::PlaybackSession,
         dpad_seeking: InstantDpadSeeking,
         state: u8,
-        rebuffering: bool,
-        seek_display: i64,
     }
     impl PlaybackFixture {
         fn new() -> Self {
             let saved = Self {
-                duration: plx_media::player::SHARED
-                    .duration_ns
-                    .swap(100_000_000_000, Relaxed),
-                position: plx_media::player::SHARED
-                    .playpos_ns
-                    .swap(40_000_000_000, Relaxed),
+                session: super::super::overlay_tests::playback_session(40_000_000_000, 100_000_000_000),
                 dpad_seeking: plx_media::route::instant_dpad_seeking(),
                 state: plx_media::player::swap_state_for_test(
                     plx_media::player::PlaybackState::Playing,
                 ),
-                rebuffering: plx_media::player::SHARED
-                    .hls_rebuffering
-                    .swap(false, Relaxed),
-                seek_display: plx_media::player::SHARED.seek_display_ns.swap(-1, Relaxed),
             };
             plx_media::route::restore_instant_dpad_seeking(InstantDpadSeeking::On);
             saved
         }
+
+        fn update(&mut self, edit: impl FnOnce(&mut plx_media::player::attempt_view::AttemptFacts)) {
+            let mut facts = *self.session.attempt_view().facts();
+            edit(&mut facts);
+            super::super::overlay_tests::publish_facts(&mut self.session, facts);
+        }
     }
     impl Drop for PlaybackFixture {
         fn drop(&mut self) {
-            plx_media::player::SHARED
-                .duration_ns
-                .store(self.duration, Relaxed);
-            plx_media::player::SHARED
-                .playpos_ns
-                .store(self.position, Relaxed);
             plx_media::route::restore_instant_dpad_seeking(self.dpad_seeking);
             plx_media::player::restore_state_for_test(self.state);
-            plx_media::player::SHARED
-                .hls_rebuffering
-                .store(self.rebuffering, Relaxed);
-            plx_media::player::SHARED
-                .seek_display_ns
-                .store(self.seek_display, Relaxed);
         }
     }
 
-    fn key(page: &mut PlayerScreen, sym: u32, edge: Edge, now: u32) -> Vec<PlayerReq> {
+    fn key(ps: &plx_media::route::PlaybackSession, page: &mut PlayerScreen, sym: u32, edge: Edge, now: u32) -> Vec<PlayerReq> {
         let cx = Cx {
-            views: (),
+            views: ps,
             tick: Tick::default(),
             measure: &FixtureMeasure,
             focus: Default::default(),
@@ -227,49 +208,49 @@ mod tests {
     #[test]
     fn transport_ff_tap_jumps_without_the_dpad_option_or_hud() {
         let _g = plx_base::testlock::serial();
-        let _playback = PlaybackFixture::new();
+        let playback = PlaybackFixture::new();
         plx_media::route::restore_instant_dpad_seeking(InstantDpadSeeking::Off);
         let _interval = player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
         let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
         page.hud.dismissed = true;
-        assert!(key(&mut page, consts::WCODE_FASTFORWARD, Edge::Down, 1_000).is_empty());
+        assert!(key(&playback.session, &mut page, consts::WCODE_FASTFORWARD, Edge::Down, 1_000).is_empty());
         assert!(page.hud.dismissed);
-        assert_eq!(key(&mut page, consts::WCODE_FASTFORWARD, Edge::Up, 1_050),
+        assert_eq!(key(&playback.session, &mut page, consts::WCODE_FASTFORWARD, Edge::Up, 1_050),
             vec![PlayerReq::CommitSeek(50_000_000_000)]);
     }
 
     #[test]
     fn seek_jump_ff_burst_accumulates_and_rew_reverses_with_dpad_off() {
         let _g = plx_base::testlock::serial();
-        let _playback = PlaybackFixture::new();
+        let mut playback = PlaybackFixture::new();
         plx_media::route::restore_instant_dpad_seeking(InstantDpadSeeking::Off);
         let _interval = player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
         let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
         for (sym, at, target) in [(consts::WCODE_FASTFORWARD, 1_000, 50_000_000_000),
             (consts::WCODE_FASTFORWARD, 1_300, 60_000_000_000),
             (consts::WCODE_REWIND, 1_600, 50_000_000_000)] {
-            assert!(key(&mut page, sym, Edge::Down, at).is_empty());
-            assert_eq!(key(&mut page, sym, Edge::Up, at + 40), vec![PlayerReq::CommitSeek(target)]);
-            plx_media::player::SHARED.playpos_ns.store(40_000_000_000, Relaxed);
+            assert!(key(&playback.session, &mut page, sym, Edge::Down, at).is_empty());
+            assert_eq!(key(&playback.session, &mut page, sym, Edge::Up, at + 40), vec![PlayerReq::CommitSeek(target)]);
+            playback.update(|facts| facts.position_ns = Some(40_000_000_000));
         }
     }
 
     #[test]
     fn seek_jump_ff_hold_scrubs_and_waits_for_ok_without_an_initial_seek() {
         let _g = plx_base::testlock::serial();
-        let _playback = PlaybackFixture::new();
+        let playback = PlaybackFixture::new();
         plx_media::route::restore_instant_dpad_seeking(InstantDpadSeeking::Off);
         let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
         page.hud.dismissed = true;
-        assert!(key(&mut page, consts::WCODE_FASTFORWARD, Edge::Down, 1_000).is_empty());
-        assert!(key(&mut page, consts::WCODE_FASTFORWARD, Edge::Repeat, 1_500).is_empty());
-        page.step_scrub_hold(plx_media::route::idle_session_for_test(), 1_600);
+        assert!(key(&playback.session, &mut page, consts::WCODE_FASTFORWARD, Edge::Down, 1_000).is_empty());
+        assert!(key(&playback.session, &mut page, consts::WCODE_FASTFORWARD, Edge::Repeat, 1_500).is_empty());
+        page.step_scrub_hold(&playback.session, 1_600);
         assert!(page.scrub.ns > 40_000_000_000);
         assert!(!page.hud.dismissed);
-        assert!(key(&mut page, consts::WCODE_FASTFORWARD, Edge::Up, 1_610).is_empty());
-        page.step_scrub_hold(plx_media::route::idle_session_for_test(), 1_800);
+        assert!(key(&playback.session, &mut page, consts::WCODE_FASTFORWARD, Edge::Up, 1_610).is_empty());
+        page.step_scrub_hold(&playback.session, 1_800);
         let target = page.scrub.ns;
-        assert_eq!(key(&mut page, consts::SDLK_RETURN, Edge::Down, 1_810), vec![PlayerReq::SeekTo(target)]);
+        assert_eq!(key(&playback.session, &mut page, consts::SDLK_RETURN, Edge::Down, 1_810), vec![PlayerReq::SeekTo(target)]);
     }
 
     #[test]
@@ -277,9 +258,9 @@ mod tests {
         use plx_ui::focus::{FocusEngine, Outcome};
         use plx_ui::screen::By;
         let _g = plx_base::testlock::serial();
-        let _playback = PlaybackFixture::new();
+        let playback = PlaybackFixture::new();
         let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
-        let cx: Cx<'_, TestHost> = Cx { views: (), tick: Tick::default(), measure: &FixtureMeasure,
+        let cx: Cx<'_, TestHost> = Cx { views: &playback.session, tick: Tick::default(), measure: &FixtureMeasure,
             focus: Default::default(), press: Default::default(), owner: InputOwner::Entry(EntryId(9)) };
         for (controls, primary, right, left) in [
             (player_hud::Controls::for_item(true, false, true, false), 1, 2, 1),
@@ -290,7 +271,7 @@ mod tests {
             page.hud.nav.focus = GROUP_SCRUB;
             page.hud.visible_at_press = true;
             // UP from the scrubber is the engine's: the declared link lands the row's own seat.
-            let mut travel = Rig::on(&page, EntryId(9));
+            let mut travel = Rig::on_session(&page, EntryId(9), &playback.session);
             travel.key(&mut page, consts::SDLK_UP, 0, Edge::Down, 1_000);
             assert_eq!(page.hud.nav.focus, GROUP_ROW);
             assert_eq!(page.hud.nav.btn, primary);
@@ -319,7 +300,7 @@ mod tests {
     #[test]
     fn seek_jump_rapid_taps_accumulate_past_an_earlier_keyframe_landing() {
         let _g = plx_base::testlock::serial();
-        let _playback = PlaybackFixture::new();
+        let mut playback = PlaybackFixture::new();
         let _interval =
             player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
         let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
@@ -332,51 +313,47 @@ mod tests {
             (consts::SDLK_LEFT, 1_600, 50_000_000_000),
         ] {
             assert_eq!(
-                key(&mut page, sym, Edge::Down, at),
+                key(&playback.session, &mut page, sym, Edge::Down, at),
                 vec![PlayerReq::CommitSeek(target)]
             );
-            assert!(key(&mut page, sym, Edge::Up, at + 20).is_empty());
-            plx_media::player::SHARED
-                .seek_display_ns
-                .store(target, Relaxed);
-            plx_media::player::SHARED
-                .playpos_ns
-                .store(40_000_000_000, Relaxed);
+            assert!(key(&playback.session, &mut page, sym, Edge::Up, at + 20).is_empty());
+            playback.update(|facts| {
+                facts.seek_display_ns = Some(target);
+                facts.position_ns = Some(40_000_000_000);
+            });
         }
     }
 
     #[test]
     fn seek_jump_burst_expires_and_other_controls_clear_it() {
         let _g = plx_base::testlock::serial();
-        let _playback = PlaybackFixture::new();
+        let mut playback = PlaybackFixture::new();
         let _interval =
             player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
         let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
         let right = consts::SDLK_RIGHT;
         assert_eq!(
-            key(&mut page, right, Edge::Down, 1_000),
+            key(&playback.session, &mut page, right, Edge::Down, 1_000),
             vec![PlayerReq::CommitSeek(50_000_000_000)]
         );
-        plx_media::player::SHARED
-            .playpos_ns
-            .store(43_000_000_000, Relaxed);
+        playback.update(|facts| facts.position_ns = Some(43_000_000_000));
         assert_eq!(
-            key(&mut page, right, Edge::Down, 2_501),
+            key(&playback.session, &mut page, right, Edge::Down, 2_501),
             vec![PlayerReq::CommitSeek(53_000_000_000)]
         );
-        key(&mut page, consts::SDLK_UP, Edge::Down, 2_550);
+        key(&playback.session, &mut page, consts::SDLK_UP, Edge::Down, 2_550);
         // UP raises or moves the HUD; simulate dismissing it again without moving the playhead.
         page.hud.visible_at_press = false;
         assert_eq!(
-            key(&mut page, right, Edge::Down, 2_600),
+            key(&playback.session, &mut page, right, Edge::Down, 2_600),
             vec![PlayerReq::CommitSeek(53_000_000_000)]
         );
         page.hud.visible_at_press = true;
-        key(&mut page, right, Edge::Down, 2_650);
+        key(&playback.session, &mut page, right, Edge::Down, 2_650);
         page.scrub.cancel();
         page.hud.visible_at_press = false;
         assert_eq!(
-            key(&mut page, right, Edge::Down, 2_700),
+            key(&playback.session, &mut page, right, Edge::Down, 2_700),
             vec![PlayerReq::CommitSeek(53_000_000_000)]
         );
     }
@@ -384,22 +361,22 @@ mod tests {
     #[test]
     fn seek_jump_burst_survives_a_seek_reload_but_not_an_item_change() {
         let _g = plx_base::testlock::serial();
-        let _playback = PlaybackFixture::new();
+        let playback = PlaybackFixture::new();
         let _interval =
             player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
         let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
         assert_eq!(
-            key(&mut page, consts::SDLK_RIGHT, Edge::Down, 1_000),
+            key(&playback.session, &mut page, consts::SDLK_RIGHT, Edge::Down, 1_000),
             vec![PlayerReq::CommitSeek(50_000_000_000)]
         );
         page.transport_reset(true);
         assert_eq!(
-            key(&mut page, consts::SDLK_RIGHT, Edge::Down, 1_100),
+            key(&playback.session, &mut page, consts::SDLK_RIGHT, Edge::Down, 1_100),
             vec![PlayerReq::CommitSeek(60_000_000_000)]
         );
         page.transport_reset(false);
         assert_eq!(
-            key(&mut page, consts::SDLK_RIGHT, Edge::Down, 1_200),
+            key(&playback.session, &mut page, consts::SDLK_RIGHT, Edge::Down, 1_200),
             vec![PlayerReq::CommitSeek(50_000_000_000)]
         );
     }
@@ -407,7 +384,7 @@ mod tests {
     #[test]
     fn seek_jump_hidden_press_seeks_immediately_without_raising_the_hud() {
         let _g = plx_base::testlock::serial();
-        let _playback = PlaybackFixture::new();
+        let playback = PlaybackFixture::new();
         let _interval =
             player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
         for (sym, target) in [
@@ -417,7 +394,7 @@ mod tests {
             let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
             page.hud.dismissed = true;
             assert_eq!(
-                key(&mut page, sym, Edge::Down, 1_000),
+                key(&playback.session, &mut page, sym, Edge::Down, 1_000),
                 vec![PlayerReq::CommitSeek(target)]
             );
             assert_eq!(page.scrub.ns, -1, "no preview is waiting for confirmation");
@@ -426,23 +403,23 @@ mod tests {
                 "the hidden seek does not extend the HUD timer"
             );
             assert!(page.hud.dismissed);
-            assert!(key(&mut page, sym, Edge::Up, 1_020).is_empty());
+            assert!(key(&playback.session, &mut page, sym, Edge::Up, 1_020).is_empty());
         }
     }
 
     #[test]
     fn seek_jump_visible_seek_still_waits_for_confirmation() {
         let _g = plx_base::testlock::serial();
-        let _playback = PlaybackFixture::new();
+        let playback = PlaybackFixture::new();
         let _interval =
             player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
         let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
         page.hud.visible_at_press = true;
-        assert!(key(&mut page, consts::SDLK_RIGHT, Edge::Down, 1_000).is_empty());
+        assert!(key(&playback.session, &mut page, consts::SDLK_RIGHT, Edge::Down, 1_000).is_empty());
         assert_eq!(page.scrub.ns, 50_000_000_000);
-        assert!(key(&mut page, consts::SDLK_RIGHT, Edge::Up, 1_020).is_empty());
+        assert!(key(&playback.session, &mut page, consts::SDLK_RIGHT, Edge::Up, 1_020).is_empty());
         assert_eq!(
-            key(&mut page, consts::SDLK_RETURN, Edge::Down, 1_040),
+            key(&playback.session, &mut page, consts::SDLK_RETURN, Edge::Down, 1_040),
             vec![PlayerReq::SeekTo(50_000_000_000)]
         );
     }
@@ -450,24 +427,19 @@ mod tests {
     #[test]
     fn seek_jump_do_not_raise_the_hud_during_seeking_but_buffering_still_does() {
         let _g = plx_base::testlock::serial();
-        let _playback = PlaybackFixture::new();
-        let ps = plx_media::route::PlaybackSession::IDLE;
+        let mut playback = PlaybackFixture::new();
         plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Seeking);
-        assert!(!input::hud_visible(&ps, 1_000, 0, false, true));
-        assert!(input::hud_visible(&ps, 1_000, 2_000, false, false));
+        assert!(!input::hud_visible(&playback.session, 1_000, 0, false, true));
+        assert!(input::hud_visible(&playback.session, 1_000, 2_000, false, false));
         plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Buffering);
-        assert!(input::hud_visible(&ps, 1_000, 0, false, true));
+        assert!(input::hud_visible(&playback.session, 1_000, 0, false, true));
         // Play has been issued after seeking, but its first new picture has not arrived yet.
         // The derived state briefly becomes Buffering; that must not flash the transport.
-        plx_media::player::SHARED
-            .seek_display_ns
-            .store(50_000_000_000, Relaxed);
-        assert!(!input::hud_visible(&ps, 1_000, 0, false, true));
-        plx_media::player::SHARED
-            .hls_rebuffering
-            .store(true, Relaxed);
+        playback.update(|facts| facts.seek_display_ns = Some(50_000_000_000));
+        assert!(!input::hud_visible(&playback.session, 1_000, 0, false, true));
+        playback.update(|facts| facts.rebuffering = Some(true));
         assert!(
-            input::hud_visible(&ps, 1_000, 0, false, true),
+            input::hud_visible(&playback.session, 1_000, 0, false, true),
             "later rebuffering stays visible"
         );
     }
@@ -475,10 +447,10 @@ mod tests {
     #[test]
     fn seek_jump_off_keeps_the_reveal_first_behavior() {
         let _g = plx_base::testlock::serial();
-        let _playback = PlaybackFixture::new();
+        let playback = PlaybackFixture::new();
         plx_media::route::restore_instant_dpad_seeking(InstantDpadSeeking::Off);
         let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
-        assert!(key(&mut page, consts::SDLK_RIGHT, Edge::Down, 1_000).is_empty());
+        assert!(key(&playback.session, &mut page, consts::SDLK_RIGHT, Edge::Down, 1_000).is_empty());
         assert!(page.scrub.reveal);
         assert!(page.hud.until > 1_000);
     }
@@ -486,17 +458,17 @@ mod tests {
     #[test]
     fn seek_jump_hidden_jumps_clamp_and_repeats_do_not_create_a_scrub() {
         let _g = plx_base::testlock::serial();
-        let _playback = PlaybackFixture::new();
+        let playback = PlaybackFixture::new();
         let _interval =
             player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds60);
         for (sym, target) in [(consts::SDLK_RIGHT, 97_000_000_000), (consts::SDLK_LEFT, 0)] {
             let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
             assert_eq!(
-                key(&mut page, sym, Edge::Down, 1_000),
+                key(&playback.session, &mut page, sym, Edge::Down, 1_000),
                 vec![PlayerReq::CommitSeek(target)]
             );
-            assert!(key(&mut page, sym, Edge::Repeat, 1_050).is_empty());
-            assert!(key(&mut page, sym, Edge::Up, 1_080).is_empty());
+            assert!(key(&playback.session, &mut page, sym, Edge::Repeat, 1_050).is_empty());
+            assert!(key(&playback.session, &mut page, sym, Edge::Up, 1_080).is_empty());
             assert!(!page.scrub.is_live());
         }
     }
@@ -504,8 +476,8 @@ mod tests {
     #[test]
     fn a_seek_control_press_keeps_the_hud_up_where_a_hidden_tap_takes_it_down() {
         let _g = plx_base::testlock::serial();
-        let _playback = PlaybackFixture::new();
-        let ps = plx_media::route::PlaybackSession::IDLE;
+        let playback = PlaybackFixture::new();
+        let ps = &playback.session;
         let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
         assert_eq!(page.jump_by(&ps, 10_000_000_000, true, 1_000), Some(50_000_000_000));
         assert!(!page.hud.dismissed, "a control pressed on a visible transport does not hide it");
@@ -519,8 +491,8 @@ mod tests {
     #[test]
     fn seek_control_presses_and_jump_keys_share_one_burst() {
         let _g = plx_base::testlock::serial();
-        let _playback = PlaybackFixture::new();
-        let ps = plx_media::route::PlaybackSession::IDLE;
+        let playback = PlaybackFixture::new();
+        let ps = &playback.session;
         let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
         let step = 10_000_000_000;
         assert_eq!(page.jump_by(&ps, step, true, 1_000), Some(50_000_000_000));
@@ -532,9 +504,9 @@ mod tests {
     #[test]
     fn a_jump_with_no_known_duration_has_no_target() {
         let _g = plx_base::testlock::serial();
-        let _playback = PlaybackFixture::new();
-        plx_media::player::SHARED.duration_ns.store(0, Relaxed);
-        let ps = plx_media::route::PlaybackSession::IDLE;
+        let mut playback = PlaybackFixture::new();
+        playback.update(|facts| facts.duration_ns = Some(0));
+        let ps = &playback.session;
         let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
         assert_eq!(page.jump_by(&ps, 10_000_000_000, true, 1_000), None);
         assert!(page.hud.until == 0, "nothing to clamp against: the HUD is left alone");
@@ -549,8 +521,8 @@ mod tests {
     fn two_ok_presses_on_a_seek_control_inside_one_burst_give_one_target() {
         use player_hud::command::{HudCommand, SeekBy, SeekDir};
         let _g = plx_base::testlock::serial();
-        let _playback = PlaybackFixture::new();
-        let ps = plx_media::route::PlaybackSession::IDLE;
+        let playback = PlaybackFixture::new();
+        let ps = &playback.session;
         let step = 10_000_000_000;
         let seek = Some(HudCommand::Seek(SeekBy::Setting(SeekDir::Forward)));
         let ok_down = |page: &mut PlayerScreen, command: Option<HudCommand>, now: u32| {

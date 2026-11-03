@@ -27,7 +27,7 @@ const ENTRY: EntryId = EntryId(9);
 
 fn cx() -> Cx<'static, TestHost> {
     Cx {
-        views: (),
+        views: plx_media::route::idle_session_for_test(),
         tick: Tick::default(),
         measure: &FixtureMeasure,
         focus: Default::default(),
