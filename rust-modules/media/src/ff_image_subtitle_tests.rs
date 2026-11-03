@@ -10,10 +10,12 @@
 //! `make check`, never a pass that executed nothing. `bind_host_ffmpeg` is shared with the `ff` tests
 //! that run a real demux (`ff_subside`, `ff_late_audio_tests`).
 
-use super::subs::SubCue;
 use super::*;
+use crate::player::subtitle_cue::{SideTracks, SubCue};
 use crate::player::SHARED;
 use crate::player::{ass, ass_source};
+use plx_media_codecs::subtitle_extract::{collect_manifest, AssTrack};
+use plx_playback_contract::subtitle::DecodeKind;
 use std::sync::Arc;
 
 const TERMINATED_ASS_HEADER: &[u8] =
@@ -23,6 +25,7 @@ struct AssFixture {
     fmt: *mut AVFormatContext,
     pkt: *mut AVPacket,
     subs: SubTracks,
+    presentation: SideTracks,
 }
 
 impl AssFixture {
@@ -41,18 +44,23 @@ impl AssFixture {
         );
         let pkt = av_packet_alloc();
         assert!(!pkt.is_null());
-        let subs = SubTracks::open(fmt, (*fmt).streams);
+        let infos = SubTracks::inspect(fmt, (*fmt).streams);
+        let presentation = SideTracks::new(&infos);
+        let plan = presentation.decode_plan();
+        let subs = SubTracks::open((*fmt).streams, infos, plan);
         assert_eq!(subs.entries().len(), 2);
-        Self { fmt, pkt, subs }
+        Self { fmt, pkt, subs, presentation }
     }
 
     unsafe fn sources(&self) -> u64 {
-        begin_ass_sources(
-            "fixture:ass-header",
-            self.fmt,
-            (*self.fmt).streams,
-            self.subs.entries(),
-        )
+        let tracks: Vec<_> = self.subs.entries().iter().zip(self.subs.plan()).map(|(info, kind)| AssTrack {
+            stream_index: info.stream_index,
+            authored: matches!(kind, DecodeKind::Ass { .. }),
+        }).collect();
+        let mut budget = ass::FontBudget::default();
+        let manifest = collect_manifest(self.fmt, (*self.fmt).streams, &tracks,
+            ass_source::MAX_HEADER_BYTES, |len| budget.admit(len));
+        crate::player::subtitle_cue::begin_sources("fixture:ass-header", self.presentation.kinds(), manifest)
     }
 
     unsafe fn read(&self, generation: u64) {
@@ -65,11 +73,9 @@ impl AssFixture {
                 );
                 let raw = std::slice::from_raw_parts((*self.pkt).data, (*self.pkt).size as usize);
                 assert_eq!(raw.last() == Some(&0), pos == 0);
-                if let Some(cue) =
-                    self.subs
-                        .decode(pos, self.pkt, *(*self.fmt).streams.add(si as usize))
-                {
-                    cue.push(generation);
+                if let Some(raw) = self.subs.decode(pos, self.pkt,
+                    *(*self.fmt).streams.add(si as usize), true, crate::player::SUB_BITMAP_BUDGET) {
+                    self.presentation.decode(raw).push(generation);
                 }
             }
             av_packet_unref(self.pkt);
@@ -139,7 +145,7 @@ fn terminated_ass_header_and_packets_render_through_main_subtitle_ingestion() {
     SHARED.playpos_ns.store(0, Ordering::Relaxed);
     unsafe {
         let d = AssFixture::open();
-        let cp = stream_codecpar(*(*d.fmt).streams.add(d.subs.entries()[0].0 as usize));
+        let cp = stream_codecpar(*(*d.fmt).streams.add(d.subs.entries()[0].stream_index as usize));
         assert_eq!((*cp).extradata_size, 521);
         assert_eq!(
             std::slice::from_raw_parts((*cp).extradata, 521),
@@ -336,7 +342,7 @@ fn ass_header_terminators_do_not_weaken_validation() {
     ass_source::reset();
     unsafe {
         let d = AssFixture::open();
-        let cp = stream_codecpar(*(*d.fmt).streams.add(d.subs.entries()[0].0 as usize));
+        let cp = stream_codecpar(*(*d.fmt).streams.add(d.subs.entries()[0].stream_index as usize));
         // FFmpeg allocates zeroed AV_INPUT_BUFFER_PADDING_SIZE bytes after extradata.
         (*cp).extradata_size = 523;
         d.sources();
@@ -477,9 +483,8 @@ pub(crate) fn bind_host_ffmpeg() -> HostFfmpeg {
 /// --disable-track-statistics-tags s.sup --compression 0:none s.sup v.mkv --compression 0:none
 /// v.mkv --compression 0:zlib t.srt`.
 ///
-/// The image tracks go through the app's own decode path — `open_sub_decoder`, `decode_bitmap_cue`,
-/// `rect_to_indexed`, `sub_canvas`, `push_subtitle_bitmap` — keyed by file-order ordinal as the demux
-/// loop keys them.
+/// Image tracks go through the same lower decoder and common cue presentation as the demux loop,
+/// keyed by file-order ordinal.
 #[test]
 #[ignore = "needs the host build of the bundled FFmpeg — run by `make check-ffmpeg`"]
 fn mkvmerge_zlib_subtitle_tracks_decode_like_uncompressed_ones() {
@@ -506,39 +511,25 @@ fn mkvmerge_zlib_subtitle_tracks_decode_like_uncompressed_ones() {
             "open the fixture"
         );
         let streams = (*fmt).streams;
-        // (stream index, kind, decoder) in FILE order — the demux loop's `sub_streams`
-        let mut subs: Vec<(c_int, SubKind, *mut AVCodecContext)> = Vec::new();
-        for i in 0..(*fmt).nb_streams {
-            let cp = stream_codecpar(*streams.add(i as usize));
-            if (*cp).codec_type == AVMEDIA_TYPE_SUBTITLE {
-                let k = sub_kind((*cp).codec_id);
-                let dec = if k == SubKind::Bitmap {
-                    let d = open_sub_decoder(cp);
-                    assert!(
-                        !d.is_null(),
-                        "the bundled build decodes subtitle stream #{i}"
-                    );
-                    d
-                } else {
-                    std::ptr::null_mut()
-                };
-                subs.push((i as c_int, k, dec));
-            }
-        }
-        let kinds: Vec<bool> = subs.iter().map(|(_, k, _)| *k == SubKind::Bitmap).collect();
+        let infos = SubTracks::inspect(fmt, streams);
+        let presentation = SideTracks::new(&infos);
+        let plan = presentation.decode_plan();
+        let kinds: Vec<bool> = plan.iter().map(|kind| matches!(kind, DecodeKind::Bitmap)).collect();
         assert_eq!(
             kinds,
             [true, true, true, true, false],
             "the fixture's five tracks"
         );
+        let mut subs = SubTracks::open(streams, infos, plan);
 
         let pkt = av_packet_alloc();
         while av_read_frame(fmt, pkt) >= 0 {
             let si = (*pkt).stream_index;
-            if let Some(pos) = subs.iter().position(|(s, _, _)| *s == si) {
-                let (_, kind, dec) = subs[pos];
-                if kind == SubKind::Bitmap {
-                    decode_bitmap_cue(dec, pkt, pos as c_int, *streams.add(si as usize));
+            if let Some(pos) = subs.position(si) {
+                if matches!(subs.plan()[pos], DecodeKind::Bitmap) {
+                    if let Some(raw) = subs.decode(pos, pkt, *streams.add(si as usize), true, crate::player::SUB_BITMAP_BUDGET) {
+                        presentation.decode(raw).push(0);
+                    }
                 } else {
                     let n = (*pkt).size.max(0) as usize;
                     text_payloads.push(std::slice::from_raw_parts((*pkt).data, n).to_vec());
@@ -548,11 +539,7 @@ fn mkvmerge_zlib_subtitle_tracks_decode_like_uncompressed_ones() {
         }
         let mut p = pkt;
         av_packet_free(&mut p);
-        for (_, _, dec) in subs.iter_mut() {
-            if !dec.is_null() {
-                avcodec_free_context(dec);
-            }
-        }
+        subs.close();
         avformat_close_input(&mut fmt);
     }
 

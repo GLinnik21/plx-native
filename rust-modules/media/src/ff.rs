@@ -278,20 +278,21 @@ pub(crate) use plx_media_codecs::SpeedDecoder;
 /// dictionary layouts are already compile-asserted against our bundled FFmpeg headers; the
 /// attachment media-type constant is asserted beside them. No firmware layout is inferred.
 unsafe fn begin_ass_sources(
+    session: &mut dyn DemuxSession,
     media_key: &str,
     fmt: *mut AVFormatContext,
     streams: *mut *mut AVStream,
-    subs: &[(c_int, SubKind, *mut AVCodecContext)],
-) -> u64 {
+    subs: &SubTracks,
+) -> Option<u64> {
     use plx_media_codecs::subtitle_extract::{collect_manifest, AssTrack};
-    let tracks: Vec<AssTrack> = subs.iter().map(|(si, kind, _)| AssTrack {
-        stream_index: *si,
-        authored: *kind == SubKind::Ass,
+    let tracks: Vec<AssTrack> = subs.entries().iter().zip(subs.plan()).map(|(info, kind)| AssTrack {
+        stream_index: info.stream_index,
+        authored: matches!(kind, plx_playback_contract::subtitle::DecodeKind::Ass { .. }),
     }).collect();
-    let mut budget = crate::player::ass::FontBudget::default();
-    let manifest = collect_manifest(fmt, streams, &tracks, crate::player::ass_source::MAX_HEADER_BYTES, |len| budget.admit(len));
-    let kinds: Vec<_> = subs.iter().map(|(_, kind, _)| *kind).collect();
-    crate::player::subtitle_cue::begin_sources(media_key, &kinds, manifest)
+    let max_header_bytes = session.subtitle().max_header_bytes();
+    let manifest = collect_manifest(fmt, streams, &tracks, max_header_bytes,
+        |len| session.subtitle().admit_font(len));
+    session.subtitle().begin_sources(media_key, manifest)
 }
 
 /// Did the CURRENT demux session hand over a single video AU? Distinguishes "the demuxer produced
@@ -673,9 +674,8 @@ mod subs;
 #[path = "ff_native_audio.rs"]
 pub(crate) mod native_audio;
 pub(crate) use crate::subtitle_job as subside;
-use subs::{SubKind, SubTracks};
+use subs::SubTracks;
 #[cfg(test)]
-use subs::{decode_bitmap_cue, open_sub_decoder, sub_kind};
 use acquisition::{AcquisitionRuntime, Phase, SegmentAcquisition};
 
 /// A rollback-reserve deadline is monotone in one direction: a floor downshift that reaches an
@@ -6526,13 +6526,19 @@ pub(crate) fn demux(
                 // from the original Part; this stream's own enumeration and ASS source would be
                 // replaced by it.
                 let side_owner = session.clock().side_subtitle_owner();
-                let mut sub_tracks = if side_owner { SubTracks::empty() } else { SubTracks::open(fmt, streams) };
+                let mut sub_tracks = if side_owner {
+                    SubTracks::empty()
+                } else {
+                    let infos = SubTracks::inspect(fmt, streams);
+                    let plan = session.subtitle().plan(&infos);
+                    SubTracks::open(streams, infos, plan)
+                };
                 let ass_generation = if side_owner {
                     0
                 } else {
-                    begin_ass_sources(&url, fmt, streams, sub_tracks.entries())
+                    begin_ass_sources(session.as_mut(), &url, fmt, streams, &sub_tracks).unwrap_or(0)
                 };
-                sub_tracks.log_tracks();
+                if !side_owner { session.subtitle().record_tracks(); }
 
                 // Hand-roll length-prefix -> Annex-B + prepend VPS/SPS/PPS at every keyframe (the
                 // format Starfish decodes). FFmpeg's hevc_mp4toannexb does NOT reliably prepend the
@@ -6659,7 +6665,7 @@ pub(crate) fn demux(
                         // `origin_ns`, so a seek to 0 lands on its first packet, not before it.
                         let ts = av_rescale_q(seek_ns.saturating_add(origin_ns), NS_TB, stream_time_base(vst));
                         // Fence completed renders from the old position before new packets arrive.
-                        crate::player::ass_source::seek(ass_generation);
+                        session.subtitle().seek(ass_generation);
                         session.media().record(&format!("ff: seek begin {}s", seek_ns / 1_000_000_000));
                         let seek_began = std::time::Instant::now();
                         let sr = av_seek_frame(fmt, vi, ts, AVSEEK_FLAG_BACKWARD);
@@ -7002,8 +7008,10 @@ pub(crate) fn demux(
                         // Subtitle packet: `SubTracks::decode` yields a cue for EVERY text track
                         // (not just the selected one) and decodes every image track while subtitles
                         // are on; see ff_subs.rs. Subtitles carry no ES -> never fed to the pipeline.
-                        if let Some(cue) = sub_tracks.decode(sub_pos, pkt, *streams.add(si as usize)) {
-                            cue.push(ass_generation);
+                        let decode_image = session.subtitle().selected_track() >= 0;
+                        let bitmap_budget = session.subtitle().bitmap_budget();
+                        if let Some(cue) = sub_tracks.decode(sub_pos, pkt, *streams.add(si as usize), decode_image, bitmap_budget) {
+                            session.subtitle().emit(ass_generation, cue);
                         }
                         av_packet_unref(pkt);
                     } else {
