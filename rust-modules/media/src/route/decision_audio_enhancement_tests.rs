@@ -4330,7 +4330,7 @@ fn sidecar_clock_a_sidecar_over_a_remux_is_drawn_on_the_clock_of_the_content_it_
         let delta = measured(kf, FIRST_FRAME, requested);
         assert_eq!(delta, -lead_ms * 1_000_000);
         assert_eq!(
-            crate::player::sidecar_clock_ns(&ps, crate::player::feed_playpos_ns()),
+            crate::player::sidecar_clock_ns(&ps, playhead),
             kf,
             "the first frame shows the content of the Part keyframe {kf} ns, requested {requested} ns"
         );
