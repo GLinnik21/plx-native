@@ -86,8 +86,8 @@ impl SegmentAcquisition {
         })
     }
 
-    /// Private: the only callers are [`SegmentAcquisition::for_cursor`] and, under `#[cfg(test)]`,
-    /// [`SegmentAcquisition::for_test`]. Not reachable from `ff`.
+    /// Private: the only callers are [`SegmentAcquisition::for_cursor`] and, under
+    /// the test-support gate, [`SegmentAcquisition::for_test`]. Not reachable from `ff`.
     fn active(
         reserve_ms: Option<i64>, at_floor: bool, already_held: bool,
         observer: Arc<dyn DemuxObserver>,
@@ -138,8 +138,8 @@ impl SegmentAcquisition {
 
     /// Test-only escape hatch: build an `Active` acquisition from explicit inputs rather than
     /// `for_cursor`'s own live sampling, so a test can hold the buffer/floor/hold state fixed
-    /// without wiring up a real cursor, controller and `SHARED` state. Never reachable outside
-    /// `#[cfg(test)]`; the shipping constructor is always `for_cursor`.
+    /// without wiring up a real cursor, controller and session observer. Available only
+    /// to tests and the test-support feature; the shipping constructor is always `for_cursor`.
     #[cfg(any(test, feature = "test-support"))]
     pub fn for_test(
         reserve_ms: Option<i64>, at_floor: bool, already_held: bool,
