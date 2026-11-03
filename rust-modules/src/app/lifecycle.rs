@@ -21,8 +21,10 @@ pub(crate) use plx_media::player::lifecycle::{
     ForegroundLoadStatus, Successor,
 };
 pub(crate) use plx_media::player::transport::{
-    paused, resume_if_paused, set_paused, set_transport_paused, transport_target, viewer_paused_for,
+    resume_if_paused, set_paused, set_transport_paused, transport_target, viewer_paused_for,
 };
+#[cfg(all(test, feature = "hostsim"))]
+pub(crate) use plx_media::player::transport::paused;
 // Only `app::run`'s hostsim lifecycle tests name the machine's state, so a re-export outside
 // them would be an unused import.
 #[cfg(all(test, feature = "hostsim"))]
@@ -117,7 +119,7 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
             // from `TX.paused`: a live Engine (a replacement the pump launched after a refused
             // restore) owns its clock, and `PlayClock` resumes it after `Started`, which it does
             // only while `TX.paused` still reads Paused.
-            ForegroundClock::Playing if paused() && !self.pa.is_live() => {
+            ForegroundClock::Playing if viewer_paused_for(self.pa) && !self.pa.is_live() => {
                 plx_media::player::transport::commit_viewer_resume_for_load();
             }
             ForegroundClock::Playing => {}
@@ -188,7 +190,7 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
     fn play_clock(&mut self) -> bool {
         // start_bufferfeed has installed the Initial native-clock hold from TX.paused. Publish
         // Play through the synchronized reducer so that hold and the feed gate reopen together.
-        !paused() || set_transport_paused(self.pa, false)
+        !viewer_paused_for(self.pa) || set_transport_paused(self.pa, false)
     }
 }
 

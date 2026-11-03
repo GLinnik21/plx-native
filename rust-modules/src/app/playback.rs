@@ -1355,7 +1355,7 @@ pub(crate) fn key_pause(
     now: u32,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
-    if super::bridge::player(pages).is_some() && !paused() {
+    if super::bridge::player(pages).is_some() && !super::lifecycle::viewer_paused_for(pa) {
         if set_transport_paused(pa, true) {
             plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
                 feature: plx_telemetry::diag::schema::Feature::Pause,
@@ -1407,11 +1407,11 @@ pub(crate) unsafe fn key_play(
                 enter_player(pages, bridge, Origin::Here, None);
                 // Keep the ordinary off-route start's existing stale-Pause defense. A foreground
                 // transition applies its explicit clock intent through the lifecycle actuator.
-                if paused() {
+                if super::lifecycle::viewer_paused_for(pa) {
                     set_transport_paused(pa, false);
                 }
             }
-        } else if paused() {
+        } else if super::lifecycle::viewer_paused_for(pa) {
             set_transport_paused(pa, false);
         }
     }

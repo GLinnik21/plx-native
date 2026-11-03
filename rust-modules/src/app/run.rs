@@ -1264,6 +1264,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             sym,
             wcode,
             app.last_input,
+            viewer_paused_for(&app.adapters.player),
             &mut app.down_sym,
             super::bridge::player_mut(&mut app.pages).map(|player| &mut player.hud),
             &mut app.ptr,
@@ -1420,7 +1421,8 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             // ONE key, both directions. `key_play`/`key_pause` are each half of the
             // toggle, so this arm picks; off the player route `key_play` is what starts
             // playback, which is the right answer for a PLAYPAUSE press on a card.
-            if paused() || super::bridge::player(&app.pages).is_none() {
+            if viewer_paused_for(&app.adapters.player)
+                || super::bridge::player(&app.pages).is_none() {
                 key_play(&mut app.player.session,
                     &mut app.adapters.player,
                     app.last_input,
@@ -2197,7 +2199,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         let section_up = super::bridge::player(&app.pages).is_some_and(|p| p.hud.sections.any());
         let bare = !app.pages.surface_up() && !section_up;
         if matches!(app.route(), AppArg::Player) {
-            let paused_now = paused();
+            let paused_now = viewer_paused_for(&app.adapters.player);
             let mut parked = false;
             if let Some(player) = super::bridge::player_mut(&mut app.pages) {
                 if player.up_next.armed() {
@@ -3359,7 +3361,8 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
                     focus: player.hud.nav.focus.0 as i32,
                     btn: player.hud.nav.btn,
                     tab: player.hud.nav.tab,
-                    visible: player.hud.visible(&app.player.session, app.last_input, paused()),
+                    visible: player.hud.visible(&app.player.session, app.last_input,
+                        viewer_paused_for(&app.adapters.player)),
                 },
             )
         };
@@ -3737,7 +3740,8 @@ unsafe fn controlled_key_input(app: &mut App, event: plx_machine::machine::Input
         _ => {
             app.last_input = event.at.ms;
             begin_fresh_press(&mut app.player.session, classify(sym, wcode), sym, wcode,
-                event.at.ms, &mut app.down_sym, None, &mut app.ptr, &mut app.ok_armed, &mut app.input.press);
+                event.at.ms, viewer_paused_for(&app.adapters.player), &mut app.down_sym,
+                None, &mut app.ptr, &mut app.ok_armed, &mut app.input.press);
         }
     }
     app.inputs.push(event);
