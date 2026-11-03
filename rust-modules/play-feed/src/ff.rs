@@ -17,7 +17,6 @@ use std::os::raw::{c_int, c_long, c_uchar, c_uint, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 pub use plx_media_codecs::ffi::*;
-pub use plx_media_codecs::Venc;
 
 /// Captured by the media composition and moved into one demux worker. Authorization is checked
 /// afresh on every request by the injected range factory and plaintext redirect gate.
@@ -1918,7 +1917,7 @@ struct ObuSpan {
 /// Split an OBU run into its OBUs. An OBU without a size field runs to the end of the run and
 /// is therefore the last one. Returns None for a set forbidden bit, a truncated header or size,
 /// or a payload that overruns the run.
-pub fn walk_obus(b: &[u8]) -> Option<Vec<ObuSpan>> {
+fn walk_obus(b: &[u8]) -> Option<Vec<ObuSpan>> {
     let mut spans = Vec::new();
     let mut p = 0usize;
     while p < b.len() {
@@ -3854,7 +3853,7 @@ struct AudioStamp {
 /// MPEG-TS may put a PES timestamp on the second AAC access unit while the first unit carries
 /// only its frame duration. Resolve those holes inside one complete segment before mapping the
 /// audio lane onto the normalized content timeline. We never borrow video PTS or wall time.
-pub fn resolve_audio_stamps(stamps: &mut [AudioStamp]) -> Result<usize, &'static str> {
+fn resolve_audio_stamps(stamps: &mut [AudioStamp]) -> Result<usize, &'static str> {
     let missing = stamps.iter().filter(|stamp| stamp.raw_ns.is_none()).count();
     if stamps.is_empty() || missing == 0 {
         return Ok(missing);
