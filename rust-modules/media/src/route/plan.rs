@@ -743,7 +743,7 @@ pub enum DisabledReason {
 /// [`Hidden`]: EnhancementAvailability::Hidden
 pub(super) fn enhancement_availability(f: &EnhancementFacts, target: RouteFamily) -> EnhancementAvailability {
     use plx_plex::plex::serverinfo::Subscription;
-    use EnhancementAvailability::{Disabled, Hidden, Offered};
+    use EnhancementAvailability::{Disabled, Hidden};
     // I1/I2: `Unknown` fails closed exactly like `No` — an unknown server is not assumed to hold a
     // subscription it may not have, and with it hidden the app's URLs are byte-identical to a
     // build without the feature. The ONE state that stays a silent absence.
