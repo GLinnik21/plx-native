@@ -34,3 +34,6 @@ pub mod hls; // compatibility facade for the strict parser/auth/timeline in play
 pub mod player; // buffer-feed video engine (was playback.c) -- step 5
 pub mod speed_audio; // compatibility facade for the independent codec DSP
 pub mod route; // play_movie route selection (direct-play vs transcode) -- step 3
+
+#[cfg(test)]
+mod http_test_support;

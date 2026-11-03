@@ -513,6 +513,7 @@ pub(crate) fn read_once(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::http_test_support::{serve_file, with_counting_listener};
     use crate::player::SHARED;
 
     /// A one-pixel image set on `track` stamped `pts` (Part time).
