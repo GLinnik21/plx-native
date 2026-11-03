@@ -124,7 +124,8 @@ mod qualified_uri_offer_tests {
             crate::route::backend_policy::Selection::Open(offer)
                 if offer.backend == BackendKind::Uri
                     && offer.id == crate::route::backend_policy::OfferId::URI_ORIGINAL));
-        let started = super::super::route_start::start_bufferfeed_tracked(&mut session, &mut adapter);
+        let started = super::super::route_start::start_bufferfeed_for(
+            &mut session, &mut adapter, ticket);
         assert!(matches!(started, super::super::route_start::BufferfeedStartOutcome::Launched(_)),
             "queued URI Open is distinct from the fake transport's later refusal");
         assert!(adapter.qualified_uri.is_none(), "failed Start consumed the source authorization");
