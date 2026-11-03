@@ -235,6 +235,13 @@ impl PlayerAdapter {
         self.feed.active_attempt()
     }
 
+    /// Address the physical callback snapshot to the current route-owned attempt.
+    pub(super) fn publish_feed_attempt_view(&self, ps: &mut crate::route::PlaybackSession) {
+        let Some(attempt) = self.active_feed_attempt() else { return; };
+        let Some(facts) = super::feed_pump::attempt_facts(&self.feed) else { return; };
+        let _ = ps.ingest_attempt_facts(attempt, facts);
+    }
+
     pub(super) fn feed_uses_stream_queues(&self) -> bool { self.feed.uses_stream_queues() }
     pub(super) fn arm_feed_live_clock_prime(&mut self) -> bool { self.feed.arm_live_clock_prime() }
     pub(super) fn feed_stage(&self) -> Option<super::shared::Stage> { self.feed.stage() }
