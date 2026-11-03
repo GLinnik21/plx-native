@@ -6136,55 +6136,57 @@ mod prime_livelock_tests {
     /// stays parked on it and neither tail can rise before Play. Every later press logged
     /// `physical Play remains fenced`.
     ///
-    /// Two phases pin both sides of the release. While the queue still has room, more media can
-    /// arrive, so the hold keeps waiting for the runway. Once the queue is over its cap as well,
-    /// nothing more can, and the hold releases on what the pipeline holds.
-    #[test]
-    fn a_resume_prime_on_a_saturated_pipeline_plays_below_the_runway() {
-        let _serial = plx_base::testlock::serial();
-        struct Restore {
-            runway: i64,
-            video_tail: i64,
-            audio_tail: i64,
-            audio_expected: bool,
-            pts_shift: i64,
-            presented: i64,
-            paused: bool,
-        }
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                SHARED
-                    .hls_prime_runway_ms
-                    .store(self.runway, Ordering::Relaxed);
-                SHARED
-                    .hls_video_tail_ns
-                    .store(self.video_tail, Ordering::Relaxed);
-                SHARED
-                    .hls_audio_tail_ns
-                    .store(self.audio_tail, Ordering::Relaxed);
-                SHARED
-                    .hls_audio_expected
-                    .store(self.audio_expected, Ordering::Relaxed);
-                SHARED.pts_shift.store(self.pts_shift, Ordering::Relaxed);
-                SHARED.pres_fed.store(self.presented, Ordering::Relaxed);
-                TX.commit_paused(self.paused);
-                SHARED.reset_hls_clock_for_test();
-                crate::player::ffi_host::refuse_feed_past_for_test(1, None);
-                crate::player::ffi_host::force_clocksink_for_test(false);
-            }
-        }
+    /// [`saturation_fixture`] is that Resume, armed: Pause accepted, Resume taken as a ResumePrime,
+    /// the live-clock prime armed at [`SAT_BASE`], and the device's runway and queued tails
+    /// published. The four tests below pin both halves of [`pipeline_saturated`] on both lanes.
+    const SAT_BASE: i64 = 10_000_000_000;
+    const SAT_TAILS: i64 = SAT_BASE + 10_800_000_000;
 
+    struct SaturationFixture {
+        runway: i64,
+        video_tail: i64,
+        audio_tail: i64,
+        audio_expected: bool,
+        pts_shift: i64,
+        presented: i64,
+        paused: bool,
+    }
+
+    impl Drop for SaturationFixture {
+        fn drop(&mut self) {
+            SHARED
+                .hls_prime_runway_ms
+                .store(self.runway, Ordering::Relaxed);
+            SHARED
+                .hls_video_tail_ns
+                .store(self.video_tail, Ordering::Relaxed);
+            SHARED
+                .hls_audio_tail_ns
+                .store(self.audio_tail, Ordering::Relaxed);
+            SHARED
+                .hls_audio_expected
+                .store(self.audio_expected, Ordering::Relaxed);
+            SHARED.pts_shift.store(self.pts_shift, Ordering::Relaxed);
+            SHARED.pres_fed.store(self.presented, Ordering::Relaxed);
+            TX.commit_paused(self.paused);
+            SHARED.reset_hls_clock_for_test();
+            crate::player::ffi_host::refuse_feed_past_for_test(1, None);
+            crate::player::ffi_host::refuse_feed_past_for_test(2, None);
+            crate::player::ffi_host::force_clocksink_for_test(false);
+        }
+    }
+
+    /// The caller holds `plx_base::testlock::serial()` for as long as the fixture lives.
+    fn saturation_fixture() -> (SaturationFixture, Engine) {
         crate::player::ffi_host::force_clocksink_for_test(true);
         SHARED.reset_hls_clock_for_test();
-        let base = 10_000_000_000;
-        let tails = base + 10_800_000_000;
-        let _restore = Restore {
+        let fixture = SaturationFixture {
             runway: SHARED.hls_prime_runway_ms.swap(14_754, Ordering::Relaxed),
-            video_tail: SHARED.hls_video_tail_ns.swap(tails, Ordering::Relaxed),
-            audio_tail: SHARED.hls_audio_tail_ns.swap(tails, Ordering::Relaxed),
+            video_tail: SHARED.hls_video_tail_ns.swap(SAT_TAILS, Ordering::Relaxed),
+            audio_tail: SHARED.hls_audio_tail_ns.swap(SAT_TAILS, Ordering::Relaxed),
             audio_expected: SHARED.hls_audio_expected.swap(true, Ordering::Relaxed),
             pts_shift: SHARED.pts_shift.swap(0, Ordering::Relaxed),
-            presented: SHARED.pres_fed.swap(base, Ordering::Relaxed),
+            presented: SHARED.pres_fed.swap(SAT_BASE, Ordering::Relaxed),
             paused: TX.paused.swap(true, Ordering::Relaxed),
         };
         let pause = match SHARED.prepare_hls_user_pause().expect("reserve user Pause") {
@@ -6199,45 +6201,115 @@ mod prime_livelock_tests {
             SHARED.prepare_hls_user_resume(true),
             Some(super::super::shared::HlsUserResume::Prime)
         );
-
-        let mt = unsafe { plx_base::task::MainThread::assume() };
         let mut eng = engine_after_reload();
         eng.prime_play = false;
         arm_live_clock_prime(&mut eng);
-        // Starfish's source buffer is full 1.5 s past the paused frame: past the decoder prime.
-        crate::player::ffi_host::refuse_feed_past_for_test(1, Some(base + 1_500_000_000));
-        push_segment_at(&mut eng, base);
         TX.commit_paused(false);
-        let before = crate::player::ffi_host::play_calls_for_test();
+        (fixture, eng)
+    }
 
-        // Phase 1: Starfish refuses, but the queue is under its cap, so the demuxer can still add.
+    /// One AU of `len` bytes on a lane (`es` 1 video, 2 audio): with the queue under its cap the
+    /// push is admitted, and the queue then holds more than the cap, as a demuxer parked on it does.
+    fn overfill(eng: &mut Engine, es: c_int, len: c_long, pts: i64) {
+        let q = if es == 1 { &mut eng.aq_video } else { &mut eng.aq_audio };
+        let q = &mut **q.as_mut().unwrap() as *mut crate::aq::AuQueue;
+        let data = vec![0u8; len as usize];
+        crate::aq::aq_push(q, data.as_ptr(), len as c_int, pts, 0, es);
+        assert!(crate::aq::aq_would_park(q), "the lane's queue is over its cap");
+    }
+
+    fn assert_decoder_primed(eng: &Engine) {
+        assert!(
+            eng.max_fed_video_pts - SAT_BASE >= PRIME_NS
+                && eng.max_fed_audio_pts - SAT_BASE >= PRIME_AUDIO_NS,
+            "the decoder prime is met; only the runway holds the clock",
+        );
+    }
+
+    /// Starfish refuses, but the queue has room: the demuxer can still extend the tails, so the
+    /// hold keeps waiting for the runway.
+    #[test]
+    fn a_resume_prime_refused_with_room_in_the_queue_waits_for_the_runway() {
+        let _serial = plx_base::testlock::serial();
+        let (_fixture, mut eng) = saturation_fixture();
+        let mt = unsafe { plx_base::task::MainThread::assume() };
+        crate::player::ffi_host::refuse_feed_past_for_test(1, Some(SAT_BASE + 1_500_000_000));
+        push_segment_at(&mut eng, SAT_BASE);
+        let before = crate::player::ffi_host::play_calls_for_test();
         for _ in 0..600 {
             tick(&mt, &mut eng);
         }
         assert!(eng.pending_video.is_some(), "the lane holds the AU Starfish refused");
-        assert!(
-            eng.max_fed_video_pts - base >= PRIME_NS
-                && eng.max_fed_audio_pts - base >= PRIME_AUDIO_NS,
-            "the decoder prime is met; only the runway holds the clock",
-        );
-        assert_eq!(
-            crate::player::ffi_host::play_calls_for_test(),
-            before,
-            "a queue with room can still grow the tails: the hold must wait for the runway",
-        );
+        assert_decoder_primed(&eng);
+        assert_eq!(crate::player::ffi_host::play_calls_for_test(), before);
+        assert!(eng.prime_play);
+    }
 
-        // Phase 2: the demuxer fills the queue past its cap and parks. Nothing more can arrive.
-        let filler = vec![0u8; AQ_VIDEO_BYTES as usize];
+    /// The queue is over its cap, but Starfish is still taking AUs: the lane drains it, the demuxer
+    /// will push again, so this is not saturation. It is also the state a Resume finds on its
+    /// first tick, the queue having filled during the pause.
+    #[test]
+    fn a_resume_prime_with_a_full_queue_that_still_drains_waits_for_the_runway() {
+        let _serial = plx_base::testlock::serial();
+        let (_fixture, mut eng) = saturation_fixture();
+        let mt = unsafe { plx_base::task::MainThread::assume() };
+        push_segment_at(&mut eng, SAT_BASE);
+        // More AUs than one tick feeds (120), and more bytes behind them than the cap. A push over
+        // the cap would park this thread, so they go in under headroom that is then snapped back.
         let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut crate::aq::AuQueue;
-        crate::aq::aq_push(qv, filler.as_ptr(), filler.len() as c_int, tails, 0, 1);
-        assert!(crate::aq::aq_would_park(qv));
+        let au = vec![0u8; (AQ_VIDEO_BYTES / 50) as usize];
+        crate::aq::aq_set_headroom(qv, 4 * AQ_VIDEO_BYTES);
+        for i in 0..180 {
+            let pts = SAT_BASE + 2_000_000_000 + i * V_STEP_NS;
+            crate::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, pts, 0, 1);
+        }
+        crate::aq::aq_set_headroom(qv, 0);
+        let before = crate::player::ffi_host::play_calls_for_test();
         tick(&mt, &mut eng);
+        assert!(crate::aq::aq_would_park(qv), "still over the cap after the tick");
+        assert!(!eng.video_sink_full, "Starfish took every AU offered");
+        assert_decoder_primed(&eng);
+        assert_eq!(crate::player::ffi_host::play_calls_for_test(), before);
+        assert!(eng.prime_play);
+    }
 
+    /// The device's state: Starfish refuses the video AU the lane holds and the video queue is over
+    /// its cap. Nothing more can arrive, so the hold releases on what the pipeline holds.
+    #[test]
+    fn a_resume_prime_on_a_saturated_video_lane_plays_below_the_runway() {
+        let _serial = plx_base::testlock::serial();
+        let (_fixture, mut eng) = saturation_fixture();
+        let mt = unsafe { plx_base::task::MainThread::assume() };
+        crate::player::ffi_host::refuse_feed_past_for_test(1, Some(SAT_BASE + 1_500_000_000));
+        push_segment_at(&mut eng, SAT_BASE);
+        overfill(&mut eng, 1, AQ_VIDEO_BYTES, SAT_TAILS);
+        let before = crate::player::ffi_host::play_calls_for_test();
+        tick(&mt, &mut eng);
+        assert!(eng.video_sink_full);
+        assert_decoder_primed(&eng);
         assert_eq!(
             crate::player::ffi_host::play_calls_for_test(),
             before + 1,
             "a saturated pipeline held the clock below a runway it can never reach",
         );
+        assert!(!eng.prime_play);
+    }
+
+    /// The same on the audio lane: the demuxer fills both lanes from one sequential read, so a
+    /// parked audio push stops the video tail too.
+    #[test]
+    fn a_resume_prime_on_a_saturated_audio_lane_plays_below_the_runway() {
+        let _serial = plx_base::testlock::serial();
+        let (_fixture, mut eng) = saturation_fixture();
+        let mt = unsafe { plx_base::task::MainThread::assume() };
+        crate::player::ffi_host::refuse_feed_past_for_test(2, Some(SAT_BASE + 1_000_000_000));
+        push_segment_at(&mut eng, SAT_BASE);
+        overfill(&mut eng, 2, AQ_AUDIO_BYTES, SAT_TAILS);
+        let before = crate::player::ffi_host::play_calls_for_test();
+        tick(&mt, &mut eng);
+        assert!(eng.audio_sink_full && !eng.video_sink_full);
+        assert_decoder_primed(&eng);
+        assert_eq!(crate::player::ffi_host::play_calls_for_test(), before + 1);
         assert!(!eng.prime_play);
     }
 

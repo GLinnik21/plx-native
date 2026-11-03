@@ -992,10 +992,12 @@ unsafe fn sf_send_segment() -> c_int {
 /// audio lane is allowed to run `AUDIO_SLACK_NS` ahead by design, so clamping to it would let the
 /// clock outrun the pictures it claims to be presenting.
 ///
-/// Always `'O'`. `'B'` (BufferFull) is the real pipeline's own backpressure, and the sink has no
-/// buffer to fill — the app's backpressure is upstream, in the AU queues' byte caps and the
-/// feed-ahead throttle, and those are exactly what this exists to exercise. Returning `'B'` here
-/// would add a second, fictional one.
+/// Always `'O'` in the simulator. `'B'` (BufferFull) is the real pipeline's own backpressure, and
+/// the sink has no buffer to fill — the app's backpressure is upstream, in the AU queues' byte
+/// caps and the feed-ahead throttle, and those are exactly what this exists to exercise. Returning
+/// `'B'` there would add a second, fictional one. A `cfg(test)` build is the one exception: a test
+/// can arm [`refuse_feed_past_for_test`] to get `'B'` past a sink pts, its model of a paused
+/// pipeline whose source buffer is full (#1216).
 unsafe fn sf_feed(p: *const u8, size: c_uint, pts: i64, es_data: c_int) -> c_char {
     #[cfg(any(test, feature = "test-support"))]
     note_dispatch("sf_feed");

@@ -111,7 +111,11 @@ enum ClockHold {
     /// The viewer explicitly paused a running clock.
     User,
     /// The viewer resumed a queued stream; feeding is open, but the physical clock remains held
-    /// until both decoder lanes and the measured runway are ready.
+    /// until both decoder lanes are primed and either every expected lane holds the measured
+    /// runway or the pipeline is saturated (`engine::pipeline_saturated`: a lane's Feed answered
+    /// BufferFull this tick and that lane's AU queue is over its cap). The runway grows with the
+    /// session and nothing caps it at what Starfish and the queues can hold, so a hold that waited
+    /// for the runway alone never played (#1216).
     ResumePrime,
 }
 

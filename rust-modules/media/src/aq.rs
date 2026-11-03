@@ -529,8 +529,10 @@ pub fn aq_cap(q: *mut AuQueue) -> c_long {
     }
 }
 
-/// Would a push made now park? Producer-side, advisory: the consumer can only make the answer
-/// "no" (a pop) between this call and the push. Same predicate `aq_push` waits on.
+/// Would a push made now park? Same predicate `aq_push` waits on. Two callers: the producer asks
+/// before a push, and only a consumer pop can turn its answer to "no" before it pushes;
+/// `engine::pipeline_saturated` asks from the consumer side, where a "yes" holds until a pop or
+/// until the producer raises the cap with [`aq_set_headroom`].
 pub fn aq_would_park(q: *mut AuQueue) -> bool {
     if q.is_null() {
         return false;
