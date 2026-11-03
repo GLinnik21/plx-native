@@ -996,6 +996,12 @@ mod tests {
             command: rig.command, operation: Operation::Pause, native_acknowledged: true },
             DriverEvent::Observation { attempt: A, observation: Observation::Playback(Observed {
                 value: Playback::Paused, from: EvidenceSource::BackendReport }) }]);
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, Operation::Play), DispatchResult::Queued);
+        rig.bus.say("play", r#"{"returnValue":false,"mediaId":"m1"}"#);
+        assert_eq!(rig.driver.poll(&rig.mt), [DriverEvent::ControlRefused { attempt: A,
+            command: rig.command, operation: Operation::Play, failure: Failure::Refused }]);
+        assert_eq!(rig.driver.exit_disposition(), ExitDisposition::PreserveNativeOwnership,
+            "a later Play refusal leaves the live attempt available for another viewer press");
     }
 
     #[test]
