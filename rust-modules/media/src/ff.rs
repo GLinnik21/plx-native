@@ -6320,9 +6320,9 @@ fn hls_demux(
             (next, port.candidate.take(), port.segment.take(), port.error.take())
         };
         let mut candidate = candidate_slot.expect("segment lookup retains its candidate cursor");
-        let candidate_segment = match next {
-            FeedObservation::SegmentReady { trial, .. } if trial == trial_id =>
-                segment_slot.expect("ready segment carries its physical object"),
+        let (candidate_segment, candidate_duration) = match next {
+            FeedObservation::SegmentReady { trial, duration } if trial == trial_id =>
+                (segment_slot.expect("ready segment carries its physical object"), duration),
             FeedObservation::Failed { failure: FeedFailure::Aborted | FeedFailure::SourceMoved, .. }
             | FeedObservation::SegmentReady { .. }
             | FeedObservation::Opened { .. } => {
@@ -6420,7 +6420,7 @@ fn hls_demux(
         // reserve and internally held clock, so its prediction uses the actual candidate and
         // completed delivery evidence instead of the request ceiling.
         let budget = state.candidate_budget(
-            proposal, reserve_policy, candidate_segment.duration, reserve,
+            proposal, reserve_policy, candidate_duration, reserve,
             SHARED.hls_rebuffering.load(Ordering::Acquire),
         );
         if let Some(media_budget) = budget.media_deadline {
@@ -6438,7 +6438,7 @@ fn hls_demux(
             proposal.direction,
         );
         let mut staged_timeline = timeline;
-        let mut candidate_clock = match staged_timeline.begin(candidate_segment.duration) {
+        let mut candidate_clock = match staged_timeline.begin(candidate_duration) {
             Ok(clock) => clock,
             Err(_) => {
                 state.abandon(&primed.encoder_session);
@@ -6515,7 +6515,7 @@ fn hls_demux(
         let mut candidate_outputs = vec![(
             candidate_output,
             candidate_clock,
-            candidate_segment.duration,
+            candidate_duration,
         )];
         let mut candidate_transition: Option<HlsCandidateTransition> = None;
 
@@ -6576,9 +6576,9 @@ fn hls_demux(
                 (next, port.candidate.take(), port.segment.take(), port.error.take())
             };
             candidate = candidate_slot.expect("follow-up lookup retains its candidate cursor");
-            let repeatable_segment = match next {
-                FeedObservation::SegmentReady { trial, .. } if trial == trial_id =>
-                    segment_slot.expect("ready follow-up carries its physical object"),
+            let (repeatable_segment, repeatable_duration) = match next {
+                FeedObservation::SegmentReady { trial, duration } if trial == trial_id =>
+                    (segment_slot.expect("ready follow-up carries its physical object"), duration),
                 FeedObservation::Failed { failure: FeedFailure::Ended, .. } => {
                     state.abandon(&primed.encoder_session);
                     reject_hls_abr_after_transaction(
@@ -6609,7 +6609,7 @@ fn hls_demux(
                     continue;
                 }
             };
-            let mut repeatable_clock = match staged_timeline.begin(repeatable_segment.duration) {
+            let mut repeatable_clock = match staged_timeline.begin(repeatable_duration) {
                 Ok(clock) => clock,
                 Err(_) => {
                     state.abandon(&primed.encoder_session);
@@ -6670,7 +6670,7 @@ fn hls_demux(
             candidate_outputs.push((
                 repeatable_output,
                 repeatable_clock,
-                repeatable_segment.duration,
+                repeatable_duration,
             ));
             verdict = hls_segment_sample(&candidate_outputs[1].0, candidate_outputs[1].2)
                 .map_or(crate::abr::CandidateVerdict::Incomplete, |sample| {
