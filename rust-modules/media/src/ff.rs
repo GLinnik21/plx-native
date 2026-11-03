@@ -5,7 +5,7 @@
 #![deny(clippy::debug_assert_with_mut_call)]
 use crate::aq::AuQueue;
 use crate::adaptive;
-use plx_playback_contract::adaptive::{Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, AutomaticPort, AutomaticTransition, BufferFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, RoundId, TrialActuatorPort, TrialClock, TrialId};
+use plx_playback_contract::adaptive::{Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, RoundId, TrialActuatorPort, TrialClock, TrialId};
 use plx_playback_contract::SourceKey;
 use crate::player::threads::SendPtr;
 use crate::player::SHARED;
@@ -5199,10 +5199,17 @@ impl HlsCandidateTransition {
     }
 }
 
-fn settle_candidate_transition(transition: &mut Option<HlsCandidateTransition>) {
-    if let Some(transition) = transition.take() {
-        transition.settle();
+struct HlsCandidateFencePort;
+
+impl CandidateFencePort for HlsCandidateFencePort {
+    type Fence = HlsCandidateTransition;
+    type Error = HlsExit;
+
+    fn arm(&mut self, automatic_token: u64) -> Result<Self::Fence, Self::Error> {
+        HlsCandidateTransition::arm(automatic_token)
     }
+
+    fn settle(&mut self, fence: Self::Fence) { fence.settle(); }
 }
 
 /// The physical feed's AQ-abort serialization port. Adaptive policy never names a queue.
@@ -6186,7 +6193,6 @@ fn hls_demux(
             adaptive::FirstPhase::Aborted => return Err(HlsExit::Aborted),
             adaptive::FirstPhase::Failed(message) => return Err(HlsExit::Failed(message)),
         };
-        let mut candidate_transition: Option<HlsCandidateTransition> = None;
 
         // The boundary object is still direct evidence whenever it satisfies `A<=D && B_post>=A`:
         // commit it immediately. An `A>D` boundary contains one-time PMS/session/JIT setup and may
@@ -6244,78 +6250,34 @@ fn hls_demux(
         // The route must remain old until every candidate AU which precedes the switch is safely
         // queued. Otherwise teardown can abort a blocked feed after publication and leave a live
         // route naming media the playback pipeline never received.
-        tx.mark_decided();
-        if candidate_transition.is_none() {
-            candidate_transition = match HlsCandidateTransition::arm(automatic_token) {
-                Ok(transition) => Some(transition),
-                Err(error) => {
-                    state.abandon(&primed.encoder_session);
-                    tx.finish("publication_overlap");
-                    return Err(error);
-                }
-            };
-        }
-        runner.authorize_queue();
-        let feed_started = std::time::Instant::now();
-        let queued = runner.queue_staged();
-        if queued != (FeedObservation::Queued { trial: trial_id }) {
-            state.abandon(&primed.encoder_session);
-            let aborted = queued == (FeedObservation::Failed {
-                trial: trial_id, failure: FeedFailure::Aborted,
-            });
-            tx.finish(if aborted { "aborted" } else { "commit_feed_failed" });
-            return Err(if aborted { HlsExit::Aborted } else {
-                HlsExit::Failed("adaptive feed queue protocol violation")
-            });
-        }
-        tx.mark_feed(feed_started);
-        drop(runner);
-        let mut candidate = port.candidate.take().expect("queued trial retains its candidate cursor");
-        let staged_timeline = port.timeline.take().expect("queued trial retains its staged timeline");
-        drop(port);
-        timeline = staged_timeline;
-
-        // The queue abort is teardown's actual linearization point. Publish both copies of the
-        // live encoder while holding that SAME mutex, so exactly one side wins: either teardown
-        // prevents the route change, or publication captures the old encoder before teardown can
-        // join this worker. No cleanup/network work is allowed inside the closure.
-        let publication = state.publish_queued_candidate(
-            &mut trial_protocol,
-            &mut AqPublicationPort(aq),
-            &primed,
-            proposal,
-            sample,
-            candidate_variant,
-            now_ms(),
+        let mut fence_port = HlsCandidateFencePort;
+        // A queue ACK transfers only the local cursor/timeline. The common owner
+        // then enters the existing AQ abort gate for route/controller publication.
+        let queued = runner.queue_publish(
+            state, &mut fence_port, &mut AqPublicationPort(aq), automatic_token,
+            &primed, proposal, sample, candidate_variant, || now_ms(),
+            |physical| {
+                let candidate = physical.candidate.take()
+                    .expect("queued trial retains its candidate cursor");
+                timeline = physical.timeline.take()
+                    .expect("queued trial retains its staged timeline");
+                candidate
+            },
+            |event| match event {
+                adaptive::QueueTrace::Decided => tx.mark_decided(),
+                adaptive::QueueTrace::FeedCompleted(started) => tx.mark_feed(started),
+                adaptive::QueueTrace::Finish(outcome) => tx.finish(outcome),
+            },
         );
-        let previous = match publication {
-            adaptive::CandidatePublication::Aborted => {
-                state.abandon(&primed.encoder_session);
-                tx.finish("aborted");
-                return Err(HlsExit::Aborted);
-            }
-            adaptive::CandidatePublication::SessionEnded => {
-                state.abandon(&primed.encoder_session);
-                tx.finish("commit_session_ended");
-                return Err(HlsExit::Aborted);
-            }
-            adaptive::CandidatePublication::RouteMoved => {
-                // The route changed independently while this candidate was in flight. The
-                // callback never ran, so controller and worker-local encoder also remain old.
-                // The transaction still owns the candidate cleanup.
-                state.abandon(&primed.encoder_session);
-                tx.finish("commit_route_moved");
-                return Err(HlsExit::Aborted);
-            }
-            adaptive::CandidatePublication::ControllerRejected => {
-                state.abandon(&primed.encoder_session);
-                tx.finish("commit_controller_rejected");
-                return Err(HlsExit::Failed(
-                    "ABR candidate commit lost its validated evidence",
-                ));
-            }
-            adaptive::CandidatePublication::Active { previous } => previous,
+        let (previous, mut candidate, fence) = match queued {
+            adaptive::QueueAttempt::Published { previous, physical, fence } =>
+                (previous, physical, fence),
+            adaptive::QueueAttempt::Aborted => return Err(HlsExit::Aborted),
+            adaptive::QueueAttempt::Failed(message) => return Err(HlsExit::Failed(message)),
+            adaptive::QueueAttempt::FenceFailed(error) => return Err(error),
         };
+        drop(runner);
+        drop(port);
         // The committed candidate is already the first completed acquisition at the new
         // operating point. Publish its exact replay boundary before the trial lifetime marker and
         // explicit candidate-generation settlement. Leaving the old rung's value here would authorize
@@ -6361,7 +6323,7 @@ fn hls_demux(
         // All behavioral projections now name the candidate: controller, global route,
         // worker-local encoder/cursor, runway and recovery policy. Release both main-thread gates
         // before encoder cleanup, whose task-spawn fallback may perform synchronous network I/O.
-        settle_candidate_transition(&mut candidate_transition);
+        fence_port.settle(fence);
         drop(_trial_reserve.take());
         state.retire(previous);
         // **`out=` is what was DECODED; the pair before it is the rung's bounding box.** They are

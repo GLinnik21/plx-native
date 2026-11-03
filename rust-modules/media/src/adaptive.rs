@@ -5,7 +5,7 @@
 use crate::{abr, route};
 use plx_playback_contract::adaptive::PublicationGate;
 use plx_playback_contract::adaptive::{
-    Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, ActiveQuantum, AutomaticPort, AutomaticTransition, BufferFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
+    Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, ActiveQuantum, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
     RoundId, TrialActuatorPort, TrialObservation, TrialPhase, TrialProtocol, TrialProtocolError,
 };
 use plx_playback_contract::SourceKey;
@@ -791,6 +791,74 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
         }
         observed
     }
+
+    /// Queue every staged AU before entering the AQ publication gate. The
+    /// physical cursor/timeline transfer is synchronous and local, between the
+    /// queue ACK and the short guarded route/controller publication. A failed
+    /// queue or publication is terminal and owns candidate cleanup here.
+    pub(crate) fn queue_publish<F: CandidateFencePort, R>(
+        &mut self, coordinator: &mut Coordinator, fence_port: &mut F,
+        gate: &mut dyn PublicationGate, automatic_token: u64,
+        primed: &route::PrimedHls, proposal: abr::Proposal,
+        sample: abr::SegmentSample, variant: abr::ObservedHlsVariant,
+        now_ms: impl FnOnce() -> u64,
+        after_queue: impl FnOnce(&mut P) -> R,
+        mut on_trace: impl FnMut(QueueTrace),
+    ) -> QueueAttempt<R, F::Fence, F::Error> {
+        on_trace(QueueTrace::Decided);
+        let fence = match fence_port.arm(automatic_token) {
+            Ok(fence) => fence,
+            Err(error) => {
+                coordinator.abandon(&primed.encoder_session);
+                on_trace(QueueTrace::Finish("publication_overlap"));
+                return QueueAttempt::FenceFailed(error);
+            }
+        };
+        self.authorize_queue();
+        let started = std::time::Instant::now();
+        let trial = self.protocol.id();
+        let queued = self.queue_staged();
+        if queued != (FeedObservation::Queued { trial }) {
+            coordinator.abandon(&primed.encoder_session);
+            let aborted = queued == (FeedObservation::Failed {
+                trial, failure: FeedFailure::Aborted,
+            });
+            on_trace(QueueTrace::Finish(if aborted { "aborted" } else { "commit_feed_failed" }));
+            return if aborted { QueueAttempt::Aborted } else {
+                QueueAttempt::Failed("adaptive feed queue protocol violation")
+            };
+        }
+        on_trace(QueueTrace::FeedCompleted(started));
+        let physical = after_queue(&mut *self.port);
+        let publication = coordinator.publish_queued_candidate(
+            self.protocol, gate, primed, proposal, sample, variant, now_ms(),
+        );
+        match publication {
+            CandidatePublication::Active { previous } => QueueAttempt::Published {
+                previous, physical, fence,
+            },
+            CandidatePublication::Aborted => {
+                coordinator.abandon(&primed.encoder_session);
+                on_trace(QueueTrace::Finish("aborted"));
+                QueueAttempt::Aborted
+            }
+            CandidatePublication::SessionEnded => {
+                coordinator.abandon(&primed.encoder_session);
+                on_trace(QueueTrace::Finish("commit_session_ended"));
+                QueueAttempt::Aborted
+            }
+            CandidatePublication::RouteMoved => {
+                coordinator.abandon(&primed.encoder_session);
+                on_trace(QueueTrace::Finish("commit_route_moved"));
+                QueueAttempt::Aborted
+            }
+            CandidatePublication::ControllerRejected => {
+                coordinator.abandon(&primed.encoder_session);
+                on_trace(QueueTrace::Finish("commit_controller_rejected"));
+                QueueAttempt::Failed("ABR candidate commit lost its validated evidence")
+            }
+        }
+    }
 }
 
 /// Project physical acquisition onto the controller's whole-millisecond reserve lattice.
@@ -1284,6 +1352,19 @@ pub(crate) enum CandidateJudgment {
     Stay,
     Aborted,
     Failed(&'static str),
+}
+
+pub(crate) enum QueueTrace {
+    Decided,
+    FeedCompleted(std::time::Instant),
+    Finish(&'static str),
+}
+
+pub(crate) enum QueueAttempt<R, F, E> {
+    Published { previous: String, physical: R, fence: F },
+    Aborted,
+    Failed(&'static str),
+    FenceFailed(E),
 }
 
 pub(crate) enum FirstPhase {
