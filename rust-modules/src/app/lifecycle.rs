@@ -93,7 +93,7 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
         if self.pa.watching_queued_start() {
             use plx_media::player::adapter::QueuedLanding;
             #[cfg(feature = "play-feed")]
-            plx_media::player::poll_release_frame(ps, self.pa);
+            plx_media::player::poll_release_frame(_ps, self.pa);
             return match self.pa.take_queued_landing() {
                 QueuedLanding::Waiting => FlightLanding::Waiting,
                 QueuedLanding::Stale => FlightLanding::Stale,
