@@ -4805,7 +4805,7 @@ mod lifecycle_regression_tests {
 
         // a package that places only `open_more`
         let minimal = plx_appkit::player_hud::loaded::load(
-            include_str!("../../appkit/src/hud_format/fixtures/minimal/hud.json").as_bytes(),
+            include_bytes!("../../appkit/src/hud_format/fixtures/minimal.plxhud"),
             "0.0.0-test",
             plx_platform::i18n::english(),
             &plx_ui::fixture::FixtureMeasure,
