@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-03T03:09:15Z",
+ "generated": "2026-11-03T03:15:02Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -111,9 +111,9 @@
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 75,
+   "n_now": 76,
    "n_prev": 84,
-   "now": 202,
+   "now": 202.0,
    "prev7": 159.5,
    "shown": true,
    "state": "worse",
@@ -124,17 +124,17 @@
   },
   {
    "change30_pct": -62.3,
-   "change7_pct": 20.3,
+   "change7_pct": 20.1,
    "d30": 1083.5,
-   "delta30": -674.5,
-   "delta7": 69,
+   "delta30": -675.0,
+   "delta7": 68.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 95,
-   "now": 409,
+   "now": 408.5,
    "prev7": 340,
    "shown": true,
    "state": "worse",
@@ -165,10 +165,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -63.7,
+   "change30_pct": -63.6,
    "change7_pct": 15.9,
-   "d30": 1142,
-   "delta30": -727,
+   "d30": 1140.5,
+   "delta30": -725.5,
    "delta7": 57,
    "group": "ci",
    "id": "pr_wait",
@@ -408,18 +408,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 26.9,
-   "change7_pct": 7.5,
+   "change30_pct": 27.2,
+   "change7_pct": 7.7,
    "d30": 224.5,
-   "delta30": 60.5,
-   "delta7": 20.0,
+   "delta30": 61.0,
+   "delta7": 20.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 75,
+   "n_now": 76,
    "n_prev": 84,
-   "now": 285,
+   "now": 285.5,
    "prev7": 265.0,
    "shown": true,
    "state": "flat",
@@ -433,14 +433,14 @@
    "change7_pct": 8.0,
    "d30": 1045.0,
    "delta30": -829.0,
-   "delta7": 16,
+   "delta7": 16.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 75,
+   "n_now": 76,
    "n_prev": 83,
-   "now": 216,
+   "now": 216.0,
    "prev7": 200,
    "shown": true,
    "state": "flat",
@@ -545,9 +545,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 75,
+   "n_now": 76,
    "n_prev": 84,
-   "now": 18,
+   "now": 18.0,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 70.5,
    "commits": [
     {
-     "pr": 1195,
-     "sha": "2200ceb34",
-     "title": "HUD plugins: a package from the HUD folder installs, a profile picks it, and the player draws it"
-    },
-    {
      "pr": 1202,
      "sha": "1e9bd1d02",
      "title": "Draw a sidecar over a remux on the content's clock: a clock-only side reader"
@@ -715,6 +710,11 @@
      "pr": 1214,
      "sha": "e3bb1aebc",
      "title": "Profiles: Change profile opens on the profile that is watching"
+    },
+    {
+     "pr": 1218,
+     "sha": "a7572c88a",
+     "title": "player: stop fencing viewer HLS Resume on historical runway"
     }
    ],
    "from": 193.0,
@@ -771,6 +771,11 @@
      "pr": 1214,
      "sha": "e3bb1aebc",
      "title": "Profiles: Change profile opens on the profile that is watching"
+    },
+    {
+     "pr": 1218,
+     "sha": "a7572c88a",
+     "title": "player: stop fencing viewer HLS Resume on historical runway"
     }
    ],
    "from": 215.0,
@@ -827,6 +832,11 @@
      "pr": 1214,
      "sha": "e3bb1aebc",
      "title": "Profiles: Change profile opens on the profile that is watching"
+    },
+    {
+     "pr": 1218,
+     "sha": "a7572c88a",
+     "title": "player: stop fencing viewer HLS Resume on historical runway"
     }
    ],
    "from": 159.5,
@@ -834,16 +844,11 @@
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "since": "2026-11-03",
    "threshold_pct": 20.0,
-   "to": 202
+   "to": 202.0
   },
   {
-   "change_pct": 20.3,
+   "change_pct": 20.1,
    "commits": [
-    {
-     "pr": 1195,
-     "sha": "2200ceb34",
-     "title": "HUD plugins: a package from the HUD folder installs, a profile picks it, and the player draws it"
-    },
     {
      "pr": 1202,
      "sha": "1e9bd1d02",
@@ -888,23 +893,23 @@
      "pr": 1214,
      "sha": "e3bb1aebc",
      "title": "Profiles: Change profile opens on the profile that is watching"
+    },
+    {
+     "pr": 1218,
+     "sha": "a7572c88a",
+     "title": "player: stop fencing viewer HLS Resume on historical runway"
     }
    ],
    "from": 340,
    "id": "push_wait",
    "label": "Wait after merge",
-   "since": "2026-11-01",
+   "since": "2026-11-03",
    "threshold_pct": 15.0,
-   "to": 409
+   "to": 408.5
   },
   {
    "change_pct": 16.4,
    "commits": [
-    {
-     "pr": 1195,
-     "sha": "2200ceb34",
-     "title": "HUD plugins: a package from the HUD folder installs, a profile picks it, and the player draws it"
-    },
     {
      "pr": 1202,
      "sha": "1e9bd1d02",
@@ -949,6 +954,11 @@
      "pr": 1214,
      "sha": "e3bb1aebc",
      "title": "Profiles: Change profile opens on the profile that is watching"
+    },
+    {
+     "pr": 1218,
+     "sha": "a7572c88a",
+     "title": "player: stop fencing viewer HLS Resume on historical runway"
     }
    ],
    "from": 2165.0,
