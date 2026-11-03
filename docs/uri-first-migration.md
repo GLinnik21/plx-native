@@ -21,12 +21,15 @@ load readiness, addressed track confirmation, exact seek completion and the desi
 Play goal. Its local metrics distinguish logical requests, physical attempts, clock progress and
 picture evidence. Queuing work is never counted as a native acknowledgment.
 
-The existing application still uses transitional feed entry points while the remaining physical
-implementation is extracted. The common pump no longer borrows an Engine; addressed resource
-mapping, timeline/Plex writes and recovery stay common. Source IO and demux state travel through
-injected ports. `play-feed` and `media-codecs` are still required media dependencies at this
-checkpoint: neither optional build completion nor physical removability has been established.
-Application composition and the deletion/build matrix below remain completion work.
+The application composes the common runner with the URI and feed drivers. Addressed resource
+mapping, timeline/Plex writes and recovery stay common; physical demux, engine and transport
+resources live in `plx_play_feed`. Source IO and demux observations travel through injected ports.
+Caption stores receive explicit playhead and seek-target facts rather than reading feed clocks.
+Both playback drivers are optional Cargo dependencies, and the URI-only normal dependency graph
+excludes `plx_play_feed`. URI-only source compilation is still being finished: dependency exclusion
+alone does not prove a working build or physical removability. `plx_media_codecs` remains required
+for independent codec consumers. The production build/package and deletion matrices below remain
+completion work.
 
 ## Ordered checkpoints
 
@@ -84,7 +87,8 @@ original-stream feed offers, with permitted conversion afterward. The common own
 finite offer catalog and stable recipe IDs, rather than treating a new transient URL as a new
 candidate. Selection does not acquire a resource lease. Admission spends a recipe exactly once;
 capability refresh preserves that history. At most one cross-executor handoff is permitted per
-recovery episode. This policy still needs application composition; adding it does not promote URI.
+recovery episode. The application supplies this catalog at route admission; recovery integration
+is still under test. This composition does not promote URI.
 
 Each attempt starts with fresh observations. Unknown remains unknown; an acknowledgment or
 advancing clock is not picture evidence. Separate logical-request metrics from backend attempts,
