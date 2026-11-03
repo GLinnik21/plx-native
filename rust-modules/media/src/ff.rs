@@ -6,7 +6,7 @@
 use crate::aq::AuQueue;
 use crate::adaptive;
 use plx_playback_contract::adaptive::TrialObservation as TrialEvent;
-use plx_playback_contract::adaptive::{Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, AutomaticPort, AutomaticTransition, BufferFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, RoundId, TrialClock, TrialId};
+use plx_playback_contract::adaptive::{Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, AutomaticPort, AutomaticTransition, BufferFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, RoundId, TrialActuatorPort, TrialClock, TrialId};
 use plx_playback_contract::SourceKey;
 use crate::player::threads::SendPtr;
 use crate::player::SHARED;
@@ -4226,7 +4226,9 @@ impl FeedPort for HlsTrialPort<'_> {
 
     fn step(&mut self, action: FeedAction) -> FeedObservation {
         let trial = match action {
-            FeedAction::Open { trial, .. } | FeedAction::ReadNext { trial }
+            FeedAction::CheckAbort { trial } | FeedAction::CheckExpired { trial }
+            | FeedAction::BudgetSnapshot { trial }
+            | FeedAction::Open { trial, .. } | FeedAction::ReadNext { trial }
             | FeedAction::AcquireFirst { trial, .. }
             | FeedAction::AcquireFollowup { trial }
             | FeedAction::StageAcquired { trial }
@@ -4237,6 +4239,20 @@ impl FeedPort for HlsTrialPort<'_> {
             return FeedObservation::Failed { trial, failure: FeedFailure::Protocol };
         }
         match action {
+            FeedAction::CheckAbort { trial } => FeedObservation::AbortStatus {
+                trial, aborted: unsafe { crate::aq::aq_is_aborted(self.aq) },
+            },
+            FeedAction::CheckExpired { trial } => FeedObservation::ExpiryStatus {
+                trial, expired: exploration_expired(self.reserve),
+            },
+            FeedAction::BudgetSnapshot { trial } => {
+                let (buffer, started_ns) = hls_buffer_snapshot_with_playhead(None);
+                FeedObservation::BudgetSnapshot {
+                    trial, buffered_ms: buffer.buffered_ms(), started_ns,
+                    remaining: self.reserve.as_ref().and_then(ReserveDeadlineState::remaining),
+                    rebuffering: SHARED.hls_rebuffering.load(Ordering::Acquire),
+                }
+            }
             FeedAction::Open { trial, source } => self.open(trial, source),
             FeedAction::ReadNext { trial } => self.read_next(trial),
             FeedAction::AcquireFirst {
@@ -5185,6 +5201,20 @@ impl AutomaticPort for HlsAutomaticPort {
     }
 }
 
+impl TrialActuatorPort for HlsAutomaticPort {
+    type TrialReserve = HlsTrialReserve;
+
+    fn arm_trial_reserve(
+        &mut self, runway_ms: i64, expected_user_sequence: u64,
+    ) -> Option<Self::TrialReserve> {
+        HlsTrialReserve::arm(runway_ms, expected_user_sequence)
+    }
+
+    fn lease_token(&self, lease: &Self::Lease) -> u64 { lease.token() }
+
+    fn trial_token(&self, reserve: &Self::TrialReserve) -> u64 { reserve.token() }
+}
+
 impl TxTrace {
     fn open(
         proposal: crate::abr::Proposal,
@@ -5353,31 +5383,6 @@ impl Drop for TxTrace {
             self.candidate_dur_ms.unwrap_or(-1),
         ));
     }
-}
-
-/// **`cause` is a judgement each call site makes about its own failure, and it is load-bearing.**
-///
-/// N11's backoff refuses to re-prime a rung that just failed. That is right when the failure was
-/// ABOUT the rung — a completed-but-unfunded response, PMS refusing this rung's ceiling
-/// (`route::PrimeRefusal::Rung`), an acceptance test the candidate did not pass — and wrong when it
-/// was about the session: `reserve_unreadable` is the audio lane falling silent at a seek,
-/// `origin_changed` is the route moving underneath, and `prime_session_moved` is either of those
-/// caught one branch earlier, before a round trip was spent. **"A refused prime" is about the rung
-/// only when the server actually refused it**, which is why `prime` reports which of its four exits
-/// it took rather than handing back a bare failure for this function to guess at.
-/// A missed absolute deadline is a third class: it is common censored budget evidence, because no
-/// complete response exists whose size could order this rung against another.
-/// Blocking a good rung for either would be the guard doing harm in the one direction that has no
-/// recovery path, so the classification lives here, beside the `tx.finish` string that already
-/// names the same event for the transaction log.
-fn reject_hls_abr(
-    coordinator: &mut crate::adaptive::Coordinator,
-    proposal: crate::abr::Proposal,
-    cause: crate::abr::RejectCause,
-    now_ms: u64,
-) {
-    let refreshing_same_request = coordinator.reject(proposal, cause, now_ms);
-    publish_hls_abr_action(proposal, refreshing_same_request, Some(false));
 }
 
 /// Candidate rejection after a transaction has actually run. Freeze the transaction's decision
@@ -6135,103 +6140,61 @@ fn hls_demux(
             }
         }
         let Some((proposal, reserve_policy)) = trial else { continue; };
-        let preprime = match state.preprime_plan(
-            proposal,
+        let candidate_start = match state.begin_candidate(
+            proposal, &mut HlsAutomaticPort { gate: AqPublicationPort(aq) },
+            expected_user_sequence,
             || {
                 let (snapshot, started_ns) = hls_buffer_snapshot_with_playhead(None);
                 (snapshot.buffered_ms(), started_ns)
             },
             || now_ms(),
+            |proposal, refreshing| publish_hls_abr_action(proposal, refreshing, Some(false)),
         ) {
-            Ok(plan) => plan,
-            Err(failure) => {
-                if let Some(refreshing) = failure.refreshing_same_request() {
-                    publish_hls_abr_action(proposal, refreshing, Some(false));
-                }
-                match failure {
-                    adaptive::ExplorationFailure::ReserveUnknown { .. } => crate::player::log(
+            Ok(start) => start,
+            Err(refusal) => {
+                match refusal {
+                    adaptive::CandidateStartRefusal::ReserveUnknown => crate::player::log(
                         "abr: candidate reserve unreadable before exploration; staying on current rung",
                     ),
-                    adaptive::ExplorationFailure::NoRunway { .. } => crate::player::log(
+                    adaptive::CandidateStartRefusal::NoRunway => crate::player::log(
                         "abr: candidate has no completed current acquisition to preserve; staying",
                     ),
-                    adaptive::ExplorationFailure::NoSurplus { .. } => crate::player::log(
+                    adaptive::CandidateStartRefusal::NoSurplus => crate::player::log(
                         "abr: candidate has no reserve above rollback boundary; staying on current rung",
                     ),
-                    adaptive::ExplorationFailure::BudgetMoved { budget_ms } => crate::player::log(&format!(
-                        "abr: actual exploration budget {}ms no longer releases {}kbps; staying on current rung",
-                        budget_ms, proposal.rung.kbps(),
-                    )),
+                    adaptive::CandidateStartRefusal::BudgetMoved { budget_ms, target_kbps } =>
+                        crate::player::log(&format!(
+                            "abr: actual exploration budget {}ms no longer releases {}kbps; staying on current rung",
+                            budget_ms, target_kbps,
+                        )),
+                    adaptive::CandidateStartRefusal::LeaseMoved => crate::player::log(
+                        "abr: recovery transaction superseded before its actuator lease could arm",
+                    ),
+                    adaptive::CandidateStartRefusal::TrialReserveMoved => crate::player::log(
+                        "abr: clock transition superseded exploration before its trial could arm",
+                    ),
                 }
                 continue;
             }
         };
-        // A recovery downshift may legitimately span an internally-held rebuffer clock, so it
-        // does not use the upward trial-reserve certificate below. It still owns the same single
-        // automatic-actuator slot for the whole PMS/candidate transaction: source recovery and a
-        // second rung transaction cannot both pass an earlier snapshot and publish independently.
-        let _automatic_lease = if matches!(&preprime, adaptive::PreprimePlan::Recovery) {
-            let Some(lease) = HlsAutomaticLease::begin(
-                crate::player::HlsAutomaticTransition::QualityDown,
-                expected_user_sequence,
-            )
-            else {
-                reject_hls_abr(
-                    state,
-                    proposal,
-                    crate::abr::RejectCause::Circumstance,
-                    now_ms(),
-                );
-                crate::player::log(
-                    "abr: recovery transaction superseded before its actuator lease could arm",
-                );
-                continue;
-            };
-            Some(lease)
-        } else {
-            None
-        };
-        // Upshift is an experiment, not a capacity prediction. Spend only the observable reserve
-        // above max(replay boundary, rollback media horizon), and publish the retained replay
-        // balance while the transaction is live. One playhead-funded clock follows the initial
-        // transaction through its first candidate object. Every blocking control/playlist leg
-        // receives a current wall-clock snapshot of that clock, while the media AVIO owns the state
-        // itself. A setup-bearing object and its optional ordinary observation share this same
-        // clock while both remain staged. A user Pause therefore moves an already-issued snapshot
-        // instead of consuming playable reserve. Publish the retained balance BEFORE the control
-        // plane: PMS session creation and playlist requests consume it while the native clock
-        // advances, even though they move no media bytes.
-        let mut _trial_reserve = None;
-        let mut exploration_reserve = None;
-        if let adaptive::PreprimePlan::Exploration { grant, started_ns } = preprime {
-            let adaptive::ExplorationGrant { buffered_ms, runway_ms, budget_ms } = grant;
-            let Some(trial_reserve) = HlsTrialReserve::arm(runway_ms, expected_user_sequence)
-            else {
-                reject_hls_abr(
-                    state,
-                    proposal,
-                    crate::abr::RejectCause::Circumstance,
-                    now_ms(),
-                );
-                crate::player::log(
-                    "abr: clock transition superseded exploration before its trial could arm",
-                );
-                continue;
-            };
-            _trial_reserve = Some(trial_reserve);
-            exploration_reserve = Some(ReserveDeadlineState::from_playhead_at(
-                started_ns,
-                std::time::Duration::from_millis(u64::try_from(budget_ms).unwrap_or(u64::MAX)),
-                false,
-            ));
+        // The physical guard stays live through candidate queueing and AQ publication.
+        // Dropping it on any early return releases only this generation's actuator slot.
+        let mut _trial_reserve = candidate_start.trial_reserve;
+        let _automatic_lease = candidate_start.automatic_lease;
+        let automatic_token = candidate_start.token;
+        let mut exploration_reserve = candidate_start.exploration.map(|clock| {
             crate::player::log(&format!(
                 "abr: exploration target={}kbps buf={}ms runway={}ms budget={}ms",
-                proposal.rung.kbps(),
-                buffered_ms,
-                runway_ms,
-                budget_ms,
+                proposal.rung.kbps(), clock.buffered_ms, clock.runway_ms, clock.budget_ms,
             ));
-        }
+            ReserveDeadlineState::from_playhead_at(
+                clock.started_ns,
+                std::time::Duration::from_millis(
+                    u64::try_from(clock.budget_ms).unwrap_or(u64::MAX),
+                ),
+                false,
+            )
+        });
         // Records the whole transaction on every exit path, including the twelve rejects. Drop
         // emits it; nothing below has to remember to.
         let refreshing_same_request = proposal.rung == state.current();
@@ -6255,7 +6218,7 @@ fn hls_demux(
         let mut port = HlsTrialPort {
             trial: trial_id, origin, aq, aqa, net: &mut net, acodec,
             reserve: &mut exploration_reserve, source: None,
-            candidate: None, segment: None, timeline: None,
+            candidate: None, segment: None, timeline: Some(timeline),
             clock: None, output: None, staged: Vec::new(),
         };
         let mut runner = adaptive::TrialRunner::new(&mut port, &mut trial_protocol);
@@ -6263,7 +6226,9 @@ fn hls_demux(
         let primed = match runner.prime(state, off, proposal, offset_micros, prime_deadline) {
             Ok(primed) => primed,
             Err(refusal) => {
-                if unsafe { crate::aq::aq_is_aborted(aq) } {
+                if runner.aborted().map_err(|_| HlsExit::Failed(
+                    "adaptive feed abort status protocol violation",
+                ))? {
                     tx.finish("aborted");
                     return Err(HlsExit::Aborted);
                 }
@@ -6285,12 +6250,16 @@ fn hls_demux(
             }
         };
         tx.mark_prime();
-        if unsafe { crate::aq::aq_is_aborted(aq) } {
+        if runner.aborted().map_err(|_| HlsExit::Failed(
+            "adaptive feed abort status protocol violation",
+        ))? {
             state.abandon(&primed.encoder_session);
             tx.finish("aborted");
             return Err(HlsExit::Aborted);
         }
-        if exploration_expired(&mut *runner.physical().reserve) {
+        if runner.expired().map_err(|_| HlsExit::Failed(
+            "adaptive feed expiry status protocol violation",
+        ))? {
             state.abandon(&primed.encoder_session);
             reject_hls_abr_after_transaction(
                 state,
@@ -6324,12 +6293,16 @@ fn hls_demux(
             }
         };
         tx.mark_master(opened_declared_bps);
-        if unsafe { crate::aq::aq_is_aborted(aq) } {
+        if runner.aborted().map_err(|_| HlsExit::Failed(
+            "adaptive feed abort status protocol violation",
+        ))? {
             state.abandon(&primed.encoder_session);
             tx.finish("aborted");
             return Err(HlsExit::Aborted);
         }
-        if exploration_expired(&mut *runner.physical().reserve) {
+        if runner.expired().map_err(|_| HlsExit::Failed(
+            "adaptive feed expiry status protocol violation",
+        ))? {
             state.abandon(&primed.encoder_session);
             reject_hls_abr_after_transaction(
                 state,
@@ -6366,12 +6339,16 @@ fn hls_demux(
         // layer receives a fresh absolute snapshot, so a timeout retains the budget actually
         // executed while a Pause or native hold moves the boundary instead of spending it.
         tx.mark_control_plane();
-        if unsafe { crate::aq::aq_is_aborted(aq) } {
+        if runner.aborted().map_err(|_| HlsExit::Failed(
+            "adaptive feed abort status protocol violation",
+        ))? {
             state.abandon(&primed.encoder_session);
             tx.finish("aborted");
             return Err(HlsExit::Aborted);
         }
-        if exploration_expired(&mut *runner.physical().reserve) {
+        if runner.expired().map_err(|_| HlsExit::Failed(
+            "adaptive feed expiry status protocol violation",
+        ))? {
             state.abandon(&primed.encoder_session);
             reject_hls_abr_after_transaction(
                 state,
@@ -6393,8 +6370,11 @@ fn hls_demux(
         // fixed clock it armed before the control plane, whose remaining value already subtracts
         // exactly Δplayhead. Reading a fresh buffer as a new exploration grant would let segments
         // arriving on some future concurrent implementation silently enlarge `E` mid-transaction.
-        let (reserve_snapshot, reserve_started_ns) = hls_buffer_snapshot_with_playhead(None);
-        let Some(reserve_ms) = reserve_snapshot.buffered_ms() else {
+        let (buffered_ms, reserve_started_ns, remaining, rebuffering) =
+            runner.budget_snapshot().map_err(|_| HlsExit::Failed(
+                "adaptive feed budget snapshot protocol violation",
+            ))?;
+        let Some(reserve_ms) = buffered_ms else {
             // No readable reserve means nothing can be said about what this transaction can
             // afford, and a transaction with no affordability bound is the unbounded case being
             // removed. **Refusing costs nothing**, which is what `RejectCause::Circumstance` on the
@@ -6418,17 +6398,13 @@ fn hls_demux(
             );
             continue;
         };
-        let reserve = runner.physical().reserve
-            .as_ref()
-            .and_then(ReserveDeadlineState::remaining)
-            .unwrap_or_else(|| crate::abr::reserve_as_budget(reserve_ms));
         // The floor is a DOWNSHIFT's only protection against the reserve it is trying to refill:
         // see `candidate_warmup_budget`. The coordinator receives the transaction's current
         // reserve and internally held clock, so its prediction uses the actual candidate and
         // completed delivery evidence instead of the request ceiling.
-        let budget = state.candidate_budget(
-            proposal, reserve_policy, candidate_duration, reserve,
-            SHARED.hls_rebuffering.load(Ordering::Acquire),
+        let budget = state.candidate_budget_from_snapshot(
+            proposal, reserve_policy, candidate_duration,
+            reserve_ms, remaining, rebuffering,
         );
         if let Some(media_budget) = budget.media_deadline {
             tx.mark_warmup_deadline(media_budget);
@@ -6437,7 +6413,6 @@ fn hls_demux(
                 "abr: terminal floor recovery keeps the only candidate response alive",
             );
         }
-        runner.physical().timeline = Some(timeline);
         let acquired = runner.acquire_first(budget, reserve_started_ns);
         let first_acquisition = match acquired {
             FeedObservation::Acquired { acquisition, .. } => acquisition,
@@ -6594,11 +6569,6 @@ fn hls_demux(
         // route naming media the playback pipeline never received.
         tx.mark_decided();
         if candidate_transition.is_none() {
-            let automatic_token = _trial_reserve
-                .as_ref()
-                .map(HlsTrialReserve::token)
-                .or_else(|| _automatic_lease.as_ref().map(HlsAutomaticLease::token))
-                .expect("every HLS candidate transaction owns one automatic actuator lease");
             candidate_transition = match HlsCandidateTransition::arm(automatic_token) {
                 Ok(transition) => Some(transition),
                 Err(error) => {

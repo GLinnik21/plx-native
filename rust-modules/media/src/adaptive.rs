@@ -6,7 +6,7 @@ use crate::{abr, route};
 use plx_playback_contract::adaptive::PublicationGate;
 use plx_playback_contract::adaptive::{
     Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, ActiveQuantum, AutomaticPort, AutomaticTransition, BufferFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
-    RoundId, TrialObservation, TrialPhase, TrialProtocol, TrialProtocolError,
+    RoundId, TrialActuatorPort, TrialObservation, TrialPhase, TrialProtocol, TrialProtocolError,
 };
 use plx_playback_contract::SourceKey;
 
@@ -191,6 +191,32 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
             FeedObservation::Failed {
                 trial: self.protocol.id(), failure: FeedFailure::Protocol,
             }
+        }
+    }
+
+    pub(crate) fn aborted(&mut self) -> Result<bool, FeedFailure> {
+        let trial = self.protocol.id();
+        match self.step(FeedAction::CheckAbort { trial }) {
+            FeedObservation::AbortStatus { aborted, .. } => Ok(aborted),
+            _ => Err(FeedFailure::Protocol),
+        }
+    }
+
+    pub(crate) fn expired(&mut self) -> Result<bool, FeedFailure> {
+        let trial = self.protocol.id();
+        match self.step(FeedAction::CheckExpired { trial }) {
+            FeedObservation::ExpiryStatus { expired, .. } => Ok(expired),
+            _ => Err(FeedFailure::Protocol),
+        }
+    }
+
+    pub(crate) fn budget_snapshot(&mut self) -> Result<(Option<i64>, i64, Option<std::time::Duration>, bool), FeedFailure> {
+        let trial = self.protocol.id();
+        match self.step(FeedAction::BudgetSnapshot { trial }) {
+            FeedObservation::BudgetSnapshot {
+                buffered_ms, started_ns, remaining, rebuffering, ..
+            } => Ok((buffered_ms, started_ns, remaining, rebuffering)),
+            _ => Err(FeedFailure::Protocol),
         }
     }
 
@@ -945,6 +971,29 @@ pub(crate) enum PreprimePlan {
     Exploration { grant: ExplorationGrant, started_ns: i64 },
 }
 
+pub(crate) struct ExplorationClock {
+    pub(crate) buffered_ms: i64,
+    pub(crate) runway_ms: i64,
+    pub(crate) budget_ms: i64,
+    pub(crate) started_ns: i64,
+}
+
+pub(crate) struct CandidateStart<L, R> {
+    pub(crate) automatic_lease: Option<L>,
+    pub(crate) trial_reserve: Option<R>,
+    pub(crate) token: u64,
+    pub(crate) exploration: Option<ExplorationClock>,
+}
+
+pub(crate) enum CandidateStartRefusal {
+    ReserveUnknown,
+    NoRunway,
+    NoSurplus,
+    BudgetMoved { budget_ms: i64, target_kbps: u32 },
+    LeaseMoved,
+    TrialReserveMoved,
+}
+
 pub(crate) enum ExplorationFailure {
     ReserveUnknown { refreshing_same_request: bool },
     NoRunway { refreshing_same_request: bool },
@@ -1010,6 +1059,75 @@ impl Coordinator {
     pub(crate) fn pending_reserve_policy(&self, proposal: abr::Proposal) -> abr::ReservePolicy {
         self.controller.pending_reserve_policy(proposal)
             .expect("a Prime decision owns one pending reserve policy")
+    }
+    pub(crate) fn candidate_budget_from_snapshot(
+        &self, proposal: abr::Proposal, reserve_policy: abr::ReservePolicy,
+        candidate_duration: std::time::Duration, buffered_ms: i64,
+        remaining: Option<std::time::Duration>, rebuffering: bool,
+    ) -> CandidateBudget {
+        let reserve = remaining.unwrap_or_else(|| abr::reserve_as_budget(buffered_ms));
+        self.candidate_budget(
+            proposal, reserve_policy, candidate_duration, reserve, rebuffering,
+        )
+    }
+    pub(crate) fn begin_candidate<P: TrialActuatorPort>(
+        &mut self, proposal: abr::Proposal, port: &mut P,
+        expected_user_sequence: u64,
+        buffer: impl FnOnce() -> (Option<i64>, i64),
+        now_ms: impl Fn() -> u64,
+        mut on_rejected: impl FnMut(abr::Proposal, bool),
+    ) -> Result<CandidateStart<P::Lease, P::TrialReserve>, CandidateStartRefusal> {
+        let plan = match self.preprime_plan(proposal, buffer, || now_ms()) {
+            Ok(plan) => plan,
+            Err(failure) => {
+                if let Some(refreshing) = failure.refreshing_same_request() {
+                    on_rejected(proposal, refreshing);
+                }
+                return Err(match failure {
+                    ExplorationFailure::ReserveUnknown { .. } => CandidateStartRefusal::ReserveUnknown,
+                    ExplorationFailure::NoRunway { .. } => CandidateStartRefusal::NoRunway,
+                    ExplorationFailure::NoSurplus { .. } => CandidateStartRefusal::NoSurplus,
+                    ExplorationFailure::BudgetMoved { budget_ms } => CandidateStartRefusal::BudgetMoved {
+                        budget_ms, target_kbps: proposal.rung.kbps(),
+                    },
+                });
+            }
+        };
+        match plan {
+            PreprimePlan::Recovery => {
+                let Some(lease) = port.begin(
+                    AutomaticTransition::QualityDown, expected_user_sequence,
+                ) else {
+                    let refreshing = self.reject(proposal, abr::RejectCause::Circumstance, now_ms());
+                    on_rejected(proposal, refreshing);
+                    return Err(CandidateStartRefusal::LeaseMoved);
+                };
+                let token = port.lease_token(&lease);
+                Ok(CandidateStart {
+                    automatic_lease: Some(lease), trial_reserve: None,
+                    token, exploration: None,
+                })
+            }
+            PreprimePlan::Exploration { grant, started_ns } => {
+                let Some(reserve) = port.arm_trial_reserve(
+                    grant.runway_ms, expected_user_sequence,
+                ) else {
+                    let refreshing = self.reject(proposal, abr::RejectCause::Circumstance, now_ms());
+                    on_rejected(proposal, refreshing);
+                    return Err(CandidateStartRefusal::TrialReserveMoved);
+                };
+                let token = port.trial_token(&reserve);
+                Ok(CandidateStart {
+                    automatic_lease: None, trial_reserve: Some(reserve), token,
+                    exploration: Some(ExplorationClock {
+                        buffered_ms: grant.buffered_ms,
+                        runway_ms: grant.runway_ms,
+                        budget_ms: grant.budget_ms,
+                        started_ns,
+                    }),
+                })
+            }
+        }
     }
     pub(crate) fn next_round_id(&mut self) -> Option<RoundId> {
         self.next_round_serial = self.next_round_serial.checked_add(1)?;

@@ -74,6 +74,9 @@ pub trait ActiveFeedPort {
 /// its URL and authentication remain in that worker's private source binding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FeedAction {
+    CheckAbort { trial: TrialId },
+    CheckExpired { trial: TrialId },
+    BudgetSnapshot { trial: TrialId },
     Open { trial: TrialId, source: SourceKey },
     ReadNext { trial: TrialId },
     AcquireFirst {
@@ -105,6 +108,14 @@ pub trait AutomaticPort {
     fn authorize(&mut self, lease: &Self::Lease) -> bool;
     fn aborted(&self) -> bool;
     fn gate(&mut self) -> &mut dyn PublicationGate;
+}
+
+pub trait TrialActuatorPort: AutomaticPort {
+    type TrialReserve;
+    fn arm_trial_reserve(&mut self, runway_ms: i64, expected_user_sequence: u64)
+        -> Option<Self::TrialReserve>;
+    fn lease_token(&self, lease: &Self::Lease) -> u64;
+    fn trial_token(&self, reserve: &Self::TrialReserve) -> u64;
 }
 
 /// Physical transfer and output geometry before a candidate policy verdict.
@@ -151,6 +162,12 @@ pub enum FeedFailure {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FeedObservation {
+    AbortStatus { trial: TrialId, aborted: bool },
+    ExpiryStatus { trial: TrialId, expired: bool },
+    BudgetSnapshot {
+        trial: TrialId, buffered_ms: Option<i64>, started_ns: i64,
+        remaining: Option<Duration>, rebuffering: bool,
+    },
     Opened { trial: TrialId, declared_bps: u64 },
     SegmentReady { trial: TrialId, duration: std::time::Duration },
     Acquired { trial: TrialId, acquisition: Acquisition },
@@ -163,7 +180,8 @@ pub enum FeedObservation {
 impl FeedObservation {
     pub const fn trial(self) -> TrialId {
         match self {
-            Self::Opened { trial, .. }
+            Self::AbortStatus { trial, .. } | Self::ExpiryStatus { trial, .. }
+            | Self::BudgetSnapshot { trial, .. } | Self::Opened { trial, .. }
             | Self::SegmentReady { trial, .. }
             | Self::Acquired { trial, .. }
             | Self::Staged { trial, .. }
