@@ -5452,7 +5452,7 @@ mod end_of_film_tests {
                 SHARED.duration_ns.load(Relaxed) / 1_000_000,
                 self.eng().eos_pushed,
                 SHARED.pipeline_eos.load(Relaxed),
-                crate::player::ended(),
+                crate::player::feed_ended(),
                 clock_ns / 1_000_000,
                 TX.feed_allowed(),
                 TX.seek_to_ns.load(Relaxed),
@@ -5488,12 +5488,12 @@ mod end_of_film_tests {
              (the prime, the feed or the sink did not run): {}",
             rig.facts()
         );
-        assert!(crate::player::seen_frame(), "PRECONDITION FAILED, not the defect: no picture was reported");
+        assert!(crate::player::feed_seen_frame(), "PRECONDITION FAILED, not the defect: no picture was reported");
         for _ in 0..10 {
             rig.step();
         }
         assert!(
-            !rig.eng().eos_pushed && !SHARED.pipeline_eos.load(Relaxed) && !crate::player::ended(),
+            !rig.eng().eos_pushed && !SHARED.pipeline_eos.load(Relaxed) && !crate::player::feed_ended(),
             "the sink reported an end of stream nobody pushed: {}",
             rig.facts()
         );
@@ -5514,7 +5514,7 @@ mod end_of_film_tests {
              duration, so the arithmetic would end this film"
         );
         assert!(
-            rig.run_until(|_| crate::player::ended()),
+            rig.run_until(|_| crate::player::feed_ended()),
             "the film never ended: video ran to {}s, audio to {}s, and the pipeline's clock stopped \
              at the last picture: {}",
             VIDEO_END_NS / S,
