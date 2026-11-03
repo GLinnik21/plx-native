@@ -9348,6 +9348,16 @@ pub fn retry_uri_source_as_feed(ps: &mut PlaybackSession,
     if !abort_route_start(ticket, RouteStartResult::StartFailed) {
         return false;
     }
+    // The qualified Part URL names the logical Streaming Resource even before a native
+    // Load succeeds. Retire it exactly once on an expired/refused URI start, before Feed may
+    // replace the active route. The existing worker-ticket fence prevents a stale ticket from
+    // clearing a successor's resource.
+    let active = worker_ticket();
+    if ps.sess.is_empty() || active.encoder() != ps.sess.as_str()
+        || replace_active_encoder_for(&active, "").is_none() { return false; }
+    retire_plan_resources(AbandonedPlanResources {
+        sid: cur_sid(ps), identities: vec![ps.sess.clone()],
+    });
     if !cfg!(feature = "play-feed") { return false; }
     let Some(request) = ps.request.clone() else { return false };
     ps.qualify_backend_offer(plx_playback_contract::BackendKind::Uri,
@@ -9690,11 +9700,9 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
     // id lets scrobble_stop exact-close it while PlaybackSession::tsession stays empty and Direct remains
     // truthfully distinguishable from a transcode. A refusing plan has no playable URL and leaves
     // its cleanup to pump_play's abandoned-resource owner instead.
-    let active_encoder = if plan.uri_source_ready {
-        String::new()
-    } else if !plan.tsession.is_empty() {
+    let active_encoder = if !plan.tsession.is_empty() {
         plan.tsession.clone()
-    } else if !plan.url.is_empty() {
+    } else if plan.uri_source_ready || !plan.url.is_empty() {
         plan.sess.clone()
     } else {
         String::new()

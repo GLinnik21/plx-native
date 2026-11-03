@@ -1130,6 +1130,8 @@ pub enum PlayVerdict {
     /// A hero/trailer preview resolved to a route that is not a direct play. A muted preview takes
     /// only the original, so the plan is refused here, with no URL.
     PreviewNeedsDirectPlay,
+    /// This build has no Feed executor and no source-specific URI qualification was granted.
+    NoQualifiedBackend,
 }
 
 /// The limitation a Force Direct Play verdict names. Each one carries the same recovery step.
@@ -1162,6 +1164,7 @@ impl PlayVerdict {
             Self::Server(sentence, _) => Borrowed(sentence),
             Self::DirectPlayDisabled => Borrowed(msg::widgets_verdict_direct_play_disabled()),
             Self::PreviewNeedsDirectPlay => Borrowed(msg::widgets_reason_open()),
+            Self::NoQualifiedBackend => Borrowed(msg::widgets_reason_open()),
             Self::Forced(why) => match why {
                 ForcedFailure::NoOriginal => Borrowed(msg::widgets_verdict_forced_no_original()),
                 ForcedFailure::Container => Borrowed(msg::widgets_verdict_forced_container()),
@@ -1886,6 +1889,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     duration_ms: plan.playing.as_ref().and_then(|p| p.duration_ms),
                     video_codec: vcodec.to_owned(),
                     dolby_vision: plan.playing.as_ref().map_or(plx_data::metadata::Dovi::NONE, |p| p.dovi),
+                    dolby_vision_mode: env.dolby_vision_mode,
                     audio_codec: source_audio.as_ref().map_or_else(|| acodec.to_owned(), |(_, codec, _)| codec.clone()),
                     subtitle_source: source_sub_stream.map(|sub| super::uri_preflight::SourceSubtitle {
                         codec: sub.codec.to_lowercase(), embedded: !sub.external }),
@@ -1915,6 +1919,13 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     plan.uri_source_ready = true;
                     return plan;
                 }
+            }
+            if !cfg!(feature = "play-feed") {
+                // No PMS encoder was acquired. The fresh session id was used only to ask for
+                // the PlayQueue; leave no fictional Streaming Resource for refusal cleanup.
+                plan.sess.clear();
+                plan.verdict = Some(PlayVerdict::NoQualifiedBackend);
+                return plan;
             }
             let (src_w, src_h) = plan
                 .playing

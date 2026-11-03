@@ -292,6 +292,30 @@ fn unknown_uri_qualification_keeps_the_existing_feed_decision_path() {
     plx_plex::plex::reset_servers_for_test();
 }
 
+#[test]
+#[cfg(all(feature = "play-uri", not(feature = "play-feed"), feature = "devtriggers"))]
+fn unknown_uri_without_feed_has_a_named_refusal_before_pms_encoder_work() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    assert!(plx_net::net::global_init());
+    let evidence = crate::route::uri_preflight::ProductEvidence::unqualified(
+        plx_platform::tv::sink::VP_EXPORTED);
+    ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
+        evidence, std::sync::Arc::new(crate::route::uri_preflight::ProductQualifier)));
+    let (port, done, server) = versions_pms_with(URI_DTS, MDE_TRANSCODE_VIDEO);
+    let sid = plx_plex::plex::register_for_test("unqualified-dts", "127.0.0.1", port, "token", "unqualified-client");
+    let env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-v");
+    let plan = build_stream(&plx_base::task::OffFrame::for_test(), "rk-v",
+        "/library/parts/3134/1/file.mkv", "h264", "dca", &env);
+    done.send(()).unwrap();
+    let requests = server.join().unwrap();
+    assert_eq!(plan.verdict, Some(PlayVerdict::NoQualifiedBackend));
+    assert!(plan.url.is_empty() && plan.sess.is_empty(), "no Feed resource was acquired");
+    assert!(!requests.iter().any(|line| line.contains("/decision?") || line.contains("/transcode/")
+        || line.starts_with("PUT /library/parts/")), "Unknown URI must stop before Feed work: {requests:?}");
+    plx_plex::plex::reset_servers_for_test();
+}
+
 /// A retry or quality change resolves the same item again from the stored request, so the pick
 /// rides it; the session installs the landed version for every later encoder of the playback.
 #[test]

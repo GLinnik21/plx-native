@@ -7,6 +7,77 @@ use super::test_support::*;
 use super::test_support::apply_plan;
 
 #[test]
+#[cfg(feature = "play-uri")]
+fn a_uri_original_logical_resource_is_closed_once_on_stop() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    assert!(plx_net::net::global_init());
+    let (port, rx, server) = plan_pms_within(1, EMPTY_MC,
+        std::time::Duration::from_secs(10), true);
+    let sid = plx_plex::plex::register_for_test("uri-resource", "127.0.0.1", port,
+        "token", "uri-resource-client");
+    apply_plan(&mut ps, Plan { sid, uri_source_ready: true,
+        sess: "uri-logical-resource".to_owned(), ..Default::default() }, "rk-v");
+    scrobble_stop(&mut ps, None, None);
+    drain_scrobble();
+    // A repeated stop has no active resource to take and cannot close it twice.
+    scrobble_stop(&mut ps, None, None);
+    drain_scrobble();
+    let requests = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("resource stop");
+    server.join().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].contains("/video/:/transcode/universal/stop?")
+        && requests[0].contains("session=uri-logical-resource"), "{requests:?}");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
+#[cfg(feature = "play-uri")]
+fn expired_uri_landing_retires_its_unstarted_logical_resource_once() {
+    use plx_playback_contract::{Fidelity, Requirements, SourceKind, TrackChoice};
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    assert!(plx_net::net::global_init());
+    let (port, rx, server) = plan_pms_within(1, EMPTY_MC,
+        std::time::Duration::from_secs(10), true);
+    let sid = plx_plex::plex::register_for_test("expired-uri", "127.0.0.1", port,
+        "token", "expired-uri-client");
+    let selection = crate::route::SourceSelection { server: sid, part_id: 3134,
+        audio_sid: 42, subtitle_sid: 0,
+        audio_contract: plx_plex::plex::AudioEnhancements::NONE };
+    let known = crate::route::uri_preflight::KnownSource { selection,
+        source: plx_play_uri::backend::UriSource::new(
+            "https://example.invalid/expired.mkv".to_owned(), Vec::new()),
+        requirements: Requirements { source: SourceKind::ProgressiveUri,
+            video: Fidelity::Exact, audio: Fidelity::Exact,
+            audio_track: TrackChoice::Selected(42), subtitle_track: TrackChoice::Unspecified },
+        certified_dolby_vision: None, certified_subtitle_source: None,
+        expires_at: std::time::Instant::now() - std::time::Duration::from_secs(1) };
+    let mut playing = fourk_item(sid, Vec::new());
+    playing.rk = "rk-v".to_owned();
+    playing.duration_ms = Some(60_000);
+    let plan = Plan { sid, part_id: 3134, source_selection: Some(selection),
+        uri_original: Some(known), uri_source_ready: true,
+        playing: Some(playing),
+        sess: "expired-uri-resource".to_owned(), ..Default::default() };
+    assert!(begin_playback_request());
+    PLAY_GEN.store(41, Ordering::SeqCst);
+    PLAY_BUSY.store(true, Ordering::SeqCst);
+    *PLAY_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(PlayLanding {
+        gen: 41, trace_generation: 0, contract_revision: desired_contract_revision(),
+        candidate_purpose: CandidatePurpose::NewCandidate, plan, rk: "rk-v".to_owned() });
+    assert!(pump_play(&mut ps, &mut plx_data::stores::metadata::MetadataStore::default()).is_none());
+    scrobble_stop(&mut ps, None, None);
+    drain_scrobble();
+    let requests = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("expired resource stop");
+    server.join().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].contains("/video/:/transcode/universal/stop?")
+        && requests[0].contains("session=expired-uri-resource"), "{requests:?}");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
 #[cfg(feature = "play-feed")]
 fn same_source_intent_keeps_spent_candidates_across_effective_audio_and_failed_retry() {
     use super::super::backend_policy::{BackendPolicy, OfferId};

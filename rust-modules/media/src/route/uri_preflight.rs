@@ -61,6 +61,7 @@ pub struct OriginalRequest {
     pub video_codec: String,
     /// Exact selected-source layering; a positive DV verdict must certify this record.
     pub dolby_vision: plx_data::metadata::Dovi,
+    pub dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode,
     pub audio_codec: String,
     pub subtitle_source: Option<SourceSubtitle>,
     pub source_kbps: Option<u32>,
@@ -112,6 +113,8 @@ impl ResolvePort {
             || !request.quality_allows_original || !request.link_allows_original
             || !request.auto_allows_original || request.selection.audio_contract.any()
             || request.requires_subtitle_burn || request.requires_client_subtitle
+            || (request.dolby_vision.present
+                && request.dolby_vision_mode == plx_plex::plex::session::DolbyVisionMode::Off)
             || (request.preview && !self.evidence.preview_rectangle) {
             return Verdict::Refused;
         }
@@ -187,7 +190,9 @@ mod tests {
                 server: plx_plex::plex::ServerId::from_raw(1), part_id: 4, audio_sid: 42,
                 subtitle_sid: 0, audio_contract: plx_plex::plex::AudioEnhancements::NONE },
             source_url: "https://example.invalid/part.mkv".to_owned(), duration_ms: Some(60_000),
-            video_codec: "hevc".to_owned(), dolby_vision: dovi, audio_codec: "ac3".to_owned(),
+            video_codec: "hevc".to_owned(), dolby_vision: dovi,
+            dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode::Auto,
+            audio_codec: "ac3".to_owned(),
             subtitle_source: None,
             source_kbps: Some(4000), raster: Some((1920, 1080)),
             requested_rate_permille: plx_playback_contract::RATE_NORMAL, resume_ns: 0,
@@ -200,6 +205,10 @@ mod tests {
         let certified = ResolvePort::new(evidence, Arc::new(Certified { dovi: Some(dovi),
             subtitle: None, expired: false }));
         assert!(matches!(certified.qualify(&off, request()), Verdict::Known(_)));
+        let mut off_mode = request();
+        off_mode.dolby_vision_mode = plx_plex::plex::session::DolbyVisionMode::Off;
+        assert!(matches!(certified.qualify(&off, off_mode), Verdict::Refused),
+            "a raw URI may not bypass the viewer's disabled-DV presentation");
         let expired = ResolvePort::new(evidence, Arc::new(Certified { dovi: Some(dovi),
             subtitle: None, expired: true }));
         assert!(matches!(expired.qualify(&off, request()), Verdict::Unknown));
