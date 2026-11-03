@@ -24,62 +24,21 @@ use std::time::Duration;
 /// sound-output read in front of `Load`; the Load-timing log and telemetry do not (`threads::load_alone`).
 pub const NATIVE_LOAD_BUDGET: Duration = Duration::from_secs(20);
 
-/// The issued→return gate shared by the constructor wait and the loadCompleted arm.
-/// Ready objects retain the existing demux-failure precedence before this gate is evaluated.
+/// Attach the physical Load gate's addressed timeout to the current common trace. Both the
+/// constructor wait and loadCompleted arm call this after demux-failure precedence is settled.
 fn native_load_gate_ready(epoch: u32) -> bool {
-    if SHARED.native_load_returned(epoch) { return true; }
-    // Log the deferral exactly once per session (a fast Load may never hit this arm at all,
-    // in which case nothing here fires and the ordinary loadCompleted path below runs
-    // immediately once the gate is already open).
-    if SHARED
-        .native_load_deferred_logged_epoch
-        .swap(epoch, Relaxed)
-        != epoch
-    {
-        super::log("native: loadCompleted while Load in flight — deferring");
-    }
-    // D.1.4: bound the wait. A Load that never returns (the k5lp DirectVoInit hang,
-    // investigation.md §B) must not leave the player in Connecting forever — past the
-    // budget, publish the same signal an outright Load refusal sets, so the EXISTING
-    // failure/rollback arm above (this function, near the top) raises the failure read-out
-    // on the next tick instead of a permanent spinner.
-    match SHARED.native_load_elapsed(epoch) {
-        Some(elapsed) if elapsed >= NATIVE_LOAD_BUDGET => {
-            super::log(&format!(
-                "native: Load did not return within {}s — publishing load_failed",
-                NATIVE_LOAD_BUDGET.as_secs()
-            ));
-            SHARED.load_failed.store(true, Release);
-            SHARED.load_timed_out.store(true, Release);
-            super::report::note_load_gate_for(
-                crate::route::playback_trace_generation(),
-                super::report::LoadElapsedClass::from_ms(elapsed.as_millis() as i64),
-            );
+    let gate = super::feed_pump::load_gate(epoch, NATIVE_LOAD_BUDGET);
+    debug_assert_eq!(gate.native_epoch, epoch);
+    let timeout = match gate.verdict {
+        super::feed_pump::LoadGateVerdict::Returned => return true,
+        super::feed_pump::LoadGateVerdict::Deferred => return false,
+        super::feed_pump::LoadGateVerdict::TimedOut(elapsed) => {
+            super::report::LoadElapsedClass::from_ms(elapsed.as_millis() as i64)
         }
-        Some(_) => {}
-        // `native_load_elapsed` shares its precondition with `native_load_returned` — both
-        // require the epoch to still own `NativeSessionPhase::Active`. A synchronous
-        // UnloadCompleted callback (firmware type=23) for this epoch flips the phase to
-        // `Unloaded` *without* this arm ever having seen `Returned`, which would otherwise
-        // make the budget above unreachable at exactly the moment the gate can never open
-        // again — the permanent Connecting spinner D.1.4 exists to rule out. Treat losing
-        // `Active` while still deferred as a fired timeout rather than silently disabling it.
-        None => {
-            super::log(
-                "native: Load epoch left Active while loadCompleted was still deferred — \
-                 publishing load_failed",
-            );
-            SHARED.load_failed.store(true, Release);
-            SHARED.load_timed_out.store(true, Release);
-            // The epoch left Active before this arm ever saw an elapsed reading, so the exact
-            // in-flight time is unknown — bucket it as the budget's own ceiling, which is the
-            // honest floor for "still deferred when Active was lost".
-            super::report::note_load_gate_for(
-                crate::route::playback_trace_generation(),
-                super::report::LoadElapsedClass::Over20s,
-            );
-        }
-    }
+        // The epoch retired before this poll could measure its elapsed time.
+        super::feed_pump::LoadGateVerdict::LostEpoch => super::report::LoadElapsedClass::Over20s,
+    };
+    super::report::note_load_gate_for(crate::route::playback_trace_generation(), timeout);
     false
 }
 
@@ -355,36 +314,6 @@ fn maybe_begin_hls_rebuffer(ps: &crate::route::PlaybackSession, mt: &MainThread,
         trial_reserve_ms,
         runtime_runway_ms,
         silence_ms.map_or(-1, i64::from),
-    ));
-}
-
-/// Place the webOS 5+ exported window: source frame -> on-screen rect.
-///
-/// No-op on the ACB path. `src` is the frame being FED and `dst` where it lands, and the pair is
-/// what expresses scaling — so a 4K direct play must not be described as 1080p, which passing the
-/// authoring canvas for both would do. The coded size comes from the demuxer, the only thing that
-/// knows it for certain; before it has published, the canvas is the least-wrong fallback and the
-/// caller re-places once the real one arrives.
-fn place_exported(mt: &MainThread, eng: &mut super::engine::Engine) {
-    if super::sink().window_mode() != super::VP_EXPORTED {
-        return;
-    }
-    let (w, h) = SHARED.video_raster();
-    let src = if w > 0 && h > 0 { (w, h) } else { (1920, 1080) };
-    let rv = unsafe { super::sink().place_window(mt, src.0, src.1, 0, 0, 1920, 1080) };
-    eng.placed_src = src;
-    // RECORD it, do not merely log it. These three fields had no writer anywhere in the tree, so
-    // `dg_place_rv` sat at its `i32::MIN` "never called" sentinel for the life of the process and
-    // the diagnostics read-out rendered `Placed: not placed` in DANGER bold on every webOS 5+ set
-    // — a fabricated fault, on the one firmware family nobody here can test, pointing every reader
-    // at the video plane. The dev TV takes the ACB path, so no amount of looking at it would have
-    // caught this.
-    SHARED.dg_place_rv.store(rv, Relaxed);
-    SHARED.dg_placed_w.store(src.0, Relaxed);
-    SHARED.dg_placed_h.store(src.1, Relaxed);
-    super::log(&format!(
-        "vplane: exported window placed src={}x{} rv={rv}",
-        src.0, src.1
     ));
 }
 
@@ -2277,7 +2206,7 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         // the pipeline has produced something. The exported window has no such dependency: the
         // BINDING already happened via `option.windowId` in the Load payload, and this call is
         // pure geometry.
-        place_exported(mt, eng);
+        super::feed_pump::place_exported(mt, eng);
         if super::sink().window_mode() == super::VP_EXPORTED {
             // Playing -> Streaming directly: there is no bind sequence to sit in the middle of.
             // The transition is load-bearing beyond bookkeeping — `pushEOS` is gated on
@@ -2485,7 +2414,7 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     if eng.stage >= Stage::Playing && eng.placed_src != (0, 0) {
         let now = SHARED.video_raster();
         if now.0 > 0 && now.1 > 0 && now != eng.placed_src {
-            place_exported(mt, eng);
+            super::feed_pump::place_exported(mt, eng);
         }
     }
 
