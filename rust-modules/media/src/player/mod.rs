@@ -60,6 +60,8 @@ mod foreground_flight_tests;
 #[cfg(all(test, feature = "hostsim"))]
 mod resume_tests;
 mod shared;
+mod shared_resources;
+use shared_resources::Shared;
 pub mod sidecar;
 pub mod sub_charset; // legacy-encoding text subtitles (GBK, Big5, Shift_JIS, ...) read as UTF-8; decided once per track
 pub mod subside; // the side subtitle reader's thread and state (dev trigger `plxnative-subside`)
@@ -84,7 +86,7 @@ pub use shared::SubRect;
 pub use plx_data::metadata::track_names::TrackNames;
 pub use shared::UserPauseCursor;
 use shared::{
-    HlsPauseCompletion, HlsPlayCompletion, HlsUserPause, HlsUserResume, Shared, SubBitmap,
+    HlsPauseCompletion, HlsPlayCompletion, HlsUserPause, HlsUserResume, SubBitmap,
     Transport,
 };
 

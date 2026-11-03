@@ -506,8 +506,6 @@ pub struct Shared {
     /// picker's rows are the only place this reaches, and only on DIRECT PLAY: a transcode is a
     /// remux the server built, and its tags are whatever the server put there.
     pub track_names: Mutex<TrackNames>,
-    pub ass_sources: Mutex<super::ass_source::Store>,
-    pub ass_renderer: super::ass::Runtime,
     pub sub_bitmaps: Mutex<Vec<SubBitmap>>, // image-sub cues (every image track while subs are on)
 
     /// The main demuxer's FIRST video keyframe of this engine run (stream time + a payload
@@ -912,8 +910,6 @@ impl Shared {
             native_load_elapsed_ms: AtomicU64::new(0),
             desired_sub_idx: AtomicI32::new(-1),
             track_names: Mutex::new(TrackNames::new()),
-            ass_sources: Mutex::new(super::ass_source::Store::new()),
-            ass_renderer: super::ass::Runtime::new(),
             sub_bitmaps: Mutex::new(Vec::new()),
             file_size: AtomicI64::new(0),
             video_w: AtomicI32::new(0),
@@ -1148,7 +1144,15 @@ impl Shared {
     fn reset_session_inner(&self, for_reload: bool) {
         // Preserve the callback/reset barrier across every mirror write below. Abandoned and
         // releasing objects keep their native phase while their old callbacks drain.
-        self.native_session.reset_session_with(|| self.reset_session_mirrors(for_reload));
+        self.reset_session_with(for_reload, || {});
+    }
+
+    /// Keep common resource retirement inside the existing callback/reset barrier.
+    pub fn reset_session_with(&self, for_reload: bool, reset_common: impl FnOnce()) {
+        self.native_session.reset_session_with(|| {
+            self.reset_session_mirrors(for_reload);
+            reset_common();
+        });
     }
 
     fn reset_session_mirrors(&self, for_reload: bool) {
@@ -1253,15 +1257,6 @@ impl Shared {
         self.load_timed_out.store(false, Ordering::Relaxed);
         self.decoder_revoked.store(false, Ordering::Relaxed);
         self.native_audio_refused.store(false, Ordering::Relaxed);
-        // NB: desired_sub_idx is NOT reset here — like desired_audio_idx it persists across
-        // seeks/reloads so a reload-based seek keeps the chosen subtitle. It is reset on a new
-        // item (player::reset_subtitle). ASS packets are immutable file facts, not
-        // rendered frames: a reload must keep long signs that a seek will not resend.
-        // A fresh playback clears them; a reopen additionally revalidates URL + headers.
-        {
-            let mut sources = self.ass_sources.lock().unwrap_or_else(|e| e.into_inner());
-            if for_reload { sources.retain_for_reload(); } else { sources.reset(); }
-        }
         // The decoded bitmap store is transient render state and refills on read.
         self.sub_bitmaps.lock().unwrap().clear();
         // Cleared with them, and for the same reason: they describe the FILE the last demuxer had
