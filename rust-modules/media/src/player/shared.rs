@@ -5,7 +5,7 @@
 //! cycle and is *reset*, never freed. Native callbacks additionally carry the exact `Load` epoch:
 //! retirement drains an event already inside that epoch and rejects every later event, so stable
 //! storage is not mistaken for permission to mutate the next playback.
-use plx_data::metadata::track_names::TrackNames;
+use plx_playback_contract::tracks::TrackNames;
 use plx_net::stream::HttpStream;
 use plx_play_feed::native_gate::NativeGate;
 pub use plx_play_feed::native_gate::{EventScope, NativeEventClass};

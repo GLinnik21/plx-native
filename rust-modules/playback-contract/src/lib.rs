@@ -9,6 +9,7 @@ mod time;
 pub use time::MediaTimeMs;
 pub mod adaptive;
 pub mod subtitle;
+pub mod tracks;
 pub use state::{BackendState, Event, Fx, Intent, Phase, Snapshot, TrackFact};
 
 /// The selected physical executor. An attempt and every result carry this identity separately;
