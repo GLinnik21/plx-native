@@ -10,6 +10,7 @@
 //! rule for the rest of this file — a function here takes the token **iff** it reaches the slot
 //! or the ACB/Starfish seam, so the parameter carries information. `arm_seek` and `begin_resume`
 //! run on the main thread too and deliberately do not take one: they only publish to `SHARED`.
+use super::feed_open::{FeedOpenRequest, PayloadFacts};
 use super::shared::{HlsPlayCompletion, HlsPrimeKind, Stage};
 use super::SeekMode;
 use super::{log, sink, threads, ACB_OK, PTYPE, SHARED, TX};
@@ -1183,7 +1184,7 @@ fn fps_class(fps: f64) -> u32 {
     fps.ceil() as u32
 }
 
-fn sink_envelope_now(ps: &crate::route::PlaybackSession, video: LoadVideo) -> SinkEnvelope {
+fn sink_envelope_now(facts: &PayloadFacts, video: LoadVideo, rate: i32) -> SinkEnvelope {
     if let Some(spec) = plx_base::devtrig::read("sinkmax") {
         if let Some(env) = parse_sinkmax(&spec) {
             #[cfg(feature = "devtriggers")]
@@ -1197,10 +1198,10 @@ fn sink_envelope_now(ps: &crate::route::PlaybackSession, video: LoadVideo) -> Si
     }
     sink_envelope(
         video,
-        crate::route::sink_max_raster(ps),
-        fed_fps(crate::route::stream_fps(ps), super::applied_rate_permille()),
+        facts.max_raster,
+        fed_fps(facts.fps, rate),
         &plx_platform::devcaps::caps(),
-        plx_platform::devcaps::measured() && !crate::route::forced_direct_play(ps),
+        plx_platform::devcaps::measured() && !facts.force_direct_play,
     )
 }
 
@@ -1349,14 +1350,23 @@ fn pcm_decode_line(codec: &str, f: &crate::route::PcmFormat) -> String {
 
 /// The pipeline reads the true dimensions from the SPS (Phase 0 HEVC probe), so mw/mh are only
 /// the sink envelope.
+#[cfg(test)]
 fn build_av_payload(ps: &crate::route::PlaybackSession, video: &str, audio: &str, env: SinkEnvelope) -> String {
     build_av_payload_at(ps, video, audio, env, super::applied_rate_permille())
 }
 
 /// [`build_av_payload`] at an explicit session speed (`rate`, permille), so the host tests can pin
 /// it without touching the process-wide `applied_rate_permille`.
+#[cfg(test)]
 fn build_av_payload_at(
     ps: &crate::route::PlaybackSession, video: &str, audio: &str, env: SinkEnvelope, rate: i32,
+) -> String {
+    let facts = PayloadFacts::capture(ps);
+    build_av_payload_from_facts(&facts, video, audio, env, rate)
+}
+
+fn build_av_payload_from_facts(
+    facts: &PayloadFacts, video: &str, audio: &str, env: SinkEnvelope, rate: i32,
 ) -> String {
     // WHO declares the PCM, decided once: FLAC at 1x (the app decodes it, `ff_pcm`) declares its
     // own shape below via `with_pcm_info`; every other PCM Load (the speed decoder, any codec,
@@ -1364,7 +1374,7 @@ fn build_av_payload_at(
     // fixed node is skipped when the app's shape exists, else the Load would carry two `pcmInfo`
     // keys that disagree on the rate's unit and the bit depth. (A FLAC track whose facts are
     // missing is `Err`: that Load is refused in `start_bufferfeed` before this payload is used.)
-    let app_pcm = app_pcm_for_rate(rate, crate::route::stream_pcm(ps)).and_then(Result::ok);
+    let app_pcm = app_pcm_for_rate(rate, facts.pcm.clone()).and_then(Result::ok);
     let mut p = PAYLOAD_AV
         .replace(r#""video":"H264""#, &format!(r#""video":"{video}""#))
         .replace(r#""audio":"AC3""#, &format!(r#""audio":"{audio}""#))
@@ -1401,7 +1411,7 @@ fn build_av_payload_at(
     if plx_base::devtrig::flag("nofps") {
         #[cfg(feature = "devtriggers")]
         log("esInfo: videoFps WITHHELD by /tmp/plxnative-nofps");
-    } else if let Some((num, den)) = fed_fps_rational(crate::route::stream_fps(ps), rate) {
+    } else if let Some((num, den)) = fed_fps_rational(facts.fps, rate) {
         p = p
             .replace(
                 r#""seperatedPTS":true}"#,
@@ -1413,14 +1423,14 @@ fn build_av_payload_at(
             );
         log(&format!(
             "esInfo: videoFps {num}/{den} + adaptiveResolution (src {:.3})",
-            crate::route::stream_fps(ps)
+            facts.fps
         ));
     }
-    let p = with_dolby_hdr_info(&p, video, crate::route::stream_dv_presentation(ps));
+    let p = with_dolby_hdr_info(&p, video, facts.dv_presentation);
     // The app-decoded (FLAC, 1x) node: sampleRate in kHz and a format name. The speed decoder's
     // fixed node above is the only other `pcmInfo` a Load can carry, and never together with this.
     let p = with_pcm_info(&p, audio, app_pcm);
-    with_immersive(&p, audio, crate::route::stream_immersive(ps))
+    with_immersive(&p, audio, facts.immersive)
 }
 
 /// The `contents.immersive` node — **the Dolby Atmos half of the same envelope**, and the reason
@@ -1978,6 +1988,9 @@ fn start_bufferfeed_inner(
             }
         }
     }
+    // The prepared route has finished choosing the stream. Freeze the values the native Load,
+    // payload and demux worker will use before any of those physical resources are constructed.
+    let mut open = stream.then(|| FeedOpenRequest::capture(ps, url));
     // For a streamed direct-play/transcode, pick the Load codecs from the item: video H264 vs
     // H265 (native HEVC direct-play), audio AC3/EAC3/AAC/DTS. (The local sample paths keep their
     // fixed payloads.)
@@ -2009,8 +2022,9 @@ fn start_bufferfeed_inner(
         log(&format!("speed: this Load plays at {session_rate} (audio decoded in the app, fed as PCM)"));
     }
     let payload_str: &str = if stream {
-        let stream_vcodec = crate::route::stream_vcodec(ps);
-        let Some(lv) = LoadVideo::of_stream(&stream_vcodec) else {
+        let open = open.as_ref().expect("stream request was captured");
+        let stream_vcodec = &open.video_codec;
+        let Some(lv) = LoadVideo::of_stream(stream_vcodec) else {
             log(&format!(
                 "start_bufferfeed: the pipeline cannot feed video codec {stream_vcodec:?}; refusing the Load instead of declaring it H.264"
             ));
@@ -2045,10 +2059,10 @@ fn start_bufferfeed_inner(
             // LG's pipeline names E-AC3 "AC3 PLUS" (Dolby Digital Plus), NOT "EAC3" — the
             // wrong string leaves the audio ES unconfigured, and with audioSync the video
             // sink slaves to the dead audio clock and stalls (verified: video-only plays).
-            let codec = crate::route::stream_acodec(ps);
+            let codec = &open.audio_codec;
             // App-decoded audio: the Load must state the PCM shape, and the demuxer must produce
             // exactly that. Missing facts refuse the Load — a guessed rate plays at the wrong pitch.
-            let pcm = match app_pcm_for_rate(session_rate, crate::route::stream_pcm(ps)) {
+            let pcm = match app_pcm_for_rate(session_rate, open.payload.pcm.clone()) {
                 Some(Ok(f)) => Some(f),
                 Some(Err(why)) => {
                     log(&format!("start_bufferfeed: PCM audio refused — {why}"));
@@ -2071,7 +2085,7 @@ fn start_bufferfeed_inner(
                 pcm.map(|f| crate::ff_pcm::PcmOut {
                     rate: f.sample_rate, bits: f.bits, channels: f.channels, source_rate: f.source_rate,
                 }),
-                pcm.is_some() && crate::route::stream_pcm_is_lossy(ps),
+                pcm.is_some() && open.pcm_is_lossy,
             );
             if let Some(f) = pcm {
                 log(&pcm_decode_line(&codec, &f));
@@ -2099,10 +2113,10 @@ fn start_bufferfeed_inner(
             // `lv` is the STREAM's declared codec; `is_h265` above belongs to the local-sample
             // path and is false here for every streamed HEVC playback (device-measured 2026-09-03:
             // three HEVC cells declared FHD before this read the right flag).
-            sink_env = sink_envelope_now(ps, lv);
-            let av = build_av_payload(ps, lv.payload_name(), ac, sink_env);
+            sink_env = sink_envelope_now(&open.payload, lv, session_rate);
+            let av = build_av_payload_from_facts(&open.payload, lv.payload_name(), ac, sink_env, session_rate);
             stream_payload = if ac == "OPUS" {
-                let channels = crate::route::stream_achannels(ps);
+                let channels = open.audio_channels;
                 let Some(p) = with_opus_info(&av, channels) else {
                     log(&format!("start_bufferfeed: no Opus layout for {channels} channel(s); refusing the Load"));
                     SHARED.demux_failed.store(true, Ordering::Release);
@@ -2131,6 +2145,7 @@ fn start_bufferfeed_inner(
     // gone by then.
     let payload_c = std::ffi::CString::new(with_window_id(pa.mt(), &with_app_id(payload_str))).unwrap();
     if stream {
+        let open = open.as_ref().expect("stream request was captured");
         // What the payload ACTUALLY declared, once, in the event log. Not test scaffolding: until
         // this line, the only answer to "what did we tell the television this stream was" lived in
         // the on-screen diagnostics read-out (`dg_load_v`/`dg_load_a` above), i.e. nowhere a log
@@ -2139,17 +2154,17 @@ fn start_bufferfeed_inner(
         // unconfigured and stalls the video sink through audioSync. Streamed only: the two static
         // sample payloads declare nothing chosen and would be claiming a declaration they never
         // consulted. Carries no URL and no token, and costs one line per playback.
-        let dv = crate::route::stream_dovi(ps);
+        let dv = open.payload.dovi;
         log(&format!(
             "load: v={} a={:?} fps={:.3} dv=present:{} P{}/{} el:{} atmos:{} max={}x{}@{}",
             video_declared,
             audio_declared,
-            crate::route::stream_fps(ps),
+            open.payload.fps,
             dv.present as i32,
             dv.profile,
             dv.bl_compat,
             dv.el_present as i32,
-            crate::route::stream_immersive(ps) as i32,
+            open.payload.immersive as i32,
             sink_env.w,
             sink_env.h,
             sink_env.fps
@@ -2186,10 +2201,11 @@ fn start_bufferfeed_inner(
     // Whether the side subtitle reader will run for this engine run, decided BEFORE the demuxer is
     // spawned: the demuxer reads `side_subs_owner` once, as it opens the stream, and must never
     // also open subtitle decoders or ASS sources the reader replaces.
-    let side_target = if stream { crate::route::side_reader_target(ps) } else { None };
+    let side_target = open.as_mut().and_then(|request| request.side_reader.take());
 
     if stream {
-        let su = plx_plex::plex::StreamUrl::parse(&url); // the typed layer's URL splitter
+        let open = open.as_mut().expect("stream request was captured");
+        let su = plx_plex::plex::StreamUrl::parse(&open.url); // the typed layer's URL splitter
                                                       // **The whole ORIGIN goes down, not a `(host, port)` pair, because the SCHEME chooses the
                                                       // transport**: `ff::demux` reads http through `plx_net::stream`'s cleartext socket and https
                                                       // through `crate::curlio`. This used to REFUSE an https origin outright — cleartext to a
@@ -2217,17 +2233,17 @@ fn start_bufferfeed_inner(
             let aqp = threads::SendPtr(aqv_raw);
             let aqap = threads::SendPtr(aqa_raw);
             let hsp = threads::SendPtr(hs_raw);
-            // The Load payload's audio codec, captured BY VALUE here on the main thread.
+            // The Load payload's audio codec, moved BY VALUE from the prepared open.
             // `ff::demux` used to call `route::stream_acodec()` from the demux thread, cloning
             // a `static mut String` that main-thread route transitions and native audio switches
             // reassign — a data race, and a use-after-free if the reassignment dropped the old
             // buffer mid-clone.
-            // Capturing is free: every one of those writers is followed by
+            // The prepared open is refreshed on every reload: every one of those writers is followed by
             // `teardown(true) + start_bufferfeed()` (reload_at / reload_transcode /
             // switch_audio_native), which respawns this thread with the new value.
-            let acodec = crate::route::stream_acodec(ps);
-            let abr = crate::route::hls_abr_control(ps);
-            let auto_original = crate::route::auto_original_watch(ps);
+            let acodec = std::mem::take(&mut open.audio_codec);
+            let abr = open.hls_abr.take();
+            let auto_original = open.auto_original.take();
             // Before the demuxer exists, so what it publishes is this session's.
             crate::ff::native_audio::reset();
             // A clock-only reader (a sidecar) reads no subtitle: the demuxer keeps what it enumerates.
@@ -2254,7 +2270,11 @@ fn start_bufferfeed_inner(
     // the media thread constructs + loads + runs the loop (owns the GMainContext)
     let payload_ptr = threads::SendPtr(payload_c.as_ptr() as *mut c_char);
     let native_epoch = native_start.epoch();
-    let receipt = pa.load_receipt(route_attempt, native_epoch, crate::route::playback_trace_generation());
+    let trace_generation = open.as_ref().map_or_else(
+        crate::route::playback_trace_generation,
+        |request| request.trace_generation,
+    );
+    let receipt = pa.load_receipt(route_attempt, native_epoch, trace_generation);
     let receipt_token = receipt.token();
     let load_th = plx_base::task::spawn("media", move || {
         threads::load_thread(payload_ptr, native_epoch, Some(receipt), audio_lead)
