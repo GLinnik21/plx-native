@@ -179,6 +179,11 @@ pub(super) fn start_bufferfeed_inner(
     pa: &mut super::adapter::PlayerAdapter,
     route_start: crate::route::RouteStartTransaction,
 ) -> Result<crate::route::RouteStartAttempt, crate::route::RouteStartResult> {
+    if !cfg!(feature = "play-feed") || !ps.backend_planned_feed_allowed() {
+        log("start_bufferfeed: no qualified feed offer for this resolved route");
+        return Err(crate::route::RouteStartResult::StartFailed);
+    }
+    let offer = ps.planned_feed_offer().expect("qualified feed has a recipe");
     // The previous object's release is finished or the start was deferred before this point
     // (`start_bufferfeed_for`), so the epoch is retired and the object destroyed already.
     // A timed-out Load from an earlier Engine may still own the one native object the C seam
@@ -252,17 +257,13 @@ pub(super) fn start_bufferfeed_inner(
         return Err(crate::route::RouteStartResult::StartFailed);
     };
     let attempt = route_attempt.contract_id();
-    let force_original = prepared_native.force_original();
+    let (video_fidelity, audio_fidelity) = ps.planned_feed_fidelity()
+        .expect("qualified feed has fidelity requirements");
     prepared_native.bind_demux_session(attempt);
     ps.begin_attempt_view(route_attempt, super::attempt_view::Backend::Feed);
     let source = pa.next_source_key();
     pa.stage_native_feed(attempt, source, prepared_native)
         .map_err(|_| crate::route::RouteStartResult::StartFailed)?;
-    let fidelity = if force_original {
-        plx_playback_contract::Fidelity::Exact
-    } else {
-        plx_playback_contract::Fidelity::Compatible
-    };
     let backend_at = pa.backend_tick();
     let result = pa.backend_send_at(
         plx_playback_contract::Intent::Start {
@@ -271,8 +272,8 @@ pub(super) fn start_bufferfeed_inner(
             source,
             requirements: plx_playback_contract::Requirements {
                 source: plx_playback_contract::SourceKind::PacketFeed,
-                video: fidelity,
-                audio: fidelity,
+                video: video_fidelity,
+                audio: audio_fidelity,
                 // Route preparation has already selected the feed's streams. The native
                 // driver has no separate track command to confirm during startup.
                 audio_track: plx_playback_contract::TrackChoice::Unspecified,
@@ -297,6 +298,8 @@ pub(super) fn start_bufferfeed_inner(
     )) {
         return Err(crate::route::RouteStartResult::StartFailed);
     }
+    let admitted = ps.backend_offer_admitted(plx_playback_contract::BackendKind::Feed, offer);
+    assert!(admitted, "the prechecked feed offer must remain admissible on the main thread");
     pa.bind_feed_attempt(route_attempt, trace_generation);
     // The app gates its first pump on this readout. Publish after physical start and exact
     // attempt binding, before the caller returns to that gate.
