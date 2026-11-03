@@ -3839,7 +3839,14 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine) {
             };
             recovery.ready(playable)
         }
-        HlsPrimeKind::Fresh | HlsPrimeKind::Resume => balanced_runway_ready,
+        HlsPrimeKind::Fresh => balanced_runway_ready,
+        // A viewer Resume continues an existing timeline, not a replay of every acquisition
+        // since the rung was selected. That historical worst-permutation reserve can exceed
+        // native + AU queue capacity (#1216); no further media can arrive until Play. Keep the
+        // accepted A/V decoder prime below, but do not make user intent repay historical stress.
+        // An automatic rebuffer remains Rebuffer even across user Pause/Resume and must still
+        // close its own pause-local recovery epoch above.
+        HlsPrimeKind::Resume => true,
     };
     if decoder_ready && boundary_ready && TX.feed_allowed() {
         let Some((play_token, recovery)) =
@@ -5990,10 +5997,20 @@ mod prime_livelock_tests {
 
     /// Reproduces the device sequence: Pause, let the demux queues fill, then Resume. The user
     /// intent may reopen feeding, but it must not run the native/ACB clock until Starfish has
-    /// accepted a balanced decoder prime. The measured runway may extend into the validated queue
-    /// tails because a paused native source buffer is finite and cannot accept the whole runway.
+    /// accepted a balanced decoder prime. Historical stress runway is not a runtime Resume floor.
     #[test]
     fn pause_to_fill_resume_primes_both_lanes_before_native_play() {
+        assert_viewer_resume_primes(3_000, 3_500_000_000);
+    }
+
+    /// Issue #1216: 14.754 s of historical runway, but the paused native pipeline and
+    /// validated queues can hold only 10.8 s. Neither tail grows until Play.
+    #[test]
+    fn a_resume_prime_whose_runway_exceeds_the_queue_capacity_still_plays() {
+        assert_viewer_resume_primes(14_754, 10_800_000_000);
+    }
+
+    fn assert_viewer_resume_primes(runway_ms: i64, playable_ns: i64) {
         let _serial = plx_base::testlock::serial();
         struct Restore {
             runway: i64,
@@ -6030,13 +6047,13 @@ mod prime_livelock_tests {
         SHARED.reset_hls_clock_for_test();
         let base = 10_000_000_000;
         let _restore = Restore {
-            runway: SHARED.hls_prime_runway_ms.swap(3_000, Ordering::Relaxed),
+            runway: SHARED.hls_prime_runway_ms.swap(runway_ms, Ordering::Relaxed),
             video_tail: SHARED
                 .hls_video_tail_ns
-                .swap(base + 3_500_000_000, Ordering::Relaxed),
+                .swap(base + playable_ns, Ordering::Relaxed),
             audio_tail: SHARED
                 .hls_audio_tail_ns
-                .swap(base + 3_500_000_000, Ordering::Relaxed),
+                .swap(base + playable_ns, Ordering::Relaxed),
             audio_expected: SHARED.hls_audio_expected.swap(true, Ordering::Relaxed),
             pts_shift: SHARED.pts_shift.swap(0, Ordering::Relaxed),
             presented: SHARED.pres_fed.swap(base, Ordering::Relaxed),
@@ -6071,19 +6088,26 @@ mod prime_livelock_tests {
         );
 
         TX.commit_paused(false);
-        tick(&mt, &mut eng);
+        // Balanced decoder prime is still mandatory even when historical runway is ignored.
+        eng.max_fed_video_pts = base + PRIME_NS;
+        eng.max_fed_audio_pts = base;
+        try_prime(&mt, &mut eng);
+        assert_eq!(crate::player::ffi_host::play_calls_for_test(), before);
+        for _ in 0..600 {
+            tick(&mt, &mut eng);
+        }
 
         let accepted_video = eng.max_fed_video_pts - base;
         let accepted_audio = eng.max_fed_audio_pts - base;
         assert!(accepted_video >= PRIME_NS && accepted_audio >= PRIME_AUDIO_NS);
         assert!(
-            accepted_video < 3_000_000_000 && accepted_audio < 3_000_000_000,
+            accepted_video < runway_ms * 1_000_000 && accepted_audio < runway_ms * 1_000_000,
             "the fixture must leave part of the measured runway in the application queues",
         );
         assert_eq!(crate::player::ffi_host::play_calls_for_test(), before + 1);
         assert!(
             !eng.prime_play,
-            "balanced accepted A/V plus validated queued runway did not release ResumePrime",
+            "viewer Resume stayed fenced after a balanced decoder prime",
         );
     }
 
