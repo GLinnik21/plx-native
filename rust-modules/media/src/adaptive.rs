@@ -2665,7 +2665,7 @@ impl Coordinator {
         let authorized = port.authorize(&lease);
         let position_ns = port.position_sampler();
         match self.publish_original(
-            port.gate(), authorized, prepared.kbps, position_ns, on_published,
+            port.gate(), authorized, prepared.kbps, move || position_ns(), on_published,
         ) {
             OriginalPublication::Published => OriginalSwitchOutcome::Published { kbps: prepared.kbps },
             OriginalPublication::Busy => OriginalSwitchOutcome::Busy,
@@ -2747,7 +2747,7 @@ impl Coordinator {
                 let authorized = port.authorize(&lease);
                 let position_ns = port.position_sampler();
                 let publication = self.publish_probed_original(
-                    port.gate(), authorized, kbps, measured_kbps, position_ns,
+                    port.gate(), authorized, kbps, measured_kbps, move || position_ns(),
                     || diagnostics.action(ProbeTraceAction::RecoverOriginal, 0),
                 );
                 match publication {
@@ -3329,7 +3329,7 @@ impl AdaptiveSession for Session {
         let user_sequence = physical.user_sequence_sampler();
         let cycle = match run_active_round(
             &mut *coordinator, physical, round_id, || now_ms(),
-            remaining_playback_ms, user_sequence,
+            || remaining_playback_ms(), || user_sequence(),
             &mut self.session_boundary_pending, &mut diagnostics,
         ) {
             Ok(ActiveRun::Ended) => return AdaptiveProgress::Ended,
