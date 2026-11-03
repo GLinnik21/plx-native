@@ -2081,7 +2081,14 @@ plx_base::devtrig::latched_flag!(
 /// only one of them.
 pub fn speed_offer(ps: &crate::route::PlaybackSession) -> Vec<i32> {
     if ps.attempt_view().backend() == Some(attempt_view::Backend::Uri) {
-        return Vec::new();
+        // URI has no native speed operation. A viewer pick can re-resolve this same source for
+        // Feed's decoder only while its position is known and the item is still resolvable.
+        #[cfg(feature = "play-feed")]
+        { return if crate::route::can_retry_current_play(ps)
+            && intended_pos_known_ns(ps).is_some() { feed_speed_offer(ps) }
+            else { Vec::new() }; }
+        #[cfg(not(feature = "play-feed"))]
+        { return Vec::new(); }
     }
     #[cfg(feature = "play-feed")]
     { feed_speed_offer(ps) }

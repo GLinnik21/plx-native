@@ -130,10 +130,20 @@ pub(crate) fn apply_more_action(ps: &mut plx_media::route::PlaybackSession, pa: 
                 plx_media::route::set_quality(ps, q);
             }
         }
-        // A playback speed: a reload at the viewer's position at the new speed
-        // (`player::set_play_rate`). Picking the current speed does nothing.
+        // A URI speed pick re-resolves the same source for a Feed-capable executor. The common
+        // route request owns its new bounded episode; missing clock or pause evidence refuses
+        // the edit before replacing anything. Feed keeps its in-place rate-reload path.
         plx_appkit::more_menu::Action::SetSpeed(r) => {
-            pa.set_play_rate(ps, r);
+            if ps.attempt_view().backend() == Some(plx_media::player::attempt_view::Backend::Uri) {
+                if plx_media::player::speed_offer(ps).contains(&r) {
+                    let position = plx_media::player::intended_pos_known_ns(ps);
+                    let paused = pa.backend_viewer_paused();
+                    let _ = plx_media::route::request_viewer_reconfigure(ps, bridge.metadata_mut(),
+                        plx_media::route::ViewerReconfigure::Speed(r), position, paused);
+                }
+            } else {
+                pa.set_play_rate(ps, r);
+            }
         }
         // Lab builds only. Nothing about playback changes: the snapshot is taken and the toast
         // reports, over whatever the player is doing.
@@ -551,6 +561,7 @@ pub(crate) fn close_player_overlays(pages: &mut plx_ui::dispatch::Dispatcher<sup
 pub(crate) fn commit_track(
     ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
+    meta: &mut plx_data::stores::metadata::MetadataStore,
     commit: plx_appkit::track_menu::TrackCommit,
 ) {
     use plx_appkit::track_menu::TrackCommit;
@@ -558,7 +569,18 @@ pub(crate) fn commit_track(
         TrackCommit::Audio { carried, memo } => {
             pa.commit_audio_track(ps, carried, memo);
         }
-        TrackCommit::AudioEnhancement(a) => { pa.commit_audio_enhancement(ps, a); }
+        TrackCommit::AudioEnhancement(a) => {
+            if ps.attempt_view().backend() == Some(plx_media::player::attempt_view::Backend::Uri) {
+                if plx_media::route::audio_enhancements_offered_live(ps) {
+                    let position = plx_media::player::intended_pos_known_ns(ps);
+                    let paused = pa.backend_viewer_paused();
+                    let _ = plx_media::route::request_viewer_reconfigure(ps, meta,
+                        plx_media::route::ViewerReconfigure::Audio(a), position, paused);
+                }
+            } else {
+                pa.commit_audio_enhancement(ps, a);
+            }
+        }
         // The route commits the pick and performs the sidecar half of it too
         // (`route::commit_subtitle_and_sidecar`): the sidecar policy lives beside the track memory's.
         TrackCommit::Subtitle { render_ordinal, stream_id, sidecar_key, sidecar_codec, memo } => {
@@ -629,7 +651,8 @@ pub(crate) fn player_requests(
             // The pump keeps the pause across it (see `commit_seek`).
             PlayerReq::CommitSeek(ns) => commit_seek(&mut player.session, pa, ns),
             PlayerReq::More(action) => apply_more_action(&mut player.session, pa, bridge, action),
-            PlayerReq::CommitTrack(commit) => commit_track(&mut player.session, pa, commit),
+            PlayerReq::CommitTrack(commit) =>
+                commit_track(&mut player.session, pa, bridge.metadata_mut(), commit),
             // The failure-read-out's recovery escape (`ChooseQuality`) and the Tracks->Timing hand-off, which
             // present a panel immediately rather than through the deferred press `ArmControlRow` uses. The
             // tabs row is not an asker: it asks `ToggleSection` (Info and Chapters are sections).

@@ -747,6 +747,51 @@ mod backend_offer_session_tests {
             Some((71, 81)), "an external source subtitle remains a viewer-selected sidecar");
     }
 
+    #[cfg(feature = "play-uri")]
+    #[test]
+    fn uri_original_enhancement_offer_uses_source_facts_without_feed_original_candidate() {
+        let _serial = plx_base::testlock::serial();
+        let (mut session, _) = enhancement_test_session(EnhTestFixture {
+            base_present: false, ..Default::default()
+        });
+        session.begin_attempt_view(RouteStartAttempt::fixture(),
+            crate::player::attempt_view::Backend::Uri);
+        session.cur_source_decodable = true;
+        session.request = Some(PlaybackRequest {
+            sid: session.cur_sid, rk: "42".into(), part: "/library/parts/7".into(),
+            vcodec: "h264".into(), acodec: "ac3".into(), title: "Film".into(),
+            ctx: String::new(), preview: false, version: None,
+        });
+        assert_eq!(menu_enhancement_availability(&session),
+            EnhancementAvailability::Offered(EnhancementRoute::Remux),
+            "URI eligibility comes from the selected source, not Feed's absent fallback candidate");
+    }
+
+    #[test]
+    fn viewer_reconfigure_refuses_unknown_position_pause_and_same_value_without_spending() {
+        let _serial = plx_base::testlock::serial();
+        let mut session = PlaybackSession::IDLE;
+        session.request = Some(PlaybackRequest {
+            sid: ServerId::UNSET, rk: "42".into(), part: "/library/parts/7".into(),
+            vcodec: "h264".into(), acodec: "ac3".into(), title: "Film".into(),
+            ctx: String::new(), preview: false, version: None,
+        });
+        let mut meta = plx_data::stores::metadata::MetadataStore::default();
+        let change = ViewerReconfigure::Speed(1500);
+        assert!(!request_viewer_reconfigure(&mut session, &mut meta, change, None, Some(true)));
+        assert!(!request_viewer_reconfigure(&mut session, &mut meta, change,
+            Some(42_000_000_000), None));
+        assert!(!request_viewer_reconfigure(&mut session, &mut meta,
+            ViewerReconfigure::Speed(plx_playback_contract::RATE_NORMAL),
+            Some(42_000_000_000), Some(true)));
+        assert_eq!(session.requested_rate_permille(), plx_playback_contract::RATE_NORMAL);
+        assert_eq!(session.reconfigure_pause_goal(), None);
+        assert!(session.backend_policy.is_none(), "a refused edit spends no recipe or episode");
+        session.direct_play_mode = DirectPlayMode::Forced;
+        assert!(!request_viewer_reconfigure(&mut session, &mut meta, change,
+            Some(42_000_000_000), Some(true)), "Force forbids an implicit PCM transform");
+    }
+
     #[test]
     fn qualified_original_feed_precedes_uri_conversion_then_uri_precedes_feed_conversion() {
         let mut session = PlaybackSession::IDLE;
@@ -9049,7 +9094,7 @@ pub fn request_play_queue_item(
     request_play_with_queue(ps, meta, caps, PlaybackRequest {
         sid: row.sid, rk: row.rk.clone(), part: row.part.clone(), vcodec: row.vcodec.clone(),
         acodec: row.acodec.clone(), title: title.clone(), ctx: ctx.into(), preview: false, version: None,
-    }, None, None, false, crate::player::report::AttemptOrigin::Fresh, queue, false)
+    }, None, None, false, crate::player::report::AttemptOrigin::Fresh, queue, false, None)
 }
 
 /// Same resolve door as [`request_play`], flagged as a preview. Does not push a route. Resume is
@@ -9130,7 +9175,44 @@ fn request_play_inner(
     drain_previous: bool,
     origin: crate::player::report::AttemptOrigin,
 ) -> bool {
-    request_play_with_queue(ps, meta, caps, request, retry, trace_generation, drain_previous, origin, None, false)
+    request_play_with_queue(ps, meta, caps, request, retry, trace_generation, drain_previous, origin, None, false, None)
+}
+
+/// An explicit viewer edit that needs a new physical executor. Its desired value is installed
+/// only after the common request door accepts the resolve, so Busy leaves the current play intact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewerReconfigure {
+    Speed(i32),
+    Audio(plx_plex::plex::AudioEnhancements),
+}
+
+/// Re-resolve the same source and selected tracks at a proven viewer position. This is one new
+/// finite policy episode, whereas automatic failures continue within their existing episode.
+/// The old executor remains owned until the normal resolved-start/release queue replaces it.
+pub fn request_viewer_reconfigure(ps: &mut PlaybackSession,
+    meta: &mut plx_data::stores::metadata::MetadataStore,
+    change: ViewerReconfigure, position_ns: Option<i64>, paused: Option<bool>) -> bool {
+    let (Some(request), Some(position_ns), Some(paused)) =
+        (ps.request.clone(), position_ns, paused) else { return false };
+    if position_ns < 0 || ps.preview { return false; }
+    match change {
+        ViewerReconfigure::Speed(rate) => {
+            if !crate::player::PLAY_RATES.contains(&rate)
+                || rate == ps.requested_rate_permille
+                || (ps.direct_play_mode == DirectPlayMode::Forced
+                    && rate != plx_playback_contract::RATE_NORMAL) { return false; }
+        }
+        ViewerReconfigure::Audio(audio) => {
+            if audio == crate::player::audio_enhancements()
+                || (ps.direct_play_mode == DirectPlayMode::Forced && audio.any()) { return false; }
+        }
+    }
+    let mut retry = current_retry_context(ps, position_ns);
+    retry.candidate_purpose = CandidatePurpose::NewCandidate;
+    let caps = ps.attempt_caps();
+    request_play_with_queue(ps, meta, caps, request, Some(retry), None, false,
+        crate::player::report::AttemptOrigin::ViewerReconfigure, None, false,
+        Some((change, paused)))
 }
 
 fn local_attempt_origin(origin: crate::player::report::AttemptOrigin)
@@ -9161,6 +9243,7 @@ fn request_play_with_queue(
     origin: crate::player::report::AttemptOrigin,
     queue: Option<super::queue_navigation::QueueContinuation>,
     same_episode_feed_retry: bool,
+    viewer_reconfigure: Option<(ViewerReconfigure, bool)>,
 ) -> bool {
     ps.finished = false; // a flag the previous stop never took must not mark THIS item
     let sid = request.sid;
@@ -9176,6 +9259,13 @@ fn request_play_with_queue(
             "playback request: route transition still owns the player; refusing overlapping resolve",
         );
         return false;
+    }
+    if let Some((change, paused)) = viewer_reconfigure {
+        ps.set_reconfigure_pause_goal(paused);
+        match change {
+            ViewerReconfigure::Speed(rate) => ps.requested_rate_permille = rate,
+            ViewerReconfigure::Audio(audio) => crate::player::set_audio_enhancements(audio),
+        }
     }
     // **The playback funnel's denominator, minted HERE and not where the plan lands.** Every way
     // into playback comes through this one function, including the ones that go on to be refused at
@@ -9444,7 +9534,7 @@ pub fn retry_uri_source_as_feed(ps: &mut PlaybackSession,
     let caps = ps.attempt_caps();
     request_play_with_queue(ps, meta, caps, request, Some(retry),
         Some(playback_trace_generation()), false,
-        crate::player::report::AttemptOrigin::Fresh, None, true)
+        crate::player::report::AttemptOrigin::Fresh, None, true, None)
 }
 
 /// The context a START-FAILURE rescue resolves under: [`current_retry_context`], plus the
@@ -9703,7 +9793,8 @@ pub fn pump_play(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata
                 super::backend_policy::OfferId::URI_ORIGINAL,
                 crate::player::adapter::UriSourceRecipe::OriginalPart,
                 ticket, selection, known.source, known.requirements,
-                plx_playback_contract::InitialPlayback { position, paused: false },
+                plx_playback_contract::InitialPlayback {
+                    position, paused: ps.reconfigure_pause_goal().unwrap_or(false) },
                 duration_ms, known.expires_at,
             ).ok()
         }
@@ -11790,6 +11881,26 @@ pub fn displayed_audio_enhancements(ps: &PlaybackSession) -> plx_plex::plex::Aud
 /// [`enhancement_family`], not `live_family`, so an already-applied Burn reads as its own route
 /// rather than as an unrelated `Other`-family re-encode.
 pub fn menu_enhancement_availability(ps: &PlaybackSession) -> EnhancementAvailability {
+    if ps.attempt_view().backend() == Some(crate::player::attempt_view::Backend::Uri) {
+        use plx_plex::plex::serverinfo::Subscription;
+        if plx_plex::plex::serverinfo::subscription_of(cur_sid(ps)) != Subscription::Yes {
+            return EnhancementAvailability::Hidden;
+        }
+        if ps.cur_enhancement == EnhancementOutcome::Refused {
+            return EnhancementAvailability::Disabled(DisabledReason::ServerRefused);
+        }
+        if forced_direct_play(ps) {
+            return EnhancementAvailability::Disabled(DisabledReason::ForcedDirectPlay);
+        }
+        if !cfg!(feature = "play-feed") || !enhancement_quality() || !source_decodable(ps)
+            || ps.request.as_ref().is_none_or(|request| request.part.is_empty()) {
+            return EnhancementAvailability::Disabled(if !enhancement_quality() {
+                DisabledReason::NotOriginalQuality
+            } else { DisabledReason::NotCopyable });
+        }
+        return super::plan::enhancement_source_offer(ps.src_dovi, ps.src_dovi.present,
+            ps.cur_audio.as_ref(), subtitle_effect_of(ps));
+    }
     enhancement_availability(&facts(ps), enhancement_family(ps))
 }
 

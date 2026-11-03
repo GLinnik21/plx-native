@@ -285,7 +285,7 @@ fn start_qualified_uri_inner(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
         source,
         requirements: offer.requirements,
         initial: offer.initial,
-    }, super::attempt_metrics::Origin::Fresh, at);
+    }, ps.attempt_origin(), at);
     if result.playback.iter().any(|fx| matches!(fx,
         plx_playback_contract::Fx::Rejected { attempt: id, .. }
         | plx_playback_contract::Fx::CommandRefused { attempt: id, .. } if *id == attempt
@@ -296,6 +296,7 @@ fn start_qualified_uri_inner(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
     }
     assert!(ps.backend_offer_admitted(plx_playback_contract::BackendKind::Uri,
         offer.offer_id), "qualified URI offer must remain selected on the main thread");
+    ps.clear_reconfigure_pause_goal();
     ps.begin_attempt_view(route_attempt, super::attempt_view::Backend::Uri);
     let mut facts = *ps.attempt_view().facts();
     facts.duration_ns = Some(offer.pms_duration_ns);

@@ -779,24 +779,29 @@ pub(super) fn enhancement_availability(f: &EnhancementFacts, target: RouteFamily
             DisabledReason::NotOriginalQuality
         });
     }
+    enhancement_source_offer(base.dovi, base.dv_decision.presentation.declared().is_some(),
+        f.carried, f.subtitle_effect)
+}
+
+/// The source-specific half of an enhancement offer. A Feed Original candidate and an active
+/// original URI have different executors, but the server's DV/subtitle/audio analysis rules are
+/// identical. Callers establish source copyability and quality before reaching this shared rule.
+pub(super) fn enhancement_source_offer(dovi: plx_data::metadata::Dovi, dv_declared: bool,
+    carried: Option<&CarriedAudio>, subtitle_effect: SubtitleEffect) -> EnhancementAvailability {
+    use EnhancementAvailability::{Disabled, Offered};
     // I7: an unusable Dolby Vision base layer is never copied at all — nothing to decorate.
-    if base.dovi.base_layer_unusable() {
+    if dovi.base_layer_unusable() {
         return Disabled(DisabledReason::DolbyVisionUnusable);
     }
-    let dv_declared = base.dv_decision.presentation.declared().is_some();
-    // M7: a declared DV source burning an embedded subtitle is refused by the server itself
-    // (video copied regardless, subtitle silently dropped) — never attempted.
-    if dv_declared && f.subtitle_effect == SubtitleEffect::Embedded {
+    // M7: a declared DV source burning an embedded subtitle is refused by the server itself.
+    if dv_declared && subtitle_effect == SubtitleEffect::Embedded {
         return Disabled(DisabledReason::DolbyVisionSubtitle);
     }
-    // A known, capable carried track. `canNormalizeLoudness` is PMS 1.43.4's own per-stream
-    // statement that it has the loudness analysis the DSP needs; unknown or absent reads the same
-    // to a viewer as "not analyzed yet".
-    let analyzed = f.carried.is_some_and(|a| a.can_normalize_loudness);
-    if !analyzed {
+    // The selected source audio must carry PMS's loudness analysis statement.
+    if !carried.is_some_and(|a| a.can_normalize_loudness) {
         return Disabled(DisabledReason::NotAnalyzed);
     }
-    Offered(match f.subtitle_effect {
+    Offered(match subtitle_effect {
         SubtitleEffect::Embedded => EnhancementRoute::Burn,
         SubtitleEffect::None | SubtitleEffect::Sidecar => EnhancementRoute::Remux,
     })
