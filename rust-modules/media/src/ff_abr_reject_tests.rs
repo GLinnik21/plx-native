@@ -1,5 +1,5 @@
-//! ABR candidate reject-cause classification: mapping HLS exits and candidate
-//! results onto `crate::abr::RejectCause`.
+//! ABR candidate reject-cause classification: physical feed observations and
+//! candidate results onto `crate::abr::RejectCause`.
 
 use super::*;
 #[allow(unused_imports)]
@@ -8,11 +8,15 @@ use super::test_support::*;
 #[test]
 fn an_expired_candidate_is_a_common_censored_budget_not_an_ordinal_rung_failure() {
     assert_eq!(
-        abr_reject_for_hls_exit(HlsExit::PrimeExpired),
+        crate::adaptive::reject_cause_for_feed_failure(
+            hls_feed_failure(HlsExit::PrimeExpired),
+        ),
         crate::abr::RejectCause::Censored,
     );
     assert_eq!(
-        abr_reject_for_hls_exit(HlsExit::NotReady),
+        crate::adaptive::reject_cause_for_feed_failure(
+            hls_feed_failure(HlsExit::NotReady),
+        ),
         crate::abr::RejectCause::Circumstance,
         "an ordinary PMS not-ready reply has no exhausted deadline and says nothing about a rung",
     );
