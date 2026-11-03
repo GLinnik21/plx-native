@@ -238,6 +238,102 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
         self.after_first_grade(grade)
     }
 
+    /// The setup-bearing object is already staged. A second read is taken only
+    /// after the common budget decision, and both physical objects stay private
+    /// until the final grade authorizes queueing them together.
+    pub(crate) fn grade_staged(
+        &mut self, coordinator: &Coordinator, proposal: abr::Proposal,
+        reserve_policy: abr::ReservePolicy, current: VariantFacts,
+        first: Acquisition, first_buffer: BufferFact, opened_declared_bps: u64,
+        mut on_followup: impl FnMut(Option<u64>),
+        mut on_trace: impl FnMut(&mut P, TrialTraceMoment),
+    ) -> StagedCandidate {
+        let first_variant = VariantFacts {
+            width: first.width, height: first.height, declared_bps: first.declared_bps,
+        };
+        let first_sample = candidate_sample(first, buffer_snapshot(first_buffer));
+        let first_action = self.first_action(
+            coordinator, proposal, current, first_variant, first_sample,
+        );
+        let mut verdict = match first_action {
+            FirstCandidateAction::Finalize { verdict }
+            | FirstCandidateAction::ReadFollowup { verdict, .. } => verdict,
+            FirstCandidateAction::Unfunded => return StagedCandidate::Unfunded,
+            FirstCandidateAction::Protocol => return StagedCandidate::Protocol(
+                "adaptive feed follow-up reserve protocol violation",
+            ),
+        };
+        let mut acquisitions = vec![first];
+        let mut final_acquisition = first;
+        let mut final_buffer = first_buffer;
+        if let FirstCandidateAction::ReadFollowup { remaining_ms, .. } = first_action {
+            let (acquisition, buffer) = match self.read_repeatable(
+                remaining_ms, &mut on_followup, &mut on_trace,
+            ) {
+                Ok(evidence) => evidence,
+                Err(outcome) => return outcome,
+            };
+            final_acquisition = acquisition;
+            final_buffer = buffer;
+            acquisitions.push(acquisition);
+            verdict = self.followup_verdict(
+                coordinator, proposal,
+                candidate_sample(acquisition, buffer_snapshot(final_buffer)),
+                opened_declared_bps,
+            );
+        }
+        let candidate = VariantFacts {
+            width: final_acquisition.width,
+            height: final_acquisition.height,
+            declared_bps: final_acquisition.declared_bps,
+        };
+        on_trace(self.physical(), TrialTraceMoment::FinalEvidence);
+        let grade = self.final_action(
+            coordinator, proposal, reserve_policy, current, candidate, &acquisitions, verdict,
+        );
+        StagedCandidate::Ready { final_acquisition, final_buffer, verdict, grade }
+    }
+
+    fn read_repeatable(
+        &mut self, remaining_ms: Option<u64>,
+        on_followup: &mut impl FnMut(Option<u64>),
+        on_trace: &mut impl FnMut(&mut P, TrialTraceMoment),
+    ) -> Result<(Acquisition, BufferFact), StagedCandidate> {
+        on_followup(remaining_ms);
+        self.observe(TrialObservation::FollowupRequested)
+            .expect("a repeatable read follows its first staged object");
+        let next = self.read_next();
+        if !matches!(next, FeedObservation::SegmentReady { .. }) {
+            return Err(StagedCandidate::Failed {
+                step: TrialStep::FollowupRead,
+                failure: match next {
+                    FeedObservation::Failed { failure, .. } => failure,
+                    _ => FeedFailure::Protocol,
+                },
+            });
+        }
+        let acquired = self.acquire_followup();
+        let acquisition = match acquired {
+            FeedObservation::Acquired { acquisition, .. } => acquisition,
+            other => return Err(StagedCandidate::Failed {
+                step: TrialStep::FollowupAcquire,
+                failure: match other {
+                    FeedObservation::Failed { failure, .. } => failure,
+                    _ => FeedFailure::Protocol,
+                },
+            }),
+        };
+        on_trace(self.physical(), TrialTraceMoment::FollowupMedia);
+        self.observe(TrialObservation::FollowupAcquired)
+            .expect("the repeatable acquisition follows its request");
+        match self.stage_acquired() {
+            FeedObservation::Staged { buffer, count: 2, .. } => Ok((acquisition, buffer)),
+            _ => Err(StagedCandidate::Protocol(
+                "adaptive feed follow-up stage protocol violation",
+            )),
+        }
+    }
+
     fn after_first_grade(&mut self, grade: FirstCandidateGrade) -> FirstCandidateAction {
         if !grade.needs_followup {
             return FirstCandidateAction::Finalize { verdict: grade.verdict };
@@ -763,6 +859,21 @@ pub(crate) enum FirstCandidateAction {
     Unfunded,
     Protocol,
 }
+
+pub(crate) enum StagedCandidate {
+    Ready {
+        final_acquisition: Acquisition,
+        final_buffer: BufferFact,
+        verdict: abr::CandidateVerdict,
+        grade: FinalCandidateGrade,
+    },
+    Unfunded,
+    Failed { step: TrialStep, failure: FeedFailure },
+    Protocol(&'static str),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TrialTraceMoment { FollowupMedia, FinalEvidence }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TrialStep {
@@ -1825,6 +1936,61 @@ mod trial_runner_tests {
             verdict: abr::CandidateVerdict::SetupBearing, needs_followup: true,
         }), FirstCandidateAction::ReadFollowup { remaining_ms: Some(750), .. }));
         assert_eq!(runner.physical().checks, 2);
+    }
+
+    #[test]
+    fn repeatable_candidate_is_read_and_staged_before_it_can_be_graded() {
+        use std::collections::VecDeque;
+        struct Port {
+            replies: VecDeque<FeedObservation>,
+            actions: Vec<FeedAction>,
+            media_trace: Vec<TrialTraceMoment>,
+        }
+        impl FeedPort for Port {
+            type Locator = ();
+            fn bind_source(&mut self, _source: SourceKey, _locator: ()) {}
+            fn step(&mut self, action: FeedAction) -> FeedObservation {
+                self.actions.push(action);
+                self.replies.pop_front().expect("one reply per physical step")
+            }
+        }
+        let trial = TrialId::new(AttemptId::new(8, 13), 4);
+        let mut protocol = TrialProtocol::new(trial);
+        protocol.observe(trial, TrialObservation::Prepared).unwrap();
+        protocol.observe(trial, TrialObservation::FirstAcquired).unwrap();
+        let acquisition = Acquisition {
+            bytes: 200_000, active_us: 100_000, total_us: 125_000,
+            duration: std::time::Duration::from_secs(2),
+            width: 1280, height: 720, declared_bps: 2_000_000,
+        };
+        let buffer = BufferFact {
+            playback_ms: 1_000, video_tail_ms: 5_000,
+            audio_tail_ms: Some(5_000), audio_expected: true,
+        };
+        let mut port = Port {
+            replies: VecDeque::from([
+                FeedObservation::SegmentReady { trial, duration: acquisition.duration },
+                FeedObservation::Acquired { trial, acquisition },
+                FeedObservation::Staged { trial, buffer, count: 2 },
+            ]),
+            actions: Vec::new(), media_trace: Vec::new(),
+        };
+        let mut budgets = Vec::new();
+        let mut runner = TrialRunner::new(&mut port, &mut protocol);
+        let result = runner.read_repeatable(
+            Some(700), &mut |budget| budgets.push(budget),
+            &mut |port, moment| port.media_trace.push(moment),
+        );
+        assert!(matches!(result, Ok((got, fact)) if got == acquisition && fact == buffer));
+        drop(runner);
+        assert_eq!(budgets, [Some(700)]);
+        assert_eq!(port.actions, [
+            FeedAction::ReadNext { trial },
+            FeedAction::AcquireFollowup { trial },
+            FeedAction::StageAcquired { trial },
+        ]);
+        assert_eq!(port.media_trace, [TrialTraceMoment::FollowupMedia]);
+        assert_eq!(protocol.phase(), TrialPhase::FollowupAcquired);
     }
 
     #[test]
