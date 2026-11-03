@@ -1871,7 +1871,7 @@ pub fn reset_audio_track() {
 }
 
 /// Normal speed, in the thousandths every playback-rate value here is counted in.
-pub const RATE_NORMAL: i32 = 1000;
+pub const RATE_NORMAL: i32 = plx_play_feed::shared::RATE_NORMAL;
 /// The speeds the player offers, slowest first: the same seven as Plex Web's Playback Speed.
 pub const PLAY_RATES: [i32; 7] = [500, 750, RATE_NORMAL, 1250, 1500, 1750, 2000];
 
@@ -2017,7 +2017,7 @@ pub fn speed_audio_report() -> Option<bool> {
         _ => None,
     }
 }
-pub(crate) const SPEED_AUDIO_UNKNOWN: u8 = 0;
+pub(crate) const SPEED_AUDIO_UNKNOWN: u8 = plx_play_feed::shared::SPEED_AUDIO_UNKNOWN;
 pub(crate) const SPEED_AUDIO_OK: u8 = 1;
 pub(crate) const SPEED_AUDIO_BAD: u8 = 2;
 
