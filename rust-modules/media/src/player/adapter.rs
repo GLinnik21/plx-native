@@ -408,6 +408,10 @@ pub struct PlayerAdapter {
     timeline: Option<timeline::TimelineRunner>,
     repair: Option<(u64, std::sync::mpsc::Receiver<Result<(), plx_platform::tv::sandbox::Failure>>)>,
     release: super::release::NativeRelease,
+    /// Effects produced by an addressed URI release while the backend poll has no session
+    /// borrow. The release machine owns the sole queued transaction; these are only its IO work.
+    #[cfg(feature = "play-uri")]
+    release_fx: Vec<super::release::ReleaseEffect>,
     /// What became of the start the FOREGROUND restore queued behind the release
     /// ([`watch_queued_start`](Self::watch_queued_start)); the lifecycle machine polls it.
     queued_watch: QueuedWatch,
@@ -482,6 +486,8 @@ impl PlayerAdapter {
             timeline: None,
             repair: None,
             release: super::release::NativeRelease::new(),
+            #[cfg(feature = "play-uri")]
+            release_fx: Vec::new(),
             queued_watch: QueuedWatch::Unwatched,
             #[cfg(feature = "play-feed")]
             preview_admission: None,
@@ -736,7 +742,20 @@ impl PlayerAdapter {
             uri: &mut self.uri_backend,
         };
         let result = self.backend.send_at(&mut drivers, &self.mt, intent, origin, at);
-        self.finish_backend_actions(result, at)
+        let result = self.finish_backend_actions(result, at);
+        #[cfg(feature = "play-uri")]
+        {
+            if let Intent::Stop { backend: BackendKind::Uri, attempt, .. } = intent {
+                if result.controls.iter().any(|sent| sent.backend == BackendKind::Uri
+                    && sent.attempt == attempt && matches!(sent.operation, Operation::Stop(_))) {
+                    self.release_step(&super::release::ReleaseEvent::UriReleaseStarted {
+                        attempt, at: std::time::Instant::now(),
+                    }, &mut Vec::new());
+                }
+            }
+            self.capture_uri_release(&result.playback);
+        }
+        result
     }
 
     /// Poll both physical executors even when no player page is mounted. A terminal observation
@@ -752,7 +771,30 @@ impl PlayerAdapter {
             uri: &mut self.uri_backend,
         };
         let result = self.backend.poll_at(&mut drivers, &self.mt, at);
-        self.finish_backend_actions(result, at)
+        let result = self.finish_backend_actions(result, at);
+        #[cfg(feature = "play-uri")]
+        self.capture_uri_release(&result.playback);
+        result
+    }
+
+    #[cfg(feature = "play-uri")]
+    fn capture_uri_release(&mut self, notices: &[plx_playback_contract::Fx]) {
+        for notice in notices {
+            if let plx_playback_contract::Fx::ReleaseOutcome {
+                backend: BackendKind::Uri, attempt, status,
+            } = *notice {
+                let mut fx = Vec::new();
+                self.release_step(&match status {
+                    ReleaseStatus::Closing | ReleaseStatus::Quarantined =>
+                        super::release::ReleaseEvent::UriReleaseStarted {
+                            attempt, at: std::time::Instant::now(),
+                        },
+                    ReleaseStatus::Released =>
+                        super::release::ReleaseEvent::UriReleased { attempt },
+                }, &mut fx);
+                self.release_fx.extend(fx);
+            }
+        }
     }
 
     pub fn backend_set_foreground_at(&mut self, foreground: bool,
@@ -919,6 +961,32 @@ impl PlayerAdapter {
                 crate::route::backend_policy::Qualification::Unknown);
             None
         }
+    }
+
+    /// A cancelled queued start has no future claim boundary. Drop only the authorization
+    /// attached to that route ticket; a newer replacement's escrow stays intact.
+    #[cfg(feature = "play-uri")]
+    pub(super) fn discard_qualified_uri_for(&mut self, ps: &mut crate::route::PlaybackSession,
+        route_start: crate::route::RouteStartTransaction) {
+        if self.qualified_uri.as_ref().is_some_and(|offer| offer.route_start == route_start) {
+            if let Some(offer) = self.qualified_uri.take() {
+                ps.qualify_backend_offer(BackendKind::Uri, offer.offer_id,
+                    crate::route::backend_policy::Qualification::Unknown);
+            }
+        }
+    }
+
+    #[cfg(feature = "play-uri")]
+    pub(super) fn drop_qualified_uri_for_exit(&mut self,
+        route_start: crate::route::RouteStartTransaction) {
+        if self.qualified_uri.as_ref().is_some_and(|offer| offer.route_start == route_start) {
+            self.qualified_uri = None;
+        }
+    }
+
+    #[cfg(feature = "play-uri")]
+    pub(super) fn take_release_effects(&mut self) -> Vec<super::release::ReleaseEffect> {
+        std::mem::take(&mut self.release_fx)
     }
 
     #[cfg(feature = "play-uri")]
@@ -1127,6 +1195,16 @@ impl PlayerAdapter {
         }
         #[cfg(feature = "play-uri")]
         self.publish_uri_timeline(ps);
+        #[cfg(feature = "play-uri")]
+        {
+            let mut release_fx = std::mem::take(&mut self.release_fx);
+            if self.uri_route_attempt.is_some() && self.release.is_busy() {
+                self.release_step(&super::release::ReleaseEvent::Tick {
+                    now: std::time::Instant::now(),
+                }, &mut release_fx);
+            }
+            super::route_start::run_uri_queued_effects(ps, self, release_fx);
+        }
         #[cfg(not(feature = "play-uri"))]
         let _ = ps;
         result

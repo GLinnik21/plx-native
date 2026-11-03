@@ -562,11 +562,14 @@ mod backend_offer_session_tests {
         assert!(session.qualify_resolved_feed_offer(OfferId::FEED_ORIGINAL, CandidatePurpose::NewCandidate));
         assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
         assert!(session.backend_planned_feed_allowed(), "a physical seek may reopen Feed");
+        assert_eq!(session.planned_start_backend(), Some(BackendKind::Feed));
 
         session.qualify_backend_offer(BackendKind::Uri, OfferId::URI_ORIGINAL,
             Qualification::Qualified);
         assert!(matches!(session.backend_offer(), Selection::Open(offer)
             if offer.backend == BackendKind::Uri));
+        assert_eq!(session.planned_start_backend(), Some(BackendKind::Uri),
+            "qualified URI precedence also governs pre-load viewer transport");
         assert!(session.backend_offer_admitted(BackendKind::Uri, OfferId::URI_ORIGINAL));
         assert!(!session.backend_planned_feed_allowed(),
             "an old Feed admission cannot reverse the one cross-backend handoff");
@@ -721,6 +724,18 @@ impl PlaybackSession {
             super::backend_policy::Selection::Unqualified,
             super::backend_policy::BackendPolicy::choose,
         )
+    }
+
+    /// The next start's backend at the same catalog precedence as the physical start door.
+    /// A previously admitted Feed recipe can reopen only when no newly qualified URI offer
+    /// currently wins. Callers retire expired URI authorization through the adapter first.
+    pub fn planned_start_backend(&self) -> Option<plx_playback_contract::BackendKind> {
+        if let super::backend_policy::Selection::Open(offer) = self.backend_offer() {
+            if offer.backend == plx_playback_contract::BackendKind::Uri {
+                return Some(offer.backend);
+            }
+        }
+        self.backend_planned_feed_allowed().then_some(plx_playback_contract::BackendKind::Feed)
     }
 
     pub fn planned_feed_offer(&self) -> Option<super::backend_policy::OfferId> {
@@ -5831,6 +5846,7 @@ pub(crate) fn engine_failure(ps: &PlaybackSession) -> Option<crate::player::Runt
 /// Record that the Engine failed for good and is about to be released: its `cause`, and the
 /// position a retry resumes from (`resume_ns`, kept in the unpresented-resume slot a retry already
 /// reads, since the playhead goes with the Engine).
+#[cfg(feature = "play-feed")]
 pub(crate) fn note_engine_failure(ps: &mut PlaybackSession, cause: crate::player::RuntimeFailure, resume_ns: i64) {
     { let s = &mut *ps; {
         s.engine_failure = Some(cause);

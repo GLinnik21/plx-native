@@ -88,14 +88,16 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
     }
     #[cfg(feature = "play-uri")]
     if let Some(existing) = pa.active_uri_attempt() {
-        if matches!(pa.backend_snapshot().phase,
-            plx_playback_contract::Phase::Releasing | plx_playback_contract::Phase::Quarantined) {
+        if pa.backend_snapshot().phase == plx_playback_contract::Phase::Quarantined {
             if let crate::route::LiveEngineStartRelation::Conflict(ticket) =
                 crate::route::classify_live_engine_start(existing) {
                 let _ = crate::route::abort_route_start(ticket, crate::route::RouteStartResult::StartFailed);
             }
             return BufferfeedStartOutcome::Failed;
         }
+        // A closing URI still owns its native session, but the logical successor may reserve
+        // the one route transaction behind its addressed release. No URL escrow is taken here.
+        if pa.backend_snapshot().phase != plx_playback_contract::Phase::Releasing {
         match crate::route::classify_live_engine_start(existing) {
             crate::route::LiveEngineStartRelation::CurrentAttempt =>
                 return BufferfeedStartOutcome::Launched(existing),
@@ -105,6 +107,7 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
                 let _ = crate::route::abort_route_start(ticket, crate::route::RouteStartResult::StartFailed);
                 return BufferfeedStartOutcome::Failed;
             }
+        }
         }
     }
     #[cfg(feature = "play-feed")]
@@ -163,42 +166,42 @@ pub(super) fn start_bufferfeed_for(
     // The last real stop's object may still be inside its off-frame `Unload`. A tail that is ready
     // runs now; one that is not defers this start into the release machine (never a blocking join:
     // PLX-NATIVE-1Q), which starts it the frame the tail has run or refuses it at the deadline.
-    #[cfg(feature = "play-feed")]
+    #[cfg(all(feature = "play-feed", feature = "play-uri"))]
+    if pa.release_busy() && pa.active_uri_attempt().is_none() {
+        poll_release(ps, pa, std::time::Instant::now());
+    }
+    #[cfg(all(feature = "play-feed", not(feature = "play-uri")))]
     if pa.release_busy() {
         poll_release(ps, pa, std::time::Instant::now());
     }
-    #[cfg(feature = "play-feed")]
     let mut fx = Vec::new();
-    #[cfg(feature = "play-feed")]
     pa.release_step(
         &super::release::ReleaseEvent::StartRequested(super::release::QueuedStart { route_start }),
         &mut fx,
     );
-    #[cfg(feature = "play-feed")]
     let mut go = false;
-    #[cfg(feature = "play-feed")]
     let mut refused = false;
-    #[cfg(feature = "play-feed")]
     for effect in fx {
         match effect {
             super::release::ReleaseEffect::Start(_) => go = true,
             super::release::ReleaseEffect::RefuseStart(q) => {
-                refuse_start_for_release(ps, q);
+                refuse_start_for_release(ps, pa, q);
                 refused = true;
             }
             super::release::ReleaseEffect::AbortSuperseded(q) => {
+                #[cfg(feature = "play-feed")]
                 pa.settle_preview_admission(false, false);
+                #[cfg(feature = "play-uri")]
+                pa.discard_qualified_uri_for(ps, q.route_start);
                 pa.queued_start_dropped();
                 let _ = crate::route::abort_route_start(q.route_start, crate::route::RouteStartResult::StartFailed);
             }
             _ => {}
         }
     }
-    #[cfg(feature = "play-feed")]
     if refused {
         return BufferfeedStartOutcome::Failed;
     }
-    #[cfg(feature = "play-feed")]
     if !go {
         log("start_bufferfeed: the previous Unload is still running; start deferred");
         return BufferfeedStartOutcome::Deferred;
@@ -450,6 +453,45 @@ pub(super) struct ReleasePass {
     pub(super) exit: Option<super::release::ReleaseEffect>,
 }
 
+/// Execute the existing release machine's queued route transaction after the addressed URI
+/// `Released` verdict. The backend poll cannot start a route until it has the session borrow;
+/// the adapter carries only these effects between those two steps, never a second queue.
+#[cfg(feature = "play-uri")]
+pub(super) fn run_uri_queued_effects(ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter, fx: Vec<super::release::ReleaseEffect>) {
+    use super::release::ReleaseEffect as E;
+    for effect in fx {
+        match effect {
+            E::Start(q) => {
+                let launched = match start_bufferfeed_for(ps, pa, q.route_start) {
+                    BufferfeedStartOutcome::Launched(attempt) => Some(attempt),
+                    _ => None,
+                };
+                #[cfg(feature = "play-feed")]
+                pa.settle_preview_admission(launched.is_some(), true);
+                pa.queued_start_ran(launched);
+            }
+            E::AbortSuperseded(q) => {
+                #[cfg(feature = "play-feed")]
+                pa.settle_preview_admission(false, false);
+                pa.discard_qualified_uri_for(ps, q.route_start);
+                pa.queued_start_dropped();
+                let _ = crate::route::abort_route_start(q.route_start,
+                    crate::route::RouteStartResult::StartFailed);
+            }
+            E::RefuseStart(q) => {
+                refuse_start_for_release(ps, pa, q);
+                #[cfg(feature = "play-feed")]
+                pa.settle_preview_admission(false, true);
+                pa.queued_start_ran(None);
+            }
+            E::RunTail { .. } | E::ExitClean | E::ExitWaiting | E::ExitWorkerInFirmware => {
+                debug_assert!(false, "URI release produced a native Feed tail/exit effect");
+            }
+        }
+    }
+}
+
 
 #[cfg(feature = "play-feed")]
 pub(super) fn run_release_effects(
@@ -489,11 +531,13 @@ pub(super) fn run_release_effects(
             }
             E::AbortSuperseded(q) => {
                 pa.settle_preview_admission(false, false);
+                #[cfg(feature = "play-uri")]
+                pa.discard_qualified_uri_for(ps, q.route_start);
                 pa.queued_start_dropped();
                 let _ = crate::route::abort_route_start(q.route_start, crate::route::RouteStartResult::StartFailed);
             }
             E::RefuseStart(q) => {
-                refuse_start_for_release(ps, q);
+                refuse_start_for_release(ps, pa, q);
                 pa.settle_preview_admission(false, true);
                 pa.queued_start_ran(None);
             }
@@ -505,9 +549,13 @@ pub(super) fn run_release_effects(
 
 /// The deadline passed over a start: settle its transaction as failed and record where
 /// `player::state` derives the `release_timeout` read-out from. No Engine, no second object.
-#[cfg(feature = "play-feed")]
-pub(super) fn refuse_start_for_release(ps: &mut crate::route::PlaybackSession, q: super::release::QueuedStart) {
-    log("native lifecycle: the previous Unload is overdue (refusing native start)");
+pub(super) fn refuse_start_for_release(ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter, q: super::release::QueuedStart) {
+    log("native lifecycle: the previous release is overdue (refusing native start)");
+    #[cfg(feature = "play-uri")]
+    pa.discard_qualified_uri_for(ps, q.route_start);
+    #[cfg(not(feature = "play-uri"))]
+    let _ = pa;
     let _ = crate::route::abort_route_start(q.route_start, crate::route::RouteStartResult::StartFailed);
     ps.native_start_refused = Some(crate::route::StartRefusal::ReleaseTimeout);
 }
@@ -879,6 +927,25 @@ pub(super) fn exit_native_with(
     mut clock: impl FnMut() -> std::time::Instant,
     mut idle: impl FnMut(),
 ) -> NativeExit {
+    // Exit cannot launch the successor a release was holding. Retire its exact route ticket
+    // before waiting for the old native owner; no URL escrow or encoder may be started later.
+    let mut queued_fx = Vec::new();
+    pa.release_step(&super::release::ReleaseEvent::CancelQueued, &mut queued_fx);
+    #[cfg(feature = "play-uri")]
+    queued_fx.extend(pa.take_release_effects());
+    for effect in queued_fx {
+        if let super::release::ReleaseEffect::AbortSuperseded(q)
+            | super::release::ReleaseEffect::Start(q)
+            | super::release::ReleaseEffect::RefuseStart(q) = effect {
+            #[cfg(feature = "play-feed")]
+            pa.settle_preview_admission(false, false);
+            #[cfg(feature = "play-uri")]
+            pa.drop_qualified_uri_for_exit(q.route_start);
+            pa.queued_start_dropped();
+            let _ = crate::route::abort_route_start(q.route_start,
+                crate::route::RouteStartResult::StartFailed);
+        }
+    }
     #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
     if pa.uri_live() {
         let started = clock();
@@ -1141,11 +1208,15 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
     // A start still queued behind the previous object's `Unload` is the playback this stop ends.
     // Always sent: the machine owns whether anything is queued (a no-op otherwise), and no copy of
     // that fact in the session can go stale across a landing that replaced the session.
-    #[cfg(feature = "play-feed")]
     {
         let mut fx = Vec::new();
         pa.release_step(&super::release::ReleaseEvent::CancelQueued, &mut fx);
+        #[cfg(feature = "play-feed")]
         let _ = run_release_effects(ps, pa, fx, None, false);
+        #[cfg(all(not(feature = "play-feed"), feature = "play-uri"))]
+        run_uri_queued_effects(ps, pa, fx);
+        #[cfg(not(any(feature = "play-feed", feature = "play-uri")))]
+        let _ = fx;
     }
     // A prepared route whose native start failed has no Engine but still owns its exact PMS
     // resource and Session projection. A real stop must retire that ownership exactly once;

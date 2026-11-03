@@ -11,37 +11,56 @@ struct Clock;
 impl MonotonicClock for Clock { fn now_ms(&self) -> u64 { 0 } }
 
 struct BusState {
+    session: SessionId,
+    serial: u64,
     calls: Vec<(&'static str, RequestId)>,
     replies: VecDeque<UriReply>,
+    close: CloseStatus,
+    hold_close: bool,
 }
 struct Bus(Mutex<BusState>);
 impl Bus {
-    fn new() -> Self { Self(Mutex::new(BusState { calls: Vec::new(), replies: VecDeque::new() })) }
+    fn new() -> Self { Self(Mutex::new(BusState { session: SessionId::new(0), serial: 0,
+        calls: Vec::new(), replies: VecDeque::new(), close: CloseStatus::Released,
+        hold_close: false })) }
     fn say(&self, method: &'static str, payload: &str) {
         let mut state = self.0.lock().unwrap();
         let request = if method == "register" { RequestId::new(0) } else {
             state.calls.iter().rev().find(|(name, _)| *name == method)
                 .map(|(_, request)| *request).expect("method was called")
         };
-        state.replies.push_back(UriReply { session: SessionId::new(1), request, method,
+        let session = state.session;
+        state.replies.push_back(UriReply { session, request, method,
             payload: payload.into(), ok: true });
     }
     fn calls(&self, method: &str) -> usize {
         self.0.lock().unwrap().calls.iter().filter(|(name, _)| *name == method).count()
     }
+    fn hold_close(&self) { self.0.lock().unwrap().hold_close = true; }
+    fn release(&self) { self.0.lock().unwrap().close = CloseStatus::Released; }
 }
 impl UriMedia for Bus {
-    fn open(&self, _shape: Shape) -> Result<SessionId, String> { Ok(SessionId::new(1)) }
+    fn open(&self, _shape: Shape) -> Result<SessionId, String> {
+        let mut state = self.0.lock().unwrap();
+        state.serial += 1;
+        state.session = SessionId::new(state.serial);
+        state.close = CloseStatus::Open;
+        Ok(state.session)
+    }
     fn call(&self, _session: SessionId, request: RequestId, method: &'static str,
         _payload: &str) -> Result<(), String> {
         self.0.lock().unwrap().calls.push((method, request));
         Ok(())
     }
     fn poll(&self, _session: SessionId) -> Result<UriPoll, String> {
-        Ok(UriPoll { replies: self.0.lock().unwrap().replies.drain(..).collect(),
-            close: CloseStatus::Open })
+        let mut state = self.0.lock().unwrap();
+        Ok(UriPoll { replies: state.replies.drain(..).collect(), close: state.close })
     }
-    fn close(&self, _session: SessionId) -> Result<(), String> { Ok(()) }
+    fn close(&self, _session: SessionId) -> Result<(), String> {
+        let mut state = self.0.lock().unwrap();
+        state.close = if state.hold_close { CloseStatus::Closing } else { CloseStatus::Released };
+        Ok(())
+    }
 }
 
 fn opened() -> (crate::route::PlaybackSession, PlayerAdapter, &'static Bus,
@@ -147,5 +166,47 @@ fn queued_and_acknowledged_uri_picks_keep_the_prior_route_until_exact_confirmati
     let at = pa.backend_tick();
     let _ = pa.backend_poll_session_at(&mut ps, at);
     assert_eq!(crate::route::cur_sub_sid(&ps), 77);
+    crate::route::reset_player_control_for_test(&ps);
+}
+
+#[test]
+fn a_qualified_uri_successor_waits_for_the_prior_registration_to_release() {
+    let _serial = plx_base::testlock::serial();
+    let (mut ps, mut pa, bus, first) = opened();
+    bus.hold_close();
+    let at = pa.backend_tick();
+    let _ = pa.backend_send_at(Intent::Stop { backend: BackendKind::Uri,
+        attempt: first.contract_id(), reason: plx_playback_contract::StopReason::Replace },
+        super::super::attempt_metrics::Origin::Fresh, at);
+    let at = pa.backend_tick();
+    let _ = pa.backend_poll_session_at(&mut ps, at);
+    assert!(pa.release_busy());
+
+    crate::route::set_url(&mut ps, "https://example.invalid/successor.mkv");
+    let ticket = crate::route::begin_route_start().expect("successor route transaction");
+    let offer = QualifiedUriOffer::new(
+        crate::route::backend_policy::OfferId::URI_ORIGINAL, ticket, ps.uri_selection(),
+        UriSource::new("https://example.invalid/successor.mkv".into(), Vec::new()),
+        Requirements { source: SourceKind::ProgressiveUri,
+            video: Fidelity::Exact, audio: Fidelity::Exact,
+            audio_track: TrackChoice::Unspecified, subtitle_track: TrackChoice::Unspecified },
+        InitialPlayback { position: None, paused: true }, 60_000,
+        std::time::Instant::now() + std::time::Duration::from_secs(5))
+        .expect("exact qualification");
+    assert!(pa.offer_qualified_uri(&mut ps, offer).is_ok());
+    assert_eq!(super::super::route_start::start_bufferfeed_for(&mut ps, &mut pa, ticket),
+        super::super::route_start::BufferfeedStartOutcome::Deferred);
+    pa.watch_queued_start();
+    assert_eq!(bus.0.lock().unwrap().serial, 1,
+        "no second native registration while closing");
+    assert!(pa.qualified_uri.is_some(), "the pending URL stays in one-shot escrow");
+
+    bus.release();
+    let at = pa.backend_tick();
+    let _ = pa.backend_poll_session_at(&mut ps, at);
+    assert!(matches!(pa.take_queued_landing(), QueuedLanding::Launched(_)));
+    assert!(pa.qualified_uri.is_none(), "the exact Start consumed its authorization once");
+    assert_eq!(bus.0.lock().unwrap().serial, 2,
+        "exact release permits one successor native registration");
     crate::route::reset_player_control_for_test(&ps);
 }
