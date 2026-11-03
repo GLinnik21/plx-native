@@ -2,24 +2,7 @@
 use crate::ffi::*;
 use std::os::raw::c_int;
 
-/// One indexed subtitle rectangle in the stream's own canvas.
-pub struct IndexedRect {
-    pub x: i32,
-    pub y: i32,
-    pub w: i32,
-    pub h: i32,
-    pub index: Vec<u8>,
-    pub palette: Box<[[u8; 4]; 256]>,
-}
-impl IndexedRect {
-    pub fn bytes(&self) -> usize { self.index.capacity() + PALETTE_BYTES }
-}
-
-/// A decoded display set or a clear instruction; media assigns the stream clock and publishes it.
-pub enum BitmapDisplay {
-    Clear,
-    Set { cw: i32, ch: i32, rects: Vec<IndexedRect>, total_rects: usize },
-}
+pub use plx_playback_contract::subtitle::{IndexedRect, BitmapDisplay};
 
 /// Open a software decoder for an image-subtitle stream (PGS/VobSub/DVB). Returns a
 /// lib-allocated AVCodecContext (free with avcodec_free_context) or null if the build

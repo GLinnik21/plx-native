@@ -3223,6 +3223,7 @@ impl Coordinator {
 
 struct Session {
     start: Option<Start>,
+    initial_kbps: u32,
     effects: Option<Box<dyn AdaptiveEffects>>,
     coordinator: Option<Coordinator>,
     /// Minted on the worker after the initial cursor opens, at the same
@@ -3241,8 +3242,9 @@ struct Session {
 pub fn boxed_session(
     start: Start, effects: Box<dyn AdaptiveEffects>,
 ) -> Box<dyn AdaptiveSession> {
+    let initial_kbps = start.info().initial.kbps();
     Box::new(Session {
-        start: Some(start), effects: Some(effects),
+        start: Some(start), initial_kbps, effects: Some(effects),
         coordinator: None, history_since: None,
         session_boundary_pending: true, cleanup_wait_logged: false,
     })
@@ -3294,6 +3296,8 @@ impl Session {
 }
 
 impl AdaptiveSession for Session {
+    fn initial_kbps(&self) -> u32 { self.initial_kbps }
+
     fn drive_round(
         &mut self, off: &plx_base::task::OffFrame,
         physical: &mut dyn AdaptivePhysicalPort,

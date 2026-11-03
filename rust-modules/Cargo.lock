@@ -770,6 +770,7 @@ dependencies = [
  "libc",
  "plx_base",
  "plx_media_codecs",
+ "plx_playback_contract",
 ]
 
 [[package]]

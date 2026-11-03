@@ -44,6 +44,12 @@ pub(super) struct SideReaderOpen {
     pub spec: Option<super::subside::Spec>,
 }
 
+/// A resolved side reader that the physical open can start without route or Plex lookups.
+pub(super) struct SideReaderOpen {
+    pub clock_only: bool,
+    pub spec: Option<super::subside::Spec>,
+}
+
 /// The presentation facts consumed by the native Load declaration. These come from the
 /// already applied route and can also be passed to the pure payload builder in host tests.
 pub(super) struct PayloadFacts {

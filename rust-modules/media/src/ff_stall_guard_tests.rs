@@ -2009,7 +2009,7 @@ fn demux_loop_sample(
     duration: std::time::Duration,
     fetch_abandoned: bool,
 ) -> Option<crate::abr::SegmentSample> {
-    adaptive::active_sample(
+    crate::adaptive::active_sample(
         hls_acquisition(output, duration, 0),
         hls_buffer_fact(Some(output)),
         fetch_abandoned,
