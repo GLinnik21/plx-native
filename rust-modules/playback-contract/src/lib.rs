@@ -2,6 +2,7 @@
 //! identities, firmware callbacks, and resource ownership remain with each backend driver.
 //! `BackendState` is pure; a caller executes its effects through `BackendDriver` and feeds every
 //! answer back as an addressed event. A queued command is not proof that playback changed.
+#![deny(clippy::debug_assert_with_mut_call)]
 
 mod state;
 pub mod adaptive;

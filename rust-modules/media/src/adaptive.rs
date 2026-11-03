@@ -1,5 +1,6 @@
 //! One worker's adaptive HLS owner. The feed supplies measured media and serialized
 //! queue application; this module owns the controller and route transition.
+#![deny(clippy::debug_assert_with_mut_call)]
 
 use crate::{abr, route};
 
@@ -304,6 +305,30 @@ pub(crate) struct CandidateBudget {
     pub(crate) yields_to_rebuffer: bool,
 }
 
+pub(crate) struct ExplorationGrant {
+    pub(crate) buffered_ms: i64,
+    pub(crate) runway_ms: i64,
+    pub(crate) budget_ms: i64,
+}
+
+pub(crate) enum ExplorationFailure {
+    ReserveUnknown { refreshing_same_request: bool },
+    NoRunway { refreshing_same_request: bool },
+    NoSurplus { refreshing_same_request: bool },
+    BudgetMoved { budget_ms: i64 },
+}
+
+impl ExplorationFailure {
+    pub(crate) fn refreshing_same_request(&self) -> Option<bool> {
+        match self {
+            Self::ReserveUnknown { refreshing_same_request }
+            | Self::NoRunway { refreshing_same_request }
+            | Self::NoSurplus { refreshing_same_request } => Some(*refreshing_same_request),
+            Self::BudgetMoved { .. } => None,
+        }
+    }
+}
+
 impl Coordinator {
     pub(crate) fn start(start: Start, pin: Option<abr::Rung>) -> Self {
         let Start { control, ticket } = start;
@@ -358,13 +383,31 @@ impl Coordinator {
         );
         Some(plx_playback_contract::adaptive::TrialProtocol::new(id))
     }
-    pub(crate) fn exploration_budget_ms(&self, buffered_ms: i64) -> Option<i64> {
-        self.controller.exploration_budget_ms(buffered_ms)
-    }
-    pub(crate) fn set_executed_exploration_budget(
-        &mut self, proposal: abr::Proposal, budget_ms: i64,
-    ) -> bool {
-        self.controller.set_executed_exploration_budget(proposal, budget_ms)
+    pub(crate) fn grant_exploration(
+        &mut self, proposal: abr::Proposal, buffered_ms: Option<i64>, now_ms: u64,
+    ) -> Result<ExplorationGrant, ExplorationFailure> {
+        let Some(buffered_ms) = buffered_ms else {
+            let refreshing_same_request = self.reject(
+                proposal, abr::RejectCause::Circumstance, now_ms,
+            );
+            return Err(ExplorationFailure::ReserveUnknown { refreshing_same_request });
+        };
+        let Some(runway_ms) = self.controller.prime_runway_ms() else {
+            let refreshing_same_request = self.reject(
+                proposal, abr::RejectCause::Circumstance, now_ms,
+            );
+            return Err(ExplorationFailure::NoRunway { refreshing_same_request });
+        };
+        let Some(budget_ms) = self.controller.exploration_budget_ms(buffered_ms) else {
+            let refreshing_same_request = self.reject(
+                proposal, abr::RejectCause::Circumstance, now_ms,
+            );
+            return Err(ExplorationFailure::NoSurplus { refreshing_same_request });
+        };
+        if !self.controller.set_executed_exploration_budget(proposal, budget_ms) {
+            return Err(ExplorationFailure::BudgetMoved { budget_ms });
+        }
+        Ok(ExplorationGrant { buffered_ms, runway_ms, budget_ms })
     }
     pub(crate) fn reject(&mut self, proposal: abr::Proposal, cause: abr::RejectCause, now_ms: u64) -> bool {
         let refreshing = proposal.rung == self.controller.current();

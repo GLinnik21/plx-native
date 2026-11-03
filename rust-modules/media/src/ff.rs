@@ -2,6 +2,7 @@
 //! Codec bindings, validation and the capture encoder live in `plx_media_codecs`.
 //! Design record: docs/ffmpeg-demuxer-plan.md.
 #![allow(dead_code)]
+#![deny(clippy::debug_assert_with_mut_call)]
 use crate::aq::AuQueue;
 use crate::adaptive;
 use plx_playback_contract::adaptive::TrialObservation as TrialEvent;
@@ -6031,53 +6032,33 @@ fn hls_demux(
         let mut exploration_reserve = None;
         if proposal.direction == crate::abr::Direction::Up {
             let (buffer_snapshot, exploration_started_ns) = hls_buffer_snapshot_with_playhead(None);
-            let Some(buffered_ms) = buffer_snapshot.buffered_ms() else {
-                reject_hls_abr(
-                    state,
-                    proposal,
-                    crate::abr::RejectCause::Circumstance,
-                    now_ms(),
-                );
-                crate::player::log(
-                    "abr: candidate reserve unreadable before exploration; staying on current rung",
-                );
-                continue;
+            let grant = match state.grant_exploration(
+                proposal, buffer_snapshot.buffered_ms(), now_ms(),
+            ) {
+                Ok(grant) => grant,
+                Err(failure) => {
+                    if let Some(refreshing) = failure.refreshing_same_request() {
+                        publish_hls_abr_action(proposal, refreshing, Some(false));
+                    }
+                    match failure {
+                        adaptive::ExplorationFailure::ReserveUnknown { .. } => crate::player::log(
+                            "abr: candidate reserve unreadable before exploration; staying on current rung",
+                        ),
+                        adaptive::ExplorationFailure::NoRunway { .. } => crate::player::log(
+                            "abr: candidate has no completed current acquisition to preserve; staying",
+                        ),
+                        adaptive::ExplorationFailure::NoSurplus { .. } => crate::player::log(
+                            "abr: candidate has no reserve above rollback boundary; staying on current rung",
+                        ),
+                        adaptive::ExplorationFailure::BudgetMoved { budget_ms } => crate::player::log(&format!(
+                            "abr: actual exploration budget {}ms no longer releases {}kbps; staying on current rung",
+                            budget_ms, proposal.rung.kbps(),
+                        )),
+                    }
+                    continue;
+                }
             };
-            let Some(runway_ms) = state.prime_runway_ms() else {
-                reject_hls_abr(
-                    state,
-                    proposal,
-                    crate::abr::RejectCause::Circumstance,
-                    now_ms(),
-                );
-                crate::player::log(
-                    "abr: candidate has no completed current acquisition to preserve; staying",
-                );
-                continue;
-            };
-            let Some(budget_ms) = state.exploration_budget_ms(buffered_ms) else {
-                reject_hls_abr(
-                    state,
-                    proposal,
-                    crate::abr::RejectCause::Circumstance,
-                    now_ms(),
-                );
-                crate::player::log(
-                    "abr: candidate has no reserve above rollback boundary; staying on current rung",
-                );
-                continue;
-            };
-            // The proposal captured an earlier reserve. This re-read is the budget that is
-            // actually armed end to end, so it is the only value a failed experiment may retain
-            // in its per-rung certificate.
-            if !state.set_executed_exploration_budget(proposal, budget_ms) {
-                crate::player::log(&format!(
-                    "abr: actual exploration budget {}ms no longer releases {}kbps; staying on current rung",
-                    budget_ms,
-                    proposal.rung.kbps(),
-                ));
-                continue;
-            }
+            let adaptive::ExplorationGrant { buffered_ms, runway_ms, budget_ms } = grant;
             let Some(trial_reserve) = HlsTrialReserve::arm(runway_ms, expected_user_sequence)
             else {
                 reject_hls_abr(
