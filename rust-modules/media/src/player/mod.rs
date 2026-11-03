@@ -2085,6 +2085,7 @@ pub fn speed_offer(ps: &crate::route::PlaybackSession) -> Vec<i32> {
         // Feed's decoder only while its position is known and the item is still resolvable.
         #[cfg(feature = "play-feed")]
         { return if crate::route::can_retry_current_play(ps)
+            && crate::route::source_decodable(ps)
             && intended_pos_known_ns(ps).is_some() { feed_speed_offer(ps) }
             else { Vec::new() }; }
         #[cfg(not(feature = "play-feed"))]

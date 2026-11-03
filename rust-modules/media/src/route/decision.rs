@@ -9552,7 +9552,7 @@ pub fn retry_uri_source_as_feed(ps: &mut PlaybackSession,
     let caps = ps.attempt_caps();
     request_play_with_queue(ps, meta, caps, request, Some(retry),
         Some(playback_trace_generation()), false,
-        crate::player::report::AttemptOrigin::Fresh, None, true, None)
+        crate::player::report::AttemptOrigin::Recovery, None, true, None)
 }
 
 /// The context a START-FAILURE rescue resolves under: [`current_retry_context`], plus the
