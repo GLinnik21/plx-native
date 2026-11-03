@@ -5854,6 +5854,8 @@ mod lifecycle_regression_tests {
         fn boot_evidence_qualifies_resolved_part_and_dispatches_that_source() {
             let _serial = plx_base::testlock::serial();
             let Some(mut rig) = Rig::serving(false) else { return };
+            plx_plex::plex::client_for(rig.sid).unwrap()
+                .set_link(plx_plex::plex::probe::Location::Local);
             let bus: &'static Bus = Box::leak(Box::new(Bus::new()));
             let display: &'static Display = Box::leak(Box::new(Display));
             let caps = Capabilities { progressive_uri: true, hls_uri: false,
@@ -5897,6 +5899,8 @@ mod lifecycle_regression_tests {
         fn boot_without_source_certificate_keeps_feed_offer() {
             let _serial = plx_base::testlock::serial();
             let Some(mut rig) = Rig::serving(false) else { return };
+            plx_plex::plex::client_for(rig.sid).unwrap()
+                .set_link(plx_plex::plex::probe::Location::Local);
             let bus: &'static Bus = Box::leak(Box::new(Bus::new()));
             let display: &'static Display = Box::leak(Box::new(Display));
             let port = ResolvePort::new(ProductEvidence::unqualified(display.window_mode()),
