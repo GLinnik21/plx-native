@@ -76,7 +76,6 @@ pub struct UriBackend {
     subscribed: bool,
     dispatching: Option<PendingControl>,
     controls: BTreeMap<plx_platform::tv::uri::RequestId, PendingControl>,
-    track_refused: bool,
     pending: VecDeque<DriverEvent>,
     close_reported: bool,
     quarantine_reported: bool,
@@ -92,7 +91,7 @@ impl UriBackend {
             window: false, window_id: None,
             start_deadline_ms: None, loaded: false, play_sent: false, played_once: false,
             subscribed: false,
-            dispatching: None, controls: BTreeMap::new(), track_refused: false,
+            dispatching: None, controls: BTreeMap::new(),
             pending: VecDeque::new(), close_reported: false, quarantine_reported: false }
     }
 
@@ -204,7 +203,6 @@ impl UriBackend {
         self.subscribed = false;
         self.dispatching = None;
         self.controls.clear();
-        self.track_refused = false;
         self.close_reported = false;
         self.quarantine_reported = false;
         self.lifecycle = Lifecycle::new();
@@ -249,9 +247,6 @@ impl UriBackend {
                             | (Method::SelectTrack, ControlKind::Track(_)));
                 if matches_method && denied {
                     self.controls.remove(&request);
-                    if matches!(pending.kind, ControlKind::Track(_)) && !self.played_once {
-                        self.track_refused = true;
-                    }
                     self.retire_control(request);
                     if let Some(attempt) = self.active {
                         self.pending.push_back(DriverEvent::ControlRefused { attempt,
@@ -307,7 +302,6 @@ impl UriBackend {
                         let pending = self.controls.remove(request).expect("confirmed track is pending");
                         self.retire_control(*request);
                         let ControlKind::Track(selected) = pending.kind else { unreachable!() };
-                        self.track_refused = false;
                         self.observe(Observation::TrackSelected(Observed {
                             value: selected, from: EvidenceSource::BackendReport,
                         }));
@@ -335,10 +329,7 @@ impl UriBackend {
         let refused_control = self.control_message(method, denied, &message);
         if denied {
             if matches!(method, Method::Play | Method::Pause | Method::Seek | Method::SelectTrack) {
-                if refused_control && !self.played_once {
-                    if method == Method::Play { self.play_sent = false; }
-                    self.begin_close(mt, now_ms);
-                }
+                if refused_control && method == Method::Play { self.play_sent = false; }
                 return;
             }
             self.observe(Observation::Failed(Failure::Refused));
@@ -433,7 +424,6 @@ impl UriBackend {
                         self.tracks.clear();
                         self.dispatching = None;
                         self.controls.clear();
-                        self.track_refused = false;
                         self.loaded = false;
                         self.play_sent = false;
                         self.played_once = false;
@@ -484,7 +474,7 @@ impl UriBackend {
         let Some(media_id) = self.lifecycle.media_id().cloned() else { return DispatchResult::Refused(Failure::Busy); };
         let (call, control) = match operation {
             Operation::Play if self.config.capabilities.pause => {
-                if self.track_refused || self.controls.values().any(|pending| matches!(pending.kind, ControlKind::Track(_))) {
+                if self.controls.values().any(|pending| matches!(pending.kind, ControlKind::Track(_))) {
                     return DispatchResult::Refused(Failure::Busy);
                 }
                 self.play_sent = true;
@@ -547,7 +537,6 @@ impl UriBackend {
         if self.lifecycle.phase() == Phase::Open {
             let expired: Vec<_> = self.controls.iter().filter_map(|(request, pending)|
                 (now_ms >= pending.deadline_ms).then_some(*request)).collect();
-            let mut failed_startup_control = false;
             for request in expired {
                 let Some(pending) = self.controls.remove(&request) else { continue };
                 self.retire_control(request);
@@ -556,13 +545,8 @@ impl UriBackend {
                         command: pending.command, operation: pending.operation,
                         failure: Failure::TimedOut });
                 }
-                if !self.played_once {
-                    failed_startup_control = true;
-                    if matches!(pending.kind, ControlKind::Track(_)) { self.track_refused = true; }
-                    if pending.operation == Operation::Play { self.play_sent = false; }
-                }
+                if pending.operation == Operation::Play { self.play_sent = false; }
             }
-            if failed_startup_control { self.begin_close(mt, now_ms); }
         }
         self.pending.drain(..).collect()
     }
@@ -951,7 +935,7 @@ mod tests {
     }
 
     #[test]
-    fn refused_track_closes_without_playing_a_default_stream() {
+    fn refused_track_reports_exact_command_and_waits_for_owner_stop() {
         let mut rig = Rig::new(); rig.opened();
         assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
             Operation::SelectTrack { kind: TrackKind::Audio, choice: TrackChoice::Selected(3) }),
@@ -968,9 +952,13 @@ mod tests {
             command: rig.command,
             operation: Operation::SelectTrack { kind: TrackKind::Audio,
                 choice: TrackChoice::Selected(3) }, failure: Failure::Refused }));
-        assert!(notices.contains(&DriverEvent::Release { attempt: A,
-            status: ReleaseStatus::Closing }));
+        assert!(!notices.iter().any(|event| matches!(event, DriverEvent::Release { .. })),
+            "the common startup owner decides if this was mandatory or interactive");
         assert_eq!(rig.bus.calls("play"), 0);
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
+            Operation::Stop(StopReason::Replace)), DispatchResult::Queued);
+        assert!(rig.driver.poll(&rig.mt).contains(&DriverEvent::Release { attempt: A,
+            status: ReleaseStatus::Closing }));
     }
 
     #[test]

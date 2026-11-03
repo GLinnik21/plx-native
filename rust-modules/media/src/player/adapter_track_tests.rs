@@ -155,7 +155,30 @@ fn queued_and_acknowledged_uri_picks_keep_the_prior_route_until_exact_confirmati
     let _ = pa.backend_poll_session_at(&mut ps, at);
     assert!(pa.pending_uri_audio.is_none(), "exact refusal retires only the pending command");
     assert_eq!(crate::route::cur_audio_sid(&ps), 42);
+    assert!(pa.commit_subtitle_track(&mut ps, 5, 77, None, String::new(), None),
+        "a later interactive refusal cannot poison another selected track");
+    bus.say("subscribe", r#"{"mediaId":"m1","trackSelected":{"type":"text","index":5}}"#);
+    let at = pa.backend_tick();
+    let _ = pa.backend_poll_session_at(&mut ps, at);
+    bus.say("selectTrack", r#"{"returnValue":true,"mediaId":"m1"}"#);
+    let at = pa.backend_tick();
+    let _ = pa.backend_poll_session_at(&mut ps, at);
+    assert_eq!(crate::route::cur_sub_sid(&ps), 77);
+    let at = pa.backend_tick();
+    let attempt = pa.active_uri_attempt().expect("URI attempt").contract_id();
+    let resumed = pa.backend_send_at(Intent::Control { backend: BackendKind::Uri,
+        attempt,
+        operation: Operation::Play }, super::super::attempt_metrics::Origin::Fresh, at);
+    assert!(!resumed.playback.iter().any(|fx| matches!(fx,
+        plx_playback_contract::Fx::Rejected { .. } | plx_playback_contract::Fx::CommandRefused { .. })));
+    assert_eq!(bus.calls("play"), 1, "the paused viewer may resume after an interactive refusal");
+    crate::route::reset_player_control_for_test(&ps);
+}
 
+#[test]
+fn uri_subtitle_pick_commits_only_after_exact_ack_and_selected_report() {
+    let _serial = plx_base::testlock::serial();
+    let (mut ps, mut pa, bus, _) = opened();
     assert!(pa.commit_subtitle_track(&mut ps, 5, 77, None, String::new(), None));
     assert_eq!(crate::route::cur_sub_sid(&ps), 0);
     bus.say("subscribe", r#"{"mediaId":"m1","trackSelected":{"type":"text","index":5}}"#);

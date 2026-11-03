@@ -507,6 +507,15 @@ impl PlayerAdapter {
         self.backend.snapshot()
     }
 
+    /// The same fresh offer decision the start door will use. IO retires an expired URI
+    /// authorization before the app arms any backend-specific foreground transport hold.
+    pub fn planned_start_backend(&mut self, ps: &mut crate::route::PlaybackSession)
+        -> Option<BackendKind> {
+        #[cfg(feature = "play-uri")]
+        self.refresh_uri_qualification(ps);
+        ps.planned_start_backend()
+    }
+
     /// Product URI plane ownership is separate from the diagnostic probe and panel evidence.
     #[cfg(feature = "play-uri")]
     pub fn uri_product_plane_owned(&self) -> bool {
@@ -1045,6 +1054,8 @@ impl PlayerAdapter {
         self.refresh_uri_qualification(ps);
         let result = self.backend_poll_at(at);
         #[cfg(feature = "play-uri")]
+        let mut failed_startup = None;
+        #[cfg(feature = "play-uri")]
         for notice in &result.playback {
             if let plx_playback_contract::Fx::AcceptedObservation {
                 backend: BackendKind::Uri, attempt, observation,
@@ -1075,6 +1086,7 @@ impl PlayerAdapter {
                 plx_playback_contract::Fx::StartupFailed {
                     backend: BackendKind::Uri, attempt, failure, ..
                 } => {
+                    failed_startup = Some(attempt);
                     self.publish_uri_observation(ps, attempt,
                         plx_playback_contract::Observation::Failed(failure));
                     if let Some(route_attempt) = self.uri_route_attempt.filter(|route|
@@ -1192,6 +1204,15 @@ impl PlayerAdapter {
                 }
                 _ => {}
             }
+        }
+        #[cfg(feature = "play-uri")]
+        if let Some(attempt) = failed_startup.filter(|attempt|
+            self.uri_route_attempt.is_some_and(|route| route.contract_id() == *attempt)) {
+            // The common startup verdict alone distinguishes mandatory initial selection,
+            // seek or Play from a later interactive refusal. Retire its exact native owner.
+            let _ = self.backend_send_at(Intent::Stop { backend: BackendKind::Uri, attempt,
+                reason: plx_playback_contract::StopReason::Replace },
+                super::attempt_metrics::Origin::Fresh, at);
         }
         #[cfg(feature = "play-uri")]
         self.publish_uri_timeline(ps);
