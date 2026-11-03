@@ -4,18 +4,33 @@
 #![allow(dead_code)]
 #![deny(clippy::debug_assert_with_mut_call)]
 use crate::aq::AuQueue;
-use crate::adaptive;
-use plx_playback_contract::adaptive::{Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, RoundId, TrialActuatorPort, TrialClock, TrialId};
+use plx_playback_contract::adaptive::{Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, AdaptivePhysicalPort, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, ExplorationFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, RoundId, TrialActuatorPort, TrialClock, TrialId, VariantFact};
 use plx_playback_contract::SourceKey;
-use crate::player::threads::SendPtr;
+use plx_play_feed::SendPtr;
 use crate::player::SHARED;
 use plx_net::stream::HttpStream;
+use plx_net::net::origin::Origin;
+use plx_net::range_io::{self, RangeFactory, RangeReader};
 use plx_telemetry::telemetry::classes::DemuxExitClass;
 use std::ffi::CString;
 use std::os::raw::{c_int, c_long, c_uchar, c_uint, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 pub use plx_media_codecs::ffi::*;
 pub use plx_media_codecs::Venc;
+
+/// Captured by the media composition and moved into one demux worker. Authorization is checked
+/// afresh on every request by the injected range factory and plaintext redirect gate.
+pub(crate) struct DemuxTransport {
+    range: Arc<dyn RangeFactory>,
+    credential_gate: plx_net::stream::redirect::CredentialGate,
+}
+impl DemuxTransport {
+    pub(crate) fn new(range: Arc<dyn RangeFactory>,
+        credential_gate: plx_net::stream::redirect::CredentialGate) -> Self {
+        Self { range, credential_gate }
+    }
+}
 
 /// Feed audio (es=2) to the pipeline. Cleared by the /tmp/plxnative-noaudio dev trigger to
 /// A/B whether the audio ES (E-AC3/Atmos) is what stalls the sink on 4K HEVC.
@@ -119,8 +134,8 @@ unsafe fn dovi_conf(cp: *const AVCodecParameters) -> Option<AVDOVIDecoderConfigu
 /// `AVCodecParameters`, plus the mastering display and content light level from the stream's coded
 /// side data when the demuxer found them (Matroska's `Colour` element fills them; each only when the
 /// file states it). Read for VP9, whose bitstream cannot carry the transfer function.
-unsafe fn container_hdr(cp: *const AVCodecParameters) -> crate::player::vp9_hdr::ContainerHdr {
-    use crate::player::vp9_hdr::{parse_cll, parse_mastering, ContainerHdr};
+unsafe fn container_hdr(cp: *const AVCodecParameters) -> plx_play_feed::vp9_hdr::ContainerHdr {
+    use plx_play_feed::vp9_hdr::{parse_cll, parse_mastering, ContainerHdr};
     let mut h = ContainerHdr {
         trc: (*cp).color_trc,
         pri: (*cp).color_primaries,
@@ -293,7 +308,7 @@ pub fn boot() {
     // run `net::global_init`, which is what makes `curl_global_init` main-thread-only as its doc
     // requires. Independent of FFmpeg: a set with no libcurl multi still demuxes local samples,
     // and a set with no FFmpeg still signs in.
-    crate::curlio::boot();
+    range_io::boot();
     boot_probe_with(
         || { plx_media_codecs::ffi::boot(); abi_ok() },
         || plx_base::devtrig::read("ffprobe"),
@@ -420,10 +435,10 @@ const AVSEEK_SIZE: c_int = 0x10000;
 ///   ENGINE-owned `HttpStream` — cleartext, numeric address, seeking by closing and re-opening
 ///   with a byte `Range`. Its behaviour here is byte for byte what it was before this enum
 ///   existed.
-/// * [`Src::Curl`] is the https path ([`crate::curlio`]), which the demux thread owns outright.
+/// * [`Src::Curl`] is the injected HTTPS range reader, which the demux thread owns outright.
 ///   `ff.rs` never learns curl-multi mechanics: all it can ask is `read`/`seek`/`size`/`status`/
 ///   `abort`, deliberately the same five questions the socket answers.
-/// * [`Src::Idle`] is the placeholder after HLS HTTPS recycles the `CurlSource` into [`HlsNet`].
+/// * [`Src::Idle`] is the placeholder after HLS HTTPS recycles the reader into [`HlsNet`].
 ///   `avformat_close_input` may still invoke AVIO; this arm refuses I/O instead of dialing a
 ///   dummy socket.
 enum Src {
@@ -438,7 +453,7 @@ enum Src {
     /// Owned by this state, and so by the demux thread — which is why teardown reaches it through
     /// `curlio`'s registry instead of a pointer the engine holds. `curlio`'s module doc says why
     /// that is not the accident it looks like.
-    Curl(Box<crate::curlio::CurlSource>),
+    Curl(Box<dyn RangeReader>),
     Idle,
 }
 
@@ -457,7 +472,7 @@ impl Src {
         }
     }
 
-    fn take_curl(&mut self) -> Option<Box<crate::curlio::CurlSource>> {
+    fn take_curl(&mut self) -> Option<Box<dyn RangeReader>> {
         match std::mem::replace(self, Src::Idle) {
             Src::Curl(cs) => Some(cs),
             other => {
@@ -472,7 +487,9 @@ impl Src {
 /// multi handle reused across playlist and segment URLs.
 struct HlsNet {
     hs: *mut HttpStream,
-    curl: Option<Box<crate::curlio::CurlSource>>,
+    curl: Option<Box<dyn RangeReader>>,
+    range: Arc<dyn RangeFactory>,
+    credential_gate: plx_net::stream::redirect::CredentialGate,
 }
 
 /// **The live-transfer terminal rule.** A partial response is right-censored evidence.  PMS may
@@ -865,9 +882,9 @@ struct BlockingDeadline {
 }
 
 impl TransportWatchdog {
-    fn for_origin(origin: &plx_plex::plex::Origin) -> Self {
+    fn for_origin(origin: &Origin) -> Self {
         let inactivity = if origin.is_tls() {
-            crate::curlio::media_stall_budget()
+            range_io::media_stall_budget()
         } else {
             plx_net::stream::media_stall_budget()
         };
@@ -1009,6 +1026,8 @@ fn exploration_timeout_is_final(
 /// byte offset. Boxed so its address is stable for the C callbacks.
 struct AvioState {
     src: Src,
+    range: Arc<dyn RangeFactory>,
+    credential_gate: plx_net::stream::redirect::CredentialGate,
     aq: *mut AuQueue,
     off: i64,
     size: i64,
@@ -1466,7 +1485,7 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                 Src::Idle => return AVERROR_EOF,
             };
             let wake =
-                if r == plx_net::stream::HTTP_READ_DEADLINE || r == crate::curlio::READ_DEADLINE {
+                if r == plx_net::stream::HTTP_READ_DEADLINE || r == range_io::READ_DEADLINE {
                     let current_rebuffering = SHARED.hls_rebuffering.load(Ordering::Acquire);
                     match (blocking_deadline, s.transport_watchdog.as_ref()) {
                         (Some(attempted), Some(watchdog)) => Some(observe_hls_deadline(
@@ -1506,7 +1525,7 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                     }
                 }
             }
-            if r == plx_net::stream::HTTP_READ_STOPPED || r == crate::curlio::READ_STOPPED {
+            if r == plx_net::stream::HTTP_READ_STOPPED || r == range_io::READ_STOPPED {
                 return avio_stopped(s);
             }
             if let Some(wake) = wake {
@@ -1655,7 +1674,7 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
                 path,
             } => {
                 plx_net::stream::http_close(*hs);
-                let origin = plx_plex::plex::Origin::http(&host.to_string_lossy(), *port);
+                let origin = Origin::http(&host.to_string_lossy(), *port);
                 let from = path.to_string_lossy().into_owned();
                 let req = plx_net::stream::redirect::Request {
                     origin: &origin,
@@ -1664,7 +1683,7 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
                     range_from: Some(target),
                     deadline: None,
                     same_origin_only: false,
-                    credential_gate: plx_plex::http::credential_transport_allowed,
+                    credential_gate: s.credential_gate,
                 };
                 match plx_net::stream::redirect::open_following(
                     *hs,
@@ -1699,7 +1718,7 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
                         crossed
                     }
                     Ok(plx_net::stream::redirect::Opened::Tls(t)) => {
-                        match open_curl_hop(&t.url(), target, aq) {
+                        match open_curl_hop(s.range.as_ref(), &t.url(), target, aq) {
                             Ok(cs) => {
                                 hopped_to_tls = Some(cs);
                                 true
@@ -2020,8 +2039,8 @@ impl VideoFraming {
     /// The Load declaration this framing belongs with. The Load is sent before the demuxer opens the
     /// file, so a disagreement can only abort and say so afterwards; that still beats the black
     /// screen it would otherwise be.
-    pub(crate) fn load_video(self) -> crate::player::engine::LoadVideo {
-        use crate::player::engine::LoadVideo;
+    pub(crate) fn load_video(self) -> plx_play_feed::LoadVideo {
+        use plx_play_feed::LoadVideo;
         match self {
             Self::AnnexB { hevc: false } => LoadVideo::H264,
             Self::AnnexB { hevc: true } => LoadVideo::H265,
@@ -3000,6 +3019,42 @@ enum HlsExit {
     Failed(&'static str),
 }
 
+impl From<HlsExit> for plx_playback_contract::adaptive::PhysicalFailure {
+    fn from(exit: HlsExit) -> Self {
+        use plx_playback_contract::adaptive::{PhysicalFailure as F, TransferFact};
+        match exit {
+            HlsExit::Aborted => F::Aborted,
+            HlsExit::NotReady => F::NotReady,
+            HlsExit::PrimeExpired => F::PrimeExpired,
+            HlsExit::StallAbort(transfer) => F::StallAbort(TransferFact {
+                bytes: transfer.bytes,
+                active_us: transfer.active_us,
+                total_us: transfer.total_us,
+                audio_expected: transfer.audio_expected,
+            }),
+            HlsExit::Failed(message) => F::Failed(message),
+        }
+    }
+}
+
+impl From<plx_playback_contract::adaptive::PhysicalFailure> for HlsExit {
+    fn from(failure: plx_playback_contract::adaptive::PhysicalFailure) -> Self {
+        use plx_playback_contract::adaptive::PhysicalFailure as F;
+        match failure {
+            F::Aborted => HlsExit::Aborted,
+            F::NotReady => HlsExit::NotReady,
+            F::PrimeExpired => HlsExit::PrimeExpired,
+            F::StallAbort(transfer) => HlsExit::StallAbort(SegmentTransfer {
+                bytes: transfer.bytes,
+                active_us: transfer.active_us,
+                total_us: transfer.total_us,
+                audio_expected: transfer.audio_expected,
+            }),
+            F::Failed(message) => HlsExit::Failed(message),
+        }
+    }
+}
+
 /// **What a controlled stop means when its checkpoint latched no reason.** A leg ends in a stop
 /// only because its checkpoint answered `Flow::Stop`, and the only checkpoint that ever does, the
 /// acquisition runtime, latches why first — and its caller settles every failed leg through it
@@ -3026,19 +3081,19 @@ fn classify_plaintext_open_failure(error: plx_net::stream::HttpOpenError) -> Hls
     }
 }
 
-fn classify_curl_open_err(e: crate::curlio::OpenErr) -> HlsExit {
-    if e == crate::curlio::OpenErr::Deadline {
+fn classify_curl_open_err(e: range_io::OpenErr) -> HlsExit {
+    if e == range_io::OpenErr::Deadline {
         return HlsExit::PrimeExpired;
     }
-    if let crate::curlio::OpenErr::Status(status) = e {
+    if let range_io::OpenErr::Status(status) = e {
         SHARED.dg_http_status.store(status, Ordering::Relaxed);
         if status == 404 {
             return HlsExit::NotReady;
         }
     }
-    if e == crate::curlio::OpenErr::Aborted {
+    if e == range_io::OpenErr::Aborted {
         HlsExit::Aborted
-    } else if e == crate::curlio::OpenErr::Stopped {
+    } else if e == range_io::OpenErr::Stopped {
         UNLATCHED_STOP
     } else {
         HlsExit::Failed("HTTPS request failed")
@@ -3097,17 +3152,17 @@ fn hls_open_curl(
                 SHARED.file_size.store(size, Ordering::Release);
                 return Ok((Src::Curl(cs), size));
             }
-            Err(crate::curlio::OpenErr::Aborted) => return Err(HlsExit::Aborted),
-            Err(crate::curlio::OpenErr::Deadline) => {
+            Err(range_io::OpenErr::Aborted) => return Err(HlsExit::Aborted),
+            Err(range_io::OpenErr::Deadline) => {
                 net.curl = Some(cs);
                 return Err(HlsExit::PrimeExpired);
             }
             // A controlled stop keeps the session and never falls through to a fresh dial.
-            Err(e @ crate::curlio::OpenErr::Stopped) => {
+            Err(e @ range_io::OpenErr::Stopped) => {
                 net.curl = Some(cs);
                 return Err(classify_curl_open_err(e));
             }
-            Err(crate::curlio::OpenErr::Status(status)) => {
+            Err(range_io::OpenErr::Status(status)) => {
                 SHARED.dg_http_status.store(status, Ordering::Relaxed);
                 net.curl = Some(cs);
                 return Err(if status == 404 {
@@ -3121,8 +3176,8 @@ fn hls_open_curl(
             }
         }
     }
-    let reservation = crate::curlio::CurlSource::reserve_open().map_err(|e| {
-        if e == crate::curlio::OpenErr::Aborted {
+    let reservation = net.range.reserve_open().map_err(|e| {
+        if e == range_io::OpenErr::Aborted {
             HlsExit::Aborted
         } else {
             HlsExit::Failed("HTTPS reservation failed")
@@ -3131,7 +3186,7 @@ fn hls_open_curl(
     if unsafe { crate::aq::aq_is_aborted(aq) } {
         return Err(HlsExit::Aborted);
     }
-    let opened = crate::curlio::CurlSource::open_reserved_checked(
+    let opened = net.range.open_reserved_checked(
         url,
         0,
         reservation,
@@ -3153,7 +3208,7 @@ fn hls_open_curl(
 /// stay on the PMS origin. Also returns the resource the open landed on: a playlist's children
 /// resolve against it, not against the path that was requested.
 fn hls_open_plain(
-    origin: &plx_plex::plex::Origin,
+    origin: &Origin,
     request_path: &str,
     aq: *mut AuQueue,
     net: &mut HlsNet,
@@ -3174,7 +3229,7 @@ fn hls_open_plain(
         deadline,
         // The HLS contract (`crate::hls`): every request stays on the PMS origin.
         same_origin_only: true,
-        credential_gate: plx_plex::http::credential_transport_allowed,
+        credential_gate: net.credential_gate,
     };
     let opened = plx_net::stream::redirect::open_following(hs, &req, &mut *checkpoint);
     if unsafe { crate::aq::aq_is_aborted(aq) } {
@@ -3231,15 +3286,16 @@ enum MediaOpenFail {
 /// Open an https redirect target on the curl source at byte `at`. The reservation publishes
 /// teardown's wake target BEFORE the abort check — the order `demux`'s own TLS open keeps.
 fn open_curl_hop(
+    range: &dyn RangeFactory,
     url: &str,
     at: i64,
     aq: *mut AuQueue,
-) -> Result<Box<crate::curlio::CurlSource>, crate::curlio::OpenErr> {
-    let reservation = crate::curlio::CurlSource::reserve_open()?;
+) -> Result<Box<dyn RangeReader>, range_io::OpenErr> {
+    let reservation = range.reserve_open()?;
     if unsafe { crate::aq::aq_is_aborted(aq) } {
-        return Err(crate::curlio::OpenErr::Aborted);
+        return Err(range_io::OpenErr::Aborted);
     }
-    crate::curlio::CurlSource::open_reserved(url, at, reservation)
+    range.open_reserved(url, at, reservation)
 }
 
 /// The progressive (direct-play) open of a PLAINTEXT part URL, redirects followed. A PMS-hosted
@@ -3247,9 +3303,10 @@ fn open_curl_hop(
 /// on the curl source. Publishes the same two diagnostics the TLS arm of `demux` does.
 fn open_plain_progressive(
     hs_p: *mut HttpStream,
-    origin: &plx_plex::plex::Origin,
+    origin: &Origin,
     path: &str,
     aq_p: *mut AuQueue,
+    transport: &DemuxTransport,
 ) -> Result<(Src, i64), MediaOpenFail> {
     use plx_net::stream::redirect::Opened;
     plx_net::stream::http_close(hs_p);
@@ -3260,7 +3317,7 @@ fn open_plain_progressive(
         range_from: None,
         deadline: None,
         same_origin_only: false,
-        credential_gate: plx_plex::http::credential_transport_allowed,
+        credential_gate: transport.credential_gate,
     };
     match plx_net::stream::redirect::open_following(hs_p, &req, &mut plx_base::checkpoint::NoCheckpoint)
     {
@@ -3283,7 +3340,7 @@ fn open_plain_progressive(
                 size,
             ))
         }
-        Ok(Opened::Tls(t)) => match open_curl_hop(&t.url(), 0, aq_p) {
+        Ok(Opened::Tls(t)) => match open_curl_hop(transport.range.as_ref(), &t.url(), 0, aq_p) {
             Ok(cs) => {
                 let (st, size) = (cs.status(), cs.size());
                 SHARED.file_size.store(size, Ordering::Release);
@@ -3291,9 +3348,9 @@ fn open_plain_progressive(
                 crate::player::log(&format!("ff: open https status={st} clen={size}"));
                 Ok((Src::Curl(cs), size))
             }
-            Err(crate::curlio::OpenErr::Aborted) => Err(MediaOpenFail::Aborted),
+            Err(range_io::OpenErr::Aborted) => Err(MediaOpenFail::Aborted),
             Err(e) => {
-                if let crate::curlio::OpenErr::Status(st) = e {
+                if let range_io::OpenErr::Status(st) = e {
                     SHARED.dg_http_status.store(st, Ordering::Relaxed);
                 }
                 crate::player::log(&format!("ff: https open FAILED: {e:?}"));
@@ -3344,7 +3401,7 @@ fn hls_source_read(
         }
         return Err(HlsExit::Aborted);
     }
-    if read == plx_net::stream::HTTP_READ_DEADLINE || read == crate::curlio::READ_DEADLINE {
+    if read == plx_net::stream::HTTP_READ_DEADLINE || read == range_io::READ_DEADLINE {
         Err(HlsExit::PrimeExpired)
     } else if read < 0 {
         Err(HlsExit::Failed("HLS response body failed"))
@@ -3584,12 +3641,15 @@ unsafe fn hls_input(
     reserve_deadline: ReserveDeadlineState,
     transport_watchdog: TransportWatchdog,
     mut acquisition: AcquisitionRuntime,
+    net: &HlsNet,
 ) -> Result<HlsInput, HlsExit> {
     let request_started = acquisition.request_started();
     acquisition.enter(Phase::Body);
     let mut input = HlsInput {
         state: Box::new(AvioState {
             src,
+            range: Arc::clone(&net.range),
+            credential_gate: net.credential_gate,
             aq,
             off: 0,
             size,
@@ -3907,7 +3967,7 @@ unsafe fn hls_demux_segment(
         }
     };
     let body_started = std::time::Instant::now();
-    let mut input = hls_input(src, size, aq, reserve_deadline, transport_watchdog, runtime)?;
+    let mut input = hls_input(src, size, aq, reserve_deadline, transport_watchdog, runtime, net)?;
     let probe_done = std::time::Instant::now();
     let streams = (*input.fmt).streams;
     let vi = av_find_best_stream(
@@ -4223,15 +4283,16 @@ struct HlsCursor {
 /// trial in this round. Active and trial commands address separate generations;
 /// the URL, cursor, staged AUs and reserve clock remain private here.
 struct HlsRoundPort<'a> {
-    round: RoundId,
+    round: Option<RoundId>,
     trial: Option<TrialId>,
-    origin: &'a plx_plex::plex::Origin,
+    origin: &'a Origin,
     cursor: &'a mut HlsCursor,
     timeline: &'a mut crate::hls::SegmentTimeline,
     prefetched: &'a mut Option<ActiveMedia>,
     pause_cursor: &'a mut crate::player::UserPauseCursor,
     aq: *mut AuQueue,
     aqa: *mut AuQueue,
+    publication_gate: AqPublicationPort,
     net: &'a mut HlsNet,
     acodec: &'a str,
     current: Option<ActiveMedia>,
@@ -4286,7 +4347,7 @@ impl FeedPort for HlsRoundPort<'_> {
             FeedAction::BudgetSnapshot { trial } => {
                 let (buffer, started_ns) = hls_buffer_snapshot_with_playhead(None);
                 FeedObservation::BudgetSnapshot {
-                    trial, buffered_ms: buffer.buffered_ms(), started_ns,
+                    trial, buffered_ms: buffer, started_ns,
                     remaining: self.reserve.as_ref().and_then(ReserveDeadlineState::remaining),
                     rebuffering: SHARED.hls_rebuffering.load(Ordering::Acquire),
                 }
@@ -4320,12 +4381,13 @@ impl HlsRoundPort<'_> {
         if bound != source {
             return FeedObservation::Failed { trial, failure: FeedFailure::Protocol };
         }
-        let parsed = plx_plex::plex::StreamUrl::parse(&locator);
-        if parsed.origin != *self.origin {
+        let (parsed_origin, parsed_path) = plx_net::net::origin::split(&locator);
+        if parsed_origin != *self.origin {
             return FeedObservation::Failed { trial, failure: FeedFailure::SourceMoved };
         }
+        let parsed_path = if parsed_path.is_empty() { "/" } else { parsed_path };
         match hls_cursor_open(
-            &parsed.origin, &parsed.path, self.aq, self.net, false, self.reserve.as_mut(),
+            &parsed_origin, parsed_path, self.aq, self.net, false, self.reserve.as_mut(),
         ) {
             Ok(candidate) => {
                 let declared_bps = candidate.declared_bps;
@@ -4433,8 +4495,76 @@ impl HlsRoundPort<'_> {
     }
 }
 
+impl CandidateMediaPort for HlsRoundPort<'_> {
+    fn candidate_declared_bps(&self) -> Option<u64> {
+        self.candidate.as_ref().map(|cursor| cursor.declared_bps)
+    }
+
+    fn stage_queued_timeline(&mut self) -> bool {
+        let Some(staged) = self.candidate_timeline.take() else { return false; };
+        *self.timeline = staged;
+        true
+    }
+
+    fn promote_candidate(&mut self) -> bool {
+        let Some(mut candidate) = self.candidate.take() else { return false; };
+        candidate.publishes_duration = true;
+        *self.prefetched = None;
+        *self.cursor = candidate;
+        true
+    }
+
+    fn publication_gate(&mut self) -> &mut dyn plx_playback_contract::adaptive::PublicationGate {
+        &mut self.publication_gate
+    }
+}
+
+impl AdaptivePhysicalPort for HlsRoundPort<'_> {
+    fn begin_round(&mut self, round: RoundId) { self.round = Some(round); }
+
+    fn finish_active(&mut self) -> Option<VariantFact> {
+        let (_, output, _, _) = self.current.take()?;
+        Some(VariantFact {
+            width: output.video_width,
+            height: output.video_height,
+            declared_bps: self.cursor.declared_bps,
+        })
+    }
+
+    fn begin_trial(&mut self, trial: TrialId, exploration: Option<ExplorationFact>) {
+        self.trial = Some(trial);
+        self.candidate_timeline = Some(*self.timeline);
+        self.reserve = exploration.map(|clock| {
+            crate::player::log(&format!(
+                "abr: exploration target={}kbps buf={}ms runway={}ms budget={}ms",
+                clock.target_kbps, clock.buffered_ms, clock.runway_ms, clock.budget_ms,
+            ));
+            ReserveDeadlineState::from_playhead_at(
+                clock.started_ns,
+                std::time::Duration::from_millis(
+                    u64::try_from(clock.budget_ms).unwrap_or(u64::MAX),
+                ),
+                false,
+            )
+        });
+    }
+
+    fn candidate_offset_micros(&self) -> Option<i64> {
+        SHARED.disp_base.load(Ordering::Relaxed).max(0)
+            .checked_add(self.timeline.end_ns()).map(|ns| ns / 1_000)
+    }
+
+    fn buffer_sampler(&self) -> fn() -> Option<i64> {
+        || hls_buffer_fact(None).buffered_ms()
+    }
+
+    fn remaining_playback_sampler(&self) -> fn() -> i64 { remaining_playback_ms }
+
+    fn user_sequence_sampler(&self) -> fn() -> u64 { || SHARED.hls_user_sequence() }
+}
+
 fn hls_cursor_open(
-    origin: &plx_plex::plex::Origin,
+    origin: &Origin,
     path: &str,
     aq: *mut AuQueue,
     net: &mut HlsNet,
@@ -4628,21 +4758,11 @@ fn hls_buffer_fact_at(
     }
 }
 
-fn hls_buffer_snapshot_at(
-    output: Option<&HlsSegmentOutput>, playhead_ns: i64,
-) -> crate::abr::BufferSnapshot {
-    adaptive::buffer_snapshot(hls_buffer_fact_at(output, playhead_ns))
-}
-
 fn hls_buffer_snapshot_with_playhead(
     output: Option<&HlsSegmentOutput>,
-) -> (crate::abr::BufferSnapshot, i64) {
+) -> (Option<i64>, i64) {
     let playhead_ns = SHARED.playpos_ns.load(Ordering::Relaxed).max(0);
-    (hls_buffer_snapshot_at(output, playhead_ns), playhead_ns)
-}
-
-fn hls_buffer_snapshot(output: Option<&HlsSegmentOutput>) -> crate::abr::BufferSnapshot {
-    hls_buffer_snapshot_with_playhead(output).0
+    (hls_buffer_fact_at(output, playhead_ns).buffered_ms(), playhead_ns)
 }
 
 fn hls_buffer_fact(output: Option<&HlsSegmentOutput>) -> BufferFact {
@@ -4675,22 +4795,6 @@ fn progressive_buffered_ms(audio_expected: bool) -> Option<i64> {
     )
 }
 
-fn hls_segment_sample(
-    output: &HlsSegmentOutput,
-    duration: std::time::Duration,
-) -> Option<crate::abr::SegmentSample> {
-    let duration_ms = u32::try_from(duration.as_millis()).ok()?;
-    let duration_obligation_ms = hls_duration_obligation_ms(duration)?;
-    crate::abr::SegmentSample::new_with_obligation(
-        output.transfer.bytes,
-        output.transfer.active_us,
-        output.transfer.total_us,
-        duration_ms,
-        duration_obligation_ms,
-        hls_buffer_snapshot(Some(output)),
-    )
-}
-
 fn hls_acquisition(
     output: &HlsSegmentOutput, duration: std::time::Duration, declared_bps: u64,
 ) -> Acquisition {
@@ -4705,118 +4809,6 @@ fn hls_acquisition(
     }
 }
 
-/// The active cursor's sample for one round of the demux loop. The constructor is chosen BEFORE
-/// validation: an abandoned round goes through `SegmentSample::abandoned_acquisition`, which
-/// admits the zero bytes and zero body time of an abort before the first body byte, so the
-/// censored event still reaches the controller's recovery path instead of being dropped as
-/// invalid timing. A completed round keeps the strict constructor.
-fn hls_round_sample(
-    output: &HlsSegmentOutput,
-    duration: std::time::Duration,
-    fetch_abandoned: bool,
-) -> Option<crate::abr::SegmentSample> {
-    adaptive::active_sample(
-        hls_acquisition(output, duration, 0),
-        hls_buffer_fact(Some(output)),
-        fetch_abandoned,
-    )
-}
-
-fn publish_hls_abr_sample(sample: adaptive::SampleReadout) {
-    SHARED.dg_abr_net_kbps.store(sample.network_kbps, Ordering::Relaxed);
-    SHARED
-        .dg_abr_media_kbps
-        .store(sample.media_kbps, Ordering::Relaxed);
-    // `-1` is "not knowable this segment", which the gauge has no other way to say. It is a
-    // dev read-out with one i64 slot; the decision paths take the `Option` itself.
-    SHARED
-        .dg_abr_buffer_ms
-        .store(sample.buffer_ms, Ordering::Relaxed);
-    SHARED.dg_abr_ratio_pm.store(sample.ratio_pm, Ordering::Relaxed);
-}
-
-fn publish_original_probe_failure(failure: crate::adaptive::ProbeFailure) {
-    use crate::adaptive::ProbeFailure as F;
-    let (kind, status) = match failure {
-        F::HttpStatus(status) => (crate::player::ABR_FAILURE_ORIGINAL_HTTP, status),
-        F::Deadline => (crate::player::ABR_FAILURE_ORIGINAL_DEADLINE, 0),
-        F::Transport => (crate::player::ABR_FAILURE_ORIGINAL_TRANSPORT, 0),
-        F::NoBody => (crate::player::ABR_FAILURE_ORIGINAL_NO_BODY, 0),
-        F::Other => (crate::player::ABR_FAILURE_ORIGINAL_OPEN, 0),
-    };
-    crate::player::note_original_failure(kind, status);
-}
-
-/// One line per steady-state decision, carrying everything the decision was made ON. Nothing here
-/// is a name, an address, a title or a token — it is rates, milliseconds and per-mille — which is
-/// what makes it safe to paste into an issue thread. `abr::Controller::telemetry` assembles it, so
-/// the values logged are the values used rather than a second reading taken at the log site.
-/// **The model's own state, published on EVERY segment.**
-///
-/// Split out of [`crate::adaptive::steady_line`] on 2026-08-26, and the split is the whole point. Both used
-/// to be one function called only on `Decision::Stay` — so the panel's safe budget, uncertainty,
-/// buffer slope, starvation horizon, risk score and reason code were refreshed **only on segments
-/// where the controller decided to do nothing**. Every segment where those numbers were
-/// interesting — a short horizon, end-to-end acquisition behind real time, a reserve about to run
-/// out — is by
-/// definition a segment that returned `Prime`, and skipped the publish.
-///
-/// The visible symptom was `risk 0` essentially always, which reads as "the model never sees any
-/// risk" rather than "the panel is only ever shown the quiet samples". The LOG line stays on the
-/// `Stay` path, because it is titled `abr: steady` and a steady line on a segment that primed a
-/// candidate would be a false statement about what happened.
-fn publish_hls_abr_model(t: adaptive::ModelReadout) {
-    // Bound first and stored on ONE line each, deliberately: `shared.rs`'s writer guard greps the
-    // literal `dg_<field>.store(`, so a `SHARED\n    .dg_x\n    .store(` that rustfmt produces
-    // reads to it exactly like a field NOTHING writes — which is the bug that guard exists to catch.
-    let rel = Ordering::Relaxed;
-    SHARED
-        .dg_abr_safe_kbps
-        .store(t.safe_kbps, rel);
-    SHARED.dg_abr_optimal_kbps.store(t.optimal_kbps, rel);
-    SHARED
-        .dg_abr_unc_pm
-        .store(t.uncertainty_pm, rel);
-    SHARED
-        .dg_abr_samples
-        .store(t.samples, rel);
-    SHARED
-        .dg_abr_slope_ms_per_s
-        .store(t.slope_ms_per_s, rel);
-    SHARED.dg_abr_starve_secs.store(t.starvation_secs, rel);
-    SHARED.dg_abr_pred_pm.store(t.production_pm, rel);
-    SHARED.dg_abr_risk.store(t.risk, rel);
-    SHARED.dg_abr_why.store(abr_why_code(t.reason), rel);
-    // **The seed that survives a seek** (I8). Published every segment rather than at teardown,
-    // because a teardown has several paths and one of them (a crash of the demux worker) reaches
-    // none of them — and the estimate is worth carrying whatever ended the session. Not a `dg_`
-    // field: this coherent estimate is read to DECIDE, by `route::auto_prior` when the next
-    // control is built.
-    SHARED.publish_abr_seed(t.seed);
-}
-
-/// The common owner's diagnostic reason as the panel's code. A `match` rather than a cast makes
-/// any new [`crate::adaptive::WhyReadout`] variant an explicit wire decision here.
-fn abr_why_code(reason: Option<adaptive::WhyReadout>) -> u8 {
-    use adaptive::WhyReadout as R;
-    match reason {
-        None => crate::player::ABR_WHY_NONE,
-        Some(R::SafeBudget) => crate::player::ABR_WHY_SAFE_BUDGET,
-        Some(R::UnsafeState) => crate::player::ABR_WHY_UNSAFE_STATE,
-        Some(R::Production) => crate::player::ABR_WHY_PRODUCTION,
-        Some(R::Buffer) => crate::player::ABR_WHY_BUFFER,
-        Some(R::LadderFloor) => crate::player::ABR_WHY_LADDER_FLOOR,
-        Some(R::RejectBackoff) => crate::player::ABR_WHY_REJECT_BACKOFF,
-        Some(R::Starvation) => crate::player::ABR_WHY_STARVATION,
-        Some(R::Evidence) => crate::player::ABR_WHY_EVIDENCE,
-        Some(R::AtBest) => crate::player::ABR_WHY_AT_BEST,
-        Some(R::ReserveUnknown) => crate::player::ABR_WHY_RESERVE_UNKNOWN,
-        Some(R::DeadlineRollback) => crate::player::ABR_WHY_DEADLINE_ROLLBACK,
-        Some(R::ResponseLimited) => crate::player::ABR_WHY_RESPONSE_LIMITED,
-        Some(R::SwitchCost) => crate::player::ABR_WHY_SWITCH_COST,
-    }
-}
-
 /// Content still to play, from the one published duration and position. Feeds the utility model's
 /// benefit scaling: a visible mode switch has to earn back its cost out of what is LEFT, which is
 /// why "twenty seconds remaining" needs no special case anywhere below.
@@ -4826,33 +4818,6 @@ fn remaining_playback_ms() -> i64 {
         return 0;
     }
     (duration - SHARED.playpos_ns.load(Ordering::Relaxed).max(0)).max(0) / 1_000_000
-}
-
-fn publish_hls_abr_action(
-    action: adaptive::ActionReadout,
-) {
-    use adaptive::ActionDirection::{Down, Up};
-    let adaptive::ActionReadout { direction, target_kbps, refreshing, committed } = action;
-    let action = if refreshing {
-        match committed {
-            None => crate::player::ABR_ACTION_PRIME_REFRESH,
-            Some(true) => crate::player::ABR_ACTION_COMMIT_REFRESH,
-            Some(false) => crate::player::ABR_ACTION_REJECT_REFRESH,
-        }
-    } else {
-        match (direction, committed) {
-            (Down, None) => crate::player::ABR_ACTION_PRIME_DOWN,
-            (Up, None) => crate::player::ABR_ACTION_PRIME_UP,
-            (Down, Some(true)) => crate::player::ABR_ACTION_COMMIT_DOWN,
-            (Up, Some(true)) => crate::player::ABR_ACTION_COMMIT_UP,
-            (Down, Some(false)) => crate::player::ABR_ACTION_REJECT_DOWN,
-            (Up, Some(false)) => crate::player::ABR_ACTION_REJECT_UP,
-        }
-    };
-    SHARED.dg_abr_action.store(action, Ordering::Relaxed);
-    SHARED
-        .dg_abr_target_kbps
-        .store(i64::from(target_kbps), Ordering::Relaxed);
 }
 
 /// Lifetime marker for one exploratory upshift. The transaction's own deadline limits its spend
@@ -4897,12 +4862,6 @@ impl HlsAutomaticLease {
         SHARED
             .begin_hls_automatic_transition_at(kind, expected_user_sequence)
             .map(|token| Self { token })
-    }
-
-    /// Linearization point for a route-changing Original result.  A user hold or native-clock
-    /// transition which won the mutex first makes the result retainable evidence, not an action.
-    fn authorize_commit(&self) -> bool {
-        SHARED.authorize_hls_automatic_transition_commit(self.token)
     }
 
     fn token(&self) -> u64 {
@@ -4967,14 +4926,18 @@ impl HlsCandidateTransition {
     }
 }
 
-struct HlsCandidateFencePort;
+impl plx_playback_contract::adaptive::FenceSettlement for HlsCandidateTransition {
+    fn settle(self: Box<Self>) { HlsCandidateTransition::settle(*self); }
+}
 
-impl CandidateFencePort for HlsCandidateFencePort {
-    type Fence = HlsCandidateTransition;
-    type Error = HlsExit;
+impl CandidateFencePort for HlsRoundPort<'_> {
+    type Fence = plx_playback_contract::adaptive::FenceHandle;
+    type Error = plx_playback_contract::adaptive::PhysicalFailure;
 
     fn arm(&mut self, automatic_token: u64) -> Result<Self::Fence, Self::Error> {
         HlsCandidateTransition::arm(automatic_token)
+            .map(plx_playback_contract::adaptive::FenceHandle::new)
+            .map_err(Into::into)
     }
 
     fn settle(&mut self, fence: Self::Fence) { fence.settle(); }
@@ -4989,10 +4952,8 @@ impl plx_playback_contract::adaptive::PublicationGate for AqPublicationPort {
     }
 }
 
-struct HlsAutomaticPort { gate: AqPublicationPort }
-
-impl AutomaticPort for HlsAutomaticPort {
-    type Lease = HlsAutomaticLease;
+impl AutomaticPort for HlsRoundPort<'_> {
+    type Lease = plx_playback_contract::adaptive::LeaseHandle;
 
     fn begin(
         &mut self, kind: AutomaticTransition, expected_user_sequence: u64,
@@ -5002,25 +4963,31 @@ impl AutomaticPort for HlsAutomaticPort {
             AutomaticTransition::QualityUp => crate::player::HlsAutomaticTransition::QualityUp,
             AutomaticTransition::QualityDown => crate::player::HlsAutomaticTransition::QualityDown,
         };
-        HlsAutomaticLease::begin(kind, expected_user_sequence)
+        HlsAutomaticLease::begin(kind, expected_user_sequence).map(|lease| {
+            plx_playback_contract::adaptive::LeaseHandle::new(lease.token(), lease)
+        })
     }
 
-    fn authorize(&mut self, lease: &Self::Lease) -> bool { lease.authorize_commit() }
+    fn authorize(&mut self, lease: &Self::Lease) -> bool {
+        SHARED.authorize_hls_automatic_transition_commit(lease.token())
+    }
 
-    fn aborted(&self) -> bool { unsafe { crate::aq::aq_is_aborted(self.gate.0) } }
+    fn aborted(&self) -> bool { unsafe { crate::aq::aq_is_aborted(self.aq) } }
 
     fn gate(&mut self) -> &mut dyn plx_playback_contract::adaptive::PublicationGate {
-        &mut self.gate
+        &mut self.publication_gate
     }
 }
 
-impl TrialActuatorPort for HlsAutomaticPort {
-    type TrialReserve = HlsTrialReserve;
+impl TrialActuatorPort for HlsRoundPort<'_> {
+    type TrialReserve = plx_playback_contract::adaptive::LeaseHandle;
 
     fn arm_trial_reserve(
         &mut self, runway_ms: i64, expected_user_sequence: u64,
     ) -> Option<Self::TrialReserve> {
-        HlsTrialReserve::arm(runway_ms, expected_user_sequence)
+        HlsTrialReserve::arm(runway_ms, expected_user_sequence).map(|reserve| {
+            plx_playback_contract::adaptive::LeaseHandle::new(reserve.token(), reserve)
+        })
     }
 
     fn lease_token(&self, lease: &Self::Lease) -> u64 { lease.token() }
@@ -5028,10 +4995,12 @@ impl TrialActuatorPort for HlsAutomaticPort {
     fn trial_token(&self, reserve: &Self::TrialReserve) -> u64 { reserve.token() }
 }
 
-impl AdaptiveRoundPort for HlsAutomaticPort {
-    fn position_ns() -> i64 { SHARED.playpos_ns.load(Ordering::Relaxed).max(0) }
+impl AdaptiveRoundPort for HlsRoundPort<'_> {
+    fn position_sampler(&self) -> fn() -> i64 {
+        || SHARED.playpos_ns.load(Ordering::Relaxed).max(0)
+    }
 
-    fn transition_permitted(kind: AutomaticTransition) -> bool {
+    fn transition_permitted(&self, kind: AutomaticTransition) -> bool {
         SHARED.hls_automatic_transition_permitted(match kind {
             AutomaticTransition::Original => crate::player::HlsAutomaticTransition::Original,
             AutomaticTransition::QualityUp => crate::player::HlsAutomaticTransition::QualityUp,
@@ -5039,16 +5008,24 @@ impl AdaptiveRoundPort for HlsAutomaticPort {
         })
     }
 
-    fn rebuffer_state() -> (bool, bool) {
+    fn rebuffer_state(&self) -> (bool, bool) {
         (
             SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
             SHARED.hls_rebuffering.load(Ordering::Acquire),
         )
     }
 
-    fn buffer_snapshot() -> (Option<i64>, i64) {
-        let (snapshot, started_ns) = hls_buffer_snapshot_with_playhead(None);
-        (snapshot.buffered_ms(), started_ns)
+    fn buffer_snapshot(&self) -> (Option<i64>, i64) {
+        hls_buffer_snapshot_with_playhead(None)
+    }
+
+    fn pause_fact(&mut self) -> PauseFact {
+        let commit_pause = crate::player::TX.pause_state_sample();
+        PauseFact {
+            paused: commit_pause.paused,
+            completed_ms: self.pause_cursor.consume_completed(commit_pause)
+                .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)),
+        }
     }
 }
 
@@ -5237,14 +5214,12 @@ fn hls_read_active(
     }
 }
 
-impl ActiveFeedPort for HlsRoundPort<'_> {
-    type Error = HlsExit;
-
-    fn step_active(&mut self, action: ActiveAction) -> Result<ActiveObservation, HlsExit> {
-        if action.round() != self.round {
+impl HlsRoundPort<'_> {
+    fn step_active_native(&mut self, action: ActiveAction) -> Result<ActiveObservation, HlsExit> {
+        if Some(action.round()) != self.round {
             return Err(HlsExit::Failed("adaptive active round address mismatch"));
         }
-        let round = self.round;
+        let round = action.round();
         match action {
             ActiveAction::Read { at_floor, .. } => {
                 if self.current.is_some() {
@@ -5302,103 +5277,24 @@ impl ActiveFeedPort for HlsRoundPort<'_> {
     }
 }
 
-struct HlsActiveDiagnostics<'a> { cleanup_wait_logged: &'a mut bool }
+impl ActiveFeedPort for HlsRoundPort<'_> {
+    type Error = plx_playback_contract::adaptive::PhysicalFailure;
 
-impl adaptive::ActiveDiagnostics for HlsActiveDiagnostics<'_> {
-    fn cleanup(&mut self, ready: bool) {
-        if !ready && !*self.cleanup_wait_logged {
-            *self.cleanup_wait_logged = true;
-            crate::player::log(
-                "abr: waiting for PMS to release the stopped encoder before another experiment",
-            );
-        } else if ready && *self.cleanup_wait_logged {
-            *self.cleanup_wait_logged = false;
-            crate::player::log("abr: PMS encoder release observed; exploration may resume");
-        }
+    fn step_active(&mut self, action: ActiveAction) -> Result<ActiveObservation, Self::Error> {
+        self.step_active_native(action).map_err(Into::into)
     }
-
-    fn accepted_pause(&mut self, after_lookup: bool, sequence: u64, elapsed_ms: u64) {
-        if after_lookup {
-            crate::player::log(&format!(
-                "abr: consumed accepted pause sequence={} elapsed={}ms after rollback lookup; delivery estimate aged",
-                sequence, elapsed_ms,
-            ));
-        } else {
-            crate::player::log(&format!(
-                "abr: consumed accepted pause sequence={} elapsed={}ms; delivery estimate aged",
-                sequence, elapsed_ms,
-            ));
-        }
-    }
-
-    fn sample(&mut self, sample: adaptive::SampleReadout) {
-        publish_hls_abr_sample(sample);
-    }
-
-    fn fresh_boundary(&mut self) {
-        crate::player::log(
-            "abr: fresh-session boundary buffered; waiting for the first repeatable HLS acquisition",
-        );
-    }
-
-    fn observed(&mut self, readout: adaptive::ActiveReadout) {
-        if let Some(runway_ms) = readout.prime_runway_ms {
-            SHARED.hls_prime_runway_ms.store(runway_ms, Ordering::Release);
-        }
-        publish_hls_abr_model(readout.model);
-        crate::player::log(&readout.sample_line);
-        crate::player::log(&readout.window_line);
-    }
-}
-
-struct HlsOriginalProbeDiagnostics;
-
-impl adaptive::OriginalProbeDiagnostics for HlsOriginalProbeDiagnostics {
-    fn action(&mut self, action: adaptive::ProbeTraceAction, target_kbps: u32) {
-        match action {
-            adaptive::ProbeTraceAction::Start => {
-                SHARED.dg_abr_action.store(
-                    crate::player::ABR_ACTION_PROBE_ORIGINAL, Ordering::Relaxed,
-                );
-                SHARED.dg_abr_target_kbps.store(i64::from(target_kbps), Ordering::Relaxed);
-                crate::player::clear_original_failure();
-            }
-            adaptive::ProbeTraceAction::Failed => {
-                SHARED.dg_abr_action.store(
-                    crate::player::ABR_ACTION_ORIGINAL_PROBE_FAILED, Ordering::Relaxed,
-                );
-                SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
-            }
-            adaptive::ProbeTraceAction::Steady => {
-                SHARED.dg_abr_action.store(
-                    crate::player::ABR_ACTION_STEADY, Ordering::Relaxed,
-                );
-                SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
-            }
-            adaptive::ProbeTraceAction::RecoverOriginal => {
-                SHARED.dg_abr_action.store(
-                    crate::player::ABR_ACTION_RECOVER_ORIGINAL, Ordering::Relaxed,
-                );
-            }
-        }
-    }
-
-    fn failure(&mut self, failure: adaptive::ProbeFailure) {
-        publish_original_probe_failure(failure);
-    }
-
-    fn record(&mut self, line: &str) { crate::player::log(line); }
 }
 
 fn hls_demux(
     off: &plx_base::task::OffFrame,
-    origin: &plx_plex::plex::Origin,
+    origin: &Origin,
     path: &str,
     acodec: &str,
-    abr: Option<crate::adaptive::Start>,
+    abr: Option<Box<dyn plx_playback_contract::adaptive::AdaptiveSession>>,
     aq: *mut AuQueue,
     aqa: *mut AuQueue,
     hs: *mut HttpStream,
+    transport: DemuxTransport,
 ) -> Result<(), HlsExit> {
     // The change detector is process-global, so a second playback of the same stream would
     // otherwise log nothing at all. Cleared here rather than on teardown: this is the one place
@@ -5422,7 +5318,7 @@ fn hls_demux(
         SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
         SHARED.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
     }
-    let mut net = HlsNet { hs, curl: None };
+    let mut net = HlsNet { hs, curl: None, range: transport.range, credential_gate: transport.credential_gate };
     let mut cursor = hls_cursor_open(origin, path, aq, &mut net, true, None)?;
     if abr.is_some() {
         SHARED.dg_abr_declared_kbps.store(
@@ -5431,69 +5327,16 @@ fn hls_demux(
         );
     }
     let mut timeline = crate::hls::SegmentTimeline::default();
-    // The origin of the visible-switch decay clock: the main thread's `since_last_ms` capture
-    // is a value AS OF NOW, and this is now. `OriginalRecovery::advance_to` in the segment loop
-    // moves it forward from here.
-    let history_since = std::time::Instant::now();
-    // **The controller's ONE clock, named once.** `Controller::observe`/`commit`/`reject` share a
-    // monotonic origin so logs and switch-history decay describe the same transaction. Failure
-    // release is not time-based: it reads the newly observed surplus, and waiting alone changes
-    // no certificate.
-    let now_ms = || history_since.elapsed().as_millis() as u64;
-    let mut adaptive = abr.map(|start| {
-        let info = start.info();
-        crate::player::log(&format!(
-            "abr: history switches={} since_last={} advanced=0ms",
-            info.history.visible_switches,
-            info.history.since_last_ms.map(|ms| ms.to_string())
-                .unwrap_or_else(|| "none".to_string()),
-        ));
-        if !info.original_candidate || info.original_source_kbps == 0 {
-            crate::player::log(&format!(
-                "abr: no Original recovery for this playback (candidate={} source={}kbps) — \
-                 HLS is the ceiling until the next resolve",
-                u8::from(info.original_candidate), info.original_source_kbps,
-            ));
-        }
-        let pin = crate::abr::abr_pin();
-        let coordinator = crate::adaptive::Coordinator::start(start, pin);
-        if info.original_refused && coordinator.has_recovery() {
-            crate::player::log(
-                "abr: Original was refused on this HLS route; not asked again until the route changes",
-            );
-        }
-        let seeded = coordinator.telemetry();
-        crate::player::log(&format!(
-            "abr: seed rung={}kbps prior={} slow={}kbps fast={}kbps unc={}pm n={} pin={}",
-            info.initial.kbps(),
-            info.prior.map(|p| format!("{}kbps", p.slow_kbps))
-                .unwrap_or_else(|| "none".to_string()),
-            seeded.delivery.slow_kbps,
-            seeded.delivery.fast_kbps,
-            seeded.delivery.uncertainty_pm,
-            seeded.delivery.samples,
-            pin.map(|r| format!("{}kbps", r.kbps()))
-                .unwrap_or_else(|| "none".to_string()),
-        ));
-        coordinator
-    });
+    let mut adaptive = abr;
     // Consume native-accepted pause EVENTS, not a sampled bool. The worker can spend a complete
     // Pause→Resume cycle blocked in aq_push/network I/O and must still age the first post-resume
     // estimate by the exact cumulative interval.
     let mut pause_cursor =
         crate::player::UserPauseCursor::new(crate::player::TX.pause_state_sample());
-    // PMS acknowledges a transcode stop before its worker finishes either half of the lifecycle.
-    // The route ledger drives physical ping then exact logical-resource close; this latch keeps a
-    // potentially long server cleanup to one waiting line and one release line.
-    let mut cleanup_wait_logged = false;
-    // Exactly one completed object in a fresh cursor carries PMS encoder/session startup. It is
-    // buffered and measured, but the repeatable acquisition window begins with the next object;
-    // see `Controller::observe_session_boundary`.
-    let mut session_boundary_pending = adaptive.is_some();
     let mut prefetched: Option<ActiveMedia> = None;
 
-    'segments: loop {
-        let Some(state) = adaptive.as_mut() else {
+    loop {
+        let Some(session) = adaptive.as_mut() else {
             let Some((segment, output, clock, fetch_abandoned)) = hls_read_active(
                 &mut cursor, &mut net, timeline, &mut prefetched, aq, acodec, None,
             )? else { break; };
@@ -5518,291 +5361,26 @@ fn hls_demux(
             }
             continue;
         };
-        let round_id = state.next_round_id()
-            .ok_or(HlsExit::Failed("adaptive active round generation exhausted"))?;
         let mut physical = HlsRoundPort {
-            round: round_id, trial: None, origin,
+            round: None, trial: None, origin,
             cursor: &mut cursor, timeline: &mut timeline,
             prefetched: &mut prefetched, pause_cursor: &mut pause_cursor,
-            aq, aqa, net: &mut net, acodec, current: None, reserve: None,
+            aq, aqa, publication_gate: AqPublicationPort(aq),
+            net: &mut net, acodec, current: None, reserve: None,
             source: None, candidate: None, segment: None,
             candidate_timeline: None, clock: None, output: None, staged: Vec::new(),
         };
-        let mut diagnostics = HlsActiveDiagnostics { cleanup_wait_logged: &mut cleanup_wait_logged };
-        let cycle = match adaptive::run_active_round(
-            state, &mut physical, round_id, || now_ms(), remaining_playback_ms,
-            || SHARED.hls_user_sequence(), &mut session_boundary_pending, &mut diagnostics,
-        ) {
-            Ok(adaptive::ActiveRun::Ended) => break,
-            Ok(adaptive::ActiveRun::InvalidSample) => {
-                crate::player::log("abr: ignoring invalid segment timing sample");
-                continue;
-            }
-            Ok(adaptive::ActiveRun::Observed(cycle)) => cycle,
-            Err(adaptive::ActiveRunError::Physical(error)) => return Err(error),
-            Err(adaptive::ActiveRunError::Protocol(message)) => return Err(HlsExit::Failed(message)),
-        };
-        let (_, output, _, _) = physical.current.take()
-            .expect("an active round holds its physical media until after prefetch");
-        let (proposal, reserve_policy, sample, candidate_start) = match state.advance_round(
-            cycle, &mut HlsAutomaticPort { gate: AqPublicationPort(aq) }, || now_ms(),
-            || {
-                let commit_pause = crate::player::TX.pause_state_sample();
-                PauseFact {
-                    paused: commit_pause.paused,
-                    completed_ms: physical.pause_cursor.consume_completed(commit_pause)
-                        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)),
-                }
-            },
-            || SHARED.dg_abr_action.store(
-                crate::player::ABR_ACTION_RECOVER_ORIGINAL, Ordering::Relaxed,
-            ),
-            publish_hls_abr_action,
-            |diagnostic| match diagnostic {
-                adaptive::RoundDiagnostic::Line(line) => crate::player::log(&line),
-                adaptive::RoundDiagnostic::Steady(line) => {
-                    SHARED.dg_abr_action.store(
-                        crate::player::ABR_ACTION_STEADY, Ordering::Relaxed,
-                    );
-                    SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
-                    crate::player::log(&line);
-                }
-            },
-            &mut HlsOriginalProbeDiagnostics,
-        ) {
-            adaptive::RoundCourse::Stay => continue 'segments,
-            adaptive::RoundCourse::OriginalPublished => break,
-            adaptive::RoundCourse::Aborted => return Err(HlsExit::Aborted),
-            adaptive::RoundCourse::Candidate { proposal, reserve_policy, sample, start } =>
-                (proposal, reserve_policy, sample, start),
-        };
-        // The physical guard stays live through candidate queueing and AQ publication.
-        // Dropping it on any early return releases only this generation's actuator slot.
-        let mut _trial_reserve = candidate_start.trial_reserve;
-        let _automatic_lease = candidate_start.automatic_lease;
-        let automatic_token = candidate_start.token;
-        physical.reserve = candidate_start.exploration.map(|clock| {
-            crate::player::log(&format!(
-                "abr: exploration target={}kbps buf={}ms runway={}ms budget={}ms",
-                proposal.rung.kbps(), clock.buffered_ms, clock.runway_ms, clock.budget_ms,
-            ));
-            ReserveDeadlineState::from_playhead_at(
-                clock.started_ns,
-                std::time::Duration::from_millis(
-                    u64::try_from(clock.budget_ms).unwrap_or(u64::MAX),
-                ),
-                false,
-            )
-        });
-        // Records the whole transaction on every exit path, including the twelve rejects. Drop
-        // emits it; nothing below has to remember to.
-        let refreshing_same_request = proposal.rung == state.current();
-        let mut trial_protocol = state.begin_trial_protocol()
-            .ok_or(HlsExit::Failed("adaptive trial generation exhausted"))?;
-        let trial_id = trial_protocol.id();
-        let mut tx = adaptive::TxTrace::open(
-            proposal,
-            state.current(),
-            sample,
-            &state.delivery(),
-            || hls_buffer_snapshot(None).buffered_ms(),
-            crate::player::log,
-        );
-        publish_hls_abr_action(adaptive::ActionReadout::from_proposal(proposal, refreshing_same_request, None));
-        let offset_ns = SHARED
-            .disp_base
-            .load(Ordering::Relaxed)
-            .max(0)
-            .checked_add(physical.timeline.end_ns())
-            .ok_or(HlsExit::Failed("HLS candidate content offset overflow"))?;
-        let offset_micros = offset_ns / 1_000;
-        physical.trial = Some(trial_id);
-        physical.candidate_timeline = Some(*physical.timeline);
-        let mut runner = adaptive::TrialRunner::new(&mut physical, &mut trial_protocol);
-        let first = runner.run_first(
-            state, off, proposal, reserve_policy, offset_micros, || now_ms(),
-            |event, physical| match event {
-                adaptive::TrialTrace::Prime => tx.mark_prime(),
-                adaptive::TrialTrace::Master(declared_bps) => {
-                    assert!(physical.candidate.is_some(), "an opened trial owns its cursor");
-                    tx.mark_master(declared_bps);
-                }
-                adaptive::TrialTrace::ControlPlane => tx.mark_control_plane(),
-                adaptive::TrialTrace::WarmupDeadline(deadline) =>
-                    tx.mark_warmup_deadline(deadline),
-                adaptive::TrialTrace::FirstMedia => {
-                    let transfer = &physical.output.as_ref()
-                        .expect("acquired media has staged access units").transfer;
-                    tx.mark_media(transfer.bytes, transfer.total_us, false);
-                }
-                adaptive::TrialTrace::Decided => tx.mark_decided(),
-                adaptive::TrialTrace::Rejected { refreshing } =>
-                    publish_hls_abr_action(adaptive::ActionReadout::from_proposal(proposal, refreshing, Some(false))),
-                adaptive::TrialTrace::Finish(outcome) => tx.finish(outcome),
-                adaptive::TrialTrace::Log(line) => crate::player::log(&line),
-            },
-        );
-        let (primed, opened_declared_bps, first_acquisition, first_buffer) = match first {
-            adaptive::FirstPhase::Ready { primed, declared_bps, acquisition, buffer } =>
-                (primed, declared_bps, acquisition, buffer),
-            adaptive::FirstPhase::Stay => continue 'segments,
-            adaptive::FirstPhase::Aborted => return Err(HlsExit::Aborted),
-            adaptive::FirstPhase::Failed(message) => return Err(HlsExit::Failed(message)),
-        };
-
-        // The boundary object is still direct evidence whenever it satisfies `A<=D && B_post>=A`:
-        // commit it immediately. An `A>D` boundary contains one-time PMS/session/JIT setup and may
-        // need one ordinary object to identify repeatable cadence. Both objects remain STAGED:
-        // the original exploration clock must fund the whole observation without media credit.
-        // Publishing the setup object first and later rejecting the candidate mixed two encoder
-        // owners on one decoder timeline, forced cursor-by-count repair, and produced the observed
-        // raster/A-V excursion. A candidate now has exactly two outcomes: commit then feed every
-        // staged object, or discard all of them while the old cursor remains untouched.
-        let current_variant = adaptive::VariantFacts {
-            width: output.video_width, height: output.video_height,
-            declared_bps: runner.physical().cursor.declared_bps,
-        };
-        let staged = runner.grade_staged(
-            state, proposal, reserve_policy, current_variant, first_acquisition,
-            first_buffer, opened_declared_bps,
-            |remaining_ms| crate::player::log(&format!(
-                "abr: setup-bearing candidate retains one staged observation budget={}ms",
-                remaining_ms.unwrap_or(0),
-            )),
-            |physical, moment| match moment {
-                adaptive::TrialTraceMoment::FollowupMedia => {
-                    let transfer = &physical.output.as_ref()
-                        .expect("acquired repeatable media has staged access units").transfer;
-                    tx.mark_media(transfer.bytes, transfer.total_us, true);
-                }
-                adaptive::TrialTraceMoment::FinalEvidence => {
-                    let (output, _, duration) = physical.staged.last()
-                        .expect("a graded candidate has staged media");
-                    tx.mark_candidate_evidence(
-                        output.transfer.bytes, output.transfer.total_us, *duration,
-                    );
-                }
-            },
-        );
-        let judgment = runner.settle_staged(
-            state, &primed, proposal, staged, current_variant,
-            opened_declared_bps, || now_ms(),
-            |event, _| match event {
-                adaptive::TrialTrace::Decided => tx.mark_decided(),
-                adaptive::TrialTrace::Rejected { refreshing } =>
-                    publish_hls_abr_action(adaptive::ActionReadout::from_proposal(proposal, refreshing, Some(false))),
-                adaptive::TrialTrace::Finish(outcome) => tx.finish(outcome),
-                adaptive::TrialTrace::Log(line) => crate::player::log(&line),
-                _ => unreachable!("settling staged media cannot emit acquisition timing"),
-            },
-        );
-        let (final_acquisition, sample, candidate_variant) = match judgment {
-            adaptive::CandidateJudgment::Queue { final_acquisition, sample, variant } =>
-                (final_acquisition, sample, variant),
-            adaptive::CandidateJudgment::Stay => continue 'segments,
-            adaptive::CandidateJudgment::Aborted => return Err(HlsExit::Aborted),
-            adaptive::CandidateJudgment::Failed(message) => return Err(HlsExit::Failed(message)),
-        };
-        // Validation ends here. Freeze the decision timestamp before the feed loop, which can
-        // block on `aq_push` against a full queue; `feed=` records that backpressure separately.
-        // The route must remain old until every candidate AU which precedes the switch is safely
-        // queued. Otherwise teardown can abort a blocked feed after publication and leave a live
-        // route naming media the playback pipeline never received.
-        let mut fence_port = HlsCandidateFencePort;
-        // A queue ACK transfers only the local cursor/timeline. The common owner
-        // then enters the existing AQ abort gate for route/controller publication.
-        let queued = runner.queue_publish(
-            state, &mut fence_port, &mut AqPublicationPort(aq), automatic_token,
-            &primed, proposal, sample, candidate_variant, || now_ms(),
-            |physical| {
-                let candidate = physical.candidate.take()
-                    .expect("queued trial retains its candidate cursor");
-                *physical.timeline = physical.candidate_timeline.take()
-                    .expect("queued trial retains its staged timeline");
-                candidate
-            },
-            |event| match event {
-                adaptive::QueueTrace::Decided => tx.mark_decided(),
-                adaptive::QueueTrace::FeedCompleted(started) => tx.mark_feed(started),
-                adaptive::QueueTrace::Finish(outcome) => tx.finish(outcome),
-            },
-        );
-        let (previous, mut candidate, fence) = match queued {
-            adaptive::QueueAttempt::Published { previous, physical, fence } =>
-                (previous, physical, fence),
-            adaptive::QueueAttempt::Aborted => return Err(HlsExit::Aborted),
-            adaptive::QueueAttempt::Failed(message) => return Err(HlsExit::Failed(message)),
-            adaptive::QueueAttempt::FenceFailed(error) => return Err(error),
-        };
-        drop(runner);
-        // The committed candidate is already the first completed acquisition at the new
-        // operating point. Publish its exact replay boundary before the trial lifetime marker and
-        // explicit candidate-generation settlement. Leaving the old rung's value here would authorize
-        // a restart against evidence from an actuator that no longer owns the media stream. During
-        // an internal hold, settling the fence starts a fresh recovery epoch immediately before its
-        // release store; the next ordinary active segment, not this setup-bearing candidate object,
-        // certifies resume.
-        if let Some(runway_ms) = state.prime_runway_ms() {
-            SHARED
-                .hls_prime_runway_ms
-                .store(runway_ms, Ordering::Release);
+        match session.drive_round(off, &mut physical) {
+            plx_playback_contract::adaptive::AdaptiveProgress::Continue => continue,
+            plx_playback_contract::adaptive::AdaptiveProgress::Ended
+            | plx_playback_contract::adaptive::AdaptiveProgress::OriginalPublished => break,
+            plx_playback_contract::adaptive::AdaptiveProgress::Aborted =>
+                return Err(HlsExit::Aborted),
+            plx_playback_contract::adaptive::AdaptiveProgress::PhysicalFailure(error) =>
+                return Err(error.into()),
+            plx_playback_contract::adaptive::AdaptiveProgress::Failed(message) =>
+                return Err(HlsExit::Failed(message)),
         }
-        // Only now is `outcome=committed` an exact certificate: the staged media was fed and the
-        // controller has atomically moved the rung, reset the old bag and seeded the new one.
-        tx.finish("committed");
-        SHARED
-            .dg_abr_kbps
-            .store(i64::from(proposal.rung.kbps()), Ordering::Relaxed);
-        SHARED.dg_abr_declared_kbps.store(
-            i64::try_from(candidate.declared_bps / 1_000).unwrap_or(i64::MAX),
-            Ordering::Relaxed,
-        );
-        publish_hls_abr_action(adaptive::ActionReadout::from_proposal(proposal, refreshing_same_request, Some(true)));
-        crate::player::report::note_hls_committed_for(
-            state.trace_generation(),
-            proposal.direction,
-            proposal.rung,
-            refreshing_same_request,
-        );
-        // Promoted: from here this cursor IS the playback, so its playlist is the one that may
-        // speak for the film's duration.
-        candidate.publishes_duration = true;
-        *physical.prefetched = None;
-        *physical.cursor = candidate;
-        // Any terminal source-mode verdict was computed against the previous HLS operating point.
-        // Invalidate it explicitly: an Up keeps the completed source evidence for re-scoring on the
-        // next ordinary segment, while a safety Down retires evidence from the failed service
-        // regime and returns the source gate to a fresh bounded experiment. Non-terminal probe
-        // states remain unchanged, and no stale source switch stays actionable.
-        state.on_hls_commit(proposal.direction);
-        // All behavioral projections now name the candidate: controller, global route,
-        // worker-local encoder/cursor, runway and recovery policy. Release both main-thread gates
-        // before encoder cleanup, whose task-spawn fallback may perform synchronous network I/O.
-        fence_port.settle(fence);
-        drop(_trial_reserve.take());
-        state.retire(previous);
-        // **`out=` is what was DECODED; the pair before it is the rung's bounding box.** They are
-        // routinely different and the difference is the point: M3 (2026-08-28) measured PMS
-        // producing 1280x720 for BOTH `P720` and `P1080M6` against a 4K source, and 1918x802 for
-        // every rung from `P1080M6` up against a 1080p one. So a commit that crosses a catalog
-        // raster band is frequently invisible to a viewer, and `run.py`'s `raster_changes` — the
-        // plan's device co-grader — counted those catalog bands because this line printed nothing
-        // else. `abr.rs` states the rule this violated: *a rung's raster is a BOUNDING BOX, not a
-        // target*, and reading one as the other has already shipped as a device bug once.
-        //
-        // APPENDED rather than substituted: `RE_ABR_UP` and `RE_ABR_COMMIT` both parse the
-        // leading form, so replacing it in place would silently retire two graders. Old logs stay
-        // readable and `abr_raster_changes` prefers `out=` when it is there.
-        let observed = (final_acquisition.width, final_acquisition.height);
-        crate::player::log(&format!(
-            "abr: committed {:?} to {}kbps {}x{} out={}x{}",
-            proposal.direction,
-            proposal.rung.kbps(),
-            proposal.rung.raster().0,
-            proposal.rung.raster().1,
-            observed.0,
-            observed.1,
-        ));
     }
     Ok(())
 }
@@ -6328,20 +5906,21 @@ mod pre_audio_headroom_tests {
 
 /// The demux thread body (spawned by `engine::start_bufferfeed`).
 ///
-/// Takes an [`Origin`](plx_plex::plex::Origin) rather than a `(host, port)` pair because **the scheme
+/// Takes an [`Origin`](Origin) rather than a `(host, port)` pair because **the scheme
 /// decides the transport**: `http` reads through the Engine's `stream.rs` socket, `https` through
-/// [`crate::curlio`]. An origin is parsed from a URL and never rebuilt from an address, which is
+/// the injected range reader. An origin is parsed from a URL and never rebuilt from an address, which is
 /// what keeps the `plex.direct` hostname TLS validates against intact all the way down here
 /// (`net/origin.rs`). `hs` is still passed on both paths — it is the Engine's, and it stays
 /// unused (fd = -1, published as `SHARED.hs_ptr`) when the origin turns out to be https.
 pub(crate) fn demux(
     off: &plx_base::task::OffFrame,
-    origin: plx_plex::plex::Origin,
+    origin: Origin,
     path: String,
     acodec: String,
     force_original: bool,
-    abr: Option<crate::adaptive::Start>,
-    auto_original: Option<crate::adaptive::OriginalStart>,
+    transport: DemuxTransport,
+    abr: Option<Box<dyn plx_playback_contract::adaptive::AdaptiveSession>>,
+    auto_original: Option<Box<dyn plx_playback_contract::adaptive::OriginalSession>>,
     aq: SendPtr<AuQueue>,
     aqa: SendPtr<AuQueue>,
     hs: SendPtr<HttpStream>,
@@ -6377,7 +5956,7 @@ pub(crate) fn demux(
     {
         crate::player::log("hls: segmented demux start");
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            hls_demux(off, &origin, &path, &acodec, abr, aq_p, aqa_p, hs_p)
+            hls_demux(off, &origin, &path, &acodec, abr, aq_p, aqa_p, hs_p, transport)
         }));
         match outcome {
             Ok(Ok(())) | Ok(Err(HlsExit::Aborted)) => {}
@@ -6422,7 +6001,8 @@ pub(crate) fn demux(
         crate::player::log("hls: segmented demux ended");
         return;
     }
-    if let Some(watch) = auto_original.as_ref() {
+    let mut original_watch = auto_original;
+    if let Some(watch) = original_watch.as_ref() {
         // Auto deliberately begins by trying Original. Publish that state before the first
         // measurement window completes so Stats for Nerds says what the policy is doing instead
         // of looking inactive during the exact startup interval a user is trying to diagnose.
@@ -6441,16 +6021,11 @@ pub(crate) fn demux(
         SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
         SHARED.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
     }
-    let mut original_watch = auto_original.map(crate::adaptive::OriginalStart::start);
+    if let Some(watch) = original_watch.as_mut() { watch.begin_on_worker(); }
     // Same accepted-event cursor as HLS. Progressive reads and queue pushes can hide an entire
     // pause cycle, so a local `paused_since` sampled around packets is not a valid clock.
     let mut original_pause_cursor =
         crate::player::UserPauseCursor::new(crate::player::TX.pause_state_sample());
-    // **The Original watchdog's WALL clock** (N13). Its persistence rule used to count 750 ms
-    // windows of ACTIVE BODY-READ time, which under backpressure — the healthy full-buffer case —
-    // spans unbounded wall clock, so "six windows" was not a duration at all. One `Instant` for the
-    // whole progressive session, read absolutely, for the reason `advance_to` documents.
-    let mut original_since = std::time::Instant::now();
     // `base()` re-brackets a v6 host, which is what a URL needs; the plaintext arm hands the
     // `Origin` itself to `open_plain_progressive`, which dials its BARE `host()`.
     let url = format!("{}{}", origin.base(), path); // delivery identity; may carry a token, never logged
@@ -6491,7 +6066,7 @@ pub(crate) fn demux(
                 // source only after the check leaves a window where teardown's one wake sees nothing
                 // and the demuxer then opens a fresh connection under the main thread's join.
                 let mut curl_open = if origin.is_tls() {
-                    match crate::curlio::CurlSource::reserve_open() {
+                    match transport.range.reserve_open() {
                         Ok(r) => Some(r),
                         Err(e) => {
                             crate::player::log(&format!("ff: https reservation FAILED: {e:?}"));
@@ -6518,7 +6093,7 @@ pub(crate) fn demux(
                     let reservation = curl_open
                         .take()
                         .expect("TLS reserved its abort handle above");
-                    match crate::curlio::CurlSource::open_reserved(&url, 0, reservation) {
+                    match transport.range.open_reserved(&url, 0, reservation) {
                         Ok(cs) => {
                             let (st, size) = (cs.status(), cs.size());
                             SHARED.file_size.store(size, Ordering::Release);
@@ -6529,7 +6104,7 @@ pub(crate) fn demux(
                         Err(e) => {
                             // A status we could not stream is worth publishing; a transport failure has
                             // no status, and 0 is how the panel already spells "never answered".
-                            if let crate::curlio::OpenErr::Status(st) = e {
+                            if let range_io::OpenErr::Status(st) = e {
                                 SHARED.dg_http_status.store(st, Ordering::Relaxed);
                             }
                             crate::player::log(&format!("ff: https open FAILED: {e:?}"));
@@ -6539,7 +6114,7 @@ pub(crate) fn demux(
                     }
                 } else {
                     // Redirects followed; an https hop comes back as the curl source.
-                    match open_plain_progressive(hs_p, &origin, &path, aq_p) {
+                    match open_plain_progressive(hs_p, &origin, &path, aq_p, &transport) {
                         Ok(opened) => opened,
                         Err(MediaOpenFail::Aborted) => {
                             crate::player::log("ff: aborted during open");
@@ -6556,6 +6131,8 @@ pub(crate) fn demux(
 
                 let mut state = Box::new(AvioState {
                     src,
+                    range: Arc::clone(&transport.range),
+                    credential_gate: transport.credential_gate,
                     aq: aq_p,
                     off: 0,
                     size,
@@ -7094,10 +6671,6 @@ pub(crate) fn demux(
                             // because the viewer jumped, so the delivery estimate survives — while the
                             // buffer, the deficit history and the byte counters all describe a position
                             // that no longer exists.
-                            SHARED.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
-                            SHARED.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
-                            SHARED.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
-                            original_since = std::time::Instant::now();
                         } else {
                             // The route/engine moved, not merely the playhead. This worker cannot
                             // adopt that ownership; teardown will replace it.
@@ -7459,105 +7032,30 @@ pub(crate) fn demux(
                     if !SHARED.seeking.load(Ordering::Relaxed) {
                         if let Some(watch) = original_watch.as_mut() {
                             let pause_state = crate::player::TX.pause_state_sample();
-                            if let Some(elapsed) =
-                                original_pause_cursor.consume_completed(pause_state)
-                            {
-                                watch.on_resume(
-                                    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
-                                );
-                            }
-                            if !pause_state.paused {
+                            let completed_pause_ms = original_pause_cursor
+                                .consume_completed(pause_state)
+                                .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX));
+                            let (buffered_ms, remaining_ms) = if pause_state.paused {
+                                (None, None)
+                            } else {
                                 let audio_expected = ai >= 0 && FEED_AUDIO.load(Ordering::Relaxed);
-                                if let Some(observation) = watch.observe(
-                                    state.body_bytes,
-                                    state.body_active_us,
-                                    progressive_buffered_ms(audio_expected),
-                                    remaining_playback_ms(),
-                                    original_since.elapsed().as_millis() as u64,
-                                ) {
-                                    SHARED.dg_abr_net_kbps.store(
-                                        i64::from(observation.measured_kbps),
-                                        Ordering::Relaxed,
-                                    );
-                                    SHARED
-                                        .dg_abr_buffer_ms
-                                        .store(observation.buffered_ms, Ordering::Relaxed);
-                                    SHARED
-                                        .dg_abr_unsafe_deficit_ms
-                                        .store(observation.unsafe_deficit_ms, Ordering::Relaxed);
-                                    // The rest of the model, on ONE line each — `shared.rs`'s writer guard
-                                    // greps `dg_<field>.store(` and a rustfmt-split call reads to it as a
-                                    // field nothing writes.
-                                    //
-                                    // Without these, Original mode published a buffer LEVEL and left the
-                                    // slope and the horizon at their reset values, so the panel drew
-                                    // `+0.0 s/s · no deficit` — two sentinels, rendered as measurements,
-                                    // beside a level that was real. Device-observed 2026-08-26.
-                                    let rel = Ordering::Relaxed;
-                                    let horizon =
-                                        observation.horizon_secs.map(i64::from).unwrap_or(-1);
-                                    SHARED
-                                        .dg_abr_slope_ms_per_s
-                                        .store(observation.slope_ms_per_s, rel);
-                                    SHARED.dg_abr_starve_secs.store(horizon, rel);
-                                    SHARED
-                                        .dg_abr_safe_kbps
-                                        .store(i64::from(observation.conservative_kbps), rel);
-                                    if let Some(reason) = observation.fallback {
-                                        // The whole basis of a VISIBLE switch, in one line: the rate, the
-                                        // requirement it was measured against, the reserve, its direction,
-                                        // how many seconds that reserve survives, and which rule fired.
-                                        crate::player::log(&format!(
-                                            // **`held=` and NOT `windows=`.** The value is wall
-                                            // milliseconds now (N13); reusing the old label would make an
-                                            // old log's `windows=2` and a new log's `windows=2` two
-                                            // different quantities under one name — the exact shape the
-                                            // heartbeat's `FPS=`/`loop=` rename exists to prevent.
-                                            "auto: Original -> HLS {reason:?} measured={}kbps safe={}kbps need={}kbps buf={}ms slope={}ms/s starve={} held={}ms target={}kbps",
-                                            observation.measured_kbps,
-                                            observation.conservative_kbps,
-                                            observation.requirement_kbps,
-                                            observation.buffered_ms,
-                                            observation.slope_ms_per_s,
-                                            observation
-                                                .horizon_secs
-                                                .map(|s| s.to_string())
-                                                .unwrap_or_else(|| "none".to_string()),
-                                            observation.unsafe_deficit_ms,
-                                            observation.target.map(|r| r.kbps()).unwrap_or(0),
-                                        ));
-                                        // Hand over the CONSERVATIVE estimate, not the last window's raw
-                                        // rate. The synchronized ticket also binds it to this exact engine,
-                                        // route, media epoch and user contract; stale evidence is discarded
-                                        // without stopping the stream or manufacturing a playback error.
-                                        let publication =
-                                            original_watch.as_ref().map(|watch| {
-                                                watch.request_hls_fallback(
-                                                    observation.conservative_kbps.max(1),
-                                                    SHARED
-                                                        .playpos_ns
-                                                        .load(Ordering::Relaxed)
-                                                        .max(0),
-                                                )
-                                            });
-                                        match publication {
-                                            Some(crate::adaptive::OriginalFallbackResult::Published) => {
-                                                break;
-                                            }
-                                            Some(crate::adaptive::OriginalFallbackResult::Busy) => {
-                                                crate::player::log(
-                                                    "auto: Original fallback retained behind another route transition",
-                                                );
-                                            }
-                                            Some(crate::adaptive::OriginalFallbackResult::RouteMoved)
-                                            | None => {
-                                                crate::player::log(
-                                                    "auto: discarded Original fallback from a superseded worker intent",
-                                                );
-                                                original_watch = None;
-                                            }
-                                        }
-                                    }
+                                (progressive_buffered_ms(audio_expected), Some(remaining_playback_ms()))
+                            };
+                            let quantum = plx_playback_contract::adaptive::OriginalQuantum {
+                                bytes: state.body_bytes,
+                                active_us: state.body_active_us,
+                                buffered_ms,
+                                remaining_ms,
+                                paused: pause_state.paused,
+                                completed_pause_ms,
+                            };
+                            match watch.observe(quantum, || {
+                                SHARED.playpos_ns.load(Ordering::Relaxed).max(0)
+                            }) {
+                                plx_playback_contract::adaptive::OriginalProgress::Continue => {}
+                                plx_playback_contract::adaptive::OriginalProgress::Published => break,
+                                plx_playback_contract::adaptive::OriginalProgress::Retired => {
+                                    original_watch = None;
                                 }
                             }
                         }

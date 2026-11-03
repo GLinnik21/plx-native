@@ -100,6 +100,84 @@ pub enum TrialClock { Playhead, UnpausedElapsed }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AutomaticTransition { Original, QualityUp, QualityDown }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AdaptiveDirection { Up, Down }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ActionReadout {
+    pub direction: AdaptiveDirection,
+    pub target_kbps: u32,
+    pub refreshing: bool,
+    pub committed: Option<bool>,
+}
+
+/// Complete capacity estimate carried between media opens. The sink timestamps
+/// this snapshot at receipt, and `samples == 0` means no usable prior.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SeedReadout {
+    pub fast_kbps: u32,
+    pub slow_kbps: u32,
+    pub uncertainty_pm: u32,
+    pub samples: u32,
+}
+
+/// Published only after queued media and the AQ-guarded route/controller
+/// commit. All fields belong to the accepted generation, never a grant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommitReadout {
+    pub trace_generation: u32,
+    pub direction: AdaptiveDirection,
+    pub target_kbps: u32,
+    pub refreshing: bool,
+    pub declared_bps: u64,
+    pub observed_width: i32,
+    pub observed_height: i32,
+}
+
+trait LeaseGuard: Send {}
+impl<T: Send> LeaseGuard for T {}
+
+/// An addressed physical actuator guard. The backend owns the guard's
+/// implementation; dropping this move-only handle releases that exact lease.
+/// No process registry or concrete backend type crosses the contract.
+pub struct LeaseHandle {
+    token: u64,
+    _guard: Box<dyn LeaseGuard>,
+}
+
+impl LeaseHandle {
+    pub fn new<T: Send + 'static>(token: u64, guard: T) -> Self {
+        Self { token, _guard: Box::new(guard) }
+    }
+
+    pub const fn token(&self) -> u64 { self.token }
+}
+
+/// The physical implementation releases its publication fence only through
+/// this consuming settlement. Dropping the handle leaves the fence armed for
+/// teardown, including on a post-queue terminal error.
+pub trait FenceSettlement: Send {
+    fn settle(self: Box<Self>);
+}
+
+pub struct FenceHandle(Box<dyn FenceSettlement>);
+
+impl FenceHandle {
+    pub fn new<T: FenceSettlement + 'static>(fence: T) -> Self {
+        Self(Box::new(fence))
+    }
+
+    pub fn settle(self) { self.0.settle(); }
+}
+
+/// Effects emitted by the adaptive worker after a completed observation or an
+/// accepted publication. The session owns this sink; the feed supplies only
+/// physical media and queue observations.
+pub trait AdaptiveEffects: Send {
+    fn seed(&mut self, readout: SeedReadout);
+    fn committed(&mut self, readout: CommitReadout);
+}
+
 /// Physical automatic-actuator lease and the existing queue abort fence. The
 /// policy owner holds the lease across blocking work and enters `gate` only for
 /// the short route/controller publication closure.
@@ -121,13 +199,14 @@ pub trait TrialActuatorPort: AutomaticPort {
 }
 
 /// Physical facts available to one adaptive decision on the existing feed
-/// worker. Associated samplers keep the playhead read callable inside the AQ
-/// publication closure without borrowing the actuator port through its gate.
+/// worker. The playhead sampler remains callable inside the AQ publication
+/// closure without borrowing the actuator port through its gate.
 pub trait AdaptiveRoundPort: TrialActuatorPort {
-    fn position_ns() -> i64;
-    fn transition_permitted(kind: AutomaticTransition) -> bool;
-    fn rebuffer_state() -> (bool, bool);
-    fn buffer_snapshot() -> (Option<i64>, i64);
+    fn position_sampler(&self) -> fn() -> i64;
+    fn transition_permitted(&self, kind: AutomaticTransition) -> bool;
+    fn rebuffer_state(&self) -> (bool, bool);
+    fn buffer_snapshot(&self) -> (Option<i64>, i64);
+    fn pause_fact(&mut self) -> PauseFact;
 }
 
 /// Physical transfer and output geometry before a candidate policy verdict.
@@ -142,6 +221,25 @@ pub struct Acquisition {
     pub declared_bps: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TransferFact {
+    pub bytes: u64,
+    pub active_us: u64,
+    pub total_us: u64,
+    pub audio_expected: bool,
+}
+
+/// A physical feed exit, preserving the current active-acquisition terminal
+/// distinction without placing a transport or decoder type in policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PhysicalFailure {
+    Aborted,
+    NotReady,
+    PrimeExpired,
+    StallAbort(TransferFact),
+    Failed(&'static str),
+}
+
 /// Normalized content-time tails sampled by the physical feed. A missing audio
 /// tail remains absent even when audio is expected; it is not an empty buffer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -150,6 +248,19 @@ pub struct BufferFact {
     pub video_tail_ms: i64,
     pub audio_tail_ms: Option<i64>,
     pub audio_expected: bool,
+}
+
+impl BufferFact {
+    /// The playable tail is the shorter required lane. An expected but absent
+    /// audio tail is unknown, never a fabricated zero-length reserve.
+    pub fn buffered_ms(self) -> Option<i64> {
+        let tail = match (self.audio_expected, self.audio_tail_ms) {
+            (true, None) => return None,
+            (_, Some(audio)) => audio.min(self.video_tail_ms),
+            (false, None) => self.video_tail_ms,
+        };
+        Some(tail.saturating_sub(self.playback_ms).max(0))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -214,6 +325,92 @@ pub trait FeedPort {
     type Locator;
     fn bind_source(&mut self, source: SourceKey, locator: Self::Locator);
     fn step(&mut self, action: FeedAction) -> FeedObservation;
+}
+
+/// Physical candidate cursor and timeline remain in the feed port through the
+/// guarded route publication. The runner may stage the completed timeline only
+/// after all AUs are queued; promotion is available only after publication.
+pub trait CandidateMediaPort: FeedPort<Locator = String> {
+    fn candidate_declared_bps(&self) -> Option<u64>;
+    fn stage_queued_timeline(&mut self) -> bool;
+    fn promote_candidate(&mut self) -> bool;
+    fn publication_gate(&mut self) -> &mut dyn PublicationGate;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VariantFact {
+    pub width: i32,
+    pub height: i32,
+    pub declared_bps: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExplorationFact {
+    pub target_kbps: u32,
+    pub started_ns: i64,
+    pub buffered_ms: i64,
+    pub runway_ms: i64,
+    pub budget_ms: i64,
+}
+
+/// One worker's physical HLS state. The common session issues every policy
+/// action; the implementation retains cursor, network, AU and queue objects.
+pub trait AdaptivePhysicalPort:
+    ActiveFeedPort<Error = PhysicalFailure>
+    + AdaptiveRoundPort<Lease = LeaseHandle, TrialReserve = LeaseHandle>
+    + CandidateMediaPort
+    + CandidateFencePort<Fence = FenceHandle, Error = PhysicalFailure>
+{
+    fn begin_round(&mut self, round: RoundId);
+    fn finish_active(&mut self) -> Option<VariantFact>;
+    fn begin_trial(&mut self, trial: TrialId, exploration: Option<ExplorationFact>);
+    fn candidate_offset_micros(&self) -> Option<i64>;
+    fn buffer_sampler(&self) -> fn() -> Option<i64>;
+    fn remaining_playback_sampler(&self) -> fn() -> i64;
+    fn user_sequence_sampler(&self) -> fn() -> u64;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AdaptiveProgress {
+    Continue,
+    Ended,
+    OriginalPublished,
+    Aborted,
+    PhysicalFailure(PhysicalFailure),
+    Failed(&'static str),
+}
+
+/// The route/controller owner moves into the existing feed worker. Every
+/// round is driven synchronously on that worker through one addressed port.
+pub trait AdaptiveSession: Send {
+    fn drive_round(
+        &mut self, off: &plx_base::task::OffFrame,
+        physical: &mut dyn AdaptivePhysicalPort,
+    ) -> AdaptiveProgress;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OriginalQuantum {
+    pub bytes: u64,
+    pub active_us: u64,
+    pub buffered_ms: Option<i64>,
+    pub remaining_ms: Option<i64>,
+    pub paused: bool,
+    pub completed_pause_ms: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OriginalProgress { Continue, Published, Retired }
+
+/// Progressive Original's watchdog and route ticket. The physical feed only
+/// reports completed byte and buffer facts, plus the late playhead sampler
+/// used at the route publication boundary.
+pub trait OriginalSession: Send {
+    fn source_kbps(&self) -> u32;
+    fn begin_on_worker(&mut self);
+    fn seek(&mut self, bytes: u64, active_us: u64) -> bool;
+    fn observe(&mut self, quantum: OriginalQuantum, position_ns: fn() -> i64)
+        -> OriginalProgress;
 }
 
 /// The feed worker's physical clock fence. It is armed before candidate AUs

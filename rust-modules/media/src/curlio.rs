@@ -19,6 +19,15 @@ impl plx_net::range_io::UrlAuthorizer for PlexAuthorization {
 
 pub type CurlSource = plx_net::range_io::CurlSource<PlexAuthorization>;
 
+/// A per-job factory. The policy itself is read at each request by `PlexAuthorization`, so
+/// capturing this value cannot freeze or bypass a later credential revocation.
+pub fn range_factory() -> std::sync::Arc<dyn plx_net::range_io::RangeFactory> {
+    std::sync::Arc::new(plx_net::range_io::AuthorizingRangeFactory::<PlexAuthorization>::new())
+}
+
+pub const CREDENTIAL_GATE: plx_net::stream::redirect::CredentialGate =
+    plx_plex::http::credential_transport_allowed;
+
 pub fn sample_throughput_result(
     url: &str, target_bytes: usize, setup_budget: std::time::Duration,
     body_budget: std::time::Duration,

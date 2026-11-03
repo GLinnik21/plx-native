@@ -1524,6 +1524,10 @@ pub(super) fn launch_native_open(
             // switch_audio_native), which respawns this thread with the new value.
             let acodec = std::mem::take(&mut open.audio_codec);
             let force_original = open.payload.force_direct_play;
+            let demux_transport = crate::ff::DemuxTransport::new(
+                crate::curlio::range_factory(),
+                crate::curlio::CREDENTIAL_GATE,
+            );
             let abr = open.hls_abr.take();
             let auto_original = open.auto_original.take();
             // Before the demuxer exists, so what it publishes is this session's.
@@ -1531,7 +1535,7 @@ pub(super) fn launch_native_open(
             // A clock-only reader (a sidecar) reads no subtitle: the demuxer keeps what it enumerates.
             SHARED.side_subs_owner.store(side_target.as_ref().is_some_and(|t| !t.clock_only()), Ordering::Release);
             stream_th = plx_base::task::spawn_off_frame_keeping("demux", move |off| {
-                crate::ff::demux(off, origin, path, acodec, force_original, abr.map(Into::into), auto_original.map(Into::into), aqp, aqap, hsp)
+                crate::ff::demux(off, origin, path, acodec, force_original, demux_transport, abr.map(Into::into), auto_original.map(Into::into), aqp, aqap, hsp)
             });
             if stream_th.is_none() {
                 SHARED.side_subs_owner.store(false, Ordering::Release);

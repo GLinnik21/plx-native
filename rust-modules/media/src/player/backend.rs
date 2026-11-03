@@ -1,19 +1,54 @@
 //! One backend-neutral state runner for all physical playback drivers. The app composition owns
 //! concrete source escrow and persistent drivers; this runner keeps only pure attempt state.
-use plx_playback_contract::{BackendState, DriverSet, Event, ExitDisposition, Fx, Intent, Snapshot};
+#[path = "backend_startup.rs"]
+mod startup;
 
-pub struct BackendRunner { state: BackendState }
+use plx_playback_contract::{BackendState, DriverSet, Event, ExitDisposition, Failure, Fx,
+    Intent, Operation, Phase, Snapshot};
+use startup::Startup;
+
+pub struct BackendRunner { state: BackendState, startup: Startup }
 
 impl BackendRunner {
-    pub fn new() -> Self { Self { state: BackendState::new() } }
+    pub fn new() -> Self { Self { state: BackendState::new(), startup: Startup::new() } }
 
     pub fn snapshot(&self) -> &Snapshot { self.state.snapshot() }
 
     /// Apply one route/player intent and its synchronous queue answer. Rejected Starts dispose
     /// only the exact staged source key, even while another backend owns the active attempt.
     pub fn send<C>(&mut self, drivers: &mut dyn DriverSet<Context = C>, ctx: &C, intent: Intent) -> Vec<Fx> {
+        match intent {
+            Intent::Start { backend, attempt, requirements, initial, .. }
+                if self.state.snapshot().phase == Phase::Vacant => {
+                self.startup.begin(backend, attempt, requirements, initial);
+            }
+            Intent::Control { backend, attempt, operation }
+                if self.startup.intercept_control(backend, attempt, operation) => {
+                return if self.startup.is_halted(backend, attempt) {
+                    vec![Fx::Rejected { backend, attempt, failure: Failure::Refused }]
+                } else if matches!(operation, Operation::Play | Operation::Pause) {
+                    self.advance(drivers, ctx)
+                } else {
+                    vec![Fx::Rejected { backend, attempt, failure: Failure::Busy }]
+                };
+            }
+            Intent::Control { backend, attempt, operation: Operation::Play }
+                if !self.startup.foreground() => {
+                return vec![Fx::Rejected { backend, attempt, failure: Failure::Busy }];
+            }
+            Intent::Stop { backend, attempt, .. } => self.startup.abort(backend, attempt),
+            _ => {}
+        }
         let capabilities = drivers.capabilities(intent.backend());
         self.feed(drivers, ctx, Event::Intent(intent), capabilities)
+    }
+
+    /// Startup never plays in the background. Foreground restoration resumes only an unpaused
+    /// startup goal whose exact track and seek confirmations have already arrived.
+    pub fn set_foreground<C>(&mut self, drivers: &mut dyn DriverSet<Context = C>,
+        ctx: &C, foreground: bool) -> Vec<Fx> {
+        self.startup.set_foreground(foreground);
+        self.advance(drivers, ctx)
     }
 
     /// Accepted observations, seek landings and release verdicts remain in driver poll order,
@@ -41,6 +76,7 @@ impl BackendRunner {
         for effect in effects {
             match effect {
                 Fx::Dispatch { backend, attempt, command, operation } => {
+                    self.startup.on_dispatch(backend, attempt, command, operation);
                     let result = drivers.dispatch(backend, ctx, attempt, command, operation);
                     notices.extend(self.feed(drivers, ctx, Event::CommandAnswer {
                         backend, attempt, command, result,
@@ -50,11 +86,23 @@ impl BackendRunner {
                     drivers.discard_staged(backend, attempt, key);
                 }
                 notice @ (Fx::Rejected { .. } | Fx::CommandRefused { .. }
-                    | Fx::AcceptedObservation { .. } | Fx::AcceptedSeekLanded { .. }
-                    | Fx::ReleaseOutcome { .. }) => notices.push(notice),
+                    | Fx::AcceptedObservation { .. } | Fx::AcceptedTrackSettled { .. }
+                    | Fx::AcceptedSeekLanded { .. } | Fx::ReleaseOutcome { .. }) => {
+                    self.startup.on_notice(&notice);
+                    notices.push(notice);
+                }
             }
         }
+        notices.extend(self.advance(drivers, ctx));
         notices
+    }
+
+    fn advance<C>(&mut self, drivers: &mut dyn DriverSet<Context = C>, ctx: &C) -> Vec<Fx> {
+        let Some((backend, attempt, operation)) = self.startup.next() else { return Vec::new() };
+        let capabilities = drivers.capabilities(backend);
+        self.feed(drivers, ctx, Event::Intent(Intent::Control {
+            backend, attempt, operation,
+        }), capabilities)
     }
 }
 impl Default for BackendRunner { fn default() -> Self { Self::new() } }
@@ -63,7 +111,7 @@ impl Default for BackendRunner { fn default() -> Self { Self::new() } }
 mod tests {
     use super::*;
     use plx_playback_contract::{AttemptId, BackendEvent, BackendKind, Capabilities, CommandId,
-        ContentTime, DispatchResult, DriverEvent, EvidenceSource, Failure, Fidelity,
+        ContentTime, DispatchResult, DriverEvent, EvidenceSource, Failure, Fidelity, InitialPlayback,
         Observation, Observed, Operation, Playback, ReleaseStatus, Requirements, SourceKey,
         SourceKind, StopReason, TrackChoice};
 
@@ -77,11 +125,13 @@ mod tests {
         source: SourceKind::ProgressiveUri, video: Fidelity::Exact, audio: Fidelity::Exact,
         audio_track: TrackChoice::Unspecified, subtitle_track: TrackChoice::Unspecified,
     };
+    const INITIAL: InitialPlayback = InitialPlayback { position: None, paused: false };
     const A: AttemptId = AttemptId::new(1, 1);
 
     struct FakeSet {
         uri: bool,
         feed: bool,
+        caps: Capabilities,
         sent: Vec<(BackendKind, AttemptId, CommandId, Operation)>,
         events: Vec<BackendEvent>,
         discarded: Vec<(BackendKind, AttemptId, SourceKey)>,
@@ -90,7 +140,7 @@ mod tests {
     }
     impl FakeSet {
         fn new() -> Self {
-            Self { uri: true, feed: true, sent: Vec::new(), events: Vec::new(),
+            Self { uri: true, feed: true, caps: CAPS, sent: Vec::new(), events: Vec::new(),
                 discarded: Vec::new(), refuse_start: false, exit: ExitDisposition::Clean }
         }
     }
@@ -98,7 +148,7 @@ mod tests {
         type Context = ();
         fn capabilities(&self, backend: BackendKind) -> Option<Capabilities> {
             match backend {
-                URI if self.uri => Some(CAPS), FEED if self.feed => Some(CAPS), _ => None,
+                URI if self.uri => Some(self.caps), FEED if self.feed => Some(self.caps), _ => None,
             }
         }
         fn dispatch(&mut self, backend: BackendKind, _ctx: &(), attempt: AttemptId,
@@ -116,7 +166,8 @@ mod tests {
     }
     fn start(runner: &mut BackendRunner, drivers: &mut FakeSet, backend: BackendKind,
         attempt: AttemptId, source: SourceKey) -> Vec<Fx> {
-        runner.send(drivers, &(), Intent::Start { backend, attempt, source, requirements: REQ })
+        runner.send(drivers, &(), Intent::Start { backend, attempt, source,
+            requirements: REQ, initial: INITIAL })
     }
 
     #[test]
@@ -224,7 +275,7 @@ mod tests {
         let set: &mut dyn DriverSet<Context = Token> = &mut drivers;
         let mut runner = BackendRunner::new();
         assert!(runner.send(&mut *set, &first, Intent::Start { backend: URI, attempt: A,
-            source: SourceKey::new(3), requirements: REQ }).is_empty());
+            source: SourceKey::new(3), requirements: REQ, initial: INITIAL }).is_empty());
         assert!(runner.snapshot().last_queued.is_some());
         assert!(runner.poll(&mut *set, &second).is_empty());
         assert_eq!(drivers.seen, [std::ptr::from_ref(&first) as usize,
@@ -241,5 +292,98 @@ mod tests {
         assert!(effects.is_empty());
         assert!(matches!(drivers.sent.last().unwrap().3, Operation::Stop(StopReason::Exit)));
         assert_eq!(runner.exit_disposition(&drivers), ExitDisposition::PreserveNativeOwnership);
+    }
+
+    #[test]
+    fn startup_waits_for_correlated_track_and_seek_completion_before_play() {
+        let mut runner = BackendRunner::new();
+        let mut drivers = FakeSet::new();
+        drivers.caps.subtitle_off = true;
+        let requirements = Requirements { audio_track: TrackChoice::Selected(3),
+            subtitle_track: TrackChoice::Off, ..REQ };
+        let initial = InitialPlayback { position: Some(ContentTime::from_millis(9_000)), paused: false };
+        runner.send(&mut drivers, &(), Intent::Start { backend: URI, attempt: A,
+            source: SourceKey::new(8), requirements, initial });
+        assert_eq!(drivers.sent.len(), 1);
+        drivers.events.push(BackendEvent { backend: URI, event: DriverEvent::Observation {
+            attempt: A, observation: Observation::Playback(Observed { value: Playback::ReadyAwaitPlay,
+                from: EvidenceSource::BackendReport }) } });
+        runner.poll(&mut drivers, &());
+        let audio_command = drivers.sent.last().unwrap().2;
+        let start_command = drivers.sent[0].2;
+        assert_eq!(drivers.sent.last().unwrap().3, Operation::SelectTrack {
+            kind: plx_playback_contract::TrackKind::Audio, choice: TrackChoice::Selected(3) });
+        drivers.events.extend([
+            BackendEvent { backend: URI, event: DriverEvent::Observation { attempt: A,
+                observation: Observation::TrackSelected(Observed { value:
+                    plx_playback_contract::TrackSelection { kind: plx_playback_contract::TrackKind::Audio, id: 3 },
+                    from: EvidenceSource::BackendReport }) } },
+            BackendEvent { backend: URI, event: DriverEvent::TrackSettled { attempt: A,
+                command: start_command, kind: plx_playback_contract::TrackKind::Audio,
+                choice: TrackChoice::Selected(3) } },
+        ]);
+        runner.poll(&mut drivers, &());
+        assert_eq!(drivers.sent.len(), 2, "track fact and stale command cannot advance startup");
+        drivers.events.push(BackendEvent { backend: FEED, event: DriverEvent::TrackSettled {
+            attempt: A, command: audio_command, kind: plx_playback_contract::TrackKind::Audio,
+            choice: TrackChoice::Selected(3) } });
+        runner.poll(&mut drivers, &());
+        assert_eq!(drivers.sent.len(), 2, "wrong physical backend cannot settle the command");
+        drivers.events.push(BackendEvent { backend: URI, event: DriverEvent::TrackSettled {
+            attempt: A, command: audio_command, kind: plx_playback_contract::TrackKind::Audio,
+            choice: TrackChoice::Selected(3) } });
+        runner.poll(&mut drivers, &());
+        let subtitle_command = drivers.sent.last().unwrap().2;
+        assert_eq!(drivers.sent.last().unwrap().3, Operation::SelectTrack {
+            kind: plx_playback_contract::TrackKind::Subtitle, choice: TrackChoice::Off });
+        drivers.events.push(BackendEvent { backend: URI, event: DriverEvent::Observation {
+            attempt: A, observation: Observation::TrackOff(Observed {
+                value: plx_playback_contract::TrackKind::Subtitle,
+                from: EvidenceSource::BackendReport }) } });
+        runner.poll(&mut drivers, &());
+        assert_eq!(drivers.sent.len(), 3, "track-off observation alone lacks command completion");
+        drivers.events.push(BackendEvent { backend: URI, event: DriverEvent::TrackSettled {
+            attempt: A, command: subtitle_command, kind: plx_playback_contract::TrackKind::Subtitle,
+            choice: TrackChoice::Off } });
+        runner.poll(&mut drivers, &());
+        let seek_command = drivers.sent.last().unwrap().2;
+        assert_eq!(drivers.sent.last().unwrap().3, Operation::Seek(ContentTime::from_millis(9_000)));
+        drivers.events.extend([
+            BackendEvent { backend: URI, event: DriverEvent::Observation { attempt: A,
+                observation: Observation::Position(Observed { value: ContentTime::from_millis(9_000),
+                    from: EvidenceSource::BackendReport }) } },
+            BackendEvent { backend: URI, event: DriverEvent::SeekLanded { attempt: A,
+                command: subtitle_command, position: None } },
+        ]);
+        runner.poll(&mut drivers, &());
+        assert_eq!(drivers.sent.len(), 4, "clock and stale seek do not start playback");
+        drivers.events.push(BackendEvent { backend: URI, event: DriverEvent::SeekLanded {
+            attempt: A, command: seek_command, position: None } });
+        runner.poll(&mut drivers, &());
+        assert_eq!(drivers.sent.last().unwrap().3, Operation::Play);
+        assert_eq!(drivers.sent.len(), 5);
+        assert!(!runner.snapshot().presented, "Play dispatch is not a presented picture");
+    }
+
+    #[test]
+    fn paused_and_background_startup_hold_play_until_caller_allows_it() {
+        let mut runner = BackendRunner::new();
+        let mut drivers = FakeSet::new();
+        runner.set_foreground(&mut drivers, &(), false);
+        runner.send(&mut drivers, &(), Intent::Start { backend: URI, attempt: A,
+            source: SourceKey::new(1), requirements: REQ, initial: INITIAL });
+        runner.send(&mut drivers, &(), Intent::Control { backend: URI, attempt: A,
+            operation: Operation::Pause });
+        drivers.events.push(BackendEvent { backend: URI, event: DriverEvent::Observation {
+            attempt: A, observation: Observation::Playback(Observed { value: Playback::ReadyAwaitPlay,
+                from: EvidenceSource::BackendReport }) } });
+        runner.poll(&mut drivers, &());
+        assert_eq!(drivers.sent.len(), 1);
+        runner.set_foreground(&mut drivers, &(), true);
+        assert_eq!(drivers.sent.len(), 1, "paused initial intent survives foreground restoration");
+        runner.send(&mut drivers, &(), Intent::Control { backend: URI, attempt: A,
+            operation: Operation::Play });
+        assert_eq!(drivers.sent.last().unwrap().3, Operation::Play);
+        assert_eq!(drivers.sent.len(), 2);
     }
 }

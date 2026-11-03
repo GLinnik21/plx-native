@@ -9,6 +9,7 @@ mod time;
 pub use time::MediaTimeMs;
 pub mod adaptive;
 pub mod subtitle;
+pub mod tracks;
 pub use state::{BackendState, Event, Fx, Intent, Phase, Snapshot, TrackFact};
 
 /// The selected physical executor. An attempt and every result carry this identity separately;
@@ -168,6 +169,9 @@ pub enum ExitDisposition { Clean, PreserveNativeOwnership }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DriverEvent {
     Observation { attempt: AttemptId, observation: Observation },
+    /// Completion of the exact queued track command, after native confirmation. A plain
+    /// TrackSelected observation remains useful evidence but cannot settle startup policy.
+    TrackSettled { attempt: AttemptId, command: CommandId, kind: TrackKind, choice: TrackChoice },
     /// Emitted only after the driver correlates completion to this exact Seek request.
     SeekLanded { attempt: AttemptId, command: CommandId, position: Option<Observed<ContentTime>> },
     Release { attempt: AttemptId, status: ReleaseStatus },
@@ -180,6 +184,8 @@ impl From<BackendEvent> for Event {
         let backend = value.backend;
         match value.event {
             DriverEvent::Observation { attempt, observation } => Event::Observation { backend, attempt, observation },
+            DriverEvent::TrackSettled { attempt, command, kind, choice } =>
+                Event::TrackSettled { backend, attempt, command, kind, choice },
             DriverEvent::SeekLanded { attempt, command, position } => Event::SeekLanded { backend, attempt, command, position },
             DriverEvent::Release { attempt, status } => Event::Release { backend, attempt, status },
         }

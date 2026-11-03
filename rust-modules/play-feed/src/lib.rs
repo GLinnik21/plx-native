@@ -6,6 +6,9 @@ pub mod hls;
 pub mod native_gate;
 pub mod native_load;
 pub mod pcm_lead;
+pub mod vp9_hdr;
+mod send_ptr;
+pub use send_ptr::SendPtr;
 
 // BUFFERSTREAM Load payloads (ss4s shape). Video-only for the local sample path;
 // video+AC3 for streaming. Copied VERBATIM from playback.c.

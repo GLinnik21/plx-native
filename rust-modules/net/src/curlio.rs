@@ -601,6 +601,59 @@ pub trait UrlAuthorizer {
     fn allows(url: &str) -> bool;
 }
 
+/// The demuxer's owned HTTPS source. Object safety keeps a caller's authorization policy out
+/// of the lower feed worker while retaining this transport's read, seek and abort semantics.
+pub trait RangeReader {
+    fn body_receipt(&mut self) -> crate::stream::BodyReceipt;
+    fn body_complete(&self) -> bool;
+    fn drain_available(&mut self, dst: &mut [u8]) -> c_int;
+    fn read_until(&mut self, dst: &mut [u8], deadline: Option<std::time::Instant>,
+        checkpoint: &mut dyn Checkpoint) -> c_int;
+    fn seek(&mut self, to: i64) -> bool;
+    fn reopen_until(&mut self, url: &str, deadline: Option<std::time::Instant>,
+        checkpoint: &mut dyn Checkpoint) -> Result<(), OpenErr>;
+    fn size(&self) -> i64;
+    fn status(&self) -> c_int;
+    fn body_failure(&self) -> Option<BodyFailure>;
+    fn abort(&self);
+}
+
+/// Creates one reader while preserving `CurlSource`'s reservation-before-connect order. The
+/// policy implementation remains in the caller; every open, reopen, seek and redirect hop still
+/// asks `UrlAuthorizer` inside the existing curl source.
+pub trait RangeFactory: Send + Sync {
+    fn reserve_open(&self) -> Result<OpenReservation, OpenErr>;
+    fn open_reserved(&self, url: &str, at: i64, reservation: OpenReservation)
+        -> Result<Box<dyn RangeReader>, OpenErr>;
+    fn open_reserved_checked(&self, url: &str, at: i64, reservation: OpenReservation,
+        deadline: Option<std::time::Instant>, checkpoint: &mut dyn Checkpoint)
+        -> Result<Box<dyn RangeReader>, OpenErr>;
+}
+
+/// Zero-sized factory chosen by the owner of the credential policy, then moved with a demux job.
+pub struct AuthorizingRangeFactory<A: UrlAuthorizer>(std::marker::PhantomData<A>);
+impl<A: UrlAuthorizer> AuthorizingRangeFactory<A> {
+    pub const fn new() -> Self { Self(std::marker::PhantomData) }
+}
+impl<A: UrlAuthorizer> Default for AuthorizingRangeFactory<A> {
+    fn default() -> Self { Self::new() }
+}
+impl<A: UrlAuthorizer + Send + Sync + 'static> RangeFactory for AuthorizingRangeFactory<A> {
+    fn reserve_open(&self) -> Result<OpenReservation, OpenErr> {
+        CurlSource::<A>::reserve_open()
+    }
+    fn open_reserved(&self, url: &str, at: i64, reservation: OpenReservation)
+        -> Result<Box<dyn RangeReader>, OpenErr> {
+        CurlSource::<A>::open_reserved(url, at, reservation).map(|reader| reader as Box<dyn RangeReader>)
+    }
+    fn open_reserved_checked(&self, url: &str, at: i64, reservation: OpenReservation,
+        deadline: Option<std::time::Instant>, checkpoint: &mut dyn Checkpoint)
+        -> Result<Box<dyn RangeReader>, OpenErr> {
+        CurlSource::<A>::open_reserved_checked(url, at, reservation, deadline, checkpoint)
+            .map(|reader| reader as Box<dyn RangeReader>)
+    }
+}
+
 /// One remote file, pulled over http(s) by byte range.
 ///
 /// Lives on the demux thread for its whole life — created there, read there, dropped there. Only
@@ -2119,6 +2172,25 @@ fn log_target(target: Option<&Target>) -> String {
         Some(t) => format!("{}{}", t.origin.log_form(), log_endpoint(&t.path)),
         None => "an origin this client cannot read".to_owned(),
     }
+}
+
+impl<A: UrlAuthorizer> RangeReader for CurlSource<A> {
+    fn body_receipt(&mut self) -> crate::stream::BodyReceipt { CurlSource::<A>::body_receipt(self) }
+    fn body_complete(&self) -> bool { CurlSource::<A>::body_complete(self) }
+    fn drain_available(&mut self, dst: &mut [u8]) -> c_int { CurlSource::<A>::drain_available(self, dst) }
+    fn read_until(&mut self, dst: &mut [u8], deadline: Option<std::time::Instant>,
+        checkpoint: &mut dyn Checkpoint) -> c_int {
+        CurlSource::<A>::read_until(self, dst, deadline, checkpoint)
+    }
+    fn seek(&mut self, to: i64) -> bool { CurlSource::<A>::seek(self, to) }
+    fn reopen_until(&mut self, url: &str, deadline: Option<std::time::Instant>,
+        checkpoint: &mut dyn Checkpoint) -> Result<(), OpenErr> {
+        CurlSource::<A>::reopen_until(self, url, deadline, checkpoint)
+    }
+    fn size(&self) -> i64 { CurlSource::<A>::size(self) }
+    fn status(&self) -> c_int { CurlSource::<A>::status(self) }
+    fn body_failure(&self) -> Option<BodyFailure> { CurlSource::<A>::body_failure(self) }
+    fn abort(&self) { CurlSource::<A>::abort(self) }
 }
 
 impl<A: UrlAuthorizer> Drop for CurlSource<A> {
