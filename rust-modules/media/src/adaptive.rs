@@ -4,7 +4,10 @@
 
 use crate::{abr, route};
 use plx_playback_contract::adaptive::PublicationGate;
-use plx_playback_contract::adaptive::{Acquisition, FeedAction, FeedFailure, FeedObservation, FeedPort, TrialClock, TrialId};
+use plx_playback_contract::adaptive::{
+    Acquisition, FeedAction, FeedFailure, FeedObservation, FeedPort, TrialClock, TrialId,
+    TrialObservation, TrialPhase, TrialProtocol, TrialProtocolError,
+};
 use plx_playback_contract::SourceKey;
 
 /// The route owner's captured inputs at a worker start. No second route identity is
@@ -148,36 +151,67 @@ pub(crate) fn classify_prime_failure(
     }
 }
 
-/// The runner binds the primed locator only in the feed's private source slot.
-/// Adaptive policy and the lower action carry its opaque worker-local key.
-pub(crate) fn open_candidate(
-    port: &mut impl FeedPort<Locator = String>, trial: TrialId, locator: String,
-) -> FeedObservation {
-    let source = SourceKey::new(trial.serial);
-    port.bind_source(source, locator);
-    port.step(FeedAction::Open { trial, source })
+/// One worker-local trial runner. It owns phase and address validation while the
+/// feed holds the opaque cursor, timeline, and staged access units in its port.
+pub(crate) struct TrialRunner<'a, P: FeedPort> {
+    port: &'a mut P,
+    protocol: &'a mut TrialProtocol,
 }
 
-pub(crate) fn next_candidate_segment(
-    port: &mut impl FeedPort, trial: TrialId,
-) -> FeedObservation {
-    port.step(FeedAction::ReadNext { trial })
-}
+impl<'a, P: FeedPort> TrialRunner<'a, P> {
+    pub(crate) fn new(port: &'a mut P, protocol: &'a mut TrialProtocol) -> Self {
+        Self { port, protocol }
+    }
 
-pub(crate) fn acquire_first_candidate(
-    port: &mut impl FeedPort, trial: TrialId, budget: CandidateBudget, started_ns: i64,
-) -> FeedObservation {
-    port.step(FeedAction::AcquireFirst {
-        trial, media_budget: budget.media_deadline,
-        yields_to_rebuffer: budget.yields_to_rebuffer,
-        started_ns, clock: budget.clock,
-    })
-}
+    pub(crate) fn physical(&mut self) -> &mut P { &mut *self.port }
 
-pub(crate) fn acquire_followup_candidate(
-    port: &mut impl FeedPort, trial: TrialId,
-) -> FeedObservation {
-    port.step(FeedAction::AcquireFollowup { trial })
+    pub(crate) fn observe(
+        &mut self, observation: TrialObservation,
+    ) -> Result<TrialPhase, TrialProtocolError> {
+        let trial = self.protocol.id();
+        self.protocol.observe(trial, observation)
+    }
+
+    fn step(&mut self, action: FeedAction) -> FeedObservation {
+        let observed = self.port.step(action);
+        if observed.trial() == self.protocol.id() {
+            observed
+        } else {
+            FeedObservation::Failed {
+                trial: self.protocol.id(), failure: FeedFailure::Protocol,
+            }
+        }
+    }
+
+    /// Bind the primed locator only in the physical source slot. The action
+    /// itself carries an opaque key, never a URL or authentication material.
+    pub(crate) fn open(&mut self, locator: P::Locator) -> FeedObservation {
+        let trial = self.protocol.id();
+        let source = SourceKey::new(trial.serial);
+        self.port.bind_source(source, locator);
+        self.step(FeedAction::Open { trial, source })
+    }
+
+    pub(crate) fn read_next(&mut self) -> FeedObservation {
+        let trial = self.protocol.id();
+        self.step(FeedAction::ReadNext { trial })
+    }
+
+    pub(crate) fn acquire_first(
+        &mut self, budget: CandidateBudget, started_ns: i64,
+    ) -> FeedObservation {
+        let trial = self.protocol.id();
+        self.step(FeedAction::AcquireFirst {
+            trial, media_budget: budget.media_deadline,
+            yields_to_rebuffer: budget.yields_to_rebuffer,
+            started_ns, clock: budget.clock,
+        })
+    }
+
+    pub(crate) fn acquire_followup(&mut self) -> FeedObservation {
+        let trial = self.protocol.id();
+        self.step(FeedAction::AcquireFollowup { trial })
+    }
 }
 
 /// Project physical acquisition onto the controller's whole-millisecond reserve lattice.
@@ -982,5 +1016,38 @@ pub(crate) fn hls_upshift_strictly_improves(
     };
     abr::ObservedHlsVariant::new(candidate_declared_bps, candidate_width, candidate_height)
         .is_some_and(|candidate| candidate.strictly_dominates(current))
+}
+
+#[cfg(test)]
+mod trial_runner_tests {
+    use super::*;
+    use plx_playback_contract::AttemptId;
+
+    struct LateReplyPort { response: FeedObservation }
+
+    impl FeedPort for LateReplyPort {
+        type Locator = ();
+
+        fn bind_source(&mut self, _source: SourceKey, _locator: ()) {}
+
+        fn step(&mut self, _action: FeedAction) -> FeedObservation { self.response }
+    }
+
+    #[test]
+    fn late_open_reply_cannot_advance_a_new_trial() {
+        let current = TrialId::new(AttemptId::new(3, 8), 12);
+        let previous = TrialId::new(AttemptId::new(3, 7), 12);
+        let mut protocol = TrialProtocol::new(current);
+        protocol.observe(current, TrialObservation::Prepared).unwrap();
+        let mut port = LateReplyPort {
+            response: FeedObservation::Opened { trial: previous, declared_bps: 2_000_000 },
+        };
+        let mut runner = TrialRunner::new(&mut port, &mut protocol);
+        assert_eq!(runner.open(()), FeedObservation::Failed {
+            trial: current, failure: FeedFailure::Protocol,
+        });
+        drop(runner);
+        assert_eq!(protocol.phase(), TrialPhase::Prepared);
+    }
 }
 
