@@ -1121,30 +1121,7 @@ pub struct ErrorShape {
     pub no_pass: bool,
 }
 
-/// Which runtime boundary ended playback after route resolution succeeded.
-///
-/// This is a small product vocabulary, not a copy of FFmpeg or Starfish return codes. Every
-/// variant is backed by a distinct signal the worker already publishes, so the HUD never parses
-/// log strings or guesses from elapsed time.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum RuntimeFailure {
-    /// No worker supplied a cause. Say that honestly rather than leaving the reason slot blank.
-    Unknown,
-    /// The producer never opened a usable media stream or produced a video access unit.
-    MediaSource,
-    /// The media producer stopped after it had supplied at least one access unit. The worker's
-    /// flag deliberately says nothing narrower about why it stopped.
-    PlaybackInterrupted,
-    /// Starfish refused the Load declaration, so no decoder session could start.
-    TvPipeline,
-    /// Issue #74 D.1.4's `NATIVE_LOAD_BUDGET` fired — a hang, not a firmware refusal. See
-    /// [`FailureKind::LoadTimeout`].
-    LoadTimeout,
-    /// The previous object's `Unload` is overdue. See [`FailureKind::ReleaseTimeout`].
-    ReleaseTimeout,
-    /// The resolve landed no plan and no verdict ([`FailureKind::ResolveFailed`]).
-    ResolveFailed,
-}
+pub(crate) use attempt_view::RuntimeFailure;
 
 /// PURE: turn the four terminal worker signals into one cause. More specific downstream evidence
 /// wins over the generic producer flag when concurrent teardown makes more than one bit visible.
@@ -1181,6 +1158,9 @@ fn live_runtime_failure(ps: &crate::route::PlaybackSession) -> RuntimeFailure {
     // previous playback's, not this one's.
     if crate::route::play_resolution_failed(ps) {
         return RuntimeFailure::ResolveFailed;
+    }
+    if ps.attempt_view().backend().is_some_and(|backend| backend != attempt_view::Backend::Feed) {
+        return ps.attempt_view().facts().runtime_failure.unwrap_or(RuntimeFailure::Unknown);
     }
     runtime_failure(
         SHARED.demux_failed.load(std::sync::atomic::Ordering::Acquire),
@@ -1410,7 +1390,7 @@ pub fn error_now(ps: &crate::route::PlaybackSession) -> ErrorShape {
         return preview_not_direct_shape();
     }
     with_forced_playback_context(error_shape(
-        SHARED.demux_no_video.load(Relaxed),
+        ps.attempt_view().facts().no_video.unwrap_or(false),
         crate::route::is_transcoding(ps),
         playing_subscription(&ps),
         crate::route::play_verdict(ps).as_deref(),

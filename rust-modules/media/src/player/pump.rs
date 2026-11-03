@@ -379,7 +379,15 @@ fn publish_attempt_view(ps: &mut crate::route::PlaybackSession, attempt: crate::
     let abr_buffer_ms = SHARED.dg_abr_buffer_ms.load(Relaxed);
     let transport_rc = SHARED.dg_transport_rc.load(Relaxed);
     let transfer_age_ms = SHARED.dg_transport_age_ms.load(Relaxed);
+    let failure = super::runtime_failure(
+        SHARED.demux_failed.load(std::sync::atomic::Ordering::Acquire),
+        SHARED.demux_io_failed.load(std::sync::atomic::Ordering::Acquire),
+        SHARED.load_failed.load(Relaxed),
+        SHARED.load_timed_out.load(Relaxed),
+    );
     let facts = AttemptFacts {
+        runtime_failure: (failure != super::RuntimeFailure::Unknown).then_some(failure),
+        no_video: SHARED.demux_no_video.load(Relaxed).then_some(true),
         position_ns: reported_frame.then_some(position.max(0)),
         duration_ns: (duration > 0).then_some(duration),
         playable_buffer_ms: super::playable_buffer_ms(
