@@ -240,6 +240,8 @@ impl PlayerAdapter {
     pub(super) fn foreground_follows_feed_load(&self) -> bool {
         self.feed.foreground_follows_load()
     }
+    /// Native readiness for a route/action claim; the route policy itself stays in the pump.
+    pub(super) fn route_actions_ready(&self) -> bool { self.feed.route_actions_ready() }
 
     /// One physical seek-preroll tick. The common pump supplies route-flight facts and applies
     /// the returned finish request after this borrow of feed resources ends.

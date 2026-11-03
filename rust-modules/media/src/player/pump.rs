@@ -909,25 +909,10 @@ fn start_original_trial_reload(
     }
 }
 
-/// Re-borrow the live Engine + main-thread token from `pa` after a claim's `Rejected` tail, which
-/// leaves the Engine exactly where it was. `run_claim_tail` itself takes `pa` back (the only way to
-/// call a function that MAY replace the Engine), which ends the pump's own `eng`/`mt` borrows for
-/// the call's duration; this restores them so the rest of `pump` can keep reading/mutating `eng`.
-fn reacquire_engine(pa: &mut super::adapter::PlayerAdapter) -> (&mut Engine, &MainThread) {
-    let (eng, mt) = pa.split();
-    (
-        eng.expect("a rejected route claim never tears down the live Engine"),
-        mt,
-    )
-}
-
 /// Physical half of a claimed user action whose PMS half `route` already ran (`ClaimTail`).
 /// Returns whether it replaced the Engine: every arm but `Rejected` does, and the caller must
-/// return immediately in that case (`eng` dangles); `Rejected` restores the previous projection
-/// and lets the pump keep using the live Engine, so callers read
-/// `if run_claim_tail(..) { return; } eng = ...; mt = ...;` via [`reacquire_engine`] — passing `pa`
-/// into this function ends the pump's own borrow of it for the call, same as every other function
-/// here that might replace the Engine.
+/// return immediately in that case; `Rejected` restores the previous projection and lets the
+/// common route phase continue. The Engine is borrowed only after that phase ends.
 fn run_claim_tail(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
@@ -1482,18 +1467,12 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         }
         return;
     }
-    // The route's opening verdicts are settled. Borrow the physical feed for route claims and
-    // native seek/feed operations; any reload drops this borrow and returns immediately.
-    let (eng, mut mt) = pa.split();
-    let mut eng = eng.expect("live adapter checked before splitting it");
-    let stream = matches!(eng.source, Source::Stream);
-
     // ---------- one synchronized route/action state machine ----------
     //
     // User quality/track changes survive pre-roll and outrank automatic ABR. A simultaneous seek
     // is not a competing mailbox: it supplies this action's target, so the two become ONE reload
     // instead of either resetting the seek or rebuilding at the position the viewer already left.
-    if stream && eng.stage >= Stage::Playing && !(eng.flushed && eng.rebase_pending) {
+    if pa.route_actions_ready() {
         // A retranscode claim's PMS half may now be running on a worker (the freeze this fixes:
         // `execute_retranscode_claim` used to run `put_selection` + `/decision` right on this frame
         // thread). Drain any landing BEFORE trying to claim a new action — `ControlPhase` stays
@@ -1526,14 +1505,12 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
             if replaced {
                 return;
             }
-            (eng, mt) = reacquire_engine(pa);
         } else if let Some(crate::route::ReadyFlight::Seek { serial, target_ns, verdict }) = ready {
             let reloads = matches!(verdict, crate::route::SeekVerdict::Install(_));
             seek_landing_tail(ps, pa, serial, target_ns, verdict);
             if reloads {
-                return; // REPLACED the engine — `eng` dangles.
+                return; // A fresh physical feed replaced this attempt.
             }
-            (eng, mt) = reacquire_engine(pa);
         } else if let Some(action) = crate::route::claim_route_action() {
             let pending_seek = TX.seek_to_ns.load(Relaxed);
             let current_pos = SHARED.playpos_ns.load(Relaxed).max(0);
@@ -1553,8 +1530,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
                                 if run_claim_tail(ps, pa, &action, tail, pending_seek, user_target) {
                                     return;
                                 }
-                                (eng, mt) = reacquire_engine(pa);
-                            }
+                                                }
                             crate::route::RetranscodeClaimDispatch::Pending
                             | crate::route::RetranscodeClaimDispatch::PendingNoHold => {
                                 // A worker now owns the PMS half. The drain at the top of this
@@ -1563,8 +1539,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
                                 // the landing reloads THERE, so letting the flight play would show
                                 // the same seconds twice.
                                 super::claim_hold::engage(pa, action.serial());
-                                (eng, mt) = reacquire_engine(pa);
-                            }
+                                                }
                         }
                     }
                     crate::route::UserRouteIntent::NativeAudioReload => {
@@ -1585,13 +1560,11 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
                                     if run_claim_tail(ps, pa, &action, tail, pending_seek, user_target) {
                                         return;
                                     }
-                                    (eng, mt) = reacquire_engine(pa);
-                                }
+                                                        }
                                 crate::route::RetranscodeClaimDispatch::Pending
                                 | crate::route::RetranscodeClaimDispatch::PendingNoHold => {
                                     super::claim_hold::engage(pa, action.serial());
-                                    (eng, mt) = reacquire_engine(pa);
-                                }
+                                                        }
                             }
                         } else {
                             crate::route::honour_displaced_pick(ps, action.displaced_pick, "AdaptiveReload");
@@ -1627,13 +1600,11 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
                                 if run_claim_tail(ps, pa, &action, tail, pending_seek, user_target) {
                                     return;
                                 }
-                                (eng, mt) = reacquire_engine(pa);
-                            }
+                                                }
                             crate::route::RetranscodeClaimDispatch::Pending
                             | crate::route::RetranscodeClaimDispatch::PendingNoHold => {
                                 super::claim_hold::engage(pa, action.serial());
-                                (eng, mt) = reacquire_engine(pa);
-                            }
+                                                }
                         }
                     }
                 },
@@ -1672,12 +1643,10 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
                                     if land_automatic_hls(ps, pa, &action, tail, pending_seek, position_ns) {
                                         return;
                                     }
-                                    (eng, mt) = reacquire_engine(pa);
-                                }
+                                                        }
                                 crate::route::RetranscodeClaimDispatch::Pending
                                 | crate::route::RetranscodeClaimDispatch::PendingNoHold => {
-                                    (eng, mt) = reacquire_engine(pa);
-                                }
+                                                        }
                             }
                         }
                         crate::route::AutomaticRouteIntent::HlsToOriginal {
@@ -1713,15 +1682,12 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
                                     if land_automatic_original(ps, pa, &action, tail, pending_seek, position_ns) {
                                         return;
                                     }
-                                    (eng, mt) = reacquire_engine(pa);
-                                }
+                                                        }
                                 crate::route::RetranscodeClaimDispatch::Pending => {
                                     super::claim_hold::engage(pa, action.serial());
-                                    (eng, mt) = reacquire_engine(pa);
-                                }
+                                                        }
                                 crate::route::RetranscodeClaimDispatch::PendingNoHold => {
-                                    (eng, mt) = reacquire_engine(pa);
-                                }
+                                                        }
                             }
                         }
                     }
@@ -1730,6 +1696,11 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         }
     }
 
+    // Route actions may replace the physical feed. Borrow it only after their decision and
+    // settlement are complete; the remaining seek/feed phase runs against the current object.
+    let (eng, mut mt) = pa.split();
+    let mut eng = eng.expect("live adapter checked before splitting it");
+    let stream = matches!(eng.source, Source::Stream);
     // ---------- an in-place seek is still resolving (flushed, not yet re-anchored): COALESCE.
     // Firing another now would race the demux reopen (rapid tap-seeks) and the rebase guard would
     // then eat everything → stuck. Hold the latest requested target (it stays in TX.seek_to_ns) and
