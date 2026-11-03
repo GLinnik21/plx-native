@@ -1,4 +1,5 @@
-//! Bundled FFmpeg codec ABI and jobs. Transport and player state stay in `plx_media`.
+//! Bundled FFmpeg codec ABI and jobs. The physical feed uses `plx_play_feed` and
+//! `plx_net`; player policy stays in `plx_media`.
 
 pub mod ffi;
 #[cfg(any(test, feature = "test-support"))]
