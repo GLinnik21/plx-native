@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-03T12:09:33Z",
+ "generated": "2026-11-03T12:15:07Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -103,17 +103,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 25.5,
+   "change7_pct": 25.8,
    "d30": null,
    "delta30": null,
-   "delta7": 41,
+   "delta7": 41.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 77,
+   "n_now": 78,
    "n_prev": 79,
-   "now": 202,
+   "now": 202.5,
    "prev7": 161,
    "shown": true,
    "state": "worse",
@@ -124,17 +124,17 @@
   },
   {
    "change30_pct": -61.1,
-   "change7_pct": 20.6,
+   "change7_pct": 20.4,
    "d30": 1053.0,
-   "delta30": -643.0,
-   "delta7": 70,
+   "delta30": -643.5,
+   "delta7": 69.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 85,
+   "n_now": 86,
    "n_prev": 91,
-   "now": 410,
+   "now": 409.5,
    "prev7": 340,
    "shown": true,
    "state": "worse",
@@ -188,8 +188,8 @@
   {
    "change30_pct": -62.6,
    "change7_pct": 14.6,
-   "d30": 1110,
-   "delta30": -695,
+   "d30": 1110.0,
+   "delta30": -695.0,
    "delta7": 53,
    "group": "ci",
    "id": "pr_wait",
@@ -408,18 +408,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 27.2,
-   "change7_pct": 7.1,
+   "change30_pct": 27.5,
+   "change7_pct": 7.3,
    "d30": 224,
-   "delta30": 61,
-   "delta7": 19,
+   "delta30": 61.5,
+   "delta7": 19.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 77,
+   "n_now": 78,
    "n_prev": 79,
-   "now": 285,
+   "now": 285.5,
    "prev7": 266,
    "shown": true,
    "state": "flat",
@@ -432,15 +432,15 @@
    "change30_pct": -79.0,
    "change7_pct": 7.7,
    "d30": 1028,
-   "delta30": -812,
+   "delta30": -812.0,
    "delta7": 15.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 77,
+   "n_now": 78,
    "n_prev": 78,
-   "now": 216,
+   "now": 216.0,
    "prev7": 200.5,
    "shown": true,
    "state": "flat",
@@ -539,15 +539,15 @@
    "change30_pct": 12.5,
    "change7_pct": 0.0,
    "d30": 16,
-   "delta30": 2,
-   "delta7": 0,
+   "delta30": 2.0,
+   "delta7": 0.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 77,
+   "n_now": 78,
    "n_prev": 79,
-   "now": 18,
+   "now": 18.0,
    "prev7": 18,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 69.6,
    "commits": [
     {
-     "pr": 1203,
-     "sha": "f2449cc55",
-     "title": "Honor Player HUD design declarations through shared UI components"
-    },
-    {
      "pr": 1206,
      "sha": "f1436ba47",
      "title": "Add source-pinned Player HUD registry tooling"
@@ -715,6 +710,11 @@
      "pr": 1215,
      "sha": "01e91f1c4",
      "title": "Refresh the open library grid atomically after server changes"
+    },
+    {
+     "pr": 1220,
+     "sha": "3b651de0a",
+     "title": "Align Home and Detail heroes and normalize logo sizing"
     }
    ],
    "from": 194,
@@ -728,11 +728,6 @@
    "change_pct": 34.0,
    "commits": [
     {
-     "pr": 1203,
-     "sha": "f2449cc55",
-     "title": "Honor Player HUD design declarations through shared UI components"
-    },
-    {
      "pr": 1206,
      "sha": "f1436ba47",
      "title": "Add source-pinned Player HUD registry tooling"
@@ -776,6 +771,11 @@
      "pr": 1215,
      "sha": "01e91f1c4",
      "title": "Refresh the open library grid atomically after server changes"
+    },
+    {
+     "pr": 1220,
+     "sha": "3b651de0a",
+     "title": "Align Home and Detail heroes and normalize logo sizing"
     }
    ],
    "from": 215,
@@ -786,13 +786,8 @@
    "to": 288
   },
   {
-   "change_pct": 25.5,
+   "change_pct": 25.8,
    "commits": [
-    {
-     "pr": 1203,
-     "sha": "f2449cc55",
-     "title": "Honor Player HUD design declarations through shared UI components"
-    },
     {
      "pr": 1206,
      "sha": "f1436ba47",
@@ -837,6 +832,11 @@
      "pr": 1215,
      "sha": "01e91f1c4",
      "title": "Refresh the open library grid atomically after server changes"
+    },
+    {
+     "pr": 1220,
+     "sha": "3b651de0a",
+     "title": "Align Home and Detail heroes and normalize logo sizing"
     }
    ],
    "from": 161,
@@ -844,16 +844,11 @@
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "since": "2026-11-03",
    "threshold_pct": 20.0,
-   "to": 202
+   "to": 202.5
   },
   {
-   "change_pct": 20.6,
+   "change_pct": 20.4,
    "commits": [
-    {
-     "pr": 1203,
-     "sha": "f2449cc55",
-     "title": "Honor Player HUD design declarations through shared UI components"
-    },
     {
      "pr": 1206,
      "sha": "f1436ba47",
@@ -898,23 +893,23 @@
      "pr": 1215,
      "sha": "01e91f1c4",
      "title": "Refresh the open library grid atomically after server changes"
+    },
+    {
+     "pr": 1220,
+     "sha": "3b651de0a",
+     "title": "Align Home and Detail heroes and normalize logo sizing"
     }
    ],
    "from": 340,
    "id": "push_wait",
    "label": "Wait after merge",
-   "since": "2026-11-01",
+   "since": "2026-11-03",
    "threshold_pct": 15.0,
-   "to": 410
+   "to": 409.5
   },
   {
    "change_pct": 20.1,
    "commits": [
-    {
-     "pr": 1203,
-     "sha": "f2449cc55",
-     "title": "Honor Player HUD design declarations through shared UI components"
-    },
     {
      "pr": 1206,
      "sha": "f1436ba47",
@@ -959,6 +954,11 @@
      "pr": 1215,
      "sha": "01e91f1c4",
      "title": "Refresh the open library grid atomically after server changes"
+    },
+    {
+     "pr": 1220,
+     "sha": "3b651de0a",
+     "title": "Align Home and Detail heroes and normalize logo sizing"
     }
    ],
    "from": 339,
@@ -972,11 +972,6 @@
    "change_pct": 16.1,
    "commits": [
     {
-     "pr": 1203,
-     "sha": "f2449cc55",
-     "title": "Honor Player HUD design declarations through shared UI components"
-    },
-    {
      "pr": 1206,
      "sha": "f1436ba47",
      "title": "Add source-pinned Player HUD registry tooling"
@@ -1020,6 +1015,11 @@
      "pr": 1215,
      "sha": "01e91f1c4",
      "title": "Refresh the open library grid atomically after server changes"
+    },
+    {
+     "pr": 1220,
+     "sha": "3b651de0a",
+     "title": "Align Home and Detail heroes and normalize logo sizing"
     }
    ],
    "from": 2172.0,
