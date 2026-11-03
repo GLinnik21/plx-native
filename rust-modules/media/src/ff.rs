@@ -5796,7 +5796,7 @@ pub(crate) fn demux(
     hs: SendPtr<HttpStream>,
 ) {
     PUSHED_ANY.store(false, Ordering::Relaxed);
-    *SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    session.media().publish(DemuxEffect::SideAnchor(None));
     // Refuse rather than read a struct whose shape we do not know (see `boot`). EOF must still be
     // set on both lanes or `pump` waits forever on a queue nothing will ever fill — the same
     // contract the panic barrier below exists to keep.
@@ -6408,7 +6408,7 @@ pub(crate) fn demux(
                 // A side reader that owns this playback's subtitles (`ff_subside.rs`) demuxes them
                 // from the original Part; this stream's own enumeration and ASS source would be
                 // replaced by it.
-                let side_owner = SHARED.side_subs_owner.load(Ordering::Acquire);
+                let side_owner = session.clock().side_subtitle_owner();
                 let mut sub_tracks = if side_owner { SubTracks::empty() } else { SubTracks::open(fmt, streams) };
                 let ass_generation = if side_owner {
                     0
@@ -6497,7 +6497,7 @@ pub(crate) fn demux(
                 // engine's audio lead-in has been pushed, then released as the consumer drains.
                 // Restarted (and the lane's grant withdrawn) by every seek and at loop exit.
                 let mut headroom = PreAudioHeadroom::default();
-                SHARED.first_audio_pts.store(i64::MIN, Ordering::Release);
+                session.media().publish(DemuxEffect::FirstAudioPts(i64::MIN));
                 // INNER read loop
                 loop {
                     // Direct-play seek (and the armed resume, which is just a seek published before
@@ -6557,7 +6557,7 @@ pub(crate) fn demux(
                         if let Some(batch) = pcm_batch.as_mut() {
                             batch.clear();
                         }
-                        SHARED.first_audio_pts.store(i64::MIN, Ordering::Release);
+                        session.media().publish(DemuxEffect::FirstAudioPts(i64::MIN));
                     }
                     let r = av_read_frame(fmt, pkt);
                     if frame_read_failed(&mut state, r) {
@@ -6588,8 +6588,9 @@ pub(crate) fn demux(
                         if !anchor_taken && (*pkt).flags & AV_PKT_FLAG_KEY != 0 && !(*pkt).data.is_null() {
                             anchor_taken = true;
                             let raw = std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize);
-                            *SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) =
-                                Some(subside::Anchor::of(pts_ns(pkt, vst), raw));
+                            session.media().publish(DemuxEffect::SideAnchor(Some(
+                                subside::Anchor::of(pts_ns(pkt, vst), raw),
+                            )));
                         }
                         let pkt_bytes: &[u8] = if (*pkt).data.is_null() {
                             &[]
@@ -6744,7 +6745,7 @@ pub(crate) fn demux(
                         if headroom.first_audio_ns.is_none() {
                             // Before the push, so the feed thread that pops this AU sees it: the
                             // audio lane feeds a late-starting track's first AU on this mark.
-                            SHARED.first_audio_pts.store(pts, Ordering::Release);
+                            session.media().publish(DemuxEffect::FirstAudioPts(pts));
                         }
                         // The audio lane runs past its soft cap while the video lane is starved
                         // ([`AUDIO_AHEAD_HEADROOM`]); the gate is what makes that decision, here.

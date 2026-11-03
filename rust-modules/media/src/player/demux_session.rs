@@ -128,6 +128,9 @@ impl DemuxClock for PlayerDemuxSession {
     fn applied_rate_permille(&self) -> i32 {
         SHARED.applied_rate_permille.load(Ordering::Relaxed)
     }
+    fn side_subtitle_owner(&self) -> bool {
+        SHARED.side_subs_owner.load(Ordering::Acquire)
+    }
     fn playpos_sampler(&self) -> fn() -> i64 {
         || SHARED.playpos_ns.load(Ordering::Relaxed).max(0)
     }
@@ -260,6 +263,11 @@ impl DemuxMedia for PlayerDemuxSession {
             DemuxEffect::TrackNames { audio, subs } => {
                 *SHARED.track_names.lock().unwrap() = super::TrackNames { audio, subs };
             }
+            DemuxEffect::SideAnchor(anchor) => {
+                *SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) = anchor;
+            }
+            DemuxEffect::FirstAudioPts(pts) =>
+                SHARED.first_audio_pts.store(pts, Ordering::Release),
             DemuxEffect::FileSize(size) => SHARED.file_size.store(size, Ordering::Release),
             DemuxEffect::TransportRc(rc) => SHARED.dg_transport_rc.store(rc, Ordering::Release),
             DemuxEffect::NetworkBytes(bytes) => { SHARED.dg_net_rx.fetch_add(bytes, Ordering::Relaxed); }
