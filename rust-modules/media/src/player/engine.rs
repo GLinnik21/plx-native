@@ -12,7 +12,7 @@
 //! thread too and deliberately does not take one: it only publishes to `SHARED`.
 use super::feed_open::FeedOpenRequest;
 #[cfg(all(test, feature = "hostsim"))]
-use super::route_start::{exit_native, finish_release_for_test, poll_release};
+use super::route_start::{exit_native, exit_native_with, finish_release_for_test, poll_release, NativeExit};
 #[cfg(test)]
 use super::feed_open::PayloadFacts;
 #[cfg(test)]
