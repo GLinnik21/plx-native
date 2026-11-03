@@ -68,6 +68,7 @@ struct PlaybackRequest {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RetryContext {
     resume_ns: i64,
+    candidate_purpose: CandidatePurpose,
     /// `(audio_sid, sub_sid)` the session HELD when this retry was built, `Some` only when that
     /// selection was KNOWN ([`PlaybackSession::selection_known`]): a playable plan landed, or the
     /// viewer picked a track. `0` is both "subtitles Off" and "nothing landed yet", so the pair
@@ -540,6 +541,11 @@ pub struct UriSelection {
     pub subtitle_sid: i64,
 }
 
+/// The route decision explicitly distinguishes another recovery candidate from a physical
+/// reopen of its current recipe, even if PMS refreshes the URL during a seek or restore.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CandidatePurpose { NewCandidate, ReopenCurrent }
+
 #[cfg(all(test, feature = "play-feed"))]
 mod backend_offer_session_tests {
     use super::*;
@@ -550,7 +556,7 @@ mod backend_offer_session_tests {
     fn a_spent_feed_recipe_cannot_reopen_after_handoff_to_uri() {
         let mut session = PlaybackSession::IDLE;
         set_url(&mut session, "https://example.invalid/original.mkv");
-        assert!(session.qualify_resolved_feed_offer(OfferId::FEED_ORIGINAL));
+        assert!(session.qualify_resolved_feed_offer(OfferId::FEED_ORIGINAL, CandidatePurpose::NewCandidate));
         assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
         assert!(session.backend_planned_feed_allowed(), "a physical seek may reopen Feed");
 
@@ -568,14 +574,49 @@ mod backend_offer_session_tests {
     fn a_new_resolve_cannot_replay_the_same_spent_feed_recipe() {
         let mut session = PlaybackSession::IDLE;
         set_url(&mut session, "https://example.invalid/original.mkv");
-        assert!(session.qualify_resolved_feed_offer(OfferId::FEED_ORIGINAL));
+        assert!(session.qualify_resolved_feed_offer(OfferId::FEED_ORIGINAL, CandidatePurpose::NewCandidate));
         assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
         assert!(session.backend_planned_feed_allowed());
 
-        assert!(session.qualify_resolved_feed_offer(OfferId::FEED_ORIGINAL));
+        assert!(session.qualify_resolved_feed_offer(OfferId::FEED_ORIGINAL, CandidatePurpose::NewCandidate));
         assert!(!session.backend_planned_feed_allowed(),
             "a new source decision is not an ordinary physical reload");
         assert!(!session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+    }
+
+    #[test]
+    fn an_explicit_same_backend_reopen_keeps_its_recipe_after_a_fresh_url() {
+        let mut session = PlaybackSession::IDLE;
+        set_url(&mut session, "https://example.invalid/first.mkv");
+        assert!(session.qualify_resolved_feed_offer(OfferId::FEED_PMS_HLS,
+            CandidatePurpose::NewCandidate));
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_PMS_HLS));
+        set_url(&mut session, "https://example.invalid/reopened.m3u8");
+        assert!(session.qualify_resolved_feed_offer(OfferId::FEED_PMS_HLS,
+            CandidatePurpose::ReopenCurrent));
+        assert!(session.backend_planned_feed_allowed(),
+            "a seek or foreground restore may refresh the URL without buying a recovery retry");
+    }
+
+    #[test]
+    fn qualified_original_feed_precedes_uri_conversion_then_uri_precedes_feed_conversion() {
+        let mut session = PlaybackSession::IDLE;
+        set_url(&mut session, "https://example.invalid/original.mkv");
+        assert!(session.qualify_resolved_feed_offer(OfferId::FEED_ORIGINAL,
+            CandidatePurpose::NewCandidate));
+        session.qualify_backend_offer(BackendKind::Uri, OfferId::URI_PMS_REMUX,
+            Qualification::Qualified);
+        assert!(matches!(session.backend_offer(), Selection::Open(offer)
+            if offer.backend == BackendKind::Feed && offer.id == OfferId::FEED_ORIGINAL));
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+
+        assert!(session.qualify_resolved_feed_offer(OfferId::FEED_PMS_REMUX,
+            CandidatePurpose::NewCandidate));
+        assert!(matches!(session.backend_offer(), Selection::Open(offer)
+            if offer.backend == BackendKind::Uri && offer.id == OfferId::URI_PMS_REMUX));
+        assert!(session.backend_offer_admitted(BackendKind::Uri, OfferId::URI_PMS_REMUX));
+        assert!(!session.backend_planned_feed_allowed(),
+            "conversion cannot buy a return handoff to Feed");
     }
 }
 
@@ -653,13 +694,12 @@ impl PlaybackSession {
 
     /// Publish a Feed recipe only after a route has resolved an exact source for these selected
     /// streams. Ordinary plans and explicit test sources use this same admission input.
-    pub fn qualify_resolved_feed_offer(&mut self, id: super::backend_policy::OfferId) -> bool {
+    pub fn qualify_resolved_feed_offer(&mut self, id: super::backend_policy::OfferId,
+        purpose: CandidatePurpose) -> bool {
         if !cfg!(feature = "play-feed") || !self.ensure_backend_offers() { return false; }
         self.backend_policy.as_mut().expect("catalog exists").qualify_planned_feed(id);
         self.planned_feed_offer = Some(id);
-        // A fresh resolve is a new candidate decision, even when its fixed recipe ID matches
-        // the previous physical open. Reopen permission belongs only to an unplanned reload.
-        self.admitted_feed_offer = None;
+        if purpose == CandidatePurpose::NewCandidate { self.admitted_feed_offer = None; }
         true
     }
 
@@ -8553,6 +8593,7 @@ struct PlayLanding {
     trace_generation: u32,
     /// Desired route contract captured before ResolveEnv was projected on the main thread.
     contract_revision: u64,
+    candidate_purpose: CandidatePurpose,
     plan: Plan,
     rk: String,
 }
@@ -8907,6 +8948,8 @@ fn request_play_with_queue(
     // captured HERE, on the main thread, and moved into the worker — see ResolveEnv
     let mut env = request_env(ps, meta.view(), &request, retry);
     env.queue_continuation = queue;
+    let candidate_purpose = retry.map_or(CandidatePurpose::NewCandidate,
+        |context| context.candidate_purpose);
     let gen = PLAY_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     if let Some(resume_ns) = retry.map(|r| r.resume_ns).filter(|ns| *ns > 0) {
         *PLAY_RESUME.lock().unwrap_or_else(|e| e.into_inner()) = Some((gen, resume_ns));
@@ -8931,6 +8974,7 @@ fn request_play_with_queue(
             gen,
             trace_generation,
             contract_revision,
+            candidate_purpose,
             plan,
             rk,
         };
@@ -9039,6 +9083,7 @@ pub fn confirm_resume_presented(ps: &mut PlaybackSession) {
 fn current_retry_context(ps: &PlaybackSession, resume_ns: i64) -> RetryContext {
     RetryContext {
         resume_ns: resume_ns.max(0),
+        candidate_purpose: CandidatePurpose::ReopenCurrent,
         selection: if ps.selection_known {
             Some((cur_audio_sid(ps), cur_sub_sid(ps)))
         } else {
@@ -9058,6 +9103,7 @@ fn current_retry_context(ps: &PlaybackSession, resume_ns: i64) -> RetryContext {
 fn rescue_retry_context(ps: &PlaybackSession, resume_ns: i64) -> RetryContext {
     RetryContext {
         suppress_enhancement: ps.cur_contract.audio.any(),
+        candidate_purpose: CandidatePurpose::NewCandidate,
         ..current_retry_context(ps, resume_ns)
     }
 }
@@ -9219,6 +9265,7 @@ pub fn pump_play(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata
         gen,
         trace_generation,
         contract_revision,
+        candidate_purpose,
         plan,
         rk,
     }) = taken
@@ -9280,7 +9327,7 @@ pub fn pump_play(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata
     if !is_preview(ps) {
         ACTIVE_TRACE_GENERATION.store(trace_generation, Ordering::SeqCst);
     }
-    let _start = apply_plan(ps, meta, plan, &rk);
+    let _start = apply_plan(ps, meta, plan, &rk, candidate_purpose);
     if let Some(resources) = refused_resources {
         retire_plan_resources(resources);
     }
@@ -9315,7 +9362,8 @@ pub fn pump_play(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata
 /// to set and are carried across it explicitly — the HUD strings, the `/identity` cache when this
 /// plan learned no id, and the codec quartet when the plan resolved no video codec — and each says
 /// below why it stays.
-fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::MetadataStore, plan: Plan, rk: &str) -> Option<RouteStartTransaction> {
+fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::MetadataStore,
+    plan: Plan, rk: &str, candidate_purpose: CandidatePurpose) -> Option<RouteStartTransaction> {
     // These IDs name the route transformation class for this request's selected streams.
     // A later recovery plan can qualify another fixed recipe; a seek/reload keeps its spent
     // history. URI remains Unknown until the IO composition qualifies the exact source.
@@ -9380,9 +9428,10 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
         let backend_policy = if same_selection { s.backend_policy.take() } else { None }
             .unwrap_or_else(|| super::backend_policy::BackendPolicy::for_request(
                 plan.direct_play_mode == DirectPlayMode::Forced));
-        // A new resolved plan is a new candidate decision, even if it chose the same recipe.
-        // Only a physical reload that skips planning may reuse the previously admitted recipe.
-        let admitted_feed_offer = None;
+        let admitted_feed_offer = if same_selection
+            && candidate_purpose == CandidatePurpose::ReopenCurrent {
+            s.admitted_feed_offer
+        } else { None };
         // "" = this plan fetched no id — either one was already known, or it never got as far as
         // asking — so leave the cache alone (`Plan::machine_id` says the same). What IS cached is
         // cached AGAINST its server: the next playback only reuses it when it is playing from the
@@ -9517,7 +9566,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
         };
     } };
     if let Some(id) = planned_feed_offer {
-        let _ = ps.qualify_resolved_feed_offer(id);
+        let _ = ps.qualify_resolved_feed_offer(id, candidate_purpose);
     }
     if let (plx_plex::plex::TranscodeDelivery::FixedHls { .. }, Some(rung)) = (
         ps.cur_contract.delivery,

@@ -218,16 +218,16 @@ pub(super) fn start_bufferfeed_for(
 fn start_qualified_uri_inner(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAdapter,
     route_start: crate::route::RouteStartTransaction)
     -> Result<crate::route::RouteStartAttempt, crate::route::RouteStartResult> {
-    use crate::route::backend_policy::{OfferId, Selection};
+    use crate::route::backend_policy::Selection;
     let fail = crate::route::RouteStartResult::StartFailed;
     if !crate::route::prepare_route_start(route_start) { return Err(fail); }
     let route_attempt = crate::route::claim_route_start_attempt(route_start).ok_or(fail)?;
     let offer = pa.take_qualified_uri(ps, route_start).ok_or(fail)?;
     if !matches!(ps.backend_offer(), Selection::Open(choice)
         if choice.backend == plx_playback_contract::BackendKind::Uri
-            && choice.id == OfferId::URI_ORIGINAL) {
+            && choice.id == offer.offer_id) {
         ps.qualify_backend_offer(plx_playback_contract::BackendKind::Uri,
-            OfferId::URI_ORIGINAL, crate::route::backend_policy::Qualification::Unknown);
+            offer.offer_id, crate::route::backend_policy::Qualification::Unknown);
         return Err(fail);
     }
     let attempt = route_attempt.contract_id();
@@ -235,7 +235,7 @@ fn start_qualified_uri_inner(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
         Ok(source) => source,
         Err(_) => {
             ps.qualify_backend_offer(plx_playback_contract::BackendKind::Uri,
-                OfferId::URI_ORIGINAL, crate::route::backend_policy::Qualification::Unknown);
+                offer.offer_id, crate::route::backend_policy::Qualification::Unknown);
             return Err(fail);
         }
     };
@@ -252,13 +252,21 @@ fn start_qualified_uri_inner(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
         | plx_playback_contract::Fx::CommandRefused { attempt: id, .. } if *id == attempt
     )) {
         ps.qualify_backend_offer(plx_playback_contract::BackendKind::Uri,
-            OfferId::URI_ORIGINAL, crate::route::backend_policy::Qualification::Unknown);
+            offer.offer_id, crate::route::backend_policy::Qualification::Unknown);
         return Err(fail);
     }
     assert!(ps.backend_offer_admitted(plx_playback_contract::BackendKind::Uri,
-        OfferId::URI_ORIGINAL), "qualified URI offer must remain selected on the main thread");
+        offer.offer_id), "qualified URI offer must remain selected on the main thread");
     ps.begin_attempt_view(route_attempt, super::attempt_view::Backend::Uri);
+    let mut facts = *ps.attempt_view().facts();
+    facts.duration_ns = Some(offer.pms_duration_ns);
+    facts.ended = Some(false);
+    facts.seek_display_ns = offer.initial.position.and_then(|position|
+        position.as_millis().checked_mul(1_000_000))
+        .and_then(|ns| i64::try_from(ns).ok());
+    let _ = ps.ingest_attempt_facts(route_attempt, super::attempt_view::Backend::Uri, facts);
     pa.bind_uri_attempt(route_attempt);
+    pa.start_timeline(ps, route_attempt);
     Ok(route_attempt)
 }
 
