@@ -1926,13 +1926,13 @@ plx_base::devtrig::latched_flag!(
 );
 
 /// **The speeds this playback can offer** (Normal included), or none when speed is unavailable:
-/// a trailer preview, segmented HLS (not wired), audio the bundled FFmpeg cannot decode
+/// a trailer preview, Force Direct Play (speed requires PCM conversion), segmented HLS (not wired), audio the bundled FFmpeg cannot decode
 /// (`ff::speed_decoder_available`), a television that has already failed a PCM session
 /// ([`speed_unsupported`]), or a stream whose fed rate would pass the frame rate the Load can
 /// declare ([`engine::speed_fps_ceiling_now`]). The menu offers exactly these, and a Load plays
 /// only one of them.
 pub fn speed_offer(ps: &crate::route::PlaybackSession) -> Vec<i32> {
-    if crate::route::is_preview(ps) || crate::route::is_segmented_hls(ps) || speed_unsupported() {
+    if crate::route::forced_direct_play(ps) || crate::route::is_preview(ps) || crate::route::is_segmented_hls(ps) || speed_unsupported() {
         return Vec::new();
     }
     let codec = crate::route::stream_acodec(ps);
@@ -3018,6 +3018,20 @@ mod tests {
     // refusal retiring on route exit) is exercised by
     // `native_failure_regressions::jail_refusal_enters_error_without_engine_and_retires_on_exit`
     // below, against the real `ps.jail_load_blocked`-based gate in `engine.rs` — see that test.
+
+    #[test]
+    fn forced_original_never_offers_or_retains_a_pcm_speed() {
+        let _serial = plx_base::testlock::serial();
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        crate::route::set_direct_play_mode_for_test(&mut ps, crate::route::DirectPlayMode::Forced);
+        reset_play_rate();
+        assert!(speed_offer(&ps).is_empty());
+        assert!(!set_play_rate(&ps, 1250));
+        // A speed retained from a preceding Auto route must not silently decode this Load.
+        SHARED.play_rate_permille.store(1500, Relaxed);
+        assert_eq!(session_rate_for(&ps), RATE_NORMAL);
+        assert_eq!(play_rate_permille(), RATE_NORMAL);
+    }
 
     #[test]
     fn forced_runtime_failures_keep_the_cause_and_explain_how_to_leave_force() {
