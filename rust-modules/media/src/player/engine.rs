@@ -218,6 +218,8 @@ pub struct Engine {
     pub source: Source,
     pub stream_th: Option<std::thread::JoinHandle<()>>,
     pub load_th: Option<std::thread::JoinHandle<()>>,
+    /// Attempt-scoped common reader IO; its stop runs before the paired demux join.
+    pub side_reader: Box<dyn plx_play_feed::side_reader::SideReaderPort>,
     /// Preview Load that must land unbound. The media join waits until the thread has returned.
     pub preview_abandon: bool,
     /// The foreground lifecycle follows this Engine's Load attempt ([`foreground_follows_load`]).
@@ -1084,6 +1086,7 @@ pub(super) fn prepare_native_open(
     sample: Option<super::feed_open::SampleSource>,
     is_h265: bool,
     session_rate: i32,
+    side_reader: Box<dyn plx_play_feed::side_reader::SideReaderPort>,
 ) -> Result<NativePrepared, NativeOpenError> {
     let stream = sample.is_none();
     let sample = sample.map(|sample| Box::new(SampleBuf {
@@ -1305,7 +1308,7 @@ pub(super) fn prepare_native_open(
         }
     };
 
-    Ok(NativePrepared { open, sample, stream, payload_c, audio_lead, clock_start, native_start })
+    Ok(NativePrepared { open, sample, stream, payload_c, audio_lead, clock_start, native_start, side_reader })
 }
 
 /// One physical Load declaration and its native callback guards, prepared before the route owner
@@ -1318,6 +1321,7 @@ pub(super) struct NativePrepared {
     audio_lead: PcmLead,
     clock_start: ClockStartGuard,
     native_start: NativeSessionStartGuard,
+    side_reader: Box<dyn plx_play_feed::side_reader::SideReaderPort>,
 }
 
 impl NativePrepared {
@@ -1338,7 +1342,7 @@ pub(super) fn launch_native_open(
     attempt: plx_playback_contract::AttemptId,
     prepared: NativePrepared,
 ) -> Result<(), NativeOpenError> {
-    let NativePrepared { mut open, sample, stream, payload_c, audio_lead, clock_start, native_start } = prepared;
+    let NativePrepared { mut open, sample, stream, payload_c, audio_lead, clock_start, native_start, mut side_reader } = prepared;
     // fd = -1 (CLOSED) so a teardown before/without http_open doesn't close(0)
     let mut hs = plx_net::stream::http_stream_boxed();
     let mut aqv_box: Option<Box<AuQueue>> = None;
@@ -1348,7 +1352,6 @@ pub(super) fn launch_native_open(
     // Whether the side subtitle reader will run for this engine run, decided BEFORE the demuxer is
     // spawned: the demuxer reads `side_subs_owner` once, as it opens the stream, and must never
     // also open subtitle decoders or ASS sources the reader replaces.
-    let side_target = open.as_mut().and_then(|request| request.side_reader.take());
 
     if stream {
         let open = open.as_mut().expect("stream request was captured");
@@ -1389,7 +1392,7 @@ pub(super) fn launch_native_open(
             // Before the demuxer exists, so what it publishes is this session's.
             crate::ff::native_audio::reset();
             // A clock-only reader (a sidecar) reads no subtitle: the demuxer keeps what it enumerates.
-            SHARED.side_subs_owner.store(side_target.as_ref().is_some_and(|t| !t.clock_only), Ordering::Release);
+            SHARED.side_subs_owner.store(side_reader.embedded_owner(), Ordering::Release);
             stream_th = plx_base::task::spawn_off_frame_keeping("demux", move |off| {
                 crate::ff::demux(off, origin, path, acodec, force_original, demux_transport, session, abr, auto_original, aqp, aqap, hsp)
             });
@@ -1430,7 +1433,7 @@ pub(super) fn launch_native_open(
         if !p.is_null() {
             plx_net::stream::http_shutdown(p);
         }
-        super::subside::stop("start-failed"); // before the demux join, like teardown
+        side_reader.stop_before_demux_join("start-failed"); // before the demux join, like teardown
         crate::curlio::abort_active(); // the https demuxer's equivalent — see teardown
         if let Some(t) = stream_th.take() {
             plx_base::task::join("demux", t);
@@ -1443,9 +1446,7 @@ pub(super) fn launch_native_open(
     // The side subtitle reader (dev trigger `plxnative-subside`), started once the demuxer is
     // spawned and the media thread exists: it waits for the demuxer's first keyframe before it
     // reads anything. (Its ownership flag was set before the demux spawn, below.)
-    if let Some(target) = side_target {
-        start_side_reader(target);
-    }
+    side_reader.start_after_load_spawn();
 
     let (lead_at_start, lead_pending) = audio_lead.at_engine_start();
     let eng = Engine {
@@ -1483,6 +1484,7 @@ pub(super) fn launch_native_open(
         source,
         stream_th,
         load_th,
+        side_reader,
         preview_abandon: false,
         foreground_follows_load: false,
         era_watch: super::era_callbacks::Watch::new(),
@@ -1525,36 +1527,6 @@ pub fn arm_seek(target_ns: i64) {
     SHARED.playpos_ns.store(t, Ordering::Relaxed); // instant HUD feedback until frames land
 }
 
-/// Direct-play seek = tear down the pipeline and start a FRESH Load at `target_ns`. The old
-/// flush()+refeed path left a STALE GStreamer segment (decompiled ground truth: the no-arg
-/// StarfishMediaAPIs::flush() → CustomPipeline::flush() is a degenerate gst_element_seek to
-/// GST_CLOCK_TIME_NONE with NO FLUSH_START/STOP and NO fresh SEGMENT; the HW sink/decoder
-/// only re-anchor their segment/basetime on a real SEGMENT/FLUSH event). Post-seek buffers
-/// were then scheduled against the pre-seek segment, the sink stopped draining, and the fixed
-/// ~14.7 MB of upstream buffers filled in ~48 s → permanent BufferFull + "Playing error". A
-/// fresh Load re-establishes a correct segment by construction — the known-good fresh-play
-/// path, which never wedges. Heavier than a flush (a ~1 s re-preroll) but correct.
-/// Start the side subtitle reader for the live remux this engine run plays, drawing the track
-/// the route's target names (or, for a sidecar, measuring the clock only).
-fn start_side_reader(target: super::feed_open::SideReaderOpen) {
-    let clock_only = target.clock_only;
-    let started = target.spec.is_some_and(super::subside::start);
-    if !started {
-        // One place decides the label and the burn, so the two roles can never drift: a
-        // clock-only reader that cannot start — no client for the running server, or a refused
-        // thread — never raises the failure that rebuilds the stream.
-        super::subside::failed_reading(clock_only, "subside: could not start the reader thread");
-        if clock_only {
-            // The app fetches that subtitle itself and no reader owns it: the sidecar is drawn on
-            // the remux's clock, as it was before the reader measured it.
-            return;
-        }
-        // Nothing reads beside the stream: the demuxer must not leave the subtitle to a reader
-        // that is not there.
-        SHARED.side_subs_owner.store(false, Ordering::Release);
-    }
-}
-
 /// Set where the pump ends an Engine for good under the failure read-out; spent by
 /// [`super::route_start::release_failed_engine`] or by any teardown.
 static FAILED_ENGINE_RELEASE_ARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -1594,7 +1566,7 @@ impl NativeStop {
     /// The side reader must stop before the paired demux reader is joined.
     pub(super) fn stop_side_reader(&mut self, for_reload: bool) {
         self.spans.mark("begin");
-        super::subside::stop(if for_reload { "reload" } else { "stop" });
+        self.eng.side_reader.stop_before_demux_join(if for_reload { "reload" } else { "stop" });
         self.spans.mark("subside");
     }
 
@@ -3751,6 +3723,7 @@ mod prime_livelock_tests {
             source: Source::Stream,
             stream_th: None,
             load_th: None,
+            side_reader: Box::new(super::super::feed_open::SideReaderOpen::empty()),
             preview_abandon: false,
             foreground_follows_load: false,
             era_watch: crate::player::era_callbacks::Watch::new(),
