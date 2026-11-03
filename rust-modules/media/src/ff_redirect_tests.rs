@@ -124,6 +124,8 @@ fn hls_open_plain(
     let mut net = HlsNet {
         hs: &mut *hs,
         curl: None,
+        range: crate::curlio::range_factory(),
+        credential_gate: crate::curlio::CREDENTIAL_GATE,
     };
     let opened = hls_open_source(
         &hls_resource(port),
@@ -151,7 +153,7 @@ fn progressive_open(port: u16, path: &str) -> Result<(String, i64), String> {
     let mut hs = plx_net::stream::http_stream_boxed();
     let mut aq = crate::aq::aq_new(1 << 20);
     let origin = plx_plex::plex::Origin::http("127.0.0.1", port as i32);
-    let opened = open_plain_progressive(&mut *hs, &origin, path, &mut *aq);
+    let opened = open_plain_progressive(&mut *hs, &origin, path, &mut *aq, &DemuxTransport::new(crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE));
     let outcome = match opened {
         Ok((Src::Socket { path, .. }, size)) => Ok((path.to_string_lossy().into_owned(), size)),
         Ok((Src::Curl(_), size)) => Ok(("<curl>".into(), size)),
@@ -161,6 +163,22 @@ fn progressive_open(port: u16, path: &str) -> Result<(String, i64), String> {
     plx_net::stream::http_close(&mut *hs);
     crate::aq::aq_destroy(&mut *aq);
     outcome
+}
+
+#[test]
+fn progressive_open_uses_the_injected_credential_gate_before_connect() {
+    fn refuse(_: &Origin, _: &str, _: &[&str]) -> bool { false }
+    let _serial = plx_base::testlock::serial();
+    let pms = Scripted::start(|_, _| ok_body("unreachable"));
+    let mut hs = plx_net::stream::http_stream_boxed();
+    let mut aq = crate::aq::aq_new(1 << 20);
+    let origin = Origin::http("127.0.0.1", pms.port as i32);
+    let transport = DemuxTransport::new(crate::curlio::range_factory(), refuse);
+    let opened = open_plain_progressive(&mut *hs, &origin, "/movie?X-Plex-Token=private", &mut *aq, &transport);
+    assert!(matches!(opened, Err(MediaOpenFail::Failed)));
+    assert!(pms.requests().is_empty(), "refused URL must never reach the listener");
+    plx_net::stream::http_close(&mut *hs);
+    crate::aq::aq_destroy(&mut *aq);
 }
 
 #[test]
@@ -212,6 +230,8 @@ fn a_seek_reopen_follows_a_relative_302_and_keeps_its_range() {
             port: pms.port as c_int,
             path: CString::new("/dir/a.mp4").unwrap(),
         },
+        range: crate::curlio::range_factory(),
+        credential_gate: crate::curlio::CREDENTIAL_GATE,
         aq: &mut *aq,
         off: 0,
         size: 4,
@@ -309,6 +329,7 @@ fn a_progressive_open_follows_a_302() {
         &origin,
         "/library/parts/1/file.mp4?X-Plex-Token=tok",
         &mut *aq,
+        &DemuxTransport::new(crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE),
     );
     let outcome = match opened {
         Ok((Src::Socket { path, .. }, size)) => Some((path.to_string_lossy().into_owned(), size)),
@@ -376,6 +397,8 @@ fn a_redirected_master_playlist_resolves_its_children_against_the_redirect_targe
     let mut net = HlsNet {
         hs: &mut *hs,
         curl: None,
+        range: crate::curlio::range_factory(),
+        credential_gate: crate::curlio::CREDENTIAL_GATE,
     };
     let origin = plx_plex::plex::Origin::http("127.0.0.1", pms.port as i32);
     let cursor = hls_cursor_open(
