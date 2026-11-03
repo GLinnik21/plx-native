@@ -11,6 +11,8 @@ pub(super) struct FeedOpenRequest {
     pub pcm_is_lossy: bool,
     pub audio_channels: i64,
     pub payload: PayloadFacts,
+    /// Backend-owned Load facts, with route and metadata types mapped at capture time.
+    pub feed_payload: plx_play_feed::PayloadFacts,
     pub side_reader: Option<route::SideReaderTarget>,
     pub hls_abr: Option<(route::HlsAbrControl, route::WorkerTicket)>,
     pub auto_original: Option<route::AutoOriginalWatch>,
@@ -29,7 +31,33 @@ pub(super) struct PayloadFacts {
     pub force_direct_play: bool,
 }
 
+impl From<route::PcmFormat> for plx_play_feed::PcmFormat {
+    fn from(f: route::PcmFormat) -> Self {
+        Self {
+            sample_rate: f.sample_rate,
+            bits: f.bits,
+            channels: f.channels,
+            source_rate: f.source_rate,
+        }
+    }
+}
+
 impl PayloadFacts {
+    pub fn to_feed(&self) -> plx_play_feed::PayloadFacts {
+        plx_play_feed::PayloadFacts {
+            pcm: self.pcm.clone().map(|value| value.map(Into::into)),
+            max_raster: self.max_raster,
+            fps: self.fps,
+            dv: self.dv_presentation.declared().map(|n| plx_play_feed::DolbyHdrInfo {
+                profile_id: n.profile_id,
+                track_type: n.track_type,
+                encryption_type: n.encryption_type,
+            }),
+            immersive: self.immersive,
+            force_direct_play: self.force_direct_play,
+        }
+    }
+
     pub fn capture(ps: &route::PlaybackSession) -> Self {
         Self {
             pcm: route::stream_pcm(ps),
@@ -48,6 +76,7 @@ impl FeedOpenRequest {
     /// Worker tickets are captured alongside the same projection consumed by Load.
     pub fn capture(ps: &route::PlaybackSession, url: String) -> Self {
         let payload = PayloadFacts::capture(ps);
+        let feed_payload = payload.to_feed();
         Self {
             url,
             video_codec: route::stream_vcodec(ps),
@@ -55,6 +84,7 @@ impl FeedOpenRequest {
             pcm_is_lossy: route::stream_pcm_is_lossy(ps),
             audio_channels: route::stream_achannels(ps),
             payload,
+            feed_payload,
             side_reader: route::side_reader_target(ps),
             hls_abr: route::hls_abr_control(ps),
             auto_original: route::auto_original_watch(ps),
