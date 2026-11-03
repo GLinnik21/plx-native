@@ -16,9 +16,9 @@ use std::sync::{Arc, MutexGuard};
 // `MAX_EVENTS` events and `MAX_EVENT_BYTES` bytes, of which the selected track may use a whole
 // script's worth and the others share one pool of the same size.
 pub const MAX_HEADER_BYTES: usize = 1024 * 1024;
-const MAX_PACKET_BYTES: usize = 256 * 1024;
+pub(crate) const MAX_PACKET_BYTES: usize = 256 * 1024;
 const MAX_EVENTS: usize = 8192;
-const MAX_EVENT_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_EVENT_BYTES: usize = 8 * 1024 * 1024;
 /// Byte pool the unselected tracks' events share between them (the selected track has its own).
 const OTHER_TRACKS_EVENT_BYTES: usize = 8 * 1024 * 1024;
 /// An event this far ahead of the newest packet read can only be one a backward seek left

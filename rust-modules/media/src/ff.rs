@@ -269,39 +269,15 @@ unsafe fn begin_ass_sources(
     streams: *mut *mut AVStream,
     subs: &[(c_int, SubKind, *mut AVCodecContext)],
 ) -> u64 {
-    use crate::player::{ass::Font, ass_source};
     use plx_media_codecs::subtitle_extract::{collect_manifest, AssTrack};
     let tracks: Vec<AssTrack> = subs.iter().map(|(si, kind, _)| AssTrack {
         stream_index: *si,
         authored: *kind == SubKind::Ass,
     }).collect();
     let mut budget = crate::player::ass::FontBudget::default();
-    let manifest = collect_manifest(fmt, streams, &tracks, ass_source::MAX_HEADER_BYTES, |len| budget.admit(len));
-    let mut headers = Vec::new();
-    let mut text_tracks = 0;
-    for (track, ((_, kind, _), authored)) in subs.iter().zip(manifest.headers).enumerate() {
-        match kind {
-            SubKind::Text(dialect) => {
-                headers.push((track as i32, ass_source::TrackHeader::Text(*dialect)));
-                text_tracks += 1;
-            }
-            SubKind::Ass => {
-                if let Some(header) = authored {
-                    headers.push((track as i32, ass_source::TrackHeader::Authored(header)));
-                }
-            }
-            SubKind::Bitmap => {}
-        }
-    }
-    let authored_tracks = headers.len() - text_tracks;
-    let fonts: Vec<Font> = manifest.fonts.into_iter().map(|f| Font { name: f.name, data: f.data }).collect();
-    if !headers.is_empty() || !fonts.is_empty() {
-        crate::player::log(&format!(
-            "ass: embedded tracks={authored_tracks} text_tracks={text_tracks} fonts={} font_bytes={}",
-            fonts.len(), manifest.font_bytes,
-        ));
-    }
-    ass_source::begin(media_key, headers, fonts)
+    let manifest = collect_manifest(fmt, streams, &tracks, crate::player::ass_source::MAX_HEADER_BYTES, |len| budget.admit(len));
+    let kinds: Vec<_> = subs.iter().map(|(_, kind, _)| *kind).collect();
+    crate::player::subtitle_cue::begin_sources(media_key, &kinds, manifest)
 }
 
 /// Did the CURRENT demux session hand over a single video AU? Distinguishes "the demuxer produced
@@ -660,8 +636,7 @@ mod acquisition;
 mod subs;
 #[path = "ff_native_audio.rs"]
 pub(crate) mod native_audio;
-#[path = "ff_subside.rs"]
-pub(crate) mod subside;
+pub(crate) use crate::subtitle_job as subside;
 use subs::{SubKind, SubTracks};
 #[cfg(test)]
 use subs::{decode_bitmap_cue, open_sub_decoder, sub_kind};
@@ -8687,7 +8662,7 @@ pub(crate) fn demux(
 // ---------------------------------------------------------------------------------------
 #[cfg(test)]
 #[path = "ff_test_support.rs"]
-mod test_support;
+pub(crate) mod test_support;
 
 #[cfg(test)]
 #[path = "ff_abr_reject_tests.rs"]
@@ -8715,7 +8690,7 @@ mod stall_guard_tests;
 
 #[cfg(test)]
 #[path = "ff_image_subtitle_tests.rs"]
-mod image_subtitle_tests;
+pub(crate) mod image_subtitle_tests;
 
 #[cfg(test)]
 #[path = "ff_subtitle_charset_tests.rs"]

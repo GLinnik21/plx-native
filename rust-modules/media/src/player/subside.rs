@@ -28,7 +28,7 @@
 //! Logs: `subside: open|anchor|reopen|failed|clock-only failed|stop …` — labels and numbers, never
 //! the URL, host, token or session identifier.
 
-use crate::ff::subside::{read_once, ReadCfg, RunEnd, SideStop};
+use crate::subtitle_job::{read_once, ReadCfg, RunEnd, SideStop};
 use plx_playback_contract::subtitle::Anchor;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -398,7 +398,7 @@ fn run(spec: Spec, stop: Arc<SideStop>) {
         let first = delta.is_none() && !from_playhead;
         let resume = |d: i64| {
             if first {
-                cfg.offset_ns - crate::ff::subside::SCAN_NS
+                cfg.offset_ns - crate::subtitle_job::SCAN_NS
             } else {
                 playpos().saturating_add(d).saturating_sub(REOPEN_LEAD_NS)
             }

@@ -271,14 +271,14 @@ fn ass_packet_terminators_do_not_weaken_validation() {
                 track: 0,
                 start: 1_000_000_000,
                 end: 3_000_000_000,
-                payload,
+                payload: payload.into(),
             }
             .push(generation);
             SubCue::Ass {
                 track: 0,
                 start: 1_000_000_000,
                 end: 3_000_000_000,
-                payload: b"0,0,Default,,0,0,0,,VALID CAPTION",
+                payload: b"0,0,Default,,0,0,0,,VALID CAPTION"[..].into(),
             }
             .push(generation);
             let source = ass_source::selected(0).unwrap();
@@ -295,7 +295,7 @@ fn ass_packet_terminators_do_not_weaken_validation() {
                 track: 0,
                 start: 1_000_000_000,
                 end: 3_000_000_000,
-                payload,
+                payload: payload.into(),
             }
             .push(generation);
         }
@@ -304,7 +304,7 @@ fn ass_packet_terminators_do_not_weaken_validation() {
             track: 0,
             start: 1_000_000_000,
             end: 3_000_000_000,
-            payload: &oversized,
+            payload: oversized.as_slice().into(),
         }
         .push(generation);
         let source = ass_source::selected(0).unwrap();
@@ -319,7 +319,7 @@ fn ass_packet_terminators_do_not_weaken_validation() {
             track: 0,
             start: 1_000_000_000,
             end: 3_000_000_000,
-            payload: b"0,0,Default,,0,0,0,,MULTIPLE TERMINATORS\0\0\0",
+            payload: b"0,0,Default,,0,0,0,,MULTIPLE TERMINATORS\0\0\0"[..].into(),
         }
         .push(generation);
         assert_ass_caption(&ass_source::selected(0).unwrap(), 2000);

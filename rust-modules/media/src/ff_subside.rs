@@ -1,7 +1,7 @@
-//! The **side reader**'s FFmpeg half: a second demux of the film's ORIGINAL Part, reading only
+//! The **side reader**'s transport and presentation runner: a second demux of the film's ORIGINAL Part, reading only
 //! subtitle packets, while the player plays a server remux of that same film (PMS cannot put a
-//! subtitle in a remux, so the app draws it). A `#[path]` child of `ff.rs`, like `ff_subs.rs`,
-//! whose [`SubTracks`] decode every packet this module reads.
+//! subtitle in a remux, so the app draws it). The lower codec job owns all FFmpeg objects and
+//! returns owned raw or bitmap observations; this module owns transport, clock and delivery.
 //!
 //! Three pieces, from the bottom up:
 //!
@@ -20,10 +20,12 @@
 //!
 //! No URL, host, token or session identifier is ever logged from here.
 
-use super::subs::SubCue;
-use super::*;
+use crate::player::subtitle_cue::{begin_sources, SideTracks, SubCue};
+use plx_media_codecs::subtitle_extract::{Job, JobOpenError, ReadOutcome, ReadSeek};
+use plx_net::stream::HttpStream;
+use std::os::raw::c_int;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use plx_media_codecs::subtitle_extract::{AvioInput, ReadOutcome, ReadSeek};
 
 // Clock evidence is shared with presentation; this FFmpeg reader only supplies bytes and times.
 pub(crate) use plx_playback_contract::subtitle::{Anchor, delta_exact, playhead_of};
@@ -296,160 +298,33 @@ pub(crate) enum RunEnd {
     Measured,
 }
 
-/// One open `AVFormatContext` over a [`SideIo`], freed in the one order libavformat needs.
-struct SideDemux {
-    fmt: *mut AVFormatContext,
-    input: Option<AvioInput>,
-    pkt: *mut AVPacket,
-    subs: Option<SubTracks>,
-}
-
-impl Drop for SideDemux {
-    fn drop(&mut self) {
-        // SAFETY: each pointer is either null or exclusively owned by this struct, and is freed
-        // exactly once, here. The decoders go before the format context that owns their parameters,
-        // the AVIO after the context that read through it, and the callbacks' state last.
-        unsafe {
-            if let Some(subs) = self.subs.as_mut() {
-                subs.close();
-            }
-            if !self.pkt.is_null() {
-                av_packet_free(&mut self.pkt);
-            }
-            if !self.fmt.is_null() {
-                avformat_close_input(&mut self.fmt);
-            }
-            drop(self.input.take());
-        }
-    }
-}
-
-/// Open the Part through [`SideIo`] and its subtitle tracks. `Err` carries how to react.
-unsafe fn open_side(cfg: &ReadCfg, stop: &Arc<SideStop>) -> Result<(SideDemux, c_int, u64), RunEnd> {
+/// Open the optional extractor over the transport owned by this reader. The lower codec job
+/// owns FFmpeg objects and yields only owned raw/bitmap observations; the common adapter installs
+/// ASS sources and gives the job the presentation dialects and bounded copy limits.
+fn open_side(cfg: &ReadCfg, stop: &Arc<SideStop>) -> Result<(Job, Option<SideTracks>, u64), RunEnd> {
     let io = match SideIo::open(cfg.url, stop) {
         Ok(io) => io,
         Err(SideOpenErr::Stopped) => return Err(RunEnd::Stopped),
         Err(SideOpenErr::Failed) => return Err(RunEnd::Failed),
     };
-    // The same gate as the main demuxer's (`ff::demux`): a device whose FFmpeg is not the one the
-    // struct offsets were built for is never read through. Only a backstop here: the reader waits
-    // for the main demuxer's anchor, which that demuxer publishes after it has passed this same
-    // gate, so on such a device the reader never gets this far. (Checking it before the anchor
-    // wait would be wrong: the flag is not set until the demuxer has registered FFmpeg.)
-    // `Unusable` raises the failure (a rebuild as the server burn).
-    if !abi_ok() {
-        return Err(RunEnd::Unusable);
-    }
-    let input = AvioInput::new(io).ok_or(RunEnd::Failed)?;
-    let mut d = SideDemux { fmt: std::ptr::null_mut(), input: Some(input), pkt: std::ptr::null_mut(), subs: None };
-    d.fmt = avformat_alloc_context();
-    if d.fmt.is_null() {
-        return Err(RunEnd::Failed);
-    }
-    (*d.fmt).pb = d.input.as_ref().expect("AVIO input installed").context();
-    // No `avformat_find_stream_info`: it would read seconds of interleaved video just to learn what
-    // a Matroska header already says. (Device-verify risk: a stream whose parameters only a probe
-    // reveals; the subtitle decoders read theirs from the header.)
-    let mut fmt = d.fmt;
-    let r = avformat_open_input(&mut fmt, std::ptr::null(), std::ptr::null_mut(), std::ptr::null_mut());
-    d.fmt = fmt; // null on failure: open_input frees the context itself
-    if r < 0 || d.fmt.is_null() {
-        return Err(if stop.is_set() { RunEnd::Stopped } else { RunEnd::Failed });
-    }
-    d.pkt = av_packet_alloc();
-    if d.pkt.is_null() {
-        return Err(RunEnd::Failed);
-    }
-    let streams = (*d.fmt).streams;
-    let mut vi = -1;
-    for i in 0..(*d.fmt).nb_streams {
-        if (*stream_codecpar(*streams.add(i as usize))).codec_type == AVMEDIA_TYPE_VIDEO {
-            vi = i as c_int;
-            break;
-        }
-    }
-    if vi < 0 {
-        return Err(RunEnd::Unusable);
-    }
-    if cfg.clock_only {
-        // The scan needs the video stream and nothing else. A film with a sidecar often has no
-        // embedded subtitle at all, and the Part's ASS sources are not this run's to install.
-        return Ok((d, vi, 0));
-    }
-    let subs = SubTracks::open(d.fmt, streams);
-    let generation = begin_ass_sources(cfg.url, d.fmt, streams, subs.entries());
-    let tracks = subs.entries().len();
-    d.subs = Some(subs);
-    plx_base::eventlog::log(&format!("subside: open tracks={tracks} ordinal={} kbps={}", cfg.ordinal, cfg.kbps));
-    if cfg.ordinal >= tracks {
-        return Err(RunEnd::Unusable);
-    }
-    Ok((d, vi, generation))
-}
-
-/// What the keyframe scan found.
-struct Scan {
-    /// The Part's stream time of the keyframe that matched the anchor byte for byte.
-    matched: Option<i64>,
-    /// The last keyframe at or before the start offset.
-    k_le: Option<i64>,
-    bytes: i64,
-}
-
-/// Seek to `from_ns` on the video stream. `Err` is how the pass ends if it fails.
-unsafe fn seek_video(d: &SideDemux, vi: c_int, from_ns: i64, stop: &SideStop) -> Result<(), RunEnd> {
-    let vst = *(*d.fmt).streams.add(vi as usize);
-    let ts = av_rescale_q(from_ns.max(0), NS_TB, stream_time_base(vst));
-    if av_seek_frame(d.fmt, vi, ts, AVSEEK_FLAG_BACKWARD) < 0 {
-        return Err(if stop.is_set() { RunEnd::Stopped } else { RunEnd::Failed });
-    }
-    Ok(())
-}
-
-/// **Pass A**: read the Part's video keyframes from `offset − 15 s` until one is the anchor (same
-/// size, head and tail) or one is past `offset + 15 s`, remembering the last keyframe at or before
-/// `offset` for the assumed mapping. Every packet is unref'd; only keyframe payloads are compared.
-unsafe fn scan_keyframes(
-    d: &SideDemux,
-    vi: c_int,
-    offset_ns: i64,
-    anchor: &Anchor,
-    stop: &SideStop,
-) -> Result<Scan, RunEnd> {
-    let vst = *(*d.fmt).streams.add(vi as usize);
-    seek_video(d, vi, offset_ns - SCAN_NS, stop)?;
-    let mut scan = Scan { matched: None, k_le: None, bytes: 0 };
-    loop {
-        if stop.is_set() {
-            return Err(RunEnd::Stopped);
-        }
-        let r = av_read_frame(d.fmt, d.pkt);
-        if r < 0 {
-            if stop.is_set() {
-                return Err(RunEnd::Stopped);
-            }
-            return if r == AVERROR_EOF { Ok(scan) } else { Err(RunEnd::Failed) };
-        }
-        let size = (*d.pkt).size.max(0);
-        scan.bytes += i64::from(size);
-        if (*d.pkt).stream_index == vi && (*d.pkt).flags & AV_PKT_FLAG_KEY != 0 {
-            if let Some(t) = pts_ns_opt(d.pkt, vst) {
-                if t > offset_ns.saturating_add(SCAN_NS) {
-                    av_packet_unref(d.pkt);
-                    return Ok(scan);
-                }
-                if t <= offset_ns {
-                    scan.k_le = Some(scan.k_le.map_or(t, |k| k.max(t)));
-                }
-                if !(*d.pkt).data.is_null() && anchor.matches(std::slice::from_raw_parts((*d.pkt).data, size as usize)) {
-                    scan.matched = Some(t);
-                    av_packet_unref(d.pkt);
-                    return Ok(scan);
-                }
-            }
-        }
-        av_packet_unref(d.pkt);
-    }
+    // The main demuxer publishes the anchor only after the same bundled-FFmpeg ABI gate. Keep
+    // the backstop here in case the gate was refused before this reader was admitted.
+    if !plx_media_codecs::ffi::abi_ok() { return Err(RunEnd::Unusable); }
+    let mut job = Job::open(io, !cfg.clock_only).map_err(|error| match error {
+        JobOpenError::NoVideo => RunEnd::Unusable,
+        JobOpenError::Failed if stop.is_set() => RunEnd::Stopped,
+        JobOpenError::Failed => RunEnd::Failed,
+    })?;
+    if cfg.clock_only { return Ok((job, None, 0)); }
+    let tracks = SideTracks::new(job.tracks());
+    let count = tracks.len();
+    job.configure(tracks.decode_plan());
+    let mut budget = crate::player::ass::FontBudget::default();
+    let manifest = job.manifest(crate::player::ass_source::MAX_HEADER_BYTES, |len| budget.admit(len));
+    let generation = begin_sources(cfg.url, tracks.kinds(), manifest);
+    plx_base::eventlog::log(&format!("subside: open tracks={count} ordinal={} kbps={}", cfg.ordinal, cfg.kbps));
+    if cfg.ordinal >= count { return Err(RunEnd::Unusable); }
+    Ok((job, Some(tracks), generation))
 }
 
 /// The `subside: anchor …` line. Numbers and labels only.
@@ -570,106 +445,68 @@ pub(crate) fn read_once(
     playpos: &dyn Fn() -> i64,
     clock: &dyn Fn() -> (i64, i64),
 ) -> RunEnd {
-    // SAFETY: every FFmpeg object below is owned by `d` and used on this thread only; the callbacks'
-    // state outlives the context (see `SideDemux::drop`).
-    unsafe {
-        let (d, vi, generation) = match open_side(cfg, stop) {
-            Ok(v) => v,
-            Err(end) => return end,
+    let (mut job, tracks, generation) = match open_side(cfg, stop) {
+        Ok(v) => v,
+        Err(end) => return end,
+    };
+    if delta.is_none() {
+        let started = std::time::Instant::now();
+        let scan = match job.scan_keyframes(cfg.offset_ns, SCAN_NS, || stop.is_set(), |bytes| anchor.matches(bytes)) {
+            Some(scan) => scan,
+            None => return if stop.is_set() { RunEnd::Stopped } else { RunEnd::Failed },
         };
-        if delta.is_none() {
-            let started = std::time::Instant::now();
-            let scan = match scan_keyframes(&d, vi, cfg.offset_ns, anchor, stop) {
-                Ok(s) => s,
-                Err(end) => return end,
-            };
-            let (pts_shift, disp_base) = clock();
-            let assumed = scan.k_le.map(|k| delta_assumed(k, anchor.pts_ns, pts_shift, disp_base));
-            let chosen = match (scan.matched, assumed) {
-                (Some(t), _) => delta_exact(t, anchor.pts_ns, pts_shift, disp_base),
-                (None, Some(a)) => a,
-                (None, None) => 0,
-            };
-            plx_base::eventlog::log(&anchor_line(
-                scan.matched,
-                anchor.pts_ns,
-                disp_base,
-                pts_shift,
-                chosen,
-                assumed,
-                scan.bytes,
-                started.elapsed().as_millis(),
-            ));
-            *delta = Some(chosen);
-            if scan.matched.is_some() {
-                // Only a byte-exact match is the sidecar draw's to trust (`player::sidecar_clock_ns`).
-                crate::player::subside::publish_exact(chosen);
-            }
-            if cfg.clock_only {
-                return RunEnd::Measured; // `d` drops here: the Part's connection is closed
-            }
-        }
-        if cfg.clock_only {
-            return RunEnd::Measured; // a delta was handed in: nothing to scan
-        }
-        let delta_ns = delta.unwrap_or(0);
-        // Pass B: from `offset − 15 s` (or the playhead on a reopen) decode the track.
-        if let Err(end) = seek_video(&d, vi, resume_part_ns(delta_ns), stop) {
-            return end;
-        }
-        let subs = d.subs.as_ref().expect("opened with its tracks");
-        let mut delivery = Delivery::new();
-        // The judged clock, read once per packet: the player's playhead (never behind where this
-        // run's first keyframe is shown), on the subtitle clock.
-        let judged = || {
-            let (pts_shift, disp_base) = clock();
-            let anchor_playhead = playhead_of(anchor.pts_ns, pts_shift, disp_base);
-            judged_clock(playpos(), anchor_playhead, crate::player::subtitle_offset_ns())
+        let (pts_shift, disp_base) = clock();
+        let assumed = scan.k_le.map(|k| delta_assumed(k, anchor.pts_ns, pts_shift, disp_base));
+        let chosen = match (scan.matched, assumed) {
+            (Some(t), _) => delta_exact(t, anchor.pts_ns, pts_shift, disp_base),
+            (None, Some(a)) => a,
+            (None, None) => 0,
         };
-        loop {
-            if stop.is_set() {
-                return RunEnd::Stopped;
-            }
-            let r = av_read_frame(d.fmt, d.pkt);
-            if r < 0 {
-                if stop.is_set() {
-                    return RunEnd::Stopped;
-                }
-                if r != AVERROR_EOF {
-                    return RunEnd::Failed;
-                }
-                // The Part ended: nothing more to draw. Idle until told to stop.
+        plx_base::eventlog::log(&anchor_line(
+            scan.matched, anchor.pts_ns, disp_base, pts_shift, chosen, assumed,
+            scan.bytes, started.elapsed().as_millis(),
+        ));
+        *delta = Some(chosen);
+        if scan.matched.is_some() {
+            // Only byte-exact matching gives the sidecar's render clock a correction.
+            crate::player::subside::publish_exact(chosen);
+        }
+        if cfg.clock_only { return RunEnd::Measured; }
+    }
+    if cfg.clock_only { return RunEnd::Measured; }
+    let delta_ns = delta.unwrap_or(0);
+    if !job.seek_video(resume_part_ns(delta_ns)) {
+        return if stop.is_set() { RunEnd::Stopped } else { RunEnd::Failed };
+    }
+    let tracks = tracks.expect("embedded extractor has tracks");
+    let mut delivery = Delivery::new();
+    let judged = || {
+        let (pts_shift, disp_base) = clock();
+        let anchor_playhead = playhead_of(anchor.pts_ns, pts_shift, disp_base);
+        judged_clock(playpos(), anchor_playhead, crate::player::subtitle_offset_ns())
+    };
+    loop {
+        if stop.is_set() { return RunEnd::Stopped; }
+        let packet = match job.next(cfg.ordinal, crate::player::desired_sub_idx() >= 0, crate::player::SUB_BITMAP_BUDGET) {
+            Ok(Some(packet)) => packet,
+            Ok(None) => {
+                if stop.is_set() { return RunEnd::Stopped; }
                 delivery.flush(generation);
                 while !stop.is_set() {
                     std::thread::park_timeout(std::time::Duration::from_millis(PARK_MS));
                 }
                 return RunEnd::Stopped;
             }
-            let si = (*d.pkt).stream_index;
-            // The stream table is re-read per packet and the index bounded: a packet that names a
-            // stream the header never declared is dropped, never indexed past the array.
-            if si < 0 || si as u32 >= (*d.fmt).nb_streams {
-                av_packet_unref(d.pkt);
-                continue;
-            }
-            let st = *(*d.fmt).streams.add(si as usize);
-            let t = pts_ns_opt(d.pkt, st);
-            if let Some(pos) = subs.position(si).filter(|p| *p == cfg.ordinal) {
-                if let Some(cue) = subs.decode(pos, d.pkt, st) {
-                    delivery.deliver(cue, delta_ns, judged(), generation);
-                }
-            }
-            av_packet_unref(d.pkt);
-            if let Some(t) = t {
-                delivery.advance(t.saturating_sub(delta_ns), judged(), generation);
-            }
-            if let Some(t) = t {
-                while pacing_parks(t, delta_ns, playpos()) {
-                    if stop.is_set() {
-                        return RunEnd::Stopped;
-                    }
-                    std::thread::park_timeout(std::time::Duration::from_millis(PARK_MS));
-                }
+            Err(()) => return if stop.is_set() { RunEnd::Stopped } else { RunEnd::Failed },
+        };
+        if let Some(raw) = packet.cue {
+            delivery.deliver(tracks.decode(raw), delta_ns, judged(), generation);
+        }
+        if let Some(t) = packet.time_ns {
+            delivery.advance(t.saturating_sub(delta_ns), judged(), generation);
+            while pacing_parks(t, delta_ns, playpos()) {
+                if stop.is_set() { return RunEnd::Stopped; }
+                std::thread::park_timeout(std::time::Duration::from_millis(PARK_MS));
             }
         }
     }
@@ -679,7 +516,8 @@ pub(crate) fn read_once(
 mod tests {
     use super::*;
     #[allow(unused_imports)]
-    use super::super::test_support::*;
+    use crate::ff::test_support::*;
+    use crate::player::SHARED;
 
     /// A one-pixel image set on `track` stamped `pts` (Part time).
     fn set(track: i32, pts: i64) -> SubCue<'static> {
@@ -966,7 +804,7 @@ mod tests {
     #[ignore = "needs the bundled host FFmpeg and a system ffmpeg; run make check-ffmpeg"]
     fn side_reader_draws_a_shifted_cue_from_a_generated_mkv() {
         let _g = plx_base::testlock::serial();
-        let _ffmpeg = super::super::image_subtitle_tests::bind_host_ffmpeg();
+        let _ffmpeg = crate::ff::image_subtitle_tests::bind_host_ffmpeg();
         let dir = std::env::temp_dir().join(format!("plx-subside-e2e-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("t.srt"), "1\n00:00:01,000 --> 00:00:02,500\nHello\n\n").unwrap();

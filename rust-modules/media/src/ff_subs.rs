@@ -15,28 +15,11 @@ use crate::player::text_ass::TextDialect;
 use plx_media_codecs::subtitle_extract::ImageDecoders;
 #[cfg(test)]
 pub(super) use plx_media_codecs::subtitle::open_sub_decoder;
-/// How a subtitle stream's payload turns into displayable text — classified by the codec's
-/// name (avcodec_get_name is already linked, so we avoid hardcoding the n3.3 subtitle codec-id
-/// block, which the ABI probe never verified). Bitmap subs (PGS/VobSub/DVB/teletext) carry no
-/// text and can't be client-rendered, but still occupy their file-order slot so the track
-/// menu's desired_sub_idx stays aligned with the metadata subs list.
-#[derive(Clone, Copy, PartialEq)]
-pub(super) enum SubKind {
-    /// SRT / subrip / webvtt / sami / text / mov_text ...: the packet payload is text, UTF-8 or (see
-    /// `sub_charset`) a legacy encoding, converted to ASS by the dialect (`player::text_ass`) and
-    /// rendered by libass like an authored track. mov_text (mp4 tx3g) also carries a 2-byte
-    /// big-endian text-length prefix before the text.
-    Text(TextDialect),
-    Ass,    // ASS / SSA: dialogue line; text is the field after the 8th comma
-    Bitmap, // PGS / VobSub / DVB / teletext: image subtitle, not renderable here
-}
+pub(super) use crate::player::subtitle_cue::PresentationTrack as SubKind;
 
 pub(super) unsafe fn sub_kind(codec_id: c_int) -> SubKind {
     let name = std::ffi::CStr::from_ptr(avcodec_get_name(codec_id)).to_string_lossy();
-    if matches!(name.as_ref(), "ass" | "ssa") {
-        return SubKind::Ass;
-    }
-    TextDialect::from_codec_name(&name).map_or(SubKind::Bitmap, SubKind::Text)
+    SubKind::from_codec_name(&name)
 }
 
 /// Adapt the codec's neutral bitmap output to the player store's cue type.
@@ -49,21 +32,6 @@ unsafe fn decode_bitmap(
     let display = plx_media_codecs::subtitle::decode_bitmap(dec, pkt, crate::player::SUB_BITMAP_BUDGET)?;
     let pts = pts_ns(pkt, st);
     Some(bitmap_cue(display, track, pts))
-}
-
-fn bitmap_cue(display: plx_media_codecs::subtitle::BitmapDisplay, track: c_int, pts: i64) -> SubCue<'static> {
-    match display {
-        plx_media_codecs::subtitle::BitmapDisplay::Clear => SubCue::BitmapClear { track, pts },
-        plx_media_codecs::subtitle::BitmapDisplay::Set { cw, ch, rects, total_rects } => {
-            SubCue::BitmapSet {
-                track, pts, cw, ch,
-                rects: rects.into_iter().map(|r| crate::player::SubRect {
-                    x: r.x, y: r.y, w: r.w, h: r.h, index: r.index, palette: r.palette,
-                }).collect(),
-                total_rects,
-            }
-        }
-    }
 }
 
 /// Player-store adapter for the shared, generic byte-budget selector.
@@ -91,88 +59,8 @@ pub(super) unsafe fn decode_bitmap_cue(
     }
 }
 
-/// One cue produced from one subtitle packet, in the stream's clock (`pts_ns`), not yet delivered.
-pub(super) enum SubCue<'a> {
-    /// SRT / WebVTT / mov_text ... payload (mov_text's length prefix already dropped), converted to
-    /// ASS by the track's dialect in `ass_source::push_text`.
-    /// `payload` is always UTF-8 here: [`SubTracks::decode`] ran the track's charset step.
-    /// `identity` is `ass_source::packet_identity` of the packet bytes BEFORE the charset step: the
-    /// dedup key of a re-read, which must not depend on how the detector decoded it this time.
-    Text { track: i32, start: i64, end: i64, payload: std::borrow::Cow<'a, [u8]>, identity: u64 },
-    /// An ASS/SSA dialogue line for `ass_source`.
-    Ass { track: i32, start: i64, end: i64, payload: &'a [u8] },
-    /// A decoded image display set (every rect, indexed) on its authoring canvas.
-    BitmapSet {
-        track: c_int,
-        pts: i64,
-        cw: i32,
-        ch: i32,
-        rects: Vec<crate::player::SubRect>,
-        /// Rects the decoder produced, before the byte budget and the unusable-rect skip (for the
-        /// log line that reports a set the store had to thin).
-        total_rects: usize,
-    },
-    /// An image-subtitle CLEAR: closes the track's open bitmap cue at `pts`.
-    BitmapClear { track: c_int, pts: i64 },
-}
-
-impl<'a> SubCue<'a> {
-    /// The cue with every time moved by `by_ns` (negative = earlier). The side reader's clock
-    /// mapping: a cue is stamped in the original Part's time and drawn against the remux's playhead,
-    /// so each one goes through this with `-delta` before [`Self::push`].
-    pub(super) fn shifted(self, by_ns: i64) -> SubCue<'a> {
-        match self {
-            SubCue::Text { track, start, end, payload, identity } => {
-                SubCue::Text { track, start: start.saturating_add(by_ns), end: end.saturating_add(by_ns), payload, identity }
-            }
-            SubCue::Ass { track, start, end, payload } => {
-                SubCue::Ass { track, start: start.saturating_add(by_ns), end: end.saturating_add(by_ns), payload }
-            }
-            SubCue::BitmapSet { track, pts, cw, ch, rects, total_rects } => {
-                SubCue::BitmapSet { track, pts: pts.saturating_add(by_ns), cw, ch, rects, total_rects }
-            }
-            SubCue::BitmapClear { track, pts } => SubCue::BitmapClear { track, pts: pts.saturating_add(by_ns) },
-        }
-    }
-}
-
-impl SubCue<'_> {
-    /// Hand the cue to the render store. `ass_generation` is the `ass_source::begin` token a
-    /// `Text` or `Ass` cue is pushed under; the image kinds ignore it.
-    pub(super) fn push(self, ass_generation: u64) {
-        match self {
-            SubCue::Text { track, start, end, payload, identity } => {
-                let text = String::from_utf8_lossy(&payload);
-                crate::player::ass_source::push_text(ass_generation, track, start, end, &text, identity);
-            }
-            SubCue::Ass { track, start, end, payload } => {
-                crate::player::ass_source::push(ass_generation, track, start, end, payload);
-            }
-            SubCue::BitmapClear { track, pts } => crate::player::close_subtitle_bitmap(track, pts),
-            SubCue::BitmapSet { track, pts, cw, ch, rects, total_rects } => {
-                if track == crate::player::desired_sub_idx() {
-                    let r0 = &rects[0];
-                    crate::player::log(&format!(
-                        "image cue [{}ms] {}x{} at {},{} rects={} canvas={cw}x{ch}",
-                        pts / 1_000_000,
-                        r0.w,
-                        r0.h,
-                        r0.x,
-                        r0.y,
-                        rects.len()
-                    ));
-                }
-                let rects_kept = rects.len();
-                crate::player::push_subtitle_bitmap(track, pts, cw, ch, rects);
-                if rects_kept < total_rects {
-                    crate::player::log(&format!(
-                        "ff: image-sub track#{track} kept {rects_kept} of {total_rects} rects"
-                    ));
-                }
-            }
-        }
-    }
-}
+use crate::player::subtitle_cue::bitmap_cue;
+pub(super) use crate::player::subtitle_cue::SubCue;
 
 /// The subtitle streams of one `AVFormatContext`, in FILE order, with the decoder of each image
 /// stream. A track's 0-based position here is its `desired_sub_idx` / store key.
@@ -295,7 +183,7 @@ impl SubTracks {
         };
         let track = pos as i32;
         Some(if kind == SubKind::Ass {
-            SubCue::Ass { track, start, end, payload }
+            SubCue::Ass { track, start, end, payload: payload.into() }
         } else {
             // Text is UTF-8 by the spec and legacy-encoded (GBK, Big5, ...) in practice (#628).
             let identity = crate::player::ass_source::packet_identity(payload);
@@ -417,7 +305,7 @@ mod tests {
             }
             _ => panic!("a text cue stays a text cue"),
         }
-        match (SubCue::Ass { track: 2, start: 5_000_000_000, end: 6_000_000_000, payload: b"y" }).shifted(by) {
+        match (SubCue::Ass { track: 2, start: 5_000_000_000, end: 6_000_000_000, payload: b"y"[..].into() }).shifted(by) {
             SubCue::Ass { track, start, end, .. } => assert_eq!((track, start, end), (2, 2_500_000_000, 3_500_000_000)),
             _ => panic!("an ASS cue stays an ASS cue"),
         }
