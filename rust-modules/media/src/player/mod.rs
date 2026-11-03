@@ -2869,11 +2869,14 @@ mod tests {
         ps.begin_attempt_view(crate::route::RouteStartAttempt::fixture(), attempt_view::Backend::Uri);
         SHARED.load_failed.store(true, Relaxed);
         SHARED.demux_no_video.store(true, Relaxed);
+        SHARED.pb_state.store(PlaybackState::Error as u8, Relaxed);
         let cause = live_runtime_failure(&ps);
         let shape = error_now(&ps).kind;
+        let status = state(&ps);
         SHARED.reset_session();
         assert_eq!(cause, RuntimeFailure::Unknown, "a URI attempt has no feed failure evidence");
         assert_eq!(shape, FailureKind::Unspecified, "retired demux flags cannot diagnose URI media");
+        assert_eq!(status, PlaybackState::Connecting, "retired feed status cannot describe a new URI attempt");
     }
 
     /// The speeds a source can be offered: everything up to 2x for film, nothing above 1x for 60p
