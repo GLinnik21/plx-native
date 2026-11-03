@@ -2019,7 +2019,12 @@ mod flight_tests {
         fn frames_until(&mut self, what: &str, done: impl Fn(&Rig) -> bool) {
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             while !done(self) {
-                assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+                assert!(std::time::Instant::now() < deadline,
+                    "timed out waiting for {what}: phase={}, decisions={}, answered={}, live={}, stage={:?}, recovery={}, state={:?}, requests={:?}",
+                    crate::route::control_phase_label(), self.flight.decisions(),
+                    self.flight.answered(), self.pa.is_live(), self.pa.feed_stage(),
+                    crate::route::recovery_flight_outstanding(), crate::player::state(&self.ps),
+                    self.flight.requests());
                 std::thread::sleep(Duration::from_millis(2));
                 self.frame();
             }
