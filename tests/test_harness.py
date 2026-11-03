@@ -1959,6 +1959,19 @@ class PipelineTier(unittest.TestCase):
     def _pipeline_cases(self):
         return _manifest()["pipeline_cases"]
 
+    def test_loopback_fixture_mode_requires_a_fixed_forwarded_port(self):
+        result = subprocess.run([sys.executable, run.__file__, "--fixtures-loopback", "--list"],
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--fixtures-loopback needs a fixed --fixtures-port", result.stderr)
+
+    def test_loopback_fixture_listing_is_offline(self):
+        result = subprocess.run([sys.executable, run.__file__, "--fixtures-loopback",
+                                 "--fixtures-port", "32498", "--list"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("pipe_h264_ac3_1080p", result.stdout)
+
     def test_pipeline_case_arms_requested_extra_triggers_without_changing_assertions(self):
         case = {"name": "uri-routing", "fixture": "clip.mkv", "operations": [{"op": "play"}],
                 "expect": {"require_video_bound": True}}

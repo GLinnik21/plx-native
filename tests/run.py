@@ -7050,7 +7050,12 @@ def main():
     ap.add_argument("--fixtures-port", type=int, default=0, metavar="PORT",
                     help="port for the fixture HTTP server (default: pick a free one). Pin it when "
                          "a firewall rule names a port")
+    ap.add_argument("--fixtures-loopback", action="store_true",
+                    help="advertise synthetic fixtures as 127.0.0.1 on the TV; requires a fixed "
+                         "--fixtures-port and an operator-owned reverse SSH forward to that port")
     args = ap.parse_args()
+    if args.fixtures_loopback and not args.fixtures_port:
+        sys.exit("--fixtures-loopback needs a fixed --fixtures-port for reverse SSH forwarding")
     if args.print_test_token:
         # Standalone: this mode answers one question (what token is the managed test user's?)
         # and touches nothing else -- no case selection, no TV lock, no launch. Reject every flag
@@ -7060,6 +7065,7 @@ def main():
             ("--list", args.list), ("--server", args.server), ("--fps", args.fps),
             ("--fps-player", args.fps_player), ("--pipeline", args.pipeline),
             ("--owner", args.owner), ("--build", args.build), ("--mock", args.mock),
+            ("--fixtures-loopback", args.fixtures_loopback),
         ] if v]
         if conflicting:
             sys.exit(f"--print-test-token is standalone and cannot combine with {', '.join(conflicting)}")
@@ -7092,6 +7098,8 @@ def main():
     # The FPS scenes are on the server side of the line whatever else is asked: they navigate a
     # real signed-in Home, so without a token they grade a QR screen.
     server_tier = args.server or args.fps or args.fps_player
+    if args.fixtures_loopback and server_tier:
+        sys.exit("--fixtures-loopback applies only to the synthetic pipeline tier")
     if args.mock:
         # The synthetic library has no real items, no plex.tv account and one fabricated guest, so
         # every flag that names one of those is a contradiction, not a preference to resolve.
@@ -7259,7 +7267,7 @@ def main():
                         if pskipped else f" — --filter {args.filter!r} matched nothing"))
         srv, url_base = serve(root, port=args.fixtures_port,
                               sink=(lambda m: print(f"      [srv] {m}")) if args.verbose else None,
-                              peer=cfg["tv"])
+                              peer="127.0.0.1" if args.fixtures_loopback else cfg["tv"])
         # LIFO: registered after the server and BEFORE arm_teardown, so on the way out the TV is
         # cleaned FIRST and the bytes are pulled second. The other order stops serving an app that
         # is still playing, which turns every interrupted run into a demux failure in the log.

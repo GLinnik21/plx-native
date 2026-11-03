@@ -998,6 +998,12 @@ buffer-feed assertions or control scripts into a URI backend: inspect each saved
 probe variants are restricted to their known SDR720p24 fixture and must not be applied to this
 mixed-codec matrix.
 
+If the TV cannot reach the fixture server over the LAN, `--fixtures-loopback --fixtures-port PORT`
+advertises the fixtures through the TV's loopback interface. Hold the TV lease and keep
+`tools/tv-ssh ssh -o ExitOnForwardFailure=yes -R PORT:127.0.0.1:PORT -N tv` running for that
+case or suite, then stop that forward when the run ends. The harness still owns and grades its
+fixture server; this option changes the advertised interface only.
+
 Nothing else is required — no `manifest.local.json`, no PMS, no token, no ratingKey, no library, no
 sharing. The TV address comes from the overlay's `tv` if you have one, else from `tools/tv-config.sh`
 (this checkout's gitignored `.tv-host`, the main checkout's, then the per-user
