@@ -88,6 +88,13 @@ pub struct UriDriverSettings {
 #[cfg(feature = "play-uri")]
 struct ProductUriClock(std::time::Instant);
 
+/// Expiry for an off-frame source qualification, read at the player IO boundary. A qualifier
+/// owns the returned deadline with its source; the route only compares the supplied value.
+#[cfg(feature = "play-uri")]
+pub fn uri_source_expiry_after(ttl: std::time::Duration) -> std::time::Instant {
+    std::time::Instant::now() + ttl
+}
+
 #[cfg(feature = "play-uri")]
 impl MonotonicClock for ProductUriClock {
     fn now_ms(&self) -> u64 {

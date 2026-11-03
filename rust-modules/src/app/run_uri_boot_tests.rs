@@ -31,7 +31,8 @@ mod uri_boot_tests {
                 requirements: Requirements { source: SourceKind::ProgressiveUri,
                     video: Fidelity::Exact, audio: Fidelity::Exact,
                     audio_track: audio, subtitle_track: TrackChoice::Unspecified },
-                expires_at: std::time::Instant::now() + Duration::from_secs(30),
+                    expires_at: plx_media::player::adapter::uri_source_expiry_after(
+                        Duration::from_secs(30)),
                 certified_dolby_vision: None,
                 certified_subtitle_source: None,
             })
