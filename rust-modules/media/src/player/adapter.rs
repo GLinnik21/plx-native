@@ -274,10 +274,11 @@ impl PlayerAdapter {
         at: super::attempt_metrics::Tick) -> backend::RunResult {
         while let Some(action) = self.feed_driver.take_transport_action() {
             let accepted = match action {
-                FeedTransportAction::Play { .. } => super::resume(self),
+                FeedTransportAction::Play { .. } | FeedTransportAction::ResumeInitial { .. } =>
+                    super::resume(self),
                 FeedTransportAction::Pause { .. } => super::pause(self),
             };
-            self.feed_driver.note_transport_result(action, accepted);
+            self.feed_driver.note_transport_result(&mut self.feed, &self.mt, action, accepted);
             let mut drivers = PhysicalDrivers {
                 feed: &mut self.feed,
                 feed_driver: &mut self.feed_driver,
