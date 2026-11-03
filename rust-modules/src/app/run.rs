@@ -2806,6 +2806,10 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                             }
                             return;
                         }
+                        // This source owns its resume position in InitialPlayback. Feed's
+                        // begin_resume checks a Feed URL and would refuse a valid URI original.
+                        finish_landed_play(app, true);
+                        return;
                     }
                     // A preview landing nobody is waiting for any more (the page halted it while
                     // the resolve was in flight) must not start an engine: nothing would track
