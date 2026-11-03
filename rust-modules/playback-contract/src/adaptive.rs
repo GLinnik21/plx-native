@@ -20,13 +20,23 @@ pub enum FeedAction {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FeedFailure { Aborted, Deadline, Ended, NotReady, Parse, SourceMoved }
+pub enum FeedFailure { Aborted, Deadline, Ended, NotReady, Parse, SourceMoved, Protocol }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FeedObservation {
     Opened { trial: TrialId, declared_bps: u64 },
     SegmentReady { trial: TrialId, duration: std::time::Duration },
     Failed { trial: TrialId, failure: FeedFailure },
+}
+
+impl FeedObservation {
+    pub const fn trial(self) -> TrialId {
+        match self {
+            Self::Opened { trial, .. }
+            | Self::SegmentReady { trial, .. }
+            | Self::Failed { trial, .. } => trial,
+        }
+    }
 }
 
 /// One worker-local IO port. Binding a locator is a runner operation; stepped

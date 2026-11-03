@@ -4269,7 +4269,7 @@ impl FeedPort for HlsTrialPort<'_> {
             FeedAction::Open { trial, .. } | FeedAction::ReadNext { trial } => trial,
         };
         if trial != self.trial {
-            return FeedObservation::Failed { trial, failure: FeedFailure::SourceMoved };
+            return FeedObservation::Failed { trial, failure: FeedFailure::Protocol };
         }
         match action {
             FeedAction::Open { trial, source } => self.open(trial, source),
@@ -4281,10 +4281,10 @@ impl FeedPort for HlsTrialPort<'_> {
 impl HlsTrialPort<'_> {
     fn open(&mut self, trial: TrialId, source: SourceKey) -> FeedObservation {
         let Some((bound, locator)) = self.source.take() else {
-            return FeedObservation::Failed { trial, failure: FeedFailure::SourceMoved };
+            return FeedObservation::Failed { trial, failure: FeedFailure::Protocol };
         };
         if bound != source {
-            return FeedObservation::Failed { trial, failure: FeedFailure::SourceMoved };
+            return FeedObservation::Failed { trial, failure: FeedFailure::Protocol };
         }
         let parsed = plx_plex::plex::StreamUrl::parse(&locator);
         if parsed.origin != *self.origin {
@@ -4313,7 +4313,7 @@ impl HlsTrialPort<'_> {
 
     fn read_next(&mut self, trial: TrialId) -> FeedObservation {
         let Some(candidate) = self.candidate.as_mut() else {
-            return FeedObservation::Failed { trial, failure: FeedFailure::SourceMoved };
+            return FeedObservation::Failed { trial, failure: FeedFailure::Protocol };
         };
         match hls_cursor_next(candidate, self.aq, self.net, self.reserve.as_mut()) {
             Ok(Some(segment)) => {
@@ -6257,11 +6257,15 @@ fn hls_demux(
             let opened = adaptive::open_candidate(&mut port, trial_id, primed.url.clone());
             (opened, port.candidate.take(), port.error.take())
         };
+        if opened.trial() != trial_id {
+            state.abandon(&primed.encoder_session);
+            tx.finish("feed_protocol");
+            return Err(HlsExit::Failed("adaptive feed returned a foreign trial"));
+        }
         let (mut candidate, opened_declared_bps) = match opened {
-            FeedObservation::Opened { trial, declared_bps } if trial == trial_id =>
+            FeedObservation::Opened { declared_bps, .. } =>
                 (candidate_slot.take().expect("an opened trial owns its cursor"), declared_bps),
-            FeedObservation::Failed { failure: FeedFailure::SourceMoved, .. }
-            | FeedObservation::Opened { .. } => {
+            FeedObservation::Failed { failure: FeedFailure::SourceMoved, .. } => {
                 state.abandon(&primed.encoder_session);
                 reject_hls_abr_after_transaction(
                     state, proposal, crate::abr::RejectCause::Circumstance,
@@ -6270,6 +6274,12 @@ fn hls_demux(
                 tx.finish("origin_changed");
                 crate::player::log("abr: candidate changed origin; rejected");
                 continue;
+            }
+            FeedObservation::Failed { failure: FeedFailure::Protocol, .. }
+            | FeedObservation::SegmentReady { .. } => {
+                state.abandon(&primed.encoder_session);
+                tx.finish("feed_protocol");
+                return Err(HlsExit::Failed("adaptive feed open protocol violation"));
             }
             FeedObservation::Failed { .. } => {
                 let error = open_error.expect("a failed candidate open records its physical exit");
@@ -6319,16 +6329,26 @@ fn hls_demux(
             let next = adaptive::next_candidate_segment(&mut port, trial_id);
             (next, port.candidate.take(), port.segment.take(), port.error.take())
         };
+        if next.trial() != trial_id {
+            state.abandon(&primed.encoder_session);
+            tx.finish("feed_protocol");
+            return Err(HlsExit::Failed("adaptive feed returned a foreign trial"));
+        }
         let mut candidate = candidate_slot.expect("segment lookup retains its candidate cursor");
         let (candidate_segment, candidate_duration) = match next {
-            FeedObservation::SegmentReady { trial, duration } if trial == trial_id =>
+            FeedObservation::SegmentReady { duration, .. } =>
                 (segment_slot.expect("ready segment carries its physical object"), duration),
             FeedObservation::Failed { failure: FeedFailure::Aborted | FeedFailure::SourceMoved, .. }
-            | FeedObservation::SegmentReady { .. }
-            | FeedObservation::Opened { .. } => {
+            => {
                 state.abandon(&primed.encoder_session);
                 tx.finish("aborted");
                 return Err(HlsExit::Aborted);
+            }
+            FeedObservation::Failed { failure: FeedFailure::Protocol, .. }
+            | FeedObservation::Opened { .. } => {
+                state.abandon(&primed.encoder_session);
+                tx.finish("feed_protocol");
+                return Err(HlsExit::Failed("adaptive feed read protocol violation"));
             }
             FeedObservation::Failed { failure: FeedFailure::Ended, .. } => {
                 state.abandon(&primed.encoder_session);
@@ -6575,9 +6595,14 @@ fn hls_demux(
                 let next = adaptive::next_candidate_segment(&mut port, trial_id);
                 (next, port.candidate.take(), port.segment.take(), port.error.take())
             };
+            if next.trial() != trial_id {
+                state.abandon(&primed.encoder_session);
+                tx.finish("feed_protocol");
+                return Err(HlsExit::Failed("adaptive feed returned a foreign trial"));
+            }
             candidate = candidate_slot.expect("follow-up lookup retains its candidate cursor");
             let (repeatable_segment, repeatable_duration) = match next {
-                FeedObservation::SegmentReady { trial, duration } if trial == trial_id =>
+                FeedObservation::SegmentReady { duration, .. } =>
                     (segment_slot.expect("ready follow-up carries its physical object"), duration),
                 FeedObservation::Failed { failure: FeedFailure::Ended, .. } => {
                     state.abandon(&primed.encoder_session);
@@ -6589,11 +6614,16 @@ fn hls_demux(
                     continue;
                 }
                 FeedObservation::Failed { failure: FeedFailure::Aborted | FeedFailure::SourceMoved, .. }
-                | FeedObservation::SegmentReady { .. }
-                | FeedObservation::Opened { .. } => {
+                => {
                     state.abandon(&primed.encoder_session);
                     tx.finish("aborted");
                     return Err(HlsExit::Aborted);
+                }
+                FeedObservation::Failed { failure: FeedFailure::Protocol, .. }
+                | FeedObservation::Opened { .. } => {
+                    state.abandon(&primed.encoder_session);
+                    tx.finish("feed_protocol");
+                    return Err(HlsExit::Failed("adaptive feed follow-up protocol violation"));
                 }
                 FeedObservation::Failed { .. } => {
                     let error = next_error.expect("failed follow-up read records its physical exit");
