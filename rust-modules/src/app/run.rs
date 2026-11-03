@@ -648,14 +648,14 @@ fn hud_model(
     ps: &plx_media::route::PlaybackSession,
     meta: plx_data::metadata::MetadataView<'_>,
 ) -> plx_appkit::player_hud::model::HudModel {
-    let playpos_ns = plx_media::player::playpos_ns();
+    let playpos_ns = plx_media::player::playpos_ns(ps).unwrap_or(0);
     plx_appkit::player_hud::model::HudModel {
         paused: plx_media::player::TX.paused.load(Relaxed),
         is_episode: meta.now_playing().is_some_and(|n| n.is_real_episode),
         scrub_ns: plx_media::player::TX.scrub_ns.load(Relaxed),
         playpos_ns,
-        seek_display_ns: plx_media::player::seek_display_ns(),
-        duration_ns: plx_media::player::duration_ns(),
+        seek_display_ns: plx_media::player::seek_display_ns(ps).unwrap_or(-1),
+        duration_ns: plx_media::player::duration_ns(ps).unwrap_or(0),
         loading: plx_media::player::loading(ps),
         sub_size: plx_media::route::subtitle_size(),
         sub_position: plx_media::route::subtitle_position(),
@@ -1978,7 +1978,7 @@ fn pointer_on_bar(app: &App, x: f32, y: f32) -> bool {
 pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         park_on_decoder_release(app);
         if playback_may_run(app) {
-            if is_started() {
+            if is_started(&app.player.session) == Some(true) {
                 plx_media::player::pump(&mut app.player.session, &mut app.adapters.player, fr.now);
             }
             // Outside `is_started`: a refused preview landing or a stale machine has no engine,
@@ -2058,7 +2058,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // show has another episode queued and the Next episode preference is not Off, else leave
         // the player (back to the detail page or home, whichever is behind), instead of freezing
         // on the last frame.
-        if playback_may_run(app) && super::bridge::player(&app.pages).is_some() && plx_media::player::ended() {
+        if playback_may_run(app) && super::bridge::player(&app.pages).is_some() && plx_media::player::ended(&app.player.session) == Some(true) {
             let handed_off_to_up_next = finish_playback(&mut app.player,
                 &mut app.adapters.player,
                 &mut app.repause_at,
@@ -2072,7 +2072,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
             // even on a real exit — the return value is the only live signal for it this frame.
             crate::dev::scenarios::maybe_replay_after_eos(app, handed_off_to_up_next);
         } else if playback_may_run(app)
-            && plx_media::player::ended()
+            && plx_media::player::ended(&app.player.session) == Some(true)
             && super::content::off_route_orphan(
                 app.adapters.player.is_live(),
                 plx_media::route::is_preview(&app.player.session),
@@ -2264,9 +2264,10 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         if resume_pend()
             && matches!(app.route(), AppArg::Player)
             && plx_media::player::seek_preroll_active()
-            && seek_pending() < 0
-            && frames() >= 1
-            && playpos() + 15 * 1_000_000_000 >= app.repause_at
+            && seek_pending(&app.player.session).is_none()
+            && frames(&app.player.session).is_some_and(|count| count >= 1)
+            && playpos(&app.player.session)
+                .is_some_and(|pos| pos + 15 * 1_000_000_000 >= app.repause_at)
         {
             plx_media::player::finish_paused_seek(&mut app.adapters.player);
         }
@@ -3468,7 +3469,7 @@ pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
             // The cadence is the point: to OBSERVE a 15s climb through 10s samples you must
             // play ~30s, so the sparse signal was charging every case double its real floor.
             // Gated on is_playing() (not is_started()) — see that fn for the resume trap.
-            let pos_ns = playpos(); // one read — the test and the value must agree
+            let pos_ns = playpos(&app.player.session); // one read — the test and the value must agree
                                     // `play=<pm>` — MEDIA time advanced per WALL millisecond since the previous
                                     // heartbeat, in per mille. 1000 is the film running at speed; 670 is it crawling.
                                     //
@@ -3488,9 +3489,10 @@ pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
                                     // things a reader wants to see. Inventing a "that must be a seek" threshold would
                                     // be a constant nobody can derive, and the analysis side (`tests/run.py`'s
                                     // `playback_rate`) already splits legs on the discontinuity itself.
-            let playing = plx_media::player::is_playing(&app.player.session) && pos_ns > 0;
+            let playing_pos = pos_ns.filter(|pos| *pos > 0 &&
+                plx_media::player::is_playing(&app.player.session));
             let mut pos = String::new();
-            if playing {
+            if let Some(pos_ns) = playing_pos {
                 pos = format!(" pos={}s", pos_ns / 1_000_000_000);
                 if let Some((prev_ns, prev_ticks)) = app.play_prev {
                     let wall_ms = i64::from(fr.now.wrapping_sub(prev_ticks));
@@ -3500,7 +3502,7 @@ pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
                     }
                 }
             }
-            app.play_prev = if playing { Some((pos_ns, fr.now)) } else { None };
+            app.play_prev = playing_pos.map(|pos_ns| (pos_ns, fr.now));
             // `vtick=<n> vgap=<n>ms` — the media pipeline's own `FRAMEREADY` cadence, the only
             // field on this line that comes from the VIDEO plane's side of the house. Every
             // other number here describes the graphics plane: `fps=` counts our GL swaps and
@@ -3598,7 +3600,7 @@ pub(crate) unsafe fn shutdown(
     pa: &mut plx_media::player::adapter::PlayerAdapter,
 ) {
     plx_media::player::report::abandon_pending(ps);
-    if is_started() {
+    if is_started(ps) == Some(true) {
         plx_media::player::stop_bufferfeed(ps, pa);
     }
     // The stop's `Unload` runs off-frame; the process must not exit inside it, nor with the
@@ -4505,14 +4507,13 @@ mod lifecycle_regression_tests {
         assert!(glide(&mut app, off, row) > 30, "off it again the glide goes on");
     }
 
-    /// **The HUD's per-frame snapshot carries each global its presentation used to read itself**
-    /// (`hud_model`, the one place they are sampled). Every field is set to a value of its own and
-    /// read back, so a field wired to the wrong global, or left at its idle default, reads wrong.
+    /// The HUD samples addressed attempt clock facts and the viewer's control settings once per
+    /// frame. Distinct values catch swapped fields and an accidental feed-global fallback.
     #[test]
-    fn the_hud_model_samples_each_global_the_draw_used_to_read() {
+    fn the_hud_model_samples_attempt_facts_and_viewer_controls() {
         use std::sync::atomic::Ordering::Relaxed;
         let _serial = plx_base::testlock::serial();
-        let app = app();
+        let mut app = app();
         use plx_plex::plex::session::{SubtitlePosition, SubtitleSize, SubtitleTone};
         let _paused = TransportPaused::set(true);
         let (size, position, tone) =
@@ -4522,18 +4523,15 @@ mod lifecycle_regression_tests {
         plx_media::route::restore_subtitle_position(SubtitlePosition::High);
         plx_media::player::restore_subtitle_tone(SubtitleTone::Charcoal);
         let (tx, shared) = (&plx_media::player::TX, &plx_media::player::SHARED);
-        let before = (
-            tx.scrub_ns.load(Relaxed),
-            shared.playpos_ns.load(Relaxed),
-            shared.seek_display_ns.load(Relaxed),
-            shared.duration_ns.load(Relaxed),
-            shared.desired_sub_idx.load(Relaxed),
-        );
+        let before = (tx.scrub_ns.load(Relaxed), shared.desired_sub_idx.load(Relaxed));
         tx.scrub_ns.store(42_000_000_000, Relaxed);
-        shared.playpos_ns.store(7_000_000_000, Relaxed);
-        shared.seek_display_ns.store(9_000_000_000, Relaxed);
-        shared.duration_ns.store(100_000_000_000, Relaxed);
         shared.desired_sub_idx.store(3, Relaxed);
+        let attempt = plx_media::route::RouteStartAttempt::fixture();
+        app.player.session.begin_attempt_view(attempt, plx_media::player::attempt_view::Backend::Feed);
+        assert!(app.player.session.ingest_attempt_facts(attempt, plx_media::player::attempt_view::AttemptFacts {
+            position_ns: Some(7_000_000_000), seek_display_ns: Some(9_000_000_000),
+            duration_ns: Some(100_000_000_000), ..Default::default()
+        }));
         let model = hud_model(&app.player.session, app.bridge.metadata_view());
         // restore before grading: a failed assertion must not leak a scrub target into the next test
         plx_media::player::restore_state_for_test(state);
@@ -4541,10 +4539,7 @@ mod lifecycle_regression_tests {
         plx_media::route::restore_subtitle_position(position);
         plx_media::player::restore_subtitle_tone(tone);
         tx.scrub_ns.store(before.0, Relaxed);
-        shared.playpos_ns.store(before.1, Relaxed);
-        shared.seek_display_ns.store(before.2, Relaxed);
-        shared.duration_ns.store(before.3, Relaxed);
-        shared.desired_sub_idx.store(before.4, Relaxed);
+        shared.desired_sub_idx.store(before.1, Relaxed);
         assert!(model.paused, "TX.paused");
         assert_eq!(model.scrub_ns, 42_000_000_000, "TX.scrub_ns");
         assert_eq!(model.playpos_ns, 7_000_000_000, "playpos_ns()");

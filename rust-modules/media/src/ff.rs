@@ -683,16 +683,18 @@ use acquisition::{AcquisitionRuntime, Phase, SegmentAcquisition};
 /// actual internal rebuffer may stop protecting the old cursor, but a later user Resume cannot
 /// make that already-spent reserve exist again. One instance follows the whole segment transaction
 /// through open, wait, probe, body and final validation; promotion is latched as an unarmed clock.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone)]
 struct ReserveDeadlineState {
     clock: ReserveDeadlineClock,
+    observer: Arc<dyn DemuxObserver>,
     yields_to_rebuffer: bool,
-    hold_epoch_at_start: u64,
+    hold_epoch_at_start: Option<u64>,
     expired: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
 enum ReserveDeadlineClock {
+    Retired,
     Wall(Option<std::time::Instant>),
     Playhead {
         started_ns: i64,
@@ -710,51 +712,71 @@ enum ReserveDeadlineClock {
 }
 
 impl ReserveDeadlineState {
-    fn new(at: Option<std::time::Instant>, yields_to_rebuffer: bool) -> Self {
+    fn new(at: Option<std::time::Instant>, yields_to_rebuffer: bool,
+        observer: Arc<dyn DemuxObserver>) -> Self {
+        let hold_epoch_at_start = observer.hold_epoch();
         Self {
-            clock: ReserveDeadlineClock::Wall(at),
+            clock: if hold_epoch_at_start.is_some() {
+                ReserveDeadlineClock::Wall(at)
+            } else {
+                ReserveDeadlineClock::Retired
+            },
+            observer,
             yields_to_rebuffer,
-            hold_epoch_at_start: SHARED.hls_internal_hold_epoch.load(Ordering::Acquire),
+            hold_epoch_at_start,
             expired: false,
         }
     }
 
     /// A media-reserve deadline spends presentation time, not wall time. User Pause, an internal
     /// rebuffer hold and a genuinely starved native clock all freeze the same physical balance.
-    fn from_playhead(budget: std::time::Duration, yields_to_rebuffer: bool) -> Self {
-        Self::from_playhead_at(
-            crate::player::playpos_ns().max(0),
-            budget,
-            yields_to_rebuffer,
-        )
+    fn from_playhead(budget: std::time::Duration, yields_to_rebuffer: bool,
+        observer: Arc<dyn DemuxObserver>) -> Self {
+        let Some(started_ns) = observer.playpos_ns() else {
+            return Self {
+                clock: ReserveDeadlineClock::Retired,
+                observer,
+                yields_to_rebuffer,
+                hold_epoch_at_start: None,
+                expired: false,
+            };
+        };
+        Self::from_playhead_at(started_ns, budget, yields_to_rebuffer, observer)
     }
 
     fn from_playhead_at(
         started_ns: i64,
         budget: std::time::Duration,
         yields_to_rebuffer: bool,
+        observer: Arc<dyn DemuxObserver>,
     ) -> Self {
+        let hold_epoch_at_start = observer.hold_epoch();
         Self {
-            clock: ReserveDeadlineClock::Playhead {
+            clock: if hold_epoch_at_start.is_some() { ReserveDeadlineClock::Playhead {
                 started_ns: started_ns.max(0),
                 budget,
-            },
+            }} else { ReserveDeadlineClock::Retired },
+            observer,
             yields_to_rebuffer,
-            hold_epoch_at_start: SHARED.hls_internal_hold_epoch.load(Ordering::Acquire),
+            hold_epoch_at_start,
             expired: false,
         }
     }
 
-    fn from_unpaused_elapsed(budget: std::time::Duration, yields_to_rebuffer: bool) -> Self {
-        let (started_at, paused_at_start) = crate::player::TX.pause_clock_sample();
+    fn from_unpaused_elapsed(budget: std::time::Duration, yields_to_rebuffer: bool,
+        observer: Arc<dyn DemuxObserver>) -> Self {
+        let pause = observer.pause_clock();
+        let hold_epoch_at_start = observer.hold_epoch();
         Self {
-            clock: ReserveDeadlineClock::UnpausedElapsed {
-                started_at,
-                paused_at_start,
+            clock: if let (Some(pause), Some(_)) = (pause, hold_epoch_at_start) {
+                ReserveDeadlineClock::UnpausedElapsed {
+                started_at: pause.at,
+                paused_at_start: pause.elapsed,
                 budget,
-            },
+            }} else { ReserveDeadlineClock::Retired },
+            observer,
             yields_to_rebuffer,
-            hold_epoch_at_start: SHARED.hls_internal_hold_epoch.load(Ordering::Acquire),
+            hold_epoch_at_start,
             expired: false,
         }
     }
@@ -765,11 +787,12 @@ impl ReserveDeadlineState {
     /// pause into either spent reserve or a newly granted budget.
     fn remaining(&self) -> Option<std::time::Duration> {
         match self.clock {
+            ReserveDeadlineClock::Retired => None,
             ReserveDeadlineClock::Wall(at) => {
                 at.map(|at| at.saturating_duration_since(std::time::Instant::now()))
             }
             ReserveDeadlineClock::Playhead { started_ns, budget } => {
-                let spent_ns = crate::player::playpos_ns()
+                let spent_ns = self.observer.playpos_ns()?
                     .max(0)
                     .saturating_sub(started_ns);
                 let spent =
@@ -781,17 +804,21 @@ impl ReserveDeadlineState {
                 paused_at_start,
                 budget,
             } => {
-                let (now, paused_now) = crate::player::TX.pause_clock_sample();
-                let elapsed = now.saturating_duration_since(started_at);
-                let paused = paused_now.saturating_sub(paused_at_start);
+                let pause = self.observer.pause_clock()?;
+                let elapsed = pause.at.saturating_duration_since(started_at);
+                let paused = pause.elapsed.saturating_sub(paused_at_start);
                 Some(budget.saturating_sub(elapsed.saturating_sub(paused)))
             }
         }
     }
 
     fn release_to_rebuffer(&mut self, rebuffering: bool) {
-        let hold_happened =
-            SHARED.hls_internal_hold_epoch.load(Ordering::Acquire) != self.hold_epoch_at_start;
+        if matches!(self.clock, ReserveDeadlineClock::Retired) { return; }
+        let Some(hold_epoch) = self.observer.hold_epoch() else {
+            self.clock = ReserveDeadlineClock::Retired;
+            return;
+        };
+        let hold_happened = Some(hold_epoch) != self.hold_epoch_at_start;
         if self.yields_to_rebuffer && (rebuffering || hold_happened) {
             self.clock = ReserveDeadlineClock::Wall(None);
         }
@@ -802,9 +829,13 @@ impl ReserveDeadlineState {
     /// wall time may pass while the native presentation clock is stopped.
     fn clock_is_spent(&self) -> bool {
         match self.clock {
+            ReserveDeadlineClock::Retired => true,
             ReserveDeadlineClock::Wall(at) => at.is_some_and(|at| std::time::Instant::now() >= at),
             ReserveDeadlineClock::Playhead { started_ns, budget } => {
-                let spent_ns = crate::player::playpos_ns()
+                let Some(position_ns) = self.observer.playpos_ns() else {
+                    return true;
+                };
+                let spent_ns = position_ns
                     .max(0)
                     .saturating_sub(started_ns);
                 let spent =
@@ -812,7 +843,7 @@ impl ReserveDeadlineState {
                 spent >= budget
             }
             ReserveDeadlineClock::UnpausedElapsed { .. } => {
-                self.remaining() == Some(std::time::Duration::ZERO)
+                self.remaining().is_none_or(|left| left.is_zero())
             }
         }
     }
@@ -820,11 +851,12 @@ impl ReserveDeadlineState {
     fn active(&mut self, rebuffering: bool) -> Option<std::time::Instant> {
         self.release_to_rebuffer(rebuffering);
         match self.clock {
+            ReserveDeadlineClock::Retired => Some(std::time::Instant::now()),
             ReserveDeadlineClock::Wall(at) => at,
             ReserveDeadlineClock::Playhead { .. }
             | ReserveDeadlineClock::UnpausedElapsed { .. } => {
                 let mut left = self.remaining().unwrap_or(std::time::Duration::ZERO);
-                if crate::player::TX.paused.load(Ordering::Acquire) {
+                if self.observer.paused().unwrap_or(true) {
                     // Pause is published only after the native call succeeds, but the final
                     // playhead sample can land between our first read and that flag. Re-read once
                     // after observing Pause so equality cannot be hidden by the state change.
@@ -1001,16 +1033,20 @@ fn candidate_reserve_deadline(
     yields_to_rebuffer: bool,
     started_ns: i64,
     clock: TrialClock,
+    observer: Arc<dyn DemuxObserver>,
 ) -> ReserveDeadlineState {
     exploration.unwrap_or_else(|| {
+        let unbounded_observer = observer.clone();
         media_budget.map_or_else(
-            || ReserveDeadlineState::new(None, yields_to_rebuffer),
+            || ReserveDeadlineState::new(None, yields_to_rebuffer, unbounded_observer),
             |budget| match clock {
                 TrialClock::Playhead => {
-                    ReserveDeadlineState::from_playhead_at(started_ns, budget, yields_to_rebuffer)
+                    ReserveDeadlineState::from_playhead_at(started_ns, budget,
+                        yields_to_rebuffer, observer)
                 }
                 TrialClock::UnpausedElapsed => {
-                    ReserveDeadlineState::from_unpaused_elapsed(budget, yields_to_rebuffer)
+                    ReserveDeadlineState::from_unpaused_elapsed(budget,
+                        yields_to_rebuffer, observer)
                 }
             },
         )
@@ -1459,7 +1495,9 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                     return avio_stopped(s);
                 }
             }
-            let rebuffering = SHARED.hls_rebuffering.load(Ordering::Acquire);
+            let Some(rebuffering) = s.observer.rebuffering() else {
+                return AVERROR_EOF;
+            };
             if s.reserve_deadline.expire_if_due(rebuffering) {
                 return AVERROR_EOF;
             }
@@ -1511,7 +1549,9 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
             };
             let wake =
                 if r == plx_net::stream::HTTP_READ_DEADLINE || r == range_io::READ_DEADLINE {
-                    let current_rebuffering = SHARED.hls_rebuffering.load(Ordering::Acquire);
+                    let Some(current_rebuffering) = s.observer.rebuffering() else {
+                        return AVERROR_EOF;
+                    };
                     match (blocking_deadline, s.transport_watchdog.as_ref()) {
                         (Some(attempted), Some(watchdog)) => Some(observe_hls_deadline(
                             Some(&mut s.reserve_deadline),
@@ -3108,12 +3148,12 @@ fn classify_plaintext_open_failure(error: plx_net::stream::HttpOpenError) -> Hls
     }
 }
 
-fn classify_curl_open_err(e: range_io::OpenErr) -> HlsExit {
+fn classify_curl_open_err(e: range_io::OpenErr, observer: &dyn DemuxObserver) -> HlsExit {
     if e == range_io::OpenErr::Deadline {
         return HlsExit::PrimeExpired;
     }
     if let range_io::OpenErr::Status(status) = e {
-        SHARED.dg_http_status.store(status, Ordering::Relaxed);
+        observer.publish(DemuxCallbackEffect::HttpStatus(status));
         if status == 404 {
             return HlsExit::NotReady;
         }
@@ -3175,8 +3215,8 @@ fn hls_open_curl(
         match reopened {
             Ok(()) => {
                 let (status, size) = (cs.status(), cs.size());
-                SHARED.dg_http_status.store(status, Ordering::Relaxed);
-                SHARED.file_size.store(size, Ordering::Release);
+                net.observer.publish(DemuxCallbackEffect::HttpStatus(status));
+                net.observer.publish(DemuxCallbackEffect::FileSize(size));
                 return Ok((Src::Curl(cs), size));
             }
             Err(range_io::OpenErr::Aborted) => return Err(HlsExit::Aborted),
@@ -3187,10 +3227,10 @@ fn hls_open_curl(
             // A controlled stop keeps the session and never falls through to a fresh dial.
             Err(e @ range_io::OpenErr::Stopped) => {
                 net.curl = Some(cs);
-                return Err(classify_curl_open_err(e));
+                return Err(classify_curl_open_err(e, net.observer.as_ref()));
             }
             Err(range_io::OpenErr::Status(status)) => {
-                SHARED.dg_http_status.store(status, Ordering::Relaxed);
+                net.observer.publish(DemuxCallbackEffect::HttpStatus(status));
                 net.curl = Some(cs);
                 return Err(if status == 404 {
                     HlsExit::NotReady
@@ -3224,10 +3264,10 @@ fn hls_open_curl(
         drop(opened);
         return Err(HlsExit::Aborted);
     }
-    let cs = opened.map_err(classify_curl_open_err)?;
+    let cs = opened.map_err(|e| classify_curl_open_err(e, net.observer.as_ref()))?;
     let (status, size) = (cs.status(), cs.size());
-    SHARED.dg_http_status.store(status, Ordering::Relaxed);
-    SHARED.file_size.store(size, Ordering::Release);
+    net.observer.publish(DemuxCallbackEffect::HttpStatus(status));
+    net.observer.publish(DemuxCallbackEffect::FileSize(size));
     Ok((Src::Curl(cs), size))
 }
 
@@ -3267,9 +3307,9 @@ fn hls_open_plain(
         // Unreachable from a plaintext origin with `same_origin_only`: https is another origin.
         Ok(Opened::Tls(_)) => return Err(HlsExit::Failed("HTTP redirect refused")),
         Err(error) => {
-            SHARED
-                .dg_http_status
-                .store(plx_net::stream::hs_status(hs), Ordering::Relaxed);
+            net.observer.publish(DemuxCallbackEffect::HttpStatus(
+                plx_net::stream::hs_status(hs),
+            ));
             return Err(match error {
                 FollowError::Open(error) => classify_plaintext_open_failure(error),
                 FollowError::TooManyHops
@@ -3288,8 +3328,8 @@ fn hls_open_plain(
         CString::new(target.path).map_err(|_| HlsExit::Failed("invalid HLS request path"))?;
     let status = plx_net::stream::hs_status(hs);
     let size = plx_net::stream::hs_content_length(hs);
-    SHARED.dg_http_status.store(status, Ordering::Relaxed);
-    SHARED.file_size.store(size, Ordering::Release);
+    net.observer.publish(DemuxCallbackEffect::HttpStatus(status));
+    net.observer.publish(DemuxCallbackEffect::FileSize(size));
     Ok((
         Src::Socket {
             hs,
@@ -3334,6 +3374,7 @@ fn open_plain_progressive(
     path: &str,
     aq_p: *mut AuQueue,
     transport: &DemuxTransport,
+    observer: &dyn DemuxObserver,
 ) -> Result<(Src, i64), MediaOpenFail> {
     use plx_net::stream::redirect::Opened;
     plx_net::stream::http_close(hs_p);
@@ -3350,9 +3391,9 @@ fn open_plain_progressive(
     {
         Ok(Opened::Socket(t)) => {
             let size = plx_net::stream::hs_content_length(hs_p);
-            SHARED.file_size.store(size, Ordering::Release);
+            observer.publish(DemuxCallbackEffect::FileSize(size));
             let st = plx_net::stream::hs_status(hs_p);
-            SHARED.dg_http_status.store(st, Ordering::Relaxed);
+            observer.publish(DemuxCallbackEffect::HttpStatus(st));
             crate::player::log(&format!("ff: open status={st} clen={size}"));
             let (Ok(host), Ok(path)) = (CString::new(t.origin.host()), CString::new(t.path)) else {
                 return Err(MediaOpenFail::Failed);
@@ -3370,15 +3411,15 @@ fn open_plain_progressive(
         Ok(Opened::Tls(t)) => match open_curl_hop(transport.range.as_ref(), &t.url(), 0, aq_p) {
             Ok(cs) => {
                 let (st, size) = (cs.status(), cs.size());
-                SHARED.file_size.store(size, Ordering::Release);
-                SHARED.dg_http_status.store(st, Ordering::Relaxed);
+                observer.publish(DemuxCallbackEffect::FileSize(size));
+                observer.publish(DemuxCallbackEffect::HttpStatus(st));
                 crate::player::log(&format!("ff: open https status={st} clen={size}"));
                 Ok((Src::Curl(cs), size))
             }
             Err(range_io::OpenErr::Aborted) => Err(MediaOpenFail::Aborted),
             Err(e) => {
                 if let range_io::OpenErr::Status(st) = e {
-                    SHARED.dg_http_status.store(st, Ordering::Relaxed);
+                    observer.publish(DemuxCallbackEffect::HttpStatus(st));
                 }
                 crate::player::log(&format!("ff: https open FAILED: {e:?}"));
                 Err(MediaOpenFail::Failed)
@@ -3389,7 +3430,7 @@ fn open_plain_progressive(
                 return Err(MediaOpenFail::Aborted);
             }
             let st = plx_net::stream::hs_status(hs_p);
-            SHARED.dg_http_status.store(st, Ordering::Relaxed);
+            observer.publish(DemuxCallbackEffect::HttpStatus(st));
             crate::player::log(&format!("ff: http_open FAILED status={st} ({e:?})"));
             Err(MediaOpenFail::Failed)
         }
@@ -3401,6 +3442,7 @@ fn hls_source_read(
     aq: *mut AuQueue,
     dst: &mut [u8],
     deadline: Option<std::time::Instant>,
+    observer: &dyn DemuxObserver,
 ) -> Result<usize, HlsExit> {
     if unsafe { crate::aq::aq_is_aborted(aq) } {
         if let Src::Curl(cs) = src {
@@ -3428,6 +3470,9 @@ fn hls_source_read(
         }
         return Err(HlsExit::Aborted);
     }
+    if observer.hold_epoch().is_none() {
+        return Err(HlsExit::Aborted);
+    }
     if read == plx_net::stream::HTTP_READ_DEADLINE || read == range_io::READ_DEADLINE {
         Err(HlsExit::PrimeExpired)
     } else if read < 0 {
@@ -3438,7 +3483,9 @@ fn hls_source_read(
         // while visibly downloading playlists and segments. Count at the shared source seam so
         // socket and curl HLS mean the same thing: bytes actually handed to the demux fetcher.
         if read > 0 {
-            SHARED.dg_net_rx.fetch_add(read as i64, Ordering::Relaxed);
+            if !observer.publish(DemuxCallbackEffect::NetworkBytes(read as i64)) {
+                return Err(HlsExit::Aborted);
+            }
         }
         Ok(read as usize)
     }
@@ -3461,6 +3508,7 @@ fn hls_fetch_text(
         if unsafe { crate::aq::aq_is_aborted(aq) } {
             return Err(HlsExit::Aborted);
         }
+        if net.observer.hold_epoch().is_none() { return Err(HlsExit::Aborted); }
         if reserve
             .as_deref_mut()
             .is_some_and(|reserve| reserve.expire_if_due(false))
@@ -3474,14 +3522,16 @@ fn hls_fetch_text(
         // A playlist is not a segment acquisition: it has no reserve-funded guard to consult, and
         // its own reserve deadline and watchdog already bound every wait. `NoCheckpoint` keeps it
         // exactly as it was.
-        match hls_open_source(
+        let opened = hls_open_source(
             resource,
             &request_path,
             aq,
             net,
             Some(effective.at),
             &mut plx_base::checkpoint::NoCheckpoint,
-        ) {
+        );
+        if net.observer.hold_epoch().is_none() { return Err(HlsExit::Aborted); }
+        match opened {
             Ok(opened) => {
                 // A complete response head is transport progress and begins a fresh inactivity
                 // epoch for the body. Neither a stale reserve wake nor a reconnect attempt does.
@@ -3509,6 +3559,7 @@ fn hls_fetch_text(
         if unsafe { crate::aq::aq_is_aborted(aq) } {
             return Err(HlsExit::Aborted);
         }
+        if net.observer.hold_epoch().is_none() { return Err(HlsExit::Aborted); }
         if reserve
             .as_deref_mut()
             .is_some_and(|reserve| reserve.expire_if_due(false))
@@ -3519,7 +3570,8 @@ fn hls_fetch_text(
             .as_deref_mut()
             .and_then(|reserve| reserve.active(false));
         let effective = watchdog.effective(reserve_snapshot);
-        let n = match hls_source_read(&mut src, aq, &mut chunk, Some(effective.at)) {
+        let n = match hls_source_read(&mut src, aq, &mut chunk, Some(effective.at),
+            net.observer.as_ref()) {
             Ok(n) => n,
             Err(HlsExit::PrimeExpired) => {
                 let wake =
@@ -3634,7 +3686,7 @@ impl Drop for HlsInput {
 /// stream, and every consumer of that field treats it that way.
 static HLS_LAST_VIDEO: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
 
-unsafe fn log_hls_video_change(fmt: *mut AVFormatContext) {
+unsafe fn log_hls_video_change(fmt: *mut AVFormatContext, duration_ns: i64) {
     let streams = (*fmt).streams;
     for i in 0..(*fmt).nb_streams {
         let cp = stream_codecpar(*streams.add(i as usize));
@@ -3655,7 +3707,7 @@ unsafe fn log_hls_video_change(fmt: *mut AVFormatContext) {
             (*cp).color_trc,
             (*cp).color_primaries,
             (*cp).color_space,
-            SHARED.duration_ns.load(Ordering::Relaxed)
+            duration_ns
         ));
         return;
     }
@@ -3732,11 +3784,14 @@ unsafe fn hls_input(
     if crate::aq::aq_is_aborted(aq) {
         return Err(HlsExit::Aborted);
     }
+    let Some(audio_expected) = net.observer.audio_expected() else {
+        return Err(HlsExit::Aborted);
+    };
     if let Some(exit) = classify_hls_avio_operation(
         &input.state,
         opened < 0 || input.fmt.is_null(),
         request_started,
-        SHARED.hls_audio_expected.load(Ordering::Acquire) && FEED_AUDIO.load(Ordering::Relaxed),
+        audio_expected && FEED_AUDIO.load(Ordering::Relaxed),
     ) {
         return Err(exit);
     }
@@ -3749,11 +3804,14 @@ unsafe fn hls_input(
     if crate::aq::aq_is_aborted(aq) {
         return Err(HlsExit::Aborted);
     }
+    let Some(audio_expected) = net.observer.audio_expected() else {
+        return Err(HlsExit::Aborted);
+    };
     if let Some(exit) = classify_hls_avio_operation(
         &input.state,
         discovered < 0,
         request_started,
-        SHARED.hls_audio_expected.load(Ordering::Acquire) && FEED_AUDIO.load(Ordering::Relaxed),
+        audio_expected && FEED_AUDIO.load(Ordering::Relaxed),
     ) {
         return Err(exit);
     }
@@ -3761,7 +3819,10 @@ unsafe fn hls_input(
         return Err(HlsExit::Failed("segment stream discovery failed"));
     }
     input.state.io_failed = false;
-    log_hls_video_change(input.fmt);
+    let Some(duration_ns) = net.observer.duration_ns() else {
+        return Err(HlsExit::Aborted);
+    };
+    log_hls_video_change(input.fmt, duration_ns);
     input.pkt = av_packet_alloc();
     if input.pkt.is_null() {
         return Err(HlsExit::Failed("segment packet allocation failed"));
@@ -3861,6 +3922,17 @@ fn hls_body_complete(declared_size: i64, delivered: i64) -> bool {
     declared_size < 0 || delivered >= declared_size
 }
 
+fn settle_hls_segment(
+    runtime: &mut AcquisitionRuntime,
+    error: HlsExit,
+    observer: &dyn DemuxObserver,
+) -> HlsExit {
+    let Some(expected) = observer.audio_expected() else {
+        return HlsExit::Aborted;
+    };
+    runtime.settle(error, expected && FEED_AUDIO.load(Ordering::Relaxed))
+}
+
 unsafe fn hls_demux_segment(
     segment: &crate::hls::Segment,
     auth: &crate::hls::InheritedAuth,
@@ -3880,8 +3952,6 @@ unsafe fn hls_demux_segment(
         .request_path(&segment.resource)
         .map_err(|_| HlsExit::Failed("segment credential rejected"))?;
     let request_started = runtime.request_started();
-    let audio_expected =
-        || SHARED.hls_audio_expected.load(Ordering::Acquire) && FEED_AUDIO.load(Ordering::Relaxed);
     let retry_budget = segment
         .duration
         .saturating_mul(3)
@@ -3900,11 +3970,14 @@ unsafe fn hls_demux_segment(
         if crate::aq::aq_is_aborted(aq) {
             return Err(HlsExit::Aborted);
         }
-        if reserve_deadline.expire_if_due(SHARED.hls_rebuffering.load(Ordering::Acquire)) {
-            return Err(runtime.settle(HlsExit::PrimeExpired, audio_expected()));
+        if reserve_deadline.expire_if_due(
+            net.observer.rebuffering().ok_or(HlsExit::Aborted)?
+        ) {
+            return Err(settle_hls_segment(&mut runtime, HlsExit::PrimeExpired,
+                net.observer.as_ref()));
         }
         let attempt = std::time::Instant::now();
-        let rebuffering = SHARED.hls_rebuffering.load(Ordering::Acquire);
+        let rebuffering = net.observer.rebuffering().ok_or(HlsExit::Aborted)?;
         let reserve_snapshot = reserve_deadline.active(rebuffering);
         let effective = transport_watchdog.effective(reserve_snapshot);
         runtime.enter(Phase::Opening);
@@ -3916,9 +3989,11 @@ unsafe fn hls_demux_segment(
             Some(effective.at),
             &mut runtime,
         );
+        if net.observer.hold_epoch().is_none() { return Err(HlsExit::Aborted); }
         // Every unsuccessful open is SETTLED by a fresh check before it is classified: a transport
         // deadline shorter than the checkpoint slice ends the wait without asking again.
-        let opened = opened.map_err(|error| runtime.settle(error, audio_expected()));
+        let opened = opened.map_err(|error| settle_hls_segment(&mut runtime, error,
+            net.observer.as_ref()));
         match opened {
             // A segment has no children, so where a redirect landed is of no further use.
             Ok((src, size, _landed)) => {
@@ -3930,7 +4005,7 @@ unsafe fn hls_demux_segment(
             // tick that established the internal hold. Re-open under the promoted policy; the
             // ordinary transport liveness bound remains, only the rollback deadline disappears.
             Err(HlsExit::PrimeExpired) => {
-                let current_rebuffering = SHARED.hls_rebuffering.load(Ordering::Acquire);
+                let current_rebuffering = net.observer.rebuffering().ok_or(HlsExit::Aborted)?;
                 let wake = observe_hls_deadline(
                     Some(&mut reserve_deadline),
                     effective,
@@ -3955,14 +4030,17 @@ unsafe fn hls_demux_segment(
                 if crate::aq::aq_is_aborted(aq) {
                     return Err(HlsExit::Aborted);
                 }
-                if reserve_deadline.expire_if_due(SHARED.hls_rebuffering.load(Ordering::Acquire)) {
-                    return Err(runtime.settle(HlsExit::PrimeExpired, audio_expected()));
+                if reserve_deadline.expire_if_due(
+                    net.observer.rebuffering().ok_or(HlsExit::Aborted)?
+                ) {
+                    return Err(settle_hls_segment(&mut runtime, HlsExit::PrimeExpired,
+                        net.observer.as_ref()));
                 }
                 // Never sleep past the deadline. A fixed 250 ms wait against a deadline 40 ms away
                 // overshoots by 210 ms of reserve, every time, for no information — the poll after
                 // it can only be discarded.
                 let mut wait = std::time::Duration::from_millis(250);
-                let rebuffering = SHARED.hls_rebuffering.load(Ordering::Acquire);
+                let rebuffering = net.observer.rebuffering().ok_or(HlsExit::Aborted)?;
                 let reserve_snapshot = reserve_deadline.active(rebuffering);
                 let effective = transport_watchdog.effective(reserve_snapshot);
                 wait = wait.min(
@@ -3972,10 +4050,11 @@ unsafe fn hls_demux_segment(
                 );
                 runtime.enter(Phase::RetryWaiting);
                 let waited = hls_wait(aq, wait, Some(effective.at), &mut runtime)
-                    .map_err(|error| runtime.settle(error, audio_expected()));
+                    .map_err(|error| settle_hls_segment(&mut runtime, error,
+                        net.observer.as_ref()));
                 match waited {
                     Err(HlsExit::PrimeExpired) => {
-                        let current_rebuffering = SHARED.hls_rebuffering.load(Ordering::Acquire);
+                        let current_rebuffering = net.observer.rebuffering().ok_or(HlsExit::Aborted)?;
                         let wake = observe_hls_deadline(
                             Some(&mut reserve_deadline),
                             effective,
@@ -4145,7 +4224,7 @@ unsafe fn hls_demux_segment(
     if input
         .state
         .reserve_deadline
-        .expire_if_due(SHARED.hls_rebuffering.load(Ordering::Acquire))
+        .expire_if_due(net.observer.rebuffering().ok_or(HlsExit::Aborted)?)
     {
         return Err(HlsExit::PrimeExpired);
     }
@@ -4377,7 +4456,7 @@ impl FeedPort for HlsRoundPort<'_> {
                 FeedObservation::BudgetSnapshot {
                     trial, buffered_ms: buffer, started_ns,
                     remaining: self.reserve.as_ref().and_then(ReserveDeadlineState::remaining),
-                    rebuffering: SHARED.hls_rebuffering.load(Ordering::Acquire),
+                    rebuffering: self.session.clock().rebuffering(),
                 }
             }
             FeedAction::PrimeDeadline { trial } => FeedObservation::PrimeDeadline {
@@ -4450,13 +4529,14 @@ impl HlsRoundPort<'_> {
         yields_to_rebuffer: bool, started_ns: i64, clock: TrialClock,
     ) -> FeedObservation {
         let deadline = candidate_reserve_deadline(
-            self.reserve, media_budget, yields_to_rebuffer, started_ns, clock,
+            self.reserve.clone(), media_budget, yields_to_rebuffer, started_ns, clock,
+            self.session.observer(),
         );
         self.acquire(trial, deadline)
     }
 
     fn acquire_followup(&mut self, trial: TrialId) -> FeedObservation {
-        let Some(deadline) = self.reserve else {
+        let Some(deadline) = self.reserve.clone() else {
             return FeedObservation::Failed { trial, failure: FeedFailure::Protocol };
         };
         self.acquire(trial, deadline)
@@ -4562,6 +4642,7 @@ impl AdaptivePhysicalPort for HlsRoundPort<'_> {
     fn begin_trial(&mut self, trial: TrialId, exploration: Option<ExplorationFact>) {
         self.trial = Some(trial);
         self.candidate_timeline = Some(*self.timeline);
+        let observer = self.session.observer();
         self.reserve = exploration.map(|clock| {
             crate::player::log(&format!(
                 "abr: exploration target={}kbps buf={}ms runway={}ms budget={}ms",
@@ -4573,24 +4654,25 @@ impl AdaptivePhysicalPort for HlsRoundPort<'_> {
                     u64::try_from(clock.budget_ms).unwrap_or(u64::MAX),
                 ),
                 false,
+                observer,
             )
         });
     }
 
     fn candidate_offset_micros(&self) -> Option<i64> {
-        SHARED.disp_base.load(Ordering::Relaxed).max(0)
+        self.session.clock().display_base_ns().max(0)
             .checked_add(self.timeline.end_ns()).map(|ns| ns / 1_000)
     }
 
-    fn buffer_sampler(&self) -> fn() -> Option<i64> {
+    fn buffer_sampler(&self) -> plx_playback_contract::demux::AddressedSampler<Option<i64>> {
         self.session.clock().hls_buffer_sampler()
     }
 
-    fn remaining_playback_sampler(&self) -> fn() -> i64 {
+    fn remaining_playback_sampler(&self) -> plx_playback_contract::demux::AddressedSampler<i64> {
         self.session.clock().remaining_playback_sampler()
     }
 
-    fn user_sequence_sampler(&self) -> fn() -> u64 {
+    fn user_sequence_sampler(&self) -> plx_playback_contract::demux::AddressedSampler<u64> {
         self.session.clock().user_sequence_sampler()
     }
 }
@@ -4663,7 +4745,7 @@ fn hls_cursor_next(
         )
         .map_err(|_| HlsExit::Failed("HLS playlist duration overflow"))?;
         if cursor.publishes_duration {
-            SHARED.duration_ns.store(total_ns, Ordering::Relaxed);
+            net.observer.publish(DemuxCallbackEffect::DurationNs(total_ns));
         }
         let mut refresh = cursor.tracker.apply(&media).map_err(|e| {
             crate::player::log(&format!("hls: refresh rejected: {e}"));
@@ -4899,7 +4981,7 @@ impl TrialActuatorPort for HlsRoundPort<'_> {
 }
 
 impl AdaptiveRoundPort for HlsRoundPort<'_> {
-    fn position_sampler(&self) -> fn() -> i64 {
+    fn position_sampler(&self) -> plx_playback_contract::demux::AddressedSampler<i64> {
         self.session.clock().playpos_sampler()
     }
 
@@ -5989,7 +6071,8 @@ pub(crate) fn demux(
                     }
                 } else {
                     // Redirects followed; an https hop comes back as the curl source.
-                    match open_plain_progressive(hs_p, &origin, &path, aq_p, &transport) {
+                    match open_plain_progressive(hs_p, &origin, &path, aq_p, &transport,
+                        session.observer().as_ref()) {
                         Ok(opened) => opened,
                         Err(MediaOpenFail::Aborted) => {
                             session.media().record("ff: aborted during open");
@@ -6016,7 +6099,7 @@ pub(crate) fn demux(
                     body_active_us: 0,
                     body_bytes: 0,
                     first_byte_at: None,
-                    reserve_deadline: ReserveDeadlineState::new(None, false),
+                    reserve_deadline: ReserveDeadlineState::new(None, false, session.observer()),
                     transport_watchdog: None,
                     // A progressive part is not on a ladder, so there is no cheaper rung to run to
                     // and the abort rule's escape does not exist. R12's terminal case, structurally.
@@ -6920,7 +7003,7 @@ pub(crate) fn demux(
                             } else {
                                 let audio_expected = ai >= 0 && FEED_AUDIO.load(Ordering::Relaxed);
                                 (progressive_buffered_ms(session.clock(), audio_expected),
-                                 Some(session.clock().remaining_playback_sampler()()))
+                                 session.clock().remaining_playback_sampler()())
                             };
                             let quantum = plx_playback_contract::adaptive::OriginalQuantum {
                                 bytes: state.body_bytes,
@@ -6930,9 +7013,8 @@ pub(crate) fn demux(
                                 paused: pause_state.paused,
                                 completed_pause_ms,
                             };
-                            match watch.observe(quantum, &|| {
-                                session.clock().playpos_ns().max(0)
-                            }) {
+                            let position_ns = session.clock().playpos_sampler();
+                            match watch.observe(quantum, &|| position_ns()) {
                                 plx_playback_contract::adaptive::OriginalProgress::Continue => {}
                                 plx_playback_contract::adaptive::OriginalProgress::Published => break,
                                 plx_playback_contract::adaptive::OriginalProgress::Retired => {

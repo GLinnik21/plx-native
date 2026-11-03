@@ -338,7 +338,7 @@ pub(crate) fn clockstop_arm(app: &mut App, fr: &Frame) {
         if arms.clockstop_reached {
             return;
         }
-        if crate::app::playback::playpos() >= at {
+        if crate::app::playback::playpos(&app.player.session).is_some_and(|pos| pos >= at) {
             arms.clockstop_reached = true;
             plx_base::eventlog::log(&format!("clockstop: clock held at {ms} ms, still playing"));
         } else if fr.now.wrapping_sub(app.t0) > CLOCKSTOP_CEILING_MS {

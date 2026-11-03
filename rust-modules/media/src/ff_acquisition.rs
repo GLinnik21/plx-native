@@ -37,7 +37,7 @@ enum Policy {
     Candidate(ReserveDeadlineState),
     /// Non-adaptive playback: there is no ladder to abandon a rung on, so there is no reserve
     /// deadline and no stall guard to arm.
-    Fixed,
+    Fixed(Arc<dyn DemuxObserver>),
 }
 
 /// Payload of [`Policy::Active`]. Private, in a module whose only `Active`-producing path is
@@ -58,7 +58,7 @@ impl SegmentAcquisition {
     /// read ahead of the identical rung and must be classified identically. The adaptive owner
     /// supplies `Some(at_floor)` for ABR playback, sampled at this boundary; `None` denotes
     /// non-adaptive playback. This module samples live reserve
-    /// (`hls_buffer_snapshot(None).buffered_ms()`) and hold (`SHARED.hls_rebuffering`) itself.
+    /// (`hls_buffer_fact(None).buffered_ms()`) and the captured hold observer itself.
     /// Non-adaptive playback
     /// is this same constructor given `None`; there is deliberately no separate public `fixed()`.
     ///
@@ -81,7 +81,7 @@ impl SegmentAcquisition {
                 observer.rebuffering().unwrap_or(true),
                 observer,
             ),
-            None => SegmentAcquisition(Policy::Fixed),
+            None => SegmentAcquisition(Policy::Fixed(observer)),
         }
     }
 
@@ -92,7 +92,7 @@ impl SegmentAcquisition {
         observer: Arc<dyn DemuxObserver>,
     ) -> Self {
         SegmentAcquisition(Policy::Active(ActiveAcquisition {
-            reserve_deadline: ReserveDeadlineState::new(None, false),
+            reserve_deadline: ReserveDeadlineState::new(None, false, observer.clone()),
             stall: arm_active_stall_guard(reserve_ms, at_floor, already_held, observer),
         }))
     }
@@ -107,7 +107,7 @@ impl SegmentAcquisition {
     pub(super) fn stall(&self) -> Option<StallGuard> {
         match &self.0 {
             Policy::Active(active) => active.stall.clone(),
-            Policy::Candidate(_) | Policy::Fixed => None,
+            Policy::Candidate(_) | Policy::Fixed(_) => None,
         }
     }
 
@@ -120,7 +120,8 @@ impl SegmentAcquisition {
         let (reserve_deadline, stall) = match self.0 {
             Policy::Active(active) => (active.reserve_deadline, active.stall),
             Policy::Candidate(deadline) => (deadline, None),
-            Policy::Fixed => (ReserveDeadlineState::new(None, false), None),
+            Policy::Fixed(observer) =>
+                (ReserveDeadlineState::new(None, false, observer), None),
         };
         (
             reserve_deadline,

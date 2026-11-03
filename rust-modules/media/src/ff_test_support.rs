@@ -15,11 +15,27 @@ impl DemuxObserver for FixtureDemuxObserver {
     fn rebuffering(&self) -> Option<bool> {
         Some(SHARED.hls_rebuffering.load(Ordering::Acquire))
     }
+    fn audio_expected(&self) -> Option<bool> {
+        Some(SHARED.hls_audio_expected.load(Ordering::Acquire))
+    }
+    fn duration_ns(&self) -> Option<i64> {
+        Some(SHARED.duration_ns.load(Ordering::Relaxed))
+    }
     fn paused(&self) -> Option<bool> { Some(crate::player::TX.paused.load(Ordering::Acquire)) }
     fn pause_clock(&self) -> Option<plx_playback_contract::demux::PauseClock> {
         let (at, elapsed) = crate::player::TX.pause_clock_sample();
         Some(plx_playback_contract::demux::PauseClock { at, elapsed })
     }
+    fn hls_buffer_ms(&self) -> Option<Option<i64>> {
+        Some(hls_buffer_snapshot_with_playhead(None).0)
+    }
+    fn remaining_playback_ms(&self) -> Option<i64> {
+        let duration = SHARED.duration_ns.load(Ordering::Relaxed);
+        Some(if duration <= 0 { 0 } else {
+            (duration - SHARED.playpos_ns.load(Ordering::Relaxed).max(0)).max(0) / 1_000_000
+        })
+    }
+    fn user_sequence(&self) -> Option<u64> { Some(SHARED.hls_user_sequence()) }
     fn publish(&self, effect: DemuxCallbackEffect) -> bool {
         match effect {
             DemuxCallbackEffect::NetworkBytes(bytes) => {
@@ -29,6 +45,8 @@ impl DemuxObserver for FixtureDemuxObserver {
                 SHARED.dg_http_status.store(status, Ordering::Relaxed),
             DemuxCallbackEffect::FileSize(size) =>
                 SHARED.file_size.store(size, Ordering::Release),
+            DemuxCallbackEffect::DurationNs(ns) =>
+                SHARED.duration_ns.store(ns, Ordering::Relaxed),
             DemuxCallbackEffect::TransportFailure { rc, age_ms, reopen_failed } => {
                 SHARED.dg_transport_rc.store(rc, Ordering::Release);
                 SHARED.dg_transport_age_ms.store(age_ms, Ordering::Release);

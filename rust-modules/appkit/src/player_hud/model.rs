@@ -22,8 +22,8 @@ use plx_plex::plex::session::{SubtitlePosition, SubtitleSize, SubtitleTone};
 /// rects of the selected track's display set with this `start_ns` key.
 pub type BitmapLookup = fn(i64) -> Option<(i32, i32, Vec<plx_media::player::SubRect>)>;
 
-/// Every global the HUD's presentation reads, sampled once for the frame. The doc comment of each
-/// field quotes the exact expression `src/app/run.rs` samples it with.
+/// The HUD's presentation values, sampled once for the frame from the owned attempt readout and
+/// viewer controls. The doc comment of each field names its source in `src/app/run.rs`.
 #[derive(Clone, Copy, Debug)]
 pub struct HudModel {
     /// `plx_media::player::TX.paused.load(Relaxed)`: the viewer is logically paused. Drives the
@@ -34,12 +34,12 @@ pub struct HudModel {
     /// `plx_media::player::TX.scrub_ns.load(Relaxed)`: the live scrub preview's target, -1 when no
     /// scrub is in progress.
     pub scrub_ns: i64,
-    /// `plx_media::player::playpos_ns()`: the PUBLISHED playhead.
+    /// `plx_media::player::playpos_ns(ps)`: the published playhead, with unknown mapped at the widget boundary.
     pub playpos_ns: i64,
-    /// `plx_media::player::seek_display_ns()`: the target a loading seek freezes the playhead at,
+    /// `plx_media::player::seek_display_ns(ps)`: the target a loading seek freezes the playhead at,
     /// -1 when none.
     pub seek_display_ns: i64,
-    /// `plx_media::player::duration_ns()`.
+    /// `plx_media::player::duration_ns(ps)`, with unknown mapped at the widget boundary.
     pub duration_ns: i64,
     /// `plx_media::player::loading(ps)`: a seek is resolving (the playbar shows `seek_display_ns`).
     pub loading: bool,
@@ -51,7 +51,7 @@ pub struct HudModel {
     pub sub_tone: SubtitleTone,
     /// `plx_media::player::desired_sub_idx()`: the selected subtitle track, -1 when off.
     pub sub_sel: i32,
-    /// `plx_media::player::active_bitmap_key(plx_media::player::playpos_ns())`: the `start_ns` key
+    /// `plx_media::player::active_bitmap_key(plx_media::player::playpos_ns(ps))`: the `start_ns` key
     /// of the selected track's image cue active now, `None` between cues.
     pub bitmap_key: Option<i64>,
     /// `Controls::now(ps)`: which of the Previous/Next pair the playing episode has, and whether

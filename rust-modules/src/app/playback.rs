@@ -44,12 +44,12 @@ pub(crate) fn set_resume_pend(v: bool) {
     plx_media::player::TX.resume_pend.store(v, Relaxed)
 }
 #[inline]
-pub(crate) fn dur() -> i64 {
-    plx_media::player::duration_ns()
+pub(crate) fn dur(ps: &plx_media::route::PlaybackSession) -> Option<i64> {
+    plx_media::player::duration_ns(ps)
 }
 #[inline]
-pub(crate) fn playpos() -> i64 {
-    plx_media::player::playpos_ns()
+pub(crate) fn playpos(ps: &plx_media::route::PlaybackSession) -> Option<i64> {
+    plx_media::player::playpos_ns(ps)
 }
 /// The playhead the user INTENDED, which is not always the one being published. While a seek is
 /// still resolving (request → reopen → prime → Play) `playpos()` keeps reporting the PRE-seek spot,
@@ -67,12 +67,12 @@ pub(crate) fn intended_pos(ps: &plx_media::route::PlaybackSession) -> i64 {
     plx_media::player::intended_pos_ns(ps)
 }
 #[inline]
-pub(crate) fn frames() -> i32 {
-    plx_media::player::frames()
+pub(crate) fn frames(ps: &plx_media::route::PlaybackSession) -> Option<i32> {
+    plx_media::player::frames(ps)
 }
 #[inline]
-pub(crate) fn seek_pending() -> i64 {
-    plx_media::player::seek_pending()
+pub(crate) fn seek_pending(ps: &plx_media::route::PlaybackSession) -> Option<i64> {
+    plx_media::player::seek_pending(ps)
 }
 #[inline]
 pub(crate) fn request_seek(x: i64) {
@@ -90,8 +90,8 @@ pub(crate) fn commit_seek(target: i64) {
     request_seek(target);
 }
 #[inline]
-pub(crate) fn is_started() -> bool {
-    plx_media::player::is_started()
+pub(crate) fn is_started(ps: &plx_media::route::PlaybackSession) -> Option<bool> {
+    plx_media::player::is_started(ps)
 }
 
 // ---- the route vocabulary, and the pure questions asked ABOUT a route -------------------------
@@ -1463,12 +1463,13 @@ mod paused_seek_tests {
     fn a_scrub_commit_is_a_bare_seek_whether_or_not_the_film_is_paused() {
         let _g = plx_base::testlock::serial();
         let was_paused = plx_media::player::TX.paused.load(Relaxed);
-        let (was_seek, was_resume, was_seeking) = (seek_pending(), resume_pend(), plx_media::player::SHARED.seeking.load(Relaxed));
+        let (was_seek, was_resume, was_seeking) = (plx_media::player::TX.seek_to_ns.load(Relaxed), resume_pend(), plx_media::player::SHARED.seeking.load(Relaxed));
         set_resume_pend(false);
         for paused in [true, false] {
             plx_media::player::TX.paused.store(paused, Relaxed);
             commit_seek(42_000_000_000);
-            assert_eq!(seek_pending(), 42_000_000_000, "the seek really was requested");
+            assert_eq!(plx_media::player::TX.seek_to_ns.load(Relaxed), 42_000_000_000,
+                "the command itself must carry the target");
             assert!(!resume_pend());
             assert!(
                 !plx_media::player::seek_preroll_active(),

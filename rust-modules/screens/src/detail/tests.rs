@@ -32,6 +32,13 @@ impl ScreenArg for TestArg {
 
 pub(super) struct TestHost;
 
+impl crate::registry::PlayerLike for TestHost {
+    fn session<'a>(_cx: &Cx<'a, Self>) -> &'a plx_media::route::PlaybackSession {
+        &plx_media::route::PlaybackSession::IDLE
+    }
+    fn transport_paused(_cx: &Cx<'_, Self>) -> bool { false }
+}
+
 impl Host for TestHost {
     type Arg = TestArg;
     type Fx = AppFx;
@@ -1702,7 +1709,7 @@ fn preview_chrome_drives_the_below_hero_sections_to_zero_in_full_trailer_mode_an
     let mut now = 0u32;
     for _ in 0..300 {
         now += 16;
-        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink, test_store().view());
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, None, &mut sink, test_store().view());
     }
     assert!(
         screen.preview_chrome < 0.01,
@@ -1715,7 +1722,7 @@ fn preview_chrome_drives_the_below_hero_sections_to_zero_in_full_trailer_mode_an
     screen.preview_promoted = false;
     for _ in 0..300 {
         now += 16;
-        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink, test_store().view());
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, None, &mut sink, test_store().view());
     }
     assert!(
         screen.preview_chrome > 0.99,
@@ -1760,7 +1767,7 @@ fn background_autoplay_recedes_identity_and_ratings_but_holds_the_facts_row_and_
     let mut now = 0u32;
     for _ in 0..300 {
         now += 16;
-        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink, test_store().view());
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, None, &mut sink, test_store().view());
     }
     assert!(
         screen.preview_prose < 0.01,
@@ -1782,7 +1789,7 @@ fn background_autoplay_recedes_identity_and_ratings_but_holds_the_facts_row_and_
     assert!(screen.full_trailer());
     for _ in 0..300 {
         now += 16;
-        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink, test_store().view());
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, None, &mut sink, test_store().view());
     }
     assert!(
         screen.preview_chrome < 0.01,
@@ -1842,7 +1849,7 @@ fn preview_tick_does_not_read_the_session_file_every_frame() {
     let mut now = 0u32;
     for _ in 0..30 {
         now += 16;
-        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, &mut sink, test_store().view());
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, None, &mut sink, test_store().view());
     }
     let reads = plx_plex::plex::session::reads_for_test();
     assert_eq!(
@@ -2196,7 +2203,7 @@ fn trailer_act_edge(
         plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)),
         &mut present,
     );
-    screen.trailer_act::<TestHost>(act, edge, now, &mut sink);
+    screen.trailer_act::<TestHost>(act, edge, now, Some(0), Some(DurationFixture::DUR), &mut sink);
     drop(sink);
     effects
 }
@@ -2250,35 +2257,10 @@ fn ok_toggles_the_trailers_pause_and_play_pause_pick_a_direction() {
     clear();
 }
 
-/// `trailer_act`'s `Scrub` arm reads `player::duration_ns()`/`playpos_ns()` on `Down`
-/// (`Transport::scrub_fresh`'s own doc: passed in rather than read inside `trailer.rs`, but
-/// `trailer_act` is exactly the one caller that does the reading). Those are the crate-wide
-/// `SHARED` atomics — held together with the `testlock::serial()` guard `install` already hands
-/// back (construct the fixture AFTER it, never beside a second `serial()`: that lock is a plain
-/// mutex and taking it twice on one thread hangs the suite rather than failing it), same as
-/// `screens::player::mod`'s own scrub `Fixture`. `duration_ns` must be positive or
-/// `scrub_fresh` is a deliberate no-op (nothing to scrub within).
-struct DurationFixture(i64, i64);
-impl DurationFixture {
-    const DUR: i64 = 100_000_000_000;
-    fn new() -> Self {
-        use std::sync::atomic::Ordering::Relaxed;
-        let was = DurationFixture(
-            plx_media::player::SHARED.duration_ns.load(Relaxed),
-            plx_media::player::SHARED.playpos_ns.load(Relaxed),
-        );
-        plx_media::player::SHARED.duration_ns.store(Self::DUR, Relaxed);
-        plx_media::player::SHARED.playpos_ns.store(0, Relaxed);
-        was
-    }
-}
-impl Drop for DurationFixture {
-    fn drop(&mut self) {
-        use std::sync::atomic::Ordering::Relaxed;
-        plx_media::player::SHARED.duration_ns.store(self.0, Relaxed);
-        plx_media::player::SHARED.playpos_ns.store(self.1, Relaxed);
-    }
-}
+/// Input-time clock facts are supplied directly to the trailer gesture, without writing the
+/// physical feed mailbox. A positive duration admits the gesture.
+struct DurationFixture;
+impl DurationFixture { const DUR: i64 = 100_000_000_000; }
 
 /// **`TrailerKey::Scrub` is dispatched on every edge, not just `Down`** — `Down` hops the fixed
 /// step, `Up` (with no repeat in between, i.e. a tap) arms the debounce rather than committing at
@@ -2291,7 +2273,6 @@ impl Drop for DurationFixture {
 fn left_right_scrub_hops_on_down_and_asks_for_no_transport_request() {
     let sid = ServerId::UNSET;
     let _guard = install(detail(sid, "show"));
-    let _dur = DurationFixture::new();
     let mut screen = bare(&_guard, sid, "show");
     screen.preview_promoted = true;
 
@@ -2315,7 +2296,6 @@ fn left_right_scrub_hops_on_down_and_asks_for_no_transport_request() {
 fn a_held_left_right_scrub_commits_a_preview_seek_on_key_up() {
     let sid = ServerId::UNSET;
     let _guard = install(detail(sid, "show"));
-    let _dur = DurationFixture::new();
     let mut screen = bare(&_guard, sid, "show");
     screen.preview_promoted = true;
 

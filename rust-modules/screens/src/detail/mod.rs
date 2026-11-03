@@ -58,7 +58,7 @@ use plx_ui::{hero_alpha, theme, Env, Painter, Rect, Spring, View};
 use std::borrow::Cow;
 use std::cell::Cell;
 
-use super::registry::{AppFx, AppMsg, ContentArg, ContentLike, ContentReq, PageMemory, DetailIdentity, DetailKey, DetailMemory, ContentPanel, DetailRefreshPhase};
+use super::registry::{AppFx, AppMsg, ContentArg, ContentLike, ContentReq, PageMemory, DetailIdentity, DetailKey, DetailMemory, ContentPanel, DetailRefreshPhase, PlayerLike};
 
 /// Each section's local element ids are a block of its own, 2^24 wide, so a list can grow to any
 /// length the server sends without running into the next section's ids. Episodes sit alone at the
@@ -889,7 +889,7 @@ impl DetailScreen {
         }
     }
 
-    pub fn focused_rect<H: ContentLike + crate::registry::MetadataLike>(
+    pub fn focused_rect<H: ContentLike + crate::registry::MetadataLike + PlayerLike>(
         &self,
         focus: Option<FocusKey<u32>>,
         cx: &Cx<'_, H>,
@@ -1438,7 +1438,7 @@ impl DetailScreen {
     }
 }
 
-impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScreen {
+impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> for DetailScreen {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
         let meta = H::metadata(cx);
         let measure = cx.measure;
@@ -2017,7 +2017,7 @@ fn row_move(index: usize, len: usize, dir: Dir) -> Option<usize> {
     }
 }
 
-impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen {
+impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for DetailScreen {
     type Ev = ScreenEvent<H>;
 
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
@@ -2218,7 +2218,8 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                 if self.full_trailer() {
                     if let InputKind::Key { key, sym, wcode, edge, .. } = input.kind {
                         if let Some(act) = trailer::trailer_key(key, sym, wcode) {
-                            self.trailer_act(act, edge, input.at.ms, fx);
+                            let ps = H::session(cx);
+                            self.trailer_act(act, edge, input.at.ms, plx_media::player::playpos_ns(ps), plx_media::player::duration_ns(ps), fx);
                             return Handled::Yes;
                         }
                     }
@@ -2490,7 +2491,7 @@ impl DetailScreen {
     }
 }
 
-impl<H: ContentLike + crate::registry::MetadataLike> Screen<H> for DetailScreen {
+impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Screen<H> for DetailScreen {
     /// The Related / collection shelf card only; a season tab or an episode is not a catalog item.
     fn focused_card<'a>(&self, cx: &Cx<'a, H>, focus: Option<plx_machine::machine::FocusKey<u32>>, at: Option<At>) -> Option<plx_ui::screen::FocusedCard<'a>> {
         let item = self.focused_related(focus, <H as crate::registry::MetadataLike>::metadata(cx))?;
@@ -2684,6 +2685,8 @@ impl<H: ContentLike + crate::registry::MetadataLike> Screen<H> for DetailScreen 
                 .unwrap_or_default(),
             self.preview_extra(meta).map(|e| e.title.as_str()).unwrap_or_default(),
             plx_media::player::preview::paused(),
+            plx_media::player::playpos_ns(H::session(f.cx)),
+            plx_media::player::duration_ns(H::session(f.cx)),
             measure,
         );
 
@@ -3949,7 +3952,7 @@ impl DetailScreen {
         if moving || meta.season_loading() {
             fx.note(PresentEvent::Motion);
         }
-        self.preview_tick(t.ms, dt, focused, fx, meta);
+        self.preview_tick(t.ms, dt, focused, plx_media::player::duration_ns(H::session(cx)), fx, meta);
         let hint = self.hint_input(cx, focused);
         self.hold_hint.step(hint, t.ms, dt, &mut |ev| fx.note(ev));
     }
@@ -4033,6 +4036,7 @@ impl DetailScreen {
         now: u32,
         dt: f32,
         focused: Option<Located>,
+        duration_ns: Option<i64>,
         fx: &mut Effects<'_, H>,
         meta: plx_data::metadata::MetadataView<'_>,
     ) {
@@ -4103,7 +4107,7 @@ impl DetailScreen {
         // hand back a commit target on any given tick, which reaches `player::preview::seek`
         // through `ContentReq::PreviewSeek` — never `route::request_seek`'s user-intent
         // bookkeeping, per the watch-state promise `player/preview.rs`'s module doc restates.
-        if let Some(target_ns) = self.trailer_ctl.step_scrub_hold(now, plx_media::player::duration_ns()) {
+        if let Some(target_ns) = duration_ns.and_then(|duration_ns| self.trailer_ctl.step_scrub_hold(now, duration_ns)) {
             self.content(fx, ContentReq::PreviewSeek(target_ns));
         }
         if let Some(target_ns) = self.trailer_ctl.step_tap_commit(now) {
@@ -4244,17 +4248,16 @@ impl DetailScreen {
         act: trailer::TrailerKey,
         edge: Edge,
         now: u32,
+        live_ns: Option<i64>,
+        duration_ns: Option<i64>,
         fx: &mut Effects<'_, H>,
     ) {
         use trailer::TrailerKey;
         if let TrailerKey::Scrub(fwd) = act {
             let commit = match edge {
-                Edge::Down => self.trailer_ctl.scrub_fresh(
-                    fwd,
-                    now,
-                    plx_media::player::duration_ns(),
-                    plx_media::player::playpos_ns(),
-                ),
+                Edge::Down => duration_ns.zip(live_ns).and_then(|(duration_ns, live_ns)| {
+                    self.trailer_ctl.scrub_fresh(fwd, now, duration_ns, live_ns)
+                }),
                 Edge::Repeat => {
                     self.trailer_ctl.scrub_repeat(now);
                     None

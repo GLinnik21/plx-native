@@ -117,6 +117,8 @@ pub(crate) struct AppViews<'a> {
     /// a screen reads them here. A screen that wants to CHANGE the playback emits an effect
     /// (`AppFx::Player`, `ContentReq::Play`) — there is no `&mut` on this path by construction.
     pub(crate) session: &'a plx_media::route::PlaybackSession,
+    /// Viewer pause intent captured with the screen's current frame, including Tick input.
+    pub(crate) transport_paused: bool,
     /// **Today's calendar date as this frame's publication**, `[year, month, day]` in the viewer's
     /// time zone: published by the loop once per iteration ([`Bridge::publish_today`]) the way the
     /// playback session is, so a screen RECEIVES the date it words ("Today", "27 Oct") and fetches
@@ -142,7 +144,9 @@ impl Bridge {
         AppViews { auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
             directory: self.directory.view(), section_hubs: self.section_hubs.view(),
             search: self.search.view(), metadata: self.stores.metadata_view(),
-            person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session, today: self.today, beneath: None }
+            person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session,
+            transport_paused: plx_media::player::TX.paused.load(std::sync::atomic::Ordering::Relaxed),
+            today: self.today, beneath: None }
     }
 }
 
@@ -242,6 +246,7 @@ fn execute_endpoint_outcomes_with(
 
 impl plx_screens::registry::PlayerLike for AppHost {
     fn session<'a>(cx: &Cx<'a, Self>) -> &'a plx_media::route::PlaybackSession { cx.views.session }
+    fn transport_paused(cx: &Cx<'_, Self>) -> bool { cx.views.transport_paused }
 }
 
 impl plx_screens::registry::SearchLike for AppHost {
@@ -2220,7 +2225,9 @@ impl Bridge {
             let publication = self.session.publication();
             let cx = parts.cx::<AppHost>(AppViews { auth: publication.read(),
                 hubs: self.hubs.view(), listing: self.listing.view(), directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback, today: self.today, beneath: None,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback,
+                transport_paused: plx_media::player::TX.paused.load(std::sync::atomic::Ordering::Relaxed),
+                today: self.today, beneath: None,
             }, &self.measure);
             let handled = self.session.step(event, &cx, fx);
             // #132: the owner logs nothing, and the Profiles screen cannot see a read-out that
@@ -2418,7 +2425,9 @@ impl Rig<AppHost> for Bridge {
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
                 directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback, today: self.today, beneath: None,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback,
+                transport_paused: plx_media::player::TX.paused.load(std::sync::atomic::Ordering::Relaxed),
+                today: self.today, beneath: None,
             },
             measure: &self.measure,
         }

@@ -48,6 +48,7 @@ impl crate::registry::PlayerLike for TestHost {
     fn session<'a>(_cx: &Cx<'a, Self>) -> &'a plx_media::route::PlaybackSession {
         plx_media::route::idle_session_for_test()
     }
+    fn transport_paused(_cx: &Cx<'_, Self>) -> bool { false }
 }
 
 thread_local! {

@@ -1323,6 +1323,8 @@ pub trait HomeLike: AppLike<Memory = PageMemory> + Sized {
 /// on this path by construction.
 pub trait PlayerLike: AppLike<Memory = PageMemory> + Sized {
     fn session<'a>(cx: &Cx<'a, Self>) -> &'a plx_media::route::PlaybackSession;
+    /// Viewer pause intent sampled by the host at this frame's Tick boundary.
+    fn transport_paused(cx: &Cx<'_, Self>) -> bool;
 }
 
 pub trait SearchLike: AppLike<Memory = PageMemory> + Sized {

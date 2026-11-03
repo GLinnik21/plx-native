@@ -1158,7 +1158,8 @@ fn a_hold_before_an_opens_short_deadline_settles_as_a_stall_abort() {
         Some(6_000),
         false,
         false,
-        ReserveDeadlineState::new(Some(std::time::Instant::now() + SHORT_DEADLINE), false),
+        ReserveDeadlineState::new(Some(std::time::Instant::now() + SHORT_DEADLINE), false,
+            super::test_support::demux_observer()),
         super::test_support::demux_observer(),
     );
     let fire = Fire::AfterContinue(Phase::Opening, 1);
@@ -1177,7 +1178,8 @@ fn at_the_floor_an_opens_short_deadline_keeps_its_classification() {
         Some(6_000),
         true,
         false,
-        ReserveDeadlineState::new(Some(std::time::Instant::now() + SHORT_DEADLINE), false),
+        ReserveDeadlineState::new(Some(std::time::Instant::now() + SHORT_DEADLINE), false,
+            super::test_support::demux_observer()),
         super::test_support::demux_observer(),
     );
     let fire = Fire::AfterContinue(Phase::Opening, 1);
@@ -1422,7 +1424,8 @@ fn unarmed_runtimes_never_stop_and_armed_ones_recheck_within_a_slice() {
         other => panic!("an armed runtime keeps asking: {other:?}"),
     }
     let mut candidate = runtime_for(
-        SegmentAcquisition::candidate(ReserveDeadlineState::new(None, false)),
+        SegmentAcquisition::candidate(ReserveDeadlineState::new(None, false,
+            super::test_support::demux_observer())),
         &mut aq,
     );
     let mut held = runtime_for(
