@@ -574,8 +574,8 @@ pub fn note_original_probe_for(
 }
 
 /// Record the native Load-returned gate opening, or issue #74 D.1.4's budget firing first — see
-/// [`LoadElapsedClass`]. Callable off the main thread (the load thread reports the ordinary gate
-/// transition), like every other `_for` breadcrumb here.
+/// [`LoadElapsedClass`]. The common adapter publishes the worker's captured timing only after
+/// validating the receipt's attempt and native epoch; the pump reports budget expiry.
 pub fn note_load_gate_for(generation: u32, elapsed: LoadElapsedClass) {
     push_trace_for(generation, TraceEvent::LoadGateOpened { elapsed });
 }
