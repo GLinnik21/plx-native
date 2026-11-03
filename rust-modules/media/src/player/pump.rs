@@ -357,7 +357,7 @@ fn publish_attempt_view(ps: &mut crate::route::PlaybackSession, attempt: crate::
     );
     let requested_kbps = SHARED.dg_abr_kbps.load(Relaxed);
     let facts = AttemptFacts {
-        status: Some(PlaybackState::from_u8(SHARED.pb_state.load(Relaxed))),
+        status: Some(super::PlaybackState::from_u8(SHARED.pb_state.load(Relaxed))),
         requested_kbps: (requested_kbps > 0).then_some(requested_kbps),
         refusal_path: Some(SHARED.refusal_path()),
         runtime_failure: (failure != super::RuntimeFailure::Unknown).then_some(failure),
