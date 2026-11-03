@@ -61,6 +61,7 @@ mod foreground_flight_tests;
 mod resume_tests;
 mod shared;
 mod shared_resources;
+mod subtitle_bitmap;
 use shared_resources::Shared;
 pub mod sidecar;
 pub mod sub_charset; // legacy-encoding text subtitles (GBK, Big5, Shift_JIS, ...) read as UTF-8; decided once per track
@@ -82,11 +83,12 @@ pub(crate) use shared::pinned_pause_clock;
 pub use shared::HlsAutomaticTransition;
 pub use shared::HlsClockFenceError;
 /// one rect of an image-subtitle display set — the demuxer builds them, the HUD draws them
-pub use shared::SubRect;
+pub use subtitle_bitmap::SubRect;
+use subtitle_bitmap::SubBitmap;
 pub use plx_data::metadata::track_names::TrackNames;
 pub use shared::UserPauseCursor;
 use shared::{
-    HlsPauseCompletion, HlsPlayCompletion, HlsUserPause, HlsUserResume, SubBitmap,
+    HlsPauseCompletion, HlsPlayCompletion, HlsUserPause, HlsUserResume,
     Transport,
 };
 

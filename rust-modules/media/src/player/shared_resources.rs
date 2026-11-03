@@ -7,6 +7,7 @@ pub struct Shared {
     pub feed: plx_play_feed::shared::PhysicalShared,
     pub ass_sources: Mutex<super::ass_source::Store>,
     pub ass_renderer: super::ass::Runtime,
+    pub sub_bitmaps: Mutex<Vec<super::subtitle_bitmap::SubBitmap>>,
 }
 
 impl Shared {
@@ -15,6 +16,7 @@ impl Shared {
             feed: plx_play_feed::shared::PhysicalShared::new(),
             ass_sources: Mutex::new(super::ass_source::Store::new()),
             ass_renderer: super::ass::Runtime::new(),
+            sub_bitmaps: Mutex::new(Vec::new()),
         }
     }
 
@@ -41,6 +43,9 @@ impl Shared {
             // File facts survive a reload; completed rasters do not survive source retirement.
             let mut sources = self.ass_sources.lock().unwrap_or_else(|e| e.into_inner());
             if for_reload { sources.retain_for_reload(); } else { sources.reset(); }
+            drop(sources);
+            // Decoded bitmap cues refill after reopen; they are transient presentation state.
+            self.sub_bitmaps.lock().unwrap().clear();
         });
         if for_reload {
             self.feed.duration_ns.store(duration, Ordering::Relaxed);
