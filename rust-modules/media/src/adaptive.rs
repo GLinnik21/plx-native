@@ -179,7 +179,7 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
     fn trace(
         &mut self, on_trace: &mut impl FnMut(TrialTrace, &mut P), event: TrialTrace,
     ) {
-        on_trace(event, self.port);
+        on_trace(event, &mut *self.port);
     }
 
     fn reject_first(
@@ -329,7 +329,10 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
         reserve_policy: abr::ReservePolicy, offset_micros: i64,
         now_ms: impl Fn() -> u64,
         mut on_trace: impl FnMut(TrialTrace, &mut P),
-    ) -> FirstPhase {
+    ) -> FirstPhase
+    where
+        P: FeedPort<Locator = String>,
+    {
         let prime_deadline = match self.prime_deadline() {
             Ok(deadline) => deadline,
             Err(_) => return FirstPhase::Failed("adaptive feed prime deadline protocol violation"),
