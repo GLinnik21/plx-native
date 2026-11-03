@@ -16,8 +16,8 @@ pub(super) struct FeedOpenRequest {
     /// Backend-owned Load facts, with route and metadata types mapped at capture time.
     pub feed_payload: plx_play_feed::PayloadFacts,
     pub side_reader: Option<route::SideReaderTarget>,
-    pub hls_abr: Option<(route::HlsAbrControl, route::WorkerTicket)>,
-    pub auto_original: Option<route::AutoOriginalWatch>,
+    pub hls_abr: Option<Box<dyn plx_playback_contract::adaptive::AdaptiveSession>>,
+    pub auto_original: Option<Box<dyn plx_playback_contract::adaptive::OriginalSession>>,
     pub trace_generation: u32,
 }
 
@@ -88,8 +88,15 @@ impl FeedOpenRequest {
             payload,
             feed_payload,
             side_reader: route::side_reader_target(ps),
-            hls_abr: route::hls_abr_control(ps),
-            auto_original: route::auto_original_watch(ps),
+            hls_abr: route::hls_abr_control(ps).map(|control| {
+                crate::adaptive::boxed_session(
+                    crate::adaptive::Start::from(control),
+                    Box::new(crate::adaptive::PlayerAdaptiveEffects),
+                )
+            }),
+            auto_original: route::auto_original_watch(ps).map(|watch| {
+                crate::adaptive::boxed_original_session(crate::adaptive::OriginalStart::from(watch))
+            }),
             trace_generation: route::playback_trace_generation(),
         }
     }
