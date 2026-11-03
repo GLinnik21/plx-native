@@ -28,9 +28,88 @@
 #[cfg(test)]
 use super::engine::Engine;
 use super::{feed_resources::FeedResources, timeline};
+use super::{backend, feed_driver::{FeedDriver, FeedTransportAction}};
 #[cfg(test)]
 use super::threads;
 use plx_base::task::MainThread;
+use plx_playback_contract::{AttemptId, BackendEvent, BackendKind, Capabilities, CommandId,
+    DispatchResult, DriverSet, ExitDisposition, Failure, Intent, Operation, ReleaseStatus,
+    SourceKey, StopReason};
+#[cfg(feature = "play-uri")]
+use plx_play_uri::backend::{Config as UriConfig, UriBackend, UriSource};
+
+/// Temporary borrow of the adapter's persistent physical resources. The runner remains the
+/// single admission owner; each driver only executes addressed commands and reports evidence.
+struct PhysicalDrivers<'a> {
+    feed: &'a mut FeedResources,
+    feed_driver: &'a mut FeedDriver,
+    #[cfg(feature = "play-uri")]
+    uri: &'a mut Option<UriBackend>,
+}
+
+impl DriverSet for PhysicalDrivers<'_> {
+    type Context = MainThread;
+
+    fn capabilities(&self, backend: BackendKind) -> Option<Capabilities> {
+        match backend {
+            BackendKind::Feed => Some(self.feed_driver.capabilities()),
+            BackendKind::Uri => {
+                #[cfg(feature = "play-uri")]
+                { self.uri.as_ref().and_then(|driver| driver.capabilities(BackendKind::Uri)) }
+                #[cfg(not(feature = "play-uri"))]
+                { None }
+            }
+        }
+    }
+
+    fn dispatch(&mut self, backend: BackendKind, mt: &MainThread, attempt: AttemptId,
+        command: CommandId, operation: Operation) -> DispatchResult {
+        match backend {
+            BackendKind::Feed => self.feed_driver.dispatch(self.feed, mt, attempt, command, operation),
+            BackendKind::Uri => {
+                #[cfg(feature = "play-uri")]
+                { self.uri.as_mut().map_or(DispatchResult::Refused(Failure::Unavailable),
+                    |driver| driver.dispatch(BackendKind::Uri, mt, attempt, command, operation)) }
+                #[cfg(not(feature = "play-uri"))]
+                { let _ = (mt, attempt, command, operation); DispatchResult::Refused(Failure::Unavailable) }
+            }
+        }
+    }
+
+    fn poll(&mut self, mt: &MainThread) -> Vec<BackendEvent> {
+        let mut events = self.feed_driver.poll(self.feed);
+        #[cfg(feature = "play-uri")]
+        if let Some(uri) = self.uri.as_mut() { events.extend(uri.poll(mt)); }
+        #[cfg(not(feature = "play-uri"))]
+        let _ = mt;
+        events
+    }
+
+    fn discard_staged(&mut self, backend: BackendKind, attempt: AttemptId, key: SourceKey) {
+        match backend {
+            BackendKind::Feed => self.feed_driver.discard_staged(attempt, key),
+            BackendKind::Uri => {
+                #[cfg(feature = "play-uri")]
+                if let Some(uri) = self.uri.as_mut() {
+                    uri.discard_staged(BackendKind::Uri, attempt, key);
+                }
+                #[cfg(not(feature = "play-uri"))]
+                let _ = (attempt, key);
+            }
+        }
+    }
+
+    fn exit_disposition(&self) -> ExitDisposition {
+        if self.feed_driver.exit_disposition(self.feed) == ExitDisposition::PreserveNativeOwnership {
+            return ExitDisposition::PreserveNativeOwnership;
+        }
+        #[cfg(feature = "play-uri")]
+        if self.uri.as_ref().is_some_and(|driver| driver.exit_disposition() == ExitDisposition::PreserveNativeOwnership) {
+            return ExitDisposition::PreserveNativeOwnership;
+        }
+        ExitDisposition::Clean
+    }
+}
 
 /// Common coordinator and main-thread proof, as one owned value (`App.adapters.player`).
 pub struct PlayerAdapter {
@@ -39,6 +118,13 @@ pub struct PlayerAdapter {
     mt: MainThread,
     /// The native feed slot and its Load/release worker resources.
     pub(super) feed: FeedResources,
+    /// The one neutral attempt owner, with its physical feed and optional URI executors below.
+    backend: backend::BackendRunner,
+    feed_driver: FeedDriver,
+    next_source_key: u64,
+    backend_epoch: std::time::Instant,
+    #[cfg(feature = "play-uri")]
+    uri_backend: Option<UriBackend>,
     /// Route identity and product trace for the installed physical attempt. The feed itself
     /// receives only the canonical contract ID and native epoch.
     feed_attempt: Option<(crate::route::RouteStartAttempt, u32)>,
@@ -92,6 +178,12 @@ impl PlayerAdapter {
         Self {
             mt,
             feed: FeedResources::new(&super::SHARED.feed),
+            backend: backend::BackendRunner::new(),
+            feed_driver: FeedDriver::new(),
+            next_source_key: 0,
+            backend_epoch: std::time::Instant::now(),
+            #[cfg(feature = "play-uri")]
+            uri_backend: None,
             feed_attempt: None,
             timeline: None,
             repair: None,
@@ -101,6 +193,112 @@ impl PlayerAdapter {
             #[cfg(feature = "devtriggers")]
             uri: None,
         }
+    }
+
+    /// The adapter reads monotonic time; the pure backend and metrics reducers receive a value.
+    pub fn backend_tick(&self) -> super::attempt_metrics::Tick {
+        super::attempt_metrics::Tick::from_millis(
+            self.backend_epoch.elapsed().as_millis().min(u64::MAX as u128) as u64,
+        )
+    }
+
+    pub fn backend_snapshot(&self) -> &plx_playback_contract::Snapshot {
+        self.backend.snapshot()
+    }
+
+    /// Execute one route-owned intent through the sole backend admission state. The caller
+    /// supplies the physical attempt's origin and a monotonic tick for local measurements.
+    pub fn backend_send_at(&mut self, intent: Intent, origin: super::attempt_metrics::Origin,
+        at: super::attempt_metrics::Tick) -> backend::RunResult {
+        let mut drivers = PhysicalDrivers {
+            feed: &mut self.feed,
+            feed_driver: &mut self.feed_driver,
+            #[cfg(feature = "play-uri")]
+            uri: &mut self.uri_backend,
+        };
+        let result = self.backend.send_at(&mut drivers, &self.mt, intent, origin, at);
+        self.finish_backend_actions(result, at)
+    }
+
+    /// Poll both physical executors even when no player page is mounted. A terminal observation
+    /// and a same-poll release retain their order in the returned addressed results.
+    pub fn backend_poll_at(&mut self, at: super::attempt_metrics::Tick) -> backend::RunResult {
+        let mut drivers = PhysicalDrivers {
+            feed: &mut self.feed,
+            feed_driver: &mut self.feed_driver,
+            #[cfg(feature = "play-uri")]
+            uri: &mut self.uri_backend,
+        };
+        let result = self.backend.poll_at(&mut drivers, &self.mt, at);
+        self.finish_backend_actions(result, at)
+    }
+
+    pub fn backend_set_foreground_at(&mut self, foreground: bool,
+        at: super::attempt_metrics::Tick) -> backend::RunResult {
+        let mut drivers = PhysicalDrivers {
+            feed: &mut self.feed,
+            feed_driver: &mut self.feed_driver,
+            #[cfg(feature = "play-uri")]
+            uri: &mut self.uri_backend,
+        };
+        let result = self.backend.set_foreground_at(&mut drivers, &self.mt, foreground, at);
+        self.finish_backend_actions(result, at)
+    }
+
+    /// The native user transport door owns TX, Starfish and ACB together. A queued Feed control
+    /// is executed only after the runner's temporary driver borrow ends, then its addressed
+    /// acceptance is returned through the same runner before another command can advance.
+    fn finish_backend_actions(&mut self, mut result: backend::RunResult,
+        at: super::attempt_metrics::Tick) -> backend::RunResult {
+        while let Some(action) = self.feed_driver.take_transport_action() {
+            let accepted = match action {
+                FeedTransportAction::Play(_) => super::resume(self),
+                FeedTransportAction::Pause(_) => super::pause(self),
+            };
+            self.feed_driver.note_transport_result(action, accepted);
+            let mut drivers = PhysicalDrivers {
+                feed: &mut self.feed,
+                feed_driver: &mut self.feed_driver,
+                #[cfg(feature = "play-uri")]
+                uri: &mut self.uri_backend,
+            };
+            let next = self.backend.poll_at(&mut drivers, &self.mt, at);
+            result.playback.extend(next.playback);
+            result.metrics.extend(next.metrics);
+        }
+        result
+    }
+
+    pub fn backend_exit_disposition(&self) -> ExitDisposition {
+        if self.backend.snapshot().phase != plx_playback_contract::Phase::Vacant
+            || self.feed_driver.exit_disposition(&self.feed) == ExitDisposition::PreserveNativeOwnership {
+            return ExitDisposition::PreserveNativeOwnership;
+        }
+        #[cfg(feature = "play-uri")]
+        if self.uri_backend.as_ref().is_some_and(|driver|
+            driver.exit_disposition() == ExitDisposition::PreserveNativeOwnership) {
+            return ExitDisposition::PreserveNativeOwnership;
+        }
+        ExitDisposition::Clean
+    }
+
+    /// A locator is only an escrow key, never another playback attempt identity.
+    pub(super) fn next_source_key(&mut self) -> SourceKey {
+        self.next_source_key = self.next_source_key.checked_add(1).expect("source keys exhausted");
+        SourceKey::new(self.next_source_key)
+    }
+
+    pub(super) fn stage_native_feed(&mut self, attempt: AttemptId, key: SourceKey,
+        prepared: super::engine::NativePrepared) -> Result<(), Failure> {
+        self.feed_driver.stage(attempt, key, prepared)
+    }
+
+    pub(super) fn take_backend_feed_stop(&mut self) -> Option<(AttemptId, StopReason)> {
+        self.feed_driver.take_stop_request()
+    }
+
+    pub(super) fn note_backend_feed_release(&mut self, attempt: AttemptId, status: ReleaseStatus) {
+        self.feed_driver.note_release(attempt, status);
     }
 
     /// The foreground restore's start was just deferred: follow it.
@@ -422,6 +620,7 @@ impl PlayerAdapter {
             let result = if outcome.ok { crate::route::RouteStartResult::Started }
                 else { crate::route::RouteStartResult::StartFailed };
             let _ = crate::route::settle_route_start(ps, attempt, result);
+            self.feed_driver.note_load_outcome(outcome.attempt, outcome.ok);
         }
     }
 
