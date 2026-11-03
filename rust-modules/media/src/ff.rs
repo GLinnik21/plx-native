@@ -5839,7 +5839,7 @@ impl adaptive::OriginalProbeDiagnostics for HlsOriginalProbeDiagnostics {
         publish_original_probe_failure(failure);
     }
 
-    fn log(&mut self, line: &str) { crate::player::log(line); }
+    fn record(&mut self, line: &str) { crate::player::log(line); }
 }
 
 fn hls_demux(

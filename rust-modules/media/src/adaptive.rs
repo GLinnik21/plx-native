@@ -846,7 +846,7 @@ pub(crate) enum ProbeTraceAction { Start, Failed, Steady, RecoverOriginal }
 pub(crate) trait OriginalProbeDiagnostics {
     fn action(&mut self, action: ProbeTraceAction, target_kbps: u32);
     fn failure(&mut self, failure: ProbeFailure);
-    fn log(&mut self, line: &str);
+    fn record(&mut self, line: &str);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1391,22 +1391,22 @@ impl Coordinator {
         diagnostics: &mut impl OriginalProbeDiagnostics,
     ) -> OriginalProbeOutcome {
         let Some(lease) = port.begin(AutomaticTransition::Original, expected_user_sequence) else {
-            diagnostics.log("abr: Original probe deferred behind a playback-clock transition");
+            diagnostics.record("abr: Original probe deferred behind a playback-clock transition");
             return OriginalProbeOutcome::LeaseBusy;
         };
         diagnostics.action(ProbeTraceAction::Start, self.original_source_kbps());
-        diagnostics.log("abr: checking finite actual Original range on the live HLS resource");
+        diagnostics.record("abr: checking finite actual Original range on the live HLS resource");
         let probe = match self.probe_original(permit.plan, || port.aborted()) {
             ProbeResult::Measured(sample) => sample,
             ProbeResult::Stale => {
-                diagnostics.log("abr: discarded Original probe from a superseded HLS resource");
+                diagnostics.record("abr: discarded Original probe from a superseded HLS resource");
                 return OriginalProbeOutcome::Stale;
             }
             ProbeResult::Failed { outcome, failure } => {
                 diagnostics.failure(failure);
                 let grade = self.probe_failed();
                 diagnostics.action(ProbeTraceAction::Failed, 0);
-                diagnostics.log(&format!(
+                diagnostics.record(&format!(
                     "abr: Original probe #{} produced no body outcome={}; retaining best HLS \
                      request left={}s verdict={:?}",
                     grade.as_ref().map(|grade| grade.probes).unwrap_or(0),
@@ -1418,11 +1418,11 @@ impl Coordinator {
         };
         let grade = self.grade_probe(probe, telemetry, remaining_ms);
         if let Some(cmp) = grade.as_ref().and_then(|grade| grade.comparison) {
-            diagnostics.log(&mode_comparison_line(cmp));
+            diagnostics.record(&mode_comparison_line(cmp));
         }
         let (slow, unc, n, cons, need) = grade.as_ref()
             .map(|grade| grade.basis).unwrap_or_default();
-        diagnostics.log(&format!(
+        diagnostics.record(&format!(
             "abr: Original probe #{} measured={}kbps {}KiB/{}ms complete={} left={}s \
              slow={}kbps unc={}pm n={} cons={}kbps need={}kbps verdict={:?}",
             grade.as_ref().map(|grade| grade.probes).unwrap_or(0),
@@ -1441,7 +1441,7 @@ impl Coordinator {
                 OriginalProbeOutcome::Continue
             }
             ProbeRecoveryAction::Held => {
-                diagnostics.log(
+                diagnostics.record(
                     "abr: Original recovery measured during a user hold; retained until Resume",
                 );
                 OriginalProbeOutcome::Continue
@@ -1455,20 +1455,20 @@ impl Coordinator {
                 );
                 match publication {
                     OriginalPublication::Published => {
-                        diagnostics.log(&format!(
+                        diagnostics.record(&format!(
                             "abr: source sustainable again at {}kbps; requesting Original on the probe boundary",
                             kbps,
                         ));
                         OriginalProbeOutcome::Published
                     }
                     OriginalPublication::Busy => {
-                        diagnostics.log(
+                        diagnostics.record(
                             "abr: Original recovery retained behind another route transition",
                         );
                         OriginalProbeOutcome::Continue
                     }
                     OriginalPublication::ClockMoved => {
-                        diagnostics.log(
+                        diagnostics.record(
                             "abr: Original recovery retained after playback clock moved",
                         );
                         OriginalProbeOutcome::Continue
