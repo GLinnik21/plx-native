@@ -25,7 +25,7 @@ impl Kind {
     }
 
     /// The name the learned-refusal list and the exclusion rows spell the codec with.
-    pub(crate) fn ffmpeg_name(self) -> &'static str {
+    pub fn ffmpeg_name(self) -> &'static str {
         match self {
             Kind::Opus => "opus",
         }
