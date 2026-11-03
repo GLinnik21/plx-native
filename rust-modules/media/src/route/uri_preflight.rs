@@ -10,6 +10,11 @@ use plx_playback_contract::{Capabilities, Fidelity, Requirements, SourceKind, Tr
 
 use super::SourceSelection;
 
+/// The exact selected subtitle's source format and placement. A native track index alone does
+/// not establish that this firmware renders its codec.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SourceSubtitle { pub codec: String, pub embedded: bool }
+
 /// Captured product evidence shared by boot's executor configuration and one resolve's IO port.
 /// Callable operations and certified firmware behavior are separate facts.
 #[derive(Clone, Copy)]
@@ -57,6 +62,7 @@ pub struct OriginalRequest {
     /// Exact selected-source layering; a positive DV verdict must certify this record.
     pub dolby_vision: plx_data::metadata::Dovi,
     pub audio_codec: String,
+    pub subtitle_source: Option<SourceSubtitle>,
     pub source_kbps: Option<u32>,
     pub raster: Option<(u32, u32)>,
     pub requested_rate_permille: i32,
@@ -65,6 +71,7 @@ pub struct OriginalRequest {
     pub link_allows_original: bool,
     pub auto_allows_original: bool,
     pub requires_subtitle_burn: bool,
+    pub requires_client_subtitle: bool,
     pub preview: bool,
 }
 
@@ -74,6 +81,7 @@ pub struct KnownSource {
     pub requirements: Requirements,
     /// Source-specific DV certificate. `None` is enough only when PMS reports no DV.
     pub certified_dolby_vision: Option<plx_data::metadata::Dovi>,
+    pub certified_subtitle_source: Option<SourceSubtitle>,
     pub expires_at: Instant,
 }
 
@@ -103,7 +111,8 @@ impl ResolvePort {
         if request.requested_rate_permille != plx_playback_contract::RATE_NORMAL
             || !request.quality_allows_original || !request.link_allows_original
             || !request.auto_allows_original || request.selection.audio_contract.any()
-            || request.requires_subtitle_burn || (request.preview && !self.evidence.preview_rectangle) {
+            || request.requires_subtitle_burn || request.requires_client_subtitle
+            || (request.preview && !self.evidence.preview_rectangle) {
             return Verdict::Refused;
         }
         if request.duration_ms.is_none() || request.source_url.is_empty() {
@@ -112,12 +121,15 @@ impl ResolvePort {
         let preview = request.preview;
         let selected = request.selection;
         let dovi = request.dolby_vision;
+        let subtitle = request.subtitle_source.clone();
         match self.qualifier.qualify(off, request) {
             Verdict::Known(known) if known.selection == selected
                 && known.requirements.source == SourceKind::ProgressiveUri
                 && known.requirements.video == Fidelity::Exact
                 && known.requirements.audio == Fidelity::Exact
                 && (!dovi.present || known.certified_dolby_vision == Some(dovi))
+                && (selected.subtitle_sid <= 0 || (subtitle.as_ref().is_some_and(|sub| sub.embedded)
+                    && known.certified_subtitle_source == subtitle))
                 && (selected.audio_sid <= 0 || known.requirements.audio_track
                     == TrackChoice::Selected(selected.audio_sid as u64))
                 && (selected.subtitle_sid <= 0 || known.requirements.subtitle_track
@@ -142,15 +154,20 @@ impl OriginalQualifier for ProductQualifier {
 mod tests {
     use super::*;
 
-    struct Certified { dovi: Option<plx_data::metadata::Dovi>, expired: bool }
+    struct Certified { dovi: Option<plx_data::metadata::Dovi>,
+        subtitle: Option<SourceSubtitle>, expired: bool }
     impl OriginalQualifier for Certified {
         fn qualify(&self, _off: &OffFrame, request: OriginalRequest) -> Verdict {
             Verdict::Known(KnownSource { selection: request.selection,
                 source: UriSource::new(request.source_url, Vec::new()),
                 requirements: Requirements { source: SourceKind::ProgressiveUri,
                     video: Fidelity::Exact, audio: Fidelity::Exact,
-                    audio_track: TrackChoice::Selected(42), subtitle_track: TrackChoice::Unspecified },
+                    audio_track: TrackChoice::Selected(42),
+                    subtitle_track: if request.selection.subtitle_sid > 0 {
+                        TrackChoice::Selected(request.selection.subtitle_sid as u64)
+                    } else { TrackChoice::Unspecified } },
                 certified_dolby_vision: self.dovi,
+                certified_subtitle_source: self.subtitle.clone(),
                 expires_at: if self.expired { Instant::now() - std::time::Duration::from_secs(1) }
                     else { Instant::now() + std::time::Duration::from_secs(5) } })
         }
@@ -161,7 +178,7 @@ mod tests {
         let dovi = plx_data::metadata::Dovi { present: true, profile: 7, el_present: true,
             ..plx_data::metadata::Dovi::NONE };
         let capabilities = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
-            pause: true, seek: true, audio_track: true, subtitle_track: false,
+            pause: true, seek: true, audio_track: true, subtitle_track: true,
             audio_off: false, subtitle_off: false };
         let evidence = ProductEvidence { display_exported: true,
             binding: Binding::Exported { canvas: (1920, 1080) },
@@ -171,16 +188,31 @@ mod tests {
                 subtitle_sid: 0, audio_contract: plx_plex::plex::AudioEnhancements::NONE },
             source_url: "https://example.invalid/part.mkv".to_owned(), duration_ms: Some(60_000),
             video_codec: "hevc".to_owned(), dolby_vision: dovi, audio_codec: "ac3".to_owned(),
+            subtitle_source: None,
             source_kbps: Some(4000), raster: Some((1920, 1080)),
             requested_rate_permille: plx_playback_contract::RATE_NORMAL, resume_ns: 0,
             quality_allows_original: true, link_allows_original: true, auto_allows_original: true,
-            requires_subtitle_burn: false, preview: false };
+            requires_subtitle_burn: false, requires_client_subtitle: false, preview: false };
         let off = OffFrame::for_test();
-        let unknown = ResolvePort::new(evidence, Arc::new(Certified { dovi: None, expired: false }));
+        let unknown = ResolvePort::new(evidence, Arc::new(Certified { dovi: None,
+            subtitle: None, expired: false }));
         assert!(matches!(unknown.qualify(&off, request()), Verdict::Unknown));
-        let certified = ResolvePort::new(evidence, Arc::new(Certified { dovi: Some(dovi), expired: false }));
+        let certified = ResolvePort::new(evidence, Arc::new(Certified { dovi: Some(dovi),
+            subtitle: None, expired: false }));
         assert!(matches!(certified.qualify(&off, request()), Verdict::Known(_)));
-        let expired = ResolvePort::new(evidence, Arc::new(Certified { dovi: Some(dovi), expired: true }));
+        let expired = ResolvePort::new(evidence, Arc::new(Certified { dovi: Some(dovi),
+            subtitle: None, expired: true }));
         assert!(matches!(expired.qualify(&off, request()), Verdict::Unknown));
+
+        let source_subtitle = SourceSubtitle { codec: "pgs".to_owned(), embedded: true };
+        let subtitle_request = || { let mut input = request(); input.dolby_vision = plx_data::metadata::Dovi::NONE;
+            input.selection.subtitle_sid = 77;
+            input.subtitle_source = Some(source_subtitle.clone()); input };
+        let no_render_proof = ResolvePort::new(evidence, Arc::new(Certified { dovi: None,
+            subtitle: None, expired: false }));
+        assert!(matches!(no_render_proof.qualify(&off, subtitle_request()), Verdict::Unknown));
+        let render_proof = ResolvePort::new(evidence, Arc::new(Certified { dovi: None,
+            subtitle: Some(source_subtitle), expired: false }));
+        assert!(matches!(render_proof.qualify(&off, subtitle_request()), Verdict::Known(_)));
     }
 }

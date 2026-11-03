@@ -178,6 +178,7 @@ impl crate::route::uri_preflight::OriginalQualifier for QualifiedOriginal {
                 video: Fidelity::Exact, audio: Fidelity::Exact,
                 audio_track: TrackChoice::Selected(31342), subtitle_track: TrackChoice::Unspecified },
             certified_dolby_vision: None,
+            certified_subtitle_source: None,
             expires_at: std::time::Instant::now() + std::time::Duration::from_secs(15),
         })
     }

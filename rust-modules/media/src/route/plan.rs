@@ -1858,15 +1858,23 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 pick_subtitle(p, &show_prefs, account, &source_audio_lang, env.subtitle_override, memory_sub)
             });
             let source_sub_pick = source_sub_decision.as_ref().and_then(|decision| decision.pick);
+            // Source intent retains an embedded stream even if Feed cannot render its codec.
+            // The URI qualifier must certify this exact format before selecting it natively.
+            let source_sub_stream = plan.playing.as_ref().and_then(|item| {
+                source_sub_pick.and_then(|(id, _)| item.subs.iter().find(|sub| sub.id == id))
+                    .or_else(|| item.subs.iter().find(|sub| sub.selected && sub.id > 0))
+            });
+            let source_sub_sid = source_sub_stream.filter(|sub| !sub.external).map_or(0, |sub| sub.id);
+            let requires_client_subtitle = source_sub_stream.is_some_and(|sub| sub.external);
             let source_selection = SourceSelection { server: env.sid, part_id: plan.part_id,
                 audio_sid: source_audio.as_ref().map_or(0, |(_, _, sid)| *sid),
-                subtitle_sid: source_sub_pick.map_or(0, |(sid, _)| sid),
+                subtitle_sid: source_sub_sid,
                 audio_contract: env.audio_enhancements };
             plan.source_selection = Some(source_selection);
             #[cfg(feature = "play-uri")]
             if let Some(port) = env.uri_preflight_port.as_ref().filter(|_| {
                 (env.audio_sid <= 0 || source_audio.is_some())
-                    && (env.subtitle_override.unwrap_or(0) <= 0 || source_sub_pick.is_some())
+                    && (env.subtitle_override.unwrap_or(0) <= 0 || source_sub_stream.is_some())
             }) {
                 let source_kbps = plan.playing.as_ref().map_or(env.src_kbps, |p|
                     if p.bitrate > 0 { p.bitrate } else { env.src_kbps });
@@ -1879,6 +1887,8 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     video_codec: vcodec.to_owned(),
                     dolby_vision: plan.playing.as_ref().map_or(plx_data::metadata::Dovi::NONE, |p| p.dovi),
                     audio_codec: source_audio.as_ref().map_or_else(|| acodec.to_owned(), |(_, codec, _)| codec.clone()),
+                    subtitle_source: source_sub_stream.map(|sub| super::uri_preflight::SourceSubtitle {
+                        codec: sub.codec.to_lowercase(), embedded: !sub.external }),
                     source_kbps: u32::try_from(source_kbps).ok().filter(|kbps| *kbps > 0),
                     raster: u32::try_from(width).ok().zip(u32::try_from(height).ok())
                         .filter(|(w, h)| *w > 0 && *h > 0),
@@ -1890,6 +1900,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     auto_allows_original: quality != Quality::Auto
                         || client.link() == Some(plx_plex::plex::probe::Location::Local),
                     requires_subtitle_burn: env.sub_sid > 0,
+                    requires_client_subtitle,
                     preview: env.preview,
                 };
                 if let super::uri_preflight::Verdict::Known(known) = port.qualify(off, request) {
