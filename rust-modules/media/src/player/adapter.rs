@@ -528,11 +528,15 @@ impl PlayerAdapter {
         self.feed.has_abandoned_load()
     }
 
-    /// The parked Load, borrowed mutably (its once-only log latch), or taken once it returned.
-    pub fn abandoned_load_mut(&mut self) -> Option<&mut super::engine::AbandonedLoad> {
-        self.feed.abandoned_load_mut()
+    pub(super) fn begin_native_open(&mut self) -> bool {
+        super::engine::begin_native_open(&mut self.feed, &self.mt)
     }
 
+    pub fn reap_abandoned_load(&mut self) -> bool {
+        super::engine::reap_abandoned_load(&mut self.feed, &self.mt)
+    }
+
+    /// The parked Load, borrowed mutably (its once-only log latch), or taken once it returned.
     pub fn take_abandoned_load(&mut self) -> Option<super::engine::AbandonedLoad> {
         self.feed.take_abandoned_load()
     }

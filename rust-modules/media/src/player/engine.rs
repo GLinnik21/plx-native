@@ -12,7 +12,8 @@
 //! thread too and deliberately does not take one: it only publishes to `SHARED`.
 use super::feed_open::FeedOpenRequest;
 #[cfg(all(test, feature = "hostsim"))]
-use super::route_start::{exit_native, exit_native_with, finish_release_for_test, poll_release, NativeExit};
+use super::route_start::{exit_native, exit_native_with, finish_release_for_test, poll_release,
+    reap_abandoned_load, NativeExit};
 #[cfg(test)]
 use super::feed_open::PayloadFacts;
 #[cfg(test)]
@@ -363,15 +364,16 @@ pub struct AbandonedLoad {
 /// Release a parked [`AbandonedLoad`] if its `Load` has returned. Cheap when there is nothing to
 /// do; called once per app frame and at the top of every native start. `true` when the parked
 /// object was released by this call.
-pub fn reap_abandoned_load(pa: &mut super::adapter::PlayerAdapter) -> bool {
-    let finished = match pa.abandoned_load_mut() {
+pub(super) fn reap_abandoned_load(feed: &mut super::feed_resources::FeedResources,
+    mt: &MainThread) -> bool {
+    let finished = match feed.abandoned_load_mut() {
         Some(parked) => parked.load_th.is_finished(),
         None => return false,
     };
     if !finished {
         return false;
     }
-    let parked = pa.take_abandoned_load().expect("checked above");
+    let parked = feed.take_abandoned_load().expect("checked above");
     // The thread has already returned, so this join cannot block.
     plx_base::task::join("media", parked.load_th);
     log(&format!(
@@ -379,7 +381,7 @@ pub fn reap_abandoned_load(pa: &mut super::adapter::PlayerAdapter) -> bool {
         parked.epoch,
         parked.abandoned_at.elapsed().as_millis(),
     ));
-    release_native_object(pa.mt(), parked.epoch);
+    release_native_object(mt, parked.epoch);
     // `parked._payload` drops here, after the thread that read it has been joined.
     true
 }
@@ -1054,9 +1056,10 @@ fn stream_open_log_line(origin_log_form: &str, path: &str) -> String {
     format!("stream: {origin_log_form} path={path}")
 }
 
-pub(super) fn begin_native_open(pa: &mut super::adapter::PlayerAdapter) -> bool {
-    reap_abandoned_load(pa);
-    if pa.has_abandoned_load() {
+pub(super) fn begin_native_open(feed: &mut super::feed_resources::FeedResources,
+    mt: &MainThread) -> bool {
+    reap_abandoned_load(feed, mt);
+    if feed.has_abandoned_load() {
         log("start_bufferfeed: an abandoned Load has not returned yet (refusing native start)");
         return false;
     }
