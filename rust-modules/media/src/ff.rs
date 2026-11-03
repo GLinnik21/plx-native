@@ -6262,7 +6262,7 @@ fn hls_demux(
             tx.finish("feed_protocol");
             return Err(HlsExit::Failed("adaptive feed returned a foreign trial"));
         }
-        let (mut candidate, opened_declared_bps) = match opened {
+        let (candidate, opened_declared_bps) = match opened {
             FeedObservation::Opened { declared_bps, .. } =>
                 (candidate_slot.take().expect("an opened trial owns its cursor"), declared_bps),
             FeedObservation::Failed { failure: FeedFailure::SourceMoved, .. } => {

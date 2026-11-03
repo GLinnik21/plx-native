@@ -69,6 +69,7 @@ mod tests {
 
     #[test]
     fn prepared_open_keeps_its_source_and_declaration_after_route_changes() {
+        let _serial = plx_base::testlock::serial();
         let mut ps = route::PlaybackSession::IDLE;
         route::set_stream_codecs(&mut ps, "h264", "aac");
         let open = FeedOpenRequest::capture(&ps, "https://example.invalid/first".into());
