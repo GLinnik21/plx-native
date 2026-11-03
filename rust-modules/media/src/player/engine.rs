@@ -932,6 +932,53 @@ fn audio_declaration(codec: &str, pcm: Option<&crate::route::PcmFormat>) -> Opti
     audio_payload_codec(codec)
 }
 
+/// Force never declares app PCM even if an older route projection still contains a PCM shape.
+fn app_pcm_for_load<T>(
+    force_original: bool, session_rate: i32, pcm: Option<Result<T, String>>,
+) -> Option<Result<T, String>> {
+    if force_original { None } else { app_pcm_for_rate(session_rate, pcm) }
+}
+
+/// A non-normal rate requires app decoding and time stretching, which Force forbids.
+fn force_speed_refused(requested_rate: i32) -> bool {
+    requested_rate != super::RATE_NORMAL
+}
+
+/// A decoder-table omission is only a declaration veto in Auto. Force attempts the exact
+/// known feed format and lets the native Load answer; an unknown format is rejected earlier.
+fn video_declaration_refused(
+    video: LoadVideo, caps: &plx_platform::devcaps::Caps, force_original: bool,
+) -> bool {
+    !force_original && load_video_refused(video, caps)
+}
+
+/// A Force Load either declares the source's native audio wire format or refuses it. In
+/// particular, the ordinary PCM fallback for FLAC/ALAC/LPCM cannot represent original bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForceAudioRefusal {
+    AudioSuppressed,
+    NoNativeWire,
+}
+
+impl ForceAudioRefusal {
+    fn message(self) -> &'static str {
+        match self {
+            Self::AudioSuppressed => "video-only Load would drop the selected audio",
+            Self::NoNativeWire => "no native buffer-feed declaration for its original wire format",
+        }
+    }
+}
+
+fn force_audio_refusal(codec: &str, no_audio: bool) -> Option<ForceAudioRefusal> {
+    if no_audio {
+        return Some(ForceAudioRefusal::AudioSuppressed);
+    }
+    match audio_payload_codec(codec) {
+        Some((name, _)) if name != "PCM" => None,
+        _ => Some(ForceAudioRefusal::NoNativeWire),
+    }
+}
+
 // Route-format adapters for the neutral payload constructor.
 #[cfg(test)]
 fn with_pcm_info(p: &str, audio: &str, pcm: Option<crate::route::PcmFormat>) -> String {
@@ -1463,6 +1510,19 @@ fn start_bufferfeed_inner(
     // dev A/B: /tmp/plxnative-noaudio feeds video only (needAudio:false + skip es=2) to isolate
     // whether the audio ES (E-AC3/Atmos) is what stalls the sink on 4K HEVC.
     let no_audio = super::no_audio_armed();
+    // Refuse incompatible Force configurations before publishing audio/rate facts to the demuxer.
+    if let Some(open) = open.as_ref().filter(|request| request.payload.force_direct_play) {
+        if force_speed_refused(super::play_rate_permille()) {
+            log("start_bufferfeed: Force Direct Play cannot apply playback speed without changing audio");
+            SHARED.fail_demux(DemuxExitClass::LoadRefused);
+            return Err(crate::route::RouteStartResult::StartFailed);
+        }
+        if let Some(why) = force_audio_refusal(&open.audio_codec, no_audio) {
+            log(&format!("start_bufferfeed: Force Direct Play refused original audio {}: {}", open.audio_codec, why.message()));
+            SHARED.fail_demux(DemuxExitClass::LoadRefused);
+            return Err(crate::route::RouteStartResult::StartFailed);
+        }
+    }
     crate::ff::set_feed_audio(!no_audio);
     let stream_payload;
     // Every arm below assigns this — the static payloads through `static_envelope`, the streamed
@@ -1497,7 +1557,7 @@ fn start_bufferfeed_inner(
             SHARED.fail_demux(DemuxExitClass::LoadRefused);
             return Err(crate::route::RouteStartResult::StartFailed);
         };
-        if load_video_refused(lv, &plx_platform::devcaps::caps()) {
+        if video_declaration_refused(lv, &plx_platform::devcaps::caps(), open.payload.force_direct_play) {
             log(&format!(
                 "start_bufferfeed: {} stream but the device table lists no such decoder; refusing the Load",
                 lv.payload_name()
@@ -1528,7 +1588,7 @@ fn start_bufferfeed_inner(
             let codec = &open.audio_codec;
             // App-decoded audio: the Load must state the PCM shape, and the demuxer must produce
             // exactly that. Missing facts refuse the Load — a guessed rate plays at the wrong pitch.
-            let pcm = match app_pcm_for_rate(session_rate, open.payload.pcm.clone()) {
+            let pcm = match app_pcm_for_load(open.payload.force_direct_play, session_rate, open.payload.pcm.clone()) {
                 Some(Ok(f)) => Some(f),
                 Some(Err(why)) => {
                     log(&format!("start_bufferfeed: PCM audio refused — {why}"));
@@ -1709,6 +1769,7 @@ fn start_bufferfeed_inner(
             // `teardown(true) + start_bufferfeed()` (reload_at / reload_transcode /
             // switch_audio_native), which respawns this thread with the new value.
             let acodec = std::mem::take(&mut open.audio_codec);
+            let force_original = open.payload.force_direct_play;
             let abr = open.hls_abr.take();
             let auto_original = open.auto_original.take();
             // Before the demuxer exists, so what it publishes is this session's.
@@ -1716,7 +1777,7 @@ fn start_bufferfeed_inner(
             // A clock-only reader (a sidecar) reads no subtitle: the demuxer keeps what it enumerates.
             SHARED.side_subs_owner.store(side_target.as_ref().is_some_and(|t| !t.clock_only()), Ordering::Release);
             stream_th = plx_base::task::spawn_off_frame_keeping("demux", move |off| {
-                crate::ff::demux(off, origin, path, acodec, abr.map(Into::into), auto_original.map(Into::into), aqp, aqap, hsp)
+                crate::ff::demux(off, origin, path, acodec, force_original, abr.map(Into::into), auto_original.map(Into::into), aqp, aqap, hsp)
             });
             if stream_th.is_none() {
                 SHARED.side_subs_owner.store(false, Ordering::Release);
@@ -7204,7 +7265,7 @@ mod pcm_info_tests {
         assert_eq!(app_pcm_for_rate(crate::player::RATE_NORMAL, f()), f(), "1x: the FLAC decoder's shape");
         assert!(app_pcm_for_rate(1500, f()).is_none(), "1.5x: the speed decoder declares its own");
         // a FLAC track whose facts are missing only fails at 1x, where the FLAC decoder needs them
-        let missing = || Some(Err("unknown".to_string()));
+        let missing = || Some(Err::<crate::route::PcmFormat, _>("unknown".to_string()));
         assert!(app_pcm_for_rate(crate::player::RATE_NORMAL, missing()).is_some_and(|r| r.is_err()));
         assert!(app_pcm_for_rate(750, missing()).is_none());
     }
@@ -7236,14 +7297,10 @@ mod pcm_info_tests {
         serde_json::from_str::<serde_json::Value>(&on).unwrap();
     }
 
-    /// **Force Direct Play on a set with no DTS row declares a STEREO DTS track as stereo 48 kHz PCM**: the
-    /// app decodes it (the table's lossy policy admits DTS, the set has no native path, and a 2.0 source
-    /// is no downmix, `Caps::app_may_mix_down`), so the Load carries one `pcmInfo` and `PCM` instead of a
-    /// `DTS` the pipeline would hang on. Under Auto the same value still declares `DTS`. The carried track
-    /// supplies the channel count the rule reads; a 5.1 one is refused before any Load
-    /// (`forced_resolve_refuses_a_surround_dts_track_instead_of_mixing_it_down`).
+    /// Force keeps the chosen DTS track and its native Load declaration even when the decoder
+    /// table has no DTS row. It cannot silently turn the selected track into stereo PCM.
     #[test]
-    fn a_forced_dts_with_no_row_is_declared_as_stereo_48k_pcm() {
+    fn forced_dts_keeps_the_original_declaration_without_pcm() {
         let caps = std::sync::Arc::new(plx_platform::devcaps::Caps {
             app_lossy: plx_platform::devcaps::AppLossy::Measured,
             ..plx_platform::devcaps::Caps::assumed()
@@ -7258,15 +7315,40 @@ mod pcm_info_tests {
                 can_normalize_loudness: false, immersive: false, sample_rate: 48_000, bit_depth: 0,
             },
         );
-        assert_eq!(crate::route::stream_pcm(&ps).and_then(Result::ok), None, "Auto: the native decoder's");
+        assert_eq!(crate::route::stream_pcm(&ps).and_then(Result::ok), None);
         crate::route::set_direct_play_mode_for_test(&mut ps, crate::route::DirectPlayMode::Forced);
-        let shape = crate::route::stream_pcm(&ps).and_then(Result::ok);
-        assert_eq!(shape, Some(crate::route::PcmFormat::STEREO_48K));
-        assert_eq!(audio_declaration("dts", shape.as_ref()), Some(("PCM", 5)));
-        let on = build_av_payload_at(&ps, "H264", "PCM", ENVELOPE_FHD60, crate::player::RATE_NORMAL);
-        assert!(on.contains(r#""audio":"PCM""#) && !on.contains(r#""audio":"DTS""#), "{on}");
-        assert_eq!(on.matches("pcmInfo").count(), 1, "{on}");
+        assert_eq!(force_audio_refusal("dts", false), None);
+        let stale_pcm = Some(Ok(crate::route::PcmFormat::STEREO_48K));
+        assert_eq!(app_pcm_for_load(true, crate::player::RATE_NORMAL, stale_pcm), None);
+        let on = build_av_payload_at(&ps, "H264", "DTS", ENVELOPE_FHD60, crate::player::RATE_NORMAL);
+        assert!(on.contains(r#""audio":"DTS""#) && !on.contains("pcmInfo"), "{on}");
         serde_json::from_str::<serde_json::Value>(&on).unwrap();
+    }
+
+    #[test]
+    fn force_suppresses_stale_pcm_projection_but_auto_keeps_it() {
+        let shape = || Some(Ok(PcmFormat::STEREO_48K));
+        assert_eq!(app_pcm_for_load(false, crate::player::RATE_NORMAL, shape()), shape());
+        assert_eq!(app_pcm_for_load(true, crate::player::RATE_NORMAL, shape()), None);
+    }
+
+    #[test]
+    fn force_refuses_a_speed_configuration_before_pcm_declaration() {
+        assert!(!force_speed_refused(crate::player::RATE_NORMAL));
+        for rate in [500, 750, 1250, 1500, 2000] {
+            assert!(force_speed_refused(rate));
+        }
+    }
+
+    #[test]
+    fn force_refuses_audio_without_an_original_native_wire_declaration() {
+        for codec in ["flac", "alac", "pcm", "lpcm", "mp3", "vorbis", "truehd", "unknown"] {
+            assert_eq!(force_audio_refusal(codec, false), Some(ForceAudioRefusal::NoNativeWire), "{codec}");
+        }
+        for codec in ["ac3", "eac3", "ec-3", "aac", "dts", "dca", "opus"] {
+            assert_eq!(force_audio_refusal(codec, false), None, "{codec}");
+            assert_eq!(force_audio_refusal(codec, true), Some(ForceAudioRefusal::AudioSuppressed));
+        }
     }
 
     /// MP3 and Vorbis in force (S4-4) are declared exactly as DTS is: `PCM`, stereo 48 kHz S16.
@@ -7786,6 +7868,16 @@ mod sink_envelope_tests {
         // one row never admits the other codec
         let av1_only = plx_platform::devcaps::Caps { av1: true, ..plx_platform::devcaps::Caps::assumed() };
         assert!(load_video_refused(LoadVideo::Vp9, &av1_only));
+    }
+
+    #[test]
+    fn force_attempts_a_known_video_feed_even_without_a_decoder_table_row() {
+        let assumed = plx_platform::devcaps::Caps::assumed();
+        for video in [LoadVideo::Av1, LoadVideo::Vp9] {
+            assert!(video_declaration_refused(video, &assumed, false));
+            assert!(!video_declaration_refused(video, &assumed, true));
+        }
+        assert_eq!(LoadVideo::of_stream("vc1"), None, "Force cannot invent a wire format");
     }
 
     #[test]
