@@ -134,6 +134,42 @@ pub struct CommitReadout {
     pub observed_height: i32,
 }
 
+trait LeaseGuard: Send {}
+impl<T: Send> LeaseGuard for T {}
+
+/// An addressed physical actuator guard. The backend owns the guard's
+/// implementation; dropping this move-only handle releases that exact lease.
+/// No process registry or concrete backend type crosses the contract.
+pub struct LeaseHandle {
+    token: u64,
+    _guard: Box<dyn LeaseGuard>,
+}
+
+impl LeaseHandle {
+    pub fn new<T: Send + 'static>(token: u64, guard: T) -> Self {
+        Self { token, _guard: Box::new(guard) }
+    }
+
+    pub const fn token(&self) -> u64 { self.token }
+}
+
+/// The physical implementation releases its publication fence only through
+/// this consuming settlement. Dropping the handle leaves the fence armed for
+/// teardown, including on a post-queue terminal error.
+pub trait FenceSettlement: Send {
+    fn settle(self: Box<Self>);
+}
+
+pub struct FenceHandle(Box<dyn FenceSettlement>);
+
+impl FenceHandle {
+    pub fn new<T: FenceSettlement + 'static>(fence: T) -> Self {
+        Self(Box::new(fence))
+    }
+
+    pub fn settle(self) { self.0.settle(); }
+}
+
 /// Effects emitted by the adaptive worker after a completed observation or an
 /// accepted publication. The session owns this sink; the feed supplies only
 /// physical media and queue observations.
@@ -183,6 +219,25 @@ pub struct Acquisition {
     pub width: i32,
     pub height: i32,
     pub declared_bps: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TransferFact {
+    pub bytes: u64,
+    pub active_us: u64,
+    pub total_us: u64,
+    pub audio_expected: bool,
+}
+
+/// A physical feed exit, preserving the current active-acquisition terminal
+/// distinction without placing a transport or decoder type in policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PhysicalFailure {
+    Aborted,
+    NotReady,
+    PrimeExpired,
+    StallAbort(TransferFact),
+    Failed(&'static str),
 }
 
 /// Normalized content-time tails sampled by the physical feed. A missing audio

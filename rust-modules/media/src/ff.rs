@@ -3000,6 +3000,42 @@ enum HlsExit {
     Failed(&'static str),
 }
 
+impl From<HlsExit> for plx_playback_contract::adaptive::PhysicalFailure {
+    fn from(exit: HlsExit) -> Self {
+        use plx_playback_contract::adaptive::{PhysicalFailure as F, TransferFact};
+        match exit {
+            HlsExit::Aborted => F::Aborted,
+            HlsExit::NotReady => F::NotReady,
+            HlsExit::PrimeExpired => F::PrimeExpired,
+            HlsExit::StallAbort(transfer) => F::StallAbort(TransferFact {
+                bytes: transfer.bytes,
+                active_us: transfer.active_us,
+                total_us: transfer.total_us,
+                audio_expected: transfer.audio_expected,
+            }),
+            HlsExit::Failed(message) => F::Failed(message),
+        }
+    }
+}
+
+impl From<plx_playback_contract::adaptive::PhysicalFailure> for HlsExit {
+    fn from(failure: plx_playback_contract::adaptive::PhysicalFailure) -> Self {
+        use plx_playback_contract::adaptive::PhysicalFailure as F;
+        match failure {
+            F::Aborted => HlsExit::Aborted,
+            F::NotReady => HlsExit::NotReady,
+            F::PrimeExpired => HlsExit::PrimeExpired,
+            F::StallAbort(transfer) => HlsExit::StallAbort(SegmentTransfer {
+                bytes: transfer.bytes,
+                active_us: transfer.active_us,
+                total_us: transfer.total_us,
+                audio_expected: transfer.audio_expected,
+            }),
+            F::Failed(message) => HlsExit::Failed(message),
+        }
+    }
+}
+
 /// **What a controlled stop means when its checkpoint latched no reason.** A leg ends in a stop
 /// only because its checkpoint answered `Flow::Stop`, and the only checkpoint that ever does, the
 /// acquisition runtime, latches why first — and its caller settles every failed leg through it
@@ -4918,12 +4954,6 @@ impl HlsAutomaticLease {
             .map(|token| Self { token })
     }
 
-    /// Linearization point for a route-changing Original result.  A user hold or native-clock
-    /// transition which won the mutex first makes the result retainable evidence, not an action.
-    fn authorize_commit(&self) -> bool {
-        SHARED.authorize_hls_automatic_transition_commit(self.token)
-    }
-
     fn token(&self) -> u64 {
         self.token
     }
@@ -4986,12 +5016,18 @@ impl HlsCandidateTransition {
     }
 }
 
+impl plx_playback_contract::adaptive::FenceSettlement for HlsCandidateTransition {
+    fn settle(self: Box<Self>) { HlsCandidateTransition::settle(*self); }
+}
+
 impl CandidateFencePort for HlsRoundPort<'_> {
-    type Fence = HlsCandidateTransition;
-    type Error = HlsExit;
+    type Fence = plx_playback_contract::adaptive::FenceHandle;
+    type Error = plx_playback_contract::adaptive::PhysicalFailure;
 
     fn arm(&mut self, automatic_token: u64) -> Result<Self::Fence, Self::Error> {
         HlsCandidateTransition::arm(automatic_token)
+            .map(plx_playback_contract::adaptive::FenceHandle::new)
+            .map_err(Into::into)
     }
 
     fn settle(&mut self, fence: Self::Fence) { fence.settle(); }
@@ -5006,13 +5042,8 @@ impl plx_playback_contract::adaptive::PublicationGate for AqPublicationPort {
     }
 }
 
-struct HlsAutomaticPort<'a> {
-    gate: AqPublicationPort,
-    pause_cursor: &'a mut crate::player::UserPauseCursor,
-}
-
-impl AutomaticPort for HlsAutomaticPort<'_> {
-    type Lease = HlsAutomaticLease;
+impl AutomaticPort for HlsRoundPort<'_> {
+    type Lease = plx_playback_contract::adaptive::LeaseHandle;
 
     fn begin(
         &mut self, kind: AutomaticTransition, expected_user_sequence: u64,
@@ -5022,25 +5053,31 @@ impl AutomaticPort for HlsAutomaticPort<'_> {
             AutomaticTransition::QualityUp => crate::player::HlsAutomaticTransition::QualityUp,
             AutomaticTransition::QualityDown => crate::player::HlsAutomaticTransition::QualityDown,
         };
-        HlsAutomaticLease::begin(kind, expected_user_sequence)
+        HlsAutomaticLease::begin(kind, expected_user_sequence).map(|lease| {
+            plx_playback_contract::adaptive::LeaseHandle::new(lease.token(), lease)
+        })
     }
 
-    fn authorize(&mut self, lease: &Self::Lease) -> bool { lease.authorize_commit() }
+    fn authorize(&mut self, lease: &Self::Lease) -> bool {
+        SHARED.authorize_hls_automatic_transition_commit(lease.token())
+    }
 
-    fn aborted(&self) -> bool { unsafe { crate::aq::aq_is_aborted(self.gate.0) } }
+    fn aborted(&self) -> bool { unsafe { crate::aq::aq_is_aborted(self.aq) } }
 
     fn gate(&mut self) -> &mut dyn plx_playback_contract::adaptive::PublicationGate {
-        &mut self.gate
+        &mut self.publication_gate
     }
 }
 
-impl TrialActuatorPort for HlsAutomaticPort<'_> {
-    type TrialReserve = HlsTrialReserve;
+impl TrialActuatorPort for HlsRoundPort<'_> {
+    type TrialReserve = plx_playback_contract::adaptive::LeaseHandle;
 
     fn arm_trial_reserve(
         &mut self, runway_ms: i64, expected_user_sequence: u64,
     ) -> Option<Self::TrialReserve> {
-        HlsTrialReserve::arm(runway_ms, expected_user_sequence)
+        HlsTrialReserve::arm(runway_ms, expected_user_sequence).map(|reserve| {
+            plx_playback_contract::adaptive::LeaseHandle::new(reserve.token(), reserve)
+        })
     }
 
     fn lease_token(&self, lease: &Self::Lease) -> u64 { lease.token() }
@@ -5048,7 +5085,7 @@ impl TrialActuatorPort for HlsAutomaticPort<'_> {
     fn trial_token(&self, reserve: &Self::TrialReserve) -> u64 { reserve.token() }
 }
 
-impl AdaptiveRoundPort for HlsAutomaticPort<'_> {
+impl AdaptiveRoundPort for HlsRoundPort<'_> {
     fn position_sampler(&self) -> fn() -> i64 {
         || SHARED.playpos_ns.load(Ordering::Relaxed).max(0)
     }
@@ -5268,10 +5305,8 @@ fn hls_read_active(
     }
 }
 
-impl ActiveFeedPort for HlsRoundPort<'_> {
-    type Error = HlsExit;
-
-    fn step_active(&mut self, action: ActiveAction) -> Result<ActiveObservation, HlsExit> {
+impl HlsRoundPort<'_> {
+    fn step_active_native(&mut self, action: ActiveAction) -> Result<ActiveObservation, HlsExit> {
         if action.round() != self.round {
             return Err(HlsExit::Failed("adaptive active round address mismatch"));
         }
@@ -5330,6 +5365,14 @@ impl ActiveFeedPort for HlsRoundPort<'_> {
                 Ok(ActiveObservation::Prefetched { round })
             }
         }
+    }
+}
+
+impl ActiveFeedPort for HlsRoundPort<'_> {
+    type Error = plx_playback_contract::adaptive::PhysicalFailure;
+
+    fn step_active(&mut self, action: ActiveAction) -> Result<ActiveObservation, Self::Error> {
+        self.step_active_native(action).map_err(Into::into)
     }
 }
 
@@ -5573,15 +5616,13 @@ fn hls_demux(
                 continue;
             }
             Ok(adaptive::ActiveRun::Observed(cycle)) => cycle,
-            Err(adaptive::ActiveRunError::Physical(error)) => return Err(error),
+            Err(adaptive::ActiveRunError::Physical(error)) => return Err(error.into()),
             Err(adaptive::ActiveRunError::Protocol(message)) => return Err(HlsExit::Failed(message)),
         };
         let (_, output, _, _) = physical.current.take()
             .expect("an active round holds its physical media until after prefetch");
         let (proposal, reserve_policy, sample, candidate_start) = match state.advance_round(
-            cycle, &mut HlsAutomaticPort {
-                gate: AqPublicationPort(aq), pause_cursor: &mut *physical.pause_cursor,
-            }, || now_ms(),
+            cycle, &mut physical, || now_ms(),
             || SHARED.dg_abr_action.store(
                 crate::player::ABR_ACTION_RECOVER_ORIGINAL, Ordering::Relaxed,
             ),
@@ -5746,7 +5787,7 @@ fn hls_demux(
                 (previous, fence),
             adaptive::QueueAttempt::Aborted => return Err(HlsExit::Aborted),
             adaptive::QueueAttempt::Failed(message) => return Err(HlsExit::Failed(message)),
-            adaptive::QueueAttempt::FenceFailed(error) => return Err(error),
+            adaptive::QueueAttempt::FenceFailed(error) => return Err(error.into()),
         };
         drop(runner);
         // The committed candidate is already the first completed acquisition at the new
