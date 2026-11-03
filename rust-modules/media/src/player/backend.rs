@@ -46,7 +46,7 @@ impl<D: BackendDriver> BackendRunner<D> {
                     let answer = Event::CommandAnswer { attempt, command, result };
                     notices.extend(self.feed(ctx, answer));
                 }
-                notice @ (Fx::Rejected { .. } | Fx::AcceptedObservation { .. } | Fx::ReleaseOutcome { .. }) => notices.push(notice),
+                notice @ (Fx::Rejected { .. } | Fx::CommandRefused { .. } | Fx::AcceptedObservation { .. } | Fx::ReleaseOutcome { .. }) => notices.push(notice),
             }
         }
         notices

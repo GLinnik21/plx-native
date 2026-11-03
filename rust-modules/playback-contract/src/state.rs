@@ -27,6 +27,9 @@ pub enum Event {
 pub enum Fx {
     Dispatch { attempt: AttemptId, command: CommandId, operation: Operation },
     Rejected { attempt: AttemptId, failure: Failure },
+    /// A dispatched operation failed to enter the native queue. This is distinct from
+    /// admission rejection: the driver may already own resources and still owes release.
+    CommandRefused { attempt: AttemptId, command: CommandId, operation: Operation, failure: Failure },
     /// Accepted evidence is delivered even when a later event in the same poll resets Snapshot.
     AcceptedObservation { attempt: AttemptId, observation: Observation },
     /// The concrete resource owner decided this status; a stale attempt publishes nothing.
@@ -120,6 +123,7 @@ impl BackendState {
                     DispatchResult::Queued => self.snapshot.last_queued = Some(command),
                     DispatchResult::Refused(reason) => {
                         self.snapshot.failure = Some(reason);
+                        effects.push(Fx::CommandRefused { attempt, command, operation, failure: reason });
                         if matches!(operation, Operation::Start { .. }) {
                             // The driver still owns the resource verdict, even when it refused
                             // the start. It must report a confirmed release before reuse.
@@ -210,6 +214,21 @@ mod tests {
         assert_eq!(*attempt, state.snapshot().attempt.unwrap());
         *command
     }
+    #[test]
+    fn native_dispatch_refusal_is_delivered_to_the_owner_before_any_poll() {
+        let mut state = BackendState::new(CAPS);
+        let attempt = AttemptId::new(7, 1);
+        let command = start(&mut state, attempt);
+        let notices = step(&mut state, Event::CommandAnswer {
+            attempt, command, result: DispatchResult::Refused(Failure::Refused),
+        });
+        assert_eq!(notices, [Fx::CommandRefused {
+            attempt, command, operation: Operation::Start { source: SourceKey::new(7), requirements: REQ },
+            failure: Failure::Refused,
+        }]);
+        assert_eq!(state.snapshot().phase, Phase::Releasing);
+    }
+
     #[test]
     fn queued_is_not_playing_and_late_or_wrong_answers_cannot_publish() {
         let mut state = BackendState::new(CAPS);
