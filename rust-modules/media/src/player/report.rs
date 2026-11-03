@@ -1414,7 +1414,13 @@ mod tests {
     #[cfg(feature = "play-uri")]
     #[test]
     fn uri_playing_starts_lifecycle_without_claiming_panel_presentation() {
+        use plx_telemetry::telemetry::consent::{self, Consent};
         let _g = plx_base::testlock::serial();
+        let previous = consent::current();
+        let mut enabled = Consent::default();
+        enabled.errors = true;
+        enabled.asked_version = consent::POLICY_VERSION;
+        consent::install(enabled);
         let mut ps = crate::route::PlaybackSession::default();
         let attempt = crate::route::RouteStartAttempt::fixture();
         ps.begin_attempt_view(attempt, crate::player::attempt_view::Backend::Uri);
@@ -1438,6 +1444,7 @@ mod tests {
             "service Playing and a position report are not independent panel evidence",
         );
         reset_latches_for_test();
+        consent::install(previous.unwrap_or_default());
     }
 
     /// A paused session with no picture yet (`PlaybackState::Paused`) is not playing: it reports no
