@@ -3155,6 +3155,17 @@ mod tests {
         assert_eq!(names, ["0.5×", "0.75×", "1×", "1.25×", "1.5×", "1.75×", "2×"]);
     }
 
+    #[cfg(feature = "play-uri")]
+    #[test]
+    fn accepted_uri_speed_intent_is_visible_without_claiming_feed_application() {
+        let _serial = plx_base::testlock::serial();
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        ps.begin_attempt_view(crate::route::RouteStartAttempt::fixture(), attempt_view::Backend::Uri);
+        ps.accept_requested_rate(1500);
+        assert_eq!(selected_rate(&ps), Some(1500), "the menu retains the viewer's accepted goal");
+        assert_eq!(applied_rate(&ps), None, "an active URI has no Feed speed evidence");
+    }
+
     /// The safety net's evidence: the pipeline's audio-info report for a speed session. 48 kHz
     /// stereo raw is what the payload declared; the 44.1 a mis-declared rate produced, or any
     /// compressed type, is not. At 1x the report is not judged at all.
