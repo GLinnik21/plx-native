@@ -1991,7 +1991,7 @@ mod flight_tests {
             let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
             let epoch = SHARED.begin_native_session().expect("native session");
             let engine = super::super::engine::streaming_engine_for_test(epoch);
-            ps.begin_attempt_view(engine.route_start, super::super::attempt_view::Backend::Feed);
+            ps.begin_attempt_view(crate::route::RouteStartAttempt::fixture(), super::super::attempt_view::Backend::Feed);
             pa.install(engine);
             SHARED.duration_ns.store(7_200_000_000_000, Relaxed);
             SHARED.playpos_ns.store(60_000_000_000, Relaxed);

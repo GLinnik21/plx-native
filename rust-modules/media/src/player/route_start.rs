@@ -239,7 +239,8 @@ pub(super) fn start_bufferfeed_inner(
         crate::route::playback_trace_generation,
         |request| request.trace_generation,
     );
-    let prepared_native = engine::prepare_native_open(pa, open, sample, is_h265, session_rate)?;
+    let prepared_native = engine::prepare_native_open(pa.mt(), open, sample, is_h265, session_rate)
+        .map_err(|_| crate::route::RouteStartResult::StartFailed)?;
     // The route reducer alone mints the physical attempt. The native constructor consumes this
     // identity; no backend-owned logical counter can alias a later route.
     let Some(route_attempt) = crate::route::claim_route_start_attempt(route_start) else {
@@ -247,7 +248,9 @@ pub(super) fn start_bufferfeed_inner(
         return Err(crate::route::RouteStartResult::StartFailed);
     };
     ps.begin_attempt_view(route_attempt, super::attempt_view::Backend::Feed);
-    engine::launch_native_open(pa, route_attempt, trace_generation, prepared_native)?;
+    pa.launch_native_feed(route_attempt.contract_id(), prepared_native)
+        .map_err(|_| crate::route::RouteStartResult::StartFailed)?;
+    pa.bind_feed_attempt(route_attempt, trace_generation);
     if stream { pa.start_timeline(ps, route_attempt); }
     Ok(route_attempt)
 }

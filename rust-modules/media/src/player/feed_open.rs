@@ -131,7 +131,8 @@ mod tests {
         route::set_stream_codecs(&mut ps, "h264", "aac");
         let open = FeedOpenRequest::capture(&ps, "https://example.invalid/first".into());
         route::set_stream_codecs(&mut ps, "hevc", "eac3");
-        assert_eq!(format!("{}{}", open.origin.base(), open.path), "https://example.invalid/first");
+        assert_eq!(open.origin.base(), "https://example.invalid:32400");
+        assert_eq!(open.path, "/first");
         assert_eq!(open.video_codec, "h264");
         assert_eq!(open.audio_codec, "aac");
     }

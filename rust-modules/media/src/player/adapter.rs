@@ -25,8 +25,11 @@
 //! DIFFERENT thing — the ACB/Starfish seam (`tv::sink::VideoSink`'s methods, whose bind order is a
 //! sequence of calls with no locking behind it) — and that surface is not this module's.
 
+#[cfg(test)]
 use super::engine::Engine;
-use super::{feed_resources::FeedResources, threads, timeline};
+use super::{feed_resources::FeedResources, timeline};
+#[cfg(test)]
+use super::threads;
 use plx_base::task::MainThread;
 
 /// Common coordinator and main-thread proof, as one owned value (`App.adapters.player`).
@@ -35,7 +38,10 @@ pub struct PlayerAdapter {
     /// is what makes `&mut PlayerAdapter` mean "the main thread, exclusively".
     mt: MainThread,
     /// The native feed slot and its Load/release worker resources.
-    feed: FeedResources,
+    pub(super) feed: FeedResources,
+    /// Route identity and product trace for the installed physical attempt. The feed itself
+    /// receives only the canonical contract ID and native epoch.
+    feed_attempt: Option<(crate::route::RouteStartAttempt, u32)>,
     /// Backend-independent periodic reporting resource for the current physical attempt.
     timeline: Option<timeline::TimelineRunner>,
     repair: Option<(u64, std::sync::mpsc::Receiver<Result<(), plx_platform::tv::sandbox::Failure>>)>,
@@ -86,6 +92,7 @@ impl PlayerAdapter {
         Self {
             mt,
             feed: FeedResources::new(),
+            feed_attempt: None,
             timeline: None,
             repair: None,
             release: super::release::NativeRelease::new(),
@@ -224,7 +231,8 @@ impl PlayerAdapter {
         changed
     }
 
-    /// The live session, borrowed mutably.
+    /// Test-only access to the physical session for the existing hostsim rigs.
+    #[cfg(test)]
     #[inline]
     pub fn engine(&mut self) -> Option<&mut Engine> {
         self.feed.engine()
@@ -232,7 +240,25 @@ impl PlayerAdapter {
 
     /// Route identity of the active physical feed, without lending Engine state to admission.
     pub(super) fn active_feed_attempt(&self) -> Option<crate::route::RouteStartAttempt> {
-        self.feed.active_attempt()
+        let (attempt, _) = self.feed_attempt?;
+        (self.feed.active_attempt() == Some(attempt.contract_id())).then_some(attempt)
+    }
+
+    pub(super) fn bind_feed_attempt(&mut self, attempt: crate::route::RouteStartAttempt,
+        trace_generation: u32) {
+        debug_assert_eq!(self.feed.active_attempt(), Some(attempt.contract_id()));
+        self.feed_attempt = Some((attempt, trace_generation));
+    }
+
+    /// The physical executor consumes only the route owner's canonical address and its owned
+    /// prepared source; common route identity is bound after installation succeeds.
+    pub(super) fn launch_native_feed(&mut self, attempt: plx_playback_contract::AttemptId,
+        prepared: super::engine::NativePrepared) -> Result<(), super::engine::NativeOpenError> {
+        super::engine::launch_native_open(&mut self.feed, attempt, prepared)
+    }
+
+    pub(super) fn clear_feed_attempt(&mut self) {
+        self.feed_attempt = None;
     }
 
     /// Address the physical callback snapshot to the current route-owned attempt.
@@ -245,11 +271,17 @@ impl PlayerAdapter {
     pub(super) fn feed_uses_stream_queues(&self) -> bool { self.feed.uses_stream_queues() }
     pub(super) fn arm_feed_live_clock_prime(&mut self) -> bool { self.feed.arm_live_clock_prime() }
     pub(super) fn feed_stage(&self) -> Option<super::shared::Stage> { self.feed.stage() }
+    pub(super) fn feed_load_thread_finished(&self) -> bool { self.feed.load_thread_finished() }
 
     /// Whether the current physical feed has yet to leave its Load stage.
     pub(super) fn feed_loading(&self) -> bool { self.feed.loading() }
     pub(super) fn foreground_follows_feed_load(&self) -> bool {
         self.feed.foreground_follows_load()
+    }
+    pub(super) fn mark_foreground_follows_feed_load(&mut self,
+        attempt: crate::route::RouteStartAttempt) -> bool {
+        if self.active_feed_attempt() != Some(attempt) { return false; }
+        self.feed.mark_foreground_follows_load(attempt.contract_id())
     }
     /// Native readiness for a route/action claim; the route policy itself stays in the pump.
     pub(super) fn route_actions_ready(&self) -> bool { self.feed.route_actions_ready() }
@@ -335,16 +367,18 @@ impl PlayerAdapter {
     }
 
     /// Address one Load verdict without handing route state to the native worker.
+    #[cfg(test)]
     pub(super) fn load_receipt(&mut self, attempt: crate::route::RouteStartAttempt, native_epoch: u32,
-        trace_generation: u32) -> threads::LoadReceipt {
-        self.feed.load_receipt(attempt, native_epoch, trace_generation)
+        _trace_generation: u32) -> threads::LoadReceipt {
+        self.feed.load_receipt(attempt.contract_id(), native_epoch)
     }
 
     /// A refused thread spawn cannot return a receipt; retire its mapping immediately.
+    #[cfg(test)]
     pub(super) fn cancel_load_receipt(&mut self, token: u64) { self.feed.cancel_load_receipt(token); }
 
     /// Teardown retires the whole physical attempt before a still-blocked Load can return.
-    pub(super) fn retire_load_attempt(&mut self, attempt: crate::route::RouteStartAttempt) {
+    pub(super) fn retire_load_attempt(&mut self, attempt: plx_playback_contract::AttemptId) {
         self.feed.retire_load_attempt(attempt);
     }
 
@@ -355,15 +389,17 @@ impl PlayerAdapter {
         // Leave the inbox intact until its owner can validate the native epoch and attempt.
         if !self.feed.is_live() { return; }
         for outcome in self.feed.take_load_outcomes() {
+            let Some((attempt, trace_generation)) = self.feed_attempt
+                .filter(|(attempt, _)| attempt.contract_id() == outcome.attempt) else { continue; };
             if let Some(elapsed_ms) = outcome.elapsed_ms {
                 super::report::note_load_gate_for(
-                    outcome.trace_generation,
+                    trace_generation,
                     super::report::LoadElapsedClass::from_ms(elapsed_ms as i64),
                 );
             }
             let result = if outcome.ok { crate::route::RouteStartResult::Started }
                 else { crate::route::RouteStartResult::StartFailed };
-            let _ = crate::route::settle_route_start(ps, outcome.attempt, result);
+            let _ = crate::route::settle_route_start(ps, attempt, result);
         }
     }
 
@@ -396,13 +432,17 @@ impl PlayerAdapter {
     /// workers hold raw pointers into the boxes it owns; `start_bufferfeed` guards on
     /// [`is_live`](Self::is_live) first.
     #[inline]
+    #[cfg(test)]
     pub fn install(&mut self, e: Engine) {
+        self.feed_attempt = Some((crate::route::RouteStartAttempt::fixture(), 0));
         self.feed.install(e);
     }
 
     /// Take the session out of the slot; the caller then joins its workers and drops it.
     #[inline]
+    #[cfg(test)]
     pub fn take(&mut self) -> Option<Engine> {
+        self.feed_attempt = None;
         self.feed.take()
     }
 
@@ -499,6 +539,7 @@ impl PlayerAdapter {
     /// outlive a `reload_*` that replaces the slot: that is the `eng` dangles rule of `pump`,
     /// which was a COMMENT for as long as the slot handed out `&'static mut`.
     #[inline]
+    #[cfg(test)]
     pub fn split(&mut self) -> (Option<&mut Engine>, &MainThread) {
         (self.feed.engine(), &self.mt)
     }
@@ -546,8 +587,9 @@ mod load_outcome_tests {
         assert_eq!(crate::route::route_start_status(attempt), crate::route::RouteStartStatus::Pending);
 
         let mut eng = crate::player::engine::streaming_engine_for_test(8);
-        eng.route_start = attempt;
+        eng.attempt = attempt.contract_id();
         pa.install(eng);
+        pa.bind_feed_attempt(attempt, 0);
         let late = pa.load_receipt(attempt, 7, 0);
         late.deliver(7, true, Some(32));
         pa.drain_load_outcomes(&mut ps);
@@ -581,21 +623,27 @@ mod load_outcome_tests {
         pa.drain_load_outcomes(&mut ps);
 
         let mut eng = crate::player::engine::streaming_engine_for_test(8);
-        eng.route_start = attempt;
+        eng.attempt = attempt.contract_id();
         pa.install(eng);
+        pa.bind_feed_attempt(attempt, 41);
         let old_epoch = pa.load_receipt(attempt, 7, 42);
         old_epoch.deliver(7, false, Some(456));
         let wrong_epoch = pa.load_receipt(attempt, 8, 43);
         wrong_epoch.deliver(9, false, Some(789));
+        let wrong_attempt = plx_playback_contract::AttemptId::new(
+            attempt.contract_id().owner(), attempt.contract_id().generation() + 1,
+        );
+        let wrong_owner = pa.feed.load_receipt(wrong_attempt, 8);
+        wrong_owner.deliver(8, false, Some(790));
         let cancelled = pa.load_receipt(attempt, 8, 44);
         let cancelled_token = cancelled.token();
         cancelled.deliver(8, false, Some(900));
         pa.cancel_load_receipt(cancelled_token);
 
         let admitted = pa.feed.take_load_outcomes();
-        assert_eq!(admitted.len(), 1, "only the installed Engine's live receipt is admitted");
-        assert_eq!(admitted[0].attempt, attempt);
-        assert_eq!(admitted[0].trace_generation, 41, "trace identity was captured at issue time");
+        assert_eq!(admitted.len(), 1, "only the installed Engine's exact attempt and epoch are admitted");
+        assert_eq!(admitted[0].attempt, attempt.contract_id());
+        assert_eq!(pa.feed_attempt, Some((attempt, 41)), "the common owner retains the captured trace");
         assert_eq!(admitted[0].elapsed_ms, Some(123));
         assert!(admitted[0].ok);
         assert!(pa.feed.take_load_outcomes().is_empty(), "each receipt is consumed once");
