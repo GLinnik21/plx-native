@@ -102,6 +102,7 @@ if "--no-run" in args:
     art('/media', 'plx_media', '0.0.0')
     art('/playback-contract', 'plx_playback_contract', '0.0.0')
     art('/play-uri', 'plx_play_uri', '0.0.0')
+    art('/play-feed', 'plx_play_feed', '0.0.0')
     art('/media-codecs', 'plx_media_codecs', '0.0.0')
     art('/appkit', 'plx_appkit', '0.0.0')
     art('/screens', 'plx_screens', '0.0.0')

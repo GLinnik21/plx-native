@@ -6,7 +6,7 @@
 
 /// Retained physical summaries per logical request. Older summaries are discarded, while the
 /// request's aggregate counts and durations continue saturating. This bounds recorder payloads.
-const ATTEMPT_HISTORY_SLOTS: usize = 8;
+const MAX_ATTEMPT_HISTORY: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tick { Known(u64), Unknown }
@@ -209,7 +209,7 @@ impl<R: Copy + Ord, A: Copy + Ord> AttemptMetrics<R, A> {
                 AttemptOutcome::Superseded
             } else { AttemptOutcome::Unconfirmed });
         }
-        if request.recent_attempts.len() == ATTEMPT_HISTORY_SLOTS { request.recent_attempts.remove(0); }
+        if request.recent_attempts.len() == MAX_ATTEMPT_HISTORY { request.recent_attempts.remove(0); }
         request.recent_attempts.push(attempt);
     }
 
@@ -543,7 +543,7 @@ mod tests {
         }
         let s = model.snapshot().unwrap();
         assert_eq!(s.attempt_count, 12);
-        assert_eq!(s.recent_attempts.len(), ATTEMPT_HISTORY_SLOTS);
+        assert_eq!(s.recent_attempts.len(), MAX_ATTEMPT_HISTORY);
         assert_eq!(s.recent_attempts[0].id, 4);
         assert_eq!(s.current_attempt.unwrap().id, 12);
         send(&mut model, Event::AttemptStarted {

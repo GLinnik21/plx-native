@@ -1,11 +1,14 @@
 [package]
 name = "plx_play_feed"
-version = "0.1.0"
+version = "0.0.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Pure buffer-feed native Load declarations and payload construction."
 repository = "https://github.com/GLinnik21/plx-native"
 publish = false
+
+[package.metadata.plx]
+mount = "play_feed"
 
 [lib]
 name = "plx_play_feed"

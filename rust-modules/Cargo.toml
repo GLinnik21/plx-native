@@ -20,6 +20,7 @@ members = [
     "media",
     "playback-contract",
     "play-uri",
+    "play-feed",
     "media-codecs",
     "appkit",
     "screens",

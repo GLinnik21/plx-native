@@ -41,6 +41,7 @@ test-support = ["plx_media_codecs/test-support", "plx_base/test-support", "plx_m
 
 [dependencies]
 plx_playback_contract = { path = "../playback-contract" }
+plx_play_feed = { path = "../play-feed" }
 plx_play_uri = { path = "../play-uri", optional = true }
 plx_media_codecs = { path = "../media-codecs" }
 plx_base = { path = "../base" }

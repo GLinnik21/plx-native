@@ -10,7 +10,9 @@
 //! rule for the rest of this file — a function here takes the token **iff** it reaches the slot
 //! or the ACB/Starfish seam, so the parameter carries information. `arm_seek` and `begin_resume`
 //! run on the main thread too and deliberately do not take one: they only publish to `SHARED`.
-use super::feed_open::{FeedOpenRequest, PayloadFacts};
+use super::feed_open::FeedOpenRequest;
+#[cfg(test)]
+use super::feed_open::PayloadFacts;
 use plx_play_feed::{
     app_pcm_for_rate, audio_payload_codec, bf_split, decoder_row, fed_fps,
     parse_sinkmax, renamed_static_payload, sink_envelope, static_envelope,
