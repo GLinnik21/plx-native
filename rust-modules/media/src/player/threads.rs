@@ -11,31 +11,7 @@ pub use plx_play_feed::SendPtr;
 use plx_play_feed::native_load::load_alone;
 use std::sync::atomic::Ordering;
 
-/// Main-thread owned load correlation. The worker sees only this token and its return channel;
-/// the adapter maps it back to the exact route attempt after Engine installation.
-#[derive(Clone)]
-pub(super) struct LoadReceipt {
-    token: u64,
-    sender: std::sync::mpsc::Sender<LoadOutcome>,
-}
-impl LoadReceipt {
-    pub fn new(token: u64, sender: std::sync::mpsc::Sender<LoadOutcome>) -> Self {
-        Self { token, sender }
-    }
-    pub fn token(&self) -> u64 { self.token }
-    pub(super) fn deliver(self, native_epoch: u32, ok: bool, elapsed_ms: Option<u64>) {
-        let _ = self.sender.send(LoadOutcome { token: self.token, native_epoch, ok, elapsed_ms });
-    }
-}
-
-/// The native Load call's synchronous verdict, addressed without reading route state on-worker.
-pub(super) struct LoadOutcome {
-    pub token: u64,
-    pub native_epoch: u32,
-    pub ok: bool,
-    /// Load time excluding the sound-output read; absent if the native epoch did not open its gate.
-    pub elapsed_ms: Option<u64>,
-}
+pub(super) use plx_play_feed::feed_resources::LoadReceipt;
 
 /// The media-side implementation of the physical Load port. The lower worker never names
 /// Shared, Engine or a route; the port keeps its existing epoch mirrors in this transition.
