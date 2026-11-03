@@ -393,11 +393,6 @@ impl PlayerAdapter {
     #[cfg(test)]
     pub(super) fn cancel_load_receipt(&mut self, token: u64) { self.feed.cancel_load_receipt(token); }
 
-    /// Teardown retires the whole physical attempt before a still-blocked Load can return.
-    pub(super) fn retire_load_attempt(&mut self, attempt: plx_playback_contract::AttemptId) {
-        self.feed.retire_load_attempt(attempt);
-    }
-
     /// The main-thread coordinator's only Load-result landing. Late outcomes from an abandoned
     /// or replaced Engine cannot settle a successor's route, even if a worker returns afterward.
     pub(super) fn drain_load_outcomes(&mut self, ps: &mut crate::route::PlaybackSession) {
