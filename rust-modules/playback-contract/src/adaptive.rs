@@ -64,7 +64,6 @@ pub struct ActiveQuantum {
     pub buffer: BufferFact,
     pub abandoned: bool,
     pub delivered: bool,
-    pub now_ms: u64,
 }
 
 /// Accepted user-pause evidence after a blocking probe or playlist read.

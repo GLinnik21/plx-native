@@ -1164,7 +1164,7 @@ impl Coordinator {
     ) -> Option<ActiveQuantumResult> {
         self.advance_to(now_ms);
         let quantum = ActiveQuantum {
-            acquisition, buffer: buffer(), abandoned, delivered, now_ms,
+            acquisition, buffer: buffer(), abandoned, delivered,
         };
         let sample = active_sample(
             quantum.acquisition, quantum.buffer, quantum.abandoned,
