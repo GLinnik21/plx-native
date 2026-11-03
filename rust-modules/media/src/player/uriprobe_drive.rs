@@ -655,8 +655,8 @@ mod tests {
                 assert!(rig.pa.uri_live()); assert!(rig.pa.uri_closing());
                 assert_eq!(crate::player::start_bufferfeed_tracked(&mut rig.ps,&mut rig.pa),crate::player::BufferfeedStartOutcome::Failed);
                 let start=Instant::now(); let mut ticks=0;
-                let exit=crate::player::engine::exit_native_with(&mut rig.pa,|| { ticks+=1; start+std::time::Duration::from_secs(ticks*5) },||{});
-                assert_eq!(exit,crate::player::engine::NativeExit::WorkerInFirmware);
+                let exit=crate::player::route_start::exit_native_with(&mut rig.pa,|| { ticks+=1; start+std::time::Duration::from_secs(ticks*5) },||{});
+                assert_eq!(exit,crate::player::NativeExit::WorkerInFirmware);
                 assert_eq!(rig.transport.closed(),1);
                 assert!(!rig.pa.uri_live(),"unresolved resource owner is deliberately leaked for process exit");
             });
@@ -715,8 +715,8 @@ mod tests {
                 session.touch_acb_for_test(0);
                 rig.pa.install_uri(session); stop(&mut rig.ps,&mut rig.pa); drive(&mut rig.ps,&mut rig.pa);
                 assert!(rig.pa.uri_closing()); assert!(rig.pa.uri_plane_open());
-                let exit=crate::player::engine::exit_native_with(&mut rig.pa,Instant::now,||panic!("released-bus plane quarantine needs no extra wait"));
-                assert_eq!(exit,crate::player::engine::NativeExit::WorkerInFirmware);
+                let exit=crate::player::route_start::exit_native_with(&mut rig.pa,Instant::now,||panic!("released-bus plane quarantine needs no extra wait"));
+                assert_eq!(exit,crate::player::NativeExit::WorkerInFirmware);
                 assert!(!rig.pa.uri_live()); assert_eq!(rig.transport.closed(),1);
             });
         }

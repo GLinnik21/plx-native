@@ -11,6 +11,8 @@
 //! or the ACB/Starfish seam, so the parameter carries information. `arm_seek` runs on the main
 //! thread too and deliberately does not take one: it only publishes to `SHARED`.
 use super::feed_open::FeedOpenRequest;
+#[cfg(all(test, feature = "hostsim"))]
+use super::route_start::{exit_native, finish_release_for_test, poll_release};
 #[cfg(test)]
 use super::feed_open::PayloadFacts;
 #[cfg(test)]
@@ -418,6 +420,13 @@ impl PendingRelease {
     pub(crate) fn is_finished(&self) -> bool {
         self.unload_th.as_ref().is_none_or(|t| t.is_finished())
     }
+
+    /// The release machine has observed this worker return; joining it cannot block the frame.
+    pub(super) fn join_returned_worker(&mut self) {
+        if let Some(thread) = self.unload_th.take() {
+            plx_base::task::join("sf-unload", thread);
+        }
+    }
 }
 
 /// Test seam: make [`release_off_frame`] see the OS refuse the `sf-unload` thread.
@@ -459,47 +468,6 @@ fn release_off_frame(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) -> Opt
     th
 }
 
-/// **The runner of [`super::release::NativeRelease`].** Once a frame (and at the head of a start):
-/// join the `Unload` worker only if it has returned (so the join cannot block), feed that and the
-/// clock to the machine, and execute what it asks: the main-thread tail, the start that was queued
-/// behind the release, or the typed refusal once the release is overdue. `true` when a tail ran.
-pub fn poll_release(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut super::adapter::PlayerAdapter,
-    now: std::time::Instant,
-) -> bool {
-    let (fx, joined) = drive_release(pa, now, None);
-    super::route_start::run_release_effects(ps, pa, fx, joined, true).tail_ran
-}
-
-/// [`poll_release`] at the wall clock: the per-frame entry `app::run` calls.
-pub fn poll_release_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> bool {
-    poll_release(ps, pa, std::time::Instant::now())
-}
-
-/// Join a returned worker, then step the machine with its return, the clock and (at the exit) the
-/// exit request. Returns the effects and the joined release, whose tail the effects may run.
-fn drive_release(
-    pa: &mut super::adapter::PlayerAdapter,
-    now: std::time::Instant,
-    exit: Option<std::time::Instant>,
-) -> (Vec<super::release::ReleaseEffect>, Option<PendingRelease>) {
-    use super::release::ReleaseEvent as V;
-    let mut fx = Vec::new();
-    let joined = pa.take_finished_release().map(|mut p| {
-        if let Some(th) = p.unload_th.take() {
-            plx_base::task::join("sf-unload", th);
-        }
-        pa.release_step(&V::UnloadReturned { epoch: p.epoch }, &mut fx);
-        p
-    });
-    pa.release_step(&V::Tick { now }, &mut fx);
-    if let Some(at) = exit {
-        pa.release_step(&V::Exit { now: at }, &mut fx);
-    }
-    (fx, joined)
-}
-
 /// The main-thread tail of a finished off-frame release: gate, epoch, ACB, D1, window.
 pub(super) fn run_release_tail(mt: &MainThread, p: PendingRelease) {
     let mut sp = TeardownSpans::new();
@@ -513,93 +481,6 @@ pub(super) fn run_release_tail(mt: &MainThread, p: PendingRelease) {
         p.handed_off_at.elapsed().as_millis(),
     ));
     // `p._engine` drops here, after the object it belonged to is gone.
-}
-
-/// Whether the process may tear the display down.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NativeExit {
-    Clean,
-    /// Native ownership is unresolved: a worker may still be inside firmware, or a URI
-    /// registration may remain quarantined after its worker ended. Skip `SDL_Quit` and the
-    /// Wayland window destroy until the OS reclaims that ownership.
-    WorkerInFirmware,
-}
-
-/// The native half of `app::run::shutdown`, after the final stop. Waits for the native Unload or
-/// URI registration release up to the release deadline, then preserves unresolved display ownership.
-pub fn exit_native(pa: &mut super::adapter::PlayerAdapter) -> NativeExit {
-    exit_native_with(pa, std::time::Instant::now, || std::thread::sleep(std::time::Duration::from_millis(2)))
-}
-
-pub(super) fn exit_native_with(
-    pa: &mut super::adapter::PlayerAdapter,
-    mut clock: impl FnMut() -> std::time::Instant,
-    mut idle: impl FnMut(),
-) -> NativeExit {
-    #[cfg(feature = "devtriggers")]
-    if pa.uri_live() {
-        let started = clock();
-        let mut ps = crate::route::PlaybackSession::IDLE;
-        super::uriprobe_drive::stop(&mut ps, pa);
-        while pa.uri_live() {
-            super::uriprobe_drive::drive(&mut ps, pa);
-            if !pa.uri_live() { break; }
-            if pa.uri_acb_exit_quarantine() || clock().saturating_duration_since(started) >= super::release::RELEASE_DEADLINE {
-                log("exit: URI ownership unresolved; the display is left to the OS");
-                if let Some(session) = pa.take_uri() { std::mem::forget(session); }
-                leak_parked_for_exit(pa);
-                return NativeExit::WorkerInFirmware;
-            }
-            idle();
-        }
-    }
-    reap_abandoned_load(pa);
-    if pa.has_abandoned_load() {
-        log("exit: a timed-out Load is still inside firmware; the display is left to the OS");
-        leak_parked_for_exit(pa);
-        return NativeExit::WorkerInFirmware;
-    }
-    let mut ps = crate::route::PlaybackSession::IDLE;
-    loop {
-        let now = clock();
-        let (fx, joined) = drive_release(pa, now, Some(now));
-        match super::route_start::run_release_effects(&mut ps, pa, fx, joined, false).exit {
-            Some(super::release::ReleaseEffect::ExitClean) => return NativeExit::Clean,
-            Some(super::release::ReleaseEffect::ExitWorkerInFirmware) => {
-                log("exit: the native Unload is overdue; the display is left to the OS");
-                leak_parked_for_exit(pa);
-                return NativeExit::WorkerInFirmware;
-            }
-            _ => idle(),
-        }
-    }
-}
-
-/// **A worker still in firmware reads memory its owner is about to drop.** The caller skips
-/// `SDL_Quit` and `app::run_and_shutdown` ends the process with `_exit` (no `App` drop, no libc
-/// finalizers), but the stack above it may still unwind, so the parked
-/// [`PendingRelease`] (its Engine: the Load payload Starfish holds a raw pointer into, the
-/// handle set, the AU queues) and the parked [`AbandonedLoad`] (the payload its `media` thread
-/// reads) would be freed under the live call. They are leaked instead, for the life of the process
-/// (`release.rs`: the `_exit` that follows skips their destructors). Only `exit_native` calls this, and only on that outcome.
-fn leak_parked_for_exit(pa: &mut super::adapter::PlayerAdapter) {
-    if let Some(p) = pa.take_pending_release_any() {
-        std::mem::forget(p);
-    }
-    if let Some(l) = pa.take_abandoned_load() {
-        std::mem::forget(l);
-    }
-}
-
-/// Test helper: finish the pending release the way the exit does, with no deadline concerns.
-#[cfg(all(test, feature = "hostsim"))]
-pub(crate) fn finish_release_for_test(pa: &mut super::adapter::PlayerAdapter) {
-    let mut ps = crate::route::PlaybackSession::IDLE;
-    while pa.release_busy() {
-        let (fx, joined) = drive_release(pa, std::time::Instant::now(), None);
-        let _ = super::route_start::run_release_effects(&mut ps, pa, fx, joined, false);
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
 }
 
 /// Unload and retire the native object of `epoch`, then destroy it only with complete evidence.
