@@ -2919,9 +2919,9 @@ impl Coordinator {
                     )),
                 ) {
                     Ok(start) => start,
-                    Err(CandidateStartRefusal::Retired) => return RoundCourse::Aborted,
                     Err(refusal) => {
                         let line = match refusal {
+                            CandidateStartRefusal::Retired => return RoundCourse::Aborted,
                             CandidateStartRefusal::ReserveUnknown =>
                                 "abr: candidate reserve unreadable before exploration; staying on current rung".to_string(),
                             CandidateStartRefusal::NoRunway =>
