@@ -17,6 +17,7 @@ pub(super) struct FeedOpenRequest {
     pub feed_payload: plx_play_feed::PayloadFacts,
     pub original_dv: OriginalDvFacts,
     pub side_reader: Option<SideReaderOpen>,
+    pub session: Option<Box<dyn plx_playback_contract::demux::DemuxSession>>,
     pub hls_abr: Option<Box<dyn plx_playback_contract::adaptive::AdaptiveSession>>,
     pub auto_original: Option<Box<dyn plx_playback_contract::adaptive::OriginalSession>>,
 }
@@ -124,6 +125,7 @@ impl FeedOpenRequest {
             feed_payload,
             original_dv,
             side_reader,
+            session: Some(super::demux_session::PlayerDemuxSession::capture()),
             hls_abr: route::hls_abr_control(ps).map(|control| {
                 crate::adaptive::boxed_session(
                     crate::adaptive::Start::from(control),
