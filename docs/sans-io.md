@@ -272,7 +272,9 @@ worker start and the `client_for` read inside that worker are gone too. The hous
   loopback request; each failed with the page parked, and every suite is green with the directory
   read parked.
 - **A registry read is an input.** A step that decides from "which client does this server slot
-  hold" is handed `plx_plex::plex::ClientKeys` (one `ClientKey { instance, token, grant }` per server) as
+  hold" is handed `plx_plex::plex::ClientKeys` (one `HeldClient` per server: a `ClientKey` plus the
+  `Client::grant_epoch` its credential spoke for, proven or not, read together with the token by
+  `Client::credential()`) as
   an argument. The Bridge owns one buffer and refills it in place
   (`adapters::stores::refill_client_keys`, the only loop over `client_for` that feeds a step)
   immediately before the step, so a pump that runs every frame allocates nothing for it. The job
@@ -425,7 +427,7 @@ worker start and the `client_for` read inside that worker are gone too. The hous
   request or a supersede has replaced) frees nothing and records nothing. A store whose claim is a mailbox of landings
   (the view-state read-back and the view-state write) has its port post a store-local `NotStarted`
   landing, and the next pump puts the flight's items back and waits (a write is judged again first,
-  and dropped when its profile, its server or its client's key moved). A refusal never goes into a recorded mailbox (a recorded
+  and dropped when its profile, its server or its client's asker changed; a token refreshed in place re-keys it instead). A refusal never goes into a recorded mailbox (a recorded
   take would write it as an async result and change the bytes). It reaches the step one pump after
   the launch; no fixture holds a refused start, so no recorded byte moves.
 - **Subtitle search and the view-state read-back** are the fifth and sixth stores on the lane. The
@@ -731,31 +733,46 @@ worker start and the `client_for` read inside that worker are gone too. The hous
   write before it reaches the store (`app/viewstate_controlled_tests.rs`), so no replay fixture moved.
   It differs from the reads above in four ways.
   - **Two inputs, not one.** The step takes the `ClientKeys` and the profile the press was made
-    under (`Bridge::profile_scope()`, which is `plex::session::current_gen()`: the Session owner's
-    profile-scope counter, allocated only when a profile is seated, detached or signed out, and
-    never moved by a same-profile token refresh). `Req` captures both at the press. At the kick, and
-    when a refusal lands, a write whose profile moved, or whose client carries another key than the
-    press named, is dropped and its ledger entry retired: a profile switch re-tokens the registry's
-    clients in place, so the slot still answers, under the next profile's credential, and a write
-    is one household member's statement. The key compare is not optional: a switch swaps the tokens
-    in the frame the session adopts them and the new scope is published by a later commit, so for
-    those frames the profile still reads as the press's. A genuine same-profile token refresh drops
-    a press too (the read-back restores what the server holds); keeping it would take an identity
-    that moves with the token swap.
-  - **The fan-out reaches other servers through the snapshot.** The job carries the whole
-    `ClientKeys` the step decided under, and the worker (`finish_view_write_job`) builds
+    under (`Bridge::profile_scope()`, which is `plex::session::current_gen()`: the SEAT counter the
+    Session owner publishes, allocated when a profile is seated, detached or signed out, and also
+    when the same profile's seat is republished after a roster write moved the account stamp, #1037).
+    `Req` captures both at the press, the client as a `HeldClient`. At the kick, and when a refusal
+    lands, a write is dropped and its ledger entry retired when its profile moved (S), or when its
+    client is another object or its credential's grant epoch moved (C, `HeldClient::same_asker`): a
+    profile switch re-tokens the registry's clients in place, so the slot still answers, under the
+    next profile's credential, and a write is one household member's statement. The profile alone
+    cannot tell a switch from a refresh in the frames after the swap: the new seat is published by a
+    later commit than the token swap, so the profile still reads as the press's. The registry can:
+    every change of who is asking passes a revocation edge on the token, which moves the client's
+    grant epoch in the same call as the swap (the Session owner's `Switch` /
+    `Refresh { same_identity }` classification drives that edge), while a live token replaced in
+    place by another live one keeps it. A token merely refreshed (a roster refresh re-registering
+    the stored server under plex.tv's current grant) therefore moves the key and not the epoch: the
+    write is re-keyed and goes out once under the key the registry holds now. An epoch nobody proved
+    (a key built from values, a poisoned token lock) never matches a moved token. S and C cover
+    disjoint windows (the seat moves while the registry still holds the previous profile's tokens;
+    the tokens move while the seat has not), so both are kept. Still dropped on an unchanged
+    identity: a registration that re-points the slot at another origin (a new `Client`), and the
+    seat republication. The runner's launch check stays the full-key compare.
+  - **The fan-out reaches other servers through a filtered snapshot.** The job carries the keys the
+    step decided under minus every slot whose client is not the same asker as the press saw, or that
+    the press did not see at all (`ClientKeys::without_changed_hands`; for an end-of-stream fan-out
+    the press is the enqueue), and the worker (`finish_view_write_job`) builds
     `plx_plex::plex::KeyedClients` from it, with the registry read the runner passes in as a `fn`
     pointer, so no data-layer line names `client_for`. `fan_out` and `ask_sources` ask it for each
-    other source, and a source whose client no longer carries the key (re-tokened by a switch after
-    the press) is sent neither the lookup nor the write. The origin's client is resolved once, at the
-    launch, and the worker is handed that `&'static Client`. The check covers the moment a request
-    is built: one already on the wire is not recalled.
+    other source, and a source that left the snapshot, or whose client no longer carries the key in
+    it (re-tokened after the kick), is sent neither the lookup nor the write; `kick` logs each
+    omitted slot (slot numbers only). The origin's client is resolved once, at the launch, and the
+    worker is handed that `&'static Client`. The check covers the moment a request is built: one
+    already on the wire is not recalled.
   - **A refusal is not a failure.** The runner refuses a write whose origin key moved by the launch
     (or by the time a parked job runs), or whose thread the system refused, and the port posts
     `NotStarted` into the owner's mailbox. Nothing left the device, so the pump changes no ledger
     entry and owes no read-back or hub refresh: it judges the write again like any queued write (a
-    moved profile, a vanished server or a re-tokened client drops it) and puts it back at the head
-    of the queue, and waits out the retry ladder. A worker that panics answers with a failed write, never `NotStarted`: the origin write
+    moved profile, a vanished server or a client that changed hands drops it) and puts it back at
+    the head of the queue. A refusal after a token refresh was the refresh's: the write is re-keyed
+    and retried at once, as a retokened browse source is (`retry_cd = 0`); any other waits out the
+    retry ladder. A worker that panics answers with a failed write, never `NotStarted`: the origin write
     may already be on the server, and a second scrobble would add a second viewCount.
   - **One outbox, two fill lists.** ViewState sits in `Stores::VIEWSTATE_FILLS` at its `StoreId`
     position, and `Stores::RECONCILE_FILLS` is what `Bridge::reconcile_pump` drains. A reset keeps

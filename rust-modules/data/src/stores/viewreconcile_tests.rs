@@ -23,6 +23,8 @@ struct Truth {
     requests: AtomicUsize,
     /// The `viewOffset` a read answers with (0: none), whatever the watched state.
     view_offset: AtomicI64,
+    /// The `X-Plex-Token` of each scrobble that reached the server, in arrival order.
+    tokens: Mutex<Vec<String>>,
 }
 
 struct Pms {
@@ -44,6 +46,9 @@ fn serve_connection(mut conn: std::net::TcpStream, truth: Arc<Truth>) {
     truth.requests.fetch_add(1, Ordering::SeqCst);
     if path.starts_with("/:/scrobble") || path.starts_with("/:/unscrobble") {
         truth.scrobbles.fetch_add(1, Ordering::SeqCst);
+        if let Some((_, after)) = path.split_once("X-Plex-Token=") {
+            truth.tokens.lock().unwrap().push(after.split('&').next().unwrap_or_default().to_string());
+        }
         if path.starts_with("/:/scrobble") && truth.refuse_scrobble.load(Ordering::SeqCst) {
             return reply(&mut conn, "500 Internal Server Error", "{}");
         }
@@ -137,9 +142,14 @@ fn press_as(stores: &mut Stores, sid: ServerId, write: Write, profile: u32) {
 
 /// Pump both owners as the frame loop does until `done`, failing after ~5 s.
 fn drive(stores: &mut Stores, done: impl Fn(&Stores) -> bool) {
+    drive_as(stores, 0, done);
+}
+
+/// [`drive`] with the profile identity `profile` as the ViewState input.
+fn drive_as(stores: &mut Stores, profile: u32, done: impl Fn(&Stores) -> bool) {
     let directory = DirectorySnapshot::default();
     for _ in 0..1000 {
-        let _ = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test(), 0);
+        let _ = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test(), profile);
         super::rig::frame(stores, &directory);
         if done(stores) { return; }
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -562,33 +572,247 @@ fn a_fanout_target_whose_key_moved_after_the_step_gets_no_request() {
     drop(stores);
 }
 
-/// **A token swap under a profile that still reads as the old one is dropped too.** A profile
-/// switch swaps the registry's tokens in the frame the session adopts them, but the new profile's
-/// identity (`Bridge::profile_scope`) is published by a LATER commit, so for a few frames a real
-/// switch looks to the step like a same-profile refresh: the key moved, the profile did not. The
-/// step cannot tell the two apart, so a key that moved since the press drops the write and retires
-/// its ledger entry, and nothing is sent under the next profile's token.
+/// The profile identity the presses of the identity tests below are made under.
+const PRESSED_UNDER: u32 = 5;
+
+/// A ViewState owner whose in-flight write is out and whose first press, `Watched` on item `1` of
+/// `sid`, is queued behind it under [`PRESSED_UNDER`]. The caller changes the registry, then lands
+/// the held write with the returned closure and drives the frame loop.
+fn press_behind_a_held_write(stores: &mut Stores, sid: ServerId) -> Box<dyn FnOnce()> {
+    stores.viewstate.borrow_mut().hold_inflight_for_test(sid, "held");
+    press_as(stores, sid, Write::Watched, PRESSED_UNDER);
+    assert_eq!(stores.view_ledger.since(0).len(), 1, "the press is in the ledger until its fate is known");
+    stores.viewstate.borrow().late_completion_for_test()
+}
+
+/// What a profile switch does to the registry, as `execute_session_registry` does it for a
+/// `RosterCommit::Switch`: every live token is blanked, then the next profile's token is installed
+/// in place. The profile counter (`session::current_gen`) is NOT touched: it moves by a later commit.
+fn switch_profiles_in_the_registry(pms: &Pms, token: &str) {
+    plx_plex::plex::revoke_for_profile_switch();
+    plx_plex::plex::register_for_test("reconcile", "127.0.0.1", pms.port, token, "reconcile-client");
+}
+
+/// **A token refreshed under the same profile is the same household member's credential.** The
+/// registry replaced one live token by another in place (a discovery pass re-registering the stored
+/// server under plex.tv's current grant), so the queued press is sent ONCE, under the new token,
+/// and the read-back settles the tile.
 #[test]
-fn a_write_whose_client_was_re_tokened_while_the_profile_still_reads_the_old_one_is_dropped_and_retired() {
+fn a_same_profile_token_refresh_sends_a_queued_write_exactly_once_under_the_new_token() {
     let _g = plx_base::testlock::serial();
     let pms = serve();
     let (mut stores, sid) = library_holding_item(&pms);
-    stores.viewstate.borrow_mut().hold_inflight_for_test(sid, "held");
-    press_as(&mut stores, sid, Write::Watched, 5);
-    assert_eq!(stores.view_ledger.since(0).len(), 1, "the press is in the ledger until its fate is known");
-    // the swap has landed, the new profile's identity has not: same slot, new token, same profile
-    plx_plex::plex::client_for(sid).unwrap().set_token("the-next-profiles-token");
-    let land_held = stores.viewstate.borrow().late_completion_for_test();
+    let land_held = press_behind_a_held_write(&mut stores, sid);
+    let client = plx_plex::plex::client_for(sid).unwrap();
+    let (generation, grant) = (client.token_gen(), client.grant_epoch());
+    client.set_token("the-refreshed-token");
+    assert_ne!(client.token_gen(), generation, "premise: the token moved");
+    assert_eq!(client.grant_epoch(), grant, "premise: the identity it speaks for did not");
     land_held();
+
+    drive_as(&mut stores, PRESSED_UNDER, settled);
+
+    assert_eq!(pms.truth.scrobbles.load(Ordering::SeqCst), 1, "the press was sent exactly once");
+    assert_eq!(*pms.truth.tokens.lock().unwrap(), ["the-refreshed-token"], "under the token the registry holds now");
+    assert_eq!(tile(&stores), (true, false), "and the read-back after it confirms the press");
+    drop(stores);
+}
+
+/// **A profile switch is not a refresh, however early in the commit it is judged.** The switch's
+/// registry plan has swapped every token, and the new profile's identity is published by a LATER
+/// commit, so the profile input still reads the press's. The registry's grant epoch moved at the
+/// swap, so the write is dropped and retired and nothing goes out under the next profile's token.
+#[test]
+fn a_switch_commit_before_the_new_profile_is_published_sends_no_queued_write() {
+    let _g = plx_base::testlock::serial();
+    let pms = serve();
+    let (mut stores, sid) = library_holding_item(&pms);
+    let land_held = press_behind_a_held_write(&mut stores, sid);
+    switch_profiles_in_the_registry(&pms, "the-next-profiles-token");
+    land_held();
+
+    drive_as(&mut stores, PRESSED_UNDER, settled);
+
+    assert!(settled(&stores), "the queue emptied");
+    assert_eq!(pms.truth.scrobbles.load(Ordering::SeqCst), 0, "nothing was sent under the next profile's token");
+    assert!(stores.view_ledger.since(0).is_empty(), "the dropped press was retired");
+    drop(stores);
+}
+
+/// A -> B -> A: the second profile's token is the first one's again, but the identity passed two
+/// revocation edges and never comes back to the press's value.
+#[test]
+fn a_switch_away_and_back_to_the_first_profile_still_drops_the_write() {
+    let _g = plx_base::testlock::serial();
+    let pms = serve();
+    let (mut stores, sid) = library_holding_item(&pms);
+    let land_held = press_behind_a_held_write(&mut stores, sid);
+    switch_profiles_in_the_registry(&pms, "the-next-profiles-token");
+    switch_profiles_in_the_registry(&pms, "token"); // the first profile's token again
+    land_held();
+
+    drive_as(&mut stores, PRESSED_UNDER, settled);
+
+    assert_eq!(pms.truth.scrobbles.load(Ordering::SeqCst), 0, "a press is never carried across two switches");
+    assert!(stores.view_ledger.since(0).is_empty(), "and it was retired");
+    drop(stores);
+}
+
+/// A launch the runner refused BECAUSE the token was refreshed meanwhile (the full-key check at the
+/// launch) is not the system's refusal: the write is re-keyed and goes out on the very next pump,
+/// not after the ladder.
+#[test]
+fn a_refused_write_whose_token_was_refreshed_is_sent_again_at_once() {
+    let _g = plx_base::testlock::serial();
+    let pms = serve();
+    let (mut stores, sid) = library_holding_item(&pms);
     let directory = DirectorySnapshot::default();
-    for _ in 0..200 {
-        let _ = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test(), 5);
-        super::rig::frame(&mut stores, &directory);
-        if settled(&stores) { break; }
+    assert!(stores.viewstate_run(ViewStateCmd::Request {
+        sid, rk: "1".into(), write: Write::Watched, scope: Scope::Leaf, guid: String::new(),
+    }, directory.view(), &crate::pms::registry_keys_for_test(), PRESSED_UNDER).changed);
+    // the refresh lands between the step and the launch: the runner refuses the stale key
+    plx_plex::plex::client_for(sid).unwrap().set_token("the-refreshed-token");
+    super::rig::start_jobs(&mut stores);
+
+    let _ = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test(), PRESSED_UNDER);
+    super::rig::start_jobs(&mut stores); // the Bridge's drain after that one pump
+    for _ in 0..400 { // ~2 s without another pump: far less than the ladder's 120 frames of pumps
+        if pms.truth.scrobbles.load(Ordering::SeqCst) == 1 { break; }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    assert!(settled(&stores), "the queue emptied");
-    assert_eq!(pms.truth.scrobbles.load(Ordering::SeqCst), 0, "nothing was sent under the moved token");
-    assert!(stores.view_ledger.since(0).is_empty(), "the dropped press was retired");
+
+    assert_eq!(pms.truth.scrobbles.load(Ordering::SeqCst), 1, "the very next pump sent it again");
+    drive_as(&mut stores, PRESSED_UNDER, settled);
+    assert_eq!(pms.truth.scrobbles.load(Ordering::SeqCst), 1, "exactly once");
+    assert_eq!(*pms.truth.tokens.lock().unwrap(), ["the-refreshed-token"]);
+    drop(stores);
+}
+
+/// Blank then live again on one client: the registry's own sequence for a foreign retoken, a
+/// regrade, or a switch, as far as that one server is concerned.
+fn change_hands(sid: ServerId, token: &str) {
+    let client = plx_plex::plex::client_for(sid).unwrap();
+    client.set_token("");
+    client.set_token(token);
+}
+
+/// **The fan-out reaches another server only while it is the asker the press saw.** The origin's
+/// own client is untouched, so its write goes out; the other server changed hands alone while the
+/// press waited, so it hears nothing at all (no guid lookup, no scrobble).
+#[test]
+fn a_fan_out_target_that_changed_hands_while_the_write_was_queued_gets_no_request() {
+    let _g = plx_base::testlock::serial();
+    let (a, b) = (serve(), serve());
+    let (mut stores, sid_a, sid_b) = two_servers(&a, &b);
+    let land_held = press_behind_a_held_write(&mut stores, sid_a);
+    change_hands(sid_b, "b-for-another-asker");
+    land_held();
+
+    drive_as(&mut stores, PRESSED_UNDER, settled);
+
+    assert_eq!(a.truth.scrobbles.load(Ordering::SeqCst), 1, "the origin's own write went out");
+    assert_eq!(b.truth.requests.load(Ordering::SeqCst), 0, "the other server heard nothing under its new asker");
+    drop(stores);
+}
+
+/// …while a target whose token was only refreshed is the same asker and is still reached, under
+/// the token it holds now.
+#[test]
+fn a_fan_out_target_refreshed_in_place_is_still_reached() {
+    let _g = plx_base::testlock::serial();
+    let (a, b) = (serve(), serve());
+    let (mut stores, sid_a, sid_b) = two_servers(&a, &b);
+    let land_held = press_behind_a_held_write(&mut stores, sid_a);
+    plx_plex::plex::client_for(sid_b).unwrap().set_token("b-refreshed");
+    land_held();
+
+    drive_as(&mut stores, PRESSED_UNDER, settled);
+
+    assert_eq!(a.truth.scrobbles.load(Ordering::SeqCst), 1);
+    assert_eq!(b.truth.scrobbles.load(Ordering::SeqCst), 1, "the refreshed target got its copy");
+    assert_eq!(*b.truth.tokens.lock().unwrap(), ["b-refreshed"], "under its refreshed token");
+    drop(stores);
+}
+
+/// A server that was not in the registry when the press was made is not one the press chose to
+/// reach: nothing proves it speaks for the same asker (a roster listed under another account's
+/// token allocates a new slot with no revocation edge to compare).
+#[test]
+fn a_fan_out_does_not_reach_a_server_registered_after_the_press() {
+    let _g = plx_base::testlock::serial();
+    let (a, b, c) = (serve(), serve(), serve());
+    let (mut stores, sid_a, _sid_b) = two_servers(&a, &b);
+    let land_held = press_behind_a_held_write(&mut stores, sid_a);
+    let sid_c = plx_plex::plex::register_for_test("reconcile-c", "127.0.0.1", c.port, "token", "reconcile-c");
+    plx_plex::plex::client_for(sid_c).unwrap().set_link(plx_plex::plex::probe::Location::Local);
+    land_held();
+
+    drive_as(&mut stores, PRESSED_UNDER, settled);
+
+    assert_eq!(a.truth.scrobbles.load(Ordering::SeqCst), 1, "the origin's own write went out");
+    assert_eq!(c.truth.requests.load(Ordering::SeqCst), 0, "the late server heard nothing");
+    drop(stores);
+}
+
+/// Queue an end-of-stream fan-out for item `1` of `sid` behind a held write, the way
+/// `Stores::reconcile_pump` does when the read-back finds the stream's end.
+fn end_of_stream_behind_a_held_write(stores: &mut Stores, sid: ServerId) -> Box<dyn FnOnce()> {
+    stores.viewstate.borrow_mut().hold_inflight_for_test(sid, "held");
+    assert!(stores.viewstate.borrow_mut().fan_out_origin_watched(
+        sid, "1", &crate::pms::registry_keys_for_test(), PRESSED_UNDER), "queued behind the write in flight");
+    stores.viewstate.borrow().late_completion_for_test()
+}
+
+/// The origin changed hands after the fan-out was queued: it is not the client the read-back saw
+/// the stream's end on. Nothing is sent, to any server.
+#[test]
+fn an_end_of_stream_fan_out_queued_behind_an_in_flight_write_is_dropped_when_the_origin_grant_moved() {
+    let _g = plx_base::testlock::serial();
+    let (a, b) = (serve(), serve());
+    let (mut stores, sid_a, _sid_b) = two_servers(&a, &b);
+    let land_held = end_of_stream_behind_a_held_write(&mut stores, sid_a);
+    change_hands(sid_a, "a-for-another-asker");
+    land_held();
+
+    drive_as(&mut stores, PRESSED_UNDER, settled);
+
+    assert_eq!(b.truth.requests.load(Ordering::SeqCst), 0, "no copy was written under the next asker");
+    assert_eq!(a.truth.scrobbles.load(Ordering::SeqCst) + b.truth.scrobbles.load(Ordering::SeqCst), 0);
+    drop(stores);
+}
+
+/// …while a token merely refreshed on the origin leaves the fan-out standing: the other copy is
+/// scrobbled once, the origin (which already holds the write) not at all.
+#[test]
+fn an_end_of_stream_fan_out_survives_a_token_refresh() {
+    let _g = plx_base::testlock::serial();
+    let (a, b) = (serve(), serve());
+    let (mut stores, sid_a, _sid_b) = two_servers(&a, &b);
+    let land_held = end_of_stream_behind_a_held_write(&mut stores, sid_a);
+    plx_plex::plex::client_for(sid_a).unwrap().set_token("a-refreshed");
+    land_held();
+
+    drive_as(&mut stores, PRESSED_UNDER, settled);
+
+    assert_eq!(b.truth.scrobbles.load(Ordering::SeqCst), 1, "the other copy was scrobbled once");
+    assert_eq!(a.truth.scrobbles.load(Ordering::SeqCst), 0, "the origin already counted the view");
+    drop(stores);
+}
+
+/// The fan-out target changed hands alone after the entry was queued: the origin's lookup still
+/// runs, but the target gets neither lookup nor write.
+#[test]
+fn an_end_of_stream_fan_out_target_that_changed_hands_alone_is_omitted() {
+    let _g = plx_base::testlock::serial();
+    let (a, b) = (serve(), serve());
+    let (mut stores, sid_a, sid_b) = two_servers(&a, &b);
+    let land_held = end_of_stream_behind_a_held_write(&mut stores, sid_a);
+    change_hands(sid_b, "b-for-another-asker");
+    land_held();
+
+    drive_as(&mut stores, PRESSED_UNDER, settled);
+
+    assert_eq!(b.truth.requests.load(Ordering::SeqCst), 0, "the target heard nothing under its new asker");
+    assert_eq!(a.truth.scrobbles.load(Ordering::SeqCst), 0);
     drop(stores);
 }

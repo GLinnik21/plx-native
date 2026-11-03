@@ -98,7 +98,8 @@ impl Drop for TempSession {
     }
 }
 
-/// A stand-in `grant::account_key`: 8 bytes as hex. The account stamp the per-profile tests use.
+/// A stand-in account stamp in the token-fingerprint shape (what `grant::account_key` computes): 8
+/// bytes as hex. The stamp the per-profile tests use for a session whose roster names no owner.
 pub(super) const STAMP: &str = "00112233445566ff";
 
 pub(super) fn signed_in() -> Session {

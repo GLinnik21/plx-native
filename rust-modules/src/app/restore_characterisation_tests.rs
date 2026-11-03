@@ -813,6 +813,36 @@ fn same_seat_republication_restores_nothing() {
     assert_eq!(cells(), OTHER);
 }
 
+/// **#830: a re-sign-in by the same owner is the same seat.** The seat's stamp is the owner's, which
+/// a new sign-in's token does not move, so the publication the sign-in's final commit makes is a
+/// republication of the seat the TV already restored: nothing is restored and a pick in flight
+/// stands. A different owner is a different seat and restores.
+#[test]
+fn a_same_owner_resignin_republishes_the_same_seat_and_restores_nothing() {
+    let _serial = plx_base::testlock::serial();
+    let mut stored = with_own_values(record("profile-a", &["profile-b"]), "profile-a", STORED);
+    for tile in &mut stored.home_users { tile.id = if tile.uuid == "profile-a" { 7 } else { 9 }; tile.admin = tile.uuid == "profile-a"; }
+    let _fixture = Fixture::new("a0c-same-owner-resignin", &stored);
+    let (mut rig, mut d) = resume(&stored);
+    follow_auth_landing(&mut d, &mut rig);
+    settle(&mut rig, &mut d, 100);
+    seat_globally("profile-a");
+
+    let seat_under = |token: &str, owner: i64| {
+        let mut signed_in = stored.clone();
+        signed_in.account_token = token.into();
+        for tile in &mut signed_in.home_users { tile.id = if tile.admin { owner } else { 9 }; }
+        plx_plex::plex::session::Seat::Seated { user: "profile-a".into(), stamp: plx_plex::plex::session::account_stamp(&signed_in) }
+    };
+    assert!(!rig.seat_watch.arrive(seat_under("a0c-account", 7)), "control: the stored sign-in is the seat the resume restored");
+    plx_media::route::select_subtitle_size(SubtitleSize::Small, None);
+    let before = size_publishes();
+    assert!(!rig.seat_watch.arrive(seat_under("a0c-account-2", 7)), "the same owner under a new token is not a seat change");
+    assert_eq!(size_publishes(), before, "so nothing was restored");
+    assert_eq!(plx_media::route::subtitle_size(), SubtitleSize::Small, "and the pick stands");
+    assert!(rig.seat_watch.arrive(seat_under("a0c-account-3", 8)), "another owner is a seat change");
+}
+
 /// **A -> picker -> B -> picker -> A restores at each change, once (plan 3.8.5).** The picker is an
 /// `Unseated` stop (the cells hold the fallback), each commit seats a profile, and the landing restores
 /// nothing, so a cell is published exactly once per seat change.
