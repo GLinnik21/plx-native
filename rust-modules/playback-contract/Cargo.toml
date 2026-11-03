@@ -12,6 +12,7 @@ mount = "playback_contract"
 
 [lib]
 name = "plx_playback_contract"
+crate-type = ["rlib"]
 
 [lints]
 workspace = true
