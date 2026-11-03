@@ -2523,11 +2523,11 @@ fn weigh(op: &DrawOp) -> Contributor {
                 + if extra > 0 { area(rects.next) } else { 0 };
         }
         DrawOp::SkipPill { rects } => {
-            // Automatic's Watch pill may carry the shared progress bar. Budget its worst case
-            // even when this frame uses the Manual label.
-            c.draw_ops += plx_ui::widgets::ButtonProgress::Bar.extra_draw_ops();
+            // Watch uses the shared fill-sweep face, as Classic's Up Next does. Price it through
+            // that face's existing cost model; the measured class ceilings remain unchanged.
+            c.draw_ops += plx_ui::widgets::ButtonProgress::FillSweep.extra_draw_ops();
             c.glyph_runs = 1;
-            c.blended_px = 2 * rects.iter().map(|r| area(*r)).max().unwrap_or(0);
+            c.blended_px = rects.iter().map(|r| area(*r)).max().unwrap_or(0);
         }
     }
     c

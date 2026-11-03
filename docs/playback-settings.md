@@ -161,7 +161,7 @@ Requested in [discussion #826](https://github.com/GLinnik21/plx-native/discussio
 Playback settings offers **Skip intros** and **Skip credits** separately for a viewer whose
 Plex account feature list grants the corresponding capability. These are per-profile choices:
 **Manual** is the default, **Disabled** hides the skip button, and **Automatic** offers a
-**Watch Intro** or **Watch Credits** button with a five-second progress bar. Pressing that button
+**Watch Intro** or **Watch Credits** button with a five-second countdown fill. Pressing that button
 or BACK keeps watching the segment and withdraws its offer for this playback.
 
 Only time with an actionable, presented Watch button and advancing playback counts. Pause,

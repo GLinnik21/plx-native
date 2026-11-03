@@ -98,6 +98,6 @@ pub fn draw_at(row: &crate::player_hud::motion::HudMotion, p: Painter, pr: Promp
         // It stands in the transport discs' own slot, over the video plane and on the HUD's ramp,
         // so it wears their ground as well as their pop — see `ControlGround`.
         .ground(ControlGround::Unkeyed);
-    let button = if let Some(fraction) = progress { button.progress_bar(fraction) } else { button };
+    let button = if let Some(fraction) = progress { button.progress(fraction) } else { button };
     button.draw(&Env::inert(), p);
 }
