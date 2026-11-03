@@ -3,15 +3,16 @@
 use std::collections::BTreeMap;
 
 use crate::{AttemptId, BackendKind, Capabilities, CommandId, ContentTime, DispatchResult,
-    ExitDisposition, Failure, Observation, Observed, Operation, Playback, ReleaseStatus,
-    SourceKey, StopReason, TrackChoice, TrackKind};
+    ExitDisposition, Failure, InitialPlayback, Observation, Observed, Operation, Playback,
+    ReleaseStatus, SourceKey, StopReason, TrackChoice, TrackKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase { Vacant, Starting, Active, Releasing, Quarantined }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Intent {
-    Start { backend: BackendKind, attempt: AttemptId, source: SourceKey, requirements: crate::Requirements },
+    Start { backend: BackendKind, attempt: AttemptId, source: SourceKey,
+        requirements: crate::Requirements, initial: InitialPlayback },
     Control { backend: BackendKind, attempt: AttemptId, operation: Operation },
     Stop { backend: BackendKind, attempt: AttemptId, reason: StopReason },
 }
@@ -28,6 +29,8 @@ pub enum Event {
     Intent(Intent),
     CommandAnswer { backend: BackendKind, attempt: AttemptId, command: CommandId, result: DispatchResult },
     Observation { backend: BackendKind, attempt: AttemptId, observation: Observation },
+    TrackSettled { backend: BackendKind, attempt: AttemptId, command: CommandId,
+        kind: TrackKind, choice: TrackChoice },
     SeekLanded { backend: BackendKind, attempt: AttemptId, command: CommandId,
         position: Option<Observed<ContentTime>> },
     Release { backend: BackendKind, attempt: AttemptId, status: ReleaseStatus },
@@ -43,6 +46,8 @@ pub enum Fx {
     CommandRefused { backend: BackendKind, attempt: AttemptId, command: CommandId,
         operation: Operation, failure: Failure },
     AcceptedObservation { backend: BackendKind, attempt: AttemptId, observation: Observation },
+    AcceptedTrackSettled { backend: BackendKind, attempt: AttemptId, command: CommandId,
+        kind: TrackKind, choice: TrackChoice },
     /// A generic position or queued ACK cannot produce this notice.
     AcceptedSeekLanded { backend: BackendKind, attempt: AttemptId, command: CommandId,
         position: Option<Observed<ContentTime>> },
@@ -86,11 +91,13 @@ pub struct BackendState {
     snapshot: Snapshot,
     pending: BTreeMap<CommandId, Operation>,
     latest_queued_seek: Option<CommandId>,
+    latest_queued_track: [Option<(CommandId, TrackChoice)>; 2],
 }
 impl BackendState {
     pub fn new() -> Self {
         Self { last_attempt: None, next_command: 0, snapshot: Snapshot::default(),
-            pending: BTreeMap::new(), latest_queued_seek: None }
+            pending: BTreeMap::new(), latest_queued_seek: None,
+            latest_queued_track: [None; 2] }
     }
 
     pub fn snapshot(&self) -> &Snapshot { &self.snapshot }
@@ -124,7 +131,7 @@ impl BackendState {
     /// absent; no source or operation is dispatched to an unavailable driver.
     pub fn step(&mut self, event: Event, capabilities: Option<Capabilities>, effects: &mut Vec<Fx>) {
         match event {
-            Event::Intent(Intent::Start { backend, attempt, source, requirements }) => {
+            Event::Intent(Intent::Start { backend, attempt, source, requirements, initial: _ }) => {
                 let failure = if self.snapshot.phase != Phase::Vacant {
                     Some(Failure::Busy)
                 } else if self.last_attempt.is_some_and(|last| attempt <= last) {
@@ -155,6 +162,12 @@ impl BackendState {
                 if let Some(failure) = failure {
                     effects.push(Fx::Rejected { backend, attempt, failure });
                 } else {
+                    match operation {
+                        Operation::Seek(_) => self.latest_queued_seek = None,
+                        Operation::SelectTrack { kind, .. } =>
+                            self.latest_queued_track[Self::track_slot(kind)] = None,
+                        _ => {}
+                    }
                     self.dispatch(backend, attempt, operation, effects);
                 }
             }
@@ -163,6 +176,7 @@ impl BackendState {
                     || !matches!(self.snapshot.phase, Phase::Starting | Phase::Active) { return; }
                 self.pending.clear();
                 self.latest_queued_seek = None;
+                self.latest_queued_track = [None; 2];
                 if capabilities.is_none() {
                     self.snapshot.phase = Phase::Quarantined;
                     self.snapshot.failure = Some(Failure::ReleaseUncertain);
@@ -181,6 +195,9 @@ impl BackendState {
                         if matches!(operation, Operation::Seek(_)) {
                             self.latest_queued_seek = Some(command);
                             self.snapshot.seek_landed = None;
+                        }
+                        if let Operation::SelectTrack { kind, choice } = operation {
+                            self.latest_queued_track[Self::track_slot(kind)] = Some((command, choice));
                         }
                     }
                     DispatchResult::Refused(reason) => {
@@ -230,6 +247,16 @@ impl BackendState {
                 effects.push(Fx::AcceptedObservation { backend, attempt, observation });
             }
             Event::Observation { .. } => {}
+            Event::TrackSettled { backend, attempt, command, kind, choice }
+                if self.owns(backend, attempt) && self.snapshot.phase == Phase::Active =>
+            {
+                let slot = Self::track_slot(kind);
+                if choice == TrackChoice::Unspecified
+                    || self.latest_queued_track[slot] != Some((command, choice)) { return; }
+                self.latest_queued_track[slot] = None;
+                effects.push(Fx::AcceptedTrackSettled { backend, attempt, command, kind, choice });
+            }
+            Event::TrackSettled { .. } => {}
             Event::SeekLanded { backend, attempt, command, position }
                 if self.owns(backend, attempt) && self.snapshot.phase == Phase::Active =>
             {
@@ -246,16 +273,19 @@ impl BackendState {
                         self.snapshot.phase = Phase::Releasing;
                         self.pending.clear();
                         self.latest_queued_seek = None;
+                        self.latest_queued_track = [None; 2];
                     }
                     ReleaseStatus::Quarantined => {
                         self.snapshot.phase = Phase::Quarantined;
                         self.snapshot.failure = Some(Failure::ReleaseUncertain);
                         self.pending.clear();
                         self.latest_queued_seek = None;
+                        self.latest_queued_track = [None; 2];
                     }
                     ReleaseStatus::Released => {
                         self.pending.clear();
                         self.latest_queued_seek = None;
+                        self.latest_queued_track = [None; 2];
                         self.snapshot = Snapshot::default();
                     }
                 }
@@ -273,6 +303,10 @@ impl BackendState {
                 && caps.supports_track(kind, choice),
             Operation::Start { .. } | Operation::Stop(_) => false,
         }
+    }
+
+    const fn track_slot(kind: TrackKind) -> usize {
+        match kind { TrackKind::Audio => 0, TrackKind::Subtitle => 1 }
     }
 }
 impl Default for BackendState { fn default() -> Self { Self::new() } }
@@ -292,12 +326,13 @@ mod tests {
         source: SourceKind::ProgressiveUri, video: Fidelity::Exact, audio: Fidelity::Exact,
         audio_track: TrackChoice::Unspecified, subtitle_track: TrackChoice::Unspecified,
     };
+    const INITIAL: InitialPlayback = InitialPlayback { position: None, paused: false };
     fn step(state: &mut BackendState, event: Event, caps: Option<Capabilities>) -> Vec<Fx> {
         let mut effects = Vec::new(); state.step(event, caps, &mut effects); effects
     }
     fn start(state: &mut BackendState, backend: BackendKind, attempt: AttemptId) -> CommandId {
         let effects = step(state, Event::Intent(Intent::Start {
-            backend, attempt, source: SourceKey::new(7), requirements: REQ,
+            backend, attempt, source: SourceKey::new(7), requirements: REQ, initial: INITIAL,
         }), Some(CAPS));
         let [Fx::Dispatch { backend: sent, attempt: addressed, command,
             operation: Operation::Start { .. } }] = effects.as_slice() else { panic!("start dispatch: {effects:?}") };
@@ -336,7 +371,7 @@ mod tests {
         step(&mut state, Event::Release { backend: URI, attempt, status: ReleaseStatus::Quarantined }, None);
         let candidate = AttemptId::new(8, 1);
         let busy = step(&mut state, Event::Intent(Intent::Start { backend: FEED, attempt: candidate,
-            source: SourceKey::new(8), requirements: REQ }), Some(CAPS));
+            source: SourceKey::new(8), requirements: REQ, initial: INITIAL }), Some(CAPS));
         assert_eq!(busy, vec![Fx::DiscardStaged { backend: FEED, attempt: candidate, key: SourceKey::new(8) },
             Fx::Rejected { backend: FEED, attempt: candidate, failure: Failure::Busy }]);
         assert!(step(&mut state, Event::Release { backend: FEED, attempt, status: ReleaseStatus::Released }, None).is_empty());
@@ -353,7 +388,7 @@ mod tests {
         let mut state = BackendState::new();
         let attempt = AttemptId::new(2, 1);
         assert_eq!(step(&mut state, Event::Intent(Intent::Start { backend: URI, attempt,
-            source: SourceKey::new(99), requirements: REQ }), None), vec![
+            source: SourceKey::new(99), requirements: REQ, initial: INITIAL }), None), vec![
                 Fx::DiscardStaged { backend: URI, attempt, key: SourceKey::new(99) },
                 Fx::Rejected { backend: URI, attempt, failure: Failure::Unavailable },
             ]);
@@ -427,6 +462,36 @@ mod tests {
         assert_eq!(step(&mut state, Event::SeekLanded { backend: URI, attempt, command: later[1],
             position: None }, None), [Fx::AcceptedSeekLanded { backend: URI, attempt,
                 command: later[1], position: None }]);
+    }
+
+    #[test]
+    fn track_completion_rejects_old_command_and_wrong_backend_after_supersession() {
+        let mut state = BackendState::new();
+        let attempt = AttemptId::new(5, 1);
+        start(&mut state, URI, attempt);
+        ready(&mut state, URI, attempt);
+        let mut commands = Vec::new();
+        for id in [3, 4] {
+            let effects = step(&mut state, Event::Intent(Intent::Control { backend: URI,
+                attempt, operation: Operation::SelectTrack { kind: TrackKind::Audio,
+                    choice: TrackChoice::Selected(id) } }), Some(CAPS));
+            let [Fx::Dispatch { command, .. }] = effects.as_slice() else { panic!("track dispatch") };
+            let command = *command;
+            step(&mut state, Event::CommandAnswer { backend: URI, attempt, command,
+                result: DispatchResult::Queued }, None);
+            commands.push(command);
+        }
+        for (backend, command) in [(URI, commands[0]), (FEED, commands[1])] {
+            assert!(step(&mut state, Event::TrackSettled { backend, attempt, command,
+                kind: TrackKind::Audio, choice: TrackChoice::Selected(4) }, None).is_empty());
+        }
+        assert_eq!(step(&mut state, Event::TrackSettled { backend: URI, attempt,
+            command: commands[1], kind: TrackKind::Audio, choice: TrackChoice::Selected(4) }, None),
+            [Fx::AcceptedTrackSettled { backend: URI, attempt, command: commands[1],
+                kind: TrackKind::Audio, choice: TrackChoice::Selected(4) }]);
+        assert!(step(&mut state, Event::TrackSettled { backend: URI, attempt,
+            command: commands[1], kind: TrackKind::Audio,
+            choice: TrackChoice::Selected(4) }, None).is_empty());
     }
 
     #[test]

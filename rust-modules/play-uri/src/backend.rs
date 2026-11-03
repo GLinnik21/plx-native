@@ -274,6 +274,11 @@ impl UriBackend {
                         self.observe(Observation::TrackSelected(Observed {
                             value: selected, from: EvidenceSource::BackendReport,
                         }));
+                        if let Some(attempt) = self.active {
+                            self.pending.push_back(DriverEvent::TrackSettled { attempt,
+                                command: pending.command, kind: selected.kind,
+                                choice: TrackChoice::Selected(selected.id) });
+                        }
                     }
                 }
             }
@@ -537,7 +542,7 @@ mod tests {
     use plx_platform::tv::sink::NoSink;
     use plx_platform::tv::uri::{CloseStatus, RequestId, SessionId, UriPoll, UriReply};
     use plx_playback_contract::{BackendState, Event as ContractEvent, Fidelity,
-        Fx as ContractFx, Intent, Requirements, SourceKind, StopReason};
+        Fx as ContractFx, InitialPlayback, Intent, Requirements, SourceKind, StopReason};
     use std::sync::{atomic::{AtomicU64, Ordering}, Mutex};
 
     const CAPS: Capabilities = Capabilities { progressive_uri: true, hls_uri: false,
@@ -546,6 +551,7 @@ mod tests {
     const REQ: Requirements = Requirements { source: SourceKind::ProgressiveUri,
         video: Fidelity::Exact, audio: Fidelity::Exact, audio_track: TrackChoice::Unspecified,
         subtitle_track: TrackChoice::Unspecified };
+    const INITIAL: InitialPlayback = InitialPlayback { position: None, paused: false };
     const KEY: SourceKey = SourceKey::new(17);
     const A: AttemptId = AttemptId::new(7, 1);
     const B: AttemptId = AttemptId::new(7, 2);
@@ -616,7 +622,8 @@ mod tests {
             let mut state = BackendState::new();
             let mut fx = Vec::new();
             state.step(ContractEvent::Intent(Intent::Start {
-                backend: BackendKind::Uri, attempt: A, source: KEY, requirements: REQ }), Some(CAPS), &mut fx);
+                backend: BackendKind::Uri, attempt: A, source: KEY, requirements: REQ,
+                initial: INITIAL }), Some(CAPS), &mut fx);
             let [ContractFx::Dispatch { command, .. }] = fx.as_slice() else { panic!("dispatch") };
             Self { driver, clock, bus, mt: unsafe { MainThread::assume() }, command: *command }
         }
@@ -672,7 +679,9 @@ mod tests {
         rig.bus.say("selectTrack", r#"{"returnValue":true,"mediaId":"m1"}"#);
         assert_eq!(rig.driver.poll(&rig.mt), [DriverEvent::Observation { attempt: A,
             observation: Observation::TrackSelected(Observed { value: track,
-                from: EvidenceSource::BackendReport }) }]);
+                from: EvidenceSource::BackendReport }) },
+            DriverEvent::TrackSettled { attempt: A, command: rig.command,
+                kind: TrackKind::Audio, choice: TrackChoice::Selected(track.id) }]);
         assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
             Operation::SelectTrack { kind: track.kind, choice: TrackChoice::Selected(track.id) }),
             DispatchResult::Queued);
@@ -681,7 +690,9 @@ mod tests {
         rig.bus.say("subscribe", r#"{"mediaId":"m1","trackSelected":{"type":"audio","index":3}}"#);
         assert_eq!(rig.driver.poll(&rig.mt), [DriverEvent::Observation { attempt: A,
             observation: Observation::TrackSelected(Observed { value: track,
-                from: EvidenceSource::BackendReport }) }],
+                from: EvidenceSource::BackendReport }) },
+            DriverEvent::TrackSettled { attempt: A, command: rig.command,
+                kind: TrackKind::Audio, choice: TrackChoice::Selected(track.id) }],
             "a retired native request cannot make a repeated selection ambiguous");
     }
 
@@ -832,7 +843,9 @@ mod tests {
                 r#"{{"mediaId":"m1","trackSelected":{{"type":"{kind}","index":{index}}}}}"#));
             assert_eq!(rig.driver.poll(&rig.mt), [DriverEvent::Observation { attempt: A,
                 observation: Observation::TrackSelected(Observed { value: selected,
-                    from: EvidenceSource::BackendReport }) }]);
+                    from: EvidenceSource::BackendReport }) },
+                DriverEvent::TrackSettled { attempt: A, command: rig.command,
+                    kind: selected.kind, choice: TrackChoice::Selected(selected.id) }]);
         }
         assert_eq!(rig.bus.calls("play"), 0);
         assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, Operation::Play),
@@ -849,6 +862,7 @@ mod tests {
         let mut effects = Vec::new();
         state.step(ContractEvent::Intent(Intent::Start {
             backend: BackendKind::Uri, attempt: A, source: KEY, requirements: required,
+            initial: INITIAL,
         }), Some(CAPS), &mut effects);
         let [ContractFx::Dispatch { command, operation, .. }] = effects.as_slice() else { panic!("dispatch") };
         let (command, operation) = (*command, *operation);
