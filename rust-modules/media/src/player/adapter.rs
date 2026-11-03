@@ -311,6 +311,11 @@ impl PlayerAdapter {
             segmented_hls, budget, speed_deadline_ms)
     }
 
+    pub(super) fn tick_feed_presentation(&mut self, segmented_hls: bool,
+        immersive: bool) -> super::feed_pump::PresentationTick {
+        super::feed_pump::tick_presentation(&mut self.feed, &self.mt, segmented_hls, immersive)
+    }
+
     /// Is a session live? Distinct from [`engine`](Self::engine) because it answers without taking
     /// the exclusive borrow — `start_bufferfeed`'s double-start guard only needs to ask.
     #[inline]

@@ -1,13 +1,13 @@
-//! player::pump — the main-thread pump (was bufferfeed_pump). Runs each frame from
-//! plex_run: the pending-seek handler, the ACB-bind state machine (Stage), and the
-//! feed dispatch. All ACB/Starfish control calls happen here on the main thread.
-use super::engine::{
-    arm_live_clock_prime, feed_both_lanes, feed_sample, Engine, Source,
-};
-use super::shared::{HlsPauseCompletion, HlsPrimeKind, Stage};
-use super::{seek_mode, SeekMode, ACB_OK, SHARED, TX};
+//! Common route and recovery pump. The physical feed tick in `feed_pump` binds the plane,
+//! feeds AUs, and returns the stage and EOS facts used here for common presentation policy.
+#[cfg(all(test, feature = "hostsim"))]
+use super::engine::Engine;
+use super::shared::Stage;
+use super::{seek_mode, SeekMode, SHARED, TX};
+#[cfg(all(test, feature = "hostsim"))]
+use super::ACB_OK;
+#[cfg(all(test, feature = "hostsim"))]
 use plx_base::task::MainThread;
-use std::os::raw::c_char;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::time::Duration;
 
@@ -86,235 +86,12 @@ fn take_coalesced() -> u32 {
 
 #[cfg(test)]
 use super::feed_pump::prime_before_play;
-
-/// Playable HLS reserve in the same content-time coordinates as the demux controller. The main
-/// thread needs this read for the exact depleted-buffer fallback and for rebuffer diagnostics;
-/// ordinary ABR decisions remain on the worker.
-fn hls_buffered_ms() -> Option<i64> {
-    let video = SHARED.hls_video_tail_ns.load(Acquire);
-    if video < 0 {
-        return None;
-    }
-    let audio = SHARED.hls_audio_tail_ns.load(Acquire);
-    let tail = if audio >= 0 { video.min(audio) } else { video };
-    let display_base = SHARED.disp_base.load(Relaxed).max(0);
-    Some(
-        tail.saturating_add(display_base)
-            .saturating_sub(SHARED.playpos_ns.load(Relaxed).max(0))
-            .max(0)
-            / 1_000_000,
-    )
-}
-
-/// The measured period of LG's native position callback, in milliseconds.
-///
-/// **Measured, not chosen.** The pipeline emits `PF_EVENT_TYPE_FRAMEREADY` at 5 Hz and the
-/// device heartbeat reads `vtick=5 vgap=201ms` — unvarying across codec, raster and container,
-/// on clean and on visibly stuttering playback alike (`player::sf_on_event`, measured
-/// 2026-08-21). 201 is that measurement rather than the nominal 200.
-const NATIVE_POSITION_PERIOD_MS: u32 = 201;
-
-/// How many consecutive silent periods make the presentation clock physically STOPPED rather
-/// than merely late.
-///
-/// Five, so the shortest silence this reports is 1005 ms. That is far outside anything
-/// scheduling jitter can produce against a cadence measured to the millisecond, and it costs the
-/// viewer about a second before a stalled stream can be acted on — against the 82 s a completing
-/// fetch cost on the device (`pipe_abr_down_collapse`, 2026-09-02).
-const NATIVE_CLOCK_SILENT_PERIODS: u32 = 5;
-
-/// The silence that means the native clock has stopped: [`NATIVE_CLOCK_SILENT_PERIODS`] periods
-/// of [`NATIVE_POSITION_PERIOD_MS`].
-const NATIVE_CLOCK_STOPPED_MS: u32 = NATIVE_POSITION_PERIOD_MS * NATIVE_CLOCK_SILENT_PERIODS;
-
-/// When the silence observation was last restarted, in [`super::vclock_ms`] milliseconds.
-///
-/// Every state that legitimately stops the native clock — user Pause, an internal rebuffer hold,
-/// a stage below `Playing`, a route that is not segmented HLS — restarts it, because otherwise a
-/// viewer who paused for a minute would resume straight into an internal hold. Main-thread only;
-/// an atomic merely to avoid a `static mut`.
-static CLOCK_WATCH_SINCE_MS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-/// Everything that stops the clock on purpose restarts the silence observation with it.
-fn restart_native_clock_watch() {
-    CLOCK_WATCH_SINCE_MS.store(super::vclock_ms(), Relaxed);
-}
-
-/// Milliseconds since the native position callback last fired, or `None` if this seek/session
-/// epoch has not seen one at all.
-///
-/// `dg_vpres_at` is zeroed wherever `frames` is — session reset and the post-seek re-count in
-/// this file — so a seek starts with no observation rather than with a gap the size of the seek.
-/// The [`CLOCK_WATCH_SINCE_MS`] floor does the same for the deliberate holds, which do not clear
-/// the stamp.
-fn native_clock_silence_ms() -> Option<u32> {
-    let last_tick = SHARED.dg_vpres_at.load(Relaxed);
-    if last_tick == 0 {
-        return None;
-    }
-    let since = last_tick.max(CLOCK_WATCH_SINCE_MS.load(Relaxed));
-    Some(super::vclock_ms().saturating_sub(since))
-}
-
-/// **The terminal reserve boundary as a PHYSICAL fact rather than an arithmetic one.**
-///
-/// `hls_buffered_ms` is content-time bookkeeping: the demuxed tail minus the playhead. It reaches
-/// exactly zero only if the playhead reaches the tail, and on this pipeline it does not. The last
-/// fed access units cannot be presented until the ones behind them arrive, so when acquisition
-/// stops the position callback stops with the playhead parked a few hundred milliseconds short,
-/// and that remnant then never moves again. Device-measured 2026-09-02
-/// (`pipe_abr_down_collapse`): the callback went silent at `pos=29s` with the demuxed tail at
-/// ~29.96 s and stayed silent for 77 s, so neither `buffered_ms == Some(0)` here nor the worker's
-/// `spent >= reserve_ms_at_start` in [`crate::ff`]'s `StallGuard` could ever be reached, and a
-/// 20000 kbps object ran to completion on a 500 kbps link before any rung could be decided.
-///
-/// The clock's own silence is the observation both of those were standing in for. If the clock
-/// had been running through it, it would have presented `silence_ms` of media and said so five
-/// times a second; a reserve no larger than the silence has therefore already been outlasted, and
-/// `B = 0` is true within the only resolution the arithmetic can offer.
-///
-/// **The inequality is one-sided on purpose.** A large surviving reserve is not a starvation
-/// boundary, so a stream holding 5.6 s whose callback is 1.2 s late keeps playing and only a
-/// reserve the stopped clock has already outlasted counts. An unknowable reserve (`None`, the
-/// audio lane silent after an open or a seek) holds nothing, exactly as it arms no `StallGuard`.
-/// User Pause never reaches here — [`maybe_begin_hls_rebuffer`] returns before this on
-/// `TX.paused` and restarts the observation — and an internal hold cannot re-arm, because the
-/// hold sets `prime_play`, which returns at the same place.
-fn native_clock_stopped(silence_ms: Option<u32>, buffered_ms: Option<i64>) -> bool {
-    let (Some(silence_ms), Some(buffered_ms)) = (silence_ms, buffered_ms) else {
-        return false;
-    };
-    silence_ms >= NATIVE_CLOCK_STOPPED_MS && buffered_ms <= i64::from(silence_ms)
-}
-
-fn should_begin_hls_rebuffer(
-    requested: bool,
-    _trial_reserve_ms: i64,
-    _runtime_runway_ms: i64,
-    buffered_ms: Option<i64>,
-    native_clock_stopped: bool,
-) -> bool {
-    // `runtime_runway_ms` is a boundary requirement: it says how much reserve must be present
-    // when a clock starts, not how much of the same acquisition remains at every later pump tick.
-    // Comparing a decreasing mid-fetch B with the original full R makes a sustainable stream
-    // pause shortly before virtually every segment lands. The reserve retained by a bounded
-    // candidate is a boundary balance too: `exploration_budget_ms` gives the transaction only
-    // B-max(R,D), and its deadline is the actuator that enforces that spend. Treating R as a live
-    // main-thread stop arm duplicates the deadline and, on the device, latched seconds of stopped
-    // playback after 136 ms of harmless measurement/clock skew (B=5167, R=5303).
-    //
-    // Only the in-flight response, which can see its current byte progress, may request an early
-    // hold. Actual B=0 remains the coefficient-free terminal condition when no response byte has
-    // arrived. Keep the boundary arguments in this pure function so the regression exercises the
-    // exact values the pump samples and so the diagnostic line below can continue publishing them.
-    // `native_clock_stopped` is the same coefficient-free `B = 0` observation, taken from the
-    // pipeline's own cadence instead of from content-time arithmetic that cannot reach zero. See
-    // its doc comment for why the arithmetic form is not merely imprecise here but unreachable.
-    requested || buffered_ms == Some(0) || native_clock_stopped
-}
-
-fn rebuffer_request_is_current(
-    requested: bool,
-    requested_tail_ns: i64,
-    current_tail_ns: i64,
-) -> bool {
-    requested && (requested_tail_ns < 0 || current_tail_ns <= requested_tail_ns)
-}
-
-/// Stop the INTERNAL A/V clock at a physical reserve boundary while leaving demux and feeding
-/// alive. This is intentionally not `TX.paused`: the viewer did not pause, and the whole point is
-/// to keep acquiring until `try_prime` sees enough measured runway to resume smoothly.
-fn maybe_begin_hls_rebuffer(ps: &crate::route::PlaybackSession, mt: &MainThread, eng: &mut Engine) {
-    if !crate::route::is_segmented_hls(ps)
-        || eng.stage < Stage::Playing
-        || eng.prime_play
-        || TX.paused.load(Relaxed)
-    {
-        // Each of these legitimately stops the native clock, so none of them may be read later as
-        // a stalled one: a viewer paused for a minute must resume into playback, not into an
-        // instant internal hold, and the tick after this hold releases must start counting again.
-        restart_native_clock_watch();
-        return;
-    }
-    // Consume atomically: a worker request racing this tick must either be the value returned here
-    // or remain set for the next tick, never be erased by a later unconditional store.
-    let requested = SHARED.hls_rebuffer_requested.swap(false, Acquire);
-    let requested_tail_ns = SHARED.hls_rebuffer_request_tail_ns.load(Acquire);
-    let current_tail_ns = SHARED.hls_video_tail_ns.load(Acquire);
-    let requested = rebuffer_request_is_current(requested, requested_tail_ns, current_tail_ns);
-    let trial_reserve_ms = SHARED.hls_trial_reserve_ms.load(Acquire);
-    let runtime_runway_ms = SHARED.hls_prime_runway_ms.load(Acquire);
-    let buffered_ms = hls_buffered_ms();
-    let silence_ms = native_clock_silence_ms();
-    let clock_stopped = native_clock_stopped(silence_ms, buffered_ms);
-    // A silent clock that does NOT become a hold is the case this gate was blind to for 82 s on
-    // the device; say why, once per silent second, so a device log can answer it.
-    if silence_ms.is_some_and(|ms| ms >= NATIVE_CLOCK_STOPPED_MS) && !clock_stopped {
-        static LAST_SILENT_LINE_MS: std::sync::atomic::AtomicU32 =
-            std::sync::atomic::AtomicU32::new(0);
-        let now = super::vclock_ms();
-        if now.wrapping_sub(LAST_SILENT_LINE_MS.load(Relaxed)) >= 1_000 {
-            LAST_SILENT_LINE_MS.store(now, Relaxed);
-            super::log(&format!(
-                "hls: clock silent={}ms buf={}ms vtail={} atail={} disp_base={} pos={} \
-                 requested={} stage_playing=1",
-                silence_ms.unwrap_or(0),
-                buffered_ms.map_or(-1, |ms| ms),
-                SHARED.hls_video_tail_ns.load(Acquire),
-                SHARED.hls_audio_tail_ns.load(Acquire),
-                SHARED.disp_base.load(Relaxed),
-                SHARED.playpos_ns.load(Relaxed),
-                requested,
-            ));
-        }
-    }
-    if !should_begin_hls_rebuffer(
-        requested,
-        trial_reserve_ms,
-        runtime_runway_ms,
-        buffered_ms,
-        clock_stopped,
-    ) {
-        return;
-    }
-    let Some(pause_token) = SHARED.prepare_hls_rebuffer_pause() else {
-        if requested {
-            SHARED.hls_rebuffer_requested.store(true, Release);
-        }
-        super::log("hls: auto-rebuffer pause deferred by clock transition; will retry");
-        return;
-    };
-    let paused = unsafe { super::sink().pause(mt) };
-    match SHARED.complete_hls_rebuffer_pause(pause_token, paused != 0) {
-        HlsPauseCompletion::Accepted => {}
-        HlsPauseCompletion::Refused => {
-            if requested {
-                SHARED.hls_rebuffer_requested.store(true, Release);
-            }
-            super::log("hls: auto-rebuffer pause refused by Starfish; will retry");
-            return;
-        }
-        HlsPauseCompletion::Stale => {
-            if requested {
-                SHARED.hls_rebuffer_requested.store(true, Release);
-            }
-            super::log("hls: auto-rebuffer pause result was stale; will retry");
-            return;
-        }
-    }
-    arm_live_clock_prime(eng);
-    // The pause-local proof was armed before sf_pause, so a completed segment in the native-call
-    // window is already part of this hold instead of being silently discarded.
-    // `silent=` is the only field that separates the two ways this hold is reached: an exact
-    // arithmetic zero, or a presentation clock that stopped with a remnant it will never spend.
-    super::log(&format!(
-        "hls: auto-rebuffer pause buf={}ms trial_reserve={}ms runway={}ms silent={}ms",
-        buffered_ms.unwrap_or(-1),
-        trial_reserve_ms,
-        runtime_runway_ms,
-        silence_ms.map_or(-1, i64::from),
-    ));
-}
+#[cfg(test)]
+use super::feed_pump::{
+    hls_buffered_ms, native_clock_silence_ms, native_clock_stopped,
+    rebuffer_request_is_current, should_begin_hls_rebuffer,
+    CLOCK_WATCH_SINCE_MS, NATIVE_CLOCK_STOPPED_MS,
+};
 
 /// Mirror Engine-confined observations into `Shared` for diagnostics and handled-error context.
 ///
@@ -1249,20 +1026,6 @@ fn settle_paused_seek(pa: &mut super::adapter::PlayerAdapter, now: u32) {
     if step.finish { super::finish_paused_seek(pa); }
 }
 
-/// Ticks `SHARED.frames` must have reached before the ACB bind (`setMediaVideoData`) may be sent.
-/// The pipeline's sink is bound to MAIN once the decoder produces output (the order the original
-/// C engine documented: "once the decoder is producing frames so the videosink is bound to
-/// MAIN"), which is why a normal start waits for a second tick (about 400 ms of playback). While
-/// a paused preroll is open the pipeline is playing ONE picture for the viewer and every tick it
-/// waits is a tick of audible playback, so one tick (the decoder demonstrably running) is enough.
-fn acb_bind_frames_needed(preroll_open: bool) -> i32 {
-    if preroll_open {
-        1
-    } else {
-        2
-    }
-}
-
 /// The viewer is paused and the pump is doing no work for a picture: the feed gate is shut (no
 /// preroll open), no claim or seek flight is out and no seek is waiting. "Buffering…" over a player
 /// in that state is a spinner for nothing; the ladder reports `PlaybackState::Paused` (the normal
@@ -1838,119 +1601,9 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
     if let Some(reason) = load.speed_fallback { super::fall_back_from_speed(ps, reason); }
 
     // Load and speed policy are settled. Borrow the physical feed for ACB, feeding and EOS.
-    let (eng, mt) = pa.split();
-    let eng = eng.expect("live adapter checked before splitting it");
-    let stream = matches!(eng.source, Source::Stream);
-    // ---------- ACB bind, Kodi/ss4s order: setSinkType(MAIN)+setMediaId+setState(LOADED) ----------
-    if eng.stage == Stage::Playing && ACB_OK.load(Relaxed) {
-        let id = SHARED.media_id.lock().unwrap().clone();
-        if let Some(id) = id {
-            unsafe { super::sink().plane_bind(mt, id.as_ptr()) };
-            super::log(&format!("SMP ACB bound id={}", id.to_string_lossy()));
-            // **Dolby Atmos, to ACB, exactly here** — this is where LG's own client fires it
-            // (`libcbe` 0x1b98d78, on LOADCOMPLETED): after setMediaId, and BEFORE the
-            // frame-gated setMediaVideoData below. It needs no decoded frame and reads no
-            // state; `context` is the `id` we have in hand, which is the whole reason the call
-            // exists rather than a forward of the pipeline's own AUDIO_INFO callback (that
-            // string carries `track` and `dualMono` and no context). See `acb_send_atmos`.
-            //
-            // **This looks like it breaks the "never feed audio to ACB" rule and it does not** —
-            // the rule is about the audio ELEMENTARY STREAM, which the pipeline owns and which we
-            // still never hand ACB. This is a two-key metadata descriptor, and the distinction is
-            // now readable rather than remembered (see `acb_send_atmos` in `src/starfish.c` for
-            // the addresses). The rule's stated consequence, `SOUND_ERROR_019`, is a literal that
-            // exists in NO library on this device.
-            //
-            // Ran behind `/tmp/plxnative-atmosacb` first, then measured, then made the default:
-            // `rv=1` accepted, 1600 audio AUs fed with `reply=O` and no error of any kind, and the
-            // television's own read-out — "Dolby Vision / Dolby Atmos", both lines — photographed
-            // in a DISPLAY capture at 11 s. `/tmp/plxnative-noatmosacb` is the way back out.
-            if crate::route::stream_immersive(ps) && !plx_base::devtrig::flag("noatmosacb") {
-                let rv = unsafe { super::sink().plane_send_atmos(mt, id.as_ptr()) };
-                super::log(&format!("atmos: acb setMediaAudioData rv={rv}"));
-            }
-            eng.stage = Stage::Bound;
-        }
-    }
-
-    // ---------- send the WHOLE sourceInfo envelope once frames flow (verbatim, except a
-    // container-PQ VP9 stream, see below), then
-    // window + PLAYING (setMediaVideoData -> setDisplayWindow -> setState PLAYING) ----------
-    if let Some(at) = eng.bound_at_frames {
-        // The tick the landing owes after the bind has arrived (or `frames` was reset since).
-        if SHARED.frames.load(Relaxed) != at {
-            eng.bound_at_frames = None;
-        }
-    }
-    if eng.stage == Stage::Bound
-        && !eng.video_info_sent
-        && SHARED.frames.load(Relaxed) >= acb_bind_frames_needed(TX.seek_preroll_active())
-    {
-        let bytes = SHARED.source_info.lock().unwrap().clone();
-        if let Some(mut bytes) = bytes {
-            // A VP9 stream's PQ lives in the container, which the pipeline never sees, so its own
-            // envelope says "hdrType":"none". Say HDR10 here when the demuxer found PQ (see
-            // `vp9_hdr`). `/tmp/plxnative-novp9hdr` sends the envelope as the pipeline made it.
-            let container_hdr = *SHARED.container_hdr.lock().unwrap();
-            if let Some(h) = container_hdr {
-                if !plx_base::devtrig::flag("novp9hdr") {
-                    if let Some(rewritten) = super::vp9_hdr::rewrite_source_info(&bytes, &h) {
-                        super::log(&super::vp9_hdr::log_line(&h));
-                        bytes = rewritten;
-                    }
-                }
-            }
-            let rv = unsafe { super::sink().plane_send_video_data(mt, bytes.as_ptr() as *const c_char) };
-            super::log(&format!(
-                "setMediaVideoData rv={rv} frames={}",
-                SHARED.frames.load(Relaxed)
-            ));
-            if rv != -1 {
-                // -1 = client-side isJsonError reject; else accepted
-                eng.video_info_sent = true;
-                unsafe { super::sink().plane_start(mt, 0, 0, 1920, 1080) };
-                eng.stage = Stage::Streaming;
-                eng.bound_at_frames = Some(SHARED.frames.load(Relaxed));
-                // `acb_start` sets ACB PLAYING. Under a pipeline that is really paused (a late
-                // tick bound the plane after the re-pause; an open preroll is a PLAYING pipeline,
-                // and its re-pause mirrors the pause itself) ACB must follow it, or it is left
-                // PLAYING over a paused pipeline and nothing ever tells it otherwise.
-                if TX.paused.load(Acquire) && !TX.seek_preroll_active() {
-                    unsafe { super::sink().plane_pause(mt) };
-                    super::log("setMediaVideoData sent under a paused pipeline → ACB PAUSED");
-                }
-                super::log("setMediaVideoData sent → window+PLAYING");
-            }
-        }
-    }
-
-    // ---------- webOS 5+ (VP_EXPORTED): correct the placement if the real frame size only
-    // became known after Load. The demuxer publishes the coded size when it opens the stream,
-    // which races the load thread — so the placement above may have used the fallback. Re-placing
-    // costs one call, and Kodi re-places on every render-area change anyway.
-    // ----------
-    if eng.stage >= Stage::Playing && eng.placed_src != (0, 0) {
-        let now = SHARED.video_raster();
-        if now.0 > 0 && now.1 > 0 && now != eng.placed_src {
-            super::feed_pump::place_exported(mt, eng);
-        }
-    }
-
-    // ---------- feed AUs after the initial Load has reached Playing. The native clock may itself
-    // be Running or Paused: runtime rebuffer and ResumePrime deliberately fill both lanes before
-    // issuing Play. NOT while a seek is armed: on a resume the seek is armed before PLAYING, so
-    // feeding first would present the file start for a frame before the seek repositions — a
-    // visible jump. ----------
-    maybe_begin_hls_rebuffer(ps, mt, eng);
-    if eng.stage >= Stage::Playing && TX.feed_allowed() && TX.seek_to_ns.load(Relaxed) < 0 {
-        if stream {
-            // Two-lane feed, then the prime attempt — the ordering and the reason both live in
-            // `feed_both_lanes`, so this call site cannot drift from them.
-            plx_base::diag::spans::span("feed", || feed_both_lanes(mt, eng));
-        } else {
-            plx_base::diag::spans::span("feed", || feed_sample(mt, eng));
-        }
-    }
+    let physical = pa.tick_feed_presentation(
+        crate::route::is_segmented_hls(ps), crate::route::stream_immersive(ps),
+    );
 
     // ---------- end-of-stream: the producer hit file EOF (eos_pushed → all AUs to the end were
     // fed) and the pipeline has now played out to within EOS_TAIL of the duration, or the pipeline
@@ -1963,7 +1616,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
     // are the PRE-seek ones and the HUD must show the target, not them.
     set_state(if SHARED.seeking.load(Relaxed) {
         PlaybackState::Seeking
-    } else if eng.stage == Stage::Loading {
+    } else if physical.stage == Stage::Loading {
         PlaybackState::Connecting
     } else if SHARED.hls_rebuffering.load(Relaxed) {
         PlaybackState::Buffering
@@ -1976,7 +1629,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         PlaybackState::Playing
     });
 
-    if eng.eos_pushed && !SHARED.ended.load(Relaxed) {
+    if physical.eos_pushed && !SHARED.ended.load(Relaxed) {
         let dur = SHARED.duration_ns.load(Relaxed);
         let pos = SHARED.playpos_ns.load(Relaxed);
         if stream_ended(pos, dur, SHARED.pipeline_eos.load(Relaxed)) {
