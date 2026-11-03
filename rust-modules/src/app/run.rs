@@ -6444,7 +6444,11 @@ mod lifecycle_regression_tests {
                 event(&mut rig.app, &mut fr, SDL_MOUSEBUTTONDOWN);
             }
         }
-        assert!(!rig.app.player.lifecycle.awaiting_load(), "{press:?}: the press claimed the restore");
+        assert!(!rig.app.player.lifecycle.awaiting_load(),
+            "{press:?}: the press claimed the restore; state={:?}, release_busy={}, queued={}, backend={:?}, offer={:?}",
+            rig.app.player.lifecycle.state(), rig.app.adapters.player.release_busy(),
+            rig.app.adapters.player.watching_queued_start(),
+            rig.app.adapters.player.backend_snapshot(), rig.app.player.session.backend_offer());
         assert!(rig.app.inputs.is_empty(), "{press:?}: …and was spent on it, not handed to the page");
         Some((guard, rig, fr))
     }
@@ -6870,8 +6874,7 @@ mod lifecycle_regression_tests {
         // DID-foreground seams directly after granting the same WindowActivity permission.
         rig.app.window_activity.event(0x106);
         super::super::bridge::foreground(&mut rig.app.pages);
-        assert_eq!(
-            drive_foreground(
+        let activation = drive_foreground(
                 &mut rig.app.player.lifecycle,
                 &mut rig.app.player.session,
                 ForegroundInput::DidForeground,
@@ -6879,9 +6882,12 @@ mod lifecycle_regression_tests {
                     pa: &mut rig.app.adapters.player,
                     repause_at: &mut rig.app.repause_at,
                 },
-            ),
-            ForegroundActivation::Launched
-        );
+            );
+        assert_eq!(activation, ForegroundActivation::Launched,
+            "state={:?}, release_busy={}, queued={}, backend={:?}, offer={:?}",
+            rig.app.player.lifecycle.state(), rig.app.adapters.player.release_busy(),
+            rig.app.adapters.player.watching_queued_start(),
+            rig.app.adapters.player.backend_snapshot(), rig.app.player.session.backend_offer());
         let attempt = rig
             .app
             .player
