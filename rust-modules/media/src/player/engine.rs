@@ -42,7 +42,7 @@ use plx_platform::devcaps::AudioStack;
 use plx_platform::tv::sink::UnloadTicket;
 use plx_telemetry::telemetry::classes::DemuxExitClass;
 use plx_telemetry::telemetry::window::Stage as WindowStage;
-use std::os::raw::{c_char, c_int, c_void};
+use std::os::raw::{c_char, c_int};
 use std::sync::atomic::{AtomicI64, Ordering};
 
 // ACCEPTED AUs — what the pipeline took. This is what `app::diagnostics` reports, because a count of
@@ -1472,27 +1472,8 @@ impl NativeStop {
     }
 }
 
-/// free every queued AU + the held pending one, BOTH lanes (seek + teardown).
-pub fn drain_aq(eng: &mut Engine) {
-    drain_one(eng.aq_video.as_mut());
-    drain_one(eng.aq_audio.as_mut());
-    eng.pending_video = None;
-    eng.pending_audio = None;
-}
+pub use plx_play_feed::native_executor::drain_aq;
 
-fn drain_one(q: Option<&mut Box<AuQueue>>) {
-    if let Some(q) = q {
-        let qp = &mut **q as *mut AuQueue;
-        let mut eof: c_int = 0;
-        loop {
-            let n = crate::aq::aq_pop(qp, &mut eof);
-            if n.is_null() {
-                break;
-            }
-            unsafe { libc::free(n as *mut c_void) };
-        }
-    }
-}
 
 /// feed streamed AUs from the demux queue; hold the current AU across ticks on
 /// BufferFull (backpressure); zero-base the fed timeline on the first post-seek
@@ -1811,20 +1792,8 @@ fn hls_candidate_snapshot_stable(start: u64, end: u64) -> bool {
     start & 1 == 0 && start == end
 }
 
-/// Arm a prime at the current physical playhead without moving the clock. Runtime rebuffer and a
-/// viewer Resume from a queued stream are the same pipeline boundary: Starfish is already Paused,
-/// accepted media may remain ahead of the presented tail, and both application queues may continue
-/// the same validated timeline behind it.
-pub fn arm_live_clock_prime(eng: &mut Engine) {
-    let shared = eng.shared;
-    let presented = shared.pres_fed.load(Ordering::Relaxed);
-    eng.seek_base_pts = if presented == PRES_NONE {
-        eng.max_fed_video_pts.min(eng.max_fed_audio_pts.max(0))
-    } else {
-        presented
-    };
-    eng.prime_play = true;
-}
+pub use plx_play_feed::native_executor::arm_live_clock_prime;
+
 
 /// Execute the first immediate Play only after the common startup runner has commanded it.
 /// The same clock reservation and completion rule is used by the progressive legacy fixture.
@@ -2457,34 +2426,11 @@ fn feed_audio_lane(mt: &MainThread, eng: &mut Engine) {
     }
 }
 
-/// feed the looped `sample.h264` validation sample from the install's runtime root
-/// (continuous PTS @ 23.976).
+/// Feed the local validation sample through the physical executor.
 pub fn feed_sample(mt: &MainThread, eng: &mut Engine) {
-    let s = match &mut eng.source {
-        Source::Sample(s) => s,
-        _ => return,
-    };
-    let naus = s.au.len();
-    if naus < 2 {
-        return;
-    }
-    let mut fed = 0;
-    while fed < 60 {
-        if s.next >= naus - 1 {
-            s.next = 0;
-            s.loops += 1;
-        }
-        let off = s.au[s.next];
-        let end = s.au[s.next + 1];
-        let pts = (s.loops * (naus as i64 - 1) + s.next as i64) * 41708333;
-        let r = unsafe { sink().feed(mt, s.data[off..].as_ptr(), (end - off) as u32, pts, 1) };
-        if (r as u8) != b'O' {
-            break;
-        }
-        s.next += 1;
-        fed += 1;
-    }
+    plx_play_feed::native_executor::feed_sample(mt, eng, sink);
 }
+
 
 /// Whether the decompiled StarfishMediaAPIs offsets (see the NOR comment in `start_bufferfeed_inner`)
 /// may be trusted for in-place seek. The old-ABI `Feed` is the primary gate: it proves
