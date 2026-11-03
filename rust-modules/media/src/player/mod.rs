@@ -88,6 +88,7 @@ pub mod text_ass; // text subtitles to ASS: dialect converter, synthesized heade
 pub mod text_style; // the viewer's size/position picks as the numbers that converter and the screen's lift use (pure)
 #[cfg(feature = "play-feed")]
 pub mod threads;
+#[cfg(any(feature = "play-feed", feature = "play-uri"))]
 mod timeline;
 pub mod transport;
 pub mod video_geometry;
@@ -772,16 +773,16 @@ fn acb_playstate_ready(stage: shared::Stage) -> bool {
 /// [`machine::Player::set_video_plane_bound`], which is the only writer and the only publisher.
 pub fn observe_video_plane(
     pl: &mut machine::Player,
-    pa: &mut adapter::PlayerAdapter,
+    _pa: &mut adapter::PlayerAdapter,
 ) -> Option<bool> {
     #[cfg(feature = "play-feed")]
-    let bound = pa.feed_stage().is_some_and(acb_playstate_ready);
+    let bound = _pa.feed_stage().is_some_and(acb_playstate_ready);
     #[cfg(not(feature = "play-feed"))]
     let bound = false;
     #[cfg(feature = "play-uri")]
-    let bound = bound || pa.uri_product_plane_owned();
+    let bound = bound || _pa.uri_product_plane_owned();
     #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
-    let bound = bound || pa.uri_plane_open();
+    let bound = bound || _pa.uri_plane_open();
     pl.set_video_plane_bound(bound)
 }
 

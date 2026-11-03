@@ -925,9 +925,13 @@ pub fn exit_native(pa: &mut super::adapter::PlayerAdapter) -> NativeExit {
 
 pub(super) fn exit_native_with(
     pa: &mut super::adapter::PlayerAdapter,
-    mut clock: impl FnMut() -> std::time::Instant,
-    mut idle: impl FnMut(),
+    _clock: impl FnMut() -> std::time::Instant,
+    _idle: impl FnMut(),
 ) -> NativeExit {
+    #[cfg(any(feature = "play-feed", feature = "play-uri"))]
+    let mut clock = _clock;
+    #[cfg(any(feature = "play-feed", feature = "play-uri"))]
+    let mut idle = _idle;
     // Exit cannot launch the successor a release was holding. Retire its exact route ticket
     // before waiting for the old native owner; no URL escrow or encoder may be started later.
     let mut queued_fx = Vec::new();
@@ -1261,7 +1265,10 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
             // A real stop under the failure read-out whose Engine was released
             // ([`release_failed_engine`]) ends the playback the Engine would have ended: the
             // position it stopped at is the one the server keeps.
+            #[cfg(any(feature = "play-feed", feature = "play-uri"))]
             let mut final_report = None;
+            #[cfg(not(any(feature = "play-feed", feature = "play-uri")))]
+            let final_report = None;
             #[cfg(feature = "play-uri")]
             if uri_attempt.is_some() && pa.finalize_uri_once() {
                 let facts = ps.attempt_view().facts();

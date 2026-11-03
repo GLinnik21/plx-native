@@ -29,6 +29,7 @@
 use super::engine::Engine;
 #[cfg(feature = "play-feed")]
 use super::feed_resources::FeedResources;
+#[cfg(any(feature = "play-feed", feature = "play-uri"))]
 use super::timeline;
 use super::backend;
 #[cfg(feature = "play-feed")]
@@ -37,8 +38,10 @@ use super::feed_driver::{FeedDriver, FeedTransportAction};
 use super::threads;
 use plx_base::task::MainThread;
 use plx_playback_contract::{AttemptId, BackendEvent, BackendKind, Capabilities, CommandId,
-    DispatchResult, DriverSet, ExitDisposition, Failure, Intent, Operation, ReleaseStatus,
+    DispatchResult, DriverSet, ExitDisposition, Failure, Intent, Operation,
     SourceKey};
+#[cfg(any(feature = "play-feed", feature = "play-uri"))]
+use plx_playback_contract::ReleaseStatus;
 #[cfg(feature = "play-feed")]
 use plx_playback_contract::StopReason;
 #[cfg(feature = "play-uri")]
@@ -459,6 +462,7 @@ pub struct PlayerAdapter {
     backend: backend::BackendRunner,
     #[cfg(feature = "play-feed")]
     feed_driver: FeedDriver,
+    #[cfg(any(feature = "play-feed", feature = "play-uri"))]
     next_source_key: u64,
     backend_epoch: std::time::Instant,
     #[cfg(feature = "play-uri")]
@@ -482,6 +486,7 @@ pub struct PlayerAdapter {
     #[cfg(feature = "play-feed")]
     feed_attempt: Option<(crate::route::RouteStartAttempt, u32)>,
     /// Backend-independent periodic reporting resource for the current physical attempt.
+    #[cfg(any(feature = "play-feed", feature = "play-uri"))]
     timeline: Option<timeline::TimelineRunner>,
     repair: Option<(u64, std::sync::mpsc::Receiver<Result<(), plx_platform::tv::sandbox::Failure>>)>,
     release: super::release::NativeRelease,
@@ -515,8 +520,10 @@ enum QueuedWatch {
     /// The restore's start is queued; it has not run.
     Watching,
     /// The queued start ran: the Load was launched ...
+    #[cfg(any(feature = "play-feed", feature = "play-uri"))]
     Launched(crate::route::RouteStartAttempt),
     /// ... or ended without one (refused at the deadline, or the start itself failed).
+    #[cfg(any(feature = "play-feed", feature = "play-uri"))]
     Failed,
 }
 
@@ -540,6 +547,7 @@ impl PlayerAdapter {
             backend: backend::BackendRunner::new(),
             #[cfg(feature = "play-feed")]
             feed_driver: FeedDriver::new(),
+            #[cfg(any(feature = "play-feed", feature = "play-uri"))]
             next_source_key: 0,
             backend_epoch: std::time::Instant::now(),
             #[cfg(feature = "play-uri")]
@@ -560,6 +568,7 @@ impl PlayerAdapter {
             pending_uri_subtitle: None,
             #[cfg(feature = "play-feed")]
             feed_attempt: None,
+            #[cfg(any(feature = "play-feed", feature = "play-uri"))]
             timeline: None,
             repair: None,
             release: super::release::NativeRelease::new(),
@@ -1383,6 +1392,7 @@ impl PlayerAdapter {
     }
 
     /// A locator is only an escrow key, never another playback attempt identity.
+    #[cfg(any(feature = "play-feed", feature = "play-uri"))]
     pub(super) fn next_source_key(&mut self) -> SourceKey {
         self.next_source_key = self.next_source_key.checked_add(1).expect("source keys exhausted");
         SourceKey::new(self.next_source_key)
@@ -1415,6 +1425,7 @@ impl PlayerAdapter {
     }
 
     /// The restore's queued start ran, and how.
+    #[cfg(any(feature = "play-feed", feature = "play-uri"))]
     pub(super) fn queued_start_ran(&mut self, outcome: Option<crate::route::RouteStartAttempt>) {
         if self.queued_watch == QueuedWatch::Watching {
             self.queued_watch = outcome.map_or(QueuedWatch::Failed, QueuedWatch::Launched);
@@ -1432,7 +1443,9 @@ impl PlayerAdapter {
             QueuedWatch::Unwatched => QueuedLanding::Stale,
             QueuedWatch::Watching if self.release.has_queued() => return QueuedLanding::Waiting,
             QueuedWatch::Watching => QueuedLanding::Stale,
+            #[cfg(any(feature = "play-feed", feature = "play-uri"))]
             QueuedWatch::Launched(a) => QueuedLanding::Launched(a),
+            #[cfg(any(feature = "play-feed", feature = "play-uri"))]
             QueuedWatch::Failed => QueuedLanding::Failed,
         };
         self.queued_watch = QueuedWatch::Unwatched;
@@ -1763,6 +1776,7 @@ impl PlayerAdapter {
 
     /// A preview has no route lease, hence no periodic PMS writes. This follows the existing
     /// begin_timeline_reporting gate and keeps the reporter outside the Engine resource set.
+    #[cfg(any(feature = "play-feed", feature = "play-uri"))]
     pub(super) fn start_timeline(&mut self, ps: &crate::route::PlaybackSession,
         attempt: crate::route::RouteStartAttempt) {
         debug_assert!(self.timeline.is_none(), "one reporter per player adapter");
@@ -1772,6 +1786,7 @@ impl PlayerAdapter {
         }
     }
 
+    #[cfg(any(feature = "play-feed", feature = "play-uri"))]
     pub(super) fn publish_timeline(&self, attempt: crate::route::RouteStartAttempt,
         snapshot: Option<timeline::TimelineSnapshot>) {
         if let Some(runner) = self.timeline.as_ref() { runner.publish(attempt, snapshot); }
@@ -1779,6 +1794,7 @@ impl PlayerAdapter {
 
     /// Stop and detach without joining on the main thread. Real stop passes this handle to
     /// route::scrobble_stop; reload simply drops it after the stop signal became sticky.
+    #[cfg(any(feature = "play-feed", feature = "play-uri"))]
     pub(super) fn stop_timeline(&mut self, attempt: crate::route::RouteStartAttempt)
         -> Option<std::thread::JoinHandle<()>> {
         let runner = self.timeline.take()?;
