@@ -95,9 +95,21 @@ mod tests {
         }
         assert_eq!(trial.observe(TrialId::new(id.attempt, 4), TrialObservation::Published),
             Err(TrialProtocolError::Stale));
-        assert_eq!(trial.observe(id, TrialObservation::Ended),
-            Err(TrialProtocolError::TerminalAfterQueue));
         assert_eq!(trial.observe(id, TrialObservation::Published), Ok(TrialPhase::Published));
+
+        let mut failed = TrialProtocol::new(id);
+        for observation in [
+            TrialObservation::Prepared, TrialObservation::FirstAcquired,
+            TrialObservation::QueueAuthorized, TrialObservation::QueueStarted,
+            TrialObservation::QueueCompleted,
+        ] {
+            failed.observe(id, observation).unwrap();
+        }
+        assert_eq!(failed.observe(id, TrialObservation::Ended),
+            Err(TrialProtocolError::TerminalAfterQueue));
+        assert_eq!(failed.phase(), TrialPhase::Ended);
+        assert_eq!(failed.observe(id, TrialObservation::Published),
+            Err(TrialProtocolError::OutOfOrder));
     }
 
     #[test]
