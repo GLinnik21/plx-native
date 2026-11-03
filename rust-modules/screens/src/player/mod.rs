@@ -4433,7 +4433,7 @@ mod scrub_ownership_tests {
             let cx = cx(&f.session);
             let mut frame = DrawFrame::new(&cx, plx_ui::Painter::root());
             page.record_stops(&mut frame, true);
-            let mut v: Vec<u32> = f.into_stops().iter().map(|s| s.key.elem).collect();
+            let mut v: Vec<u32> = frame.into_stops().iter().map(|s| s.key.elem).collect();
             v.sort_unstable();
             v
         };
