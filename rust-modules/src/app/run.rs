@@ -5622,16 +5622,17 @@ mod lifecycle_regression_tests {
         /// `accept_start` has mounted it), run out.
         fn expire_countdown_on_mounted_player(&mut self) -> Frame {
             let player = super::super::bridge::player_mut(&mut self.app.pages).unwrap();
-            player.up_next.tick(
-                plx_appkit::player_hud::ControlSlot::UpNext(plx_data::metadata::Marker {
+            let slot = plx_appkit::player_hud::ControlSlot::UpNext(plx_data::metadata::Marker {
                     kind: plx_data::metadata::MarkerKind::Credits,
                     start_ms: 0,
                     end_ms: 60_000,
                     final_seg: true,
-                }),
-                20,
-            );
+                });
+            player.up_next.tick(slot, 20);
             let mut fr = Frame::begin(&self.app.player.session, self.app.bridge.metadata_view());
+            // This rig tests foreground and stop ownership without a decoder/marker fetch.
+            // Inject the same resolved slot into the frame as into the countdown's Tick.
+            fr.ctrl = slot;
             fr.now = 20 + plx_appkit::up_next::COUNTDOWN_MS;
             assert!(player.up_next.expired(fr.now));
             fr
@@ -6839,6 +6840,23 @@ mod lifecycle_regression_tests {
             "foreground auto-advance must remain enabled"
         );
         assert!(plx_media::route::up_next(&rig.app.player.session).is_none());
+    }
+
+    #[test]
+    fn an_expired_up_next_does_not_preempt_current_automatic_credits() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!("SKIPPED automatic credits precedence: lifecycle fixture worker could not be spawned");
+            return;
+        };
+        let mut fr = rig.due_up_next();
+        let marker = fr.ctrl.marker().expect("the injected Up Next segment");
+        let mut prompt = plx_appkit::skip_pill::prompt_for(marker);
+        prompt.automatic = true;
+        fr.ctrl = plx_appkit::player_hud::ControlSlot::Skip(prompt);
+        unsafe { playback_tick(&mut rig.app, &mut fr); }
+        assert!(!plx_media::route::play_pending(), "Watch Credits needs its own presented countdown");
+        assert_eq!(plx_media::route::cur_rk(&rig.app.player.session), "1");
     }
 
     /// The first half of every foreground restore below: playback, an OS background and a DID
