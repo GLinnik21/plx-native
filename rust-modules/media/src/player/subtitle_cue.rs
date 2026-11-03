@@ -216,3 +216,39 @@ impl SideTracks {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use plx_media_codecs::subtitle_extract::{RawCue, TrackInfo};
+
+    #[test]
+    fn side_job_owned_bytes_keep_mov_text_length_and_authored_ass() {
+        let tracks = SideTracks::new(&[
+            TrackInfo { stream_index: 4, codec_name: "mov_text".into(), language: None },
+            TrackInfo { stream_index: 6, codec_name: "ass".into(), language: None },
+        ]);
+        let cue = tracks.decode(RawCue::Bytes {
+            track: 0, start: 10, end: 20,
+            payload: vec![0, 5, b'H', b'e', b'l', b'l', b'o', b'!', b'!'],
+        });
+        match cue {
+            SubCue::Text { track, payload, identity, .. } => {
+                assert_eq!(track, 0);
+                assert_eq!(&*payload, b"Hello");
+                assert_eq!(identity, super::super::ass_source::packet_identity(b"Hello"));
+            }
+            _ => panic!("mov_text remains a text cue"),
+        }
+        let cue = tracks.decode(RawCue::Bytes {
+            track: 1, start: 30, end: 40, payload: b"0,0,Default,,0,0,0,,ASS".to_vec(),
+        });
+        match cue {
+            SubCue::Ass { track, payload, .. } => {
+                assert_eq!(track, 1);
+                assert!(matches!(payload, std::borrow::Cow::Owned(_)), "the FFmpeg packet is already released");
+            }
+            _ => panic!("ASS stays authored"),
+        }
+    }
+}
