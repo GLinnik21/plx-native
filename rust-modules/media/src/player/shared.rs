@@ -240,7 +240,7 @@ pub enum HlsPlayCompletion {
 
 #[derive(Clone, Copy, Debug)]
 struct AbrSeed {
-    estimate: crate::abr::CapacityEstimate,
+    estimate: plx_playback_contract::adaptive::SeedReadout,
     observed_at: Instant,
 }
 
@@ -1087,38 +1087,25 @@ impl Shared {
         *self.abr_seed.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
-    pub fn publish_abr_seed(&self, estimate: crate::abr::CapacityEstimate) {
-        self.publish_abr_seed_at(estimate, Instant::now());
-    }
-
     pub fn publish_abr_seed_readout(
         &self, readout: plx_playback_contract::adaptive::SeedReadout,
     ) {
-        self.publish_abr_seed(crate::abr::CapacityEstimate {
-            fast_kbps: readout.fast_kbps,
-            slow_kbps: readout.slow_kbps,
-            uncertainty_pm: readout.uncertainty_pm,
-            samples: readout.samples,
-        });
+        self.publish_abr_seed_at(readout, Instant::now());
     }
 
-    fn publish_abr_seed_at(&self, estimate: crate::abr::CapacityEstimate, observed_at: Instant) {
+    fn publish_abr_seed_at(
+        &self, estimate: plx_playback_contract::adaptive::SeedReadout, observed_at: Instant,
+    ) {
         let mut seed = self.abr_seed.lock().unwrap_or_else(|e| e.into_inner());
-        *seed = (estimate.samples > 0).then_some(AbrSeed {
-            estimate,
-            observed_at,
-        });
+        *seed = (estimate.samples > 0).then_some(AbrSeed { estimate, observed_at });
     }
 
-    /// Delivery evidence carried across an engine reload, aged by every wall interval for which
-    /// no segment could refresh it. This includes accepted Pause, app background and teardown —
-    /// all three are the same epistemic fact: the old link observation was not repeated.
-    pub fn abr_seed(&self) -> Option<crate::abr::CapacityEstimate> {
+    /// Return captured delivery evidence and its unobserved interval. Aging belongs to the
+    /// common adaptive policy; the physical transport neither chooses nor copies that policy.
+    pub fn abr_seed(&self) -> Option<(plx_playback_contract::adaptive::SeedReadout, u64)> {
         let seed = (*self.abr_seed.lock().unwrap_or_else(|e| e.into_inner()))?;
-        let mut estimate = seed.estimate;
         let elapsed_ms = u64::try_from(seed.observed_at.elapsed().as_millis()).unwrap_or(u64::MAX);
-        estimate.age_ms(elapsed_ms, &crate::abr::AbrPolicy::measured());
-        Some(estimate)
+        Some((seed.estimate, elapsed_ms))
     }
 
     /// Clear a playback's sticky Original failure. Kept separate from [`Shared::reset_session`]
@@ -3117,16 +3104,17 @@ mod tests {
     #[test]
     fn the_carried_link_estimate_survives_a_reload_and_not_a_stop() {
         let s = Shared::new();
-        let estimate = crate::abr::CapacityEstimate::from_snapshot(40_000, 41_000, 200, 19)
-            .expect("valid measured estimate");
-        s.publish_abr_seed(estimate);
+        let estimate = plx_playback_contract::adaptive::SeedReadout {
+            slow_kbps: 40_000, fast_kbps: 41_000, uncertainty_pm: 200, samples: 19,
+        };
+        s.publish_abr_seed_readout(estimate);
 
         s.reset_session();
         let carried = s
             .abr_seed()
             .expect("a reload tears the engine down and keeps the link; this is the seek path");
-        assert_eq!(carried.samples, 19);
-        assert_eq!(carried.slow_kbps, 40_000);
+        assert_eq!(carried.0.samples, 19);
+        assert_eq!(carried.0.slow_kbps, 40_000);
 
         s.clear_abr_seed();
         assert!(
@@ -3136,21 +3124,18 @@ mod tests {
     }
 
     #[test]
-    fn a_carried_link_estimate_ages_across_an_unobserved_reload_gap() {
+    fn carried_link_evidence_preserves_its_unobserved_interval() {
         let s = Shared::new();
-        let estimate = crate::abr::CapacityEstimate::from_snapshot(40_000, 42_000, 100, 19)
-            .expect("valid measured estimate");
-        let half_life = crate::abr::AbrPolicy::measured().stale_half_life_ms;
-        let observed_at = Instant::now()
-            .checked_sub(Duration::from_millis(u64::from(half_life) * 2))
+        let estimate = plx_playback_contract::adaptive::SeedReadout {
+            slow_kbps: 40_000, fast_kbps: 42_000, uncertainty_pm: 100, samples: 19,
+        };
+        let observed_at = Instant::now().checked_sub(Duration::from_millis(5_000))
             .expect("test instant");
         s.publish_abr_seed_at(estimate, observed_at);
-
-        let aged = s.abr_seed().expect("a reload carries the estimate");
-        assert!(
-            aged.uncertainty_pm > estimate.uncertainty_pm,
-            "pause/background/reload wall time must widen carried evidence",
-        );
+        s.reset_session();
+        let (carried, elapsed_ms) = s.abr_seed().expect("a reload carries the estimate");
+        assert_eq!(carried, estimate);
+        assert!(elapsed_ms >= 5_000);
     }
 
     /// A failed HLS→Original transaction immediately tears down the failed Engine and reloads
