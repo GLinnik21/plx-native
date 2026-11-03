@@ -533,7 +533,7 @@ impl PlayerAdapter {
     }
 
     pub fn reap_abandoned_load(&mut self) -> bool {
-        super::engine::reap_abandoned_load(&mut self.feed, &self.mt)
+        super::engine::reap_abandoned_load_resource(&mut self.feed, &self.mt)
     }
 
     /// The parked Load, borrowed mutably (its once-only log latch), or taken once it returned.

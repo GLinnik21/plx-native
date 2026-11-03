@@ -349,7 +349,7 @@ fn native_object_disposition(
 /// while the load thread is still inside is the issue #74 race — and joining the media thread on
 /// the SDL main thread froze the whole app on exactly the set where the Load was hung. So teardown
 /// parks the thread, the payload it reads and the epoch here instead, and
-/// [`reap_abandoned_load`] runs the ordinary native release (`Unload` → callback gate → epoch
+/// [`reap_abandoned_load_resource`] runs the ordinary native release (`Unload` → callback gate → epoch
 /// retirement → D1 or quarantine) on the main thread once the thread has finished. Until then every
 /// start is refused rather than handed the same object; if the `Load` never returns the object is
 /// leaked for the life of the process, which is what the C seam would have to do anyway.
@@ -364,7 +364,7 @@ pub struct AbandonedLoad {
 /// Release a parked [`AbandonedLoad`] if its `Load` has returned. Cheap when there is nothing to
 /// do; called once per app frame and at the top of every native start. `true` when the parked
 /// object was released by this call.
-pub(super) fn reap_abandoned_load(feed: &mut super::feed_resources::FeedResources,
+pub(super) fn reap_abandoned_load_resource(feed: &mut super::feed_resources::FeedResources,
     mt: &MainThread) -> bool {
     let finished = match feed.abandoned_load_mut() {
         Some(parked) => parked.load_th.is_finished(),
@@ -1058,7 +1058,7 @@ fn stream_open_log_line(origin_log_form: &str, path: &str) -> String {
 
 pub(super) fn begin_native_open(feed: &mut super::feed_resources::FeedResources,
     mt: &MainThread) -> bool {
-    reap_abandoned_load(feed, mt);
+    reap_abandoned_load_resource(feed, mt);
     if feed.has_abandoned_load() {
         log("start_bufferfeed: an abandoned Load has not returned yet (refusing native start)");
         return false;
