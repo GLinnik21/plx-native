@@ -136,6 +136,11 @@ mod qualified_uri_offer_tests {
             &mut session, &mut adapter, ticket);
         assert!(matches!(started, super::super::route_start::BufferfeedStartOutcome::Launched(_)),
             "queued URI Open is distinct from the fake transport's later refusal");
+        let feed_seek_before = super::super::TX.seek_to_ns.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(!adapter.request_seek(&mut session, 3_000_000_000),
+            "a URI still opening refuses runtime seek through the common door");
+        assert_eq!(super::super::TX.seek_to_ns.load(std::sync::atomic::Ordering::Relaxed),
+            feed_seek_before, "a URI seek never writes the Feed command mailbox");
         assert!(adapter.qualified_uri.is_none(), "failed Start consumed the source authorization");
         let at = adapter.backend_tick();
         let _ = adapter.backend_poll_session_at(&mut session, at);
@@ -483,6 +488,61 @@ impl PlayerAdapter {
         )))
     }
 
+    /// The app's one seek door. URI uses the addressed runner; Feed retains its existing
+    /// coalescing/reload planner. An unavailable physical backend refuses without global writes.
+    pub fn request_seek(&mut self, ps: &mut crate::route::PlaybackSession, target_ns: i64) -> bool {
+        #[cfg(feature = "play-uri")]
+        if let Some(accepted) = self.seek_uri(ps, target_ns) { return accepted; }
+        #[cfg(feature = "play-feed")]
+        {
+            let _ = ps;
+            super::request_seek(target_ns);
+            return true;
+        }
+        #[cfg(not(feature = "play-feed"))]
+        { let _ = (ps, target_ns); false }
+    }
+
+    /// Playback-rate conversion is a Feed capability. A URI attempt never mutates the Feed
+    /// rate or requests its reload as a substitute for a missing native URI operation.
+    pub fn set_play_rate(&mut self, ps: &crate::route::PlaybackSession, permille: i32) -> bool {
+        if ps.attempt_view().backend() == Some(super::attempt_view::Backend::Uri) {
+            return false;
+        }
+        #[cfg(feature = "play-feed")]
+        { super::set_play_rate(ps, permille) }
+        #[cfg(not(feature = "play-feed"))]
+        { let _ = (ps, permille); false }
+    }
+
+    /// Address a seek to the active URI attempt. A refused command changes no Feed mailbox or
+    /// route selection; the visible target is held until that command's native landing report.
+    #[cfg(feature = "play-uri")]
+    pub fn seek_uri(&mut self, ps: &mut crate::route::PlaybackSession, target_ns: i64)
+        -> Option<bool> {
+        if ps.attempt_view().backend() != Some(super::attempt_view::Backend::Uri) {
+            return None;
+        }
+        let Some(route_attempt) = self.uri_route_attempt else { return Some(false); };
+        let attempt = route_attempt.contract_id();
+        let target_ms = u64::try_from(target_ns.max(0) / 1_000_000).ok()?;
+        let result = self.backend_send_at(Intent::Control { backend: BackendKind::Uri,
+            attempt, operation: Operation::Seek(plx_playback_contract::ContentTime::from_millis(target_ms)) },
+            super::attempt_metrics::Origin::Fresh, self.backend_tick());
+        if result.playback.iter().any(|fx| matches!(fx,
+            plx_playback_contract::Fx::Rejected { .. }
+                | plx_playback_contract::Fx::CommandRefused { .. })) {
+            return Some(false);
+        }
+        let mut facts = *ps.attempt_view().facts();
+        facts.ended = Some(false);
+        facts.seek_pending_ns = Some(target_ns.max(0));
+        facts.seek_display_ns = Some(target_ns.max(0));
+        facts.status = Some(plx_playback_contract::readout::PlaybackState::Seeking);
+        let _ = ps.ingest_attempt_facts(route_attempt, super::attempt_view::Backend::Uri, facts);
+        Some(true)
+    }
+
     /// Execute one route-owned intent through the sole backend admission state. The caller
     /// supplies the physical attempt's origin and a monotonic tick for local measurements.
     pub fn backend_send_at(&mut self, intent: Intent, origin: super::attempt_metrics::Origin,
@@ -779,6 +839,24 @@ impl PlayerAdapter {
                             super::attempt_view::Backend::Uri, facts);
                     }
                 }
+                plx_playback_contract::Fx::CommandRefused {
+                    backend: BackendKind::Uri, attempt,
+                    operation: Operation::Seek(_), ..
+                } => {
+                    if let Some(route_attempt) = self.uri_route_attempt.filter(|route|
+                        route.contract_id() == attempt) {
+                        let mut facts = *ps.attempt_view().facts();
+                        facts.seek_pending_ns = None;
+                        facts.seek_display_ns = None;
+                        facts.status = Some(match self.backend.snapshot().playback.map(|p| p.value) {
+                            Some(Playback::Playing) => plx_playback_contract::readout::PlaybackState::Playing,
+                            Some(Playback::Paused) => plx_playback_contract::readout::PlaybackState::Paused,
+                            _ => plx_playback_contract::readout::PlaybackState::Buffering,
+                        });
+                        let _ = ps.ingest_attempt_facts(route_attempt,
+                            super::attempt_view::Backend::Uri, facts);
+                    }
+                }
                 plx_playback_contract::Fx::ReleaseOutcome {
                     backend: BackendKind::Uri, attempt, status,
                 } => {
@@ -871,6 +949,11 @@ impl PlayerAdapter {
             plx_playback_contract::Observation::Presented
             | plx_playback_contract::Observation::TrackSelected(_)
             | plx_playback_contract::Observation::TrackOff(_) => {}
+        }
+        if facts.seek_pending_ns.is_some()
+            && facts.status != Some(plx_playback_contract::readout::PlaybackState::Error)
+            && facts.ended != Some(true) {
+            facts.status = Some(plx_playback_contract::readout::PlaybackState::Seeking);
         }
         let _ = ps.ingest_attempt_facts(route_attempt,
             super::attempt_view::Backend::Uri, facts);

@@ -75,19 +75,21 @@ pub(crate) fn seek_pending(ps: &plx_media::route::PlaybackSession) -> Option<i64
     plx_media::player::seek_pending(ps)
 }
 #[inline]
-pub(crate) fn request_seek(x: i64) {
-    plx_media::player::request_seek(x)
+pub(crate) fn request_seek(ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter, x: i64) {
+    let _ = pa.request_seek(ps, x);
 }
 /// Commit a scrub to `target` and clear the preview. This is a bare seek: if the film is PAUSED
 /// the media layer keeps it logically paused — the pump opens the bounded seek-preroll feed
 /// override when it arms the seek, lets the landed frame decode with the transport still saying
 /// Paused, and re-pauses on the landing (its `settle_paused_seek`), so no
 /// caller has to know about the gate.
-pub(crate) fn commit_seek(target: i64) {
+pub(crate) fn commit_seek(ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter, target: i64) {
     plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
         feature: plx_telemetry::diag::schema::Feature::Seek,
     });
-    request_seek(target);
+    request_seek(ps, pa, target);
 }
 #[inline]
 pub(crate) fn is_started(ps: &plx_media::route::PlaybackSession) -> Option<bool> {
@@ -126,7 +128,7 @@ pub(crate) fn apply_more_action(ps: &mut plx_media::route::PlaybackSession, pa: 
         // A playback speed: a reload at the viewer's position at the new speed
         // (`player::set_play_rate`). Picking the current speed does nothing.
         plx_appkit::more_menu::Action::SetSpeed(r) => {
-            plx_media::player::set_play_rate(ps, r);
+            pa.set_play_rate(ps, r);
         }
         // Lab builds only. Nothing about playback changes: the snapshot is taken and the toast
         // reports, over whatever the player is doing.
@@ -615,10 +617,10 @@ pub(crate) fn player_requests(
             // The fall-through a surface cannot perform (`screens::player::overlay`'s module doc):
             // the same toggle the bare transport reaches, with the panel left untouched.
             PlayerReq::Transport(play) => apply_transport(pa, play, now, pages),
-            PlayerReq::SeekTo(ns) => apply_seek_to(pa, ns),
+            PlayerReq::SeekTo(ns) => apply_seek_to(&mut player.session, pa, ns),
             // …and its twin, which does NOT resume: the scrub bar is how a paused film is moved.
             // The pump keeps the pause across it (see `commit_seek`).
-            PlayerReq::CommitSeek(ns) => commit_seek(ns),
+            PlayerReq::CommitSeek(ns) => commit_seek(&mut player.session, pa, ns),
             PlayerReq::More(action) => apply_more_action(&mut player.session, pa, bridge, action),
             PlayerReq::CommitTrack(commit) => commit_track(&mut player.session, commit),
             // The failure-read-out's recovery escape (`ChooseQuality`) and the Tracks->Timing hand-off, which
@@ -948,7 +950,7 @@ pub(crate) fn activate_ctrl_row(
                     // is usually still inside it, so without this the button comes straight back
                     // (see `metadata::mark_skipped`).
                     bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::MarkSkipped(pr.marker));
-                    request_seek(ns);
+                    request_seek(&mut player.session, pa, ns);
                     resume_if_paused(pa);
                     false
                 }
@@ -1105,8 +1107,9 @@ pub(super) fn play_item_now_with<R: PlaybackResources>(
 
 /// Start the playing item over, playing: the Info card's *From beginning* and the
 /// `from_beginning` command.
-fn from_beginning(pa: &mut plx_media::player::adapter::PlayerAdapter) {
-    request_seek(0);
+fn from_beginning(ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter) {
+    request_seek(ps, pa, 0);
     resume_if_paused(pa);
 }
 
@@ -1213,7 +1216,7 @@ pub(crate) fn perform_hud_command(
     match command {
         HudCommand::TogglePlay => {
             match super::bridge::player_mut(pages).map(|screen| screen.toggle_play(None, now)) {
-                Some(PlayerReq::SeekTo(ns)) => apply_seek_to(pa, ns),
+                Some(PlayerReq::SeekTo(ns)) => apply_seek_to(&mut player.session, pa, ns),
                 Some(PlayerReq::Transport(play)) => apply_transport(pa, play, now, pages),
                 _ => {}
             }
@@ -1223,7 +1226,7 @@ pub(crate) fn perform_hud_command(
             let target = super::bridge::player_mut(pages)
                 .and_then(|screen| screen.jump_by(&player.session, step, true, now));
             if let Some(target) = target {
-                commit_seek(target);
+                commit_seek(&mut player.session, pa, target);
             }
         }
         HudCommand::Previous => {
@@ -1247,7 +1250,7 @@ pub(crate) fn perform_hud_command(
         // A section is the player page's own state: the performer addresses the page with the toggle, and the
         // page opens or closes it under the package's policy and seats its own focus.
         HudCommand::ToggleSection(section) => super::bridge::toggle_player_section(pages, section),
-        HudCommand::FromBeginning => from_beginning(pa),
+        HudCommand::FromBeginning => from_beginning(&mut player.session, pa),
         HudCommand::GoToDetail => {
             if let Some(rk) = plx_appkit::info_panel::detail_rk(bridge.metadata_view()).map(str::to_owned) {
                 go_to_detail(player, pa, repause_at, refresh_hubs, &rk, pages, bridge);
@@ -1279,8 +1282,9 @@ fn apply_transport(
 }
 
 /// Perform a [`PlayerReq::SeekTo`](plx_screens::registry::PlayerReq::SeekTo): seek, and resume a paused film.
-fn apply_seek_to(pa: &mut plx_media::player::adapter::PlayerAdapter, ns: i64) {
-    request_seek(ns);
+fn apply_seek_to(ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter, ns: i64) {
+    request_seek(ps, pa, ns);
     resume_if_paused(pa);
 }
 
@@ -1468,7 +1472,11 @@ mod paused_seek_tests {
         set_resume_pend(false);
         for paused in [true, false] {
             plx_media::player::TX.paused.store(paused, Relaxed);
-            commit_seek(42_000_000_000);
+            let mut ps = plx_media::route::PlaybackSession::IDLE;
+            let mut pa = plx_media::player::adapter::PlayerAdapter::new(unsafe {
+                plx_base::task::MainThread::assume()
+            });
+            commit_seek(&mut ps, &mut pa, 42_000_000_000);
             assert_eq!(plx_media::player::TX.seek_to_ns.load(Relaxed), 42_000_000_000,
                 "the command itself must carry the target");
             assert!(!resume_pend());
