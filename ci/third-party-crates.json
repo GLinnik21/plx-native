@@ -47,17 +47,20 @@
   "autocfg",
   "base64",
   "bit-vec",
+  "bumpalo",
   "cc",
+  "cfg_aliases",
   "core_detect",
   "data-encoding",
   "der-parser",
   "deranged",
   "displaydoc",
   "find-msvc-tools",
-  "getrandom",
+  "js-sys",
   "lazy_static",
   "minimal-lexical",
   "multiversion_no_op",
+  "nix",
   "nom",
   "num-bigint",
   "num-conv",
@@ -68,6 +71,7 @@
   "powerfmt",
   "proc-macro2",
   "quote",
+  "r-efi",
   "rcgen",
   "ring",
   "rusticata-macros",
@@ -89,6 +93,11 @@
   "unicode-ident",
   "untrusted",
   "wasi",
+  "wasm-bindgen",
+  "wasm-bindgen-macro",
+  "wasm-bindgen-macro-support",
+  "wasm-bindgen-shared",
+  "windows-link",
   "windows-sys",
   "windows-targets",
   "windows_aarch64_gnullvm",
@@ -188,6 +197,11 @@
      "copyright": "Mozilla Foundation. Its encoding tables derive from the WHATWG Encoding Standard, whose data files are BSD-3-Clause (`licenses/WHATWG-BSD-3-Clause.txt`)"
     },
     {
+     "name": "equivalent",
+     "licence": "Apache-2.0 OR MIT",
+     "copyright": "2016–2023 The equivalent authors"
+    },
+    {
      "name": "fdeflate",
      "licence": "MIT OR Apache-2.0",
      "copyright": "The image-rs Developers"
@@ -196,6 +210,11 @@
      "name": "flate2",
      "licence": "MIT OR Apache-2.0",
      "copyright": "2014-2026 Alex Crichton"
+    },
+    {
+     "name": "getrandom",
+     "licence": "MIT OR Apache-2.0",
+     "copyright": "2018–2026 The rust-random Project Developers; 2014 The Rust Project Developers"
     },
     {
      "name": "gimli",
@@ -211,6 +230,11 @@
      "name": "image",
      "licence": "MIT OR Apache-2.0",
      "copyright": "The image-rs Developers"
+    },
+    {
+     "name": "indexmap",
+     "licence": "Apache-2.0 OR MIT",
+     "copyright": "2016–2017 The indexmap authors"
     },
     {
      "name": "itoa",
@@ -291,6 +315,16 @@
      "name": "tinyvec",
      "licence": "Zlib OR Apache-2.0 OR MIT",
      "copyright": "2019 Daniel \"Lokathor\" Gee"
+    },
+    {
+     "name": "typed-path",
+     "licence": "MIT OR Apache-2.0",
+     "copyright": "The typed-path authors"
+    },
+    {
+     "name": "zip",
+     "licence": "MIT",
+     "copyright": "2014 Mathijs van de Nes"
     },
     {
      "name": "zune-core",
@@ -502,5 +536,10 @@
     }
    ]
   }
- ]
+ ],
+ "not_shipped_versions": {
+  "getrandom": [
+   "0.2.17"
+  ]
+ }
 }
