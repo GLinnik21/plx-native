@@ -94,7 +94,7 @@ fn the_disc_has_no_label_and_never_widens() {
         assert!(disc_verb(HeroCtl::Watchlist, named).is_none());
     }
     let s = HeroSet { more: false, watchlist: true, version: false, restart: true, trailer: true, alt: true, mark: PosterMark::None };
-    let widths = HeroWidths { pill: 236.0, alt: 300.0, disc: [CD + 90.0, CD + 60.0, CD + 120.0, CD + 70.0] };
+    let widths = HeroWidths { pill: 236.0, alt: 150.0, disc: [CD + 90.0, CD + 60.0, CD + 120.0, CD + 70.0] };
     let r = hero_btn_rect_at(s, 1, 0.0, widths);
     assert_eq!((r.w, r.h), (CD, CD));
     let play = hero_btn_rect_at(s, 0, 0.0, widths);
