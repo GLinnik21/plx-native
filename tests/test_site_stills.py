@@ -37,6 +37,8 @@ class FileSet(unittest.TestCase):
         film = {p for p in committed if p.startswith("site/media/feel")}
         # the stills' manifest is written by `adopt` beside the stills, not rendered as one
         film.add("site/media/stills.manifest.json")
+        # FinNative's README screenshots are taken by hand against a Jellyfin server, not rendered by the stills tool
+        film |= {p for p in committed if p.startswith("docs/screenshots/finnative/")}
         # what is committed and in neither set is the film, the stills' manifest and the photograph taken on the
         # television, nothing else
         self.assertEqual(committed - auto - manual - film, {"docs/screenshots/navblur-transition.jpg"})
