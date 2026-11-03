@@ -24,6 +24,8 @@ pub trait DemuxClock {
     fn playpos_ns(&self) -> i64;
     fn display_base_ns(&self) -> i64;
     fn duration_ns(&self) -> i64;
+    fn video_tail_ns(&self) -> i64;
+    fn audio_tail_ns(&self) -> i64;
     fn hold_epoch(&self) -> u64;
     fn rebuffering(&self) -> bool;
     fn rebuffer_requested(&self) -> bool;
@@ -38,6 +40,8 @@ pub trait DemuxClock {
     fn applied_rate_permille(&self) -> i32;
     fn playpos_sampler(&self) -> fn() -> i64;
     fn hls_buffer_sampler(&self) -> fn() -> Option<i64>;
+    fn remaining_playback_sampler(&self) -> fn() -> i64;
+    fn user_sequence_sampler(&self) -> fn() -> u64;
 }
 
 /// A move-only physical lease is returned with its exact Drop action. The
@@ -67,6 +71,7 @@ pub enum DemuxEffect {
     VideoTailNs(i64),
     AudioTailNs(i64),
     AudioExpected(bool),
+    PrimeRunwayMax(i64),
     RecoverySegment { total_us: u64, duration: Duration },
 }
 

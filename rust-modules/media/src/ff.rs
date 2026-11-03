@@ -5,7 +5,7 @@
 #![deny(clippy::debug_assert_with_mut_call)]
 use crate::aq::AuQueue;
 use plx_playback_contract::adaptive::{Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, AdaptivePhysicalPort, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, ExplorationFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, RoundId, TrialActuatorPort, TrialClock, TrialId, VariantFact};
-use plx_playback_contract::demux::{DemuxEffect, DemuxSession, PauseLane};
+use plx_playback_contract::demux::{DemuxClock, DemuxEffect, DemuxSession, PauseLane};
 use plx_playback_contract::SourceKey;
 use plx_play_feed::SendPtr;
 use crate::player::SHARED;
@@ -575,7 +575,7 @@ impl StallGuard {
     /// response whose declared bytes all arrived (or whose unsized body reached a confirmed end);
     /// before the body exists nothing is complete. `terminal_hold_started` is the main thread's
     /// terminal observation — an exact arithmetic `B=0`, or a presentation clock that has
-    /// physically stopped (`pump::native_clock_stopped`) — and a hold epoch that moved since
+    /// physically stopped (`player::feed_pump::native_clock_stopped`) — and a hold epoch that moved since
     /// arming is the same observation, already released.
     /// The playhead form is the same arithmetic sampled by this worker, and on this pipeline it is
     /// a bound rather than a trigger: `reserve_ms_at_start` is measured to the demuxed tail, and
@@ -4200,10 +4200,9 @@ fn hls_feed_segment(
     output: &HlsSegmentOutput,
     aq: *mut AuQueue,
     aqa: *mut AuQueue,
+    session: &mut dyn DemuxSession,
 ) -> Result<(), HlsExit> {
-    SHARED
-        .hls_audio_expected
-        .store(output.transfer.audio_expected, Ordering::Release);
+    session.media().publish(DemuxEffect::AudioExpected(output.transfer.audio_expected));
     // Close the race with the main-thread pump: before the first AU can satisfy the decoder prime,
     // publish how long this acquisition actually cost.  The pump then requires at least that much
     // playable media.  Do NOT lower the published value at the end of this function: the AUs are
@@ -4214,9 +4213,7 @@ fn hls_feed_segment(
     // immediately after `observe` below.
     let acquisition_ms =
         i64::try_from(output.transfer.total_us.saturating_add(999) / 1_000).unwrap_or(i64::MAX);
-    SHARED
-        .hls_prime_runway_ms
-        .fetch_max(acquisition_ms, Ordering::AcqRel);
+    session.media().publish(DemuxEffect::PrimeRunwayMax(acquisition_ms));
     // A candidate is demuxed before it owns playback. Publish one coherent raster only after its
     // first video AU is accepted by the active queue; a rejected candidate and a failed first push
     // must remain invisible to the video-plane actuator.
@@ -4236,13 +4233,15 @@ fn hls_feed_segment(
         }
         if au.es == 1 {
             if !raster_published {
-                SHARED.publish_video_raster(output.video_width, output.video_height);
+                session.media().publish(DemuxEffect::VideoRaster {
+                    width: output.video_width, height: output.video_height,
+                });
                 raster_published = true;
             }
             PUSHED_ANY.store(true, Ordering::Relaxed);
-            SHARED.hls_video_tail_ns.store(au.pts_ns, Ordering::Release);
+            session.media().publish(DemuxEffect::VideoTailNs(au.pts_ns));
         } else {
-            SHARED.hls_audio_tail_ns.store(au.pts_ns, Ordering::Release);
+            session.media().publish(DemuxEffect::AudioTailNs(au.pts_ns));
         }
     }
     Ok(())
@@ -4488,7 +4487,7 @@ impl HlsRoundPort<'_> {
             return FeedObservation::Failed { trial, failure: FeedFailure::Protocol };
         }
         for (output, _, _) in &self.staged {
-            if let Err(error) = hls_feed_segment(output, self.aq, self.aqa) {
+            if let Err(error) = hls_feed_segment(output, self.aq, self.aqa, self.session) {
                 return FeedObservation::Failed { trial, failure: hls_feed_failure(error) };
             }
         }
@@ -4556,12 +4555,16 @@ impl AdaptivePhysicalPort for HlsRoundPort<'_> {
     }
 
     fn buffer_sampler(&self) -> fn() -> Option<i64> {
-        || hls_buffer_fact(None).buffered_ms()
+        self.session.clock().hls_buffer_sampler()
     }
 
-    fn remaining_playback_sampler(&self) -> fn() -> i64 { remaining_playback_ms }
+    fn remaining_playback_sampler(&self) -> fn() -> i64 {
+        self.session.clock().remaining_playback_sampler()
+    }
 
-    fn user_sequence_sampler(&self) -> fn() -> u64 { || SHARED.hls_user_sequence() }
+    fn user_sequence_sampler(&self) -> fn() -> u64 {
+        self.session.clock().user_sequence_sampler()
+    }
 }
 
 fn hls_cursor_open(
@@ -4775,12 +4778,12 @@ fn hls_buffer_fact(output: Option<&HlsSegmentOutput>) -> BufferFact {
 /// translation belongs here. Both lanes must have produced post-open/post-seek timestamps before
 /// an A/V stream can claim a buffer duration; otherwise the absent lane is exactly the starvation
 /// the metric is meant to notice, but not yet enough evidence to start an encoder.
-fn progressive_buffered_ms(audio_expected: bool) -> Option<i64> {
-    let video = SHARED.hls_video_tail_ns.load(Ordering::Acquire);
+fn progressive_buffered_ms(clock: &dyn DemuxClock, audio_expected: bool) -> Option<i64> {
+    let video = clock.video_tail_ns();
     if video < 0 {
         return None;
     }
-    let audio = SHARED.hls_audio_tail_ns.load(Ordering::Acquire);
+    let audio = clock.audio_tail_ns();
     let tail = if audio_expected {
         if audio < 0 {
             return None;
@@ -4790,7 +4793,7 @@ fn progressive_buffered_ms(audio_expected: bool) -> Option<i64> {
         video
     };
     Some(
-        tail.saturating_sub(SHARED.playpos_ns.load(Ordering::Relaxed).max(0))
+        tail.saturating_sub(clock.playpos_ns().max(0))
             .max(0)
             / 1_000_000,
     )
@@ -4813,124 +4816,6 @@ fn hls_acquisition(
 /// Content still to play, from the one published duration and position. Feeds the utility model's
 /// benefit scaling: a visible mode switch has to earn back its cost out of what is LEFT, which is
 /// why "twenty seconds remaining" needs no special case anywhere below.
-fn remaining_playback_ms() -> i64 {
-    let duration = SHARED.duration_ns.load(Ordering::Relaxed);
-    if duration <= 0 {
-        return 0;
-    }
-    (duration - SHARED.playpos_ns.load(Ordering::Relaxed).max(0)).max(0) / 1_000_000
-}
-
-/// Lifetime marker for one exploratory upshift. The transaction's own deadline limits its spend
-/// to `B-max(R_s,D_next)`; the published retained reserve is diagnostic and prevents an already-held
-/// clock from restarting mid-transaction. It is not a second main-thread pause threshold.
-struct HlsTrialReserve {
-    token: u64,
-}
-
-impl HlsTrialReserve {
-    fn arm(runway_ms: i64, expected_user_sequence: u64) -> Option<Self> {
-        SHARED
-            .arm_hls_trial_at(runway_ms, expected_user_sequence)
-            .map(|token| Self { token })
-    }
-
-    fn token(&self) -> u64 {
-        self.token
-    }
-}
-
-impl Drop for HlsTrialReserve {
-    fn drop(&mut self) {
-        // A teardown may already have revoked this generation. A stale drop must never clear a
-        // newer session's trial reserve, which is why finish is token-checked.
-        let _ = SHARED.finish_hls_trial(self.token);
-    }
-}
-
-/// Exclusive ownership of one automatic actuator while its blocking PMS/native work runs outside
-/// the playback-clock mutex.  Acquisition and commit authorization are synchronized state-machine
-/// transitions; dropping the lease is the single rollback/finish edge on every return path.
-struct HlsAutomaticLease {
-    token: u64,
-}
-
-impl HlsAutomaticLease {
-    fn begin(
-        kind: crate::player::HlsAutomaticTransition,
-        expected_user_sequence: u64,
-    ) -> Option<Self> {
-        SHARED
-            .begin_hls_automatic_transition_at(kind, expected_user_sequence)
-            .map(|token| Self { token })
-    }
-
-    fn token(&self) -> u64 {
-        self.token
-    }
-}
-
-impl Drop for HlsAutomaticLease {
-    fn drop(&mut self) {
-        // Session teardown revokes every outstanding token before joining the worker; in that
-        // ordering `false` is the expected proof that this stale completion owns nothing.
-        let _ = SHARED.finish_hls_automatic_transition(self.token);
-    }
-}
-
-/// Fence the irreversible half of a candidate transition: arm immediately before the first
-/// candidate AU may be queued, then hold until controller/route ownership has committed or the old
-/// cursor has been realigned after a recoverable rejection. While armed, the main-thread pump
-/// cannot resume an internal clock from candidate tails combined with the previous actuator's
-/// recovery epoch.
-///
-/// Armed is deliberately fail-closed: an ordinary drop, including unwinding, leaves the generation
-/// odd until queue teardown resets it. Only [`Self::settle`] may release the fence, and callers do
-/// that only after the candidate commits or the old cursor is proven realigned with every published
-/// candidate AU.
-struct HlsCandidateTransition {
-    generation: u64,
-}
-
-impl HlsCandidateTransition {
-    fn arm(automatic_token: u64) -> Result<Self, HlsExit> {
-        Self::arm_for(Some(automatic_token))
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    fn arm_unowned_for_test() -> Result<Self, HlsExit> {
-        Self::arm_for(None)
-    }
-
-    fn arm_for(automatic_token: Option<u64>) -> Result<Self, HlsExit> {
-        match SHARED.begin_hls_candidate_transition(automatic_token) {
-            Ok(generation) => Ok(Self { generation }),
-            Err(crate::player::HlsClockFenceError::Stopping) => Err(HlsExit::Aborted),
-            Err(crate::player::HlsClockFenceError::Overlap) => {
-                Err(HlsExit::Failed("overlapping HLS candidate publication"))
-            }
-            Err(crate::player::HlsClockFenceError::Exhausted) => {
-                Err(HlsExit::Failed("HLS candidate generation exhausted"))
-            }
-            Err(crate::player::HlsClockFenceError::Superseded) => Err(HlsExit::Failed(
-                "HLS candidate automatic lease was superseded",
-            )),
-        }
-    }
-
-    fn settle(self) {
-        let settled = SHARED.settle_hls_candidate_transition(self.generation);
-        debug_assert!(
-            settled,
-            "candidate generation changed inside its sole writer"
-        );
-    }
-}
-
-impl plx_playback_contract::adaptive::FenceSettlement for HlsCandidateTransition {
-    fn settle(self: Box<Self>) { HlsCandidateTransition::settle(*self); }
-}
-
 impl CandidateFencePort for HlsRoundPort<'_> {
     type Fence = plx_playback_contract::adaptive::FenceHandle;
     type Error = plx_playback_contract::adaptive::PhysicalFailure;
@@ -5225,7 +5110,7 @@ impl HlsRoundPort<'_> {
                     return Err(HlsExit::Failed("adaptive active feed without read"));
                 };
                 if !output.aus.is_empty() {
-                    hls_feed_segment(output, self.aq, self.aqa)?;
+                    hls_feed_segment(output, self.aq, self.aqa, self.session)?;
                     self.session.media().publish(DemuxEffect::RecoverySegment {
                         total_us: output.transfer.total_us, duration: segment.duration,
                     });
@@ -5328,7 +5213,7 @@ fn hls_demux(
             )? else { break; };
             let delivered = !output.aus.is_empty();
             if delivered {
-                hls_feed_segment(&output, aq, aqa)?;
+                hls_feed_segment(&output, aq, aqa, session)?;
                 session.media().publish(DemuxEffect::RecoverySegment {
                     total_us: output.transfer.total_us, duration: segment.duration,
                 });
@@ -7025,7 +6910,8 @@ pub(crate) fn demux(
                                 (None, None)
                             } else {
                                 let audio_expected = ai >= 0 && FEED_AUDIO.load(Ordering::Relaxed);
-                                (progressive_buffered_ms(audio_expected), Some(remaining_playback_ms()))
+                                (progressive_buffered_ms(session.clock(), audio_expected),
+                                 Some(session.clock().remaining_playback_sampler()()))
                             };
                             let quantum = plx_playback_contract::adaptive::OriginalQuantum {
                                 bytes: state.body_bytes,

@@ -41,6 +41,8 @@ impl DemuxClock for PlayerDemuxSession {
     fn playpos_ns(&self) -> i64 { SHARED.playpos_ns.load(Ordering::Relaxed) }
     fn display_base_ns(&self) -> i64 { SHARED.disp_base.load(Ordering::Relaxed) }
     fn duration_ns(&self) -> i64 { SHARED.duration_ns.load(Ordering::Relaxed) }
+    fn video_tail_ns(&self) -> i64 { SHARED.hls_video_tail_ns.load(Ordering::Acquire) }
+    fn audio_tail_ns(&self) -> i64 { SHARED.hls_audio_tail_ns.load(Ordering::Acquire) }
     fn hold_epoch(&self) -> u64 { SHARED.hls_internal_hold_epoch.load(Ordering::Acquire) }
     fn rebuffering(&self) -> bool { SHARED.hls_rebuffering.load(Ordering::Acquire) }
     fn rebuffer_requested(&self) -> bool { SHARED.hls_rebuffer_requested.load(Ordering::Acquire) }
@@ -76,6 +78,8 @@ impl DemuxClock for PlayerDemuxSession {
         || SHARED.playpos_ns.load(Ordering::Relaxed).max(0)
     }
     fn hls_buffer_sampler(&self) -> fn() -> Option<i64> { hls_buffered_ms }
+    fn remaining_playback_sampler(&self) -> fn() -> i64 { remaining_playback_ms }
+    fn user_sequence_sampler(&self) -> fn() -> u64 { || SHARED.hls_user_sequence() }
 }
 
 fn hls_buffered_ms() -> Option<i64> {
@@ -91,6 +95,12 @@ fn hls_buffered_ms() -> Option<i64> {
         ),
         audio_expected: audio >= 0,
     }.buffered_ms()
+}
+
+fn remaining_playback_ms() -> i64 {
+    let duration = SHARED.duration_ns.load(Ordering::Relaxed);
+    if duration <= 0 { return 0; }
+    (duration - SHARED.playpos_ns.load(Ordering::Relaxed).max(0)).max(0) / 1_000_000
 }
 
 struct AutomaticLease(u64);
@@ -172,6 +182,7 @@ impl DemuxMedia for PlayerDemuxSession {
             DemuxEffect::VideoTailNs(ns) => SHARED.hls_video_tail_ns.store(ns, Ordering::Release),
             DemuxEffect::AudioTailNs(ns) => SHARED.hls_audio_tail_ns.store(ns, Ordering::Release),
             DemuxEffect::AudioExpected(expected) => SHARED.hls_audio_expected.store(expected, Ordering::Release),
+            DemuxEffect::PrimeRunwayMax(runway_ms) => { SHARED.hls_prime_runway_ms.fetch_max(runway_ms, Ordering::AcqRel); }
             DemuxEffect::RecoverySegment { total_us, duration } => SHARED.observe_hls_recovery(total_us, duration),
         }
     }
