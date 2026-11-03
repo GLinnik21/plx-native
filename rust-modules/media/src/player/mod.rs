@@ -1941,17 +1941,26 @@ pub fn seek_display_ns(ps: &crate::route::PlaybackSession) -> Option<i64> {
 /// outer two rungs with the live scrub preview between them, so its expression is a superset
 /// rather than a caller.
 pub fn intended_pos_ns(ps: &crate::route::PlaybackSession) -> i64 {
+    intended_pos_known_ns(ps).unwrap_or(0)
+}
+
+/// An addressed intended playhead for operations that must not restart a film at zero when the
+/// backend has not yet reported a position. UI widgets may use their existing zero placeholder;
+/// a viewer reconfiguration requires this proof before replacing the current executor.
+pub fn intended_pos_known_ns(ps: &crate::route::PlaybackSession) -> Option<i64> {
     let t = seek_display_ns(ps);
     if loading(ps) && t.is_some() {
-        t.unwrap_or(0)
+        t
     } else if let Some(offset_ns) = crate::route::recovery_flight_offset_ns() {
         // A resume/recovery flight is out and has not landed: `playpos_ns` is still the zero
         // `reset_session` left (it is seeded at the landing), so the flight's own offset is where
         // the viewer is. Without it a Home press mid-resume saves 0 and the restore plays from the
         // start, after which the timeline reports overwrite the server's viewOffset.
-        offset_ns
+        Some(offset_ns)
+    } else if crate::route::unpresented_resume_ns(ps) > 0 {
+        Some(crate::route::unpresented_resume_ns(ps))
     } else {
-        playpos_ns(ps).unwrap_or(0)
+        playpos_ns(ps)
     }
 }
 /// request an audio-track switch (Plex audioStreamID); the pump forces a fresh
@@ -3166,6 +3175,20 @@ mod tests {
         ps.accept_requested_rate(1500);
         assert_eq!(selected_rate(&ps), Some(1500), "the menu retains the viewer's accepted goal");
         assert_eq!(applied_rate(&ps), None, "an active URI has no Feed speed evidence");
+    }
+
+    #[cfg(feature = "play-uri")]
+    #[test]
+    fn reconfiguration_playhead_requires_addressed_position_evidence() {
+        let _serial = plx_base::testlock::serial();
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let attempt = crate::route::RouteStartAttempt::fixture();
+        ps.begin_attempt_view(attempt, attempt_view::Backend::Uri);
+        assert_eq!(intended_pos_known_ns(&ps), None,
+            "an unknown native clock cannot authorize restarting a film at zero");
+        assert!(ps.ingest_attempt_facts(attempt, attempt_view::Backend::Uri,
+            attempt_view::AttemptFacts { position_ns: Some(42_000_000_000), ..Default::default() }));
+        assert_eq!(intended_pos_known_ns(&ps), Some(42_000_000_000));
     }
 
     /// The safety net's evidence: the pipeline's audio-info report for a speed session. 48 kHz
