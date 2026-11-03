@@ -6,7 +6,7 @@ use super::feed_resources::FeedResources;
 use super::{ACB_OK, SHARED, TX};
 use super::shared::Stage;
 use plx_base::task::MainThread;
-use std::sync::atomic::Ordering::{Relaxed, Release};
+use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::time::Duration;
 
 pub(super) struct LoadGate {
