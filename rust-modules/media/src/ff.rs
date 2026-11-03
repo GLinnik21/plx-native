@@ -4249,6 +4249,7 @@ struct HlsTrialPort<'a> {
     trial: TrialId,
     origin: &'a plx_plex::plex::Origin,
     aq: *mut AuQueue,
+    aqa: *mut AuQueue,
     net: &'a mut HlsNet,
     acodec: &'a str,
     reserve: &'a mut Option<ReserveDeadlineState>,
@@ -4258,6 +4259,7 @@ struct HlsTrialPort<'a> {
     timeline: Option<crate::hls::SegmentTimeline>,
     clock: Option<crate::hls::SegmentClock>,
     output: Option<HlsSegmentOutput>,
+    staged: Vec<HlsSegmentOutput>,
 }
 
 fn hls_feed_failure(error: HlsExit) -> FeedFailure {
@@ -4280,7 +4282,8 @@ impl FeedPort for HlsTrialPort<'_> {
         let trial = match action {
             FeedAction::Open { trial, .. } | FeedAction::ReadNext { trial }
             | FeedAction::AcquireFirst { trial, .. }
-            | FeedAction::AcquireFollowup { trial } => trial,
+            | FeedAction::AcquireFollowup { trial }
+            | FeedAction::QueueStaged { trial } => trial,
         };
         if trial != self.trial {
             return FeedObservation::Failed { trial, failure: FeedFailure::Protocol };
@@ -4294,6 +4297,7 @@ impl FeedPort for HlsTrialPort<'_> {
                 trial, media_budget, yields_to_rebuffer, started_ns, clock,
             ),
             FeedAction::AcquireFollowup { trial } => self.acquire_followup(trial),
+            FeedAction::QueueStaged { trial } => self.queue_staged(trial),
         }
     }
 }
@@ -4393,6 +4397,18 @@ impl HlsTrialPort<'_> {
         self.clock = Some(clock);
         self.output = Some(output);
         FeedObservation::Acquired { trial, acquisition }
+    }
+
+    fn queue_staged(&mut self, trial: TrialId) -> FeedObservation {
+        if self.staged.is_empty() {
+            return FeedObservation::Failed { trial, failure: FeedFailure::Protocol };
+        }
+        for output in &self.staged {
+            if let Err(error) = hls_feed_segment(output, self.aq, self.aqa) {
+                return FeedObservation::Failed { trial, failure: hls_feed_failure(error) };
+            }
+        }
+        FeedObservation::Queued { trial }
     }
 }
 
@@ -6296,10 +6312,10 @@ fn hls_demux(
             continue;
         }
         let mut port = HlsTrialPort {
-            trial: trial_id, origin, aq, net: &mut net, acodec,
+            trial: trial_id, origin, aq, aqa, net: &mut net, acodec,
             reserve: &mut exploration_reserve, source: None,
             candidate: None, segment: None, timeline: None,
-            clock: None, output: None,
+            clock: None, output: None, staged: Vec::new(),
         };
         let mut runner = adaptive::TrialRunner::new(&mut port, &mut trial_protocol);
         let opened = runner.open(primed.url.clone());
@@ -6323,7 +6339,8 @@ fn hls_demux(
                 ..
             }
             | FeedObservation::SegmentReady { .. }
-            | FeedObservation::Acquired { .. } => {
+            | FeedObservation::Acquired { .. }
+            | FeedObservation::Queued { .. } => {
                 state.abandon(&primed.encoder_session);
                 tx.finish("feed_protocol");
                 return Err(HlsExit::Failed("adaptive feed open protocol violation"));
@@ -6383,7 +6400,8 @@ fn hls_demux(
                 failure: FeedFailure::Protocol | FeedFailure::TimelineOverflow, ..
             }
             | FeedObservation::Opened { .. }
-            | FeedObservation::Acquired { .. } => {
+            | FeedObservation::Acquired { .. }
+            | FeedObservation::Queued { .. } => {
                 state.abandon(&primed.encoder_session);
                 tx.finish("feed_protocol");
                 return Err(HlsExit::Failed("adaptive feed read protocol violation"));
@@ -6514,7 +6532,8 @@ fn hls_demux(
             }
             FeedObservation::Failed { failure: FeedFailure::Protocol | FeedFailure::SourceMoved | FeedFailure::Ended, .. }
             | FeedObservation::Opened { .. }
-            | FeedObservation::SegmentReady { .. } => {
+            | FeedObservation::SegmentReady { .. }
+            | FeedObservation::Queued { .. } => {
                 state.abandon(&primed.encoder_session);
                 tx.finish("feed_protocol");
                 return Err(HlsExit::Failed("adaptive feed acquisition protocol violation"));
@@ -6631,7 +6650,8 @@ fn hls_demux(
                     failure: FeedFailure::Protocol | FeedFailure::TimelineOverflow, ..
                 }
                 | FeedObservation::Opened { .. }
-                | FeedObservation::Acquired { .. } => {
+                | FeedObservation::Acquired { .. }
+                | FeedObservation::Queued { .. } => {
                     state.abandon(&primed.encoder_session);
                     tx.finish("feed_protocol");
                     return Err(HlsExit::Failed("adaptive feed follow-up protocol violation"));
@@ -6677,7 +6697,8 @@ fn hls_demux(
                     failure: FeedFailure::Protocol | FeedFailure::SourceMoved | FeedFailure::Ended, ..
                 }
                 | FeedObservation::Opened { .. }
-                | FeedObservation::SegmentReady { .. } => {
+                | FeedObservation::SegmentReady { .. }
+                | FeedObservation::Queued { .. } => {
                     state.abandon(&primed.encoder_session);
                     tx.finish("feed_protocol");
                     return Err(HlsExit::Failed("adaptive feed follow-up acquisition protocol violation"));
@@ -6772,12 +6793,8 @@ fn hls_demux(
             continue;
         }
         let sample = candidate_sample.expect("a ready candidate has a completed segment sample");
-        drop(runner);
-        let mut candidate = port.candidate.take().expect("acquisition retains its candidate cursor");
-        let staged_timeline = port.timeline.take().expect("acquisition retains its staged timeline");
-        drop(port);
         let Some(candidate_variant) = crate::abr::ObservedHlsVariant::new(
-            candidate.declared_bps,
+            final_acquisition.declared_bps,
             candidate_output.video_width,
             candidate_output.video_height,
         ) else {
@@ -6807,30 +6824,36 @@ fn hls_demux(
                 }
             };
         }
-        trial_protocol.observe(trial_id, TrialEvent::QueueAuthorized)
+        runner.observe(TrialEvent::QueueAuthorized)
             .expect("only graded candidate media may enter the queue");
         let feed_started = std::time::Instant::now();
-        trial_protocol.observe(trial_id, TrialEvent::QueueStarted)
+        runner.observe(TrialEvent::QueueStarted)
             .expect("queueing follows candidate authorization");
-        for (output, _, _) in &candidate_outputs {
-            if let Err(error) = hls_feed_segment(output, aq, aqa) {
-                let terminal = trial_protocol.observe(trial_id, TrialEvent::Ended);
-                debug_assert_eq!(
-                    terminal,
-                    Err(plx_playback_contract::adaptive::TrialProtocolError::TerminalAfterQueue),
-                );
-                state.abandon(&primed.encoder_session);
-                tx.finish(if matches!(error, HlsExit::Aborted) {
-                    "aborted"
-                } else {
-                    "commit_feed_failed"
-                });
-                return Err(error);
-            }
+        runner.physical().staged = candidate_outputs
+            .into_iter().map(|(output, _, _)| output).collect();
+        let queued = runner.queue_staged();
+        if queued != (FeedObservation::Queued { trial: trial_id }) {
+            let terminal = runner.observe(TrialEvent::Ended);
+            debug_assert_eq!(
+                terminal,
+                Err(plx_playback_contract::adaptive::TrialProtocolError::TerminalAfterQueue),
+            );
+            state.abandon(&primed.encoder_session);
+            let aborted = queued == (FeedObservation::Failed {
+                trial: trial_id, failure: FeedFailure::Aborted,
+            });
+            tx.finish(if aborted { "aborted" } else { "commit_feed_failed" });
+            return Err(if aborted { HlsExit::Aborted } else {
+                HlsExit::Failed("adaptive feed queue protocol violation")
+            });
         }
-        trial_protocol.observe(trial_id, TrialEvent::QueueCompleted)
+        runner.observe(TrialEvent::QueueCompleted)
             .expect("all staged candidate media was queued");
         tx.mark_feed(feed_started);
+        drop(runner);
+        let mut candidate = port.candidate.take().expect("queued trial retains its candidate cursor");
+        let staged_timeline = port.timeline.take().expect("queued trial retains its staged timeline");
+        drop(port);
         timeline = staged_timeline;
 
         // The queue abort is teardown's actual linearization point. Publish both copies of the
@@ -6942,10 +6965,7 @@ fn hls_demux(
         // APPENDED rather than substituted: `RE_ABR_UP` and `RE_ABR_COMMIT` both parse the
         // leading form, so replacing it in place would silently retire two graders. Old logs stay
         // readable and `abr_raster_changes` prefers `out=` when it is there.
-        let observed = candidate_outputs
-            .last()
-            .map(|(output, _, _)| (output.video_width, output.video_height))
-            .unwrap_or((0, 0));
+        let observed = (final_acquisition.width, final_acquisition.height);
         crate::player::log(&format!(
             "abr: committed {:?} to {}kbps {}x{} out={}x{}",
             proposal.direction,

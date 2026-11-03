@@ -212,6 +212,11 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
         let trial = self.protocol.id();
         self.step(FeedAction::AcquireFollowup { trial })
     }
+
+    pub(crate) fn queue_staged(&mut self) -> FeedObservation {
+        let trial = self.protocol.id();
+        self.step(FeedAction::QueueStaged { trial })
+    }
 }
 
 /// Project physical acquisition onto the controller's whole-millisecond reserve lattice.
@@ -1048,6 +1053,30 @@ mod trial_runner_tests {
         });
         drop(runner);
         assert_eq!(protocol.phase(), TrialPhase::Prepared);
+    }
+
+    #[test]
+    fn late_queue_reply_after_enqueue_stays_terminal() {
+        let current = TrialId::new(AttemptId::new(4, 9), 2);
+        let previous = TrialId::new(AttemptId::new(4, 8), 2);
+        let mut protocol = TrialProtocol::new(current);
+        for phase in [
+            TrialObservation::Prepared, TrialObservation::FirstAcquired,
+            TrialObservation::QueueAuthorized, TrialObservation::QueueStarted,
+        ] {
+            protocol.observe(current, phase).unwrap();
+        }
+        let mut port = LateReplyPort { response: FeedObservation::Queued { trial: previous } };
+        let mut runner = TrialRunner::new(&mut port, &mut protocol);
+        assert_eq!(runner.queue_staged(), FeedObservation::Failed {
+            trial: current, failure: FeedFailure::Protocol,
+        });
+        assert_eq!(runner.observe(TrialObservation::Ended),
+            Err(TrialProtocolError::TerminalAfterQueue));
+        drop(runner);
+        assert_eq!(protocol.phase(), TrialPhase::Ended);
+        assert_eq!(protocol.observe(current, TrialObservation::Published),
+            Err(TrialProtocolError::OutOfOrder));
     }
 }
 

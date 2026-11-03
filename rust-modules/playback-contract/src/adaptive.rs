@@ -26,6 +26,7 @@ pub enum FeedAction {
         clock: TrialClock,
     },
     AcquireFollowup { trial: TrialId },
+    QueueStaged { trial: TrialId },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +54,7 @@ pub enum FeedObservation {
     Opened { trial: TrialId, declared_bps: u64 },
     SegmentReady { trial: TrialId, duration: std::time::Duration },
     Acquired { trial: TrialId, acquisition: Acquisition },
+    Queued { trial: TrialId },
     Failed { trial: TrialId, failure: FeedFailure },
 }
 
@@ -62,6 +64,7 @@ impl FeedObservation {
             Self::Opened { trial, .. }
             | Self::SegmentReady { trial, .. }
             | Self::Acquired { trial, .. }
+            | Self::Queued { trial }
             | Self::Failed { trial, .. } => trial,
         }
     }
