@@ -63,3 +63,59 @@ pub fn judged_clock(playpos_ns: i64, anchor_playhead_ns: i64, offset_ns: i64) ->
     let now = playpos_ns.max(anchor_playhead_ns);
     now.min(now.saturating_sub(offset_ns))
 }
+
+/// One indexed subtitle rectangle in the stream's own canvas.
+pub struct IndexedRect {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    pub index: Vec<u8>,
+    pub palette: Box<[[u8; 4]; 256]>,
+}
+impl IndexedRect {
+    pub fn bytes(&self) -> usize { self.index.capacity() + std::mem::size_of::<[[u8; 4]; 256]>() }
+}
+
+/// A decoded display set or a clear instruction; media assigns the stream clock and publishes it.
+pub enum BitmapDisplay {
+    Clear,
+    Set { cw: i32, ch: i32, rects: Vec<IndexedRect>, total_rects: usize },
+}
+
+/// The lower codec's owned, bounded container metadata. Each header slot corresponds to the
+/// caller's track list in file order; `None` means that track had no admitted ASS header.
+pub struct Manifest {
+    pub headers: Vec<Option<Vec<u8>>>,
+    pub fonts: Vec<EmbeddedFont>,
+    pub font_bytes: usize,
+}
+
+pub struct EmbeddedFont {
+    pub name: String,
+    pub data: std::sync::Arc<[u8]>,
+}
+
+/// File-order subtitle inventory copied while the format context is alive.
+/// The codec name is used by the caller's text dialect policy; none of these fields is logged.
+pub struct TrackInfo {
+    pub stream_index: i32,
+    pub codec_name: String,
+    pub language: Option<String>,
+}
+
+/// The presentation owner's choice for one subtitle track. This keeps text dialect and charset
+/// policy outside the codec while letting the codec open only image decoders.
+pub enum DecodeKind {
+    Text { max_bytes: usize },
+    Ass { max_bytes: usize },
+    Bitmap,
+}
+
+/// One decoded, owned observation. Raw text stays in its container encoding for the caller's
+/// per-track charset step. Bitmap data has already passed its byte budget inside the decoder.
+pub enum RawCue {
+    Bytes { track: usize, start: i64, end: i64, payload: Vec<u8> },
+    Bitmap { track: usize, pts: i64, display: crate::subtitle::BitmapDisplay },
+}
+

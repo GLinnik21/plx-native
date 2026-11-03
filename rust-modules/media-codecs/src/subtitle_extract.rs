@@ -22,18 +22,7 @@ pub unsafe fn pts_ns_opt(pkt: *const AVPacket, st: *mut AVStream) -> Option<i64>
     else { Some(ffi::av_rescale_q(t, ffi::stream_time_base(st), ffi::NS_TB)) }
 }
 
-/// The lower codec's owned, bounded container metadata. Each header slot corresponds to the
-/// caller's track list in file order; `None` means that track had no admitted ASS header.
-pub struct Manifest {
-    pub headers: Vec<Option<Vec<u8>>>,
-    pub fonts: Vec<EmbeddedFont>,
-    pub font_bytes: usize,
-}
-
-pub struct EmbeddedFont {
-    pub name: String,
-    pub data: Arc<[u8]>,
-}
+pub use plx_playback_contract::subtitle::{Manifest, EmbeddedFont};
 
 /// A subtitle stream whose authored ASS header may be copied. Other stream kinds are omitted.
 pub struct AssTrack {
@@ -304,28 +293,7 @@ mod tests {
     }
 }
 
-/// File-order subtitle inventory copied while the format context is alive.
-/// The codec name is used by the caller's text dialect policy; none of these fields is logged.
-pub struct TrackInfo {
-    pub stream_index: c_int,
-    pub codec_name: String,
-    pub language: Option<String>,
-}
-
-/// The presentation owner's choice for one subtitle track. This keeps text dialect and charset
-/// policy outside the codec while letting the codec open only image decoders.
-pub enum DecodeKind {
-    Text { max_bytes: usize },
-    Ass { max_bytes: usize },
-    Bitmap,
-}
-
-/// One decoded, owned observation. Raw text stays in its container encoding for the caller's
-/// per-track charset step. Bitmap data has already passed its byte budget inside the decoder.
-pub enum RawCue {
-    Bytes { track: usize, start: i64, end: i64, payload: Vec<u8> },
-    Bitmap { track: usize, pts: i64, display: crate::subtitle::BitmapDisplay },
-}
+pub use plx_playback_contract::subtitle::{TrackInfo, DecodeKind, RawCue};
 
 pub struct PacketObservation {
     pub time_ns: Option<i64>,
