@@ -508,7 +508,8 @@ pub fn draw_people(p: Painter, d: &Detail, button_y: f32, measure: &dyn Measure)
         .map(|credit| credit.tag.as_str())
         .collect();
     let credit = hero_credit(d);
-    // Credits stack upward from the facts bottom, above the action row. An absent line takes no room.
+    // Align the last cap band with the facts, not the bottom of its full leading box.
+    // An absent line takes no room.
     let cast_text = people_text(&cast_names);
     let credit_text = credit.as_ref().map(|(_, names)| people_text(names));
     let cast = (!cast_names.is_empty()).then(|| {
@@ -520,7 +521,8 @@ pub fn draw_people(p: Painter, d: &Detail, button_y: f32, measure: &dyn Measure)
         cast.as_ref().map(|v| v.measure_h(PEOPLE_W)),
     ];
     let items = heights.map(|h| h.map_or(Item::absent(), Item::new));
-    let stack = VStack::new(&items, 0.0, Anchor::Bottom(button_y - theme::space::MD));
+    let bottom = plx_ui::detail_layout::people_box_bottom(button_y, measure.cap_h(theme::size::CAPTION));
+    let stack = VStack::new(&items, 0.0, Anchor::Bottom(bottom));
     for span in stack.placed() {
         let view = if span.i == 0 { credit_view.as_ref() } else { cast.as_ref() };
         if let Some(view) = view {

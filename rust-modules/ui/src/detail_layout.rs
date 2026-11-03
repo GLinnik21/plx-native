@@ -62,8 +62,13 @@ pub fn hero_chain(
     }
 }
 
-pub fn people_top(btn_y: f32, lines: usize) -> f32 {
-    btn_y - theme::space::MD - lines as f32 * PEOPLE_LEAD
+/// Bottom of the credits' full leading boxes, aligned by the last cap band to the facts.
+pub fn people_box_bottom(btn_y: f32, cap_h: f32) -> f32 {
+    btn_y - theme::space::MD + PEOPLE_LEAD - (theme::hero::FACTS_H + cap_h) * 0.5
+}
+
+pub fn people_top(btn_y: f32, lines: usize, cap_h: f32) -> f32 {
+    people_box_bottom(btn_y, cap_h) - lines as f32 * PEOPLE_LEAD
 }
 
 pub fn base_scrim_a(y: f32, hero_vis: f32) -> f32 {
@@ -99,14 +104,17 @@ mod tests {
     }
 
     #[test]
-    fn people_share_the_facts_bottom_and_grow_upward() {
+    fn hero_people_share_the_facts_cap_band_and_grow_upward() {
         let ch = hero_chain(72.0, true, &crate::fixture::FixtureMeasure);
         let minimum = hero_chain(34.0, false, &crate::fixture::FixtureMeasure);
         assert_eq!(minimum.facts_y, 714.0);
-        assert_eq!(people_top(minimum.btn_y, PEOPLE_MAX_LINES), 610.0);
-        for lines in 1..=PEOPLE_MAX_LINES {
-            assert_eq!(people_top(ch.btn_y, lines) + lines as f32 * PEOPLE_LEAD,
-                ch.facts_y + theme::hero::FACTS_H);
+        assert_eq!(people_top(minimum.btn_y, PEOPLE_MAX_LINES, 18.0), 621.0);
+        for cap_h in [16.0, 18.0, 24.0] {
+            for lines in 1..=PEOPLE_MAX_LINES {
+                assert_eq!(people_top(ch.btn_y, lines, cap_h) + (lines - 1) as f32 * PEOPLE_LEAD + cap_h * 0.5,
+                    ch.facts_y + theme::hero::FACTS_H * 0.5,
+                    "last credit cap band must share the facts centre");
+            }
         }
         let facts_r = SCR_W - MARGIN_X - PEOPLE_W - theme::space::SM;
         assert!(facts_r < SCR_W - MARGIN_X - PEOPLE_W);

@@ -2143,7 +2143,7 @@ impl HomeScreen {
             let dots = PageDots::new(view.hero_count()).active(self.carousel_index(view));
             let items = [Item::new(dots.width()), Item::glyph(Icon::Chevron, HERO_PAGER_D)];
             let row = plx_ui::hstack::HStack::new(&items, HERO_CTRL_GAP,
-                plx_ui::hstack::Align::Leading(info.x + info.w + HERO_CTRL_GAP));
+                plx_ui::hstack::Align::Leading(info.x + info.w + theme::space::LG));
             let (x, _) = row.span(0).unwrap();
             dots.centered_y(x, HERO_ROW_Y + HERO_CTRL_D * 0.5).draw(env, p);
             let (x, _) = row.span(1).unwrap();

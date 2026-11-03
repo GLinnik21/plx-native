@@ -351,7 +351,8 @@ fn the_hero_text_reads_over_bright_artwork() {
         (
             "detail people (top line)",
             people_r,
-            crate::detail_layout::people_top(hc.btn_y, crate::detail_layout::PEOPLE_MAX_LINES),
+            crate::detail_layout::people_top(hc.btn_y, crate::detail_layout::PEOPLE_MAX_LINES,
+                theme::size::CAPTION as f32), // conservative full-size cap band
             crate::detail_layout::PEOPLE_INK,
             true,
             3.0,
