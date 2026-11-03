@@ -1225,7 +1225,7 @@ pub(super) fn native_slot_available() -> Option<()> {
 /// has already frozen its URL, codec declaration, playback rate, and trace identity.
 pub(super) fn prepare_native_open(
     pa: &mut super::adapter::PlayerAdapter,
-    mut open: Option<FeedOpenRequest>,
+    open: Option<FeedOpenRequest>,
     sample: Option<super::feed_open::SampleSource>,
     is_h265: bool,
     session_rate: i32,
