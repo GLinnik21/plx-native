@@ -411,7 +411,7 @@ pub(super) struct HostFfmpeg {
 
 impl Drop for HostFfmpeg {
     fn drop(&mut self) {
-        ABI_OK.store(self.previous_abi_ok, Ordering::Relaxed);
+        swap_abi_for_test(self.previous_abi_ok);
     }
 }
 
@@ -445,7 +445,7 @@ pub(super) fn bind_host_ffmpeg() -> HostFfmpeg {
         "the staged FFmpeg is not the one ff.rs is built for"
     );
     HostFfmpeg {
-        previous_abi_ok: ABI_OK.swap(true, Ordering::Relaxed),
+        previous_abi_ok: swap_abi_for_test(true),
     }
 }
 

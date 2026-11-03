@@ -27,6 +27,11 @@ customer and a boundary drawn from guesses about the second; the fence in `ci/ch
 would, and L15b is where the port's OS-neutral shape is worked out.
 
 The gate is `ci/check-module-layers.py` and its config is `ci/module-layers.ini`.
+The gate also checks each extracted crate's local Cargo declarations, including build, dev,
+optional and target-specific dependencies, against those same `uses` edges. A declared edge is
+checked even before Rust code names the dependency, so an unused upward dependency cannot bypass
+the module graph. A crate's `[package.metadata.plx] mount` selects its layer; ordinary `plx_` crate
+names fall back to their package suffix. External crates are outside this graph.
 `ci/allow/layers.txt` holds the migration list. L1 to L14 emptied it, L15 declared 44 entries of
 its own and then removed them, so it is empty again and only shrinks. Run
 `ci/check-module-layers.py --report` for current numbers. The graph findings and the migration

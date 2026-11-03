@@ -24,7 +24,7 @@ default = []
 # behaviour here, not plumbing: the quality-override, track-name, playurl and forced-route triggers
 # read their files through `plx_base::devtrig`, which is compile-time `None` without it, and
 # 130-odd `cfg`s select the dev surface.
-devtriggers = ["plx_base/devtriggers", "plx_machine/devtriggers", "plx_net/devtriggers", "plx_platform/devtriggers", "plx_gfx?/devtriggers", "plx_plex/devtriggers", "plx_telemetry/devtriggers", "plx_data/devtriggers"]
+devtriggers = ["dep:plx_play_uri", "plx_play_uri/devtriggers", "plx_media_codecs/devtriggers", "plx_base/devtriggers", "plx_machine/devtriggers", "plx_net/devtriggers", "plx_platform/devtriggers", "plx_gfx?/devtriggers", "plx_plex/devtriggers", "plx_telemetry/devtriggers", "plx_data/devtriggers"]
 # `player::ffi_host` (the simulator's `VideoSink`) and `player::sim_video` replace `player::ffi`
 # (Starfish/ACB) under it. `sim_video` is the one thing here that draws, so `plx_gfx` is a
 # dependency of this feature only.
@@ -37,9 +37,12 @@ lab-diagnostics = []
 # `cfg(test)` alone cannot give a dependent (the stand-in sink, the stepped feed clock, the asset
 # directory, the settled route start). Enabled from the dependents' `[dev-dependencies]`; never in a
 # shipped build.
-test-support = ["plx_base/test-support", "plx_machine/test-support", "plx_platform/test-support", "plx_gfx?/test-support", "plx_net/test-support", "plx_plex/test-support", "plx_telemetry/test-support", "plx_data/test-support"]
+test-support = ["plx_media_codecs/test-support", "plx_base/test-support", "plx_machine/test-support", "plx_platform/test-support", "plx_gfx?/test-support", "plx_net/test-support", "plx_plex/test-support", "plx_telemetry/test-support", "plx_data/test-support"]
 
 [dependencies]
+plx_playback_contract = { path = "../playback-contract" }
+plx_play_uri = { path = "../play-uri", optional = true }
+plx_media_codecs = { path = "../media-codecs" }
 plx_base = { path = "../base" }
 plx_machine = { path = "../machine" }
 plx_platform = { path = "../platform" }
@@ -61,6 +64,8 @@ serde_json = { version = "1", default-features = false, features = ["alloc", "st
 dolby_vision = { version = "3.4", default-features = false }
 
 [dev-dependencies]
+plx_media_codecs = { path = "../media-codecs", features = ["test-support"] }
+plx_play_uri = { path = "../play-uri", features = ["devtriggers", "test-support"] }
 # THE rule of the layer crates: dev-depend on ITSELF with `devtriggers`, so `cargo test -p plx_media`
 # alone builds the crate and every layer below it as the Makefile's suite does.
 plx_media = { path = ".", features = ["devtriggers"] }

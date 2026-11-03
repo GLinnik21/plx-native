@@ -37,7 +37,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CRATE = "plxnative_modules"
 # The layer crates split out of the app crate (docs/module-layers.md), each a dependency of it and
 # each held to the same rule: an rlib, never an archive. One archive is linked, and it is the app's.
-LAYER_CRATES = ("plx_base", "plx_machine", "plx_net", "plx_platform", "plx_gfx", "plx_ui", "plx_plex", "plx_telemetry", "plx_data", "plx_session", "plx_media", "plx_appkit", "plx_screens")
+LAYER_CRATES = ("plx_base", "plx_machine", "plx_net", "plx_platform", "plx_gfx", "plx_ui", "plx_plex", "plx_telemetry", "plx_data", "plx_session", "plx_media", "plx_playback_contract", "plx_play_uri", "plx_media_codecs", "plx_appkit", "plx_screens")
 TOOLCHAIN = pinned()  # the repo's one toolchain
 # What the workspace needs for cargo to resolve (not compile) the app package: the manifest and
 # lockfile, the `.cargo/config.toml` that cargo finds from the working directory, and the sources

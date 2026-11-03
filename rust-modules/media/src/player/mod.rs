@@ -19,6 +19,7 @@
 //! and `sink()` answers a no-op sink to every other main-thread verb until it is done.
 #![allow(non_upper_case_globals)]
 pub mod adapter;
+pub mod backend;
 pub mod claim_hold;
 pub mod ass; // pinned libass worker and immutable rendered frames
 pub mod ass_perf; // per-second libass cost line (`assperf:`)

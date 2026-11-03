@@ -18,6 +18,9 @@ members = [
     "data",
     "session",
     "media",
+    "playback-contract",
+    "play-uri",
+    "media-codecs",
     "appkit",
     "screens",
     "storage",
@@ -97,6 +100,7 @@ devtriggers = [
     "plx_data/devtriggers",
     "plx_session/devtriggers",
     "plx_media/devtriggers",
+    "plx_media_codecs/devtriggers",
     "plx_appkit/devtriggers",
     "plx_screens/devtriggers",
 ]
@@ -245,6 +249,8 @@ plx_session = { path = "session" }
 # HLS, adaptive bitrate, the buffer-feed player engine and route selection. It declares the Starfish/ACB
 # externs and the two C callbacks `src/starfish.c` calls, and links nothing on the television.
 plx_media = { path = "media" }
+plx_playback_contract = { path = "playback-contract" }
+plx_media_codecs = { path = "media-codecs" }
 # The appkit layer (ci/module-layers.ini `[appkit]`): the widgets several screens share, composed from
 # the ui library over application types (the player HUD, the track menus, the info panel, the Sources row
 # model). It links nothing on the television; its build script is for the host test binary.

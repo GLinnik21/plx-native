@@ -438,7 +438,7 @@ unsafe fn open_side(cfg: &ReadCfg, stop: &Arc<SideStop>) -> Result<(SideDemux, c
     // gate, so on such a device the reader never gets this far. (Checking it before the anchor
     // wait would be wrong: the flag is not set until the demuxer has registered FFmpeg.)
     // `Unusable` raises the failure (a rebuild as the server burn).
-    if !ABI_OK.load(std::sync::atomic::Ordering::Relaxed) {
+    if !abi_ok() {
         return Err(RunEnd::Unusable);
     }
     let io = Box::into_raw(io);
