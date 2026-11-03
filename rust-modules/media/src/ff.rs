@@ -5006,9 +5006,12 @@ impl plx_playback_contract::adaptive::PublicationGate for AqPublicationPort {
     }
 }
 
-struct HlsAutomaticPort { gate: AqPublicationPort }
+struct HlsAutomaticPort<'a> {
+    gate: AqPublicationPort,
+    pause_cursor: &'a mut crate::player::UserPauseCursor,
+}
 
-impl AutomaticPort for HlsAutomaticPort {
+impl AutomaticPort for HlsAutomaticPort<'_> {
     type Lease = HlsAutomaticLease;
 
     fn begin(
@@ -5031,7 +5034,7 @@ impl AutomaticPort for HlsAutomaticPort {
     }
 }
 
-impl TrialActuatorPort for HlsAutomaticPort {
+impl TrialActuatorPort for HlsAutomaticPort<'_> {
     type TrialReserve = HlsTrialReserve;
 
     fn arm_trial_reserve(
@@ -5045,10 +5048,12 @@ impl TrialActuatorPort for HlsAutomaticPort {
     fn trial_token(&self, reserve: &Self::TrialReserve) -> u64 { reserve.token() }
 }
 
-impl AdaptiveRoundPort for HlsAutomaticPort {
-    fn position_ns() -> i64 { SHARED.playpos_ns.load(Ordering::Relaxed).max(0) }
+impl AdaptiveRoundPort for HlsAutomaticPort<'_> {
+    fn position_sampler(&self) -> fn() -> i64 {
+        || SHARED.playpos_ns.load(Ordering::Relaxed).max(0)
+    }
 
-    fn transition_permitted(kind: AutomaticTransition) -> bool {
+    fn transition_permitted(&self, kind: AutomaticTransition) -> bool {
         SHARED.hls_automatic_transition_permitted(match kind {
             AutomaticTransition::Original => crate::player::HlsAutomaticTransition::Original,
             AutomaticTransition::QualityUp => crate::player::HlsAutomaticTransition::QualityUp,
@@ -5056,16 +5061,25 @@ impl AdaptiveRoundPort for HlsAutomaticPort {
         })
     }
 
-    fn rebuffer_state() -> (bool, bool) {
+    fn rebuffer_state(&self) -> (bool, bool) {
         (
             SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
             SHARED.hls_rebuffering.load(Ordering::Acquire),
         )
     }
 
-    fn buffer_snapshot() -> (Option<i64>, i64) {
+    fn buffer_snapshot(&self) -> (Option<i64>, i64) {
         let (snapshot, started_ns) = hls_buffer_snapshot_with_playhead(None);
         (snapshot.buffered_ms(), started_ns)
+    }
+
+    fn pause_fact(&mut self) -> PauseFact {
+        let commit_pause = crate::player::TX.pause_state_sample();
+        PauseFact {
+            paused: commit_pause.paused,
+            completed_ms: self.pause_cursor.consume_completed(commit_pause)
+                .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)),
+        }
     }
 }
 
@@ -5565,15 +5579,9 @@ fn hls_demux(
         let (_, output, _, _) = physical.current.take()
             .expect("an active round holds its physical media until after prefetch");
         let (proposal, reserve_policy, sample, candidate_start) = match state.advance_round(
-            cycle, &mut HlsAutomaticPort { gate: AqPublicationPort(aq) }, || now_ms(),
-            || {
-                let commit_pause = crate::player::TX.pause_state_sample();
-                PauseFact {
-                    paused: commit_pause.paused,
-                    completed_ms: physical.pause_cursor.consume_completed(commit_pause)
-                        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)),
-                }
-            },
+            cycle, &mut HlsAutomaticPort {
+                gate: AqPublicationPort(aq), pause_cursor: &mut *physical.pause_cursor,
+            }, || now_ms(),
             || SHARED.dg_abr_action.store(
                 crate::player::ABR_ACTION_RECOVER_ORIGINAL, Ordering::Relaxed,
             ),

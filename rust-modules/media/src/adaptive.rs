@@ -2091,14 +2091,13 @@ impl Coordinator {
             proposal, reserve_policy, candidate_duration, reserve, rebuffering,
         )
     }
-    pub(crate) fn begin_candidate<P: TrialActuatorPort>(
+    pub(crate) fn begin_candidate<P: AdaptiveRoundPort>(
         &mut self, proposal: abr::Proposal, port: &mut P,
         expected_user_sequence: u64,
-        buffer: impl FnOnce() -> (Option<i64>, i64),
         now_ms: impl Fn() -> u64,
         mut on_rejected: impl FnMut(abr::Proposal, bool),
     ) -> Result<CandidateStart<P::Lease, P::TrialReserve>, CandidateStartRefusal> {
-        let plan = match self.preprime_plan(proposal, buffer, || now_ms()) {
+        let plan = match self.preprime_plan(proposal, || port.buffer_snapshot(), || now_ms()) {
             Ok(plan) => plan,
             Err(failure) => {
                 if let Some(refreshing) = failure.refreshing_same_request() {
@@ -2384,10 +2383,9 @@ impl Coordinator {
     /// A source latch wins a physical lease before cancelling a competing rung.
     /// Publication itself is short and runs under the feed's AQ abort fence;
     /// a Busy or moved clock retains source evidence for a later boundary.
-    pub(crate) fn run_latched_original<P: AutomaticPort>(
+    pub(crate) fn run_latched_original<P: AdaptiveRoundPort>(
         &mut self, source: LatchedOriginalRecovery, port: &mut P,
         expected_user_sequence: u64, now_ms: impl FnOnce() -> u64,
-        position_ns: impl FnOnce() -> i64,
         on_published: impl FnOnce(),
         on_cancelled_rung: impl FnOnce(abr::Proposal, bool),
     ) -> OriginalSwitchOutcome {
@@ -2403,6 +2401,7 @@ impl Coordinator {
             on_cancelled_rung(proposal, refreshing);
         }
         let authorized = port.authorize(&lease);
+        let position_ns = port.position_sampler();
         match self.publish_original(
             port.gate(), authorized, prepared.kbps, position_ns, on_published,
         ) {
@@ -2418,13 +2417,11 @@ impl Coordinator {
     /// A bounded Original probe keeps its actuator lease through physical GET,
     /// fresh pause settlement and the AQ-fenced route request. A stale resource
     /// produces no source evidence; Busy and clock movement retain a recovery.
-    pub(crate) fn run_original_probe<P: AutomaticPort>(
+    pub(crate) fn run_original_probe<P: AdaptiveRoundPort>(
         &mut self, permit: abr::ProbePermit, port: &mut P,
         expected_user_sequence: u64, telemetry: &abr::ControllerTelemetry,
         remaining_ms: i64, decision: abr::Decision, cleanup_ready: bool,
         buffered_ms: Option<i64>, media_duration_ms: u32,
-        pause: impl FnOnce() -> PauseFact,
-        position_ns: impl FnOnce() -> i64,
         diagnostics: &mut impl OriginalProbeDiagnostics,
     ) -> OriginalProbeOutcome {
         let Some(lease) = port.begin(AutomaticTransition::Original, expected_user_sequence) else {
@@ -2469,7 +2466,7 @@ impl Coordinator {
             grade.as_ref().map(|grade| grade.verdict),
         ));
         let recovery = self.settle_probe_recovery(
-            grade.as_ref(), probe.kbps, pause, decision, cleanup_ready,
+            grade.as_ref(), probe.kbps, || port.pause_fact(), decision, cleanup_ready,
             buffered_ms, media_duration_ms,
         );
         match recovery {
@@ -2486,6 +2483,7 @@ impl Coordinator {
             ProbeRecoveryAction::Retained => OriginalProbeOutcome::Continue,
             ProbeRecoveryAction::Switch { kbps, measured_kbps } => {
                 let authorized = port.authorize(&lease);
+                let position_ns = port.position_sampler();
                 let publication = self.publish_probed_original(
                     port.gate(), authorized, kbps, measured_kbps, position_ns,
                     || diagnostics.action(ProbeTraceAction::RecoverOriginal, 0),
@@ -2549,7 +2547,7 @@ impl Coordinator {
     /// transaction receives its pending reserve policy from the same controller.
     pub(crate) fn advance_round<P: AdaptiveRoundPort>(
         &mut self, cycle: ActiveCycle, port: &mut P,
-        now_ms: impl Fn() -> u64, pause: impl FnOnce() -> PauseFact,
+        now_ms: impl Fn() -> u64,
         on_recover_original: impl FnOnce(),
         mut on_action: impl FnMut(ActionReadout),
         mut on_diagnostic: impl FnMut(RoundDiagnostic),
@@ -2574,7 +2572,7 @@ impl Coordinator {
         }
         let source = self.run_latched_original(
             after_prefetch.source, port, expected_user_sequence, || now_ms(),
-            P::position_ns, on_recover_original,
+            on_recover_original,
             |proposal, refreshing| on_action(action_readout(
                 proposal, refreshing, Some(false),
             )),
@@ -2598,7 +2596,8 @@ impl Coordinator {
         }
         let action = self.next_round_action(
             &round, sample, rollback_media_ms, remaining_ms, || now_ms(),
-            paused, cleanup_ready, P::transition_permitted, P::rebuffer_state,
+            paused, cleanup_ready,
+            |kind| port.transition_permitted(kind), || port.rebuffer_state(),
         );
         match action {
             RoundAction::Stay => RoundCourse::Stay,
@@ -2625,7 +2624,7 @@ impl Coordinator {
                     permit, port, expected_user_sequence, &round.telemetry,
                     remaining_ms, round.decision, cleanup_ready,
                     sample.buffer.buffered_ms(), sample.media_duration_ms(),
-                    pause, P::position_ns, probe_diagnostics,
+                    probe_diagnostics,
                 ) {
                     OriginalProbeOutcome::Published => RoundCourse::OriginalPublished,
                     OriginalProbeOutcome::Aborted => RoundCourse::Aborted,
@@ -2647,7 +2646,7 @@ impl Coordinator {
             }
             RoundAction::Trial { proposal, reserve_policy } => {
                 let start = match self.begin_candidate(
-                    proposal, port, expected_user_sequence, P::buffer_snapshot,
+                    proposal, port, expected_user_sequence,
                     || now_ms(),
                     |proposal, refreshing| on_action(action_readout(
                         proposal, refreshing, Some(false),

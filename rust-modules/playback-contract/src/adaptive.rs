@@ -163,13 +163,14 @@ pub trait TrialActuatorPort: AutomaticPort {
 }
 
 /// Physical facts available to one adaptive decision on the existing feed
-/// worker. Associated samplers keep the playhead read callable inside the AQ
-/// publication closure without borrowing the actuator port through its gate.
+/// worker. The playhead sampler remains callable inside the AQ publication
+/// closure without borrowing the actuator port through its gate.
 pub trait AdaptiveRoundPort: TrialActuatorPort {
-    fn position_ns() -> i64;
-    fn transition_permitted(kind: AutomaticTransition) -> bool;
-    fn rebuffer_state() -> (bool, bool);
-    fn buffer_snapshot() -> (Option<i64>, i64);
+    fn position_sampler(&self) -> fn() -> i64;
+    fn transition_permitted(&self, kind: AutomaticTransition) -> bool;
+    fn rebuffer_state(&self) -> (bool, bool);
+    fn buffer_snapshot(&self) -> (Option<i64>, i64);
+    fn pause_fact(&mut self) -> PauseFact;
 }
 
 /// Physical transfer and output geometry before a candidate policy verdict.
