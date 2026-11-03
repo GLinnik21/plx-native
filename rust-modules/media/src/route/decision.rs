@@ -350,6 +350,10 @@ pub struct PlaybackSession {
     /// old accessor kept as a projection: `.map_or(0, |a| a.sid)`, so every existing caller that
     /// only ever wanted the wire id keeps compiling unchanged.
     cur_audio: Option<CarriedAudio>,
+    /// The viewer's selected source Part, streams and audio constraint, captured before a
+    /// physical backend chooses a different effective stream. Both backends use this one intent;
+    /// `cur_audio` remains the stream the current Feed route actually carries.
+    source_selection: Option<SourceSelection>,
     /// current subtitle selection (0 = none) — the picked Plex stream id, regardless of how it
     /// renders: burned into any TRANSCODE (our client profile advertises no soft-sub support, so
     /// Plex's decision is burn), or client-rendered from the demuxer on direct play
@@ -536,16 +540,28 @@ pub struct PlaybackSession {
     resolved_as_preview: bool,
 }
 
-/// The resolved source and selected streams an external URI qualifier must bind its exact URL
-/// and native track map to. A capability row for another Part or selection cannot reuse it.
+/// Compatibility name at the URI qualifier boundary; the session keeps one common intent.
 #[cfg(feature = "play-uri")]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct UriSelection {
-    pub server: ServerId,
-    pub part_id: i64,
-    pub audio_sid: i64,
-    pub subtitle_sid: i64,
-    pub audio_contract: plx_plex::plex::AudioEnhancements,
+pub use super::plan::SourceSelection as UriSelection;
+
+#[cfg(all(test, feature = "play-uri"))]
+mod source_selection_tests {
+    use super::*;
+
+    #[test]
+    fn a_feed_effective_selection_cannot_retarget_an_original_uri_offer() {
+        let mut session = PlaybackSession::IDLE;
+        let selected = SourceSelection { server: ServerId::UNSET, part_id: 17,
+            audio_sid: 41, subtitle_sid: 73,
+            audio_contract: plx_plex::plex::AudioEnhancements::NONE };
+        session.bind_source_selection(selected);
+        session.cur_sub_sid = 99; // A backend-specific effective route may carry another stream.
+        assert_eq!(session.uri_selection(), selected);
+
+        clear_track_selection(&mut session); // A new logical request retires that source intent.
+        assert_eq!(session.source_selection(), None);
+        assert_ne!(session.uri_selection(), selected);
+    }
 }
 
 /// The route decision explicitly distinguishes another recovery candidate from a physical
@@ -778,10 +794,21 @@ impl PlaybackSession {
 
     #[cfg(feature = "play-uri")]
     pub fn uri_selection(&self) -> UriSelection {
-        UriSelection { server: self.cur_sid, part_id: self.cur_part_id,
+        self.source_selection.unwrap_or_else(|| SourceSelection {
+            server: self.cur_sid, part_id: self.cur_part_id,
             audio_sid: self.cur_audio.as_ref().map_or(0, |audio| audio.sid),
             subtitle_sid: self.cur_sub_sid,
-            audio_contract: self.cur_contract.audio }
+            audio_contract: self.cur_contract.audio })
+    }
+
+    /// Install the resolved Part's source-selected streams before backend-specific planning.
+    /// Both physical backends must honor this intent or explicitly refuse it.
+    pub fn bind_source_selection(&mut self, selection: SourceSelection) {
+        self.source_selection = Some(selection);
+    }
+
+    pub fn source_selection(&self) -> Option<SourceSelection> {
+        self.source_selection
     }
 
     pub fn planned_feed_fidelity(&self) -> Option<(plx_playback_contract::Fidelity,
@@ -951,6 +978,7 @@ impl PlaybackSession {
         cur_media_index: 0,
         cur_sid: ServerId::UNSET,
         cur_audio: None,
+        source_selection: None,
         cur_sub_sid: 0,
         selection_known: false,
         carried_selection: None,
@@ -1046,6 +1074,7 @@ impl PlaybackSession {
             cur_media_index,
             cur_sid,
             cur_audio,
+            source_selection,
             cur_sub_sid,
             selection_known,
             carried_selection,
@@ -1123,6 +1152,7 @@ impl PlaybackSession {
             cur_media_index: *cur_media_index,
             cur_sid: *cur_sid,
             cur_audio: cur_audio.clone(),
+            source_selection: *source_selection,
             cur_sub_sid: *cur_sub_sid,
             selection_known: *selection_known,
             carried_selection: *carried_selection,
@@ -9201,6 +9231,7 @@ fn request_play_with_queue(
 /// the incoming item's own).
 fn clear_track_selection(s: &mut PlaybackSession) {
     s.cur_audio = None;
+    s.source_selection = None;
     s.cur_sub_sid = 0;
     s.selection_known = false;
     s.cur_sub_sidecar = false;
@@ -9709,6 +9740,9 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             // The carried track, as `build_stream` froze it from the fetched stream. `None` = the
             // plan names the server default, or its track list was never fetched.
             cur_audio: plan.audio,
+            // The pre-plan source intent is retained across physical route reconstruction.
+            // A resolved Plan with its own source selection installs that exact value here.
+            source_selection: s.source_selection,
             // the part/show-selected subtitle (0 = none), so the menu checkmark, the timeline report
             // and any later transcode of this item all agree with what the renderer is told below
             cur_sub_sid: plan.sub_sid,
@@ -11804,6 +11838,11 @@ pub fn commit_audio_selection(ps: &mut PlaybackSession, audio: CarriedAudio) -> 
     let accepted = commit_audio_route(ps, audio);
     if accepted {
         follow_audio_with_forced_only(ps, sid);
+        if let Some(source) = ps.source_selection.as_mut() {
+            source.audio_sid = sid;
+            source.subtitle_sid = ps.cur_sub_sid;
+            source.audio_contract = ps.cur_contract.audio;
+        }
     }
     accepted
 }
@@ -12002,6 +12041,10 @@ fn commit_subtitle_selection_inner(
     }
     crate::player::request_subtitle(sub_idx);
     set_subtitle(ps, stream_id);
+    if let Some(source) = ps.source_selection.as_mut() {
+        source.subtitle_sid = stream_id;
+        source.audio_contract = ps.cur_contract.audio;
+    }
     ps.selection_known = true;
     // `sub_idx` is `metadata::sub_render_ordinal`'s own convention: negative for an external
     // sidecar (and for Off, where `stream_id == 0` disambiguates), non-negative for an embedded
