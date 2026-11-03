@@ -63,7 +63,7 @@ mod resume_tests;
 mod shared;
 mod shared_resources;
 mod subtitle_bitmap;
-use shared_resources::Shared;
+use shared_resources::{Shared, Transport};
 pub mod sidecar;
 pub mod sub_charset; // legacy-encoding text subtitles (GBK, Big5, Shift_JIS, ...) read as UTF-8; decided once per track
 pub mod subside; // the side subtitle reader's thread and state (dev trigger `plxnative-subside`)
@@ -90,7 +90,6 @@ pub use plx_data::metadata::track_names::TrackNames;
 pub use shared::UserPauseCursor;
 use shared::{
     HlsPauseCompletion, HlsPlayCompletion, HlsUserPause, HlsUserResume,
-    Transport,
 };
 
 /// The video sink every seam call goes through. The port installs the television's

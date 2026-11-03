@@ -1982,8 +1982,6 @@ pub struct Transport {
     /// default again, so only a still-live pipeline ever needs the restore
     /// (`player::restore_preroll_volume`: resume, the accepted re-pause, and the pump's per-tick sweep).
     preroll_volume: AtomicI32,
-    pub hud_until: AtomicU32,  // pl_hud_until (SDL ticks)
-    pub scrub_ns: AtomicI64,   // pl_scrub_ns (-1 = not scrubbing)
     pub seek_to_ns: AtomicI64, // g_seek_to_ns (UI seek request, -1 = none)
     // Seek requests received since the pump last APPLIED one. seek_to_ns only ever holds the
     // newest target, so without this counter a coalesced burst is indistinguishable from a
@@ -2104,8 +2102,6 @@ impl Transport {
             seek_preroll: AtomicBool::new(false),
             seek_preroll_owned: AtomicI64::new(-1),
             preroll_volume: AtomicI32::new(PREROLL_VOLUME_NONE),
-            hud_until: AtomicU32::new(0),
-            scrub_ns: AtomicI64::new(-1),
             seek_to_ns: AtomicI64::new(-1),
             seek_reqs: AtomicU32::new(0),
         }
