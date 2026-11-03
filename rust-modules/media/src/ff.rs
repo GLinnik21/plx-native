@@ -3,6 +3,41 @@ pub use plx_play_feed::ff::*;
 #[cfg(test)]
 pub(crate) use crate::subtitle_job as subside;
 
+// The integration fixtures remain in media because they exercise its player
+// session and route adapter. Their physical vocabulary is imported from the
+// lower contracts and the same standard types the former local module used.
+#[cfg(test)]
+use crate::aq::AuQueue;
+#[cfg(test)]
+use plx_playback_contract::adaptive::{Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation,
+    AdaptivePhysicalPort, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact,
+    CandidateFencePort, CandidateMediaPort, ExplorationFact, FeedAction, FeedFailure,
+    FeedObservation, FeedPort, PauseFact, RoundId, TrialActuatorPort, TrialClock, TrialId,
+    VariantFact};
+#[cfg(test)]
+use plx_playback_contract::demux::{DemuxCallbackEffect, DemuxClock, DemuxEffect, DemuxObserver,
+    DemuxSession, HlsBufferClocks, PauseLane};
+#[cfg(test)]
+use plx_playback_contract::SourceKey;
+#[cfg(test)]
+use plx_play_feed::SendPtr;
+#[cfg(test)]
+use plx_net::stream::HttpStream;
+#[cfg(test)]
+use plx_net::net::origin::Origin;
+#[cfg(test)]
+use plx_net::range_io::{self, RangeFactory, RangeReader};
+#[cfg(test)]
+use plx_playback_contract::demux::DemuxFault;
+#[cfg(test)]
+use std::ffi::CString;
+#[cfg(test)]
+use std::os::raw::{c_int, c_long, c_uchar, c_uint, c_void};
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
+use std::sync::Arc;
+
 // ---------------------------------------------------------------------------------------
 #[cfg(test)]
 #[path = "ff_test_support.rs"]
