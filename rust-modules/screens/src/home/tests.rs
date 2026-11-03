@@ -3847,8 +3847,10 @@ fn the_hint_does_not_stand_up_by_itself_while_the_screenshot_clocks_are_held() {
         plx_machine::motion::hold_phase_clocks(Some(4000));
         let ms = hint_ticks(&mut s, view, card, None, 0, hint_secs(8.0));
         assert!(!s.hold_hint.visible(), "pinned clocks: no self-appearing hint in a documentation figure");
-        hint_ticks(&mut s, view, card, Some(100), ms, 30);
-        assert!(s.hold_hint.visible(), "a real hold is input and still shows it");
+        let ms = hint_ticks(&mut s, view, card, Some(100), ms, 30);
+        assert!(!s.hold_hint.visible(), "a short click stays hidden even with pinned clocks");
+        hint_ticks(&mut s, view, card, Some(plx_ui::press::LONG_MS / 2), ms, 30);
+        assert!(s.hold_hint.visible(), "a deliberate hold is input and still shows it");
         plx_machine::motion::hold_phase_clocks(None);
     });
 }
