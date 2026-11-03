@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-03T11:47:33Z",
+ "generated": "2026-11-03T11:53:14Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -106,14 +106,14 @@
    "change7_pct": 25.5,
    "d30": null,
    "delta30": null,
-   "delta7": 41.0,
+   "delta7": 41,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 76,
+   "n_now": 77,
    "n_prev": 79,
-   "now": 202.0,
+   "now": 202,
    "prev7": 161,
    "shown": true,
    "state": "worse",
@@ -123,18 +123,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -61.1,
-   "change7_pct": 20.4,
+   "change30_pct": -61.2,
+   "change7_pct": 20.3,
    "d30": 1053,
-   "delta30": -643.5,
-   "delta7": 69.5,
+   "delta30": -644,
+   "delta7": 69,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 84,
+   "n_now": 85,
    "n_prev": 91,
-   "now": 409.5,
+   "now": 409,
    "prev7": 340,
    "shown": true,
    "state": "worse",
@@ -167,7 +167,7 @@
   {
    "change30_pct": -62.6,
    "change7_pct": 14.6,
-   "d30": 1110,
+   "d30": 1110.0,
    "delta30": -695.0,
    "delta7": 53.0,
    "group": "ci",
@@ -324,10 +324,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 33.9,
+   "change30_pct": 33.5,
    "change7_pct": 5.3,
-   "d30": 743,
-   "delta30": 252,
+   "d30": 745.5,
+   "delta30": 249.5,
    "delta7": 50,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
@@ -408,18 +408,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 28.3,
-   "change7_pct": 7.3,
+   "change30_pct": 28.1,
+   "change7_pct": 7.1,
    "d30": 222.5,
-   "delta30": 63.0,
-   "delta7": 19.5,
+   "delta30": 62.5,
+   "delta7": 19,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 76,
+   "n_now": 77,
    "n_prev": 79,
-   "now": 285.5,
+   "now": 285,
    "prev7": 266,
    "shown": true,
    "state": "flat",
@@ -438,9 +438,9 @@
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 76,
+   "n_now": 77,
    "n_prev": 78,
-   "now": 216.0,
+   "now": 216,
    "prev7": 200.5,
    "shown": true,
    "state": "flat",
@@ -517,8 +517,8 @@
   {
    "change30_pct": 33.3,
    "change7_pct": 26.3,
-   "d30": 18,
-   "delta30": 6,
+   "d30": 18.0,
+   "delta30": 6.0,
    "delta7": 5,
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
@@ -540,14 +540,14 @@
    "change7_pct": 0.0,
    "d30": 16.5,
    "delta30": 1.5,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 76,
+   "n_now": 77,
    "n_prev": 79,
-   "now": 18.0,
+   "now": 18,
    "prev7": 18,
    "shown": false,
    "state": "flat",
@@ -559,8 +559,8 @@
   {
    "change30_pct": 30.8,
    "change7_pct": 0.0,
-   "d30": 13,
-   "delta30": 4,
+   "d30": 13.0,
+   "delta30": 4.0,
    "delta7": 0,
    "group": "ci",
    "id": "nightly|plan today's nightly",
@@ -667,11 +667,6 @@
    "change_pct": 69.1,
    "commits": [
     {
-     "pr": 1202,
-     "sha": "1e9bd1d02",
-     "title": "Draw a sidecar over a remux on the content's clock: a clock-only side reader"
-    },
-    {
      "pr": 1203,
      "sha": "f2449cc55",
      "title": "Honor Player HUD design declarations through shared UI components"
@@ -715,6 +710,11 @@
      "pr": 1218,
      "sha": "a7572c88a",
      "title": "player: stop fencing viewer HLS Resume on historical runway"
+    },
+    {
+     "pr": 1215,
+     "sha": "01e91f1c4",
+     "title": "Refresh the open library grid atomically after server changes"
     }
    ],
    "from": 194,
@@ -728,11 +728,6 @@
    "change_pct": 33.3,
    "commits": [
     {
-     "pr": 1202,
-     "sha": "1e9bd1d02",
-     "title": "Draw a sidecar over a remux on the content's clock: a clock-only side reader"
-    },
-    {
      "pr": 1203,
      "sha": "f2449cc55",
      "title": "Honor Player HUD design declarations through shared UI components"
@@ -776,6 +771,11 @@
      "pr": 1218,
      "sha": "a7572c88a",
      "title": "player: stop fencing viewer HLS Resume on historical runway"
+    },
+    {
+     "pr": 1215,
+     "sha": "01e91f1c4",
+     "title": "Refresh the open library grid atomically after server changes"
     }
    ],
    "from": 215,
@@ -789,11 +789,6 @@
    "change_pct": 25.5,
    "commits": [
     {
-     "pr": 1202,
-     "sha": "1e9bd1d02",
-     "title": "Draw a sidecar over a remux on the content's clock: a clock-only side reader"
-    },
-    {
      "pr": 1203,
      "sha": "f2449cc55",
      "title": "Honor Player HUD design declarations through shared UI components"
@@ -837,6 +832,11 @@
      "pr": 1218,
      "sha": "a7572c88a",
      "title": "player: stop fencing viewer HLS Resume on historical runway"
+    },
+    {
+     "pr": 1215,
+     "sha": "01e91f1c4",
+     "title": "Refresh the open library grid atomically after server changes"
     }
    ],
    "from": 161,
@@ -844,16 +844,11 @@
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "since": "2026-11-03",
    "threshold_pct": 20.0,
-   "to": 202.0
+   "to": 202
   },
   {
-   "change_pct": 20.4,
+   "change_pct": 20.3,
    "commits": [
-    {
-     "pr": 1202,
-     "sha": "1e9bd1d02",
-     "title": "Draw a sidecar over a remux on the content's clock: a clock-only side reader"
-    },
     {
      "pr": 1203,
      "sha": "f2449cc55",
@@ -898,23 +893,23 @@
      "pr": 1218,
      "sha": "a7572c88a",
      "title": "player: stop fencing viewer HLS Resume on historical runway"
+    },
+    {
+     "pr": 1215,
+     "sha": "01e91f1c4",
+     "title": "Refresh the open library grid atomically after server changes"
     }
    ],
    "from": 340,
    "id": "push_wait",
    "label": "Wait after merge",
-   "since": "2026-11-01",
+   "since": "2026-11-03",
    "threshold_pct": 15.0,
-   "to": 409.5
+   "to": 409
   },
   {
    "change_pct": 15.8,
    "commits": [
-    {
-     "pr": 1202,
-     "sha": "1e9bd1d02",
-     "title": "Draw a sidecar over a remux on the content's clock: a clock-only side reader"
-    },
     {
      "pr": 1203,
      "sha": "f2449cc55",
@@ -959,6 +954,11 @@
      "pr": 1218,
      "sha": "a7572c88a",
      "title": "player: stop fencing viewer HLS Resume on historical runway"
+    },
+    {
+     "pr": 1215,
+     "sha": "01e91f1c4",
+     "title": "Refresh the open library grid atomically after server changes"
     }
    ],
    "from": 2172.0,
