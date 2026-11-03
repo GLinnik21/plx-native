@@ -4,6 +4,7 @@
 
 use crate::adaptive::{AutomaticTransition, FenceHandle, LeaseHandle, PhysicalFailure};
 use crate::AttemptId;
+use crate::subtitle::Anchor;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -63,6 +64,7 @@ pub trait DemuxClock {
     fn user_sequence(&self) -> u64;
     fn desired_audio_idx(&self) -> i32;
     fn applied_rate_permille(&self) -> i32;
+    fn side_subtitle_owner(&self) -> bool;
     fn playpos_sampler(&self) -> fn() -> i64;
     fn hls_buffer_sampler(&self) -> fn() -> Option<i64>;
     fn remaining_playback_sampler(&self) -> fn() -> i64;
@@ -108,6 +110,8 @@ pub enum DemuxEffect {
     NoVideo,
     HttpStatus(i32),
     TrackNames { audio: Vec<String>, subs: Vec<String> },
+    SideAnchor(Option<Anchor>),
+    FirstAudioPts(i64),
     FileSize(i64),
     TransportRc(i32),
     NetworkBytes(i64),
