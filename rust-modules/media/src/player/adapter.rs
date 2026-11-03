@@ -541,6 +541,7 @@ impl PlayerAdapter {
     pub fn offer_qualified_uri(&mut self, ps: &mut crate::route::PlaybackSession,
         offer: QualifiedUriOffer) -> Result<(), Failure> {
         if self.uri_backend.is_none() { return Err(Failure::Unavailable); }
+        if crate::route::is_preview(ps) { return Err(Failure::Unsupported); }
         if offer.selection != ps.uri_selection()
             || crate::route::pending_route_start() != Some(offer.route_start)
             || offer.expires_at <= std::time::Instant::now() {
