@@ -8,7 +8,7 @@ use std::os::raw::c_int;
 /// How a subtitle stream's payload turns into displayable text — classified by the codec's
 /// name (avcodec_get_name is already linked, so we avoid hardcoding the n3.3 subtitle codec-id
 /// block, which the ABI probe never verified). Bitmap subs (PGS/VobSub/DVB/teletext) carry no
-/// text and can't be client-rendered, but still occupy their file-order slot so the track
+/// text and are software-decoded to indexed rectangles; they also occupy a file-order slot so the track
 /// menu's desired_sub_idx stays aligned with the metadata subs list.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum PresentationTrack {
@@ -18,7 +18,7 @@ pub(crate) enum PresentationTrack {
     /// big-endian text-length prefix before the text.
     Text(TextDialect),
     Ass,    // ASS / SSA: dialogue line; text is the field after the 8th comma
-    Bitmap, // PGS / VobSub / DVB / teletext: image subtitle, not renderable here
+    Bitmap, // PGS / VobSub / DVB / teletext: software-decoded image subtitle
 }
 
 impl PresentationTrack {

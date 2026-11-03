@@ -117,7 +117,8 @@ pub(crate) enum SideOpenErr {
     Failed,
 }
 
-/// The AVIO state of the side reader. Its address is the callbacks' opaque pointer.
+/// The owned network source of the side reader. The codec job boxes it behind an AVIO callback
+/// state whose address stays stable until libavformat closes.
 pub(crate) struct SideIo {
     src: SideSrc,
     stop: Arc<SideStop>,
