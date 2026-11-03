@@ -156,7 +156,7 @@ impl Metrics {
                     backend: map_backend(backend), origin, at }, out);
                 if self.model.snapshot().and_then(|r| r.current_attempt).is_some_and(|a| a.id == attempt) {
                     self.physical = Some(Physical { backend, attempt, ready: false, picture: false,
-                        finished: false, paused, seeking: false, held: paused,
+                        finished: false, paused, seeking: false, held: paused || !self.foreground,
                         last_position: None, stop: None });
                     if paused { self.condition(backend, attempt, m::Condition::Paused, at, out); }
                 }
