@@ -20,7 +20,7 @@ const TWO_VERSIONS: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-
 
 /// A loopback PMS that serves [`TWO_VERSIONS`] for the item, `mde` for every `/decision`, a
 /// bounded body for `start.mkv`, and records every request line until it is told to stop.
-fn versions_pms(mde: &'static [u8]) -> (i32, std::sync::mpsc::Sender<()>, std::thread::JoinHandle<Vec<String>>) {
+fn versions_pms_with(body: &'static [u8], mde: &'static [u8]) -> (i32, std::sync::mpsc::Sender<()>, std::thread::JoinHandle<Vec<String>>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port() as i32;
     listener.set_nonblocking(true).unwrap();
@@ -32,7 +32,7 @@ fn versions_pms(mde: &'static [u8]) -> (i32, std::sync::mpsc::Sender<()>, std::t
                 Ok((mut socket, _)) => {
                     let line = drain_http(&mut socket);
                     let body: &[u8] = if line.starts_with("GET /library/metadata/rk-v") {
-                        TWO_VERSIONS
+                        body
                     } else if line.contains("/decision?") {
                         mde
                     } else {
@@ -53,6 +53,10 @@ fn versions_pms(mde: &'static [u8]) -> (i32, std::sync::mpsc::Sender<()>, std::t
         requests
     });
     (port, done, handle)
+}
+
+fn versions_pms(mde: &'static [u8]) -> (i32, std::sync::mpsc::Sender<()>, std::thread::JoinHandle<Vec<String>>) {
+    versions_pms_with(TWO_VERSIONS, mde)
 }
 
 /// Resolve `rk-v` as the request a menu's play makes: the default's part and codecs (what the
@@ -130,6 +134,82 @@ fn no_pick_is_the_default_version_exactly_as_before() {
     let mde = requests.iter().find(|l| l.contains("/decision?")).unwrap_or_else(|| panic!("{requests:?}"));
     assert_eq!(query_param(mde, "mediaIndex"), Some("0"), "{mde}");
     assert_eq!((plan.part_id, plan.media_index), (3134, 0));
+}
+
+#[cfg(feature = "play-uri")]
+const URI_DTS: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-v","type":"movie","duration":600000,"Media":[
+  {"id":3086,"duration":450000,"bitrate":2372,"width":1920,"height":1080,"videoCodec":"h264","audioCodec":"dca","container":"mkv",
+   "Part":[{"id":3134,"duration":450000,"key":"/library/parts/3134/1/file.mkv","container":"mkv","Stream":[
+     {"id":31341,"streamType":1,"codec":"h264","index":0},
+     {"id":31342,"streamType":2,"codec":"dca","channels":6,"index":1,"languageCode":"eng","default":true,"selected":true}]}]}]}]}}"#;
+
+#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+struct QualifiedDts;
+
+#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+impl super::uri_preflight::OriginalQualifier for QualifiedDts {
+    fn qualify(&self, _: &plx_base::task::OffFrame,
+        request: super::uri_preflight::OriginalRequest) -> super::uri_preflight::Verdict {
+        use plx_playback_contract::{Fidelity, Requirements, SourceKind, TrackChoice};
+        assert_eq!(request.audio_codec, "dca");
+        assert_eq!(request.selection.audio_sid, 31342);
+        assert_eq!(request.duration_ms, Some(450_000), "the selected Part overrides item duration");
+        assert!(request.source_url.contains("/library/parts/3134/1/file.mkv"));
+        let selected = request.selection;
+        super::uri_preflight::Verdict::Known(super::uri_preflight::KnownSource {
+            selection: selected,
+            source: plx_play_uri::backend::UriSource::new(request.source_url, vec![
+                plx_play_uri::backend::NativeTrackIndex {
+                    selection: plx_playback_contract::TrackSelection {
+                        kind: plx_playback_contract::TrackKind::Audio, id: 31342,
+                    }, index: 1,
+                },
+            ]),
+            requirements: Requirements { source: SourceKind::ProgressiveUri,
+                video: Fidelity::Exact, audio: Fidelity::Exact,
+                audio_track: TrackChoice::Selected(31342), subtitle_track: TrackChoice::Unspecified },
+            expires_at: std::time::Instant::now() + std::time::Duration::from_secs(15),
+        })
+    }
+}
+
+#[test]
+#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+fn a_qualified_dts_original_lands_from_the_real_resolve_worker_before_feed_decision() {
+    use plx_play_uri::backend::Binding;
+    use plx_playback_contract::Capabilities;
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    assert!(plx_net::net::global_init());
+    let all = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
+        pause: true, seek: true, audio_track: true, subtitle_track: true,
+        audio_off: true, subtitle_off: true };
+    let evidence = super::uri_preflight::ProductEvidence { display_exported: true,
+        binding: Binding::Exported { canvas: (1920, 1080) }, callable: all,
+        certified: all, preview_rectangle: false };
+    ps.install_uri_preflight_port(super::uri_preflight::ResolvePort::new(
+        evidence, std::sync::Arc::new(QualifiedDts)));
+    let (port, done, server) = versions_pms_with(URI_DTS, MDE_TRANSCODE_VIDEO);
+    let sid = plx_plex::plex::register_for_test("qualified-dts", "127.0.0.1", port, "token", "qualified-dts-client");
+    let mut meta = plx_data::stores::metadata::MetadataStore::default();
+    assert!(request_play(&mut ps, &mut meta, plx_platform::devcaps::caps(), sid,
+        "rk-v", "/library/parts/3134/1/file.mkv", "h264", "dca", "Film", "", None));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let start = loop {
+        if let Some(start) = pump_play(&mut ps, &mut meta) { break start; }
+        assert!(std::time::Instant::now() < deadline, "resolve did not publish an owned URI start");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    assert!(start.uri_offer.is_some(), "the addressed landing carries the owned URI source");
+    assert!(ps.source_selection().is_some_and(|selection| selection.audio_sid == 31342));
+    assert_eq!(meta.view().playing().and_then(|item| item.duration_ms), Some(450_000));
+    done.send(()).unwrap();
+    let requests = server.join().unwrap();
+    assert!(requests.iter().any(|line| line.starts_with("GET /library/metadata/rk-v")));
+    assert!(requests.iter().any(|line| line.starts_with("POST /playQueues")));
+    assert!(!requests.iter().any(|line| line.contains("/decision?") || line.contains("/transcode/")
+        || line.starts_with("PUT /library/parts/")), "URI original must not acquire a Feed encoder or substitute source: {requests:?}");
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// A retry or quality change resolves the same item again from the stored request, so the pick

@@ -9345,9 +9345,10 @@ fn current_retry_context(ps: &PlaybackSession, resume_ns: i64) -> RetryContext {
 pub fn retry_uri_source_as_feed(ps: &mut PlaybackSession,
     meta: &mut plx_data::stores::metadata::MetadataStore,
     ticket: RouteStartTransaction) -> bool {
-    if !cfg!(feature = "play-feed") || !abort_route_start(ticket, RouteStartResult::StartFailed) {
+    if !abort_route_start(ticket, RouteStartResult::StartFailed) {
         return false;
     }
+    if !cfg!(feature = "play-feed") { return false; }
     let Some(request) = ps.request.clone() else { return false };
     ps.qualify_backend_offer(plx_playback_contract::BackendKind::Uri,
         super::backend_policy::OfferId::URI_ORIGINAL,

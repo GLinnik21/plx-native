@@ -1773,79 +1773,6 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             // SoC, but a fallback that never asked the server never meets the limitation, so a 4K file with
             // any AAC/AC3 track (nearly every file has one) would direct-play straight onto the bounded
             // decoder. See `video_direct_plays` for the gate itself.
-            let (src_w, src_h) = plan
-                .playing
-                .as_ref()
-                .map(|p| (p.width, p.height))
-                .unwrap_or((0, 0));
-            // The DV layering rides the same playing-item store as the frame size, for the same reason:
-            // it is the PLAYED LEAF's, not the detail page's (a show page's Detail describes whichever
-            // episode backfilled it). Absent store → default `Dovi`, which is all-zero and refuses
-            // nothing.
-            let dovi = plan.playing.as_ref().map(|p| p.dovi).unwrap_or_default();
-            // Freeze the probe's answer and the presentation derived from it (through the profile's
-            // Dolby Vision setting) together. A late configd answer affects the next route only; it
-            // cannot change this candidate between the gate and Starfish Load.
-            let dv_decision = frozen_dv_decision(env.dolby_vision_mode, env.dv_capability, dovi, vcodec);
-            let dv = dv_decision.presentation;
-            let video_dp = if forced { video_feed_supported(vcodec, dv, &env.caps) } else {
-                video_direct_plays(vcodec, src_w, src_h, dv, &env.caps)
-            };
-            // Carried to the session so the quality menu can say whether "Original" means anything for
-            // this item without evaluating the gate a second time against a different set of facts.
-            plan.source_decodable = video_dp;
-            plan.src_dovi = dovi;
-            plan.src_dv_decision = dv_decision;
-            // **Refusing direct play is only half of it.** The transcode query below grants the server
-            // `directStream=1` — permission to COPY the video rather than encode it — and PMS takes that
-            // permission whenever the source fits the caps the query carries. Those caps are resolution,
-            // bitrate and the profile's limitation axes, and **not one of them can say "Dolby Vision"**,
-            // so a refused Profile 5 file came back `Part.decision=transcode` with the video's own
-            // decision `copy`: the identical IPT-PQ bitstream, one container down, and the identical
-            // wrong colours the refusal was for (measured against the dev PMS 2026-08-21 — before this
-            // line existed, the whole gate above changed the container and nothing else). Withdrawing the
-            // permission is what makes the refusal mean something, and it is withdrawn ONLY here: a size
-            // or codec refusal is one the server's own caps already express, and a copy that satisfies
-            // them is a free win worth keeping.
-            //
-            // **This stays the base-layer question, and does NOT become `dv.refusal().is_some()`.** A copy
-            // arrives with no `DolbyHdrInfo` node unless somebody declares it, and a Profile 5 copy is
-            // never declared (`copied_video_dv` withdraws it), so the test is the
-            // pre-declaration one: is this bitstream a correct picture when
-            // nobody has been told what it is? Declaring a Profile 5 makes direct play right and leaves a
-            // copy of it exactly as wrong as before.
-            let no_video_copy = dovi.base_layer_unusable();
-            if dovi.present {
-                crate::player::log(&format!(
-                    "dv: capability={} presentation={} profile={} bl_compat={}",
-                    dv_decision.capability.label(),
-                    dv.label(),
-                    dovi.profile,
-                    dovi.bl_compat,
-                ));
-            }
-            if let Some(why) = dv.refusal() {
-                // Worth a line of its own: from the outside this looks like a 4K HEVC file with a normal
-                // audio track being sent to the transcoder for no reason, and the DOVI fields that
-                // explain it are not in any other log line. `ff.rs` logs the demuxer's own reading of the
-                // configuration record at open, which is the ground truth this decision only approximates.
-                // NB the server is allowed to answer that it cannot do it — this PMS refuses a Profile 5
-                // outright ("File is unplayable. DoVi (Profile 5) color space is not supported."), which
-                // `refusal` below turns into the player's read-out quoting that sentence. A read-out that
-                // names the reason beats a picture in the wrong colours with nothing to explain it.
-                crate::player::log(&format!(
-                    "route: dolby vision P{} (bl_compat={} el={}) — {why}, base layer is not self-displayable; re-encoding (no copy)",
-                    dovi.profile, dovi.bl_compat, dovi.el_present as i32
-                ));
-            } else if let Some(n) = dv.declared() {
-                // The other half of the same story, and worth its own line for the same reason: from the
-                // outside a Profile 5 that suddenly direct-plays looks like the refusal having silently
-                // regressed. This says it was a decision, and names the values the payload will carry.
-                crate::player::log(&format!(
-                    "route: dolby vision P{} (bl_compat={} el={}) — declaring DolbyHdrInfo (trackType={} profileId={}); direct play",
-                    dovi.profile, dovi.bl_compat, dovi.el_present as i32, n.track_type, n.profile_id
-                ));
-            }
             // MKV and MP4 both direct-play. MP4 once died after AU#0 (b1002de) because the mov demuxer's
             // random access needed seeks the then-unseekable AVIO could not serve; `ff.rs::seek_cb` has
             // reopened with a byte Range since, and mp4 was re-measured on-device 2026-08-11: sequential
@@ -1940,6 +1867,8 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             if let Some(port) = env.uri_preflight_port.as_ref().filter(|_| {
                 (env.audio_sid <= 0 || source_audio.is_some())
                     && (env.subtitle_override.unwrap_or(0) <= 0 || source_sub_pick.is_some())
+                    // The URI qualifier has no source-specific Dolby Vision certificate yet.
+                    && !plan.playing.as_ref().is_some_and(|item| item.dovi.present)
             }) {
                 let source_kbps = plan.playing.as_ref().map_or(env.src_kbps, |p|
                     if p.bitrate > 0 { p.bitrate } else { env.src_kbps });
@@ -1976,6 +1905,79 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     plan.uri_source_ready = true;
                     return plan;
                 }
+            }
+            let (src_w, src_h) = plan
+                .playing
+                .as_ref()
+                .map(|p| (p.width, p.height))
+                .unwrap_or((0, 0));
+            // The DV layering rides the same playing-item store as the frame size, for the same reason:
+            // it is the PLAYED LEAF's, not the detail page's (a show page's Detail describes whichever
+            // episode backfilled it). Absent store → default `Dovi`, which is all-zero and refuses
+            // nothing.
+            let dovi = plan.playing.as_ref().map(|p| p.dovi).unwrap_or_default();
+            // Freeze the probe's answer and the presentation derived from it (through the profile's
+            // Dolby Vision setting) together. A late configd answer affects the next route only; it
+            // cannot change this candidate between the gate and Starfish Load.
+            let dv_decision = frozen_dv_decision(env.dolby_vision_mode, env.dv_capability, dovi, vcodec);
+            let dv = dv_decision.presentation;
+            let video_dp = if forced { video_feed_supported(vcodec, dv, &env.caps) } else {
+                video_direct_plays(vcodec, src_w, src_h, dv, &env.caps)
+            };
+            // Carried to the session so the quality menu can say whether "Original" means anything for
+            // this item without evaluating the gate a second time against a different set of facts.
+            plan.source_decodable = video_dp;
+            plan.src_dovi = dovi;
+            plan.src_dv_decision = dv_decision;
+            // **Refusing direct play is only half of it.** The transcode query below grants the server
+            // `directStream=1` — permission to COPY the video rather than encode it — and PMS takes that
+            // permission whenever the source fits the caps the query carries. Those caps are resolution,
+            // bitrate and the profile's limitation axes, and **not one of them can say "Dolby Vision"**,
+            // so a refused Profile 5 file came back `Part.decision=transcode` with the video's own
+            // decision `copy`: the identical IPT-PQ bitstream, one container down, and the identical
+            // wrong colours the refusal was for (measured against the dev PMS 2026-08-21 — before this
+            // line existed, the whole gate above changed the container and nothing else). Withdrawing the
+            // permission is what makes the refusal mean something, and it is withdrawn ONLY here: a size
+            // or codec refusal is one the server's own caps already express, and a copy that satisfies
+            // them is a free win worth keeping.
+            //
+            // **This stays the base-layer question, and does NOT become `dv.refusal().is_some()`.** A copy
+            // arrives with no `DolbyHdrInfo` node unless somebody declares it, and a Profile 5 copy is
+            // never declared (`copied_video_dv` withdraws it), so the test is the
+            // pre-declaration one: is this bitstream a correct picture when
+            // nobody has been told what it is? Declaring a Profile 5 makes direct play right and leaves a
+            // copy of it exactly as wrong as before.
+            let no_video_copy = dovi.base_layer_unusable();
+            if dovi.present {
+                crate::player::log(&format!(
+                    "dv: capability={} presentation={} profile={} bl_compat={}",
+                    dv_decision.capability.label(),
+                    dv.label(),
+                    dovi.profile,
+                    dovi.bl_compat,
+                ));
+            }
+            if let Some(why) = dv.refusal() {
+                // Worth a line of its own: from the outside this looks like a 4K HEVC file with a normal
+                // audio track being sent to the transcoder for no reason, and the DOVI fields that
+                // explain it are not in any other log line. `ff.rs` logs the demuxer's own reading of the
+                // configuration record at open, which is the ground truth this decision only approximates.
+                // NB the server is allowed to answer that it cannot do it — this PMS refuses a Profile 5
+                // outright ("File is unplayable. DoVi (Profile 5) color space is not supported."), which
+                // `refusal` below turns into the player's read-out quoting that sentence. A read-out that
+                // names the reason beats a picture in the wrong colours with nothing to explain it.
+                crate::player::log(&format!(
+                    "route: dolby vision P{} (bl_compat={} el={}) — {why}, base layer is not self-displayable; re-encoding (no copy)",
+                    dovi.profile, dovi.bl_compat, dovi.el_present as i32
+                ));
+            } else if let Some(n) = dv.declared() {
+                // The other half of the same story, and worth its own line for the same reason: from the
+                // outside a Profile 5 that suddenly direct-plays looks like the refusal having silently
+                // regressed. This says it was a decision, and names the values the payload will carry.
+                crate::player::log(&format!(
+                    "route: dolby vision P{} (bl_compat={} el={}) — declaring DolbyHdrInfo (trackType={} profileId={}); direct play",
+                    dovi.profile, dovi.bl_compat, dovi.el_present as i32, n.track_type, n.profile_id
+                ));
             }
             // The audio the TV will DECODE, decided in two steps so the subtitle pick (which reads the
             // audio's language) sits between them:
