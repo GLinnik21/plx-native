@@ -473,7 +473,7 @@ impl Src {
         }
     }
 
-    fn take_curl(&mut self) -> Option<Box<dyn RangeReader>> {
+    pub fn take_curl(&mut self) -> Option<Box<dyn RangeReader>> {
         match std::mem::replace(self, Src::Idle) {
             Src::Curl(cs) => Some(cs),
             other => {
@@ -928,8 +928,8 @@ pub enum BlockingDeadlineOwner {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlockingDeadline {
-    at: std::time::Instant,
-    owner: BlockingDeadlineOwner,
+    pub at: std::time::Instant,
+    pub owner: BlockingDeadlineOwner,
 }
 
 impl TransportWatchdog {
@@ -980,9 +980,9 @@ impl TransportWatchdog {
 /// relabelling the boundary which actually ended this I/O operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlockingWake {
-    owner: BlockingDeadlineOwner,
-    reserve_spent: bool,
-    transport_due: bool,
+    pub owner: BlockingDeadlineOwner,
+    pub reserve_spent: bool,
+    pub transport_due: bool,
 }
 
 pub fn observe_hls_deadline(
@@ -1127,6 +1127,9 @@ pub struct AvioState {
     /// stream is somewhere else and `read_cb` must answer the clean end itself. Any other read at
     /// the end still asks the transport, which is how a failure there stays an error.
     pub parked_at_end: bool,
+    /// Maximum silence while healing an incomplete progressive body. Captured
+    /// with this AVIO so fixture timing never changes production behavior.
+    pub body_silence: std::time::Duration,
     /// Reopens of a cut direct-play body that brought nothing back. See [`HealBudget`].
     pub heal: HealBudget,
 }
@@ -1441,10 +1444,7 @@ fn avio_stopped(s: &mut AvioState) -> c_int {
 pub const BODY_HEAL_ATTEMPTS: u8 = 3;
 
 /// How long a direct-play socket read waits for a byte before the transfer counts as cut.
-#[cfg(not(test))]
-pub const BODY_SILENCE: std::time::Duration = std::time::Duration::from_secs(15);
-#[cfg(test)]
-const BODY_SILENCE: std::time::Duration = std::time::Duration::from_millis(400);
+const BODY_SILENCE: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// Reopen the source at the byte reached, through the same path a seek takes.
 fn heal_at_offset(s: &mut AvioState) -> bool {
@@ -1515,7 +1515,7 @@ pub extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
             // silent that long while the PMS catches up, and cannot be reopened at a byte (its
             // restart would answer 200 from the head). It keeps the pre-heal behaviour.
             let direct_play = s.acquisition.is_none();
-            let silence_deadline = (s.may_heal_at_offset() && blocking_deadline.is_none()).then(|| std::time::Instant::now() + BODY_SILENCE);
+            let silence_deadline = (s.may_heal_at_offset() && blocking_deadline.is_none()).then(|| std::time::Instant::now() + s.body_silence);
             let live_deadline = blocking_deadline.map(|deadline| deadline.at).or(silence_deadline);
             // Both sources use the same three-way return — >0 bytes, 0 clean end, <0 error — so
             // the EOF decision below stays one branch rather than one per transport.
@@ -3742,6 +3742,7 @@ unsafe fn hls_input(
             bounce: Vec::new(),
             bounce_pos: 0,
             parked_at_end: false,
+            body_silence: BODY_SILENCE,
             heal: HealBudget::default(),
         }),
         avio: std::ptr::null_mut(),
@@ -6118,6 +6119,7 @@ pub fn demux(
                     bounce: Vec::new(),
                     bounce_pos: 0,
                     parked_at_end: false,
+                    body_silence: BODY_SILENCE,
                     heal: HealBudget::default(),
                 });
                 let buf = av_malloc(65536) as *mut u8;

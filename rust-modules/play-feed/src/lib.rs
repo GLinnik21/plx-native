@@ -45,7 +45,7 @@ pub mod ff_test_support {
         H264ParamSets, HealBudget, HlsAu, HlsCursor, HlsExit, HlsNet, HlsSegmentOutput,
         MediaOpenFail, NalInput, Rap, ReserveDeadlineState, SegmentTransfer,
         SeiStrip, Src, StallAction, StallGuard, TransportWatchdog, VideoFraming,
-        AUDIO_AHEAD_HEADROOM, AV1_TD, AVSEEK_SIZE, BODY_HEAL_ATTEMPTS, BODY_SILENCE,
+        AUDIO_AHEAD_HEADROOM, AV1_TD, AVSEEK_SIZE, BODY_HEAL_ATTEMPTS,
         FEED_AUDIO, PRE_AUDIO_VIDEO_HEADROOM, SEEK_END, SEEK_SET,
         push_test_elapsed, drain_test_elapsed};
 }

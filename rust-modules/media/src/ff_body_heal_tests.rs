@@ -178,6 +178,7 @@ fn with_sized_source<R>(port: u16, size: i64, f: impl FnOnce(*mut c_void) -> R) 
         bounce: Vec::new(),
         bounce_pos: 0,
         parked_at_end: false,
+        body_silence: super::test_support::fixture_body_silence(),
         heal: HealBudget::default(),
     };
     let op = &mut state as *mut AvioState as *mut c_void;
@@ -259,7 +260,7 @@ fn an_unsized_body_is_not_given_the_silence_deadline() {
     let srv = ShortBody::start(UNSIZED_HEAD, true, false);
     let release = srv.release.clone();
     // Well past the silence a sized body would be reopened after.
-    let quiet = BODY_SILENCE * 3;
+    let quiet = super::test_support::fixture_body_silence() * 3;
     let releaser = std::thread::spawn(move || {
         std::thread::sleep(quiet);
         release.store(true, Ordering::Release);
