@@ -138,6 +138,25 @@ pub struct NativeGate {
     state: Mutex<NativeSessionState>,
 }
 
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn native_epoch_exhaustion_never_reuses_an_earlier_callback_address() {
+        let gate = NativeGate {
+            state: Mutex::new(NativeSessionState {
+                next_epoch: u32::MAX - 1,
+                phase: NativeSessionPhase::Idle,
+            }),
+        };
+        assert_eq!(gate.begin_native_session(), Some(u32::MAX));
+        assert!(gate.retire_native_session(u32::MAX));
+        assert_eq!(gate.begin_native_session(), None, "an old callback must never alias a wrapped epoch");
+        assert_eq!(gate.begin_native_session(), None, "exhaustion must remain closed");
+    }
+}
+
 impl NativeGate {
     pub const fn new() -> Self {
         Self { state: Mutex::new(NativeSessionState::new()) }
