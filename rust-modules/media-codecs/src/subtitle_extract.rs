@@ -1,12 +1,83 @@
 //! Cancellable, owned byte input for the optional subtitle demux. The caller owns the
 //! transport and its cancellation wake; this crate owns only the FFmpeg AVIO callback state.
 //! No URL, route, network client, or player registry is visible here.
-use crate::ffi::{self, AVIOContext, AVERROR_EOF, AVERROR_IO};
+use crate::ffi::{self, AVDictionary, AVFormatContext, AVIOContext, AVStream, AVERROR_EOF, AVERROR_IO};
 use std::ffi::c_void;
 use std::os::raw::c_int;
+use std::sync::Arc;
 
 const AVIO_BUFFER_BYTES: usize = 65_536;
 const AVSEEK_SIZE: c_int = 0x10000;
+
+/// The lower codec's owned, bounded container metadata. Each header slot corresponds to the
+/// caller's track list in file order; `None` means that track had no admitted ASS header.
+pub struct Manifest {
+    pub headers: Vec<Option<Vec<u8>>>,
+    pub fonts: Vec<EmbeddedFont>,
+    pub font_bytes: usize,
+}
+
+pub struct EmbeddedFont {
+    pub name: String,
+    pub data: Arc<[u8]>,
+}
+
+/// A subtitle stream whose authored ASS header may be copied. Other stream kinds are omitted.
+pub struct AssTrack {
+    pub stream_index: c_int,
+    pub authored: bool,
+}
+
+/// Read ASS headers and font attachments from the container, with admission BEFORE any payload
+/// copy. The caller supplies the presentation layer's exact font budget policy.
+///
+/// # Safety
+/// `fmt` and `streams` must name a live FFmpeg format and its full stream table. Every track
+/// index must be a valid index into that table.
+pub unsafe fn collect_manifest(
+    fmt: *mut AVFormatContext,
+    streams: *mut *mut AVStream,
+    tracks: &[AssTrack],
+    max_header_bytes: usize,
+    mut admit_font: impl FnMut(usize) -> bool,
+) -> Manifest {
+    let mut headers = Vec::with_capacity(tracks.len());
+    for track in tracks {
+        if !track.authored {
+            headers.push(None);
+            continue;
+        }
+        let cp = ffi::stream_codecpar(*streams.add(track.stream_index as usize));
+        let len = (*cp).extradata_size.max(0) as usize;
+        if len > max_header_bytes {
+            headers.push(None);
+        } else if len == 0 || (*cp).extradata.is_null() {
+            headers.push(Some(Vec::new()));
+        } else {
+            headers.push(Some(std::slice::from_raw_parts((*cp).extradata, len).to_vec()));
+        }
+    }
+    let mut fonts = Vec::new();
+    let mut font_bytes = 0usize;
+    for i in 0..(*fmt).nb_streams {
+        let st = *streams.add(i as usize);
+        let cp = ffi::stream_codecpar(st);
+        let len = (*cp).extradata_size.max(0) as usize;
+        if (*cp).codec_type != ffi::AVMEDIA_TYPE_ATTACHMENT || len < 4 || (*cp).extradata.is_null() { continue; }
+        let data = std::slice::from_raw_parts((*cp).extradata, len);
+        if !matches!(&data[..4], b"\x00\x01\x00\x00" | b"OTTO" | b"ttcf" | b"true") { continue; }
+        let dict = *((st as *const u8).add(ffi::OFF_STREAM_METADATA) as *const *const AVDictionary);
+        let entry = if dict.is_null() { std::ptr::null_mut() }
+            else { ffi::av_dict_get(dict, c"filename".as_ptr(), std::ptr::null(), 0) };
+        let name = if !entry.is_null() && !(*entry).value.is_null() {
+            std::ffi::CStr::from_ptr((*entry).value).to_string_lossy().into_owned()
+        } else { format!("attachment-{i}.ttf") };
+        if !admit_font(len) { continue; }
+        font_bytes += len;
+        fonts.push(EmbeddedFont { name, data: data.into() });
+    }
+    Manifest { headers, fonts, font_bytes }
+}
 
 /// One read from the caller's owned source. Payload bytes are never retained by AVIO.
 /// Zero bytes have the same meaning as `End` at the FFmpeg callback boundary.

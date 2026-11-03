@@ -270,61 +270,36 @@ unsafe fn begin_ass_sources(
     subs: &[(c_int, SubKind, *mut AVCodecContext)],
 ) -> u64 {
     use crate::player::{ass::Font, ass_source};
+    use plx_media_codecs::subtitle_extract::{collect_manifest, AssTrack};
+    let tracks: Vec<AssTrack> = subs.iter().map(|(si, kind, _)| AssTrack {
+        stream_index: *si,
+        authored: *kind == SubKind::Ass,
+    }).collect();
+    let mut budget = crate::player::ass::FontBudget::default();
+    let manifest = collect_manifest(fmt, streams, &tracks, ass_source::MAX_HEADER_BYTES, |len| budget.admit(len));
     let mut headers = Vec::new();
     let mut text_tracks = 0;
-    for (track, (si, kind, _)) in subs.iter().enumerate() {
-        // A text track has no header in the file: the store synthesizes one and converts its cues
-        // by the dialect (plan `libass-text-subs` §1.5).
-        if let SubKind::Text(dialect) = kind {
-            headers.push((track as i32, ass_source::TrackHeader::Text(*dialect)));
-            text_tracks += 1;
-            continue;
+    for (track, ((_, kind, _), authored)) in subs.iter().zip(manifest.headers).enumerate() {
+        match kind {
+            SubKind::Text(dialect) => {
+                headers.push((track as i32, ass_source::TrackHeader::Text(*dialect)));
+                text_tracks += 1;
+            }
+            SubKind::Ass => {
+                if let Some(header) = authored {
+                    headers.push((track as i32, ass_source::TrackHeader::Authored(header)));
+                }
+            }
+            SubKind::Bitmap => {}
         }
-        if *kind != SubKind::Ass { continue; }
-        let cp = stream_codecpar(*streams.add(*si as usize));
-        let len = (*cp).extradata_size.max(0) as usize;
-        if len > ass_source::MAX_HEADER_BYTES { continue; }
-        let header: &[u8] = if len == 0 || (*cp).extradata.is_null() {
-            &[]
-        } else {
-            std::slice::from_raw_parts((*cp).extradata, len)
-        };
-        headers.push((track as i32, ass_source::TrackHeader::Authored(header.to_vec())));
     }
     let authored_tracks = headers.len() - text_tracks;
-    let mut fonts = Vec::new();
-    let mut font_budget = crate::player::ass::FontBudget::default();
-    let mut font_bytes = 0;
-    {
-        // External ASS may refer to these attachments even when the container carries no
-        // embedded ASS stream. Keep the per-media fonts independently of subtitle selection.
-        for i in 0..(*fmt).nb_streams {
-            let st = *streams.add(i as usize);
-            let cp = stream_codecpar(st);
-            let len = (*cp).extradata_size.max(0) as usize;
-            if (*cp).codec_type != AVMEDIA_TYPE_ATTACHMENT || len < 4
-                || (*cp).extradata.is_null() { continue; }
-            let data = std::slice::from_raw_parts((*cp).extradata, len);
-            // Accept sfnt/OpenType/TrueType collection signatures, not arbitrary attachments.
-            if !matches!(&data[..4], b"\x00\x01\x00\x00" | b"OTTO" | b"ttcf" | b"true") { continue; }
-            let dict = *((st as *const u8).add(OFF_STREAM_METADATA) as *const *const AVDictionary);
-            let entry = if dict.is_null() { std::ptr::null_mut() }
-                else { av_dict_get(dict, c"filename".as_ptr(), std::ptr::null(), 0) };
-            let name = if !entry.is_null() && !(*entry).value.is_null() {
-                std::ffi::CStr::from_ptr((*entry).value).to_string_lossy().into_owned()
-            } else { format!("attachment-{i}.ttf") };
-            // Over the budget: skipped before the copy; text naming it falls back to the
-            // default face. Charged after the magic check so non-fonts spend nothing.
-            if !font_budget.admit(len) { continue; }
-            font_bytes += len;
-            fonts.push(Font { name, data: data.into() });
-        }
-        if !headers.is_empty() || !fonts.is_empty() {
-            crate::player::log(&format!(
-                "ass: embedded tracks={authored_tracks} text_tracks={text_tracks} fonts={} font_bytes={font_bytes}",
-                fonts.len()
-            ));
-        }
+    let fonts: Vec<Font> = manifest.fonts.into_iter().map(|f| Font { name: f.name, data: f.data }).collect();
+    if !headers.is_empty() || !fonts.is_empty() {
+        crate::player::log(&format!(
+            "ass: embedded tracks={authored_tracks} text_tracks={text_tracks} fonts={} font_bytes={}",
+            fonts.len(), manifest.font_bytes,
+        ));
     }
     ass_source::begin(media_key, headers, fonts)
 }
