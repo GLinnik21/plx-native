@@ -586,7 +586,7 @@ pub fn with_dolby_hdr_info(
     };
     if suppress {
         return (p.to_string(), Some(format!(
-            "dv: DolbyHdrInfo P{} SUPPRESSED by /tmp/plxnative-dvnonode (direct play kept)",
+            "dv: DolbyHdrInfo P{} SUPPRESSED by diagnostic override (direct play kept)",
             n.profile_id
         )));
     }

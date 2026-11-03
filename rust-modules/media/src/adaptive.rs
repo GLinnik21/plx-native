@@ -6,7 +6,7 @@ use crate::{abr, route};
 use plx_playback_contract::adaptive::PublicationGate;
 use plx_playback_contract::adaptive::{
     Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, ActiveQuantum, AutomaticPort, AutomaticTransition, BufferFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
-    RoundId, TrialObservation, TrialPhase, TrialProtocol, TrialProtocolError,
+    RoundId, TrialActuatorPort, TrialObservation, TrialPhase, TrialProtocol, TrialProtocolError,
 };
 use plx_playback_contract::SourceKey;
 
@@ -176,6 +176,273 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
         Ok(primed)
     }
 
+    fn trace(
+        &mut self, on_trace: &mut impl FnMut(TrialTrace, &mut P), event: TrialTrace,
+    ) {
+        on_trace(event, &mut *self.port);
+    }
+
+    fn reject_first(
+        &mut self, coordinator: &mut Coordinator, proposal: abr::Proposal,
+        cause: abr::RejectCause, outcome: &'static str, line: Option<String>,
+        now_ms: u64, on_trace: &mut impl FnMut(TrialTrace, &mut P),
+    ) -> FirstPhase {
+        self.trace(on_trace, TrialTrace::Decided);
+        let refreshing = coordinator.reject(proposal, cause, now_ms);
+        self.trace(on_trace, TrialTrace::Rejected { refreshing });
+        self.trace(on_trace, TrialTrace::Finish(outcome));
+        if let Some(line) = line { self.trace(on_trace, TrialTrace::Log(line)); }
+        FirstPhase::Stay
+    }
+
+    fn after_primed_leg(
+        &mut self, coordinator: &mut Coordinator, primed: &route::PrimedHls,
+        proposal: abr::Proposal, deadline_outcome: &'static str,
+        on_trace: &mut impl FnMut(TrialTrace, &mut P), now_ms: &impl Fn() -> u64,
+    ) -> Result<(), FirstPhase> {
+        match self.aborted() {
+            Ok(true) => {
+                coordinator.abandon(&primed.encoder_session);
+                self.trace(on_trace, TrialTrace::Finish("aborted"));
+                return Err(FirstPhase::Aborted);
+            }
+            Err(_) => {
+                coordinator.abandon(&primed.encoder_session);
+                self.trace(on_trace, TrialTrace::Finish("feed_protocol"));
+                return Err(FirstPhase::Failed("adaptive feed abort status protocol violation"));
+            }
+            Ok(false) => {}
+        }
+        match self.expired() {
+            Ok(true) => {
+                coordinator.abandon(&primed.encoder_session);
+                let line = match deadline_outcome {
+                    "control_deadline" =>
+                        "abr: candidate spent its exploration reserve in the control plane",
+                    _ => "abr: candidate spent its exploration reserve before media",
+                };
+                return Err(self.reject_first(
+                    coordinator, proposal, abr::RejectCause::Censored,
+                    deadline_outcome, Some(line.to_string()), now_ms(), on_trace,
+                ));
+            }
+            Err(_) => {
+                coordinator.abandon(&primed.encoder_session);
+                self.trace(on_trace, TrialTrace::Finish("feed_protocol"));
+                return Err(FirstPhase::Failed("adaptive feed expiry status protocol violation"));
+            }
+            Ok(false) => {}
+        }
+        Ok(())
+    }
+
+    fn settle_first_failure(
+        &mut self, coordinator: &mut Coordinator, primed: &route::PrimedHls,
+        proposal: abr::Proposal, step: TrialStep, failure: FeedFailure,
+        now_ms: &impl Fn() -> u64,
+        on_trace: &mut impl FnMut(TrialTrace, &mut P),
+    ) -> FirstPhase {
+        use TrialFailureAction as A;
+        use TrialRejectReason as R;
+        use TrialStep as S;
+        coordinator.abandon(&primed.encoder_session);
+        match trial_failure_action(step, failure) {
+            A::Abort => {
+                self.trace(on_trace, TrialTrace::Finish("aborted"));
+                FirstPhase::Aborted
+            }
+            A::Protocol => {
+                self.trace(on_trace, TrialTrace::Finish("feed_protocol"));
+                FirstPhase::Failed(match step {
+                    S::Open => "adaptive feed open protocol violation",
+                    S::FirstRead => "adaptive feed read protocol violation",
+                    S::FirstAcquire => "adaptive feed acquisition protocol violation",
+                    S::FollowupRead => "adaptive feed follow-up protocol violation",
+                    S::FollowupAcquire => "adaptive feed follow-up acquisition protocol violation",
+                })
+            }
+            A::TimelineOverflow => {
+                let outcome = if step == S::FollowupAcquire {
+                    "repeatable_timeline_overflow"
+                } else { "timeline_overflow" };
+                let _ = self.reject_first(
+                    coordinator, proposal, abr::RejectCause::Circumstance,
+                    outcome, None, now_ms(), on_trace,
+                );
+                FirstPhase::Failed("HLS candidate timeline overflow")
+            }
+            A::Reject { cause, reason } => {
+                let deadline = reason == R::Deadline;
+                let outcome = match (step, reason) {
+                    (S::Open, R::SourceMoved) => "origin_changed",
+                    (S::Open, _) if deadline => "master_deadline",
+                    (S::Open, _) => "no_master_playlist",
+                    (S::FirstRead, R::Ended) => "candidate_ended",
+                    (S::FirstRead, _) if deadline => "playlist_deadline",
+                    (S::FirstRead, _) => "no_media_playlist",
+                    (S::FirstAcquire, _) if deadline => "warmup_deadline",
+                    (S::FirstAcquire, _) => "warmup_failed",
+                    (S::FollowupRead, R::Ended) => "candidate_ended_after_setup",
+                    (S::FollowupRead, _) if deadline => "repeatable_playlist_deadline",
+                    (S::FollowupRead, _) => "repeatable_playlist_failed",
+                    (S::FollowupAcquire, _) if deadline => "repeatable_deadline",
+                    (S::FollowupAcquire, _) => "repeatable_failed",
+                };
+                let line = match (step, reason) {
+                    (S::Open, R::SourceMoved) => Some(
+                        "abr: candidate changed origin; rejected".to_string(),
+                    ),
+                    (S::Open, _) => Some(
+                        "abr: candidate master failed; staying on current rung".to_string(),
+                    ),
+                    (S::FirstRead, R::Ended) => Some(
+                        "abr: candidate stream ended before media; staying".to_string(),
+                    ),
+                    (S::FirstRead, _) => Some(
+                        "abr: candidate produced no segment; staying on current rung".to_string(),
+                    ),
+                    (S::FirstAcquire, R::Deadline) => Some(format!(
+                        "abr: {:?} candidate warm-up exceeded deadline; staying on current rung",
+                        proposal.direction,
+                    )),
+                    (S::FirstAcquire, _) => Some(
+                        "abr: candidate segment failed; staying on current rung".to_string(),
+                    ),
+                    (S::FollowupAcquire, _) => Some(
+                        "abr: candidate produced no complete repeatable object; staying current".to_string(),
+                    ),
+                    (S::FollowupRead, _) => None,
+                };
+                self.reject_first(
+                    coordinator, proposal, cause, outcome, line, now_ms(), on_trace,
+                )
+            }
+        }
+    }
+
+    /// Prime and acquire the first candidate without transferring cursor or AU
+    /// ownership to policy. Every blocking completion is addressed, checked for
+    /// queue abort and measured against the same physical reserve clock.
+    pub(crate) fn run_first(
+        &mut self, coordinator: &mut Coordinator,
+        off: &plx_base::task::OffFrame, proposal: abr::Proposal,
+        reserve_policy: abr::ReservePolicy, offset_micros: i64,
+        now_ms: impl Fn() -> u64,
+        mut on_trace: impl FnMut(TrialTrace, &mut P),
+    ) -> FirstPhase
+    where
+        P: FeedPort<Locator = String>,
+    {
+        let prime_deadline = match self.prime_deadline() {
+            Ok(deadline) => deadline,
+            Err(_) => return FirstPhase::Failed("adaptive feed prime deadline protocol violation"),
+        };
+        let primed = match self.prime(coordinator, off, proposal, offset_micros, prime_deadline) {
+            Ok(primed) => primed,
+            Err(refusal) => {
+                match self.aborted() {
+                    Ok(true) => {
+                        self.trace(&mut on_trace, TrialTrace::Finish("aborted"));
+                        return FirstPhase::Aborted;
+                    }
+                    Err(_) => return FirstPhase::Failed(
+                        "adaptive feed abort status protocol violation",
+                    ),
+                    Ok(false) => {}
+                }
+                let deadline_final = if matches!(refusal, PrimeFailure::Deadline) {
+                    match self.deadline_final(prime_deadline) {
+                        Ok(final_expiry) => final_expiry,
+                        Err(_) => return FirstPhase::Failed(
+                            "adaptive feed prime expiry protocol violation",
+                        ),
+                    }
+                } else { true };
+                let (cause, why) = classify_prime_failure(refusal, deadline_final);
+                return self.reject_first(
+                    coordinator, proposal, cause, why,
+                    Some("abr: candidate registration rejected; staying on current rung".to_string()),
+                    now_ms(), &mut on_trace,
+                );
+            }
+        };
+        self.trace(&mut on_trace, TrialTrace::Prime);
+        if let Err(outcome) = self.after_primed_leg(
+            coordinator, &primed, proposal, "control_deadline", &mut on_trace, &now_ms,
+        ) { return outcome; }
+        let opened = self.open(primed.url.clone());
+        let declared_bps = match opened {
+            FeedObservation::Opened { declared_bps, .. } => declared_bps,
+            other => return self.settle_first_failure(
+                coordinator, &primed, proposal, TrialStep::Open,
+                feed_failure(other), &now_ms, &mut on_trace,
+            ),
+        };
+        self.trace(&mut on_trace, TrialTrace::Master(declared_bps));
+        if let Err(outcome) = self.after_primed_leg(
+            coordinator, &primed, proposal, "master_deadline", &mut on_trace, &now_ms,
+        ) { return outcome; }
+        let next = self.read_next();
+        let duration = match next {
+            FeedObservation::SegmentReady { duration, .. } => duration,
+            other => return self.settle_first_failure(
+                coordinator, &primed, proposal, TrialStep::FirstRead,
+                feed_failure(other), &now_ms, &mut on_trace,
+            ),
+        };
+        self.trace(&mut on_trace, TrialTrace::ControlPlane);
+        if let Err(outcome) = self.after_primed_leg(
+            coordinator, &primed, proposal, "playlist_deadline", &mut on_trace, &now_ms,
+        ) { return outcome; }
+        let (buffered_ms, started_ns, remaining, rebuffering) = match self.budget_snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(_) => {
+                coordinator.abandon(&primed.encoder_session);
+                self.trace(&mut on_trace, TrialTrace::Finish("feed_protocol"));
+                return FirstPhase::Failed("adaptive feed budget snapshot protocol violation");
+            }
+        };
+        let Some(buffered_ms) = buffered_ms else {
+            coordinator.abandon(&primed.encoder_session);
+            return self.reject_first(
+                coordinator, proposal, abr::RejectCause::Circumstance,
+                "reserve_unreadable", Some(
+                    "abr: candidate reserve unreadable; cannot bound the transfer, staying on current rung".to_string(),
+                ), now_ms(), &mut on_trace,
+            );
+        };
+        let budget = coordinator.candidate_budget_from_snapshot(
+            proposal, reserve_policy, duration, buffered_ms, remaining, rebuffering,
+        );
+        if let Some(media_budget) = budget.media_deadline {
+            self.trace(&mut on_trace, TrialTrace::WarmupDeadline(media_budget));
+        } else {
+            self.trace(&mut on_trace, TrialTrace::Log(
+                "abr: terminal floor recovery keeps the only candidate response alive".to_string(),
+            ));
+        }
+        let acquired = self.acquire_first(budget, started_ns);
+        let acquisition = match acquired {
+            FeedObservation::Acquired { acquisition, .. } => acquisition,
+            other => return self.settle_first_failure(
+                coordinator, &primed, proposal, TrialStep::FirstAcquire,
+                feed_failure(other), &now_ms, &mut on_trace,
+            ),
+        };
+        self.trace(&mut on_trace, TrialTrace::FirstMedia);
+        self.observe(TrialObservation::FirstAcquired)
+            .expect("the first candidate acquisition follows prime");
+        let buffer = match self.stage_acquired() {
+            FeedObservation::Staged { buffer, count: 1, .. } => buffer,
+            _ => {
+                coordinator.abandon(&primed.encoder_session);
+                self.trace(&mut on_trace, TrialTrace::Finish("feed_protocol"));
+                return FirstPhase::Failed("adaptive feed stage protocol violation");
+            }
+        };
+        FirstPhase::Ready { primed, declared_bps, acquisition, buffer }
+    }
+
     pub(crate) fn observe(
         &mut self, observation: TrialObservation,
     ) -> Result<TrialPhase, TrialProtocolError> {
@@ -191,6 +458,50 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
             FeedObservation::Failed {
                 trial: self.protocol.id(), failure: FeedFailure::Protocol,
             }
+        }
+    }
+
+    pub(crate) fn aborted(&mut self) -> Result<bool, FeedFailure> {
+        let trial = self.protocol.id();
+        match self.step(FeedAction::CheckAbort { trial }) {
+            FeedObservation::AbortStatus { aborted, .. } => Ok(aborted),
+            _ => Err(FeedFailure::Protocol),
+        }
+    }
+
+    pub(crate) fn expired(&mut self) -> Result<bool, FeedFailure> {
+        let trial = self.protocol.id();
+        match self.step(FeedAction::CheckExpired { trial }) {
+            FeedObservation::ExpiryStatus { expired, .. } => Ok(expired),
+            _ => Err(FeedFailure::Protocol),
+        }
+    }
+
+    pub(crate) fn budget_snapshot(&mut self) -> Result<(Option<i64>, i64, Option<std::time::Duration>, bool), FeedFailure> {
+        let trial = self.protocol.id();
+        match self.step(FeedAction::BudgetSnapshot { trial }) {
+            FeedObservation::BudgetSnapshot {
+                buffered_ms, started_ns, remaining, rebuffering, ..
+            } => Ok((buffered_ms, started_ns, remaining, rebuffering)),
+            _ => Err(FeedFailure::Protocol),
+        }
+    }
+
+    pub(crate) fn prime_deadline(&mut self) -> Result<Option<std::time::Instant>, FeedFailure> {
+        let trial = self.protocol.id();
+        match self.step(FeedAction::PrimeDeadline { trial }) {
+            FeedObservation::PrimeDeadline { deadline, .. } => Ok(deadline),
+            _ => Err(FeedFailure::Protocol),
+        }
+    }
+
+    pub(crate) fn deadline_final(
+        &mut self, snapshot: Option<std::time::Instant>,
+    ) -> Result<bool, FeedFailure> {
+        let trial = self.protocol.id();
+        match self.step(FeedAction::DeadlineFinal { trial, snapshot }) {
+            FeedObservation::DeadlineFinal { final_expiry, .. } => Ok(final_expiry),
+            _ => Err(FeedFailure::Protocol),
         }
     }
 
@@ -820,7 +1131,7 @@ pub(crate) enum ProbeTraceAction { Start, Failed, Steady, RecoverOriginal }
 pub(crate) trait OriginalProbeDiagnostics {
     fn action(&mut self, action: ProbeTraceAction, target_kbps: u32);
     fn failure(&mut self, failure: ProbeFailure);
-    fn log(&mut self, line: &str);
+    fn record(&mut self, line: &str);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -870,6 +1181,30 @@ pub(crate) enum StagedCandidate {
     Unfunded,
     Failed { step: TrialStep, failure: FeedFailure },
     Protocol(&'static str),
+}
+
+pub(crate) enum FirstPhase {
+    Ready {
+        primed: route::PrimedHls,
+        declared_bps: u64,
+        acquisition: Acquisition,
+        buffer: BufferFact,
+    },
+    Stay,
+    Aborted,
+    Failed(&'static str),
+}
+
+pub(crate) enum TrialTrace {
+    Prime,
+    Master(u64),
+    ControlPlane,
+    WarmupDeadline(std::time::Duration),
+    FirstMedia,
+    Decided,
+    Rejected { refreshing: bool },
+    Finish(&'static str),
+    Log(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -922,6 +1257,13 @@ pub(crate) fn trial_failure_action(
     }
 }
 
+fn feed_failure(observation: FeedObservation) -> FeedFailure {
+    match observation {
+        FeedObservation::Failed { failure, .. } => failure,
+        _ => FeedFailure::Protocol,
+    }
+}
+
 pub(crate) struct FinalCandidateGrade {
     pub(crate) raster_ready: bool,
     pub(crate) quality_improves: bool,
@@ -943,6 +1285,29 @@ pub(crate) struct ExplorationGrant {
 pub(crate) enum PreprimePlan {
     Recovery,
     Exploration { grant: ExplorationGrant, started_ns: i64 },
+}
+
+pub(crate) struct ExplorationClock {
+    pub(crate) buffered_ms: i64,
+    pub(crate) runway_ms: i64,
+    pub(crate) budget_ms: i64,
+    pub(crate) started_ns: i64,
+}
+
+pub(crate) struct CandidateStart<L, R> {
+    pub(crate) automatic_lease: Option<L>,
+    pub(crate) trial_reserve: Option<R>,
+    pub(crate) token: u64,
+    pub(crate) exploration: Option<ExplorationClock>,
+}
+
+pub(crate) enum CandidateStartRefusal {
+    ReserveUnknown,
+    NoRunway,
+    NoSurplus,
+    BudgetMoved { budget_ms: i64, target_kbps: u32 },
+    LeaseMoved,
+    TrialReserveMoved,
 }
 
 pub(crate) enum ExplorationFailure {
@@ -1010,6 +1375,75 @@ impl Coordinator {
     pub(crate) fn pending_reserve_policy(&self, proposal: abr::Proposal) -> abr::ReservePolicy {
         self.controller.pending_reserve_policy(proposal)
             .expect("a Prime decision owns one pending reserve policy")
+    }
+    pub(crate) fn candidate_budget_from_snapshot(
+        &self, proposal: abr::Proposal, reserve_policy: abr::ReservePolicy,
+        candidate_duration: std::time::Duration, buffered_ms: i64,
+        remaining: Option<std::time::Duration>, rebuffering: bool,
+    ) -> CandidateBudget {
+        let reserve = remaining.unwrap_or_else(|| abr::reserve_as_budget(buffered_ms));
+        self.candidate_budget(
+            proposal, reserve_policy, candidate_duration, reserve, rebuffering,
+        )
+    }
+    pub(crate) fn begin_candidate<P: TrialActuatorPort>(
+        &mut self, proposal: abr::Proposal, port: &mut P,
+        expected_user_sequence: u64,
+        buffer: impl FnOnce() -> (Option<i64>, i64),
+        now_ms: impl Fn() -> u64,
+        mut on_rejected: impl FnMut(abr::Proposal, bool),
+    ) -> Result<CandidateStart<P::Lease, P::TrialReserve>, CandidateStartRefusal> {
+        let plan = match self.preprime_plan(proposal, buffer, || now_ms()) {
+            Ok(plan) => plan,
+            Err(failure) => {
+                if let Some(refreshing) = failure.refreshing_same_request() {
+                    on_rejected(proposal, refreshing);
+                }
+                return Err(match failure {
+                    ExplorationFailure::ReserveUnknown { .. } => CandidateStartRefusal::ReserveUnknown,
+                    ExplorationFailure::NoRunway { .. } => CandidateStartRefusal::NoRunway,
+                    ExplorationFailure::NoSurplus { .. } => CandidateStartRefusal::NoSurplus,
+                    ExplorationFailure::BudgetMoved { budget_ms } => CandidateStartRefusal::BudgetMoved {
+                        budget_ms, target_kbps: proposal.rung.kbps(),
+                    },
+                });
+            }
+        };
+        match plan {
+            PreprimePlan::Recovery => {
+                let Some(lease) = port.begin(
+                    AutomaticTransition::QualityDown, expected_user_sequence,
+                ) else {
+                    let refreshing = self.reject(proposal, abr::RejectCause::Circumstance, now_ms());
+                    on_rejected(proposal, refreshing);
+                    return Err(CandidateStartRefusal::LeaseMoved);
+                };
+                let token = port.lease_token(&lease);
+                Ok(CandidateStart {
+                    automatic_lease: Some(lease), trial_reserve: None,
+                    token, exploration: None,
+                })
+            }
+            PreprimePlan::Exploration { grant, started_ns } => {
+                let Some(reserve) = port.arm_trial_reserve(
+                    grant.runway_ms, expected_user_sequence,
+                ) else {
+                    let refreshing = self.reject(proposal, abr::RejectCause::Circumstance, now_ms());
+                    on_rejected(proposal, refreshing);
+                    return Err(CandidateStartRefusal::TrialReserveMoved);
+                };
+                let token = port.trial_token(&reserve);
+                Ok(CandidateStart {
+                    automatic_lease: None, trial_reserve: Some(reserve), token,
+                    exploration: Some(ExplorationClock {
+                        buffered_ms: grant.buffered_ms,
+                        runway_ms: grant.runway_ms,
+                        budget_ms: grant.budget_ms,
+                        started_ns,
+                    }),
+                })
+            }
+        }
     }
     pub(crate) fn next_round_id(&mut self) -> Option<RoundId> {
         self.next_round_serial = self.next_round_serial.checked_add(1)?;
@@ -1273,22 +1707,22 @@ impl Coordinator {
         diagnostics: &mut impl OriginalProbeDiagnostics,
     ) -> OriginalProbeOutcome {
         let Some(lease) = port.begin(AutomaticTransition::Original, expected_user_sequence) else {
-            diagnostics.log("abr: Original probe deferred behind a playback-clock transition");
+            diagnostics.record("abr: Original probe deferred behind a playback-clock transition");
             return OriginalProbeOutcome::LeaseBusy;
         };
         diagnostics.action(ProbeTraceAction::Start, self.original_source_kbps());
-        diagnostics.log("abr: checking finite actual Original range on the live HLS resource");
+        diagnostics.record("abr: checking finite actual Original range on the live HLS resource");
         let probe = match self.probe_original(permit.plan, || port.aborted()) {
             ProbeResult::Measured(sample) => sample,
             ProbeResult::Stale => {
-                diagnostics.log("abr: discarded Original probe from a superseded HLS resource");
+                diagnostics.record("abr: discarded Original probe from a superseded HLS resource");
                 return OriginalProbeOutcome::Stale;
             }
             ProbeResult::Failed { outcome, failure } => {
                 diagnostics.failure(failure);
                 let grade = self.probe_failed();
                 diagnostics.action(ProbeTraceAction::Failed, 0);
-                diagnostics.log(&format!(
+                diagnostics.record(&format!(
                     "abr: Original probe #{} produced no body outcome={}; retaining best HLS \
                      request left={}s verdict={:?}",
                     grade.as_ref().map(|grade| grade.probes).unwrap_or(0),
@@ -1300,11 +1734,11 @@ impl Coordinator {
         };
         let grade = self.grade_probe(probe, telemetry, remaining_ms);
         if let Some(cmp) = grade.as_ref().and_then(|grade| grade.comparison) {
-            diagnostics.log(&mode_comparison_line(cmp));
+            diagnostics.record(&mode_comparison_line(cmp));
         }
         let (slow, unc, n, cons, need) = grade.as_ref()
             .map(|grade| grade.basis).unwrap_or_default();
-        diagnostics.log(&format!(
+        diagnostics.record(&format!(
             "abr: Original probe #{} measured={}kbps {}KiB/{}ms complete={} left={}s \
              slow={}kbps unc={}pm n={} cons={}kbps need={}kbps verdict={:?}",
             grade.as_ref().map(|grade| grade.probes).unwrap_or(0),
@@ -1323,7 +1757,7 @@ impl Coordinator {
                 OriginalProbeOutcome::Continue
             }
             ProbeRecoveryAction::Held => {
-                diagnostics.log(
+                diagnostics.record(
                     "abr: Original recovery measured during a user hold; retained until Resume",
                 );
                 OriginalProbeOutcome::Continue
@@ -1337,20 +1771,20 @@ impl Coordinator {
                 );
                 match publication {
                     OriginalPublication::Published => {
-                        diagnostics.log(&format!(
+                        diagnostics.record(&format!(
                             "abr: source sustainable again at {}kbps; requesting Original on the probe boundary",
                             kbps,
                         ));
                         OriginalProbeOutcome::Published
                     }
                     OriginalPublication::Busy => {
-                        diagnostics.log(
+                        diagnostics.record(
                             "abr: Original recovery retained behind another route transition",
                         );
                         OriginalProbeOutcome::Continue
                     }
                     OriginalPublication::ClockMoved => {
-                        diagnostics.log(
+                        diagnostics.record(
                             "abr: Original recovery retained after playback clock moved",
                         );
                         OriginalProbeOutcome::Continue
