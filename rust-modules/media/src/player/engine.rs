@@ -1125,7 +1125,7 @@ pub(super) fn prepare_native_open(
                     log("start_bufferfeed: Force Direct Play refused original Dolby Vision Profile 7/enhancement-layer wire: no qualified buffer-feed declaration for unchanged bytes");
                 }
             }
-            shared.fail_demux(DemuxExitClass::LoadRefused);
+            shared.fail_demux_latch(DemuxExitClass::LoadRefused.latch());
             return Err(NativeOpenError::Refused);
         }
     }
@@ -1159,7 +1159,7 @@ pub(super) fn prepare_native_open(
             log(&format!(
                 "start_bufferfeed: the pipeline cannot feed video codec {stream_vcodec:?}; refusing the Load instead of declaring it H.264"
             ));
-            shared.fail_demux(DemuxExitClass::LoadRefused);
+            shared.fail_demux_latch(DemuxExitClass::LoadRefused.latch());
             return Err(NativeOpenError::Refused);
         };
         if video_declaration_refused(lv, &plx_platform::devcaps::caps(), open.feed_payload.force_direct_play) {
@@ -1167,7 +1167,7 @@ pub(super) fn prepare_native_open(
                 "start_bufferfeed: {} stream but the device table lists no such decoder; refusing the Load",
                 lv.payload_name()
             ));
-            shared.fail_demux(DemuxExitClass::LoadRefused);
+            shared.fail_demux_latch(DemuxExitClass::LoadRefused.latch());
             return Err(NativeOpenError::Refused);
         }
         video_declared = lv.payload_name();
@@ -1209,7 +1209,7 @@ pub(super) fn prepare_native_open(
                 &codec, session_rate, pcm.is_some(), lead_override.as_deref(), plx_platform::devcaps::audio_stack(),
             ) else {
                 log(&format!("start_bufferfeed: unsupported audio codec {codec:?}; refusing incorrect Load declaration"));
-                shared.fail_demux(DemuxExitClass::LoadRefused);
+                shared.fail_demux_latch(DemuxExitClass::LoadRefused.latch());
                 return Err(NativeOpenError::Refused);
             };
             crate::ff::set_pcm_out(
