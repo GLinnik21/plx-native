@@ -161,7 +161,7 @@ pub struct Engine {
     pub stream_th: Option<std::thread::JoinHandle<()>>,
     pub load_th: Option<std::thread::JoinHandle<()>>,
     /// Attempt-scoped common reader IO; its stop runs before the paired demux join.
-    pub side_reader: Box<dyn plx_play_feed::side_reader::SideReaderPort>,
+    pub side_reader: Box<dyn crate::side_reader::SideReaderPort>,
     /// Preview Load that must land unbound. The media join waits until the thread has returned.
     pub preview_abandon: bool,
     /// The foreground lifecycle follows this Engine's Load attempt (`foreground_follows_load`).
