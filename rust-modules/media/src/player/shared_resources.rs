@@ -1,13 +1,16 @@
 //! Common subtitle resources composed beside the physical feed transport.
 //! The existing process-lifetime owner stays singular; a feed executor receives only `feed`.
 use std::ops::Deref;
-use std::sync::{atomic::Ordering, Mutex};
+use std::sync::{atomic::{AtomicU64, Ordering}, Mutex};
 
 pub struct Shared {
     pub feed: plx_play_feed::shared::PhysicalShared,
     pub ass_sources: Mutex<super::ass_source::Store>,
     pub ass_renderer: super::ass::Runtime,
     pub sub_bitmaps: Mutex<Vec<super::subtitle_bitmap::SubBitmap>>,
+    /// Bumped while holding `sub_bitmaps` at reset, so an old producer can
+    /// never append pixels after the successor has cleared that store.
+    pub bitmap_generation: AtomicU64,
 }
 
 impl Shared {
@@ -17,6 +20,7 @@ impl Shared {
             ass_sources: Mutex::new(super::ass_source::Store::new()),
             ass_renderer: super::ass::Runtime::new(),
             sub_bitmaps: Mutex::new(Vec::new()),
+            bitmap_generation: AtomicU64::new(0),
         }
     }
 
@@ -45,7 +49,9 @@ impl Shared {
             if for_reload { sources.retain_for_reload(); } else { sources.reset(); }
             drop(sources);
             // Decoded bitmap cues refill after reopen; they are transient presentation state.
-            self.sub_bitmaps.lock().unwrap().clear();
+            let mut bitmaps = self.sub_bitmaps.lock().unwrap();
+            self.bitmap_generation.fetch_add(1, Ordering::Release);
+            bitmaps.clear();
         });
         if for_reload {
             self.feed.duration_ns.store(duration, Ordering::Relaxed);
