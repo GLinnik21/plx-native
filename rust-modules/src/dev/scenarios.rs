@@ -1536,7 +1536,8 @@ fn play_await_tick(app: &mut App, fr: &mut Frame) {
 fn autoseek_arm(app: &mut App, fr: &mut Frame) {
     if !app.scenarios.seek_tried
         && matches!(app.route(), AppArg::Player)
-        && crate::app::playback::dur() > 0
+        && crate::app::playback::dur(&app.player.session).is_some_and(|dur| dur > 0)
+        && crate::app::playback::playpos(&app.player.session).is_some()
         && fr.now.wrapping_sub(app.t0) > 12000
     {
         app.scenarios.seek_tried = true;
@@ -1557,7 +1558,8 @@ fn autoseek_arm(app: &mut App, fr: &mut Frame) {
             if steps.is_empty() {
                 steps.push("140".to_string());
             }
-            app.scenarios.seek_script_last = plx_media::player::playpos_ns();
+            app.scenarios.seek_script_last = crate::app::playback::playpos(&app.player.session)
+                .expect("the autoseek arm required an observed position");
             app.scenarios.seek_script_at = fr.now.wrapping_sub(app.scenarios.seek_gap_ms).wrapping_add(first_delay_ms);
             app.scenarios.seek_script = steps;
         }
@@ -1585,7 +1587,7 @@ fn qualityswitch_arm(app: &mut App, fr: &mut Frame) {
     if !app.scenarios.quality_tried {
         const QUALITY_SWITCH_OBSERVE_MS: u32 = 12_000;
         let playing = matches!(app.route(), AppArg::Player)
-            && crate::app::playback::dur() > 0
+            && crate::app::playback::dur(&app.player.session).is_some_and(|dur| dur > 0)
             && plx_media::player::is_playing(&app.player.session);
         if !playing {
             app.scenarios.quality_playing_since = None;
@@ -1630,7 +1632,8 @@ fn autopause_arm(app: &mut App, fr: &mut Frame) {
         if let Some(ms) = at_ms {
             plx_media::player::stop_sim_clock_at(Some(i64::from(ms) * 1_000_000));
         }
-        let reached = at_ms.is_none_or(|ms| crate::app::playback::playpos() >= i64::from(ms) * 1_000_000);
+        let reached = at_ms.is_none_or(|ms| crate::app::playback::playpos(&app.player.session)
+            .is_some_and(|pos| pos >= i64::from(ms) * 1_000_000));
         if matches!(app.route(), AppArg::Player) && script_step_due(fr.now, pause_at, 0) && reached {
             if crate::app::lifecycle::set_transport_paused(&mut app.adapters.player, true) {
                 plx_base::eventlog::log(&format!(

@@ -449,6 +449,8 @@ impl Transport {
         film_title: &str,
         extra_title: &str,
         paused: bool,
+        live_ns: Option<i64>,
+        duration_ns: Option<i64>,
         measure: &dyn plx_machine::machine::Measure,
     ) {
         if self.alpha <= 0.01 {
@@ -466,12 +468,12 @@ impl Transport {
                 title.as_ptr(),
             );
         }
-        let live_ns = plx_media::player::playpos_ns();
+        let live_ns = live_ns.unwrap_or(0);
         plx_appkit::player_hud::classic::draw_playbar(
             p,
             Playbar {
                 pos_ns: if self.scrubbing() { self.scrub_ns } else { live_ns },
-                dur_ns: plx_media::player::duration_ns(),
+                dur_ns: duration_ns.unwrap_or(0),
                 // The trailer's playbar is not FOCUSABLE and a pointer cannot drag it — the tick
                 // knob everywhere else on this transport is a read-out — but LEFT/RIGHT do move
                 // it now, same as the player HUD's own scrubber.

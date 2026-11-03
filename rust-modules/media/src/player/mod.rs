@@ -692,26 +692,30 @@ pub fn observe_video_plane(
 }
 
 // ---- transport accessors the app's per-frame loop and `HudMotion`'s tick call ----
-pub fn is_started() -> bool {
-    TX.started.load(Relaxed)
+pub fn is_started(ps: &crate::route::PlaybackSession) -> Option<bool> {
+    ps.attempt_view().facts().started
 }
 /// Coded video raster, atomically published by the demuxer. Subtitle renderers need this
 /// independently of the output canvas for anamorphic glyph/blur scaling.
-pub fn video_raster() -> (i32, i32) {
-    SHARED.video_raster()
+pub fn video_raster(ps: &crate::route::PlaybackSession) -> Option<(i32, i32)> {
+    ps.attempt_view().facts().raster
 }
 
 /// The picture inside the full-screen video window, including non-square pixels.
-pub fn video_viewport(width: i32, height: i32) -> video_geometry::Viewport {
-    let (w, h) = SHARED.video_raster();
-    video_geometry::Aspect::unpack(SHARED.video_aspect.load(std::sync::atomic::Ordering::Acquire))
-        .or_else(|| video_geometry::Aspect::from_raster(w, h))
-        .unwrap_or_else(|| video_geometry::Aspect::from_raster(width, height).unwrap())
-        .fit(width, height)
+pub fn video_viewport(ps: &crate::route::PlaybackSession, width: i32, height: i32)
+    -> Option<video_geometry::Viewport> {
+    let facts = ps.attempt_view().facts();
+    facts.display_aspect.and_then(|(num, den)|
+        video_geometry::Aspect::unpack((u64::from(num) << 32) | u64::from(den)))
+        .or_else(|| facts.raster.and_then(|(w, h)| video_geometry::Aspect::from_raster(w, h)))
+        .map(|aspect| aspect.fit(width, height))
 }
 
-pub fn playpos_ns() -> i64 {
+pub(crate) fn feed_playpos_ns() -> i64 {
     SHARED.playpos_ns.load(Relaxed)
+}
+pub fn playpos_ns(ps: &crate::route::PlaybackSession) -> Option<i64> {
+    ps.attempt_view().facts().position_ns
 }
 /// Content-time position reported by this session's current physical attempt, if observed.
 pub fn observed_position_ns(ps: &crate::route::PlaybackSession) -> Option<i64> {
@@ -727,26 +731,32 @@ pub fn observed_playable_buffer_ms(ps: &crate::route::PlaybackSession) -> Option
 pub fn reported_frame(ps: &crate::route::PlaybackSession) -> Option<bool> {
     ps.attempt_view().facts().reported_frame
 }
-pub fn frames() -> i32 {
-    SHARED.frames.load(Relaxed)
+pub fn frames(ps: &crate::route::PlaybackSession) -> Option<i32> {
+    ps.attempt_view().facts().frames
 }
 /// True once this SESSION has presented at least one frame. Deliberately NOT `frames() > 0`: the
 /// pump zeroes `frames` as part of applying a seek (`pump.rs`), so that expression reads "no
 /// picture" for the whole of every seek. Cleared only by `reset_session` — i.e. by a real stop or
 /// a reload, both of which do blank the video plane. See [`shared::Shared::seen_frame`].
-pub fn seen_frame() -> bool {
+pub(crate) fn feed_seen_frame() -> bool {
     SHARED.seen_frame.load(Relaxed)
 }
-pub fn duration_ns() -> i64 {
-    SHARED.duration_ns.load(Relaxed)
+pub fn seen_frame(ps: &crate::route::PlaybackSession) -> Option<bool> {
+    ps.attempt_view().facts().seen_frame
 }
-pub fn seek_pending() -> i64 {
-    TX.seek_to_ns.load(Relaxed)
+pub fn duration_ns(ps: &crate::route::PlaybackSession) -> Option<i64> {
+    ps.attempt_view().facts().duration_ns
+}
+pub fn seek_pending(ps: &crate::route::PlaybackSession) -> Option<i64> {
+    ps.attempt_view().facts().seek_pending_ns
 }
 /// true once the pipeline has drained to true end-of-stream (see pump's EOS check). app.rs polls
 /// this to tear the player down at the credits.
-pub fn ended() -> bool {
+pub(crate) fn feed_ended() -> bool {
     SHARED.ended.load(Relaxed)
+}
+pub fn ended(ps: &crate::route::PlaybackSession) -> Option<bool> {
+    ps.attempt_view().facts().ended
 }
 pub fn request_seek(ns: i64) {
     report::note_seek_for(crate::route::playback_trace_generation());
@@ -795,8 +805,8 @@ pub fn loading(ps: &crate::route::PlaybackSession) -> bool {
     state(ps).is_busy()
 }
 /// Runtime rebuffering, distinct from the brief Buffering state after seek priming.
-pub fn rebuffering() -> bool {
-    SHARED.hls_rebuffering.load(Relaxed)
+pub fn rebuffering(ps: &crate::route::PlaybackSession) -> Option<bool> {
+    ps.attempt_view().facts().rebuffering
 }
 /// true only while the pipeline is actually presenting frames — not resolving, connecting,
 /// buffering or seeking. app.rs gates the heartbeat's `pos=` field on this: on a **direct-play**
@@ -1795,8 +1805,8 @@ pub fn diag(ps: &crate::route::PlaybackSession) -> Diag {
     }
 }
 
-pub fn seek_display_ns() -> i64 {
-    SHARED.seek_display_ns.load(Relaxed)
+pub fn seek_display_ns(ps: &crate::route::PlaybackSession) -> Option<i64> {
+    ps.attempt_view().facts().seek_display_ns
 }
 /// The playhead the user INTENDS, which is not always the one being published: while a seek is
 /// still resolving (request → reopen → prime → Play) `playpos_ns` keeps reporting the PRE-seek
@@ -1815,9 +1825,9 @@ pub fn seek_display_ns() -> i64 {
 /// outer two rungs with the live scrub preview between them, so its expression is a superset
 /// rather than a caller.
 pub fn intended_pos_ns(ps: &crate::route::PlaybackSession) -> i64 {
-    let t = seek_display_ns();
-    if loading(ps) && t >= 0 {
-        t
+    let t = seek_display_ns(ps);
+    if loading(ps) && t.is_some() {
+        t.unwrap_or(0)
     } else if let Some(offset_ns) = crate::route::recovery_flight_offset_ns() {
         // A resume/recovery flight is out and has not landed: `playpos_ns` is still the zero
         // `reset_session` left (it is seeded at the landing), so the flight's own offset is where
@@ -1825,7 +1835,7 @@ pub fn intended_pos_ns(ps: &crate::route::PlaybackSession) -> i64 {
         // start, after which the timeline reports overwrite the server's viewOffset.
         offset_ns
     } else {
-        playpos_ns()
+        playpos_ns(ps).unwrap_or(0)
     }
 }
 /// request an audio-track switch (Plex audioStreamID); the pump forces a fresh
@@ -1901,7 +1911,7 @@ pub fn set_play_rate(ps: &crate::route::PlaybackSession, permille: i32) -> bool 
     }
     SHARED.play_rate_permille.store(permille, Relaxed);
     log(&format!("rate: {permille} requested"));
-    if !is_started() {
+    if !TX.started.load(Relaxed) {
         return true; // nothing on screen: the next Load applies it
     }
     SHARED.rate_reload.store(true, Relaxed);
@@ -2193,7 +2203,7 @@ pub fn subtitle_draw(ps: &crate::route::PlaybackSession) -> Option<(std::sync::A
     if crate::route::subtitles_burned(ps) || loading(ps) {
         return None;
     }
-    let playhead = playpos_ns();
+    let playhead = playpos_ns(ps)?;
     if let Some(source) = sidecar::ass_source(false) {
         return Some((source, sidecar_clock_ns(ps, playhead)));
     }
@@ -2989,28 +2999,32 @@ mod tests {
             }
         }
         let _restore = Restore;
-        let ps = crate::route::PlaybackSession::IDLE;
+        let mut ps = crate::route::PlaybackSession::IDLE;
         SHARED.reset_session();
         TX.reset();
         crate::ff::force_speed_decoder_for_test(true);
 
         assert!(set_play_rate(&ps, 1250), "not started: remembered for the next Load");
         assert_eq!(play_rate_permille(), 1250);
-        assert_eq!(seek_pending(), -1, "with nothing on screen there is nothing to reload");
+        assert_eq!(TX.seek_to_ns.load(Relaxed), -1, "with nothing on screen there is nothing to reload");
         assert!(!SHARED.rate_reload.load(Relaxed));
 
         TX.started.store(true, Relaxed);
-        SHARED.playpos_ns.store(42_000_000_000, Relaxed);
+        let attempt = crate::route::RouteStartAttempt::fixture();
+        ps.begin_attempt_view(attempt, attempt_view::Backend::Feed);
+        assert!(ps.ingest_attempt_facts(attempt, attempt_view::AttemptFacts {
+            position_ns: Some(42_000_000_000), ..Default::default()
+        }));
         assert!(set_play_rate(&ps, 1500));
         assert_eq!(play_rate_permille(), 1500);
-        assert_eq!(seek_pending(), 42_000_000_000, "a seek to the viewer's own position");
+        assert_eq!(TX.seek_to_ns.load(Relaxed), 42_000_000_000, "a seek to the viewer's own position");
         assert!(SHARED.rate_reload.load(Relaxed), "marked so an in-place seek mode reloads it");
 
         TX.seek_to_ns.store(-1, Relaxed);
         SHARED.rate_reload.store(false, Relaxed);
         assert!(!set_play_rate(&ps, 1500), "the speed already set asks for nothing");
         assert!(!set_play_rate(&ps, 1300), "off the ladder");
-        assert_eq!(seek_pending(), -1);
+        assert_eq!(TX.seek_to_ns.load(Relaxed), -1);
         assert_eq!(play_rate_permille(), 1500);
 
         reset_play_rate();
@@ -3766,7 +3780,7 @@ mod tests {
             "the requester arms the spinner"
         );
         assert_eq!(
-            seek_display_ns(),
+            SHARED.seek_display_ns.load(Relaxed),
             40_000_000_000,
             "and freezes the playhead at the target"
         );
@@ -3774,7 +3788,7 @@ mod tests {
         abandon_seek();
         assert!(!SHARED.seeking.load(Relaxed), "giving up must disarm it");
         assert_eq!(
-            seek_display_ns(),
+            SHARED.seek_display_ns.load(Relaxed),
             -1,
             "a stale target would keep the playhead frozen"
         );
@@ -4621,10 +4635,10 @@ mod seek_hud_regressions {
         SHARED.duration_ns.store(5_400_000_000_000, Relaxed);
         SHARED.playpos_ns.store(1_200_000_000_000, Relaxed);
         SHARED.reset_session_for_reload();
-        assert_eq!(duration_ns(), 5_400_000_000_000, "the same file is about to be reopened");
-        assert_eq!(playpos_ns(), 0, "…and everything that IS the session's was still cleared");
+        assert_eq!(SHARED.duration_ns.load(Relaxed), 5_400_000_000_000, "the same file is about to be reopened");
+        assert_eq!(SHARED.playpos_ns.load(Relaxed), 0, "…and everything that IS the session's was still cleared");
         SHARED.reset_session();
-        assert_eq!(duration_ns(), 0, "a real stop: the next item is a new file");
+        assert_eq!(SHARED.duration_ns.load(Relaxed), 0, "a real stop: the next item is a new file");
     }
 
     /// **A requested seek reads as Seeking at once**, not one pump pass later. `request_seek`
@@ -4645,7 +4659,7 @@ mod seek_hud_regressions {
         request_seek(90_000_000_000);
         assert_eq!(state(&ps), PlaybackState::Seeking, "the pump has not run yet");
         assert!(state(&ps).is_busy(), "busy is what freezes the HUD's playhead on the target");
-        assert_eq!(seek_display_ns(), 90_000_000_000, "…and this is the target it freezes on");
+        assert_eq!(SHARED.seek_display_ns.load(Relaxed), 90_000_000_000, "…and this is the target it freezes on");
         SHARED.reset_session();
         TX.reset();
         crate::route::reset_player_control_for_test(&ps);

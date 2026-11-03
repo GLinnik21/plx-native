@@ -466,7 +466,7 @@ impl PlayerScreen {
     ///   the HUD auto-hidden, where nothing else in the frame moves at all.
     pub fn clock_fingerprint(&self, ps: &plx_media::route::PlaybackSession, now: u32) -> u64 {
         use std::sync::atomic::Ordering::Relaxed;
-        let pos = plx_media::player::playpos_ns();
+        let pos = plx_media::player::playpos_ns(ps);
         let hud_up = self.hud_up(ps, now);
         let mut h: u64 = 0;
         let mut mix = |v: u64| {
@@ -479,8 +479,8 @@ impl PlayerScreen {
         // picture nobody is drawing — playback spends ~99% of its time with the HUD auto-hidden,
         // where the frame is already 0 draw calls, and a report there is the gate turned off.
         if hud_up {
-            mix(pos as u64);
-            mix(plx_media::player::seek_display_ns() as u64);
+            mix(pos.unwrap_or(0) as u64);
+            mix(plx_media::player::seek_display_ns(ps).unwrap_or(-1) as u64);
             mix(plx_media::player::TX.scrub_ns.load(Relaxed) as u64);
             // the scrub's fades, card and knob clock: a frame is owed for as long as one runs
             if self.row.scrub_motion_animating(now) {
@@ -494,7 +494,7 @@ impl PlayerScreen {
         // the sidecar failure notice lapsing on the wall clock: nothing else on the screen moves
         // then, so the instant it expires still owes a frame
         mix(u64::from(plx_media::player::sidecar::notice_shown()));
-        mix(plx_media::player::active_bitmap_key(pos).unwrap_or(0) as u64);
+        mix(pos.and_then(plx_media::player::active_bitmap_key).unwrap_or(0) as u64);
         mix(u64::from(hud_up));
         mix(u64::from(
             self.row
@@ -776,7 +776,8 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                 // spring advanced in the draw would run at a rate that depended on which overlay
                 // was open (`HudMotion::step`'s own doc).
                 self.row
-                    .step(self.eff_slot(), self.hud.nav.focus, self.hud.nav.btn, tick.dt(), tick.ms);
+                    .step(self.eff_slot(), self.hud.nav.focus, self.hud.nav.btn, tick.dt(), tick.ms,
+                        plx_media::player::is_started(H::session(cx)), self.model.paused);
                 // …and the sections' appear springs, pointed at the sections that are open (a write to
                 // `hud.sections` that did not tell them is caught up here) and stepped once per frame.
                 self.row.follow(self.hud.sections.bits());
@@ -799,7 +800,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                 // per-loop-iteration block, now on this screen's own Tick: the continuous
                 // accelerating advance with its lost-keyup net. Neither it nor anything else on
                 // this Tick seeks: a key target waits for OK.
-                self.step_scrub_hold(tick.ms);
+                self.step_scrub_hold(H::session(cx), tick.ms);
                 self.hold_the_transport_for_a_target(tick.ms);
                 self.publish();
                 Handled::Yes
@@ -832,7 +833,8 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                     // must not capture the bar the moment it passes over it.
                     InputKind::Drag { x, .. } => {
                         self.end_jump_gesture();
-                        self.handle_drag(*x, plx_appkit::chapters_panel::has_chapters(H::metadata(cx)), input.at.ms)
+                        self.handle_drag(H::session(cx), *x,
+                            plx_appkit::chapters_panel::has_chapters(H::metadata(cx)), input.at.ms)
                     },
                     // Pointer MOTION over the bare transport raises it and clears a hand
                     // dismissal, which is how a Magic Remote user finds the HUD over full-screen
@@ -982,8 +984,7 @@ impl PlayerScreen {
                 Handled::Yes
             }
             e if e == ELEM_SCRUB => {
-                let dur = plx_media::player::duration_ns();
-                if dur > 0 {
+                if let Some(dur) = plx_media::player::duration_ns(ps).filter(|dur| *dur > 0) {
                     self.hud.nav.focus = GROUP_SCRUB;
                     self.seat_elem(fx, ELEM_SCRUB);
                     self.scrub.ns = self.pointed_ns(x, chapters, dur);
@@ -1032,12 +1033,12 @@ impl PlayerScreen {
     /// bar (`Scrub::drag`): a drag that began on some other control, or on nothing, must not
     /// capture the scrubber the moment it passes over it. Nothing is committed — that is the
     /// release's job.
-    fn handle_drag(&mut self, x: f32, chapters: bool, now: u32) -> Handled {
+    fn handle_drag(&mut self, ps: &plx_media::route::PlaybackSession,
+        x: f32, chapters: bool, now: u32) -> Handled {
         if !self.scrub.drag {
             return Handled::No;
         }
-        let dur = plx_media::player::duration_ns();
-        if dur > 0 {
+        if let Some(dur) = plx_media::player::duration_ns(ps).filter(|dur| *dur > 0) {
             self.scrub.ns = self.pointed_ns(x, chapters, dur);
         }
         self.hud.dismissed = false;
@@ -1539,7 +1540,7 @@ impl PlayerScreen {
         meta: plx_data::metadata::MetadataView<'_>,
     ) {
         let fwd = matches!(key, consts::Key::Right { .. });
-        let dur = plx_media::player::duration_ns();
+        let Some(dur) = plx_media::player::duration_ns(ps) else { return };
         // **A key-up then a key-down inside the bounce window is one hold, not two gestures.**
         // The key driver was measured doing exactly that mid-hold, and the old code committed the
         // seek on the `Up` and began again on the `Down`. Now the pending release is cancelled and
@@ -1679,7 +1680,7 @@ impl PlayerScreen {
     /// followed by ONE keyup, and a dropped keyup leaves the hold engaged with the preview slewing at
     /// up to `SCRUB_MAX` for as long as the page is up. Every repeat proves the key down, so
     /// `HeldKey::lost` (`SCRUB_LOST_MS` without one) is the release that never arrived.
-    fn step_scrub_hold(&mut self, now: u32) {
+    fn step_scrub_hold(&mut self, ps: &plx_media::route::PlaybackSession, now: u32) {
         // The release that survived the bounce window is the real one.
         if self.scrub.key.release_due(now) {
             self.end_hold("keyup survived the bounce window");
@@ -1693,7 +1694,7 @@ impl PlayerScreen {
             return;
         }
         let was = self.scrub.ns;
-        let dur = plx_media::player::duration_ns();
+        let Some(dur) = plx_media::player::duration_ns(ps) else { return };
         let s = Scrub::clamp_target(was + self.scrub.key.advance_ns(now), dur);
         self.scrub.ns = s;
         // Real travel is what turns a reveal into a scrub — not the hold edge, which fires a beat
@@ -4428,7 +4429,7 @@ mod scrub_ownership_tests {
             v.sort_unstable();
             v
         };
-        let step = |page: &mut PlayerScreen, now: u32| page.row.step(ControlSlot::Discs(player_hud::Controls::NONE), GROUP_SCRUB, 0, 0.016, now);
+        let step = |page: &mut PlayerScreen, now: u32| page.row.step(ControlSlot::Discs(player_hud::Controls::NONE), GROUP_SCRUB, 0, 0.016, now, Some(true), false);
         let mut page = page_on_the_bar();
         step(&mut page, 1_000);
         let before = elems(&page);
@@ -4462,7 +4463,7 @@ mod scrub_ownership_tests {
         playhead(50 * S);
         let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
         assert!(!page.hud.visible_at_press, "the fixture: the transport is hidden");
-        let step = |page: &mut PlayerScreen, now: u32| page.row.step(ControlSlot::Discs(player_hud::Controls::NONE), GROUP_SCRUB, 0, 0.016, now);
+        let step = |page: &mut PlayerScreen, now: u32| page.row.step(ControlSlot::Discs(player_hud::Controls::NONE), GROUP_SCRUB, 0, 0.016, now, Some(true), false);
 
         key(&mut page, SDLK_RIGHT, Edge::Down, 1_000);
         page.publish();
