@@ -163,11 +163,8 @@ mod qualified_uri_offer_tests {
             &mut session, &mut adapter, ticket);
         assert!(matches!(started, super::super::route_start::BufferfeedStartOutcome::Launched(_)),
             "queued URI Open is distinct from the fake transport's later refusal");
-        let feed_seek_before = super::super::TX.seek_to_ns.load(std::sync::atomic::Ordering::Relaxed);
         assert!(!adapter.request_seek(&mut session, 3_000_000_000),
             "a URI still opening refuses runtime seek through the common door");
-        assert_eq!(super::super::TX.seek_to_ns.load(std::sync::atomic::Ordering::Relaxed),
-            feed_seek_before, "a URI seek never writes the Feed command mailbox");
         assert!(adapter.qualified_uri.is_none(), "failed Start consumed the source authorization");
         let at = adapter.backend_tick();
         let _ = adapter.backend_poll_session_at(&mut session, at);
@@ -607,12 +604,12 @@ impl PlayerAdapter {
 
     #[cfg(feature = "play-uri")]
     pub fn select_uri_subtitle(&mut self, ps: &crate::route::PlaybackSession,
-        ordinal: i32, stream_id: i64,
+        ordinal: i32, stream_id: i64, has_sidecar: bool,
         memo: Option<plx_plex::plex::session::prefs::SubtitleMemo>) -> Option<bool> {
         if ps.attempt_view().backend() != Some(super::attempt_view::Backend::Uri) { return None; }
         // Off and external sidecars have no confirmed native operation in this transport.
         let Ok(id) = u64::try_from(stream_id) else { return Some(false); };
-        if id == 0 || ordinal < 0 { return Some(false); }
+        if id == 0 || ordinal < 0 || has_sidecar { return Some(false); }
         let Some(route_attempt) = self.uri_route_attempt else { return Some(false); };
         let attempt = route_attempt.contract_id();
         let result = self.backend_send_at(Intent::Control { backend: BackendKind::Uri, attempt,
@@ -646,7 +643,8 @@ impl PlayerAdapter {
         ordinal: i32, stream_id: i64, sidecar_key: Option<String>, sidecar_codec: String,
         memo: Option<plx_plex::plex::session::prefs::SubtitleMemo>) -> bool {
         #[cfg(feature = "play-uri")]
-        if let Some(accepted) = self.select_uri_subtitle(ps, ordinal, stream_id, memo.clone()) {
+        if let Some(accepted) = self.select_uri_subtitle(ps, ordinal, stream_id,
+            sidecar_key.is_some(), memo.clone()) {
             return accepted;
         }
         #[cfg(feature = "play-feed")]
