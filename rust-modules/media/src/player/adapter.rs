@@ -274,7 +274,10 @@ impl PlayerAdapter {
 
     pub(super) fn finish_native_stop(&mut self, stop: super::engine::NativeStop,
         for_reload: bool) {
-        stop.finish(&mut self.feed, for_reload);
+        if let Some(release) = stop.finish(for_reload) {
+            // This event is the release machine's admission fence for the next start.
+            self.park_release(release);
+        }
     }
 
     /// Address the physical callback snapshot to the current route-owned attempt.

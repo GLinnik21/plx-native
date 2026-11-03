@@ -1986,7 +1986,7 @@ impl NativeStop {
 
     /// Keep the Engine and payload alive under an off-frame Unload; otherwise drop only after
     /// every worker has joined and the queues are destroyed.
-    pub(super) fn finish(mut self, feed: &mut super::feed_resources::FeedResources, for_reload: bool) {
+    pub(super) fn finish(mut self, for_reload: bool) -> Option<PendingRelease> {
         self.spans.mark("reset");
         self.spans.emit(if for_reload { "reload" } else { "stop" });
         if let Some(unload_th) = self.unload_th.take() {
@@ -1994,14 +1994,15 @@ impl NativeStop {
                 "stop_bufferfeed: torn down (native Unload epoch={} continues off-frame)",
                 self.eng.native_epoch,
             ));
-            feed.park_release(PendingRelease {
+            Some(PendingRelease {
                 epoch: self.eng.native_epoch,
                 unload_th: Some(unload_th),
                 handed_off_at: std::time::Instant::now(),
                 _engine: self.eng,
-            });
+            })
         } else {
             log("stop_bufferfeed: torn down");
+            None
         }
     }
 }
