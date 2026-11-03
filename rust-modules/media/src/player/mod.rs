@@ -93,6 +93,7 @@ pub mod video_geometry;
 #[cfg(feature = "play-feed")]
 pub mod vp9_hdr; // HDR10 for a VP9 stream: the container's PQ tag, written into the sourceInfo envelope ACB is sent
 
+#[cfg(feature = "play-feed")]
 use plx_base::task::MainThread;
 #[cfg(all(test, feature = "play-feed"))]
 pub(crate) use shared::pinned_pause_clock;
@@ -203,13 +204,20 @@ pub fn seed_dev_track_names() {
     ));
     *SHARED.track_names.lock().unwrap() = TrackNames { audio, subs };
 }
+#[cfg(feature = "play-feed")]
 use std::ffi::CStr;
-use std::os::raw::{c_char, c_int, c_long, c_uint};
+use std::os::raw::c_int;
+#[cfg(feature = "play-feed")]
+use std::os::raw::{c_char, c_long, c_uint};
+#[cfg(feature = "play-feed")]
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+#[cfg(feature = "play-feed")]
+use std::sync::atomic::{AtomicI32, AtomicU8};
 
 pub static SHARED: Shared = Shared::new();
 pub static TX: Transport = Transport::new();
+#[cfg(feature = "play-feed")]
 static ACB_OK: AtomicBool = AtomicBool::new(false); // was the g_acb availability flag
 
 /// **Is the Stats-for-nerds read-out on screen?** The bit `pump::publish_diag` asks before it
@@ -245,11 +253,13 @@ pub const ABR_FAILURE_ORIGINAL_TRANSPORT: u8 = 3;
 pub const ABR_FAILURE_ORIGINAL_NO_BODY: u8 = 4;
 pub const ABR_FAILURE_ORIGINAL_OPEN: u8 = 5;
 
+#[cfg(feature = "play-feed")]
 pub fn note_original_failure(kind: u8, http_status: i32) {
     SHARED.abr_failure_status.store(http_status.max(0), Relaxed);
     SHARED.abr_failure_kind.store(kind, Relaxed);
 }
 
+#[cfg(feature = "play-feed")]
 pub fn clear_original_failure() {
     SHARED.clear_abr_failure();
 }
@@ -1245,6 +1255,7 @@ pub(crate) use attempt_view::RuntimeFailure;
 /// always sets both together on a budget expiry: the distinction this function exists to make is
 /// "did the pipeline refuse this, or did it never answer at all", and only the timed-out signal
 /// can tell the two apart.
+#[cfg(feature = "play-feed")]
 fn runtime_failure(
     demux_failed: bool,
     io_failed: bool,
@@ -1278,6 +1289,9 @@ fn live_runtime_failure(ps: &crate::route::PlaybackSession) -> RuntimeFailure {
     if ps.attempt_view().backend().is_some_and(|backend| backend != attempt_view::Backend::Feed) {
         return ps.attempt_view().facts().runtime_failure.unwrap_or(RuntimeFailure::Unknown);
     }
+    #[cfg(not(feature = "play-feed"))]
+    { ps.attempt_view().facts().runtime_failure.unwrap_or(RuntimeFailure::Unknown) }
+    #[cfg(feature = "play-feed")]
     runtime_failure(
         SHARED.demux_failed.load(std::sync::atomic::Ordering::Acquire),
         SHARED.demux_io_failed.load(std::sync::atomic::Ordering::Acquire),
@@ -1637,6 +1651,7 @@ pub use ffi_host::stop_clock_at as stop_sim_clock_at;
 
 /// The video codec a `dg_load_v` code names (video 1 = H264, 2 = H265, 3 = AV1, 4 = VP9; 0 = not built).
 /// The codes are written from `engine::LoadVideo::diag_code`, the names from its `payload_name`.
+#[cfg(feature = "play-feed")]
 pub fn load_v_name(code: u8) -> &'static str {
     plx_play_feed::LoadVideo::from_diag_code(code)
         .map_or("—", plx_play_feed::LoadVideo::payload_name)
@@ -1763,6 +1778,9 @@ impl Diag {
     /// The lab snapshot's wire spelling; the on-screen read-out words its own labels.
     #[cfg_attr(not(feature = "lab-diagnostics"), allow(dead_code))]
     pub fn vp_mode_str(&self) -> &'static str {
+        #[cfg(not(feature = "play-feed"))]
+        { "—" }
+        #[cfg(feature = "play-feed")]
         match self.vp_mode {
             VP_EXPORTED => "exported window (webOS 5+)",
             VP_ACB => "ACB (webOS 4)",
@@ -1771,6 +1789,9 @@ impl Diag {
     }
     /// What the Load payload named as the video codec, or `—` before one was built.
     pub fn load_v_str(&self) -> &'static str {
+        #[cfg(not(feature = "play-feed"))]
+        { "—" }
+        #[cfg(feature = "play-feed")]
         load_v_name(self.load_v)
     }
     /// …and the audio codec. `needAudio:false` is its own answer, not an absence.

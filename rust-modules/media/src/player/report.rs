@@ -651,11 +651,14 @@ fn error_context(ps: &crate::route::PlaybackSession) -> PlaybackErrorContext {
         pipeline_error: facts.pipeline_error.unwrap_or(0),
         refusal,
     };
+    #[cfg(feature = "play-feed")]
     if crate::route::preview_request(ps) {
         as_preview(context)
     } else {
         context
     }
+    #[cfg(not(feature = "play-feed"))]
+    { context }
 }
 
 /// **Whether a failed detail-page preview is reported at all.** This is the one switch: `false`
@@ -681,6 +684,7 @@ const REPORT_PREVIEW_FAILURES: bool = true;
 ///   ([`super::preview::picture_shown`]). The trace cannot say: it never sees a preview's
 ///   `Presented`, so it would claim "no picture" for a trailer that played and then lost its
 ///   connection.
+#[cfg(feature = "play-feed")]
 fn as_preview(mut context: PlaybackErrorContext) -> PlaybackErrorContext {
     let shown = super::preview::picture_shown();
     context.started = shown;
@@ -725,8 +729,9 @@ pub fn last_delivery_requested_for_test() -> Option<(DeliveryReason, DeliveryCla
 /// asked for a trace.
 #[cfg(any(test, feature = "test-support"))]
 pub fn reset_latches_for_test() {
-    super::SHARED.pb_state.store(super::shared::PlaybackState::Idle as u8, Relaxed);
-    LAST.store(super::shared::PlaybackState::Idle as u8, Relaxed);
+    #[cfg(feature = "play-feed")]
+    super::SHARED.pb_state.store(super::attempt_view::PlaybackState::Idle as u8, Relaxed);
+    LAST.store(super::attempt_view::PlaybackState::Idle as u8, Relaxed);
     SAW_START.store(false, Relaxed);
     SAW_FAIL.store(false, Relaxed);
     preview_requested();
@@ -823,7 +828,7 @@ pub fn requested(
     REBUFFER_AT_MS.store(0, Relaxed);
     REBUFFER_TOTAL_MS.store(0, Relaxed);
     REQUESTED_MS.store(at, Relaxed);
-    LAST.store(super::shared::PlaybackState::Resolving as u8, Relaxed);
+    LAST.store(super::attempt_view::PlaybackState::Resolving as u8, Relaxed);
     let mut trace = TRACE
         .lock()
         .unwrap_or_else(|e| e.into_inner());
@@ -935,12 +940,12 @@ enum What {
 /// heavy scrubbers look like heavy watchers. Neither is observable without a test, so the decision
 /// is separated from the globals and graded on the host.
 fn transition(
-    prev: super::shared::PlaybackState,
-    now: super::shared::PlaybackState,
+    prev: super::attempt_view::PlaybackState,
+    now: super::attempt_view::PlaybackState,
     saw_start: bool,
     saw_fail: bool,
 ) -> Option<What> {
-    use super::shared::PlaybackState as S;
+    use super::attempt_view::PlaybackState as S;
     if prev == now {
         return None;
     }
@@ -969,15 +974,24 @@ pub fn preview_requested() {
 /// [`tick`] with the preview-reporting switch passed in, so a test can flip it without a second
 /// production switch: [`tick`] is its only caller and always passes [`REPORT_PREVIEW_FAILURES`].
 fn tick_with(ps: &crate::route::PlaybackSession, report_preview_failures: bool) {
+    #[cfg(not(feature = "play-feed"))]
+    let _ = report_preview_failures;
     let now = super::state(ps);
-    let prev = super::shared::PlaybackState::from_u8(LAST.swap(now as u8, Relaxed));
+    let prev = super::attempt_view::PlaybackState::from_u8(LAST.swap(now as u8, Relaxed));
+    #[cfg(feature = "play-feed")]
     if crate::route::preview_request(ps) {
         tick_preview(ps, prev, now, report_preview_failures);
         return;
     }
     // A claim's presentation hold answers Buffering on purpose (`state()`), so its
     // Playing -> Buffering edge is the viewer's own pick working, not a stall.
-    if !super::claim_hold::active() {
+    let claim_held = {
+        #[cfg(feature = "play-feed")]
+        { super::claim_hold::active() }
+        #[cfg(not(feature = "play-feed"))]
+        { false }
+    };
+    if !claim_held {
         note_rebuffer(prev, now, SAW_START.load(Relaxed));
     }
     // `Resolving` and `Connecting` are the states of an engine being opened, whether the first or
@@ -986,12 +1000,12 @@ fn tick_with(ps: &crate::route::PlaybackSession, report_preview_failures: bool) 
     if prev != now
         && matches!(
             now,
-            super::shared::PlaybackState::Resolving | super::shared::PlaybackState::Connecting
+            super::attempt_view::PlaybackState::Resolving | super::attempt_view::PlaybackState::Connecting
         )
     {
         note_engine_opening();
     }
-    if prev != now && now == super::shared::PlaybackState::Playing {
+    if prev != now && now == super::attempt_view::PlaybackState::Playing {
         // Unlike the usage funnel's once-per-attempt `Started`, every return to actual presented
         // video is useful causal evidence after a seek or delivery reload.
         push_trace(presented_event(ps));
@@ -1040,10 +1054,11 @@ fn tick_with(ps: &crate::route::PlaybackSession, report_preview_failures: bool) 
 /// told, once per preview request ([`PREVIEW_SAW_FAIL`]): the trace is sealed whatever
 /// `report_failure` says (so withdrawal's eraser covers it), and `report_failure` alone decides
 /// whether the handled error is queued.
+#[cfg(feature = "play-feed")]
 fn tick_preview(
     ps: &crate::route::PlaybackSession,
-    prev: super::shared::PlaybackState,
-    now: super::shared::PlaybackState,
+    prev: super::attempt_view::PlaybackState,
+    now: super::attempt_view::PlaybackState,
     report_failure: bool,
 ) {
     // `saw_start` is passed as true: a trailer reaching Playing is not `playback.started`.
@@ -1088,11 +1103,11 @@ pub fn ended(ps: &crate::route::PlaybackSession, position_ns: i64, duration_ns: 
 }
 
 fn note_rebuffer(
-    prev: super::shared::PlaybackState,
-    now: super::shared::PlaybackState,
+    prev: super::attempt_view::PlaybackState,
+    now: super::attempt_view::PlaybackState,
     saw_start: bool,
 ) {
-    use super::shared::PlaybackState as S;
+    use super::attempt_view::PlaybackState as S;
     if starts_rebuffer(prev, now, saw_start) {
         // A saturating increment, as a loop; see `requested` for why not `fetch_update`.
         let mut current = REBUFFER_COUNT.load(Relaxed);
@@ -1108,11 +1123,11 @@ fn note_rebuffer(
 }
 
 fn starts_rebuffer(
-    prev: super::shared::PlaybackState,
-    now: super::shared::PlaybackState,
+    prev: super::attempt_view::PlaybackState,
+    now: super::attempt_view::PlaybackState,
     saw_start: bool,
 ) -> bool {
-    use super::shared::PlaybackState as S;
+    use super::attempt_view::PlaybackState as S;
     saw_start && prev == S::Playing && now == S::Buffering
 }
 
@@ -1394,6 +1409,35 @@ mod tests {
         assert!(starts_rebuffer(S::Playing, S::Buffering, true));
         assert!(!starts_rebuffer(S::Seeking, S::Buffering, true));
         assert!(!starts_rebuffer(S::Playing, S::Buffering, false));
+    }
+
+    #[cfg(feature = "play-uri")]
+    #[test]
+    fn uri_playing_starts_lifecycle_without_claiming_panel_presentation() {
+        let _g = plx_base::testlock::serial();
+        let mut ps = crate::route::PlaybackSession::default();
+        let attempt = crate::route::RouteStartAttempt::fixture();
+        ps.begin_attempt_view(attempt, crate::player::attempt_view::Backend::Uri);
+        assert!(ps.ingest_attempt_facts(
+            attempt,
+            crate::player::attempt_view::Backend::Uri,
+            crate::player::attempt_view::AttemptFacts {
+                status: Some(S::Playing),
+                position_ns: Some(1_000_000),
+                ..Default::default()
+            },
+        ));
+        TRACE.lock().unwrap_or_else(|e| e.into_inner()).seed_for_reset_test();
+        SAW_START.store(false, Relaxed);
+        LAST.store(S::Connecting as u8, Relaxed);
+        assert_eq!(crate::player::state(&ps), S::Playing);
+        tick(&ps);
+        assert!(SAW_START.load(Relaxed), "service Playing starts the common lifecycle");
+        assert!(
+            !trace_steps().iter().any(|step| matches!(step.event, TraceEvent::Presented { .. })),
+            "service Playing and a position report are not independent panel evidence",
+        );
+        reset_latches_for_test();
     }
 
     /// A paused session with no picture yet (`PlaybackState::Paused`) is not playing: it reports no
@@ -2564,7 +2608,7 @@ mod tests {
         assert_eq!(error_context(&hls).delivery.code(), "hls");
     }
 
-    use super::super::shared::PlaybackState as S;
+    use super::super::attempt_view::PlaybackState as S;
 
     /// Drive a sequence of states through the rule the way a frame loop would, latches and all, and
     /// report what it emitted.
