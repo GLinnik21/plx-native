@@ -27,6 +27,7 @@ pub mod curlio; // the HTTPS media plane: a remote file pulled by byte range ove
 pub mod ff_pcm; // compatibility facade for the physical PCM decoder in play-feed
 #[cfg(feature = "play-feed")]
 pub mod ff; // compatibility facade for the physical FFmpeg demuxer in play-feed
+#[cfg(feature = "play-feed")]
 #[path = "ff_subside.rs"]
 pub(crate) mod subtitle_job; // optional subtitle transport and common presentation runner over a codec job
 #[cfg(feature = "play-feed")]

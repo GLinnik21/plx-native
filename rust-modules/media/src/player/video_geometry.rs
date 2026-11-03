@@ -47,6 +47,7 @@ impl Aspect {
 /// Parse only the sourceInfo video object, never a similarly named nested field.
 /// Observed on the TV as `video:{width,height,pixelAspectRatio:{width,height}}`.
 /// This runs only on metadata callbacks, not on the frame/position callback path.
+#[cfg(feature = "play-feed")]
 pub(super) fn source_aspect(bytes: &[u8]) -> Option<Aspect> {
     let root: serde_json::Value = serde_json::from_slice(bytes).ok()?;
     let video = root.get("video")?;
@@ -72,6 +73,7 @@ pub(super) fn source_aspect(bytes: &[u8]) -> Option<Aspect> {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "play-feed")]
     #[test]
     fn picture_fit_covers_pillarbox_letterbox_and_anamorphic_sources() {
         let fit = |json: &[u8]| source_aspect(json).unwrap().fit(1920, 1080);
@@ -99,6 +101,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "play-feed")]
     #[test]
     fn missing_or_invalid_geometry_does_not_publish_an_aspect() {
         for value in [

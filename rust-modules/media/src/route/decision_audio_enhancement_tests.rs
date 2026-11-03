@@ -4284,7 +4284,7 @@ fn sidecar_over_admitted_remux(ps: &mut PlaybackSession) -> Live {
 /// offset, and the playhead the position callback stores is `fed - pts_shift + disp_base`. Returns
 /// the playhead of that first frame.
 fn remux_started_at(requested_ns: i64, first_pts_ns: i64) -> i64 {
-    use crate::subtitle_job::playhead_of;
+    use plx_playback_contract::subtitle::playhead_of;
     let s = &crate::player::SHARED;
     s.pts_shift.store(0, std::sync::atomic::Ordering::Relaxed);
     s.disp_base.store(requested_ns, std::sync::atomic::Ordering::Relaxed);
@@ -4295,7 +4295,7 @@ fn remux_started_at(requested_ns: i64, first_pts_ns: i64) -> i64 {
 
 /// The reader's measurement for such a run, published the way `read_once` publishes it.
 fn measured(part_kf_ns: i64, first_pts_ns: i64, requested_ns: i64) -> i64 {
-    let delta = crate::subtitle_job::delta_exact(part_kf_ns, first_pts_ns, 0, requested_ns);
+    let delta = plx_playback_contract::subtitle::delta_exact(part_kf_ns, first_pts_ns, 0, requested_ns);
     crate::player::subside::publish_exact(delta);
     delta
 }

@@ -80,7 +80,8 @@ pub mod sidecar;
 pub mod sub_charset; // legacy-encoding text subtitles (GBK, Big5, Shift_JIS, ...) read as UTF-8; decided once per track
 #[cfg(feature = "play-feed")]
 pub mod subside; // the side subtitle reader's thread and state (dev trigger `plxnative-subside`)
-pub(crate) mod subtitle_cue; // shared text/ASS/bitmap cue publication for main and side readers
+#[cfg(feature = "play-feed")]
+pub(crate) mod subtitle_cue; // embedded/side-reader cue bridge; caption stores remain common
 #[cfg(all(feature = "hostsim", feature = "play-feed"))]
 pub mod sim_video; // the simulator's decoded picture, for screenshots (see its doc)
 pub mod text_ass; // text subtitles to ASS: dialect converter, synthesized header, sidecar scripts (pure)
@@ -1746,6 +1747,7 @@ pub struct Diag {
 /// time and have `display_base_ns == 0`; segmented HLS and offset progressive transcodes publish a
 /// zero-based tail and carry the movie offset in `display_base_ns`. Adding that base universally
 /// makes all three shapes land in the same timeline without a route-specific heuristic.
+#[cfg(feature = "play-feed")]
 fn playable_buffer_ms(
     video_tail_ns: i64,
     audio_tail_ns: i64,
@@ -2595,6 +2597,7 @@ pub fn push_subtitle_bitmap(
 
 /// Publish from a captured demux only while its bitmap store generation still
 /// owns the slot. Reset changes the generation under this same store mutex.
+#[cfg(feature = "play-feed")]
 pub(crate) fn push_subtitle_bitmap_for_generation(
     generation: u64, track: i32, start_ns: i64, cw: i32, ch: i32, rects: Vec<SubRect>,
     retention: plx_playback_contract::subtitle::CaptionRetention,
@@ -2663,6 +2666,7 @@ pub fn close_subtitle_bitmap(track: i32, end_ns: i64) {
     close_subtitle_bitmap_locked(&mut v, track, end_ns);
 }
 
+#[cfg(feature = "play-feed")]
 pub(crate) fn close_subtitle_bitmap_for_generation(generation: u64, track: i32, end_ns: i64) -> bool {
     let mut v = SHARED.sub_bitmaps.lock().unwrap();
     if SHARED.bitmap_generation.load(std::sync::atomic::Ordering::Acquire) != generation { return false; }
@@ -3426,6 +3430,7 @@ mod tests {
         assert!(acb_playstate_ready(shared::Stage::Streaming));
     }
 
+    #[cfg(feature = "play-feed")]
     #[test]
     fn playable_buffer_uses_one_movie_timeline_for_every_transport() {
         assert_eq!(

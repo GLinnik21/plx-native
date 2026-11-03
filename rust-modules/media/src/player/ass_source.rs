@@ -572,22 +572,26 @@ pub fn begin(media_key: &str, headers: Vec<(i32, TrackHeader)>, fonts: Vec<Font>
 
 /// The owned source inventory. Repreparing after a concurrent store change
 /// reuses these facts without rereading FFmpeg's released metadata.
+#[cfg(feature = "play-feed")]
 pub(crate) struct SourceInventory {
     media_key: String,
     headers: Vec<(i32, TrackHeader)>,
     fonts: Vec<Font>,
 }
 
+#[cfg(feature = "play-feed")]
 impl SourceInventory {
     pub(crate) fn new(media_key: &str, headers: Vec<(i32, TrackHeader)>, fonts: Vec<Font>) -> Self {
         Self { media_key: media_key.to_owned(), headers, fonts }
     }
 }
 
+#[cfg(feature = "play-feed")]
 pub(crate) fn begin_inventory(inventory: SourceInventory) -> u64 {
     begin(&inventory.media_key, inventory.headers, inventory.fonts)
 }
 
+#[cfg(feature = "play-feed")]
 pub(crate) struct PreparedBegin {
     expected_revision: u64,
     next: Store,
@@ -596,6 +600,7 @@ pub(crate) struct PreparedBegin {
 
 /// Clone the bounded cue index and merge the next ASS source off the native
 /// retirement barrier. The source's payloads and fonts remain shared Arcs.
+#[cfg(feature = "play-feed")]
 pub(crate) fn prepare_begin(inventory: &SourceInventory) -> PreparedBegin {
     let style = TextStyle::current();
     let mut next = store().clone();
@@ -608,6 +613,7 @@ pub(crate) fn prepare_begin(inventory: &SourceInventory) -> PreparedBegin {
 
 /// Only the pointer/map swap runs under the native epoch barrier. If cues,
 /// style or a reset changed during preparation, the caller must reprepare.
+#[cfg(feature = "play-feed")]
 pub(crate) fn commit_prepared(prepared: PreparedBegin) -> Result<(u64, Store), PreparedBegin> {
     let mut active = store();
     if active.revision != prepared.expected_revision { return Err(prepared); }
@@ -725,6 +731,7 @@ mod tests {
         plx_playback_contract::subtitle::CaptionRetention { playhead_ns: None, seek_target_ns: None }
     }
 
+    #[cfg(feature = "play-feed")]
     #[test]
     fn prepared_reopen_rebases_after_a_concurrent_cue() {
         let _serial = plx_base::testlock::serial();
