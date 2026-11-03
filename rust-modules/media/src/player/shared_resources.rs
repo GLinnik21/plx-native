@@ -90,7 +90,7 @@ impl Shared {
         #[cfg(feature = "play-feed")]
         {
             let duration = self.feed.duration_ns.load(Ordering::Relaxed);
-            self.feed.reset_session_with(for_reload, || self.reset_captions(for_reload));
+            self.feed.reset_session_with(|| self.reset_captions(for_reload));
             if for_reload { self.feed.duration_ns.store(duration, Ordering::Relaxed); }
         }
         #[cfg(not(feature = "play-feed"))]

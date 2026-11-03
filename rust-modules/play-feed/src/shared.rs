@@ -1009,7 +1009,7 @@ impl Shared {
     /// has the account).
     pub fn reset_session_for_reload(&self) {
         let duration_ns = self.duration_ns.load(Ordering::Relaxed);
-        self.reset_session_inner(true);
+        self.reset_session_inner();
         self.duration_ns.store(duration_ns, Ordering::Relaxed);
     }
 
@@ -1017,24 +1017,24 @@ impl Shared {
     /// [`Shared::clear_abr_seed`] and [`Shared::clear_abr_failure`]. Everything else here describes
     /// one engine's session and must not outlive it.
     pub fn reset_session(&self) {
-        self.reset_session_inner(false);
+        self.reset_session_inner();
     }
 
-    fn reset_session_inner(&self, for_reload: bool) {
+    fn reset_session_inner(&self) {
         // Preserve the callback/reset barrier across every mirror write below. Abandoned and
         // releasing objects keep their native phase while their old callbacks drain.
-        self.reset_session_with(for_reload, || {});
+        self.reset_session_with(|| {});
     }
 
     /// Keep common resource retirement inside the existing callback/reset barrier.
-    pub fn reset_session_with(&self, for_reload: bool, reset_common: impl FnOnce()) {
+    pub fn reset_session_with(&self, reset_common: impl FnOnce()) {
         self.native_session.reset_session_with(|| {
-            self.reset_session_mirrors(for_reload);
+            self.reset_session_mirrors();
             reset_common();
         });
     }
 
-    fn reset_session_mirrors(&self, for_reload: bool) {
+    fn reset_session_mirrors(&self) {
         // the diagnostics mirror is per-session too — a stale bind outcome from the last item is
         // exactly the misleading answer the read-out exists to avoid
         self.dg_stage.store(0, Ordering::Relaxed);

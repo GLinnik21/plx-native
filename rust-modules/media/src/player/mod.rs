@@ -1818,10 +1818,16 @@ pub fn diag(ps: &crate::route::PlaybackSession) -> Diag {
     let view = ps.attempt_view();
     let backend = view.backend();
     let observed = *view.facts();
+    let common = Diag { backend, observed,
+        source_kbps: crate::route::transport_kbps(ps), ..Default::default() };
+    #[cfg(not(feature = "play-feed"))]
+    { common }
+    #[cfg(feature = "play-feed")]
+    {
     if backend != Some(attempt_view::Backend::Feed) {
         // No buffer-feed Engine owns these callback mailboxes. In particular a URI open must
         // never display the previous Engine's feed counts or a guessed zero as an observation.
-        return Diag { backend, observed, source_kbps: crate::route::transport_kbps(ps), ..Default::default() };
+        return common;
     }
     let (fed_v, fed_a) = engine::fed_totals();
     // The sink hands back the seam's own static buffer — never NULL, "" when no window was
@@ -1890,6 +1896,7 @@ pub fn diag(ps: &crate::route::PlaybackSession) -> Diag {
         abr_risk: SHARED.dg_abr_risk.load(Relaxed),
         abr_why: SHARED.dg_abr_why.load(Relaxed),
     }
+    }
 }
 
 pub fn seek_display_ns(ps: &crate::route::PlaybackSession) -> Option<i64> {
@@ -1934,6 +1941,7 @@ pub fn request_audio_switch(ps: &crate::route::PlaybackSession, _sid: i64) {
 /// audio stream from the same MKV with codec `codec`. The pump reloads direct-play at the current
 /// position next tick (switch_audio_native). Used when the item direct-plays and the target track
 /// is a direct-playable codec (aac/ac3/eac3).
+#[cfg(feature = "play-feed")]
 pub fn request_audio_track(ps: &mut crate::route::PlaybackSession, audio_idx: i32, codec: &str) {
     stage_native_audio(ps, audio_idx, codec);
     crate::route::request_user_route_intent(ps, crate::route::UserRouteIntent::NativeAudioReload);
@@ -1942,12 +1950,14 @@ pub fn request_audio_track(ps: &mut crate::route::PlaybackSession, audio_idx: i3
 /// the Load payload codec and the demuxer's stream index.
 /// A claimed action that owes a displaced pick its reload (issue #266) stages it here and runs
 /// the reload itself, so no second intent is queued mid-claim.
+#[cfg(feature = "play-feed")]
 pub fn stage_native_audio(ps: &mut crate::route::PlaybackSession, audio_idx: i32, codec: &str) {
     crate::route::set_stream_acodec(ps, codec); // the reload's Load payload uses this audio codec
     SHARED.desired_audio_idx.store(audio_idx, Relaxed);
 }
 /// reset to the default (best) audio stream — called on a new item so a prior track choice
 /// does not leak across items (desired_audio_idx persists across seeks, not across items).
+#[cfg(feature = "play-feed")]
 pub fn reset_audio_track() {
     SHARED.desired_audio_idx.store(-1, Relaxed);
 }
@@ -1967,13 +1977,33 @@ pub fn rate_name(permille: i32) -> String {
 }
 
 /// The viewer's playback speed, in thousandths (1500 = 1.5x).
+#[cfg(feature = "play-feed")]
 pub fn play_rate_permille() -> i32 {
     SHARED.play_rate_permille.load(Relaxed)
 }
 /// The speed the pipeline on screen is actually running at: [`play_rate_permille`] once a Load
 /// has applied it, 1x before that, and 1x for good if LG refused it.
+#[cfg(feature = "play-feed")]
 pub fn applied_rate_permille() -> i32 {
     SHARED.applied_rate_permille.load(Relaxed)
+}
+
+/// Selected Feed speed for this addressed attempt. URI and unknown attempts have no app-owned
+/// speed decoder, so callers receive absence instead of sampling a stale Feed process mailbox.
+pub fn selected_rate(ps: &crate::route::PlaybackSession) -> Option<i32> {
+    if ps.attempt_view().backend() != Some(attempt_view::Backend::Feed) { return None; }
+    #[cfg(feature = "play-feed")]
+    { Some(play_rate_permille()) }
+    #[cfg(not(feature = "play-feed"))]
+    { None }
+}
+
+pub fn applied_rate(ps: &crate::route::PlaybackSession) -> Option<i32> {
+    if ps.attempt_view().backend() != Some(attempt_view::Backend::Feed) { return None; }
+    #[cfg(feature = "play-feed")]
+    { Some(applied_rate_permille()) }
+    #[cfg(not(feature = "play-feed"))]
+    { None }
 }
 
 /// **Change the playback speed of the item on screen.**
@@ -1988,6 +2018,7 @@ pub fn applied_rate_permille() -> i32 {
 /// too (`pump::seek_must_reload`), so each session starts on a fresh timeline.
 ///
 /// Returns whether anything was requested: picking the speed already set does nothing.
+#[cfg(feature = "play-feed")]
 pub fn set_play_rate(ps: &crate::route::PlaybackSession, permille: i32) -> bool {
     if !PLAY_RATES.contains(&permille) || permille == play_rate_permille() {
         return false;
@@ -2005,6 +2036,7 @@ pub fn set_play_rate(ps: &crate::route::PlaybackSession, permille: i32) -> bool 
     request_seek(intended_pos_ns(ps).max(0));
     true
 }
+#[cfg(feature = "play-feed")]
 plx_base::devtrig::latched_flag!(
     /// `/tmp/plxnative-noaudio` — a video-only Load (`needAudio:false`, no audio ES fed), the dev A/B
     /// that isolates the audio path. Latched: [`speed_offer`] runs every frame while the More menu
@@ -2057,6 +2089,7 @@ pub fn speeds_within(fps: f64, max_fps: f64) -> Vec<i32> {
 /// **The speed a Load is about to play at**: the viewer's, if this playback offers it, else 1x —
 /// and a refusal puts the viewer's speed back to Normal so the menu does not claim a speed the
 /// picture is not playing at.
+#[cfg(feature = "play-feed")]
 pub(crate) fn session_rate_for(ps: &crate::route::PlaybackSession) -> i32 {
     let want = play_rate_permille();
     if want == RATE_NORMAL || crate::route::is_preview(ps) {
@@ -2078,6 +2111,7 @@ pub fn session_rate(want: i32, offer: &[i32]) -> i32 {
 
 /// **A television that did not take this session's PCM.** Latched for the life of the process:
 /// the same set will refuse the next one too.
+#[cfg(feature = "play-feed")]
 pub fn speed_unsupported() -> bool {
     SHARED.speed_unsupported.load(Relaxed)
 }
@@ -2086,6 +2120,7 @@ pub fn speed_unsupported() -> bool {
 /// (`audio/x-raw … <kHz> <channels> …`). 48 kHz stereo is what the payload declared; anything
 /// else means the declaration was not understood — measured: `"sampleRate":48000` came back as
 /// 44.099998 and the audio drifted and resynced every few seconds.
+#[cfg(feature = "play-feed")]
 pub(crate) fn note_speed_audio_report(b: &[u8]) {
     if applied_rate_permille() == RATE_NORMAL || !b.starts_with(b"audio/") {
         return;
@@ -2101,6 +2136,7 @@ pub(crate) fn note_speed_audio_report(b: &[u8]) {
 }
 /// What the pipeline reported for this speed session's audio, for the Stats for nerds read-out:
 /// `None` before any report, `Some(true)` for the declared 48 kHz stereo, `Some(false)` otherwise.
+#[cfg(feature = "play-feed")]
 pub fn speed_audio_report() -> Option<bool> {
     match SHARED.speed_audio_verdict.load(Relaxed) {
         SPEED_AUDIO_OK => Some(true),
@@ -2108,13 +2144,17 @@ pub fn speed_audio_report() -> Option<bool> {
         _ => None,
     }
 }
+#[cfg(feature = "play-feed")]
 pub(crate) const SPEED_AUDIO_UNKNOWN: u8 = plx_play_feed::shared::SPEED_AUDIO_UNKNOWN;
+#[cfg(feature = "play-feed")]
 pub(crate) const SPEED_AUDIO_OK: u8 = 1;
+#[cfg(feature = "play-feed")]
 pub(crate) const SPEED_AUDIO_BAD: u8 = 2;
 
 /// **The safety net**: this television did not take a speed session's PCM (`why`). Latch speed off
 /// ([`speed_unsupported`]), put the viewer's speed back to Normal, and reload at their position —
 /// the same reload a speed change is, which now lands at 1x on the TV's own audio path.
+#[cfg(feature = "play-feed")]
 pub(crate) fn fall_back_from_speed(ps: &crate::route::PlaybackSession, why: &str) {
     log(&format!("speed: FALLING BACK to 1x — {why}; speed is off until the app restarts"));
     SHARED.speed_unsupported.store(true, Relaxed);
@@ -2127,13 +2167,16 @@ pub(crate) fn fall_back_from_speed(ps: &crate::route::PlaybackSession, why: &str
 /// so every timestamp the app hands it — a fed AU, a seek or decode position — is divided by `r`;
 /// the frames then arrive `r` times closer together and the picture runs `r` times faster.
 /// Identity at 1x, which is every playback that has not picked a speed.
+#[cfg(feature = "play-feed")]
 pub fn to_sink_ns(ns: i64) -> i64 {
     scale_ns(ns, RATE_NORMAL, applied_rate_permille())
 }
 /// The inverse, for every timestamp the pipeline reports back (a presented frame).
+#[cfg(feature = "play-feed")]
 pub fn from_sink_ns(ns: i64) -> i64 {
     scale_ns(ns, applied_rate_permille(), RATE_NORMAL)
 }
+#[cfg(feature = "play-feed")]
 fn scale_ns(ns: i64, num: i32, den: i32) -> i64 {
     if num == den || den <= 0 {
         return ns;
@@ -2143,6 +2186,7 @@ fn scale_ns(ns: i64, num: i32, den: i32) -> i64 {
 
 /// Back to 1x — called on a new item, like [`reset_audio_track`]: a speed is a choice about what
 /// is playing, and Plex Web's resets the same way.
+#[cfg(feature = "play-feed")]
 pub fn reset_play_rate() {
     SHARED.play_rate_permille.store(RATE_NORMAL, Relaxed);
     SHARED.rate_reload.store(false, Relaxed);
@@ -2634,10 +2678,12 @@ pub fn bitmap_by_key(key: i64) -> Option<(i32, i32, Vec<SubRect>)> {
 }
 pub use plx_base::eventlog::log; // event-log sink (crate-wide single copy in lib.rs)
 
+#[cfg(feature = "play-feed")]
 fn find(h: &[u8], n: &[u8]) -> bool {
     !n.is_empty() && h.windows(n.len()).any(|w| w == n)
 }
 /// bytes between `prefix` and the next `term`, or None if `prefix` absent.
+#[cfg(feature = "play-feed")]
 fn between(h: &[u8], prefix: &[u8], term: u8) -> Option<Vec<u8>> {
     let start = h.windows(prefix.len()).position(|w| w == prefix)? + prefix.len();
     let rest = &h[start..];
@@ -2648,6 +2694,7 @@ fn between(h: &[u8], prefix: &[u8], term: u8) -> Option<Vec<u8>> {
 /// Parse one JSON number into thousandths without allocating a JSON tree on the pipeline callback
 /// thread. SourceInfo is firmware-owned and may contain integer (`24`) or fractional (`23.976`)
 /// frame rates; malformed, zero and non-finite values remain "not reported".
+#[cfg(feature = "play-feed")]
 fn source_fps_milli(h: &[u8]) -> Option<i64> {
     let prefix = b"\"frameRate\":";
     let start = h.windows(prefix.len()).position(|w| w == prefix)? + prefix.len();
@@ -2693,6 +2740,7 @@ fn vclock_ms() -> u32 {
 /// whether the pipeline still thinks it is running. A steady `5 / 201` through a picture the
 /// viewer says is stuttering is a real and useful finding: it rules the fault OUT of everything
 /// this process can see, and sends the search to the display side.
+#[cfg(feature = "play-feed")]
 pub fn vplane_take() -> (u32, u32) {
     (
         SHARED.dg_vpres_ct.swap(0, Relaxed),
@@ -2717,6 +2765,7 @@ pub fn vplane_take() -> (u32, u32) {
 /// (`kad-hdr`).
 /// Panic-guarded (unwinding into C is UB); touches only SHARED.
 #[no_mangle]
+#[cfg(feature = "play-feed")]
 pub extern "C" fn sf_on_event(epoch: c_uint, ty: c_int, num: i64, s: *const c_char) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         // The mutex is deliberately held through the complete callback. A bare equality check
@@ -2734,6 +2783,7 @@ pub extern "C" fn sf_on_event(epoch: c_uint, ty: c_int, num: i64, s: *const c_ch
 /// The two libpf frame counters a callback type can name, once the webOS 4 vs 5+ numbering
 /// shift is taken out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(feature = "play-feed")]
 enum SinkCounter {
     Dropped,
     Displayed,
@@ -2744,6 +2794,7 @@ enum SinkCounter {
 /// `updateDisplayedFrame` → 0x2f = 47); every type above 0x1c is two higher on webOS 5+
 /// (Kodi's `if (webOSVersion < 5 && type > ENDOFSTREAM) type += 2`), so 48/49 there. An unknown
 /// major (0, os_info unreadable) is read as the numbering this project has actually measured.
+#[cfg(feature = "play-feed")]
 fn sink_counter_kind(ty: c_int, major: u32) -> Option<SinkCounter> {
     let normalised = if major == 0 || major < 5 { ty + 2 } else { ty };
     match normalised {
@@ -2755,12 +2806,14 @@ fn sink_counter_kind(ty: c_int, major: u32) -> Option<SinkCounter> {
 
 /// The raw callback type [`sink_counter_kind`] reads as the displayed-frame counter on this major,
 /// found through it so the two cannot drift apart.
+#[cfg(feature = "play-feed")]
 fn displayed_counter_type(major: u32) -> c_int {
     (46..=49)
         .find(|&ty| sink_counter_kind(ty, major) == Some(SinkCounter::Displayed))
         .unwrap_or(0)
 }
 
+#[cfg(feature = "play-feed")]
 fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::EventScope) {
     if scope == shared::EventScope::Release {
         // The lifecycle evidence of an object being released after the main thread reset the
@@ -2966,6 +3019,7 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::Event
 }
 
 #[no_mangle]
+#[cfg(feature = "play-feed")]
 pub extern "C" fn acb_on_event(ev: c_long, reply: *const c_char) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         let (code, binding_error) = if reply.is_null() { (None, false) } else {
