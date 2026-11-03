@@ -716,9 +716,6 @@ pub fn video_viewport(ps: &crate::route::PlaybackSession, width: i32, height: i3
         .map(|aspect| aspect.fit(width, height))
 }
 
-pub(crate) fn feed_playpos_ns() -> i64 {
-    SHARED.playpos_ns.load(Relaxed)
-}
 pub fn playpos_ns(ps: &crate::route::PlaybackSession) -> Option<i64> {
     ps.attempt_view().facts().position_ns
 }
