@@ -3123,9 +3123,12 @@ impl Coordinator {
 }
 
 struct Session {
-    coordinator: Coordinator,
-    /// One monotonic origin for observe, commit, reject and switch history.
-    history_since: std::time::Instant,
+    start: Option<Start>,
+    effects: Option<Box<dyn AdaptiveEffects>>,
+    coordinator: Option<Coordinator>,
+    /// Minted on the worker after the initial cursor opens, at the same
+    /// boundary as the former in-loop controller construction.
+    history_since: Option<std::time::Instant>,
     /// The first completed object carries encoder startup and does not certify
     /// repeatable acquisition; the next object opens that evidence window.
     session_boundary_pending: bool,
@@ -3133,53 +3136,62 @@ struct Session {
     cleanup_wait_logged: bool,
 }
 
-/// Construct the single adaptive owner before entering the feed loop. This
-/// box moves with the playback attempt; no controller or route ticket is
-/// reconstructed from a feed-side snapshot.
+/// Capture the one route owner for transfer into the existing feed worker.
+/// Construction reads no clock, dev trigger or player state; those reads stay
+/// at the first worker drive after the initial HLS cursor is open.
 pub fn boxed_session(
     start: Start, effects: Box<dyn AdaptiveEffects>,
 ) -> Box<dyn AdaptiveSession> {
-    let history_since = std::time::Instant::now();
-    let info = start.info();
-    crate::player::log(&format!(
-        "abr: history switches={} since_last={} advanced=0ms",
-        info.history.visible_switches,
-        info.history.since_last_ms.map(|ms| ms.to_string())
-            .unwrap_or_else(|| "none".to_string()),
-    ));
-    if !info.original_candidate || info.original_source_kbps == 0 {
-        crate::player::log(&format!(
-            "abr: no Original recovery for this playback (candidate={} source={}kbps) — \
-             HLS is the ceiling until the next resolve",
-            u8::from(info.original_candidate), info.original_source_kbps,
-        ));
-    }
-    let pin = abr::abr_pin();
-    let coordinator = Coordinator::start(start, pin, effects);
-    if info.original_refused && coordinator.has_recovery() {
-        crate::player::log(
-            "abr: Original was refused on this HLS route; not asked again until the route changes",
-        );
-    }
-    let seeded = coordinator.telemetry();
-    crate::player::log(&format!(
-        "abr: seed rung={}kbps prior={} slow={}kbps fast={}kbps unc={}pm n={} pin={}",
-        info.initial.kbps(),
-        info.prior.map(|p| format!("{}kbps", p.slow_kbps))
-            .unwrap_or_else(|| "none".to_string()),
-        seeded.delivery.slow_kbps,
-        seeded.delivery.fast_kbps,
-        seeded.delivery.uncertainty_pm,
-        seeded.delivery.samples,
-        pin.map(|r| format!("{}kbps", r.kbps()))
-            .unwrap_or_else(|| "none".to_string()),
-    ));
     Box::new(Session {
-        coordinator,
-        history_since,
-        session_boundary_pending: true,
-        cleanup_wait_logged: false,
+        start: Some(start), effects: Some(effects),
+        coordinator: None, history_since: None,
+        session_boundary_pending: true, cleanup_wait_logged: false,
     })
+}
+
+impl Session {
+    fn initialize_on_worker(&mut self) {
+        if self.coordinator.is_some() { return; }
+        let history_since = std::time::Instant::now();
+        let start = self.start.take().expect("an uninitialized session owns its start");
+        let effects = self.effects.take().expect("an uninitialized session owns its effects");
+        let info = start.info();
+        crate::player::log(&format!(
+            "abr: history switches={} since_last={} advanced=0ms",
+            info.history.visible_switches,
+            info.history.since_last_ms.map(|ms| ms.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+        ));
+        if !info.original_candidate || info.original_source_kbps == 0 {
+            crate::player::log(&format!(
+                "abr: no Original recovery for this playback (candidate={} source={}kbps) — \
+                 HLS is the ceiling until the next resolve",
+                u8::from(info.original_candidate), info.original_source_kbps,
+            ));
+        }
+        let pin = abr::abr_pin();
+        let coordinator = Coordinator::start(start, pin, effects);
+        if info.original_refused && coordinator.has_recovery() {
+            crate::player::log(
+                "abr: Original was refused on this HLS route; not asked again until the route changes",
+            );
+        }
+        let seeded = coordinator.telemetry();
+        crate::player::log(&format!(
+            "abr: seed rung={}kbps prior={} slow={}kbps fast={}kbps unc={}pm n={} pin={}",
+            info.initial.kbps(),
+            info.prior.map(|p| format!("{}kbps", p.slow_kbps))
+                .unwrap_or_else(|| "none".to_string()),
+            seeded.delivery.slow_kbps,
+            seeded.delivery.fast_kbps,
+            seeded.delivery.uncertainty_pm,
+            seeded.delivery.samples,
+            pin.map(|r| format!("{}kbps", r.kbps()))
+                .unwrap_or_else(|| "none".to_string()),
+        ));
+        self.history_since = Some(history_since);
+        self.coordinator = Some(coordinator);
+    }
 }
 
 impl AdaptiveSession for Session {
@@ -3187,9 +3199,13 @@ impl AdaptiveSession for Session {
         &mut self, off: &plx_base::task::OffFrame,
         physical: &mut dyn AdaptivePhysicalPort,
     ) -> AdaptiveProgress {
-        let history_since = &self.history_since;
+        self.initialize_on_worker();
+        let history_since = self.history_since.as_ref()
+            .expect("initialized session owns its clock");
+        let coordinator = self.coordinator.as_mut()
+            .expect("initialized session owns its controller");
         let now_ms = || history_since.elapsed().as_millis() as u64;
-        let Some(round_id) = self.coordinator.next_round_id() else {
+        let Some(round_id) = coordinator.next_round_id() else {
             return AdaptiveProgress::Failed("adaptive active round generation exhausted");
         };
         physical.begin_round(round_id);
@@ -3199,7 +3215,7 @@ impl AdaptiveSession for Session {
         let remaining_playback_ms = physical.remaining_playback_sampler();
         let user_sequence = physical.user_sequence_sampler();
         let cycle = match run_active_round(
-            &mut self.coordinator, physical, round_id, || now_ms(),
+            &mut *coordinator, physical, round_id, || now_ms(),
             remaining_playback_ms, user_sequence,
             &mut self.session_boundary_pending, &mut diagnostics,
         ) {
@@ -3215,7 +3231,7 @@ impl AdaptiveSession for Session {
         let Some(current) = physical.finish_active() else {
             return AdaptiveProgress::Failed("adaptive active round lost physical media");
         };
-        let (proposal, reserve_policy, sample, start) = match self.coordinator.advance_round(
+        let (proposal, reserve_policy, sample, start) = match coordinator.advance_round(
             cycle, physical, || now_ms(),
             || crate::player::SHARED.dg_abr_action.store(
                 crate::player::ABR_ACTION_RECOVER_ORIGINAL, Ordering::Relaxed,
@@ -3242,8 +3258,8 @@ impl AdaptiveSession for Session {
         let mut trial_reserve = start.trial_reserve;
         let _automatic_lease = start.automatic_lease;
         let automatic_token = start.token;
-        let refreshing = proposal.rung == self.coordinator.current();
-        let Some(mut trial_protocol) = self.coordinator.begin_trial_protocol() else {
+        let refreshing = proposal.rung == coordinator.current();
+        let Some(mut trial_protocol) = coordinator.begin_trial_protocol() else {
             return AdaptiveProgress::Failed("adaptive trial generation exhausted");
         };
         let trial_id = trial_protocol.id();
@@ -3257,7 +3273,7 @@ impl AdaptiveSession for Session {
             }
         }));
         let mut tx = TxTrace::open(
-            proposal, self.coordinator.current(), sample, &self.coordinator.delivery(),
+            proposal, coordinator.current(), sample, &coordinator.delivery(),
             physical.buffer_sampler(), crate::player::log,
         );
         publish_action(action_readout(proposal, refreshing, None));
@@ -3266,7 +3282,7 @@ impl AdaptiveSession for Session {
         };
         let mut runner = TrialRunner::new(physical, &mut trial_protocol);
         let first = runner.run_first(
-            &mut self.coordinator, off, proposal, reserve_policy, offset_micros, || now_ms(),
+            &mut *coordinator, off, proposal, reserve_policy, offset_micros, || now_ms(),
             |event, physical| match event {
                 TrialTrace::Prime => tx.mark_prime(),
                 TrialTrace::Master(declared_bps) => {
@@ -3296,7 +3312,7 @@ impl AdaptiveSession for Session {
             width: current.width, height: current.height, declared_bps: current.declared_bps,
         };
         let staged = runner.grade_staged(
-            &mut self.coordinator, proposal, reserve_policy, current_variant,
+            &mut *coordinator, proposal, reserve_policy, current_variant,
             first_acquisition, first_buffer, declared_bps,
             |remaining_ms| crate::player::log(&format!(
                 "abr: setup-bearing candidate retains one staged observation budget={}ms",
@@ -3311,7 +3327,7 @@ impl AdaptiveSession for Session {
             },
         );
         let judgment = runner.settle_staged(
-            &mut self.coordinator, &primed, proposal, staged, current_variant,
+            &mut *coordinator, &primed, proposal, staged, current_variant,
             declared_bps, || now_ms(),
             |event, _| match event {
                 TrialTrace::Decided => tx.mark_decided(),
@@ -3330,7 +3346,7 @@ impl AdaptiveSession for Session {
             CandidateJudgment::Failed(message) => return AdaptiveProgress::Failed(message),
         };
         let queued = runner.queue_publish(
-            &mut self.coordinator, automatic_token, &primed, proposal, sample,
+            &mut *coordinator, automatic_token, &primed, proposal, sample,
             candidate_variant, || now_ms(),
             |event| match event {
                 QueueTrace::Decided => tx.mark_decided(),
@@ -3345,13 +3361,13 @@ impl AdaptiveSession for Session {
             QueueAttempt::FenceFailed(error) => return AdaptiveProgress::PhysicalFailure(error),
         };
         drop(runner);
-        if let Some(runway_ms) = self.coordinator.prime_runway_ms() {
+        if let Some(runway_ms) = coordinator.prime_runway_ms() {
             crate::player::SHARED.hls_prime_runway_ms.store(runway_ms, Ordering::Release);
         }
         tx.finish("committed");
         let candidate_declared_bps = physical.candidate_declared_bps()
             .expect("published trial retains its candidate cursor");
-        let committed = self.coordinator.commit_readout(
+        let committed = coordinator.commit_readout(
             proposal, refreshing, candidate_declared_bps, final_acquisition,
         );
         crate::player::SHARED.dg_abr_kbps.store(i64::from(committed.target_kbps), Ordering::Relaxed);
@@ -3362,12 +3378,12 @@ impl AdaptiveSession for Session {
             direction: committed.direction, target_kbps: committed.target_kbps,
             refreshing: committed.refreshing, committed: Some(true),
         });
-        self.coordinator.emit_committed(committed);
+        coordinator.emit_committed(committed);
         assert!(physical.promote_candidate(), "published trial promotes its candidate cursor");
-        self.coordinator.on_hls_commit(proposal.direction);
+        coordinator.on_hls_commit(proposal.direction);
         physical.settle(fence);
         drop(trial_reserve.take());
-        self.coordinator.retire(previous);
+        coordinator.retire(previous);
         crate::player::log(&format!(
             "abr: committed {:?} to {}kbps {}x{} out={}x{}",
             proposal.direction, committed.target_kbps,

@@ -74,7 +74,7 @@ impl SegmentAcquisition {
     pub(super) fn for_cursor(at_floor: Option<bool>) -> Self {
         match at_floor {
             Some(at_floor) => Self::active(
-                hls_buffer_snapshot(None).buffered_ms(),
+                hls_buffer_fact(None).buffered_ms(),
                 at_floor,
                 SHARED.hls_rebuffering.load(Ordering::Acquire),
             ),
