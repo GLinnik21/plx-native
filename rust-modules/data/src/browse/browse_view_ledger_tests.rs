@@ -194,3 +194,117 @@ fn a_change_while_a_re_list_is_out_keeps_it_and_owes_one_more() {
     assert_eq!(browse.state.states()[0].total, 1);
     assert!(!browse.state.states()[0].relist, "and no more after it");
 }
+
+
+#[test]
+fn relist_regression_relist_invalidates_the_rail_counts() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, client) = loopback_page_source();
+    {
+        let state = browse.state.state_mut(0).unwrap();
+        state.fetch = SecFetch::Ready;
+        state.total = 3;
+        state.items = SecItems::from_vec(vec![Some(row(sid, "6")), Some(row(sid, "7")), Some(row(sid, "8"))]);
+        state.land_letters(state.letters_key(), vec![("A".into(), 1), ("B".into(), 2)]);
+        assert!(state.letters_current());
+    }
+    browse.state.want(0, PAGE, None);
+    browse.state.listings_changed(sid, true);
+    browse.maybe_spawn();
+    browse.adapter.page.post(PageResult {
+        client, token_gen: client.token_gen(), gen: browse.state.query_gen(), sec: 0, start: 0,
+        items: vec![row(sid, "7"), row(sid, "8")], total: 2,
+        sorts: None, restored: None, genres: None, genre: None, resolved: Default::default(),
+    }, |_| true);
+    let _ = browse.state.pump_owned(&browse.adapter);
+    assert!(browse.state.states()[0].letters_owed(), "A's removed item changed every B offset: the old rail must be fetched again");
+}
+
+#[test]
+fn relist_regression_a_change_during_initial_load_is_not_lost() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, client) = loopback_page_source();
+    browse.state.want(0, PAGE, None);
+    browse.maybe_spawn();
+    assert!(browse.adapter.page.busy());
+    let gen = browse.state.query_gen();
+    browse.state.listings_changed(sid, true);
+    browse.adapter.page.post(PageResult {
+        client, token_gen: client.token_gen(), gen, sec: 0, start: 0,
+        items: vec![row(sid, "old")], total: 1,
+        sorts: None, restored: None, genres: None, genre: None, resolved: Default::default(),
+    }, |_| true);
+    let _ = browse.state.pump_owned(&browse.adapter);
+    let state = &browse.state.states()[0];
+    assert!(state.relist || state.membership_stale || browse.state.query_gen() != gen,
+        "the answer predates the server change, so a newer listing must remain owed");
+}
+
+#[test]
+fn relist_regression_a_visible_window_across_pages_does_not_turn_to_skeletons() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, client) = loopback_page_source();
+    {
+        let state = browse.state.state_mut(0).unwrap();
+        state.fetch = SecFetch::Ready;
+        state.total = (2 * PAGE) as i64;
+        state.items = SecItems::from_vec((0..2 * PAGE).map(|i| Some(row(sid, &i.to_string()))).collect());
+    }
+    browse.state.want(PAGE - 10, PAGE + 20, Some(PAGE + 5));
+    browse.state.listings_changed(sid, true);
+    browse.maybe_spawn();
+    browse.adapter.page.post(PageResult {
+        client, token_gen: client.token_gen(), gen: browse.state.query_gen(), sec: 0, start: 0,
+        items: (0..PAGE).map(|i| row(sid, &format!("new-{i}"))).collect(), total: (2 * PAGE) as i64,
+        sorts: None, restored: None, genres: None, genre: None, resolved: Default::default(),
+    }, |_| true);
+    let _ = browse.state.pump_owned(&browse.adapter);
+    assert!(browse.state.states()[0].items.get(PAGE + 5).is_some(),
+        "the still-visible focused tile in the second page became a skeleton");
+    assert_eq!(browse.state.states()[0].items.get(PAGE - 1).unwrap().rk, (PAGE - 1).to_string(),
+        "none of the replacement is published before the second visible page arrives");
+    browse.maybe_spawn();
+    browse.adapter.page.post(PageResult {
+        client, token_gen: client.token_gen(), gen: browse.state.query_gen(), sec: 0, start: PAGE,
+        items: (PAGE..2 * PAGE).map(|i| row(sid, &format!("new-{i}"))).collect(), total: (2 * PAGE) as i64,
+        sorts: None, restored: None, genres: None, genre: None, resolved: Default::default(),
+    }, |_| true);
+    let _ = browse.state.pump_owned(&browse.adapter);
+    assert_eq!(browse.state.states()[0].items.get(PAGE - 1).unwrap().rk, format!("new-{}", PAGE - 1));
+    assert_eq!(browse.state.states()[0].items.get(PAGE + 5).unwrap().rk, format!("new-{}", PAGE + 5));
+    assert!(!browse.state.states()[0].relist);
+}
+
+#[test]
+fn relist_regression_a_shrinking_listing_loads_its_new_tail() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, client) = loopback_page_source();
+    {
+        let state = browse.state.state_mut(0).unwrap();
+        state.fetch = SecFetch::Ready;
+        state.total = (2 * PAGE) as i64;
+        state.items = SecItems::from_vec((0..2 * PAGE).map(|i| Some(row(sid, &i.to_string()))).collect());
+    }
+    browse.state.want(PAGE, 2 * PAGE, Some(PAGE + 5));
+    browse.state.listings_changed(sid, true);
+    browse.maybe_spawn();
+    browse.adapter.page.post(PageResult {
+        client, token_gen: client.token_gen(), gen: browse.state.query_gen(), sec: 0, start: PAGE,
+        items: Vec::new(), total: 2,
+        sorts: None, restored: None, genres: None, genre: None, resolved: Default::default(),
+    }, |_| true);
+    let _ = browse.state.pump_owned(&browse.adapter);
+    let state = &browse.state.states()[0];
+    assert_eq!(state.total, (2 * PAGE) as i64, "keep the old window while the new tail is missing");
+    assert_eq!(state.relist_next((PAGE, 2 * PAGE), Some(PAGE + 5)), Some(0));
+    browse.maybe_spawn();
+    browse.adapter.page.post(PageResult {
+        client, token_gen: client.token_gen(), gen: browse.state.query_gen(), sec: 0, start: 0,
+        items: vec![row(sid, "last-a"), row(sid, "last-b")], total: 2,
+        sorts: None, restored: None, genres: None, genre: None, resolved: Default::default(),
+    }, |_| true);
+    let _ = browse.state.pump_owned(&browse.adapter);
+    assert_eq!(browse.state.states()[0].total, 2);
+    assert_eq!(browse.state.states()[0].items.get(1).unwrap().rk, "last-b");
+    assert!(!browse.state.states()[0].relist);
+}

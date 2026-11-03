@@ -327,7 +327,7 @@ impl<'a> ListingView<'a> {
         self.0.data.as_ref().is_some_and(|s| s.membership_stale)
     }
     /// The server created or removed items and the re-list is out: the rows shown are the old
-    /// listing's, which the re-list's first page replaces in place (`BrowseCmd::ListingsChanged`).
+    /// listing's, which the replacement wanted window replaces in place (`BrowseCmd::ListingsChanged`).
     pub fn relisting(self) -> bool {
         self.0.data.as_ref().is_some_and(|s| s.relist)
     }

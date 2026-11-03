@@ -247,7 +247,12 @@ impl GridPart {
         // The re-list's landing started on this tick or has ended: once it is no longer playing
         // the play is let go, and the ghosts with it.
         if self.relist == Relist::Swapped && !self.grid.landing_pending() && !self.grid.has_ghosts() {
-            self.end_relist();
+            if H::listing(cx).relisting() {
+                self.relist = Relist::Armed;
+                self.ghosts.clear();
+            } else {
+                self.end_relist();
+            }
         }
         self.grid.landed_shift()
     }
@@ -335,6 +340,8 @@ impl GridPart {
         ranges: Vec<Range<usize>>) {
         let view = H::listing(cx);
         let ranges = merged_ranges(ranges, view.total().max(0) as usize);
+        let same_listing = self.snapshot.as_ref().is_some_and(|old| old.view().id() == view.id());
+        if !same_listing { self.end_relist(); }
         if view.relisting() && self.relist == Relist::Idle {
             self.relist = Relist::Armed;
             self.grid.set_animate_landings(true);
@@ -344,7 +351,10 @@ impl GridPart {
         }
         self.captions.borrow_mut().labels.clear();
         // The re-list's rows: what leaves is kept for the landing's ghosts.
-        let swap = self.relist == Relist::Armed && !view.relisting();
+        // A completed window can land while another re-list is already owed. Its removed cards
+        // still belong to THIS landing, even though `relisting` remains true.
+        let swap = same_listing && self.relist != Relist::Idle
+            && self.snapshot.as_ref().is_some_and(|old| !view.same_items(old.view()));
         let old = if swap { self.snapshot.take() } else { None };
         let was: Vec<(u32, usize)> = if swap {
             self.windows.iter().flat_map(|w| w.elems.iter().enumerate().map(move |(n, e)| (*e, w.first + n))).collect()
@@ -361,13 +371,11 @@ impl GridPart {
     /// (an unloaded cell of the new listing says nothing about what left).
     fn keep_ghosts(&mut self, view: plx_data::stores::browse::ListingView<'_>,
         old: plx_data::stores::browse::ListingView<'_>, was: &[(u32, usize)]) {
-        let loaded: Vec<usize> = self.windows.iter()
-            .flat_map(|w| w.first..w.first + w.elems.len())
-            .filter(|&i| view.item(i).is_some())
-            .collect();
-        let (Some(&lo), Some(&hi)) = (loaded.first(), loaded.last()) else { return };
         for &(elem, index) in was {
-            if self.indexes.index_of(elem).is_some() || !(lo..=hi).contains(&index) { continue; }
+            if self.indexes.index_of(elem).is_some() { continue; }
+            // The new end proves a tail card left, including when the whole listing is empty.
+            // An unloaded cell inside the listing cannot prove that its old occupant left.
+            if index < view.total().max(0) as usize && view.item(index).is_none() { continue; }
             if let Some(item) = old.item(index) {
                 self.ghosts.insert(ui_cards::elem_key(&elem), item.clone());
             }
