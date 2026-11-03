@@ -140,6 +140,15 @@ impl FeedOpenRequest {
     }
 }
 
+/// Apply the current route's selected codec and Force policy to the native speed ceiling.
+pub(crate) fn speed_fps_ceiling_now(ps: &route::PlaybackSession) -> f64 {
+    super::engine::speed_fps_ceiling(
+        plx_play_feed::LoadVideo::of_stream(&route::stream_vcodec(ps)),
+        &plx_platform::devcaps::caps(),
+        plx_platform::devcaps::measured() && !route::forced_direct_play(ps),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

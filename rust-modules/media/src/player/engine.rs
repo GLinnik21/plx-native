@@ -832,16 +832,6 @@ pub(crate) fn speed_fps_ceiling(
     (f64::from(row_fps) + 0.5).min(super::SPEED_MAX_FPS)
 }
 
-/// [`speed_fps_ceiling`] for the playback on screen, from the live caps the way
-/// [`sink_envelope_now`] reads them.
-pub(crate) fn speed_fps_ceiling_now(ps: &crate::route::PlaybackSession) -> f64 {
-    speed_fps_ceiling(
-        LoadVideo::of_stream(&crate::route::stream_vcodec(ps)),
-        &plx_platform::devcaps::caps(),
-        plx_platform::devcaps::measured() && !crate::route::forced_direct_play(ps),
-    )
-}
-
 /// The sink envelope for THIS Load, from the route (main thread), with the dev override applied.
 fn sink_envelope_now(facts: &plx_play_feed::PayloadFacts, video: LoadVideo, rate: i32) -> SinkEnvelope {
     if let Some(spec) = plx_base::devtrig::read("sinkmax") {
