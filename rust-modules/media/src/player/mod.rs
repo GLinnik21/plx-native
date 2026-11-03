@@ -461,8 +461,9 @@ pub use engine::{
 };
 pub use route_start::{begin_resume, exit_native, land_resume, stop_bufferfeed,
     suspend_bufferfeed, BufferfeedStartOutcome, NativeExit, ResumeOutcome, ResumeStart,
-    start_playback, start_playback_tracked};
+    start_playback, start_playback_tracked, suspend_playback_if_attempt};
 pub use route_start::suspend_bufferfeed as suspend_playback;
+pub use route_start::stop_bufferfeed as stop_playback;
 #[cfg(feature = "play-feed")]
 pub use route_start::{foreground_follows_load, poll_release_frame, reap_abandoned_load,
     suspend_bufferfeed_if_attempt};
@@ -2015,7 +2016,7 @@ pub fn applied_rate_permille() -> i32 {
 pub fn selected_rate(ps: &crate::route::PlaybackSession) -> Option<i32> {
     if ps.attempt_view().backend() != Some(attempt_view::Backend::Feed) { return None; }
     #[cfg(feature = "play-feed")]
-    { Some(play_rate_permille()) }
+    { Some(ps.requested_rate_permille()) }
     #[cfg(not(feature = "play-feed"))]
     { None }
 }
@@ -2041,14 +2042,15 @@ pub fn applied_rate(ps: &crate::route::PlaybackSession) -> Option<i32> {
 ///
 /// Returns whether anything was requested: picking the speed already set does nothing.
 #[cfg(feature = "play-feed")]
-pub fn set_play_rate(ps: &crate::route::PlaybackSession, permille: i32) -> bool {
-    if !PLAY_RATES.contains(&permille) || permille == play_rate_permille() {
+pub fn set_play_rate(ps: &mut crate::route::PlaybackSession, permille: i32) -> bool {
+    if !PLAY_RATES.contains(&permille) || permille == ps.requested_rate_permille() {
         return false;
     }
     if permille != RATE_NORMAL && !speed_offer(ps).contains(&permille) {
         log(&format!("rate: {permille} not offered for this playback"));
         return false;
     }
+    ps.accept_requested_rate(permille);
     SHARED.play_rate_permille.store(permille, Relaxed);
     log(&format!("rate: {permille} requested"));
     if !TX.started.load(Relaxed) {
@@ -3134,6 +3136,7 @@ mod tests {
 
     /// The speeds a source can be offered: everything up to 2x for film, nothing above 1x for 60p
     /// (it would ask the decoder for more than 60 fps), and a Load plays only an offered speed.
+    #[cfg(feature = "play-feed")]
     #[test]
     fn a_session_plays_only_an_offered_speed() {
         assert_eq!(speeds_within(23.976, SPEED_MAX_FPS), PLAY_RATES.to_vec());
@@ -3211,6 +3214,7 @@ mod tests {
     /// **A speed change is a seek to where the viewer already is, marked to reload**, and only a
     /// real change on the ladder is one: the speed already set, or a value Plex Web does not offer,
     /// asks for nothing. With nothing on screen the speed is only remembered for the next Load.
+    #[cfg(feature = "play-feed")]
     #[test]
     fn a_speed_change_requests_a_reload_at_the_viewers_position() {
         let _serial = plx_base::testlock::serial();
@@ -3230,7 +3234,7 @@ mod tests {
         TX.reset();
         crate::ff::force_speed_decoder_for_test(true);
 
-        assert!(set_play_rate(&ps, 1250), "not started: remembered for the next Load");
+        assert!(set_play_rate(&mut ps, 1250), "not started: remembered for the next Load");
         assert_eq!(play_rate_permille(), 1250);
         assert_eq!(TX.seek_to_ns.load(Relaxed), -1, "with nothing on screen there is nothing to reload");
         assert!(!SHARED.rate_reload.load(Relaxed));
@@ -3241,15 +3245,15 @@ mod tests {
         assert!(ps.ingest_attempt_facts(attempt, crate::player::attempt_view::Backend::Feed, attempt_view::AttemptFacts {
             position_ns: Some(42_000_000_000), ..Default::default()
         }));
-        assert!(set_play_rate(&ps, 1500));
+        assert!(set_play_rate(&mut ps, 1500));
         assert_eq!(play_rate_permille(), 1500);
         assert_eq!(TX.seek_to_ns.load(Relaxed), 42_000_000_000, "a seek to the viewer's own position");
         assert!(SHARED.rate_reload.load(Relaxed), "marked so an in-place seek mode reloads it");
 
         TX.seek_to_ns.store(-1, Relaxed);
         SHARED.rate_reload.store(false, Relaxed);
-        assert!(!set_play_rate(&ps, 1500), "the speed already set asks for nothing");
-        assert!(!set_play_rate(&ps, 1300), "off the ladder");
+        assert!(!set_play_rate(&mut ps, 1500), "the speed already set asks for nothing");
+        assert!(!set_play_rate(&mut ps, 1300), "off the ladder");
         assert_eq!(TX.seek_to_ns.load(Relaxed), -1);
         assert_eq!(play_rate_permille(), 1500);
 
@@ -3259,7 +3263,7 @@ mod tests {
         // a television that failed a PCM session offers no speed at all
         SHARED.speed_unsupported.store(true, Relaxed);
         assert!(speed_offer(&ps).is_empty());
-        assert!(!set_play_rate(&ps, 1500), "nothing is offered after the fallback");
+        assert!(!set_play_rate(&mut ps, 1500), "nothing is offered after the fallback");
         assert_eq!(play_rate_permille(), RATE_NORMAL);
     }
 
@@ -3268,6 +3272,7 @@ mod tests {
     // `native_failure_regressions::jail_refusal_enters_error_without_engine_and_retires_on_exit`
     // below, against the real `ps.jail_load_blocked`-based gate in `engine.rs` — see that test.
 
+    #[cfg(feature = "play-feed")]
     #[test]
     fn forced_original_never_offers_or_retains_a_pcm_speed() {
         let _serial = plx_base::testlock::serial();
@@ -3275,7 +3280,7 @@ mod tests {
         crate::route::set_direct_play_mode_for_test(&mut ps, crate::route::DirectPlayMode::Forced);
         reset_play_rate();
         assert!(speed_offer(&ps).is_empty());
-        assert!(!set_play_rate(&ps, 1250));
+        assert!(!set_play_rate(&mut ps, 1250));
         // A speed retained from a preceding Auto route must not silently decode this Load.
         SHARED.play_rate_permille.store(1500, Relaxed);
         assert_eq!(session_rate_for(&ps), RATE_NORMAL);

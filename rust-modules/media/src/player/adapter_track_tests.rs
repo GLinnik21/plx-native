@@ -208,7 +208,8 @@ fn a_qualified_uri_successor_waits_for_the_prior_registration_to_release() {
     crate::route::set_url(&mut ps, "https://example.invalid/successor.mkv");
     let ticket = crate::route::begin_route_start().expect("successor route transaction");
     let offer = QualifiedUriOffer::new(
-        crate::route::backend_policy::OfferId::URI_ORIGINAL, ticket, ps.uri_selection(),
+        crate::route::backend_policy::OfferId::URI_ORIGINAL,
+        UriSourceRecipe::OriginalPart, ticket, ps.uri_selection(),
         UriSource::new("https://example.invalid/successor.mkv".into(), Vec::new()),
         Requirements { source: SourceKind::ProgressiveUri,
             video: Fidelity::Exact, audio: Fidelity::Exact,

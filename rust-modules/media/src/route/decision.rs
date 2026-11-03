@@ -136,6 +136,9 @@ pub struct PlaybackSession {
     /// A seek or foreground reload can reopen the already admitted recipe without buying a
     /// new recovery rung. A changed recipe still has to pass the finite policy.
     admitted_feed_offer: Option<super::backend_policy::OfferId>,
+    /// Viewer speed intent for this item. Feed owns the physical PCM/timebase actuator; a URI
+    /// qualification cannot silently reinterpret a non-1× request as native 1× playback.
+    requested_rate_permille: i32,
     /// Frozen for one logical playback, including its retries and track changes.
     direct_play_mode: DirectPlayMode,
     /// This playback was refused by the cached device sandbox preflight. No Engine exists.
@@ -542,6 +545,7 @@ pub struct UriSelection {
     pub part_id: i64,
     pub audio_sid: i64,
     pub subtitle_sid: i64,
+    pub audio_contract: plx_plex::plex::AudioEnhancements,
 }
 
 /// The route decision explicitly distinguishes another recovery candidate from a physical
@@ -660,6 +664,29 @@ mod backend_offer_session_tests {
         assert!(!session.backend_planned_feed_allowed());
     }
 
+    #[cfg(feature = "play-uri")]
+    #[test]
+    fn native_uri_original_can_precede_feed_app_pcm_and_audio_contract_changes_its_binding() {
+        let mut session = PlaybackSession::IDLE;
+        set_url(&mut session, "https://example.invalid/original.flac");
+        session.src_acodec = "flac".into();
+        session.stream_acodec = "pcm".into();
+        assert!(session.qualify_installed_feed_offer(CandidatePurpose::NewCandidate));
+        assert_eq!(session.planned_feed_offer(), Some(OfferId::FEED_APP_AUDIO));
+        let original = session.uri_selection();
+        assert_eq!(original.audio_contract, plx_plex::plex::AudioEnhancements::NONE);
+        session.qualify_backend_offer(BackendKind::Uri, OfferId::URI_ORIGINAL,
+            Qualification::Qualified);
+        assert!(matches!(session.backend_offer(), Selection::Open(offer)
+            if offer.backend == BackendKind::Uri && offer.id == OfferId::URI_ORIGINAL),
+            "Feed's PCM executor does not veto an independently qualified original URI");
+        session.cur_contract.audio = plx_plex::plex::AudioEnhancements {
+            boost_dialog: true, normalize_loudness: false,
+        };
+        assert_ne!(session.uri_selection(), original,
+            "a changed viewer audio contract invalidates the source-specific URI offer");
+    }
+
     #[test]
     fn qualified_original_feed_precedes_uri_conversion_then_uri_precedes_feed_conversion() {
         let mut session = PlaybackSession::IDLE;
@@ -742,11 +769,19 @@ impl PlaybackSession {
         self.planned_feed_offer
     }
 
+    pub fn requested_rate_permille(&self) -> i32 { self.requested_rate_permille }
+
+    #[cfg(feature = "play-feed")]
+    pub(crate) fn accept_requested_rate(&mut self, permille: i32) {
+        self.requested_rate_permille = permille;
+    }
+
     #[cfg(feature = "play-uri")]
     pub fn uri_selection(&self) -> UriSelection {
         UriSelection { server: self.cur_sid, part_id: self.cur_part_id,
             audio_sid: self.cur_audio.as_ref().map_or(0, |audio| audio.sid),
-            subtitle_sid: self.cur_sub_sid }
+            subtitle_sid: self.cur_sub_sid,
+            audio_contract: self.cur_contract.audio }
     }
 
     pub fn planned_feed_fidelity(&self) -> Option<(plx_playback_contract::Fidelity,
@@ -781,8 +816,8 @@ impl PlaybackSession {
     /// A recovery flight installs a resolved route without passing through `apply_plan`.
     /// Classify that installed source by the same stable recipe identities as a cold plan;
     /// keep the request's spent catalog and cross-backend history intact.
-    pub(crate) fn qualify_installed_feed_offer(&mut self, purpose: CandidatePurpose) -> bool {
-        let id = if self.tsession.is_empty() {
+    fn installed_feed_recipe(&self) -> super::backend_policy::OfferId {
+        if self.tsession.is_empty() {
             if stream_pcm_is_lossy(self) || self.stream_acodec != self.src_acodec {
                 super::backend_policy::OfferId::FEED_APP_AUDIO
             } else {
@@ -795,7 +830,11 @@ impl PlaybackSession {
             super::backend_policy::OfferId::FEED_PMS_REMUX
         } else {
             super::backend_policy::OfferId::FEED_PMS_ENCODE
-        };
+        }
+    }
+
+    pub(crate) fn qualify_installed_feed_offer(&mut self, purpose: CandidatePurpose) -> bool {
+        let id = self.installed_feed_recipe();
         let still_current = purpose == CandidatePurpose::RollbackExisting
             && self.backend_policy.as_ref().is_some_and(|policy|
                 policy.can_reopen(plx_playback_contract::BackendKind::Feed, id));
@@ -881,6 +920,7 @@ impl PlaybackSession {
         planned_feed_offer: None,
         planned_feed_purpose: CandidatePurpose::NewCandidate,
         admitted_feed_offer: None,
+        requested_rate_permille: plx_playback_contract::RATE_NORMAL,
         direct_play_mode: DirectPlayMode::Auto,
         jail_load_blocked: false,
         native_start_refused: None,
@@ -975,6 +1015,7 @@ impl PlaybackSession {
             planned_feed_offer,
             planned_feed_purpose: _,
             admitted_feed_offer: _,
+            requested_rate_permille,
             direct_play_mode,
             jail_load_blocked,
             native_start_refused,
@@ -1051,6 +1092,7 @@ impl PlaybackSession {
             planned_feed_offer: *planned_feed_offer,
             planned_feed_purpose: CandidatePurpose::NewCandidate,
             admitted_feed_offer: None,
+            requested_rate_permille: *requested_rate_permille,
             direct_play_mode: *direct_play_mode,
             jail_load_blocked: *jail_load_blocked,
             native_start_refused: *native_start_refused,
@@ -9080,6 +9122,9 @@ fn request_play_with_queue(
     // the PREVIOUS leaf's until this resolve lands. See `metadata::retire_playing_item`.
     if !request.preview {
         meta.run(plx_data::stores::metadata::MetadataCmd::RetirePlayingItem);
+        if retry.is_none() {
+            ps.requested_rate_permille = plx_playback_contract::RATE_NORMAL;
+        }
         reset_track_selection(request.sid, &request.rk, retry);
     }
     // Capture the reducer revision BEFORE projecting the environment. Both happen on the main
@@ -9610,6 +9655,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
         // …and the subtitle mode with it: a refused landing keeps the retry's.
         let sub_mode = if selection_known { plan.sub_mode } else { s.sub_mode };
         let now_ms = s.now_ms;
+        let requested_rate_permille = s.requested_rate_permille;
         let preview = request.as_ref().is_some_and(|r| r.preview);
         *s = PlaybackSession {
             attempt_view: crate::player::attempt_view::AttemptView::EMPTY,
@@ -9617,6 +9663,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             planned_feed_offer,
             planned_feed_purpose: candidate_purpose,
             admitted_feed_offer,
+            requested_rate_permille,
             direct_play_mode: plan.direct_play_mode,
             jail_load_blocked: false,
             native_start_refused: None,

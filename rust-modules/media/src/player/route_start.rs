@@ -1106,6 +1106,22 @@ pub fn suspend_bufferfeed_if_attempt(
     owns_attempt
 }
 
+/// Retire only the failed physical start the foreground is following. A replacement that won
+/// the route between the frame tick and this callback keeps its native owner and readout.
+pub fn suspend_playback_if_attempt(ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    attempt: crate::route::RouteStartAttempt) -> bool {
+    #[cfg(feature = "play-uri")]
+    if pa.active_uri_attempt() == Some(attempt) {
+        teardown(ps, pa, true, plx_playback_contract::StopReason::Suspend);
+        return true;
+    }
+    #[cfg(feature = "play-feed")]
+    { return suspend_bufferfeed_if_attempt(ps, pa, attempt); }
+    #[cfg(not(feature = "play-feed"))]
+    { let _ = (ps, pa, attempt); false }
+}
+
 /// The foreground lifecycle follows `attempt` (it launched that Load, or took over following it):
 /// from now on the Load call's own synchronous refusal is the lifecycle's to settle
 /// (`PlayerAdapter::mark_foreground_follows_feed_load`). True when the live Engine owns that exact attempt; a

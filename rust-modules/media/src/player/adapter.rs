@@ -85,8 +85,39 @@ pub struct UriDriverSettings {
 /// The owned URL and native track map never enter the route machine or a Debug value. No
 /// production qualifier currently supplies this value; absence preserves the Feed choice.
 #[cfg(feature = "play-uri")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UriSourceRecipe {
+    OriginalPart,
+    PmsRemux { applied_audio: plx_plex::plex::AudioEnhancements },
+    PmsEncode { applied_audio: plx_plex::plex::AudioEnhancements },
+    PmsHls { applied_audio: plx_plex::plex::AudioEnhancements },
+}
+
+#[cfg(feature = "play-uri")]
+impl UriSourceRecipe {
+    fn offer_id(self) -> crate::route::backend_policy::OfferId {
+        use crate::route::backend_policy::OfferId;
+        match self {
+            Self::OriginalPart => OfferId::URI_ORIGINAL,
+            Self::PmsRemux { .. } => OfferId::URI_PMS_REMUX,
+            Self::PmsEncode { .. } => OfferId::URI_PMS_ENCODE,
+            Self::PmsHls { .. } => OfferId::URI_PMS_HLS,
+        }
+    }
+
+    fn audio(self) -> plx_plex::plex::AudioEnhancements {
+        match self {
+            Self::OriginalPart => plx_plex::plex::AudioEnhancements::NONE,
+            Self::PmsRemux { applied_audio } | Self::PmsEncode { applied_audio }
+            | Self::PmsHls { applied_audio } => applied_audio,
+        }
+    }
+}
+
+#[cfg(feature = "play-uri")]
 pub struct QualifiedUriOffer {
     pub(super) offer_id: crate::route::backend_policy::OfferId,
+    pub(super) recipe: UriSourceRecipe,
     pub(super) route_start: crate::route::RouteStartTransaction,
     pub(super) selection: crate::route::UriSelection,
     pub(super) source: UriSource,
@@ -145,13 +176,29 @@ mod qualified_uri_offer_tests {
         let initial = InitialPlayback { position: None, paused: false };
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let stale_offer = QualifiedUriOffer::new(
-            crate::route::backend_policy::OfferId::URI_ORIGINAL, ticket, stale,
+            crate::route::backend_policy::OfferId::URI_ORIGINAL,
+            UriSourceRecipe::OriginalPart, ticket, stale,
             UriSource::new("https://example.invalid/wrong.mkv".to_owned(), vec![]),
             requirements(TrackChoice::Unspecified), initial, 60_000, deadline).expect("typed offer");
         assert!(matches!(adapter.offer_qualified_uri(&mut session, stale_offer), Err(Failure::Stale)));
 
+        #[cfg(feature = "play-feed")]
+        {
+        session.accept_requested_rate(1500);
+        let wrong_speed = QualifiedUriOffer::new(
+            crate::route::backend_policy::OfferId::URI_ORIGINAL,
+            UriSourceRecipe::OriginalPart, ticket, selection,
+            UriSource::new("https://example.invalid/original.mkv".to_owned(), vec![]),
+            requirements(TrackChoice::Unspecified), initial, 60_000, deadline)
+            .expect("typed source");
+        assert!(matches!(adapter.offer_qualified_uri(&mut session, wrong_speed),
+            Err(Failure::Unsupported)), "URI has no implicit speed transform");
+        session.accept_requested_rate(plx_playback_contract::RATE_NORMAL);
+        }
+
         let offered = QualifiedUriOffer::new(
-            crate::route::backend_policy::OfferId::URI_ORIGINAL, ticket, selection,
+            crate::route::backend_policy::OfferId::URI_ORIGINAL,
+            UriSourceRecipe::OriginalPart, ticket, selection,
             UriSource::new("https://example.invalid/original.mkv".to_owned(), vec![]),
             requirements(TrackChoice::Unspecified), initial, 60_000, deadline).expect("typed offer");
         assert!(adapter.offer_qualified_uri(&mut session, offered).is_ok());
@@ -189,26 +236,44 @@ mod qualified_uri_offer_tests {
     #[test]
     fn original_selected_track_cannot_be_silently_changed_by_a_uri_offer() {
         let selection = crate::route::UriSelection { server: plx_plex::plex::ServerId::UNSET,
-            part_id: 17, audio_sid: 41, subtitle_sid: 0 };
+            part_id: 17, audio_sid: 41, subtitle_sid: 0,
+            audio_contract: plx_plex::plex::AudioEnhancements::NONE };
         let ticket = crate::route::RouteStartTransaction::fixture(17);
         let source = || UriSource::new("https://example.invalid/track.mkv".to_owned(), vec![]);
         let initial = InitialPlayback { position: None, paused: true };
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         assert!(matches!(QualifiedUriOffer::new(
-            crate::route::backend_policy::OfferId::URI_ORIGINAL, ticket, selection, source(),
+            crate::route::backend_policy::OfferId::URI_ORIGINAL,
+            UriSourceRecipe::OriginalPart, ticket, selection, source(),
             requirements(TrackChoice::Selected(42)), initial, 60_000, deadline), Err(Failure::Unsupported)));
+        let enhanced = crate::route::UriSelection {
+            audio_contract: plx_plex::plex::AudioEnhancements {
+                boost_dialog: true, normalize_loudness: false,
+            }, ..selection
+        };
+        assert!(matches!(QualifiedUriOffer::new(
+            crate::route::backend_policy::OfferId::URI_ORIGINAL,
+            UriSourceRecipe::OriginalPart, ticket, enhanced, source(),
+            requirements(TrackChoice::Selected(41)), initial, 60_000, deadline),
+            Err(Failure::Unsupported)),
+            "original native URI cannot silently drop a viewer audio enhancement");
         assert!(QualifiedUriOffer::new(
-            crate::route::backend_policy::OfferId::URI_ORIGINAL, ticket, selection, source(),
+            crate::route::backend_policy::OfferId::URI_ORIGINAL,
+            UriSourceRecipe::OriginalPart, ticket, selection, source(),
             requirements(TrackChoice::Selected(41)), initial, 60_000, deadline).is_ok());
         let converted = Requirements { source: SourceKind::HlsUri,
             video: Fidelity::Compatible, audio: Fidelity::Compatible,
             audio_track: TrackChoice::Unspecified, subtitle_track: TrackChoice::Unspecified };
         assert!(QualifiedUriOffer::new(
-            crate::route::backend_policy::OfferId::URI_PMS_HLS, ticket, selection, source(),
+            crate::route::backend_policy::OfferId::URI_PMS_HLS,
+            UriSourceRecipe::PmsHls { applied_audio: plx_plex::plex::AudioEnhancements::NONE },
+            ticket, selection, source(),
             converted, initial, 60_000, deadline).is_ok(),
             "PMS has already selected the original source streams before its HLS output is qualified");
         assert!(matches!(QualifiedUriOffer::new(
-            crate::route::backend_policy::OfferId::URI_PMS_HLS, ticket, selection, source(),
+            crate::route::backend_policy::OfferId::URI_PMS_HLS,
+            UriSourceRecipe::PmsHls { applied_audio: plx_plex::plex::AudioEnhancements::NONE },
+            ticket, selection, source(),
             converted, initial, 0, deadline), Err(Failure::Unsupported)),
             "a URI report needs an identified item duration for the common timeline");
     }
@@ -217,6 +282,7 @@ mod qualified_uri_offer_tests {
 #[cfg(feature = "play-uri")]
 impl QualifiedUriOffer {
     pub fn new(offer_id: crate::route::backend_policy::OfferId,
+        recipe: UriSourceRecipe,
         route_start: crate::route::RouteStartTransaction,
         selection: crate::route::UriSelection, source: UriSource,
         requirements: plx_playback_contract::Requirements,
@@ -230,7 +296,8 @@ impl QualifiedUriOffer {
                 plx_playback_contract::Fidelity::Compatible,
             _ => return Err(Failure::Unsupported),
         };
-        if requirements.source == plx_playback_contract::SourceKind::PacketFeed
+        if recipe.offer_id() != offer_id || recipe.audio() != selection.audio_contract
+            || requirements.source == plx_playback_contract::SourceKind::PacketFeed
             || requirements.video != required_fidelity
             || requirements.audio != required_fidelity
             || (offer_id == OfferId::URI_PMS_HLS
@@ -265,9 +332,19 @@ impl QualifiedUriOffer {
                 plx_playback_contract::TrackChoice::Selected(_))) {
             return Err(Failure::Unsupported);
         }
-        Ok(Self { offer_id, route_start, selection, source, requirements, initial,
+        Ok(Self { offer_id, recipe, route_start, selection, source, requirements, initial,
             pms_duration_ns, expires_at })
     }
+}
+
+#[cfg(feature = "play-uri")]
+fn uri_offer_executable(ps: &crate::route::PlaybackSession, offer: &QualifiedUriOffer) -> bool {
+    // The URI driver has no speed transform. The server output, when it claims an enhancement,
+    // must already have it applied; an app-only/pending ask cannot be silently dropped.
+    ps.requested_rate_permille() == plx_playback_contract::RATE_NORMAL
+        && crate::route::displayed_audio_enhancements(ps) == offer.recipe.audio()
+        && (offer.recipe.audio().is_none()
+            || crate::route::applied_audio_enhancements(ps) == offer.recipe.audio())
 }
 
 /// Temporary borrow of the adapter's persistent physical resources. The runner remains the
@@ -582,7 +659,7 @@ impl PlayerAdapter {
 
     /// Playback-rate conversion is a Feed capability. A URI attempt never mutates the Feed
     /// rate or requests its reload as a substitute for a missing native URI operation.
-    pub fn set_play_rate(&mut self, ps: &crate::route::PlaybackSession, permille: i32) -> bool {
+    pub fn set_play_rate(&mut self, ps: &mut crate::route::PlaybackSession, permille: i32) -> bool {
         if ps.attempt_view().backend() == Some(super::attempt_view::Backend::Uri) {
             return false;
         }
@@ -943,6 +1020,7 @@ impl PlayerAdapter {
             || offer.expires_at <= std::time::Instant::now() {
             return Err(Failure::Stale);
         }
+        if !uri_offer_executable(ps, &offer) { return Err(Failure::Unsupported); }
         if !ps.ensure_backend_offers() { return Err(Failure::Stale); }
         let offer_id = offer.offer_id;
         if let Some(previous) = self.qualified_uri.replace(offer) {
@@ -962,7 +1040,8 @@ impl PlayerAdapter {
         -> Option<QualifiedUriOffer> {
         let offer = self.qualified_uri.take()?;
         if offer.route_start == route_start && offer.selection == ps.uri_selection()
-            && offer.expires_at > std::time::Instant::now() {
+            && offer.expires_at > std::time::Instant::now()
+            && uri_offer_executable(ps, &offer) {
             Some(offer)
         } else {
             ps.qualify_backend_offer(BackendKind::Uri,
@@ -1003,6 +1082,7 @@ impl PlayerAdapter {
         if self.qualified_uri.as_ref().is_some_and(|offer|
             offer.expires_at <= std::time::Instant::now()
                 || offer.selection != ps.uri_selection()
+                || !uri_offer_executable(ps, offer)
                 || crate::route::pending_route_start() != Some(offer.route_start)) {
             if let Some(expired) = self.qualified_uri.take() {
                 ps.qualify_backend_offer(BackendKind::Uri, expired.offer_id,
