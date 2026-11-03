@@ -9364,11 +9364,11 @@ fn current_retry_context(ps: &PlaybackSession, resume_ns: i64) -> RetryContext {
     RetryContext {
         resume_ns: resume_ns.max(0),
         candidate_purpose: CandidatePurpose::ReopenCurrent,
-        selection: if ps.selection_known {
-            Some((cur_audio_sid(ps), cur_sub_sid(ps)))
-        } else {
-            ps.carried_selection
-        },
+        selection: ps.source_selection.map(|selection|
+            (selection.audio_sid, selection.subtitle_sid)).or_else(|| {
+            if ps.selection_known { Some((cur_audio_sid(ps), cur_sub_sid(ps))) }
+            else { ps.carried_selection }
+        }),
         sub_offset_ms: crate::player::subtitle_offset_ms(),
         direct_play_mode: ps.direct_play_mode,
         suppress_enhancement: false,
