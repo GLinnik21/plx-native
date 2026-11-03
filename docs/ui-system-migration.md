@@ -668,3 +668,5 @@ the left wedge spans the frame, peaks at .84, and reaches full strength at 32% h
 peaks at .78 and feathers from 28% height. The earlier, narrower treatment failed at the wider
 Home title's upper-right edge (2.34:1 against a 3:1 bright-art floor) and at the raised four-line
 People block (2.18:1 against 3:1). Contrast tests include the shortest synopsis and longest credits.
+
+The route family uses `theme::layout::ROUTE_COPY_W` (660 px), independently of the 943 px full-bleed hero reading column. Widening title artwork or hero copy must not reduce the adjacent Settings, consent or legal content column.

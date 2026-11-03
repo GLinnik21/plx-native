@@ -93,9 +93,8 @@ use crate::underlay::{FrameLatch, Grade, Role, UnderlayField};
 use crate::widgets::ControlPalette;
 use crate::{theme, Painter, Rect, Spring};
 
-/// The left column is the same editorial measure as the Home hero.  Reusing that named measure is
-/// what makes first-run routes and Settings feel like one family instead of two similar layouts.
-const NARRATIVE_W: f32 = crate::landing_hero::COL_W;
+/// The route family shares a reading column independent of full-bleed hero artwork.
+const NARRATIVE_W: f32 = theme::layout::ROUTE_COPY_W;
 /// Two visually separate columns need a region gap, not a row gap.  Expressed entirely on the
 /// spacing ladder so a retune of that ladder moves every route together.
 const COLUMN_GAP: f32 = theme::space::XL * 2.0 + theme::space::LG + theme::space::SM;
@@ -781,7 +780,7 @@ impl RouteLayout {
     /// The same two columns with the narrative one at a **stated measure** — `--route-copy-w`, the
     /// one number in this layout the design system lets a route retune.
     ///
-    /// The default is the Home hero's editorial measure (660), which is right for a screen whose
+    /// The default is the route family's editorial measure (660), which is right for a screen whose
     /// COPY is the screen: Settings' narrative column carries the sentence that explains the list
     /// beside it. A route whose LIST is the screen can prefer a narrower measure: Filmography
     /// starts at 480, then `screen_for_title` accommodates its translated title, reclaiming space (`Person Screen.dc.html`, 2026-09-06:

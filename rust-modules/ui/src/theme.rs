@@ -203,6 +203,9 @@ pub mod space {
 /// **Panel geometry tokens** — widths a whole class of popover shares, so no panel carries a width
 /// literal of its own.
 pub mod layout {
+    /// Reading column for Settings, consent and the shared route-page family.
+    /// Independent of the wider full-bleed hero column so adjacent tables retain their measure.
+    pub const ROUTE_COPY_W: f32 = 660.0;
     /// Narrowest an in-player popover (Tracks, More) is drawn, at 1080p. A small page (Style, a
     /// Size / Position / Color picker, the More menu) would otherwise shrink to its labels and wrap
     /// its note into a column too narrow to read; this floor keeps it a panel. A FLOOR only: wider
