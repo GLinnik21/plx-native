@@ -68,6 +68,8 @@ pub enum BrowseCmd {
     #[cfg(any(test, feature = "test-support"))]
     SetCur(usize),
     RecheckShares,
+    /// Forget the transient selection for the Library section being left. Favorite memory stays.
+    EndVisit { epoch: u32, kind: SecKind },
     /// The Home editor's draft commit: one record for the whole session, carrying **the rows the
     /// viewer ANSWERED** — `(section index, the value they left it at)` — and not the rows the
     /// editor happened to be showing.

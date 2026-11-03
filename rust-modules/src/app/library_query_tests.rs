@@ -192,6 +192,7 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
         tick(81),
         script_key(Key::Right, tick(81)),
     );
+    frame(&mut d, &mut rig, AppArg::Library, tick(81), script_key(Key::Right, tick(81)));
     let toolbar = d.focus().unwrap();
     let page = d
         .top_screen()

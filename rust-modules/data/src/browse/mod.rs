@@ -1009,6 +1009,9 @@ pub struct BrowseState {
     tab_shape: u32,
     retry_cd: u32,
     remembered: Vec<(SecKind, String, i64)>,
+    /// Session-local choices include non-favorites without changing the saved favorite.
+    visited: Vec<(SecKind, String, i64)>,
+    visited_user: String,
     /// This profile's remembered library views ([`plx_plex::plex::session::Preferences::library_views`]):
     /// sort, Unwatched, genre and listing type. Loaded beside [`remembered`](Self::remembered) and
     /// cleared with it on a reset, so a profile switch can never open one person's library in
@@ -1130,6 +1133,8 @@ impl Default for BrowseState {
             tab_shape: u32::MAX,
             retry_cd: 0,
             remembered: Vec::new(),
+            visited: Vec::new(),
+            visited_user: String::new(),
             view_memory: Default::default(),
             recorded: None,
             pending_pins: None,
@@ -1623,12 +1628,6 @@ impl BrowseState {
         let (Some(kind), Some(section)) = (self.section_kind(i), self.sections.get(i)) else {
             return;
         };
-        // Only a favourite can be restored (`remembered_section`), so remembering any other pick
-        // (the Sort & Filter switcher offers every reachable library) would only forget the
-        // favourite it replaces.
-        if !section.pinned {
-            return;
-        }
         let Some(machine) = self
             .sources
             .get(section.src)
@@ -1637,12 +1636,17 @@ impl BrowseState {
             return;
         };
         let key = section.key;
+        let pinned = section.pinned;
+        let user = plx_plex::plex::session::current_profile_key();
+        if self.visited_user != user { self.visited.clear(); self.visited_user = user.clone(); }
+        self.visited.retain(|(candidate, _, _)| *candidate != kind);
+        self.visited.push((kind, machine.clone(), key));
+        if !pinned { return; }
         self.remembered
             .retain(|(remembered, _, _)| *remembered != kind);
         if !machine.is_empty() {
             self.remembered.push((kind, machine.clone(), key));
         }
-        let user = plx_plex::plex::session::current_profile_key();
         let wire = kind.wire();
         plx_plex::plex::session::queue_update(move |current| {
             let mut next = current.clone();
@@ -2141,10 +2145,10 @@ impl BrowseState {
     }
     /// **Where a tab press lands for a content type**, when the profile has not already chosen.
     ///
-    /// [`remembered_section`](Self::remembered_section) wins first and unconditionally — a person
-    /// who picked a library from the Sources panel gets that library back, and no rule here may
-    /// second-guess it. What follows is only the tiebreak among the *pinned* libraries of the
-    /// type, and it prefers the HOUSEHOLD's over an outsider's.
+    /// The current Library visit wins first, including a non-favorite selected through Library
+    /// options. Once that visit ends, [`remembered_section`](Self::remembered_section) restores
+    /// the last-used favorite. The remaining tiebreak among the *pinned* libraries of the type
+    /// prefers the HOUSEHOLD's over an outsider's.
     ///
     /// The tiebreak is issue #68's mechanism, one household wider. 0.6.x's `tab_section` sorted on
     /// raw `!owned` with no `pinned` filter at all, so two equally-graded libraries tied and the
@@ -2155,6 +2159,14 @@ impl BrowseState {
     /// owned, so everything tied again and the tab could land on a stranger's shelf. Grading on
     /// the household is what makes the tiebreak able to separate them.
     fn section_of_kind(&self, kind: SecKind) -> Option<usize> {
+        if self.tab_has_favorite(kind) {
+            if let Some((_, machine, key)) = self.visited.iter().find(|(candidate, _, _)| *candidate == kind) {
+                if let Some(index) = self.sections.iter().position(|section| section.kind == kind && section.key == *key
+                    && self.sources.get(section.src).is_some_and(|source| source.machine_id == *machine)) {
+                    return Some(index);
+                }
+            }
+        }
         if let Some(section) = self.remembered_section(kind) {
             return Some(section);
         }
@@ -2251,6 +2263,10 @@ impl BrowseState {
         }
     }
     fn load_remembered(&mut self, session: &plx_plex::plex::session::Session, user: &str) {
+        if self.visited_user != user {
+            self.visited.clear();
+            self.visited_user = user.to_owned();
+        }
         self.remembered = session.prefs.last_library.iter().find(|library| library.user == user)
             .map(|library| library.libs.iter().filter_map(|target| {
                 SecKind::from_wire(&target.kind)
@@ -2839,6 +2855,12 @@ impl BrowseState {
             BrowseCmd::SetCur(index) => {
                 self.set_cur(index);
                 true
+            }
+            BrowseCmd::EndVisit { epoch, kind } => {
+                if epoch != self.table_epoch() { return false; }
+                let before = self.visited.len();
+                self.visited.retain(|(candidate, _, _)| *candidate != kind);
+                self.visited.len() != before
             }
             BrowseCmd::RecheckShares => {
                 self.recheck_shares();

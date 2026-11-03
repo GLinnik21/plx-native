@@ -88,7 +88,7 @@ fn the_capsule_is_wanted_only_where_the_header_names_two_libraries() {
     // One world at a time (it holds the serial lock): each is built, asked and dropped in turn.
     let wanted = |two_libraries| World::movies_library("route-scroll-capsule", two_libraries).library().probe_capsule_wanted();
     assert!(wanted(true), "two libraries on the header: the capsule restates the one on view");
-    assert!(!wanted(false), "one library: nothing to restate");
+    assert!(wanted(false), "a singleton keeps its library identity when scrolled");
 }
 
 #[test]

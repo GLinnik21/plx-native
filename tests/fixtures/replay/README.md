@@ -618,3 +618,9 @@ against the synthetic mock on the integrated tree with `tests/focusfp.sh --rec -
 only its recording segment was replaced, with the identical manifests and anchor flags retained.
 The alphabet adds source-backed Movie/TV Show labels, remaining minutes and medium-format
 English dates. Both Targets and Resolve must pass the complete recordings before landing.
+
+The contextual Library favorites editor adds `SettingsPage::LibraryFavourites` to the argument
+shape (`state_fp` 3894237859247589253 → 8768599049636669478). All three old anchors failed shape
+preflight, were recorded afresh against the synthetic mock with `tests/focusfp.sh --rec --only
+1,6,12`, and installed with `plxnative-rec rerecord`, preserving anchors. Targets and Resolve
+replay every frame with all difference counters zero.
