@@ -17,7 +17,6 @@ pub(super) struct FeedOpenRequest {
     pub feed_payload: plx_play_feed::PayloadFacts,
     pub payload_options: plx_play_feed::PayloadOptions,
     pub original_dv: OriginalDvFacts,
-    pub side_reader: Option<SideReaderOpen>,
     pub session: Option<Box<dyn plx_playback_contract::demux::DemuxSession>>,
     pub hls_abr: Option<Box<dyn plx_playback_contract::adaptive::AdaptiveSession>>,
     pub auto_original: Option<Box<dyn plx_playback_contract::adaptive::OriginalSession>>,
@@ -40,10 +39,48 @@ impl From<plx_data::metadata::Dovi> for OriginalDvFacts {
     }
 }
 
-/// A resolved side reader that the physical open can start without route or Plex lookups.
+/// Common reader IO for one feed attempt. It remains attached to the Engine through teardown,
+/// so a failed Load spawn and a later dynamic track switch get the same stop-before-join barrier.
 pub(super) struct SideReaderOpen {
-    pub clock_only: bool,
-    pub spec: Option<super::subside::Spec>,
+    selected: bool,
+    clock_only: bool,
+    spec: Option<super::subside::Spec>,
+}
+
+impl SideReaderOpen {
+    pub fn capture(ps: &route::PlaybackSession, stream: bool) -> Self {
+        let Some(target) = stream.then(|| route::side_reader_target(ps)).flatten() else {
+            return Self::empty();
+        };
+        Self {
+            selected: true,
+            clock_only: target.clock_only(),
+            spec: super::subside::spec_for(&target),
+        }
+    }
+
+    pub fn empty() -> Self {
+        Self { selected: false, clock_only: false, spec: None }
+    }
+}
+
+impl plx_play_feed::side_reader::SideReaderPort for SideReaderOpen {
+    fn embedded_owner(&self) -> bool { self.selected && !self.clock_only }
+
+    fn start_after_load_spawn(&mut self) {
+        if !self.selected { return; }
+        let started = self.spec.take().is_some_and(super::subside::start);
+        if !started {
+            super::subside::failed_reading(self.clock_only, "subside: could not start the reader thread");
+            if !self.clock_only {
+                super::SHARED.side_subs_owner.store(false, std::sync::atomic::Ordering::Release);
+            }
+        }
+    }
+
+    fn stop_before_demux_join(&mut self, reason: &str) {
+        super::subside::stop(reason);
+    }
 }
 
 /// The presentation facts consumed by the native Load declaration. These come from the
@@ -107,10 +144,6 @@ impl FeedOpenRequest {
         let payload_options = payload_options(&feed_payload);
         let original_dv = payload.dovi.into();
         let source = plx_plex::plex::StreamUrl::parse(&url);
-        let side_reader = route::side_reader_target(ps).map(|target| SideReaderOpen {
-            clock_only: target.clock_only(),
-            spec: super::subside::spec_for(&target),
-        });
         Self {
             origin: source.origin,
             path: source.path,
@@ -121,7 +154,6 @@ impl FeedOpenRequest {
             feed_payload,
             payload_options,
             original_dv,
-            side_reader,
             // The exact route attempt and native epoch do not exist until after claim. The
             // common owner attaches their addressed observer before launching the worker.
             session: None,

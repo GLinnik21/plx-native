@@ -6,6 +6,7 @@ pub mod hls;
 pub mod native_gate;
 pub mod native_load;
 pub mod pcm_lead;
+pub mod side_reader;
 pub mod vp9_hdr;
 mod send_ptr;
 pub use send_ptr::SendPtr;

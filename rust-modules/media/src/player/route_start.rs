@@ -226,6 +226,7 @@ pub(super) fn start_bufferfeed_inner(
     }
     // The prepared route has finished choosing the stream. Freeze the values the native Load,
     // payload and demux worker will use before any of those physical resources are constructed.
+    let side_reader = Box::new(super::feed_open::SideReaderOpen::capture(ps, stream));
     let open = stream.then(|| super::feed_open::FeedOpenRequest::capture(ps, url));
     if open.as_ref().is_some_and(|request| !request.credential_transport_allowed()) {
         plx_base::eventlog::log("stream: refused insecure credential transport");
@@ -236,7 +237,7 @@ pub(super) fn start_bufferfeed_inner(
     // aborts it; a later supersession drops both guards without launching a worker.
     let session_rate = if stream { super::session_rate_for(ps) } else { super::RATE_NORMAL };
     let trace_generation = crate::route::playback_trace_generation();
-    let mut prepared_native = engine::prepare_native_open(pa.mt(), open, sample, is_h265, session_rate)
+    let mut prepared_native = engine::prepare_native_open(pa.mt(), open, sample, is_h265, session_rate, side_reader)
         .map_err(|_| crate::route::RouteStartResult::StartFailed)?;
     // The route reducer alone mints the physical attempt. The native constructor consumes this
     // identity; no backend-owned logical counter can alias a later route.
@@ -381,6 +382,15 @@ fn reload_transcode_start(ps: &mut crate::route::PlaybackSession, pa: &mut super
     Some(start_bufferfeed_for(ps, pa, ticket))
 }
 
+/// Direct-play seek = tear down the pipeline and start a FRESH Load at `target_ns`. The old
+/// flush()+refeed path left a STALE GStreamer segment (decompiled ground truth: the no-arg
+/// StarfishMediaAPIs::flush() → CustomPipeline::flush() is a degenerate gst_element_seek to
+/// GST_CLOCK_TIME_NONE with NO FLUSH_START/STOP and NO fresh SEGMENT; the HW sink/decoder
+/// only re-anchor their segment/basetime on a real SEGMENT/FLUSH event). Post-seek buffers
+/// were then scheduled against the pre-seek segment, the sink stopped draining, and the fixed
+/// ~14.7 MB of upstream buffers filled in ~48 s → permanent BufferFull + "Playing error". A
+/// fresh Load re-establishes a correct segment by construction — the known-good fresh-play
+/// path, which never wedges. Heavier than a flush (a ~1 s re-preroll) but correct.
 /// Every target `reload_at` was asked for (test probe, #568): proves a refused native Seek reloads
 /// exactly once, at the user's target.
 #[cfg(any(test, feature = "test-support"))]
