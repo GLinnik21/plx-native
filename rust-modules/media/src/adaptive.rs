@@ -2266,6 +2266,7 @@ pub(crate) struct CandidateStart<L, R> {
 }
 
 pub(crate) enum CandidateStartRefusal {
+    Retired,
     ReserveUnknown,
     NoRunway,
     NoSurplus,
@@ -2275,6 +2276,7 @@ pub(crate) enum CandidateStartRefusal {
 }
 
 pub(crate) enum ExplorationFailure {
+    Retired,
     ReserveUnknown { refreshing_same_request: bool },
     NoRunway { refreshing_same_request: bool },
     NoSurplus { refreshing_same_request: bool },
@@ -2287,7 +2289,7 @@ impl ExplorationFailure {
             Self::ReserveUnknown { refreshing_same_request }
             | Self::NoRunway { refreshing_same_request }
             | Self::NoSurplus { refreshing_same_request } => Some(*refreshing_same_request),
-            Self::BudgetMoved { .. } => None,
+            Self::BudgetMoved { .. } | Self::Retired => None,
         }
     }
 }
@@ -2366,6 +2368,7 @@ impl Coordinator {
                     on_rejected(proposal, refreshing);
                 }
                 return Err(match failure {
+                    ExplorationFailure::Retired => CandidateStartRefusal::Retired,
                     ExplorationFailure::ReserveUnknown { .. } => CandidateStartRefusal::ReserveUnknown,
                     ExplorationFailure::NoRunway { .. } => CandidateStartRefusal::NoRunway,
                     ExplorationFailure::NoSurplus { .. } => CandidateStartRefusal::NoSurplus,
@@ -2452,13 +2455,14 @@ impl Coordinator {
     }
     pub(crate) fn preprime_plan(
         &mut self, proposal: abr::Proposal,
-        buffer: impl FnOnce() -> (Option<i64>, i64),
+        buffer: impl FnOnce() -> Option<(Option<i64>, i64)>,
         now_ms: impl FnOnce() -> u64,
     ) -> Result<PreprimePlan, ExplorationFailure> {
         match proposal.direction {
             abr::Direction::Down => Ok(PreprimePlan::Recovery),
             abr::Direction::Up => {
-                let (buffered_ms, started_ns) = buffer();
+                let (buffered_ms, started_ns) = buffer()
+                    .ok_or(ExplorationFailure::Retired)?;
                 let grant = self.grant_exploration(proposal, buffered_ms, now_ms())?;
                 Ok(PreprimePlan::Exploration { grant, started_ns })
             }
@@ -2915,6 +2919,7 @@ impl Coordinator {
                     )),
                 ) {
                     Ok(start) => start,
+                    Err(CandidateStartRefusal::Retired) => return RoundCourse::Aborted,
                     Err(refusal) => {
                         let line = match refusal {
                             CandidateStartRefusal::ReserveUnknown =>

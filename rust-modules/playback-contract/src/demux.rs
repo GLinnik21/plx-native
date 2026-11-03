@@ -21,6 +21,16 @@ pub struct PauseEvent {
 #[derive(Clone, Copy, Debug)]
 pub struct PauseClock { pub at: Instant, pub elapsed: Duration }
 
+/// One ordered physical HLS clock read. The feed combines these published
+/// tails with a staged segment only after the captured epoch has been checked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HlsBufferClocks {
+    pub playhead_ns: i64,
+    pub video_tail_ns: i64,
+    pub audio_tail_ns: i64,
+    pub display_base_ns: i64,
+}
+
 /// The C AVIO callbacks retain this captured view while the worker retains
 /// mutable cursor and lease ownership. A retired native epoch returns `None`
 /// or refuses an effect, so a late callback cannot write the next session.
@@ -34,6 +44,7 @@ pub trait DemuxObserver: Send + Sync {
     fn paused(&self) -> Option<bool>;
     fn pause_clock(&self) -> Option<PauseClock>;
     fn hls_buffer_ms(&self) -> Option<Option<i64>>;
+    fn hls_buffer_clocks(&self) -> Option<HlsBufferClocks>;
     fn remaining_playback_ms(&self) -> Option<i64>;
     fn user_sequence(&self) -> Option<u64>;
     fn publish(&self, effect: DemuxCallbackEffect) -> bool;

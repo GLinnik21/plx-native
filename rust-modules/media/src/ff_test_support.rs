@@ -27,7 +27,15 @@ impl DemuxObserver for FixtureDemuxObserver {
         Some(plx_playback_contract::demux::PauseClock { at, elapsed })
     }
     fn hls_buffer_ms(&self) -> Option<Option<i64>> {
-        Some(hls_buffer_snapshot_with_playhead(None).0)
+        Some(hls_buffer_fact_at(self.hls_buffer_clocks()?, None).buffered_ms())
+    }
+    fn hls_buffer_clocks(&self) -> Option<plx_playback_contract::demux::HlsBufferClocks> {
+        Some(plx_playback_contract::demux::HlsBufferClocks {
+            playhead_ns: SHARED.playpos_ns.load(Ordering::Relaxed),
+            video_tail_ns: SHARED.hls_video_tail_ns.load(Ordering::Acquire),
+            audio_tail_ns: SHARED.hls_audio_tail_ns.load(Ordering::Acquire),
+            display_base_ns: SHARED.disp_base.load(Ordering::Relaxed),
+        })
     }
     fn remaining_playback_ms(&self) -> Option<i64> {
         let duration = SHARED.duration_ns.load(Ordering::Relaxed);

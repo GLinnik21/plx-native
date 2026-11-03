@@ -294,7 +294,8 @@ fn the_active_acquisition_constructor_preserves_arm_active_stall_guards_exclusio
 #[test]
 fn for_cursor_with_no_controller_is_unarmed() {
     assert!(
-        SegmentAcquisition::for_cursor(None, super::test_support::demux_observer()).stall().is_none(),
+        SegmentAcquisition::for_cursor(None, super::test_support::demux_observer())
+            .expect("fixture observer is active").stall().is_none(),
         "non-adaptive playback must never arm a stall guard"
     );
 }
@@ -2023,7 +2024,7 @@ fn demux_loop_sample(
 ) -> Option<crate::abr::SegmentSample> {
     crate::adaptive::active_sample(
         hls_acquisition(output, duration, 0),
-        hls_buffer_fact(Some(output)),
+        hls_buffer_fact(super::test_support::demux_observer().as_ref(), Some(output))?,
         fetch_abandoned,
     )
 }

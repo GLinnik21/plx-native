@@ -206,7 +206,7 @@ pub trait AdaptiveRoundPort: TrialActuatorPort {
     fn position_sampler(&self) -> AddressedSampler<i64>;
     fn transition_permitted(&self, kind: AutomaticTransition) -> bool;
     fn rebuffer_state(&self) -> (bool, bool);
-    fn buffer_snapshot(&self) -> (Option<i64>, i64);
+    fn buffer_snapshot(&self) -> Option<(Option<i64>, i64)>;
     fn pause_fact(&mut self) -> PauseFact;
 }
 

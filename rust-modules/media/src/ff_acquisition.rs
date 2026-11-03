@@ -58,7 +58,7 @@ impl SegmentAcquisition {
     /// read ahead of the identical rung and must be classified identically. The adaptive owner
     /// supplies `Some(at_floor)` for ABR playback, sampled at this boundary; `None` denotes
     /// non-adaptive playback. This module samples live reserve
-    /// (`hls_buffer_fact(None).buffered_ms()`) and the captured hold observer itself.
+    /// (`hls_buffer_fact(observer, None)`) and the captured hold observer itself.
     /// Non-adaptive playback
     /// is this same constructor given `None`; there is deliberately no separate public `fixed()`.
     ///
@@ -73,16 +73,17 @@ impl SegmentAcquisition {
     /// cannot be interrupted by any checkpoint; the guard is consulted as soon as it returns.
     pub(super) fn for_cursor(
         at_floor: Option<bool>, observer: Arc<dyn DemuxObserver>,
-    ) -> Self {
-        match at_floor {
+    ) -> Option<Self> {
+        observer.hold_epoch()?;
+        Some(match at_floor {
             Some(at_floor) => Self::active(
-                hls_buffer_fact(None).buffered_ms(),
+                hls_buffer_fact(observer.as_ref(), None)?.buffered_ms(),
                 at_floor,
                 observer.rebuffering().unwrap_or(true),
                 observer,
             ),
             None => SegmentAcquisition(Policy::Fixed(observer)),
-        }
+        })
     }
 
     /// Private: the only callers are [`SegmentAcquisition::for_cursor`] and, under `#[cfg(test)]`,

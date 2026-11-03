@@ -4,7 +4,7 @@
 
 use super::{HlsAutomaticTransition, HlsClockFenceError, UserPauseCursor, SHARED, TX};
 use plx_playback_contract::adaptive::{AutomaticTransition, BufferFact, FenceHandle, FenceSettlement, LeaseHandle, PhysicalFailure};
-use plx_playback_contract::demux::{AddressedSampler, DemuxAdaptive, DemuxCallbackEffect, DemuxClock, DemuxEffect, DemuxFault, DemuxMedia, DemuxObserver, DemuxSession, PauseClock, PauseEvent, PauseLane};
+use plx_playback_contract::demux::{AddressedSampler, DemuxAdaptive, DemuxCallbackEffect, DemuxClock, DemuxEffect, DemuxFault, DemuxMedia, DemuxObserver, DemuxSession, HlsBufferClocks, PauseClock, PauseEvent, PauseLane};
 use plx_playback_contract::AttemptId;
 use plx_telemetry::telemetry::classes::DemuxExitClass;
 use std::sync::Arc;
@@ -80,6 +80,14 @@ impl DemuxObserver for PlayerDemuxObserver {
     }
     fn hls_buffer_ms(&self) -> Option<Option<i64>> {
         SHARED.with_active_demux_epoch(self.native_epoch, hls_buffered_ms)
+    }
+    fn hls_buffer_clocks(&self) -> Option<HlsBufferClocks> {
+        SHARED.with_active_demux_epoch(self.native_epoch, || HlsBufferClocks {
+            playhead_ns: SHARED.playpos_ns.load(Ordering::Relaxed),
+            video_tail_ns: SHARED.hls_video_tail_ns.load(Ordering::Acquire),
+            audio_tail_ns: SHARED.hls_audio_tail_ns.load(Ordering::Acquire),
+            display_base_ns: SHARED.disp_base.load(Ordering::Relaxed),
+        })
     }
     fn remaining_playback_ms(&self) -> Option<i64> {
         SHARED.with_active_demux_epoch(self.native_epoch, remaining_playback_ms)
@@ -460,6 +468,7 @@ mod tests {
         assert_eq!(observer.rebuffering(), None);
         assert_eq!(observer.audio_expected(), None);
         assert_eq!(observer.duration_ns(), None);
+        assert_eq!(observer.hls_buffer_clocks(), None);
         assert_eq!(next.clock().playpos_sampler()(), Some(22_000_000));
         assert_eq!(next.clock().remaining_playback_sampler()(), Some(178));
     }
