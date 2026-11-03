@@ -13,6 +13,8 @@
 use super::feed_open::FeedOpenRequest;
 #[cfg(test)]
 use super::feed_open::PayloadFacts;
+#[cfg(test)]
+use super::feed_open::install_synthetic_playurl;
 use plx_play_feed::{
     app_pcm_for_rate, audio_payload_codec, decoder_row, fed_fps,
     parse_sinkmax, renamed_static_payload, sink_envelope, static_envelope,
