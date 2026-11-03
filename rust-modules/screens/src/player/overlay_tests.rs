@@ -294,7 +294,7 @@ fn back_dismisses_more_at_the_root_and_pops_the_quality_page_first() {
 /// root before it dismisses.
 #[test]
 fn the_more_popover_mounts_on_the_speed_page_when_addressed_to_it() {
-    plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+    plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
     let ps = plx_media::route::PlaybackSession::IDLE;
     let meta = plx_data::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::More { page: Some(MorePage::Speed) });
@@ -317,7 +317,7 @@ fn a_folded_row_closes_more_first_and_asks_the_one_performer() {
         Ask(PlayerReq),
     }
     let _g = plx_base::testlock::serial();
-    plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+    plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
     let ps = plx_media::route::PlaybackSession::IDLE;
     let meta = plx_data::stores::metadata::MetadataStore::default();
     let minimal = plx_appkit::player_hud::loaded::load(
