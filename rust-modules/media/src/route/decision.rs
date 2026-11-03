@@ -778,7 +778,10 @@ impl PlaybackSession {
             if self.planned_feed_purpose == CandidatePurpose::RollbackExisting {
                 let admitted = self.backend_policy.as_mut().is_some_and(|policy|
                     policy.admit_rollback_existing(backend, id));
-                if admitted { self.admitted_feed_offer = Some(id); }
+                if admitted {
+                    self.admitted_feed_offer = Some(id);
+                    self.planned_feed_purpose = CandidatePurpose::ReopenCurrent;
+                }
                 return admitted;
             }
             if self.admitted_feed_offer == Some(id)
@@ -790,6 +793,7 @@ impl PlaybackSession {
         let admitted = self.backend_policy.as_mut().is_some_and(|policy| policy.admitted(backend, id));
         if admitted && backend == plx_playback_contract::BackendKind::Feed {
             self.admitted_feed_offer = Some(id);
+            self.planned_feed_purpose = CandidatePurpose::ReopenCurrent;
         }
         admitted
     }
