@@ -349,6 +349,7 @@ fn quality_changed_during_resolve_cannot_land_the_old_contract() {
         gen,
         trace_generation: 7,
         contract_revision: old_contract,
+        candidate_purpose: CandidatePurpose::NewCandidate,
         plan: Plan {
             url: "https://example.invalid/old-contract.mkv".into(),
             contract: plx_plex::plex::EncodeContract {
@@ -1300,6 +1301,7 @@ fn abandoned_resolves_retire_the_streaming_resources_they_created() {
         gen: 1,
         trace_generation: 1,
         contract_revision: desired_contract_revision(),
+        candidate_purpose: CandidatePurpose::NewCandidate,
         plan: Plan {
             sid,
             sess: "abandoned-logical-resource".into(),
@@ -1320,6 +1322,7 @@ fn abandoned_resolves_retire_the_streaming_resources_they_created() {
         gen: 3,
         trace_generation: 2,
         contract_revision: desired_contract_revision(),
+        candidate_purpose: CandidatePurpose::NewCandidate,
         plan: Plan {
             sid,
             sess: "refused-logical-resource".into(),
@@ -1411,6 +1414,7 @@ fn a_retry_keeps_the_subtitle_offset_a_new_item_does_not() {
     let retry = RetryContext {
             direct_play_mode: DirectPlayMode::Auto,
         resume_ns: 0,
+        candidate_purpose: CandidatePurpose::ReopenCurrent,
         selection: Some((17, 23)),
         sub_offset_ms: crate::player::subtitle_offset_ms(),
         suppress_enhancement: false,
@@ -1473,6 +1477,7 @@ fn a_refused_retry_keeps_its_position_and_full_request_for_the_next_quality() {
         RetryContext {
             direct_play_mode: DirectPlayMode::Auto,
             resume_ns: 3_600_000_000_000,
+            candidate_purpose: CandidatePurpose::ReopenCurrent,
             selection: Some((17, 23)),
             sub_offset_ms: 0,
             suppress_enhancement: false,
@@ -2300,7 +2305,7 @@ fn restored_sidecar_is_part_of_the_route_contract() {
     ));
     let start = super::apply_plan(&mut ps, &mut meta, Plan {
         sid, playing, url: "http://fixture.invalid/movie.mkv".into(), ..Default::default()
-    }, "rk-4k");
+    }, "rk-4k", CandidatePurpose::NewCandidate);
     settle_plan_start_in_unit_test(&mut ps, start);
     assert_eq!(cur_sub_sid(&ps), 77, "timeline and later audio/quality transcodes must retain the restored sidecar");
     crate::player::sidecar::reset();

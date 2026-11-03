@@ -1579,7 +1579,8 @@ fn autoseek_arm(app: &mut App, fr: &mut Frame) {
         }.max(0);
         app.scenarios.seek_script_last = t;
         plx_base::eventlog::log(&format!("autoseek: step → {}s ({} left)", t / 1_000_000_000, app.scenarios.seek_script.len()));
-        crate::app::playback::request_seek(t);
+        crate::app::playback::request_seek(&mut app.player.session,
+            &mut app.adapters.player, t);
     }
 }
 
@@ -2130,7 +2131,8 @@ fn marker_arm(app: &mut App, _fr: &mut Frame) {
                     if let Some(m) = markers.iter().find(|m| m.kind == want) {
                         let t = (m.start_ms - 5_000).max(0) * 1_000_000;
                         plx_base::eventlog::log(&format!("marker trigger: seek to {}s (5s before {:?})", t / 1_000_000_000, want));
-                        crate::app::playback::request_seek(t);
+                        crate::app::playback::request_seek(&mut app.player.session,
+                            &mut app.adapters.player, t);
                     } else {
                         plx_base::eventlog::log(&format!("marker trigger: item has no {want:?} marker"));
                     }
