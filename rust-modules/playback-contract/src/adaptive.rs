@@ -12,6 +12,64 @@ impl TrialId {
     pub const fn new(attempt: AttemptId, serial: u64) -> Self { Self { attempt, serial } }
 }
 
+/// One completed or abandoned acquisition under the route owner's attempt.
+/// Replies from a superseded read cannot become evidence for a later round.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RoundId { pub attempt: AttemptId, pub serial: u64 }
+
+impl RoundId {
+    pub const fn new(attempt: AttemptId, serial: u64) -> Self { Self { attempt, serial } }
+}
+
+/// Physical work on the active cursor. The feed owns its cursor, access units,
+/// timeline, pause cursor, and prefetch slot; these instructions carry none of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActiveAction {
+    Read { round: RoundId, at_floor: Option<bool> },
+    Feed { round: RoundId },
+    Buffer { round: RoundId },
+    Pause { round: RoundId },
+    RollbackDuration { round: RoundId },
+    Prefetch { round: RoundId, at_floor: Option<bool> },
+}
+
+impl ActiveAction {
+    pub const fn round(self) -> RoundId {
+        match self {
+            Self::Read { round, .. } | Self::Feed { round }
+            | Self::Buffer { round } | Self::Pause { round }
+            | Self::RollbackDuration { round } | Self::Prefetch { round, .. } => round,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActiveObservation {
+    Ready { round: RoundId, acquisition: Acquisition, delivered: bool, abandoned: bool },
+    Ended { round: RoundId },
+    Fed { round: RoundId },
+    Buffer { round: RoundId, fact: BufferFact },
+    Pause { round: RoundId, paused: bool, sequence: u64, completed_ms: Option<u64> },
+    RollbackDuration { round: RoundId, duration_ms: Option<u32> },
+    Prefetched { round: RoundId },
+}
+
+impl ActiveObservation {
+    pub const fn round(self) -> RoundId {
+        match self {
+            Self::Ready { round, .. } | Self::Ended { round }
+            | Self::Fed { round } | Self::Buffer { round, .. }
+            | Self::Pause { round, .. } | Self::RollbackDuration { round, .. }
+            | Self::Prefetched { round } => round,
+        }
+    }
+}
+
+pub trait ActiveFeedPort {
+    type Error;
+    fn step_active(&mut self, action: ActiveAction) -> Result<ActiveObservation, Self::Error>;
+}
+
 /// Instructions for the existing feed worker. A source is an opaque local key;
 /// its URL and authentication remain in that worker's private source binding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

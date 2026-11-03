@@ -5,8 +5,8 @@
 use crate::{abr, route};
 use plx_playback_contract::adaptive::PublicationGate;
 use plx_playback_contract::adaptive::{
-    Acquisition, ActiveQuantum, AutomaticTransition, BufferFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
-    TrialObservation, TrialPhase, TrialProtocol, TrialProtocolError,
+    Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, ActiveQuantum, AutomaticTransition, BufferFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
+    RoundId, TrialObservation, TrialPhase, TrialProtocol, TrialProtocolError,
 };
 use plx_playback_contract::SourceKey;
 
@@ -334,15 +334,6 @@ pub(crate) fn active_sample(
     }
 }
 
-/// A physical feed failure is a circumstance unless the candidate's reserve clock expired.
-pub(crate) fn reject_cause_for_feed_failure(failure: FeedFailure) -> abr::RejectCause {
-    if failure == FeedFailure::Deadline {
-        abr::RejectCause::Censored
-    } else {
-        abr::RejectCause::Circumstance
-    }
-}
-
 /// The feed's existing abort mutex is the first serialization boundary. Its
 /// implementation must run the callback while holding that mutex and do no IO.
 fn inside_publication_gate<T>(
@@ -478,6 +469,7 @@ pub(crate) struct Coordinator {
     recovery: Option<abr::OriginalRecovery>,
     recover_kbps: u32,
     next_trial_serial: u64,
+    next_round_serial: u64,
 }
 
 pub(crate) struct RoundDecision {
@@ -490,6 +482,131 @@ pub(crate) struct ActiveAfterPrefetch {
     pub(crate) reconsidered: Option<Reconsideration>,
     pub(crate) steady: bool,
     pub(crate) source: LatchedOriginalRecovery,
+}
+
+pub(crate) trait ActiveDiagnostics {
+    fn cleanup(&mut self, ready: bool);
+    fn accepted_pause(&mut self, after_lookup: bool, sequence: u64, elapsed_ms: u64);
+    fn sample(&mut self, sample: abr::SegmentSample);
+    fn fresh_boundary(&mut self);
+    fn observed(&mut self, round: &RoundDecision, sample: abr::SegmentSample);
+}
+
+pub(crate) enum ActiveRunError<E> { Physical(E), Protocol(&'static str) }
+
+pub(crate) enum ActiveRun {
+    Ended,
+    InvalidSample,
+    Observed(ActiveCycle),
+}
+
+pub(crate) struct ActiveCycle {
+    pub(crate) sample: abr::SegmentSample,
+    pub(crate) round: RoundDecision,
+    pub(crate) rollback_media_ms: Option<u32>,
+    pub(crate) remaining_ms: i64,
+    pub(crate) paused: bool,
+    pub(crate) expected_user_sequence: u64,
+    pub(crate) cleanup_ready: bool,
+    pub(crate) after_prefetch: ActiveAfterPrefetch,
+}
+
+fn active_step<P: ActiveFeedPort>(
+    port: &mut P, round: RoundId, action: ActiveAction,
+) -> Result<ActiveObservation, ActiveRunError<P::Error>> {
+    let observed = port.step_active(action).map_err(ActiveRunError::Physical)?;
+    if observed.round() != round {
+        return Err(ActiveRunError::Protocol("adaptive active reply address mismatch"));
+    }
+    Ok(observed)
+}
+
+/// One active acquisition and the controller observation in their original
+/// physical order. The port may block on a queue or playlist; no controller or
+/// route lock spans a port call. The two buffer samples bracket the rollback
+/// lookup, and both accepted-pause samples precede the policy decision.
+pub(crate) fn run_active_round<P: ActiveFeedPort>(
+    coordinator: &mut Coordinator, port: &mut P, round: RoundId,
+    now_ms: impl Fn() -> u64, remaining_ms: impl Fn() -> i64,
+    user_sequence: impl Fn() -> u64, session_boundary_pending: &mut bool,
+    diagnostics: &mut impl ActiveDiagnostics,
+) -> Result<ActiveRun, ActiveRunError<P::Error>> {
+    let read = active_step(port, round, ActiveAction::Read {
+        round, at_floor: Some(coordinator.at_floor()),
+    })?;
+    let (acquisition, delivered, abandoned) = match read {
+        ActiveObservation::Ready { acquisition, delivered, abandoned, .. } =>
+            (acquisition, delivered, abandoned),
+        ActiveObservation::Ended { .. } => return Ok(ActiveRun::Ended),
+        _ => return Err(ActiveRunError::Protocol("adaptive active read protocol violation")),
+    };
+    if active_step(port, round, ActiveAction::Feed { round })?
+        != (ActiveObservation::Fed { round }) {
+        return Err(ActiveRunError::Protocol("adaptive active feed protocol violation"));
+    }
+    let active_now_ms = now_ms();
+    let first_buffer = match active_step(port, round, ActiveAction::Buffer { round })? {
+        ActiveObservation::Buffer { fact, .. } => fact,
+        _ => return Err(ActiveRunError::Protocol("adaptive active buffer protocol violation")),
+    };
+    let Some(active) = coordinator.begin_active_quantum(
+        acquisition, || first_buffer, abandoned, delivered, active_now_ms,
+    ) else { return Ok(ActiveRun::InvalidSample); };
+    let cleanup_ready = active.cleanup_ready;
+    diagnostics.cleanup(cleanup_ready);
+    let before = match active_step(port, round, ActiveAction::Pause { round })? {
+        ActiveObservation::Pause { paused, sequence, completed_ms, .. } =>
+            (paused, sequence, completed_ms),
+        _ => return Err(ActiveRunError::Protocol("adaptive active pause protocol violation")),
+    };
+    if let Some(elapsed_ms) = before.2 {
+        coordinator.on_resume(elapsed_ms);
+        diagnostics.accepted_pause(false, before.1, elapsed_ms);
+    }
+    let rollback_media_ms = if before.0 { None } else {
+        match active_step(port, round, ActiveAction::RollbackDuration { round })? {
+            ActiveObservation::RollbackDuration { duration_ms, .. } => duration_ms,
+            _ => return Err(ActiveRunError::Protocol("adaptive rollback protocol violation")),
+        }
+    };
+    let refreshed_buffer = match active_step(port, round, ActiveAction::Buffer { round })? {
+        ActiveObservation::Buffer { fact, .. } => fact,
+        _ => return Err(ActiveRunError::Protocol("adaptive refreshed buffer protocol violation")),
+    };
+    let active = active.refresh(refreshed_buffer);
+    let after = match active_step(port, round, ActiveAction::Pause { round })? {
+        ActiveObservation::Pause { paused, sequence, completed_ms, .. } =>
+            (paused, sequence, completed_ms),
+        _ => return Err(ActiveRunError::Protocol("adaptive refreshed pause protocol violation")),
+    };
+    if let Some(elapsed_ms) = after.2 {
+        coordinator.on_resume(elapsed_ms);
+        diagnostics.accepted_pause(true, after.1, elapsed_ms);
+    }
+    let expected_user_sequence = user_sequence();
+    diagnostics.sample(active.sample());
+    let remaining_ms = remaining_ms();
+    let boundary = *session_boundary_pending && delivered && active.sample().completed();
+    if boundary {
+        *session_boundary_pending = false;
+        diagnostics.fresh_boundary();
+    }
+    let (sample, round_decision, prefetch_allowed) =
+        active.observe(coordinator, rollback_media_ms, now_ms(), boundary);
+    diagnostics.observed(&round_decision, sample);
+    if prefetch_allowed && active_step(port, round, ActiveAction::Prefetch {
+        round, at_floor: Some(coordinator.at_floor()),
+    })? != (ActiveObservation::Prefetched { round }) {
+        return Err(ActiveRunError::Protocol("adaptive active prefetch protocol violation"));
+    }
+    let after_prefetch = coordinator.after_active_prefetch(
+        &round_decision, sample, delivered, remaining_ms, after.0, cleanup_ready,
+    );
+    Ok(ActiveRun::Observed(ActiveCycle {
+        sample, round: round_decision, rollback_media_ms,
+        remaining_ms, paused: after.0, expected_user_sequence,
+        cleanup_ready, after_prefetch,
+    }))
 }
 
 pub(crate) struct PreparedOriginalSwitch {
@@ -605,6 +722,53 @@ pub(crate) enum FirstCandidateAction {
     Protocol,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TrialStep {
+    Open, FirstRead, FirstAcquire, FollowupRead, FollowupAcquire,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TrialRejectReason { SourceMoved, Ended, Deadline, Other }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TrialFailureAction {
+    Abort,
+    Protocol,
+    TimelineOverflow,
+    Reject { cause: abr::RejectCause, reason: TrialRejectReason },
+}
+
+/// A physical reply does not decide whether a rung failed. This policy table
+/// distinguishes terminal abort/protocol faults from circumstance or censored
+/// evidence, including the stage where EOF and origin changes have meaning.
+pub(crate) fn trial_failure_action(
+    step: TrialStep, failure: FeedFailure,
+) -> TrialFailureAction {
+    use FeedFailure as F;
+    use TrialFailureAction as A;
+    use TrialRejectReason as R;
+    use TrialStep as S;
+    match (step, failure) {
+        (_, F::Aborted) | (S::FirstRead | S::FollowupRead, F::SourceMoved) => A::Abort,
+        (S::FirstAcquire | S::FollowupAcquire, F::TimelineOverflow) => A::TimelineOverflow,
+        (_, F::Protocol) | (_, F::TimelineOverflow)
+        | (S::FirstAcquire | S::FollowupAcquire, F::SourceMoved | F::Ended)
+        | (S::Open, F::Ended) => A::Protocol,
+        (S::Open, F::SourceMoved) => A::Reject {
+            cause: abr::RejectCause::Circumstance, reason: R::SourceMoved,
+        },
+        (S::FirstRead | S::FollowupRead, F::Ended) => A::Reject {
+            cause: abr::RejectCause::Circumstance, reason: R::Ended,
+        },
+        (_, F::Deadline) => A::Reject {
+            cause: abr::RejectCause::Censored, reason: R::Deadline,
+        },
+        (_, F::NotReady | F::Parse) => A::Reject {
+            cause: abr::RejectCause::Circumstance, reason: R::Other,
+        },
+    }
+}
+
 pub(crate) struct FinalCandidateGrade {
     pub(crate) raster_ready: bool,
     pub(crate) quality_improves: bool,
@@ -670,7 +834,10 @@ impl Coordinator {
         if let Some((variant, evidence_kbps)) = control.initial_observed {
             controller.observe_active_variant(variant, evidence_kbps);
         }
-        Self { control, ticket, controller, recovery, recover_kbps: 0, next_trial_serial: 0 }
+        Self {
+            control, ticket, controller, recovery, recover_kbps: 0,
+            next_trial_serial: 0, next_round_serial: 0,
+        }
     }
 
     pub(crate) fn telemetry(&self) -> abr::ControllerTelemetry {
@@ -690,6 +857,10 @@ impl Coordinator {
     pub(crate) fn pending_reserve_policy(&self, proposal: abr::Proposal) -> abr::ReservePolicy {
         self.controller.pending_reserve_policy(proposal)
             .expect("a Prime decision owns one pending reserve policy")
+    }
+    pub(crate) fn next_round_id(&mut self) -> Option<RoundId> {
+        self.next_round_serial = self.next_round_serial.checked_add(1)?;
+        Some(RoundId::new(self.ticket.adaptive_attempt(), self.next_round_serial))
     }
     pub(crate) fn begin_trial_protocol(
         &mut self,
@@ -1476,6 +1647,23 @@ mod trial_runner_tests {
             verdict: abr::CandidateVerdict::SetupBearing, needs_followup: true,
         }), FirstCandidateAction::ReadFollowup { remaining_ms: Some(750), .. }));
         assert_eq!(runner.physical().checks, 2);
+    }
+
+    #[test]
+    fn failure_course_depends_on_trial_stage_not_only_transport_code() {
+        use TrialFailureAction as A;
+        use TrialRejectReason as R;
+        use TrialStep as S;
+        assert_eq!(trial_failure_action(S::Open, FeedFailure::SourceMoved),
+            A::Reject { cause: abr::RejectCause::Circumstance, reason: R::SourceMoved });
+        assert_eq!(trial_failure_action(S::FirstRead, FeedFailure::SourceMoved), A::Abort);
+        assert_eq!(trial_failure_action(S::FollowupRead, FeedFailure::Ended),
+            A::Reject { cause: abr::RejectCause::Circumstance, reason: R::Ended });
+        assert_eq!(trial_failure_action(S::FirstAcquire, FeedFailure::Deadline),
+            A::Reject { cause: abr::RejectCause::Censored, reason: R::Deadline });
+        assert_eq!(trial_failure_action(S::FollowupAcquire, FeedFailure::TimelineOverflow),
+            A::TimelineOverflow);
+        assert_eq!(trial_failure_action(S::Open, FeedFailure::Protocol), A::Protocol);
     }
 }
 

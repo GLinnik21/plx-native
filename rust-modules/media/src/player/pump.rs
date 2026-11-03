@@ -2858,7 +2858,7 @@ mod flight_tests {
         }
 
         /// The Engine streaming the route `flight` installed in `ps`.
-        fn on(ps: crate::route::PlaybackSession, flight: FlightRig) -> Rig {
+        fn on(mut ps: crate::route::PlaybackSession, flight: FlightRig) -> Rig {
             SHARED.reset_session();
             TX.reset();
             super::super::claim_hold::clear();
@@ -2867,7 +2867,9 @@ mod flight_tests {
             super::super::ffi_host::force_object_ready_for_test(true);
             let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
             let epoch = SHARED.begin_native_session().expect("native session");
-            pa.install(super::super::engine::streaming_engine_for_test(epoch));
+            let engine = super::super::engine::streaming_engine_for_test(epoch);
+            ps.begin_attempt_view(engine.route_start, super::super::attempt_view::Backend::Feed);
+            pa.install(engine);
             SHARED.duration_ns.store(7_200_000_000_000, Relaxed);
             SHARED.playpos_ns.store(60_000_000_000, Relaxed);
             Rig { ps, pa, flight, now: 1_000 }
@@ -4920,6 +4922,8 @@ mod flight_tests {
                 assert!(SHARED.mark_native_load_returned(epoch, None).is_some(), "the Load returned");
                 rig.frame();
                 assert_eq!(SHARED.dg_cb_err_num.load(Relaxed), 601, "the refusal went through the callback");
+                assert_eq!(rig.ps.attempt_view().facts().pipeline_error, Some(601),
+                    "a refusal raised during the pump must reach its addressed view in the same frame");
                 assert!(crate::route::flight_outstanding(), "the injected refusal ran the ladder: a conversion flies");
                 rig.frames_until("the conversion's landing", |_| !crate::route::flight_outstanding());
                 let reloaded = engine_epoch(&mut rig).expect("the reloaded Engine");

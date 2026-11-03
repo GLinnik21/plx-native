@@ -7,17 +7,24 @@ use super::test_support::*;
 
 #[test]
 fn an_expired_candidate_is_a_common_censored_budget_not_an_ordinal_rung_failure() {
+    use crate::adaptive::{TrialFailureAction, TrialRejectReason, TrialStep};
     assert_eq!(
-        crate::adaptive::reject_cause_for_feed_failure(
-            hls_feed_failure(HlsExit::PrimeExpired),
+        crate::adaptive::trial_failure_action(
+            TrialStep::FirstAcquire, hls_feed_failure(HlsExit::PrimeExpired),
         ),
-        crate::abr::RejectCause::Censored,
+        TrialFailureAction::Reject {
+            cause: crate::abr::RejectCause::Censored,
+            reason: TrialRejectReason::Deadline,
+        },
     );
     assert_eq!(
-        crate::adaptive::reject_cause_for_feed_failure(
-            hls_feed_failure(HlsExit::NotReady),
+        crate::adaptive::trial_failure_action(
+            TrialStep::FirstAcquire, hls_feed_failure(HlsExit::NotReady),
         ),
-        crate::abr::RejectCause::Circumstance,
+        TrialFailureAction::Reject {
+            cause: crate::abr::RejectCause::Circumstance,
+            reason: TrialRejectReason::Other,
+        },
         "an ordinary PMS not-ready reply has no exhausted deadline and says nothing about a rung",
     );
 }
