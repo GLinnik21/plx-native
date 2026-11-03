@@ -36,7 +36,7 @@ fn huds(emitted: &[Stamped<InnerHost>]) -> Vec<&HudCmd> {
 }
 
 fn meta(id: &str, name: &str) -> Meta {
-    Meta { id: id.into(), name: name.into(), version: "1.0.0".into(), format: "1.0".into() }
+    Meta { id: id.into(), name: name.into(), version: "1.0.0".into(), package_format: "1.0".into(), hud_format: "1.0".into() }
 }
 
 fn builtin(selected: bool) -> Entry {
