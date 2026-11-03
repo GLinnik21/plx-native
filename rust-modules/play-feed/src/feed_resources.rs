@@ -44,6 +44,7 @@ pub struct FeedResources {
     load_tickets: BTreeMap<u64, LoadTicket>,
     next_load_token: u64,
     abandoned_load: Option<feed_state::AbandonedLoad>,
+    reaped_release: Option<(AttemptId, plx_playback_contract::ReleaseStatus)>,
     // The main-thread release tail may inspect/take this through `&self`; the adapter is !Send.
     pending_release: RefCell<Option<feed_state::PendingRelease>>,
 }
@@ -70,6 +71,7 @@ impl FeedResources {
             load_tickets: BTreeMap::new(),
             next_load_token: 0,
             abandoned_load: None,
+            reaped_release: None,
             pending_release: RefCell::new(None),
         }
     }
@@ -171,6 +173,14 @@ impl FeedResources {
     pub fn has_abandoned_load(&self) -> bool { self.abandoned_load.is_some() }
     pub fn abandoned_load_mut(&mut self) -> Option<&mut feed_state::AbandonedLoad> { self.abandoned_load.as_mut() }
     pub fn take_abandoned_load(&mut self) -> Option<feed_state::AbandonedLoad> { self.abandoned_load.take() }
+    pub fn note_reaped_release(&mut self, attempt: AttemptId,
+        status: plx_playback_contract::ReleaseStatus) {
+        self.reaped_release = Some((attempt, status));
+    }
+    pub fn take_reaped_release(&mut self) -> Option<(AttemptId, plx_playback_contract::ReleaseStatus)> {
+        self.reaped_release.take()
+    }
+    pub fn has_reaped_release(&self) -> bool { self.reaped_release.is_some() }
 
     pub fn park_release(&self, release: feed_state::PendingRelease) {
         let mut slot = self.pending_release.borrow_mut();
