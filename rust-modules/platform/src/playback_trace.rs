@@ -1,4 +1,5 @@
-//! Opt-in, process-local firmware playback tracing. No worker or developer trigger is needed.
+//! Opt-in, process-local firmware playback tracing. Capture needs no worker or developer trigger;
+//! saving the combined log uses the app's shared storage executor.
 //! GStreamer public logging ABI: NDK gst/gstinfo.h; symbols checked in DAS firmware 3–6/9–11.
 //! No native struct layout is read. Missing APIs refuse recording, never playback.
 use std::ffi::c_void;
@@ -55,6 +56,35 @@ pub enum Command {
     Delete,
 }
 
+/// Only fixed labels and numeric OS errors enter the event log. In particular, never print an
+/// arbitrary IO error's Display text: it can contain a path or other viewer data.
+#[derive(Debug)]
+struct SaveFailure {
+    stage: &'static str,
+    error: std::io::Error,
+}
+impl From<std::io::Error> for SaveFailure {
+    fn from(error: std::io::Error) -> Self {
+        Self { stage: "save", error }
+    }
+}
+type SaveResult<T> = Result<T, SaveFailure>;
+fn save_step<T>(stage: &'static str, result: std::io::Result<T>) -> SaveResult<T> {
+    result.map_err(|error| SaveFailure { stage, error })
+}
+fn save_failure_line(failure: &SaveFailure) -> String {
+    format!("playback diagnostics: save failed stage={} errno={} kind={:?}",
+        failure.stage, failure.error.raw_os_error().unwrap_or(0), failure.error.kind())
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum SaveWorkerFailure {
+    QueueFull,
+    QueueStopped,
+    StartFailed,
+    Disconnected,
+}
+
 /// The exact size/time guard used by the live writer and tests. Time is an input here.
 struct Capture<W> {
     writer: W,
@@ -102,6 +132,11 @@ struct State {
 impl State {
     fn invalidate(&mut self) {
         self.generation = self.generation.wrapping_add(1);
+    }
+    fn fail_save(&mut self, generation: u64) -> bool {
+        if self.generation != generation || self.status != Status::Saving { return false; }
+        self.status = Status::Failed;
+        true
     }
 }
 static STATE: Mutex<State> = Mutex::new(State {
@@ -338,7 +373,23 @@ pub fn prepare_export() -> u64 {
     stop();
     let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
     state.status = Status::Saving;
-    state.generation
+    let generation = state.generation;
+    drop(state);
+    plx_base::eventlog::log("playback diagnostics: saving local combined log");
+    generation
+}
+/// A refused or lost worker must retire Saving too. Privacy deletion or a newer recording wins
+/// over a late failure receipt just as it wins over a late successful save.
+pub fn fail_export(generation: u64, failure: SaveWorkerFailure) -> Status {
+    let _io = EXPORT_IO.lock().unwrap_or_else(|e| e.into_inner());
+    let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+    let failed = state.fail_save(generation);
+    let status = state.status;
+    drop(state);
+    if failed {
+        plx_base::eventlog::log(&format!("playback diagnostics: save failed stage=worker reason={failure:?}"));
+    }
+    status
 }
 /// Execute on the storage worker. IO serialization makes privacy deletion wait for an active
 /// save, then invalidate queued work, before it unlinks the output. Nothing can recreate it later.
@@ -358,15 +409,20 @@ pub fn save_export(generation: u64) -> Status {
 fn export_if_current(
     generation: u64,
     current: u64,
-    save: impl FnOnce() -> std::io::Result<()>,
+    save: impl FnOnce() -> SaveResult<()>,
 ) -> Option<Status> {
     if generation != current {
         return None;
     }
-    Some(if save().is_ok() {
-        Status::Exported
-    } else {
-        Status::Failed
+    Some(match save() {
+        Ok(()) => {
+            plx_base::eventlog::log("playback diagnostics: saved plxnative-playback.log");
+            Status::Exported
+        }
+        Err(failure) => {
+            plx_base::eventlog::log(&save_failure_line(&failure));
+            Status::Failed
+        }
     })
 }
 
@@ -375,7 +431,7 @@ fn export_path() -> std::path::PathBuf {
 }
 
 /// The same no-follow/owner/single-link rule as the shared private log writer. Nonblocking open
-/// prevents a pre-created FIFO from parking the UI before the descriptor can be validated.
+/// prevents a pre-created FIFO from parking the export worker before descriptor validation.
 fn open_owned_log(path: &std::path::Path) -> std::io::Result<File> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     let file = std::fs::OpenOptions::new()
@@ -390,16 +446,19 @@ fn open_owned_log(path: &std::path::Path) -> std::io::Result<File> {
 }
 
 /// Explicit local export. Readers are bounded even if an older developer build left a large file.
-fn export() -> std::io::Result<()> {
-    let trace = open_owned_log(&path())?;
-    let mut output = plx_base::eventlog::open_log_append(&export_path())?;
-    output.set_len(0)?;
-    let events = open_owned_log(&plx_base::eventlog::events_log())
+fn export() -> SaveResult<()> {
+    export_at(&path(), &plx_base::eventlog::events_log(), &export_path())
+}
+fn export_at(trace_path: &std::path::Path, events_path: &std::path::Path, output_path: &std::path::Path) -> SaveResult<()> {
+    let trace = save_step("open-trace", open_owned_log(trace_path))?;
+    let mut output = save_step("open-output", plx_base::eventlog::open_log_append(output_path))?;
+    save_step("truncate-output", output.set_len(0))?;
+    let events = open_owned_log(events_path)
         .ok()
         .map(|mut events| {
-            let length = events.metadata()?.len();
-            events.seek(SeekFrom::Start(length.saturating_sub(256 * 1024)))?;
-            Ok::<File, std::io::Error>(events)
+            let length = save_step("inspect-events", events.metadata())?.len();
+            save_step("seek-events", events.seek(SeekFrom::Start(length.saturating_sub(256 * 1024))))?;
+            Ok::<File, SaveFailure>(events)
         })
         .transpose()?;
     write_bundle(trace, events, &mut output)
@@ -408,12 +467,12 @@ fn write_bundle(
     trace: impl Read,
     events: Option<impl Read>,
     mut output: impl Write,
-) -> std::io::Result<()> {
-    output.write_all(b"=== Playback trace (up to 8 MiB) ===\n")?;
-    std::io::copy(&mut trace.take(TRACE_BYTE_LIMIT as u64), &mut output)?;
+) -> SaveResult<()> {
+    save_step("write-trace-header", output.write_all(b"=== Playback trace (up to 8 MiB) ===\n"))?;
+    save_step("copy-trace", std::io::copy(&mut trace.take(TRACE_BYTE_LIMIT as u64), &mut output))?;
     if let Some(events) = events {
-        output.write_all(b"\n=== Recent app events (tail, up to 256 KiB) ===\n")?;
-        std::io::copy(&mut events.take(256 * 1024), &mut output)?;
+        save_step("write-events-header", output.write_all(b"\n=== Recent app events (tail, up to 256 KiB) ===\n"))?;
+        save_step("copy-events", std::io::copy(&mut events.take(256 * 1024), &mut output))?;
     }
     Ok(())
 }
@@ -421,6 +480,65 @@ fn write_bundle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_failed_save_reports_the_os_error_without_private_error_text() {
+        plx_base::eventlog::with_private_log(|| {
+            assert_eq!(
+                export_if_current(4, 4, || Err(std::io::Error::from_raw_os_error(libc::ENOSPC).into())),
+                Some(Status::Failed)
+            );
+            let events = std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default();
+            assert!(events.contains("playback diagnostics: save failed"), "save failure was silent: {events}");
+            assert!(events.contains("errno=28"), "save failure lost its OS error: {events}");
+            let private = SaveFailure { stage: "open-output", error: std::io::Error::other(
+                "/private/viewer/X-Plex-Token=secret destination refused") };
+            assert_eq!(save_failure_line(&private),
+                "playback diagnostics: save failed stage=open-output errno=0 kind=Other");
+        });
+    }
+    #[test]
+    fn failed_worker_retires_saving_but_a_late_failure_cannot_override_deletion() {
+        let mut state = State { status: Status::Saving, generation: 3, ..State::default() };
+        assert!(state.fail_save(3));
+        assert_eq!(state.status, Status::Failed);
+        state.invalidate();
+        state.status = Status::Off;
+        assert!(!state.fail_save(3));
+        assert_eq!(state.status, Status::Off);
+    }
+    #[test]
+    fn saving_real_files_combines_trace_and_events_with_private_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        plx_base::eventlog::with_private_log(|| {
+            let events = plx_base::eventlog::events_log();
+            let root = events.parent().unwrap();
+            let trace = root.join("trace");
+            let output = root.join("output");
+            std::fs::write(&trace, b"TRACE\n").unwrap();
+            std::fs::write(&events, b"EVENTS\n").unwrap();
+            export_at(&trace, &events, &output).unwrap();
+            let saved = std::fs::read_to_string(&output).unwrap();
+            assert!(saved.contains("TRACE\n"));
+            assert!(saved.contains("EVENTS\n"));
+            assert_eq!(std::fs::metadata(output).unwrap().permissions().mode() & 0o777, 0o640);
+        });
+    }
+    #[test]
+    fn missing_trace_and_refused_destination_report_different_stages() {
+        plx_base::eventlog::with_private_log(|| {
+            let events = plx_base::eventlog::events_log();
+            let root = events.parent().unwrap();
+            let trace = root.join("trace");
+            let output = root.join("output");
+            let missing = export_at(&trace, &events, &output).unwrap_err();
+            assert_eq!(missing.stage, "open-trace");
+            assert_eq!(missing.error.kind(), std::io::ErrorKind::NotFound);
+            assert!(!output.exists());
+            std::fs::write(&trace, b"TRACE\n").unwrap();
+            std::fs::create_dir(&output).unwrap();
+            assert_eq!(export_at(&trace, &events, &output).unwrap_err().stage, "open-output");
+        });
+    }
     #[test]
     fn a_save_queued_before_privacy_deletion_never_recreates_the_file() {
         let mut state = State::default();

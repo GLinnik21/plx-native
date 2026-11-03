@@ -855,7 +855,7 @@ mod tests {
 
     use super::super::compile::{compile, CompileCtx};
     use super::super::lint::{LangCtx, LintOptions};
-    use super::super::parse::parse;
+    use super::super::fixtures::parse;
     use super::super::reach::Slot;
     use super::{surfaces, views, Surfaces};
 

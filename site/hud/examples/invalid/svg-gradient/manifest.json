@@ -1,0 +1,15 @@
+{
+  "package_format": "1.0",
+  "author": "PlxNative",
+  "license": "CC0-1.0",
+  "id": "com.plxnative.examples.minimal",
+  "name": "Minimal",
+  "version": "1.0.0",
+  "hud": {
+    "format": "1.0",
+    "entry": "hud.json"
+  },
+  "resources": {
+    "mark": "assets/mark.svg"
+  }
+}

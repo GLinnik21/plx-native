@@ -1,0 +1,18 @@
+{
+  "costs": [],
+  "file": "examples/invalid/bad-palette-value",
+  "findings": [
+    {
+      "code": "HUD-E0506",
+      "file": "hud.json",
+      "hint": "write # and six lower-case hex digits, for example \"#f2b535\"; alpha goes on the element that uses the colour",
+      "message": "`#fc0` is not #rrggbb",
+      "nearest": [],
+      "path": "/palette/gold",
+      "rule": "palette-value",
+      "severity": "error"
+    }
+  ],
+  "package_sha256": "e834c9041c5a8692351909b65f8bc16e32d73ca8f364dfa25f9cdce493d24efa",
+  "protocol": 1
+}

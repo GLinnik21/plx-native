@@ -17,11 +17,11 @@ use plx_ui::consts::{SCR_H, SCR_W};
 use std::sync::Arc;
 
 const NONE: ControlSlot = ControlSlot::Discs(Controls::NONE);
-const RISING: &str = include_str!("../../../hud_format/fixtures/rising-tabs.plxhud.json");
-const REFERENCE: &str = include_str!("../../../hud_format/fixtures/reference.plxhud.json");
+const RISING: &str = include_str!("../../../hud_format/fixtures/rising-tabs/hud.json");
+const REFERENCE: &str = include_str!("../../../hud_format/fixtures/reference/hud.json");
 
 fn load(text: &str) -> Arc<Compiled> {
-    crate::player_hud::loaded::load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &FM)
+    crate::player_hud::loaded::load(&crate::hud_format::fixtures::with_hud_resources("reference", &text), "0.0.0-test", plx_platform::i18n::english(), &FM)
         .expect("the package loads")
         .compiled
 }

@@ -1732,8 +1732,8 @@ mod tests {
         /// title and summary at the compiler's rects, its summary last and top-anchored, so there is nothing to collapse.
         #[test]
         fn a_package_vstack_with_the_title_pair_stays_static() {
-            let text = include_str!("../hud_format/fixtures/reference.plxhud.json");
-            let compiled = crate::player_hud::loaded::load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &FM)
+            let text = include_str!("../hud_format/fixtures/reference/hud.json");
+            let compiled = crate::player_hud::loaded::load(&crate::hud_format::fixtures::with_hud_resources("reference", &text), "0.0.0-test", plx_platform::i18n::english(), &FM)
                 .expect("the reference loads")
                 .compiled;
             let state = compiled.lookup(OPEN_INFO, Slot::Discs, true, true, false).expect("the reference has an info state");
@@ -1787,8 +1787,8 @@ mod tests {
         /// this is also the disc's `solid` face (`draw_control` reads the same answer).
         #[test]
         fn a_toggle_section_control_reads_selected_while_its_section_is_open() {
-            let text = include_str!("../hud_format/fixtures/reference.plxhud.json");
-            let compiled = crate::player_hud::loaded::load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &FM)
+            let text = include_str!("../hud_format/fixtures/reference/hud.json");
+            let compiled = crate::player_hud::loaded::load(&crate::hud_format::fixtures::with_hud_resources("reference", &text), "0.0.0-test", plx_platform::i18n::english(), &FM)
                 .expect("the reference loads")
                 .compiled;
             let open = |bits: u8| {
@@ -1841,8 +1841,8 @@ mod tests {
         use crate::hud_format::compile::{ClockMode, KnobMode};
 
         fn reference() -> std::sync::Arc<Compiled> {
-            let text = include_str!("../hud_format/fixtures/reference.plxhud.json");
-            crate::player_hud::loaded::load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &FM)
+            let text = include_str!("../hud_format/fixtures/reference/hud.json");
+            crate::player_hud::loaded::load(&crate::hud_format::fixtures::with_hud_resources("reference", &text), "0.0.0-test", plx_platform::i18n::english(), &FM)
                 .expect("the reference loads")
                 .compiled
         }

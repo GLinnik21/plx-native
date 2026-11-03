@@ -41,7 +41,6 @@
 //! | `Object(node)` | an object walked against `node(node)` | `Object` | `E0104` |
 //! | `List {of,max_len}` | an array of at most `max_len` values of `of` | `List` | `E0104`, `E0105` |
 //! | `Palette` | an object: lower-case name -> `"#rrggbb"` | `Object` of `Text` | `E0505`, `E0506`, `E0104` |
-//! | `Assets` | an object: id ([`Pattern::Id`]) -> SVG source, each through `svg_subset::check_asset` | `Object` of `Text` | `E0105` (id), `E0104`, `E07xx` |
 //! | `Command` | a string naming a [`Cmd`] | `Name` | `E0104`, `E0301` + `nearest` |
 //! | `Either(a, b)` | the first of `a`, `b` whose JSON kind the value has | that one's | that one's, else `E0104` |
 //!
@@ -149,6 +148,8 @@ pub enum Pattern {
     SchemaUrl,
     /// An author-chosen identifier: lower-case `[a-z][a-z0-9_-]*`, at most 40 chars.
     Id,
+    /// A canonical portable package-root-relative path.
+    PackagePath,
 }
 
 impl Pattern {
@@ -164,6 +165,7 @@ impl Pattern {
             Pattern::FormatVersion => r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$",
             Pattern::SchemaUrl => r"^https://[!-~]+$",
             Pattern::Id => r"^[a-z][a-z0-9_-]*$",
+            Pattern::PackagePath => r"^[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)*$",
         }
     }
 }
@@ -212,7 +214,7 @@ pub enum Ty {
         max_len: usize,
     },
     Palette,
-    Assets,
+    Resources,
     Command,
     Either(&'static Ty, &'static Ty),
 }
@@ -839,29 +841,49 @@ const REST_FOCUS_RULES: &[Rule] = &[
     },
 ];
 
-/// The package's top level.
+/// The HUD document. Its identity, format and resource inventory belong to the manifest.
 pub static ROOT: Node = Node {
-    name: "package",
+    name: "hud",
     kind: NodeKind::Plain,
     fields: &[
-        Field::opt(
-            "$schema",
-            Ty::Pattern(Pattern::SchemaUrl),
-            "The schema URL, for editors: accepted and ignored by the app; lint checks its major.minor equals `format`.",
-        ),
-        Field::req("format", Ty::Pattern(Pattern::FormatVersion), "MAJOR.MINOR of the schema, bindings and command vocabulary."),
-        Field::req("id", Ty::Pattern(Pattern::ReverseDns), "The package's reverse-DNS identity (the built-in HUD's reserved `builtin:classic` is the one other id that parses)."),
-        Field::req("version", Ty::Pattern(Pattern::Semver), "The package's own semver; it only orders updates of one id."),
-        Field::req("name", Ty::Text { max_len: 64 }, "The display name."),
-        Field::req("author", Ty::Text { max_len: 64 }, "The author."),
-        Field::req("license", Ty::Text { max_len: 64 }, "An SPDX license identifier."),
-        Field::opt("app", Ty::Object("app"), "The app releases this package renders correctly on."),
-        Field::opt("palette", Ty::Palette, "Named colours: lower-case name -> \"#rrggbb\". Every entry must be used."),
-        Field::opt("assets", Ty::Assets, "Inline SVG masks, by id."),
+        Field::opt("$schema", Ty::Pattern(Pattern::SchemaUrl), "The HUD document schema URL for editors."),
+        Field::opt("palette", Ty::Palette, "Named colours used by the layout."),
         Field::req("layout", Ty::Object("layout"), "Where the HUD sits and what it holds."),
     ],
     rules: &[],
-    doc: "A HUD package: one UTF-8 JSON file, `*.plxhud.json`, assets inline.",
+    doc: "A HUD document inside a data-only PlxNative bundle.",
+};
+
+/// The only owner of package identity, format declarations and resource paths.
+pub static MANIFEST: Node = Node {
+    name: "manifest",
+    kind: NodeKind::Plain,
+    fields: &[
+        Field::opt("$schema", Ty::Pattern(Pattern::SchemaUrl), "The package manifest schema URL for editors."),
+        Field::req("package_format", Ty::Pattern(Pattern::FormatVersion), "MAJOR.MINOR of the package container profile."),
+        Field::req("id", Ty::Pattern(Pattern::ReverseDns), "The package's reverse-DNS identity. builtin:classic is reserved for the embedded package."),
+        Field::req("version", Ty::Pattern(Pattern::Semver), "The plugin's numeric MAJOR.MINOR.PATCH version."),
+        Field::req("name", Ty::Text { max_len: 64 }, "The display name."),
+        Field::req("author", Ty::Text { max_len: 64 }, "The author."),
+        Field::req("license", Ty::Text { max_len: 64 }, "The package license identifier."),
+        Field::req("hud", Ty::Object("hud_entry"), "The HUD document and its independent schema version."),
+        Field::opt("app", Ty::Object("app"), "The app releases this package renders correctly on."),
+        Field::opt("resources", Ty::Resources, "Logical resource identifiers mapped to package-root-relative files."),
+        Field::opt("notices", Ty::List { of: &Ty::Pattern(Pattern::PackagePath), max_len: super::bundle::MAX_ENTRIES }, "Declared UTF-8 license and attribution texts."),
+    ],
+    rules: &[],
+    doc: "The manifest.json of a PlxNative HUD bundle.",
+};
+
+pub static HUD_ENTRY: Node = Node {
+    name: "hud_entry",
+    kind: NodeKind::Plain,
+    fields: &[
+        Field::req("format", Ty::Pattern(Pattern::FormatVersion), "MAJOR.MINOR of the HUD schema, bindings and command vocabulary."),
+        Field::req("entry", Ty::Pattern(Pattern::PackagePath), "The package-root-relative HUD JSON document."),
+    ],
+    rules: &[],
+    doc: "One HUD document within the package.",
 };
 
 /// `app`: an app-release range, an escape hatch for "this release renders me wrong".
@@ -1556,6 +1578,8 @@ pub static UP_NEXT_BUTTON: Node = Node {
 /// Every node of the table, [`ROOT`] first. `node(name)` and `all_nodes()` read it.
 static NODES: &[&Node] = &[
     &ROOT,
+    &MANIFEST,
+    &HUD_ENTRY,
     &APP,
     &LAYOUT,
     &SCRIM,
@@ -1679,9 +1703,9 @@ mod freeze_tests {
 
     #[test]
     fn the_landed_nodes_resolve_and_every_entry_is_since_1_0() {
-        assert!(std::ptr::eq(node("package").unwrap(), &ROOT));
+        assert!(std::ptr::eq(node("hud").unwrap(), &ROOT));
         assert!(std::ptr::eq(all_nodes()[0], &ROOT));
-        assert_eq!(field(&ROOT, "format").map(|f| f.required), Some(true));
+        assert_eq!(field(&HUD_ENTRY, "format").map(|f| f.required), Some(true));
         assert!(field(&ROOT, "formt").is_none());
         let mut seen = HashSet::new();
         for n in all_nodes() {
@@ -1781,7 +1805,7 @@ mod tests {
     #[test]
     fn hud_format_schema_every_object_reference_resolves_and_all_nodes_is_the_reachable_set() {
         let mut reached: BTreeSet<&str> = BTreeSet::new();
-        let mut todo = vec![ROOT.name];
+        let mut todo = vec![ROOT.name, MANIFEST.name];
         while let Some(name) = todo.pop() {
             if !reached.insert(name) {
                 continue;
@@ -1811,7 +1835,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(all_nodes().len(), 24);
+        assert_eq!(all_nodes().len(), 26);
     }
 
     #[test]
