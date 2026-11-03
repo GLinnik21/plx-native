@@ -1545,10 +1545,16 @@ rebuilds the application only. The no-op build is 0.1 s in both.
 
 ### Split 11 (media)
 
+This section records the original media extraction. In the current layout,
+`plx_play_feed` owns the physical FFmpeg demuxer, HLS parser and access-unit
+queues; `plx_media_codecs` owns the FFmpeg binding and encoder. `plx_media::ff`
+is a compatibility facade for the feed's application entry points and media
+integration fixtures.
+
 `media` was extracted eleventh: `rust-modules/media/` is the workspace member `plx_media` (an `rlib`,
 `uses = base machine platform gfx net plex telemetry data`; the manifest names those eight, with
 `plx_gfx` optional behind `hostsim` because only the simulator's `player::sim_video` draws), holding
-`ff` (the bundled-FFmpeg demuxer), `aq`, `abr`, `hls`, `curlio`, `player` (the buffer-feed engine,
+`ff` (then the bundled-FFmpeg demuxer), `aq`, `abr`, `hls`, `curlio`, `player` (the buffer-feed engine,
 `player/CLAUDE.md` with it) and `route`: 70 files, 84,579 lines. It is the layer with the FFI, and
 the one that held the last import cycle of the application, `abr curlio ff hls player route`, which
 is now inside one crate where a cycle is legal. The 12 root-level files the modules include by
@@ -1559,7 +1565,7 @@ files (`pub(super)` only where it was written at the top level of a file whose p
 root), and one intra-doc link to `screens` unbracketed. The module-cycle baseline now reads "3
 modules on the cycle (`app dev textinput`), 10 outside". What it taught:
 
-- **FFI and the final link: proven in the artifact, not assumed.** The crate holds every
+- **FFI and the final link: proven in the artifact, not assumed.** At this extraction, the crate held every
   `dynlib!` table of FFmpeg (`ff.rs`, four), libass's subtitle surface (`player/ass.rs`; the UI text
   surface's table is `plx_gfx::rtl`) and the second libcurl table
   (`curlio.rs`), `player::ffi`'s `extern "C"` block (the Starfish/ACB verbs, 29 undefined

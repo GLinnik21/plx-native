@@ -1,13 +1,13 @@
 //! plx_media: the media layer of the PlxNative application core.
 //!
-//! Feed demux (`ff`, through `plx_media_codecs`), the media credential facade (`curlio` over
+//! The `ff` compatibility facade over `plx_play_feed`'s demux, the media credential facade (`curlio` over
 //! `plx_net::range_io`), the adaptive-bitrate controller (`abr`), the buffer-feed engine (`player`)
 //! and route selection (`route`). The HLS parser and access-unit queues live in `plx_play_feed`.
 //! It is the `media` layer of `ci/module-layers.ini`: it
 //! uses `playback-contract`, `play-feed`, `media-codecs`, optional `play-uri`, `base`, `machine`,
 //! `platform`, `gfx`, `net`, `plex`, `telemetry` and `data`, and nothing above them. The remaining
-//! feed orchestration members (`abr`, `curlio`, `ff`, `player` and
-//! `route`) share a crate. The bundled FFmpeg binding, encoder and pure
+//! media orchestration members (`abr`, `curlio`, `player` and
+//! `route`) and the `ff` facade share a crate. The bundled FFmpeg binding, encoder and pure
 //! audio DSP live in `plx_media_codecs` below this layer.
 //!
 //! Starfish/ACB calls back into `player` through `sf_on_event` and `acb_on_event`. The native
@@ -21,11 +21,11 @@ pub mod abr; // client-managed fixed-session HLS controller: estimate, propose, 
 pub(crate) mod adaptive; // common adaptive policy and route transition; feed supplies physical media
 pub mod aq;
 pub mod curlio; // the HTTPS media plane: a remote file pulled by byte range over libcurl-multi (stream.rs is the plaintext-socket twin)
-pub mod ff_pcm; // FLAC decoded in the app and fed as PCM (libpf has no FLAC input)
-pub mod ff; // THE demuxer -- the FFmpeg 9.0 this app BUNDLES and pins (majors 63/63/61), dlopen'd by absolute path beside the binary, never the television's
+pub mod ff_pcm; // compatibility facade for the physical PCM decoder in play-feed
+pub mod ff; // compatibility facade for the physical FFmpeg demuxer in play-feed
 #[path = "ff_subside.rs"]
 pub(crate) mod subtitle_job; // optional subtitle transport and common presentation runner over a codec job
-pub mod hls; // strict parser/auth/timeline for the measured one-variant PMS HLS shape
+pub mod hls; // compatibility facade for the strict parser/auth/timeline in play-feed
 pub mod player; // buffer-feed video engine (was playback.c) -- step 5
 pub mod speed_audio; // compatibility facade for the independent codec DSP
 pub mod route; // play_movie route selection (direct-play vs transcode) -- step 3

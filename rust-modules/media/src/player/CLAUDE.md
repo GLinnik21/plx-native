@@ -37,9 +37,9 @@ outside the player screen, and blocks reuse through unresolved close. Generic tr
 method ACKs remain distinct observations; they do not invent confirmation or resume policy.
 The stream side: `PMS HTTP GET` → demux → per-lane access-unit
 queues with byte-cap backpressure (`play-feed/src/aq.rs`) → the pump `Feed()`s each AU to the Starfish pipeline.
-The demuxer is **`ff.rs` — the libavformat the app BUNDLES (not the TV's), over a custom AVIO on
+The demuxer is **`play-feed/src/ff.rs` — the libavformat the app BUNDLES (not the TV's), over a custom AVIO on
 one of TWO transports** (design record: `docs/ffmpeg-demuxer-plan.md`; the hand-rolled `mkv.rs`
-fallback is retired/deleted). **Which transport is decided in `ff::demux` from the part URL's
+fallback is retired/deleted). `media/src/ff.rs` reexports its application entry points. **Which transport is decided in `ff::demux` from the part URL's
 scheme, or by a plaintext open's redirect to https (`stream::redirect` hands that hop to curl)** —
 `AvioState` holds a source enum and `read_cb`/`seek_cb` dispatch: `http` → `stream.rs`'s raw socket, `https` → media's `curlio` credential facade over `plx_net::range_io`. That matters *here* because teardown is a
 different mechanism per arm: `engine::teardown` fires `stream::http_shutdown` at the socket **and**
@@ -905,13 +905,13 @@ something.
 
 **Start with `make check`** — the host unit suite (`cargo test --lib`, ~28 s for 3,639 tests,
 measured 2026-09-17; do not re-quote that number, `time` it) covers a real
-slice of this pipeline's pure logic: `ff.rs`'s `nal_end` bounds guard and AVCC→Annex-B conversion,
+slice of this pipeline's pure logic: `play-feed/src/ff.rs`'s `nal_end` bounds guard and AVCC→Annex-B conversion,
 the AVIO abort guards (a seek after teardown must not open a second connection — graded on an accept
 count), `stream.rs`'s socket lifecycle, `route/plan.rs`'s direct-play-vs-transcode selection, and
 `task.rs`'s `MainThread` token being genuinely `!Send`. Cheap enough that there is no reason to skip
 it before a deploy.
 
-But there is **no host *runtime*** — nothing above decodes a frame or touches Starfish/ACB (`ff.rs`
+But there is **no host *runtime*** — nothing above decodes a frame or touches Starfish/ACB (`play-feed/src/ff.rs`
 once gated `#[link]` directives out of `cfg(test)` to keep the pure logic host-testable; with
 everything on `dynlib!` those are gone, so a test that actually calls FFmpeg now fails by taking
 `dlopen`'s `None` branch on Darwin rather than by failing to link), and the host is Darwin while the TV is
