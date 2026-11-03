@@ -646,7 +646,10 @@ Home's poster tops rest at y=817.
 The earlier BODY/28 metadata was larger than the latest PDF and was corrected after font-metric comparison. `widgets::hero_facts` draws the year (movies) or named-month aired date (episodes), then
 runtime or remaining time; source attribution follows within the width bound. Direct Play and
 Direct Stream are implicit; conversion and subscription warnings remain visible. Provider scores
-and captions use regular weight. `HeroLogo` retains the shared constant-area logo rule and falls
+and captions use regular weight. `HeroLogo` targets a shared 60,000 px² bounding-box area, contained within 640 × 240 px and the
+reading column. There is no painted-height floor: wide marks can be shorter than the fixed
+120 px title band, and tall marks can spill upward. Aspect and the bottom anchor are preserved.
+Compact limits interpolate with the hero limits, preserving the existing 54 px compact band. It falls
 back to at most two bold DISPLAY/48 lines; Compact remains one TITLE/40 line. Synopsis stays
 LABEL/26 with 36 px leading and a three-line cap.
 

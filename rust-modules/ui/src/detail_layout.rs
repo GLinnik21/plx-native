@@ -51,7 +51,7 @@ pub fn hero_chain(
 ) -> HeroChain {
     let _ = measure;
     let rows = super::landing_hero::hero_rows(
-        theme::logo::HERO_H_MIN, widgets::BADGE_H,
+        theme::logo::HERO_BAND_H, widgets::BADGE_H,
         has_ratings.then_some(widgets::RATING_MARK_D), Some(syn_h.max(34.0)),
         super::landing_hero::HeroAnchor::TitleBottom(TITLE_BOTTOM),
     );
