@@ -1,142 +1,206 @@
-//! Admission and publication for one playback backend. The native backend remains responsible
-//! for its own registration, callback correlation, release deadlines, and quarantine policy.
+//! Pure admission and publication for one logical playback attempt across physical backends.
+//! Each concrete driver owns its native requests, release deadlines and quarantine evidence.
 use std::collections::BTreeMap;
 
-use crate::{AttemptId, Capabilities, CommandId, ContentTime, DispatchResult, Failure, Observation,
-    Observed, Operation, Playback, ReleaseStatus, SourceKey, TrackKind, TrackSelection};
+use crate::{AttemptId, BackendKind, Capabilities, CommandId, ContentTime, DispatchResult,
+    ExitDisposition, Failure, Observation, Observed, Operation, Playback, ReleaseStatus,
+    SourceKey, StopReason, TrackChoice, TrackKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase { Vacant, Starting, Active, Releasing, Quarantined }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Intent {
-    Start { attempt: AttemptId, source: SourceKey, requirements: crate::Requirements },
-    Control { attempt: AttemptId, operation: Operation },
-    Stop { attempt: AttemptId },
+    Start { backend: BackendKind, attempt: AttemptId, source: SourceKey, requirements: crate::Requirements },
+    Control { backend: BackendKind, attempt: AttemptId, operation: Operation },
+    Stop { backend: BackendKind, attempt: AttemptId, reason: StopReason },
+}
+impl Intent {
+    pub const fn backend(self) -> BackendKind {
+        match self {
+            Self::Start { backend, .. } | Self::Control { backend, .. } | Self::Stop { backend, .. } => backend,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
     Intent(Intent),
-    CommandAnswer { attempt: AttemptId, command: CommandId, result: DispatchResult },
-    Observation { attempt: AttemptId, observation: Observation },
-    Release { attempt: AttemptId, status: ReleaseStatus },
+    CommandAnswer { backend: BackendKind, attempt: AttemptId, command: CommandId, result: DispatchResult },
+    Observation { backend: BackendKind, attempt: AttemptId, observation: Observation },
+    SeekLanded { backend: BackendKind, attempt: AttemptId, command: CommandId,
+        position: Option<Observed<ContentTime>> },
+    Release { backend: BackendKind, attempt: AttemptId, status: ReleaseStatus },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fx {
-    Dispatch { attempt: AttemptId, command: CommandId, operation: Operation },
-    Rejected { attempt: AttemptId, failure: Failure },
-    /// A dispatched operation failed to enter the native queue. This is distinct from
-    /// admission rejection: the driver may already own resources and still owes release.
-    CommandRefused { attempt: AttemptId, command: CommandId, operation: Operation, failure: Failure },
-    /// Accepted evidence is delivered even when a later event in the same poll resets Snapshot.
-    AcceptedObservation { attempt: AttemptId, observation: Observation },
-    /// The concrete resource owner decided this status; a stale attempt publishes nothing.
-    ReleaseOutcome { attempt: AttemptId, status: ReleaseStatus },
+    Dispatch { backend: BackendKind, attempt: AttemptId, command: CommandId, operation: Operation },
+    /// Dispose only the rejected Start's staged source; never touch the occupant's source.
+    DiscardStaged { backend: BackendKind, attempt: AttemptId, key: SourceKey },
+    Rejected { backend: BackendKind, attempt: AttemptId, failure: Failure },
+    /// A synchronous queue refusal still leaves native resource release to the driver.
+    CommandRefused { backend: BackendKind, attempt: AttemptId, command: CommandId,
+        operation: Operation, failure: Failure },
+    AcceptedObservation { backend: BackendKind, attempt: AttemptId, observation: Observation },
+    /// A generic position or queued ACK cannot produce this notice.
+    AcceptedSeekLanded { backend: BackendKind, attempt: AttemptId, command: CommandId,
+        position: Option<Observed<ContentTime>> },
+    /// Only a concrete driver's addressed release verdict produces this notice.
+    ReleaseOutcome { backend: BackendKind, attempt: AttemptId, status: ReleaseStatus },
 }
 
-/// Only populated fields are observations. `last_queued` means the driver accepted a request
-/// into its queue; it never updates playback, position, track or presentation evidence.
+/// A confirmed track state; `Unspecified` is a request, never an observation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrackFact { Off, Selected(u64) }
+
+/// Sparse evidence for the active attempt. `last_queued` proves only that an operation entered
+/// a driver queue. Ready and Playing reports never imply a presented picture.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub phase: Phase,
+    pub backend: Option<BackendKind>,
     pub attempt: Option<AttemptId>,
     pub playback: Option<Observed<Playback>>,
     pub position: Option<Observed<ContentTime>>,
     pub presented: bool,
-    pub audio_track: Option<Observed<TrackSelection>>,
-    pub subtitle_track: Option<Observed<TrackSelection>>,
+    pub audio_track: Option<Observed<TrackFact>>,
+    pub subtitle_track: Option<Observed<TrackFact>>,
     pub last_queued: Option<CommandId>,
+    pub seek_landed: Option<CommandId>,
     pub failure: Option<Failure>,
 }
 impl Default for Snapshot {
     fn default() -> Self {
-        Self { phase: Phase::Vacant, attempt: None, playback: None, position: None,
-            presented: false, audio_track: None, subtitle_track: None, last_queued: None,
-            failure: None }
+        Self { phase: Phase::Vacant, backend: None, attempt: None, playback: None,
+            position: None, presented: false, audio_track: None, subtitle_track: None,
+            last_queued: None, seek_landed: None, failure: None }
     }
 }
 
-/// Pure reducer. Its identities outlive the visible snapshot, so a released attempt's late
-/// answer cannot alias the next attempt. A confirmed release clears all published evidence.
+/// One state owner across URI and Feed. Attempts come from the route owner, command IDs from this
+/// reducer; a confirmed release clears evidence but never rewinds either identity.
 pub struct BackendState {
-    capabilities: Capabilities,
     last_attempt: Option<AttemptId>,
     next_command: u64,
     snapshot: Snapshot,
     pending: BTreeMap<CommandId, Operation>,
+    latest_queued_seek: Option<CommandId>,
 }
 impl BackendState {
-    pub fn new(capabilities: Capabilities) -> Self {
-        Self { capabilities, last_attempt: None, next_command: 0,
-            snapshot: Snapshot::default(), pending: BTreeMap::new() }
+    pub fn new() -> Self {
+        Self { last_attempt: None, next_command: 0, snapshot: Snapshot::default(),
+            pending: BTreeMap::new(), latest_queued_seek: None }
     }
 
     pub fn snapshot(&self) -> &Snapshot { &self.snapshot }
 
-    fn dispatch(&mut self, attempt: AttemptId, operation: Operation, effects: &mut Vec<Fx>) {
+    /// This is the common state's share of exit safety. The runner also asks every driver set;
+    /// even a vacant snapshot cannot declare a quarantined physical resource clean.
+    pub fn exit_disposition(&self) -> ExitDisposition {
+        if self.snapshot.phase == Phase::Vacant { ExitDisposition::Clean }
+        else { ExitDisposition::PreserveNativeOwnership }
+    }
+
+    fn owns(&self, backend: BackendKind, attempt: AttemptId) -> bool {
+        self.snapshot.backend == Some(backend) && self.snapshot.attempt == Some(attempt)
+    }
+
+    fn dispatch(&mut self, backend: BackendKind, attempt: AttemptId,
+        operation: Operation, effects: &mut Vec<Fx>) {
         self.next_command = self.next_command.checked_add(1).expect("playback command IDs exhausted");
         let command = CommandId(self.next_command);
         self.pending.insert(command, operation);
-        effects.push(Fx::Dispatch { attempt, command, operation });
+        effects.push(Fx::Dispatch { backend, attempt, command, operation });
     }
 
-    pub fn step(&mut self, event: Event, effects: &mut Vec<Fx>) {
+    fn reject_start(effects: &mut Vec<Fx>, backend: BackendKind, attempt: AttemptId,
+        source: SourceKey, failure: Failure) {
+        effects.push(Fx::DiscardStaged { backend, attempt, key: source });
+        effects.push(Fx::Rejected { backend, attempt, failure });
+    }
+
+    /// `capabilities` is supplied by the injected driver set for this event's backend. It may be
+    /// absent; no source or operation is dispatched to an unavailable driver.
+    pub fn step(&mut self, event: Event, capabilities: Option<Capabilities>, effects: &mut Vec<Fx>) {
         match event {
-            Event::Intent(Intent::Start { attempt, source, requirements }) => {
-                if self.snapshot.phase != Phase::Vacant {
-                    effects.push(Fx::Rejected { attempt, failure: Failure::Busy });
+            Event::Intent(Intent::Start { backend, attempt, source, requirements }) => {
+                let failure = if self.snapshot.phase != Phase::Vacant {
+                    Some(Failure::Busy)
                 } else if self.last_attempt.is_some_and(|last| attempt <= last) {
-                    effects.push(Fx::Rejected { attempt, failure: Failure::Stale });
-                } else if !self.capabilities.supports(requirements) {
-                    effects.push(Fx::Rejected { attempt, failure: Failure::Unsupported });
+                    Some(Failure::Stale)
+                } else if let Some(caps) = capabilities {
+                    (!caps.supports(requirements)).then_some(Failure::Unsupported)
+                } else {
+                    Some(Failure::Unavailable)
+                };
+                if let Some(failure) = failure {
+                    Self::reject_start(effects, backend, attempt, source, failure);
                 } else {
                     self.last_attempt = Some(attempt);
                     self.snapshot.phase = Phase::Starting;
+                    self.snapshot.backend = Some(backend);
                     self.snapshot.attempt = Some(attempt);
-                    self.dispatch(attempt, Operation::Start { source, requirements }, effects);
+                    self.dispatch(backend, attempt, Operation::Start { source, requirements }, effects);
                 }
             }
-            Event::Intent(Intent::Control { attempt, operation }) => {
-                if self.snapshot.attempt != Some(attempt) || self.snapshot.phase != Phase::Active {
-                    effects.push(Fx::Rejected { attempt, failure: Failure::Stale });
-                } else if !self.supports_operation(operation) {
-                    effects.push(Fx::Rejected { attempt, failure: Failure::Unsupported });
+            Event::Intent(Intent::Control { backend, attempt, operation }) => {
+                let failure = if !self.owns(backend, attempt) || self.snapshot.phase != Phase::Active {
+                    Some(Failure::Stale)
+                } else if let Some(caps) = capabilities {
+                    (!Self::supports_operation(caps, operation)).then_some(Failure::Unsupported)
                 } else {
-                    self.dispatch(attempt, operation, effects);
+                    Some(Failure::Unavailable)
+                };
+                if let Some(failure) = failure {
+                    effects.push(Fx::Rejected { backend, attempt, failure });
+                } else {
+                    self.dispatch(backend, attempt, operation, effects);
                 }
             }
-            Event::Intent(Intent::Stop { attempt }) => {
-                if self.snapshot.attempt == Some(attempt)
-                    && matches!(self.snapshot.phase, Phase::Starting | Phase::Active)
-                {
+            Event::Intent(Intent::Stop { backend, attempt, reason }) => {
+                if !self.owns(backend, attempt)
+                    || !matches!(self.snapshot.phase, Phase::Starting | Phase::Active) { return; }
+                self.pending.clear();
+                self.latest_queued_seek = None;
+                if capabilities.is_none() {
+                    self.snapshot.phase = Phase::Quarantined;
+                    self.snapshot.failure = Some(Failure::ReleaseUncertain);
+                    effects.push(Fx::Rejected { backend, attempt, failure: Failure::Unavailable });
+                } else {
                     self.snapshot.phase = Phase::Releasing;
-                    self.pending.clear();
-                    self.dispatch(attempt, Operation::Stop, effects);
+                    self.dispatch(backend, attempt, Operation::Stop(reason), effects);
                 }
             }
-            Event::CommandAnswer { attempt, command, result } => {
-                if self.snapshot.attempt != Some(attempt) { return; }
+            Event::CommandAnswer { backend, attempt, command, result } => {
+                if !self.owns(backend, attempt) { return; }
                 let Some(operation) = self.pending.remove(&command) else { return; };
                 match result {
-                    DispatchResult::Queued => self.snapshot.last_queued = Some(command),
+                    DispatchResult::Queued => {
+                        self.snapshot.last_queued = Some(command);
+                        if matches!(operation, Operation::Seek(_)) {
+                            self.latest_queued_seek = Some(command);
+                            self.snapshot.seek_landed = None;
+                        }
+                    }
                     DispatchResult::Refused(reason) => {
                         self.snapshot.failure = Some(reason);
-                        effects.push(Fx::CommandRefused { attempt, command, operation, failure: reason });
+                        if let Operation::Start { source, .. } = operation {
+                            effects.push(Fx::DiscardStaged { backend, attempt, key: source });
+                        }
+                        effects.push(Fx::CommandRefused { backend, attempt, command, operation, failure: reason });
                         if matches!(operation, Operation::Start { .. }) {
-                            // The driver still owns the resource verdict, even when it refused
-                            // the start. It must report a confirmed release before reuse.
+                            // A refused Start can still own a native object. Release is explicit.
                             self.snapshot.phase = Phase::Releasing;
-                        } else if matches!(operation, Operation::Stop) {
+                        } else if matches!(operation, Operation::Stop(_)) {
                             self.snapshot.phase = Phase::Quarantined;
                             self.snapshot.failure = Some(Failure::ReleaseUncertain);
                         }
                     }
                 }
             }
-            Event::Observation { attempt, observation }
-                if self.snapshot.attempt == Some(attempt)
+            Event::Observation { backend, attempt, observation }
+                if self.owns(backend, attempt)
                     && matches!(self.snapshot.phase, Phase::Starting | Phase::Active) =>
             {
                 if observation == Observation::Presented && self.snapshot.presented { return; }
@@ -147,164 +211,242 @@ impl BackendState {
                     }
                     Observation::Position(value) => self.snapshot.position = Some(value),
                     Observation::Presented => self.snapshot.presented = true,
-                    Observation::TrackSelected(value) => match value.value.kind {
-                        TrackKind::Audio => self.snapshot.audio_track = Some(value),
-                        TrackKind::Subtitle => self.snapshot.subtitle_track = Some(value),
-                    },
+                    Observation::TrackSelected(value) => {
+                        let fact = Observed { value: TrackFact::Selected(value.value.id), from: value.from };
+                        match value.value.kind {
+                            TrackKind::Audio => self.snapshot.audio_track = Some(fact),
+                            TrackKind::Subtitle => self.snapshot.subtitle_track = Some(fact),
+                        }
+                    }
+                    Observation::TrackOff(value) => {
+                        let fact = Observed { value: TrackFact::Off, from: value.from };
+                        match value.value {
+                            TrackKind::Audio => self.snapshot.audio_track = Some(fact),
+                            TrackKind::Subtitle => self.snapshot.subtitle_track = Some(fact),
+                        }
+                    }
                     Observation::Failed(reason) => self.snapshot.failure = Some(reason),
                 }
-                effects.push(Fx::AcceptedObservation { attempt, observation });
+                effects.push(Fx::AcceptedObservation { backend, attempt, observation });
             }
             Event::Observation { .. } => {}
-            Event::Release { attempt, status } if self.snapshot.attempt == Some(attempt) => {
+            Event::SeekLanded { backend, attempt, command, position }
+                if self.owns(backend, attempt) && self.snapshot.phase == Phase::Active =>
+            {
+                if self.latest_queued_seek != Some(command) { return; }
+                self.latest_queued_seek = None;
+                self.snapshot.seek_landed = Some(command);
+                if let Some(position) = position { self.snapshot.position = Some(position); }
+                effects.push(Fx::AcceptedSeekLanded { backend, attempt, command, position });
+            }
+            Event::SeekLanded { .. } => {}
+            Event::Release { backend, attempt, status } if self.owns(backend, attempt) => {
                 match status {
                     ReleaseStatus::Closing => {
                         self.snapshot.phase = Phase::Releasing;
                         self.pending.clear();
+                        self.latest_queued_seek = None;
                     }
                     ReleaseStatus::Quarantined => {
                         self.snapshot.phase = Phase::Quarantined;
                         self.snapshot.failure = Some(Failure::ReleaseUncertain);
                         self.pending.clear();
+                        self.latest_queued_seek = None;
                     }
                     ReleaseStatus::Released => {
                         self.pending.clear();
+                        self.latest_queued_seek = None;
                         self.snapshot = Snapshot::default();
                     }
                 }
-                effects.push(Fx::ReleaseOutcome { attempt, status });
+                effects.push(Fx::ReleaseOutcome { backend, attempt, status });
             }
             Event::Release { .. } => {}
         }
     }
 
-    fn supports_operation(&self, operation: Operation) -> bool {
+    fn supports_operation(caps: Capabilities, operation: Operation) -> bool {
         match operation {
-            Operation::Play | Operation::Pause => self.capabilities.pause,
-            Operation::Seek(_) => self.capabilities.seek,
-            Operation::SelectTrack(track) => match track.kind {
-                TrackKind::Audio => self.capabilities.audio_track,
-                TrackKind::Subtitle => self.capabilities.subtitle_track,
-            },
-            Operation::Start { .. } | Operation::Stop => false,
+            Operation::Play | Operation::Pause => caps.pause,
+            Operation::Seek(_) => caps.seek,
+            Operation::SelectTrack { kind, choice } => choice != TrackChoice::Unspecified
+                && caps.supports_track(kind, choice),
+            Operation::Start { .. } | Operation::Stop(_) => false,
         }
     }
 }
+impl Default for BackendState { fn default() -> Self { Self::new() } }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EvidenceSource, Fidelity, Requirements, SourceKind};
+    use crate::{EvidenceSource, Fidelity, Requirements, SourceKind, TrackSelection};
 
+    const URI: BackendKind = BackendKind::Uri;
+    const FEED: BackendKind = BackendKind::Feed;
     const CAPS: Capabilities = Capabilities {
-        progressive_uri: true, hls_uri: false, packet_feed: false,
-        exact_video: true, exact_audio: true, pause: true, seek: true,
-        audio_track: true, subtitle_track: true,
+        progressive_uri: true, hls_uri: false, packet_feed: false, pause: true, seek: true,
+        audio_track: true, subtitle_track: true, audio_off: false, subtitle_off: false,
     };
     const REQ: Requirements = Requirements {
         source: SourceKind::ProgressiveUri, video: Fidelity::Exact, audio: Fidelity::Exact,
-        audio_track: None, subtitle_track: None,
+        audio_track: TrackChoice::Unspecified, subtitle_track: TrackChoice::Unspecified,
     };
-    fn step(state: &mut BackendState, event: Event) -> Vec<Fx> {
-        let mut effects = Vec::new(); state.step(event, &mut effects); effects
+    fn step(state: &mut BackendState, event: Event, caps: Option<Capabilities>) -> Vec<Fx> {
+        let mut effects = Vec::new(); state.step(event, caps, &mut effects); effects
     }
-    fn start(state: &mut BackendState, attempt: AttemptId) -> CommandId {
-        let effects = step(state, Event::Intent(Intent::Start { attempt, source: SourceKey::new(7), requirements: REQ }));
-        let [Fx::Dispatch { attempt, command, operation: Operation::Start { .. } }] = effects.as_slice() else { panic!("start dispatch: {effects:?}") };
-        assert_eq!(*attempt, state.snapshot().attempt.unwrap());
+    fn start(state: &mut BackendState, backend: BackendKind, attempt: AttemptId) -> CommandId {
+        let effects = step(state, Event::Intent(Intent::Start {
+            backend, attempt, source: SourceKey::new(7), requirements: REQ,
+        }), Some(CAPS));
+        let [Fx::Dispatch { backend: sent, attempt: addressed, command,
+            operation: Operation::Start { .. } }] = effects.as_slice() else { panic!("start dispatch: {effects:?}") };
+        assert_eq!((*sent, *addressed), (backend, attempt));
         *command
     }
-    #[test]
-    fn native_dispatch_refusal_is_delivered_to_the_owner_before_any_poll() {
-        let mut state = BackendState::new(CAPS);
-        let attempt = AttemptId::new(7, 1);
-        let command = start(&mut state, attempt);
-        let notices = step(&mut state, Event::CommandAnswer {
-            attempt, command, result: DispatchResult::Refused(Failure::Refused),
-        });
-        assert_eq!(notices, [Fx::CommandRefused {
-            attempt, command, operation: Operation::Start { source: SourceKey::new(7), requirements: REQ },
-            failure: Failure::Refused,
-        }]);
-        assert_eq!(state.snapshot().phase, Phase::Releasing);
+    fn ready(state: &mut BackendState, backend: BackendKind, attempt: AttemptId) {
+        step(state, Event::Observation { backend, attempt, observation: Observation::Playback(Observed {
+            value: Playback::ReadyAwaitPlay, from: EvidenceSource::BackendReport,
+        }) }, None);
     }
 
     #[test]
-    fn queued_is_not_playing_and_late_or_wrong_answers_cannot_publish() {
-        let mut state = BackendState::new(CAPS);
+    fn one_owner_ignores_wrong_backend_even_with_matching_attempt_and_quarantines_stop() {
+        let mut state = BackendState::new();
         let attempt = AttemptId::new(7, 1);
-        let command = start(&mut state, attempt);
-        let wrong = AttemptId::new(7, 2);
-        step(&mut state, Event::CommandAnswer { attempt: wrong, command, result: DispatchResult::Queued });
-        step(&mut state, Event::CommandAnswer { attempt, command: CommandId(command.get() + 1), result: DispatchResult::Queued });
-        assert_eq!(state.snapshot().last_queued, None);
-        step(&mut state, Event::CommandAnswer { attempt, command, result: DispatchResult::Queued });
-        assert_eq!(state.snapshot().last_queued, Some(command));
-        assert_eq!(state.snapshot().playback, None);
-        step(&mut state, Event::Observation { attempt: wrong, observation: Observation::Presented });
-        assert!(!state.snapshot().presented);
-        step(&mut state, Event::Observation { attempt, observation: Observation::Playback(Observed { value: Playback::Playing, from: EvidenceSource::BackendReport }) });
-        assert_eq!(state.snapshot().playback.unwrap().value, Playback::Playing);
-        assert!(!state.snapshot().presented, "a service report cannot prove a visible frame");
-    }
-    #[test]
-    fn refusal_preserves_observed_state_and_stop_refusal_quarantines() {
-        let mut state = BackendState::new(CAPS);
-        let attempt = AttemptId::new(7, 1);
-        start(&mut state, attempt);
-        step(&mut state, Event::Observation { attempt, observation: Observation::Playback(Observed { value: Playback::Playing, from: EvidenceSource::BackendReport }) });
+        let start_command = start(&mut state, URI, attempt);
+        step(&mut state, Event::CommandAnswer { backend: FEED, attempt, command: start_command,
+            result: DispatchResult::Queued }, None);
+        assert_eq!(state.snapshot.last_queued, None);
+        step(&mut state, Event::Observation { backend: FEED, attempt,
+            observation: Observation::Presented }, None);
+        step(&mut state, Event::Release { backend: FEED, attempt, status: ReleaseStatus::Released }, None);
+        assert_eq!(state.snapshot.phase, Phase::Starting);
+        ready(&mut state, URI, attempt);
+        assert_eq!(state.snapshot.phase, Phase::Active);
+        assert!(!state.snapshot.presented, "Ready is not picture proof");
+        let stop = step(&mut state, Event::Intent(Intent::Stop { backend: URI, attempt,
+            reason: StopReason::Replace }), Some(CAPS));
+        let [Fx::Dispatch { operation: Operation::Stop(StopReason::Replace), command, .. }] = stop.as_slice()
+            else { panic!("typed replace stop: {stop:?}") };
+        step(&mut state, Event::CommandAnswer { backend: URI, attempt, command: *command,
+            result: DispatchResult::Queued }, None);
+        assert_eq!(state.exit_disposition(), ExitDisposition::PreserveNativeOwnership,
+            "a queued Stop is not a release verdict");
+        step(&mut state, Event::Release { backend: URI, attempt, status: ReleaseStatus::Quarantined }, None);
         let candidate = AttemptId::new(8, 1);
-        assert_eq!(step(&mut state, Event::Intent(Intent::Start { attempt: candidate, source: SourceKey::new(8), requirements: REQ })),
-            vec![Fx::Rejected { attempt: candidate, failure: Failure::Busy }]);
-        let effects = step(&mut state, Event::Intent(Intent::Control { attempt, operation: Operation::Pause }));
-        let [Fx::Dispatch { command, .. }] = effects.as_slice() else { panic!("pause") };
-        step(&mut state, Event::CommandAnswer { attempt, command: *command, result: DispatchResult::Refused(Failure::Refused) });
-        assert_eq!(state.snapshot().playback.unwrap().value, Playback::Playing);
-        assert_eq!(state.snapshot().failure, Some(Failure::Refused));
-        let effects = step(&mut state, Event::Intent(Intent::Stop { attempt }));
-        let [Fx::Dispatch { command, .. }] = effects.as_slice() else { panic!("stop") };
-        step(&mut state, Event::CommandAnswer { attempt, command: *command, result: DispatchResult::Refused(Failure::Refused) });
-        assert_eq!(state.snapshot().phase, Phase::Quarantined);
-        assert_eq!(step(&mut state, Event::Intent(Intent::Start { attempt: candidate, source: SourceKey::new(8), requirements: REQ })),
-            vec![Fx::Rejected { attempt: candidate, failure: Failure::Busy }]);
-    }
-    #[test]
-    fn confirmed_release_resets_sparse_snapshot_without_reusing_ids() {
-        let mut state = BackendState::new(CAPS);
-        let attempt = AttemptId::new(7, 1);
-        let command = start(&mut state, attempt);
-        step(&mut state, Event::Observation { attempt, observation: Observation::Position(Observed { value: ContentTime::from_millis(12_345), from: EvidenceSource::BackendReport }) });
-        step(&mut state, Event::Release { attempt, status: ReleaseStatus::Quarantined });
-        assert_eq!(state.snapshot().position.unwrap().value.as_millis(), 12_345);
-        step(&mut state, Event::Release { attempt, status: ReleaseStatus::Released });
+        let busy = step(&mut state, Event::Intent(Intent::Start { backend: FEED, attempt: candidate,
+            source: SourceKey::new(8), requirements: REQ }), Some(CAPS));
+        assert_eq!(busy, vec![Fx::DiscardStaged { backend: FEED, attempt: candidate, key: SourceKey::new(8) },
+            Fx::Rejected { backend: FEED, attempt: candidate, failure: Failure::Busy }]);
+        assert!(step(&mut state, Event::Release { backend: FEED, attempt, status: ReleaseStatus::Released }, None).is_empty());
+        assert_eq!(state.snapshot.phase, Phase::Quarantined);
+        step(&mut state, Event::Release { backend: URI, attempt, status: ReleaseStatus::Released }, None);
         assert_eq!(*state.snapshot(), Snapshot::default());
-        let next = AttemptId::new(7, 2);
-        let next_command = start(&mut state, next);
-        assert!(next > attempt && next_command > command);
-        step(&mut state, Event::Observation { attempt, observation: Observation::Presented });
-        step(&mut state, Event::CommandAnswer { attempt, command, result: DispatchResult::Queued });
-        assert_eq!(state.snapshot().attempt, Some(next));
-        assert!(!state.snapshot().presented);
-        assert_eq!(state.snapshot().last_queued, None);
+        assert_eq!(state.exit_disposition(), ExitDisposition::Clean);
+        start(&mut state, FEED, candidate);
+        assert_eq!(state.snapshot.backend, Some(FEED));
     }
+
     #[test]
-    fn unsupported_requirements_never_dispatch() {
-        let mut state = BackendState::new(CAPS);
-        let req = Requirements { source: SourceKind::HlsUri, ..REQ };
-        assert_eq!(step(&mut state, Event::Intent(Intent::Start { attempt: AttemptId::new(7, 1), source: SourceKey::new(9), requirements: req })),
-            vec![Fx::Rejected { attempt: AttemptId::new(7, 1), failure: Failure::Unsupported }]);
+    fn unavailable_start_discards_only_its_staged_key_and_never_mints_an_attempt() {
+        let mut state = BackendState::new();
+        let attempt = AttemptId::new(2, 1);
+        assert_eq!(step(&mut state, Event::Intent(Intent::Start { backend: URI, attempt,
+            source: SourceKey::new(99), requirements: REQ }), None), vec![
+                Fx::DiscardStaged { backend: URI, attempt, key: SourceKey::new(99) },
+                Fx::Rejected { backend: URI, attempt, failure: Failure::Unavailable },
+            ]);
+        assert_eq!(*state.snapshot(), Snapshot::default());
+        start(&mut state, URI, attempt);
+    }
+
+    #[test]
+    fn synchronous_start_refusal_keeps_release_debt_and_terminal_notices_survive_reset() {
+        let mut state = BackendState::new();
+        let attempt = AttemptId::new(3, 1);
+        let command = start(&mut state, FEED, attempt);
+        let refused = step(&mut state, Event::CommandAnswer { backend: FEED, attempt, command,
+            result: DispatchResult::Refused(Failure::Refused) }, None);
+        assert_eq!(refused, [Fx::DiscardStaged { backend: FEED, attempt, key: SourceKey::new(7) },
+            Fx::CommandRefused { backend: FEED, attempt, command,
+            operation: Operation::Start { source: SourceKey::new(7), requirements: REQ },
+            failure: Failure::Refused }]);
+        assert_eq!(state.snapshot.phase, Phase::Releasing);
+        assert_eq!(state.exit_disposition(), ExitDisposition::PreserveNativeOwnership);
+        assert!(step(&mut state, Event::Release { backend: URI, attempt,
+            status: ReleaseStatus::Released }, None).is_empty());
+        assert_eq!(step(&mut state, Event::Release { backend: FEED, attempt,
+            status: ReleaseStatus::Released }, None), [Fx::ReleaseOutcome { backend: FEED, attempt,
+            status: ReleaseStatus::Released }]);
         assert_eq!(*state.snapshot(), Snapshot::default());
     }
+
     #[test]
-    fn refused_start_needs_an_explicit_release_verdict() {
-        let mut state = BackendState::new(CAPS);
-        let attempt = AttemptId::new(7, 1);
-        let command = start(&mut state, attempt);
-        step(&mut state, Event::CommandAnswer { attempt, command, result: DispatchResult::Refused(Failure::Refused) });
-        assert_eq!(state.snapshot().phase, Phase::Releasing);
-        assert_eq!(step(&mut state, Event::Intent(Intent::Start { attempt: AttemptId::new(8, 1), source: SourceKey::new(8), requirements: REQ })),
-            vec![Fx::Rejected { attempt: AttemptId::new(8, 1), failure: Failure::Busy }]);
-        step(&mut state, Event::Release { attempt, status: ReleaseStatus::Released });
-        assert_eq!(state.snapshot().phase, Phase::Vacant);
+    fn seek_lands_only_from_exact_queued_command_on_the_active_backend() {
+        let mut state = BackendState::new();
+        let attempt = AttemptId::new(4, 1);
+        start(&mut state, URI, attempt); ready(&mut state, URI, attempt);
+        let target = ContentTime::from_millis(5_000);
+        let effects = step(&mut state, Event::Intent(Intent::Control { backend: URI, attempt,
+            operation: Operation::Seek(target) }), Some(CAPS));
+        let [Fx::Dispatch { command, .. }] = effects.as_slice() else { panic!("seek dispatch") };
+        let command = *command;
+        step(&mut state, Event::Observation { backend: URI, attempt, observation: Observation::Position(
+            Observed { value: target, from: EvidenceSource::BackendReport }) }, None);
+        assert_eq!(state.snapshot.seek_landed, None);
+        for (backend, addressed, id) in [(FEED, attempt, command), (URI, AttemptId::new(4, 2), command),
+            (URI, attempt, CommandId(command.get() + 1))] {
+            assert!(step(&mut state, Event::SeekLanded { backend, attempt: addressed, command: id,
+                position: None }, None).is_empty());
+        }
+        assert!(step(&mut state, Event::SeekLanded { backend: URI, attempt, command,
+            position: None }, None).is_empty(), "a command not yet queued has not landed");
+        step(&mut state, Event::CommandAnswer { backend: URI, attempt, command,
+            result: DispatchResult::Queued }, None);
+        let landed = step(&mut state, Event::SeekLanded { backend: URI, attempt, command,
+            position: None }, None);
+        assert_eq!(landed, [Fx::AcceptedSeekLanded { backend: URI, attempt, command, position: None }]);
+        assert_eq!(state.snapshot.seek_landed, Some(command));
+        assert!(step(&mut state, Event::SeekLanded { backend: URI, attempt, command,
+            position: None }, None).is_empty(), "one seek lands once");
+
+        let mut later = Vec::new();
+        for ms in [6_000, 7_000] {
+            let effects = step(&mut state, Event::Intent(Intent::Control {
+                backend: URI, attempt, operation: Operation::Seek(ContentTime::from_millis(ms)),
+            }), Some(CAPS));
+            let [Fx::Dispatch { command, .. }] = effects.as_slice() else { panic!("later seek dispatch") };
+            let command = *command;
+            step(&mut state, Event::CommandAnswer { backend: URI, attempt, command,
+                result: DispatchResult::Queued }, None);
+            later.push(command);
+        }
+        assert!(step(&mut state, Event::SeekLanded { backend: URI, attempt, command: later[0],
+            position: None }, None).is_empty(), "a superseded seek cannot land the latest intent");
+        assert_eq!(step(&mut state, Event::SeekLanded { backend: URI, attempt, command: later[1],
+            position: None }, None), [Fx::AcceptedSeekLanded { backend: URI, attempt,
+                command: later[1], position: None }]);
+    }
+
+    #[test]
+    fn off_is_distinct_from_unspecified_and_positive_track_evidence() {
+        let mut state = BackendState::new();
+        assert!(CAPS.supports(REQ));
+        assert!(!CAPS.supports(Requirements { subtitle_track: TrackChoice::Off, ..REQ }));
+        let attempt = AttemptId::new(5, 1);
+        start(&mut state, URI, attempt); ready(&mut state, URI, attempt);
+        assert_eq!(step(&mut state, Event::Intent(Intent::Control { backend: URI, attempt,
+            operation: Operation::SelectTrack { kind: TrackKind::Audio, choice: TrackChoice::Off } }), Some(CAPS)),
+            [Fx::Rejected { backend: URI, attempt, failure: Failure::Unsupported }]);
+        let observation = Observation::TrackSelected(Observed { value: TrackSelection {
+            kind: TrackKind::Audio, id: 0 }, from: EvidenceSource::BackendReport });
+        step(&mut state, Event::Observation { backend: URI, attempt, observation }, None);
+        assert_eq!(state.snapshot.audio_track.unwrap().value, TrackFact::Selected(0),
+            "zero is a valid selected identity, never a sentinel for Off");
+        step(&mut state, Event::Observation { backend: URI, attempt,
+            observation: Observation::TrackOff(Observed { value: TrackKind::Audio,
+                from: EvidenceSource::BackendReport }) }, None);
+        assert_eq!(state.snapshot.audio_track.unwrap().value, TrackFact::Off);
     }
 }
