@@ -227,8 +227,8 @@ pub struct LibraryScreen {
     values: bool,
     keys: KeyRegistry,
     pair: MasterDetail<RailPart, GridPart, Regions>,
-    /// The names on the header row (the library on view among them) and, last, `MORE` when some
-    /// do not fit. Empty for a single library: the row then carries only the controls.
+    /// The visible favorite names, the current library when outside those shortcuts, and the
+    /// persistent `MORE` action last. A single library retains its name and the options action.
     libraries: Vec<(u32, usize)>,
     /// The directory sections the fold hid behind Library options (what the Sources list shows).
     folded: Vec<u32>,
@@ -456,14 +456,14 @@ impl LibraryScreen {
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_header_builds(&self) -> u32 { self.header.builds() }
 
-    /// The library names on the header row as `(element, directory section index)`, the `+N`
-    /// overflow stop last (its index is `usize::MAX`).
+    /// The library names on the header row as `(element, directory section index)`, the persistent
+    /// options stop last (its index is `usize::MAX`).
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_libraries(&self) -> Vec<(u32, usize)> { self.libraries.clone() }
 
     /// The directory section index of the library the header's selection plate stands under, read
     /// from the BUILT row (the same `selected_stop` the row's motion follows), `None` when the row
-    /// has no plate on a library name (one library: no names).
+    /// has no selected library name, as on the Collections breadcrumb row.
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_plate_section(&self) -> Option<usize> {
         let stop = self.header.row()?.selected_stop()?;

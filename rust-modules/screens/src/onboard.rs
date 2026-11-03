@@ -325,8 +325,9 @@ impl OnboardScreen {
     /// managed profile that instant is routinely *before* `/api/v2/home/users` lands — so the
     /// draft held a table computed from "nothing here is ours", the roster arrived and corrected
     /// the live pins underneath it, and the commit then wrote the stale values back as though the
-    /// viewer had chosen every one of them. Untouched is untouched on both mounts; the only thing
-    /// `settings` still decides is whether *Done* is offered ([`Self::dirty`]).
+    /// viewer had chosen every one of them. Untouched is untouched on every mount. Settings and
+    /// the contextual editor save switches immediately and offer Done; first run stages them
+    /// until Start watching.
     fn draft_rows(&mut self, directory: DirectoryView<'_>) -> Vec<SrcRow> {
         let mut rows: Vec<_> = directory.sections().iter().map(|section| section.row.clone()).collect();
         for r in &rows {
