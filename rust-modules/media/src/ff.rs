@@ -5987,9 +5987,8 @@ fn hls_demux(
                         .store(crate::player::ABR_ACTION_STEADY, Ordering::Relaxed);
                     SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
                 }
+                continue;
             }
-            continue;
-        }
         let Some((proposal, reserve_policy)) = trial else { continue; };
         let automatic_kind = match proposal.direction {
             crate::abr::Direction::Up => crate::player::HlsAutomaticTransition::QualityUp,
