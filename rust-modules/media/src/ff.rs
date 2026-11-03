@@ -6295,24 +6295,23 @@ fn hls_demux(
             crate::player::log("abr: candidate spent its exploration reserve in the control plane");
             continue;
         }
-        let (opened, mut candidate_slot) = {
-            let mut port = HlsTrialPort {
-                trial: trial_id, origin, aq, net: &mut net, acodec,
-                reserve: &mut exploration_reserve, source: None,
-                candidate: None, segment: None, timeline: None,
-                clock: None, output: None,
-            };
-            let opened = adaptive::open_candidate(&mut port, trial_id, primed.url.clone());
-            (opened, port.candidate.take())
+        let mut port = HlsTrialPort {
+            trial: trial_id, origin, aq, net: &mut net, acodec,
+            reserve: &mut exploration_reserve, source: None,
+            candidate: None, segment: None, timeline: None,
+            clock: None, output: None,
         };
+        let opened = adaptive::open_candidate(&mut port, trial_id, primed.url.clone());
         if opened.trial() != trial_id {
             state.abandon(&primed.encoder_session);
             tx.finish("feed_protocol");
             return Err(HlsExit::Failed("adaptive feed returned a foreign trial"));
         }
-        let (candidate, opened_declared_bps) = match opened {
-            FeedObservation::Opened { declared_bps, .. } =>
-                (candidate_slot.take().expect("an opened trial owns its cursor"), declared_bps),
+        let opened_declared_bps = match opened {
+            FeedObservation::Opened { declared_bps, .. } => {
+                assert!(port.candidate.is_some(), "an opened trial owns its cursor");
+                declared_bps
+            }
             FeedObservation::Failed { failure: FeedFailure::SourceMoved, .. } => {
                 state.abandon(&primed.encoder_session);
                 reject_hls_abr_after_transaction(
@@ -6359,7 +6358,7 @@ fn hls_demux(
             tx.finish("aborted");
             return Err(HlsExit::Aborted);
         }
-        if exploration_expired(&mut exploration_reserve) {
+        if exploration_expired(&mut *port.reserve) {
             state.abandon(&primed.encoder_session);
             reject_hls_abr_after_transaction(
                 state,
@@ -6372,25 +6371,17 @@ fn hls_demux(
             crate::player::log("abr: candidate spent its exploration reserve before media");
             continue;
         }
-        let (next, candidate_slot, segment_slot) = {
-            let mut port = HlsTrialPort {
-                trial: trial_id, origin, aq, net: &mut net, acodec,
-                reserve: &mut exploration_reserve, source: None,
-                candidate: Some(candidate), segment: None, timeline: None,
-                clock: None, output: None,
-            };
-            let next = adaptive::next_candidate_segment(&mut port, trial_id);
-            (next, port.candidate.take(), port.segment.take())
-        };
+        let next = adaptive::next_candidate_segment(&mut port, trial_id);
         if next.trial() != trial_id {
             state.abandon(&primed.encoder_session);
             tx.finish("feed_protocol");
             return Err(HlsExit::Failed("adaptive feed returned a foreign trial"));
         }
-        let mut candidate = candidate_slot.expect("segment lookup retains its candidate cursor");
-        let (candidate_segment, candidate_duration) = match next {
-            FeedObservation::SegmentReady { duration, .. } =>
-                (segment_slot.expect("ready segment carries its physical object"), duration),
+        let candidate_duration = match next {
+            FeedObservation::SegmentReady { duration, .. } => {
+                assert!(port.segment.is_some(), "ready segment carries its physical object");
+                duration
+            }
             FeedObservation::Failed { failure: FeedFailure::Aborted | FeedFailure::SourceMoved, .. }
             => {
                 state.abandon(&primed.encoder_session);
@@ -6440,7 +6431,7 @@ fn hls_demux(
             tx.finish("aborted");
             return Err(HlsExit::Aborted);
         }
-        if exploration_expired(&mut exploration_reserve) {
+        if exploration_expired(&mut *port.reserve) {
             state.abandon(&primed.encoder_session);
             reject_hls_abr_after_transaction(
                 state,
@@ -6487,7 +6478,7 @@ fn hls_demux(
             );
             continue;
         };
-        let reserve = exploration_reserve
+        let reserve = port.reserve
             .as_ref()
             .and_then(ReserveDeadlineState::remaining)
             .unwrap_or_else(|| crate::abr::reserve_as_budget(reserve_ms));
@@ -6506,19 +6497,10 @@ fn hls_demux(
                 "abr: terminal floor recovery keeps the only candidate response alive",
             );
         }
-        let (acquired, candidate_slot, timeline_slot, clock_slot, output_slot) = {
-            let mut port = HlsTrialPort {
-                trial: trial_id, origin, aq, net: &mut net, acodec,
-                reserve: &mut exploration_reserve, source: None,
-                candidate: Some(candidate), segment: Some(candidate_segment),
-                timeline: Some(timeline), clock: None, output: None,
-            };
-            let acquired = adaptive::acquire_first_candidate(
-                &mut port, trial_id, budget, reserve_started_ns,
-            );
-            (acquired, port.candidate.take(), port.timeline.take(),
-             port.clock.take(), port.output.take())
-        };
+        port.timeline = Some(timeline);
+        let acquired = adaptive::acquire_first_candidate(
+            &mut port, trial_id, budget, reserve_started_ns,
+        );
         if acquired.trial() != trial_id {
             state.abandon(&primed.encoder_session);
             tx.finish("feed_protocol");
@@ -6526,8 +6508,8 @@ fn hls_demux(
         }
         let (candidate_output, candidate_clock, first_acquisition) = match acquired {
             FeedObservation::Acquired { acquisition, .. } => {
-                let output = output_slot.expect("acquired media has staged access units");
-                let clock = clock_slot.expect("acquired media has a staged content clock");
+                let output = port.output.take().expect("acquired media has staged access units");
+                let clock = port.clock.take().expect("acquired media has a staged content clock");
                 (output, clock, acquisition)
             }
             FeedObservation::Failed { failure: FeedFailure::TimelineOverflow, .. } => {
@@ -6575,8 +6557,6 @@ fn hls_demux(
                 continue;
             }
         };
-        let mut candidate = candidate_slot.expect("acquisition retains its candidate cursor");
-        let mut staged_timeline = timeline_slot.expect("acquisition retains its staged timeline");
         tx.mark_media(&candidate_output, false);
         trial_protocol.observe(trial_id, TrialEvent::FirstAcquired)
             .expect("the first candidate acquisition follows prime");
@@ -6616,8 +6596,8 @@ fn hls_demux(
         let mut verdict = first_grade.verdict;
 
         if first_grade.needs_followup {
-            let funded = exploration_reserve.is_some()
-                && !exploration_expired(&mut exploration_reserve);
+            let funded = port.reserve.is_some()
+                && !exploration_expired(&mut *port.reserve);
             if !funded { tx.mark_decided(); }
             if let Err(refreshing) = state.fund_followup(proposal, funded, now_ms()) {
                 trial_protocol.observe(trial_id, TrialEvent::Ended)
@@ -6632,36 +6612,25 @@ fn hls_demux(
             }
             crate::player::log(&format!(
                 "abr: setup-bearing candidate retains one staged observation budget={}ms",
-                exploration_reserve
+                port.reserve
                     .as_ref()
                     .and_then(ReserveDeadlineState::remaining)
                     .map_or(0, |left| left.as_millis()),
             ));
             trial_protocol.observe(trial_id, TrialEvent::FollowupRequested)
                 .expect("a repeatable read follows its first staged object");
-            let (next, candidate_slot, segment_slot) = {
-                let mut port = HlsTrialPort {
-                    trial: trial_id, origin, aq, net: &mut net, acodec,
-                    reserve: &mut exploration_reserve, source: None,
-                    candidate: Some(candidate), segment: None, timeline: None,
-                    clock: None, output: None,
-                };
-                let next = adaptive::next_candidate_segment(&mut port, trial_id);
-                (next, port.candidate.take(), port.segment.take())
-            };
+            let next = adaptive::next_candidate_segment(&mut port, trial_id);
             if next.trial() != trial_id {
                 state.abandon(&primed.encoder_session);
                 tx.finish("feed_protocol");
                 return Err(HlsExit::Failed("adaptive feed returned a foreign trial"));
             }
-            candidate = candidate_slot.expect("follow-up lookup retains its candidate cursor");
-            let repeatable_segment = match next {
-                FeedObservation::SegmentReady { duration, .. } =>
-                    {
-                        let segment = segment_slot.expect("ready follow-up carries its physical object");
-                        debug_assert_eq!(segment.duration, duration);
-                        segment
-                    },
+            match next {
+                FeedObservation::SegmentReady { duration, .. } => {
+                    let segment = port.segment.as_ref()
+                        .expect("ready follow-up carries its physical object");
+                    debug_assert_eq!(segment.duration, duration);
+                }
                 FeedObservation::Failed { failure: FeedFailure::Ended, .. } => {
                     state.abandon(&primed.encoder_session);
                     reject_hls_abr_after_transaction(
@@ -6700,17 +6669,7 @@ fn hls_demux(
                     continue;
                 }
             };
-            let (acquired, candidate_slot, timeline_slot, clock_slot, output_slot) = {
-                let mut port = HlsTrialPort {
-                    trial: trial_id, origin, aq, net: &mut net, acodec,
-                    reserve: &mut exploration_reserve, source: None,
-                    candidate: Some(candidate), segment: Some(repeatable_segment),
-                    timeline: Some(staged_timeline), clock: None, output: None,
-                };
-                let acquired = adaptive::acquire_followup_candidate(&mut port, trial_id);
-                (acquired, port.candidate.take(), port.timeline.take(),
-                 port.clock.take(), port.output.take())
-            };
+            let acquired = adaptive::acquire_followup_candidate(&mut port, trial_id);
             if acquired.trial() != trial_id {
                 state.abandon(&primed.encoder_session);
                 tx.finish("feed_protocol");
@@ -6718,8 +6677,8 @@ fn hls_demux(
             }
             let (repeatable_output, repeatable_clock, repeatable_acquisition) = match acquired {
                 FeedObservation::Acquired { acquisition, .. } => (
-                    output_slot.expect("acquired repeatable media has staged access units"),
-                    clock_slot.expect("acquired repeatable media has a staged content clock"),
+                    port.output.take().expect("acquired repeatable media has staged access units"),
+                    port.clock.take().expect("acquired repeatable media has a staged content clock"),
                     acquisition,
                 ),
                 FeedObservation::Failed { failure: FeedFailure::TimelineOverflow, .. } => {
@@ -6765,8 +6724,6 @@ fn hls_demux(
                     continue;
                 }
             };
-            candidate = candidate_slot.expect("acquisition retains its candidate cursor");
-            staged_timeline = timeline_slot.expect("acquisition retains its staged timeline");
             tx.mark_media(&repeatable_output, true);
             trial_protocol.observe(trial_id, TrialEvent::FollowupAcquired)
                 .expect("the repeatable acquisition follows its request");
@@ -6782,7 +6739,7 @@ fn hls_demux(
                 hls_buffer_snapshot(Some(&candidate_outputs[1].0)),
             )
                 .map_or(crate::abr::CandidateVerdict::Incomplete, |sample| {
-                    state.candidate_verdict(proposal, sample, candidate.declared_bps, false)
+                    state.candidate_verdict(proposal, sample, opened_declared_bps, false)
                 });
         }
 
@@ -6821,7 +6778,7 @@ fn hls_demux(
                     proposal.rung.kbps(),
                     candidate_output.video_width,
                     candidate_output.video_height,
-                    candidate.declared_bps / 1_000,
+                    opened_declared_bps / 1_000,
                     output.video_width,
                     output.video_height,
                     cursor.declared_bps / 1_000,
@@ -6837,6 +6794,9 @@ fn hls_demux(
             continue;
         }
         let sample = candidate_sample.expect("a ready candidate has a completed segment sample");
+        let mut candidate = port.candidate.take().expect("acquisition retains its candidate cursor");
+        let staged_timeline = port.timeline.take().expect("acquisition retains its staged timeline");
+        drop(port);
         let Some(candidate_variant) = crate::abr::ObservedHlsVariant::new(
             candidate.declared_bps,
             candidate_output.video_width,
