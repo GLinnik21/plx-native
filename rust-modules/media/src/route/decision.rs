@@ -6100,7 +6100,7 @@ mod pcm_format_tests {
         set_stream_codecs(&mut ps, "h264", "flac");
         assert!(!stream_pcm_is_lossy(&ps), "a lossless PCM Load is never the lossy one");
         assert_eq!(PcmFormat::STEREO_48K, PcmFormat { sample_rate: 48_000, bits: 16, channels: 2, source_rate: 48_000 });
-        let out = crate::ff_pcm::STEREO_48K;
+        let out = plx_media_codecs::pcm::STEREO_48K;
         assert_eq!(
             (PcmFormat::STEREO_48K.sample_rate, PcmFormat::STEREO_48K.bits, PcmFormat::STEREO_48K.channels),
             (out.rate, out.bits, out.channels),
