@@ -471,6 +471,7 @@ impl Chaptered {
             plx_data::metadata::PlayingItem {
                 sid: plx_plex::plex::ServerId::from_raw(0),
                 rk: "rk".into(),
+                duration_ms: None,
                 show_rk: String::new(),
                 kind: String::new(),
                 audio: Vec::new(),

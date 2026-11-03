@@ -1709,7 +1709,7 @@ fn preview_chrome_drives_the_below_hero_sections_to_zero_in_full_trailer_mode_an
     let mut now = 0u32;
     for _ in 0..300 {
         now += 16;
-        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, None, &mut sink, test_store().view());
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, None, false, &mut sink, test_store().view());
     }
     assert!(
         screen.preview_chrome < 0.01,
@@ -1722,7 +1722,7 @@ fn preview_chrome_drives_the_below_hero_sections_to_zero_in_full_trailer_mode_an
     screen.preview_promoted = false;
     for _ in 0..300 {
         now += 16;
-        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, None, &mut sink, test_store().view());
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, None, false, &mut sink, test_store().view());
     }
     assert!(
         screen.preview_chrome > 0.99,
@@ -1767,7 +1767,7 @@ fn background_autoplay_recedes_identity_and_ratings_but_holds_the_facts_row_and_
     let mut now = 0u32;
     for _ in 0..300 {
         now += 16;
-        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, None, &mut sink, test_store().view());
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, None, false, &mut sink, test_store().view());
     }
     assert!(
         screen.preview_prose < 0.01,
@@ -1789,7 +1789,7 @@ fn background_autoplay_recedes_identity_and_ratings_but_holds_the_facts_row_and_
     assert!(screen.full_trailer());
     for _ in 0..300 {
         now += 16;
-        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, None, &mut sink, test_store().view());
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, None, false, &mut sink, test_store().view());
     }
     assert!(
         screen.preview_chrome < 0.01,
@@ -1849,7 +1849,7 @@ fn preview_tick_does_not_read_the_session_file_every_frame() {
     let mut now = 0u32;
     for _ in 0..30 {
         now += 16;
-        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, None, &mut sink, test_store().view());
+        screen.preview_tick::<TestHost>(now, 0.016, hero_focus, None, false, &mut sink, test_store().view());
     }
     let reads = plx_plex::plex::session::reads_for_test();
     assert_eq!(

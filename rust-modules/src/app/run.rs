@@ -5009,6 +5009,7 @@ mod lifecycle_regression_tests {
             assert!(app.bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(plx_data::metadata::PlayingItem {
                 sid: plx_plex::plex::ServerId::from_raw(0),
                 rk: "rk".into(),
+                duration_ms: None,
                 show_rk: String::new(),
                 kind: String::new(),
                 audio: Vec::new(),

@@ -225,7 +225,7 @@ mod tests {
             expired: false }));
         assert!(matches!(wrong_codec.qualify(&off, subtitle_request()), Verdict::Unknown));
         let render_proof = ResolvePort::new(evidence, Arc::new(Certified { dovi: None,
-            subtitle: Some(source_subtitle), expired: false }));
+            subtitle: Some(source_subtitle.clone()), expired: false }));
         assert!(matches!(render_proof.qualify(&off, subtitle_request()), Verdict::Known(_)));
     }
 }
