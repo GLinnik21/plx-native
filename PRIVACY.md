@@ -191,7 +191,7 @@ Two more closed fields say why that attempt was made and which one it was, becau
 a Retry or a handoff reads differently from the first open: `attempt_origin`, one of `fresh` (the
 Play the viewer pressed) / `user_retry` (Retry, or *Switch to Auto and play*, on the failure
 screen) / `quality_change` (a quality the viewer picked, including one picked on the failure
-screen) / `auto_handoff` (a change of delivery the app made on its own) / `recovery` (the app
+screen) / `viewer_reconfigure` (a playback speed or audio-processing change the viewer requested) / `auto_handoff` (a change of delivery the app made on its own) / `recovery` (the app
 reopening the video after an attempt failed to open) / `resume` (reopening where playback left off
 after the app returned to the foreground) / `preview` (the trailer that plays quietly behind a
 detail page, which the viewer did not press Play for); and `attempt_ordinal`, which open of this
