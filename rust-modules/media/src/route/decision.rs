@@ -139,6 +139,9 @@ pub struct PlaybackSession {
     /// Viewer speed intent for this item. Feed owns the physical PCM/timebase actuator; a URI
     /// qualification cannot silently reinterpret a non-1× request as native 1× playback.
     requested_rate_permille: i32,
+    /// Viewer pause goal captured for an explicit same-item reconfiguration. The physical Feed
+    /// hold is executor state and cannot describe a URI attempt's viewer intent.
+    reconfigure_pause_goal: Option<bool>,
     /// Frozen for one logical playback, including its retries and track changes.
     direct_play_mode: DirectPlayMode,
     /// This playback was refused by the cached device sandbox preflight. No Engine exists.
@@ -790,6 +793,16 @@ impl PlaybackSession {
 
     pub fn requested_rate_permille(&self) -> i32 { self.requested_rate_permille }
 
+    pub fn reconfigure_pause_goal(&self) -> Option<bool> { self.reconfigure_pause_goal }
+
+    pub fn set_reconfigure_pause_goal(&mut self, paused: bool) {
+        self.reconfigure_pause_goal = Some(paused);
+    }
+
+    pub fn clear_reconfigure_pause_goal(&mut self) {
+        self.reconfigure_pause_goal = None;
+    }
+
     #[cfg(feature = "play-feed")]
     pub(crate) fn accept_requested_rate(&mut self, permille: i32) {
         self.requested_rate_permille = permille;
@@ -956,6 +969,7 @@ impl PlaybackSession {
         planned_feed_purpose: CandidatePurpose::NewCandidate,
         admitted_feed_offer: None,
         requested_rate_permille: plx_playback_contract::RATE_NORMAL,
+        reconfigure_pause_goal: None,
         #[cfg(feature = "play-uri")]
         uri_preflight_port: None,
         direct_play_mode: DirectPlayMode::Auto,
@@ -1054,6 +1068,7 @@ impl PlaybackSession {
             planned_feed_purpose: _,
             admitted_feed_offer: _,
             requested_rate_permille,
+            reconfigure_pause_goal,
             #[cfg(feature = "play-uri")]
             uri_preflight_port: _,
             direct_play_mode,
@@ -1134,6 +1149,7 @@ impl PlaybackSession {
             planned_feed_purpose: CandidatePurpose::NewCandidate,
             admitted_feed_offer: None,
             requested_rate_permille: *requested_rate_permille,
+            reconfigure_pause_goal: *reconfigure_pause_goal,
             #[cfg(feature = "play-uri")]
             uri_preflight_port: None,
             direct_play_mode: *direct_play_mode,
@@ -9790,6 +9806,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
         let sub_mode = if selection_known { plan.sub_mode } else { s.sub_mode };
         let now_ms = s.now_ms;
         let requested_rate_permille = s.requested_rate_permille;
+        let reconfigure_pause_goal = s.reconfigure_pause_goal;
         let preview = request.as_ref().is_some_and(|r| r.preview);
         *s = PlaybackSession {
             attempt_view: crate::player::attempt_view::AttemptView::EMPTY,
@@ -9798,6 +9815,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             planned_feed_purpose: candidate_purpose,
             admitted_feed_offer,
             requested_rate_permille,
+            reconfigure_pause_goal,
             #[cfg(feature = "play-uri")]
             uri_preflight_port: s.uri_preflight_port.clone(),
             direct_play_mode: plan.direct_play_mode,
