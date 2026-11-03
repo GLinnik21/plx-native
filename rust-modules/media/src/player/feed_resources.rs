@@ -11,11 +11,24 @@ pub(super) struct FeedResources {
     engine: Option<engine::Engine>,
     load_tx: mpsc::Sender<threads::LoadOutcome>,
     load_rx: mpsc::Receiver<threads::LoadOutcome>,
-    load_tickets: BTreeMap<u64, (RouteStartAttempt, u32)>,
+    load_tickets: BTreeMap<u64, LoadTicket>,
     next_load_token: u64,
     abandoned_load: Option<engine::AbandonedLoad>,
     // The main-thread release tail may inspect/take this through `&self`; the adapter is !Send.
     pending_release: RefCell<Option<engine::PendingRelease>>,
+}
+
+struct LoadTicket {
+    attempt: RouteStartAttempt,
+    native_epoch: u32,
+    trace_generation: u32,
+}
+
+pub(super) struct AcceptedLoadOutcome {
+    pub attempt: RouteStartAttempt,
+    pub trace_generation: u32,
+    pub ok: bool,
+    pub elapsed_ms: Option<u64>,
 }
 
 impl FeedResources {
@@ -41,28 +54,33 @@ impl FeedResources {
         trace_generation: u32) -> threads::LoadReceipt {
         self.next_load_token = self.next_load_token.checked_add(1).expect("Load receipt IDs exhausted");
         let token = self.next_load_token;
-        self.load_tickets.insert(token, (attempt, native_epoch));
-        threads::LoadReceipt::new(token, trace_generation, self.load_tx.clone())
+        self.load_tickets.insert(token, LoadTicket { attempt, native_epoch, trace_generation });
+        threads::LoadReceipt::new(token, self.load_tx.clone())
     }
 
     pub fn cancel_load_receipt(&mut self, token: u64) { self.load_tickets.remove(&token); }
 
     pub fn retire_load_attempt(&mut self, attempt: RouteStartAttempt) {
-        self.load_tickets.retain(|_, (owned, _)| *owned != attempt);
+        self.load_tickets.retain(|_, ticket| ticket.attempt != attempt);
     }
 
     /// Accept only a token and native epoch still owned by the installed Engine. Return verdicts
     /// in channel order; the common adapter settles their route attempts after this admission.
-    pub fn take_load_outcomes(&mut self) -> Vec<(RouteStartAttempt, bool)> {
+    pub fn take_load_outcomes(&mut self) -> Vec<AcceptedLoadOutcome> {
         let outcomes: Vec<_> = self.load_rx.try_iter().collect();
         let mut accepted = Vec::new();
         for outcome in outcomes {
-            let Some((attempt, native_epoch)) = self.load_tickets.remove(&outcome.token) else { continue; };
-            if native_epoch != outcome.native_epoch
-                || !self.engine.as_ref().is_some_and(|engine| engine.route_start == attempt && engine.native_epoch == native_epoch) {
+            let Some(ticket) = self.load_tickets.remove(&outcome.token) else { continue; };
+            if ticket.native_epoch != outcome.native_epoch
+                || !self.engine.as_ref().is_some_and(|engine| engine.route_start == ticket.attempt && engine.native_epoch == ticket.native_epoch) {
                 continue;
             }
-            accepted.push((attempt, outcome.ok));
+            accepted.push(AcceptedLoadOutcome {
+                attempt: ticket.attempt,
+                trace_generation: ticket.trace_generation,
+                ok: outcome.ok,
+                elapsed_ms: outcome.elapsed_ms,
+            });
         }
         accepted
     }

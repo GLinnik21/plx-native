@@ -15,26 +15,31 @@ unsafe impl<T> Send for SendPtr<T> {}
 #[derive(Clone)]
 pub(super) struct LoadReceipt {
     token: u64,
-    pub trace_generation: u32,
     sender: std::sync::mpsc::Sender<LoadOutcome>,
 }
 impl LoadReceipt {
-    pub fn new(token: u64, trace_generation: u32, sender: std::sync::mpsc::Sender<LoadOutcome>) -> Self {
-        Self { token, trace_generation, sender }
+    pub fn new(token: u64, sender: std::sync::mpsc::Sender<LoadOutcome>) -> Self {
+        Self { token, sender }
     }
     pub fn token(&self) -> u64 { self.token }
-    pub(super) fn deliver(self, native_epoch: u32, ok: bool) {
-        let _ = self.sender.send(LoadOutcome { token: self.token, native_epoch, ok });
+    pub(super) fn deliver(self, native_epoch: u32, ok: bool, elapsed_ms: Option<u64>) {
+        let _ = self.sender.send(LoadOutcome { token: self.token, native_epoch, ok, elapsed_ms });
     }
 }
 
 /// The native Load call's synchronous verdict, addressed without reading route state on-worker.
-pub(super) struct LoadOutcome { pub token: u64, pub native_epoch: u32, pub ok: bool }
+pub(super) struct LoadOutcome {
+    pub token: u64,
+    pub native_epoch: u32,
+    pub ok: bool,
+    /// Load time excluding the sound-output read; absent if the native epoch did not open its gate.
+    pub elapsed_ms: Option<u64>,
+}
 
 /// The time Starfish `Load` itself took: `since_issued` (what `Shared::mark_native_load_returned`
 /// reports, measured from `begin_native_session`) less `settings_read`, the sound-output read this
 /// thread did in front of `Load`. That read is not Load time, so the "native: Load returned after
-/// Nms" line, `native_load_elapsed_ms` and the `LoadElapsedClass` telemetry exclude it.
+/// Nms" line, `native_load_elapsed_ms` and the returned elapsed fact exclude it.
 ///
 /// `NATIVE_LOAD_BUDGET` is NOT measured this way: the pump compares it with `native_load_elapsed`,
 /// the wall clock from `begin_native_session`, so the budget still counts the read (a registration
@@ -88,7 +93,7 @@ fn load_thread_with(
     // verb) must never observe "Load has returned" any later than this. Route tickets are a
     // SEPARATE mechanism (a ticket can be rejected as stale independent of this gate) and are
     // published after, not before, on purpose.
-    if let Some(elapsed) = SHARED.mark_native_load_returned(native_epoch, pcm_lead_ns) {
+    let elapsed_ms = SHARED.mark_native_load_returned(native_epoch, pcm_lead_ns).map(|elapsed| {
         // Captured HERE, at the moment the flag actually flips, so the "native: Load returned
         // after Nms" log measures the real in-flight duration rather than however long it took
         // the main-thread pump to next run and notice. Logged unconditionally, right at the gate
@@ -102,18 +107,10 @@ fn load_thread_with(
             .native_load_elapsed_ms
             .store(elapsed_ms, Ordering::Relaxed);
         super::log(&format!("native: Load returned after {elapsed_ms}ms"));
-        // issue #74 item 3: the Load-returned gate opening, bucketed — never the millisecond
-        // count. This is the ordinary path; `pump.rs`'s two D.1.4 budget arms record the other
-        // half, for a Load that never returns at all.
-        if let Some(receipt) = receipt.as_ref() {
-            super::report::note_load_gate_for(
-                receipt.trace_generation,
-                super::report::LoadElapsedClass::from_ms(elapsed_ms as i64),
-            );
-        }
-    }
+        elapsed_ms
+    });
     if let Some(receipt) = receipt {
-        receipt.deliver(native_epoch, ok != 0);
+        receipt.deliver(native_epoch, ok != 0, elapsed_ms);
     }
     if ok == 0 {
         // Publish it. This used to be logged and discarded, so a refused payload was
