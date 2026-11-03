@@ -999,7 +999,7 @@ pub(in crate::hud_format) fn corpus() -> Vec<Row> {
     add(row("palette_name_with_a_dash", r(r##""gold": "#f2b535""##, r##""gold-2": "#f2b535""##), &codes::E0505, "/palette/gold-2"));
     add(row("palette_name_starting_with_a_digit", r(r##""gold": "#f2b535""##, r##""2gold": "#f2b535""##), &codes::E0505, "/palette/2gold"));
 
-    // ----- HUD-E0701 to E0706: the inline assets -----
+    // ----- HUD-E0701 to E0706: external SVG members -----
     const EQ_PATH: &str = "<path d='M6 14h2v6H6zM11 8h2v12h-2zM16 11h2v9h-2z'/>";
     add(row("asset_gradient", svg(EQ_PATH, "<linearGradient id='g'><stop offset='0'/></linearGradient><path d='M6 14h2v6H6z'/>"), &codes::E0701, ""));
     add(row("asset_text_element", svg(EQ_PATH, "<text>x</text><path d='M6 14h2v6H6z'/>"), &codes::E0701, "").only());

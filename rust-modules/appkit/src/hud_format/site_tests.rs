@@ -1,15 +1,15 @@
-//! **Tests of what `site/hud/` publishes**: the emitted JSON Schema as a golden, the six valid examples
+//! **Tests of what `site/hud/` publishes**: the emitted JSON Schema as a golden, the seven valid examples
 //! (byte-identical to the fixtures the parser's own tests use, so the two copies cannot drift), and the
 //! invalid examples with the lint report [`super::report`] prints for each, also goldens.
 //!
 //! Goldens are compared, never silently rewritten. After a deliberate change, regenerate them (the schema, the
-//! examples' copies and every `invalid/*.lint.json`) with
+//! examples' copies and every `invalid/*/lint.json`) with
 //!
 //! ```text
 //! PLX_HUD_SCHEMA_WRITE=1 PATH="$HOME/.cargo/bin:$PATH" make test-crate C=plx_appkit T=hud_format
 //! ```
 //!
-//! and commit what changed. The invalid examples' own `*.plxhud.json` are authored, not generated.
+//! and commit what changed. The invalid examples' own `source directories` are authored, not generated.
 //!
 //! `pages.yml` stages this directory at `/hud/`, preserving the schema and examples' bytes.
 //! `ci.yml` includes `site/hud/**` in its gate inputs, so an authoring-file-only PR runs these
@@ -22,12 +22,14 @@ use std::path::PathBuf;
 use plx_ui::rec::strict_json::Value;
 
 use super::schema_check::{accepts, check as schema_check, is_prefix};
-use super::{check, report, schema, schema_emit};
+use super::{bundle, check, fixtures, report, schema, schema_emit};
+use plx_ui::rec::strict_json::Budget;
 
 /// The environment variable that turns a golden comparison into a rewrite.
 const BLESS: &str = "PLX_HUD_SCHEMA_WRITE";
 
-const EXAMPLES: [(&str, &str); 6] = [
+const EXAMPLES: [(&str, &str); 7] = [
+    ("classic", include_str!("fixtures/classic/hud.json")),
     ("reference", include_str!("fixtures/reference/hud.json")),
     ("minimal", include_str!("fixtures/minimal/hud.json")),
     (
@@ -116,7 +118,8 @@ fn names_in(rel: &str, suffix: &str) -> Vec<String> {
 
 #[test]
 fn the_published_schema_is_the_one_the_table_emits() {
-    golden("schema/1.0.json", &schema_emit::emit_text(schema::CURRENT));
+    golden("schema/hud/1.0.json", &schema_emit::emit_text(schema::CURRENT));
+    golden("schema/manifest/1.0.json", &format!("{:#}\n", schema_emit::emit_manifest(bundle::CURRENT)));
 }
 
 #[test]
@@ -126,7 +129,7 @@ fn the_golden_check_fails_on_a_one_character_change_and_passes_on_the_file() {
     let committed = if blessing() {
         emitted.clone()
     } else {
-        fs::read_to_string(site("schema/1.0.json")).expect("the committed schema")
+        fs::read_to_string(site("schema/hud/1.0.json")).expect("the committed schema")
     };
     assert_eq!(
         first_difference("x", &emitted, &committed),
@@ -142,7 +145,7 @@ fn the_golden_check_fails_on_a_one_character_change_and_passes_on_the_file() {
         let mut text = committed.clone();
         let other = if c == 'x' { "y" } else { "x" };
         text.replace_range(at..at + 1, other);
-        let found = first_difference("site/hud/schema/1.0.json", &emitted, &text)
+        let found = first_difference("site/hud/schema/hud/1.0.json", &emitted, &text)
             .unwrap_or_else(|| panic!("a change at byte {at} went unnoticed"));
         assert!(
             found.contains("line ") && found.contains(BLESS),
@@ -168,17 +171,14 @@ fn the_golden_check_fails_on_a_one_character_change_and_passes_on_the_file() {
 
 #[test]
 fn the_published_schema_describes_itself_as_draft_2020_12_at_its_own_address() {
-    let text = fs::read_to_string(site("schema/1.0.json")).unwrap_or_default();
-    if blessing() {
-        return;
+    if blessing() { return; }
+    for kind in ["manifest", "hud"] {
+        let text = fs::read_to_string(site(&format!("schema/{kind}/1.0.json"))).expect("published schema");
+        let schema: Value = text.parse().expect("schema JSON");
+        assert_eq!(schema["$schema"], "https://json-schema.org/draft/2020-12/schema");
+        assert_eq!(schema["$id"], format!("https://plxnative.com/hud/schema/{kind}/1.0.json"));
+        assert!(text.ends_with("}\n"), "one trailing newline");
     }
-    let schema: Value = text.parse().expect("the committed schema is JSON");
-    assert_eq!(
-        schema["$schema"],
-        "https://json-schema.org/draft/2020-12/schema"
-    );
-    assert_eq!(schema["$id"], "https://plxnative.com/hud/schema/1.0.json");
-    assert!(text.ends_with("}\n"), "one trailing newline");
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -187,46 +187,39 @@ fn the_published_schema_describes_itself_as_draft_2020_12_at_its_own_address() {
 
 #[test]
 fn the_published_examples_are_byte_identical_to_the_fixtures() {
-    for (name, fixture) in EXAMPLES {
-        golden(&format!("examples/{name}.plxhud.json"), fixture);
+    for (name, _) in EXAMPLES {
+        let files = fixtures::files(name);
+        for file in files {
+            let path = site(&format!("examples/{name}/{}", file.path));
+            assert_eq!(fs::read(&path).expect("source member"), file.bytes.as_ref(), "{}", path.display());
+        }
+        assert_eq!(fs::read(site(&format!("examples/{name}.plxhud"))).expect("published artifact"), fixtures::bytes(name), "{name}");
     }
-    let published = names_in("examples", ".plxhud.json");
-    let mut want: Vec<String> = EXAMPLES.iter().map(|(n, _)| (*n).to_owned()).collect();
+    let published = names_in("examples", ".plxhud");
+    let mut want: Vec<String> = EXAMPLES.iter().map(|(name, _)| (*name).to_owned()).collect();
     want.sort();
-    assert_eq!(
-        published, want,
-        "site/hud/examples holds exactly the examples (classic is exported from the binary once it embeds it, not copied)"
-    );
+    assert_eq!(published, want);
 }
 
 #[test]
-fn every_example_parses_with_no_finding_and_the_schema_accepts_it() {
-    let schema = schema_emit::emit_current();
-    for (name, text) in EXAMPLES {
-        let parsed = crate::hud_format::fixtures::parse(text.as_bytes());
-        assert!(
-            parsed.findings.is_empty() && parsed.package.is_some(),
-            "{name}: {:#?}",
-            parsed.findings
-        );
-        let value: Value = text.parse().expect("an example is JSON");
-        let found = schema_check(&schema, &value);
-        assert!(found.is_empty(), "{name}: {found:#?}");
+fn every_example_parses_with_no_finding_and_the_schemas_accept_it() {
+    for (name, _) in EXAMPLES {
+        let decoded = bundle::read(&fixtures::bytes(name), None);
+        assert!(decoded.package.is_some() && decoded.findings.is_empty(), "{name}: {:?}", decoded.findings);
+        for file in fixtures::files(name).into_iter().filter(|file| matches!(file.path.as_str(), "manifest.json" | "hud.json")) {
+            let schema = if file.path == "manifest.json" { schema_emit::emit_manifest(bundle::CURRENT) } else { schema_emit::emit_current() };
+            let value: Value = std::str::from_utf8(&file.bytes).unwrap().parse().unwrap();
+            assert!(schema_check(&schema, &value).is_empty(), "{name}/{}", file.path);
+        }
     }
 }
 
 #[test]
 fn every_example_passes_the_package_checker_with_no_finding() {
-    for (name, text) in EXAMPLES {
-        let package = crate::hud_format::fixtures::parse(text.as_bytes())
-            .package
-            .unwrap_or_else(|| panic!("{name} parses"));
-        let checked = check(&package);
-        assert!(
-            checked.findings.is_empty(),
-            "{name}: R1 to R4 and the invariants: {:#?}",
-            checked.findings
-        );
+    for (name, _) in EXAMPLES {
+        let decoded = bundle::read(&fixtures::bytes(name), None);
+        let checked = check(decoded.package.as_ref().expect("verified fixture").hud());
+        assert!(checked.findings.is_empty(), "{name}: {:?}", checked.findings);
     }
 }
 
@@ -265,85 +258,75 @@ const INVALID: [(&str, &str, bool); 10] = [
     ("newer-format", "HUD-E0402", false),
 ];
 
-fn invalid_text(name: &str) -> String {
-    let path = site(&format!("examples/invalid/{name}.plxhud.json"));
-    fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+fn invalid_source(name: &str) -> bundle::Decoded {
+    let directory = site(&format!("examples/invalid/{name}"));
+    let bytes = fs::read(directory.join("manifest.json")).expect("authored manifest");
+    let manifest = match bundle::manifest::read(&bytes, &Budget::new(bundle::JSON_DECODE_BYTES)) {
+        Ok(manifest) => manifest,
+        Err(findings) => return bundle::Decoded::source_error(None, findings),
+    };
+    let files: Vec<_> = manifest.files().map(|path| {
+        bundle::archive::File::new(path, fs::read(directory.join(path)).expect("declared source member"))
+    }).collect();
+    match bundle::pack(&files) {
+        Ok((_, decoded)) | Err(decoded) => decoded,
+    }
 }
 
 #[test]
 fn the_invalid_examples_are_the_ones_this_test_knows() {
-    let published = names_in("examples/invalid", ".plxhud.json");
-    let mut want: Vec<String> = INVALID.iter().map(|(n, _, _)| (*n).to_owned()).collect();
+    let mut published: Vec<_> = fs::read_dir(site("examples/invalid")).unwrap().map(|entry| entry.unwrap())
+        .filter(|entry| entry.file_type().unwrap().is_dir())
+        .map(|entry| entry.file_name().into_string().unwrap()).collect();
+    published.sort();
+    let mut want: Vec<_> = INVALID.iter().map(|(name, _, _)| name.to_string()).collect();
     want.sort();
-    assert_eq!(
-        published, want,
-        "an invalid example is listed in INVALID with the code it shows"
-    );
-    assert!(published.len() >= 7, "one per parse rule family at least");
-    if !blessing() {
-        assert_eq!(
-            names_in("examples/invalid", ".lint.json"),
-            want,
-            "each example has its lint report, and no report is orphaned"
-        );
+    assert_eq!(published, want);
+    for name in published {
+        assert!(site(&format!("examples/invalid/{name}/lint.json")).is_file());
     }
 }
 
 #[test]
 fn every_invalid_example_produces_its_code_and_is_never_a_package() {
     for (name, code, _) in INVALID {
-        let parsed = crate::hud_format::fixtures::parse(invalid_text(name).as_bytes());
-        assert!(parsed.package.is_none(), "{name} must not parse");
-        assert!(
-            parsed.findings.iter().any(|f| f.code == code),
-            "{name}: expected {code}, found {:#?}",
-            parsed
-                .findings
-                .iter()
-                .map(|f| format!("{} {}", f.code, f.pointer))
-                .collect::<Vec<_>>()
-        );
+        let decoded = invalid_source(name);
+        assert!(decoded.package.is_none(), "{name}");
+        assert!(decoded.findings.iter().any(|finding| finding.code == code), "{name}: {:?}", decoded.findings);
     }
 }
 
 #[test]
 fn every_invalid_example_has_the_lint_report_the_report_module_prints() {
     for (name, _, _) in INVALID {
-        let file = format!("{name}.plxhud.json");
-        let findings = crate::hud_format::fixtures::parse(invalid_text(name).as_bytes()).findings;
-        let json = report::json_text(&file, &findings);
-        golden(&format!("examples/invalid/{name}.lint.json"), &json);
-        if !blessing() {
-            let read: Value = json.parse().expect("the report is JSON");
-            assert_eq!(read["lint"], 1);
-            assert_eq!(read["file"], file.as_str());
-            assert_eq!(
-                read["findings"].as_array().map(Vec::len),
-                Some(findings.len()),
-                "{name}"
-            );
-        }
+        let decoded = invalid_source(name);
+        let file = format!("examples/invalid/{name}");
+        let value = report::with_digest(report::to_json_with_costs(&file, &decoded.findings, &[]), decoded.sha256);
+        golden(&format!("{file}/lint.json"), &format!("{value:#}\n"));
+        assert_eq!(value["protocol"], 1);
+        assert_eq!(value["file"], file);
     }
 }
 
 #[test]
 fn the_schema_rejects_the_key_type_and_value_faults_among_them_where_the_parser_agrees() {
-    let schema = schema_emit::emit_current();
     for (name, _, rejected) in INVALID {
-        let text = invalid_text(name);
-        let instance: Value = text.parse().expect("an invalid example is still JSON");
-        let failures = schema_check(&schema, &instance);
-        assert_eq!(!failures.is_empty(), rejected, "{name}: {failures:#?}");
-        assert_eq!(accepts(&schema, &instance), !rejected, "{name}");
-        let parser = crate::hud_format::fixtures::parse(text.as_bytes()).findings;
-        for failure in &failures {
-            assert!(
-                parser
-                    .iter()
-                    .any(|f| is_prefix(&failure.pointer, &f.pointer)),
-                "{name}: the schema fails at {:?} and the parser names nothing under it",
-                failure.pointer
-            );
+        let decoded = invalid_source(name);
+        let mut any = false;
+        for (member, schema) in [
+            ("manifest.json", schema_emit::emit_manifest(bundle::CURRENT)),
+            ("hud.json", schema_emit::emit_current()),
+        ] {
+            let text = fs::read_to_string(site(&format!("examples/invalid/{name}/{member}"))).unwrap();
+            let instance: Value = text.parse().expect("invalid example is still JSON");
+            let failures = schema_check(&schema, &instance);
+            any |= !failures.is_empty();
+            assert_eq!(accepts(&schema, &instance), failures.is_empty());
+            for failure in failures {
+                assert!(decoded.findings.iter().any(|finding| finding.file.as_deref() == Some(member)
+                    && is_prefix(&failure.pointer, &finding.pointer)), "{name}/{member}: {:?}", failure);
+            }
         }
+        assert_eq!(any, rejected, "{name}");
     }
 }

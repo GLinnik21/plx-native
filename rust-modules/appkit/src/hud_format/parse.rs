@@ -1883,7 +1883,7 @@ fn pattern_name(pattern: Pattern) -> &'static str {
 
 fn matches_pattern(pattern: Pattern, text: &str) -> bool {
     match pattern {
-        Pattern::ReverseDns => is_reverse_dns(text),
+        Pattern::ReverseDns => plx_data::hudpacks::valid_package_id(text),
         Pattern::Semver => is_semver(text),
         Pattern::FormatVersion => parse_format(text).is_some(),
         Pattern::SchemaUrl => is_schema_url(text),
@@ -1918,21 +1918,6 @@ fn is_semver(text: &str) -> bool {
     }
 }
 
-pub(super) fn is_reverse_dns(text: &str) -> bool {
-    if text == schema::BUILTIN_CLASSIC_ID {
-        return true;
-    }
-    let alphabet = text
-        .bytes()
-        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'-');
-    let labels: Vec<&str> = text.split('.').collect();
-    text.len() <= PATTERN_LEN
-        && alphabet
-        && labels.len() >= 2
-        && labels
-            .iter()
-            .all(|l| matches!(l.bytes().next(), Some(b) if b.is_ascii_lowercase()))
-}
 
 fn is_schema_url(text: &str) -> bool {
     text.len() <= PATTERN_LEN

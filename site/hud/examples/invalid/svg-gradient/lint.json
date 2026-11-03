@@ -11,16 +11,6 @@
       "path": "",
       "rule": "svg-element",
       "severity": "error"
-    },
-    {
-      "code": "HUD-E0904",
-      "file": "hud.json",
-      "hint": "set this band's chrome to steady; put fading title text and controls in separate bands",
-      "message": "the playbar's band fades during scrub, hiding the bar and its preview while the gesture is active",
-      "nearest": [],
-      "path": "/layout/block/0/chrome",
-      "rule": "playbar-steady",
-      "severity": "error"
     }
   ],
   "package_sha256": "c6a6d99ff152423cbabaef5ddfcfc77aa89ae03d4621c42bf35928a66ac778ef",

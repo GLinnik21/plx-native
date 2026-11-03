@@ -204,8 +204,11 @@ pub(crate) fn run(
                 return EXIT_FINDINGS;
             };
             let measure = match measure() { Ok(value) => value, Err(reason) => return usage(err, &reason, false) };
-            emit(out, &crate::hud_tools::inspect(package, measure.as_ref(), &langs));
-            EXIT_CLEAN
+            let mut json = crate::hud_tools::inspect(package, measure.as_ref(), &langs);
+            let mut findings = report::to_json(&file, &decoded.findings);
+            json["findings"] = findings["findings"].take();
+            emit(out, &json);
+            if decoded.findings.is_empty() { EXIT_CLEAN } else { EXIT_FINDINGS }
         }
         Command::Lint { file, format, langs, skew } => {
             let source = match (io.read)(&file) { Ok(source) => source, Err(reason) => return usage(err, &format!("cannot read {file}: {reason}"), false) };
@@ -358,6 +361,30 @@ mod tests {
         for flags in [vec!["--hud-info","--text-skew","p.json"],vec!["--hud-inspect","p.json","--format","json"]] {
             assert_eq!(go(&flags,&|_| panic!("bad arguments read a file"),&never).0,2);
         }
+    }
+
+    #[test]
+    fn inspect_retains_bundle_warnings_alongside_the_admitted_manifest_and_languages() {
+        let before = r#""face": "fwd30" }"#;
+        let after = r#""face": "fwd30" },
+          { "id": "skip_back", "command": "seek", "by": "setting", "dir": "back", "widget": "disc", "size": 52,
+            "face": { "default": "back10", "by_interval": { "10": "back10", "30": "fwd30" } } }"#;
+        assert_eq!(REFERENCE_FIXTURE.matches(before).count(), 1);
+        let hud = REFERENCE_FIXTURE.replacen(before, after, 1);
+        let read = |_: &str| Ok(hud.clone());
+        let bytes = plx_appkit::hud_format::fixtures::with_hud_resources("reference", &hud);
+        let decoded = bundle::read(&bytes, None);
+        assert!(decoded.package.is_some(), "a warning does not prevent typed bundle admission");
+        assert_eq!(decoded.findings.len(), 1);
+        assert_eq!(decoded.findings[0].code, "HUD-W0903");
+        let (code, out, err) = go(&["--hud-inspect", "warning.plxhud", "--lang", "en"], &read, &shipped);
+        assert_eq!((code, err.as_str()), (1, ""));
+        let report: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(report["findings"], report::to_json("warning.plxhud", &decoded.findings)["findings"]);
+        assert_eq!(report["findings"][0]["file"], "hud.json");
+        assert_eq!(report["package_sha256"], report::digest_hex(decoded.sha256.unwrap()));
+        assert_eq!(report["manifest"]["hud"]["format"], "1.0");
+        assert_eq!(report["languages"][0]["lang"], "en");
     }
 
     #[test]

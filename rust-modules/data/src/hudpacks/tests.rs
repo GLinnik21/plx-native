@@ -1059,6 +1059,9 @@ fn malformed_indexes_are_read_only_and_never_rewritten_or_reclaimed() {
         good.replace(&format!(r#""sha":"{sha}""#), &format!(r#""sha":"{}","sha":"{sha}""#, Sha::of(b"other").hex())),
         good.replace(r#""package_format":"1.0","#, ""),
         good.replace(r#""hud_format":"1.0""#, r#""hud_format":"2.0""#),
+        good.replace("org.example.a", ""),
+        good.replace("org.example.a", "../bad"),
+        good.replace("org.example.a", "Upper.Case"),
         good.replace("org.example.a", "builtin:classic"),
         good.replace(&format!(r#""org.example.a":{record}"#), &format!(r#""org.example.a":{record},"org.example.a":{record}"#)),
     ];
@@ -1085,6 +1088,23 @@ fn emitted_indexes_bind_both_formats_and_the_complete_archive_digest() {
         "sha": Sha::of(&bytes).hex(), "source": "address", "at": 9,
         "package_format": "1.0", "hud_format": "1.0"
     }));
+}
+
+#[test]
+fn removal_reports_incomplete_when_an_unknown_candidate_may_retain_the_id() {
+    let bytes = pack("org.example.a", "1.0.0");
+    let mut r = Rig::with(&[(&bytes, Source::Drop, &[0, 1])]);
+    let mut doc: Value = serde_json::from_slice(&r.files[&index_path(0)]).unwrap();
+    doc["unknown"] = true.into();
+    let evidence = doc.to_string().into_bytes();
+    r.files.insert(index_path(0), evidence.clone());
+    r.refresh();
+    assert_eq!(r.ids(), [BUILTIN_CLASSIC, "org.example.a"], "candidate one lists the HUD");
+    assert_eq!(r.send(HudEvent::Removed { id: "org.example.a".into() }), Handled::Yes);
+    assert_eq!(r.notices.last(), Some(&Notice::RemoveIncomplete { id: "org.example.a".into() }));
+    assert_eq!(r.files[&index_path(0)], evidence);
+    assert!(r.files.contains_key(&pack_path(0, Sha::of(&bytes))));
+    assert!(!r.files.contains_key(&pack_path(1, Sha::of(&bytes))));
 }
 
 /// An install over the byte bound is refused before anything is asked of the runner.

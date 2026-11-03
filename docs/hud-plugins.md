@@ -477,7 +477,7 @@ eight segments. Trailing dots and DOS-reserved basenames are rejected. Absolute 
 cannot be represented. Directory snapshots open each member through directory descriptors with
 no-follow semantics on every component beneath the selected root.
 
-Package 1.0 bounds are 2 MiB for the complete artifact, 1 MiB per member, 64 KiB for the manifest,
+Package 1.0 bounds are 2 MiB for the complete artifact, 1 MiB of aggregate member payloads, 64 KiB for the manifest,
 64 KiB for the central directory and 128 members. HUD 1.0 retains a 1 MiB JSON source cap, a shared
 16 MiB pre-allocation JSON decoding budget across both documents, 16 KiB per SVG and eight paths
 per SVG. These source/container budgets are separate from the renderer's existing decoded geometry,
@@ -1492,6 +1492,13 @@ Layout: `packs/<sha256>.plxhud` (content-addressed, so an update is a new file a
 `installed.json` (id -> sha, source, installed-at), `index-cache.json` (plus ETag), `drop/` (the sideload
 drop folder, scanned when HUD settings open).
 
+The current installed index requires integer v1 and closed records containing the complete archive SHA,
+source, install timestamp, package_format and hud_format. Both format fields are 1.0 in this baseline.
+Duplicate fields or ids, unknown fields, malformed identities and unsupported headers make the entire
+index read-only. Installation uses another writable candidate. Removal reports an incomplete result
+when any unreadable candidate might retain a copy. Index failures never trigger deletion of that
+candidate's files.
+
 Measured on the television (PR10, 2026-11-01), for the DEBUG install on a ROOTED set only (webOS 4.10.2, the app
 jailed as uid 6085, gid 5000): the order behaved as written, except that candidate 2 is never taken there.
 - (1) `/media/developer/{id}-huds`: the app creates it itself when it is absent (`755`, owned by the app's uid), and a
@@ -1609,9 +1616,8 @@ authoring exercise; the other external comparisons below remain design notes.
 1. Schema.
 - Where: `https://plxnative.com/hud/schema/{manifest,hud}/1.N.json`, served from this repo's `site/` (static Pages, F40), so the
   URL is app-owned and stable; the registry mirrors it under `schema/`. A package's schema-URL key names it; the
-  strict parser accepts the key, the TV never fetches it, and lint checks its MAJOR.MINOR equals `format`'s.
-- One file per MAJOR.MINOR, immutable once published; a minor only adds, so `1.0.json` validates every 1.0
-  package forever.
+  strict parser checks its document kind and version. The manifest URL follows `package_format` and the HUD URL follows `hud.format`.
+- One schema per document kind and MAJOR.MINOR. Each declared version keeps its published contract when later minors extend it.
 - One source: `hud_format::schema` holds a descriptor table (per key: type, closed values, numeric range,
   required, state-keyable; per command: its typed parameters). The strict parser walks it and
   `plxnative-sim --hud-schema manifest|hud --version 1.0` serializes it; nothing is hand-written. The emitted file is a committed golden
@@ -1668,8 +1674,8 @@ at the ITEM, through the `oneOf`, where the parser names the key). The schema is
 
 3. Examples and a guide.
 - Published beside the schema (`site/hud/examples/`, mirrored in the registry's `examples/`):
-  `reference.plxhud` (above); `classic.plxhud`, emitted by `--hud-export builtin:classic` from the
-  embedded JSON, never copied; small variants `minimal` (the smallest valid package: a playbar and a `more`
+  `reference.plxhud` (above); `classic.plxhud`, exported with `--hud-export builtin:classic --out classic.plxhud` from the
+  embedded canonical archive and checked against the authored source directory; small variants `minimal` (the smallest valid package: a playbar and a `more`
   disc), `hero-center` (a `toggle_play` hero), `tabs` (openers as pills), `palette`. Each invalid fixture of the
   corpus is published with its lint output, so a model sees error and fix side by side. Every example is a
   golden linted in CI, so none can rot.
@@ -1782,7 +1788,7 @@ PR5. `appkit::hud_format`.
   classic; mitigated by reviewing PR5 with PR7 and by `builtin_classic_passes_every_invariant` here.
 
 PR6. Schema, examples, site: `plxnative-sim --hud-schema manifest|hud --version 1.0`, `--hud-export builtin:classic`,
-`site/hud/schema/1.0.json` committed as a golden with a drift test, `site/hud/examples/` linted in CI. No crate.
+`site/hud/schema/{manifest,hud}/1.0.json` committed as goldens with drift tests, `site/hud/examples/` linted in CI. The bundle reader and canonical writer use the pinned minimal-feature ZIP crate.
 
 PR7. One renderer for the compact HUD.
 - Goal: `player_hud::render` draws a `CompiledHud` from `HudModel`; `classic.json` embedded; the hand-written

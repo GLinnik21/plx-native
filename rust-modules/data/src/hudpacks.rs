@@ -78,6 +78,20 @@ use serde_json::Map;
 /// (`app/adapters/huds.rs::tests`).
 pub const BUILTIN_CLASSIC: &str = "builtin:classic";
 
+/// The manifest/index identifier bound, shared with the appkit descriptor walker.
+pub const MAX_PACKAGE_ID_BYTES: usize = 256;
+
+/// A reverse-DNS package identity, including the reserved embedded Classic identity.
+pub fn valid_package_id(text: &str) -> bool {
+    if text == BUILTIN_CLASSIC {
+        return true;
+    }
+    text.len() <= MAX_PACKAGE_ID_BYTES
+        && text.contains('.')
+        && text.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-'))
+        && text.split('.').all(|label| matches!(label.bytes().next(), Some(byte) if byte.is_ascii_lowercase()))
+}
+
 const PACKS_DIR: &str = "packs";
 const DROP_DIR: &str = "drop";
 const INDEX_FILE: &str = "installed.json";
@@ -1227,12 +1241,12 @@ impl HudStore {
         if self.busy() || id == BUILTIN_CLASSIC {
             return Handled::No;
         }
-        let dirs: VecDeque<usize> = (0..self.dirs.len())
-            .filter(|d| self.dirs[*d].index.contains_key(&id))
-            .collect();
-        if dirs.is_empty() {
+        if !self.dirs.iter().any(|dir| dir.index.contains_key(&id)) {
             return Handled::No;
         }
+        let dirs: VecDeque<usize> = (0..self.dirs.len())
+            .filter(|dir| self.dirs[*dir].access == Access::ReadOnly || self.dirs[*dir].index.contains_key(&id))
+            .collect();
         self.op = self.advance_removal(Removing { id, dirs, incomplete: false, flight: None }, fx);
         Handled::Yes
     }
@@ -1385,7 +1399,7 @@ fn parse_index(bytes: &[u8]) -> Dir {
     if file.v != INDEX_FORMAT { return readonly(); }
     let mut index = Index::new();
     for (id, record) in file.packs {
-        if id == BUILTIN_CLASSIC || record.package_format != "1.0" || record.hud_format != "1.0" {
+        if id == BUILTIN_CLASSIC || !valid_package_id(&id) || record.package_format != "1.0" || record.hud_format != "1.0" {
             return readonly();
         }
         let Some(sha) = Sha::parse(&record.sha) else { return readonly() };

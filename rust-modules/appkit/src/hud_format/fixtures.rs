@@ -1,9 +1,9 @@
 //! Embedded source fixtures shared by the package, compiler and runtime tests.
-use std::sync::Arc;
-use plx_ui::rec::strict_json::{decode_ordered_with, Budget};
 use super::bundle::{self, archive::File, manifest};
 use super::parse::{self, Ctx, Parsed};
 use super::{codes, Finding};
+use plx_ui::rec::strict_json::{decode_ordered_with, Budget};
+use std::sync::Arc;
 macro_rules! source {
     ($name:literal, [$($asset:literal),* $(,)?]) => {
         vec![
@@ -61,7 +61,9 @@ pub fn with_hud_resources(name: &str, text: &str) -> Vec<u8> {
         if let Some(resources) = value.get_mut("resources").and_then(|value| value.as_object_mut()) {
             resources.retain(|id, path| {
                 let keep = used.contains(id.as_str());
-                if keep { kept.insert(path.as_str().unwrap().to_owned()); }
+                if keep {
+                    kept.insert(path.as_str().unwrap().to_owned());
+                }
                 keep
             });
         }
@@ -105,18 +107,47 @@ fn parse_documents(files: &[File], manifest_bytes: &[u8], bytes: &[u8]) -> Parse
         Err(findings) => return Parsed { package: None, findings },
     };
     if bytes.len() > parse::MAX_HUD_JSON_BYTES {
-        return Parsed { package: None, findings: vec![Finding::new(&codes::E0100, "", format!("HUD document exceeds {} bytes", parse::MAX_HUD_JSON_BYTES), "reduce the HUD document")] };
+        return Parsed {
+            package: None,
+            findings: vec![Finding::new(
+                &codes::E0100,
+                "",
+                format!("HUD document exceeds {} bytes", parse::MAX_HUD_JSON_BYTES),
+                "reduce the HUD document",
+            )],
+        };
     }
     let root = match decode_ordered_with(bytes, &budget) {
         Ok(root) => root,
-        Err(error) => return Parsed { package: None, findings: vec![Finding::new(&codes::E0100, "", format!("JSON is malformed or too large to read: {}", error.to_string().replace("decoded recording", "decoded JSON")), "write one bounded UTF-8 JSON object")] },
+        Err(error) => {
+            return Parsed {
+                package: None,
+                findings: vec![Finding::new(
+                    &codes::E0100,
+                    "",
+                    format!(
+                        "JSON is malformed or too large to read: {}",
+                        error.to_string().replace("decoded recording", "decoded JSON")
+                    ),
+                    "write one bounded UTF-8 JSON object",
+                )],
+            }
+        }
     };
-    let ctx = Ctx { assets: metadata.resources.iter().map(|(id, _)| id.clone()).collect(), format: metadata.hud_format, ..Ctx::v1() };
+    let ctx = Ctx {
+        assets: metadata.resources.iter().map(|(id, _)| id.clone()).collect(),
+        format: metadata.hud_format,
+        ..Ctx::v1()
+    };
     let (hud, findings) = parse::walk_fragment(&super::schema::ROOT, &root, "", &ctx);
-    let assets = metadata.resources.iter().filter_map(|(id, path)| {
-        let bytes = &files.iter().find(|file| file.path == *path)?.bytes;
-        Some((id.clone(), Arc::<str>::from(std::str::from_utf8(bytes).expect("fixture SVG"))))
-    }).collect();
+    let assets = metadata
+        .resources
+        .iter()
+        .filter_map(|(id, path)| {
+            let bytes = &files.iter().find(|file| file.path == *path)?.bytes;
+            Some((id.clone(), Arc::<str>::from(std::str::from_utf8(bytes).expect("fixture SVG"))))
+        })
+        .collect();
     let mut package = hud.and_then(|hud| parse::Package::from_documents(&metadata.object, &hud, metadata.hud_format, assets));
     if let Some(package) = &mut package {
         let used: std::collections::BTreeSet<String> = bundle::resource_uses(package).into_iter().map(str::to_owned).collect();

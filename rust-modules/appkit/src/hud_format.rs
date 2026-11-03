@@ -3,10 +3,10 @@
 //! invariants ([`reach`], [`validate`], entered through [`check`]), the layout compiler ([`compile`]: the
 //! rects and the draw list of every state `reach` enumerates), and the finding every one of them reports.
 //!
-//! A HUD package is declarative DATA, never code (D1): one UTF-8 JSON file, assets inline. This module is
+//! A HUD package is declarative DATA, never code (D1): a bounded ZIP archive containing separate manifest, HUD and SVG members. This module is
 //! PURE: no IO, no globals, no clock, no `cfg(test)` fork. Bytes go in; a typed [`parse::Package`] and a
 //! list of [`Finding`]s come out, and [`compile::compile`] lays a package out given a text measurer and the
-//! app's labels. [`lint`] runs the whole pipeline over a package's text in every shipped language and
+//! app's labels. [`lint`] runs the whole pipeline over a resolved package in every shipped language and
 //! reports every finding, the geometric invariants (`lint_zorder`, `lint_safe`, `lint_band`, `lint_menus`,
 //! `lint_text`, `lint_size`, `lint_travel`) among them. [`schema_emit`] serializes the descriptor table to the published
 //! JSON Schema, and [`report`] prints findings as the lint JSON and as text.
@@ -33,7 +33,7 @@ pub mod admit; // `admit`: the verdict a package gets when it is installed or li
 pub mod bundle;
 pub mod clocks; // the playbar's two clocks as app text: their widest strings and the rects the layout and the lint see
 pub mod compile; // `compile`: a parsed package laid out in every reachable state: the rects the player reads and the draw list (docs/hud-plugins.md, "Architecture")
-pub mod lint; // `lint`: the whole pipeline over a package's text, per language: parse, reach, compile, then the geometric checks below
+pub mod lint; // `lint`: the whole pipeline over a resolved package, per language: parse, reach, compile, then the geometric checks below
 mod lint_band; // I6: the caption band respects the player's minimum controls top
 pub mod lint_cost; // I12: the cost ceilings, measured on the television, and the comparison a state's cost is held to
 mod lint_menus; // I7: the two player menus place through the shared placer (M1-M4)

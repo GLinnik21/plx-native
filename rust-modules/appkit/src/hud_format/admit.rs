@@ -12,7 +12,7 @@
 use plx_ui::rec::strict_json::{decode_ordered, Ordered};
 
 use super::bundle::{self, MAX_ARTIFACT_BYTES};
-use super::parse::is_reverse_dns;
+use plx_data::hudpacks::valid_package_id;
 use super::{codes, REASON_NEWER};
 
 /// The longest `name` the list keeps, in characters.
@@ -114,7 +114,7 @@ fn gated_facts(bytes: &[u8]) -> Option<Facts> {
         Ordered::String(s) => Some(s.clone()),
         _ => None,
     };
-    let id = text("id").filter(|id| is_reverse_dns(id))?;
+    let id = text("id").filter(|id| valid_package_id(id))?;
     Some(Facts { id, name: clean_name(&text("name")?), version: text("version")?,
         package_format: text("package_format")?, hud_format: root.get("hud")?.get("format")?.as_str()?.to_owned() })
 }
@@ -158,7 +158,7 @@ mod tests {
                 Admission::Cannot(facts, got) => {
                     assert_eq!(got, why, "{format}");
                     assert_eq!(facts.hud_format, format);
-                    assert!(is_reverse_dns(&facts.id));
+                    assert!(valid_package_id(&facts.id));
                 }
                 other => panic!("{format}: {other:?}"),
             }

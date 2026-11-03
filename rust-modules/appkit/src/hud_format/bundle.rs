@@ -44,9 +44,9 @@ pub fn valid_path(path: &str) -> bool {
         if depth > MAX_PATH_DEPTH
             || !first.is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
             || segment.ends_with('.')
-            || !segment.bytes().all(|b| {
-                b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-')
-            })
+            || !segment
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-'))
         {
             return false;
         }
@@ -55,9 +55,7 @@ pub fn valid_path(path: &str) -> bool {
             || base
                 .strip_prefix("com")
                 .or_else(|| base.strip_prefix("lpt"))
-                .is_some_and(|suffix| {
-                    suffix.len() == 1 && matches!(suffix.as_bytes()[0], b'1'..=b'9')
-                })
+                .is_some_and(|suffix| suffix.len() == 1 && matches!(suffix.as_bytes()[0], b'1'..=b'9'))
         {
             return false;
         }
@@ -110,7 +108,13 @@ impl Decoded {
     }
 
     fn failed(sha256: Option<[u8; 32]>, manifest: Option<Manifest>, findings: Vec<Finding>) -> Self {
-        Self { package: None, manifest, sha256, findings, diagnostic: None }
+        Self {
+            package: None,
+            manifest,
+            sha256,
+            findings,
+            diagnostic: None,
+        }
     }
 }
 
@@ -129,13 +133,27 @@ fn in_file(mut finding: Finding, file: &str) -> Finding {
 /// with the confirmed/published digest when supplied. Oversized input never receives a digest.
 pub fn read(bytes: &[u8], expected: Option<[u8; 32]>) -> Decoded {
     if bytes.len() > MAX_ARTIFACT_BYTES {
-        return Decoded::failed(None, None, vec![archive_finding(archive::Error {
-            member: None, message: "bundle exceeds the package artifact byte limit".to_owned(),
-        })]);
+        return Decoded::failed(
+            None,
+            None,
+            vec![archive_finding(archive::Error {
+                member: None,
+                message: "bundle exceeds the package artifact byte limit".to_owned(),
+            })],
+        );
     }
     let sha256 = plx_base::sha256::sha256(bytes);
     if expected.is_some_and(|expected| expected != sha256) {
-        return Decoded::failed(Some(sha256), None, vec![Finding::new(&codes::E1603, "", "artifact digest differs from the expected package", "fetch or confirm the complete artifact again")]);
+        return Decoded::failed(
+            Some(sha256),
+            None,
+            vec![Finding::new(
+                &codes::E1603,
+                "",
+                "artifact digest differs from the expected package",
+                "fetch or confirm the complete artifact again",
+            )],
+        );
     }
     let files = match archive::read(bytes) {
         Ok(files) => files,
@@ -143,7 +161,16 @@ pub fn read(bytes: &[u8], expected: Option<[u8; 32]>) -> Decoded {
     };
     let file = |path: &str| files.iter().find(|file| file.path == path);
     let Some(manifest_file) = file(manifest::FILE) else {
-        return Decoded::failed(Some(sha256), None, vec![Finding::new(&codes::E1602, "", "bundle has no manifest.json", "put manifest.json at the package root")]);
+        return Decoded::failed(
+            Some(sha256),
+            None,
+            vec![Finding::new(
+                &codes::E1602,
+                "",
+                "bundle has no manifest.json",
+                "put manifest.json at the package root",
+            )],
+        );
     };
     let budget = Budget::new(JSON_DECODE_BYTES);
     let manifest = match manifest::read(&manifest_file.bytes, &budget) {
@@ -154,17 +181,38 @@ pub fn read(bytes: &[u8], expected: Option<[u8; 32]>) -> Decoded {
     let inventory: BTreeSet<&str> = manifest.files().collect();
     for path in &inventory {
         if file(path).is_none() {
-            findings.push(manifest::at(Finding::new(&codes::E1602, "", format!("declared member {path:?} is missing"), "include every declared member")));
+            findings.push(manifest::at(Finding::new(
+                &codes::E1602,
+                "",
+                format!("declared member {path:?} is missing"),
+                "include every declared member",
+            )));
         }
     }
     for member in &files {
         if !inventory.contains(member.path.as_str()) {
-            findings.push(in_file(Finding::new(&codes::E1602, "", "archive member has no manifest declaration", "declare the member or remove it from the source snapshot"), &member.path));
+            findings.push(in_file(
+                Finding::new(
+                    &codes::E1602,
+                    "",
+                    "archive member has no manifest declaration",
+                    "declare the member or remove it from the source snapshot",
+                ),
+                &member.path,
+            ));
         }
     }
     for path in &manifest.notices {
         if file(path).is_some_and(|file| std::str::from_utf8(&file.bytes).is_err()) {
-            findings.push(in_file(Finding::new(&codes::E1602, "", "notice is not UTF-8 text", "store legal notices as plain UTF-8 text"), path));
+            findings.push(in_file(
+                Finding::new(
+                    &codes::E1602,
+                    "",
+                    "notice is not UTF-8 text",
+                    "store legal notices as plain UTF-8 text",
+                ),
+                path,
+            ));
         }
     }
     if has_error(&findings) {
@@ -178,27 +226,58 @@ pub fn read(bytes: &[u8], expected: Option<[u8; 32]>) -> Decoded {
                 Ok(_) => assets.push((id.clone(), Arc::<str>::from(svg))),
                 Err(errors) => findings.extend(errors.into_iter().map(|finding| in_file(finding, path))),
             },
-            Err(_) => findings.push(in_file(Finding::new(&codes::E0704, "", "SVG mask is not UTF-8", "store the SVG source as UTF-8 text"), path)),
+            Err(_) => findings.push(in_file(
+                Finding::new(&codes::E0704, "", "SVG mask is not UTF-8", "store the SVG source as UTF-8 text"),
+                path,
+            )),
         }
     }
     let hud_file = file(&manifest.entry).expect("the checked inventory contains its HUD entry");
     if hud_file.bytes.len() > parse::MAX_HUD_JSON_BYTES {
-        findings.push(in_file(Finding::new(&codes::E0100, "", "HUD document exceeds its source byte limit", "reduce the HUD JSON document"), &manifest.entry));
+        findings.push(in_file(
+            Finding::new(
+                &codes::E0100,
+                "",
+                "HUD document exceeds its source byte limit",
+                "reduce the HUD JSON document",
+            ),
+            &manifest.entry,
+        ));
         return Decoded::failed(Some(sha256), Some(manifest), findings);
     }
     let root = match decode_ordered_with(&hud_file.bytes, &budget) {
         Ok(root) => root,
         Err(error) => {
-            findings.push(in_file(Finding::new(&codes::E0100, "", error.to_string().replace("decoded recording", "decoded JSON"), "write one bounded UTF-8 HUD JSON object"), &manifest.entry));
+            findings.push(in_file(
+                Finding::new(
+                    &codes::E0100,
+                    "",
+                    error.to_string().replace("decoded recording", "decoded JSON"),
+                    "write one bounded UTF-8 HUD JSON object",
+                ),
+                &manifest.entry,
+            ));
             return Decoded::failed(Some(sha256), Some(manifest), findings);
         }
     };
     if let Some(url) = root.get("$schema").and_then(Ordered::as_str) {
         if url != schema_emit::schema_id(manifest.hud_format) {
-            findings.push(in_file(Finding::new(&codes::E0401, "/$schema", "HUD schema URL disagrees with hud.format", schema_emit::schema_id(manifest.hud_format)), &manifest.entry));
+            findings.push(in_file(
+                Finding::new(
+                    &codes::E0401,
+                    "/$schema",
+                    "HUD schema URL disagrees with hud.format",
+                    schema_emit::schema_id(manifest.hud_format),
+                ),
+                &manifest.entry,
+            ));
         }
     }
-    let ctx = Ctx { assets: manifest.resources.iter().map(|(id, _)| id.clone()).collect(), format: manifest.hud_format, ..Ctx::v1() };
+    let ctx = Ctx {
+        assets: manifest.resources.iter().map(|(id, _)| id.clone()).collect(),
+        format: manifest.hud_format,
+        ..Ctx::v1()
+    };
     let (hud, errors) = parse::walk_fragment(&super::schema::ROOT, &root, "", &ctx);
     findings.extend(errors.into_iter().map(|finding| in_file(finding, &manifest.entry)));
     let Some(hud) = hud.and_then(|hud| Package::from_documents(&manifest.object, &hud, manifest.hud_format, assets)) else {
@@ -207,27 +286,54 @@ pub fn read(bytes: &[u8], expected: Option<[u8; 32]>) -> Decoded {
     let used = resource_uses(&hud);
     for (id, _) in &manifest.resources {
         if !used.contains(id.as_str()) {
-            findings.push(manifest::at(Finding::new(&codes::E1602, manifest::resource_pointer(id), format!("resource {id:?} is never used by the HUD"), "remove the resource declaration or reference it from the HUD")));
+            findings.push(manifest::at(Finding::new(
+                &codes::E1602,
+                manifest::resource_pointer(id),
+                format!("resource {id:?} is never used by the HUD"),
+                "remove the resource declaration or reference it from the HUD",
+            )));
         }
     }
     if has_error(&findings) {
         return Decoded::failed(Some(sha256), Some(manifest), findings);
     }
-    findings.extend(super::check(&hud).findings.into_iter().map(|finding| in_file(finding, &manifest.entry)));
+    findings.extend(
+        super::check(&hud)
+            .findings
+            .into_iter()
+            .map(|finding| in_file(finding, &manifest.entry)),
+    );
     let (package, diagnostic) = if has_error(&findings) {
         (None, Some(hud))
     } else {
-        (Some(VerifiedPackage { sha256, manifest: manifest.clone(), hud }), None)
+        (
+            Some(VerifiedPackage {
+                sha256,
+                manifest: manifest.clone(),
+                hud,
+            }),
+            None,
+        )
     };
-    Decoded { package, manifest: Some(manifest), sha256: Some(sha256), findings, diagnostic }
+    Decoded {
+        package,
+        manifest: Some(manifest),
+        sha256: Some(sha256),
+        findings,
+        diagnostic,
+    }
 }
 
 pub(super) fn resource_uses(package: &Package) -> BTreeSet<&str> {
     fn collect<'a>(value: &'a Val, out: &mut BTreeSet<&'a str>) {
         match value {
-            Val::Ref(id) => { out.insert(id); }
+            Val::Ref(id) => {
+                out.insert(id);
+            }
             Val::Object(object) => {
-                for (_, value) in &object.fields { collect(value, out); }
+                for (_, value) in &object.fields {
+                    collect(value, out);
+                }
             }
             _ => {}
         }
@@ -235,7 +341,9 @@ pub(super) fn resource_uses(package: &Package) -> BTreeSet<&str> {
     let mut used = BTreeSet::new();
     validate::each_object(&package.layout, &mut |object| {
         for (key, value) in &object.fields {
-            if matches!(key.as_str(), "asset" | "face") { collect(value, &mut used); }
+            if matches!(key.as_str(), "asset" | "face") {
+                collect(value, &mut used);
+            }
         }
     });
     used
@@ -246,7 +354,11 @@ pub(super) fn resource_uses(package: &Package) -> BTreeSet<&str> {
 pub fn pack(files: &[archive::File]) -> Result<(Vec<u8>, Decoded), Decoded> {
     let bytes = archive::pack(files).map_err(|error| Decoded::failed(None, None, vec![archive_finding(error)]))?;
     let decoded = read(&bytes, None);
-    if decoded.package.is_some() { Ok((bytes, decoded)) } else { Err(decoded) }
+    if decoded.package.is_some() {
+        Ok((bytes, decoded))
+    } else {
+        Err(decoded)
+    }
 }
 
 #[cfg(test)]
@@ -299,7 +411,10 @@ mod tests {
         }
         let files = changed(minimal(), "hud.json", "\"anchor\"", "\"anchoor\"");
         let decoded = read(&archive::pack(&files).unwrap(), None);
-        assert!(decoded.findings.iter().any(|f| f.file.as_deref() == Some("hud.json") && f.pointer == "/layout/anchoor"));
+        assert!(decoded
+            .findings
+            .iter()
+            .any(|f| f.file.as_deref() == Some("hud.json") && f.pointer == "/layout/anchoor"));
     }
 
     #[test]
@@ -310,16 +425,37 @@ mod tests {
         files.pop();
         files.pop();
         assert!(pack(&files).is_err());
-        let mut files = changed(minimal(), "manifest.json", "\"hud\":", "\"resources\": {\"unused\": \"assets/unused.svg\"}, \"hud\":");
-        files.push(archive::File::new("assets/unused.svg", &b"<svg viewBox='0 0 24 24'><path d='M0 0h4v4z'/></svg>"[..]));
+        let mut files = changed(
+            minimal(),
+            "manifest.json",
+            "\"hud\":",
+            "\"resources\": {\"unused\": \"assets/unused.svg\"}, \"hud\":",
+        );
+        files.push(archive::File::new(
+            "assets/unused.svg",
+            &b"<svg viewBox='0 0 24 24'><path d='M0 0h4v4z'/></svg>"[..],
+        ));
         let decoded = pack(&files).unwrap_err();
-        assert!(decoded.findings.iter().any(|f| f.code == codes::E1602.id && f.pointer == "/resources/unused"));
+        assert!(decoded
+            .findings
+            .iter()
+            .any(|f| f.code == codes::E1602.id && f.pointer == "/resources/unused"));
     }
 
     #[test]
     fn source_order_and_external_svg_bytes_survive_packing() {
-        let mut files = changed(minimal(), "manifest.json", "\"hud\":", "\"resources\": {\"more\": \"assets/more.svg\"}, \"hud\":");
-        files = changed(files, "hud.json", "\"command\": \"open_more\"", "\"command\": \"open_more\", \"face\": \"more\"");
+        let mut files = changed(
+            minimal(),
+            "manifest.json",
+            "\"hud\":",
+            "\"resources\": {\"more\": \"assets/more.svg\"}, \"hud\":",
+        );
+        files = changed(
+            files,
+            "hud.json",
+            "\"command\": \"open_more\"",
+            "\"command\": \"open_more\", \"face\": \"more\"",
+        );
         let svg = b"<svg viewBox='0 0 24 24'><path d='M0 0h4v4z'/></svg>";
         files.push(archive::File::new("assets/more.svg", &svg[..]));
         let (bytes, decoded) = pack(&files).unwrap();
@@ -346,13 +482,58 @@ mod tests {
             let source = root.join(name);
             let manifest_bytes = std::fs::read(source.join("manifest.json")).unwrap();
             let manifest = manifest::read(&manifest_bytes, &Budget::new(JSON_DECODE_BYTES)).unwrap();
-            let files: Vec<_> = manifest.files().map(|path| archive::File::new(path, std::fs::read(source.join(path)).unwrap())).collect();
+            let files: Vec<_> = manifest
+                .files()
+                .map(|path| archive::File::new(path, std::fs::read(source.join(path)).unwrap()))
+                .collect();
             let (bytes, _) = pack(&files).unwrap_or_else(|failure| panic!("{name}: {:?}", failure.findings));
             let path = root.join(format!("{name}.plxhud"));
             if std::env::var_os("PLX_HUD_BUNDLE_WRITE").is_some_and(|value| value == "1") {
                 std::fs::write(&path, &bytes).unwrap();
             }
-            assert_eq!(std::fs::read(&path).unwrap(), bytes, "{name}: regenerate with PLX_HUD_BUNDLE_WRITE=1");
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                bytes,
+                "{name}: regenerate with PLX_HUD_BUNDLE_WRITE=1"
+            );
         }
+    }
+    #[test]
+    fn invariant_failures_keep_complete_lint_without_admitting_a_runtime_package() {
+        use crate::hud_format::lint::{lint_decoded, LintLang, LintOptions};
+        use plx_base::fontcov::advances::ShippedMeasure;
+        let hud = crate::hud_format::fixtures::hud("minimal")
+            .replace(
+                "\"command\": \"open_more\"",
+                "\"command\": \"open_more\", \"when\": \"title.is_episode\"",
+            )
+            .replace("\"size\": 52", "\"size\": 20");
+        let bytes = crate::hud_format::fixtures::with_hud("minimal", &hud);
+        let decoded = read(&bytes, None);
+        assert!(decoded.package.is_none() && decoded.has_layout(), "{:?}", decoded.findings);
+        let linted = lint_decoded(
+            &decoded,
+            &ShippedMeasure,
+            &ShippedMeasure,
+            &[LintLang::for_tag("en").unwrap()],
+            &LintOptions::default(),
+        );
+        assert!(linted.findings.iter().any(|finding| finding.code == "HUD-E0801"));
+        assert!(linted.findings.iter().any(|finding| finding.code == "HUD-E0603"));
+        assert!(!linted.costs.is_empty());
+        assert!(linted.findings.iter().all(|finding| finding.file.as_deref() == Some("hud.json")));
+    }
+
+    #[test]
+    fn an_invalid_resource_stops_before_layout_admission() {
+        let mut files = crate::hud_format::fixtures::files("reference");
+        files.iter_mut().find(|file| file.path == "assets/eq.svg").unwrap().bytes =
+            b"<svg viewBox='0 0 24 24'><linearGradient/></svg>".as_slice().into();
+        let decoded = read(&archive::pack(&files).unwrap(), None);
+        assert!(decoded.package.is_none() && !decoded.has_layout());
+        assert!(decoded
+            .findings
+            .iter()
+            .all(|finding| finding.file.as_deref() == Some("assets/eq.svg")));
     }
 }

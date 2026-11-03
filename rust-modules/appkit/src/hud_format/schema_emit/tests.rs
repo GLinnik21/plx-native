@@ -801,9 +801,9 @@ fn every_pattern_regex_gives_the_parsers_answer() {
         |s| {
             !refused_at(
                 &parsed(&edit(
-                    include_str!("../fixtures/minimal/manifest.json"),
-                    r#""format": "1.0","#,
-                    &format!("\"format\": \"1.0\", \"$schema\": {},", quoted(s)),
+                    MINIMAL,
+                    r#""layout": {"#,
+                    &format!(r#""$schema": {}, "layout": {{"#, quoted(s)),
                 )),
                 "HUD-E0105",
                 "/$schema",
