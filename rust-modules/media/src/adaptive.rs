@@ -5,8 +5,8 @@
 use crate::{abr, route};
 use plx_playback_contract::adaptive::PublicationGate;
 use plx_playback_contract::adaptive::{
-    Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, ActiveQuantum, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
-    RoundId, TrialActuatorPort, TrialObservation, TrialPhase, TrialProtocol, TrialProtocolError,
+    ActionReadout, AdaptiveDirection, Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, ActiveQuantum, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, CommitReadout, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
+    RoundId, SeedReadout, TrialActuatorPort, TrialObservation, TrialPhase, TrialProtocol, TrialProtocolError,
 };
 use plx_playback_contract::SourceKey;
 
@@ -1422,28 +1422,15 @@ pub(crate) enum WhyReadout {
     ResponseLimited, SwitchCost,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum ActionDirection { Up, Down }
-
-#[derive(Clone, Copy)]
-pub(crate) struct ActionReadout {
-    pub(crate) direction: ActionDirection,
-    pub(crate) target_kbps: u32,
-    pub(crate) refreshing: bool,
-    pub(crate) committed: Option<bool>,
-}
-
-impl ActionReadout {
-    pub(crate) fn from_proposal(
-        proposal: abr::Proposal, refreshing: bool, committed: Option<bool>,
-    ) -> Self {
-        Self {
-            direction: match proposal.direction {
-                abr::Direction::Up => ActionDirection::Up,
-                abr::Direction::Down => ActionDirection::Down,
-            },
-            target_kbps: proposal.rung.kbps(), refreshing, committed,
-        }
+pub(crate) fn action_readout(
+    proposal: abr::Proposal, refreshing: bool, committed: Option<bool>,
+) -> ActionReadout {
+    ActionReadout {
+        direction: match proposal.direction {
+            abr::Direction::Up => AdaptiveDirection::Up,
+            abr::Direction::Down => AdaptiveDirection::Down,
+        },
+        target_kbps: proposal.rung.kbps(), refreshing, committed,
     }
 }
 
@@ -1476,7 +1463,7 @@ pub(crate) struct ModelReadout {
     pub(crate) production_pm: i64,
     pub(crate) risk: i64,
     pub(crate) reason: Option<WhyReadout>,
-    pub(crate) seed: abr::CapacityEstimate,
+    pub(crate) seed: SeedReadout,
 }
 
 pub(crate) struct ActiveReadout {
@@ -1501,7 +1488,12 @@ impl ActiveReadout {
                 production_pm: t.risk.production_ratio_pm.map(i64::from).unwrap_or(-1),
                 risk: i64::from(t.risk.score),
                 reason: why_readout(t.reason),
-                seed: t.delivery,
+                seed: SeedReadout {
+                    fast_kbps: t.delivery.fast_kbps,
+                    slow_kbps: t.delivery.slow_kbps,
+                    uncertainty_pm: t.delivery.uncertainty_pm,
+                    samples: t.delivery.samples,
+                },
             },
             sample_line: sample_line(t, sample, round.decision),
             window_line: window_line(t, sample),
@@ -2276,7 +2268,17 @@ impl Coordinator {
     }
     pub(crate) fn abandon(&self, encoder: &str) { self.control.abandon(encoder); }
     pub(crate) fn retire(&self, encoder: String) { self.control.retire(encoder); }
-    pub(crate) fn trace_generation(&self) -> u32 { self.control.trace_generation() }
+    pub(crate) fn commit_readout(
+        &self, proposal: abr::Proposal, refreshing: bool, declared_bps: u64,
+        observed: Acquisition,
+    ) -> CommitReadout {
+        CommitReadout {
+            trace_generation: self.control.trace_generation(),
+            direction: action_readout(proposal, refreshing, Some(true)).direction,
+            target_kbps: proposal.rung.kbps(), refreshing, declared_bps,
+            observed_width: observed.width, observed_height: observed.height,
+        }
+    }
     pub(crate) fn original_source_kbps(&self) -> u32 { self.control.original_source_kbps() }
     pub(crate) fn retain_original_recovery(&mut self, kbps: u32) { self.recover_kbps = kbps; }
     pub(crate) fn on_hls_commit(&mut self, direction: abr::Direction) {
@@ -2536,7 +2538,7 @@ impl Coordinator {
         let source = self.run_latched_original(
             after_prefetch.source, port, expected_user_sequence, || now_ms(),
             P::position_ns, on_recover_original,
-            |proposal, refreshing| on_action(ActionReadout::from_proposal(
+            |proposal, refreshing| on_action(action_readout(
                 proposal, refreshing, Some(false),
             )),
         );
@@ -2595,7 +2597,7 @@ impl Coordinator {
                 }
             }
             RoundAction::TrialDeferred { proposal, refreshing_same_request, reason } => {
-                on_action(ActionReadout::from_proposal(
+                on_action(action_readout(
                     proposal, refreshing_same_request, Some(false),
                 ));
                 on_diagnostic(RoundDiagnostic::Line(match reason {
@@ -2610,7 +2612,7 @@ impl Coordinator {
                 let start = match self.begin_candidate(
                     proposal, port, expected_user_sequence, P::buffer_snapshot,
                     || now_ms(),
-                    |proposal, refreshing| on_action(ActionReadout::from_proposal(
+                    |proposal, refreshing| on_action(action_readout(
                         proposal, refreshing, Some(false),
                     )),
                 ) {

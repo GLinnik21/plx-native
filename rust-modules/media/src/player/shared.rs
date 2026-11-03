@@ -1187,6 +1187,17 @@ impl Shared {
         self.publish_abr_seed_at(estimate, Instant::now());
     }
 
+    pub fn publish_abr_seed_readout(
+        &self, readout: plx_playback_contract::adaptive::SeedReadout,
+    ) {
+        self.publish_abr_seed(crate::abr::CapacityEstimate {
+            fast_kbps: readout.fast_kbps,
+            slow_kbps: readout.slow_kbps,
+            uncertainty_pm: readout.uncertainty_pm,
+            samples: readout.samples,
+        });
+    }
+
     fn publish_abr_seed_at(&self, estimate: crate::abr::CapacityEstimate, observed_at: Instant) {
         let mut seed = self.abr_seed.lock().unwrap_or_else(|e| e.into_inner());
         *seed = (estimate.samples > 0).then_some(AbrSeed {

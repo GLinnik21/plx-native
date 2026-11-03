@@ -100,6 +100,40 @@ pub enum TrialClock { Playhead, UnpausedElapsed }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AutomaticTransition { Original, QualityUp, QualityDown }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AdaptiveDirection { Up, Down }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ActionReadout {
+    pub direction: AdaptiveDirection,
+    pub target_kbps: u32,
+    pub refreshing: bool,
+    pub committed: Option<bool>,
+}
+
+/// Complete capacity estimate carried between media opens. The sink timestamps
+/// this snapshot at receipt, and `samples == 0` means no usable prior.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SeedReadout {
+    pub fast_kbps: u32,
+    pub slow_kbps: u32,
+    pub uncertainty_pm: u32,
+    pub samples: u32,
+}
+
+/// Published only after queued media and the AQ-guarded route/controller
+/// commit. All fields belong to the accepted generation, never a grant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommitReadout {
+    pub trace_generation: u32,
+    pub direction: AdaptiveDirection,
+    pub target_kbps: u32,
+    pub refreshing: bool,
+    pub declared_bps: u64,
+    pub observed_width: i32,
+    pub observed_height: i32,
+}
+
 /// Physical automatic-actuator lease and the existing queue abort fence. The
 /// policy owner holds the lease across blocking work and enters `gate` only for
 /// the short route/controller publication closure.

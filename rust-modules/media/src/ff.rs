@@ -4812,7 +4812,7 @@ fn publish_hls_abr_model(t: adaptive::ModelReadout) {
     // none of them — and the estimate is worth carrying whatever ended the session. Not a `dg_`
     // field: this coherent estimate is read to DECIDE, by `route::auto_prior` when the next
     // control is built.
-    SHARED.publish_abr_seed(t.seed);
+    SHARED.publish_abr_seed_readout(t.seed);
 }
 
 /// The common owner's diagnostic reason as the panel's code. A `match` rather than a cast makes
@@ -4849,10 +4849,10 @@ fn remaining_playback_ms() -> i64 {
 }
 
 fn publish_hls_abr_action(
-    action: adaptive::ActionReadout,
+    action: plx_playback_contract::adaptive::ActionReadout,
 ) {
-    use adaptive::ActionDirection::{Down, Up};
-    let adaptive::ActionReadout { direction, target_kbps, refreshing, committed } = action;
+    use plx_playback_contract::adaptive::AdaptiveDirection::{Down, Up};
+    let plx_playback_contract::adaptive::ActionReadout { direction, target_kbps, refreshing, committed } = action;
     let action = if refreshing {
         match committed {
             None => crate::player::ABR_ACTION_PRIME_REFRESH,
@@ -5628,7 +5628,7 @@ fn hls_demux(
             || hls_buffer_snapshot(None).buffered_ms(),
             crate::player::log,
         );
-        publish_hls_abr_action(adaptive::ActionReadout::from_proposal(proposal, refreshing_same_request, None));
+        publish_hls_abr_action(adaptive::action_readout(proposal, refreshing_same_request, None));
         let offset_ns = SHARED
             .disp_base
             .load(Ordering::Relaxed)
@@ -5655,7 +5655,7 @@ fn hls_demux(
                 }
                 adaptive::TrialTrace::Decided => tx.mark_decided(),
                 adaptive::TrialTrace::Rejected { refreshing } =>
-                    publish_hls_abr_action(adaptive::ActionReadout::from_proposal(proposal, refreshing, Some(false))),
+                    publish_hls_abr_action(adaptive::action_readout(proposal, refreshing, Some(false))),
                 adaptive::TrialTrace::Finish(outcome) => tx.finish(outcome),
                 adaptive::TrialTrace::Log(line) => crate::player::log(&line),
             },
@@ -5704,7 +5704,7 @@ fn hls_demux(
             |event, _| match event {
                 adaptive::TrialTrace::Decided => tx.mark_decided(),
                 adaptive::TrialTrace::Rejected { refreshing } =>
-                    publish_hls_abr_action(adaptive::ActionReadout::from_proposal(proposal, refreshing, Some(false))),
+                    publish_hls_abr_action(adaptive::action_readout(proposal, refreshing, Some(false))),
                 adaptive::TrialTrace::Finish(outcome) => tx.finish(outcome),
                 adaptive::TrialTrace::Log(line) => crate::player::log(&line),
                 _ => unreachable!("settling staged media cannot emit acquisition timing"),
@@ -5757,18 +5757,24 @@ fn hls_demux(
         // Only now is `outcome=committed` an exact certificate: the staged media was fed and the
         // controller has atomically moved the rung, reset the old bag and seeded the new one.
         tx.finish("committed");
-        SHARED
-            .dg_abr_kbps
-            .store(i64::from(proposal.rung.kbps()), Ordering::Relaxed);
         let candidate_declared_bps = physical.candidate_declared_bps()
             .expect("published trial retains its candidate cursor");
+        let committed = state.commit_readout(
+            proposal, refreshing_same_request, candidate_declared_bps, final_acquisition,
+        );
+        SHARED
+            .dg_abr_kbps
+            .store(i64::from(committed.target_kbps), Ordering::Relaxed);
         SHARED.dg_abr_declared_kbps.store(
-            i64::try_from(candidate_declared_bps / 1_000).unwrap_or(i64::MAX),
+            i64::try_from(committed.declared_bps / 1_000).unwrap_or(i64::MAX),
             Ordering::Relaxed,
         );
-        publish_hls_abr_action(adaptive::ActionReadout::from_proposal(proposal, refreshing_same_request, Some(true)));
+        publish_hls_abr_action(plx_playback_contract::adaptive::ActionReadout {
+            direction: committed.direction, target_kbps: committed.target_kbps,
+            refreshing: committed.refreshing, committed: Some(true),
+        });
         crate::player::report::note_hls_committed_for(
-            state.trace_generation(),
+            committed.trace_generation,
             proposal.direction,
             proposal.rung,
             refreshing_same_request,
@@ -5800,15 +5806,14 @@ fn hls_demux(
         // APPENDED rather than substituted: `RE_ABR_UP` and `RE_ABR_COMMIT` both parse the
         // leading form, so replacing it in place would silently retire two graders. Old logs stay
         // readable and `abr_raster_changes` prefers `out=` when it is there.
-        let observed = (final_acquisition.width, final_acquisition.height);
         crate::player::log(&format!(
             "abr: committed {:?} to {}kbps {}x{} out={}x{}",
             proposal.direction,
-            proposal.rung.kbps(),
+            committed.target_kbps,
             proposal.rung.raster().0,
             proposal.rung.raster().1,
-            observed.0,
-            observed.1,
+            committed.observed_width,
+            committed.observed_height,
         ));
     }
     Ok(())
