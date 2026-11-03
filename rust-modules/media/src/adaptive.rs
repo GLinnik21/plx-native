@@ -160,6 +160,12 @@ pub(crate) fn open_candidate(
     port.step(FeedAction::Open { trial, source })
 }
 
+pub(crate) fn next_candidate_segment(
+    port: &mut impl FeedPort, trial: TrialId,
+) -> FeedObservation {
+    port.step(FeedAction::ReadNext { trial })
+}
+
 pub(crate) fn reject_cause_for_acquisition(failure: AcquisitionFailure) -> abr::RejectCause {
     match failure {
         AcquisitionFailure::Deadline => abr::RejectCause::Censored,

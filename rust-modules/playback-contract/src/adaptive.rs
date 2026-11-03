@@ -16,14 +16,16 @@ impl TrialId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FeedAction {
     Open { trial: TrialId, source: SourceKey },
+    ReadNext { trial: TrialId },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FeedFailure { Aborted, Deadline, NotReady, Parse, SourceMoved }
+pub enum FeedFailure { Aborted, Deadline, Ended, NotReady, Parse, SourceMoved }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FeedObservation {
     Opened { trial: TrialId, declared_bps: u64 },
+    SegmentReady { trial: TrialId, duration: std::time::Duration },
     Failed { trial: TrialId, failure: FeedFailure },
 }
 
