@@ -92,7 +92,19 @@ pub enum FeedAction {
 pub enum TrialClock { Playhead, UnpausedElapsed }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AutomaticTransition { QualityUp, QualityDown }
+pub enum AutomaticTransition { Original, QualityUp, QualityDown }
+
+/// Physical automatic-actuator lease and the existing queue abort fence. The
+/// policy owner holds the lease across blocking work and enters `gate` only for
+/// the short route/controller publication closure.
+pub trait AutomaticPort {
+    type Lease;
+    fn begin(&mut self, kind: AutomaticTransition, expected_user_sequence: u64)
+        -> Option<Self::Lease>;
+    fn authorize(&mut self, lease: &Self::Lease) -> bool;
+    fn aborted(&self) -> bool;
+    fn gate(&mut self) -> &mut dyn PublicationGate;
+}
 
 /// Physical transfer and output geometry before a candidate policy verdict.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
