@@ -6,10 +6,11 @@ use crate::uri_protocol::{Ev, Message, Method, UriCall};
 use plx_base::task::MainThread;
 use plx_platform::tv::sink::{DisplaySink, VP_EXPORTED};
 use plx_platform::tv::uri::{Shape, UriMedia};
-use plx_playback_contract::{AttemptId, BackendDriver, Capabilities, ContentTime, DispatchResult,
-    DriverEvent, EvidenceSource, Failure, Observation, Observed, Operation, Playback,
-    ReleaseStatus, SourceKey, SourceKind, TrackKind, TrackSelection};
-use std::collections::VecDeque;
+use plx_playback_contract::{AttemptId, BackendEvent, BackendKind, Capabilities, CommandId,
+    ContentTime, DispatchResult, DriverEvent, DriverSet, EvidenceSource, ExitDisposition,
+    Failure, Observation, Observed, Operation, Playback, ReleaseStatus, SourceKey, SourceKind,
+    TrackChoice, TrackKind, TrackSelection};
+use std::collections::{BTreeMap, VecDeque};
 use std::os::raw::c_int;
 
 /// A monotonic clock supplied by the runner. The ownership reducer only receives its value.
@@ -50,6 +51,11 @@ fn native_index(tracks: &[NativeTrackIndex], selected: TrackSelection) -> Option
     (first.index >= 0 && matches.next().is_none()).then_some(first.index)
 }
 
+#[derive(Clone, Copy)]
+enum ControlKind { Track(TrackSelection), Seek { ack: bool, done: bool } }
+#[derive(Clone, Copy)]
+struct PendingControl { command: CommandId, kind: ControlKind, deadline_ms: u64 }
+
 /// The active URL and the staged URL are deliberately excluded from `Debug` and all notices.
 /// The caller must keep this object until `Release::Released`, or retain it in quarantine.
 pub struct UriBackend {
@@ -60,16 +66,15 @@ pub struct UriBackend {
     last_started: Option<AttemptId>,
     url: Option<String>,
     tracks: Vec<NativeTrackIndex>,
-    requirements: Option<plx_playback_contract::Requirements>,
     window: bool,
     window_id: Option<String>,
     start_deadline_ms: Option<u64>,
     loaded: bool,
     play_sent: bool,
     subscribed: bool,
-    selections_sent: bool,
-    audio_confirmed: bool,
-    subtitle_confirmed: bool,
+    dispatching: Option<PendingControl>,
+    controls: BTreeMap<plx_platform::tv::uri::RequestId, PendingControl>,
+    track_refused: bool,
     pending: VecDeque<DriverEvent>,
     close_reported: bool,
     quarantine_reported: bool,
@@ -78,11 +83,13 @@ pub struct UriBackend {
 impl UriBackend {
     pub fn new(config: Config) -> Self {
         assert!(!config.capabilities.packet_feed, "URI transport cannot accept packet feeds");
+        assert!(!config.capabilities.audio_off && !config.capabilities.subtitle_off,
+            "URI transport has no confirmed track-disable operation");
         Self { config, lifecycle: Lifecycle::new(), staged: None, active: None,
-            last_started: None, url: None, tracks: Vec::new(), requirements: None,
+            last_started: None, url: None, tracks: Vec::new(),
             window: false, window_id: None,
             start_deadline_ms: None, loaded: false, play_sent: false, subscribed: false,
-            selections_sent: false, audio_confirmed: false, subtitle_confirmed: false,
+            dispatching: None, controls: BTreeMap::new(), track_refused: false,
             pending: VecDeque::new(), close_reported: false, quarantine_reported: false }
     }
 
@@ -106,6 +113,16 @@ impl UriBackend {
     pub fn cancel_staged(&mut self, attempt: AttemptId) {
         if self.staged.as_ref().is_some_and(|source| source.attempt == attempt) {
             self.staged = None;
+        }
+    }
+
+    /// Native ownership remains live through close and quarantine. Only the real release effect
+    /// makes application exit clean; a deadline never does.
+    pub fn exit_disposition(&self) -> ExitDisposition {
+        if self.active.is_some() || !self.lifecycle.released() {
+            ExitDisposition::PreserveNativeOwnership
+        } else {
+            ExitDisposition::Clean
         }
     }
 
@@ -145,10 +162,13 @@ impl UriBackend {
         if staged.attempt != attempt || staged.key != source || self.config.clock.now_ms() >= staged.deadline_ms {
             return self.refuse_before_open(attempt, Failure::Stale);
         }
-        if requirements.audio_track.is_some_and(|track| track.kind != TrackKind::Audio
-            || native_index(&staged.source.tracks, track).is_none())
-            || requirements.subtitle_track.is_some_and(|track| track.kind != TrackKind::Subtitle
-                || native_index(&staged.source.tracks, track).is_none()) {
+        let mapped = |choice, kind| match choice {
+            TrackChoice::Unspecified => true,
+            TrackChoice::Off => false,
+            TrackChoice::Selected(id) => native_index(&staged.source.tracks, TrackSelection { kind, id }).is_some(),
+        };
+        if !mapped(requirements.audio_track, TrackKind::Audio)
+            || !mapped(requirements.subtitle_track, TrackKind::Subtitle) {
             return self.refuse_before_open(attempt, Failure::Unsupported);
         }
         if matches!(self.config.binding, Binding::Exported { .. }) && self.config.display.window_mode() != VP_EXPORTED {
@@ -169,15 +189,14 @@ impl UriBackend {
         self.active = Some(attempt);
         self.url = Some(staged.source.url);
         self.tracks = staged.source.tracks;
-        self.requirements = Some(requirements);
         self.window_id = window_id;
         self.start_deadline_ms = Some(self.config.clock.now_ms().saturating_add(self.config.startup_timeout_ms));
         self.loaded = false;
         self.play_sent = false;
         self.subscribed = false;
-        self.selections_sent = false;
-        self.audio_confirmed = false;
-        self.subtitle_confirmed = false;
+        self.dispatching = None;
+        self.controls.clear();
+        self.track_refused = false;
         self.close_reported = false;
         self.quarantine_reported = false;
         self.lifecycle = Lifecycle::new();
@@ -188,6 +207,8 @@ impl UriBackend {
     fn begin_close(&mut self, mt: &MainThread, now_ms: u64) {
         self.url = None;
         self.start_deadline_ms = None;
+        self.dispatching = None;
+        self.controls.clear();
         if self.active.is_none() || matches!(self.lifecycle.phase(), Phase::Closing | Phase::Quarantined) {
             return;
         }
@@ -197,43 +218,83 @@ impl UriBackend {
         self.feed(LifeEvent::Close { now_ms, allowance_ms: self.config.release_allowance_ms }, mt, now_ms);
     }
 
-    fn maybe_subscribe_and_play(&mut self, mt: &MainThread, now_ms: u64) {
+    fn maybe_subscribe(&mut self, mt: &MainThread, now_ms: u64) {
         if self.lifecycle.phase() != Phase::Open { return; }
         let Some(media_id) = self.lifecycle.media_id().cloned() else { return; };
         if !self.subscribed {
             self.subscribed = true;
-            self.feed(LifeEvent::Call(UriCall::Subscribe { media_id: media_id.clone() }), mt, now_ms);
+            self.feed(LifeEvent::Call(UriCall::Subscribe { media_id }), mt, now_ms);
         }
-        if self.lifecycle.phase() != Phase::Open { return; }
-        if !self.loaded { return; }
-        let requirements = self.requirements.expect("active URI attempt has requirements");
-        if !self.selections_sent {
-            self.selections_sent = true;
-            for track in [requirements.audio_track, requirements.subtitle_track].into_iter().flatten() {
-                let index = native_index(&self.tracks, track).expect("required track admitted at Start");
-                let kind = match track.kind { TrackKind::Audio => "audio", TrackKind::Subtitle => "text" };
-                self.feed(LifeEvent::Call(UriCall::SelectTrack {
-                    media_id: media_id.clone(), kind, index,
-                }), mt, now_ms);
-                if self.lifecycle.phase() != Phase::Open { return; }
+    }
+
+    fn control_message(&mut self, method: Method, denied: bool, message: &Message) {
+        if let Some(request) = message.reply_request {
+            if denied && matches!(method, Method::Seek | Method::SelectTrack) {
+                if let Some(pending) = self.controls.remove(&request) {
+                    if matches!(pending.kind, ControlKind::Track(_)) { self.track_refused = true; }
+                    self.retire_control(request);
+                }
+            } else if method == Method::Seek {
+                let landed = if let Some(pending) = self.controls.get_mut(&request) {
+                    if let ControlKind::Seek { ack, done } = &mut pending.kind {
+                        if message.accepted() == Some(true) { *ack = true; }
+                        if message.normalized.contains(&Ev::SeekDone) { *done = true; }
+                        *ack && *done
+                    } else { false }
+                } else { false };
+                if landed {
+                    let pending = self.controls.remove(&request).expect("landed seek is pending");
+                    self.retire_control(request);
+                    if let Some(attempt) = self.active {
+                        let position = message.current_time.and_then(|ms| u64::try_from(ms).ok())
+                            .map(|ms| Observed { value: ContentTime::from_millis(ms),
+                                from: EvidenceSource::BackendReport });
+                        self.pending.push_back(DriverEvent::SeekLanded {
+                            attempt, command: pending.command, position,
+                        });
+                    }
+                }
             }
         }
-        if requirements.audio_track.is_some() && !self.audio_confirmed { return; }
-        if requirements.subtitle_track.is_some() && !self.subtitle_confirmed { return; }
-        if !self.play_sent {
-            self.play_sent = true;
-            self.feed(LifeEvent::Call(UriCall::Play { media_id }), mt, now_ms);
+        if message.confirmed_track.is_some() {
+            if let Some((kind, index)) = message.selected_track {
+                let kind = match kind { "audio" => Some(TrackKind::Audio),
+                    "text" => Some(TrackKind::Subtitle), _ => None };
+                if let Some(kind) = kind {
+                    let matches: Vec<_> = self.controls.iter().filter_map(|(request, pending)| {
+                        let ControlKind::Track(selected) = pending.kind else { return None };
+                        (selected.kind == kind && native_index(&self.tracks, selected) == Some(index))
+                            .then_some(*request)
+                    }).collect();
+                    if let [request] = matches.as_slice() {
+                        let pending = self.controls.remove(request).expect("confirmed track is pending");
+                        self.retire_control(*request);
+                        let ControlKind::Track(selected) = pending.kind else { unreachable!() };
+                        self.track_refused = false;
+                        self.observe(Observation::TrackSelected(Observed {
+                            value: selected, from: EvidenceSource::BackendReport,
+                        }));
+                    }
+                }
+            }
         }
+    }
+
+    fn retire_control(&mut self, request: plx_platform::tv::uri::RequestId) {
+        // A confirmed request cannot correlate a later selection of the same native index.
+        // Keep the lifecycle's request set aligned with the interactive command ledger.
+        self.lifecycle.step(LifeEvent::Retire { request }, &mut Vec::new());
     }
 
     fn delivered(&mut self, method: Method, ok: bool, message: Message,
         mt: &MainThread, now_ms: u64) {
         let denied = !ok || message.accepted() == Some(false);
+        self.control_message(method, denied, &message);
         if denied {
+            if method == Method::Play { self.play_sent = false; }
             self.observe(Observation::Failed(Failure::Refused));
-            if matches!(method, Method::Register | Method::Load | Method::Subscribe)
-                || (method == Method::SelectTrack && !self.play_sent && self.selections_sent)
-                || (method == Method::Play && self.start_deadline_ms.is_some()) {
+            if matches!(method, Method::Register | Method::Load | Method::Subscribe | Method::SelectTrack)
+                || (method == Method::Play && !self.loaded) {
                 self.begin_close(mt, now_ms);
             }
             return;
@@ -251,17 +312,15 @@ impl UriBackend {
             let playback = match event {
                 Ev::LoadCompleted => {
                     self.loaded = true;
-                    Some(Playback::Ready)
+                    self.start_deadline_ms = None;
+                    Some(Playback::ReadyAwaitPlay)
                 }
                 Ev::Playing => {
-                    let required = self.requirements.expect("active URI attempt has requirements");
-                    if (required.audio_track.is_some() && !self.audio_confirmed)
-                        || (required.subtitle_track.is_some() && !self.subtitle_confirmed) {
+                    if !self.play_sent || self.controls.values().any(|pending| matches!(pending.kind, ControlKind::Track(_))) {
                         self.observe(Observation::Failed(Failure::Backend));
                         ended = true;
                         None
                     } else {
-                        self.start_deadline_ms = None;
                         Some(Playback::Playing)
                     }
                 }
@@ -287,26 +346,8 @@ impl UriBackend {
                 self.observe(Observation::Playback(Observed { value, from: EvidenceSource::BackendReport }));
             }
         }
-        if message.confirmed_track.is_some() {
-            if let Some((kind, index)) = message.selected_track {
-                let kind = match kind { "audio" => Some(TrackKind::Audio), "text" => Some(TrackKind::Subtitle), _ => None };
-                if let (Some(kind), Ok(_)) = (kind, u64::try_from(index)) {
-                    // Native index is an address, not the caller's neutral track ID.
-                    let selected = self.tracks.iter().find(|track| track.index == index
-                        && track.selection.kind == kind).map(|track| track.selection);
-                    if let Some(selected) = selected {
-                        let required = self.requirements.expect("active URI attempt has requirements");
-                        if required.audio_track == Some(selected) { self.audio_confirmed = true; }
-                        if required.subtitle_track == Some(selected) { self.subtitle_confirmed = true; }
-                        self.observe(Observation::TrackSelected(Observed {
-                            value: selected, from: EvidenceSource::BackendReport,
-                        }));
-                    }
-                }
-            }
-        }
         if ended { self.begin_close(mt, now_ms); }
-        else { self.maybe_subscribe_and_play(mt, now_ms); }
+        else { self.maybe_subscribe(mt, now_ms); }
     }
 
     fn feed(&mut self, first: LifeEvent, mt: &MainThread, now_ms: u64) {
@@ -315,6 +356,14 @@ impl UriBackend {
             let mut effects = Vec::new();
             self.lifecycle.step(event, &mut effects);
             for effect in effects {
+                if let LifeFx::Call { request, call, .. } = &effect {
+                    if let Some(pending) = self.dispatching {
+                        let matches = matches!((call, pending.kind),
+                            (UriCall::Seek { .. }, ControlKind::Seek { .. })
+                                | (UriCall::SelectTrack { .. }, ControlKind::Track(_)));
+                        if matches { self.controls.insert(*request, pending); }
+                    }
+                }
                 if let Some(answer) = session_io::transport_answer(
                     &effect, self.config.transport, self.url.as_deref().unwrap_or(""), &self.config.app_id,
                 ) {
@@ -331,7 +380,12 @@ impl UriBackend {
                         self.active = None;
                         self.url = None;
                         self.tracks.clear();
-                        self.requirements = None;
+                        self.dispatching = None;
+                        self.controls.clear();
+                        self.track_refused = false;
+                        self.loaded = false;
+                        self.play_sent = false;
+                        self.subscribed = false;
                     }
                     LifeFx::Fault => {
                         self.observe(Observation::Failed(Failure::ReleaseUncertain));
@@ -357,49 +411,63 @@ impl UriBackend {
     }
 }
 
-impl BackendDriver for UriBackend {
-    type Context = MainThread;
-    fn capabilities(&self) -> Capabilities { self.config.capabilities }
-
+impl UriBackend {
     fn dispatch(&mut self, mt: &MainThread, attempt: AttemptId,
-        _command: plx_playback_contract::CommandId, operation: Operation) -> DispatchResult {
+        command: CommandId, operation: Operation) -> DispatchResult {
         if let Operation::Start { source, requirements } = operation {
             return self.start(mt, attempt, source, requirements);
         }
         if self.active != Some(attempt) { return DispatchResult::Refused(Failure::Stale); }
         let now_ms = self.config.clock.now_ms();
-        if matches!(operation, Operation::Stop) {
+        if matches!(operation, Operation::Stop(_)) {
             if self.lifecycle.phase() == Phase::Quarantined {
                 return DispatchResult::Refused(Failure::ReleaseUncertain);
             }
             self.begin_close(mt, now_ms);
             return DispatchResult::Queued;
         }
-        if self.lifecycle.phase() != Phase::Open || !self.play_sent {
+        if self.lifecycle.phase() != Phase::Open || !self.loaded {
             return DispatchResult::Refused(Failure::Busy);
         }
         let Some(media_id) = self.lifecycle.media_id().cloned() else { return DispatchResult::Refused(Failure::Busy); };
-        let call = match operation {
-            Operation::Play if self.config.capabilities.pause => UriCall::Play { media_id },
-            Operation::Pause if self.config.capabilities.pause => UriCall::Pause { media_id },
+        let (call, control) = match operation {
+            Operation::Play if self.config.capabilities.pause => {
+                if self.track_refused || self.controls.values().any(|pending| matches!(pending.kind, ControlKind::Track(_))) {
+                    return DispatchResult::Refused(Failure::Busy);
+                }
+                self.play_sent = true;
+                (UriCall::Play { media_id }, None)
+            }
+            Operation::Pause if self.config.capabilities.pause => (UriCall::Pause { media_id }, None),
             Operation::Seek(time) if self.config.capabilities.seek => {
                 let Ok(position) = i64::try_from(time.as_millis()) else { return DispatchResult::Refused(Failure::Unsupported); };
-                UriCall::Seek { media_id, position }
+                (UriCall::Seek { media_id, position }, Some(ControlKind::Seek { ack: false, done: false }))
             }
-            Operation::SelectTrack(track) => {
-                let enabled = match track.kind {
+            Operation::SelectTrack { kind, choice } => {
+                let enabled = match kind {
                     TrackKind::Audio => self.config.capabilities.audio_track,
                     TrackKind::Subtitle => self.config.capabilities.subtitle_track,
                 };
                 if !enabled { return DispatchResult::Refused(Failure::Unsupported); }
+                let TrackChoice::Selected(id) = choice else {
+                    return DispatchResult::Refused(Failure::Unsupported);
+                };
+                let track = TrackSelection { kind, id };
+                if self.controls.values().any(|pending| matches!(pending.kind,
+                    ControlKind::Track(previous) if previous.kind == kind)) {
+                    return DispatchResult::Refused(Failure::Busy);
+                }
                 let Some(index) = native_index(&self.tracks, track) else {
                     return DispatchResult::Refused(Failure::Unsupported);
                 };
-                UriCall::SelectTrack { media_id, kind: match track.kind { TrackKind::Audio => "audio", TrackKind::Subtitle => "text" }, index }
+                (UriCall::SelectTrack { media_id, kind: match kind { TrackKind::Audio => "audio", TrackKind::Subtitle => "text" }, index }, Some(ControlKind::Track(track)))
             }
             _ => return DispatchResult::Refused(Failure::Unsupported),
         };
+        self.dispatching = control.map(|kind| PendingControl { command, kind,
+            deadline_ms: now_ms.saturating_add(self.config.startup_timeout_ms) });
         self.feed(LifeEvent::Call(call), mt, now_ms);
+        self.dispatching = None;
         DispatchResult::Queued
     }
 
@@ -423,8 +491,44 @@ impl BackendDriver for UriBackend {
             self.observe(Observation::Failed(Failure::TimedOut));
             self.begin_close(mt, now_ms);
         }
+        if self.controls.values().any(|pending| now_ms >= pending.deadline_ms)
+            && self.lifecycle.phase() == Phase::Open {
+            self.observe(Observation::Failed(Failure::TimedOut));
+            self.begin_close(mt, now_ms);
+        }
         self.pending.drain(..).collect()
     }
+}
+
+/// A URI-only set composes with the common runner directly. A larger application may wrap it
+/// alongside Feed; neither backend can claim the other's attempt or staged locator.
+impl DriverSet for UriBackend {
+    type Context = MainThread;
+
+    fn capabilities(&self, backend: BackendKind) -> Option<Capabilities> {
+        (backend == BackendKind::Uri).then_some(self.config.capabilities)
+    }
+
+    fn dispatch(&mut self, backend: BackendKind, mt: &MainThread, attempt: AttemptId,
+        command: CommandId, operation: Operation) -> DispatchResult {
+        if backend != BackendKind::Uri { return DispatchResult::Refused(Failure::Unavailable); }
+        UriBackend::dispatch(self, mt, attempt, command, operation)
+    }
+
+    fn poll(&mut self, mt: &MainThread) -> Vec<BackendEvent> {
+        UriBackend::poll(self, mt).into_iter().map(|event| BackendEvent {
+            backend: BackendKind::Uri, event,
+        }).collect()
+    }
+
+    fn discard_staged(&mut self, backend: BackendKind, attempt: AttemptId, key: SourceKey) {
+        if backend == BackendKind::Uri
+            && self.staged.as_ref().is_some_and(|staged| staged.attempt == attempt && staged.key == key) {
+            self.staged = None;
+        }
+    }
+
+    fn exit_disposition(&self) -> ExitDisposition { UriBackend::exit_disposition(self) }
 }
 
 #[cfg(test)]
@@ -433,15 +537,15 @@ mod tests {
     use plx_platform::tv::sink::NoSink;
     use plx_platform::tv::uri::{CloseStatus, RequestId, SessionId, UriPoll, UriReply};
     use plx_playback_contract::{BackendState, Event as ContractEvent, Fidelity,
-        Fx as ContractFx, Intent, Requirements, SourceKind};
+        Fx as ContractFx, Intent, Requirements, SourceKind, StopReason};
     use std::sync::{atomic::{AtomicU64, Ordering}, Mutex};
 
     const CAPS: Capabilities = Capabilities { progressive_uri: true, hls_uri: false,
-        packet_feed: false, exact_video: true, exact_audio: true, pause: true,
-        seek: true, audio_track: true, subtitle_track: true };
+        packet_feed: false, pause: true,
+        seek: true, audio_track: true, subtitle_track: true, audio_off: false, subtitle_off: false };
     const REQ: Requirements = Requirements { source: SourceKind::ProgressiveUri,
-        video: Fidelity::Exact, audio: Fidelity::Exact, audio_track: None,
-        subtitle_track: None };
+        video: Fidelity::Exact, audio: Fidelity::Exact, audio_track: TrackChoice::Unspecified,
+        subtitle_track: TrackChoice::Unspecified };
     const KEY: SourceKey = SourceKey::new(17);
     const A: AttemptId = AttemptId::new(7, 1);
     const B: AttemptId = AttemptId::new(7, 2);
@@ -509,10 +613,10 @@ mod tests {
             let driver = UriBackend::new(Config { transport: bus, display, clock,
                 app_id: "app.test".into(), binding: Binding::Unbound, capabilities: CAPS,
                 startup_timeout_ms: 500, release_allowance_ms: 100, source_ttl_ms: 50 });
-            let mut state = BackendState::new(CAPS);
+            let mut state = BackendState::new();
             let mut fx = Vec::new();
             state.step(ContractEvent::Intent(Intent::Start {
-                attempt: A, source: KEY, requirements: REQ }), &mut fx);
+                backend: BackendKind::Uri, attempt: A, source: KEY, requirements: REQ }), Some(CAPS), &mut fx);
             let [ContractFx::Dispatch { command, .. }] = fx.as_slice() else { panic!("dispatch") };
             Self { driver, clock, bus, mt: unsafe { MainThread::assume() }, command: *command }
         }
@@ -530,10 +634,10 @@ mod tests {
             assert_eq!(self.bus.calls("load"), 1);
             self.bus.say("load", r#"{"returnValue":true,"mediaId":"m1","loadCompleted":true}"#);
             assert_eq!(self.driver.poll(&self.mt), [DriverEvent::Observation { attempt: A,
-                observation: Observation::Playback(Observed { value: Playback::Ready,
+                observation: Observation::Playback(Observed { value: Playback::ReadyAwaitPlay,
                     from: EvidenceSource::BackendReport }) }]);
             assert_eq!(self.bus.calls("subscribe"), 1);
-            assert_eq!(self.bus.calls("play"), 1);
+            assert_eq!(self.bus.calls("play"), 0);
         }
     }
 
@@ -541,6 +645,7 @@ mod tests {
     fn native_clock_and_ack_never_prove_a_picture_and_controls_remain_addressed() {
         let mut rig = Rig::new(); rig.opened();
         assert!(rig.driver.url.is_none(), "load consumed the private locator");
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, Operation::Play), DispatchResult::Queued);
         rig.bus.say("play", r#"{"returnValue":true,"mediaId":"m1","playing":true,"currentTime":123}"#);
         let notices = rig.driver.poll(&rig.mt);
         assert!(notices.contains(&DriverEvent::Observation { attempt: A,
@@ -561,20 +666,30 @@ mod tests {
         let mut rig = Rig::new(); rig.opened();
         let track = TrackSelection { kind: TrackKind::Audio, id: 3 };
         assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
-            Operation::SelectTrack(track)), DispatchResult::Queued);
+            Operation::SelectTrack { kind: track.kind, choice: TrackChoice::Selected(track.id) }), DispatchResult::Queued);
         rig.bus.say("subscribe", r#"{"mediaId":"m1","trackSelected":{"type":"audio","index":3}}"#);
         assert!(rig.driver.poll(&rig.mt).is_empty());
         rig.bus.say("selectTrack", r#"{"returnValue":true,"mediaId":"m1"}"#);
         assert_eq!(rig.driver.poll(&rig.mt), [DriverEvent::Observation { attempt: A,
             observation: Observation::TrackSelected(Observed { value: track,
                 from: EvidenceSource::BackendReport }) }]);
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
+            Operation::SelectTrack { kind: track.kind, choice: TrackChoice::Selected(track.id) }),
+            DispatchResult::Queued);
+        rig.bus.say("selectTrack", r#"{"returnValue":true,"mediaId":"m1"}"#);
+        assert!(rig.driver.poll(&rig.mt).is_empty());
+        rig.bus.say("subscribe", r#"{"mediaId":"m1","trackSelected":{"type":"audio","index":3}}"#);
+        assert_eq!(rig.driver.poll(&rig.mt), [DriverEvent::Observation { attempt: A,
+            observation: Observation::TrackSelected(Observed { value: track,
+                from: EvidenceSource::BackendReport }) }],
+            "a retired native request cannot make a repeated selection ambiguous");
     }
 
     #[test]
     fn quarantine_blocks_successor_until_release_and_expired_source_is_not_reused() {
         let mut rig = Rig::new(); rig.opened();
         rig.bus.0.lock().unwrap().hold = true;
-        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, Operation::Stop), DispatchResult::Queued);
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, Operation::Stop(StopReason::Stop)), DispatchResult::Queued);
         assert_eq!(rig.driver.poll(&rig.mt), [DriverEvent::Release { attempt: A,
             status: ReleaseStatus::Closing }]);
         rig.driver.stage_source(B, KEY, UriSource::new(URL.into(), Vec::new())).unwrap();
@@ -663,13 +778,16 @@ mod tests {
     }
 
     #[test]
-    fn required_original_tracks_wait_for_each_exact_event_and_ack_before_play() {
+    fn ready_never_plays_or_selects_and_explicit_track_confirmation_gates_play() {
         let mut rig = Rig::new();
-        let selection = TrackSelection { kind: TrackKind::Audio, id: 42 };
+        let audio = TrackSelection { kind: TrackKind::Audio, id: 42 };
         let subtitle = TrackSelection { kind: TrackKind::Subtitle, id: 77 };
-        let required = Requirements { audio_track: Some(selection), subtitle_track: Some(subtitle), ..REQ };
+        let required = Requirements {
+            audio_track: TrackChoice::Selected(audio.id),
+            subtitle_track: TrackChoice::Selected(subtitle.id), ..REQ
+        };
         rig.driver.stage_source(A, KEY, UriSource::new(URL.into(), vec![
-            NativeTrackIndex { selection, index: 3 },
+            NativeTrackIndex { selection: audio, index: 3 },
             NativeTrackIndex { selection: subtitle, index: 5 },
         ])).unwrap();
         assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
@@ -678,93 +796,90 @@ mod tests {
         assert!(rig.driver.poll(&rig.mt).is_empty());
         rig.bus.say("load", r#"{"returnValue":true,"mediaId":"m1","loadCompleted":true}"#);
         assert_eq!(rig.driver.poll(&rig.mt), [DriverEvent::Observation { attempt: A,
-            observation: Observation::Playback(Observed { value: Playback::Ready,
+            observation: Observation::Playback(Observed { value: Playback::ReadyAwaitPlay,
                 from: EvidenceSource::BackendReport }) }]);
-        assert_eq!(rig.bus.calls("selectTrack"), 2);
+        assert_eq!(rig.bus.calls("selectTrack"), 0);
         assert_eq!(rig.bus.calls("play"), 0);
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, Operation::Pause),
+            DispatchResult::Queued, "a paused initial intent stays in common ownership");
+        assert_eq!(rig.bus.calls("play"), 0);
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
+            Operation::SelectTrack { kind: TrackKind::Audio, choice: TrackChoice::Selected(audio.id) }),
+            DispatchResult::Queued);
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
+            Operation::SelectTrack { kind: TrackKind::Subtitle, choice: TrackChoice::Selected(subtitle.id) }),
+            DispatchResult::Queued);
         assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, Operation::Play),
-            DispatchResult::Refused(Failure::Busy), "controls cannot bypass initial selection");
-        let (session, request) = {
+            DispatchResult::Refused(Failure::Busy));
+        let (session, audio_request, subtitle_request) = {
             let state = rig.bus.0.lock().unwrap();
-            (state.session, state.calls.iter().find(|(method, _, _)| *method == "selectTrack").unwrap().1)
+            let mut requests = state.calls.iter().filter(|(method, _, _)| *method == "selectTrack");
+            (state.session, requests.next().unwrap().1, requests.next().unwrap().1)
         };
         rig.bus.0.lock().unwrap().replies.push_back(UriReply { session,
             request: RequestId::new(999), method: "selectTrack",
             payload: r#"{"returnValue":true,"mediaId":"m1"}"#.into(), ok: true });
         assert!(rig.driver.poll(&rig.mt).is_empty());
-        assert_eq!(rig.bus.calls("play"), 0, "a stale native ACK cannot select the stream");
-        rig.bus.0.lock().unwrap().replies.push_back(UriReply { session, request,
-            method: "selectTrack", payload: r#"{"returnValue":true,"mediaId":"m1"}"#.into(),
-            ok: true });
-        assert!(rig.driver.poll(&rig.mt).is_empty());
-        assert_eq!(rig.bus.calls("play"), 0, "the correct ACK still lacks a track event");
-        rig.bus.say("subscribe", r#"{"mediaId":"m1","trackSelected":{"type":"audio","index":3}}"#);
-        assert_eq!(rig.driver.poll(&rig.mt), [DriverEvent::Observation { attempt: A,
-            observation: Observation::TrackSelected(Observed { value: selection,
-                from: EvidenceSource::BackendReport }) }]);
-        assert_eq!(rig.bus.calls("play"), 0, "the subtitle requirement is still outstanding");
-        let subtitle_request = {
-            let state = rig.bus.0.lock().unwrap();
-            state.calls.iter().rev().find(|(method, _, _)| *method == "selectTrack").unwrap().1
-        };
-        rig.bus.0.lock().unwrap().replies.push_back(UriReply { session,
-            request: subtitle_request, method: "selectTrack",
-            payload: r#"{"returnValue":true,"mediaId":"m1"}"#.into(), ok: true });
-        assert!(rig.driver.poll(&rig.mt).is_empty());
-        rig.bus.say("subscribe", r#"{"mediaId":"m1","trackSelected":{"type":"text","index":5}}"#);
-        assert_eq!(rig.driver.poll(&rig.mt), [DriverEvent::Observation { attempt: A,
-            observation: Observation::TrackSelected(Observed { value: subtitle,
-                from: EvidenceSource::BackendReport }) }]);
+        for (request, kind, index, selected) in [
+            (audio_request, "audio", 3, audio), (subtitle_request, "text", 5, subtitle)
+        ] {
+            rig.bus.0.lock().unwrap().replies.push_back(UriReply { session, request,
+                method: "selectTrack", payload: r#"{"returnValue":true,"mediaId":"m1"}"#.into(),
+                ok: true });
+            assert!(rig.driver.poll(&rig.mt).is_empty(), "ACK cannot confirm selection");
+            assert_eq!(rig.bus.calls("play"), 0);
+            rig.bus.say("subscribe", &format!(
+                r#"{{"mediaId":"m1","trackSelected":{{"type":"{kind}","index":{index}}}}}"#));
+            assert_eq!(rig.driver.poll(&rig.mt), [DriverEvent::Observation { attempt: A,
+                observation: Observation::TrackSelected(Observed { value: selected,
+                    from: EvidenceSource::BackendReport }) }]);
+        }
+        assert_eq!(rig.bus.calls("play"), 0);
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, Operation::Play),
+            DispatchResult::Queued);
         assert_eq!(rig.bus.calls("play"), 1);
     }
 
     #[test]
     fn missing_original_mapping_refuses_before_open_and_reducer_returns_to_vacant() {
         let mut rig = Rig::new();
-        let selected = TrackSelection { kind: TrackKind::Audio, id: 42 };
-        let required = Requirements { audio_track: Some(selected), ..REQ };
+        let required = Requirements { audio_track: TrackChoice::Selected(42), ..REQ };
         rig.driver.stage_source(A, KEY, UriSource::new(URL.into(), Vec::new())).unwrap();
-        let mut state = BackendState::new(CAPS);
+        let mut state = BackendState::new();
         let mut effects = Vec::new();
         state.step(ContractEvent::Intent(Intent::Start {
-            attempt: A, source: KEY, requirements: required,
-        }), &mut effects);
+            backend: BackendKind::Uri, attempt: A, source: KEY, requirements: required,
+        }), Some(CAPS), &mut effects);
         let [ContractFx::Dispatch { command, operation, .. }] = effects.as_slice() else { panic!("dispatch") };
         let (command, operation) = (*command, *operation);
         let result = rig.driver.dispatch(&rig.mt, A, command, operation);
         assert_eq!(result, DispatchResult::Refused(Failure::Unsupported));
         assert!(rig.driver.staged.is_none(), "failed admission destroys the authorized URL");
         effects.clear();
-        state.step(ContractEvent::CommandAnswer { attempt: A, command, result }, &mut effects);
+        state.step(ContractEvent::CommandAnswer { backend: BackendKind::Uri,
+            attempt: A, command, result }, None, &mut effects);
         assert_eq!(state.snapshot().phase, plx_playback_contract::Phase::Releasing);
         for notice in rig.driver.poll(&rig.mt) {
             effects.clear();
-            state.step(notice.into(), &mut effects);
+            state.step(BackendEvent { backend: BackendKind::Uri, event: notice }.into(), None, &mut effects);
         }
         assert_eq!(state.snapshot().phase, plx_playback_contract::Phase::Vacant);
         assert_eq!(rig.bus.0.lock().unwrap().serial, 0, "no native registration was attempted");
     }
 
     #[test]
-    fn selection_refusal_never_plays_the_default_track() {
-        let mut rig = Rig::new();
-        let selection = TrackSelection { kind: TrackKind::Audio, id: 42 };
-        let required = Requirements { audio_track: Some(selection), ..REQ };
-        rig.driver.stage_source(A, KEY, UriSource::new(URL.into(), vec![
-            NativeTrackIndex { selection, index: 3 },
-        ])).unwrap();
+    fn refused_track_closes_without_playing_a_default_stream() {
+        let mut rig = Rig::new(); rig.opened();
         assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
-            Operation::Start { source: KEY, requirements: required }), DispatchResult::Queued);
-        rig.bus.say("register", "");
-        rig.driver.poll(&rig.mt);
-        rig.bus.say("load", r#"{"returnValue":true,"mediaId":"m1","loadCompleted":true}"#);
-        rig.driver.poll(&rig.mt);
-        let (session, request) = {
+            Operation::SelectTrack { kind: TrackKind::Audio, choice: TrackChoice::Selected(3) }),
+            DispatchResult::Queued);
+        let reply = {
             let state = rig.bus.0.lock().unwrap();
-            (state.session, state.calls.iter().find(|(method, _, _)| *method == "selectTrack").unwrap().1)
+            let (_, request, _) = state.calls.iter().rev().find(|(method, _, _)| *method == "selectTrack").unwrap();
+            UriReply { session: state.session, request: *request,
+                method: "selectTrack", payload: "refused".into(), ok: false }
         };
-        rig.bus.0.lock().unwrap().replies.push_back(UriReply { session, request,
-            method: "selectTrack", payload: "refused".into(), ok: false });
+        rig.bus.0.lock().unwrap().replies.push_back(reply);
         let notices = rig.driver.poll(&rig.mt);
         assert!(notices.contains(&DriverEvent::Observation { attempt: A,
             observation: Observation::Failed(Failure::Refused) }));
@@ -774,19 +889,38 @@ mod tests {
     }
 
     #[test]
-    fn acknowledged_but_unconfirmed_initial_selection_times_out_without_play() {
-        let mut rig = Rig::new();
-        let selection = TrackSelection { kind: TrackKind::Audio, id: 42 };
-        let required = Requirements { audio_track: Some(selection), ..REQ };
-        rig.driver.stage_source(A, KEY, UriSource::new(URL.into(), vec![
-            NativeTrackIndex { selection, index: 3 },
-        ])).unwrap();
+    fn seek_landing_requires_exact_request_and_ack_and_off_is_unsupported() {
+        let mut rig = Rig::new(); rig.opened();
         assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
-            Operation::Start { source: KEY, requirements: required }), DispatchResult::Queued);
-        rig.bus.say("register", "");
-        rig.driver.poll(&rig.mt);
-        rig.bus.say("load", r#"{"returnValue":true,"mediaId":"m1","loadCompleted":true}"#);
-        rig.driver.poll(&rig.mt);
+            Operation::SelectTrack { kind: TrackKind::Subtitle, choice: TrackChoice::Off }),
+            DispatchResult::Refused(Failure::Unsupported));
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
+            Operation::Seek(ContentTime::from_millis(5000))), DispatchResult::Queued);
+        let (session, request) = {
+            let state = rig.bus.0.lock().unwrap();
+            (state.session, state.calls.iter().rev().find(|(method, _, _)| *method == "seek").unwrap().1)
+        };
+        rig.bus.say("subscribe", r#"{"mediaId":"m1","seekDone":true,"currentTime":5000}"#);
+        assert!(!rig.driver.poll(&rig.mt).iter().any(|event| matches!(event, DriverEvent::SeekLanded { .. })));
+        rig.bus.0.lock().unwrap().replies.push_back(UriReply { session,
+            request: RequestId::new(999), method: "seek",
+            payload: r#"{"returnValue":true,"mediaId":"m1","seekDone":true}"#.into(), ok: true });
+        assert!(rig.driver.poll(&rig.mt).is_empty());
+        rig.bus.0.lock().unwrap().replies.push_back(UriReply { session, request,
+            method: "seek", payload: r#"{"returnValue":true,"mediaId":"m1","seekDone":true,"currentTime":5000}"#.into(),
+            ok: true });
+        assert_eq!(rig.driver.poll(&rig.mt), [DriverEvent::SeekLanded { attempt: A,
+            command: rig.command, position: Some(Observed {
+                value: ContentTime::from_millis(5000), from: EvidenceSource::BackendReport }) }]);
+        assert_eq!(rig.bus.calls("play"), 0, "seeking never chooses playback policy");
+    }
+
+    #[test]
+    fn acknowledged_track_without_confirmation_times_out_and_releases() {
+        let mut rig = Rig::new(); rig.opened();
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
+            Operation::SelectTrack { kind: TrackKind::Audio, choice: TrackChoice::Selected(3) }),
+            DispatchResult::Queued);
         rig.bus.say("selectTrack", r#"{"returnValue":true,"mediaId":"m1"}"#);
         assert!(rig.driver.poll(&rig.mt).is_empty());
         rig.clock.0.store(500, Ordering::Relaxed);
@@ -796,5 +930,20 @@ mod tests {
         assert!(notices.contains(&DriverEvent::Release { attempt: A,
             status: ReleaseStatus::Closing }));
         assert_eq!(rig.bus.calls("play"), 0);
+    }
+
+    #[test]
+    fn startup_deadline_stops_at_ready_and_exit_waits_for_real_release() {
+        let mut rig = Rig::new();
+        assert_eq!(rig.driver.exit_disposition(), ExitDisposition::Clean);
+        rig.opened();
+        assert_eq!(rig.driver.exit_disposition(), ExitDisposition::PreserveNativeOwnership);
+        rig.clock.0.store(501, Ordering::Relaxed);
+        assert!(rig.driver.poll(&rig.mt).is_empty(), "common owner may stay paused at ready");
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
+            Operation::Stop(StopReason::Exit)), DispatchResult::Queued);
+        assert_eq!(rig.driver.exit_disposition(), ExitDisposition::PreserveNativeOwnership);
+        rig.driver.poll(&rig.mt);
+        assert_eq!(rig.driver.exit_disposition(), ExitDisposition::Clean);
     }
 }

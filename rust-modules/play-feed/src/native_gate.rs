@@ -106,12 +106,9 @@ impl NativeSessionState {
         }
     }
 
-    fn next(&mut self) -> u32 {
-        self.next_epoch = self.next_epoch.wrapping_add(1);
-        if self.next_epoch == 0 {
-            self.next_epoch = 1;
-        }
-        self.next_epoch
+    fn next(&mut self) -> Option<u32> {
+        self.next_epoch = self.next_epoch.checked_add(1)?;
+        Some(self.next_epoch)
     }
 }
 
@@ -138,6 +135,25 @@ pub struct NativeGate {
     state: Mutex<NativeSessionState>,
 }
 
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn native_epoch_exhaustion_never_reuses_an_earlier_callback_address() {
+        let gate = NativeGate {
+            state: Mutex::new(NativeSessionState {
+                next_epoch: u32::MAX - 1,
+                phase: NativeSessionPhase::Idle,
+            }),
+        };
+        assert_eq!(gate.begin_native_session(), Some(u32::MAX));
+        assert!(gate.retire_native_session(u32::MAX));
+        assert_eq!(gate.begin_native_session(), None, "an old callback must never alias a wrapped epoch");
+        assert_eq!(gate.begin_native_session(), None, "exhaustion must remain closed");
+    }
+}
+
 impl NativeGate {
     pub const fn new() -> Self {
         Self { state: Mutex::new(NativeSessionState::new()) }
@@ -155,8 +171,8 @@ impl NativeGate {
 
     /// Enter the only state in which a Starfish `Load` may publish callbacks.
     ///
-    /// `None` rejects an overlapping native session instead of silently retagging two live
-    /// objects with one process-global owner.
+    /// `None` rejects an overlapping native session or exhausted identity domain instead of
+    /// retagging a live object or reusing an old callback address.
     pub fn begin_native_session(&self) -> Option<u32> {
         let mut state = self
             .state
@@ -165,7 +181,7 @@ impl NativeGate {
         if state.phase != NativeSessionPhase::Idle {
             return None;
         }
-        let epoch = state.next();
+        let epoch = state.next()?;
         state.phase = NativeSessionPhase::Active {
             epoch,
             presentation_gate: NativePresentationGate::Armed,

@@ -217,6 +217,7 @@ const EVENT_KEYS: [(&str, Ev); 16] = [
 ];
 
 impl Ev {
+    #[cfg(any(test, feature = "devtriggers"))]
     pub(crate) fn name(self) -> &'static str {
         EVENT_KEYS
             .iter()
@@ -677,12 +678,14 @@ fn scrub_word(word: &str) -> String {
 }
 
 impl Message {
+    #[cfg(any(test, feature = "devtriggers"))]
     pub(crate) fn has_events(&self) -> bool {
         !self.seen.is_empty()
     }
 
     /// Why a call was refused, for a log line: the service's code and scrubbed text when it gave
     /// them (`code -1: Denied`), else whatever the transport said.
+    #[cfg(any(test, feature = "devtriggers"))]
     pub(crate) fn why(&self) -> String {
         match (self.error_code, &self.error_text) {
             (Some(code), Some(text)) if !text.is_empty() => format!("code {code}: {text}"),

@@ -7,7 +7,6 @@ pub mod secure;
 pub mod sink;
 pub mod sound;
 pub mod toast;
-#[cfg(feature = "devtriggers")]
 pub mod uri;
 pub mod window;
 
@@ -47,8 +46,8 @@ pub struct Port {
     /// The Starfish-shaped verb sink (see `sink::VideoSink`); the OS-neutral sink is step L15b.
     /// Read only by [`sink::installed`], the one way out of `tv` for it.
     pub sink: &'static dyn sink::VideoSink,
-    /// The URI-mode media pipe of the developer probe (issue #1064); read only by [`uri::installed`].
-    #[cfg(feature = "devtriggers")]
+    /// The URI media pipe; the absent port and feature-off webOS port provide `NoUriMedia`.
+    /// Read only by [`uri::installed`].
     pub uri_media: &'static dyn uri::UriMedia,
 }
 
@@ -83,7 +82,6 @@ static ABSENT: Port = Port {
     frame_probe_acquired: nothing,
     frame_probe_fields: String::new,
     sink: &sink::NoSink,
-    #[cfg(feature = "devtriggers")]
     uri_media: &uri::NoUriMedia,
 };
 
@@ -93,8 +91,8 @@ static INSTALLED: OnceLock<&'static Port> = OnceLock::new();
 pub fn install(port: &'static Port) -> Result<(), &'static Port> { INSTALLED.set(port) }
 
 /// The installed port. Only `tv`'s own modules read the table, so no other module can issue a
-/// verb the interfaces below do not offer; the sink leaves through [`sink::installed`] and, in a
-/// `devtriggers` build, the URI-mode probe's pipe through `uri::installed`.
+/// verb the interfaces below do not offer; the sink leaves through [`sink::installed`] and the
+/// URI media pipe through `uri::installed`.
 pub(in crate::tv) fn port() -> &'static Port { INSTALLED.get().copied().unwrap_or_else(absent) }
 
 /// Nothing installed. A host test expects that; the shipping build never should, and a silent
