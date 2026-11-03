@@ -120,6 +120,16 @@ pub trait TrialActuatorPort: AutomaticPort {
     fn trial_token(&self, reserve: &Self::TrialReserve) -> u64;
 }
 
+/// Physical facts available to one adaptive decision on the existing feed
+/// worker. Associated samplers keep the playhead read callable inside the AQ
+/// publication closure without borrowing the actuator port through its gate.
+pub trait AdaptiveRoundPort: TrialActuatorPort {
+    fn position_ns() -> i64;
+    fn transition_permitted(kind: AutomaticTransition) -> bool;
+    fn rebuffer_state() -> (bool, bool);
+    fn buffer_snapshot() -> (Option<i64>, i64);
+}
+
 /// Physical transfer and output geometry before a candidate policy verdict.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Acquisition {

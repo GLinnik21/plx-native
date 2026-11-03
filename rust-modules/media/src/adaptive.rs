@@ -5,7 +5,7 @@
 use crate::{abr, route};
 use plx_playback_contract::adaptive::PublicationGate;
 use plx_playback_contract::adaptive::{
-    Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, ActiveQuantum, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
+    Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, ActiveQuantum, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
     RoundId, TrialActuatorPort, TrialObservation, TrialPhase, TrialProtocol, TrialProtocolError,
 };
 use plx_playback_contract::SourceKey;
@@ -1039,6 +1039,7 @@ pub(crate) struct Coordinator {
     controller: abr::Controller,
     recovery: Option<abr::OriginalRecovery>,
     recover_kbps: u32,
+    last_probe_block: Option<abr::ProbeBlock>,
     next_trial_serial: u64,
     next_round_serial: u64,
 }
@@ -1160,6 +1161,31 @@ pub(crate) enum WhyReadout {
     ResponseLimited, SwitchCost,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum ActionDirection { Up, Down }
+
+#[derive(Clone, Copy)]
+pub(crate) struct ActionReadout {
+    pub(crate) direction: ActionDirection,
+    pub(crate) target_kbps: u32,
+    pub(crate) refreshing: bool,
+    pub(crate) committed: Option<bool>,
+}
+
+impl ActionReadout {
+    pub(crate) fn from_proposal(
+        proposal: abr::Proposal, refreshing: bool, committed: Option<bool>,
+    ) -> Self {
+        Self {
+            direction: match proposal.direction {
+                abr::Direction::Up => ActionDirection::Up,
+                abr::Direction::Down => ActionDirection::Down,
+            },
+            target_kbps: proposal.rung.kbps(), refreshing, committed,
+        }
+    }
+}
+
 fn why_readout(reason: Option<abr::DecisionReason>) -> Option<WhyReadout> {
     use abr::{DecisionReason::Hls, HlsReason as R};
     Some(match reason? {
@@ -1269,6 +1295,23 @@ pub(crate) struct ActiveCycle {
     pub(crate) expected_user_sequence: u64,
     pub(crate) cleanup_ready: bool,
     pub(crate) after_prefetch: ActiveAfterPrefetch,
+}
+
+pub(crate) enum RoundDiagnostic {
+    Line(String),
+    Steady(String),
+}
+
+pub(crate) enum RoundCourse<L, R> {
+    Stay,
+    OriginalPublished,
+    Aborted,
+    Candidate {
+        proposal: abr::Proposal,
+        reserve_policy: abr::ReservePolicy,
+        sample: abr::SegmentSample,
+        start: CandidateStart<L, R>,
+    },
 }
 
 fn active_step<P: ActiveFeedPort>(
@@ -1727,6 +1770,7 @@ impl Coordinator {
         }
         Self {
             control, ticket, controller, recovery, recover_kbps: 0,
+            last_probe_block: None,
             next_trial_serial: 0, next_round_serial: 0,
         }
     }
@@ -1974,6 +2018,7 @@ impl Coordinator {
     pub(crate) fn on_hls_commit(&mut self, direction: abr::Direction) {
         if let Some(gate) = self.recovery.as_mut() { gate.on_hls_commit(direction); }
         self.recover_kbps = 0;
+        self.last_probe_block = None;
     }
     fn reconsider_original(
         &mut self, telemetry: &abr::ControllerTelemetry, remaining_ms: i64,
@@ -2199,6 +2244,139 @@ impl Coordinator {
     /// Called after the higher-priority latched source switch had its publication
     /// opportunity. A probe spends its permit only on a Stay boundary; a quality
     /// transaction receives its pending reserve policy from the same controller.
+    pub(crate) fn advance_round<P: AdaptiveRoundPort>(
+        &mut self, cycle: ActiveCycle, port: &mut P,
+        now_ms: impl Fn() -> u64, pause: impl FnOnce() -> PauseFact,
+        on_recover_original: impl FnOnce(),
+        mut on_action: impl FnMut(ActionReadout),
+        mut on_diagnostic: impl FnMut(RoundDiagnostic),
+        probe_diagnostics: &mut impl OriginalProbeDiagnostics,
+    ) -> RoundCourse<P::Lease, P::TrialReserve> {
+        let ActiveCycle {
+            sample, round, rollback_media_ms, remaining_ms, paused,
+            expected_user_sequence, cleanup_ready, after_prefetch,
+        } = cycle;
+        if let Some(reconsidered) = after_prefetch.reconsidered {
+            self.last_probe_block = None;
+            if let Some(cmp) = reconsidered.comparison {
+                on_diagnostic(RoundDiagnostic::Line(mode_comparison_line(cmp)));
+            }
+            on_diagnostic(RoundDiagnostic::Line(format!(
+                "abr: retained Original probe reconsidered after HLS commit measured={}kbps verdict={:?}",
+                reconsidered.measured_kbps, reconsidered.verdict,
+            )));
+        }
+        if after_prefetch.steady {
+            on_diagnostic(RoundDiagnostic::Steady(steady_line(&round.telemetry, remaining_ms)));
+        }
+        let source = self.run_latched_original(
+            after_prefetch.source, port, expected_user_sequence, || now_ms(),
+            P::position_ns, on_recover_original,
+            |proposal, refreshing| on_action(ActionReadout::from_proposal(
+                proposal, refreshing, Some(false),
+            )),
+        );
+        match source {
+            OriginalSwitchOutcome::NoSwitch | OriginalSwitchOutcome::LeaseBusy => {}
+            OriginalSwitchOutcome::Published { kbps } => {
+                on_diagnostic(RoundDiagnostic::Line(format!(
+                    "abr: source sustainable again at {}kbps; requesting Original", kbps,
+                )));
+                return RoundCourse::OriginalPublished;
+            }
+            OriginalSwitchOutcome::Busy => on_diagnostic(RoundDiagnostic::Line(
+                "abr: Original recovery retained behind another route transition".to_string(),
+            )),
+            OriginalSwitchOutcome::ClockMoved => on_diagnostic(RoundDiagnostic::Line(
+                "abr: Original recovery retained after playback clock moved".to_string(),
+            )),
+            OriginalSwitchOutcome::Aborted | OriginalSwitchOutcome::RouteMoved =>
+                return RoundCourse::Aborted,
+        }
+        let action = self.next_round_action(
+            &round, sample, rollback_media_ms, remaining_ms, || now_ms(),
+            paused, cleanup_ready, P::transition_permitted, P::rebuffer_state,
+        );
+        match action {
+            RoundAction::Stay => RoundCourse::Stay,
+            RoundAction::ProbeDeferredForCleanup => {
+                self.last_probe_block = None;
+                RoundCourse::Stay
+            }
+            RoundAction::ProbeBlocked(ProbeBlockSummary {
+                reason, current_wire_kbps, conservative_kbps,
+            }) => {
+                if self.last_probe_block != Some(reason) {
+                    self.last_probe_block = Some(reason);
+                    on_diagnostic(RoundDiagnostic::Line(format!(
+                        "abr: probe withheld reason={} rung={}kbps buf={}ms safe={}kbps",
+                        reason.as_str(), current_wire_kbps,
+                        sample.buffer.buffered_ms().unwrap_or(-1), conservative_kbps,
+                    )));
+                }
+                RoundCourse::Stay
+            }
+            RoundAction::Probe(permit) => {
+                self.last_probe_block = None;
+                match self.run_original_probe(
+                    permit, port, expected_user_sequence, &round.telemetry,
+                    remaining_ms, round.decision, cleanup_ready,
+                    sample.buffer.buffered_ms(), sample.media_duration_ms(),
+                    pause, P::position_ns, probe_diagnostics,
+                ) {
+                    OriginalProbeOutcome::Published => RoundCourse::OriginalPublished,
+                    OriginalProbeOutcome::Aborted => RoundCourse::Aborted,
+                    OriginalProbeOutcome::LeaseBusy | OriginalProbeOutcome::Stale
+                    | OriginalProbeOutcome::Continue => RoundCourse::Stay,
+                }
+            }
+            RoundAction::TrialDeferred { proposal, refreshing_same_request, reason } => {
+                on_action(ActionReadout::from_proposal(
+                    proposal, refreshing_same_request, Some(false),
+                ));
+                on_diagnostic(RoundDiagnostic::Line(match reason {
+                    TrialDeferral::EncoderCleanup =>
+                        "abr: quality exploration deferred until PMS confirms prior encoder cleanup",
+                    TrialDeferral::PlaybackClock =>
+                        "abr: quality transaction deferred until playback clock is running and recovery completes",
+                }.to_string()));
+                RoundCourse::Stay
+            }
+            RoundAction::Trial { proposal, reserve_policy } => {
+                let start = match self.begin_candidate(
+                    proposal, port, expected_user_sequence, P::buffer_snapshot,
+                    || now_ms(),
+                    |proposal, refreshing| on_action(ActionReadout::from_proposal(
+                        proposal, refreshing, Some(false),
+                    )),
+                ) {
+                    Ok(start) => start,
+                    Err(refusal) => {
+                        let line = match refusal {
+                            CandidateStartRefusal::ReserveUnknown =>
+                                "abr: candidate reserve unreadable before exploration; staying on current rung".to_string(),
+                            CandidateStartRefusal::NoRunway =>
+                                "abr: candidate has no completed current acquisition to preserve; staying".to_string(),
+                            CandidateStartRefusal::NoSurplus =>
+                                "abr: candidate has no reserve above rollback boundary; staying on current rung".to_string(),
+                            CandidateStartRefusal::BudgetMoved { budget_ms, target_kbps } => format!(
+                                "abr: actual exploration budget {}ms no longer releases {}kbps; staying on current rung",
+                                budget_ms, target_kbps,
+                            ),
+                            CandidateStartRefusal::LeaseMoved =>
+                                "abr: recovery transaction superseded before its actuator lease could arm".to_string(),
+                            CandidateStartRefusal::TrialReserveMoved =>
+                                "abr: clock transition superseded exploration before its trial could arm".to_string(),
+                        };
+                        on_diagnostic(RoundDiagnostic::Line(line));
+                        return RoundCourse::Stay;
+                    }
+                };
+                RoundCourse::Candidate { proposal, reserve_policy, sample, start }
+            }
+        }
+    }
+
     pub(crate) fn next_round_action(
         &mut self, round: &RoundDecision, sample: abr::SegmentSample,
         rollback_media_ms: Option<u32>, remaining_ms: i64,
