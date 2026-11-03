@@ -1743,7 +1743,7 @@ fn park_playback(app: &mut App) {
     // The transport is read HERE, as the viewer sees it (a claim's presentation hold keeps a pause
     // that is the hold's loan, not the viewer's): the machine reads no global.
     let _ = app.player.lifecycle.step(
-        &ForegroundEvent::Park { saved_ns, viewer_paused: viewer_paused() },
+        &ForegroundEvent::Park { saved_ns, viewer_paused: viewer_paused_for(&app.adapters.player) },
         &mut Vec::new(),
     );
     // The session is preserved for the foreground reload, so

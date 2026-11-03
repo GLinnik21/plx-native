@@ -1270,7 +1270,8 @@ fn apply_transport(
     now: u32,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
-    set_transport_paused(pa, super::lifecycle::transport_target(play, super::lifecycle::viewer_paused()));
+    let target = super::lifecycle::transport_target(play, super::lifecycle::viewer_paused_for(pa));
+    set_transport_paused(pa, target);
     if let Some(player) = super::bridge::player_mut(pages) {
         player.hud.extend(now, HUD_LINGER_MS);
         player.publish();

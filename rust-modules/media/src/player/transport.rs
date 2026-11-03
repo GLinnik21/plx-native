@@ -60,6 +60,12 @@ pub fn viewer_paused() -> bool {
     paused() && !crate::player::claim_hold::owns_pause()
 }
 
+/// During common startup, the viewer's desired pause can differ from the native pause hold.
+/// Read the addressed goal first so a toggle never mistakes that hold for a viewer Pause.
+pub fn viewer_paused_for(pa: &crate::player::adapter::PlayerAdapter) -> bool {
+    pa.backend_viewer_paused().unwrap_or_else(viewer_paused)
+}
+
 /// Ask the synchronized player clock to commit a user Pause/Resume. The player publishes the feed
 /// gate at the same accepted native boundary; keeping a second commit here used to leave a window
 /// in which deadline accounting still treated an already-accepted Pause as active playback.
@@ -78,7 +84,7 @@ pub fn set_transport_paused(
     // A viewer press outranks a claim's presentation hold (`player::claim_hold`), including the
     // press that finds the transport already in the state it asks for.
     crate::player::claim_hold::note_user_transport();
-    if paused() == value {
+    if pa.backend_viewer_paused().unwrap_or_else(paused) == value {
         return true;
     }
     if let Some(accepted) = pa.backend_transport_control(value) {
@@ -97,7 +103,7 @@ pub fn set_transport_paused(
 /// in `app::playback` before it had a name; it came from `app/playback.rs` (module-layer step L12
 /// moved it into `lifecycle.rs`, and the Sans-IO lifecycle PR B moved it on, here).
 pub fn resume_if_paused(pa: &mut crate::player::adapter::PlayerAdapter) {
-    if viewer_paused() {
+    if viewer_paused_for(pa) {
         set_transport_paused(pa, false);
     }
 }

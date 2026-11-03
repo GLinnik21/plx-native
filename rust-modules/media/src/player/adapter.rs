@@ -381,6 +381,16 @@ impl PlayerAdapter {
         self.backend.snapshot()
     }
 
+    /// A pending first Play keeps the native pause hold until its exact startup command is
+    /// accepted. Viewer toggles read the common pending goal during that interval.
+    pub fn backend_viewer_paused(&self) -> Option<bool> {
+        let snapshot = self.backend.snapshot();
+        let (Some(backend), Some(attempt)) = (snapshot.backend, snapshot.attempt) else {
+            return None;
+        };
+        self.backend.startup_viewer_paused(backend, attempt)
+    }
+
     /// Route a viewer transport change through the active common attempt. An absent attempt
     /// leaves legacy no-engine transport handling to the caller.
     pub fn backend_transport_control(&mut self, paused: bool) -> Option<bool> {
