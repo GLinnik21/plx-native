@@ -577,6 +577,19 @@ impl PlayerAdapter {
     }
 
     #[cfg(feature = "play-uri")]
+    pub(super) fn refresh_uri_qualification(&mut self, ps: &mut crate::route::PlaybackSession) {
+        if self.qualified_uri.as_ref().is_some_and(|offer|
+            offer.expires_at <= std::time::Instant::now()
+                || offer.selection != ps.uri_selection()
+                || crate::route::pending_route_start() != Some(offer.route_start)) {
+            self.qualified_uri = None;
+            ps.qualify_backend_offer(BackendKind::Uri,
+                crate::route::backend_policy::OfferId::URI_ORIGINAL,
+                crate::route::backend_policy::Qualification::Unknown);
+        }
+    }
+
+    #[cfg(feature = "play-uri")]
     pub(super) fn bind_uri_attempt(&mut self, attempt: crate::route::RouteStartAttempt) {
         self.uri_route_attempt = Some(attempt);
         self.uri_route_settled = false;
@@ -605,13 +618,7 @@ impl PlayerAdapter {
     pub fn backend_poll_session_at(&mut self, ps: &mut crate::route::PlaybackSession,
         at: super::attempt_metrics::Tick) -> backend::RunResult {
         #[cfg(feature = "play-uri")]
-        if self.qualified_uri.as_ref().is_some_and(|offer|
-            offer.expires_at <= std::time::Instant::now()) {
-            self.qualified_uri = None;
-            ps.qualify_backend_offer(BackendKind::Uri,
-                crate::route::backend_policy::OfferId::URI_ORIGINAL,
-                crate::route::backend_policy::Qualification::Unknown);
-        }
+        self.refresh_uri_qualification(ps);
         let result = self.backend_poll_at(at);
         #[cfg(feature = "play-uri")]
         for notice in &result.playback {

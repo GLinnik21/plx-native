@@ -35,6 +35,8 @@ pub fn start_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut super::
 /// Foreground recovery uses this to wait for the media-thread result instead of treating thread
 /// creation as proof that the television accepted the payload.
 pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> BufferfeedStartOutcome {
+    #[cfg(feature = "play-uri")]
+    pa.refresh_uri_qualification(ps);
     let uri_chosen = matches!(ps.backend_offer(),
         crate::route::backend_policy::Selection::Open(offer)
             if offer.backend == plx_playback_contract::BackendKind::Uri);
@@ -176,6 +178,8 @@ pub(super) fn start_bufferfeed_for(
         log("start_bufferfeed: the previous Unload is still running; start deferred");
         return BufferfeedStartOutcome::Deferred;
     }
+    #[cfg(feature = "play-uri")]
+    pa.refresh_uri_qualification(ps);
     #[cfg(feature = "play-uri")]
     let start = if matches!(ps.backend_offer(),
         crate::route::backend_policy::Selection::Open(offer)
