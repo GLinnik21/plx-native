@@ -982,7 +982,7 @@ mod tests {
             assert_eq!(hero_btn_rect_at(s, n - 1, 0.0, cw).w, CD);
         }
         // The widest row fits the fixed array.
-        let all = HeroSet { watchlist: true, version: true, restart: true, trailer: true, alt: true, mark: PosterMark::InProgress, favorite: Some(true), go_show: true };
+        let all = HeroSet { more: true, watchlist: true, version: true, restart: true, trailer: true, alt: true, mark: PosterMark::InProgress, favorite: Some(true), go_show: true };
         assert_eq!(hero_ctls(all).1, MAX_CTLS);
     }
 
