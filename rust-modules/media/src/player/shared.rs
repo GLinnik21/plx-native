@@ -1050,6 +1050,14 @@ impl Shared {
         self.native_session.reject_native_presentation_probe(epoch)
     }
 
+    /// Sample or publish one demux observer's facts under the existing retirement barrier.
+    /// The closure must contain only bounded state work: no IO, native calls, or nested epoch gate.
+    pub fn with_active_demux_epoch<R>(&self, epoch: u32, read: impl FnOnce() -> R) -> Option<R> {
+        let mut result = None;
+        self.native_session.with_active_epoch(epoch, || result = Some(read()));
+        result
+    }
+
     pub fn with_native_session<R>(
         &self,
         epoch: u32,
@@ -2355,6 +2363,30 @@ pub enum Stage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn demux_observer_cannot_publish_or_sample_a_successors_native_epoch() {
+        let shared = Shared::new();
+        let first = shared.begin_native_session().expect("first native epoch");
+        assert_eq!(shared.with_active_demux_epoch(first, || {
+            shared.playpos_ns.store(17, Ordering::Relaxed);
+            17
+        }), Some(17));
+        assert!(shared.retire_native_session(first));
+        let second = shared.begin_native_session().expect("successor native epoch");
+        shared.playpos_ns.store(29, Ordering::Relaxed);
+        assert_eq!(shared.with_active_demux_epoch(first, || {
+            shared.playpos_ns.store(99, Ordering::Relaxed);
+            99
+        }), None);
+        assert_eq!(shared.with_active_demux_epoch(first, || {
+            shared.playpos_ns.load(Ordering::Relaxed)
+        }), None);
+        assert_eq!(shared.with_active_demux_epoch(second, || {
+            shared.playpos_ns.load(Ordering::Relaxed)
+        }), Some(29));
+        assert!(shared.retire_native_session(second));
+    }
 
     #[test]
     fn a_worker_consumes_a_complete_hidden_pause_cycle_as_one_event() {
