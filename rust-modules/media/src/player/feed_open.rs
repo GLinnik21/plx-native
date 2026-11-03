@@ -15,6 +15,7 @@ pub(super) struct FeedOpenRequest {
     pub audio_channels: i64,
     /// Backend-owned Load facts, with route and metadata types mapped at capture time.
     pub feed_payload: plx_play_feed::PayloadFacts,
+    pub payload_options: plx_play_feed::PayloadOptions,
     pub original_dv: OriginalDvFacts,
     pub side_reader: Option<SideReaderOpen>,
     pub session: Option<Box<dyn plx_playback_contract::demux::DemuxSession>>,
@@ -103,6 +104,7 @@ impl FeedOpenRequest {
     pub fn capture(ps: &route::PlaybackSession, url: String) -> Self {
         let payload = PayloadFacts::capture(ps);
         let feed_payload = payload.to_feed();
+        let payload_options = payload_options(&feed_payload);
         let original_dv = payload.dovi.into();
         let source = plx_plex::plex::StreamUrl::parse(&url);
         let side_reader = route::side_reader_target(ps).map(|target| SideReaderOpen {
@@ -117,6 +119,7 @@ impl FeedOpenRequest {
             pcm_is_lossy: route::stream_pcm_is_lossy(ps),
             audio_channels: route::stream_achannels(ps),
             feed_payload,
+            payload_options,
             original_dv,
             side_reader,
             // The exact route attempt and native epoch do not exist until after claim. The
@@ -137,6 +140,20 @@ impl FeedOpenRequest {
     /// The common owner checks the credential policy before claiming the native attempt.
     pub fn credential_transport_allowed(&self) -> bool {
         plx_plex::http::credential_transport_allowed(&self.origin, &self.path, &[])
+    }
+}
+
+/// The developer switches are read once by the common open runner. The physical payload builder
+/// receives resolved values and never consults route metadata or trigger files.
+pub(super) fn payload_options(facts: &plx_play_feed::PayloadFacts) -> plx_play_feed::PayloadOptions {
+    let with_fps = !plx_base::devtrig::flag("nofps");
+    if !with_fps {
+        #[cfg(feature = "devtriggers")]
+        log("esInfo: videoFps WITHHELD by /tmp/plxnative-nofps");
+    }
+    plx_play_feed::PayloadOptions {
+        with_fps,
+        suppress_dv_node: facts.dv.is_some() && plx_data::metadata::dv_node_suppressed(),
     }
 }
 
