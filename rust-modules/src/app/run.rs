@@ -2947,6 +2947,7 @@ fn finish_landed_play(app: &mut App, resume_prepared: bool) {
         );
         let started = app.player.session.jail_load_blocked || outcome.accepted();
         // Queued behind the previous object's `Unload`: not started yet, so not admitted yet.
+        #[cfg(feature = "play-feed")]
         let deferred = outcome == plx_media::player::BufferfeedStartOutcome::Deferred;
         let preview = plx_media::route::is_preview(&app.player.session);
         if started && !matches!(app.route(), AppArg::Player) && !preview {

@@ -10,6 +10,7 @@
 //! spelling the names it always did. Moved out of `app.rs` verbatim in phase 1a (a pure move;
 //! `pub(crate)` widening only).
 
+#[cfg(feature = "play-feed")]
 use super::*;
 
 pub(crate) use plx_media::player::foreground::{
