@@ -46,6 +46,17 @@ impl FeedResources {
     }
 
     pub fn engine(&mut self) -> Option<&mut engine::Engine> { self.engine.as_mut() }
+    pub fn uses_stream_queues(&self) -> bool {
+        self.engine.as_ref().is_some_and(engine::Engine::uses_stream_queues)
+    }
+    pub fn arm_live_clock_prime(&mut self) -> bool {
+        let Some(engine) = self.engine.as_mut() else { return false; };
+        engine::arm_live_clock_prime(engine);
+        true
+    }
+    pub fn stage(&self) -> Option<super::shared::Stage> {
+        self.engine.as_ref().map(|engine| engine.stage)
+    }
     pub fn pending_seek_ready(&self, seek_reloads: bool) -> bool {
         self.engine.as_ref().is_some_and(|eng| {
             matches!(&eng.source, engine::Source::Stream)

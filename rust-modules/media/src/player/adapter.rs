@@ -235,6 +235,10 @@ impl PlayerAdapter {
         self.feed.active_attempt()
     }
 
+    pub(super) fn feed_uses_stream_queues(&self) -> bool { self.feed.uses_stream_queues() }
+    pub(super) fn arm_feed_live_clock_prime(&mut self) -> bool { self.feed.arm_live_clock_prime() }
+    pub(super) fn feed_stage(&self) -> Option<super::shared::Stage> { self.feed.stage() }
+
     /// Whether the current physical feed has yet to leave its Load stage.
     pub(super) fn feed_loading(&self) -> bool { self.feed.loading() }
     pub(super) fn foreground_follows_feed_load(&self) -> bool {
