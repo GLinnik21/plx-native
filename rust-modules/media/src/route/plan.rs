@@ -84,7 +84,8 @@ pub struct RouteStartAttempt {
 
 
 impl RouteStartAttempt {
-    #[cfg(all(any(test, feature = "test-support"), feature = "hostsim"))]
+    /// A never-running address for reducer and readout tests in any host feature set.
+    #[cfg(any(test, feature = "test-support"))]
     pub const fn fixture() -> Self {
         Self {
             serial: 1,

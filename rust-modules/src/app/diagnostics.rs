@@ -550,7 +550,7 @@ fn playback_line(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::
 ///
 /// Pure, with the process-global state passed in, so both arms are host-testable.
 fn never_played(d: &plx_media::player::Diag, st: plx_media::player::PlaybackState) -> bool {
-    matches!(st, plx_media::player::PlaybackState::Idle) && d.load_at == 0
+    matches!(st, plx_media::player::PlaybackState::Idle) && d.backend.is_none() && d.load_at == 0
 }
 
 /// **The read-out with no playback behind it: what this SET is.**
@@ -677,6 +677,7 @@ fn rows(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::Diag, pre
 }
 
 fn pipeline_rows(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::Diag, prev: (i64, i64, u32), now: u32) -> Vec<Field> {
+    let feed = d.backend != Some(plx_media::player::attempt_view::Backend::Uri);
     let mut v = Vec::with_capacity(LEFT_ROWS);
     v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_connection(), connection_line(ps)));
     v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_route(), route_line(ps, d)));
@@ -684,7 +685,7 @@ fn pipeline_rows(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::
     let mut video = chain(
         plx_media::route::source_vcodec(ps),
         plx_media::route::stream_vcodec(ps),
-        d.load_v_str(),
+        if feed { d.load_v_str() } else { plx_platform::i18n::msg::browse_diagnostics_unknown() },
     );
     let dv = plx_media::route::stream_dovi(ps);
     if dv.present {
@@ -702,7 +703,9 @@ fn pipeline_rows(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::
     let mut audio = chain(
         plx_media::route::source_acodec(ps),
         plx_media::route::stream_acodec(ps),
-        if d.load_a == 0 {
+        if !feed {
+            plx_platform::i18n::msg::browse_diagnostics_unknown()
+        } else if d.load_a == 0 {
             plx_platform::i18n::msg::browse_diagnostics_no_audio_payload()
         } else {
             d.load_a_str()
@@ -723,18 +726,41 @@ fn pipeline_rows(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::
     // Playback speed: the sound is decoded and time-stretched in the app and reaches the pipeline as
     // PCM, whatever the chain above says the file carries; and the pipeline's own report of what it
     // set up is the safety net's evidence (`player::note_speed_audio_report`), so it is shown.
-    let speed = speed_suffix(
-        plx_media::player::applied_rate_permille(),
-        plx_media::player::speed_audio_report(),
-        plx_media::player::speed_unsupported(),
-    );
+    let speed = if feed {
+        speed_suffix(
+            plx_media::player::applied_rate_permille(),
+            plx_media::player::speed_audio_report(),
+            plx_media::player::speed_unsupported(),
+        )
+    } else {
+        String::new()
+    };
     audio.push_str(&speed);
-    let speed_bad = plx_media::player::applied_rate_permille() != plx_media::player::RATE_NORMAL
+    let speed_bad = feed && plx_media::player::applied_rate_permille() != plx_media::player::RATE_NORMAL
         && plx_media::player::speed_audio_report() == Some(false);
     v.push(
         Field::new(plx_platform::i18n::msg::browse_diagnostics_field_audio(), audio)
             .fault((d.load_a == 0 && d.load_v != 0) || speed_bad),
     );
+    if !feed {
+        // Source/route declarations above are known. Feed and sink measurements are not.
+        let unknown = plx_platform::i18n::msg::browse_diagnostics_unknown();
+        for label in [
+            plx_platform::i18n::msg::browse_diagnostics_field_picture(),
+            plx_platform::i18n::msg::browse_diagnostics_field_timeline(),
+            plx_platform::i18n::msg::browse_diagnostics_field_av_sync(),
+            plx_platform::i18n::msg::browse_diagnostics_field_video_plane(),
+            plx_platform::i18n::msg::browse_diagnostics_field_transfer(),
+            plx_platform::i18n::msg::browse_diagnostics_field_load(),
+            plx_platform::i18n::msg::browse_diagnostics_field_feed(),
+            plx_platform::i18n::msg::browse_diagnostics_field_queues(),
+            plx_platform::i18n::msg::browse_diagnostics_field_frames(),
+        ] {
+            v.push(Field::new(label, unknown));
+        }
+        debug_assert_eq!(v.len(), LEFT_ROWS);
+        return v;
+    }
 
     // **The frame rate here is a CLAIM, and the row says whose.** `video_fps_milli` is what LG's
     // pipeline announced in its own `sourceInfo` callback, and on this set that is not a
@@ -1014,6 +1040,23 @@ fn frames_str(d: &plx_media::player::Diag, now: u32) -> String {
 /// made every mode a different panel and is the regression this shape prevents.
 fn model_rows(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::Diag) -> Vec<Field> {
     let mut v = Vec::with_capacity(RIGHT_ROWS);
+    if d.backend == Some(plx_media::player::attempt_view::Backend::Uri) {
+        let unknown = plx_platform::i18n::msg::browse_diagnostics_unknown();
+        for label in [
+            plx_platform::i18n::msg::browse_diagnostics_field_mode(),
+            plx_platform::i18n::msg::browse_diagnostics_field_quality(),
+            plx_platform::i18n::msg::browse_diagnostics_field_sample(),
+            plx_platform::i18n::msg::browse_diagnostics_field_conservative(),
+            plx_platform::i18n::msg::browse_diagnostics_field_buffer(),
+            plx_platform::i18n::msg::browse_diagnostics_field_risk(),
+            plx_platform::i18n::msg::browse_diagnostics_field_acquisition(),
+            plx_platform::i18n::msg::browse_diagnostics_field_action(),
+            plx_platform::i18n::msg::browse_diagnostics_field_reason(),
+        ] {
+            v.push(Field::new(label, unknown));
+        }
+        return v;
+    }
     // One selection snapshot for the whole block.  A quality press must not leave Mode saying
     // Auto while the lower rows have already formatted the new manual state.
     abr_rows(ps, d, plx_media::route::quality(), &mut v);
@@ -1950,6 +1993,25 @@ pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
 mod tests {
     use super::*;
     use plx_media::route::{reset_player_control_for_test, EnhTestFixture};
+
+    #[test]
+    fn uri_attempt_does_not_inherit_feed_diagnostics() {
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let d = plx_media::player::Diag {
+            backend: Some(plx_media::player::attempt_view::Backend::Uri),
+            ..Default::default()
+        };
+        let unknown = plx_platform::i18n::msg::browse_diagnostics_unknown();
+        let left = pipeline_rows(&ps, &d, (0, 0, 0), 0);
+        assert_eq!(left.len(), LEFT_ROWS);
+        assert!(left[2].val.as_deref().unwrap_or("").contains(unknown), "video's native declaration is unknown");
+        for row in &left[4..] {
+            assert_eq!(row.val.as_deref(), Some(unknown), "{} must not show feed data", row.key);
+        }
+        let right = model_rows(&ps, &d);
+        assert_eq!(right.len(), RIGHT_ROWS);
+        assert!(right.iter().all(|row| row.val.as_deref() == Some(unknown)));
+    }
 
     /// The top of the transport's control row, as the layout reports it (`HudGeometry`): the line the
     /// panel must stay above.
