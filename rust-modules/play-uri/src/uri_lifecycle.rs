@@ -26,6 +26,9 @@ pub enum Event {
         message: Message,
     },
     Reply(UriReply),
+    /// The caller consumed a confirmed interactive control. Later commands may select the
+    /// same native index without the retired request making attribution ambiguous.
+    Retire { request: RequestId },
     Close {
         now_ms: u64,
         allowance_ms: u64,
@@ -355,6 +358,7 @@ impl Lifecycle {
                     }
                 }
             }
+            Event::Retire { request } => { self.requests.remove(&request); }
             Event::AcbTouched {session} if self.session == Some(session) && self.phase == Phase::Open => { self.acb_touched = true; }
             Event::AcbUnloadDispatched {session} if self.session == Some(session) && self.bus_released && self.acb_unload_requested && !self.acb_tail_done => {
                 self.acb_tail_done = true;
