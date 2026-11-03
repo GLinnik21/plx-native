@@ -6366,7 +6366,7 @@ pub(crate) fn demux(
                     ),
                     None => String::new(),
                 };
-                session.media().record(&format!(
+                let line = format!(
                     "ff: v=#{vi} codec={cname} codec_id={} {}x{} trc={} pri={} spc={}{dv} a=#{ai} dur_ns={}",
                     (*vcp).codec_id,
                     (*vcp).width,
@@ -6375,7 +6375,8 @@ pub(crate) fn demux(
                     (*vcp).color_primaries,
                     (*vcp).color_space,
                     session.clock().duration_ns()
-                ));
+                );
+                session.media().record(&line);
                 if force_original && dovi_conf(vcp).is_some_and(|d| {
                     force_original_dovi_unsupported(&d)
                 }) {
