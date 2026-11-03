@@ -979,6 +979,49 @@ fn force_audio_refusal(codec: &str, no_audio: bool) -> Option<ForceAudioRefusal>
     }
 }
 
+/// One Force preflight decision, using the original source facts captured before native Load.
+enum ForceOpenRefusal {
+    Speed,
+    Audio(ForceAudioRefusal),
+}
+
+fn force_open_refusal(
+    requested_rate: i32,
+    audio_codec: &str,
+    no_audio: bool,
+    _original_dovi: plx_data::metadata::Dovi,
+) -> Option<ForceOpenRefusal> {
+    if force_speed_refused(requested_rate) {
+        return Some(ForceOpenRefusal::Speed);
+    }
+    force_audio_refusal(audio_codec, no_audio).map(ForceOpenRefusal::Audio)
+}
+
+#[cfg(test)]
+mod force_video_wire_tests {
+    use super::*;
+
+    #[test]
+    fn force_refuses_original_profile_7_before_any_profile_8_declaration() {
+        let original = plx_data::metadata::Dovi {
+            present: true,
+            profile: 7,
+            bl_compat: 6,
+            el_present: true,
+            ..plx_data::metadata::Dovi::NONE
+        };
+        let declared = original.presentation(
+            true, plx_platform::devcaps::dv::DvCapability::Supported, true,
+        );
+        assert_eq!(declared.declared().expect("Auto can convert P7").profile_id, 8);
+        assert!(force_open_refusal(super::super::RATE_NORMAL, "ac3", false, original).is_some(),
+            "Force preserves original P7 bytes, so a converted P8 Load declaration is untrue");
+        assert!(original.presentation(
+            false, plx_platform::devcaps::dv::DvCapability::Unsupported, true,
+        ).declared().is_none(), "an undeclared P7 still leaves the original P7 wire bytes");
+    }
+}
+
 // Route-format adapters for the neutral payload constructor.
 #[cfg(test)]
 fn with_pcm_info(p: &str, audio: &str, pcm: Option<crate::route::PcmFormat>) -> String {
@@ -1512,13 +1555,17 @@ fn start_bufferfeed_inner(
     let no_audio = super::no_audio_armed();
     // Refuse incompatible Force configurations before publishing audio/rate facts to the demuxer.
     if let Some(open) = open.as_ref().filter(|request| request.payload.force_direct_play) {
-        if force_speed_refused(super::play_rate_permille()) {
-            log("start_bufferfeed: Force Direct Play cannot apply playback speed without changing audio");
-            SHARED.fail_demux(DemuxExitClass::LoadRefused);
-            return Err(crate::route::RouteStartResult::StartFailed);
-        }
-        if let Some(why) = force_audio_refusal(&open.audio_codec, no_audio) {
-            log(&format!("start_bufferfeed: Force Direct Play refused original audio {}: {}", open.audio_codec, why.message()));
+        if let Some(refusal) = force_open_refusal(
+            super::play_rate_permille(), &open.audio_codec, no_audio, open.payload.dovi,
+        ) {
+            match refusal {
+                ForceOpenRefusal::Speed => {
+                    log("start_bufferfeed: Force Direct Play cannot apply playback speed without changing audio");
+                }
+                ForceOpenRefusal::Audio(why) => {
+                    log(&format!("start_bufferfeed: Force Direct Play refused original audio {}: {}", open.audio_codec, why.message()));
+                }
+            }
             SHARED.fail_demux(DemuxExitClass::LoadRefused);
             return Err(crate::route::RouteStartResult::StartFailed);
         }
