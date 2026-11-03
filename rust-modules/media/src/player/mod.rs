@@ -2985,11 +2985,9 @@ mod tests {
     use super::*;
 
     fn caption_retention() -> plx_playback_contract::subtitle::CaptionRetention {
-        let seeking = SHARED.seeking.load(Relaxed);
-        let target = SHARED.seek_display_ns.load(Relaxed);
         plx_playback_contract::subtitle::CaptionRetention {
             playhead_ns: Some(SHARED.playpos_ns.load(Relaxed)),
-            seek_target_ns: (seeking && target >= 0).then_some(target),
+            seek_target_ns: None,
         }
     }
 
