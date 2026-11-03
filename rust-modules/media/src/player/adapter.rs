@@ -91,7 +91,7 @@ impl PlayerAdapter {
     pub fn new(mt: MainThread) -> Self {
         Self {
             mt,
-            feed: FeedResources::new(),
+            feed: FeedResources::new(&super::SHARED.feed),
             feed_attempt: None,
             timeline: None,
             repair: None,

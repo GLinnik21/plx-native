@@ -237,7 +237,9 @@ pub(super) fn start_bufferfeed_inner(
     // aborts it; a later supersession drops both guards without launching a worker.
     let session_rate = if stream { super::session_rate_for(ps) } else { super::RATE_NORMAL };
     let trace_generation = crate::route::playback_trace_generation();
-    let mut prepared_native = engine::prepare_native_open(pa.mt(), open.map(super::feed_open::FeedOpenRequest::into_physical), sample, is_h265, session_rate, side_reader)
+    let mut prepared_native = engine::prepare_native_open(pa.mt(), pa.feed.shared(),
+        TX.paused.load(Ordering::Acquire), TX.seek_preroll_active(),
+        open.map(super::feed_open::FeedOpenRequest::into_physical), sample, is_h265, session_rate, side_reader)
         .map_err(|_| crate::route::RouteStartResult::StartFailed)?;
     // The route reducer alone mints the physical attempt. The native constructor consumes this
     // identity; no backend-owned logical counter can alias a later route.

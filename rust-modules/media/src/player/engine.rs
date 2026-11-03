@@ -11,6 +11,7 @@
 //! or the ACB/Starfish seam, so the parameter carries information. `arm_seek` runs on the main
 //! thread too and deliberately does not take one: it only publishes to `SHARED`.
 use plx_play_feed::open::{OriginalDvFacts, PhysicalOpen};
+use plx_play_feed::shared::PhysicalShared;
 #[cfg(all(test, feature = "hostsim"))]
 use super::route_start::{exit_native, exit_native_with, finish_release_for_test, poll_release,
     reap_abandoned_load, NativeExit};
@@ -146,6 +147,8 @@ impl Drop for AuBox {
 
 /// MAIN-THREAD-CONFINED. No worker thread ever names an Engine field.
 pub struct Engine {
+    /// Physical callback mailbox for this feed executor; common owns its lifetime and reset.
+    pub shared: &'static PhysicalShared,
     /// Exact reducer attempt which constructed this native object. A duplicate start for this
     /// attempt is harmless; a different Prepared transaction must never be mistaken for it.
     pub attempt: plx_playback_contract::AttemptId,
@@ -266,14 +269,15 @@ impl Drop for Engine {
 /// early return after worker creation runs this guard only after its local handles have been
 /// stopped/joined, so a failed start cannot poison the next attempt with a phantom held clock.
 struct ClockStartGuard {
+    shared: &'static PhysicalShared,
     armed: bool,
 }
 
 impl ClockStartGuard {
-    fn arm() -> Option<Self> {
-        SHARED
-            .arm_initial_clock_hold(TX.paused.load(Ordering::Acquire), TX.seek_preroll_active())
-            .then_some(Self { armed: true })
+    fn arm(shared: &'static PhysicalShared, user_held: bool, seek_preroll: bool) -> Option<Self> {
+        shared
+            .arm_initial_clock_hold(user_held, seek_preroll)
+            .then_some(Self { shared, armed: true })
     }
 
     fn commit(mut self) {
@@ -284,7 +288,7 @@ impl ClockStartGuard {
 impl Drop for ClockStartGuard {
     fn drop(&mut self) {
         if self.armed {
-            SHARED.cancel_clock_session_start();
+            self.shared.cancel_clock_session_start();
         }
     }
 }
@@ -293,15 +297,16 @@ impl Drop for ClockStartGuard {
 /// return then retires it automatically, and retirement is also a barrier for a callback already
 /// executing on Starfish's library thread.
 struct NativeSessionStartGuard {
+    shared: &'static PhysicalShared,
     epoch: u32,
     armed: bool,
 }
 
 impl NativeSessionStartGuard {
-    fn arm() -> Option<Self> {
-        SHARED
+    fn arm(shared: &'static PhysicalShared) -> Option<Self> {
+        shared
             .begin_native_session()
-            .map(|epoch| Self { epoch, armed: true })
+            .map(|epoch| Self { shared, epoch, armed: true })
     }
 
     fn epoch(&self) -> u32 {
@@ -316,7 +321,7 @@ impl NativeSessionStartGuard {
 impl Drop for NativeSessionStartGuard {
     fn drop(&mut self) {
         if self.armed {
-            SHARED.retire_native_session(self.epoch);
+            self.shared.retire_native_session(self.epoch);
         }
     }
 }
@@ -1073,7 +1078,7 @@ pub(super) fn begin_native_open(feed: &mut super::feed_resources::FeedResources,
 
 #[cfg(feature = "devtriggers")]
 pub(super) fn native_slot_available() -> Option<()> {
-    NativeSessionStartGuard::arm().map(|guard| { drop(guard); })
+    NativeSessionStartGuard::arm(&SHARED.feed).map(|guard| { drop(guard); })
 }
 
 /// Native construction failed before a usable Load could be installed. Route settlement is
@@ -1085,6 +1090,9 @@ pub(super) enum NativeOpenError { Refused }
 /// has already frozen its URL, codec declaration, playback rate, and trace identity.
 pub(super) fn prepare_native_open(
     mt: &MainThread,
+    shared: &'static PhysicalShared,
+    user_held: bool,
+    seek_preroll: bool,
     open: Option<PhysicalOpen>,
     sample: Option<super::feed_open::SampleSource>,
     is_h265: bool,
@@ -1117,7 +1125,7 @@ pub(super) fn prepare_native_open(
                     log("start_bufferfeed: Force Direct Play refused original Dolby Vision Profile 7/enhancement-layer wire: no qualified buffer-feed declaration for unchanged bytes");
                 }
             }
-            SHARED.fail_demux(DemuxExitClass::LoadRefused);
+            shared.fail_demux(DemuxExitClass::LoadRefused);
             return Err(NativeOpenError::Refused);
         }
     }
@@ -1140,7 +1148,7 @@ pub(super) fn prepare_native_open(
     // spawned: it reads it to decide whether to decode the audio, and every timestamp crossing to
     // the pipeline is scaled by it (`player::to_sink_ns`). After any `reset_session`, which puts
     // it back to 1x.
-    SHARED.applied_rate_permille.store(session_rate, Ordering::Relaxed);
+    shared.applied_rate_permille.store(session_rate, Ordering::Relaxed);
     if session_rate != super::RATE_NORMAL {
         log(&format!("speed: this Load plays at {session_rate} (audio decoded in the app, fed as PCM)"));
     }
@@ -1151,7 +1159,7 @@ pub(super) fn prepare_native_open(
             log(&format!(
                 "start_bufferfeed: the pipeline cannot feed video codec {stream_vcodec:?}; refusing the Load instead of declaring it H.264"
             ));
-            SHARED.fail_demux(DemuxExitClass::LoadRefused);
+            shared.fail_demux(DemuxExitClass::LoadRefused);
             return Err(NativeOpenError::Refused);
         };
         if video_declaration_refused(lv, &plx_platform::devcaps::caps(), open.feed_payload.force_direct_play) {
@@ -1159,15 +1167,15 @@ pub(super) fn prepare_native_open(
                 "start_bufferfeed: {} stream but the device table lists no such decoder; refusing the Load",
                 lv.payload_name()
             ));
-            SHARED.fail_demux(DemuxExitClass::LoadRefused);
+            shared.fail_demux(DemuxExitClass::LoadRefused);
             return Err(NativeOpenError::Refused);
         }
         video_declared = lv.payload_name();
         // Record what the payload ACTUALLY says, for the diagnostics read-out — including the
         // video-only case, where `dg_load_a == 0` is the whole explanation for silence.
-        SHARED.dg_load_v.store(lv.diag_code(), Ordering::Relaxed);
+        shared.dg_load_v.store(lv.diag_code(), Ordering::Relaxed);
         if no_audio {
-            SHARED.dg_load_a.store(0, Ordering::Relaxed);
+            shared.dg_load_a.store(0, Ordering::Relaxed);
             // A static payload declares its own envelope; say so on the `load:` line.
             sink_env = static_envelope(lv);
             match lv {
@@ -1189,7 +1197,7 @@ pub(super) fn prepare_native_open(
                 Some(Ok(f)) => Some(f),
                 Some(Err(why)) => {
                     log(&format!("start_bufferfeed: PCM audio refused — {why}"));
-                    SHARED.demux_failed.store(true, Ordering::Release);
+                    shared.demux_failed.store(true, Ordering::Release);
                     return Err(NativeOpenError::Refused);
                 }
                 None => None,
@@ -1201,7 +1209,7 @@ pub(super) fn prepare_native_open(
                 &codec, session_rate, pcm.is_some(), lead_override.as_deref(), plx_platform::devcaps::audio_stack(),
             ) else {
                 log(&format!("start_bufferfeed: unsupported audio codec {codec:?}; refusing incorrect Load declaration"));
-                SHARED.fail_demux(DemuxExitClass::LoadRefused);
+                shared.fail_demux(DemuxExitClass::LoadRefused);
                 return Err(NativeOpenError::Refused);
             };
             crate::ff::set_pcm_out(
@@ -1213,7 +1221,7 @@ pub(super) fn prepare_native_open(
             if let Some(f) = pcm {
                 log(&plx_play_feed::pcm_decode_line(&codec, &f));
             }
-            SHARED.dg_load_a.store(audio.diagnostic, Ordering::Relaxed);
+            shared.dg_load_a.store(audio.diagnostic, Ordering::Relaxed);
             // App-decoded audio (`pcm`) and a speed session (`ff::SpeedDecoder`) both declare PCM;
             // `load_audio` has already put that into the declared name and the lead plan with it.
             let ac = audio.name;
@@ -1242,7 +1250,7 @@ pub(super) fn prepare_native_open(
                 let channels = open.audio_channels;
                 let Some(p) = with_opus_info(&av, channels) else {
                     log(&format!("start_bufferfeed: no Opus layout for {channels} channel(s); refusing the Load"));
-                    SHARED.demux_failed.store(true, Ordering::Release);
+                    shared.demux_failed.store(true, Ordering::Release);
                     return Err(NativeOpenError::Refused);
                 };
                 log(&format!("start_bufferfeed: opusInfo channels={channels}"));
@@ -1296,14 +1304,14 @@ pub(super) fn prepare_native_open(
 
     // The native object starts stopped. Publish that physical fact before either worker can arm an
     // ABR trial or observe a user command; the guard rolls it back on every construction failure.
-    let clock_start = match ClockStartGuard::arm() {
+    let clock_start = match ClockStartGuard::arm(shared, user_held, seek_preroll) {
         Some(guard) => guard,
         None => {
             log("start_bufferfeed: clock state is not idle (refusing overlapping start)");
             return Err(NativeOpenError::Refused);
         }
     };
-    let native_start = match NativeSessionStartGuard::arm() {
+    let native_start = match NativeSessionStartGuard::arm(shared) {
         Some(guard) => guard,
         None => {
             log("start_bufferfeed: native session is not idle (refusing overlapping Load)");
@@ -1346,6 +1354,7 @@ pub(super) fn launch_native_open(
     prepared: NativePrepared,
 ) -> Result<(), NativeOpenError> {
     let NativePrepared { mut open, sample, stream, payload_c, audio_lead, clock_start, native_start, mut side_reader } = prepared;
+    let shared = feed.shared();
     // fd = -1 (CLOSED) so a teardown before/without http_open doesn't close(0)
     let mut hs = plx_net::stream::http_stream_boxed();
     let mut aqv_box: Option<Box<AuQueue>> = None;
@@ -1370,7 +1379,7 @@ pub(super) fn launch_native_open(
         let aqv_raw = &mut *qv as *mut AuQueue;
         let aqa_raw = &mut *qa as *mut AuQueue;
         let hs_raw = &mut *hs as *mut HttpStream;
-        SHARED.hs_ptr.store(hs_raw, Ordering::Release);
+        shared.hs_ptr.store(hs_raw, Ordering::Release);
         {
             let aqp = threads::SendPtr(aqv_raw);
             let aqap = threads::SendPtr(aqa_raw);
@@ -1395,16 +1404,16 @@ pub(super) fn launch_native_open(
             // Before the demuxer exists, so what it publishes is this session's.
             crate::ff::native_audio::reset();
             // A clock-only reader (a sidecar) reads no subtitle: the demuxer keeps what it enumerates.
-            SHARED.side_subs_owner.store(side_reader.embedded_owner(), Ordering::Release);
+            shared.side_subs_owner.store(side_reader.embedded_owner(), Ordering::Release);
             stream_th = plx_base::task::spawn_off_frame_keeping("demux", move |off| {
                 crate::ff::demux(off, origin, path, acodec, force_original, demux_transport, session, abr, auto_original, aqp, aqap, hsp)
             });
             if stream_th.is_none() {
-                SHARED.side_subs_owner.store(false, Ordering::Release);
+                shared.side_subs_owner.store(false, Ordering::Release);
                 // Nothing will ever fill the AU queues, so there is no session to start. `hs` is
                 // about to drop with this early return, so retract the pointer first — the pump
-                // and teardown both read it straight off SHARED.
-                SHARED.hs_ptr.store(std::ptr::null_mut(), Ordering::Release);
+                // and teardown both read it straight off shared.
+                shared.hs_ptr.store(std::ptr::null_mut(), Ordering::Release);
                 return Err(NativeOpenError::Refused);
             }
         }
@@ -1432,7 +1441,7 @@ pub(super) fn launch_native_open(
         for q in [aqv_box.as_mut(), aqa_box.as_mut()].into_iter().flatten() {
             crate::aq::aq_abort(&mut **q);
         }
-        let p = SHARED.hs_ptr.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        let p = shared.hs_ptr.swap(std::ptr::null_mut(), Ordering::AcqRel);
         if !p.is_null() {
             plx_net::stream::http_shutdown(p);
         }
@@ -1453,6 +1462,7 @@ pub(super) fn launch_native_open(
 
     let (lead_at_start, lead_pending) = audio_lead.at_engine_start();
     let eng = Engine {
+        shared,
         attempt,
         native_epoch,
         stage: Stage::Loading,
@@ -1464,7 +1474,7 @@ pub(super) fn launch_native_open(
         // post-seek keyframe to fed-pts 0 so the pipeline sees a 0-based timeline identical
         // to fresh play (disp_base carries the content offset). Plain fresh play leaves this
         // false (first keyframe is already ~0).
-        rebase_pending: SHARED.seek_to_ns.load(Ordering::Relaxed) >= 0,
+        rebase_pending: shared.seek_to_ns.load(Ordering::Relaxed) >= 0,
         rebase_drops: 0,
         seek_armed_at: 0,
         seek_retries: 0,
@@ -1576,11 +1586,12 @@ impl NativeStop {
     /// Wake both transports and queues before either worker join; close the socket only after
     /// the demux reader no longer owns its fd. A timed-out Load remains parked and unjoined.
     pub(super) fn unblock_join_close(&mut self) {
+        let shared = self.eng.shared;
         if self.stream {
             for q in [self.eng.aq_video.as_mut(), self.eng.aq_audio.as_mut()].into_iter().flatten() {
                 crate::aq::aq_abort(&mut **q);
             }
-            let p = SHARED.hs_ptr.load(Ordering::Acquire);
+            let p = shared.hs_ptr.load(Ordering::Acquire);
             if !p.is_null() { plx_net::stream::http_shutdown(p); }
             crate::curlio::abort_active();
         }
@@ -1590,7 +1601,7 @@ impl NativeStop {
         }
         self.spans.mark("join_demux");
         self.abandoned_load = match self.eng.load_th.take() {
-            Some(thread) if !thread.is_finished() && SHARED.load_timed_out.load(Ordering::Acquire) => Some(thread),
+            Some(thread) if !thread.is_finished() && shared.load_timed_out.load(Ordering::Acquire) => Some(thread),
             Some(thread) => {
                 plx_base::task::join("media", thread);
                 None
@@ -1599,7 +1610,7 @@ impl NativeStop {
         };
         self.spans.mark("join_media");
         if self.stream {
-            let p = SHARED.hs_ptr.load(Ordering::Acquire);
+            let p = shared.hs_ptr.load(Ordering::Acquire);
             if !p.is_null() { plx_net::stream::http_close(p); }
         }
         self.spans.mark("http_close");
@@ -1616,8 +1627,9 @@ impl NativeStop {
     /// Release only after common reporting has handed its final write to the off-frame worker.
     pub(super) fn release_and_drain(&mut self, mt: &MainThread,
         feed: &mut super::feed_resources::FeedResources, for_reload: bool) {
+        let shared = self.eng.shared;
         if let Some(load_th) = self.abandoned_load.take() {
-            if !SHARED.abandon_native_session(self.eng.native_epoch) {
+            if !shared.abandon_native_session(self.eng.native_epoch) {
                 log(&format!(
                     "native lifecycle: abandoned Load epoch={} no longer owned the Active phase",
                     self.eng.native_epoch,
@@ -2044,10 +2056,11 @@ fn load_audio(
 /// fed. `false` while the Load has not returned (the audio waits; nothing can be fed before it
 /// anyway). A lead that was settled on the frame thread has nothing to take.
 fn settle_pcm_lead(eng: &mut Engine) -> bool {
+    let shared = eng.shared;
     if !eng.pcm_lead_pending {
         return true;
     }
-    let Some(ns) = SHARED.native_load_pcm_lead(eng.native_epoch) else {
+    let Some(ns) = shared.native_load_pcm_lead(eng.native_epoch) else {
         return false;
     };
     eng.pcm_sink_lead_ns = ns;
@@ -2064,7 +2077,8 @@ fn hls_candidate_snapshot_stable(start: u64, end: u64) -> bool {
 /// accepted media may remain ahead of the presented tail, and both application queues may continue
 /// the same validated timeline behind it.
 pub fn arm_live_clock_prime(eng: &mut Engine) {
-    let presented = SHARED.pres_fed.load(Ordering::Relaxed);
+    let shared = eng.shared;
+    let presented = shared.pres_fed.load(Ordering::Relaxed);
     eng.seek_base_pts = if presented == PRES_NONE {
         eng.max_fed_video_pts.min(eng.max_fed_audio_pts.max(0))
     } else {
@@ -2092,10 +2106,11 @@ pub fn arm_live_clock_prime(eng: &mut Engine) {
 /// so the in-loop call is kept for the case it already served: a direct-play stream that reaches
 /// the threshold mid-lane should start on that AU, not a tick later.
 pub fn try_prime(mt: &MainThread, eng: &mut Engine) {
+    let shared = eng.shared;
     if !eng.prime_play {
         return;
     }
-    let Some(prime_kind) = SHARED.hls_prime_kind() else {
+    let Some(prime_kind) = shared.hls_prime_kind() else {
         return;
     };
     // If the clock is already held, do not restart it in the middle of an exploratory transaction.
@@ -2103,16 +2118,16 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine) {
     // the playhead too would spend that balance a second time. This marker never pauses a running
     // clock — it only delays release of an existing prime hold until commit/reject. Dropping the
     // trial marker releases this gate, and the next ordinary pump tick retries the prime.
-    if SHARED.hls_trial_reserve_ms.load(Ordering::Acquire) >= 0 {
+    if shared.hls_trial_reserve_ms.load(Ordering::Acquire) >= 0 {
         return;
     }
-    let candidate_generation = SHARED.hls_candidate_generation.load(Ordering::Acquire);
+    let candidate_generation = shared.hls_candidate_generation.load(Ordering::Acquire);
     if !hls_candidate_snapshot_stable(candidate_generation, candidate_generation) {
         return;
     }
     let accepted_vbuf = eng.max_fed_video_pts - eng.seek_base_pts;
     let accepted_abuf = eng.max_fed_audio_pts - eng.seek_base_pts;
-    let observed_runway_ns = SHARED
+    let observed_runway_ns = shared
         .hls_prime_runway_ms
         .load(Ordering::Relaxed)
         .max(0)
@@ -2129,9 +2144,9 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine) {
     // accepted-only because it is a fresh clock boundary whose old queued tail is not proof about
     // the newly loaded/landed timeline.
     let queued_runway = matches!(prime_kind, HlsPrimeKind::Rebuffer | HlsPrimeKind::Resume);
-    let shift = SHARED.pts_shift.load(Ordering::Relaxed);
-    let queued_video = SHARED.hls_video_tail_ns.load(Ordering::Acquire);
-    let queued_audio = SHARED.hls_audio_tail_ns.load(Ordering::Acquire);
+    let shift = shared.pts_shift.load(Ordering::Relaxed);
+    let queued_video = shared.hls_video_tail_ns.load(Ordering::Acquire);
+    let queued_audio = shared.hls_audio_tail_ns.load(Ordering::Acquire);
     let playable_video_high = if queued_runway && queued_video >= 0 {
         eng.max_fed_video_pts
             .max(queued_video.saturating_add(shift))
@@ -2149,22 +2164,22 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine) {
     // An A/V stream requires both lanes even while audio is temporarily empty. Only a segment the
     // demuxer proved audioless may use the video-only escape; `abuf <= 0` alone is starvation, not
     // evidence that no audio exists.
-    let audio_expected = SHARED.hls_audio_expected.load(Ordering::Acquire) || playable_abuf > 0;
+    let audio_expected = shared.hls_audio_expected.load(Ordering::Acquire) || playable_abuf > 0;
     let decoder_ready = if audio_expected {
         accepted_vbuf >= PRIME_NS && accepted_abuf >= PRIME_AUDIO_NS
     } else {
         accepted_vbuf >= PRIME_VIDEO_MAX_NS
     };
-    let recovery = SHARED.hls_recovery();
+    let recovery = shared.hls_recovery();
     // A downshift has no discretionary trial reserve, yet it can queue candidate AUs while an
     // internal hold is active. Validate one seqlock generation around the ENTIRE tail/decoder/
     // recovery snapshot: an odd or changed value means candidate publication overlapped it. A
     // bool cannot prove this because a complete false->true->false transition is an ABA. Re-read
     // the up-trial gate at the same final boundary so neither transaction type has a check/use gap.
-    if SHARED.hls_trial_reserve_ms.load(Ordering::Acquire) >= 0
+    if shared.hls_trial_reserve_ms.load(Ordering::Acquire) >= 0
         || !hls_candidate_snapshot_stable(
             candidate_generation,
-            SHARED.hls_candidate_generation.load(Ordering::Acquire),
+            shared.hls_candidate_generation.load(Ordering::Acquire),
         )
     {
         return;
@@ -2187,7 +2202,7 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine) {
     };
     if decoder_ready && boundary_ready && TX.feed_allowed() {
         let Some((play_token, recovery)) =
-            SHARED.reserve_hls_prime_play(prime_kind, candidate_generation, recovery)
+            shared.reserve_hls_prime_play(prime_kind, candidate_generation, recovery)
         else {
             return;
         };
@@ -2196,13 +2211,13 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine) {
             super::mute_for_preroll(mt);
         }
         let played = unsafe { sink().play(mt) };
-        match SHARED.complete_hls_prime_play(play_token, played != 0) {
+        match shared.complete_hls_prime_play(play_token, played != 0) {
             HlsPlayCompletion::Accepted { resume_acb } => {
                 if resume_acb {
                     super::acb_mirror_playstate_at(mt, eng.stage, true);
                 }
                 eng.prime_play = false;
-                SHARED.seeking.store(false, Ordering::Relaxed); // playback resumed at the new position → HUD spinner off
+                shared.seeking.store(false, Ordering::Relaxed); // playback resumed at the new position → HUD spinner off
                 if prime_kind == HlsPrimeKind::Rebuffer {
                     log(&format!(
                         "primed: v={}ms a={}ms recovery_n={} debt={}ms runway={}ms -> Play",
@@ -2258,6 +2273,7 @@ pub fn feed_both_lanes(mt: &MainThread, eng: &mut Engine) {
 }
 
 fn feed_stream(mt: &MainThread, eng: &mut Engine) {
+    let shared = eng.shared;
     let qp = match eng.aq_video.as_mut() {
         Some(q) => &mut **q as *mut AuQueue,
         None => return,
@@ -2281,7 +2297,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
                 }
                 // Nothing to send. THE case the read-out's Feed row exists to name: a dead
                 // PRODUCER, which every other field on the panel cannot tell from a dead sink.
-                SHARED.dg_feed_state.store(5, Ordering::Relaxed);
+                shared.dg_feed_state.store(5, Ordering::Relaxed);
                 break;
             }
             eng.pending_video = Some(AuBox(n));
@@ -2296,7 +2312,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
                 // frame from the pre-flush read position (the reopen+av_seek hasn't taken effect yet),
                 // not the real post-seek keyframe. Capped so a failed av_seek can't hang the rebase.
                 if eng.flushed {
-                    let target = SHARED.seek_target_ns.load(Ordering::Relaxed);
+                    let target = shared.seek_target_ns.load(Ordering::Relaxed);
                     let stale = target >= 0
                         && (pts - target > SEEK_STALE_AHEAD_NS
                             || target - pts > SEEK_STALE_BEHIND_NS);
@@ -2325,7 +2341,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
                     // runs on the main thread and is the only Feed caller, and this keyframe is
                     // not fed yet, so Seek cannot race a Feed. Never a negative millis: Seek
                     // refuses it, and a negative PTS is unparseable by Feed.
-                    SHARED.pts_shift.store(0, Ordering::Relaxed);
+                    shared.pts_shift.store(0, Ordering::Relaxed);
                     let ms = super::to_sink_ns(pts.max(0)) / 1_000_000;
                     let rv = unsafe { sink().seek(mt, ms) };
                     log(&format!("in-place seek(native): Seek({ms}) rv={rv}"));
@@ -2345,7 +2361,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
                             "in-place seek DOWNGRADE: native Seek refused -> reload-per-seek for \
                              the rest of this playback",
                         );
-                        let tgt = SHARED.seek_target_ns.load(Ordering::Relaxed).max(0);
+                        let tgt = shared.seek_target_ns.load(Ordering::Relaxed).max(0);
                         TX.seek_reqs.store(1, Ordering::Release);
                         TX.seek_to_ns.store(tgt, Ordering::Release);
                         eng.pending_video = None;
@@ -2367,7 +2383,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
                     // pipeline the real decode position, then inject a fresh GStreamer SEGMENT —
                     // this re-anchors the sink WITHOUT a reload/decoder re-init. disp_base=0 +
                     // pts_shift=0 → playpos = presented real pts = content time.
-                    SHARED.pts_shift.store(0, Ordering::Relaxed);
+                    shared.pts_shift.store(0, Ordering::Relaxed);
                     let ok = unsafe { sink().set_time_to_decode(mt, super::to_sink_ns(pts)) };
                     // setTimeToDecode returns 0 on webOS<11 (it needs PausedState); fall back to
                     // the content-info path (loadSpi_getInfo + setContentInfo(ptsToDecode)), which
@@ -2405,24 +2421,24 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
                 } else {
                     // reload / initial-resume seek: rebase the landed keyframe to fed-pts 0 (the
                     // fresh Load's pipeline expects a 0-based feed; disp_base carries the offset).
-                    SHARED.pts_shift.store(-pts, Ordering::Relaxed);
+                    shared.pts_shift.store(-pts, Ordering::Relaxed);
                 }
                 eng.rebase_pending = false; // releases the AUDIO lane (which holds until this clears)
-                eng.seek_base_pts = pts + SHARED.pts_shift.load(Ordering::Relaxed); // fed-pts base
+                eng.seek_base_pts = pts + shared.pts_shift.load(Ordering::Relaxed); // fed-pts base
                                                                                     // Installing a SEGMENT is not acceptance of the AU which establishes it. Keep
                                                                                     // callbacks fenced across BufferFull/error and arm only below, after this exact
                                                                                     // retained keyframe has returned `O` from sf_feed.
                 eng.presentation_rearm_pending = completing_in_place_seek && segment_installed;
                 log(&format!(
                     "rebase: first post-seek keyframe pts={pts} -> pts_shift={}",
-                    SHARED.pts_shift.load(Ordering::Relaxed)
+                    shared.pts_shift.load(Ordering::Relaxed)
                 ));
             } else {
                 eng.pending_video = None; // drop pre-keyframe AUs
                 continue;
             }
         }
-        let mut fp = pts + SHARED.pts_shift.load(Ordering::Relaxed) + pts_nudge_ns();
+        let mut fp = pts + shared.pts_shift.load(Ordering::Relaxed) + pts_nudge_ns();
         if fp < eng.max_fed_video_pts - STALE_BACKJUMP_NS {
             eng.pending_video = None; // stale (a big backward jump)
             continue;
@@ -2436,9 +2452,9 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
         // until the lane holds its prime depth, then spreads the rest). Each lane's queue is
         // pts-ordered, so if the head is over budget everything behind it is too; breaking is right.
         let pres = eng.feed_pace.reference_at(
-            SHARED.pres_fed.load(Ordering::Relaxed),
+            shared.pres_fed.load(Ordering::Relaxed),
             super::vclock_ms(),
-            SHARED.applied_rate_permille.load(Ordering::Relaxed),
+            shared.applied_rate_permille.load(Ordering::Relaxed),
         );
         if !eng.prime_play {
             let budget = if es == 1 {
@@ -2447,7 +2463,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
                 MAX_FEED_AHEAD_NS + AUDIO_SLACK_NS
             };
             if pres != PRES_NONE && fp - pres > budget {
-                SHARED.dg_feed_state.store(4, Ordering::Relaxed); // waiting for a frame
+                shared.dg_feed_state.store(4, Ordering::Relaxed); // waiting for a frame
                 break;
             }
         }
@@ -2464,7 +2480,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
             break;
         }
         let presentation_probe = if eng.presentation_rearm_pending {
-            let armed = SHARED.begin_native_presentation_probe(eng.native_epoch);
+            let armed = shared.begin_native_presentation_probe(eng.native_epoch);
             if !armed {
                 log("rebase: native presentation epoch retired before post-seek Feed");
             }
@@ -2476,12 +2492,12 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
         let r = plx_base::diag::spans::span("sfv", || unsafe { sink().feed(mt, data, len as u32, sink_pts, es) });
         if presentation_probe {
             if (r as u8) == b'O' {
-                if !SHARED.commit_native_presentation_probe(eng.native_epoch, |num| {
+                if !shared.commit_native_presentation_probe(eng.native_epoch, |num| {
                     super::sf_on_event_inner(0, num, std::ptr::null(), super::shared::EventScope::Live)
                 }) {
                     log("rebase: native presentation probe lost its epoch after accepted Feed");
                 }
-            } else if !SHARED.reject_native_presentation_probe(eng.native_epoch) {
+            } else if !shared.reject_native_presentation_probe(eng.native_epoch) {
                 log("rebase: native presentation probe lost its epoch after rejected Feed");
             }
         }
@@ -2517,7 +2533,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
         }
         if (r as u8) != b'O' {
             // 'B' BufferFull -> keep pending, retry next tick (VIDEO lane only)
-            SHARED
+            shared
                 .dg_feed_state
                 .store(if (r as u8) == b'B' { 2 } else { 3 }, Ordering::Relaxed);
             break;
@@ -2525,7 +2541,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
         if eng.presentation_rearm_pending {
             eng.presentation_rearm_pending = false;
         }
-        SHARED.dg_feed_state.store(1, Ordering::Relaxed); // accepting
+        shared.dg_feed_state.store(1, Ordering::Relaxed); // accepting
                                                           // COUNTED HERE, below the reply test, so `Fed` means AUs the pipeline TOOK. Counted above
                                                           // it, a permanently-full sink re-offered and re-counted the same retained AU every tick,
                                                           // and the read-out showed a brisk feed rate through a stall.
@@ -2552,6 +2568,7 @@ fn audio_lead_in(fp: i64, opens: bool, start: Option<i64>) -> bool {
 /// only the video lane starts the clock. Called AFTER feed_stream each tick, so a same-tick rebase
 /// is already visible.
 fn feed_audio_lane(mt: &MainThread, eng: &mut Engine) {
+    let shared = eng.shared;
     if eng.rebase_pending {
         return; // wait for the video lane to publish pts_shift
     }
@@ -2565,11 +2582,11 @@ fn feed_audio_lane(mt: &MainThread, eng: &mut Engine) {
     // hoisted out of the loop: pts_shift is stable once rebase clears (only the video lane's rebase
     // arm writes it, on this same thread), and one pres_fed sample per tick is plenty against the
     // multi-second audio budget.
-    let shift = SHARED.pts_shift.load(Ordering::Relaxed);
+    let shift = shared.pts_shift.load(Ordering::Relaxed);
     let pres = eng.feed_pace.reference_at(
-        SHARED.pres_fed.load(Ordering::Relaxed),
+        shared.pres_fed.load(Ordering::Relaxed),
         super::vclock_ms(),
-        SHARED.applied_rate_permille.load(Ordering::Relaxed),
+        shared.applied_rate_permille.load(Ordering::Relaxed),
     );
     let slice = FeedSlice::begin();
     let mut fed = 0;
@@ -2585,7 +2602,7 @@ fn feed_audio_lane(mt: &MainThread, eng: &mut Engine) {
         let n = eng.pending_audio.as_ref().unwrap().0;
         let (es, _key, pts, len, data) = unsafe { crate::aq::au_fields(n) };
         let mut fp = pts + shift;
-        let first_pts = SHARED.first_audio_pts.load(Ordering::Acquire);
+        let first_pts = shared.first_audio_pts.load(Ordering::Acquire);
         let opens = first_pts != i64::MIN && pts == first_pts;
         let lead_in = audio_lead_in(fp, opens, eng.audio_start_fp);
         // Stale drifted audio from before a seek's reopen: far AHEAD of the freshly-anchored video.
@@ -3696,6 +3713,7 @@ mod prime_livelock_tests {
     pub(super) fn engine_after_reload() -> Engine {
         SHARED.ensure_initial_clock_hold_for_test();
         Engine {
+            shared: &SHARED.feed,
             attempt: crate::route::RouteStartAttempt::fixture().contract_id(),
             native_epoch: 0,
             stage: Stage::Streaming,

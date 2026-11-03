@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::mpsc;
 
 pub(super) struct FeedResources {
+    shared: &'static plx_play_feed::shared::PhysicalShared,
     engine: Option<engine::Engine>,
     load_tx: mpsc::Sender<threads::LoadOutcome>,
     load_rx: mpsc::Receiver<threads::LoadOutcome>,
@@ -30,9 +31,10 @@ pub(super) struct AcceptedLoadOutcome {
 }
 
 impl FeedResources {
-    pub fn new() -> Self {
+    pub fn new(shared: &'static plx_play_feed::shared::PhysicalShared) -> Self {
         let (load_tx, load_rx) = mpsc::channel();
         Self {
+            shared,
             engine: None,
             load_tx,
             load_rx,
@@ -42,6 +44,8 @@ impl FeedResources {
             pending_release: RefCell::new(None),
         }
     }
+
+    pub fn shared(&self) -> &'static plx_play_feed::shared::PhysicalShared { self.shared }
 
     pub fn engine(&mut self) -> Option<&mut engine::Engine> { self.engine.as_mut() }
     pub fn uses_stream_queues(&self) -> bool {
@@ -67,7 +71,7 @@ impl FeedResources {
         })
     }
     pub fn begin_seek_discontinuity(&self) -> bool {
-        self.engine.as_ref().is_some_and(|eng| super::SHARED.begin_native_media_discontinuity(eng.native_epoch))
+        self.engine.as_ref().is_some_and(|eng| self.shared.begin_native_media_discontinuity(eng.native_epoch))
     }
     pub fn is_live(&self) -> bool { self.engine.is_some() }
     pub fn active_attempt(&self) -> Option<AttemptId> { self.engine.as_ref().map(|e| e.attempt) }
