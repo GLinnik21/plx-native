@@ -2928,7 +2928,7 @@ fn finish_landed_play(app: &mut App, resume_prepared: bool) {
     // A preview is the exception: the detail page stays mounted, and an off-route
     // engine is the feature, not a violation.
     if resume_prepared {
-        let outcome = plx_media::player::start_bufferfeed_tracked(
+        let outcome = plx_media::player::start_playback_tracked(
             &mut app.player.session,
             &mut app.adapters.player,
         );

@@ -405,7 +405,7 @@ impl PlaybackResources for LivePlaybackResources {
         } else if matches!(resume, plx_media::player::ResumeStart::Pending) {
             true
         } else if resume_prepared {
-            plx_media::player::start_bufferfeed(ps, pa)
+            plx_media::player::start_playback(ps, pa)
         } else {
             false
         }
@@ -1401,7 +1401,7 @@ pub(crate) unsafe fn key_play(
         super::bridge::show_page(pages, AppArg::Player);
     } else if matches!(activation, ForegroundActivation::Ordinary) {
         if was_off_player {
-            if plx_media::player::start_bufferfeed(ps, pa) {
+            if plx_media::player::start_playback(ps, pa) {
                 // The origin is the page the PLAY key was pressed on — through the same one door
                 // `start_playback` uses, so the seed and the push cannot drift apart here.
                 enter_player(pages, bridge, Origin::Here, None);

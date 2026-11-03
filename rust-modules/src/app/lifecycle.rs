@@ -127,7 +127,7 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
     }
 
     fn start_load(&mut self, ps: &mut plx_media::route::PlaybackSession) -> ForegroundLoadStart<Self::Attempt> {
-        let first = plx_media::player::start_bufferfeed_tracked(ps, self.pa);
+        let first = plx_media::player::start_playback_tracked(ps, self.pa);
         if matches!(first, plx_media::player::BufferfeedStartOutcome::Failed) {
             // A synchronous failure inside an Original trial has no Engine for player::pump to
             // recover. Take the same explicit rollback edge here and follow its exact HLS Load.
