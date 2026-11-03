@@ -31,7 +31,7 @@
 //! HEVC mastering-display SEI), not FFmpeg's R, G, B; the HEVC envelope above has G's x in
 //! `displayPrimariesX0`.
 
-pub use plx_play_feed::vp9_hdr::{ContainerHdr, Mastering, Rat, TRC_PQ, parse_cll, parse_mastering};
+pub use plx_playback_contract::video::{ContainerHdr, Mastering, Rat, TRC_PQ};
 
 /// `num/den * scale`, rounded; `None` for a zero denominator or a value that does not fit.
 fn scaled(r: Rat, scale: f64) -> Option<i64> {
