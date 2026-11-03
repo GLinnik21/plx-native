@@ -6,7 +6,6 @@
 use crate::aq::AuQueue;
 use plx_playback_contract::adaptive::{Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, AdaptivePhysicalPort, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, ExplorationFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, RoundId, TrialActuatorPort, TrialClock, TrialId, VariantFact};
 use plx_playback_contract::demux::{DemuxCallbackEffect, DemuxClock, DemuxEffect, DemuxObserver, DemuxSession, PauseLane};
-use std::sync::Arc;
 use plx_playback_contract::SourceKey;
 use plx_play_feed::SendPtr;
 use crate::player::SHARED;
@@ -510,8 +509,9 @@ struct HlsNet {
 /// already blocked.  Above the ladder floor it abandons the still-incomplete object so the
 /// controller can fetch a smaller one, even before any body byte exists.  At the floor it leaves
 /// the only useful response alive.  No prefix becomes a capacity sample in either direction.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone)]
 struct StallGuard {
+    observer: Arc<dyn DemuxObserver>,
     /// The playable reserve when this fetch began, in ms of media. `None` is never stored — an
     /// unknowable reserve (`BufferSnapshot::buffered_ms`'s `None`, the audio lane silent after an
     /// open or a seek) arms no guard at all, because the comparison has no left-hand side.
@@ -524,6 +524,29 @@ struct StallGuard {
     hold_epoch_at_arm: u64,
     action: StallAction,
 }
+
+impl std::fmt::Debug for StallGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StallGuard")
+            .field("attempt", &self.observer.attempt())
+            .field("reserve_ms_at_start", &self.reserve_ms_at_start)
+            .field("playhead_at_start_ns", &self.playhead_at_start_ns)
+            .field("hold_epoch_at_arm", &self.hold_epoch_at_arm)
+            .field("action", &self.action)
+            .finish()
+    }
+}
+
+impl PartialEq for StallGuard {
+    fn eq(&self, other: &Self) -> bool {
+        self.observer.attempt() == other.observer.attempt()
+            && self.reserve_ms_at_start == other.reserve_ms_at_start
+            && self.playhead_at_start_ns == other.playhead_at_start_ns
+            && self.hold_epoch_at_arm == other.hold_epoch_at_arm
+            && self.action == other.action
+    }
+}
+impl Eq for StallGuard {}
 
 /// What happens after the same in-flight conservation inequality is crossed. Above the floor a
 /// smaller object exists, so abandoning the response releases the controller to fetch it. At the
@@ -551,25 +574,27 @@ impl StallGuard {
     /// Mid-playback a genuinely drained reserve declines the guard too, and that is the
     /// conservative direction rather than a gap: by then the picture has already stopped, the
     /// abort can no longer prevent anything, and `starving()` is the predicate that owns it.
-    fn arm(reserve_ms_at_start: i64) -> Option<Self> {
-        (reserve_ms_at_start > 0).then(|| Self {
+    fn arm(reserve_ms_at_start: i64, observer: Arc<dyn DemuxObserver>) -> Option<Self> {
+        if reserve_ms_at_start <= 0 { return None; }
+        Some(Self {
+            playhead_at_start_ns: observer.playpos_ns()?,
+            hold_epoch_at_arm: observer.hold_epoch()?,
+            observer,
             reserve_ms_at_start,
-            playhead_at_start_ns: crate::player::playpos_ns(),
-            hold_epoch_at_arm: SHARED.hls_internal_hold_epoch.load(Ordering::Acquire),
             action: StallAction::AbortFetch,
         })
     }
 
     /// At the terminal actuator the same observed boundary may stop presentation, but it must not
     /// discard the only response capable of producing more media.
-    fn arm_clock_hold(reserve_ms_at_start: i64) -> Option<Self> {
-        Self::arm(reserve_ms_at_start).map(|mut guard| {
+    fn arm_clock_hold(reserve_ms_at_start: i64, observer: Arc<dyn DemuxObserver>) -> Option<Self> {
+        Self::arm(reserve_ms_at_start, observer).map(|mut guard| {
             guard.action = StallAction::HoldClock;
             guard
         })
     }
 
-    fn aborts_fetch(self) -> bool {
+    fn aborts_fetch(&self) -> bool {
         self.action == StallAction::AbortFetch
     }
 
@@ -591,12 +616,12 @@ impl StallGuard {
             return false;
         }
         terminal_hold_started
-            || SHARED.hls_internal_hold_epoch.load(Ordering::Acquire) != self.hold_epoch_at_arm
+            || self.observer.hold_epoch() != Some(self.hold_epoch_at_arm)
             || self.spent_ms() >= self.reserve_ms_at_start
     }
 
     fn spent_ms(&self) -> i64 {
-        crate::player::playpos_ns()
+        self.observer.playpos_ns().unwrap_or(i64::MAX)
             .saturating_sub(self.playhead_at_start_ns)
             .max(0)
             / 1_000_000
@@ -618,14 +643,6 @@ impl StallGuard {
 /// **The one way a guard asks the main thread to hold Starfish's A/V clock** — from whichever
 /// blocking leg saw the boundary. The main thread may already have held it on its own exact B=0
 /// sample; asking again is harmless.
-fn request_terminal_hold() {
-    SHARED.hls_rebuffer_request_tail_ns.store(
-        SHARED.hls_video_tail_ns.load(Ordering::Acquire),
-        Ordering::Release,
-    );
-    SHARED.hls_rebuffer_requested.store(true, Ordering::Release);
-}
-
 /// An already-held clock is a recovery state: the active response is rebuilding reserve and may
 /// not be abandoned by the boundary that has already fired. Kept pure at the call boundary so a
 /// regression cannot silently turn B=0 into an abort loop again.
@@ -633,15 +650,16 @@ fn arm_active_stall_guard(
     reserve_ms: Option<i64>,
     at_floor: bool,
     already_held: bool,
+    observer: Arc<dyn DemuxObserver>,
 ) -> Option<StallGuard> {
     if already_held {
         return None;
     }
     reserve_ms.and_then(|reserve_ms| {
         if at_floor {
-            StallGuard::arm_clock_hold(reserve_ms)
+            StallGuard::arm_clock_hold(reserve_ms, observer)
         } else {
-            StallGuard::arm(reserve_ms)
+            StallGuard::arm(reserve_ms, observer)
         }
     })
 }
@@ -4969,6 +4987,7 @@ fn hls_prefetch_same_encoder_with<F>(
     n_clock: crate::hls::SegmentClock,
     // The adaptive owner's current floor decision, sampled at this acquisition boundary.
     at_floor: Option<bool>,
+    observer: Arc<dyn DemuxObserver>,
     demux: F,
 ) -> Result<
     Option<(
@@ -5001,7 +5020,7 @@ where
     // that skips the evaluation. (This is precisely what was missing before: the lookahead used
     // to build `ReserveDeadlineState::new(None, false), None` here unconditionally, which is how
     // `pipe_abr_down_collapse` never aborted a fetch that had already exhausted the reserve.)
-    let acquisition = SegmentAcquisition::for_cursor(at_floor);
+    let acquisition = SegmentAcquisition::for_cursor(at_floor, observer);
     let stall_reserve_ms = acquisition
         .stall()
         .map(|guard| guard.reserve_ms_at_start)
@@ -5054,7 +5073,7 @@ unsafe fn hls_prefetch_same_encoder(
         Err(_) => return Ok(None),
     };
     let auth = cursor.auth.clone();
-    hls_prefetch_same_encoder_with(cursor, n1, timeline, n_clock, at_floor, |segment, clock, acquisition| {
+    hls_prefetch_same_encoder_with(cursor, n1, timeline, n_clock, at_floor, net.observer.clone(), |segment, clock, acquisition| {
         // SAFETY: this closure is only ever invoked (synchronously, within this call) by
         // `hls_prefetch_same_encoder_with` above, under the same `unsafe` obligations the caller
         // of this whole function already carries (a live `aq`/`net` for the duration of the call).
@@ -5080,7 +5099,7 @@ fn hls_read_active(
     let Some(segment) = hls_cursor_next(cursor, aq, net, None)? else { return Ok(None); };
     let mut clock = timeline.begin(segment.duration)
         .map_err(|_| HlsExit::Failed("HLS content timeline overflow"))?;
-    let acquisition = SegmentAcquisition::for_cursor(at_floor);
+    let acquisition = SegmentAcquisition::for_cursor(at_floor, net.observer.clone());
     let stall_reserve_ms = acquisition.stall()
         .map(|guard| guard.reserve_ms_at_start).unwrap_or(-1);
     match unsafe { hls_demux_segment(
@@ -6460,7 +6479,9 @@ pub(crate) fn demux(
                 // A VP9 stream's PQ is in the container only; hand it to the pump, which writes it into
                 // the sourceInfo envelope ACB is sent. Always replaced, so a previous stream's colour
                 // cannot outlive it.
-                *SHARED.container_hdr.lock().unwrap() = if is_vp9 { Some(container_hdr(vcp)) } else { None };
+                session.media().publish(DemuxEffect::ContainerHdr(
+                    if is_vp9 { Some(container_hdr(vcp)) } else { None },
+                ));
                 session.media().record(&format!(
                     "ff: param_sets={} bytes nal_len={} is_hevc={} is_av1={} is_vp9={} av1_cfg={}B nal_input={:?}",
                     param_blob.len(),

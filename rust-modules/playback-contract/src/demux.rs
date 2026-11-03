@@ -42,6 +42,7 @@ pub enum DemuxCallbackEffect {
     FileSize(i64),
     TransportFailure { rc: i32, age_ms: i64, reopen_failed: bool },
     IoFailed,
+    RequestTerminalHold,
 }
 
 /// Each read is made at the call site. A cached all-fields snapshot would
@@ -111,6 +112,7 @@ pub enum DemuxEffect {
     HttpStatus(i32),
     TrackNames { audio: Vec<String>, subs: Vec<String> },
     SideAnchor(Option<Anchor>),
+    ContainerHdr(Option<crate::video::ContainerHdr>),
     FirstAudioPts(i64),
     FileSize(i64),
     TransportRc(i32),

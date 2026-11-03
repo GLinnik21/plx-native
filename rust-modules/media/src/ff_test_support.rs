@@ -37,6 +37,12 @@ impl DemuxObserver for FixtureDemuxObserver {
             }
             DemuxCallbackEffect::IoFailed =>
                 SHARED.demux_io_failed.store(true, Ordering::Release),
+            DemuxCallbackEffect::RequestTerminalHold => {
+                SHARED.hls_rebuffer_request_tail_ns.store(
+                    SHARED.hls_video_tail_ns.load(Ordering::Acquire), Ordering::Release,
+                );
+                SHARED.hls_rebuffer_requested.store(true, Ordering::Release);
+            }
         }
         true
     }
@@ -44,6 +50,18 @@ impl DemuxObserver for FixtureDemuxObserver {
 
 pub(super) fn demux_observer() -> Arc<dyn DemuxObserver> {
     Arc::new(FixtureDemuxObserver)
+}
+
+pub(super) fn with_demux_session<R>(run: impl FnOnce(Box<dyn DemuxSession>) -> R) -> R {
+    let epoch = SHARED.begin_native_session().expect("fixture owns native epoch");
+    struct Retire(u32);
+    impl Drop for Retire {
+        fn drop(&mut self) { SHARED.retire_native_session(self.0); }
+    }
+    let _retire = Retire(epoch);
+    run(crate::player::demux_session::PlayerDemuxSession::capture(
+        plx_playback_contract::AttemptId::new(0, u64::from(epoch)), epoch,
+    ))
 }
 
 /// Build a length-prefixed (AVCC-style) packet: 4-byte big-endian length + payload, repeated.
