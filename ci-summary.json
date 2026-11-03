@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-03T20:36:47Z",
+ "generated": "2026-11-03T20:46:45Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -103,17 +103,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 24.2,
+   "change7_pct": 24.5,
    "d30": null,
    "delta30": null,
-   "delta7": 39.5,
+   "delta7": 40,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 78,
+   "n_now": 79,
    "n_prev": 73,
-   "now": 202.5,
+   "now": 203,
    "prev7": 163,
    "shown": true,
    "state": "worse",
@@ -144,18 +144,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -60.3,
-   "change7_pct": 20.4,
+   "change30_pct": -60.4,
+   "change7_pct": 20.3,
    "d30": 1032,
-   "delta30": -622.5,
-   "delta7": 69.5,
+   "delta30": -623,
+   "delta7": 69,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 86,
+   "n_now": 87,
    "n_prev": 85,
-   "now": 409.5,
+   "now": 409,
    "prev7": 340,
    "shown": true,
    "state": "worse",
@@ -408,18 +408,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 27.5,
-   "change7_pct": 7.7,
+   "change30_pct": 27.7,
+   "change7_pct": 7.9,
    "d30": 224,
-   "delta30": 61.5,
-   "delta7": 20.5,
+   "delta30": 62,
+   "delta7": 21,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 78,
+   "n_now": 79,
    "n_prev": 73,
-   "now": 285.5,
+   "now": 286,
    "prev7": 265,
    "shown": true,
    "state": "flat",
@@ -432,15 +432,15 @@
    "change30_pct": -78.9,
    "change7_pct": 7.7,
    "d30": 1026,
-   "delta30": -810.0,
+   "delta30": -810,
    "delta7": 15.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 78,
+   "n_now": 79,
    "n_prev": 72,
-   "now": 216.0,
+   "now": 216,
    "prev7": 200.5,
    "shown": true,
    "state": "flat",
@@ -539,15 +539,15 @@
    "change30_pct": 12.5,
    "change7_pct": 0.0,
    "d30": 16,
-   "delta30": 2.0,
-   "delta7": 0.0,
+   "delta30": 2,
+   "delta7": 0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 78,
+   "n_now": 79,
    "n_prev": 73,
-   "now": 18.0,
+   "now": 18,
    "prev7": 18,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 69.2,
    "commits": [
     {
-     "pr": 1209,
-     "sha": "1c9a75db4",
-     "title": "Publish HUD authoring files and verify registry setup"
-    },
-    {
      "pr": 1210,
      "sha": "60b35acea",
      "title": "Add opt-in firmware playback diagnostics"
@@ -715,6 +710,11 @@
      "pr": 1223,
      "sha": "5d66b9619",
      "title": "Report diagnostic export failures and add DV CRA/IDR controls"
+    },
+    {
+     "pr": 1224,
+     "sha": "a97bc1b49",
+     "title": "Separate library navigation from Sort & Filter"
     }
    ],
    "from": 195,
@@ -728,11 +728,6 @@
    "change_pct": 36.0,
    "commits": [
     {
-     "pr": 1209,
-     "sha": "1c9a75db4",
-     "title": "Publish HUD authoring files and verify registry setup"
-    },
-    {
      "pr": 1210,
      "sha": "60b35acea",
      "title": "Add opt-in firmware playback diagnostics"
@@ -776,6 +771,11 @@
      "pr": 1223,
      "sha": "5d66b9619",
      "title": "Report diagnostic export failures and add DV CRA/IDR controls"
+    },
+    {
+     "pr": 1224,
+     "sha": "a97bc1b49",
+     "title": "Separate library navigation from Sort & Filter"
     }
    ],
    "from": 214,
@@ -786,13 +786,8 @@
    "to": 291
   },
   {
-   "change_pct": 24.2,
+   "change_pct": 24.5,
    "commits": [
-    {
-     "pr": 1209,
-     "sha": "1c9a75db4",
-     "title": "Publish HUD authoring files and verify registry setup"
-    },
     {
      "pr": 1210,
      "sha": "60b35acea",
@@ -837,6 +832,11 @@
      "pr": 1223,
      "sha": "5d66b9619",
      "title": "Report diagnostic export failures and add DV CRA/IDR controls"
+    },
+    {
+     "pr": 1224,
+     "sha": "a97bc1b49",
+     "title": "Separate library navigation from Sort & Filter"
     }
    ],
    "from": 163,
@@ -844,16 +844,11 @@
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "since": "2026-11-03",
    "threshold_pct": 20.0,
-   "to": 202.5
+   "to": 203
   },
   {
    "change_pct": 21.5,
    "commits": [
-    {
-     "pr": 1209,
-     "sha": "1c9a75db4",
-     "title": "Publish HUD authoring files and verify registry setup"
-    },
     {
      "pr": 1210,
      "sha": "60b35acea",
@@ -898,6 +893,11 @@
      "pr": 1223,
      "sha": "5d66b9619",
      "title": "Report diagnostic export failures and add DV CRA/IDR controls"
+    },
+    {
+     "pr": 1224,
+     "sha": "a97bc1b49",
+     "title": "Separate library navigation from Sort & Filter"
     }
    ],
    "from": 335,
@@ -908,13 +908,8 @@
    "to": 407
   },
   {
-   "change_pct": 20.4,
+   "change_pct": 20.3,
    "commits": [
-    {
-     "pr": 1209,
-     "sha": "1c9a75db4",
-     "title": "Publish HUD authoring files and verify registry setup"
-    },
     {
      "pr": 1210,
      "sha": "60b35acea",
@@ -959,6 +954,11 @@
      "pr": 1223,
      "sha": "5d66b9619",
      "title": "Report diagnostic export failures and add DV CRA/IDR controls"
+    },
+    {
+     "pr": 1224,
+     "sha": "a97bc1b49",
+     "title": "Separate library navigation from Sort & Filter"
     }
    ],
    "from": 340,
@@ -966,16 +966,11 @@
    "label": "Wait after merge",
    "since": "2026-11-03",
    "threshold_pct": 15.0,
-   "to": 409.5
+   "to": 409
   },
   {
    "change_pct": 16.0,
    "commits": [
-    {
-     "pr": 1209,
-     "sha": "1c9a75db4",
-     "title": "Publish HUD authoring files and verify registry setup"
-    },
     {
      "pr": 1210,
      "sha": "60b35acea",
@@ -1020,6 +1015,11 @@
      "pr": 1223,
      "sha": "5d66b9619",
      "title": "Report diagnostic export failures and add DV CRA/IDR controls"
+    },
+    {
+     "pr": 1224,
+     "sha": "a97bc1b49",
+     "title": "Separate library navigation from Sort & Filter"
     }
    ],
    "from": 2178.5,

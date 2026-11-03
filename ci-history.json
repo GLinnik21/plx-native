@@ -1,4 +1,4 @@
-{"updated":"2026-11-03T20:36:23Z",
+{"updated":"2026-11-03T20:46:25Z",
 "ci":[
 {"id":31025719515,"at":"2026-08-05T16:31:58Z","sha":"363548b32","title":"ff: prove the ABI table instead of asserting it, and refuse a foreign FFmpeg","jobs":{"cross-build (armv7) + artifact assertions":86,"host checks (NOT a device gate)":64},"pr":null,"conclusion":"success","attempt":1},
 {"id":31093855724,"at":"2026-08-06T10:35:26Z","sha":"bdbf8a099","title":"docs: the README promised a ceiling the binary no longer has","jobs":{"cross-build (armv7) + artifact assertions":124,"host checks (NOT a device gate)":73},"pr":null,"conclusion":"success","attempt":1},
@@ -4475,7 +4475,8 @@
 {"id":41677497363,"at":"2026-11-03T16:45:50Z","sha":"3abbedc2c","title":"Add read-back verified Dolby Vision CRA and IDR fixture comparison","pr":1223,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":224,"Linux simulator build + launch":324,"Windows launcher syntax":20,"macOS simulator build + launch":200}},
 {"id":41680803355,"at":"2026-11-03T17:05:38Z","sha":"7004bc986","title":"Use initial 1.0 resource bundles for Player HUD plugins","pr":1222,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":382,"macOS tests against bundled FFmpeg and ASS":227,"macOS simulator build + launch":260,"Windows launcher syntax":17}},
 {"id":41685818683,"at":"2026-11-03T17:36:01Z","sha":"5d66b9619","title":"Report diagnostic export failures and add DV CRA/IDR controls","pr":1223,"conclusion":"failure","attempt":1,"jobs":{"Windows launcher syntax":60,"Linux simulator build + launch":257}},
-{"id":41709810531,"at":"2026-11-03T20:08:36Z","sha":"5fec89f0a","title":"Align library header and favorites editor comments with their behavior","pr":1224,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":206,"Windows launcher syntax":37,"Linux simulator build + launch":378,"macOS tests against bundled FFmpeg and ASS":248}}
+{"id":41709810531,"at":"2026-11-03T20:08:36Z","sha":"5fec89f0a","title":"Align library header and favorites editor comments with their behavior","pr":1224,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":206,"Windows launcher syntax":37,"Linux simulator build + launch":378,"macOS tests against bundled FFmpeg and ASS":248}},
+{"id":41714121529,"at":"2026-11-03T20:36:24Z","sha":"a97bc1b49","title":"Separate library navigation from Sort & Filter","pr":1224,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":249,"macOS simulator build + launch":258,"Windows launcher syntax":56,"Linux simulator build + launch":315}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
