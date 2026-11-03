@@ -147,16 +147,16 @@ const URI_DTS: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-v","t
 struct QualifiedDts;
 
 #[cfg(all(feature = "play-uri", feature = "devtriggers"))]
-impl super::uri_preflight::OriginalQualifier for QualifiedDts {
+impl crate::route::uri_preflight::OriginalQualifier for QualifiedDts {
     fn qualify(&self, _: &plx_base::task::OffFrame,
-        request: super::uri_preflight::OriginalRequest) -> super::uri_preflight::Verdict {
+        request: crate::route::uri_preflight::OriginalRequest) -> crate::route::uri_preflight::Verdict {
         use plx_playback_contract::{Fidelity, Requirements, SourceKind, TrackChoice};
         assert_eq!(request.audio_codec, "dca");
         assert_eq!(request.selection.audio_sid, 31342);
         assert_eq!(request.duration_ms, Some(450_000), "the selected Part overrides item duration");
         assert!(request.source_url.contains("/library/parts/3134/1/file.mkv"));
         let selected = request.selection;
-        super::uri_preflight::Verdict::Known(super::uri_preflight::KnownSource {
+        crate::route::uri_preflight::Verdict::Known(crate::route::uri_preflight::KnownSource {
             selection: selected,
             source: plx_play_uri::backend::UriSource::new(request.source_url, vec![
                 plx_play_uri::backend::NativeTrackIndex {
@@ -184,10 +184,10 @@ fn a_qualified_dts_original_lands_from_the_real_resolve_worker_before_feed_decis
     let all = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
         pause: true, seek: true, audio_track: true, subtitle_track: true,
         audio_off: true, subtitle_off: true };
-    let evidence = super::uri_preflight::ProductEvidence { display_exported: true,
+    let evidence = crate::route::uri_preflight::ProductEvidence { display_exported: true,
         binding: Binding::Exported { canvas: (1920, 1080) }, callable: all,
         certified: all, preview_rectangle: false };
-    ps.install_uri_preflight_port(super::uri_preflight::ResolvePort::new(
+    ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
         evidence, std::sync::Arc::new(QualifiedDts)));
     let (port, done, server) = versions_pms_with(URI_DTS, MDE_TRANSCODE_VIDEO);
     let sid = plx_plex::plex::register_for_test("qualified-dts", "127.0.0.1", port, "token", "qualified-dts-client");
