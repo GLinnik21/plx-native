@@ -76,7 +76,7 @@ mod resume_tests;
 mod shared;
 mod shared_resources;
 mod subtitle_bitmap;
-use shared_resources::{Shared, Transport};
+use shared_resources::{AudioSwitch, Shared, Transport, AUDIO_PICK_WINDOW_MS};
 pub mod sidecar;
 pub mod sub_charset; // legacy-encoding text subtitles (GBK, Big5, Shift_JIS, ...) read as UTF-8; decided once per track
 pub mod subside; // the side subtitle reader's thread and state (dev trigger `plxnative-subside`)
@@ -338,12 +338,14 @@ pub const ABR_WHY_SWITCH_COST: u8 = 14;
 /// `pump.rs` reads it without an Engine borrow at hand; its LIFETIME is the Engine's, since
 /// `start_bufferfeed` is the sole constructor and the mode is only read while a session is live.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg(feature = "play-feed")]
 pub enum SeekMode {
     Segment,
     NativeSeek,
     Reload,
 }
 
+#[cfg(feature = "play-feed")]
 impl SeekMode {
     const fn to_u8(self) -> u8 {
         match self {
@@ -361,31 +363,38 @@ impl SeekMode {
     }
 }
 
+#[cfg(feature = "play-feed")]
 static SEEK_MODE: AtomicU8 = AtomicU8::new(SeekMode::Segment.to_u8());
 
 /// Set once a native `Seek` was REFUSED during the current playback, and preserved by `reload_at`
 /// (whose fresh session would otherwise re-select `NativeSeek` and pay a refused `Seek` plus a full
 /// `Load` on every seek). A fresh play (`start_bufferfeed_tracked` with no live Engine) clears it.
+#[cfg(feature = "play-feed")]
 static NATIVE_SEEK_REFUSED: AtomicBool = AtomicBool::new(false);
 
 /// Whether this playback's native `Seek` was refused (see [`NATIVE_SEEK_REFUSED`]).
+#[cfg(feature = "play-feed")]
 pub(crate) fn native_seek_refused() -> bool {
     NATIVE_SEEK_REFUSED.load(Relaxed)
 }
 
+#[cfg(feature = "play-feed")]
 pub(crate) fn set_native_seek_refused(refused: bool) {
     NATIVE_SEEK_REFUSED.store(refused, Relaxed);
 }
 
 /// This session's direct-play seek mode.
+#[cfg(feature = "play-feed")]
 pub fn seek_mode() -> SeekMode {
     SeekMode::from_u8(SEEK_MODE.load(Relaxed))
 }
 
 /// Set this session's direct-play seek mode (`start_bufferfeed` selects it, `feed_stream` downgrades it).
+#[cfg(feature = "play-feed")]
 pub(crate) fn set_seek_mode(mode: SeekMode) {
     SEEK_MODE.store(mode.to_u8(), Relaxed);
 }
+#[cfg(feature = "play-feed")]
 static PTYPE: AtomicI32 = AtomicI32::new(10); // g_ptype (PLAYER_TYPE_MSE)
 
 // ---- API app.rs calls (were extern "C" fns in playback.h) ----
@@ -401,36 +410,41 @@ static PTYPE: AtomicI32 = AtomicI32::new(10); // g_ptype (PLAYER_TYPE_MSE)
 // same way. See `engine.rs`'s `start_bufferfeed`/`start_bufferfeed_tracked` for the gate itself.
 /// `type=18`'s `num` when the pipeline releases the video decoder from an established session
 /// (`"VDEC resource is released by policy action"`). See `Shared::decoder_revoked`.
+#[cfg(feature = "play-feed")]
 const DECODER_REVOKED_BY_POLICY: i64 = 600;
 
 /// `type=18`'s `num` for `"Audio Codec Not Supported"`: libpf's `handleBusWarningMessage` raises it
 /// when a gst stream warning (`GST_STREAM_ERROR_CODEC_NOT_FOUND`) names audio. Every native Vorbis
 /// Load on a C1 ended in it (2026-10-21).
+#[cfg(feature = "play-feed")]
 const AUDIO_CODEC_NOT_SUPPORTED: i64 = 200;
 
 /// `PF_EVENT_TYPE_STR_STATE_UPDATE__ENDOFSTREAM` (0x1c): the last numbered type before the
 /// renumbering between webOS 4 and 5+, so the same on both. See `Shared::pipeline_eos`.
+#[cfg(feature = "play-feed")]
 const PIPELINE_END_OF_STREAM: c_int = 28;
 
 /// Did the pipeline take this session's video decoder back since the last ask? Consumes the
 /// answer: the app loop parks the session once per release.
+#[cfg(feature = "play-feed")]
 pub fn take_decoder_revoked() -> bool {
     SHARED.decoder_revoked.swap(false, std::sync::atomic::Ordering::AcqRel)
 }
 
 /// The pipeline's decoder release as the app loop sees it, for a test with no native session.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
 pub fn note_decoder_revoked_for_test() {
     SHARED.decoder_revoked.store(true, std::sync::atomic::Ordering::Release);
 }
 
 /// Whether the session's native clock is held for the viewer's pause, for a test with no native
 /// session to observe the fenced first Play on.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
 pub fn clock_user_held_for_test() -> bool {
     SHARED.clock_user_held_for_test()
 }
 
+#[cfg(feature = "play-feed")]
 pub use engine::{
     acb_init, start_bufferfeed, start_bufferfeed_tracked, stop_bufferfeed,
     suspend_bufferfeed, BufferfeedStartOutcome,
@@ -439,6 +453,7 @@ pub use route_start::{begin_resume, exit_native, foreground_follows_load, land_r
     poll_release_frame, reap_abandoned_load, suspend_bufferfeed_if_attempt, NativeExit,
     ResumeOutcome, ResumeStart};
 
+#[cfg(feature = "play-feed")]
 pub use pump::{
     drain_engineless_rollback, land_engineless_rollback, pump, recover_failed_foreground_original, ForegroundOriginalRecovery,
     RollbackLanding,
@@ -459,22 +474,22 @@ pub fn state_caption(state: PlaybackState) -> &'static std::ffi::CStr {
 
 
 /// The viewer picked an audio track and the stream is being rebuilt for it: `route::
-/// commit_audio_selection` calls this once its rebuild is queued. See [`shared::Shared::audio_switch`].
+/// commit_audio_selection` calls this once its rebuild is queued. See [`Shared::audio_switch`].
 pub fn note_audio_pick() {
     SHARED.audio_pick_ms.store(i64::from(vclock_ms()), Relaxed);
-    SHARED.audio_switch.store(shared::AudioSwitch::Picked as u8, Relaxed);
+    SHARED.audio_switch.store(AudioSwitch::Picked as u8, Relaxed);
 }
 
 /// Is the rebuild now loading the one an audio-track pick asked for? A pick that is still waiting
-/// for its reload counts only inside [`shared::AUDIO_PICK_WINDOW_MS`]; once the reload has begun
+/// for its reload counts only inside [`AUDIO_PICK_WINDOW_MS`]; once the reload has begun
 /// it counts until the session's first frame.
 pub fn audio_switching() -> bool {
-    match shared::AudioSwitch::from_u8(SHARED.audio_switch.load(Relaxed)) {
-        shared::AudioSwitch::Reloading => true,
-        shared::AudioSwitch::Picked => {
-            i64::from(vclock_ms()) - SHARED.audio_pick_ms.load(Relaxed) <= shared::AUDIO_PICK_WINDOW_MS
+    match AudioSwitch::from_u8(SHARED.audio_switch.load(Relaxed)) {
+        AudioSwitch::Reloading => true,
+        AudioSwitch::Picked => {
+            i64::from(vclock_ms()) - SHARED.audio_pick_ms.load(Relaxed) <= AUDIO_PICK_WINDOW_MS
         }
-        shared::AudioSwitch::None => false,
+        AudioSwitch::None => false,
     }
 }
 
@@ -733,7 +748,12 @@ pub fn observe_video_plane(
     pl: &mut machine::Player,
     pa: &mut adapter::PlayerAdapter,
 ) -> Option<bool> {
+    #[cfg(feature = "play-feed")]
     let bound = pa.feed_stage().is_some_and(acb_playstate_ready);
+    #[cfg(not(feature = "play-feed"))]
+    let bound = false;
+    #[cfg(feature = "play-uri")]
+    let bound = bound || pa.uri_product_plane_owned();
     #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
     let bound = bound || pa.uri_plane_open();
     pl.set_video_plane_bound(bound)
@@ -2850,8 +2870,8 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::Event
         SHARED.seen_frame.store(true, Relaxed); // session-scoped: unlike `frames`, a seek won't clear it
         // the rebuild an audio pick asked for has put its picture up: the switch is over
         let _ = SHARED.audio_switch.compare_exchange(
-            shared::AudioSwitch::Reloading as u8,
-            shared::AudioSwitch::None as u8,
+            AudioSwitch::Reloading as u8,
+            AudioSwitch::None as u8,
             Relaxed,
             Relaxed,
         );
@@ -4755,7 +4775,7 @@ mod audio_switch_tests {
 
     fn reset() {
         SHARED.reset_session();
-        SHARED.audio_switch.store(shared::AudioSwitch::None as u8, Relaxed);
+        SHARED.audio_switch.store(AudioSwitch::None as u8, Relaxed);
     }
 
     #[test]
@@ -4793,7 +4813,7 @@ mod audio_switch_tests {
         let _g = plx_base::testlock::serial();
         reset();
         note_audio_pick();
-        SHARED.audio_pick_ms.store(i64::from(vclock_ms()) - shared::AUDIO_PICK_WINDOW_MS - 1, Relaxed);
+        SHARED.audio_pick_ms.store(i64::from(vclock_ms()) - AUDIO_PICK_WINDOW_MS - 1, Relaxed);
         assert!(!audio_switching(), "a refused rebuild must not name a later one");
         note_audio_pick();
         assert!(audio_switching());

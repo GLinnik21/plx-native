@@ -2,7 +2,19 @@
 //! The existing process-lifetime owner stays singular; a feed executor receives only `feed`.
 #[cfg(feature = "play-feed")]
 use std::ops::Deref;
-use std::sync::{atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering}, Mutex};
+use std::sync::{atomic::{AtomicI32, AtomicI64, AtomicU8, AtomicU32, AtomicU64, Ordering}, Mutex};
+
+/// A viewer audio pick names the next rebuild for at most this long.
+pub const AUDIO_PICK_WINDOW_MS: i64 = 30_000;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum AudioSwitch { None = 0, Picked = 1, Reloading = 2 }
+impl AudioSwitch {
+    pub fn from_u8(value: u8) -> Self {
+        match value { 1 => Self::Picked, 2 => Self::Reloading, _ => Self::None }
+    }
+}
 
 pub struct Shared {
     #[cfg(feature = "play-feed")]
@@ -27,6 +39,11 @@ pub struct Shared {
     /// Bumped while holding `sub_bitmaps` at reset, so an old producer can
     /// never append pixels after the successor has cleared that store.
     pub bitmap_generation: AtomicU64,
+    /// Common presentation reason for the next rebuild, independent of its executor. A queued
+    /// audio pick becomes Reloading on a reload, then clears at the first reported frame or a
+    /// full reset. Picked expires if its rebuild never arrives.
+    pub audio_switch: AtomicU8,
+    pub audio_pick_ms: AtomicI64,
 }
 
 impl Shared {
@@ -40,6 +57,8 @@ impl Shared {
             ass_renderer: super::ass::Runtime::new(),
             sub_bitmaps: Mutex::new(Vec::new()),
             bitmap_generation: AtomicU64::new(0),
+            audio_switch: AtomicU8::new(AudioSwitch::None as u8),
+            audio_pick_ms: AtomicI64::new(0),
         }
     }
 
@@ -79,6 +98,12 @@ impl Shared {
     }
 
     fn reset_captions(&self, for_reload: bool) {
+        // A reload keeps an audio pick's meaning; a new item or teardown retires it.
+        let next = match AudioSwitch::from_u8(self.audio_switch.load(Ordering::Relaxed)) {
+            AudioSwitch::Picked | AudioSwitch::Reloading if for_reload => AudioSwitch::Reloading,
+            _ => AudioSwitch::None,
+        };
+        self.audio_switch.store(next as u8, Ordering::Relaxed);
         *self.track_names.lock().unwrap_or_else(|e| e.into_inner()) = plx_playback_contract::tracks::TrackNames::new();
         let mut sources = self.ass_sources.lock().unwrap_or_else(|e| e.into_inner());
         if for_reload { sources.retain_for_reload(); } else { sources.reset(); }
