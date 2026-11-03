@@ -4,10 +4,10 @@
 //! main-thread token, and log function. No Plex route or buffer-feed engine is
 //! referenced from this crate.
 
-#[cfg(feature = "devtriggers")]
 pub mod uri_protocol;
-#[cfg(feature = "devtriggers")]
 pub mod uri_lifecycle;
+mod session_io;
+pub mod backend;
 #[cfg(feature = "devtriggers")]
 pub mod uriprobe;
 #[cfg(feature = "devtriggers")]
