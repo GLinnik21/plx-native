@@ -1931,7 +1931,7 @@ plx_base::devtrig::latched_flag!(
 /// a trailer preview, Force Direct Play (speed requires PCM conversion), segmented HLS (not wired), audio the bundled FFmpeg cannot decode
 /// (`ff::speed_decoder_available`), a television that has already failed a PCM session
 /// ([`speed_unsupported`]), or a stream whose fed rate would pass the frame rate the Load can
-/// declare ([`engine::speed_fps_ceiling_now`]). The menu offers exactly these, and a Load plays
+/// declare ([`feed_open::speed_fps_ceiling_now`]). The menu offers exactly these, and a Load plays
 /// only one of them.
 pub fn speed_offer(ps: &crate::route::PlaybackSession) -> Vec<i32> {
     if crate::route::forced_direct_play(ps) || crate::route::is_preview(ps) || crate::route::is_segmented_hls(ps) || speed_unsupported() {
@@ -1941,7 +1941,7 @@ pub fn speed_offer(ps: &crate::route::PlaybackSession) -> Vec<i32> {
     if !no_audio_armed() && !crate::ff::speed_decoder_available(&codec) {
         return Vec::new();
     }
-    speeds_within(crate::route::stream_fps(ps), engine::speed_fps_ceiling_now(ps))
+    speeds_within(crate::route::stream_fps(ps), feed_open::speed_fps_ceiling_now(ps))
 }
 
 /// The most frames per second a speed may ask the decoder to show: at speed `r` a `fps` source is
