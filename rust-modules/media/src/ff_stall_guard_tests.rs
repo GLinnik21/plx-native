@@ -370,7 +370,7 @@ fn the_lookahead_wiring_aborts_through_the_shared_reducer_when_the_guard_is_arme
         crate::hls::SegmentTimeline::default()
             .begin(std::time::Duration::from_secs(0))
             .expect("fixture clock"),
-        Some(&controller),
+        Some(controller.current().at_floor()),
         |_segment, _clock, acquisition| {
             let armed = acquisition.stall().is_some();
             observed_armed = Some(armed);
@@ -1245,7 +1245,7 @@ fn a_zero_byte_abort_reaches_the_controller_as_an_abandoned_sample() {
         segment.clone(),
         crate::hls::SegmentTimeline::default(),
         clock(),
-        Some(&controller),
+        Some(controller.current().at_floor()),
         |_, _, _| Err(HlsExit::StallAbort(pre_body)),
     )
     .expect("a StallAbort is a round, not an error")

@@ -16,6 +16,7 @@
 //! only, so no shipped build sees it.
 
 pub mod abr; // client-managed fixed-session HLS controller: estimate, propose, prime, then commit
+pub(crate) mod adaptive; // worker-owned controller and route transition; feed supplies physical media
 pub mod aq;
 pub mod curlio; // the HTTPS media plane: a remote file pulled by byte range over libcurl-multi (stream.rs is the plaintext-socket twin)
 pub mod ff_pcm; // FLAC decoded in the app and fed as PCM (libpf has no FLAC input)

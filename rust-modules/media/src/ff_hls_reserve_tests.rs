@@ -24,11 +24,11 @@ fn a_terminal_floor_response_cannot_loop_only_because_pms_exceeded_its_box() {
         rung: crate::abr::Rung::P240,
         direction: Direction::Down,
     };
-    assert!(!hls_candidate_requires_rung_box(
+    assert!(!crate::adaptive::hls_candidate_requires_rung_box(
         floor,
         crate::abr::ReservePolicy::TerminalFloor,
     ));
-    assert!(hls_candidate_requires_rung_box(
+    assert!(crate::adaptive::hls_candidate_requires_rung_box(
         floor,
         crate::abr::ReservePolicy::Preserve,
     ));
@@ -36,25 +36,25 @@ fn a_terminal_floor_response_cannot_loop_only_because_pms_exceeded_its_box() {
 
 #[test]
 fn a_quality_trial_never_extends_an_active_rebuffer_hold() {
-    assert!(hls_quality_trial_may_start(
+    assert!(crate::adaptive::hls_quality_trial_may_start(
         Direction::Up,
         false,
         false,
         false
     ));
-    assert!(!hls_quality_trial_may_start(
+    assert!(!crate::adaptive::hls_quality_trial_may_start(
         Direction::Up,
         true,
         false,
         false
     ));
-    assert!(!hls_quality_trial_may_start(
+    assert!(!crate::adaptive::hls_quality_trial_may_start(
         Direction::Up,
         false,
         true,
         false
     ));
-    assert!(!hls_quality_trial_may_start(
+    assert!(!crate::adaptive::hls_quality_trial_may_start(
         Direction::Up,
         true,
         true,
@@ -78,7 +78,7 @@ fn an_abort_at_the_exact_wait_boundary_wins_over_reserve_expiry() {
 
 #[test]
 fn a_downshift_remains_available_because_it_is_the_recovery_edge() {
-    assert!(hls_quality_trial_may_start(
+    assert!(crate::adaptive::hls_quality_trial_may_start(
         Direction::Down,
         true,
         true,
@@ -153,27 +153,27 @@ fn every_ffmpeg_phase_reduces_callback_facts_with_one_priority_table() {
 #[test]
 fn rejected_candidate_media_has_only_the_discard_transition() {
     assert_eq!(
-        hls_candidate_disposition(true, true, crate::abr::CandidateVerdict::Unfunded,),
-        HlsCandidateDisposition::Discard {
+        crate::adaptive::hls_candidate_disposition(true, true, crate::abr::CandidateVerdict::Unfunded,),
+        crate::adaptive::HlsCandidateDisposition::Discard {
             cause: crate::abr::RejectCause::Candidate,
             outcome: "not_ready_discarded",
         },
     );
     assert_eq!(
-        hls_candidate_disposition(true, true, crate::abr::CandidateVerdict::Ready),
-        HlsCandidateDisposition::Commit,
+        crate::adaptive::hls_candidate_disposition(true, true, crate::abr::CandidateVerdict::Ready),
+        crate::adaptive::HlsCandidateDisposition::Commit,
     );
 }
 
 #[test]
 fn a_user_pause_fills_the_active_queues_without_starting_a_private_trial() {
-    assert!(!hls_quality_trial_may_start(
+    assert!(!crate::adaptive::hls_quality_trial_may_start(
         Direction::Up,
         false,
         false,
         true
     ));
-    assert!(!hls_quality_trial_may_start(
+    assert!(!crate::adaptive::hls_quality_trial_may_start(
         Direction::Down,
         false,
         false,
@@ -188,7 +188,7 @@ fn a_latched_original_switch_preempts_an_unstarted_hls_prime() {
         direction: Direction::Up,
     };
     assert_eq!(
-        latched_original_recovery(
+        crate::adaptive::latched_original_recovery(
             24_000,
             None,
             crate::abr::Decision::Prime(proposal),
@@ -196,13 +196,13 @@ fn a_latched_original_switch_preempts_an_unstarted_hls_prime() {
             Some(2_000),
             2_000,
         ),
-        LatchedOriginalRecovery::Switch {
+        crate::adaptive::LatchedOriginalRecovery::Switch {
             kbps: 24_000,
             cancel: Some(proposal),
         },
     );
     assert_eq!(
-        latched_original_recovery(
+        crate::adaptive::latched_original_recovery(
             24_000,
             None,
             crate::abr::Decision::Prime(proposal),
@@ -210,7 +210,7 @@ fn a_latched_original_switch_preempts_an_unstarted_hls_prime() {
             Some(2_000),
             2_000,
         ),
-        LatchedOriginalRecovery::Wait,
+        crate::adaptive::LatchedOriginalRecovery::Wait,
         "a live cleanup obligation still keeps both actuator transitions quiescent",
     );
 }
@@ -223,7 +223,7 @@ fn a_latched_original_switch_preempts_an_unstarted_hls_prime() {
 #[test]
 fn a_fresh_original_probe_switches_on_its_own_media_boundary() {
     assert_eq!(
-        latched_original_recovery(
+        crate::adaptive::latched_original_recovery(
             0,
             Some(49_041),
             crate::abr::Decision::Stay,
@@ -231,7 +231,7 @@ fn a_fresh_original_probe_switches_on_its_own_media_boundary() {
             Some(4_000),
             2_000,
         ),
-        LatchedOriginalRecovery::Switch {
+        crate::adaptive::LatchedOriginalRecovery::Switch {
             kbps: 49_041,
             cancel: None,
         },

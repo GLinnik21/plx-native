@@ -21,7 +21,7 @@ fn an_expired_candidate_is_a_common_censored_budget_not_an_ordinal_rung_failure(
 #[test]
 fn a_completed_underfilled_response_is_common_evidence_not_a_structural_rung_failure() {
     assert_eq!(
-        abr_reject_for_candidate_result(true, false, crate::abr::CandidateVerdict::Ready,),
+        crate::adaptive::abr_reject_for_candidate_result(true, false, crate::abr::CandidateVerdict::Ready,),
         crate::abr::RejectCause::ResponseUnchanged,
         "PMS response geometry, not the different requested actuator, determines the evidence",
     );
@@ -52,32 +52,32 @@ fn an_incomplete_prefix_is_unknown_on_the_unqualified_debug_panel() {
 
 #[test]
 fn an_abr_candidate_must_decode_within_the_proposed_raster() {
-    assert!(hls_raster_within(1_280, 536, crate::abr::Rung::P720));
-    assert!(hls_raster_within(1_280, 720, crate::abr::Rung::P720));
-    assert!(!hls_raster_within(1_920, 804, crate::abr::Rung::P720));
-    assert!(!hls_raster_within(0, 720, crate::abr::Rung::P720));
+    assert!(crate::adaptive::hls_raster_within(1_280, 536, crate::abr::Rung::P720));
+    assert!(crate::adaptive::hls_raster_within(1_280, 720, crate::abr::Rung::P720));
+    assert!(!crate::adaptive::hls_raster_within(1_920, 804, crate::abr::Rung::P720));
+    assert!(!crate::adaptive::hls_raster_within(0, 720, crate::abr::Rung::P720));
 }
 
 #[test]
 fn an_upshift_commits_only_an_observed_quality_improvement() {
-    assert!(hls_upshift_strictly_improves(
+    assert!(crate::adaptive::hls_upshift_strictly_improves(
         720, 404, 896_000, 720, 404, 992_000
     ));
-    assert!(hls_upshift_strictly_improves(
+    assert!(crate::adaptive::hls_upshift_strictly_improves(
         720, 404, 896_000, 1_920, 1_080, 16_150_000
     ));
-    assert!(!hls_upshift_strictly_improves(
+    assert!(!crate::adaptive::hls_upshift_strictly_improves(
         720, 404, 896_000, 720, 404, 896_000
     ));
     assert!(
-        !hls_upshift_strictly_improves(720, 404, 992_000, 720, 404, 923_000),
+        !crate::adaptive::hls_upshift_strictly_improves(720, 404, 992_000, 720, 404, 923_000),
         "the live trace's 12→16 Mbps request returned the same raster at a lower declaration",
     );
     assert!(
-        !hls_upshift_strictly_improves(720, 404, 992_000, 3_840, 2_160, 896_000),
+        !crate::adaptive::hls_upshift_strictly_improves(720, 404, 992_000, 3_840, 2_160, 896_000),
         "pixels traded for fewer declared bits are not objectively ordered without a heuristic",
     );
-    assert!(!hls_upshift_strictly_improves(
+    assert!(!crate::adaptive::hls_upshift_strictly_improves(
         0, 0, 0, 3_840, 2_160, 20_895_000
     ));
 }

@@ -13,8 +13,8 @@
 //! This module is the second half: `SegmentAcquisition`'s payload lives in a private inner enum
 //! (`Policy`) that `ff` cannot name, so the only way `ff` can produce an `Active` acquisition at
 //! all is [`SegmentAcquisition::for_cursor`] — which is also the only place the
-//! `arm_active_stall_guard` evaluation runs, from inputs it samples itself rather than inputs a
-//! caller hands it.
+//! `arm_active_stall_guard` evaluation runs. The adaptive owner supplies the current floor
+//! decision; this module samples the live reserve and hold at the acquisition boundary.
 use super::*;
 use plx_base::checkpoint::{Checkpoint, Flow};
 
@@ -55,12 +55,11 @@ impl SegmentAcquisition {
     /// **The one constructor for a fetch against the session's active cursor** — the ordinary
     /// fetch in `hls_demux`'s segment loop and the same-encoder lookahead in
     /// `hls_prefetch_same_encoder` both call this, with the SAME adaptive context, because they
-    /// read ahead of the identical rung and must be classified identically. Takes the
-    /// authoritative adaptive context itself — `hls_demux`'s own `adaptive` state, as
-    /// `Some(&Controller)` for an ABR playback or `None` for non-adaptive playback — rather than a
-    /// caller-derived `at_floor` bool, and samples the live reserve
-    /// (`hls_buffer_snapshot(None).buffered_ms()`) and hold (`SHARED.hls_rebuffering`) itself
-    /// inside this call, so a caller cannot pass stale or fabricated inputs. Non-adaptive playback
+    /// read ahead of the identical rung and must be classified identically. The adaptive owner
+    /// supplies `Some(at_floor)` for ABR playback, sampled at this boundary; `None` denotes
+    /// non-adaptive playback. This module samples live reserve
+    /// (`hls_buffer_snapshot(None).buffered_ms()`) and hold (`SHARED.hls_rebuffering`) itself.
+    /// Non-adaptive playback
     /// is this same constructor given `None`; there is deliberately no separate public `fixed()`.
     ///
     /// The guard this evaluation arms is consulted on EVERY blocking leg of the fetch, not only at
@@ -72,11 +71,11 @@ impl SegmentAcquisition {
     ///
     /// **Still out of scope:** the synchronous `getaddrinfo` inside a plaintext open's connect
     /// cannot be interrupted by any checkpoint; the guard is consulted as soon as it returns.
-    pub(super) fn for_cursor(controller: Option<&crate::abr::Controller>) -> Self {
-        match controller {
-            Some(controller) => Self::active(
+    pub(super) fn for_cursor(at_floor: Option<bool>) -> Self {
+        match at_floor {
+            Some(at_floor) => Self::active(
                 hls_buffer_snapshot(None).buffered_ms(),
-                controller.current().at_floor(),
+                at_floor,
                 SHARED.hls_rebuffering.load(Ordering::Acquire),
             ),
             None => SegmentAcquisition(Policy::Fixed),
