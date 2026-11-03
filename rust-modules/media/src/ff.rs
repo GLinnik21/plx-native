@@ -1,5 +1,11 @@
 //! Compatibility facade for the bundled FFmpeg physical feed owned by `plx_play_feed`.
-pub use plx_play_feed::ff::*;
+pub use plx_play_feed::{boot, demux, native_audio, pushed_any, set_feed_audio, set_pcm_out, DemuxTransport};
+pub use plx_media_codecs::ffi::*;
+pub use plx_media_codecs::{SpeedDecoder, Venc};
+#[cfg(test)]
+use plx_play_feed::ff_test_support::*;
+#[cfg(test)]
+use plx_media_codecs::subtitle_extract::pts_ns;
 #[cfg(test)]
 pub(crate) use crate::subtitle_job as subside;
 

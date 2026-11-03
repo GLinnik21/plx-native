@@ -6,7 +6,49 @@ pub mod era_callbacks;
 pub mod feed_resources;
 pub mod feed_state;
 pub mod ff_pcm;
-pub mod ff;
+mod ff;
+pub use ff::{boot, demux, pushed_any, set_feed_audio, set_pcm_out, DemuxTransport};
+pub use ff::native_audio;
+
+/// Physical mechanisms exercised by media's integration fixtures. No raw
+/// callback state is exported by the shipping feed crate.
+#[cfg(feature = "test-support")]
+pub mod ff_test_support {
+    pub use crate::ff::test_support::{avcc, dovi_bytes, rpu_fixture_nal, to_annexb,
+        to_annexb_flagged, to_annexb_p7};
+    pub mod acquisition {
+        pub use crate::ff::acquisition::{AcquisitionRuntime, Phase, SegmentAcquisition,
+            CHECK_SLICE};
+        pub mod observe {
+            pub use crate::ff::acquisition::observe::{unwatch, watch_this_thread};
+        }
+    }
+    pub use acquisition::{AcquisitionRuntime, Phase, SegmentAcquisition};
+    pub use crate::ff::subs::SubTracks;
+    pub use crate::ff::{adts_duration_ns, adts_framed, adts_header, annexb_h264_access_unit,
+        annexb_start, arm_active_stall_guard, av1_packet_to_tu, candidate_reserve_deadline,
+        classify_curl_open_err, classify_hls_avio_facts, classify_hls_deadline,
+        classify_plaintext_open_failure, dovi_converts_to_p81, drain_keep_polling,
+        exploration_snapshot, exploration_timeout_is_final, force_original_dovi_unsupported,
+        force_original_hevc_has_unsupported_dv, frame_read_failed, hevc_layer_id,
+        hls_acquisition, hls_body_complete, hls_buffer_fact_at, hls_buffer_fact,
+        hls_cursor_open, hls_demux_segment, hls_duration_obligation_ms, hls_feed_failure,
+        hls_open_source, hls_prefetch_is_fatal, hls_prefetch_same_encoder_with,
+        hls_should_prefetch_after_abr, hls_source_read, hls_stall_abort_outcome, hls_wait,
+        is_dv_enhancement_layer, nal_end, observe_hls_deadline, open_input_failure_note,
+        open_plain_progressive, packet_has_adts, packet_to_annexb, park_read_fails_closed,
+        parse_av1c, parse_dovi_conf, read_cb, read_leb128, rebase_ts,
+        resolve_audio_stamps, rewrite_dv_rpu_p7_to_p81, seek_cb, sei_rbsp,
+        stream_origin_ns, strip_hdr10plus_sei, ts_h264_access_unit,
+        unproductive_exit_failed, vp9_packet_to_frame, walk_obus, write_leb128,
+        Av1Framing, AvioState, BlockingDeadline, BlockingDeadlineOwner, BlockingWake,
+        H264ParamSets, HealBudget, HlsAu, HlsExit, HlsNet, HlsSegmentOutput,
+        MediaOpenFail, NalInput, Rap, ReserveDeadlineState, SegmentTransfer,
+        SeiStrip, Src, StallAction, StallGuard, TransportWatchdog, VideoFraming,
+        AUDIO_AHEAD_HEADROOM, AV1_TD, AVSEEK_SIZE, BODY_HEAL_ATTEMPTS, BODY_SILENCE,
+        FEED_AUDIO, PRE_AUDIO_VIDEO_HEADROOM, SEEK_END, SEEK_SET,
+        push_test_elapsed, drain_test_elapsed};
+}
 pub mod hls;
 pub mod native_gate;
 pub mod native_load;

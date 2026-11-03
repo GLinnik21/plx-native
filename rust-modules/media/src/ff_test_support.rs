@@ -95,7 +95,7 @@ pub(super) fn with_demux_session<R>(run: impl FnOnce(Box<dyn DemuxSession>) -> R
 }
 
 /// Build a length-prefixed (AVCC-style) packet: 4-byte big-endian length + payload, repeated.
-pub(super) use plx_play_feed::ff::test_support::{avcc, to_annexb, to_annexb_flagged,
+pub(super) use plx_play_feed::ff_test_support::{avcc, to_annexb, to_annexb_flagged,
     to_annexb_p7, rpu_fixture_nal, dovi_bytes};
 
 // -- the AVIO callbacks under teardown -------------------------------------------------
