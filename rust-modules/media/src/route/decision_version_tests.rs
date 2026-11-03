@@ -236,13 +236,13 @@ fn remembered_subtitle_off_remains_off_during_uri_source_qualification() {
         "/library/parts/3134/1/file.mkv", "h264", "dca", &env);
     done.send(()).unwrap();
     let requests = server.join().unwrap();
-    assert!(plan.uri_original.is_some(), "the certified source was eligible before Feed work");
+    assert!(plan.uri_original.is_none(),
+        "remembered Off requires native subtitle disable, which the URI driver cannot execute");
     assert_eq!(plan.source_selection.expect("source intent").subtitle_sid, 0,
         "remembered Off outranks the PMS-selected embedded subtitle");
     assert_eq!(plan.sub_sid, 0, "the native route must keep subtitles Off");
-    assert!(!requests.iter().any(|line| line.contains("/decision?")
-        || line.starts_with("PUT /library/parts/")),
-        "URI qualification must not ask Feed MDE or write the remembered selection: {requests:?}");
+    assert!(requests.iter().any(|line| line.contains("/decision?")),
+        "the unsupported native Off intent falls through to Feed MDE: {requests:?}");
     plx_plex::plex::reset_servers_for_test();
 }
 
