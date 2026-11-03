@@ -5,7 +5,7 @@
 #![deny(clippy::debug_assert_with_mut_call)]
 use crate::aq::AuQueue;
 use crate::adaptive;
-use plx_playback_contract::adaptive::{Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, RoundId, TrialActuatorPort, TrialClock, TrialId};
+use plx_playback_contract::adaptive::{Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, RoundId, TrialActuatorPort, TrialClock, TrialId};
 use plx_playback_contract::SourceKey;
 use crate::player::threads::SendPtr;
 use crate::player::SHARED;
@@ -3000,6 +3000,42 @@ enum HlsExit {
     Failed(&'static str),
 }
 
+impl From<HlsExit> for plx_playback_contract::adaptive::PhysicalFailure {
+    fn from(exit: HlsExit) -> Self {
+        use plx_playback_contract::adaptive::{PhysicalFailure as F, TransferFact};
+        match exit {
+            HlsExit::Aborted => F::Aborted,
+            HlsExit::NotReady => F::NotReady,
+            HlsExit::PrimeExpired => F::PrimeExpired,
+            HlsExit::StallAbort(transfer) => F::StallAbort(TransferFact {
+                bytes: transfer.bytes,
+                active_us: transfer.active_us,
+                total_us: transfer.total_us,
+                audio_expected: transfer.audio_expected,
+            }),
+            HlsExit::Failed(message) => F::Failed(message),
+        }
+    }
+}
+
+impl From<plx_playback_contract::adaptive::PhysicalFailure> for HlsExit {
+    fn from(failure: plx_playback_contract::adaptive::PhysicalFailure) -> Self {
+        use plx_playback_contract::adaptive::PhysicalFailure as F;
+        match failure {
+            F::Aborted => HlsExit::Aborted,
+            F::NotReady => HlsExit::NotReady,
+            F::PrimeExpired => HlsExit::PrimeExpired,
+            F::StallAbort(transfer) => HlsExit::StallAbort(SegmentTransfer {
+                bytes: transfer.bytes,
+                active_us: transfer.active_us,
+                total_us: transfer.total_us,
+                audio_expected: transfer.audio_expected,
+            }),
+            F::Failed(message) => HlsExit::Failed(message),
+        }
+    }
+}
+
 /// **What a controlled stop means when its checkpoint latched no reason.** A leg ends in a stop
 /// only because its checkpoint answered `Flow::Stop`, and the only checkpoint that ever does, the
 /// acquisition runtime, latches why first — and its caller settles every failed leg through it
@@ -4232,6 +4268,7 @@ struct HlsRoundPort<'a> {
     pause_cursor: &'a mut crate::player::UserPauseCursor,
     aq: *mut AuQueue,
     aqa: *mut AuQueue,
+    publication_gate: AqPublicationPort,
     net: &'a mut HlsNet,
     acodec: &'a str,
     current: Option<ActiveMedia>,
@@ -4430,6 +4467,30 @@ impl HlsRoundPort<'_> {
             }
         }
         FeedObservation::Queued { trial }
+    }
+}
+
+impl CandidateMediaPort for HlsRoundPort<'_> {
+    fn candidate_declared_bps(&self) -> Option<u64> {
+        self.candidate.as_ref().map(|cursor| cursor.declared_bps)
+    }
+
+    fn stage_queued_timeline(&mut self) -> bool {
+        let Some(staged) = self.candidate_timeline.take() else { return false; };
+        *self.timeline = staged;
+        true
+    }
+
+    fn promote_candidate(&mut self) -> bool {
+        let Some(mut candidate) = self.candidate.take() else { return false; };
+        candidate.publishes_duration = true;
+        *self.prefetched = None;
+        *self.cursor = candidate;
+        true
+    }
+
+    fn publication_gate(&mut self) -> &mut dyn plx_playback_contract::adaptive::PublicationGate {
+        &mut self.publication_gate
     }
 }
 
@@ -4787,12 +4848,6 @@ fn publish_hls_abr_model(t: adaptive::ModelReadout) {
     SHARED.dg_abr_pred_pm.store(t.production_pm, rel);
     SHARED.dg_abr_risk.store(t.risk, rel);
     SHARED.dg_abr_why.store(abr_why_code(t.reason), rel);
-    // **The seed that survives a seek** (I8). Published every segment rather than at teardown,
-    // because a teardown has several paths and one of them (a crash of the demux worker) reaches
-    // none of them — and the estimate is worth carrying whatever ended the session. Not a `dg_`
-    // field: this coherent estimate is read to DECIDE, by `route::auto_prior` when the next
-    // control is built.
-    SHARED.publish_abr_seed(t.seed);
 }
 
 /// The common owner's diagnostic reason as the panel's code. A `match` rather than a cast makes
@@ -4829,10 +4884,10 @@ fn remaining_playback_ms() -> i64 {
 }
 
 fn publish_hls_abr_action(
-    action: adaptive::ActionReadout,
+    action: plx_playback_contract::adaptive::ActionReadout,
 ) {
-    use adaptive::ActionDirection::{Down, Up};
-    let adaptive::ActionReadout { direction, target_kbps, refreshing, committed } = action;
+    use plx_playback_contract::adaptive::AdaptiveDirection::{Down, Up};
+    let plx_playback_contract::adaptive::ActionReadout { direction, target_kbps, refreshing, committed } = action;
     let action = if refreshing {
         match committed {
             None => crate::player::ABR_ACTION_PRIME_REFRESH,
@@ -4899,12 +4954,6 @@ impl HlsAutomaticLease {
             .map(|token| Self { token })
     }
 
-    /// Linearization point for a route-changing Original result.  A user hold or native-clock
-    /// transition which won the mutex first makes the result retainable evidence, not an action.
-    fn authorize_commit(&self) -> bool {
-        SHARED.authorize_hls_automatic_transition_commit(self.token)
-    }
-
     fn token(&self) -> u64 {
         self.token
     }
@@ -4967,14 +5016,18 @@ impl HlsCandidateTransition {
     }
 }
 
-struct HlsCandidateFencePort;
+impl plx_playback_contract::adaptive::FenceSettlement for HlsCandidateTransition {
+    fn settle(self: Box<Self>) { HlsCandidateTransition::settle(*self); }
+}
 
-impl CandidateFencePort for HlsCandidateFencePort {
-    type Fence = HlsCandidateTransition;
-    type Error = HlsExit;
+impl CandidateFencePort for HlsRoundPort<'_> {
+    type Fence = plx_playback_contract::adaptive::FenceHandle;
+    type Error = plx_playback_contract::adaptive::PhysicalFailure;
 
     fn arm(&mut self, automatic_token: u64) -> Result<Self::Fence, Self::Error> {
         HlsCandidateTransition::arm(automatic_token)
+            .map(plx_playback_contract::adaptive::FenceHandle::new)
+            .map_err(Into::into)
     }
 
     fn settle(&mut self, fence: Self::Fence) { fence.settle(); }
@@ -4989,10 +5042,8 @@ impl plx_playback_contract::adaptive::PublicationGate for AqPublicationPort {
     }
 }
 
-struct HlsAutomaticPort { gate: AqPublicationPort }
-
-impl AutomaticPort for HlsAutomaticPort {
-    type Lease = HlsAutomaticLease;
+impl AutomaticPort for HlsRoundPort<'_> {
+    type Lease = plx_playback_contract::adaptive::LeaseHandle;
 
     fn begin(
         &mut self, kind: AutomaticTransition, expected_user_sequence: u64,
@@ -5002,25 +5053,31 @@ impl AutomaticPort for HlsAutomaticPort {
             AutomaticTransition::QualityUp => crate::player::HlsAutomaticTransition::QualityUp,
             AutomaticTransition::QualityDown => crate::player::HlsAutomaticTransition::QualityDown,
         };
-        HlsAutomaticLease::begin(kind, expected_user_sequence)
+        HlsAutomaticLease::begin(kind, expected_user_sequence).map(|lease| {
+            plx_playback_contract::adaptive::LeaseHandle::new(lease.token(), lease)
+        })
     }
 
-    fn authorize(&mut self, lease: &Self::Lease) -> bool { lease.authorize_commit() }
+    fn authorize(&mut self, lease: &Self::Lease) -> bool {
+        SHARED.authorize_hls_automatic_transition_commit(lease.token())
+    }
 
-    fn aborted(&self) -> bool { unsafe { crate::aq::aq_is_aborted(self.gate.0) } }
+    fn aborted(&self) -> bool { unsafe { crate::aq::aq_is_aborted(self.aq) } }
 
     fn gate(&mut self) -> &mut dyn plx_playback_contract::adaptive::PublicationGate {
-        &mut self.gate
+        &mut self.publication_gate
     }
 }
 
-impl TrialActuatorPort for HlsAutomaticPort {
-    type TrialReserve = HlsTrialReserve;
+impl TrialActuatorPort for HlsRoundPort<'_> {
+    type TrialReserve = plx_playback_contract::adaptive::LeaseHandle;
 
     fn arm_trial_reserve(
         &mut self, runway_ms: i64, expected_user_sequence: u64,
     ) -> Option<Self::TrialReserve> {
-        HlsTrialReserve::arm(runway_ms, expected_user_sequence)
+        HlsTrialReserve::arm(runway_ms, expected_user_sequence).map(|reserve| {
+            plx_playback_contract::adaptive::LeaseHandle::new(reserve.token(), reserve)
+        })
     }
 
     fn lease_token(&self, lease: &Self::Lease) -> u64 { lease.token() }
@@ -5028,10 +5085,12 @@ impl TrialActuatorPort for HlsAutomaticPort {
     fn trial_token(&self, reserve: &Self::TrialReserve) -> u64 { reserve.token() }
 }
 
-impl AdaptiveRoundPort for HlsAutomaticPort {
-    fn position_ns() -> i64 { SHARED.playpos_ns.load(Ordering::Relaxed).max(0) }
+impl AdaptiveRoundPort for HlsRoundPort<'_> {
+    fn position_sampler(&self) -> fn() -> i64 {
+        || SHARED.playpos_ns.load(Ordering::Relaxed).max(0)
+    }
 
-    fn transition_permitted(kind: AutomaticTransition) -> bool {
+    fn transition_permitted(&self, kind: AutomaticTransition) -> bool {
         SHARED.hls_automatic_transition_permitted(match kind {
             AutomaticTransition::Original => crate::player::HlsAutomaticTransition::Original,
             AutomaticTransition::QualityUp => crate::player::HlsAutomaticTransition::QualityUp,
@@ -5039,16 +5098,25 @@ impl AdaptiveRoundPort for HlsAutomaticPort {
         })
     }
 
-    fn rebuffer_state() -> (bool, bool) {
+    fn rebuffer_state(&self) -> (bool, bool) {
         (
             SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
             SHARED.hls_rebuffering.load(Ordering::Acquire),
         )
     }
 
-    fn buffer_snapshot() -> (Option<i64>, i64) {
+    fn buffer_snapshot(&self) -> (Option<i64>, i64) {
         let (snapshot, started_ns) = hls_buffer_snapshot_with_playhead(None);
         (snapshot.buffered_ms(), started_ns)
+    }
+
+    fn pause_fact(&mut self) -> PauseFact {
+        let commit_pause = crate::player::TX.pause_state_sample();
+        PauseFact {
+            paused: commit_pause.paused,
+            completed_ms: self.pause_cursor.consume_completed(commit_pause)
+                .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)),
+        }
     }
 }
 
@@ -5237,10 +5305,8 @@ fn hls_read_active(
     }
 }
 
-impl ActiveFeedPort for HlsRoundPort<'_> {
-    type Error = HlsExit;
-
-    fn step_active(&mut self, action: ActiveAction) -> Result<ActiveObservation, HlsExit> {
+impl HlsRoundPort<'_> {
+    fn step_active_native(&mut self, action: ActiveAction) -> Result<ActiveObservation, HlsExit> {
         if action.round() != self.round {
             return Err(HlsExit::Failed("adaptive active round address mismatch"));
         }
@@ -5299,6 +5365,14 @@ impl ActiveFeedPort for HlsRoundPort<'_> {
                 Ok(ActiveObservation::Prefetched { round })
             }
         }
+    }
+}
+
+impl ActiveFeedPort for HlsRoundPort<'_> {
+    type Error = plx_playback_contract::adaptive::PhysicalFailure;
+
+    fn step_active(&mut self, action: ActiveAction) -> Result<ActiveObservation, Self::Error> {
+        self.step_active_native(action).map_err(Into::into)
     }
 }
 
@@ -5456,7 +5530,9 @@ fn hls_demux(
             ));
         }
         let pin = crate::abr::abr_pin();
-        let coordinator = crate::adaptive::Coordinator::start(start, pin);
+        let coordinator = crate::adaptive::Coordinator::start(
+            start, pin, Box::new(adaptive::PlayerAdaptiveEffects),
+        );
         if info.original_refused && coordinator.has_recovery() {
             crate::player::log(
                 "abr: Original was refused on this HLS route; not asked again until the route changes",
@@ -5524,7 +5600,8 @@ fn hls_demux(
             round: round_id, trial: None, origin,
             cursor: &mut cursor, timeline: &mut timeline,
             prefetched: &mut prefetched, pause_cursor: &mut pause_cursor,
-            aq, aqa, net: &mut net, acodec, current: None, reserve: None,
+            aq, aqa, publication_gate: AqPublicationPort(aq),
+            net: &mut net, acodec, current: None, reserve: None,
             source: None, candidate: None, segment: None,
             candidate_timeline: None, clock: None, output: None, staged: Vec::new(),
         };
@@ -5539,21 +5616,13 @@ fn hls_demux(
                 continue;
             }
             Ok(adaptive::ActiveRun::Observed(cycle)) => cycle,
-            Err(adaptive::ActiveRunError::Physical(error)) => return Err(error),
+            Err(adaptive::ActiveRunError::Physical(error)) => return Err(error.into()),
             Err(adaptive::ActiveRunError::Protocol(message)) => return Err(HlsExit::Failed(message)),
         };
         let (_, output, _, _) = physical.current.take()
             .expect("an active round holds its physical media until after prefetch");
         let (proposal, reserve_policy, sample, candidate_start) = match state.advance_round(
-            cycle, &mut HlsAutomaticPort { gate: AqPublicationPort(aq) }, || now_ms(),
-            || {
-                let commit_pause = crate::player::TX.pause_state_sample();
-                PauseFact {
-                    paused: commit_pause.paused,
-                    completed_ms: physical.pause_cursor.consume_completed(commit_pause)
-                        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)),
-                }
-            },
+            cycle, &mut physical, || now_ms(),
             || SHARED.dg_abr_action.store(
                 crate::player::ABR_ACTION_RECOVER_ORIGINAL, Ordering::Relaxed,
             ),
@@ -5608,7 +5677,7 @@ fn hls_demux(
             || hls_buffer_snapshot(None).buffered_ms(),
             crate::player::log,
         );
-        publish_hls_abr_action(adaptive::ActionReadout::from_proposal(proposal, refreshing_same_request, None));
+        publish_hls_abr_action(adaptive::action_readout(proposal, refreshing_same_request, None));
         let offset_ns = SHARED
             .disp_base
             .load(Ordering::Relaxed)
@@ -5630,14 +5699,12 @@ fn hls_demux(
                 adaptive::TrialTrace::ControlPlane => tx.mark_control_plane(),
                 adaptive::TrialTrace::WarmupDeadline(deadline) =>
                     tx.mark_warmup_deadline(deadline),
-                adaptive::TrialTrace::FirstMedia => {
-                    let transfer = &physical.output.as_ref()
-                        .expect("acquired media has staged access units").transfer;
-                    tx.mark_media(transfer.bytes, transfer.total_us, false);
+                adaptive::TrialTrace::FirstMedia(acquisition) => {
+                    tx.mark_media(acquisition.bytes, acquisition.total_us, false);
                 }
                 adaptive::TrialTrace::Decided => tx.mark_decided(),
                 adaptive::TrialTrace::Rejected { refreshing } =>
-                    publish_hls_abr_action(adaptive::ActionReadout::from_proposal(proposal, refreshing, Some(false))),
+                    publish_hls_abr_action(adaptive::action_readout(proposal, refreshing, Some(false))),
                 adaptive::TrialTrace::Finish(outcome) => tx.finish(outcome),
                 adaptive::TrialTrace::Log(line) => crate::player::log(&line),
             },
@@ -5669,17 +5736,13 @@ fn hls_demux(
                 "abr: setup-bearing candidate retains one staged observation budget={}ms",
                 remaining_ms.unwrap_or(0),
             )),
-            |physical, moment| match moment {
-                adaptive::TrialTraceMoment::FollowupMedia => {
-                    let transfer = &physical.output.as_ref()
-                        .expect("acquired repeatable media has staged access units").transfer;
-                    tx.mark_media(transfer.bytes, transfer.total_us, true);
+            |moment| match moment {
+                adaptive::TrialTraceMoment::FollowupMedia(acquisition) => {
+                    tx.mark_media(acquisition.bytes, acquisition.total_us, true);
                 }
-                adaptive::TrialTraceMoment::FinalEvidence => {
-                    let (output, _, duration) = physical.staged.last()
-                        .expect("a graded candidate has staged media");
+                adaptive::TrialTraceMoment::FinalEvidence(acquisition) => {
                     tx.mark_candidate_evidence(
-                        output.transfer.bytes, output.transfer.total_us, *duration,
+                        acquisition.bytes, acquisition.total_us, acquisition.duration,
                     );
                 }
             },
@@ -5690,7 +5753,7 @@ fn hls_demux(
             |event, _| match event {
                 adaptive::TrialTrace::Decided => tx.mark_decided(),
                 adaptive::TrialTrace::Rejected { refreshing } =>
-                    publish_hls_abr_action(adaptive::ActionReadout::from_proposal(proposal, refreshing, Some(false))),
+                    publish_hls_abr_action(adaptive::action_readout(proposal, refreshing, Some(false))),
                 adaptive::TrialTrace::Finish(outcome) => tx.finish(outcome),
                 adaptive::TrialTrace::Log(line) => crate::player::log(&line),
                 _ => unreachable!("settling staged media cannot emit acquisition timing"),
@@ -5708,31 +5771,23 @@ fn hls_demux(
         // The route must remain old until every candidate AU which precedes the switch is safely
         // queued. Otherwise teardown can abort a blocked feed after publication and leave a live
         // route naming media the playback pipeline never received.
-        let mut fence_port = HlsCandidateFencePort;
         // A queue ACK transfers only the local cursor/timeline. The common owner
         // then enters the existing AQ abort gate for route/controller publication.
         let queued = runner.queue_publish(
-            state, &mut fence_port, &mut AqPublicationPort(aq), automatic_token,
+            state, automatic_token,
             &primed, proposal, sample, candidate_variant, || now_ms(),
-            |physical| {
-                let candidate = physical.candidate.take()
-                    .expect("queued trial retains its candidate cursor");
-                *physical.timeline = physical.candidate_timeline.take()
-                    .expect("queued trial retains its staged timeline");
-                candidate
-            },
             |event| match event {
                 adaptive::QueueTrace::Decided => tx.mark_decided(),
                 adaptive::QueueTrace::FeedCompleted(started) => tx.mark_feed(started),
                 adaptive::QueueTrace::Finish(outcome) => tx.finish(outcome),
             },
         );
-        let (previous, mut candidate, fence) = match queued {
-            adaptive::QueueAttempt::Published { previous, physical, fence } =>
-                (previous, physical, fence),
+        let (previous, fence) = match queued {
+            adaptive::QueueAttempt::Published { previous, fence } =>
+                (previous, fence),
             adaptive::QueueAttempt::Aborted => return Err(HlsExit::Aborted),
             adaptive::QueueAttempt::Failed(message) => return Err(HlsExit::Failed(message)),
-            adaptive::QueueAttempt::FenceFailed(error) => return Err(error),
+            adaptive::QueueAttempt::FenceFailed(error) => return Err(error.into()),
         };
         drop(runner);
         // The committed candidate is already the first completed acquisition at the new
@@ -5750,25 +5805,26 @@ fn hls_demux(
         // Only now is `outcome=committed` an exact certificate: the staged media was fed and the
         // controller has atomically moved the rung, reset the old bag and seeded the new one.
         tx.finish("committed");
+        let candidate_declared_bps = physical.candidate_declared_bps()
+            .expect("published trial retains its candidate cursor");
+        let committed = state.commit_readout(
+            proposal, refreshing_same_request, candidate_declared_bps, final_acquisition,
+        );
         SHARED
             .dg_abr_kbps
-            .store(i64::from(proposal.rung.kbps()), Ordering::Relaxed);
+            .store(i64::from(committed.target_kbps), Ordering::Relaxed);
         SHARED.dg_abr_declared_kbps.store(
-            i64::try_from(candidate.declared_bps / 1_000).unwrap_or(i64::MAX),
+            i64::try_from(committed.declared_bps / 1_000).unwrap_or(i64::MAX),
             Ordering::Relaxed,
         );
-        publish_hls_abr_action(adaptive::ActionReadout::from_proposal(proposal, refreshing_same_request, Some(true)));
-        crate::player::report::note_hls_committed_for(
-            state.trace_generation(),
-            proposal.direction,
-            proposal.rung,
-            refreshing_same_request,
-        );
+        publish_hls_abr_action(plx_playback_contract::adaptive::ActionReadout {
+            direction: committed.direction, target_kbps: committed.target_kbps,
+            refreshing: committed.refreshing, committed: Some(true),
+        });
+        state.emit_committed(committed);
         // Promoted: from here this cursor IS the playback, so its playlist is the one that may
         // speak for the film's duration.
-        candidate.publishes_duration = true;
-        *physical.prefetched = None;
-        *physical.cursor = candidate;
+        assert!(physical.promote_candidate(), "published trial promotes its candidate cursor");
         // Any terminal source-mode verdict was computed against the previous HLS operating point.
         // Invalidate it explicitly: an Up keeps the completed source evidence for re-scoring on the
         // next ordinary segment, while a safety Down retires evidence from the failed service
@@ -5778,7 +5834,7 @@ fn hls_demux(
         // All behavioral projections now name the candidate: controller, global route,
         // worker-local encoder/cursor, runway and recovery policy. Release both main-thread gates
         // before encoder cleanup, whose task-spawn fallback may perform synchronous network I/O.
-        fence_port.settle(fence);
+        physical.settle(fence);
         drop(_trial_reserve.take());
         state.retire(previous);
         // **`out=` is what was DECODED; the pair before it is the rung's bounding box.** They are
@@ -5793,15 +5849,14 @@ fn hls_demux(
         // APPENDED rather than substituted: `RE_ABR_UP` and `RE_ABR_COMMIT` both parse the
         // leading form, so replacing it in place would silently retire two graders. Old logs stay
         // readable and `abr_raster_changes` prefers `out=` when it is there.
-        let observed = (final_acquisition.width, final_acquisition.height);
         crate::player::log(&format!(
             "abr: committed {:?} to {}kbps {}x{} out={}x{}",
             proposal.direction,
-            proposal.rung.kbps(),
+            committed.target_kbps,
             proposal.rung.raster().0,
             proposal.rung.raster().1,
-            observed.0,
-            observed.1,
+            committed.observed_width,
+            committed.observed_height,
         ));
     }
     Ok(())

@@ -14,5 +14,9 @@ mount = "playback_contract"
 name = "plx_playback_contract"
 crate-type = ["rlib"]
 
+[dependencies]
+# The worker-only adaptive session carries the existing off-frame proof across its port.
+plx_base = { path = "../base" }
+
 [lints]
 workspace = true

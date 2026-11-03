@@ -333,35 +333,6 @@ fn maybe_begin_hls_rebuffer(ps: &crate::route::PlaybackSession, mt: &MainThread,
 /// and the pump zeroes it applying a seek, which is motion, not a freeze.
 static LAST_FRAMES: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
-fn publish_diag(eng: &Engine, now: u32) {
-    SHARED.dg_stage.store(eng.stage as u8, Relaxed);
-    // Nobody is looking: skip it. `aq_bytes` takes each queue's pthread mutex, and the read-out
-    // samples at 2 Hz, so publishing at 60 Hz is 30x more often than anything can observe. Costs
-    // no freshness — the loop order is pump → `Diagnostics::update` → `Diagnostics::draw`
-    // (`app/run.rs`), so the frame the panel
-    // is switched on has already republished.
-    if !super::DIAG_READOUT_ON.load(Relaxed) {
-        return;
-    }
-    let qv = eng.aq_video.as_ref().map_or(0, |q| {
-        crate::aq::aq_bytes(&**q as *const _ as *mut _) as i64
-    });
-    let qa = eng.aq_audio.as_ref().map_or(0, |q| {
-        crate::aq::aq_bytes(&**q as *const _ as *mut _) as i64
-    });
-    SHARED.dg_aq_video.store(qv, Relaxed);
-    SHARED.dg_aq_audio.store(qa, Relaxed);
-    SHARED.dg_fed_v_pts.store(eng.max_fed_video_pts, Relaxed);
-    SHARED.dg_fed_a_pts.store(eng.max_fed_audio_pts, Relaxed);
-    // Stamp when the frame count MOVES. The panel needs "how long has it been stuck" and a
-    // photograph has no time axis; stamping here rather than in `app::diagnostics` is what makes the
-    // clock measure the STALL rather than how long the panel has been open.
-    let f = SHARED.frames.load(Relaxed);
-    if LAST_FRAMES.swap(f, Relaxed) != f {
-        SHARED.dg_frame_at.store(now, Relaxed);
-    }
-}
-
 /// Translate legacy feed callback mailboxes into one addressed, sparse session observation.
 /// The callback fields remain private to this driver; common readouts consume the session value.
 fn publish_attempt_view(ps: &mut crate::route::PlaybackSession, attempt: crate::route::RouteStartAttempt) {
@@ -379,7 +350,15 @@ fn publish_attempt_view(ps: &mut crate::route::PlaybackSession, attempt: crate::
     let abr_buffer_ms = SHARED.dg_abr_buffer_ms.load(Relaxed);
     let transport_rc = SHARED.dg_transport_rc.load(Relaxed);
     let transfer_age_ms = SHARED.dg_transport_age_ms.load(Relaxed);
+    let failure = super::runtime_failure(
+        SHARED.demux_failed.load(std::sync::atomic::Ordering::Acquire),
+        SHARED.demux_io_failed.load(std::sync::atomic::Ordering::Acquire),
+        SHARED.load_failed.load(Relaxed),
+        SHARED.load_timed_out.load(Relaxed),
+    );
     let facts = AttemptFacts {
+        runtime_failure: (failure != super::RuntimeFailure::Unknown).then_some(failure),
+        no_video: SHARED.demux_no_video.load(Relaxed).then_some(true),
         position_ns: reported_frame.then_some(position.max(0)),
         duration_ns: (duration > 0).then_some(duration),
         playable_buffer_ms: super::playable_buffer_ms(
@@ -1348,103 +1327,13 @@ fn own_seek_under_pause(target_ns: i64) {
 #[cfg(test)]
 static MID_SEEK_CLAIMS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// The pump's half of "a paused film stays paused across a scrub", run at the head of every tick:
-///
-/// * a viewer Pause pressed AFTER a playing seek was dispatched shut the feed gate under it, so
-///   the pump opens its preroll now (and restarts the stuck watchdog's clock from the open);
-/// * a session with no picture yet under a viewer Pause (any reload, or a Pause before the first
-///   frame) gets the same preroll, so it can present one frame (see the branch below);
-/// * once the preroll the pump owns has LANDED on whichever Engine is live (in place: the keyframe
-///   re-anchored; a reload or transcode landing: the fresh session re-anchored, and `frames` —
-///   zeroed by the arm and by every session reset — counts a POST-seek presentation), re-pause with
-///   [`super::finish_paused_seek`] (on the ACB route only once the plane is bound and a tick has
-///   followed the bind: [`plane_shows_the_picture`]). A refused re-pause leaves the preroll and its ownership in
-///   place, so the next tick retries; the film plays only for that long.
-///
-/// `playpos + 15 s >= target` is the guard the loop's old re-pause had: a presented frame far
-/// before the target is not the landing. Runs before `pa` is split, because the re-pause takes the
-/// whole adapter.
 fn settle_paused_seek(pa: &mut super::adapter::PlayerAdapter, now: u32) {
-    if TX.paused.load(Acquire)
-        && !TX.seek_preroll_active()
-        && SHARED.seeking.load(Relaxed)
-        && !crate::route::flight_outstanding()
-        && !super::claim_hold::owns_pause()
-    {
-        let target = SHARED.seek_target_ns.load(Relaxed);
-        let target = if target >= 0 { target } else { SHARED.playpos_ns.load(Relaxed) };
-        // Only a seek the pump already DISPATCHED and that is still in flight: no newer tap waiting
-        // (`request_seek` sets `SHARED.seeking` and `TX.seek_to_ns` together, ahead of the
-        // dispatcher, and the dispatcher's `own_seek_under_pause` owns THAT seek at its own target),
-        // and the Engine flushed or awaiting its keyframe's rebase.
-        if let Some(eng) = pa.engine().filter(|e| TX.seek_to_ns.load(Relaxed) < 0 && (e.flushed || e.rebase_pending)) {
-            // The Pause marked the clock the seek prime owns as the viewer's, which fences the
-            // prime's Play: give the hold back to the prime first (it Plays one frame, then
-            // `finish_paused_seek` re-pauses).
-            if SHARED.hand_hold_to_seek_prime() && TX.own_paused_seek(target) {
-                eng.seek_armed_at = now;
-                #[cfg(test)]
-                MID_SEEK_CLAIMS.fetch_add(1, Relaxed);
-                super::log("seek: viewer paused mid-seek; the pump opened the preroll");
-            }
-        }
-    }
-    // A session with no picture under a viewer Pause. A reload keeps the Pause and zeroes `frames`,
-    // the fresh Engine arms an Initial hold the Pause marks user-held, and the feed gate
-    // (`TX.feed_allowed`) stays shut: no keyframe is fed, nothing is ever presented, and the HUD
-    // reads Buffering over a blank plane until Play. Derived from the state, so it covers every
-    // route that reloads (retranscode, adaptive, native audio, Original, recovery landings, a
-    // Pause pressed during a claim flight or before the first frame) without a call at each site:
-    // open the same bounded preroll a paused seek gets. Once a frame is presented `frames >= 1`
-    // closes this branch for good and the landed check below re-pauses.
-    if TX.paused.load(Acquire)
-        && !TX.seek_preroll_active()
-        && !super::claim_hold::owns_pause()
-        && !crate::route::flight_outstanding()
-        && TX.seek_to_ns.load(Relaxed) < 0
-        && SHARED.frames.load(Relaxed) == 0
-        // A prime still owed: only then does the seek hold hand back a Play. Once the prime's Play
-        // has fired (`prime_play` cleared, the clock Running) a Pause before the first position
-        // update is a plain `Held(User)`; converting it would clear `user_held` with nothing left
-        // to Play, and the viewer's Play would then find no hold to release.
-        && pa.engine().is_some_and(|e| e.prime_play)
-        && SHARED.hand_hold_to_seek_prime()
-    {
-        // Owned at 0, not at `playpos_ns`: `frames` is per-session (zeroed by every reset), so the
-        // first presented frame IS this session's landing, while `playpos_ns` is the PRE-reload
-        // playhead (a reload does not rewrite it). A target taken from it makes the `+ 15 s >=
-        // target` guard fail for a reload that lands behind the old playhead, and the film then
-        // plays on under a Paused transport.
-        if TX.own_paused_seek(0) {
-            super::log("reload: viewer paused with no picture yet; the pump opened the preroll");
-        }
-    }
-    let Some(target) = TX.owned_paused_seek() else { return };
-    let Some(eng) = pa.engine() else { return };
-    let landed = !eng.flushed
-        && !eng.rebase_pending
-        && TX.seek_to_ns.load(Relaxed) < 0
-        && !crate::route::flight_outstanding()
-        && SHARED.frames.load(Relaxed) >= 1
-        && plane_shows_the_picture(eng)
-        && SHARED.playpos_ns.load(Relaxed) + 15 * 1_000_000_000 >= target;
-    if landed {
-        super::finish_paused_seek(pa);
-    }
-}
-
-/// Is a picture the Engine has presented actually on the panel? Without ACB (webOS 5+) the sink is
-/// placed at Load, so any presented tick is. On the ACB route (webOS 4) the video plane connects
-/// only through `setMediaVideoData` + `acb_start` (the `Stage::Streaming` transition below), and a
-/// tick counted before that is a picture the plane never showed. A paused preroll re-paused on such
-/// a tick leaves a black panel (device-measured: a VIDEO-only capture read "no signal" until
-/// Resume), because the pause stops the ticks the bind is waiting on. So the landing needs the
-/// bind complete AND one tick after it (`Engine::bound_at_frames`).
-fn plane_shows_the_picture(eng: &Engine) -> bool {
-    if !ACB_OK.load(Relaxed) {
-        return true;
-    }
-    eng.stage >= Stage::Streaming && eng.bound_at_frames.is_none_or(|at| SHARED.frames.load(Relaxed) != at)
+    let step = pa.paused_seek_step(
+        now, crate::route::flight_outstanding(), super::claim_hold::owns_pause(),
+    );
+    #[cfg(test)]
+    if step.mid_seek_claimed { MID_SEEK_CLAIMS.fetch_add(1, Relaxed); }
+    if step.finish { super::finish_paused_seek(pa); }
 }
 
 /// Ticks `SHARED.frames` must have reached before the ACB bind (`setMediaVideoData`) may be sent.
@@ -1516,11 +1405,11 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     // Capture before a terminal release can clear the callback mailbox, then capture every
     // surviving/replacement Engine after the frame, including its early-return paths. A callback
     // or timeout raised during this tick must reach reports before the app observes Error.
-    if let Some(attempt) = pa.engine().map(|engine| engine.route_start) {
+    if let Some(attempt) = pa.active_feed_attempt() {
         publish_attempt_view(ps, attempt);
     }
     pump_frame(ps, pa, now);
-    if let Some(attempt) = pa.engine().map(|engine| engine.route_start) {
+    if let Some(attempt) = pa.active_feed_attempt() {
         publish_attempt_view(ps, attempt);
     }
 }
@@ -1546,12 +1435,12 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
     }
     // Preserve the old per-frame ordering: diagnostic mirror, side-reader failure, then Load
     // settlement. Borrowing the Engine only for each step lets the adapter land its owned inbox.
-    if let Some(eng) = pa.engine() { publish_diag(eng, now); }
+    pa.publish_feed_diag(now, &LAST_FRAMES);
     if super::subside::take_failure() { crate::route::side_subtitles_failed(ps); }
     // The native Load may return before its Engine is installed. Only this main-thread landing
     // maps its worker token to the current attempt and settles the route, after installation.
     pa.drain_load_outcomes(ps);
-    if let Some(attempt) = pa.engine().map(|engine| engine.route_start) {
+    if let Some(attempt) = pa.active_feed_attempt() {
         let snapshot = super::timeline::TimelineSnapshot::from_content_ns(
             SHARED.playpos_ns.load(Relaxed),
             SHARED.duration_ns.load(Relaxed),

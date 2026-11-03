@@ -5,10 +5,36 @@
 use crate::{abr, route};
 use plx_playback_contract::adaptive::PublicationGate;
 use plx_playback_contract::adaptive::{
-    Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, ActiveQuantum, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
-    RoundId, TrialActuatorPort, TrialObservation, TrialPhase, TrialProtocol, TrialProtocolError,
+    ActionReadout, AdaptiveDirection, AdaptiveEffects, Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, ActiveQuantum, AdaptiveRoundPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, CommitReadout, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
+    RoundId, SeedReadout, TrialObservation, TrialPhase, TrialProtocol, TrialProtocolError,
 };
 use plx_playback_contract::SourceKey;
+
+/// The player sink for common adaptive effects. Only the common worker invokes
+/// these callbacks; the physical feed does not choose when a seed or committed
+/// route becomes visible.
+pub struct PlayerAdaptiveEffects;
+
+impl AdaptiveEffects for PlayerAdaptiveEffects {
+    fn seed(&mut self, readout: SeedReadout) {
+        crate::player::SHARED.publish_abr_seed_readout(readout);
+    }
+
+    fn committed(&mut self, readout: CommitReadout) {
+        let rung = abr::LADDER.into_iter()
+            .find(|rung| rung.kbps() == readout.target_kbps)
+            .expect("a committed adaptive target belongs to the captured ladder");
+        crate::player::report::note_hls_committed_for(
+            readout.trace_generation,
+            match readout.direction {
+                AdaptiveDirection::Up => abr::Direction::Up,
+                AdaptiveDirection::Down => abr::Direction::Down,
+            },
+            rung,
+            readout.refreshing,
+        );
+    }
+}
 
 /// The route owner's captured inputs at a worker start. No second route identity is
 /// minted here: the ticket remains the route's complete worker-generation fence.
@@ -429,7 +455,7 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
                 feed_failure(other), &now_ms, &mut on_trace,
             ),
         };
-        self.trace(&mut on_trace, TrialTrace::FirstMedia);
+        self.trace(&mut on_trace, TrialTrace::FirstMedia(acquisition));
         self.observe(TrialObservation::FirstAcquired)
             .expect("the first candidate acquisition follows prime");
         let buffer = match self.stage_acquired() {
@@ -557,7 +583,7 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
         reserve_policy: abr::ReservePolicy, current: VariantFacts,
         first: Acquisition, first_buffer: BufferFact, opened_declared_bps: u64,
         mut on_followup: impl FnMut(Option<u64>),
-        mut on_trace: impl FnMut(&mut P, TrialTraceMoment),
+        mut on_trace: impl FnMut(TrialTraceMoment),
     ) -> StagedCandidate {
         let first_variant = VariantFacts {
             width: first.width, height: first.height, declared_bps: first.declared_bps,
@@ -598,7 +624,7 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
             height: final_acquisition.height,
             declared_bps: final_acquisition.declared_bps,
         };
-        on_trace(self.physical(), TrialTraceMoment::FinalEvidence);
+        on_trace(TrialTraceMoment::FinalEvidence(final_acquisition));
         let grade = self.final_action(
             coordinator, proposal, reserve_policy, current, candidate, &acquisitions, verdict,
         );
@@ -699,7 +725,7 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
     fn read_repeatable(
         &mut self, remaining_ms: Option<u64>,
         on_followup: &mut impl FnMut(Option<u64>),
-        on_trace: &mut impl FnMut(&mut P, TrialTraceMoment),
+        on_trace: &mut impl FnMut(TrialTraceMoment),
     ) -> Result<(Acquisition, BufferFact), StagedCandidate> {
         on_followup(remaining_ms);
         self.observe(TrialObservation::FollowupRequested)
@@ -725,7 +751,7 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
                 },
             }),
         };
-        on_trace(self.physical(), TrialTraceMoment::FollowupMedia);
+        on_trace(TrialTraceMoment::FollowupMedia(acquisition));
         self.observe(TrialObservation::FollowupAcquired)
             .expect("the repeatable acquisition follows its request");
         match self.stage_acquired() {
@@ -796,17 +822,18 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
     /// physical cursor/timeline transfer is synchronous and local, between the
     /// queue ACK and the short guarded route/controller publication. A failed
     /// queue or publication is terminal and owns candidate cleanup here.
-    pub(crate) fn queue_publish<F: CandidateFencePort, R>(
-        &mut self, coordinator: &mut Coordinator, fence_port: &mut F,
-        gate: &mut dyn PublicationGate, automatic_token: u64,
+    pub(crate) fn queue_publish(
+        &mut self, coordinator: &mut Coordinator,
+        automatic_token: u64,
         primed: &route::PrimedHls, proposal: abr::Proposal,
         sample: abr::SegmentSample, variant: abr::ObservedHlsVariant,
         now_ms: impl FnOnce() -> u64,
-        after_queue: impl FnOnce(&mut P) -> R,
         mut on_trace: impl FnMut(QueueTrace),
-    ) -> QueueAttempt<R, F::Fence, F::Error> {
+    ) -> QueueAttempt<P::Fence, P::Error>
+    where P: CandidateMediaPort + CandidateFencePort,
+    {
         on_trace(QueueTrace::Decided);
-        let fence = match fence_port.arm(automatic_token) {
+        let fence = match self.port.arm(automatic_token) {
             Ok(fence) => fence,
             Err(error) => {
                 coordinator.abandon(&primed.encoder_session);
@@ -829,14 +856,18 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
             };
         }
         on_trace(QueueTrace::FeedCompleted(started));
-        let physical = after_queue(&mut *self.port);
+        if !self.port.stage_queued_timeline() {
+            coordinator.abandon(&primed.encoder_session);
+            let terminal = self.observe(TrialObservation::Ended);
+            debug_assert_eq!(terminal, Err(TrialProtocolError::TerminalAfterQueue));
+            on_trace(QueueTrace::Finish("commit_feed_failed"));
+            return QueueAttempt::Failed("adaptive staged timeline protocol violation");
+        }
         let publication = coordinator.publish_queued_candidate(
-            self.protocol, gate, primed, proposal, sample, variant, now_ms(),
+            self.protocol, self.port.publication_gate(), primed, proposal, sample, variant, now_ms(),
         );
         match publication {
-            CandidatePublication::Active { previous } => QueueAttempt::Published {
-                previous, physical, fence,
-            },
+            CandidatePublication::Active { previous } => QueueAttempt::Published { previous, fence },
             CandidatePublication::Aborted => {
                 coordinator.abandon(&primed.encoder_session);
                 on_trace(QueueTrace::Finish("aborted"));
@@ -1037,6 +1068,7 @@ pub(crate) struct Coordinator {
     control: route::HlsAbrControl,
     ticket: route::WorkerTicket,
     controller: abr::Controller,
+    effects: Box<dyn AdaptiveEffects>,
     recovery: Option<abr::OriginalRecovery>,
     recover_kbps: u32,
     last_probe_block: Option<abr::ProbeBlock>,
@@ -1417,28 +1449,15 @@ pub(crate) enum WhyReadout {
     ResponseLimited, SwitchCost,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum ActionDirection { Up, Down }
-
-#[derive(Clone, Copy)]
-pub(crate) struct ActionReadout {
-    pub(crate) direction: ActionDirection,
-    pub(crate) target_kbps: u32,
-    pub(crate) refreshing: bool,
-    pub(crate) committed: Option<bool>,
-}
-
-impl ActionReadout {
-    pub(crate) fn from_proposal(
-        proposal: abr::Proposal, refreshing: bool, committed: Option<bool>,
-    ) -> Self {
-        Self {
-            direction: match proposal.direction {
-                abr::Direction::Up => ActionDirection::Up,
-                abr::Direction::Down => ActionDirection::Down,
-            },
-            target_kbps: proposal.rung.kbps(), refreshing, committed,
-        }
+pub(crate) fn action_readout(
+    proposal: abr::Proposal, refreshing: bool, committed: Option<bool>,
+) -> ActionReadout {
+    ActionReadout {
+        direction: match proposal.direction {
+            abr::Direction::Up => AdaptiveDirection::Up,
+            abr::Direction::Down => AdaptiveDirection::Down,
+        },
+        target_kbps: proposal.rung.kbps(), refreshing, committed,
     }
 }
 
@@ -1471,7 +1490,7 @@ pub(crate) struct ModelReadout {
     pub(crate) production_pm: i64,
     pub(crate) risk: i64,
     pub(crate) reason: Option<WhyReadout>,
-    pub(crate) seed: abr::CapacityEstimate,
+    pub(crate) seed: SeedReadout,
 }
 
 pub(crate) struct ActiveReadout {
@@ -1496,7 +1515,12 @@ impl ActiveReadout {
                 production_pm: t.risk.production_ratio_pm.map(i64::from).unwrap_or(-1),
                 risk: i64::from(t.risk.score),
                 reason: why_readout(t.reason),
-                seed: t.delivery,
+                seed: SeedReadout {
+                    fast_kbps: t.delivery.fast_kbps,
+                    slow_kbps: t.delivery.slow_kbps,
+                    uncertainty_pm: t.delivery.uncertainty_pm,
+                    samples: t.delivery.samples,
+                },
             },
             sample_line: sample_line(t, sample, round.decision),
             window_line: window_line(t, sample),
@@ -1652,7 +1676,10 @@ pub(crate) fn run_active_round<P: ActiveFeedPort>(
     }
     let (sample, round_decision, prefetch_allowed) =
         active.observe(coordinator, rollback_media_ms, now_ms(), boundary);
-    diagnostics.observed(ActiveReadout::new(&round_decision, sample));
+    let readout = ActiveReadout::new(&round_decision, sample);
+    let seed = readout.model.seed;
+    diagnostics.observed(readout);
+    coordinator.effects.seed(seed);
     if prefetch_allowed && active_step(port, round, ActiveAction::Prefetch {
         round, at_floor: Some(coordinator.at_floor()),
     })? != (ActiveObservation::Prefetched { round }) {
@@ -1848,8 +1875,8 @@ pub(crate) enum QueueTrace {
     Finish(&'static str),
 }
 
-pub(crate) enum QueueAttempt<R, F, E> {
-    Published { previous: String, physical: R, fence: F },
+pub(crate) enum QueueAttempt<F, E> {
+    Published { previous: String, fence: F },
     Aborted,
     Failed(&'static str),
     FenceFailed(E),
@@ -1872,7 +1899,7 @@ pub(crate) enum TrialTrace {
     Master(u64),
     ControlPlane,
     WarmupDeadline(std::time::Duration),
-    FirstMedia,
+    FirstMedia(Acquisition),
     Decided,
     Rejected { refreshing: bool },
     Finish(&'static str),
@@ -1880,7 +1907,10 @@ pub(crate) enum TrialTrace {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TrialTraceMoment { FollowupMedia, FinalEvidence }
+pub(crate) enum TrialTraceMoment {
+    FollowupMedia(Acquisition),
+    FinalEvidence(Acquisition),
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TrialStep {
@@ -2001,7 +2031,9 @@ impl ExplorationFailure {
 }
 
 impl Coordinator {
-    pub(crate) fn start(start: Start, pin: Option<abr::Rung>) -> Self {
+    pub(crate) fn start(
+        start: Start, pin: Option<abr::Rung>, effects: Box<dyn AdaptiveEffects>,
+    ) -> Self {
         let Start { control, ticket } = start;
         let recovery = control.can_recover_original().then(|| {
             abr::OriginalRecovery::new(
@@ -2025,7 +2057,7 @@ impl Coordinator {
             controller.observe_active_variant(variant, evidence_kbps);
         }
         Self {
-            control, ticket, controller, recovery, recover_kbps: 0,
+            control, ticket, controller, effects, recovery, recover_kbps: 0,
             last_probe_block: None,
             next_trial_serial: 0, next_round_serial: 0,
         }
@@ -2059,14 +2091,13 @@ impl Coordinator {
             proposal, reserve_policy, candidate_duration, reserve, rebuffering,
         )
     }
-    pub(crate) fn begin_candidate<P: TrialActuatorPort>(
+    pub(crate) fn begin_candidate<P: AdaptiveRoundPort>(
         &mut self, proposal: abr::Proposal, port: &mut P,
         expected_user_sequence: u64,
-        buffer: impl FnOnce() -> (Option<i64>, i64),
         now_ms: impl Fn() -> u64,
         mut on_rejected: impl FnMut(abr::Proposal, bool),
     ) -> Result<CandidateStart<P::Lease, P::TrialReserve>, CandidateStartRefusal> {
-        let plan = match self.preprime_plan(proposal, buffer, || now_ms()) {
+        let plan = match self.preprime_plan(proposal, || port.buffer_snapshot(), || now_ms()) {
             Ok(plan) => plan,
             Err(failure) => {
                 if let Some(refreshing) = failure.refreshing_same_request() {
@@ -2268,7 +2299,22 @@ impl Coordinator {
     }
     pub(crate) fn abandon(&self, encoder: &str) { self.control.abandon(encoder); }
     pub(crate) fn retire(&self, encoder: String) { self.control.retire(encoder); }
-    pub(crate) fn trace_generation(&self) -> u32 { self.control.trace_generation() }
+    pub(crate) fn commit_readout(
+        &self, proposal: abr::Proposal, refreshing: bool, declared_bps: u64,
+        observed: Acquisition,
+    ) -> CommitReadout {
+        CommitReadout {
+            trace_generation: self.control.trace_generation(),
+            direction: action_readout(proposal, refreshing, Some(true)).direction,
+            target_kbps: proposal.rung.kbps(), refreshing, declared_bps,
+            observed_width: observed.width, observed_height: observed.height,
+        }
+    }
+    /// Called after the AQ publication and native gauge projection. The sink
+    /// receives the generation captured with this route, never a global lookup.
+    pub(crate) fn emit_committed(&mut self, readout: CommitReadout) {
+        self.effects.committed(readout);
+    }
     pub(crate) fn original_source_kbps(&self) -> u32 { self.control.original_source_kbps() }
     pub(crate) fn retain_original_recovery(&mut self, kbps: u32) { self.recover_kbps = kbps; }
     pub(crate) fn on_hls_commit(&mut self, direction: abr::Direction) {
@@ -2337,10 +2383,9 @@ impl Coordinator {
     /// A source latch wins a physical lease before cancelling a competing rung.
     /// Publication itself is short and runs under the feed's AQ abort fence;
     /// a Busy or moved clock retains source evidence for a later boundary.
-    pub(crate) fn run_latched_original<P: AutomaticPort>(
+    pub(crate) fn run_latched_original<P: AdaptiveRoundPort>(
         &mut self, source: LatchedOriginalRecovery, port: &mut P,
         expected_user_sequence: u64, now_ms: impl FnOnce() -> u64,
-        position_ns: impl FnOnce() -> i64,
         on_published: impl FnOnce(),
         on_cancelled_rung: impl FnOnce(abr::Proposal, bool),
     ) -> OriginalSwitchOutcome {
@@ -2356,6 +2401,7 @@ impl Coordinator {
             on_cancelled_rung(proposal, refreshing);
         }
         let authorized = port.authorize(&lease);
+        let position_ns = port.position_sampler();
         match self.publish_original(
             port.gate(), authorized, prepared.kbps, position_ns, on_published,
         ) {
@@ -2371,13 +2417,11 @@ impl Coordinator {
     /// A bounded Original probe keeps its actuator lease through physical GET,
     /// fresh pause settlement and the AQ-fenced route request. A stale resource
     /// produces no source evidence; Busy and clock movement retain a recovery.
-    pub(crate) fn run_original_probe<P: AutomaticPort>(
+    pub(crate) fn run_original_probe<P: AdaptiveRoundPort>(
         &mut self, permit: abr::ProbePermit, port: &mut P,
         expected_user_sequence: u64, telemetry: &abr::ControllerTelemetry,
         remaining_ms: i64, decision: abr::Decision, cleanup_ready: bool,
         buffered_ms: Option<i64>, media_duration_ms: u32,
-        pause: impl FnOnce() -> PauseFact,
-        position_ns: impl FnOnce() -> i64,
         diagnostics: &mut impl OriginalProbeDiagnostics,
     ) -> OriginalProbeOutcome {
         let Some(lease) = port.begin(AutomaticTransition::Original, expected_user_sequence) else {
@@ -2422,7 +2466,7 @@ impl Coordinator {
             grade.as_ref().map(|grade| grade.verdict),
         ));
         let recovery = self.settle_probe_recovery(
-            grade.as_ref(), probe.kbps, pause, decision, cleanup_ready,
+            grade.as_ref(), probe.kbps, || port.pause_fact(), decision, cleanup_ready,
             buffered_ms, media_duration_ms,
         );
         match recovery {
@@ -2439,6 +2483,7 @@ impl Coordinator {
             ProbeRecoveryAction::Retained => OriginalProbeOutcome::Continue,
             ProbeRecoveryAction::Switch { kbps, measured_kbps } => {
                 let authorized = port.authorize(&lease);
+                let position_ns = port.position_sampler();
                 let publication = self.publish_probed_original(
                     port.gate(), authorized, kbps, measured_kbps, position_ns,
                     || diagnostics.action(ProbeTraceAction::RecoverOriginal, 0),
@@ -2502,7 +2547,7 @@ impl Coordinator {
     /// transaction receives its pending reserve policy from the same controller.
     pub(crate) fn advance_round<P: AdaptiveRoundPort>(
         &mut self, cycle: ActiveCycle, port: &mut P,
-        now_ms: impl Fn() -> u64, pause: impl FnOnce() -> PauseFact,
+        now_ms: impl Fn() -> u64,
         on_recover_original: impl FnOnce(),
         mut on_action: impl FnMut(ActionReadout),
         mut on_diagnostic: impl FnMut(RoundDiagnostic),
@@ -2527,8 +2572,8 @@ impl Coordinator {
         }
         let source = self.run_latched_original(
             after_prefetch.source, port, expected_user_sequence, || now_ms(),
-            P::position_ns, on_recover_original,
-            |proposal, refreshing| on_action(ActionReadout::from_proposal(
+            on_recover_original,
+            |proposal, refreshing| on_action(action_readout(
                 proposal, refreshing, Some(false),
             )),
         );
@@ -2551,7 +2596,8 @@ impl Coordinator {
         }
         let action = self.next_round_action(
             &round, sample, rollback_media_ms, remaining_ms, || now_ms(),
-            paused, cleanup_ready, P::transition_permitted, P::rebuffer_state,
+            paused, cleanup_ready,
+            |kind| port.transition_permitted(kind), || port.rebuffer_state(),
         );
         match action {
             RoundAction::Stay => RoundCourse::Stay,
@@ -2578,7 +2624,7 @@ impl Coordinator {
                     permit, port, expected_user_sequence, &round.telemetry,
                     remaining_ms, round.decision, cleanup_ready,
                     sample.buffer.buffered_ms(), sample.media_duration_ms(),
-                    pause, P::position_ns, probe_diagnostics,
+                    probe_diagnostics,
                 ) {
                     OriginalProbeOutcome::Published => RoundCourse::OriginalPublished,
                     OriginalProbeOutcome::Aborted => RoundCourse::Aborted,
@@ -2587,7 +2633,7 @@ impl Coordinator {
                 }
             }
             RoundAction::TrialDeferred { proposal, refreshing_same_request, reason } => {
-                on_action(ActionReadout::from_proposal(
+                on_action(action_readout(
                     proposal, refreshing_same_request, Some(false),
                 ));
                 on_diagnostic(RoundDiagnostic::Line(match reason {
@@ -2600,9 +2646,9 @@ impl Coordinator {
             }
             RoundAction::Trial { proposal, reserve_policy } => {
                 let start = match self.begin_candidate(
-                    proposal, port, expected_user_sequence, P::buffer_snapshot,
+                    proposal, port, expected_user_sequence,
                     || now_ms(),
-                    |proposal, refreshing| on_action(ActionReadout::from_proposal(
+                    |proposal, refreshing| on_action(action_readout(
                         proposal, refreshing, Some(false),
                     )),
                 ) {
@@ -3185,7 +3231,6 @@ mod trial_runner_tests {
         struct Port {
             replies: VecDeque<FeedObservation>,
             actions: Vec<FeedAction>,
-            media_trace: Vec<TrialTraceMoment>,
         }
         impl FeedPort for Port {
             type Locator = ();
@@ -3214,13 +3259,14 @@ mod trial_runner_tests {
                 FeedObservation::Acquired { trial, acquisition },
                 FeedObservation::Staged { trial, buffer, count: 2 },
             ]),
-            actions: Vec::new(), media_trace: Vec::new(),
+            actions: Vec::new(),
         };
         let mut budgets = Vec::new();
+        let mut media_trace = Vec::new();
         let mut runner = TrialRunner::new(&mut port, &mut protocol);
         let result = runner.read_repeatable(
             Some(700), &mut |budget| budgets.push(budget),
-            &mut |port, moment| port.media_trace.push(moment),
+            &mut |moment| media_trace.push(moment),
         );
         assert!(matches!(result, Ok((got, fact)) if got == acquisition && fact == buffer));
         drop(runner);
@@ -3230,7 +3276,7 @@ mod trial_runner_tests {
             FeedAction::AcquireFollowup { trial },
             FeedAction::StageAcquired { trial },
         ]);
-        assert_eq!(port.media_trace, [TrialTraceMoment::FollowupMedia]);
+        assert_eq!(media_trace, [TrialTraceMoment::FollowupMedia(acquisition)]);
         assert_eq!(protocol.phase(), TrialPhase::FollowupAcquired);
     }
 

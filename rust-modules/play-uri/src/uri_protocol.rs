@@ -64,7 +64,7 @@ impl AcbSource { pub fn text(&self) -> &str { &self.text } }
 
 /// Pinned Stremio051818e descriptor, allowed ONLY for the explicitly controlled SDR720p24 fixture.
 /// Arbitrary URI/HDR streams require an actual validated sourceInfo envelope instead.
-#[cfg(any(test, feature = "devtriggers"))]
+#[cfg(feature = "devtriggers")]
 pub fn build_acb_fixture_video(media_id: &MediaId, video: VideoFacts) -> Option<String> {
     if video.width != 1280 || video.height != 720 || video.frame_rate != 24.0 { return None; }
     Some(json!({"content":"movie","context":media_id,"video":{
@@ -217,7 +217,7 @@ const EVENT_KEYS: [(&str, Ev); 16] = [
 ];
 
 impl Ev {
-    #[cfg(any(test, feature = "devtriggers"))]
+    #[cfg(feature = "devtriggers")]
     pub(crate) fn name(self) -> &'static str {
         EVENT_KEYS
             .iter()
@@ -678,14 +678,14 @@ fn scrub_word(word: &str) -> String {
 }
 
 impl Message {
-    #[cfg(any(test, feature = "devtriggers"))]
+    #[cfg(feature = "devtriggers")]
     pub(crate) fn has_events(&self) -> bool {
         !self.seen.is_empty()
     }
 
     /// Why a call was refused, for a log line: the service's code and scrubbed text when it gave
     /// them (`code -1: Denied`), else whatever the transport said.
-    #[cfg(any(test, feature = "devtriggers"))]
+    #[cfg(feature = "devtriggers")]
     pub(crate) fn why(&self) -> String {
         match (self.error_code, &self.error_text) {
             (Some(code), Some(text)) if !text.is_empty() => format!("code {code}: {text}"),
