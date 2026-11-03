@@ -109,6 +109,16 @@ impl PlaybackState {
 #[derive(Clone, Copy, Default)]
 pub struct AttemptFacts {
     pub status: Option<PlaybackState>,
+    /// The exact physical transport start flag, independent of a route or busy status.
+    pub started: Option<bool>,
+    /// True only after the physical pipeline drained to end of stream.
+    pub ended: Option<bool>,
+    /// An in-flight physical seek target. Absence replaces the feed's private -1 sentinel.
+    pub seek_pending_ns: Option<i64>,
+    /// A runtime rebuffer, distinct from initial buffering and seek priming.
+    pub rebuffering: Option<bool>,
+    /// The target the viewer sees while a physical seek resolves.
+    pub seek_display_ns: Option<i64>,
     pub requested_kbps: Option<i64>,
     pub refusal_path: Option<RefusalPath>,
     pub runtime_failure: Option<RuntimeFailure>,
@@ -135,6 +145,8 @@ pub struct AttemptFacts {
 impl AttemptFacts {
     pub const EMPTY: Self = Self {
         status: None, runtime_failure: None, no_video: None, requested_kbps: None, refusal_path: None,
+        started: None, ended: None, seek_pending_ns: None, rebuffering: None,
+        seek_display_ns: None,
         position_ns: None, duration_ns: None, playable_buffer_ms: None,
         reported_frame: None, frames: None, raster: None, pipeline_stage: None,
         pipeline_error: None, http_status: None, demux_exit: None,
