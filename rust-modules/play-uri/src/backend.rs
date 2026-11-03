@@ -25,7 +25,7 @@ pub enum Binding { Exported { canvas: (c_int, c_int) }, Unbound }
 pub struct Config {
     pub transport: &'static dyn UriMedia,
     pub display: &'static dyn DisplaySink,
-    pub clock: &'static dyn MonotonicClock,
+    pub clock: Box<dyn MonotonicClock>,
     pub app_id: String,
     pub binding: Binding,
     pub capabilities: Capabilities,
@@ -557,7 +557,7 @@ mod tests {
     const B: AttemptId = AttemptId::new(7, 2);
     const URL: &str = "https://private.invalid/file?X-Plex-Token=SECRET";
 
-    struct Clock(AtomicU64);
+    struct Clock(std::sync::Arc<AtomicU64>);
     impl MonotonicClock for Clock { fn now_ms(&self) -> u64 { self.0.load(Ordering::Relaxed) } }
     struct BusState { session: SessionId, serial: u64,
         calls: Vec<(&'static str, RequestId, String)>, replies: VecDeque<UriReply>,
@@ -609,14 +609,15 @@ mod tests {
             Ok(())
         }
     }
-    struct Rig { driver: UriBackend, clock: &'static Clock, bus: &'static Bus,
+    struct Rig { driver: UriBackend, clock: std::sync::Arc<AtomicU64>, bus: &'static Bus,
         mt: MainThread, command: plx_playback_contract::CommandId }
     impl Rig {
         fn new() -> Self {
-            let clock = Box::leak(Box::new(Clock(AtomicU64::new(0))));
+            let clock = std::sync::Arc::new(AtomicU64::new(0));
             let bus = Box::leak(Box::new(Bus::new()));
             let display = Box::leak(Box::new(NoSink));
-            let driver = UriBackend::new(Config { transport: bus, display, clock,
+            let driver = UriBackend::new(Config { transport: bus, display,
+                clock: Box::new(Clock(clock.clone())),
                 app_id: "app.test".into(), binding: Binding::Unbound, capabilities: CAPS,
                 startup_timeout_ms: 500, release_allowance_ms: 100, source_ttl_ms: 50 });
             let mut state = BackendState::new();
@@ -706,7 +707,7 @@ mod tests {
         rig.driver.stage_source(B, KEY, UriSource::new(URL.into(), Vec::new())).unwrap();
         assert_eq!(rig.driver.dispatch(&rig.mt, B, rig.command,
             Operation::Start { source: KEY, requirements: REQ }), DispatchResult::Refused(Failure::Busy));
-        rig.clock.0.store(101, Ordering::Relaxed);
+        rig.clock.store(101, Ordering::Relaxed);
         assert!(rig.driver.poll(&rig.mt).contains(&DriverEvent::Release { attempt: A,
             status: ReleaseStatus::Quarantined }));
         rig.bus.0.lock().unwrap().close = CloseStatus::Released;
@@ -764,14 +765,14 @@ mod tests {
         assert_eq!(rig.driver.poll(&rig.mt), [DriverEvent::Release { attempt: A,
             status: ReleaseStatus::Released }], "a pre-open refusal has a proven empty owner");
         rig.driver.stage_source(A, KEY, UriSource::new(URL.into(), Vec::new())).unwrap();
-        rig.clock.0.store(50, Ordering::Relaxed);
+        rig.clock.store(50, Ordering::Relaxed);
         assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
             Operation::Start { source: KEY, requirements: REQ }), DispatchResult::Refused(Failure::Stale));
         assert_eq!(rig.driver.poll(&rig.mt), [DriverEvent::Release { attempt: A,
             status: ReleaseStatus::Released }]);
         assert!(rig.driver.staged.is_none());
         rig.driver.stage_source(B, KEY, UriSource::new(URL.into(), Vec::new())).unwrap();
-        rig.clock.0.store(100, Ordering::Relaxed);
+        rig.clock.store(100, Ordering::Relaxed);
         assert!(rig.driver.poll(&rig.mt).is_empty());
         assert!(rig.driver.staged.is_none(), "poll drops an unused authorization at its deadline");
     }
@@ -945,7 +946,7 @@ mod tests {
             DispatchResult::Queued);
         rig.bus.say("selectTrack", r#"{"returnValue":true,"mediaId":"m1"}"#);
         assert!(rig.driver.poll(&rig.mt).is_empty());
-        rig.clock.0.store(500, Ordering::Relaxed);
+        rig.clock.store(500, Ordering::Relaxed);
         let notices = rig.driver.poll(&rig.mt);
         assert!(notices.contains(&DriverEvent::Observation { attempt: A,
             observation: Observation::Failed(Failure::TimedOut) }));
@@ -960,7 +961,7 @@ mod tests {
         assert_eq!(rig.driver.exit_disposition(), ExitDisposition::Clean);
         rig.opened();
         assert_eq!(rig.driver.exit_disposition(), ExitDisposition::PreserveNativeOwnership);
-        rig.clock.0.store(501, Ordering::Relaxed);
+        rig.clock.store(501, Ordering::Relaxed);
         assert!(rig.driver.poll(&rig.mt).is_empty(), "common owner may stay paused at ready");
         assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
             Operation::Stop(StopReason::Exit)), DispatchResult::Queued);
