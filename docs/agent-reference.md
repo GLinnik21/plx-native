@@ -371,7 +371,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
     counted the layer crates' `test-support` optional dependencies (rcgen, rustls, ...) that only a
     `[dev-dependencies]` entry switches on. A fourth, the line count of `rust-modules/src` and every
     layer crate's `src`, only warns. Each entry records the value it was set
-    from and the date (10% headroom on sizes, +3 on counts). **To raise a budget deliberately, edit
+    from, the date and its declared headroom. **To raise a budget deliberately, edit
     the json in the same PR, update `measured`/`measured_on`, and justify the growth in the PR body**;
     the failing message says the same. Run it locally with
     `python3 ci/check-build-budgets.py --graph --src rust-modules/src` plus one `--src` per layer crate,
