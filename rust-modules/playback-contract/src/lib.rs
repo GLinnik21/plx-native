@@ -5,6 +5,8 @@
 #![deny(clippy::debug_assert_with_mut_call)]
 
 mod state;
+mod time;
+pub use time::MediaTimeMs;
 pub mod adaptive;
 pub mod subtitle;
 pub use state::{BackendState, Fx, Event, Intent, Phase, Snapshot};

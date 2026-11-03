@@ -2,6 +2,7 @@
 //! Device queries and logs stay with the media adapter; all inputs here are resolved facts.
 
 pub mod aq;
+pub mod hls;
 
 // BUFFERSTREAM Load payloads (ss4s shape). Video-only for the local sample path;
 // video+AC3 for streaming. Copied VERBATIM from playback.c.
