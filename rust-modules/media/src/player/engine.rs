@@ -6128,13 +6128,13 @@ mod prime_livelock_tests {
         );
     }
 
-    /// #1216, from a device log (0.8.0, OLED65CX, webOS 5.6.2, a 1080p HLS transcode on the 20 Mbps
-    /// rung): Pause at 21:15, Resume 1.5 s later, and Play never came. The finite-bag runway had grown
-    /// over 558 segments on that rung to 14 754 ms, while Starfish (`reply=B` on one retained AU) and
-    /// the video queue (`qbytes=10488086`, over `AQ_VIDEO_BYTES`) held about 10.8 s. The queue
-    /// cannot drain while Starfish refuses the AU the lane holds, so the demuxer stays parked on it
-    /// and neither tail can rise before Play. Every later press logged `physical Play remains
-    /// fenced`.
+    /// #1216, from a device log (0.8.0, OLED65CX, webOS 5.6.2, a 1080p HLS transcode on the
+    /// 20 Mbps rung): Pause at 21:15, Resume 1.5 s later, and Play never came. The finite-bag
+    /// runway had grown over 558 segments on that rung to 14 754 ms, while Starfish (`reply=B` on
+    /// one retained AU) and the video queue (`qbytes=10488086`, over `AQ_VIDEO_BYTES`) held about
+    /// 10.8 s. The queue cannot drain while Starfish refuses the AU the lane holds, so the demuxer
+    /// stays parked on it and neither tail can rise before Play. Every later press logged
+    /// `physical Play remains fenced`.
     ///
     /// Two phases pin both sides of the release. While the queue still has room, more media can
     /// arrive, so the hold keeps waiting for the runway. Once the queue is over its cap as well,
