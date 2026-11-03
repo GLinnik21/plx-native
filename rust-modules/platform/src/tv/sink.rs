@@ -93,6 +93,11 @@ pub trait DisplaySink: Sync {
 /// `p`/`size` a readable buffer. Apart from `load` and `unload`, the verbs must be called on the
 /// main thread (which `&MainThread` witnesses), in the order the player's pump drives them.
 pub trait VideoSink: DisplaySink {
+    /// Positive proof that a joined Load never left a native object behind. A zero `ready()`
+    /// answer is insufficient: firmware also reports zero after quarantining a live object.
+    /// The default keeps real firmware conservative; a sink with its own object ledger may
+    /// provide this only after the caller has joined the Load worker for this attempt.
+    fn no_object_proof(&self, _mt: &MainThread) -> bool { false }
     /// # Safety
     /// Unlike every other verb, `load` runs off the main thread (the media worker calls it, after
     /// `create_window` has put the windowId into `payload`), so an implementation must not touch

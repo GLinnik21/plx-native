@@ -1168,6 +1168,15 @@ unsafe fn acb_resume() {
 pub struct HostSink;
 
 impl VideoSink for HostSink {
+    fn no_object_proof(&self, _: &MainThread) -> bool {
+        // NativeStop joins the Load worker before asking. A refused host Load never wrote an
+        // object, callback epoch or loaded state. A prior quarantine clears OBJECT_READY too,
+        // so its blocked latch and retained epoch are essential to this positive proof.
+        !OBJECT_READY.load(std::sync::atomic::Ordering::Acquire)
+            && ACTIVE_EPOCH.load(std::sync::atomic::Ordering::Acquire) == 0
+            && !LOADED.load(std::sync::atomic::Ordering::Acquire)
+            && !LIFECYCLE_BLOCKED.load(std::sync::atomic::Ordering::Acquire)
+    }
     unsafe fn load(&self, payload: *const c_char, epoch: u32) -> c_int {
         sf_load(payload, epoch)
     }

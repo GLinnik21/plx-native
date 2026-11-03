@@ -376,13 +376,20 @@ fn release_native_object_timed(mt: &MainThread, epoch: u32, sp: &mut TeardownSpa
         sp.mark("sf_unload");
         finish_unloaded_object(mt, epoch, sp)
     } else {
-        if !SHARED.retire_native_session(epoch) {
+        let no_object = super::raw_sink().no_object_proof(mt);
+        let retired = SHARED.retire_native_session(epoch);
+        if !retired {
             log(&format!(
                 "native lifecycle: no dispatchable object and epoch={epoch} was already retired",
             ));
         }
-        // `ready=0` also describes a C object retained after quarantine. No D1 proof exists.
-        plx_playback_contract::ReleaseStatus::Quarantined
+        // The host sink can positively prove a joined Load never constructed an object. Real
+        // firmware supplies no such proof: `ready=0` also describes a quarantined C object.
+        if retired && no_object {
+            plx_playback_contract::ReleaseStatus::Released
+        } else {
+            plx_playback_contract::ReleaseStatus::Quarantined
+        }
     };
     destroy_native_window(mt, sp);
     status
@@ -2855,8 +2862,42 @@ mod native_lifecycle_host_seam_tests {
         assert_eq!(release_native_object_timed(&mt, epoch, &mut TeardownSpans::new()),
             plx_playback_contract::ReleaseStatus::Released,
             "the joined host Load refused before constructing any native object");
-        assert!(SHARED.begin_native_session().is_some(),
-            "an explicitly empty native seam must not quarantine subsequent attempts");
+        let next = SHARED.begin_native_session()
+            .expect("an explicitly empty native seam must not quarantine subsequent attempts");
+        assert!(SHARED.retire_native_session(next));
+    }
+
+    #[test]
+    fn ready_zero_with_an_allocated_epoch_is_still_uncertain() {
+        let _serial = plx_base::testlock::serial();
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
+        SHARED.reset_session();
+        let _fresh_process = FreshProcess;
+        let mt = unsafe { MainThread::assume() };
+        let epoch = loaded_epoch(&mt);
+        // Hide dispatchability while retaining the constructed object's callback epoch.
+        crate::player::ffi_host::force_object_ready_for_test(false);
+        assert_eq!(unsafe { crate::player::sink().ready(&mt) }, 0);
+        assert_eq!(release_native_object_timed(&mt, epoch, &mut TeardownSpans::new()),
+            plx_playback_contract::ReleaseStatus::Quarantined,
+            "ready=0 alone cannot authorize release of an allocated object");
+    }
+
+    #[test]
+    fn a_blocked_host_lifecycle_never_becomes_no_object_proof() {
+        let _serial = plx_base::testlock::serial();
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
+        SHARED.reset_session();
+        let _fresh_process = FreshProcess;
+        let mt = unsafe { MainThread::assume() };
+        let epoch = loaded_epoch(&mt);
+        unsafe { crate::player::sink().quarantine(&mt) };
+        assert!(crate::player::ffi_host::lifecycle_blocked_for_test());
+        assert_eq!(unsafe { crate::player::sink().ready(&mt) }, 0);
+        assert_eq!(release_native_object_timed(&mt, epoch, &mut TeardownSpans::new()),
+            plx_playback_contract::ReleaseStatus::Quarantined);
     }
 
     #[test]
