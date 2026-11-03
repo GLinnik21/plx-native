@@ -102,8 +102,8 @@ pub enum ControlSlot {
     Discs(Controls),
     /// a marker segment is under the playhead
     Skip(crate::skip_pill::Prompt),
-    /// …and the show has another episode queued, which outranks skipping the credits. Carries the
-    /// segment for the same reason `Skip` does — so the row has a stable IDENTITY.
+    /// Final credits with a queued successor under Countdown, unless authorized Automatic
+    /// credits owns the row. Carries the segment so the row has a stable IDENTITY.
     UpNext(plx_data::metadata::Marker),
 }
 

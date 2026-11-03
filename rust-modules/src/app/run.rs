@@ -487,9 +487,9 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
     }
     // ---- the player page's per-frame HUD SNAPSHOT (`HudModel`) ----
     //
-    // Sampled ONCE here and pushed into the screen as a value, so nothing the page prepares or
-    // draws reads a process global (`docs/sans-io.md`). Here, and not at the top of the iteration,
-    // because it must see everything the frame has changed: the pump (`playback_tick`) has
+    // Refreshed here and pushed into the screen as a value, so nothing the page prepares or
+    // draws reads a process global (`docs/sans-io.md`). This second publication includes
+    // everything the frame has changed: the pump (`playback_tick`) has
     // republished the playhead, the seek target and the pipeline state, and the dispatcher's frame
     // and `update` have run the screen's own `publish` — `TX.scrub_ns`, which the scrub preview
     // draws, is written by the page's `Tick` and its keys, and a snapshot taken before them would
@@ -633,14 +633,14 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
 }
 
 /// **The player HUD's [`HudModel`] for this frame**: every process global its presentation reads,
-/// sampled once. Each field is the expression its own doc in `appkit/player_hud/model.rs` names;
+/// sampled for one publication. Each field is the expression its own doc in `appkit/player_hud/model.rs` names;
 /// `bitmap_by_key` is the media function `draw_subtitle_bitmap` fetches a cue's rects with, injected
 /// so appkit never names the player's globals. Allocation-free: a dozen atomic loads, plus the image
 /// cue lookup (`active_bitmap_key`, one lock only while an image subtitle track is selected).
 ///
 /// The playhead is read once and the cue lookup takes that same sample, so the two cannot straddle a
 /// media-thread publication. App-side by construction: the app crate is where globals are read, the
-/// screen and the draw receive the value (`prepare_window` is the one caller).
+/// screen and the draw receive the value through `publish_player_model`, before dispatch and drawing.
 fn hud_model(
     ps: &plx_media::route::PlaybackSession,
     meta: plx_data::metadata::MetadataView<'_>,

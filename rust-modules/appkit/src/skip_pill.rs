@@ -6,8 +6,8 @@
 //! Replacing them rather than joining them is the design call: one wide unmissable target in the
 //! spot the eye already goes for transport controls. The cost is that CC/Audio are covered for the
 //! length of the segment, so BACK over the pill DISMISSES the offer for that segment and puts the
-//! discs back (`PlayerScreen::dismiss_offer` asks `PlayerReq::DismissOffer`, which marks the
-//! segment skipped in the metadata store — the same set a Skip press uses) — the row stays at five
+//! discs back (`PlayerScreen::dismiss_offer` asks `DismissOffer` for Manual, or `CancelAutoSkip`
+//! for Automatic; both retire the segment in the metadata store) — the row stays at five
 //! controls and the viewer never has to wait an intro out to change tracks. The button only exists
 //! while the HUD is up, which is why `app.rs` RAISES the HUD once when a segment begins and parks
 //! focus here. Manual skips on OK; Automatic offers Watch and lets the viewer cancel its timer.
@@ -18,7 +18,8 @@ use plx_ui::widgets::{Button, ControlGround};
 use plx_ui::{Env, Painter, Rect, View};
 use std::ffi::CString;
 
-/// What pressing the button does. The distinction is the `final` flag on a credits marker: an
+/// The skip performed by a Manual press or Automatic expiry. A Watch press cancels instead.
+/// The distinction is the `final` flag on a credits marker: an
 /// ordinary segment is a seek and playback continues past it, but a `final` one runs to the end of
 /// the item, so "skip" means **the episode is over** — seeking to its end would race the decoder
 /// against its own last frames for no benefit.

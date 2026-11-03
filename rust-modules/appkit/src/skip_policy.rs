@@ -93,8 +93,8 @@ impl OfferTimer {
     pub fn progress(&self) -> f32 {
         self.elapsed_us as f32 / COUNTDOWN_US as f32
     }
-    /// A rendered, actionable Watch opportunity was actually presented. Drawing is paint-only;
-    /// the caller reports the previous presentation at the frame boundary.
+    /// A rendered, actionable Watch opportunity was actually presented. Drawing records the
+    /// renderer's receipt here; the next Tick may count that presentation.
     pub fn presented(&mut self) {
         self.presented = true;
     }

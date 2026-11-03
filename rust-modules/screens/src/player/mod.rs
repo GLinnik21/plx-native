@@ -174,10 +174,10 @@ pub struct PlayerScreen {
     clock_warm: plx_appkit::player_hud::motion::ClockWarm,
     /// **This frame's snapshot of everything the HUD's presentation reads from the player's
     /// globals** (`TX.paused`, the scrub target, the playhead, the duration, the subtitle picks).
-    /// The app assigns it ONCE a frame, before `prepare` and `draw`, and those two read it. So do the
+    /// The app assigns it before input/Tick and refreshes it before `prepare` and `draw`. So do the
     /// stops a key press resolves against (`row_enabled`, `row_command`, `geometry_for`: the row's enabled
-    /// predicates and the paused state pick the compiled state). The scrub arithmetic and the Tick keep
-    /// sampling what they always did.
+    /// predicates and the paused state pick the compiled state). Automatic-skip Tick consumes the
+    /// injected entitlement and transport facts; the scrub keeps its existing live inputs.
     pub model: HudModel,
     /// **The compiled HUD this page draws and places from**, handed in by the application the way
     /// [`Self::model`] is: parsed and compiled outside the draw, once per (package, language) (`player_hud::loaded`;
@@ -302,8 +302,9 @@ impl PlayerScreen {
         plx_appkit::player_hud::draw_subtitle_bitmap(&mut self.render.subs, hud_up, band, &self.model);
     }
 
-    /// The transport, with this instance's own springs, memo and countdown. Paint only: what a
-    /// pointer can hit is registered by [`Self::record_stops`], from this screen's `Focusable`.
+    /// The transport, with this instance's own springs, memo and countdown. Records whether Watch
+    /// was actually painted for the next Tick. Pointer hits are registered by [`Self::record_stops`],
+    /// from this screen's `Focusable`.
     ///
     /// It draws the compiled package ([`Self::compiled`]: `builtin:classic` unless the seated profile chose an
     /// installed package that fits the language, or a dev package was asked for) through `player_hud::render`. A package with no state for this frame draws nothing (a
