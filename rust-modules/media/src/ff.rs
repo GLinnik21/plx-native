@@ -6754,13 +6754,14 @@ fn hls_demux(
             ));
             final_acquisition = repeatable_acquisition;
             candidate_acquisitions.push(repeatable_acquisition);
-            verdict = adaptive::candidate_sample(
-                repeatable_acquisition,
-                hls_buffer_snapshot(Some(&candidate_outputs[1].0)),
-            )
-                .map_or(crate::abr::CandidateVerdict::Incomplete, |sample| {
-                    state.candidate_verdict(proposal, sample, opened_declared_bps, false)
-                });
+            verdict = runner.followup_verdict(
+                state, proposal,
+                adaptive::candidate_sample(
+                    repeatable_acquisition,
+                    hls_buffer_snapshot(Some(&candidate_outputs[1].0)),
+                ),
+                opened_declared_bps,
+            );
         }
 
         let (candidate_output, _, candidate_duration) =
@@ -6773,8 +6774,8 @@ fn hls_demux(
         let candidate_sample = adaptive::candidate_sample(
             final_acquisition, hls_buffer_snapshot(Some(candidate_output)),
         );
-        let grade = state.final_candidate_grade(
-            proposal, reserve_policy, current_variant, candidate_variant_facts,
+        let grade = runner.final_action(
+            state, proposal, reserve_policy, current_variant, candidate_variant_facts,
             &candidate_acquisitions, verdict,
         );
         let adaptive::FinalCandidateGrade { raster_ready, quality_improves, disposition } = grade;

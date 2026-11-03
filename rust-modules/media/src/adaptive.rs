@@ -234,6 +234,26 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
         }
     }
 
+    pub(crate) fn followup_verdict(
+        &self, coordinator: &Coordinator, proposal: abr::Proposal,
+        sample: Option<abr::SegmentSample>, declared_bps: u64,
+    ) -> abr::CandidateVerdict {
+        sample.map_or(abr::CandidateVerdict::Incomplete, |sample| {
+            coordinator.candidate_verdict(proposal, sample, declared_bps, false)
+        })
+    }
+
+    pub(crate) fn final_action(
+        &self, coordinator: &Coordinator, proposal: abr::Proposal,
+        reserve_policy: abr::ReservePolicy, current: VariantFacts,
+        candidate: VariantFacts, acquisitions: &[Acquisition],
+        verdict: abr::CandidateVerdict,
+    ) -> FinalCandidateGrade {
+        coordinator.final_candidate_grade(
+            proposal, reserve_policy, current, candidate, acquisitions, verdict,
+        )
+    }
+
     pub(crate) fn authorize_queue(&mut self) {
         self.observe(TrialObservation::QueueAuthorized)
             .expect("only graded candidate media may enter the queue");
@@ -468,9 +488,9 @@ pub(crate) struct VariantFacts {
     pub(crate) declared_bps: u64,
 }
 
-pub(crate) struct FirstCandidateGrade {
-    pub(crate) verdict: abr::CandidateVerdict,
-    pub(crate) needs_followup: bool,
+struct FirstCandidateGrade {
+    verdict: abr::CandidateVerdict,
+    needs_followup: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -602,7 +622,7 @@ impl Coordinator {
         self.controller.reject(proposal, cause, now_ms);
         refreshing
     }
-    pub(crate) fn candidate_verdict(
+    fn candidate_verdict(
         &self, proposal: abr::Proposal, sample: abr::SegmentSample,
         declared_bps: u64, boundary: bool,
     ) -> abr::CandidateVerdict {
@@ -612,7 +632,7 @@ impl Coordinator {
             self.controller.candidate_verdict(proposal, sample, declared_bps)
         }
     }
-    pub(crate) fn first_candidate_grade(
+    fn first_candidate_grade(
         &self, proposal: abr::Proposal, current: VariantFacts,
         candidate: VariantFacts, sample: Option<abr::SegmentSample>,
     ) -> FirstCandidateGrade {
@@ -634,7 +654,7 @@ impl Coordinator {
                 && verdict == abr::CandidateVerdict::SetupBearing,
         }
     }
-    pub(crate) fn final_candidate_grade(
+    fn final_candidate_grade(
         &self, proposal: abr::Proposal, reserve_policy: abr::ReservePolicy,
         current: VariantFacts, candidate: VariantFacts,
         acquisitions: &[Acquisition], verdict: abr::CandidateVerdict,
