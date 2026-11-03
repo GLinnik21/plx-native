@@ -2012,6 +2012,9 @@ mod flight_tests {
         fn frame(&mut self) {
             let _frame = plx_base::task::FrameScope::enter();
             self.now += 16;
+            // The app's frame drain owns a rollback whose trial Load was refused before
+            // an Engine existed. It runs before the physical pump on each app frame.
+            drain_engineless_rollback(&mut self.ps, &mut self.pa);
             pump(&mut self.ps, &mut self.pa, self.now);
         }
 
@@ -2020,11 +2023,10 @@ mod flight_tests {
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             while !done(self) {
                 assert!(std::time::Instant::now() < deadline,
-                    "timed out waiting for {what}: phase={}, decisions={}, answered={}, live={}, stage={:?}, recovery={}, state={:?}, requests={:?}",
+                    "timed out waiting for {what}: phase={}, decisions={}, answered={}, live={}, stage={:?}, recovery={}, state={:?}",
                     crate::route::control_phase_label(), self.flight.decisions(),
                     self.flight.answered(), self.pa.is_live(), self.pa.feed_stage().map(|stage| stage as u8),
-                    crate::route::recovery_flight_outstanding(), crate::player::state(&self.ps),
-                    self.flight.requests());
+                    crate::route::recovery_flight_outstanding(), crate::player::state(&self.ps));
                 std::thread::sleep(Duration::from_millis(2));
                 self.frame();
             }
