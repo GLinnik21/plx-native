@@ -169,12 +169,13 @@ impl BackendRunner {
                 notice @ (Fx::Rejected { .. } | Fx::CommandRefused { .. }
                     | Fx::AcceptedObservation { .. } | Fx::AcceptedTrackSettled { .. }
                     | Fx::AcceptedSeekLanded { .. } | Fx::ReleaseOutcome { .. }) => {
+                    let initial_play_refusal = self.startup.is_initial_play_refusal(&notice);
                     self.startup.on_notice(&notice);
                     if let (Event::Intent(Intent::Start { .. }), Fx::Rejected { backend, attempt, failure })
                         = (event, notice) {
                         self.metrics.rejected_start(backend, attempt, failure, &mut result.metrics);
                     }
-                    self.metrics.notice(&notice, at, &mut result.metrics);
+                    self.metrics.notice(&notice, initial_play_refusal, at, &mut result.metrics);
                     result.playback.push(notice);
                 }
             }
@@ -471,6 +472,64 @@ mod tests {
             operation: Operation::Play });
         assert_eq!(drivers.sent.last().unwrap().3, Operation::Play);
         assert_eq!(drivers.sent.len(), 2);
+    }
+
+    #[test]
+    fn mandatory_initial_play_refusal_fails_but_later_transport_refusals_do_not() {
+        let mut runner = BackendRunner::new();
+        let mut drivers = FakeSet::new();
+        let request = LogicalRequestId::new(30);
+        runner.begin_request_at(request, measure::Origin::Fresh, tick(0));
+        runner.send_at(&mut drivers, &(), Intent::Start { backend: FEED, attempt: A,
+            source: SourceKey::new(1), requirements: REQ, initial: INITIAL },
+            measure::Origin::Fresh, tick(1));
+        drivers.events.push(BackendEvent { backend: FEED, event: DriverEvent::Observation {
+            attempt: A, observation: Observation::Playback(Observed { value: Playback::ReadyAwaitPlay,
+                from: EvidenceSource::BackendReport }) } });
+        runner.poll_at(&mut drivers, &(), tick(2));
+        let initial = drivers.sent.last().unwrap().2;
+        assert_eq!(drivers.sent.last().unwrap().3, Operation::Play);
+        drivers.events.push(BackendEvent { backend: FEED, event: DriverEvent::ControlRefused {
+            attempt: A, command: initial, operation: Operation::Play, failure: Failure::Refused } });
+        let refused = runner.poll_at(&mut drivers, &(), tick(3));
+        assert_eq!(refused.playback, [Fx::CommandRefused { backend: FEED, attempt: A,
+            command: initial, operation: Operation::Play, failure: Failure::Refused }]);
+        assert_eq!(runner.metrics_snapshot().unwrap().current_attempt.unwrap().outcome,
+            Some(measure::AttemptOutcome::Failed(measure::Failure {
+                stage: measure::Stage::Presentation, cause: measure::Cause::Refused })));
+
+        let mut runner = BackendRunner::new();
+        let mut drivers = FakeSet::new();
+        runner.begin_request_at(LogicalRequestId::new(31), measure::Origin::Fresh, tick(0));
+        runner.send_at(&mut drivers, &(), Intent::Start { backend: FEED, attempt: A,
+            source: SourceKey::new(2), requirements: REQ,
+            initial: InitialPlayback { paused: true, position: None } },
+            measure::Origin::Fresh, tick(1));
+        drivers.events.push(BackendEvent { backend: FEED, event: DriverEvent::Observation {
+            attempt: A, observation: Observation::Playback(Observed { value: Playback::ReadyAwaitPlay,
+                from: EvidenceSource::BackendReport }) } });
+        runner.poll_at(&mut drivers, &(), tick(2));
+        assert_eq!(drivers.sent.len(), 1, "paused startup issues no mandatory Play");
+        runner.send_at(&mut drivers, &(), Intent::Control { backend: FEED, attempt: A,
+            operation: Operation::Play }, measure::Origin::Fresh, tick(3));
+        let interactive = drivers.sent.last().unwrap().2;
+        drivers.events.push(BackendEvent { backend: FEED, event: DriverEvent::ControlRefused {
+            attempt: A, command: interactive, operation: Operation::Play,
+            failure: Failure::Refused } });
+        runner.poll_at(&mut drivers, &(), tick(4));
+        assert_eq!(runner.metrics_snapshot().unwrap().current_attempt.unwrap().outcome, None);
+        runner.send_at(&mut drivers, &(), Intent::Control { backend: FEED, attempt: A,
+            operation: Operation::Pause }, measure::Origin::Fresh, tick(5));
+        let pause = drivers.sent.last().unwrap().2;
+        drivers.events.push(BackendEvent { backend: FEED, event: DriverEvent::ControlRefused {
+            attempt: A, command: pause, operation: Operation::Pause,
+            failure: Failure::Refused } });
+        runner.poll_at(&mut drivers, &(), tick(6));
+        assert_eq!(runner.metrics_snapshot().unwrap().current_attempt.unwrap().outcome, None);
+        let before = drivers.sent.len();
+        runner.send(&mut drivers, &(), Intent::Control { backend: FEED, attempt: A,
+            operation: Operation::Play });
+        assert_eq!(drivers.sent.len(), before + 1, "later refusal did not poison the startup plan");
     }
     fn tick(ms: u64) -> measure::Tick { measure::Tick::from_millis(ms) }
 

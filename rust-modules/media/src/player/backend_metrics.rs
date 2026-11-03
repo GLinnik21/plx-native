@@ -34,6 +34,7 @@ struct Physical {
     picture: bool,
     finished: bool,
     paused: bool,
+    pre_pause: Option<bool>,
     seeking: bool,
     held: bool,
     last_position: Option<u64>,
@@ -122,6 +123,7 @@ impl Metrics {
         match intent {
             Intent::Control { backend, attempt, operation: Operation::Pause } => {
                 if let Some(p) = self.physical.as_mut().filter(|p| (p.backend,p.attempt)==(backend,attempt)) {
+                    p.pre_pause.get_or_insert(p.paused);
                     p.paused = true;
                 }
                 self.condition(backend, attempt, m::Condition::Paused, at, out);
@@ -156,7 +158,8 @@ impl Metrics {
                     backend: map_backend(backend), origin, at }, out);
                 if self.model.snapshot().and_then(|r| r.current_attempt).is_some_and(|a| a.id == attempt) {
                     self.physical = Some(Physical { backend, attempt, ready: false, picture: false,
-                        finished: false, paused, seeking: false, held: paused || !self.foreground,
+                        finished: false, paused, pre_pause: None, seeking: false,
+                        held: paused || !self.foreground,
                         last_position: None, stop: None });
                     if paused { self.condition(backend, attempt, m::Condition::Paused, at, out); }
                 }
@@ -179,7 +182,8 @@ impl Metrics {
         }
     }
 
-    pub(super) fn notice(&mut self, notice: &Fx, at: m::Tick, out: &mut Vec<MetricNotice>) {
+    pub(super) fn notice(&mut self, notice: &Fx, initial_play_refusal: bool,
+        at: m::Tick, out: &mut Vec<MetricNotice>) {
         let (backend, attempt) = match *notice {
             Fx::AcceptedObservation { backend, attempt, .. }
             | Fx::CommandRefused { backend, attempt, .. }
@@ -197,6 +201,7 @@ impl Metrics {
                 Observation::Playback(value) => match value.value {
                     Playback::ReadyAwaitPlay => physical.ready = true,
                     Playback::Playing => {
+                        physical.pre_pause = None;
                         physical.paused = false;
                         physical.seeking = false;
                         physical.held = !self.foreground;
@@ -207,6 +212,7 @@ impl Metrics {
                             at, out);
                     }
                     Playback::Paused => {
+                        physical.pre_pause = None;
                         physical.paused = true;
                         self.condition(backend, attempt, m::Condition::Paused, at, out);
                     }
@@ -238,6 +244,18 @@ impl Metrics {
                 Observation::TrackSelected(_) | Observation::TrackOff(_) => {}
             },
             Fx::CommandRefused { operation, failure, .. } => {
+                if operation == Operation::Pause {
+                    if let Some(previous) = physical.pre_pause.take() {
+                        physical.paused = previous;
+                        let condition = if !self.foreground || physical.held { m::Condition::Held }
+                            else if previous { m::Condition::Paused }
+                            else { m::Condition::Unknown };
+                        self.step(m::Event::Condition { request, attempt, condition, at }, out);
+                    }
+                } else if operation == Operation::Play && !initial_play_refusal {
+                    // A viewer can retry Play on a paused live attempt; a refused press does
+                    // not turn the whole physical attempt into a failed open.
+                } else {
                 let stage = match operation {
                     Operation::Start { .. } => m::Stage::Open,
                     Operation::Stop(_) => m::Stage::Release,
@@ -245,6 +263,7 @@ impl Metrics {
                 };
                 self.finish_attempt(request, &mut physical,
                     m::AttemptOutcome::Failed(m::Failure { stage, cause: map_cause(failure) }), at, out);
+                }
             }
             Fx::AcceptedSeekLanded { .. } => {
                 physical.seeking = false;
