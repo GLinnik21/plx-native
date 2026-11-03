@@ -2842,6 +2842,24 @@ mod native_lifecycle_host_seam_tests {
     }
 
     #[test]
+    fn a_refused_load_with_no_constructed_object_releases_its_epoch() {
+        let _serial = plx_base::testlock::serial();
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(false);
+        SHARED.reset_session();
+        let _fresh_process = FreshProcess;
+        let mt = unsafe { MainThread::assume() };
+        let epoch = SHARED.begin_native_session().expect("native epoch");
+        assert_eq!(unsafe { crate::player::sink().load(c"{}".as_ptr(), epoch) }, 0);
+        assert_eq!(unsafe { crate::player::sink().ready(&mt) }, 0);
+        assert_eq!(release_native_object_timed(&mt, epoch, &mut TeardownSpans::new()),
+            plx_playback_contract::ReleaseStatus::Released,
+            "the joined host Load refused before constructing any native object");
+        assert!(SHARED.begin_native_session().is_some(),
+            "an explicitly empty native seam must not quarantine subsequent attempts");
+    }
+
+    #[test]
     fn a_proven_release_leaves_unload_destroyed_and_window_destroy_in_order() {
         let _serial = plx_base::testlock::serial();
         crate::player::ffi_host::reset_native_lifecycle_for_test();
