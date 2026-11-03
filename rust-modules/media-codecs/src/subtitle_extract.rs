@@ -403,7 +403,7 @@ impl Job {
 
     pub fn manifest(&self, max_header_bytes: usize, admit_font: impl FnMut(usize) -> bool) -> Manifest {
         let tracks: Vec<_> = self.tracks.iter().zip(&self.kinds).map(|(track, kind)| AssTrack {
-            stream_index: track.stream_index, authored: matches!(kind, DecodeKind::Ass),
+            stream_index: track.stream_index, authored: matches!(kind, DecodeKind::Ass { .. }),
         }).collect();
         unsafe { collect_manifest(self.fmt, (*self.fmt).streams, &tracks, max_header_bytes, admit_font) }
     }
