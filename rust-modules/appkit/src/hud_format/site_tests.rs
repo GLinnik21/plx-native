@@ -22,21 +22,21 @@ use std::path::PathBuf;
 use plx_ui::rec::strict_json::Value;
 
 use super::schema_check::{accepts, check as schema_check, is_prefix};
-use super::{check, parse, report, schema, schema_emit};
+use super::{check, report, schema, schema_emit};
 
 /// The environment variable that turns a golden comparison into a rewrite.
 const BLESS: &str = "PLX_HUD_SCHEMA_WRITE";
 
 const EXAMPLES: [(&str, &str); 6] = [
-    ("reference", include_str!("fixtures/reference.plxhud.json")),
-    ("minimal", include_str!("fixtures/minimal.plxhud.json")),
+    ("reference", include_str!("fixtures/reference/hud.json")),
+    ("minimal", include_str!("fixtures/minimal/hud.json")),
     (
         "hero-center",
-        include_str!("fixtures/hero-center.plxhud.json"),
+        include_str!("fixtures/hero-center/hud.json"),
     ),
-    ("tabs", include_str!("fixtures/tabs.plxhud.json")),
-    ("palette", include_str!("fixtures/palette.plxhud.json")),
-    ("rising-tabs", include_str!("fixtures/rising-tabs.plxhud.json")),
+    ("tabs", include_str!("fixtures/tabs/hud.json")),
+    ("palette", include_str!("fixtures/palette/hud.json")),
+    ("rising-tabs", include_str!("fixtures/rising-tabs/hud.json")),
 ];
 
 fn blessing() -> bool {
@@ -203,7 +203,7 @@ fn the_published_examples_are_byte_identical_to_the_fixtures() {
 fn every_example_parses_with_no_finding_and_the_schema_accepts_it() {
     let schema = schema_emit::emit_current();
     for (name, text) in EXAMPLES {
-        let parsed = parse::parse(text.as_bytes());
+        let parsed = crate::hud_format::fixtures::parse(text.as_bytes());
         assert!(
             parsed.findings.is_empty() && parsed.package.is_some(),
             "{name}: {:#?}",
@@ -218,7 +218,7 @@ fn every_example_parses_with_no_finding_and_the_schema_accepts_it() {
 #[test]
 fn every_example_passes_the_package_checker_with_no_finding() {
     for (name, text) in EXAMPLES {
-        let package = parse::parse(text.as_bytes())
+        let package = crate::hud_format::fixtures::parse(text.as_bytes())
             .package
             .unwrap_or_else(|| panic!("{name} parses"));
         let checked = check(&package);
@@ -292,7 +292,7 @@ fn the_invalid_examples_are_the_ones_this_test_knows() {
 #[test]
 fn every_invalid_example_produces_its_code_and_is_never_a_package() {
     for (name, code, _) in INVALID {
-        let parsed = parse::parse(invalid_text(name).as_bytes());
+        let parsed = crate::hud_format::fixtures::parse(invalid_text(name).as_bytes());
         assert!(parsed.package.is_none(), "{name} must not parse");
         assert!(
             parsed.findings.iter().any(|f| f.code == code),
@@ -310,7 +310,7 @@ fn every_invalid_example_produces_its_code_and_is_never_a_package() {
 fn every_invalid_example_has_the_lint_report_the_report_module_prints() {
     for (name, _, _) in INVALID {
         let file = format!("{name}.plxhud.json");
-        let findings = parse::parse(invalid_text(name).as_bytes()).findings;
+        let findings = crate::hud_format::fixtures::parse(invalid_text(name).as_bytes()).findings;
         let json = report::json_text(&file, &findings);
         golden(&format!("examples/invalid/{name}.lint.json"), &json);
         if !blessing() {
@@ -335,7 +335,7 @@ fn the_schema_rejects_the_key_type_and_value_faults_among_them_where_the_parser_
         let failures = schema_check(&schema, &instance);
         assert_eq!(!failures.is_empty(), rejected, "{name}: {failures:#?}");
         assert_eq!(accepts(&schema, &instance), !rejected, "{name}");
-        let parser = parse::parse(text.as_bytes()).findings;
+        let parser = crate::hud_format::fixtures::parse(text.as_bytes()).findings;
         for failure in &failures {
             assert!(
                 parser

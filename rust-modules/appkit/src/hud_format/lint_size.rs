@@ -204,17 +204,16 @@ mod tests {
     use crate::hud_format::compile::{compile, CompileCtx};
     use crate::hud_format::lint::testing::{apply, assert_case, Base};
     use crate::hud_format::lint::{lint, LintLang, LintOptions};
-    use crate::hud_format::parse;
-    use crate::hud_format::{Code, BUILTIN_CLASSIC};
+    use crate::hud_format::{Code, CLASSIC_HUD};
 
-    const REFERENCE: &str = include_str!("fixtures/reference.plxhud.json");
-    const MINIMAL: &str = include_str!("fixtures/minimal.plxhud.json");
-    const HERO: &str = include_str!("fixtures/hero-center.plxhud.json");
-    const TABS: &str = include_str!("fixtures/tabs.plxhud.json");
-    const PALETTE: &str = include_str!("fixtures/palette.plxhud.json");
+    const REFERENCE: &str = include_str!("fixtures/reference/hud.json");
+    const MINIMAL: &str = include_str!("fixtures/minimal/hud.json");
+    const HERO: &str = include_str!("fixtures/hero-center/hud.json");
+    const TABS: &str = include_str!("fixtures/tabs/hud.json");
+    const PALETTE: &str = include_str!("fixtures/palette/hud.json");
 
     const FIXTURES: [(&str, &str); 6] = [
-        ("classic", BUILTIN_CLASSIC),
+        ("classic", CLASSIC_HUD),
         ("reference", REFERENCE),
         ("minimal", MINIMAL),
         ("hero-center", HERO),
@@ -230,7 +229,7 @@ mod tests {
 
     /// What this module's `check` reports for `text` in the language `tag`, with the real font advances.
     fn found(text: &str, tag: &str) -> Vec<Finding> {
-        let parsed = parse::parse(text.as_bytes());
+        let parsed = crate::hud_format::fixtures::parse(text.as_bytes());
         let package = parsed.package.expect("a package");
         let lang = LintLang::for_tag(tag).expect("a shipped language");
         let compiled = compile(&package, &ShippedMeasure, CompileCtx { labels: lang.labels.clone() });
@@ -265,7 +264,7 @@ mod tests {
     fn reference_52_is_admitted() {
         let reference_disc = 52.0_f32;
         assert!(reference_disc >= MIN_CONTROL_SIZE);
-        let parsed = parse::parse(REFERENCE.as_bytes());
+        let parsed = crate::hud_format::fixtures::parse(REFERENCE.as_bytes());
         let package = parsed.package.expect("a package");
         let lang = LintLang::for_tag("en").expect("en");
         let compiled = compile(&package, &ShippedMeasure, CompileCtx { labels: lang.labels.clone() });

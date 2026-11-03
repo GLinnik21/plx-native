@@ -1986,7 +1986,7 @@ mod sections {
     /// The `rising-tabs` fixture: a MODAL package whose tab pills are compiled above the page an open section draws,
     /// so the way into the page is Down from a tab and the way out is Up off the page (`travel::Order::toward_tabs`).
     fn rising_tabs_run() -> Run {
-        let text = include_str!("../../../appkit/src/hud_format/fixtures/rising-tabs.plxhud.json");
+        let text = include_str!("../../../appkit/src/hud_format/fixtures/rising-tabs/hud.json");
         let package = plx_appkit::player_hud::loaded::load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &FixtureMeasure)
             .expect("the rising-tabs fixture loads")
             .compiled;
@@ -2503,7 +2503,7 @@ mod sections {
         let _g = plx_base::testlock::serial();
         assert_idle_playhead();
         let _chapters = Chaptered::install();
-        let text = include_str!("../../../appkit/src/hud_format/fixtures/tabs.plxhud.json");
+        let text = include_str!("../../../appkit/src/hud_format/fixtures/tabs/hud.json");
         let tabs = plx_appkit::player_hud::loaded::load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &FixtureMeasure)
             .expect("the tabs fixture loads")
             .compiled;
@@ -2713,7 +2713,7 @@ mod sections {
     fn a_pill_that_opens_a_section_keeps_its_tab_stop() {
         let _g = plx_base::testlock::serial();
         assert_idle_playhead();
-        let tabs_text = include_str!("../../../appkit/src/hud_format/fixtures/tabs.plxhud.json");
+        let tabs_text = include_str!("../../../appkit/src/hud_format/fixtures/tabs/hud.json");
         let tabs = plx_appkit::player_hud::loaded::load(tabs_text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &FixtureMeasure)
             .expect("the tabs fixture loads")
             .compiled;

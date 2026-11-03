@@ -228,7 +228,7 @@ fn the_menu_anchor_is_the_compiled_openers_and_follows_the_held_control() {
 // ---------------------------------------------------------------------------------------------------
 
 fn reference() -> Arc<Compiled> {
-    let text = include_str!("../../../appkit/src/hud_format/fixtures/reference.plxhud.json");
+    let text = include_str!("../../../appkit/src/hud_format/fixtures/reference/hud.json");
     load(text.as_bytes(), "test", plx_platform::i18n::english(), &FixtureMeasure).expect("the reference loads").compiled
 }
 
@@ -307,7 +307,7 @@ fn the_row_parks_on_the_primary_control_of_the_package() {
 fn a_failed_playback_seeds_no_folded_rows_into_more() {
     let _g = plx_base::testlock::serial();
     let minimal = load(
-        include_str!("../../../appkit/src/hud_format/fixtures/minimal.plxhud.json").as_bytes(),
+        include_str!("../../../appkit/src/hud_format/fixtures/minimal/hud.json").as_bytes(),
         "test",
         plx_platform::i18n::english(),
         &FixtureMeasure,

@@ -1,10 +1,4 @@
 {
-  "format": "1.0",
-  "id": "builtin:classic",
-  "version": "1.0.0",
-  "name": "Classic",
-  "author": "PlxNative",
-  "license": "GPL-3.0-or-later",
   "layout": {
     "anchor": "bottom", "inset": 13, "x_inset": 0, "band": "controls", "sections": "modal",
     "scrim": { "cover": "fixed", "height": 470 },

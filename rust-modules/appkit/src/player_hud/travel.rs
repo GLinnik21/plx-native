@@ -194,11 +194,11 @@ mod tests {
     use plx_ui::fixture::FixtureMeasure;
 
     fn fixture(text: &str) -> std::sync::Arc<Compiled> {
-        load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &FixtureMeasure).expect("the fixture loads").compiled
+        load(&crate::hud_format::fixtures::with_hud_resources("reference", &text), "0.0.0-test", plx_platform::i18n::english(), &FixtureMeasure).expect("the fixture loads").compiled
     }
 
     fn reference() -> std::sync::Arc<Compiled> {
-        fixture(include_str!("../hud_format/fixtures/reference.plxhud.json"))
+        fixture(include_str!("../hud_format/fixtures/reference/hud.json"))
     }
 
     fn order_of(compiled: &Compiled, open: u8) -> Order {
@@ -211,7 +211,7 @@ mod tests {
     }
 
     fn rising_tabs() -> std::sync::Arc<Compiled> {
-        fixture(include_str!("../hud_format/fixtures/rising-tabs.plxhud.json"))
+        fixture(include_str!("../hud_format/fixtures/rising-tabs/hud.json"))
     }
 
     /// Classic draws its row above the bar and its tabs below: today's row, bar, tabs.
@@ -257,8 +257,8 @@ mod tests {
     #[test]
     fn minimal_and_hero_center_come_out_as_bar_row() {
         for text in [
-            include_str!("../hud_format/fixtures/minimal.plxhud.json"),
-            include_str!("../hud_format/fixtures/hero-center.plxhud.json"),
+            include_str!("../hud_format/fixtures/minimal/hud.json"),
+            include_str!("../hud_format/fixtures/hero-center/hud.json"),
         ] {
             assert_eq!(walk(&fixture(text), 0), [GROUP_SCRUB, GROUP_ROW]);
         }
@@ -268,7 +268,7 @@ mod tests {
     /// before the tabs, and an open strip (drawn lower) follows both.
     #[test]
     fn the_tabs_fixture_keeps_its_pills_after_the_row_it_shares_a_band_with() {
-        let tabs = fixture(include_str!("../hud_format/fixtures/tabs.plxhud.json"));
+        let tabs = fixture(include_str!("../hud_format/fixtures/tabs/hud.json"));
         assert_eq!(walk(&tabs, 0), [GROUP_SCRUB, GROUP_ROW, GROUP_TABS]);
         assert_eq!(walk(&tabs, CHAPTERS), [GROUP_SCRUB, GROUP_ROW, GROUP_TABS, GROUP_STRIP]);
         assert_eq!(walk(&tabs, CHAPTERS | INFO), [GROUP_SCRUB, GROUP_ROW, GROUP_TABS, GROUP_STRIP]);
@@ -290,7 +290,7 @@ mod tests {
             assert_eq!(info.widget, Widget::Disc);
             assert!(geo.items.contains(&Some(info.rect)), "open {open}: the Info disc is an item of the row");
         }
-        let tabs = fixture(include_str!("../hud_format/fixtures/tabs.plxhud.json"));
+        let tabs = fixture(include_str!("../hud_format/fixtures/tabs/hud.json"));
         let geo = geometry(&tabs, 0, slot, true, false);
         assert!(geo.tabs.iter().all(Option::is_some), "a pill is a tab: {:?}", geo.tabs);
     }

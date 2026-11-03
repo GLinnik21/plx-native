@@ -1009,16 +1009,16 @@ mod tests {
     use super::super::compile::{compile, CompileCtx};
     use super::super::lint::testing::{apply, assert_case, Base};
     use super::super::lint::{lint, lint_with, LintLang, LintOptions};
-    use super::super::parse::parse;
+    use super::super::fixtures::parse;
     use super::super::schema::size_rung;
-    use super::super::BUILTIN_CLASSIC;
+    use super::super::CLASSIC_HUD;
     use super::*;
 
-    const REFERENCE: &str = include_str!("fixtures/reference.plxhud.json");
-    const MINIMAL: &str = include_str!("fixtures/minimal.plxhud.json");
-    const HERO: &str = include_str!("fixtures/hero-center.plxhud.json");
-    const TABS: &str = include_str!("fixtures/tabs.plxhud.json");
-    const PALETTE: &str = include_str!("fixtures/palette.plxhud.json");
+    const REFERENCE: &str = include_str!("fixtures/reference/hud.json");
+    const MINIMAL: &str = include_str!("fixtures/minimal/hud.json");
+    const HERO: &str = include_str!("fixtures/hero-center/hud.json");
+    const TABS: &str = include_str!("fixtures/tabs/hud.json");
+    const PALETTE: &str = include_str!("fixtures/palette/hud.json");
 
     const KICKER: &str = "/layout/block/0/cells/0/vstack/cells/0/text";
     const INFO_KICKER: &str = "/layout/block/6/cells/1/vstack/cells/0/text";
@@ -1145,7 +1145,7 @@ mod tests {
         let langs = LintLang::shipped();
         assert_eq!(langs.len(), 11);
         for (name, text) in [
-            ("classic", BUILTIN_CLASSIC),
+            ("classic", CLASSIC_HUD),
             ("reference", REFERENCE),
             ("minimal", MINIMAL),
             ("hero-center", HERO),
@@ -1468,7 +1468,7 @@ mod tests {
     fn the_widest_weight_a_text_can_draw_is_the_one_measured() {
         // The classic's kicker is bold in an episode state and plain otherwise: the prefix is only checked
         // in the episode states, and the width reported is the bold one.
-        let found = in_en(BUILTIN_CLASSIC, 1e9);
+        let found = in_en(CLASSIC_HUD, 1e9);
         let fact = found
             .iter()
             .find(|f| f.pointer == KICKER)
@@ -1491,7 +1491,7 @@ mod tests {
     fn the_credits_layout_of_a_skip_state_is_checked_too() {
         // Narrow the band until the kicker's room is between the two Skip pills: the intro pill leaves it
         // enough, the credits pill (wider, in German) does not.
-        let tight = BUILTIN_CLASSIC.replace("\"x_inset\": 0", "\"x_inset\": 590");
+        let tight = CLASSIC_HUD.replace("\"x_inset\": 0", "\"x_inset\": 590");
         let de = LintLang::for_tag("de").unwrap();
         let found = check_in(&tight, &de, &ShippedMeasure, 0.0);
         let skip: Vec<_> = found

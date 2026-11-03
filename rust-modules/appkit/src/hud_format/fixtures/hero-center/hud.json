@@ -1,11 +1,5 @@
 {
-  "$schema": "https://plxnative.com/hud/schema/1.0.json",
-  "format": "1.0",
-  "id": "com.plxnative.examples.hero-center",
-  "version": "1.0.0",
-  "name": "Hero centre",
-  "author": "PlxNative",
-  "license": "CC0-1.0",
+  "$schema": "https://plxnative.com/hud/schema/hud/1.0.json",
   "layout": {
     "anchor": "bottom",
     "inset": "MD",

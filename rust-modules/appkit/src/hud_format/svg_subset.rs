@@ -1587,7 +1587,7 @@ mod tests {
         assert!(chevron.iter().all(|f| f.hint.contains("filled outlines")));
     }
 
-    /// The six assets of `fixtures/reference.plxhud.json`, hand-copied; the test below proves the copies.
+    /// The six assets of `fixtures/reference.plxhud`, hand-copied; the test below proves the copies.
     const EXAMPLE_ASSETS: [(&str, &str); 6] = [
         (
             "subs-bubble",
@@ -1617,10 +1617,10 @@ mod tests {
 
     #[test]
     fn the_worked_examples_assets_pass_and_match_the_fixture() {
-        let fixture = include_str!("fixtures/reference.plxhud.json");
+        let fixture = crate::hud_format::fixtures::files("reference");
         for (id, svg) in EXAMPLE_ASSETS {
             assert!(
-                fixture.contains(&format!("\"{id}\": \"{svg}\"")),
+                fixture.iter().any(|file| file.path == format!("assets/{id}.svg") && file.bytes.as_ref() == svg.as_bytes()),
                 "the hand-copy of {id} drifted from the fixture"
             );
             let info = accepts(svg);

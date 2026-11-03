@@ -26,7 +26,7 @@
 //! * a missing required key: the OBJECT's pointer (the one that lacks it);
 //! * a wrong type or value: the VALUE's pointer;
 //! * JSON syntax: `""`;
-//! * the version gate: `/format`;
+//! * the version gates: `/package_format` and `/hud/format`;
 //! * an SVG asset: the asset string's pointer, `/assets/<id>`.
 
 pub mod admit; // `admit`: the verdict a package gets when it is installed or listed: loadable, unloadable on this app (and why), or invalid
@@ -50,12 +50,18 @@ pub mod schema_emit;
 pub mod svg_subset;
 pub mod validate; // the package-level invariants no geometry is needed for (I3, I9, I11)
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod fixtures;
+
 pub use reach::{check, Checked, Fold, Slot};
 
 /// **`builtin:classic`, as the bytes the app ships**: the one place the package is embedded
 /// (`include_str!`). The player compiles exactly these bytes ([`crate::player_hud::loaded`]), the
 /// tests parse exactly these bytes, and `--hud-export builtin:classic` prints exactly these bytes.
-pub const CLASSIC_PACKAGE: &str = include_str!("hud_format/fixtures/classic.plxhud.json");
+pub const CLASSIC_PACKAGE: &[u8] = include_bytes!("hud_format/fixtures/classic.plxhud");
+
+#[cfg(any(test, feature = "test-support"))]
+pub const CLASSIC_HUD: &str = include_str!("hud_format/fixtures/classic/hud.json");
 
 #[cfg(test)]
 mod tests; // the corpus of valid and invalid packages, the seeded mutation tests and the table-vs-parser drift test
@@ -105,6 +111,8 @@ pub struct Finding {
     pub severity: Severity,
     /// An RFC 6901 JSON pointer into the package (see the module doc for which pointer a finding names).
     pub pointer: String,
+    /// Canonical bundle member containing the finding. Archive-level findings have no member.
+    pub file: Option<String>,
     /// [`Code::rule`].
     pub rule: &'static str,
     /// What is wrong, in one sentence. The version gate's message is [`REASON_NEWER`] / [`REASON_OLDER`].
@@ -170,6 +178,7 @@ impl Finding {
             code: code.id,
             severity: code.severity,
             pointer: pointer.into(),
+            file: None,
             rule: code.rule,
             message: message.into(),
             hint: hint.into(),
@@ -205,9 +214,9 @@ pub const REASON_NEWER: &str = "Made for a newer PlxNative";
 /// The user-facing reason for a `format` whose major is below what this app supports.
 pub const REASON_OLDER: &str = "Uses an older HUD format";
 
-/// The embedded classic package (`builtin:classic`), byte for byte the file `fixtures/classic.plxhud.json`:
+/// The embedded classic package (`builtin:classic`), byte for byte the file `fixtures/classic.plxhud`:
 /// what `plxnative-sim --hud-export builtin:classic` prints and the package the lint's goldens run.
-pub const BUILTIN_CLASSIC: &str = include_str!("hud_format/fixtures/classic.plxhud.json");
+pub const BUILTIN_CLASSIC: &[u8] = CLASSIC_PACKAGE;
 
 /// `base` followed by one more reference token, RFC 6901-escaped (`~` is `~0`, `/` is `~1`). `base` is
 /// `""` for the document.
@@ -345,12 +354,12 @@ pub mod codes {
         /// Parameters that may not combine (`seek` with a numeric `by` and a `dir`, `by: "setting"`
         /// without one). Pointer: the item's.
         E0305 = (Error, "HUD-E0305", "command-param-combination");
-        /// `format` is not `"MAJOR.MINOR"`. Pointer `/format`. The version gate's whole answer.
+        /// `format` is not `"MAJOR.MINOR"`. Pointer `/package_format` or `/hud/format`. The version gate's whole answer.
         E0401 = (Error, "HUD-E0401", "format-malformed");
-        /// `format`'s minor is above the highest this app supports for its major. Pointer `/format`;
+        /// `format`'s minor is above the highest this app supports for its major. Pointer `/package_format` or `/hud/format`;
         /// message [`REASON_NEWER`](super::REASON_NEWER).
         E0402 = (Error, "HUD-E0402", "format-newer-minor");
-        /// `format`'s major is not one this app supports. Pointer `/format`; message
+        /// `format`'s major is not one this app supports. Pointer `/package_format` or `/hud/format`; message
         /// [`REASON_NEWER`](super::REASON_NEWER) for a higher major, [`REASON_OLDER`](super::REASON_OLDER)
         /// for a lower.
         E0403 = (Error, "HUD-E0403", "format-major");
@@ -475,6 +484,12 @@ pub mod codes {
         /// shares a height with them, so the way into the page (the direction it lies from the tabs) has no
         /// direction. Pointer: the pill's item. Context: `state`, `slot`, the `rects` `tab` and `page`.
         E1501 = (Error, "HUD-E1501", "tab-page-overlap");
+        /// The artifact violates the bounded canonical ZIP profile.
+        E1601 = (Error, "HUD-E1601", "bundle-archive");
+        /// A bundle member is missing, duplicated, undeclared or unused.
+        E1602 = (Error, "HUD-E1602", "bundle-inventory");
+        /// The exact artifact differs from the digest that was confirmed or published.
+        E1603 = (Error, "HUD-E1603", "bundle-digest");
         /// I10: app text fits but within `CI_TEXT_SKEW` of its room (a warning locally, an error in registry
         /// CI; 0 until PR12 measures it). Pointer: as `E0601`. Context: as `E0601`.
         W0602 = (Warning, "HUD-W0602", "text-fit-margin");
@@ -536,7 +551,7 @@ mod freeze_tests {
 
     #[test]
     fn the_code_table_is_unique_and_well_formed() {
-        assert_eq!(codes::ALL.len(), 56, "40 parse and check codes, 16 lint codes");
+        assert_eq!(codes::ALL.len(), 59, "43 package/parse/check codes, 16 lint codes");
         let ids: HashSet<_> = codes::ALL.iter().map(|c| c.id).collect();
         let rules: HashSet<_> = codes::ALL.iter().map(|c| c.rule).collect();
         assert_eq!(ids.len(), codes::ALL.len(), "a code id is never reused");

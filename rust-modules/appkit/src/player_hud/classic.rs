@@ -6,7 +6,7 @@
 //!
 //! The ARRANGEMENT is not here: which control stands where, and each rect, is what the compiled package
 //! says (`hud_format::compile`, reported through [`super::geometry`]); `builtin:classic` is the embedded
-//! package `fixtures/classic.plxhud.json`. This file holds the primitives it draws with, so a pill is
+//! package `fixtures/classic.plxhud`. This file holds the primitives it draws with, so a pill is
 //! the width [`stand_in_w`] gives it, the row stands on [`ROW_ANCHOR`], and the trailer's three calls
 //! keep their output.
 //!

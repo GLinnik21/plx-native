@@ -26,14 +26,14 @@ use super::parse::{self, Object, Package};
 use super::reach::Slot;
 use super::validate::each_object;
 use super::{codes, lint_band, lint_cost, lint_menus, lint_safe, lint_size, lint_text, lint_travel, lint_zorder, report};
-use super::{Context, Finding, Severity, BUILTIN_CLASSIC};
+use super::{Context, Finding, Severity, CLASSIC_HUD};
 
-const REFERENCE: &str = include_str!("fixtures/reference.plxhud.json");
-const MINIMAL: &str = include_str!("fixtures/minimal.plxhud.json");
-const HERO: &str = include_str!("fixtures/hero-center.plxhud.json");
-const TABS: &str = include_str!("fixtures/tabs.plxhud.json");
-const PALETTE: &str = include_str!("fixtures/palette.plxhud.json");
-const RISING_TABS: &str = include_str!("fixtures/rising-tabs.plxhud.json");
+const REFERENCE: &str = include_str!("fixtures/reference/hud.json");
+const MINIMAL: &str = include_str!("fixtures/minimal/hud.json");
+const HERO: &str = include_str!("fixtures/hero-center/hud.json");
+const TABS: &str = include_str!("fixtures/tabs/hud.json");
+const PALETTE: &str = include_str!("fixtures/palette/hud.json");
+const RISING_TABS: &str = include_str!("fixtures/rising-tabs/hud.json");
 
 /// The sixteen codes the lint registers (`HUD-E0601` ... `HUD-E1501`).
 const LINT_CODES: [&str; 16] = [
@@ -42,7 +42,7 @@ const LINT_CODES: [&str; 16] = [
 ];
 
 fn package(text: &str) -> Package {
-    let parsed = parse::parse(text.as_bytes());
+    let parsed = crate::hud_format::fixtures::parse(text.as_bytes());
     assert!(parsed.findings.is_empty(), "the fixture must parse clean: {:?}", parsed.findings);
     parsed.package.expect("a package")
 }
@@ -117,14 +117,14 @@ fn describe(name: &str, found: &[Finding]) -> String {
 
 #[test]
 fn builtin_classic_passes_every_invariant() {
-    let found = lint_in_all_languages(BUILTIN_CLASSIC);
+    let found = lint_in_all_languages(CLASSIC_HUD);
     assert!(found.is_empty(), "builtin:classic has {}", describe("builtin:classic", &found));
 }
 
 #[test]
 fn reference_passes_every_invariant() {
     let found = lint_in_all_languages(REFERENCE);
-    assert!(found.is_empty(), "the reference package has {}", describe("reference.plxhud.json", &found));
+    assert!(found.is_empty(), "the reference package has {}", describe("reference.plxhud", &found));
 }
 
 /// The five other example packages, and the `(code, pointer)` pairs each is pinned to lint to. Every list
@@ -155,7 +155,7 @@ fn the_goldens_are_clean_language_by_language_too() {
     // The eleven-language run collapses a finding every language shares and tags the rest, so an empty answer
     // already means every language was clean; one language at a time says which, were it not.
     for lang in LintLang::shipped() {
-        for (name, text) in [("builtin:classic", BUILTIN_CLASSIC), ("reference", REFERENCE)] {
+        for (name, text) in [("builtin:classic", CLASSIC_HUD), ("reference", REFERENCE)] {
             let found = lint(text, &ShippedMeasure, std::slice::from_ref(&lang));
             assert!(found.is_empty(), "{name} in `{}` has {}", lang.tag, describe(name, &found));
         }
@@ -172,7 +172,7 @@ fn a_parse_error_stops_the_run_and_carries_no_context() {
 
 #[test]
 fn with_no_language_only_the_language_free_stages_run() {
-    assert!(lint(BUILTIN_CLASSIC, &ShippedMeasure, &[]).is_empty());
+    assert!(lint(CLASSIC_HUD, &ShippedMeasure, &[]).is_empty());
     assert_eq!(lint("{", &ShippedMeasure, &[]).len(), 1);
 }
 
@@ -293,7 +293,7 @@ fn slot_names_are_the_three_slots() {
 #[test]
 fn the_state_names_of_a_compiled_package_are_unique_per_slot() {
     let lang = LintLang::for_tag("en").expect("English");
-    for text in [BUILTIN_CLASSIC, REFERENCE, HERO, TABS] {
+    for text in [CLASSIC_HUD, REFERENCE, HERO, TABS] {
         let package = package(text);
         let compiled = compile(&package, &FixtureMeasure, CompileCtx { labels: lang.labels.clone() });
         let opts = LintOptions::default();
@@ -307,7 +307,7 @@ fn the_state_names_of_a_compiled_package_are_unique_per_slot() {
 #[test]
 fn a_findings_context_starts_with_the_language_state_and_slot() {
     let lang = LintLang::for_tag("de").expect("German");
-    let package = package(BUILTIN_CLASSIC);
+    let package = package(CLASSIC_HUD);
     let compiled = compile(&package, &FixtureMeasure, CompileCtx { labels: lang.labels.clone() });
     let opts = LintOptions::default();
     let cx = LangCtx { package: &package, compiled: &compiled, measure: &FixtureMeasure, lang: &lang, opts: &opts };
@@ -376,7 +376,7 @@ fn check_provenance(name: &str, package: &Package, state: &CompiledState, nodes:
 fn every_op_and_control_of_every_fixture_names_the_node_that_produced_it() {
     let lang = LintLang::for_tag("en").expect("English");
     for (name, text) in [
-        ("classic", BUILTIN_CLASSIC),
+        ("classic", CLASSIC_HUD),
         ("reference", REFERENCE),
         ("minimal", MINIMAL),
         ("hero-center", HERO),
@@ -402,7 +402,7 @@ fn every_op_and_control_of_every_fixture_names_the_node_that_produced_it() {
 #[test]
 fn classic_names_its_nodes() {
     let lang = LintLang::for_tag("en").expect("English");
-    let package = package(BUILTIN_CLASSIC);
+    let package = package(CLASSIC_HUD);
     let compiled = compile(&package, &FixtureMeasure, CompileCtx { labels: lang.labels.clone() });
     let root = compiled
         .lookup(0, Slot::Discs, true, true, false)
@@ -469,7 +469,7 @@ fn a_case_lists_the_further_findings_it_expects_in_also() {
     assert_case(&InvalidCase {
         edits: &[
             (r#""command": "open_more""#, r#""command": "open_mor""#),
-            (r#""license": "GPL-3.0-or-later","#, r#""license": "GPL-3.0-or-later", "licence": "x","#),
+            (r#""layout": {"#, r#""licence": "x", "layout": {"#),
         ],
         also: &[("HUD-E0102", "/licence")],
         ..SUPPORT_CASE
@@ -490,7 +490,7 @@ fn an_edit_that_is_there_twice_fails() {
 
 #[test]
 fn the_bases_are_the_classic_embed_and_the_reference_fixture() {
-    assert_eq!(Base::Classic.text(), BUILTIN_CLASSIC);
+    assert_eq!(Base::Classic.text(), CLASSIC_HUD);
     assert_eq!(Base::Reference.text(), REFERENCE);
     assert_eq!(apply(Base::Reference, &[]), REFERENCE);
 }
@@ -680,7 +680,7 @@ fn the_two_passes_say_what_the_one_pipeline_said() {
     };
     let all = LintLang::shipped();
     for (name, text) in [
-        ("classic", BUILTIN_CLASSIC),
+        ("classic", CLASSIC_HUD),
         ("reference", REFERENCE),
         ("minimal", MINIMAL),
         ("hero-center", HERO),
@@ -844,7 +844,7 @@ fn every_kind_of_reach_error_is_linted_on_to_stage_three_in_every_language() {
         (
             "a palette in the built-in",
             vec![
-                (r#""license": "GPL-3.0-or-later","#, r##""license": "GPL-3.0-or-later", "palette": { "gold": "#f2b535" },"##),
+                (r#""layout": {"#, r##""palette": { "gold": "#f2b535" }, "layout": {"##),
                 (r#""track": "RAIL_TRACK""#, r#""track": "gold""#),
             ],
             "HUD-E0902",
@@ -852,7 +852,9 @@ fn every_kind_of_reach_error_is_linted_on_to_stage_three_in_every_language() {
         ),
     ];
     for (name, edits, code, pointer) in &cases {
-        let found = lint(&apply(Base::Classic, edits), &ShippedMeasure, &LintLang::shipped());
+        let text = apply(Base::Classic, edits);
+        let package = super::fixtures::parse_for("classic", text.as_bytes()).package.expect("typed classic");
+        let found = super::lint::fit_hud(&package, &ShippedMeasure, &LintLang::shipped(), &LintOptions::default());
         assert!(
             found.iter().any(|f| f.code == *code && f.pointer == *pointer),
             "{name}: {code} at {pointer} expected\n{}",
@@ -875,18 +877,18 @@ fn small_disc(langs: &[&str]) -> Vec<Finding> {
 #[test]
 fn json_output_of_an_invalid_case_is_stable() {
     let found = small_disc(&["en"]);
-    assert_eq!(found.len(), 1, "{}", describe("small-disc.plxhud.json", &found));
-    let json = report::json_text("small-disc.plxhud.json", &found);
+    assert_eq!(found.len(), 1, "{}", describe("small-disc.plxhud", &found));
+    let json = report::json_text("small-disc.plxhud", &found);
     assert_eq!(json, EXPECTED_JSON, "{json}");
     // and it is what the text report names, one line
-    assert_eq!(report::text("small-disc.plxhud.json", &found).lines().count(), 1);
+    assert_eq!(report::text("small-disc.plxhud", &found).lines().count(), 1);
 }
 
 /// `report::json_text` of the one finding above: the registry's CI reads this shape. Keys are in
 /// `serde_json`'s sorted order (`context` between `code` and `hint`; inside it `lang, rects, slot, state`).
 /// The `message` and `hint` are `lint_size`'s wording, so a rewording there is a one-line edit here.
 const EXPECTED_JSON: &str = r##"{
-  "file": "small-disc.plxhud.json",
+  "file": "small-disc.plxhud",
   "findings": [
     {
       "code": "HUD-E0603",
@@ -904,6 +906,7 @@ const EXPECTED_JSON: &str = r##"{
         "slot": "discs",
         "state": "compact,movie"
       },
+      "file": null,
       "hint": "Set `size` to at least 26; the app's own control faces are 56 to 64 px (classic's discs are 64).",
       "message": "control `info` is drawn 20 x 20 px, under the 26 px floor on its smaller side (the narrowest seat the app's own screens give a focus target)",
       "nearest": [],
@@ -912,7 +915,8 @@ const EXPECTED_JSON: &str = r##"{
       "severity": "error"
     }
   ],
-  "lint": 1
+  "package_sha256": null,
+  "protocol": 1
 }
 "##;
 
