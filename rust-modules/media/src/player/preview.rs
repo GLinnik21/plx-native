@@ -749,10 +749,7 @@ pub fn after_pump(
         // resource an OS thread may still be executing against — a real memory-safety question
         // (does the leaked `SfSlot` pattern in `src/starfish.c` make that safe, or does it not)
         // that needs `player/CLAUDE.md`'s device verification + fw-compat review, not a desk fix.
-        let finished = pa
-            .engine()
-            .and_then(|e| e.load_th.as_ref())
-            .is_none_or(|t| t.is_finished());
+        let finished = pa.feed_load_thread_finished();
         if finished {
             retire(ps, pa, "abandoned Load returned");
         }
@@ -763,7 +760,7 @@ pub fn after_pump(
     if preview && live && occupies() {
         if seen_frame {
             note_picture(now_ms);
-        } else if pa.engine().is_some_and(|eng| eng.stage >= super::shared::Stage::Playing) {
+        } else if pa.feed_stage().is_some_and(|stage| stage >= super::shared::Stage::Playing) {
             transition("bound", Machine::bound);
         }
     }

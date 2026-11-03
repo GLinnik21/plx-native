@@ -145,7 +145,7 @@ impl Drop for AuBox {
 pub struct Engine {
     /// Exact reducer attempt which constructed this native object. A duplicate start for this
     /// attempt is harmless; a different Prepared transaction must never be mistaken for it.
-    pub route_start: crate::route::RouteStartAttempt,
+    pub attempt: plx_playback_contract::AttemptId,
     /// Firmware callback context for this exact native `Load`.
     pub native_epoch: u32,
     pub stage: Stage,
@@ -1221,15 +1221,20 @@ pub(super) fn native_slot_available() -> Option<()> {
     NativeSessionStartGuard::arm().map(|guard| { drop(guard); })
 }
 
+/// Native construction failed before a usable Load could be installed. Route settlement is
+/// mapped by the common owner, never by the physical executor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum NativeOpenError { Refused }
+
 /// Construct one physical feed from facts and the route owner's addressed attempt. The request
 /// has already frozen its URL, codec declaration, playback rate, and trace identity.
 pub(super) fn prepare_native_open(
-    pa: &mut super::adapter::PlayerAdapter,
+    mt: &MainThread,
     open: Option<FeedOpenRequest>,
     sample: Option<super::feed_open::SampleSource>,
     is_h265: bool,
     session_rate: i32,
-) -> Result<NativePrepared, crate::route::RouteStartResult> {
+) -> Result<NativePrepared, NativeOpenError> {
     let stream = sample.is_none();
     let sample = sample.map(|sample| Box::new(SampleBuf {
         data: sample.data, au: sample.au, next: 0, loops: 0,
@@ -1257,7 +1262,7 @@ pub(super) fn prepare_native_open(
                 }
             }
             SHARED.fail_demux(DemuxExitClass::LoadRefused);
-            return Err(crate::route::RouteStartResult::StartFailed);
+            return Err(NativeOpenError::Refused);
         }
     }
     crate::ff::set_feed_audio(!no_audio);
@@ -1291,7 +1296,7 @@ pub(super) fn prepare_native_open(
                 "start_bufferfeed: the pipeline cannot feed video codec {stream_vcodec:?}; refusing the Load instead of declaring it H.264"
             ));
             SHARED.fail_demux(DemuxExitClass::LoadRefused);
-            return Err(crate::route::RouteStartResult::StartFailed);
+            return Err(NativeOpenError::Refused);
         };
         if video_declaration_refused(lv, &plx_platform::devcaps::caps(), open.payload.force_direct_play) {
             log(&format!(
@@ -1299,7 +1304,7 @@ pub(super) fn prepare_native_open(
                 lv.payload_name()
             ));
             SHARED.fail_demux(DemuxExitClass::LoadRefused);
-            return Err(crate::route::RouteStartResult::StartFailed);
+            return Err(NativeOpenError::Refused);
         }
         video_declared = lv.payload_name();
         // Record what the payload ACTUALLY says, for the diagnostics read-out — including the
@@ -1329,7 +1334,7 @@ pub(super) fn prepare_native_open(
                 Some(Err(why)) => {
                     log(&format!("start_bufferfeed: PCM audio refused — {why}"));
                     SHARED.demux_failed.store(true, Ordering::Release);
-                    return Err(crate::route::RouteStartResult::StartFailed);
+                    return Err(NativeOpenError::Refused);
                 }
                 None => None,
             };
@@ -1341,7 +1346,7 @@ pub(super) fn prepare_native_open(
             ) else {
                 log(&format!("start_bufferfeed: unsupported audio codec {codec:?}; refusing incorrect Load declaration"));
                 SHARED.fail_demux(DemuxExitClass::LoadRefused);
-                return Err(crate::route::RouteStartResult::StartFailed);
+                return Err(NativeOpenError::Refused);
             };
             crate::ff::set_pcm_out(
                 pcm.map(|f| crate::ff_pcm::PcmOut {
@@ -1382,7 +1387,7 @@ pub(super) fn prepare_native_open(
                 let Some(p) = with_opus_info(&av, channels) else {
                     log(&format!("start_bufferfeed: no Opus layout for {channels} channel(s); refusing the Load"));
                     SHARED.demux_failed.store(true, Ordering::Release);
-                    return Err(crate::route::RouteStartResult::StartFailed);
+                    return Err(NativeOpenError::Refused);
                 };
                 log(&format!("start_bufferfeed: opusInfo channels={channels}"));
                 p
@@ -1405,7 +1410,7 @@ pub(super) fn prepare_native_open(
     // ...and the appId substitution happens here for the same reason, and BEFORE the splice —
     // `with_window_id`'s anchor is the composed `"appId":"<id>"`, so the placeholder has to be
     // gone by then.
-    let payload_c = std::ffi::CString::new(with_window_id(pa.mt(), &with_app_id(payload_str))).unwrap();
+    let payload_c = std::ffi::CString::new(with_window_id(mt, &with_app_id(payload_str))).unwrap();
     if stream {
         let open = open.as_ref().expect("stream request was captured");
         // What the payload ACTUALLY declared, once, in the event log. Not test scaffolding: until
@@ -1439,14 +1444,14 @@ pub(super) fn prepare_native_open(
         Some(guard) => guard,
         None => {
             log("start_bufferfeed: clock state is not idle (refusing overlapping start)");
-            return Err(crate::route::RouteStartResult::StartFailed);
+            return Err(NativeOpenError::Refused);
         }
     };
     let native_start = match NativeSessionStartGuard::arm() {
         Some(guard) => guard,
         None => {
             log("start_bufferfeed: native session is not idle (refusing overlapping Load)");
-            return Err(crate::route::RouteStartResult::StartFailed);
+            return Err(NativeOpenError::Refused);
         }
     };
 
@@ -1467,11 +1472,10 @@ pub(super) struct NativePrepared {
 
 /// Launch workers against the route's exact attempt; this owns no route/session policy.
 pub(super) fn launch_native_open(
-    pa: &mut super::adapter::PlayerAdapter,
-    route_attempt: crate::route::RouteStartAttempt,
-    trace_generation: u32,
+    feed: &mut super::feed_resources::FeedResources,
+    attempt: plx_playback_contract::AttemptId,
     prepared: NativePrepared,
-) -> Result<(), crate::route::RouteStartResult> {
+) -> Result<(), NativeOpenError> {
     let NativePrepared { mut open, sample, stream, payload_c, audio_lead, clock_start, native_start } = prepared;
     // fd = -1 (CLOSED) so a teardown before/without http_open doesn't close(0)
     let mut hs = plx_net::stream::http_stream_boxed();
@@ -1532,7 +1536,7 @@ pub(super) fn launch_native_open(
                 // about to drop with this early return, so retract the pointer first — the pump
                 // and teardown both read it straight off SHARED.
                 SHARED.hs_ptr.store(std::ptr::null_mut(), Ordering::Release);
-                return Err(crate::route::RouteStartResult::StartFailed);
+                return Err(NativeOpenError::Refused);
             }
         }
         aqv_box = Some(qv);
@@ -1545,13 +1549,13 @@ pub(super) fn launch_native_open(
     // the media thread constructs + loads + runs the loop (owns the GMainContext)
     let payload_ptr = threads::SendPtr(payload_c.as_ptr() as *mut c_char);
     let native_epoch = native_start.epoch();
-    let receipt = pa.load_receipt(route_attempt, native_epoch, trace_generation);
+    let receipt = feed.load_receipt(attempt, native_epoch);
     let receipt_token = receipt.token();
     let load_th = plx_base::task::spawn("media", move || {
         threads::load_thread(payload_ptr, native_epoch, Some(receipt), audio_lead)
     });
     if load_th.is_none() {
-        pa.cancel_load_receipt(receipt_token);
+        feed.cancel_load_receipt(receipt_token);
         // Without the media thread nothing is ever Loaded and nothing drains the AU queues, so the
         // demuxer would park in aq_push forever holding raw pointers into locals this return is
         // about to drop. Stop it exactly the way teardown's stream branch does — abort both lanes,
@@ -1571,7 +1575,7 @@ pub(super) fn launch_native_open(
         if !p.is_null() {
             plx_net::stream::http_close(p); // sole owner now: the reader is joined
         }
-        return Err(crate::route::RouteStartResult::StartFailed);
+        return Err(NativeOpenError::Refused);
     }
     // The side subtitle reader (dev trigger `plxnative-subside`), started once the demuxer is
     // spawned and the media thread exists: it waits for the demuxer's first keyframe before it
@@ -1582,7 +1586,7 @@ pub(super) fn launch_native_open(
 
     let (lead_at_start, lead_pending) = audio_lead.at_engine_start();
     let eng = Engine {
-        route_start: route_attempt,
+        attempt,
         native_epoch,
         stage: Stage::Loading,
         video_info_sent: false,
@@ -1633,7 +1637,7 @@ pub(super) fn launch_native_open(
     let mode = session_seek_mode(layout_known, old_abi_seek, sink().window_mode(), dev_seek_mode());
     log(&format!("seek mode: {mode:?} (layout_known={layout_known} old_abi_seek={old_abi_seek})"));
     super::set_seek_mode(mode);
-    pa.install(eng);
+    feed.install(eng);
     native_start.commit();
     clock_start.commit();
     TX.started.store(true, Ordering::Relaxed);
@@ -1849,9 +1853,7 @@ pub fn suspend_bufferfeed_if_attempt(
     pa: &mut super::adapter::PlayerAdapter,
     attempt: crate::route::RouteStartAttempt,
 ) -> bool {
-    let owns_attempt = pa.engine()
-        .map(|engine| engine.route_start == attempt)
-        .unwrap_or(false);
+    let owns_attempt = pa.active_feed_attempt() == Some(attempt);
     if owns_attempt {
         teardown(ps, pa, true);
     }
@@ -1863,13 +1865,7 @@ pub fn suspend_bufferfeed_if_attempt(
 /// ([`Engine::foreground_follows_load`]). True when the live Engine owns that exact attempt; a
 /// replaced Engine (a different attempt) is not marked.
 pub fn foreground_follows_load(pa: &mut super::adapter::PlayerAdapter, attempt: crate::route::RouteStartAttempt) -> bool {
-    match pa.engine() {
-        Some(engine) if engine.route_start == attempt => {
-            engine.foreground_follows_load = true;
-            true
-        }
-        _ => false,
-    }
+    pa.mark_foreground_follows_feed_load(attempt)
 }
 
 /// The teardown body. `for_reload` = this is a direct-play seek reload (reload_at), NOT a real
@@ -1882,11 +1878,9 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::a
     // while the flag is set, so the picture never reaches the plane. The next halt joins once
     // the thread has already finished.
     if crate::route::is_preview(ps) {
-        if let Some(eng) = pa.engine() {
-            let loading = eng.stage == Stage::Loading;
-            let finished = eng.load_th.as_ref().is_none_or(|t| t.is_finished());
+        if let Some((loading, finished)) = pa.feed.preview_load_join_state() {
             if crate::player::preview::defer_media_join(loading, finished) {
-                eng.preview_abandon = true;
+                pa.feed.abandon_preview();
                 return;
             }
         }
@@ -1898,8 +1892,10 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::a
     let mut unload_th = None;
     super::route_start::begin_feed_teardown(for_reload);
     SHARED.stop_hls_clock();
-    let mut eng = pa.take().expect("main-thread live check and take are one transaction");
-    pa.retire_load_attempt(eng.route_start);
+    let route_attempt = pa.active_feed_attempt().expect("live feed has a route owner");
+    let mut eng = pa.feed.take().expect("main-thread live check and take are one transaction");
+    pa.clear_feed_attempt();
+    pa.retire_load_attempt(eng.attempt);
     let stream = matches!(eng.source, Source::Stream { .. });
 
     let final_report = super::route_start::final_report(ps, for_reload);
@@ -1910,7 +1906,7 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::a
     super::subside::stop(if for_reload { "reload" } else { "stop" });
     sp.mark("subside");
     // 1. unblock every thread (abort queues, close the demux socket)
-    let mut report_th = super::route_start::stop_feed_timeline(pa, eng.route_start);
+    let mut report_th = super::route_start::stop_feed_timeline(pa, route_attempt);
     if stream {
         // abort BOTH lanes: unblock the demux if it's parked in aq_push on a full lane
         for q in [eng.aq_video.as_mut(), eng.aq_audio.as_mut()]
@@ -4083,7 +4079,7 @@ mod prime_livelock_tests {
     pub(super) fn engine_after_reload() -> Engine {
         SHARED.ensure_initial_clock_hold_for_test();
         Engine {
-            route_start: crate::route::RouteStartAttempt::fixture(),
+            attempt: crate::route::RouteStartAttempt::fixture().contract_id(),
             native_epoch: 0,
             stage: Stage::Streaming,
             video_info_sent: true,
