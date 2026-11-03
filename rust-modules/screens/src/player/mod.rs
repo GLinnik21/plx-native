@@ -487,7 +487,7 @@ impl PlayerScreen {
                 mix(u64::from(now));
             }
         }
-        mix(u64::from(plx_media::player::TX.paused.load(Relaxed)));
+        mix(u64::from(self.model.paused));
         // …subtitles are NOT conditional: they are drawn on every frame of the route, HUD or no
         // HUD, which is exactly why a cue appearing had to become a report.
         mix(self.render.ass.fingerprint());
@@ -524,7 +524,7 @@ impl PlayerScreen {
     /// gated HERE, not just at the draw call site, so [`Self::clock_fingerprint`] (which calls this
     /// too) sees the same answer the frame draws.
     pub fn hud_up(&self, ps: &plx_media::route::PlaybackSession, now: u32) -> bool {
-        self.hud.visible(ps, now, plx_media::player::TX.paused.load(std::sync::atomic::Ordering::Relaxed))
+        self.hud.visible(ps, now, self.model.paused)
             && self.hud_policy != HudPolicy::Hidden
     }
 

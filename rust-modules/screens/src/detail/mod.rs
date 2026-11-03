@@ -2219,7 +2219,8 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
                     if let InputKind::Key { key, sym, wcode, edge, .. } = input.kind {
                         if let Some(act) = trailer::trailer_key(key, sym, wcode) {
                             let ps = H::session(cx);
-                            self.trailer_act(act, edge, input.at.ms, plx_media::player::playpos_ns(ps), plx_media::player::duration_ns(ps), fx);
+                            self.trailer_act(act, edge, input.at.ms, plx_media::player::playpos_ns(ps), plx_media::player::duration_ns(ps),
+                                plx_media::route::is_preview(ps) && H::transport_paused(cx), fx);
                             return Handled::Yes;
                         }
                     }
@@ -2296,7 +2297,8 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
                         ..
                     }
                 ) {
-                    if self.collapse_full_trailer(fx) {
+                    if self.collapse_full_trailer(
+                        plx_media::route::is_preview(H::session(cx)) && H::transport_paused(cx), fx) {
                         return Handled::Yes;
                     }
                     if self.collapse_background_preview(fx) {
@@ -2317,7 +2319,8 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
                         edge: Edge::Down,
                         ..
                     }
-                ) && self.collapse_full_trailer(fx)
+                ) && self.collapse_full_trailer(
+                        plx_media::route::is_preview(H::session(cx)) && H::transport_paused(cx), fx)
                 {
                     return Handled::Yes;
                 }
@@ -2684,7 +2687,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Screen<H> for 
                 .or_else(|| self.selected().map(|m| m.title.as_str()))
                 .unwrap_or_default(),
             self.preview_extra(meta).map(|e| e.title.as_str()).unwrap_or_default(),
-            plx_media::player::preview::paused(),
+            plx_media::route::is_preview(H::session(f.cx)) && H::transport_paused(f.cx),
             plx_media::player::playpos_ns(H::session(f.cx)),
             plx_media::player::duration_ns(H::session(f.cx)),
             measure,
@@ -3952,7 +3955,8 @@ impl DetailScreen {
         if moving || meta.season_loading() {
             fx.note(PresentEvent::Motion);
         }
-        self.preview_tick(t.ms, dt, focused, plx_media::player::duration_ns(H::session(cx)), fx, meta);
+        self.preview_tick(t.ms, dt, focused, plx_media::player::duration_ns(H::session(cx)),
+            plx_media::route::is_preview(H::session(cx)) && H::transport_paused(cx), fx, meta);
         let hint = self.hint_input(cx, focused);
         self.hold_hint.step(hint, t.ms, dt, &mut |ev| fx.note(ev));
     }
@@ -4037,6 +4041,7 @@ impl DetailScreen {
         dt: f32,
         focused: Option<Located>,
         duration_ns: Option<i64>,
+        preview_paused: bool,
         fx: &mut Effects<'_, H>,
         meta: plx_data::metadata::MetadataView<'_>,
     ) {
@@ -4120,7 +4125,7 @@ impl DetailScreen {
             now,
             dt,
             full_trailer,
-            plx_media::player::preview::paused(),
+            preview_paused,
             trailer::hint_shown(view.picture, self.preview_promoted, hero_active),
         ) {
             fx.note(PresentEvent::Motion);
@@ -4215,7 +4220,7 @@ impl DetailScreen {
     /// Un-promotes full-trailer mode if it was active — shared by the BACK and DOWN key arms and
     /// by the mode's own key ladder ([`Self::trailer_act`]), so the collapse itself has exactly one
     /// body. Returns whether it fired, so a caller can decide whether to also consume the key.
-    fn collapse_full_trailer<H: ContentLike>(&mut self, fx: &mut Effects<'_, H>) -> bool {
+    fn collapse_full_trailer<H: ContentLike>(&mut self, preview_paused: bool, fx: &mut Effects<'_, H>) -> bool {
         if !self.preview_promoted {
             return false;
         }
@@ -4224,7 +4229,7 @@ impl DetailScreen {
         // out: background autoplay has no control that could ever start it again, so leaving the
         // pause behind would strand a frozen picture under the restored chrome.
         self.trailer_ctl.dismiss();
-        if plx_media::player::preview::paused() {
+        if preview_paused {
             self.content(fx, ContentReq::PreviewTransport(Some(true)));
         }
         fx.invalidate(Provenance::Input);
@@ -4250,6 +4255,7 @@ impl DetailScreen {
         now: u32,
         live_ns: Option<i64>,
         duration_ns: Option<i64>,
+        preview_paused: bool,
         fx: &mut Effects<'_, H>,
     ) {
         use trailer::TrailerKey;
@@ -4281,7 +4287,7 @@ impl DetailScreen {
             // Both collapse keys go through the one collapse body, exactly as the BACK/DOWN arms
             // do outside the mode.
             TrailerKey::Collapse => {
-                self.collapse_full_trailer(fx);
+                self.collapse_full_trailer(preview_paused, fx);
                 return;
             }
             TrailerKey::Toggle => self.content(fx, ContentReq::PreviewTransport(None)),

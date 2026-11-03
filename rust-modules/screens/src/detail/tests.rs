@@ -2185,7 +2185,7 @@ fn trailer_act(
     screen: &mut DetailScreen,
     act: trailer::TrailerKey,
 ) -> Vec<plx_machine::machine::Stamped<TestHost>> {
-    trailer_act_edge(screen, act, Edge::Down, 0)
+    trailer_act_edge_with_pause(screen, act, Edge::Down, 0, false)
 }
 
 /// The edge-aware twin, for `Scrub`'s own tests below — every other variant here only ever acts
@@ -2196,6 +2196,16 @@ fn trailer_act_edge(
     edge: Edge,
     now: u32,
 ) -> Vec<plx_machine::machine::Stamped<TestHost>> {
+    trailer_act_edge_with_pause(screen, act, edge, now, false)
+}
+
+fn trailer_act_edge_with_pause(
+    screen: &mut DetailScreen,
+    act: trailer::TrailerKey,
+    edge: Edge,
+    now: u32,
+    preview_paused: bool,
+) -> Vec<plx_machine::machine::Stamped<TestHost>> {
     let mut effects = Vec::new();
     let mut present = plx_machine::present::Present::new();
     let mut sink = Effects::new(
@@ -2203,7 +2213,7 @@ fn trailer_act_edge(
         plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)),
         &mut present,
     );
-    screen.trailer_act::<TestHost>(act, edge, now, Some(0), Some(DurationFixture::DUR), &mut sink);
+    screen.trailer_act::<TestHost>(act, edge, now, Some(0), Some(DurationFixture::DUR), preview_paused, &mut sink);
     drop(sink);
     effects
 }
@@ -2348,12 +2358,9 @@ fn the_collapse_key_leaves_the_mode_and_dismisses_the_transport() {
     clear();
 }
 
-/// The collapse's OTHER branch: `preview::paused()` true means the transport was left paused when
-/// the mode closed, so `collapse_full_trailer` asks for a resume on the way out. The empty case
-/// above (nothing paused, nothing to resume) is the only one the pure `trailer_act` path can reach
-/// on its own; `preview::paused()` reads the live singleton and `player::TX`, so this one drives
-/// both — the same `force_playing_for_test`/`reset_for_test` seam as the input-arm test above, plus
-/// `TX.commit_paused`/`TX.reset`, the same production seam `player::mod`'s own tests use.
+/// The collapse's OTHER branch: the host's addressed transport readout says the trailer was
+/// left paused, so `collapse_full_trailer` asks for a resume on the way out. Supply that fact
+/// directly to the same key effect path rather than sampling a physical Feed transport.
 #[test]
 fn the_collapse_key_resumes_the_transport_when_it_was_left_paused() {
     let sid = ServerId::UNSET;
@@ -2361,11 +2368,7 @@ fn the_collapse_key_resumes_the_transport_when_it_was_left_paused() {
     let mut screen = bare(&_guard, sid, "show");
     screen.preview_promoted = true;
     screen.trailer_ctl.reveal();
-    plx_media::player::preview::force_playing_for_test();
-    plx_media::player::TX.commit_paused(true);
-    assert!(plx_media::player::preview::paused(), "the fixture must actually be paused");
-
-    let effects = trailer_act(&mut screen, trailer::TrailerKey::Collapse);
+    let effects = trailer_act_edge_with_pause(&mut screen, trailer::TrailerKey::Collapse, Edge::Down, 0, true);
 
     assert!(!screen.preview_promoted, "the mode must be over");
     assert!(!screen.trailer_ctl.revealed(), "the controls go with it");
@@ -2375,8 +2378,6 @@ fn the_collapse_key_resumes_the_transport_when_it_was_left_paused() {
         "leaving the mode while paused must ask to resume"
     );
 
-    plx_media::player::TX.reset();
-    plx_media::player::preview::reset_for_test();
     clear();
 }
 
