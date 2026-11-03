@@ -1865,10 +1865,22 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             // The URI qualifier must certify this exact format before selecting it natively.
             let source_sub_stream = plan.playing.as_ref().and_then(|item| {
                 source_sub_pick.and_then(|(id, _)| item.subs.iter().find(|sub| sub.id == id))
-                    .or_else(|| item.subs.iter().find(|sub| sub.selected && sub.id > 0))
+                    .or_else(|| source_sub_decision.as_ref()
+                        .filter(|decision| decision.source == SubPickSource::Server)
+                        .and_then(|_| item.subs.iter().find(|sub| sub.selected && sub.id > 0)))
             });
             let source_sub_sid = source_sub_stream.filter(|sub| !sub.external).map_or(0, |sub| sub.id);
             let requires_client_subtitle = source_sub_stream.is_some_and(|sub| sub.external);
+            // A selected source stream requires its exact native index. Off is an explicit
+            // viewer decision when the file contains subtitles; Unspecified is safe only when
+            // there is no source subtitle for the native decoder to auto-select.
+            let subtitle_choice = if source_sub_sid > 0 {
+                plx_playback_contract::TrackChoice::Selected(source_sub_sid as u64)
+            } else if plan.playing.as_ref().is_some_and(|item| !item.subs.is_empty()) {
+                plx_playback_contract::TrackChoice::Off
+            } else {
+                plx_playback_contract::TrackChoice::Unspecified
+            };
             let source_selection = SourceSelection { server: env.sid, part_id: plan.part_id,
                 audio_sid: source_audio.as_ref().map_or(0, |(_, _, sid)| *sid),
                 subtitle_sid: source_sub_sid,
@@ -1893,6 +1905,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     audio_codec: source_audio.as_ref().map_or_else(|| acodec.to_owned(), |(_, codec, _)| codec.clone()),
                     subtitle_source: source_sub_stream.map(|sub| super::uri_preflight::SourceSubtitle {
                         codec: sub.codec.to_lowercase(), embedded: !sub.external }),
+                    subtitle_choice,
                     source_kbps: u32::try_from(source_kbps).ok().filter(|kbps| *kbps > 0),
                     raster: u32::try_from(width).ok().zip(u32::try_from(height).ok())
                         .filter(|(w, h)| *w > 0 && *h > 0),

@@ -151,7 +151,7 @@ const URI_DTS: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-v","t
      {"id":31342,"streamType":2,"codec":"dca","channels":6,"index":1,"languageCode":"eng","default":true,"selected":true}]}]}]}]}}"#;
 
 #[cfg(feature = "play-uri")]
-const URI_DTS_REMEMBERED_OFF: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-v","type":"episode","grandparentRatingKey":"show-off","duration":600000,"Media":[
+const URI_DTS_SELECTED_SUBTITLE: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-v","type":"episode","grandparentRatingKey":"show-off","duration":600000,"Media":[
   {"id":3086,"duration":450000,"bitrate":2372,"width":1920,"height":1080,"videoCodec":"h264","audioCodec":"dca","container":"mkv",
    "Part":[{"id":3134,"duration":450000,"key":"/library/parts/3134/1/file.mkv","container":"mkv","Stream":[
      {"id":31341,"streamType":1,"codec":"h264","index":0},
@@ -225,7 +225,7 @@ fn remembered_subtitle_off_remains_off_during_uri_source_qualification() {
             binding: Binding::Exported { canvas: (1920, 1080) },
             callable: capabilities, certified: capabilities, preview_rectangle: false },
         std::sync::Arc::new(QualifiedOriginal { video: "h264", audio: "dca" })));
-    let (port, done, server) = versions_pms_with(URI_DTS_REMEMBERED_OFF, MDE_TRANSCODE_VIDEO);
+    let (port, done, server) = versions_pms_with(URI_DTS_SELECTED_SUBTITLE, MDE_TRANSCODE_VIDEO);
     let sid = plx_plex::plex::register_for_test("remembered-off", "127.0.0.1", port,
         "token", "remembered-off-client");
     let mut env = ResolveEnv::snapshot(&ps,
@@ -234,6 +234,9 @@ fn remembered_subtitle_off_remains_off_during_uri_source_qualification() {
         Some(SubtitleMemo::Off))];
     let plan = build_stream(&plx_base::task::OffFrame::for_test(), "rk-v",
         "/library/parts/3134/1/file.mkv", "h264", "dca", &env);
+    env.memory.clear();
+    let selected = build_stream(&plx_base::task::OffFrame::for_test(), "rk-v",
+        "/library/parts/3134/1/file.mkv", "h264", "dca", &env);
     done.send(()).unwrap();
     let requests = server.join().unwrap();
     assert!(plan.uri_original.is_none(),
@@ -241,6 +244,9 @@ fn remembered_subtitle_off_remains_off_during_uri_source_qualification() {
     assert_eq!(plan.source_selection.expect("source intent").subtitle_sid, 0,
         "remembered Off outranks the PMS-selected embedded subtitle");
     assert_eq!(plan.sub_sid, 0, "the native route must keep subtitles Off");
+    assert!(selected.uri_original.is_some(),
+        "a selected embedded subtitle with an exact codec and index certificate can qualify");
+    assert_eq!(selected.source_selection.expect("selected source intent").subtitle_sid, 31343);
     assert!(requests.iter().any(|line| line.contains("/decision?")),
         "the unsupported native Off intent falls through to Feed MDE: {requests:?}");
     plx_plex::plex::reset_servers_for_test();
@@ -288,6 +294,8 @@ fn a_qualified_dts_original_lands_from_the_real_resolve_worker_before_feed_decis
     };
     assert!(start.uri_offer.is_some(), "the addressed landing carries the owned URI source");
     assert!(ps.source_selection().is_some_and(|selection| selection.audio_sid == 31342));
+    assert_eq!(ps.source_selection().expect("source intent").subtitle_sid, 0,
+        "a file with no subtitle streams has no native track to disable");
     assert_eq!(meta.view().playing().and_then(|item| item.duration_ms), Some(450_000));
     done.send(()).unwrap();
     let requests = server.join().unwrap();

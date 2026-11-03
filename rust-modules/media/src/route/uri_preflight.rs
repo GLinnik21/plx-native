@@ -64,6 +64,9 @@ pub struct OriginalRequest {
     pub dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode,
     pub audio_codec: String,
     pub subtitle_source: Option<SourceSubtitle>,
+    /// Off is an actual viewer choice, distinct from no subtitle streams being present.
+    /// The current URI driver has no native disable operation.
+    pub subtitle_choice: TrackChoice,
     pub source_kbps: Option<u32>,
     pub raster: Option<(u32, u32)>,
     pub requested_rate_permille: i32,
@@ -113,6 +116,7 @@ impl ResolvePort {
             || !request.quality_allows_original || !request.link_allows_original
             || !request.auto_allows_original || request.selection.audio_contract.any()
             || request.requires_subtitle_burn || request.requires_client_subtitle
+            || request.subtitle_choice == TrackChoice::Off
             || (request.dolby_vision.present
                 && request.dolby_vision_mode == plx_plex::plex::session::DolbyVisionMode::Off)
             || (request.preview && !self.evidence.preview_rectangle) {
@@ -125,12 +129,14 @@ impl ResolvePort {
         let selected = request.selection;
         let dovi = request.dolby_vision;
         let subtitle = request.subtitle_source.clone();
+        let subtitle_choice = request.subtitle_choice;
         match self.qualifier.qualify(off, request) {
             Verdict::Known(known) if known.selection == selected
                 && known.requirements.source == SourceKind::ProgressiveUri
                 && known.requirements.video == Fidelity::Exact
                 && known.requirements.audio == Fidelity::Exact
                 && (!dovi.present || known.certified_dolby_vision == Some(dovi))
+                && known.requirements.subtitle_track == subtitle_choice
                 && (selected.subtitle_sid <= 0 || (subtitle.as_ref().is_some_and(|sub| sub.embedded)
                     && known.certified_subtitle_source == subtitle))
                 && (selected.audio_sid <= 0 || known.requirements.audio_track
@@ -194,6 +200,7 @@ mod tests {
             dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode::Auto,
             audio_codec: "ac3".to_owned(),
             subtitle_source: None,
+            subtitle_choice: TrackChoice::Unspecified,
             source_kbps: Some(4000), raster: Some((1920, 1080)),
             requested_rate_permille: plx_playback_contract::RATE_NORMAL, resume_ns: 0,
             quality_allows_original: true, link_allows_original: true, auto_allows_original: true,
@@ -216,6 +223,7 @@ mod tests {
         let source_subtitle = SourceSubtitle { codec: "pgs".to_owned(), embedded: true };
         let subtitle_request = || { let mut input = request(); input.dolby_vision = plx_data::metadata::Dovi::NONE;
             input.selection.subtitle_sid = 77;
+            input.subtitle_choice = TrackChoice::Selected(77);
             input.subtitle_source = Some(source_subtitle.clone()); input };
         let no_render_proof = ResolvePort::new(evidence, Arc::new(Certified { dovi: None,
             subtitle: None, expired: false }));
@@ -227,5 +235,10 @@ mod tests {
         let render_proof = ResolvePort::new(evidence, Arc::new(Certified { dovi: None,
             subtitle: Some(source_subtitle.clone()), expired: false }));
         assert!(matches!(render_proof.qualify(&off, subtitle_request()), Verdict::Known(_)));
+        let mut off_request = request();
+        off_request.dolby_vision = plx_data::metadata::Dovi::NONE;
+        off_request.subtitle_choice = TrackChoice::Off;
+        assert!(matches!(render_proof.qualify(&off, off_request), Verdict::Refused),
+            "the native driver cannot disable an otherwise selectable subtitle");
     }
 }
