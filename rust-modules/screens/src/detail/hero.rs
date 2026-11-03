@@ -458,8 +458,8 @@ pub(super) fn disc_caps_at(
 ) -> [f32; DISCS] {
     let (_, n) = hero_ctls(set);
     plx_appkit::hero_layout::disc_caps_with(unfurl, label_w, |disc| {
-        let last = hero_btn_rect_at(set, n.saturating_sub(1), 0.0, HeroWidths { pill, alt, disc });
-        last.x + last.w
+        // The sentinel stands after the last capsule's reserved focus expansion as well.
+        hero_btn_rect_at(set, n, 0.0, HeroWidths { pill, alt, disc }).x - CGAP
     })
 }
 
@@ -1081,61 +1081,35 @@ mod tests {
         }
     }
 
-    /// **W6a pin.** The row accumulation moved to `appkit::hero_layout::row_rect`; this pins the
-    /// Detail row's rects against the pre-move algorithm (a verbatim copy of the old loop, the
-    /// oracle) with a distinct width per control kind, at every set the row can take, and shows the
-    /// move's one difference (an empty slice) is unreachable: every set has Play and a watch face.
+    /// Every control kind feeds the shared focus-aware row, including the sentinel used by
+    /// the unfurl budget. A set's logical order and its measured width order must agree.
     #[test]
-    fn the_row_geometry_matches_the_pre_move_accumulation() {
+    fn the_row_geometry_uses_shared_spacing_for_every_control_set() {
         let cw = HeroWidths { pill: 211.0, alt: 263.0, disc: [57.0, 61.0, 67.0, 71.0] };
-        let y = 13.0;
         for restart in [false, true] {
             for alt in [false, true] {
                 for trailer in [false, true] {
                     for mark in [PosterMark::None, PosterMark::InProgress, PosterMark::Watched] {
-                        let s = set_full(restart, alt, mark, trailer);
-                        let (v, n) = hero_ctls(s);
-                        assert!(n >= 2, "{s:?}: Play and a watch face are always present, so row_rect never sees an empty slice");
+                        let set = set_full(restart, alt, mark, trailer);
+                        let (controls, n) = hero_ctls(set);
+                        let widths: Vec<f32> = controls[..n].iter().map(|ctl| match ctl {
+                            HeroCtl::Play => cw.pill,
+                            HeroCtl::Alt => cw.alt,
+                            HeroCtl::Restart => cw.disc[0],
+                            HeroCtl::Trailer => cw.disc[1],
+                            HeroCtl::Watchlist | HeroCtl::More => CD,
+                            HeroCtl::MarkWatched | HeroCtl::MarkUnwatched => cw.disc[2],
+                            HeroCtl::Version => cw.disc[3],
+                        }).collect();
                         for i in 0..=n + 1 {
-                            // The old body, verbatim.
-                            let mut x = plx_ui::consts::MARGIN_X;
-                            let mut w = cw.pill;
-                            for (k, c) in v[..n].iter().enumerate() {
-                                w = match c {
-                                    HeroCtl::Play => cw.pill,
-                                    HeroCtl::Alt => cw.alt,
-                                    HeroCtl::Restart => cw.disc[0],
-                                    HeroCtl::Trailer => cw.disc[1],
-                                    HeroCtl::Watchlist | HeroCtl::More => CD,
-                                    HeroCtl::MarkWatched | HeroCtl::MarkUnwatched => cw.disc[2],
-                                    HeroCtl::Version => cw.disc[3],
-                                };
-                                if k >= i {
-                                    break;
-                                }
-                                x += w + CGAP;
-                            }
-                            let want = Rect::new(x, y, w, CD);
-                            let got = hero_btn_rect_at(s, i, y, cw);
-                            assert_eq!(
-                                [got.x, got.y, got.w, got.h].map(f32::to_bits),
-                                [want.x, want.y, want.w, want.h].map(f32::to_bits),
-                                "set={s:?} i={i}"
-                            );
+                            let got = hero_btn_rect_at(set, i, 13.0, cw);
+                            let want = plx_appkit::hero_layout::row_rect(&widths, i, 13.0);
+                            assert_eq!((got.x, got.y, got.w, got.h), (want.x, want.y, want.w, want.h));
                         }
                     }
                 }
             }
         }
-        // And the absolute numbers for the commonest row (Play, Trailer, watch face), so a drift
-        // in CGAP / MARGIN_X / CD shows here, not only against the copy above.
-        let s = set_full(false, false, PosterMark::None, true);
-        let play = hero_btn_rect_at(s, 0, 0.0, cw);
-        let mark = hero_btn_rect_at(s, 1, 0.0, cw);
-        let trailer = hero_btn_rect_at(s, 2, 0.0, cw);
-        assert_eq!((play.x, play.w), (plx_ui::consts::MARGIN_X, 211.0));
-        assert_eq!((mark.x, mark.w), (plx_ui::consts::MARGIN_X + 211.0 + CGAP, CD), "the bookmark disc is a plain circle");
-        assert_eq!((trailer.x, trailer.w), (mark.x + CD + CGAP, 61.0));
     }
 
     /// `ctl_at`/`index_of` are exact inverses over every index the set actually has.

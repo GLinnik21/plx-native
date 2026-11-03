@@ -104,10 +104,12 @@ pub struct HeroWidths {
 }
 
 /// The accumulation itself, PURE: the drawn frame of control `i` in a row whose controls, in drawn
-/// order, are `widths` wide (`CGAP` apart, from the page margin), placed by the shared
+/// order, are `widths` wide, placed by the shared
 /// [`HStack`]. Every control is PRESENT whatever its width: a disc springing between `CD` and its
-/// open width never passes through 0 and so never pops its gap. An index past the end lands one
-/// gap after the last control, as the Detail row always has.
+/// open width never passes through 0 and so never pops its gap. Capsules reserve their focus
+/// expansion on each side, keeping `CGAP` clear when focused. Plain discs retain their ordinary
+/// gap; the first control keeps its base at the page margin. An index past the end lands one gap
+/// after the reserved right edge of the last control.
 ///
 /// `widths` is never empty from the Detail row (`hero_ctls` always yields Play and a watch face).
 /// The Detail-only fallback the old inline loop had for an empty row (`cw.pill`) is therefore
@@ -119,15 +121,23 @@ pub fn row_rect(widths: &[f32], i: usize, y: f32) -> Rect {
     // zero-wide item (the sentinel) stands in for "past the end": the stack puts it one gap after
     // the last control, exactly where the old accumulation left `x`.
     let mut items = [Item::absent(); MAX_CTLS + 1];
-    for (slot, w) in items.iter_mut().zip(&widths[..n]) {
-        *slot = Item::new(*w);
+    for (k, (slot, w)) in items.iter_mut().zip(&widths[..n]).enumerate() {
+        let air = capsule_focus_air(*w);
+        *slot = Item::new(*w + air + if k == 0 { 0.0 } else { air });
     }
     items[n] = Item::new(0.0);
     let stack = HStack::new(&items[..=n], CGAP, Align::Leading(plx_ui::consts::MARGIN_X));
     let at = i.min(n);
     let (x, _) = stack.span(at).unwrap_or((plx_ui::consts::MARGIN_X, 0.0));
     let w = widths.get(i).or(widths.last()).copied().unwrap_or(0.0);
-    Rect::new(x, y, w, CD)
+    let leading_air = if at == 0 || at == n { 0.0 } else { capsule_focus_air(w) };
+    Rect::new(x + leading_air, y, w, CD)
+}
+
+/// Reserve the capsule's horizontal focus pop, opening continuously from a plain disc.
+/// The excess-width bound avoids a jump on the first frame of the unfurl spring.
+fn capsule_focus_air(w: f32) -> f32 {
+    (w * (plx_ui::widgets::CTRL_FOCUS_SCALE - 1.0) * 0.5).min((w - CD).max(0.0))
 }
 
 /// Every disc's drawn width right now. `last_right(disc)` is the right edge of the row's LAST

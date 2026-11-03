@@ -3480,17 +3480,13 @@ struct HeroRects {
 fn hero_rects(measure: &dyn Measure, item: &PmsMovie, label: &std::ffi::CStr) -> HeroRects {
     // One row: Play, the watchlist disc when the title has one (absent: no room, no gap), Info.
     let has_disc = disc_hex(item).is_some();
-    let items = [
-        Item::new(plx_appkit::hero_layout::play_width(measure, label)),
-        if has_disc { Item::new(HERO_CTRL_D) } else { Item::absent() },
-        Item::new(HERO_CTRL_D),
-    ];
-    let row = HStack::new(&items, HERO_CTRL_GAP, Align::Leading(MARGIN_X));
-    let at = |i: usize| row.span(i).map(|(x, w)| Rect::new(x, HERO_ROW_Y, w, HERO_CTRL_D));
+    let widths = [plx_appkit::hero_layout::play_width(measure, label), HERO_CTRL_D, HERO_CTRL_D];
+    let row = &widths[..if has_disc { 3 } else { 2 }];
+    let at = |i| plx_appkit::hero_layout::row_rect(row, i, HERO_ROW_Y);
     HeroRects {
-        play: at(0).unwrap_or_default(),
-        disc: at(1),
-        info: at(2).unwrap_or_default(),
+        play: at(0),
+        disc: has_disc.then(|| at(1)),
+        info: at(if has_disc { 2 } else { 1 }),
     }
 }
 

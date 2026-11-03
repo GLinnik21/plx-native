@@ -649,7 +649,10 @@ and captions use regular weight. `HeroLogo` retains the shared constant-area log
 back to at most two bold DISPLAY/48 lines; Compact remains one TITLE/40 line. Synopsis stays
 LABEL/26 with 36 px leading and a three-line cap.
 
-Play/Resume has a 224 px minimum and grows for translations. Home places PageDots beside its
+Play/Resume has a 224 px minimum and grows for translations. Both action rows use
+`appkit::hero_layout::row_rect`, reserving the capsules' horizontal focus expansion so it does
+not consume their 20 px inter-control air. Plain discs retain the ordinary gap; the first
+control's base stays on the page margin. Home places PageDots beside its
 controls. A show's started on-deck hero names and marks that episode, using its rating key and
 Leaf scope. The optimistic metadata edit updates the on-deck copy even outside the loaded season. More opens that episode's existing item menu; its play request uses the addressed
 fetch path, independent of the season loaded below. Unstarted or finished shows retain whole-show
