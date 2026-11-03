@@ -2010,14 +2010,10 @@ pub fn applied_rate_permille() -> i32 {
     SHARED.applied_rate_permille.load(Relaxed)
 }
 
-/// Selected Feed speed for this addressed attempt. URI and unknown attempts have no app-owned
-/// speed decoder, so callers receive absence instead of sampling a stale Feed process mailbox.
+/// Viewer-selected speed for the addressed attempt. This is an intent, independent of which
+/// executor applies it; [`applied_rate`] remains absent until a physical result is observed.
 pub fn selected_rate(ps: &crate::route::PlaybackSession) -> Option<i32> {
-    if ps.attempt_view().backend() != Some(attempt_view::Backend::Feed) { return None; }
-    #[cfg(feature = "play-feed")]
-    { Some(ps.requested_rate_permille()) }
-    #[cfg(not(feature = "play-feed"))]
-    { None }
+    ps.attempt_view().backend().map(|_| ps.requested_rate_permille())
 }
 
 pub fn applied_rate(ps: &crate::route::PlaybackSession) -> Option<i32> {
