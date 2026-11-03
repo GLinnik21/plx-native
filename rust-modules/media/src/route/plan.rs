@@ -65,6 +65,12 @@ impl WorkerTicket {
     pub fn encoder(&self) -> &str {
         self.route.encoder()
     }
+
+    /// Address local adaptive trials under the engine and applied media epoch.
+    /// The full ticket remains the route CAS fence, including route and revision.
+    pub(crate) fn adaptive_attempt(&self) -> plx_playback_contract::AttemptId {
+        plx_playback_contract::AttemptId::new(self.engine_epoch, self.media_epoch)
+    }
 }
 
 

@@ -232,6 +232,7 @@ pub(crate) struct Coordinator {
     controller: abr::Controller,
     recovery: Option<abr::OriginalRecovery>,
     recover_kbps: u32,
+    next_trial_serial: u64,
 }
 
 pub(crate) struct RoundDecision {
@@ -304,7 +305,7 @@ impl Coordinator {
         if let Some((variant, evidence_kbps)) = control.initial_observed {
             controller.observe_active_variant(variant, evidence_kbps);
         }
-        Self { control, ticket, controller, recovery, recover_kbps: 0 }
+        Self { control, ticket, controller, recovery, recover_kbps: 0, next_trial_serial: 0 }
     }
 
     pub(crate) fn telemetry(&self) -> abr::ControllerTelemetry {
@@ -325,6 +326,15 @@ impl Coordinator {
     pub(crate) fn pending_reserve_policy(&self, proposal: abr::Proposal) -> abr::ReservePolicy {
         self.controller.pending_reserve_policy(proposal)
             .expect("a Prime decision owns one pending reserve policy")
+    }
+    pub(crate) fn begin_trial_protocol(
+        &mut self,
+    ) -> Option<plx_playback_contract::adaptive::TrialProtocol> {
+        self.next_trial_serial = self.next_trial_serial.checked_add(1)?;
+        let id = plx_playback_contract::adaptive::TrialId::new(
+            self.ticket.adaptive_attempt(), self.next_trial_serial,
+        );
+        Some(plx_playback_contract::adaptive::TrialProtocol::new(id))
     }
     pub(crate) fn exploration_budget_ms(&self, buffered_ms: i64) -> Option<i64> {
         self.controller.exploration_budget_ms(buffered_ms)

@@ -4,6 +4,7 @@
 //! answer back as an addressed event. A queued command is not proof that playback changed.
 
 mod state;
+pub mod adaptive;
 pub use state::{BackendState, Fx, Event, Intent, Phase, Snapshot};
 
 /// One logical start, supplied by the existing route owner. Its pair matches a route

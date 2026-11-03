@@ -4,6 +4,7 @@
 #![allow(dead_code)]
 use crate::aq::AuQueue;
 use crate::adaptive;
+use plx_playback_contract::adaptive::TrialObservation as TrialEvent;
 use crate::player::threads::SendPtr;
 use crate::player::SHARED;
 use plx_net::stream::HttpStream;
@@ -6107,6 +6108,9 @@ fn hls_demux(
         // Records the whole transaction on every exit path, including the twelve rejects. Drop
         // emits it; nothing below has to remember to.
         let refreshing_same_request = proposal.rung == state.current();
+        let mut trial_protocol = state.begin_trial_protocol()
+            .ok_or(HlsExit::Failed("adaptive trial generation exhausted"))?;
+        let trial_id = trial_protocol.id();
         let mut tx = TxTrace::open(
             proposal,
             state.current(),
@@ -6169,6 +6173,8 @@ fn hls_demux(
             }
         };
         tx.mark_prime();
+        trial_protocol.observe(trial_id, TrialEvent::Prepared)
+            .expect("a primed trial follows its grant");
         if unsafe { crate::aq::aq_is_aborted(aq) } {
             state.abandon(&primed.encoder_session);
             tx.finish("aborted");
@@ -6470,6 +6476,8 @@ fn hls_demux(
             }
         };
         tx.mark_media(&candidate_output, false);
+        trial_protocol.observe(trial_id, TrialEvent::FirstAcquired)
+            .expect("the first candidate acquisition follows prime");
         staged_timeline.commit(candidate_clock);
         let mut candidate_outputs = vec![(
             candidate_output,
@@ -6535,6 +6543,8 @@ fn hls_demux(
                     .and_then(ReserveDeadlineState::remaining)
                     .map_or(0, |left| left.as_millis()),
             ));
+            trial_protocol.observe(trial_id, TrialEvent::FollowupRequested)
+                .expect("a repeatable read follows its first staged object");
             let repeatable_segment =
                 match hls_cursor_next(&mut candidate, aq, &mut net, exploration_reserve.as_mut()) {
                     Ok(Some(segment)) => segment,
@@ -6627,6 +6637,8 @@ fn hls_demux(
                 }
             };
             tx.mark_media(&repeatable_output, true);
+            trial_protocol.observe(trial_id, TrialEvent::FollowupAcquired)
+                .expect("the repeatable acquisition follows its request");
             staged_timeline.commit(repeatable_clock);
             candidate_outputs.push((
                 repeatable_output,
@@ -6658,6 +6670,8 @@ fn hls_demux(
         let candidate_sample = hls_segment_sample(candidate_output, *candidate_duration);
         let disposition = adaptive::hls_candidate_disposition(raster_ready, quality_improves, verdict);
         if let adaptive::HlsCandidateDisposition::Discard { cause, outcome } = disposition {
+            trial_protocol.observe(trial_id, TrialEvent::Ended)
+                .expect("a rejected candidate has not entered the queue");
             state.abandon(&primed.encoder_session);
             reject_hls_abr_after_transaction(state, proposal, cause, &mut tx, now_ms());
             if !raster_ready {
@@ -6722,9 +6736,17 @@ fn hls_demux(
                 }
             };
         }
+        trial_protocol.observe(trial_id, TrialEvent::QueueAuthorized)
+            .expect("only graded candidate media may enter the queue");
         let feed_started = std::time::Instant::now();
+        trial_protocol.observe(trial_id, TrialEvent::QueueStarted)
+            .expect("queueing follows candidate authorization");
         for (output, _, _) in &candidate_outputs {
             if let Err(error) = hls_feed_segment(output, aq, aqa) {
+                debug_assert_eq!(
+                    trial_protocol.observe(trial_id, TrialEvent::Ended),
+                    Err(plx_playback_contract::adaptive::TrialProtocolError::TerminalAfterQueue),
+                );
                 state.abandon(&primed.encoder_session);
                 tx.finish(if matches!(error, HlsExit::Aborted) {
                     "aborted"
@@ -6734,6 +6756,8 @@ fn hls_demux(
                 return Err(error);
             }
         }
+        trial_protocol.observe(trial_id, TrialEvent::QueueCompleted)
+            .expect("all staged candidate media was queued");
         tx.mark_feed(feed_started);
         timeline = staged_timeline;
 
@@ -6749,6 +6773,12 @@ fn hls_demux(
             candidate_variant,
             now_ms(),
         );
+        if !matches!(&publication, adaptive::CandidatePublication::Active { .. }) {
+            debug_assert_eq!(
+                trial_protocol.observe(trial_id, TrialEvent::Ended),
+                Err(plx_playback_contract::adaptive::TrialProtocolError::TerminalAfterQueue),
+            );
+        }
         let previous = match publication {
             adaptive::CandidatePublication::Aborted => {
                 state.abandon(&primed.encoder_session);
@@ -6777,6 +6807,8 @@ fn hls_demux(
             }
             adaptive::CandidatePublication::Active { previous } => previous,
         };
+        trial_protocol.observe(trial_id, TrialEvent::Published)
+            .expect("a candidate may publish only after queue completion");
         // The committed candidate is already the first completed acquisition at the new
         // operating point. Publish its exact replay boundary before the trial lifetime marker and
         // explicit candidate-generation settlement. Leaving the old rung's value here would authorize
