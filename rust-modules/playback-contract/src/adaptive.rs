@@ -68,8 +68,10 @@ impl TrialProtocol {
             (P::Queued, O::Published) => P::Published,
             (P::Granted | P::Prepared | P::FirstAcquired | P::FollowupRequested
                 | P::FollowupAcquired | P::QueueAuthorized, O::Ended) => P::Ended,
-            (P::QueueStarted | P::Queued, O::Ended) =>
-                return Err(TrialProtocolError::TerminalAfterQueue),
+            (P::QueueStarted | P::Queued, O::Ended) => {
+                self.phase = P::Ended;
+                return Err(TrialProtocolError::TerminalAfterQueue);
+            }
             _ => return Err(TrialProtocolError::OutOfOrder),
         };
         Ok(self.phase)
