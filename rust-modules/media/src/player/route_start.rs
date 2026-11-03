@@ -624,7 +624,7 @@ fn drive_release(
     let mut fx = Vec::new();
     let joined = pa.take_finished_release().map(|mut p| {
         p.join_returned_worker();
-        pa.release_step(&V::UnloadReturned { epoch: p.epoch }, &mut fx);
+        pa.release_step(&V::UnloadReturned { epoch: p.epoch() }, &mut fx);
         p
     });
     pa.release_step(&V::Tick { now }, &mut fx);
