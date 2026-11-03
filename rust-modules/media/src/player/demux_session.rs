@@ -126,8 +126,10 @@ impl DemuxClock for PlayerDemuxSession {
     }
     fn seeking(&self) -> bool { SHARED.seeking.load(Ordering::Relaxed) }
     fn take_seek_ns(&self) -> Option<i64> {
-        let ns = SHARED.seek_to_ns.swap(-1, Ordering::Acquire);
-        (ns >= 0).then_some(ns)
+        SHARED.with_active_demux_epoch(self.observer.native_epoch, || {
+            let ns = SHARED.seek_to_ns.swap(-1, Ordering::Acquire);
+            (ns >= 0).then_some(ns)
+        }).flatten()
     }
     fn user_sequence(&self) -> u64 { SHARED.hls_user_sequence() }
     fn desired_audio_idx(&self) -> i32 { SHARED.desired_audio_idx.load(Ordering::Relaxed) }
@@ -166,21 +168,30 @@ fn remaining_playback_ms() -> i64 {
     (duration - SHARED.playpos_ns.load(Ordering::Relaxed).max(0)).max(0) / 1_000_000
 }
 
-struct AutomaticLease(u64);
+struct AutomaticLease { native_epoch: u32, token: u64 }
 impl Drop for AutomaticLease {
-    fn drop(&mut self) { let _ = SHARED.finish_hls_automatic_transition(self.0); }
+    fn drop(&mut self) {
+        let _ = SHARED.with_active_demux_epoch(self.native_epoch, ||
+            SHARED.finish_hls_automatic_transition(self.token));
+    }
 }
 
-struct TrialReserve(u64);
+struct TrialReserve { native_epoch: u32, token: u64 }
 impl Drop for TrialReserve {
-    fn drop(&mut self) { let _ = SHARED.finish_hls_trial(self.0); }
+    fn drop(&mut self) {
+        let _ = SHARED.with_active_demux_epoch(self.native_epoch, ||
+            SHARED.finish_hls_trial(self.token));
+    }
 }
 
-struct CandidateFence(u64);
+struct CandidateFence { native_epoch: u32, generation: u64 }
 impl FenceSettlement for CandidateFence {
     fn settle(self: Box<Self>) {
-        let settled = SHARED.settle_hls_candidate_transition(self.0);
-        debug_assert!(settled, "candidate generation changed inside its sole writer");
+        let settled = SHARED.with_active_demux_epoch(self.native_epoch, ||
+            SHARED.settle_hls_candidate_transition(self.generation));
+        if let Some(settled) = settled {
+            debug_assert!(settled, "candidate generation changed inside its sole writer");
+        }
     }
 }
 
@@ -192,23 +203,33 @@ impl DemuxAdaptive for PlayerDemuxSession {
             AutomaticTransition::QualityUp => HlsAutomaticTransition::QualityUp,
             AutomaticTransition::QualityDown => HlsAutomaticTransition::QualityDown,
         };
-        let token = SHARED.begin_hls_automatic_transition_at(kind, user_sequence)?;
-        Some(LeaseHandle::new(token, AutomaticLease(token)))
+        let token = SHARED.with_active_demux_epoch(self.observer.native_epoch, ||
+            SHARED.begin_hls_automatic_transition_at(kind, user_sequence)).flatten()?;
+        Some(LeaseHandle::new(token, AutomaticLease {
+            native_epoch: self.observer.native_epoch, token,
+        }))
     }
 
     fn authorize(&mut self, token: u64) -> bool {
-        SHARED.authorize_hls_automatic_transition_commit(token)
+        SHARED.with_active_demux_epoch(self.observer.native_epoch, ||
+            SHARED.authorize_hls_automatic_transition_commit(token)).unwrap_or(false)
     }
 
     fn arm_trial(&mut self, runway_ms: i64, user_sequence: u64)
         -> Option<LeaseHandle> {
-        let token = SHARED.arm_hls_trial_at(runway_ms, user_sequence)?;
-        Some(LeaseHandle::new(token, TrialReserve(token)))
+        let token = SHARED.with_active_demux_epoch(self.observer.native_epoch, ||
+            SHARED.arm_hls_trial_at(runway_ms, user_sequence)).flatten()?;
+        Some(LeaseHandle::new(token, TrialReserve {
+            native_epoch: self.observer.native_epoch, token,
+        }))
     }
 
     fn arm_candidate(&mut self, automatic_token: u64)
         -> Result<FenceHandle, PhysicalFailure> {
-        let generation = match SHARED.begin_hls_candidate_transition(Some(automatic_token)) {
+        let generation = match SHARED.with_active_demux_epoch(self.observer.native_epoch, ||
+            SHARED.begin_hls_candidate_transition(Some(automatic_token))) {
+            None => return Err(PhysicalFailure::Aborted),
+            Some(result) => match result {
             Ok(generation) => generation,
             Err(HlsClockFenceError::Stopping) => return Err(PhysicalFailure::Aborted),
             Err(HlsClockFenceError::Overlap) => return Err(PhysicalFailure::Failed(
@@ -220,16 +241,20 @@ impl DemuxAdaptive for PlayerDemuxSession {
             Err(HlsClockFenceError::Superseded) => return Err(PhysicalFailure::Failed(
                 "HLS candidate automatic lease was superseded",
             )),
+            },
         };
-        Ok(FenceHandle::new(CandidateFence(generation)))
+        Ok(FenceHandle::new(CandidateFence {
+            native_epoch: self.observer.native_epoch, generation,
+        }))
     }
 
     fn transition_permitted(&self, kind: AutomaticTransition) -> bool {
-        SHARED.hls_automatic_transition_permitted(match kind {
+        SHARED.with_active_demux_epoch(self.observer.native_epoch, ||
+            SHARED.hls_automatic_transition_permitted(match kind {
             AutomaticTransition::Original => HlsAutomaticTransition::Original,
             AutomaticTransition::QualityUp => HlsAutomaticTransition::QualityUp,
             AutomaticTransition::QualityDown => HlsAutomaticTransition::QualityDown,
-        })
+        })).unwrap_or(false)
     }
 }
 
