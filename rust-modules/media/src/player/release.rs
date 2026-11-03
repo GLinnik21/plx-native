@@ -1,4 +1,4 @@
-//! **The native object's release lifecycle** — a pure machine (`ci/check-deps.sh` `MACHINES`).
+//! **The shared native release/start queue** — a pure machine (`ci/check-deps.sh` `MACHINES`).
 //!
 //! A real stop hands the constructed native object to an off-frame `Unload` (`engine::PendingRelease`).
 //! `StarfishMediaAPIs::Unload` takes 110-150 ms on the dev set, and on a set where it never returns
@@ -18,6 +18,9 @@
 //! machine only compares them. **`Overdue` never destroys the object**: the worker may still be
 //! inside firmware, so the object, its payload and the Engine it belonged to are leaked until the
 //! `Unload` returns (or until the process ends by `_exit` on a firmware exit), exactly as an `AbandonedLoad` is.
+//! A URI registration uses the same single queued route transaction. Its release event carries
+//! the exact playback attempt rather than a Feed epoch, and only its addressed `Released`
+//! verdict runs the successor; Closing and quarantine retain native ownership.
 
 use std::time::{Duration, Instant};
 use plx_playback_contract::AttemptId;
@@ -28,8 +31,8 @@ use plx_playback_contract::AttemptId;
 /// is the reference.
 pub const RELEASE_DEADLINE: Duration = Duration::from_secs(10);
 
-/// A play that arrived while the previous object was still inside `Unload`: the prepared route
-/// transaction the runner starts the moment the tail has run.
+/// A play that arrived while the previous Feed object or URI registration was still releasing:
+/// the prepared route transaction the runner starts after exact native release.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QueuedStart {
     pub route_start: crate::route::RouteStartTransaction,

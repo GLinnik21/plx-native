@@ -16,8 +16,8 @@ use plx_base::eventlog::log;
 pub enum BufferfeedStartOutcome {
     AlreadyRunning,
     Launched(crate::route::RouteStartAttempt),
-    /// The previous object's `Unload` is still running: the start is queued in the release
-    /// machine and runs the frame its tail has run (or fails typed at the deadline). Accepted:
+    /// The previous Feed `Unload` or URI registration is still releasing: the start is queued
+    /// in the release machine and runs after exact release (or fails at the deadline). Accepted:
     /// the route stays on the Player and the HUD shows Connecting.
     Deferred,
     Failed,
@@ -159,7 +159,8 @@ pub(super) fn start_bufferfeed_for(
 ) -> BufferfeedStartOutcome {
     #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
     if pa.uri_live() {
-        // Reload/foreground starts reach this seam directly too. URI ownership never queues one.
+        // Reload/foreground starts reach this seam directly too. The diagnostic probe's
+        // registration is separate from the product URI release queue.
         let _ = crate::route::abort_route_start(route_start, crate::route::RouteStartResult::StartFailed);
         return BufferfeedStartOutcome::Failed;
     }
@@ -203,7 +204,7 @@ pub(super) fn start_bufferfeed_for(
         return BufferfeedStartOutcome::Failed;
     }
     if !go {
-        log("start_bufferfeed: the previous Unload is still running; start deferred");
+        log("start_playback: the previous native owner is still releasing; start deferred");
         return BufferfeedStartOutcome::Deferred;
     }
     #[cfg(feature = "play-uri")]

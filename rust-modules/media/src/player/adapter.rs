@@ -489,10 +489,10 @@ pub struct PlayerAdapter {
     /// borrow. The release machine owns the sole queued transaction; these are only its IO work.
     #[cfg(feature = "play-uri")]
     release_fx: Vec<super::release::ReleaseEffect>,
-    /// What became of the start the FOREGROUND restore queued behind the release
+    /// What became of the start the FOREGROUND restore queued behind native release
     /// ([`watch_queued_start`](Self::watch_queued_start)); the lifecycle machine polls it.
     queued_watch: QueuedWatch,
-    /// A hero PREVIEW's start was queued behind the release: whether its slot counts as admitted
+    /// A hero PREVIEW's start was queued behind Feed release: whether its slot counts as admitted
     /// once the Load actually launches (`None`: no preview start is queued). Admission is taken
     /// when the queued start runs, never when it is merely queued.
     #[cfg(feature = "play-feed")]
@@ -1461,7 +1461,7 @@ impl PlayerAdapter {
         }
     }
 
-    /// Is a start queued behind the running `Unload`?
+    /// Is a start queued behind Feed `Unload` or a closing URI registration?
     pub fn release_has_queued_start(&self) -> bool {
         self.release.has_queued()
     }
