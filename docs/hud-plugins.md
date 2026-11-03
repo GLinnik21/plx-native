@@ -1783,13 +1783,20 @@ in `hudpacks/address.rs`, the store's Fetch / Fetched / InstallOffer / DeclineOf
 row and the offer prompt. Verified on the host (parser, store, runner and page tests; the bounded door against a local
 server). STILL OWED on the set: a real GitHub release fetch and the CA question.
 
-PR12. Registry repository: `plxnative-huds` with CI (lint, xvfb previews, diff), the publisher (index, packs, revoked
-list), Pages, and the authoring kit (`AGENTS.md`, `llms.txt`, `AUTHORING.md`, examples, the schema mirror, the
-schema/parser agreement test); in this repo, the `plxnative-sim` release artifact. Verify with a seeded PR of two
-sample HUDs. Risk: the pinned simulator drifting from shipped apps; pin per app release and render each entry with
-the oldest app in its range. Also: the release re-lint job (`repository_dispatch` from this repo's release workflow,
-plus a weekly schedule), the `unfit` and `app.max` writes and the author issue, and the simulator-to-TV skew measurement
-that sets `CI_TEXT_SKEW` (Text fit; its TV part under the TV lock).
+PR12. Registry repository (shipped): [plxnative-huds](https://github.com/GLinnik21/plxnative-huds) with CI
+(lint, xvfb previews, diff), the publisher (index, original-byte packs, revoked list),
+[Pages](https://glinnik21.github.io/plxnative-huds/), and the authoring kit (`AGENTS.md`, `llms.txt`, `AUTHORING.md`,
+examples, schema mirror and schema/parser agreement test); this repo publishes the `plxnative-sim` artifact.
+[Seeded PR #1](https://github.com/GLinnik21/plxnative-huds/pull/1) passed 70 Reference and 32 Minimal native Linux
+states, all eleven languages, and the two-iteration authoring exercise. Public readback matched all 87 catalog files.
+Immutable per-release pins select the oldest compatible app. App-release dispatch and the weekly re-lint backstop
+record `unfit` and `app.max` and deduplicate author issues; incompatible executable protocol fixtures exercise failure
+and recovery. A live app probe triggered the registry receiver and its green, landed compatibility PR. The first
+actual stable app release carrying the SDK remains a future observation; the current bootstrap is a source-bound
+development utility. The real TV/Linux corpus measures 12,276 widths and sets per-rung registry-only skew margins
+of 4–9 px, leaving TV admission unchanged. The registry's
+[acceptance record](https://github.com/GLinnik21/plxnative-huds/blob/main/IMPLEMENTATION.md) links the exact runs,
+source pins and verification evidence.
 
 PR13. Gallery: a Settings FormTable page with preview art through the image cache, the refresh policy, updates by
 `version`, revocation, `unfit` entries hidden or offered as their update (Text fit). Verify with mock index tests
