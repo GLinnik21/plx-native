@@ -1025,3 +1025,60 @@ pub(super) struct PresentationTick {
     pub stage: Stage,
     pub eos_pushed: bool,
 }
+
+/// Snapshot the physical feed callback mailboxes without route or session access.
+/// The common adapter addresses this sparse value to the currently installed attempt.
+pub(super) fn attempt_facts(feed: &FeedResources) -> Option<plx_playback_contract::readout::AttemptFacts> {
+    if !feed.is_live() { return None; }
+    use super::attempt_view::AttemptFacts;
+    let reported_frame = SHARED.seen_frame.load(Relaxed);
+    let position = SHARED.playpos_ns.load(Relaxed);
+    let duration = SHARED.duration_ns.load(Relaxed);
+    let (width, height) = SHARED.video_raster();
+    let stage = SHARED.dg_stage.load(Relaxed);
+    let pipeline_error = SHARED.dg_cb_err_num.load(Relaxed);
+    let http_status = SHARED.dg_http_status.load(Relaxed);
+    let demux_exit = SHARED.dg_demux_exit.load(Relaxed);
+    let declared_kbps = SHARED.dg_abr_declared_kbps.load(Relaxed);
+    let media_kbps = SHARED.dg_abr_media_kbps.load(Relaxed);
+    let abr_buffer_ms = SHARED.dg_abr_buffer_ms.load(Relaxed);
+    let transport_rc = SHARED.dg_transport_rc.load(Relaxed);
+    let transfer_age_ms = SHARED.dg_transport_age_ms.load(Relaxed);
+    let failure = super::runtime_failure(
+        SHARED.demux_failed.load(std::sync::atomic::Ordering::Acquire),
+        SHARED.demux_io_failed.load(std::sync::atomic::Ordering::Acquire),
+        SHARED.load_failed.load(Relaxed),
+        SHARED.load_timed_out.load(Relaxed),
+    );
+    let requested_kbps = SHARED.dg_abr_kbps.load(Relaxed);
+    let facts = AttemptFacts {
+        status: Some(super::PlaybackState::from_u8(SHARED.pb_state.load(Relaxed))),
+        requested_kbps: (requested_kbps > 0).then_some(requested_kbps),
+        refusal_path: Some(SHARED.refusal_path()),
+        runtime_failure: (failure != super::RuntimeFailure::Unknown).then_some(failure),
+        no_video: SHARED.demux_no_video.load(Relaxed).then_some(true),
+        position_ns: reported_frame.then_some(position.max(0)),
+        duration_ns: (duration > 0).then_some(duration),
+        playable_buffer_ms: super::playable_buffer_ms(
+            SHARED.hls_video_tail_ns.load(Relaxed),
+            SHARED.hls_audio_tail_ns.load(Relaxed),
+            SHARED.dg_load_a.load(Relaxed) != 0,
+            SHARED.disp_base.load(Relaxed),
+            position,
+        ),
+        reported_frame: reported_frame.then_some(true),
+        frames: reported_frame.then_some(SHARED.frames.load(Relaxed)),
+        raster: (width > 0 && height > 0).then_some((width, height)),
+        pipeline_stage: (stage > 0).then_some(stage),
+        pipeline_error: (pipeline_error != 0).then_some(pipeline_error),
+        http_status: (http_status > 0).then_some(http_status),
+        demux_exit: (demux_exit != 0).then_some(demux_exit),
+        declared_kbps: (declared_kbps > 0).then_some(declared_kbps),
+        media_kbps: (media_kbps > 0).then_some(media_kbps),
+        abr_buffer_ms: (abr_buffer_ms > 0).then_some(abr_buffer_ms),
+        transport_rc: (transport_rc != 0).then_some(transport_rc),
+        transfer_age_ms: (transfer_age_ms > 0).then_some(transfer_age_ms),
+        transport_reopen_failed: SHARED.dg_transport_reopen_failed.load(Relaxed).then_some(true),
+    };
+    Some(facts)
+}
