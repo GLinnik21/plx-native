@@ -2,21 +2,80 @@
 //! concrete source escrow and persistent drivers; this runner keeps only pure attempt state.
 #[path = "backend_startup.rs"]
 mod startup;
+#[path = "backend_metrics.rs"]
+mod metrics;
 
 use plx_playback_contract::{BackendState, DriverSet, Event, ExitDisposition, Failure, Fx,
-    Intent, Operation, Phase, Snapshot};
+    Intent, Operation, Phase, Snapshot, AttemptId, BackendKind};
+use super::attempt_metrics as measure;
+pub use metrics::{LogicalRequestId, MetricNotice};
 use startup::Startup;
 
-pub struct BackendRunner { state: BackendState, startup: Startup }
+/// Immediate caller-owned results. Metric notices are local values; no report is sent here.
+#[derive(Default)]
+pub struct RunResult { pub playback: Vec<Fx>, pub metrics: Vec<MetricNotice> }
+
+pub struct BackendRunner { state: BackendState, startup: Startup, metrics: metrics::Metrics }
 
 impl BackendRunner {
-    pub fn new() -> Self { Self { state: BackendState::new(), startup: Startup::new() } }
+    pub fn new() -> Self { Self { state: BackendState::new(), startup: Startup::new(),
+        metrics: metrics::Metrics::new() } }
 
     pub fn snapshot(&self) -> &Snapshot { self.state.snapshot() }
+
+    pub fn metrics_snapshot(&self) -> Option<&measure::RequestSummary<LogicalRequestId, AttemptId>> {
+        self.metrics.snapshot()
+    }
+
+    /// Begin one route-owned logical request. The supplied ID must increase in route order.
+    pub fn begin_request_at(&mut self, request: LogicalRequestId, origin: measure::Origin,
+        at: measure::Tick) -> RunResult {
+        let mut result = RunResult::default();
+        self.metrics.begin(request, origin, at, &mut result.metrics);
+        result
+    }
+
+    /// The route owner settles the logical result after deciding whether another physical
+    /// backend will be tried. A physical failure alone never emits a terminal handled error.
+    pub fn finish_request_at(&mut self, request: LogicalRequestId,
+        outcome: measure::RequestOutcome, at: measure::Tick) -> RunResult {
+        let mut result = RunResult::default();
+        self.metrics.finish(request, outcome, at, &mut result.metrics);
+        result
+    }
+
+    pub fn handoff_at(&mut self, request: LogicalRequestId, from: AttemptId,
+        to: AttemptId, at: measure::Tick) -> RunResult {
+        let mut result = RunResult::default();
+        self.metrics.handoff(request, from, to, at, &mut result.metrics);
+        result
+    }
+
+    /// Viewer/claim facts that the physical backend cannot infer. Held, paused, seeking and
+    /// unknown intervals are excluded from involuntary stall time by the pure reducer.
+    pub fn condition_at(&mut self, backend: BackendKind, attempt: AttemptId,
+        condition: measure::Condition, at: measure::Tick) -> RunResult {
+        let mut result = RunResult::default();
+        self.metrics.condition(backend, attempt, condition, at, &mut result.metrics);
+        result
+    }
 
     /// Apply one route/player intent and its synchronous queue answer. Rejected Starts dispose
     /// only the exact staged source key, even while another backend owns the active attempt.
     pub fn send<C>(&mut self, drivers: &mut dyn DriverSet<Context = C>, ctx: &C, intent: Intent) -> Vec<Fx> {
+        self.send_inner(drivers, ctx, intent, None, measure::Tick::Unknown).playback
+    }
+
+    /// Timed send. `attempt_origin` is supplied for each Start by the route owner; it is
+    /// ignored for controls. No origin is inferred from backend order or the logical request.
+    pub fn send_at<C>(&mut self, drivers: &mut dyn DriverSet<Context = C>, ctx: &C,
+        intent: Intent, attempt_origin: measure::Origin, at: measure::Tick) -> RunResult {
+        self.send_inner(drivers, ctx, intent, Some(attempt_origin), at)
+    }
+
+    fn send_inner<C>(&mut self, drivers: &mut dyn DriverSet<Context = C>, ctx: &C,
+        intent: Intent, attempt_origin: Option<measure::Origin>, at: measure::Tick) -> RunResult {
+        let mut result = RunResult::default();
         match intent {
             Intent::Start { backend, attempt, requirements, initial, .. }
                 if self.state.snapshot().phase == Phase::Vacant => {
@@ -24,41 +83,60 @@ impl BackendRunner {
             }
             Intent::Control { backend, attempt, operation }
                 if self.startup.intercept_control(backend, attempt, operation) => {
-                return if self.startup.is_halted(backend, attempt) {
+                result.playback = if self.startup.is_halted(backend, attempt) {
                     vec![Fx::Rejected { backend, attempt, failure: Failure::Refused }]
                 } else if matches!(operation, Operation::Play | Operation::Pause) {
-                    self.advance(drivers, ctx)
+                    self.metrics.intent(intent, at, &mut result.metrics);
+                    self.advance(drivers, ctx, at, &mut result);
+                    return result;
                 } else {
                     vec![Fx::Rejected { backend, attempt, failure: Failure::Busy }]
                 };
+                return result;
             }
             Intent::Control { backend, attempt, operation: Operation::Play }
                 if !self.startup.foreground() => {
-                return vec![Fx::Rejected { backend, attempt, failure: Failure::Busy }];
+                result.playback.push(Fx::Rejected { backend, attempt, failure: Failure::Busy });
+                return result;
             }
             Intent::Stop { backend, attempt, .. } => self.startup.abort(backend, attempt),
             _ => {}
         }
         let capabilities = drivers.capabilities(intent.backend());
-        self.feed(drivers, ctx, Event::Intent(intent), capabilities)
+        self.feed(drivers, ctx, Event::Intent(intent), capabilities, attempt_origin, at,
+            &mut result);
+        result
     }
 
     /// Startup never plays in the background. Foreground restoration resumes only an unpaused
     /// startup goal whose exact track and seek confirmations have already arrived.
     pub fn set_foreground<C>(&mut self, drivers: &mut dyn DriverSet<Context = C>,
         ctx: &C, foreground: bool) -> Vec<Fx> {
+        self.set_foreground_at(drivers, ctx, foreground, measure::Tick::Unknown).playback
+    }
+
+    pub fn set_foreground_at<C>(&mut self, drivers: &mut dyn DriverSet<Context = C>,
+        ctx: &C, foreground: bool, at: measure::Tick) -> RunResult {
+        let mut result = RunResult::default();
+        self.metrics.foreground(foreground, at, &mut result.metrics);
         self.startup.set_foreground(foreground);
-        self.advance(drivers, ctx)
+        self.advance(drivers, ctx, at, &mut result);
+        result
     }
 
     /// Accepted observations, seek landings and release verdicts remain in driver poll order,
     /// including terminal evidence before a same-poll release resets the sparse snapshot.
     pub fn poll<C>(&mut self, drivers: &mut dyn DriverSet<Context = C>, ctx: &C) -> Vec<Fx> {
-        let mut notices = Vec::new();
+        self.poll_at(drivers, ctx, measure::Tick::Unknown).playback
+    }
+
+    pub fn poll_at<C>(&mut self, drivers: &mut dyn DriverSet<Context = C>,
+        ctx: &C, at: measure::Tick) -> RunResult {
+        let mut result = RunResult::default();
         for event in drivers.poll(ctx) {
-            notices.extend(self.feed(drivers, ctx, event.into(), None));
+            self.feed(drivers, ctx, event.into(), None, None, at, &mut result);
         }
-        notices
+        result
     }
 
     /// Both the common attempt and every physical driver must be released before exit is clean.
@@ -69,18 +147,21 @@ impl BackendRunner {
     }
 
     fn feed<C>(&mut self, drivers: &mut dyn DriverSet<Context = C>, ctx: &C,
-        event: Event, capabilities: Option<plx_playback_contract::Capabilities>) -> Vec<Fx> {
+        event: Event, capabilities: Option<plx_playback_contract::Capabilities>,
+        attempt_origin: Option<measure::Origin>, at: measure::Tick, result: &mut RunResult) {
         let mut effects = Vec::new();
         self.state.step(event, capabilities, &mut effects);
-        let mut notices = Vec::new();
         for effect in effects {
             match effect {
                 Fx::Dispatch { backend, attempt, command, operation } => {
+                    let paused = matches!(event, Event::Intent(Intent::Start { initial, .. }) if initial.paused);
+                    self.metrics.dispatch(backend, attempt, operation, attempt_origin, paused,
+                        at, &mut result.metrics);
                     self.startup.on_dispatch(backend, attempt, command, operation);
-                    let result = drivers.dispatch(backend, ctx, attempt, command, operation);
-                    notices.extend(self.feed(drivers, ctx, Event::CommandAnswer {
-                        backend, attempt, command, result,
-                    }, None));
+                    let answer = drivers.dispatch(backend, ctx, attempt, command, operation);
+                    self.feed(drivers, ctx, Event::CommandAnswer {
+                        backend, attempt, command, result: answer,
+                    }, None, None, at, result);
                 }
                 Fx::DiscardStaged { backend, attempt, key } => {
                     drivers.discard_staged(backend, attempt, key);
@@ -89,20 +170,25 @@ impl BackendRunner {
                     | Fx::AcceptedObservation { .. } | Fx::AcceptedTrackSettled { .. }
                     | Fx::AcceptedSeekLanded { .. } | Fx::ReleaseOutcome { .. }) => {
                     self.startup.on_notice(&notice);
-                    notices.push(notice);
+                    if let (Event::Intent(Intent::Start { .. }), Fx::Rejected { backend, attempt, failure })
+                        = (event, notice) {
+                        self.metrics.rejected_start(backend, attempt, failure, &mut result.metrics);
+                    }
+                    self.metrics.notice(&notice, at, &mut result.metrics);
+                    result.playback.push(notice);
                 }
             }
         }
-        notices.extend(self.advance(drivers, ctx));
-        notices
+        self.advance(drivers, ctx, at, result);
     }
 
-    fn advance<C>(&mut self, drivers: &mut dyn DriverSet<Context = C>, ctx: &C) -> Vec<Fx> {
-        let Some((backend, attempt, operation)) = self.startup.next() else { return Vec::new() };
+    fn advance<C>(&mut self, drivers: &mut dyn DriverSet<Context = C>, ctx: &C,
+        at: measure::Tick, result: &mut RunResult) {
+        let Some((backend, attempt, operation)) = self.startup.next() else { return };
         let capabilities = drivers.capabilities(backend);
         self.feed(drivers, ctx, Event::Intent(Intent::Control {
             backend, attempt, operation,
-        }), capabilities)
+        }), capabilities, None, at, result)
     }
 }
 impl Default for BackendRunner { fn default() -> Self { Self::new() } }
@@ -385,5 +471,185 @@ mod tests {
             operation: Operation::Play });
         assert_eq!(drivers.sent.last().unwrap().3, Operation::Play);
         assert_eq!(drivers.sent.len(), 2);
+    }
+    fn tick(ms: u64) -> measure::Tick { measure::Tick::from_millis(ms) }
+
+    #[test]
+    fn metrics_keep_picture_separate_and_terminal_failure_survives_same_poll_release() {
+        let mut runner = BackendRunner::new();
+        let mut drivers = FakeSet::new();
+        let request = LogicalRequestId::new(7);
+        assert!(runner.begin_request_at(request, measure::Origin::Fresh, tick(0)).metrics.is_empty());
+        let start = Intent::Start { backend: URI, attempt: A, source: SourceKey::new(19),
+            requirements: REQ, initial: INITIAL };
+        assert!(runner.send_at(&mut drivers, &(), start, measure::Origin::Fresh, tick(1)).metrics.is_empty());
+        drivers.events.extend([
+            BackendEvent { backend: URI, event: DriverEvent::Observation { attempt: A,
+                observation: Observation::Playback(Observed { value: Playback::ReadyAwaitPlay,
+                    from: EvidenceSource::BackendReport }) } },
+            BackendEvent { backend: URI, event: DriverEvent::Observation { attempt: A,
+                observation: Observation::Playback(Observed { value: Playback::Playing,
+                    from: EvidenceSource::BackendReport }) } },
+            BackendEvent { backend: URI, event: DriverEvent::Observation { attempt: A,
+                observation: Observation::Position(Observed { value: ContentTime::from_millis(100),
+                    from: EvidenceSource::BackendReport }) } },
+            BackendEvent { backend: URI, event: DriverEvent::Observation { attempt: A,
+                observation: Observation::Position(Observed { value: ContentTime::from_millis(200),
+                    from: EvidenceSource::BackendReport }) } },
+        ]);
+        runner.poll_at(&mut drivers, &(), tick(5));
+        let evidence = runner.metrics_snapshot().unwrap().current_attempt.unwrap().evidence;
+        assert!(evidence.playback_observed && evidence.clock_advanced);
+        assert!(!evidence.command_acknowledged, "queued dispatch is not a native ACK");
+        assert!(!evidence.picture_presented);
+        assert_eq!(runner.metrics_snapshot().unwrap().startup_ms, None);
+        drivers.events.extend([
+            BackendEvent { backend: FEED, event: DriverEvent::Observation { attempt: A,
+                observation: Observation::Presented } },
+            BackendEvent { backend: URI, event: DriverEvent::Observation { attempt: A,
+                observation: Observation::Presented } },
+            BackendEvent { backend: URI, event: DriverEvent::Observation { attempt: A,
+                observation: Observation::Failed(Failure::Backend) } },
+            BackendEvent { backend: URI, event: DriverEvent::Release { attempt: A,
+                status: ReleaseStatus::Released } },
+        ]);
+        let polled = runner.poll_at(&mut drivers, &(), tick(10));
+        assert!(matches!(polled.metrics.as_slice(), [MetricNotice::Release {
+            request: r, backend: URI, attempt: A, status: ReleaseStatus::Released }] if *r == request));
+        let summary = runner.metrics_snapshot().unwrap();
+        assert_eq!(summary.startup_ms, Some(10));
+        assert_eq!(summary.current_attempt.unwrap().outcome, Some(measure::AttemptOutcome::Failed(
+            measure::Failure { stage: measure::Stage::Decode, cause: measure::Cause::Native })));
+        let failure = measure::Failure { stage: measure::Stage::Decode, cause: measure::Cause::Native };
+        let terminal = runner.finish_request_at(request, measure::RequestOutcome::Failed(failure), tick(11));
+        assert!(matches!(terminal.metrics.as_slice(), [MetricNotice::Measured(measure::Fx::HandledError {
+            attempt: Some(A), .. }), MetricNotice::Measured(measure::Fx::Finished(_))]));
+        assert!(runner.finish_request_at(request, measure::RequestOutcome::Failed(failure), tick(12)).metrics.is_empty());
+    }
+
+    #[test]
+    fn recovered_refusal_needs_second_attempt_picture_and_preflight_has_no_release() {
+        let mut runner = BackendRunner::new();
+        let mut drivers = FakeSet::new();
+        let request = LogicalRequestId::new(8);
+        runner.begin_request_at(request, measure::Origin::Fresh, tick(0));
+        drivers.uri = false;
+        let preflight = runner.send_at(&mut drivers, &(), Intent::Start { backend: URI,
+            attempt: A, source: SourceKey::new(9), requirements: REQ, initial: INITIAL },
+            measure::Origin::Fresh, tick(1));
+        assert!(matches!(preflight.metrics.as_slice(), [MetricNotice::PreflightRejected {
+            failure: measure::Failure { stage: measure::Stage::Open, cause: measure::Cause::Unsupported }, .. }]));
+        assert_eq!(runner.metrics_snapshot().unwrap().attempt_count, 0);
+        assert!(drivers.sent.is_empty(), "no physical Start or release is owed");
+        drivers.uri = true;
+        drivers.refuse_start = true;
+        runner.send_at(&mut drivers, &(), Intent::Start { backend: URI, attempt: A,
+            source: SourceKey::new(10), requirements: REQ, initial: INITIAL },
+            measure::Origin::Fresh, tick(2));
+        drivers.events.push(BackendEvent { backend: URI, event: DriverEvent::Release { attempt: A,
+            status: ReleaseStatus::Released } });
+        runner.poll_at(&mut drivers, &(), tick(3));
+        let successor = AttemptId::new(1, 2);
+        let handoff = runner.handoff_at(request, A, successor, tick(4));
+        assert!(handoff.metrics.is_empty());
+        drivers.refuse_start = false;
+        runner.send_at(&mut drivers, &(), Intent::Start { backend: FEED, attempt: successor,
+            source: SourceKey::new(11), requirements: REQ, initial: INITIAL },
+            measure::Origin::Recovery, tick(5));
+        drivers.events.extend([
+            BackendEvent { backend: FEED, event: DriverEvent::Observation { attempt: successor,
+                observation: Observation::Playback(Observed { value: Playback::Playing,
+                    from: EvidenceSource::BackendReport }) } },
+            BackendEvent { backend: FEED, event: DriverEvent::Observation { attempt: successor,
+                observation: Observation::Presented } },
+        ]);
+        let recovered = runner.poll_at(&mut drivers, &(), tick(6));
+        assert!(matches!(recovered.metrics.as_slice(), [MetricNotice::Measured(
+            measure::Fx::RecoveredRefusal { refused_attempt: A, recovered_attempt, .. })]
+            if *recovered_attempt == successor));
+        let summary = runner.metrics_snapshot().unwrap();
+        assert_eq!(summary.attempt_count, 2);
+        assert_eq!(summary.current_attempt.unwrap().origin, measure::Origin::Recovery);
+        assert_eq!(summary.recent_attempts[0].outcome, Some(measure::AttemptOutcome::Failed(
+            measure::Failure { stage: measure::Stage::Open, cause: measure::Cause::Refused })));
+    }
+
+    #[test]
+    fn intentional_pause_seek_and_background_exclude_rebuffer_and_unknown_time_is_visible() {
+        let mut runner = BackendRunner::new();
+        let mut drivers = FakeSet::new();
+        let request = LogicalRequestId::new(9);
+        runner.begin_request_at(request, measure::Origin::Fresh, tick(0));
+        runner.send_at(&mut drivers, &(), Intent::Start { backend: URI, attempt: A,
+            source: SourceKey::new(1), requirements: REQ, initial: INITIAL },
+            measure::Origin::Fresh, tick(0));
+        drivers.events.extend([
+            BackendEvent { backend: URI, event: DriverEvent::Observation { attempt: A,
+                observation: Observation::Playback(Observed { value: Playback::ReadyAwaitPlay,
+                    from: EvidenceSource::BackendReport }) } },
+            BackendEvent { backend: URI, event: DriverEvent::Observation { attempt: A,
+                observation: Observation::Presented } },
+        ]);
+        runner.poll_at(&mut drivers, &(), tick(10));
+        runner.condition_at(URI, A, measure::Condition::Rebuffering, tick(20));
+        runner.send_at(&mut drivers, &(), Intent::Control { backend: URI, attempt: A,
+            operation: Operation::Pause }, measure::Origin::Fresh, tick(30));
+        runner.condition_at(URI, A, measure::Condition::Rebuffering, tick(40));
+        runner.send_at(&mut drivers, &(), Intent::Control { backend: URI, attempt: A,
+            operation: Operation::Seek(ContentTime::from_millis(2_000)) },
+            measure::Origin::Fresh, tick(50));
+        runner.set_foreground_at(&mut drivers, &(), false, tick(60));
+        runner.condition_at(URI, A, measure::Condition::Rebuffering, tick(70));
+        runner.condition_at(URI, A, measure::Condition::Unknown, measure::Tick::Unknown);
+        runner.set_foreground_at(&mut drivers, &(), true, tick(80));
+        let summary = runner.metrics_snapshot().unwrap();
+        assert_eq!(summary.rebuffer_ms, 10);
+        assert_eq!(summary.unknown_time_events, 1);
+    }
+    #[test]
+    fn measured_handoff_and_rebuffer_share_their_overlapping_time() {
+        let mut runner = BackendRunner::new();
+        let mut drivers = FakeSet::new();
+        let request = LogicalRequestId::new(10);
+        runner.begin_request_at(request, measure::Origin::Fresh, tick(0));
+        runner.send_at(&mut drivers, &(), Intent::Start { backend: URI, attempt: A,
+            source: SourceKey::new(1), requirements: REQ, initial: INITIAL },
+            measure::Origin::Fresh, tick(0));
+        drivers.events.extend([
+            BackendEvent { backend: URI, event: DriverEvent::Observation { attempt: A,
+                observation: Observation::Playback(Observed { value: Playback::ReadyAwaitPlay,
+                    from: EvidenceSource::BackendReport }) } },
+            BackendEvent { backend: URI, event: DriverEvent::Observation { attempt: A,
+                observation: Observation::Playback(Observed { value: Playback::Playing,
+                    from: EvidenceSource::BackendReport }) } },
+            BackendEvent { backend: URI, event: DriverEvent::Observation { attempt: A,
+                observation: Observation::Presented } },
+        ]);
+        runner.poll_at(&mut drivers, &(), tick(10));
+        runner.condition_at(URI, A, measure::Condition::Rebuffering, tick(20));
+        let successor = AttemptId::new(1, 2);
+        runner.handoff_at(request, A, successor, tick(30));
+        runner.handoff_at(request, A, successor, tick(31));
+        runner.send_at(&mut drivers, &(), Intent::Stop { backend: URI, attempt: A,
+            reason: StopReason::Replace }, measure::Origin::AutomaticHandoff, tick(35));
+        drivers.events.push(BackendEvent { backend: URI, event: DriverEvent::Release { attempt: A,
+            status: ReleaseStatus::Released } });
+        runner.poll_at(&mut drivers, &(), tick(36));
+        runner.send_at(&mut drivers, &(), Intent::Start { backend: FEED, attempt: successor,
+            source: SourceKey::new(2), requirements: REQ, initial: INITIAL },
+            measure::Origin::AutomaticHandoff, tick(40));
+        drivers.events.extend([
+            BackendEvent { backend: FEED, event: DriverEvent::Observation { attempt: successor,
+                observation: Observation::Playback(Observed { value: Playback::Playing,
+                    from: EvidenceSource::BackendReport }) } },
+            BackendEvent { backend: FEED, event: DriverEvent::Observation { attempt: successor,
+                observation: Observation::Presented } },
+        ]);
+        runner.poll_at(&mut drivers, &(), tick(50));
+        let summary = runner.metrics_snapshot().unwrap();
+        assert_eq!(summary.handoff_count, 1);
+        assert_eq!(summary.handoff_gap_ms, 20);
+        assert_eq!(summary.rebuffer_ms, 30);
+        assert_eq!(summary.involuntary_stall_ms, 30, "overlap is counted once");
     }
 }
