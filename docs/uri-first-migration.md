@@ -15,11 +15,18 @@ another. Neither driver owns Plex route selection, timeline writes or recovery p
 audio conversion primitives. It cannot import either playback executor. Keeping a separately
 enabled subtitle or capture codec consumer does not imply keeping the feed executor.
 
-The first extraction retains compatibility facades in `plx_media`: the independent URI driver
-receives transport, sink, attempt identity and settlement callback from its caller; the media
-adapter retains route claims. These facades are transitional, not proof that the final common
-crate can already be built without a backend. The contract runner is a tested seam; the existing
-player is not yet routed through it.
+The independent URI product driver implements the neutral `DriverSet` protocol. Its diagnostic
+probe retains a media facade with a route settlement callback. The shared runner now sequences
+load readiness, addressed track confirmation, exact seek completion and the desired foreground
+Play goal. Its local metrics distinguish logical requests, physical attempts, clock progress and
+picture evidence. Queuing work is never counted as a native acknowledgment.
+
+The existing application still uses transitional feed entry points while the remaining physical
+implementation is extracted. The common pump no longer borrows an Engine; addressed resource
+mapping, timeline/Plex writes and recovery stay common. Source IO and demux state travel through
+injected ports. `play-feed` and `media-codecs` are still required media dependencies at this
+checkpoint: neither optional build completion nor physical removability has been established.
+Application composition and the deletion/build matrix below remain completion work.
 
 ## Ordered checkpoints
 
@@ -72,8 +79,12 @@ output merely because the application hands the original stream to the platform.
 Qualify stock and `dts_restore_plus` environments separately. Preserve Developer Mode and
 rooted/Homebrew installations. Install no patch and change no TV-wide audio setting automatically.
 Native adaptive masters have one platform controller; fixed PMS offers have one app controller.
-Permit at most one cross-executor handoff per recovery episode and never retry an identical
-candidate. Capability changes and automatic reloads cannot replenish the budget.
+The pure `route::backend_policy` orders qualified original-stream URI offers before qualified
+original-stream feed offers, with permitted conversion afterward. The common owner must supply a
+finite offer catalog and stable recipe IDs, rather than treating a new transient URL as a new
+candidate. Selection does not acquire a resource lease. Admission spends a recipe exactly once;
+capability refresh preserves that history. At most one cross-executor handoff is permitted per
+recovery episode. This policy still needs application composition; adding it does not promote URI.
 
 Each attempt starts with fresh observations. Unknown remains unknown; an acknowledgment or
 advancing clock is not picture evidence. Separate logical-request metrics from backend attempts,

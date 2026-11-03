@@ -101,7 +101,7 @@ pub(super) fn halt_preview_now(
 
 /// Queue a play for [`drain_held_feature`] to perform once a still-abandoning preview's Load
 /// thread has actually released the engine. `halt_preview`/`halt_preview_now` only STARTS
-/// abandonment — the preview may still hold `pa.engine()` installed for a moment after, and
+/// abandonment — the preview may still hold a physical feed session installed for a moment after, and
 /// starting a second Load against that installed engine hits the double-start conflict guard
 /// and refuses instead of queuing. Every caller that can reach a still-occupied preview
 /// (an ordinary page Play, and the item menu's Play Trailer) must hold through here rather

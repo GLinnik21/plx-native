@@ -3067,13 +3067,14 @@ mod tests {
         // ff.rs is the THIRD writer of this block — the demux thread stamps the HTTP status and
         // the bytes it received. A writer file missing from this list reads exactly like a field
         // with no writer, so adding one here is part of adding one there.
-        const WRITERS: [&str; 6] = [
+        const WRITERS: [&str; 7] = [
             include_str!("pump.rs"),
             include_str!("feed_pump.rs"),
             include_str!("engine.rs"),
             include_str!("mod.rs"),
             include_str!("../ff.rs"),
             include_str!("../adaptive.rs"),
+            include_str!("demux_session.rs"),
         ];
 
         let declared: Vec<&str> = SHARED_SRC
