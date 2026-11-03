@@ -1,0 +1,19 @@
+[package]
+name = "plx_play_feed"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Pure buffer-feed native Load declarations and payload construction."
+repository = "https://github.com/GLinnik21/plx-native"
+publish = false
+
+[lib]
+name = "plx_play_feed"
+crate-type = ["rlib"]
+
+[dependencies]
+plx_base = { path = "../base" }
+plx_platform = { path = "../platform" }
+
+[lints]
+workspace = true
