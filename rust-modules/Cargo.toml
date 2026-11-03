@@ -77,7 +77,7 @@ required-features = ["hostsim"]
 default = ["devtools", "devtriggers", "threadcheck"]
 # Explicit production URI transport/driver inclusion. The buffer-feed route remains the default;
 # this feature does not qualify, select or promote a URI playback attempt.
-play-uri = ["dep:plx_play_uri", "plx_platform/uri-transport"]
+play-uri = ["dep:plx_play_uri", "plx_media/play-uri", "plx_platform/uri-transport"]
 # Developer-facing chrome that must not reach a public build. Currently: the on-screen
 # seven-segment counter. Everything gated here must be DRAW-ONLY or otherwise inert — the device
 # is the only test this project has, so a release build must not differ from the tested one in
