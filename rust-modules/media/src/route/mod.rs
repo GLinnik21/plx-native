@@ -10,6 +10,8 @@
 //! network/adapter effect is allowed to read wall time) but as of this split carries none either.
 
 pub mod backend_policy;
+#[cfg(feature = "play-uri")]
+pub mod uri_preflight;
 mod decision;
 mod queue_navigation;
 pub use queue_navigation::{QueueContinuation, QueueStep, previous_restarts, queue_neighbor, queue_neighbors};
