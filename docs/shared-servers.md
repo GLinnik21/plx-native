@@ -393,8 +393,12 @@ not move with the words: `BrowseSection::pinned`, `HomePins`, `plex/pins.rs` and
 than upgrade. What still comes from the GRANT and not from the setting: access itself, the grid,
 sort, the A–Z rail, and Search, which stays grant-wide and only RANKS favourite-library hits first.
 The grant decides what you can reach; the favourite decides what the app offers, with one
-exception: the Library's Sort & Filter menu lists every reachable library of the viewed type, favourite
-or not, and the header names a non-favourite while it is on view.
+exception: Library options (the persistent ellipsis) offers hidden favorites and available
+non-favorites of the viewed type. Favorite shortcuts stay in their original positions; a hidden
+current library is named above the grid and ticked in the picker. A non-favorite visit is retained
+for this session without replacing the saved favorite. Sort & Filter changes only the listing.
+Library options also refreshes shared libraries and opens the favorites editor with a library
+breadcrumb. Back and Done return directly to that opener.
 
 **Two divergences between the canvas and main, both because main moved while it was drawn**, neither
 requiring the design to change: its toolbar frames include an `Unwatched` chip that `0d9a4f6f`
@@ -745,9 +749,9 @@ writes for retry when the worker queue cannot admit them. `browse.rs` is the plu
 around them, and a selection PERSISTS: every flip was in-memory before 2026-08-21, so a selection
 made in the Sources panel was gone by the next boot and the default came back, which reads as the
 switch not working. Since 2026-09-04 the write
-is `browse::apply_pins_from`, once, when the Home editor's `Done`/`Start watching` commits its draft — a
-flip edits the in-memory draft and nothing is written until then (`toggle_pin`, the old per-press
-write, is a test-only fixture now).
+is `browse::apply_pins_from`. First run stages the choices until `Start watching`; the Settings
+and contextual Library editors send `ApplyPins` on each switch, so Back and Done both retain the
+changes. `toggle_pin`, the old direct mutator, remains a test-only fixture.
 
 ### Where the implementation reinterprets the canvas
 

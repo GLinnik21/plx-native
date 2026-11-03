@@ -28,6 +28,59 @@ fn grid_page(libraries: usize) -> (Fixture, LibraryScreen, FocusEngine<u32>) {
 fn at(engine: &FocusEngine<u32>) -> u32 { engine.current(OWNER).unwrap().elem }
 
 #[test]
+fn library_options_stays_available_with_one_or_two_visible_favorites() {
+    let _guard = plx_base::testlock::serial();
+    for count in [1, 2] {
+        let (_, page, _) = grid_page(count);
+        assert_eq!(page.libraries.len(), count + 1);
+        assert_eq!(page.libraries.last().map(|(elem, _)| *elem), Some(MORE));
+    }
+}
+
+#[test]
+fn visiting_a_non_favorite_keeps_the_favorite_shortcuts_unchanged() {
+    let _guard = plx_base::testlock::serial();
+    let mut fixture = Fixture::new(3, 36, 0);
+    fixture.sections[2].row.pinned = false;
+    fixture.publish(0, 36);
+    let mut page = fixture.screen();
+    let engine = FocusEngine::new();
+    page.sync(&fixture.cx(&engine));
+    let before = page.libraries.clone();
+    fixture.publish(2, 36);
+    page.sync(&fixture.cx(&engine));
+    assert_eq!(page.libraries, before, "a visit must never insert a temporary pill");
+    assert!(page.header.row().unwrap().page.spec().left.iter().all(|item| !item.selected_plate));
+}
+
+#[test]
+fn long_favorite_names_leave_room_for_options_in_every_language() {
+    let _guard = plx_base::testlock::serial();
+    let measure = plx_base::fontcov::advances::ShippedMeasure;
+    for language in plx_platform::i18n::SHIPPED {
+        let _language = plx_platform::i18n::language_on_this_thread_for_test(language);
+        let mut fixture = Fixture::new(3, 36, 0);
+        for section in &mut fixture.sections {
+            section.row.title = format!("{} — {}", section.row.title, "International cinema and restored classics ".repeat(5));
+        }
+        fixture.publish(0, 36);
+        let engine = FocusEngine::new();
+        let cx = Cx { measure: &measure, ..fixture.cx(&engine) };
+        let mut page = LibraryScreen::new(ENTRY, InstanceId(19), SecKind::Movie);
+        page.sync(&cx);
+        let row = page.header.row().unwrap();
+        assert_eq!(page.libraries.last().map(|(elem, _)| *elem), Some(MORE), "{}", language.tag());
+        let names: Vec<_> = row.page.spec().left.iter().filter(|item| item.glyph.is_none()).collect();
+        assert!(!names.is_empty(), "{}: a frequent library remains directly reachable", language.tag());
+        assert!(names.iter().all(|item| item.label.ends_with('…')), "{}", language.tag());
+        let mut stops: Vec<_> = page.header_elems().into_iter().map(|elem| page.header_rect(elem, At::Drawn).unwrap()).collect();
+        stops.sort_by(|a, b| a.x.total_cmp(&b.x));
+        assert!(stops.windows(2).all(|pair| pair[0].x + pair[0].w <= pair[1].x), "{}: controls overlap", language.tag());
+        assert!(page.library_context(&cx).unwrap().contains("restored classics"));
+    }
+}
+
+#[test]
 fn the_header_row_stands_at_148_and_the_grid_starts_at_244() {
     let _guard = plx_base::testlock::serial();
     let (fixture, page, engine) = grid_page(2);
@@ -181,14 +234,14 @@ fn a_criterion_in_every_language_takes_its_own_width_and_never_moves_the_names()
 }
 
 #[test]
-fn one_library_draws_no_names_and_two_draw_both() {
+fn favorite_names_and_options_are_shown_even_for_one_library() {
     let _guard = plx_base::testlock::serial();
-    assert!(grid_page(1).1.libraries.is_empty(), "one library: only the three controls");
-    assert_eq!(grid_page(2).1.libraries.len(), 2);
+    assert_eq!(grid_page(1).1.libraries.len(), 2, "one favorite and options");
+    assert_eq!(grid_page(2).1.libraries.len(), 3);
 }
 
 #[test]
-fn the_picked_library_takes_the_last_visible_slot() {
+fn the_favorite_prefix_never_reorders_when_an_overflow_library_is_picked() {
     let widths = [200.0, 180.0, 220.0, 160.0, 240.0];
     assert_eq!(pack_names(&widths, 0, 4000.0, 90.0, 8), [0, 1, 2, 3, 4], "everything fits: all names, in order");
     let gap = plx_ui::page_header::GAP;
@@ -196,9 +249,9 @@ fn the_picked_library_takes_the_last_visible_slot() {
     let cut = pack_names(&widths, 1, tight, 90.0, 8);
     assert_eq!(cut, [0, 1, 2], "a pick inside the cut keeps its place");
     let cut = pack_names(&widths, 4, tight, 90.0, 8);
-    assert_eq!(cut.last(), Some(&4), "a pick past the cut replaces the last visible name");
-    assert_eq!(cut.len(), 2, "[0, 4] is what the room holds");
-    assert_eq!(pack_names(&widths, 3, 10.0, 90.0, 8), [3], "never fewer than the picked library");
+    assert_eq!(cut, [0, 1, 2], "a hidden pick never replaces a shortcut");
+    assert_eq!(cut.len(), 3);
+    assert!(pack_names(&widths, 3, 10.0, 90.0, 8).is_empty(), "options keeps its reserved space");
     assert!(pack_names(&[], 0, 100.0, 10.0, 8).is_empty());
 }
 
@@ -227,6 +280,7 @@ fn up_lands_on_the_selected_library_then_on_the_last_control_used() {
     let selected = page.libraries.iter().find(|(_, index)| Some(*index) == page.view_section(&fixture.cx(&engine))).unwrap().0;
     fixture.direction(&mut page, &mut engine, Dir::Up);
     assert_eq!(at(&engine), selected, "the first Up lands on the library on view");
+    fixture.direction(&mut page, &mut engine, Dir::Right);
     fixture.direction(&mut page, &mut engine, Dir::Right);
     fixture.direction(&mut page, &mut engine, Dir::Right);
     assert_eq!(at(&engine), COLLECTIONS, "Right walks names then the controls");
@@ -437,7 +491,7 @@ fn the_overflow_stays_visible_wherever_focus_is_in_the_row() {
 #[test]
 fn a_one_library_row_stands_at_y_158_and_a_multi_library_row_at_148() {
     let _guard = plx_base::testlock::serial();
-    for (libraries, top) in [(1, 158.0), (2, 148.0)] {
+    for (libraries, top) in [(1, 148.0), (2, 148.0)] {
         let (fixture, page, engine) = grid_page(libraries);
         let cx = fixture.cx(&engine);
         let control = <LibraryScreen as Focusable<TestHost>>::place(&page, &SORTFILTER, &cx, At::Drawn).unwrap().rect;
@@ -514,7 +568,7 @@ fn every_header_opener_is_lit_by_the_lift_while_its_menu_is_open() {
         let rects: Vec<_> = pills.iter().filter(|(tag, _)| *tag == 2).map(|(_, r)| *r).collect();
         assert!(rects.len() == 1 && (rects[0].x - pill.x).abs() < 0.5 && (rects[0].w - pill.w).abs() < 0.5 && (rects[0].h - pill.h).abs() < 0.5,
             "elem {elem}: one accent pill at {pill:?}, got {rects:?}");
-        assert!(!runs.is_empty() && runs.iter().all(|run| words(run.at)
+        assert!((elem == MORE || !runs.is_empty()) && runs.iter().all(|run| words(run.at)
             && run.ink.iter().zip(plx_ui::ACCENT_INK).all(|(a, b)| (a - b).abs() < 0.01)),
             "elem {elem}: the face is on the pill, in the focused ink: {runs:?}");
     }
@@ -733,9 +787,9 @@ fn a_scrolled_page_wears_the_capsule_only_when_its_header_names_libraries() {
     let (fixture, mut one, engine) = grid_page(1);
     let kinds = tucked_draw_kinds(&fixture, &mut one, &engine);
     assert!(kinds.iter().any(|(k, r)| k == "rect" && r[0] == 0.0 && r[1] == 0.0 && r[3] == plx_ui::scroll_capsule::FADE_STEP), "the top fade stays");
-    assert!(kinds.iter().all(|(k, _)| k != "glass"), "one library: no names in the header, no capsule");
-    assert_eq!(kinds.iter().filter(|(k, r)| k == "rect" && r[0] == 0.0 && r[3] == plx_ui::scroll_capsule::FADE_STEP && r[1] < 200.0)
-        .map(|(_, r)| r[1] + r[3]).fold(0.0f32, f32::max), plx_ui::scroll_capsule::FADE_H, "and the fade stays the plain 72 deep");
+    assert!(kinds.iter().any(|(k, _)| k == "glass"), "a singleton keeps its library identity in the capsule");
+    assert_eq!(kinds.iter().filter(|(k, r)| k == "rect" && r[0] == 0.0 && r[3] <= plx_ui::scroll_capsule::FADE_STEP && r[1] < 200.0)
+        .map(|(_, r)| r[1] + r[3]).fold(0.0f32, f32::max), plx_ui::scroll_capsule::Y + plx_ui::scroll_capsule::H + plx_ui::scroll_capsule::FADE_BELOW_CAPSULE, "the fade reaches through the capsule");
     let (fixture, mut two, engine) = grid_page(2);
     let kinds = tucked_draw_kinds(&fixture, &mut two, &engine);
     assert!(kinds.iter().any(|(k, r)| k == "glass" && r[1] == plx_ui::scroll_capsule::Y), "two libraries: the capsule, as live glass");

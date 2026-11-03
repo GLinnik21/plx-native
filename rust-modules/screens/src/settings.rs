@@ -479,6 +479,7 @@ fn mount_page(
             Box::new(super::consent::ConsentPage::first_run(entry, i, cx, fx))
         }
         SettingsPage::Favourites => Box::new(super::onboard::OnboardScreen::settings(entry, cx.views)),
+        SettingsPage::LibraryFavourites => Box::new(super::onboard::OnboardScreen::library(entry, cx.views)),
         SettingsPage::Picker(kind) => Box::new(super::preferences::PickerPage::new(entry, kind)),
         SettingsPage::PlayerHud => Box::new(super::hud_settings::HudPage::new(entry)),
     }

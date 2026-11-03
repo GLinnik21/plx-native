@@ -69,7 +69,7 @@ use layout::COLS;
 use parts::{GridPart, RailPart, GRID_GROUP, RAIL_GROUP};
 use transactions::{PendingTransactions, SectionTarget, GridTarget, GridAction};
 
-/// The header row's group: the library names, "+N" and the page's controls, one Left/Right path.
+/// The header row's group: the library names, Library options and the page's controls, one Left/Right path.
 pub const LIBRARY_GROUP: GroupId = GroupId(0x4c49_4210);
 const STATUS_GROUP: GroupId = GroupId(0x4c49_4212);
 const RETRY: u32 = 3;
@@ -230,7 +230,7 @@ pub struct LibraryScreen {
     /// The names on the header row (the library on view among them) and, last, `MORE` when some
     /// do not fit. Empty for a single library: the row then carries only the controls.
     libraries: Vec<(u32, usize)>,
-    /// The directory sections the fold hid behind "+N" (what the Sources list shows).
+    /// The directory sections the fold hid behind Library options (what the Sources list shows).
     folded: Vec<u32>,
     /// The header row as `sync` last built it (`header.rs`): rebuilt only when [`Self::header_key`]
     /// moves (`RowCache`, the one rule the Recommended page and the Watchlist hold their row by).
@@ -399,7 +399,7 @@ impl LibraryScreen {
     /// What the committed listing lists — the TYPE menu's value as the page last synced it.
     pub fn listed(&self) -> plx_data::browse::LibraryType { self.listed }
 
-    /// The header row's group: the library names, "+N" and the controls.
+    /// The header row's group: the library names, Library options and the controls.
     #[cfg(any(test, feature = "test-support"))]
     pub fn toolbar_group(&self) -> GroupId { LIBRARY_GROUP }
 
@@ -417,8 +417,8 @@ impl LibraryScreen {
         }, elem)).collect()
     }
 
-    /// The library names on the row as `(element, section index)`, "+N" not among them, and the
-    /// section indexes the "+N" list holds: what the fold shows and what it hid.
+    /// The library names on the row as `(element, section index)`, Library options not among them, and the
+    /// section indexes the Library options list holds: what the fold shows and what it hid.
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_names(&self) -> (Vec<(u32, usize)>, Vec<u32>) {
         (self.libraries.iter().filter(|(elem, _)| *elem != MORE).copied().collect(), self.folded.clone())
@@ -482,8 +482,8 @@ impl LibraryScreen {
     }
 
     /// Does the page draw the scroll capsule once its chrome has tucked? The one predicate
-    /// [`Self::draw`] asks (the header names two or more libraries to restate).
-    pub(super) fn capsule_wanted(&self) -> bool { plx_ui::scroll_chrome::capsule_shown(self.libraries.len()) }
+    /// [`Self::draw`] asks: keep the current library's identity when its header scrolls away.
+    pub(super) fn capsule_wanted(&self) -> bool { self.listing != Listing::Collections && self.section.is_some() }
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_capsule_wanted(&self) -> bool { self.capsule_wanted() }
@@ -729,7 +729,8 @@ impl LibraryScreen {
     /// Seat the page's own focus in `group`; the library row seats the library on view.
     fn seat_on<H: LibraryLike>(&self, group: GroupId, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         if group == LIBRARY_GROUP {
-            if let Some((elem, _)) = self.libraries.iter().find(|(_, index)| Some(*index) == self.view_section(cx)) {
+            if let Some((elem, _)) = self.libraries.iter().find(|(_, index)| Some(*index) == self.view_section(cx))
+                .or_else(|| self.libraries.iter().find(|(elem, _)| *elem == MORE)) {
                 fx.remember(LIBRARY_GROUP, *elem);
             }
         }
@@ -1593,7 +1594,7 @@ impl LibraryScreen {
 impl<H: LibraryLike> Focusable<H> for LibraryScreen {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
         if self.plaintext_alert.groups(out) { return; }
-        // The header row: the names (when there are two or more), "+N" and the controls, or the
+        // The header row: the favorite names, Library options and the controls, or the
         // crumb and Sort. One group, declared by the shared `HeaderFocus`.
         out.extend(self.header_focus().and_then(|focus| focus.group_spec()));
         if self.readout == Readout::Failed {

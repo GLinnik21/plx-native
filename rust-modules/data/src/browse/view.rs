@@ -468,6 +468,7 @@ pub struct DirectorySnapshot {
     source: Option<usize>,
     source_fetch: SecFetch,
     discovery: SecFetch,
+    refreshing: bool,
     sections_gen: u32,
     tabs_gen: u32,
 }
@@ -483,6 +484,7 @@ impl Default for DirectorySnapshot {
             source: None,
             source_fetch: SecFetch::Loading,
             discovery: SecFetch::Loading,
+            refreshing: false,
             sections_gen: 0,
             tabs_gen: 0,
         }
@@ -514,6 +516,7 @@ impl DirectorySnapshot {
         self.source = state.cur_source_idx();
         self.source_fetch = state.cur_source_state();
         self.discovery = state.discovery_state();
+        self.refreshing = state.sources().iter().any(|source| source.reachable() && !source.sections_done);
         self.sections_gen = state.sections_gen();
         self.tabs_gen = state.tabs_gen();
         for (i, kind) in [super::SecKind::Movie, super::SecKind::Show].into_iter().enumerate() {
@@ -542,6 +545,7 @@ impl DirectorySnapshot {
             source: Some(0),
             source_fetch: fetch,
             discovery: fetch,
+            refreshing: fetch == SecFetch::Loading,
             sections_gen: 0,
             tabs_gen: 0,
         }
@@ -559,6 +563,7 @@ impl DirectorySnapshot {
             && self.source == other.source
             && self.source_fetch == other.source_fetch
             && self.discovery == other.discovery
+            && self.refreshing == other.refreshing
             && self.sections_gen == other.sections_gen
             && self.tabs_gen == other.tabs_gen
             && self.preferred == other.preferred
@@ -596,6 +601,7 @@ impl DirectorySnapshot {
             source: None,
             source_fetch: SecFetch::Ready,
             discovery: SecFetch::Ready,
+            refreshing: false,
             sections_gen: 0,
             tabs_gen: 0,
         }
@@ -710,6 +716,8 @@ impl<'a> DirectoryView<'a> {
     pub fn source_fetch(self) -> SecFetch {
         self.0.source_fetch
     }
+    /// A reachable server still has a library-directory read outstanding.
+    pub fn refreshing(self) -> bool { self.0.refreshing }
     pub fn discovery(self) -> SecFetch {
         self.0.discovery
     }

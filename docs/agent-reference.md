@@ -2511,8 +2511,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   within seconds — and two comparisons were silently mis-paired that way before it did.
   And the Library browse set: `/tmp/plxnative-library[=N]` (boot straight into the
   library on section N), **`/tmp/plxnative-libosc`** (a perpetual focus sweep of that library's
-  whole DOCUMENT — the library pill strip at the head where there is one (two or more eligible
-  libraries; a lone favourite draws no selector at all), each published shelf, the grid's control
+  whole DOCUMENT — the favorite library strip and persistent Library options at the head, each published shelf, the grid's control
   row, then the poster grid — reversing at the document's own ENDS rather than on a clock, which is
   the one
   oscillator here that does. The owned Library handles `LibraryCmd::Sweep`; the rule dates to

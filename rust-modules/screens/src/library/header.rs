@@ -1,4 +1,4 @@
-//! The library page header (redesign spec, "Header"): the library names, the "+N" overflow and the
+//! The library page header (redesign spec, "Header"): the library names, the Library options and the
 //! page's controls (Collections › and Recommended › as places, a divider, then the sort control:
 //! icon, the chosen criterion, a down chevron, with "Sort & Filter" as its unshown name
 //! ([`HeaderItem::sort_control`], which the Collections page's Sort and the Watchlist's wear too); on the Collections page, the
@@ -17,8 +17,10 @@
 use super::*;
 use plx_ui::hstack::{self, Align, HStack};
 use plx_ui::page_header::{self, HeaderFocus, HeaderItem, HeaderRow, PageHeader, PageHeaderSpec, Slot};
+use plx_ui::theme;
+use std::ffi::CString;
 
-/// The width the names `picks` (then, with `more_w`, the "+N" after them) stand in, one
+/// The width the names `picks` (then, with `more_w`, the options after them) stand in, one
 /// [`page_header::GAP`] apart: the ui's own [`HStack::width`]. `PageHeader::layout` places the names
 /// with the same stack and the same gap, so what is packed here and where the names stand share the
 /// gap rule (not one construction: this takes measured widths, the layout takes spec items).
@@ -28,23 +30,17 @@ fn names_w(widths: &[f32], picks: &[usize], more_w: Option<f32>) -> f32 {
 }
 
 /// Which of `n` names show when the row cannot hold them all (`budget` is text edge to text edge
-/// for names plus "+N"). The picked library takes the LAST visible slot: names keep their order
-/// from the front, and a selected one past the cut replaces the final name. Always at least the
-/// selected name; every name when they all fit under `cap`.
-pub(super) fn pack_names(widths: &[f32], selected: usize, budget: f32, more_w: f32, cap: usize) -> Vec<usize> {
-    let n = widths.len();
-    if n == 0 || cap == 0 { return Vec::new(); }
-    let selected = selected.min(n - 1);
-    let all: Vec<usize> = (0..n).collect();
-    if n <= cap && names_w(widths, &all, None) <= budget { return all; }
-    // "+N" takes the end of the row, one gap after the last name.
-    let with_more = |picks: &[usize]| names_w(widths, picks, Some(more_w));
-    for k in (1..n.min(cap)).rev() {
-        let mut picks: Vec<usize> = (0..k).collect();
-        if selected >= k { picks[k - 1] = selected; }
-        if with_more(&picks) <= budget { return picks; }
+/// for names plus options). Keep a stable prefix of favorites, reserving room for the options
+/// action. Choosing another library never reorders these shortcuts.
+pub(super) fn pack_names(widths: &[f32], _selected: usize, budget: f32, more_w: f32, cap: usize) -> Vec<usize> {
+    let mut picks = Vec::new();
+    for i in 0..widths.len().min(cap) {
+        let mut next = picks.clone();
+        next.push(i);
+        if names_w(widths, &next, Some(more_w)) > budget { break; }
+        picks = next;
     }
-    vec![selected]
+    picks
 }
 
 /// What the read-out's filtered count was taken under: the library listing (the key `unfiltered`
@@ -71,7 +67,7 @@ fn divider() -> HeaderItem {
 }
 
 impl LibraryScreen {
-    /// Every focusable element of the header row in focus order: the library names, "+N", then
+    /// Every focusable element of the header row in focus order: the library names, options, then
     /// the controls (on the Collections page, the crumb's root, then Sort).
     pub(super) fn header_elems(&self) -> Vec<u32> {
         self.header.row().map_or_else(Vec::new, |row| row.stops.iter().map(|(elem, _)| *elem).collect())
@@ -302,54 +298,46 @@ impl LibraryScreen {
 
         self.libraries.clear();
         self.folded.clear();
-        let mut overflow = 0;
         let current = self.view_section(cx);
         let mut left = Vec::new();
         if let Some(current) = current {
             let directory = H::directory(cx);
             let mut all: Vec<(u32, usize)> = Vec::new();
-            for (index, section) in directory.favorite_sections_for(current) {
+            for (index, section) in directory.favorite_sections_for(current).filter(|(_, section)| section.row.pinned) {
                 let Some(sid) = section.sid else { continue };
                 let elem = self.keys.register(
                     LibraryIdentity::Library(LibrarySectionIdentity { sid, key: section.key }),
                     LIBRARY_GROUP, all.len());
                 all.push((elem, index));
             }
-            // A SINGLE candidate never draws a name, whatever owns the section it names: a lone
-            // library carries nothing to disambiguate for ANY profile (issue #100/#165), so only
-            // the candidate COUNT decides, and only 2+ ever reaches the packing below.
-            if all.len() > 1 {
-                let labels: Vec<String> = all.iter()
-                    .map(|(_, section)| self.library_label(*section, cx)).collect();
-                let widths: Vec<f32> = labels.iter().map(|label| page_header::cluster_width(&[item(label.as_str())], measure)).collect();
-                let selected = all.iter().position(|(_, index)| *index == current).unwrap_or(0);
-                let more_w = page_header::cluster_width(&[item(format!("+{}", all.len() - 1))], measure);
-                let picks = pack_names(&widths, selected, budget, more_w, layout::MAX_LIBRARY_PILLS);
-                overflow = all.len() - picks.len();
-                self.folded = all.iter().enumerate().filter(|(i, _)| !picks.contains(i))
-                    .filter_map(|(_, (_, section))| u32::try_from(*section).ok()).collect();
-                for &pick in &picks {
-                    left.push(HeaderItem { selected_plate: all[pick].1 == current, ..item(labels[pick].as_str()) });
-                    self.libraries.push(all[pick]);
-                }
-                if overflow > 0 { self.libraries.push((MORE, usize::MAX)); }
+            let more = HeaderItem { glyph: Some(plx_ui::icons::Icon::More), value_only: true,
+                ..item(plx_platform::i18n::msg::browse_library_libraries()) };
+            let more_w = page_header::cluster_width(&[more.clone()], measure);
+            let name_budget = ((budget - more_w - 2.0 * page_header::GAP) / 2.0).max(0.0);
+            let labels: Vec<String> = all.iter().map(|(_, section)| {
+                let label = self.library_label(*section, cx);
+                plx_machine::machine::elide_by(&label, name_budget, false, |text| {
+                    CString::new(text).map_or(0.0, |c| measure.width(&c, theme::size::BODY, false))
+                })
+            }).collect();
+            let widths: Vec<f32> = labels.iter().map(|label|
+                page_header::cluster_width(&[item(label.as_str())], measure)).collect();
+            let picks = pack_names(&widths, 0, budget, more_w, layout::MAX_LIBRARY_PILLS);
+            self.folded = all.iter().enumerate().filter(|(i, _)| !picks.contains(i))
+                .filter_map(|(_, (_, section))| u32::try_from(*section).ok()).collect();
+            for &pick in &picks {
+                left.push(HeaderItem { selected_plate: all[pick].1 == current, ..item(labels[pick].as_str()) });
+                self.libraries.push(all[pick]);
             }
+            left.push(more);
+            self.libraries.push((MORE, usize::MAX));
         }
-
-        let page = PageHeader::new(PageHeaderSpec { left, overflow, right, ..Default::default() }, &widest, measure);
-        let mut layout = page.layout(SCR_W, measure);
-        if self.libraries.is_empty() {
-            // One library: no names, and the three controls sit centred between the nav and the
-            // grid (the board's row top is y 158, ten under the multi-library row's 148).
-            for it in &mut layout.items {
-                it.text.y += layout::SINGLE_LIBRARY_DY;
-                it.plate.y += layout::SINGLE_LIBRARY_DY;
-            }
-        }
+        let page = PageHeader::new(PageHeaderSpec { left, right, ..Default::default() }, &widest, measure);
+        let layout = page.layout(SCR_W, measure);
         self.header_row(page, layout)
     }
 
-    /// The built row: which element each focusable item of `layout` is. The names and "+N" are
+    /// The built row: which element each focusable item of `layout` is. The names and options are
     /// `self.libraries`, the controls are [`Self::toolbar_elems`] (the first focusable right item is
     /// the first control, a read-out before it is no stop), the crumb's root is [`CRUMB_ROOT`] and
     /// its page name, the title, is none.
@@ -425,6 +413,36 @@ impl LibraryScreen {
         // rows and the row's motion HOLDS.
         let lifted = f.lifted.filter(|key| key.entry == self.entry).map(|key| key.elem);
         row.draw_with(p, self.scroll.pos, &self.header_capsules, self.header_pop.scale_with(0, f.press.scale), lifted, &self.header_swap);
+        if let Some(context) = self.library_context(f.cx) {
+            let room = Rect::new(page_header::TEXT_X0, top + page_header::HEIGHT,
+                page_header::TEXT_X1 - page_header::TEXT_X0,
+                page_header::GRID_TOP - layout::HEADER_Y - page_header::HEIGHT);
+            let text = plx_machine::machine::elide_by(&context, room.w, false, |text|
+                CString::new(text).map_or(0.0, |c| f.measure.width(&c, theme::size::CAPTION, false)));
+            if let Ok(text) = CString::new(text) {
+                plx_ui::label::Label::new(text.as_ptr(), theme::size::CAPTION, theme::TEXT_PRIMARY).draw(p, room);
+            }
+        }
+    }
+
+    /// A hidden or truncated current library is named over its content, never inserted among
+    /// the favorite shortcuts and never represented by a selected options button.
+    pub(super) fn library_context<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> Option<String> {
+        if self.listing != Listing::All { return None; }
+        let current = self.view_section(cx)?;
+        let full = self.library_label(current, cx);
+        let visible = self.libraries.iter().position(|(_, index)| *index == current);
+        if visible.is_some_and(|index| self.header.row().is_some_and(|row|
+            row.page.spec().left.get(index).is_some_and(|item| item.label == full))) {
+            return None;
+        }
+        let directory = H::directory(cx);
+        let source = directory.sections().get(current).and_then(|section| section.sid)
+            .and_then(|sid| directory.sources().iter().find(|(candidate, _)| *candidate == sid));
+        Some(match source {
+            Some((_, group)) if !group.name.is_empty() => format!("{full} · {}", group.name),
+            _ => full,
+        })
     }
 
     /// **The opener lift for a header control** (`Screen::redraw_focused`): `elem`, the control a

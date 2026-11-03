@@ -101,7 +101,11 @@ fn nothing(_: &mut World) {}
 
 /// The Movies library, reached by its strip pill, settled, with focus climbed into its header (the
 /// page arrives in its first poster, one Up below the header the rows below start from).
-fn library(w: &mut World) { w.open_library(); w.climb_into_header(); }
+fn header_stop(w: &mut World, name: &str) {
+    let elem = w.library().probe_header_stops().into_iter().find(|(stop, _)| *stop == name).unwrap().1;
+    w.walk_header_to(elem);
+}
+fn library(w: &mut World) { w.open_library(); w.climb_into_header(); header_stop(w, "collections"); }
 
 fn press(key: Key, did: &str, top: &str, at: impl Into<String>) -> Step {
     Step { key, did: did.into(), top: top.into(), at: at.into(), prep: nothing }
@@ -340,18 +344,20 @@ fn many_libraries(w: &mut World) {
     assert_eq!(folded, [6, 8, 10, 12], "premise: the folded libraries");
 }
 
-/// The fold after a pick: the picked name has the LAST visible slot, the one it took returns to the
-/// list, and the store (not just the header) is on the new library.
-fn the_pick_took_the_last_slot(w: &mut World) -> Vec<String> {
-    let (names, folded) = w.library().probe_names();
-    let visible: Vec<usize> = names.iter().map(|(_, section)| *section).collect();
-    let mut fails = Vec::new();
-    if visible != [0, 12] { fails.push(format!("the names are {visible:?}, expected the picked 12 in the last slot after 0")); }
-    if folded != [4, 6, 8, 10] { fails.push(format!("the list holds {folded:?}, expected the displaced 4 back and the picked 12 gone")); }
+/// Picking a non-favorite changes the store and preserves the favorite shortcuts and opener.
+fn the_pick_kept_the_favorite_shortcuts(w: &mut World) -> Vec<String> {
+    let mut fails = nothing_was_picked_names(w);
     let current = w.bridge.stores.browse.borrow().current_for_test();
-    if current != 12 { fails.push(format!("the store is on library {current}, not the picked 12")); }
+    if current != 2 { fails.push(format!("the store is on {current}, not the non-favorite 2")); }
+    if here(w) != "header:more" { fails.push(format!("focus left the opener: {}", here(w))); }
     if w.d.surface_up() { fails.push("the menu is still up".into()); }
     fails
+}
+fn nothing_was_picked_names(w: &mut World) -> Vec<String> {
+    let (names, folded) = w.library().probe_names();
+    let visible: Vec<_> = names.iter().map(|(_, section)| *section).collect();
+    if visible == [0, 4] && folded == [6, 8, 10, 12] { Vec::new() }
+    else { vec![format!("favorite shortcuts moved: {visible:?}, folded {folded:?}")] }
 }
 
 fn nothing_was_picked(w: &mut World) -> Vec<String> {
@@ -365,7 +371,7 @@ fn nothing_was_picked(w: &mut World) -> Vec<String> {
 }
 
 #[test]
-fn the_plus_n_list_picks_a_library_into_the_last_slot_and_back_picks_nothing() {
+fn library_options_selects_a_non_favorite_without_moving_shortcuts_and_back_selects_nothing() {
     run(vec![
         Row {
             name: "r5-pick",
@@ -375,13 +381,10 @@ fn the_plus_n_list_picks_a_library_into_the_last_slot_and_back_picks_nothing() {
                 press(Key::Right, "", "library", "header:name4"),
                 press(Key::Right, "", "library", "header:more"),
                 // The list holds the folded libraries (6, 8, 10, 12) as `section:<source>:<key>`.
-                press(Key::Ok, "library:Menu { kind: Sources", "library", "menu:section:0:12"),
-                press(Key::Down, "", "library", "menu:section:0:14"),
-                press(Key::Down, "", "library", "menu:section:0:16"),
-                press(Key::Down, "", "library", "menu:section:0:18"),
-                press(Key::Ok, "", "library", "header:name12"),
+                press(Key::Ok, "library:Menu { kind: Sources", "library", "menu:section:1:1"),
+                press(Key::Ok, "", "library", "header:more"),
             ],
-            end: |w| { w.frames(90); the_pick_took_the_last_slot(w) },
+            end: |w| { w.frames(90); the_pick_kept_the_favorite_shortcuts(w) },
         },
         Row {
             name: "r5-back",
@@ -390,8 +393,8 @@ fn the_plus_n_list_picks_a_library_into_the_last_slot_and_back_picks_nothing() {
             steps: vec![
                 press(Key::Right, "", "library", "header:name4"),
                 press(Key::Right, "", "library", "header:more"),
-                press(Key::Ok, "library:Menu { kind: Sources", "library", "menu:section:0:12"),
-                press(Key::Down, "", "library", "menu:section:0:14"),
+                press(Key::Ok, "library:Menu { kind: Sources", "library", "menu:section:1:1"),
+                press(Key::Down, "", "library", "menu:section:1:11"),
                 press(Key::Back, "", "library", "header:more"),
             ],
             end: |w| { w.frames(90); nothing_was_picked(w) },
@@ -429,7 +432,7 @@ fn the_plus_n_list_and_sort_filter_both_lift_their_opener() {
             steps: vec![
                 press(Key::Right, "", "library", "header:name4"),
                 press(Key::Right, "", "library", "header:more"),
-                press(Key::Ok, "library:Menu { kind: Sources", "library", "menu:section:0:12"),
+                press(Key::Ok, "library:Menu { kind: Sources", "library", "menu:section:1:1"),
             ],
             end: plus_n,
         },
@@ -459,6 +462,7 @@ fn the_sort_filter_pill_is_painted_after_the_panel_in_the_dispatchers_own_draw()
     use plx_ui::frame::backdrop::Z;
     let mut w = World::movies_library("route-sort-lift-order", false);
     w.climb_into_header();
+    header_stop(&mut w, "collections");
     for (key, at) in [(Key::Right, "header:recommended"), (Key::Right, "header:sort"), (Key::Ok, "menu:unwatched")] {
         w.press(key);
         w.frames(30);
@@ -499,6 +503,7 @@ fn a_library_without_collections_has_no_collections_stop() {
         let stops: Vec<&str> = w.library().probe_header_stops().into_iter().map(|(stop, _)| stop).collect();
         assert_eq!(stops.contains(&"collections"), collections, "{name}: the header's stops are {stops:?}");
         w.climb_into_header();
+        header_stop(&mut w, if collections { "collections" } else { "recommended" });
         assert_eq!(here(&w), if collections { "header:collections" } else { "header:recommended" }, "{name}");
         w.press(Key::Right);
         w.frames(10);
@@ -519,6 +524,7 @@ fn to_sort_filter() -> Vec<Step> {
 fn with_genres(w: &mut World) {
     w.open_library();
     w.climb_into_header();
+    header_stop(w, "collections");
     let genre = |id: &str, title: &str| GenreEntry { id: id.into(), title: title.into() };
     w.bridge.stores.browse.borrow_mut().seed_query_choices_for_test(Vec::new(), vec![genre("g1", "Drama"), genre("g2", "Comedy")]);
     w.frames(30);
@@ -580,6 +586,7 @@ fn lettered(w: &mut World) {
     w.bridge.stores.browse.borrow_mut().seed_letter_counts_for_test(&[("A", 30), ("C", 30), ("M", 30), ("Z", 30)]);
     w.open_library();
     w.climb_into_header();
+    header_stop(w, "collections");
     w.frames(30);
 }
 
@@ -697,6 +704,7 @@ fn the_three_library_pages_wear_one_route_word_and_the_tab_bar() {
     let mut w = World::new("r16-word");
     w.open_library();
     w.climb_into_header();
+    header_stop(&mut w, "collections");
     let mut fails = wears_the_library_route(&w, "the grid");
     w.press(Key::Ok);
     w.frames(40);
@@ -717,6 +725,7 @@ fn opening_collections_again_does_not_stack_a_second_page() {
     let mut w = World::new("r16-twice");
     w.open_library();
     w.climb_into_header();
+    header_stop(&mut w, "collections");
     let base = w.d.nav.tabs.stack.depth();
     // A double press: the second OK lands while the first push is still on its way.
     w.tap(Key::Ok, 0);
