@@ -41,8 +41,10 @@ pub fn hero_rows(title_h: f32, meta_h: f32, ratings_h: Option<f32>, synopsis_h: 
         Item::new(title_h),
         Item::new(meta_h).before(theme::space::SM),
         ratings_h.map_or(Item::absent(), |h| Item::new(h).before(theme::space::XS)),
-        synopsis_h.map_or(Item::absent(), |h| Item::new(h).before(theme::space::MD)),
-        Item::new(theme::hero::FACTS_H).before(theme::space::LG),
+        synopsis_h.map_or(Item::absent(), |h| Item::new(h).before(theme::space::LG)),
+        // TextView measures full leading boxes. Their trailing air belongs to the prose;
+        // the proposal spends the larger block gap above it, not a second time below it.
+        Item::new(theme::hero::FACTS_H).before(if synopsis_h.is_some() { theme::space::MD } else { theme::space::LG }),
         Item::new(0.0).before(theme::space::MD),
     ];
     let anchor = match anchor {
@@ -86,7 +88,7 @@ mod tests {
         let with = hero_stack(120.0, 34.0, Some(72.0));
         assert_eq!(with.actions.y, 716.0);
         assert_eq!(with.meta.y, 498.0);
-        assert_eq!(with.synopsis.unwrap().y, 556.0);
+        assert_eq!(with.synopsis.unwrap().y, 572.0);
         assert_eq!(with.facts.y, 668.0);
         let bare = hero_stack(120.0, 34.0, None);
         assert!(bare.synopsis.is_none());
@@ -101,6 +103,30 @@ mod tests {
         let shift = detail.title.y - home.title.y;
         for (a,b) in [(home.meta,detail.meta),(home.ratings.unwrap(),detail.ratings.unwrap()),(home.synopsis.unwrap(),detail.synopsis.unwrap()),(home.facts,detail.facts),(home.actions,detail.actions)] {
             assert_eq!(b.y-a.y,shift);
+        }
+    }
+
+    #[test]
+    fn pdf_synopsis_padding_preserves_the_facts_and_action_anchors() {
+        for ratings in [None, Some(30.0)] {
+            for anchor in [HeroAnchor::Actions(716.0), HeroAnchor::TitleBottom(566.0)] {
+                let rows = hero_rows(120.0, 34.0, ratings, Some(72.0), anchor);
+                let previous = rows.ratings.unwrap_or(rows.meta);
+                let synopsis = rows.synopsis.unwrap();
+                assert_eq!(synopsis.y - (previous.y + previous.h), 40.0,
+                    "the proposal gives prose a full block gap above it");
+                assert_eq!(rows.facts.y - (synopsis.y + synopsis.h), 24.0,
+                    "the synopsis line boxes already include trailing leading");
+                assert_eq!(rows.actions.y - (rows.facts.y + rows.facts.h), 24.0);
+                match anchor {
+                    HeroAnchor::Actions(y) => assert_eq!(rows.actions.y, y),
+                    HeroAnchor::TitleBottom(y) => {
+                        assert_eq!(rows.title.y + rows.title.h, y);
+                        assert_eq!(rows.facts.y, if ratings.is_some() { 790.0 } else { 752.0 });
+                        assert_eq!(rows.actions.y, if ratings.is_some() { 838.0 } else { 800.0 });
+                    }
+                }
+            }
         }
     }
 }

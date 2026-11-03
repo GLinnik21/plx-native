@@ -90,7 +90,7 @@ mod tests {
         let ch = hero_chain(72.0, true, &m);
         assert_eq!(ch.meta_y, 582.0);
         assert_eq!(ch.ratings_y, 624.0);
-        assert_eq!(ch.syn_y, 678.0);
+        assert_eq!(ch.syn_y, 694.0);
         assert_eq!(ch.facts_y, 790.0);
         assert_eq!(ch.btn_y, 838.0);
         let bare = hero_chain(72.0, false, &m);
