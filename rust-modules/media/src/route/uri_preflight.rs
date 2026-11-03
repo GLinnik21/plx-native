@@ -82,7 +82,7 @@ pub enum Verdict { Known(KnownSource), Unknown, Refused }
 /// The caller supplies the actual Part URL and selected source tracks. An implementation may
 /// perform bounded IO only with the worker's OffFrame proof; it must not infer a URI certificate
 /// from Feed's codec table, MDE answer or native ACK.
-pub trait OriginalQualifier: Send + Sync {
+pub trait OriginalQualifier: Send + Sync + std::panic::RefUnwindSafe {
     fn qualify(&self, off: &OffFrame, request: OriginalRequest) -> Verdict;
 }
 
