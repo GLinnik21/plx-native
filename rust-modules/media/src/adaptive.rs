@@ -500,9 +500,15 @@ pub(crate) struct PreparedOriginalSwitch {
 pub(crate) struct ActiveQuantumResult {
     sample: abr::SegmentSample,
     pub(crate) cleanup_ready: bool,
+    delivered: bool,
+    abandoned: bool,
 }
 
-pub(crate) struct RefreshedQuantum { sample: abr::SegmentSample }
+pub(crate) struct RefreshedQuantum {
+    sample: abr::SegmentSample,
+    delivered: bool,
+    abandoned: bool,
+}
 
 impl ActiveQuantumResult {
     /// The rollback playlist may have blocked. It supplies a second buffer
@@ -510,6 +516,8 @@ impl ActiveQuantumResult {
     pub(crate) fn refresh(self, buffer: BufferFact) -> RefreshedQuantum {
         RefreshedQuantum {
             sample: self.sample.with_buffer(buffer_snapshot(buffer)),
+            delivered: self.delivered,
+            abandoned: self.abandoned,
         }
     }
 }
@@ -520,11 +528,13 @@ impl RefreshedQuantum {
     pub(crate) fn observe(
         self, coordinator: &mut Coordinator, rollback_media_ms: Option<u32>,
         now_ms: u64, boundary: bool,
-    ) -> (abr::SegmentSample, RoundDecision) {
+    ) -> (abr::SegmentSample, RoundDecision, bool) {
         let round = coordinator.observe(
             self.sample, rollback_media_ms, now_ms, boundary,
         );
-        (self.sample, round)
+        let prefetch = self.delivered && !self.abandoned
+            && matches!(round.decision, abr::Decision::Stay);
+        (self.sample, round, prefetch)
     }
 }
 
@@ -1171,7 +1181,10 @@ impl Coordinator {
         let cleanup_ready = self.encoder_cleanup_ready(
             quantum.delivered && sample.completed(),
         );
-        Some(ActiveQuantumResult { sample, cleanup_ready })
+        Some(ActiveQuantumResult {
+            sample, cleanup_ready,
+            delivered: quantum.delivered, abandoned: quantum.abandoned,
+        })
     }
 
 

@@ -5785,7 +5785,8 @@ fn hls_demux(
                 "abr: fresh-session boundary buffered; waiting for the first repeatable HLS acquisition",
             );
         }
-        let (sample, round) = active.observe(state, rollback_media_ms, now_ms(), boundary);
+        let (sample, round, prefetch_allowed) =
+            active.observe(state, rollback_media_ms, now_ms(), boundary);
         let decision = round.decision;
         if let Some(runway_ms) = round.prime_runway_ms {
             SHARED.hls_prime_runway_ms.store(runway_ms, Ordering::Release);
@@ -5795,11 +5796,7 @@ fn hls_demux(
         publish_hls_abr_model(&telemetry);
         log_hls_abr_sample(&telemetry, sample, decision);
         log_hls_abr_window(&telemetry, sample);
-        if hls_should_prefetch_after_abr(
-            delivered,
-            fetch_abandoned,
-            matches!(decision, crate::abr::Decision::Stay),
-        ) {
+        if prefetch_allowed {
             prefetched = unsafe {
                 hls_prefetch_same_encoder(
                     &mut cursor,
