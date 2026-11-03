@@ -1959,6 +1959,18 @@ class PipelineTier(unittest.TestCase):
     def _pipeline_cases(self):
         return _manifest()["pipeline_cases"]
 
+    def test_uri_terminal_errors_fail_the_error_gate_and_settle_early(self):
+        for end in ("timeout:load", "timeout:currentTime", "refused:play", "error:601"):
+            with self.subTest(end=end):
+                lines = [f"uriprobe: t=40000 summary load=ok playing=yes end={end}"]
+                self.assertFalse(run.a_no_error(lines)[0])
+                self.assertIsNotNone(run.failed_for_good({"expect": {}, "operations": []}, lines))
+
+    def test_normal_uri_endings_do_not_fail_the_error_gate(self):
+        for end in ("eos", "back", "script"):
+            with self.subTest(end=end):
+                self.assertTrue(run.a_no_error([f"uriprobe: t=40000 summary load=ok end={end}"])[0])
+
     def test_loopback_fixture_mode_requires_a_fixed_forwarded_port(self):
         result = subprocess.run([sys.executable, run.__file__, "--fixtures-loopback", "--list"],
                                 capture_output=True, text=True)

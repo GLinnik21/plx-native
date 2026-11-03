@@ -1532,7 +1532,9 @@ def a_no_error(lines):
     for ln in lines:
         if "smp_cb type=18" in ln or "Playing error" in ln:
             return False, f"error surfaced :: {ln.strip()}"
-    return True, "no `smp_cb type=18` / `Playing error`"
+        if "uriprobe:" in ln and re.search(r"\bsummary\b.*\bend=(?:error|timeout|refused):", ln):
+            return False, f"URI error surfaced :: {ln.strip()}"
+    return True, "no Starfish playing error or terminal URI error"
 
 
 def a_resolve_pin(lines, want="any"):
@@ -3713,7 +3715,7 @@ def op_seek_transcode(lines, target_s, min_climb_after_s=0):
 def a_no_demux_failure(lines):
     """The demuxer giving up is a death `no_playing_error` cannot see.
 
-    `no_playing_error` greps the STARFISH error surface (`smp_cb type=18` / `Playing error`).
+    `no_playing_error` checks Starfish playing errors and terminal URI probe errors.
     A pipeline that dies on the acquisition side never gets there: `ff.rs` reports
     `hls: demux failed: …` (a stopped or hopelessly slow encoder arrives as
     `HLS segment was not produced in time`, because 404 is `NotReady` by design and the retry
@@ -4195,7 +4197,7 @@ def op_resume_transcode(lines, offset_s):
 # Why grading a prefix is sound: almost every assertion is monotone once satisfied — it looks
 # for a line that has appeared, or for a max/climb that only grows. The exceptions are the two
 # ABSENCE checks, which start out true and can only flip the other way:
-#   * a_no_error            — `smp_cb type=18` / `Playing error`
+#   * a_no_error            — Starfish playing errors / terminal URI probe errors
 #   * op_seek_rapid         — `reload_at: fresh Load` (stuck-watchdog gave up on in-place)
 # ...and, since 2026-08-23, one COUNT that is an equality rather than a floor:
 #   * a_replayed            — exactly N `replay:` lines (more than N is a loop)

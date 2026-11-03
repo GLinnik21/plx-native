@@ -845,7 +845,8 @@ Operation cases (each also re-checks not-stuck / no-error afterward):
   3840×1920, so the harness asserts a **width floor**, not an exact size).
 - **video plane bound:** `setMediaVideoData sent`
 - **not stuck:** ≥2 `timeline playing t=<S>s/` reports whose `<S>` climbs; and **no**
-  `smp_cb type=18` / **no** `Playing error`.
+  `smp_cb type=18` / **no** `Playing error`, and no URI probe summary ending in
+  `error:`, `timeout:`, or `refused:`. A terminal URI error settles a failed case early.
 - **seek:** `seek(in-place)` / `in-place seek: ... sendSegment=1` / `seek(transcode)` /
   `reload_at: fresh Load at 140s`.
 - **audio switch:** `route transition: native audio idx=` / `route transition: user retranscode` + `reload_transcode:` (older logs: `audio switch (native)` / `re-transcode:`; both spellings grade).
