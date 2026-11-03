@@ -71,8 +71,8 @@ struct PendingUriSubtitle {
     memo: Option<plx_plex::plex::session::prefs::SubtitleMemo>,
 }
 
-/// Explicit product URI settings supplied by the future source qualifier. Platform transport
-/// and display are resolved at the IO composition boundary, never through Feed's VideoSink.
+/// Explicit product URI settings captured with the resolve port's certification evidence.
+/// Platform transport and display are supplied at the IO composition boundary.
 #[cfg(feature = "play-uri")]
 pub struct UriDriverSettings {
     pub clock: Box<dyn MonotonicClock>,
@@ -966,14 +966,26 @@ impl PlayerAdapter {
     #[cfg(feature = "play-uri")]
     pub fn install_uri_backend(&mut self, settings: UriDriverSettings)
         -> Result<(), UriDriverSettings> {
+        self.install_uri_backend_with_ports(settings,
+            plx_platform::tv::uri::installed(),
+            plx_platform::tv::sink::display_installed())
+    }
+
+    /// IO composition may pass captured platform ports directly. Product boot supplies the
+    /// installed pair; a host rig can supply the same interfaces without a process-wide port.
+    #[cfg(feature = "play-uri")]
+    pub fn install_uri_backend_with_ports(&mut self, settings: UriDriverSettings,
+        transport: &'static dyn plx_platform::tv::uri::UriMedia,
+        display: &'static dyn plx_platform::tv::sink::DisplaySink)
+        -> Result<(), UriDriverSettings> {
         if self.uri_backend.is_some() || self.backend_exit_disposition() != ExitDisposition::Clean
             || settings.capabilities.packet_feed || settings.capabilities.audio_off
             || settings.capabilities.subtitle_off {
             return Err(settings);
         }
         let config = UriConfig {
-            transport: plx_platform::tv::uri::installed(),
-            display: plx_platform::tv::sink::display_installed(),
+            transport,
+            display,
             clock: settings.clock,
             app_id: settings.app_id,
             binding: settings.binding,

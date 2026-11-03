@@ -1518,6 +1518,45 @@ pub(super) fn resume_stored(pages: &mut plx_ui::dispatch::Dispatcher<super::brid
     bridge.take_session_ready()
 }
 
+/// The product URI clock is owned by its driver; the pure lifecycle only sees elapsed ticks.
+#[cfg(feature = "play-uri")]
+struct UriBootClock(std::time::Instant);
+
+#[cfg(feature = "play-uri")]
+impl plx_play_uri::backend::MonotonicClock for UriBootClock {
+    fn now_ms(&self) -> u64 {
+        self.0.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+    }
+}
+
+/// Install the executor and the resolver's source qualifier from one captured evidence value.
+/// An unqualified port still installs an inert executor and keeps Feed selected. The qualifier
+/// is published only after the driver is owned.
+#[cfg(feature = "play-uri")]
+pub(super) fn install_uri_product(
+    session: &mut plx_media::route::PlaybackSession,
+    adapter: &mut plx_media::player::adapter::PlayerAdapter,
+    port: plx_media::route::uri_preflight::ResolvePort,
+    transport: &'static dyn plx_platform::tv::uri::UriMedia,
+    display: &'static dyn plx_platform::tv::sink::DisplaySink,
+) -> bool {
+    let evidence = port.evidence();
+    let settings = plx_media::player::adapter::UriDriverSettings {
+        clock: Box::new(UriBootClock(std::time::Instant::now())),
+        app_id: plx_base::paths::app_id().to_owned(),
+        binding: evidence.binding,
+        capabilities: evidence.certified,
+        startup_timeout_ms: 15_000,
+        release_allowance_ms: 10_000,
+        source_ttl_ms: 30_000,
+    };
+    if adapter.install_uri_backend_with_ports(settings, transport, display).is_err() {
+        return false;
+    }
+    session.install_uri_preflight_port(port);
+    true
+}
+
 pub(crate) unsafe fn construct(
     pms_host: *const c_char, pms_port: c_int, mt: plx_base::task::MainThread,
     preflight: super::bootstrap::Preflight, initial: Option<super::bootstrap::Initial>,
@@ -2315,6 +2354,24 @@ pub(crate) unsafe fn construct(
     // what every native-session call now asks for. See `player::adapter`.
     let adapters = super::Adapters {
         player: plx_media::player::adapter::PlayerAdapter::new(mt),
+    };
+    #[cfg(feature = "play-uri")]
+    let (player, adapters) = {
+        let mut player = player;
+        let mut adapters = adapters;
+        if !controlled {
+            let display = plx_platform::tv::sink::display_installed();
+            let transport = plx_platform::tv::uri::installed();
+            let evidence = plx_media::route::uri_preflight::ProductEvidence::unqualified(
+                display.window_mode());
+            let port = plx_media::route::uri_preflight::ResolvePort::new(evidence,
+                std::sync::Arc::new(plx_media::route::uri_preflight::ProductQualifier));
+            if !install_uri_product(&mut player.session, &mut adapters.player,
+                port, transport, display) {
+                log("uri: product driver installation refused");
+            }
+        }
+        (player, adapters)
     };
     let repause_at = 0i64;
     // ui::press click state: a grid-card OK is deferred (press-in on down, activate on the
