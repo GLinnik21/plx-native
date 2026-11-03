@@ -237,6 +237,7 @@ impl DemuxMedia for PlayerDemuxSession {
     fn publish(&mut self, effect: DemuxEffect) {
         // Session reset holds this same native gate while replacing the mirrors.
         // One typed publication therefore belongs wholly to this open or is discarded.
+        let mut previous_names = None;
         let _ = SHARED.with_active_demux_epoch(self.observer.native_epoch, || match effect {
             DemuxEffect::AbrHlsStart { kbps } => {
                 SHARED.dg_abr_mode.store(super::ABR_MODE_HLS, Ordering::Relaxed);
@@ -269,7 +270,10 @@ impl DemuxMedia for PlayerDemuxSession {
             DemuxEffect::NoVideo => SHARED.demux_no_video.store(true, Ordering::Release),
             DemuxEffect::HttpStatus(status) => SHARED.dg_http_status.store(status, Ordering::Relaxed),
             DemuxEffect::TrackNames { audio, subs } => {
-                *SHARED.track_names.lock().unwrap() = super::TrackNames { audio, subs };
+                let mut slot = SHARED.track_names.lock().unwrap();
+                previous_names = Some(std::mem::replace(
+                    &mut *slot, super::TrackNames { audio, subs },
+                ));
             }
             DemuxEffect::SideAnchor(anchor) => {
                 *SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) = anchor;
@@ -290,6 +294,9 @@ impl DemuxMedia for PlayerDemuxSession {
             DemuxEffect::PrimeRunwayMax(runway_ms) => { SHARED.hls_prime_runway_ms.fetch_max(runway_ms, Ordering::AcqRel); }
             DemuxEffect::RecoverySegment { total_us, duration } => SHARED.observe_hls_recovery(total_us, duration),
         });
+        // Old container strings may own large allocations. Release them after
+        // both the track slot and native retirement barrier have been unlocked.
+        drop(previous_names);
     }
 
     fn record(&self, line: &str) { super::log(line); }
@@ -325,20 +332,26 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         let previous = SHARED.dg_http_status.load(Ordering::Relaxed);
         let epoch = SHARED.begin_native_session().expect("fixture owns native session");
-        struct Restore { epoch: u32, status: i32 }
+        struct Restore { epoch: u32, successor: Option<u32>, status: i32 }
         impl Drop for Restore {
             fn drop(&mut self) {
                 SHARED.retire_native_session(self.epoch);
+                if let Some(epoch) = self.successor {
+                    SHARED.retire_native_session(epoch);
+                }
                 SHARED.dg_http_status.store(self.status, Ordering::Relaxed);
             }
         }
-        let _restore = Restore { epoch, status: previous };
+        let mut restore = Restore { epoch, successor: None, status: previous };
         let mut session = PlayerDemuxSession::capture(AttemptId::new(4, 7), epoch);
         session.media().publish(DemuxEffect::HttpStatus(218));
         assert_eq!(SHARED.dg_http_status.load(Ordering::Relaxed), 218);
 
         assert!(SHARED.retire_native_session(epoch));
+        let successor = SHARED.begin_native_session().expect("next native session begins");
+        restore.successor = Some(successor);
+        SHARED.dg_http_status.store(300, Ordering::Relaxed);
         session.media().publish(DemuxEffect::HttpStatus(499));
-        assert_eq!(SHARED.dg_http_status.load(Ordering::Relaxed), 218);
+        assert_eq!(SHARED.dg_http_status.load(Ordering::Relaxed), 300);
     }
 }
