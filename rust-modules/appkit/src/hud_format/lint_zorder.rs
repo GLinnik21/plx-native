@@ -893,17 +893,20 @@ mod tests {
                 assert!(held.iter().all(|(_, s)| count(s, kind) >= 1), "{base:?}: a {slot:?} state without its target");
             }
             let skips = all.iter().filter(|(s, _)| *s == Slot::Skip).count();
-            let states = census_states(base);
-            assert_eq!(skips, 2 * states, "{base:?}: each Skip state is read under both pills");
+            let layouts = census_layouts(base);
+            assert_eq!(skips, layouts, "{base:?}: each distinct Skip/Watch face is read");
         }
     }
 
-    /// How many Skip states `base` compiles to.
-    fn census_states(base: Base) -> usize {
+    /// How many distinct pill rectangles the compiled Skip states contain.
+    fn census_layouts(base: Base) -> usize {
         let package = parse(base.text().as_bytes()).package.expect("the shipped package parses");
         let lang = LintLang::for_tag("en").expect("English is shipped");
         let compiled = compile(&package, &ShippedMeasure, CompileCtx { labels: lang.labels.clone() });
-        compiled.states().iter().filter(|s| s.key.slot == Slot::Skip).count()
+        compiled.states().iter().filter(|s| s.key.slot == Slot::Skip).map(|state| {
+            let rects = state.standin.skip.unwrap();
+            rects.iter().enumerate().filter(|(i, rect)| !rects[..*i].contains(rect)).count()
+        }).sum()
     }
 
     // ---- a fault is one finding, however many states show it
