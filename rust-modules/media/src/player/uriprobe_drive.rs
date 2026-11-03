@@ -49,6 +49,10 @@ impl UriSession {
     fn advance(&mut self, ps: &mut PlaybackSession, mt: &MainThread,
         poll: Result<plx_platform::tv::uri::UriPoll, String>, now_ms: u64) {
         self.0.advance(&mut |attempt, how| settle(ps, attempt, how), mt, poll, now_ms);
+        ps.ingest_attempt_facts(self.0.attempt(), super::attempt_view::AttemptFacts {
+            position_ns: self.0.reported_position_ms().and_then(|ms| ms.checked_mul(1_000_000)),
+            ..Default::default()
+        });
     }
     fn stop_at(&mut self, ps: &mut PlaybackSession, mt: &MainThread, now_ms: u64) {
         self.0.stop_at(&mut |attempt, how| settle(ps, attempt, how), mt, now_ms);
@@ -197,12 +201,13 @@ mod tests {
 
         /// `refuse_open`: the text the transport answers `open` with, from the very first call.
         fn build(variant: Variant, refuse_open: Option<&str>) -> Rig {
-            let ps = PlaybackSession::IDLE;
+            let mut ps = PlaybackSession::IDLE;
             crate::route::reset_player_control_for_test(&ps);
             let pa = super::super::adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
             let ticket = crate::route::begin_route_start().expect("a start owner");
             assert!(crate::route::prepare_route_start(ticket));
             let attempt = crate::route::claim_route_start_attempt(ticket).expect("an attempt");
+            ps.begin_attempt_view(attempt, super::super::attempt_view::Backend::Uri);
             let transport = Scripted::leak();
             *transport.refuse_open.lock().unwrap() = refuse_open.map(str::to_owned);
             let session = UriSession::open(&ps, pa.mt(), transport, attempt, variant, URL);
@@ -252,6 +257,27 @@ mod tests {
 
     fn line_with<'a>(log: &'a str, needle: &str) -> &'a str {
         log.lines().find(|l| l.contains(needle)).unwrap_or_else(|| panic!("no log line contains {needle:?}:\n{log}"))
+    }
+
+    #[test]
+    fn uri_clock_readout_requires_matching_service_evidence_and_never_confirms_picture() {
+        let _serial = plx_base::testlock::serial();
+        logged(|| {
+            let mut rig = Rig::new(Variant::AtLoad);
+            rig.load_answered();
+            assert_eq!(rig.ps.attempt_view().facts().position_ns, None);
+            rig.transport.say("subscribe", r#"{"mediaId":"other","currentTime":9000}"#);
+            rig.frame(10);
+            assert_eq!(rig.ps.attempt_view().facts().position_ns, None);
+            rig.transport.say("subscribe", r#"{"mediaId":"_m1","currentTime":1200,"playing":true}"#);
+            rig.frame(10);
+            let facts = rig.ps.attempt_view().facts();
+            assert_eq!(facts.position_ns, Some(1_200_000_000));
+            assert_eq!(facts.reported_frame, None);
+            assert_eq!(facts.playable_buffer_ms, None);
+            assert_eq!(facts.duration_ns, None);
+            rig.back();
+        });
     }
 
     #[test]

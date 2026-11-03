@@ -86,6 +86,8 @@ pub struct UriSession<A: Copy> {
     /// fed on the next [`advance`](Self::advance), never inside the call that started the session,
     /// so a refusal cannot settle the attempt before its start has even returned.
     inbox: VecDeque<UriEvent>,
+    /// Last correlated, nonnegative service clock; never presentation evidence.
+    reported_position_ms: Option<i64>,
     clock: Instant,
 }
 
@@ -128,6 +130,7 @@ impl<A: Copy> UriSession<A> {
             release_allowance_ms,
             window: created,
             inbox: VecDeque::new(),
+            reported_position_ms: None,
             clock,
         };
         if let Some(id) = window_id {
@@ -150,6 +153,8 @@ impl<A: Copy> UriSession<A> {
     pub fn attempt(&self) -> A {
         self.attempt
     }
+
+    pub fn reported_position_ms(&self) -> Option<i64> { self.reported_position_ms }
 
     pub fn acb_exit_quarantine(&self) -> bool { self.lifecycle.acb_exit_quarantine() }
 
@@ -247,6 +252,11 @@ impl<A: Copy> UriSession<A> {
                         events.push_back(LifeEvent::CloseQueued { session, ok });
                     }
                     LifeFx::Deliver { method, ok, mut message } => {
+                        if ok && message.accepted() != Some(false) {
+                            if let Some(position) = message.position_ms().filter(|p| *p >= 0) {
+                                self.reported_position_ms = Some(position);
+                            }
+                        }
                         if let Some(source) = message.acb_source.take() { self.acb_source = Some(source); }
                         self.inbox.push_back(UriEvent::Reply { method, ok, message });
                     }
