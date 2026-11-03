@@ -5,7 +5,7 @@
 use crate::{abr, route};
 use plx_playback_contract::adaptive::PublicationGate;
 use plx_playback_contract::adaptive::{
-    Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, ActiveQuantum, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
+    Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, ActiveQuantum, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
     RoundId, TrialActuatorPort, TrialObservation, TrialPhase, TrialProtocol, TrialProtocolError,
 };
 use plx_playback_contract::SourceKey;
@@ -796,15 +796,16 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
     /// physical cursor/timeline transfer is synchronous and local, between the
     /// queue ACK and the short guarded route/controller publication. A failed
     /// queue or publication is terminal and owns candidate cleanup here.
-    pub(crate) fn queue_publish<F: CandidateFencePort, R>(
+    pub(crate) fn queue_publish<F: CandidateFencePort>(
         &mut self, coordinator: &mut Coordinator, fence_port: &mut F,
         gate: &mut dyn PublicationGate, automatic_token: u64,
         primed: &route::PrimedHls, proposal: abr::Proposal,
         sample: abr::SegmentSample, variant: abr::ObservedHlsVariant,
         now_ms: impl FnOnce() -> u64,
-        after_queue: impl FnOnce(&mut P) -> R,
         mut on_trace: impl FnMut(QueueTrace),
-    ) -> QueueAttempt<R, F::Fence, F::Error> {
+    ) -> QueueAttempt<F::Fence, F::Error>
+    where P: CandidateMediaPort,
+    {
         on_trace(QueueTrace::Decided);
         let fence = match fence_port.arm(automatic_token) {
             Ok(fence) => fence,
@@ -829,14 +830,18 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
             };
         }
         on_trace(QueueTrace::FeedCompleted(started));
-        let physical = after_queue(&mut *self.port);
+        if !self.port.stage_queued_timeline() {
+            coordinator.abandon(&primed.encoder_session);
+            let terminal = self.observe(TrialObservation::Ended);
+            debug_assert_eq!(terminal, Err(TrialProtocolError::TerminalAfterQueue));
+            on_trace(QueueTrace::Finish("commit_feed_failed"));
+            return QueueAttempt::Failed("adaptive staged timeline protocol violation");
+        }
         let publication = coordinator.publish_queued_candidate(
             self.protocol, gate, primed, proposal, sample, variant, now_ms(),
         );
         match publication {
-            CandidatePublication::Active { previous } => QueueAttempt::Published {
-                previous, physical, fence,
-            },
+            CandidatePublication::Active { previous } => QueueAttempt::Published { previous, fence },
             CandidatePublication::Aborted => {
                 coordinator.abandon(&primed.encoder_session);
                 on_trace(QueueTrace::Finish("aborted"));
@@ -1848,8 +1853,8 @@ pub(crate) enum QueueTrace {
     Finish(&'static str),
 }
 
-pub(crate) enum QueueAttempt<R, F, E> {
-    Published { previous: String, physical: R, fence: F },
+pub(crate) enum QueueAttempt<F, E> {
+    Published { previous: String, fence: F },
     Aborted,
     Failed(&'static str),
     FenceFailed(E),

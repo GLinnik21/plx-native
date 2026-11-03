@@ -216,6 +216,15 @@ pub trait FeedPort {
     fn step(&mut self, action: FeedAction) -> FeedObservation;
 }
 
+/// Physical candidate cursor and timeline remain in the feed port through the
+/// guarded route publication. The runner may stage the completed timeline only
+/// after all AUs are queued; promotion is available only after publication.
+pub trait CandidateMediaPort: FeedPort<Locator = String> {
+    fn candidate_declared_bps(&self) -> Option<u64>;
+    fn stage_queued_timeline(&mut self) -> bool;
+    fn promote_candidate(&mut self) -> bool;
+}
+
 /// The feed worker's physical clock fence. It is armed before candidate AUs
 /// enter the queue and settled only after the queued route has been published
 /// and its cursor promoted. Dropping an unsettled fence leaves teardown to

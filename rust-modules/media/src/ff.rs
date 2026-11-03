@@ -5,7 +5,7 @@
 #![deny(clippy::debug_assert_with_mut_call)]
 use crate::aq::AuQueue;
 use crate::adaptive;
-use plx_playback_contract::adaptive::{Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, RoundId, TrialActuatorPort, TrialClock, TrialId};
+use plx_playback_contract::adaptive::{Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, RoundId, TrialActuatorPort, TrialClock, TrialId};
 use plx_playback_contract::SourceKey;
 use crate::player::threads::SendPtr;
 use crate::player::SHARED;
@@ -4433,6 +4433,26 @@ impl HlsRoundPort<'_> {
     }
 }
 
+impl CandidateMediaPort for HlsRoundPort<'_> {
+    fn candidate_declared_bps(&self) -> Option<u64> {
+        self.candidate.as_ref().map(|cursor| cursor.declared_bps)
+    }
+
+    fn stage_queued_timeline(&mut self) -> bool {
+        let Some(staged) = self.candidate_timeline.take() else { return false; };
+        *self.timeline = staged;
+        true
+    }
+
+    fn promote_candidate(&mut self) -> bool {
+        let Some(mut candidate) = self.candidate.take() else { return false; };
+        candidate.publishes_duration = true;
+        *self.prefetched = None;
+        *self.cursor = candidate;
+        true
+    }
+}
+
 fn hls_cursor_open(
     origin: &plx_plex::plex::Origin,
     path: &str,
@@ -5708,22 +5728,15 @@ fn hls_demux(
         let queued = runner.queue_publish(
             state, &mut fence_port, &mut AqPublicationPort(aq), automatic_token,
             &primed, proposal, sample, candidate_variant, || now_ms(),
-            |physical| {
-                let candidate = physical.candidate.take()
-                    .expect("queued trial retains its candidate cursor");
-                *physical.timeline = physical.candidate_timeline.take()
-                    .expect("queued trial retains its staged timeline");
-                candidate
-            },
             |event| match event {
                 adaptive::QueueTrace::Decided => tx.mark_decided(),
                 adaptive::QueueTrace::FeedCompleted(started) => tx.mark_feed(started),
                 adaptive::QueueTrace::Finish(outcome) => tx.finish(outcome),
             },
         );
-        let (previous, mut candidate, fence) = match queued {
-            adaptive::QueueAttempt::Published { previous, physical, fence } =>
-                (previous, physical, fence),
+        let (previous, fence) = match queued {
+            adaptive::QueueAttempt::Published { previous, fence } =>
+                (previous, fence),
             adaptive::QueueAttempt::Aborted => return Err(HlsExit::Aborted),
             adaptive::QueueAttempt::Failed(message) => return Err(HlsExit::Failed(message)),
             adaptive::QueueAttempt::FenceFailed(error) => return Err(error),
@@ -5747,8 +5760,10 @@ fn hls_demux(
         SHARED
             .dg_abr_kbps
             .store(i64::from(proposal.rung.kbps()), Ordering::Relaxed);
+        let candidate_declared_bps = physical.candidate_declared_bps()
+            .expect("published trial retains its candidate cursor");
         SHARED.dg_abr_declared_kbps.store(
-            i64::try_from(candidate.declared_bps / 1_000).unwrap_or(i64::MAX),
+            i64::try_from(candidate_declared_bps / 1_000).unwrap_or(i64::MAX),
             Ordering::Relaxed,
         );
         publish_hls_abr_action(adaptive::ActionReadout::from_proposal(proposal, refreshing_same_request, Some(true)));
@@ -5760,9 +5775,7 @@ fn hls_demux(
         );
         // Promoted: from here this cursor IS the playback, so its playlist is the one that may
         // speak for the film's duration.
-        candidate.publishes_duration = true;
-        *physical.prefetched = None;
-        *physical.cursor = candidate;
+        assert!(physical.promote_candidate(), "published trial promotes its candidate cursor");
         // Any terminal source-mode verdict was computed against the previous HLS operating point.
         // Invalidate it explicitly: an Up keeps the completed source evidence for re-scoring on the
         // next ordinary segment, while a safety Down retires evidence from the failed service
