@@ -39,16 +39,38 @@ impl Host for TestHost {
     type Fx = AppFx;
     type Msg = AppMsg;
     type Elem = u32;
-    type Views<'a> = ();
+    type Views<'a> = &'a plx_media::route::PlaybackSession;
     type Init = plx_ui::fixture::FixtureArg;
     type Memory = PageMemory;
 }
 
 impl crate::registry::PlayerLike for TestHost {
-    fn session<'a>(_cx: &Cx<'a, Self>) -> &'a plx_media::route::PlaybackSession {
-        plx_media::route::idle_session_for_test()
+    fn session<'a>(cx: &Cx<'a, Self>) -> &'a plx_media::route::PlaybackSession {
+        cx.views
     }
     fn transport_paused(_cx: &Cx<'_, Self>) -> bool { false }
+}
+
+pub(super) fn playback_session(position_ns: i64, duration_ns: i64) -> plx_media::route::PlaybackSession {
+    use plx_media::player::attempt_view::{AttemptFacts, Backend};
+    let mut ps = plx_media::route::PlaybackSession::IDLE;
+    let attempt = plx_media::route::RouteStartAttempt::fixture();
+    ps.begin_attempt_view(attempt, Backend::Feed);
+    assert!(ps.ingest_attempt_facts(attempt, Backend::Feed, AttemptFacts {
+        position_ns: Some(position_ns),
+        duration_ns: Some(duration_ns),
+        started: Some(true),
+        rebuffering: Some(false),
+        seen_frame: Some(true),
+        ..AttemptFacts::default()
+    }));
+    ps
+}
+
+pub(super) fn publish_facts(ps: &mut plx_media::route::PlaybackSession, facts: plx_media::player::attempt_view::AttemptFacts) {
+    use plx_media::player::attempt_view::Backend;
+    let attempt = plx_media::route::RouteStartAttempt::fixture();
+    assert!(ps.ingest_attempt_facts(attempt, Backend::Feed, facts));
 }
 
 thread_local! {
@@ -73,7 +95,7 @@ const INST: InstanceId = InstanceId(7);
 
 fn cx() -> Cx<'static, TestHost> {
     Cx {
-        views: (),
+        views: plx_media::route::idle_session_for_test(),
         tick: Tick::default(),
         measure: &FixtureMeasure,
         focus: Default::default(),
