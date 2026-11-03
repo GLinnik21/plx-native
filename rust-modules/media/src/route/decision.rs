@@ -710,6 +710,28 @@ mod backend_offer_session_tests {
     }
 
     #[test]
+    fn viewer_reconfigure_carries_source_tracks_when_feed_used_a_different_effective_audio() {
+        let mut session = PlaybackSession::IDLE;
+        session.bind_source_selection(SourceSelection {
+            server: ServerId::UNSET,
+            part_id: 7,
+            audio_sid: 71,
+            subtitle_sid: 81,
+            audio_contract: plx_plex::plex::AudioEnhancements::NONE,
+        });
+        session.selection_known = true;
+        session.cur_audio = Some(CarriedAudio {
+            sid: 72, ordinal: 1, codec: "pcm".into(), channels: 2,
+            can_normalize_loudness: false, immersive: false, sample_rate: 0, bit_depth: 0,
+        });
+        session.cur_sub_sid = 81;
+        let retry = current_retry_context(&session, 5_000_000_000);
+        assert_eq!(retry.selection, Some((71, 81)),
+            "the next executor must receive the source-selected track, not Feed's substitution");
+        assert_eq!(retry.resume_ns, 5_000_000_000);
+    }
+
+    #[test]
     fn qualified_original_feed_precedes_uri_conversion_then_uri_precedes_feed_conversion() {
         let mut session = PlaybackSession::IDLE;
         set_url(&mut session, "https://example.invalid/original.mkv");
