@@ -498,7 +498,7 @@ mod marker_access_tests {
                 assert_eq!(path, "/api/v2/user"); Ok(identity.as_bytes().to_vec())
             }), Err(PreferenceError::Refused));
         }
-        let mut changed = seat.clone(); changed.stamp.push('x');
+        let changed = CurrentProfile { user: seat.user.clone(), generation: seat.generation, stamp: format!("{}x", seat.stamp) };
         assert!(!proven.matches_profile(&changed));
         let mut bad = raw.clone(); bad.stamp.push('x'); assert!(bad.bind_marker_owner(&stored).is_none());
         let mut bad = raw.clone(); bad.credential.push('x'); assert!(bad.bind_marker_owner(&stored).is_none());
