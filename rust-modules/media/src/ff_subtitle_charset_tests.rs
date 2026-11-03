@@ -17,7 +17,11 @@ use crate::player::ass::Content;
 use crate::player::ass_source;
 use crate::player::subtitle_cue::{SideTracks, SubCue};
 use plx_media_codecs::subtitle_extract::{collect_manifest, AssTrack};
-use plx_playback_contract::subtitle::DecodeKind;
+use plx_playback_contract::subtitle::{CaptionRetention, DecodeKind};
+
+fn fixture_retention() -> CaptionRetention {
+    CaptionRetention { playhead_ns: None, seek_target_ns: None }
+}
 
 unsafe fn fixture_subs(fmt: *mut AVFormatContext, key: &str) -> (SubTracks, SideTracks, u64) {
     let streams = (*fmt).streams;
@@ -59,7 +63,7 @@ fn a_gbk_subrip_track_reads_as_chinese_not_replacement_characters() {
                 let streams = fmt.as_ref().expect("avformat_open_input succeeded").streams;
                 let st = *streams.add(pkt.as_ref().expect("av_packet_alloc").stream_index as usize);
                 if let Some(raw) = subs.decode(pos, pkt, st, true, crate::player::SUB_BITMAP_BUDGET) {
-                    presentation.decode(raw).push(generation);
+                    presentation.decode(raw).push(generation, fixture_retention());
                     pushed += 1;
                 }
             }
@@ -117,7 +121,7 @@ fn a_packet_without_a_duration_is_clipped_by_the_cue_after_it() {
                     let SubCue::Text { start, end, .. } = &cue else { panic!("a text cue") };
                     assert_eq!(end - start, 4_000_000_000, "the default end is start + 4 s");
                     starts.push(start / 1_000_000);
-                    cue.push(generation);
+                    cue.push(generation, fixture_retention());
                 }
             }
             av_packet_unref(pkt);

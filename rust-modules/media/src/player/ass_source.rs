@@ -721,6 +721,10 @@ impl Clock {
 mod tests {
     use super::*;
 
+    fn fixture_retention() -> plx_playback_contract::subtitle::CaptionRetention {
+        plx_playback_contract::subtitle::CaptionRetention { playhead_ns: None, seek_target_ns: None }
+    }
+
     #[test]
     fn prepared_reopen_rebases_after_a_concurrent_cue() {
         let _serial = plx_base::testlock::serial();
@@ -732,7 +736,7 @@ mod tests {
         );
         let stale = prepare_begin(&inventory);
         push(generation, 0, 1_000_000_000, 3_000_000_000,
-            b"0,0,Default,,0,0,0,,SIGN");
+            b"0,0,Default,,0,0,0,,SIGN", fixture_retention());
         let stale = match commit_prepared(stale) {
             Ok(_) => panic!("the prepared reopen erased a cue arriving after its snapshot"),
             Err(stale) => stale,
@@ -794,7 +798,7 @@ mod tests {
             hidden_zero.as_slice(),
             second.as_slice(),
         ] {
-            push(generation, 0, 1_000_000_000, 3_000_000_000, payload);
+            push(generation, 0, 1_000_000_000, 3_000_000_000, payload, fixture_retention());
         }
 
         let track = |n| selected(n).unwrap();

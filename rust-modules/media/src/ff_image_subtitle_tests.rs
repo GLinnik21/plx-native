@@ -15,11 +15,15 @@ use crate::player::subtitle_cue::{SideTracks, SubCue};
 use crate::player::SHARED;
 use crate::player::{ass, ass_source};
 use plx_media_codecs::subtitle_extract::{collect_manifest, AssTrack};
-use plx_playback_contract::subtitle::DecodeKind;
+use plx_playback_contract::subtitle::{CaptionRetention, DecodeKind};
 use std::sync::Arc;
 
 const TERMINATED_ASS_HEADER: &[u8] =
     include_bytes!("../../../tests/fixtures/ass-terminated-header.bin");
+
+fn fixture_retention() -> CaptionRetention {
+    CaptionRetention { playhead_ns: Some(0), seek_target_ns: None }
+}
 
 struct AssFixture {
     fmt: *mut AVFormatContext,
@@ -75,7 +79,7 @@ impl AssFixture {
                 assert_eq!(raw.last() == Some(&0), pos == 0);
                 if let Some(raw) = self.subs.decode(pos, self.pkt,
                     *(*self.fmt).streams.add(si as usize), true, crate::player::SUB_BITMAP_BUDGET) {
-                    self.presentation.decode(raw).push(generation);
+                    self.presentation.decode(raw).push(generation, fixture_retention());
                 }
             }
             av_packet_unref(self.pkt);
@@ -230,7 +234,7 @@ fn terminated_ass_header_and_packets_render_through_http_side_reader() {
             };
             let anchor = Anchor::of(0, &[0]);
             let mut delta = Some(0);
-            super::subside::read_once(&cfg, &stop, &anchor, &mut delta, &|_| 0, &|| 0, &|| (0, 0))
+            super::subside::read_once(&cfg, &stop, &anchor, &mut delta, &|_| 0, &|| 0, &|| (0, 0), &fixture_retention)
         })
     };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -280,14 +284,14 @@ fn ass_packet_terminators_do_not_weaken_validation() {
                 end: 3_000_000_000,
                 payload: payload.into(),
             }
-            .push(generation);
+            .push(generation, fixture_retention());
             SubCue::Ass {
                 track: 0,
                 start: 1_000_000_000,
                 end: 3_000_000_000,
                 payload: b"0,0,Default,,0,0,0,,VALID CAPTION"[..].into(),
             }
-            .push(generation);
+            .push(generation, fixture_retention());
             let source = ass_source::selected(0).unwrap();
             let ass::Content::Embedded { events, .. } = &source.content else {
                 panic!()
@@ -304,7 +308,7 @@ fn ass_packet_terminators_do_not_weaken_validation() {
                 end: 3_000_000_000,
                 payload: payload.into(),
             }
-            .push(generation);
+            .push(generation, fixture_retention());
         }
         let oversized = vec![0; 256 * 1024 + 1];
         SubCue::Ass {
@@ -313,7 +317,7 @@ fn ass_packet_terminators_do_not_weaken_validation() {
             end: 3_000_000_000,
             payload: oversized.as_slice().into(),
         }
-        .push(generation);
+        .push(generation, fixture_retention());
         let source = ass_source::selected(0).unwrap();
         let ass::Content::Embedded { events, .. } = &source.content else {
             panic!()
@@ -328,7 +332,7 @@ fn ass_packet_terminators_do_not_weaken_validation() {
             end: 3_000_000_000,
             payload: b"0,0,Default,,0,0,0,,MULTIPLE TERMINATORS\0\0\0"[..].into(),
         }
-        .push(generation);
+        .push(generation, fixture_retention());
         assert_ass_caption(&ass_source::selected(0).unwrap(), 2000);
     }
 }
@@ -484,7 +488,7 @@ fn mkvmerge_zlib_subtitle_tracks_decode_like_uncompressed_ones() {
             if let Some(pos) = subs.position(si) {
                 if matches!(subs.plan()[pos], DecodeKind::Bitmap) {
                     if let Some(raw) = subs.decode(pos, pkt, *streams.add(si as usize), true, crate::player::SUB_BITMAP_BUDGET) {
-                        presentation.decode(raw).push(0);
+                        presentation.decode(raw).push(0, fixture_retention());
                     }
                 } else {
                     let n = (*pkt).size.max(0) as usize;
