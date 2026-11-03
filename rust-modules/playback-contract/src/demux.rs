@@ -4,7 +4,7 @@
 
 use crate::adaptive::{AutomaticTransition, FenceHandle, LeaseHandle, PhysicalFailure};
 use crate::AttemptId;
-use crate::subtitle::Anchor;
+use crate::subtitle::{Anchor, DecodeKind, Manifest, RawCue, TrackInfo};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -152,6 +152,21 @@ pub trait DemuxMedia {
     fn record(&self, line: &str);
 }
 
+/// Subtitle presentation belongs to the player session. The feed supplies only
+/// file-order inventory and owned packet observations; no FFmpeg handle, charset
+/// state or render-store cue crosses this boundary.
+pub trait DemuxSubtitle {
+    fn plan(&mut self, tracks: &[TrackInfo]) -> Vec<DecodeKind>;
+    fn max_header_bytes(&self) -> usize;
+    fn admit_font(&mut self, bytes: usize) -> bool;
+    fn begin_sources(&mut self, media_key: &str, manifest: Manifest) -> Option<u64>;
+    fn record_tracks(&self);
+    fn selected_track(&self) -> i32;
+    fn bitmap_budget(&self) -> usize;
+    fn emit(&mut self, generation: u64, cue: RawCue);
+    fn seek(&mut self, generation: u64);
+}
+
 /// One move-only adapter follows the media open into its existing feed worker.
 pub trait DemuxSession: Send {
     fn observer(&self) -> Arc<dyn DemuxObserver>;
@@ -160,4 +175,5 @@ pub trait DemuxSession: Send {
     fn adaptive_ref(&self) -> &dyn DemuxAdaptive;
     fn adaptive(&mut self) -> &mut dyn DemuxAdaptive;
     fn media(&mut self) -> &mut dyn DemuxMedia;
+    fn subtitle(&mut self) -> &mut dyn DemuxSubtitle;
 }

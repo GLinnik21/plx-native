@@ -2424,10 +2424,27 @@ pub fn push_subtitle_bitmap(
     ch: i32,
     rects: Vec<SubRect>,
 ) {
+    let mut v = SHARED.sub_bitmaps.lock().unwrap();
+    push_subtitle_bitmap_locked(&mut v, track, start_ns, cw, ch, rects);
+}
+
+/// Publish from a captured demux only while its bitmap store generation still
+/// owns the slot. Reset changes the generation under this same store mutex.
+pub(crate) fn push_subtitle_bitmap_for_generation(
+    generation: u64, track: i32, start_ns: i64, cw: i32, ch: i32, rects: Vec<SubRect>,
+) -> bool {
+    let mut v = SHARED.sub_bitmaps.lock().unwrap();
+    if SHARED.bitmap_generation.load(std::sync::atomic::Ordering::Acquire) != generation { return false; }
+    push_subtitle_bitmap_locked(&mut v, track, start_ns, cw, ch, rects);
+    true
+}
+
+fn push_subtitle_bitmap_locked(
+    v: &mut Vec<SubBitmap>, track: i32, start_ns: i64, cw: i32, ch: i32, rects: Vec<SubRect>,
+) {
     if rects.is_empty() {
         return;
     }
-    let mut v = SHARED.sub_bitmaps.lock().unwrap();
     for c in v.iter_mut() {
         if c.track == track && c.end_ns == i64::MAX {
             c.end_ns = start_ns; // this set replaces the one still showing
@@ -2474,6 +2491,17 @@ pub fn push_subtitle_bitmap(
 /// A CLEAR display-set (num_rects==0): close the currently-open cue on this track at `end_ns`.
 pub fn close_subtitle_bitmap(track: i32, end_ns: i64) {
     let mut v = SHARED.sub_bitmaps.lock().unwrap();
+    close_subtitle_bitmap_locked(&mut v, track, end_ns);
+}
+
+pub(crate) fn close_subtitle_bitmap_for_generation(generation: u64, track: i32, end_ns: i64) -> bool {
+    let mut v = SHARED.sub_bitmaps.lock().unwrap();
+    if SHARED.bitmap_generation.load(std::sync::atomic::Ordering::Acquire) != generation { return false; }
+    close_subtitle_bitmap_locked(&mut v, track, end_ns);
+    true
+}
+
+fn close_subtitle_bitmap_locked(v: &mut Vec<SubBitmap>, track: i32, end_ns: i64) {
     for c in v.iter_mut() {
         if c.track == track && c.end_ns == i64::MAX {
             c.end_ns = end_ns;

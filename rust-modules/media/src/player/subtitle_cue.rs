@@ -77,6 +77,17 @@ impl SubCue<'_> {
     /// Hand the cue to the render store. `ass_generation` is the `ass_source::begin` token a
     /// `Text` or `Ass` cue is pushed under; the image kinds ignore it.
     pub(crate) fn push(self, ass_generation: u64) {
+        self.push_with_bitmap_generation(ass_generation, None);
+    }
+
+    /// The main demux's bitmap store is generation-fenced independently of
+    /// ASS. Charset and image decode have already completed outside native
+    /// retirement; the store mutex serializes this check with reset.
+    pub(crate) fn push_addressed(self, ass_generation: u64, bitmap_generation: u64) {
+        self.push_with_bitmap_generation(ass_generation, Some(bitmap_generation));
+    }
+
+    fn push_with_bitmap_generation(self, ass_generation: u64, bitmap_generation: Option<u64>) {
         match self {
             SubCue::Text { track, start, end, payload, identity } => {
                 let text = String::from_utf8_lossy(&payload);
@@ -85,22 +96,31 @@ impl SubCue<'_> {
             SubCue::Ass { track, start, end, payload } => {
                 crate::player::ass_source::push(ass_generation, track, start, end, &payload);
             }
-            SubCue::BitmapClear { track, pts } => crate::player::close_subtitle_bitmap(track, pts),
+            SubCue::BitmapClear { track, pts } => {
+                if let Some(generation) = bitmap_generation {
+                    crate::player::close_subtitle_bitmap_for_generation(generation, track, pts);
+                } else {
+                    crate::player::close_subtitle_bitmap(track, pts);
+                }
+            }
             SubCue::BitmapSet { track, pts, cw, ch, rects, total_rects } => {
+                let rects_kept = rects.len();
+                let first_rect = rects.first().map(|r| (r.w, r.h, r.x, r.y));
+                let accepted = if let Some(generation) = bitmap_generation {
+                    crate::player::push_subtitle_bitmap_for_generation(generation, track, pts, cw, ch, rects)
+                } else {
+                    crate::player::push_subtitle_bitmap(track, pts, cw, ch, rects);
+                    true
+                };
+                if !accepted { return; }
                 if track == crate::player::desired_sub_idx() {
-                    let r0 = &rects[0];
+                    let (w, h, x, y) = first_rect.expect("bitmap display set has at least one rect");
                     crate::player::log(&format!(
                         "image cue [{}ms] {}x{} at {},{} rects={} canvas={cw}x{ch}",
                         pts / 1_000_000,
-                        r0.w,
-                        r0.h,
-                        r0.x,
-                        r0.y,
-                        rects.len()
+                        w, h, x, y, rects_kept,
                     ));
                 }
-                let rects_kept = rects.len();
-                crate::player::push_subtitle_bitmap(track, pts, cw, ch, rects);
                 if rects_kept < total_rects {
                     crate::player::log(&format!(
                         "ff: image-sub track#{track} kept {rects_kept} of {total_rects} rects"
@@ -135,6 +155,16 @@ pub(crate) fn begin_sources(
     kinds: &[PresentationTrack],
     manifest: plx_media_codecs::subtitle_extract::Manifest,
 ) -> u64 {
+    let inventory = source_inventory(media_key, kinds, manifest);
+    super::ass_source::begin_inventory(inventory)
+}
+
+/// Prepare the exact source inventory without taking the native epoch gate.
+pub(crate) fn source_inventory(
+    media_key: &str,
+    kinds: &[PresentationTrack],
+    manifest: plx_media_codecs::subtitle_extract::Manifest,
+) -> super::ass_source::SourceInventory {
     use super::{ass::Font, ass_source};
     let mut headers = Vec::new();
     let mut text_tracks = 0;
@@ -161,7 +191,7 @@ pub(crate) fn begin_sources(
             fonts.len(), manifest.font_bytes,
         ));
     }
-    ass_source::begin(media_key, headers, fonts)
+    ass_source::SourceInventory::new(media_key, headers, fonts)
 }
 
 /// Common side-reader adaptation: classifies codec names and performs the per-track charset

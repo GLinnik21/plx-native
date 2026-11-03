@@ -1,210 +1,98 @@
-//! Subtitle-stream decode for one `AVFormatContext`, split out of `ff.rs` so a second demux
-//! context (one that reads only a subtitle stream of the original Part) can share it with the
-//! main demuxer instead of duplicating it.
-//!
-//! [`SubTracks`] owns the per-subtitle-stream decoder state: the stream list in FILE order (so a
-//! track's 0-based position is the track menu's `desired_sub_idx`), each stream's [`SubKind`], and
-//! the software decoder of every image-subtitle stream. [`SubTracks::decode`] turns one packet of
-//! one track into at most one [`SubCue`]; [`SubCue::push`] hands it to the render store. Timing is
-//! in the stream's own clock as `pts_ns` rebases it (stream time base -> nanoseconds, `pts` else
-//! `dts`, 0 when neither); NO other rebasing happens here, so the caller owns any offset between
-//! this context's clock and the playhead.
+//! Physical subtitle packet decode for one FFmpeg format context. The player
+//! session owns dialect, charset, selection and render-store publication.
 
 use super::*;
-use crate::player::text_ass::TextDialect;
 use plx_media_codecs::subtitle_extract::ImageDecoders;
-#[cfg(test)]
-pub(super) use plx_media_codecs::subtitle::open_sub_decoder;
-pub(super) use crate::player::subtitle_cue::PresentationTrack as SubKind;
+use plx_playback_contract::subtitle::{DecodeKind, RawCue, TrackInfo};
 
-pub(super) unsafe fn sub_kind(codec_id: c_int) -> SubKind {
-    let name = std::ffi::CStr::from_ptr(avcodec_get_name(codec_id)).to_string_lossy();
-    SubKind::from_codec_name(&name)
-}
-
-/// Adapt the codec's neutral bitmap output to the player store's cue type.
-unsafe fn decode_bitmap(
-    dec: *mut AVCodecContext,
-    pkt: *mut AVPacket,
-    track: c_int,
-    st: *mut AVStream,
-) -> Option<SubCue<'static>> {
-    let display = plx_media_codecs::subtitle::decode_bitmap(dec, pkt, crate::player::SUB_BITMAP_BUDGET)?;
-    let pts = pts_ns(pkt, st);
-    Some(bitmap_cue(display, track, pts))
-}
-
-/// Player-store adapter for the shared, generic byte-budget selector.
-fn rects_within_budget(
-    num_rects: usize,
-    cost_at: impl FnMut(usize) -> Option<usize>,
-    rect_at: impl FnMut(usize) -> Option<crate::player::SubRect>,
-    budget: usize,
-) -> Vec<crate::player::SubRect> {
-    plx_media_codecs::subtitle::rects_within_budget(num_rects, cost_at, rect_at, |r| r.bytes(), budget)
-}
-
-const PALETTE_BYTES: usize = plx_media_codecs::subtitle::PALETTE_BYTES;
-
-/// [`decode_bitmap`] then [`SubCue::push`]: the decode-and-store step the demux loop runs for an
-/// image-subtitle packet.
-pub(super) unsafe fn decode_bitmap_cue(
-    dec: *mut AVCodecContext,
-    pkt: *mut AVPacket,
-    track: c_int,
-    st: *mut AVStream,
-) {
-    if let Some(cue) = decode_bitmap(dec, pkt, track, st) {
-        cue.push(0);
-    }
-}
-
-use crate::player::subtitle_cue::bitmap_cue;
-pub(super) use crate::player::subtitle_cue::SubCue;
-
-/// The subtitle streams of one `AVFormatContext`, in FILE order, with the decoder of each image
-/// stream. A track's 0-based position here is its `desired_sub_idx` / store key.
+/// File-order subtitle streams and their image decoders. The player supplies
+/// one decode plan entry per inspected stream before any decoder is opened.
 pub(super) struct SubTracks {
-    /// (ffmpeg stream index, kind, decoder ctx). The decoder is non-null only for Bitmap tracks
-    /// (PGS/VobSub/DVB), which are software-decoded to pixels; text tracks carry a null ctx.
-    streams: Vec<(c_int, SubKind, *mut AVCodecContext)>,
+    infos: Vec<TrackInfo>,
+    plan: Vec<DecodeKind>,
     decoders: ImageDecoders,
-    /// Per track (same order as `streams`): the language-derived text charset, fixed by the first
-    /// non-UTF-8 packet (`player::sub_charset`).
-    charsets: Vec<crate::player::sub_charset::TrackCharset>,
 }
 
 impl SubTracks {
-    /// Enumerate `fmt`'s subtitle streams and open a decoder for each image one.
-    pub(super) unsafe fn open(fmt: *mut AVFormatContext, streams: *mut *mut AVStream) -> Self {
-        if fmt.is_null() || streams.is_null() {
-            return Self::empty();
-        }
-        let mut kinds: Vec<(c_int, SubKind)> = Vec::new();
-        let mut charsets = Vec::new();
+    pub(super) unsafe fn inspect(fmt: *mut AVFormatContext, streams: *mut *mut AVStream) -> Vec<TrackInfo> {
+        if fmt.is_null() || streams.is_null() { return Vec::new(); }
+        let mut infos = Vec::new();
         for i in 0..(*fmt).nb_streams {
-            let cp = stream_codecpar(*streams.add(i as usize));
+            let st = *streams.add(i as usize);
+            let cp = stream_codecpar(st);
             if (*cp).codec_type == AVMEDIA_TYPE_SUBTITLE {
-                let k = sub_kind((*cp).codec_id);
-                kinds.push((i as c_int, k));
-                charsets.push(crate::player::sub_charset::TrackCharset::new(
-                    stream_language(*streams.add(i as usize)).as_deref(),
-                ));
+                infos.push(TrackInfo {
+                    stream_index: i as c_int,
+                    codec_name: std::ffi::CStr::from_ptr(avcodec_get_name((*cp).codec_id))
+                        .to_string_lossy().into_owned(),
+                    language: stream_language(st),
+                });
             }
         }
-        let specs: Vec<(c_int, bool)> = kinds.iter().map(|(si, k)| (*si, *k == SubKind::Bitmap)).collect();
-        let decoders = ImageDecoders::open(streams, &specs);
-        let streams = kinds.into_iter().enumerate().map(|(pos, (si, kind))| (si, kind, decoders.context(pos))).collect();
-        SubTracks { streams, decoders, charsets }
+        infos
     }
 
-    /// No tracks: what the main demuxer holds while a side reader owns the subtitles.
-    pub(super) fn empty() -> Self {
-        SubTracks { streams: Vec::new(), decoders: ImageDecoders::empty(), charsets: Vec::new() }
-    }
-
-    pub(super) fn is_empty(&self) -> bool {
-        self.streams.is_empty()
-    }
-
-    /// The (stream index, kind, decoder) list, in file order.
-    pub(super) fn entries(&self) -> &[(c_int, SubKind, *mut AVCodecContext)] {
-        &self.streams
-    }
-
-    /// The track position of ffmpeg stream `stream_index`, if it is a subtitle stream.
-    pub(super) fn position(&self, stream_index: c_int) -> Option<usize> {
-        self.streams.iter().position(|(sidx, _, _)| *sidx == stream_index)
-    }
-
-    /// The `ff: sub tracks=[..] selected=N` line.
-    pub(super) fn log_tracks(&self) {
-        if self.streams.is_empty() {
-            return;
-        }
-        let desc: Vec<String> = self
-            .streams
-            .iter()
-            .map(|(si, k, _)| {
-                let kn = match k {
-                    SubKind::Ass => "ass",
-                    SubKind::Text(TextDialect::MovText) => "mov_text",
-                    SubKind::Text(_) => "text",
-                    SubKind::Bitmap => "image",
-                };
-                format!("#{si}:{kn}")
-            })
+    pub(super) unsafe fn open(streams: *mut *mut AVStream, infos: Vec<TrackInfo>, plan: Vec<DecodeKind>) -> Self {
+        assert_eq!(infos.len(), plan.len(), "subtitle plan must cover every file-order track");
+        let specs: Vec<_> = infos.iter().zip(&plan)
+            .map(|(info, kind)| (info.stream_index, matches!(kind, DecodeKind::Bitmap)))
             .collect();
-        crate::player::log(&format!(
-            "ff: sub tracks=[{}] selected={}",
-            desc.join(","),
-            crate::player::desired_sub_idx()
-        ));
+        let decoders = ImageDecoders::open(streams, &specs);
+        Self { infos, plan, decoders }
     }
 
-    /// Decode one packet of track `pos` (an index from [`Self::position`]; `st` is its stream).
-    ///
-    /// Text kinds yield a cue for EVERY track, selected or not, so a mid-play switch is instant;
-    /// `end` is `pkt.duration` or, absent, `start + 4 s`. Image kinds are decoded only while
-    /// subtitles are on at all (`desired_sub_idx() >= 0`), on every image track, so a switch
-    /// between two image tracks stays instant. Reads the live selection; the packet is not unref'd.
-    pub(super) unsafe fn decode<'p>(
-        &self,
-        pos: usize,
-        pkt: *mut AVPacket,
-        st: *mut AVStream,
-    ) -> Option<SubCue<'p>> {
-        let (_, kind, _) = self.streams[pos];
-        if kind == SubKind::Bitmap {
-            if crate::player::desired_sub_idx() >= 0 {
-                let display = self.decoders.decode(pos, pkt, crate::player::SUB_BITMAP_BUDGET)?;
-                return Some(bitmap_cue(display, pos as c_int, pts_ns(pkt, st)));
+    pub(super) fn empty() -> Self {
+        Self { infos: Vec::new(), plan: Vec::new(), decoders: ImageDecoders::empty() }
+    }
+
+    pub(super) fn entries(&self) -> &[TrackInfo] { &self.infos }
+    pub(super) fn plan(&self) -> &[DecodeKind] { &self.plan }
+    pub(super) fn position(&self, stream_index: c_int) -> Option<usize> {
+        self.infos.iter().position(|info| info.stream_index == stream_index)
+    }
+
+    /// Every text track is observed; image tracks are decoded while subtitles
+    /// are enabled, matching live track-switch behavior.
+    pub(super) unsafe fn decode(
+        &self, pos: usize, pkt: *mut AVPacket, st: *mut AVStream,
+        decode_image: bool, bitmap_budget: usize,
+    ) -> Option<RawCue> {
+        match self.plan.get(pos)? {
+            DecodeKind::Bitmap if decode_image => self.decoders.decode(pos, pkt, bitmap_budget)
+                .map(|display| RawCue::Bitmap { track: pos, pts: pts_ns(pkt, st), display }),
+            DecodeKind::Text { max_bytes } | DecodeKind::Ass { max_bytes } => {
+                let size = (*pkt).size.max(0) as usize;
+                if size == 0 || size > *max_bytes || (*pkt).data.is_null() { return None; }
+                let start = pts_ns(pkt, st);
+                let duration = (*pkt).duration;
+                let end = if duration > 0 {
+                    start + av_rescale_q(duration, stream_time_base(st), NS_TB)
+                } else { start + 4_000_000_000 };
+                let payload = std::slice::from_raw_parts((*pkt).data, size).to_vec();
+                Some(RawCue::Bytes { track: pos, start, end, payload })
             }
-            return None;
+            _ => None,
         }
-        let start = pts_ns(pkt, st);
-        let dur = (*pkt).duration;
-        let end = if dur > 0 {
-            start + av_rescale_q(dur, stream_time_base(st), NS_TB)
-        } else {
-            start + 4_000_000_000
-        };
-        let sz = (*pkt).size.max(0) as usize;
-        if (*pkt).data.is_null() || sz == 0 {
-            return None;
-        }
-        let raw: &'p [u8] = std::slice::from_raw_parts((*pkt).data, sz);
-        // mp4 tx3g: drop the 2-byte big-endian text-length prefix.
-        let payload: &[u8] = if kind == SubKind::Text(TextDialect::MovText) && sz >= 2 {
-            let tl = ((raw[0] as usize) << 8) | raw[1] as usize;
-            &raw[2..2 + tl.min(sz - 2)]
-        } else {
-            raw
-        };
-        let track = pos as i32;
-        Some(if kind == SubKind::Ass {
-            SubCue::Ass { track, start, end, payload: payload.into() }
-        } else {
-            // Text is UTF-8 by the spec and legacy-encoded (GBK, Big5, ...) in practice (#628).
-            let identity = crate::player::ass_source::packet_identity(payload);
-            let payload = match crate::player::sub_charset::subtitle_text(payload, &self.charsets[pos]) {
-                std::borrow::Cow::Borrowed(text) => std::borrow::Cow::Borrowed(text.as_bytes()),
-                std::borrow::Cow::Owned(text) => std::borrow::Cow::Owned(text.into_bytes()),
-            };
-            SubCue::Text { track, start, end, payload, identity }
-        })
     }
 
-    /// Free every image decoder (they are reopened fresh by the next [`Self::open`]).
-    pub(super) unsafe fn close(&mut self) {
-        self.decoders.close();
-        for (_, _, dec) in self.streams.iter_mut() { *dec = std::ptr::null_mut(); }
-    }
+    pub(super) unsafe fn close(&mut self) { self.decoders.close(); }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::player::subtitle_cue::SubCue;
+    const PALETTE_BYTES: usize = plx_media_codecs::subtitle::PALETTE_BYTES;
+
+    fn rects_within_budget(
+        num_rects: usize,
+        cost_at: impl FnMut(usize) -> Option<usize>,
+        rect_at: impl FnMut(usize) -> Option<crate::player::SubRect>,
+        budget: usize,
+    ) -> Vec<crate::player::SubRect> {
+        plx_media_codecs::subtitle::rects_within_budget(
+            num_rects, cost_at, rect_at, |rect| rect.bytes(), budget,
+        )
+    }
 
     /// A rect whose store cost is exactly `pixels + 1024` (its indices plus the palette), so a
     /// budget can be written as a count of rects.

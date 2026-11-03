@@ -278,20 +278,21 @@ pub(crate) use plx_media_codecs::SpeedDecoder;
 /// dictionary layouts are already compile-asserted against our bundled FFmpeg headers; the
 /// attachment media-type constant is asserted beside them. No firmware layout is inferred.
 unsafe fn begin_ass_sources(
+    session: &mut dyn DemuxSession,
     media_key: &str,
     fmt: *mut AVFormatContext,
     streams: *mut *mut AVStream,
-    subs: &[(c_int, SubKind, *mut AVCodecContext)],
-) -> u64 {
+    subs: &SubTracks,
+) -> Option<u64> {
     use plx_media_codecs::subtitle_extract::{collect_manifest, AssTrack};
-    let tracks: Vec<AssTrack> = subs.iter().map(|(si, kind, _)| AssTrack {
-        stream_index: *si,
-        authored: *kind == SubKind::Ass,
+    let tracks: Vec<AssTrack> = subs.entries().iter().zip(subs.plan()).map(|(info, kind)| AssTrack {
+        stream_index: info.stream_index,
+        authored: matches!(kind, plx_playback_contract::subtitle::DecodeKind::Ass { .. }),
     }).collect();
-    let mut budget = crate::player::ass::FontBudget::default();
-    let manifest = collect_manifest(fmt, streams, &tracks, crate::player::ass_source::MAX_HEADER_BYTES, |len| budget.admit(len));
-    let kinds: Vec<_> = subs.iter().map(|(_, kind, _)| *kind).collect();
-    crate::player::subtitle_cue::begin_sources(media_key, &kinds, manifest)
+    let max_header_bytes = session.subtitle().max_header_bytes();
+    let manifest = collect_manifest(fmt, streams, &tracks, max_header_bytes,
+        |len| session.subtitle().admit_font(len));
+    session.subtitle().begin_sources(media_key, manifest)
 }
 
 /// Did the CURRENT demux session hand over a single video AU? Distinguishes "the demuxer produced
@@ -374,17 +375,17 @@ fn probe(url: &str) {
             std::ptr::null_mut(),
         );
         if r < 0 || fmt.is_null() {
-            crate::player::log(&format!("ffprobe: avformat_open_input failed r={r}"));
+            plx_base::eventlog::log(&format!("ffprobe: avformat_open_input failed r={r}"));
             return;
         }
         let r2 = avformat_find_stream_info(fmt, std::ptr::null_mut());
         if r2 < 0 {
-            crate::player::log(&format!("ffprobe: find_stream_info failed r={r2}"));
+            plx_base::eventlog::log(&format!("ffprobe: find_stream_info failed r={r2}"));
             avformat_close_input(&mut fmt);
             return;
         }
         let ns = (*fmt).nb_streams;
-        crate::player::log(&format!(
+        plx_base::eventlog::log(&format!(
             "ffprobe: nb_streams={ns} duration_us={} (expect HEVC codec_id=174 3840x1920)",
             fmt_duration(fmt)
         ));
@@ -393,7 +394,7 @@ fn probe(url: &str) {
             let st = *streams.add(i as usize);
             let cp = stream_codecpar(st);
             let tb = stream_time_base(st);
-            crate::player::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "ffprobe: stream[{}] idx={} type={} codec_id={} {}x{} sr={} tb={}/{}",
                 i,
                 stream_index(st),
@@ -409,7 +410,7 @@ fn probe(url: &str) {
         // BSF presence check (Phase A): both mp4toannexb filters must be compiled in.
         let hn = std::ffi::CString::new("hevc_mp4toannexb").unwrap();
         let an = std::ffi::CString::new("h264_mp4toannexb").unwrap();
-        crate::player::log(&format!(
+        plx_base::eventlog::log(&format!(
             "ffprobe: bsf hevc={} h264={}",
             !av_bsf_get_by_name(hn.as_ptr()).is_null(),
             !av_bsf_get_by_name(an.as_ptr()).is_null()
@@ -673,9 +674,7 @@ mod subs;
 #[path = "ff_native_audio.rs"]
 pub(crate) mod native_audio;
 pub(crate) use crate::subtitle_job as subside;
-use subs::{SubKind, SubTracks};
-#[cfg(test)]
-use subs::{decode_bitmap_cue, open_sub_decoder, sub_kind};
+use subs::SubTracks;
 use acquisition::{AcquisitionRuntime, Phase, SegmentAcquisition};
 
 /// A rollback-reserve deadline is monotone in one direction: a floor downshift that reaches an
@@ -1450,7 +1449,7 @@ const BODY_SILENCE: std::time::Duration = std::time::Duration::from_millis(400);
 /// Reopen the source at the byte reached, through the same path a seek takes.
 fn heal_at_offset(s: &mut AvioState) -> bool {
     let at = s.off;
-    crate::player::log(&format!("ff: body ended early at byte {at} of {}, reopening there", s.size));
+    plx_base::eventlog::log(&format!("ff: body ended early at byte {at} of {}, reopening there", s.size));
     seek_cb(s as *mut AvioState as *mut c_void, at, SEEK_SET) == at
 }
 
@@ -1642,7 +1641,7 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                 if s.heal.take(s.off) && heal_at_offset(s) {
                     continue;
                 }
-                crate::player::log(&format!(
+                plx_base::eventlog::log(&format!(
                     "ff: body cut at byte {} of {} and no reopen crossed it; transport failure, not EOF",
                     s.off, s.size
                 ));
@@ -1777,7 +1776,7 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
                             || (status == 206 && start == target)
                             || (status == 200 && target == 0);
                         if !crossed {
-                            crate::player::log(&format!(
+                            plx_base::eventlog::log(&format!(
                                 "ff: seek_cb reopen refused: status={status} range_start={start} wanted={target}"
                             ));
                             plx_net::stream::http_close(*hs);
@@ -1791,7 +1790,7 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
                                 true
                             }
                             Err(e) => {
-                                crate::player::log(&format!("ff: seek https hop FAILED: {e:?}"));
+                                plx_base::eventlog::log(&format!("ff: seek https hop FAILED: {e:?}"));
                                 false
                             }
                         }
@@ -1810,7 +1809,7 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
             s.src = Src::Curl(cs);
         }
         // One line per reopen (a seek into the file, or libavformat healing a failed read).
-        crate::player::log(&format!(
+        plx_base::eventlog::log(&format!(
             "ff: seek_cb reopen off={target} ok={ok} ms={}",
             reopen_began.elapsed().as_millis()
         ));
@@ -1845,7 +1844,7 @@ fn frame_read_failed(state: &mut AvioState, result: c_int) -> bool {
                 if f.reopen_failed { " reopen=failed" } else { "" }
             )
         });
-        crate::player::log(&format!(
+        plx_base::eventlog::log(&format!(
             "ff: media transport failed during av_read_frame r={result}{cause}"
         ));
         if let Some(f) = failure {
@@ -2613,7 +2612,7 @@ unsafe fn packet_to_annexb(
             if is_dv_enhancement_layer(nal) {
                 let n = DV_EL_DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
                 if n <= 3 || n % 5000 == 0 {
-                    crate::player::log(&format!(
+                    plx_base::eventlog::log(&format!(
                         "ff: dropped DV enhancement-layer NAL #{n} ({nl} bytes)"
                     ));
                 }
@@ -2625,7 +2624,7 @@ unsafe fn packet_to_annexb(
                     Some(rpu) => {
                         let n = DV_RPU_REWRITTEN.fetch_add(1, Ordering::Relaxed) + 1;
                         if n <= 3 || n % 5000 == 0 {
-                            crate::player::log(&format!(
+                            plx_base::eventlog::log(&format!(
                                 "ff: rewrote DV RPU #{n} P7 -> P8.1 ({nl} -> {} bytes)",
                                 rpu.len()
                             ));
@@ -2636,7 +2635,7 @@ unsafe fn packet_to_annexb(
                     None => {
                         let n = DV_RPU_FAILED.fetch_add(1, Ordering::Relaxed) + 1;
                         if n <= 3 || n % 500 == 0 {
-                            crate::player::log(&format!(
+                            plx_base::eventlog::log(&format!(
                                 "ff: DV RPU #{n} could not be converted, dropped ({nl} bytes)"
                             ));
                         }
@@ -2654,7 +2653,7 @@ unsafe fn packet_to_annexb(
                 strip => {
                     let n = SEI_STRIPPED.fetch_add(1, Ordering::Relaxed) + 1;
                     if n <= 3 || n % 500 == 0 {
-                        crate::player::log(&format!("ff: stripped HDR10+ SEI #{n} ({nl} bytes)"));
+                        plx_base::eventlog::log(&format!("ff: stripped HDR10+ SEI #{n} ({nl} bytes)"));
                     }
                     match strip {
                         SeiStrip::Rewrite(v) => {
@@ -3393,7 +3392,7 @@ fn open_plain_progressive(
             observer.publish(DemuxCallbackEffect::FileSize(size));
             let st = plx_net::stream::hs_status(hs_p);
             observer.publish(DemuxCallbackEffect::HttpStatus(st));
-            crate::player::log(&format!("ff: open status={st} clen={size}"));
+            plx_base::eventlog::log(&format!("ff: open status={st} clen={size}"));
             let (Ok(host), Ok(path)) = (CString::new(t.origin.host()), CString::new(t.path)) else {
                 return Err(MediaOpenFail::Failed);
             };
@@ -3412,7 +3411,7 @@ fn open_plain_progressive(
                 let (st, size) = (cs.status(), cs.size());
                 observer.publish(DemuxCallbackEffect::FileSize(size));
                 observer.publish(DemuxCallbackEffect::HttpStatus(st));
-                crate::player::log(&format!("ff: open https status={st} clen={size}"));
+                plx_base::eventlog::log(&format!("ff: open https status={st} clen={size}"));
                 Ok((Src::Curl(cs), size))
             }
             Err(range_io::OpenErr::Aborted) => Err(MediaOpenFail::Aborted),
@@ -3420,7 +3419,7 @@ fn open_plain_progressive(
                 if let range_io::OpenErr::Status(st) = e {
                     observer.publish(DemuxCallbackEffect::HttpStatus(st));
                 }
-                crate::player::log(&format!("ff: https open FAILED: {e:?}"));
+                plx_base::eventlog::log(&format!("ff: https open FAILED: {e:?}"));
                 Err(MediaOpenFail::Failed)
             }
         },
@@ -3430,7 +3429,7 @@ fn open_plain_progressive(
             }
             let st = plx_net::stream::hs_status(hs_p);
             observer.publish(DemuxCallbackEffect::HttpStatus(st));
-            crate::player::log(&format!("ff: http_open FAILED status={st} ({e:?})"));
+            plx_base::eventlog::log(&format!("ff: http_open FAILED status={st} ({e:?})"));
             Err(MediaOpenFail::Failed)
         }
     }
@@ -3701,7 +3700,7 @@ unsafe fn log_hls_video_change(fmt: *mut AVFormatContext, duration_ns: i64) {
             return;
         }
         let cname = std::ffi::CStr::from_ptr(avcodec_get_name(id)).to_string_lossy();
-        crate::player::log(&format!(
+        plx_base::eventlog::log(&format!(
             "ff: v=#0 codec={cname} codec_id={id} {w}x{h} trc={} pri={} spc={} a=#1 dur_ns={}",
             (*cp).color_trc,
             (*cp).color_primaries,
@@ -4229,7 +4228,7 @@ unsafe fn hls_demux_segment(
     }
 
     if !hls_body_complete(input.state.size, input.state.off) {
-        crate::player::log(&format!(
+        plx_base::eventlog::log(&format!(
             "hls: short-body segment={} got={} want={}",
             segment.sequence, input.state.off, input.state.size,
         ));
@@ -4267,7 +4266,7 @@ unsafe fn hls_demux_segment(
         total_us: request_started.elapsed().as_micros().max(1) as u64,
         audio_expected: ai >= 0 && FEED_AUDIO.load(Ordering::Relaxed),
     };
-    crate::player::log(&format!(
+    plx_base::eventlog::log(&format!(
         "hls: segment={} bytes={} raster={}x{} v={} a={} tail_skew_ms={} audio_pts_recovered={} \
          not_ready={} open_ms={} ttfb_ms={} open_probe_ms={} first_au_ms={} total_ms={}",
         segment.sequence,
@@ -4649,7 +4648,7 @@ impl AdaptivePhysicalPort for HlsRoundPort<'_> {
         self.candidate_timeline = Some(*self.timeline);
         let observer = self.session.observer();
         self.reserve = exploration.map(|clock| {
-            crate::player::log(&format!(
+            plx_base::eventlog::log(&format!(
                 "abr: exploration target={}kbps buf={}ms runway={}ms budget={}ms",
                 clock.target_kbps, clock.buffered_ms, clock.runway_ms, clock.budget_ms,
             ));
@@ -4698,10 +4697,10 @@ fn hls_cursor_open(
     let (master_text, master_ms, master_landed) =
         hls_fetch_text(&master_resource, &auth, aq, net, reserve)?;
     let master = crate::hls::parse_master(&master_landed, &master_text).map_err(|e| {
-        crate::player::log(&format!("hls: master rejected: {e}"));
+        plx_base::eventlog::log(&format!("hls: master rejected: {e}"));
         HlsExit::Failed("HLS master rejected")
     })?;
-    crate::player::log(&format!(
+    plx_base::eventlog::log(&format!(
         "hls: master one-variant bandwidth={} fetch_ms={master_ms}",
         master.variant.bandwidth
     ));
@@ -4735,7 +4734,7 @@ fn hls_cursor_next(
         let (media_text, media_ms, media_landed) =
             hls_fetch_text(&cursor.media, &cursor.auth, aq, net, reserve.as_deref_mut())?;
         let media = crate::hls::parse_media(&media_landed, &media_text).map_err(|e| {
-            crate::player::log(&format!("hls: media rejected: {e}"));
+            plx_base::eventlog::log(&format!("hls: media rejected: {e}"));
             HlsExit::Failed("HLS media playlist rejected")
         })?;
         cursor.target_duration_secs = media.target_duration_secs;
@@ -4753,7 +4752,7 @@ fn hls_cursor_next(
             net.observer.publish(DemuxCallbackEffect::DurationNs(total_ns));
         }
         let mut refresh = cursor.tracker.apply(&media).map_err(|e| {
-            crate::player::log(&format!("hls: refresh rejected: {e}"));
+            plx_base::eventlog::log(&format!("hls: refresh rejected: {e}"));
             HlsExit::Failed("HLS media refresh rejected")
         })?;
         let mut skipped = 0usize;
@@ -4774,7 +4773,7 @@ fn hls_cursor_next(
             skipped = before.saturating_sub(refresh.new_segments.len());
             cursor.start_applied = true;
         }
-        crate::player::log(&format!(
+        plx_base::eventlog::log(&format!(
             "hls: refresh new={} skipped={} total_ms={} end={} fetch_ms={media_ms}",
             refresh.new_segments.len(),
             skipped,
@@ -5036,7 +5035,7 @@ fn hls_stall_abort_outcome(
     crate::hls::SegmentClock,
     bool,
 ) {
-    crate::player::log(&format!(
+    plx_base::eventlog::log(&format!(
         "abr: stall abort seq={} bytes={} active={}ms reserve={}ms censored=1 \
          cause=terminal_reserve — abandoning the incomplete fetch so a cheaper rung \
          can be decided",
@@ -6280,7 +6279,7 @@ pub(crate) fn demux(
                 // stretched and fed as PCM. A stream with no bundled decoder cannot honour it — the
                 // engine refused the speed at Load (`player::session_rate`), so this is a guard.
                 let speed_permille = session.clock().applied_rate_permille();
-                if force_original && speed_permille != crate::player::RATE_NORMAL {
+                if force_original && speed_permille != plx_play_feed::shared::RATE_NORMAL {
                     session.media().record("ff: Force Original refused — playback speed would decode and transform audio");
                     session.media().publish(DemuxEffect::Failed);
                     avformat_close_input(&mut fmt);
@@ -6323,7 +6322,7 @@ pub(crate) fn demux(
                 }
                 let mut pcm_dec: Option<crate::ff_pcm::PcmDecoder> = None;
                 if let Some(name) = app_decoded.as_deref().filter(|_| {
-                    FEED_AUDIO.load(Ordering::Relaxed) && speed_permille == crate::player::RATE_NORMAL
+                    FEED_AUDIO.load(Ordering::Relaxed) && speed_permille == plx_play_feed::shared::RATE_NORMAL
                 }) {
                     let opened = match pcm_out() {
                         Some(out) => crate::ff_pcm::PcmDecoder::open(
@@ -6357,7 +6356,7 @@ pub(crate) fn demux(
                     ));
                 }
                 let mut speed_dec = if ai >= 0 && !force_original
-                    && speed_permille != crate::player::RATE_NORMAL {
+                    && speed_permille != plx_play_feed::shared::RATE_NORMAL {
                     let d = SpeedDecoder::open(stream_codecpar(*streams.add(ai as usize)), speed_permille);
                     session.media().record(&format!(
                         "speed: audio decoder for {speed_permille} {}",
@@ -6526,13 +6525,19 @@ pub(crate) fn demux(
                 // from the original Part; this stream's own enumeration and ASS source would be
                 // replaced by it.
                 let side_owner = session.clock().side_subtitle_owner();
-                let mut sub_tracks = if side_owner { SubTracks::empty() } else { SubTracks::open(fmt, streams) };
+                let mut sub_tracks = if side_owner {
+                    SubTracks::empty()
+                } else {
+                    let infos = SubTracks::inspect(fmt, streams);
+                    let plan = session.subtitle().plan(&infos);
+                    SubTracks::open(streams, infos, plan)
+                };
                 let ass_generation = if side_owner {
                     0
                 } else {
-                    begin_ass_sources(&url, fmt, streams, sub_tracks.entries())
+                    begin_ass_sources(session.as_mut(), &url, fmt, streams, &sub_tracks).unwrap_or(0)
                 };
-                sub_tracks.log_tracks();
+                if !side_owner { session.subtitle().record_tracks(); }
 
                 // Hand-roll length-prefix -> Annex-B + prepend VPS/SPS/PPS at every keyframe (the
                 // format Starfish decodes). FFmpeg's hevc_mp4toannexb does NOT reliably prepend the
@@ -6659,7 +6664,7 @@ pub(crate) fn demux(
                         // `origin_ns`, so a seek to 0 lands on its first packet, not before it.
                         let ts = av_rescale_q(seek_ns.saturating_add(origin_ns), NS_TB, stream_time_base(vst));
                         // Fence completed renders from the old position before new packets arrive.
-                        crate::player::ass_source::seek(ass_generation);
+                        session.subtitle().seek(ass_generation);
                         session.media().record(&format!("ff: seek begin {}s", seek_ns / 1_000_000_000));
                         let seek_began = std::time::Instant::now();
                         let sr = av_seek_frame(fmt, vi, ts, AVSEEK_FLAG_BACKWARD);
@@ -7002,8 +7007,10 @@ pub(crate) fn demux(
                         // Subtitle packet: `SubTracks::decode` yields a cue for EVERY text track
                         // (not just the selected one) and decodes every image track while subtitles
                         // are on; see ff_subs.rs. Subtitles carry no ES -> never fed to the pipeline.
-                        if let Some(cue) = sub_tracks.decode(sub_pos, pkt, *streams.add(si as usize)) {
-                            cue.push(ass_generation);
+                        let decode_image = session.subtitle().selected_track() >= 0;
+                        let bitmap_budget = session.subtitle().bitmap_budget();
+                        if let Some(cue) = sub_tracks.decode(sub_pos, pkt, *streams.add(si as usize), decode_image, bitmap_budget) {
+                            session.subtitle().emit(ass_generation, cue);
                         }
                         av_packet_unref(pkt);
                     } else {
