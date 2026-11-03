@@ -242,7 +242,7 @@ pub fn park_pending_foreground_flight<Attempt: Copy + PartialEq>(
     }
     for effect in fx {
         match effect {
-            ForegroundEffect::DropFlight => crate::player::suspend_bufferfeed(ps, pa),
+            ForegroundEffect::DropFlight => crate::player::suspend_playback(ps, pa),
             _ => debug_assert!(false, "ParkFlight emits only DropFlight"),
         }
     }

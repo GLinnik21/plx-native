@@ -457,12 +457,15 @@ pub fn clock_user_held_for_test() -> bool {
 
 #[cfg(feature = "play-feed")]
 pub use engine::{
-    acb_init, start_bufferfeed, start_bufferfeed_tracked, stop_bufferfeed,
-    suspend_bufferfeed, BufferfeedStartOutcome,
+    acb_init, start_bufferfeed, start_bufferfeed_tracked,
 };
-pub use route_start::{begin_resume, exit_native, foreground_follows_load, land_resume,
-    poll_release_frame, reap_abandoned_load, suspend_bufferfeed_if_attempt, NativeExit,
-    ResumeOutcome, ResumeStart, start_playback, start_playback_tracked};
+pub use route_start::{begin_resume, exit_native, land_resume, stop_bufferfeed,
+    suspend_bufferfeed, BufferfeedStartOutcome, NativeExit, ResumeOutcome, ResumeStart,
+    start_playback, start_playback_tracked};
+pub use route_start::suspend_bufferfeed as suspend_playback;
+#[cfg(feature = "play-feed")]
+pub use route_start::{foreground_follows_load, poll_release_frame, reap_abandoned_load,
+    suspend_bufferfeed_if_attempt};
 
 #[cfg(feature = "play-feed")]
 pub use pump::{
