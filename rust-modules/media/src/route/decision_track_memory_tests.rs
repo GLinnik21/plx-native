@@ -1035,10 +1035,10 @@ fn the_landing_carries_the_show_the_kind_and_the_note() {
     reset_session(&mut ps);
 }
 
-/// The audio commit says whether the pick stood: the memory is written on `true` only. The Forced
-/// refusal is the one `false`.
+/// Force commits the exact selected track even when a feed backend cannot later open its original
+/// wire format. Backend admission may still refuse it, but the route never substitutes a sibling.
 #[test]
-fn commit_audio_selection_is_false_only_for_the_forced_refusal() {
+fn commit_audio_selection_preserves_the_forced_original_track() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     apply_plan(&mut ps, Plan::default(), "rk-ep");
@@ -1049,8 +1049,8 @@ fn commit_audio_selection_is_false_only_for_the_forced_refusal() {
     restore_direct_play_mode(DirectPlayMode::Disabled);
     assert!(forced_direct_play(&forced));
     let truehd = CarriedAudio { sid: 9, ordinal: 0, codec: "truehd".into(), channels: 8, can_normalize_loudness: false, immersive: false, sample_rate: 0, bit_depth: 0 };
-    assert!(!commit_audio_selection(&mut forced, truehd), "Force Direct Play refuses a track it cannot feed");
-    assert_eq!(cur_audio_sid(&forced), 0, "and the selection is untouched");
+    assert!(commit_audio_selection(&mut forced, truehd), "Force keeps the viewer's original selection");
+    assert_eq!(cur_audio_sid(&forced), 9, "the route records the selected TrueHD stream");
     restore_direct_play_mode(DirectPlayMode::Auto);
     reset_session(&mut ps);
 }
@@ -1227,11 +1227,11 @@ fn an_in_place_subtitle_commit_ends_the_remembered_note() {
     tidy();
 }
 
-/// **A pick the route refuses is not remembered.** Force Direct Play refuses a track it cannot feed
-/// (`commit_audio_selection` is `false`); remembering it would put a track on the next episode that
-/// this route will not play. The control: a track it CAN feed, under the same mode, is remembered.
+/// **Force remembers the exact original pick.** A feed backend can refuse TrueHD later, but a
+/// missing native wire declaration does not make the route replace or discard the viewer's pick.
+/// A later E-AC3 pick replaces that memory normally.
 #[test]
-fn a_pick_the_route_refuses_writes_nothing() {
+fn a_forced_original_pick_is_remembered_until_the_viewer_changes_it() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let session = session::TempSession::new("track-memory-refused");
@@ -1242,11 +1242,13 @@ fn a_pick_the_route_refuses_writes_nothing() {
     assert!(forced_direct_play(&ps), "setup: Force Direct Play is on");
 
     let truehd = CarriedAudio { sid: 9, ordinal: 0, codec: "truehd".into(), channels: 8, can_normalize_loudness: false, immersive: false, sample_rate: 0, bit_depth: 0 };
-    assert!(!commit_audio_pick(&mut ps, truehd, Some(japanese_eac3())), "the route refuses TrueHD it cannot feed");
-    assert_eq!(remembered_anything(""), Vec::<TrackMemoryEntry>::new(), "and the refused pick wrote nothing");
+    let original = AudioMemo { lang: "eng".into(), codec: "truehd".into(), channels: 8, ..Default::default() };
+    assert!(commit_audio_pick(&mut ps, truehd, Some(original.clone())), "the route keeps the selected source track");
+    assert_eq!(cur_audio_sid(&ps), 9);
+    assert_eq!(remembered(""), Some(TrackMemoryEntry::new(MACHINE, SHOW, Some(original), None)));
 
     let eac3 = CarriedAudio { sid: 10, ordinal: 1, codec: "eac3".into(), channels: 6, can_normalize_loudness: false, immersive: false, sample_rate: 0, bit_depth: 0 };
-    assert!(commit_audio_pick(&mut ps, eac3, Some(japanese_eac3())), "control: a track the route can feed stands");
+    assert!(commit_audio_pick(&mut ps, eac3, Some(japanese_eac3())), "the viewer's next pick replaces it");
     assert_eq!(remembered(""), Some(TrackMemoryEntry::new(MACHINE, SHOW, Some(japanese_eac3()), None)));
     restore_direct_play_mode(DirectPlayMode::Auto);
     tidy_write(&mut ps);
