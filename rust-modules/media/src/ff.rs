@@ -10,12 +10,28 @@ use plx_playback_contract::SourceKey;
 use plx_play_feed::SendPtr;
 use crate::player::SHARED;
 use plx_net::stream::HttpStream;
+use plx_net::net::origin::Origin;
+use plx_net::range_io::{self, RangeFactory, RangeReader};
 use plx_telemetry::telemetry::classes::DemuxExitClass;
 use std::ffi::CString;
 use std::os::raw::{c_int, c_long, c_uchar, c_uint, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 pub use plx_media_codecs::ffi::*;
 pub use plx_media_codecs::Venc;
+
+/// Captured by the media composition and moved into one demux worker. Authorization is checked
+/// afresh on every request by the injected range factory and plaintext redirect gate.
+pub(crate) struct DemuxTransport {
+    range: Arc<dyn RangeFactory>,
+    credential_gate: plx_net::stream::redirect::CredentialGate,
+}
+impl DemuxTransport {
+    pub(crate) fn new(range: Arc<dyn RangeFactory>,
+        credential_gate: plx_net::stream::redirect::CredentialGate) -> Self {
+        Self { range, credential_gate }
+    }
+}
 
 /// Feed audio (es=2) to the pipeline. Cleared by the /tmp/plxnative-noaudio dev trigger to
 /// A/B whether the audio ES (E-AC3/Atmos) is what stalls the sink on 4K HEVC.
@@ -293,7 +309,7 @@ pub fn boot() {
     // run `net::global_init`, which is what makes `curl_global_init` main-thread-only as its doc
     // requires. Independent of FFmpeg: a set with no libcurl multi still demuxes local samples,
     // and a set with no FFmpeg still signs in.
-    crate::curlio::boot();
+    range_io::boot();
     boot_probe_with(
         || { plx_media_codecs::ffi::boot(); abi_ok() },
         || plx_base::devtrig::read("ffprobe"),
@@ -420,10 +436,10 @@ const AVSEEK_SIZE: c_int = 0x10000;
 ///   ENGINE-owned `HttpStream` — cleartext, numeric address, seeking by closing and re-opening
 ///   with a byte `Range`. Its behaviour here is byte for byte what it was before this enum
 ///   existed.
-/// * [`Src::Curl`] is the https path ([`crate::curlio`]), which the demux thread owns outright.
+/// * [`Src::Curl`] is the injected HTTPS range reader, which the demux thread owns outright.
 ///   `ff.rs` never learns curl-multi mechanics: all it can ask is `read`/`seek`/`size`/`status`/
 ///   `abort`, deliberately the same five questions the socket answers.
-/// * [`Src::Idle`] is the placeholder after HLS HTTPS recycles the `CurlSource` into [`HlsNet`].
+/// * [`Src::Idle`] is the placeholder after HLS HTTPS recycles the reader into [`HlsNet`].
 ///   `avformat_close_input` may still invoke AVIO; this arm refuses I/O instead of dialing a
 ///   dummy socket.
 enum Src {
@@ -438,7 +454,7 @@ enum Src {
     /// Owned by this state, and so by the demux thread — which is why teardown reaches it through
     /// `curlio`'s registry instead of a pointer the engine holds. `curlio`'s module doc says why
     /// that is not the accident it looks like.
-    Curl(Box<crate::curlio::CurlSource>),
+    Curl(Box<dyn RangeReader>),
     Idle,
 }
 
@@ -457,7 +473,7 @@ impl Src {
         }
     }
 
-    fn take_curl(&mut self) -> Option<Box<crate::curlio::CurlSource>> {
+    fn take_curl(&mut self) -> Option<Box<dyn RangeReader>> {
         match std::mem::replace(self, Src::Idle) {
             Src::Curl(cs) => Some(cs),
             other => {
@@ -472,7 +488,9 @@ impl Src {
 /// multi handle reused across playlist and segment URLs.
 struct HlsNet {
     hs: *mut HttpStream,
-    curl: Option<Box<crate::curlio::CurlSource>>,
+    curl: Option<Box<dyn RangeReader>>,
+    range: Arc<dyn RangeFactory>,
+    credential_gate: plx_net::stream::redirect::CredentialGate,
 }
 
 /// **The live-transfer terminal rule.** A partial response is right-censored evidence.  PMS may
@@ -865,9 +883,9 @@ struct BlockingDeadline {
 }
 
 impl TransportWatchdog {
-    fn for_origin(origin: &plx_plex::plex::Origin) -> Self {
+    fn for_origin(origin: &Origin) -> Self {
         let inactivity = if origin.is_tls() {
-            crate::curlio::media_stall_budget()
+            range_io::media_stall_budget()
         } else {
             plx_net::stream::media_stall_budget()
         };
@@ -1009,6 +1027,8 @@ fn exploration_timeout_is_final(
 /// byte offset. Boxed so its address is stable for the C callbacks.
 struct AvioState {
     src: Src,
+    range: Arc<dyn RangeFactory>,
+    credential_gate: plx_net::stream::redirect::CredentialGate,
     aq: *mut AuQueue,
     off: i64,
     size: i64,
@@ -1466,7 +1486,7 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                 Src::Idle => return AVERROR_EOF,
             };
             let wake =
-                if r == plx_net::stream::HTTP_READ_DEADLINE || r == crate::curlio::READ_DEADLINE {
+                if r == plx_net::stream::HTTP_READ_DEADLINE || r == range_io::READ_DEADLINE {
                     let current_rebuffering = SHARED.hls_rebuffering.load(Ordering::Acquire);
                     match (blocking_deadline, s.transport_watchdog.as_ref()) {
                         (Some(attempted), Some(watchdog)) => Some(observe_hls_deadline(
@@ -1506,7 +1526,7 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                     }
                 }
             }
-            if r == plx_net::stream::HTTP_READ_STOPPED || r == crate::curlio::READ_STOPPED {
+            if r == plx_net::stream::HTTP_READ_STOPPED || r == range_io::READ_STOPPED {
                 return avio_stopped(s);
             }
             if let Some(wake) = wake {
@@ -1655,7 +1675,7 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
                 path,
             } => {
                 plx_net::stream::http_close(*hs);
-                let origin = plx_plex::plex::Origin::http(&host.to_string_lossy(), *port);
+                let origin = Origin::http(&host.to_string_lossy(), *port);
                 let from = path.to_string_lossy().into_owned();
                 let req = plx_net::stream::redirect::Request {
                     origin: &origin,
@@ -1664,7 +1684,7 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
                     range_from: Some(target),
                     deadline: None,
                     same_origin_only: false,
-                    credential_gate: plx_plex::http::credential_transport_allowed,
+                    credential_gate: s.credential_gate,
                 };
                 match plx_net::stream::redirect::open_following(
                     *hs,
@@ -1699,7 +1719,7 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
                         crossed
                     }
                     Ok(plx_net::stream::redirect::Opened::Tls(t)) => {
-                        match open_curl_hop(&t.url(), target, aq) {
+                        match open_curl_hop(s.range.as_ref(), &t.url(), target, aq) {
                             Ok(cs) => {
                                 hopped_to_tls = Some(cs);
                                 true
@@ -3062,19 +3082,19 @@ fn classify_plaintext_open_failure(error: plx_net::stream::HttpOpenError) -> Hls
     }
 }
 
-fn classify_curl_open_err(e: crate::curlio::OpenErr) -> HlsExit {
-    if e == crate::curlio::OpenErr::Deadline {
+fn classify_curl_open_err(e: range_io::OpenErr) -> HlsExit {
+    if e == range_io::OpenErr::Deadline {
         return HlsExit::PrimeExpired;
     }
-    if let crate::curlio::OpenErr::Status(status) = e {
+    if let range_io::OpenErr::Status(status) = e {
         SHARED.dg_http_status.store(status, Ordering::Relaxed);
         if status == 404 {
             return HlsExit::NotReady;
         }
     }
-    if e == crate::curlio::OpenErr::Aborted {
+    if e == range_io::OpenErr::Aborted {
         HlsExit::Aborted
-    } else if e == crate::curlio::OpenErr::Stopped {
+    } else if e == range_io::OpenErr::Stopped {
         UNLATCHED_STOP
     } else {
         HlsExit::Failed("HTTPS request failed")
@@ -3133,17 +3153,17 @@ fn hls_open_curl(
                 SHARED.file_size.store(size, Ordering::Release);
                 return Ok((Src::Curl(cs), size));
             }
-            Err(crate::curlio::OpenErr::Aborted) => return Err(HlsExit::Aborted),
-            Err(crate::curlio::OpenErr::Deadline) => {
+            Err(range_io::OpenErr::Aborted) => return Err(HlsExit::Aborted),
+            Err(range_io::OpenErr::Deadline) => {
                 net.curl = Some(cs);
                 return Err(HlsExit::PrimeExpired);
             }
             // A controlled stop keeps the session and never falls through to a fresh dial.
-            Err(e @ crate::curlio::OpenErr::Stopped) => {
+            Err(e @ range_io::OpenErr::Stopped) => {
                 net.curl = Some(cs);
                 return Err(classify_curl_open_err(e));
             }
-            Err(crate::curlio::OpenErr::Status(status)) => {
+            Err(range_io::OpenErr::Status(status)) => {
                 SHARED.dg_http_status.store(status, Ordering::Relaxed);
                 net.curl = Some(cs);
                 return Err(if status == 404 {
@@ -3157,8 +3177,8 @@ fn hls_open_curl(
             }
         }
     }
-    let reservation = crate::curlio::CurlSource::reserve_open().map_err(|e| {
-        if e == crate::curlio::OpenErr::Aborted {
+    let reservation = net.range.reserve_open().map_err(|e| {
+        if e == range_io::OpenErr::Aborted {
             HlsExit::Aborted
         } else {
             HlsExit::Failed("HTTPS reservation failed")
@@ -3167,7 +3187,7 @@ fn hls_open_curl(
     if unsafe { crate::aq::aq_is_aborted(aq) } {
         return Err(HlsExit::Aborted);
     }
-    let opened = crate::curlio::CurlSource::open_reserved_checked(
+    let opened = net.range.open_reserved_checked(
         url,
         0,
         reservation,
@@ -3189,7 +3209,7 @@ fn hls_open_curl(
 /// stay on the PMS origin. Also returns the resource the open landed on: a playlist's children
 /// resolve against it, not against the path that was requested.
 fn hls_open_plain(
-    origin: &plx_plex::plex::Origin,
+    origin: &Origin,
     request_path: &str,
     aq: *mut AuQueue,
     net: &mut HlsNet,
@@ -3210,7 +3230,7 @@ fn hls_open_plain(
         deadline,
         // The HLS contract (`crate::hls`): every request stays on the PMS origin.
         same_origin_only: true,
-        credential_gate: plx_plex::http::credential_transport_allowed,
+        credential_gate: net.credential_gate,
     };
     let opened = plx_net::stream::redirect::open_following(hs, &req, &mut *checkpoint);
     if unsafe { crate::aq::aq_is_aborted(aq) } {
@@ -3267,15 +3287,16 @@ enum MediaOpenFail {
 /// Open an https redirect target on the curl source at byte `at`. The reservation publishes
 /// teardown's wake target BEFORE the abort check — the order `demux`'s own TLS open keeps.
 fn open_curl_hop(
+    range: &dyn RangeFactory,
     url: &str,
     at: i64,
     aq: *mut AuQueue,
-) -> Result<Box<crate::curlio::CurlSource>, crate::curlio::OpenErr> {
-    let reservation = crate::curlio::CurlSource::reserve_open()?;
+) -> Result<Box<dyn RangeReader>, range_io::OpenErr> {
+    let reservation = range.reserve_open()?;
     if unsafe { crate::aq::aq_is_aborted(aq) } {
-        return Err(crate::curlio::OpenErr::Aborted);
+        return Err(range_io::OpenErr::Aborted);
     }
-    crate::curlio::CurlSource::open_reserved(url, at, reservation)
+    range.open_reserved(url, at, reservation)
 }
 
 /// The progressive (direct-play) open of a PLAINTEXT part URL, redirects followed. A PMS-hosted
@@ -3283,9 +3304,10 @@ fn open_curl_hop(
 /// on the curl source. Publishes the same two diagnostics the TLS arm of `demux` does.
 fn open_plain_progressive(
     hs_p: *mut HttpStream,
-    origin: &plx_plex::plex::Origin,
+    origin: &Origin,
     path: &str,
     aq_p: *mut AuQueue,
+    transport: &DemuxTransport,
 ) -> Result<(Src, i64), MediaOpenFail> {
     use plx_net::stream::redirect::Opened;
     plx_net::stream::http_close(hs_p);
@@ -3296,7 +3318,7 @@ fn open_plain_progressive(
         range_from: None,
         deadline: None,
         same_origin_only: false,
-        credential_gate: plx_plex::http::credential_transport_allowed,
+        credential_gate: transport.credential_gate,
     };
     match plx_net::stream::redirect::open_following(hs_p, &req, &mut plx_base::checkpoint::NoCheckpoint)
     {
@@ -3319,7 +3341,7 @@ fn open_plain_progressive(
                 size,
             ))
         }
-        Ok(Opened::Tls(t)) => match open_curl_hop(&t.url(), 0, aq_p) {
+        Ok(Opened::Tls(t)) => match open_curl_hop(transport.range.as_ref(), &t.url(), 0, aq_p) {
             Ok(cs) => {
                 let (st, size) = (cs.status(), cs.size());
                 SHARED.file_size.store(size, Ordering::Release);
@@ -3327,9 +3349,9 @@ fn open_plain_progressive(
                 crate::player::log(&format!("ff: open https status={st} clen={size}"));
                 Ok((Src::Curl(cs), size))
             }
-            Err(crate::curlio::OpenErr::Aborted) => Err(MediaOpenFail::Aborted),
+            Err(range_io::OpenErr::Aborted) => Err(MediaOpenFail::Aborted),
             Err(e) => {
-                if let crate::curlio::OpenErr::Status(st) = e {
+                if let range_io::OpenErr::Status(st) = e {
                     SHARED.dg_http_status.store(st, Ordering::Relaxed);
                 }
                 crate::player::log(&format!("ff: https open FAILED: {e:?}"));
@@ -3380,7 +3402,7 @@ fn hls_source_read(
         }
         return Err(HlsExit::Aborted);
     }
-    if read == plx_net::stream::HTTP_READ_DEADLINE || read == crate::curlio::READ_DEADLINE {
+    if read == plx_net::stream::HTTP_READ_DEADLINE || read == range_io::READ_DEADLINE {
         Err(HlsExit::PrimeExpired)
     } else if read < 0 {
         Err(HlsExit::Failed("HLS response body failed"))
@@ -3620,12 +3642,15 @@ unsafe fn hls_input(
     reserve_deadline: ReserveDeadlineState,
     transport_watchdog: TransportWatchdog,
     mut acquisition: AcquisitionRuntime,
+    net: &HlsNet,
 ) -> Result<HlsInput, HlsExit> {
     let request_started = acquisition.request_started();
     acquisition.enter(Phase::Body);
     let mut input = HlsInput {
         state: Box::new(AvioState {
             src,
+            range: Arc::clone(&net.range),
+            credential_gate: net.credential_gate,
             aq,
             off: 0,
             size,
@@ -3943,7 +3968,7 @@ unsafe fn hls_demux_segment(
         }
     };
     let body_started = std::time::Instant::now();
-    let mut input = hls_input(src, size, aq, reserve_deadline, transport_watchdog, runtime)?;
+    let mut input = hls_input(src, size, aq, reserve_deadline, transport_watchdog, runtime, net)?;
     let probe_done = std::time::Instant::now();
     let streams = (*input.fmt).streams;
     let vi = av_find_best_stream(
@@ -4261,7 +4286,7 @@ struct HlsCursor {
 struct HlsRoundPort<'a> {
     round: Option<RoundId>,
     trial: Option<TrialId>,
-    origin: &'a plx_plex::plex::Origin,
+    origin: &'a Origin,
     cursor: &'a mut HlsCursor,
     timeline: &'a mut crate::hls::SegmentTimeline,
     prefetched: &'a mut Option<ActiveMedia>,
@@ -4357,12 +4382,13 @@ impl HlsRoundPort<'_> {
         if bound != source {
             return FeedObservation::Failed { trial, failure: FeedFailure::Protocol };
         }
-        let parsed = plx_plex::plex::StreamUrl::parse(&locator);
-        if parsed.origin != *self.origin {
+        let (parsed_origin, parsed_path) = plx_net::net::origin::split(&locator);
+        if parsed_origin != *self.origin {
             return FeedObservation::Failed { trial, failure: FeedFailure::SourceMoved };
         }
+        let parsed_path = if parsed_path.is_empty() { "/" } else { parsed_path };
         match hls_cursor_open(
-            &parsed.origin, &parsed.path, self.aq, self.net, false, self.reserve.as_mut(),
+            &parsed_origin, parsed_path, self.aq, self.net, false, self.reserve.as_mut(),
         ) {
             Ok(candidate) => {
                 let declared_bps = candidate.declared_bps;
@@ -4539,7 +4565,7 @@ impl AdaptivePhysicalPort for HlsRoundPort<'_> {
 }
 
 fn hls_cursor_open(
-    origin: &plx_plex::plex::Origin,
+    origin: &Origin,
     path: &str,
     aq: *mut AuQueue,
     net: &mut HlsNet,
@@ -5262,13 +5288,14 @@ impl ActiveFeedPort for HlsRoundPort<'_> {
 
 fn hls_demux(
     off: &plx_base::task::OffFrame,
-    origin: &plx_plex::plex::Origin,
+    origin: &Origin,
     path: &str,
     acodec: &str,
     abr: Option<crate::adaptive::Start>,
     aq: *mut AuQueue,
     aqa: *mut AuQueue,
     hs: *mut HttpStream,
+    transport: DemuxTransport,
 ) -> Result<(), HlsExit> {
     // The change detector is process-global, so a second playback of the same stream would
     // otherwise log nothing at all. Cleared here rather than on teardown: this is the one place
@@ -5292,7 +5319,7 @@ fn hls_demux(
         SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
         SHARED.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
     }
-    let mut net = HlsNet { hs, curl: None };
+    let mut net = HlsNet { hs, curl: None, range: transport.range, credential_gate: transport.credential_gate };
     let mut cursor = hls_cursor_open(origin, path, aq, &mut net, true, None)?;
     if abr.is_some() {
         SHARED.dg_abr_declared_kbps.store(
@@ -5882,18 +5909,19 @@ mod pre_audio_headroom_tests {
 
 /// The demux thread body (spawned by `engine::start_bufferfeed`).
 ///
-/// Takes an [`Origin`](plx_plex::plex::Origin) rather than a `(host, port)` pair because **the scheme
+/// Takes an [`Origin`](Origin) rather than a `(host, port)` pair because **the scheme
 /// decides the transport**: `http` reads through the Engine's `stream.rs` socket, `https` through
-/// [`crate::curlio`]. An origin is parsed from a URL and never rebuilt from an address, which is
+/// the injected range reader. An origin is parsed from a URL and never rebuilt from an address, which is
 /// what keeps the `plex.direct` hostname TLS validates against intact all the way down here
 /// (`net/origin.rs`). `hs` is still passed on both paths — it is the Engine's, and it stays
 /// unused (fd = -1, published as `SHARED.hs_ptr`) when the origin turns out to be https.
 pub(crate) fn demux(
     off: &plx_base::task::OffFrame,
-    origin: plx_plex::plex::Origin,
+    origin: Origin,
     path: String,
     acodec: String,
     force_original: bool,
+    transport: DemuxTransport,
     abr: Option<crate::adaptive::Start>,
     auto_original: Option<crate::adaptive::OriginalStart>,
     aq: SendPtr<AuQueue>,
@@ -5931,7 +5959,7 @@ pub(crate) fn demux(
     {
         crate::player::log("hls: segmented demux start");
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            hls_demux(off, &origin, &path, &acodec, abr, aq_p, aqa_p, hs_p)
+            hls_demux(off, &origin, &path, &acodec, abr, aq_p, aqa_p, hs_p, transport)
         }));
         match outcome {
             Ok(Ok(())) | Ok(Err(HlsExit::Aborted)) => {}
@@ -6041,7 +6069,7 @@ pub(crate) fn demux(
                 // source only after the check leaves a window where teardown's one wake sees nothing
                 // and the demuxer then opens a fresh connection under the main thread's join.
                 let mut curl_open = if origin.is_tls() {
-                    match crate::curlio::CurlSource::reserve_open() {
+                    match transport.range.reserve_open() {
                         Ok(r) => Some(r),
                         Err(e) => {
                             crate::player::log(&format!("ff: https reservation FAILED: {e:?}"));
@@ -6068,7 +6096,7 @@ pub(crate) fn demux(
                     let reservation = curl_open
                         .take()
                         .expect("TLS reserved its abort handle above");
-                    match crate::curlio::CurlSource::open_reserved(&url, 0, reservation) {
+                    match transport.range.open_reserved(&url, 0, reservation) {
                         Ok(cs) => {
                             let (st, size) = (cs.status(), cs.size());
                             SHARED.file_size.store(size, Ordering::Release);
@@ -6079,7 +6107,7 @@ pub(crate) fn demux(
                         Err(e) => {
                             // A status we could not stream is worth publishing; a transport failure has
                             // no status, and 0 is how the panel already spells "never answered".
-                            if let crate::curlio::OpenErr::Status(st) = e {
+                            if let range_io::OpenErr::Status(st) = e {
                                 SHARED.dg_http_status.store(st, Ordering::Relaxed);
                             }
                             crate::player::log(&format!("ff: https open FAILED: {e:?}"));
@@ -6089,7 +6117,7 @@ pub(crate) fn demux(
                     }
                 } else {
                     // Redirects followed; an https hop comes back as the curl source.
-                    match open_plain_progressive(hs_p, &origin, &path, aq_p) {
+                    match open_plain_progressive(hs_p, &origin, &path, aq_p, &transport) {
                         Ok(opened) => opened,
                         Err(MediaOpenFail::Aborted) => {
                             crate::player::log("ff: aborted during open");
@@ -6106,6 +6134,8 @@ pub(crate) fn demux(
 
                 let mut state = Box::new(AvioState {
                     src,
+                    range: Arc::clone(&transport.range),
+                    credential_gate: transport.credential_gate,
                     aq: aq_p,
                     off: 0,
                     size,

@@ -779,6 +779,8 @@ fn demux_against_when(
     let mut net = HlsNet {
         hs: &mut *hs,
         curl: None,
+        range: crate::curlio::range_factory(),
+        credential_gate: crate::curlio::CREDENTIAL_GATE,
     };
     let result = unsafe {
         hls_demux_segment(
@@ -1327,6 +1329,8 @@ fn at_the_floor_the_open_asks_for_the_hold_once_and_keeps_its_connection() {
     let mut net = HlsNet {
         hs: &mut *hs,
         curl: None,
+        range: crate::curlio::range_factory(),
+        credential_gate: crate::curlio::CREDENTIAL_GATE,
     };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     let opened = hls_open_source(
@@ -1973,6 +1977,8 @@ fn avio_state_for(
     runtime.enter(Phase::Body);
     AvioState {
         src,
+        range: crate::curlio::range_factory(),
+        credential_gate: crate::curlio::CREDENTIAL_GATE,
         aq,
         off: 0,
         size,

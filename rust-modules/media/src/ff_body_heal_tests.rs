@@ -162,6 +162,8 @@ fn with_sized_source<R>(port: u16, size: i64, f: impl FnOnce(*mut c_void) -> R) 
             port: port as c_int,
             path: CString::new("/Videos/a/stream.mkv?static=true").unwrap(),
         },
+        range: crate::curlio::range_factory(),
+        credential_gate: crate::curlio::CREDENTIAL_GATE,
         aq: &mut *aq,
         off: 0,
         size,
