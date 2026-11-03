@@ -183,12 +183,6 @@ impl BackendState {
                 if let Some(failure) = failure {
                     effects.push(Fx::Rejected { backend, attempt, failure });
                 } else {
-                    match operation {
-                        Operation::Seek(_) => self.latest_queued_seek = None,
-                        Operation::SelectTrack { kind, .. } =>
-                            self.latest_queued_track[Self::track_slot(kind)] = None,
-                        _ => {}
-                    }
                     self.dispatch(backend, attempt, operation, effects);
                 }
             }
@@ -656,6 +650,54 @@ mod tests {
         assert!(step(&mut state, Event::TrackSettled { backend: URI, attempt,
             command: commands[1], kind: TrackKind::Audio,
             choice: TrackChoice::Selected(4) }, None).is_empty());
+    }
+
+    #[test]
+    fn refused_second_track_preserves_first_queued_track_confirmation() {
+        let mut state = BackendState::new();
+        let attempt = AttemptId::new(6, 1);
+        start(&mut state, URI, attempt); ready(&mut state, URI, attempt);
+        let first_choice = TrackChoice::Selected(42);
+        let first_operation = Operation::SelectTrack { kind: TrackKind::Audio,
+            choice: first_choice };
+        let first = step(&mut state, Event::Intent(Intent::Control { backend: URI,
+            attempt, operation: first_operation }), Some(CAPS));
+        let [Fx::Dispatch { command: first, .. }] = first.as_slice() else { panic!("first track") };
+        let first = *first;
+        step(&mut state, Event::CommandAnswer { backend: URI, attempt, command: first,
+            result: DispatchResult::Queued }, None);
+        let second = step(&mut state, Event::Intent(Intent::Control { backend: URI,
+            attempt, operation: Operation::SelectTrack { kind: TrackKind::Audio,
+                choice: TrackChoice::Selected(43) } }), Some(CAPS));
+        let [Fx::Dispatch { command: second, .. }] = second.as_slice() else { panic!("second track") };
+        step(&mut state, Event::CommandAnswer { backend: URI, attempt, command: *second,
+            result: DispatchResult::Refused(Failure::Busy) }, None);
+        assert_eq!(step(&mut state, Event::TrackSettled { backend: URI, attempt,
+            command: first, kind: TrackKind::Audio, choice: first_choice }, None),
+            [Fx::AcceptedTrackSettled { backend: URI, attempt, command: first,
+                kind: TrackKind::Audio, choice: first_choice }]);
+    }
+
+    #[test]
+    fn refused_second_seek_preserves_first_queued_seek_landing() {
+        let mut state = BackendState::new();
+        let attempt = AttemptId::new(7, 1);
+        start(&mut state, URI, attempt); ready(&mut state, URI, attempt);
+        let target = ContentTime::from_millis(5_000);
+        let first = step(&mut state, Event::Intent(Intent::Control { backend: URI,
+            attempt, operation: Operation::Seek(target) }), Some(CAPS));
+        let [Fx::Dispatch { command: first, .. }] = first.as_slice() else { panic!("first seek") };
+        let first = *first;
+        step(&mut state, Event::CommandAnswer { backend: URI, attempt, command: first,
+            result: DispatchResult::Queued }, None);
+        let second = step(&mut state, Event::Intent(Intent::Control { backend: URI,
+            attempt, operation: Operation::Seek(ContentTime::from_millis(6_000)) }), Some(CAPS));
+        let [Fx::Dispatch { command: second, .. }] = second.as_slice() else { panic!("second seek") };
+        step(&mut state, Event::CommandAnswer { backend: URI, attempt, command: *second,
+            result: DispatchResult::Refused(Failure::Busy) }, None);
+        assert_eq!(step(&mut state, Event::SeekLanded { backend: URI, attempt,
+            command: first, position: None }, None),
+            [Fx::AcceptedSeekLanded { backend: URI, attempt, command: first, position: None }]);
     }
 
     #[test]
