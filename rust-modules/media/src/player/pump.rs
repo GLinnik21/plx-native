@@ -1706,8 +1706,8 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
 
     // Route actions may replace the physical feed. Borrow it only after their decision and
     // settlement are complete; the remaining seek/feed phase runs against the current object.
-    let (eng, mut mt) = pa.split();
-    let mut eng = eng.expect("live adapter checked before splitting it");
+    let (eng, mt) = pa.split();
+    let eng = eng.expect("live adapter checked before splitting it");
     let stream = matches!(eng.source, Source::Stream);
     // ---------- an in-place seek is still resolving (flushed, not yet re-anchored): COALESCE.
     // Firing another now would race the demux reopen (rapid tap-seeks) and the rebase guard would
