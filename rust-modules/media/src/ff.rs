@@ -5306,7 +5306,7 @@ fn hls_demux(
             .store(crate::player::ABR_MODE_HLS, Ordering::Relaxed);
         SHARED
             .dg_abr_kbps
-            .store(i64::from(start.info().initial.kbps()), Ordering::Relaxed);
+            .store(i64::from(start.initial_kbps()), Ordering::Relaxed);
         SHARED.dg_abr_declared_kbps.store(-1, Ordering::Relaxed);
         SHARED.dg_abr_media_kbps.store(-1, Ordering::Relaxed);
         SHARED.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
