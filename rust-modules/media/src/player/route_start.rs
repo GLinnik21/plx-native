@@ -248,6 +248,9 @@ pub(super) fn start_bufferfeed_inner(
     pa.launch_native_feed(route_attempt.contract_id(), prepared_native)
         .map_err(|_| crate::route::RouteStartResult::StartFailed)?;
     pa.bind_feed_attempt(route_attempt, trace_generation);
+    // The app gates its first pump on this readout. Publish after physical start and exact
+    // attempt binding, before the caller returns to that gate.
+    pa.publish_feed_attempt_view(ps);
     if stream { pa.start_timeline(ps, route_attempt); }
     Ok(route_attempt)
 }
@@ -489,6 +492,50 @@ pub fn suspend_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut super
 }
 
 
+/// Common teardown owns the route fence, final report and scrobble ordering. The opaque native
+/// stop owns the Engine, worker joins, transport close, native release and AU destruction.
+pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAdapter,
+    for_reload: bool) {
+    engine::clear_failed_engine_release_arm();
+    if !begin_teardown(ps, pa, for_reload) { return; }
+    // An abandoned preview Load is never joined on the frame while native Load is in flight.
+    if crate::route::is_preview(ps) {
+        if let Some((loading, finished)) = pa.feed.preview_load_join_state() {
+            if super::preview::defer_media_join(loading, finished) {
+                pa.feed.abandon_preview();
+                return;
+            }
+        }
+    }
+    begin_feed_teardown(for_reload);
+    SHARED.stop_hls_clock();
+    let route_attempt = pa.active_feed_attempt().expect("live feed has a route owner");
+    let mut native = pa.take_native_stop();
+    let final_report = final_report(ps, for_reload);
+    native.stop_side_reader(for_reload);
+    let mut report_th = stop_feed_timeline(pa, route_attempt);
+    native.unblock_join_close();
+    let mut terminal_facts = native.terminal_facts();
+    terminal_facts.started = Some(false);
+    let _ = ps.ingest_attempt_facts(route_attempt, terminal_facts);
+    after_physical_close(ps, for_reload, final_report, &mut report_th);
+    native.report_dispatched();
+    pa.release_native_stop(&mut native, for_reload);
+    // A reload preserves the file's duration and viewer transport, then restarts the same item.
+    // A real stop retires both along with the current claim hold.
+    if for_reload {
+        SHARED.reset_session_for_reload();
+        TX.reset_for_reload();
+    } else {
+        SHARED.reset_session();
+        TX.reset();
+        super::claim_hold::clear();
+    }
+    finish_feed_teardown(ps, for_reload, report_th);
+    pa.finish_native_stop(native, for_reload);
+}
+
+
 /// Settle queued and engine-less playback ownership before a physical stop.
 pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAdapter, for_reload: bool) -> bool {
     // A URI-mode probe session (dev trigger `plxnative-uriprobe`) ends with the playback it stands
@@ -535,6 +582,7 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
             crate::route::clear_url(ps);
             SHARED.reset_session();
             TX.reset();
+            mark_attempt_stopped(ps);
             super::claim_hold::clear();
             // Nothing here is asynchronous, so the fence `begin_engine_teardown` just raised is
             // already spent. Publish the completed stop rather than latching `Stopping` — see
@@ -544,6 +592,15 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
         return false;
     }
     true
+}
+
+/// A logical stop leaves the last addressed evidence available for the next report tick. The
+/// next physical start calls `begin_attempt_view` and clears it to Unknown for the new attempt.
+fn mark_attempt_stopped(ps: &mut crate::route::PlaybackSession) {
+    let Some(attempt) = ps.attempt_view().attempt() else { return; };
+    let mut facts = *ps.attempt_view().facts();
+    facts.started = Some(false);
+    let _ = ps.ingest_attempt_facts(attempt, facts);
 }
 
 /// Capture final reporting facts before native teardown resets position and duration.
