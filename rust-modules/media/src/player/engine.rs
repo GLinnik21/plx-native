@@ -42,7 +42,7 @@ use plx_platform::devcaps::AudioStack;
 use plx_platform::tv::sink::UnloadTicket;
 use plx_telemetry::telemetry::classes::DemuxExitClass;
 use plx_telemetry::telemetry::window::Stage as WindowStage;
-use std::os::raw::{c_char, c_int, c_long, c_void};
+use std::os::raw::{c_char, c_int, c_void};
 use std::sync::atomic::{AtomicI64, Ordering};
 
 // ACCEPTED AUs — what the pipeline took. This is what `app::diagnostics` reports, because a count of
@@ -81,7 +81,7 @@ pub fn fed_totals() -> (i64, i64) {
 /// this ahead of its video (issue #600) runs the lane up to `ff::AUDIO_AHEAD_HEADROOM` (16 MiB)
 /// beyond it for as long as the video lane holds less than `MAX_FEED_AHEAD_NS` of media.
 pub const fn aq_caps() -> (i64, i64) {
-    (AQ_VIDEO_BYTES as i64, AQ_AUDIO_BYTES as i64)
+    plx_play_feed::feed_state::aq_caps()
 }
 
 /// **The feed-ahead throttle's two leads, milliseconds** — video, then audio.
@@ -122,8 +122,7 @@ pub const fn feed_leads_ms() -> (i64, i64) {
 // levers are one decision and neither is worth landing alone.
 // `docs/measurements/p0-plant-sizing.md` is the record; `requiredMemory` is 160 MB, so +2 MiB RSS
 // on a 32-bit set is inside the budget already declared.
-const AQ_VIDEO_BYTES: c_long = 10 * 1024 * 1024;
-const AQ_AUDIO_BYTES: c_long = 1024 * 1024;
+use plx_play_feed::feed_state::{AQ_VIDEO_BYTES, AQ_AUDIO_BYTES};
 
 pub use plx_play_feed::feed_state::{AuBox, Engine, FeedPace, SampleBuf, Source};
 #[cfg(test)]

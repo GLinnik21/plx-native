@@ -5716,11 +5716,11 @@ mod pre_audio_headroom_tests {
     /// 768 kbit/s fits with room, the top of the codec's range does not run unbounded.
     #[test]
     fn the_audio_ceiling_holds_the_reported_film_and_not_everything() {
-        let cap = crate::player::aq_caps().1 + AUDIO_AHEAD_HEADROOM as i64;
+        let cap = plx_play_feed::feed_state::aq_caps().1 + AUDIO_AHEAD_HEADROOM as i64;
         assert_eq!(cap, 17 * 1024 * 1024);
         let bytes = |kbit: f64, secs: f64| (kbit * 1e3 / 8.0 * secs) as i64;
         assert!(bytes(768.0, 48.0) < cap, "issue #600's 48 s lead");
-        assert!(bytes(768.0, 48.0) > crate::player::aq_caps().1, "and the base cap alone cannot hold it");
+        assert!(bytes(768.0, 48.0) > plx_play_feed::feed_state::aq_caps().1, "and the base cap alone cannot hold it");
         assert!(bytes(768.0, 180.0) > AUDIO_AHEAD_HEADROOM as i64 && bytes(768.0, 170.0) < AUDIO_AHEAD_HEADROOM as i64, "16 MiB is ~2.9 min of 768 kbit/s");
         assert!(bytes(6_000.0, 60.0) > cap, "a bound, not a promise");
     }
@@ -5870,7 +5870,7 @@ mod pre_audio_headroom_tests {
     /// fits, while a delay at ~35 Mbit/s does not (the bound is real).
     #[test]
     fn the_bound_holds_the_measured_cases_and_not_everything() {
-        let base = crate::player::aq_caps().0;
+        let base = plx_play_feed::feed_state::aq_caps().0;
         let cap = base + PRE_AUDIO_VIDEO_HEADROOM as i64;
         assert_eq!(cap, 34 * 1024 * 1024);
         let bytes = |mbit: f64, secs: f64| (mbit * 1e6 / 8.0 * secs) as i64;
