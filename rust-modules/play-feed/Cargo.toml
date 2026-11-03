@@ -3,7 +3,7 @@ name = "plx_play_feed"
 version = "0.0.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
-description = "Pure buffer-feed native Load declarations and payload construction."
+description = "Buffer-feed execution, guarded transport, FFmpeg demux and native payload construction."
 repository = "https://github.com/GLinnik21/plx-native"
 publish = false
 
