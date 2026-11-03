@@ -1573,7 +1573,7 @@ fn start_side_reader(target: super::feed_open::SideReaderOpen) {
 }
 
 /// Set where the pump ends an Engine for good under the failure read-out; spent by
-/// [`release_failed_engine`] or by any teardown.
+/// [`super::route_start::release_failed_engine`] or by any teardown.
 static FAILED_ENGINE_RELEASE_ARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The pump just failed the Engine for good ([`crate::route::fail_current_engine`] and the Error
@@ -1582,72 +1582,9 @@ pub(super) fn arm_failed_engine_release() {
     FAILED_ENGINE_RELEASE_ARMED.store(true, Ordering::Release);
 }
 
-/// **A terminal playback error lets go of the pipeline.** The failure read-out stands on the
-/// session, but an Engine left loaded behind it keeps the native pipeline and the video plane,
-/// which the television reads as playback still going: its screensaver never starts.
-///
-/// Releases them the frame after the Engine failed, the same teardown an app switch uses
-/// ([`suspend_bufferfeed`]: the session, URL and transcode session stay, nothing is reported as
-/// stopped). What the read-out and its actions need survives it, in the session: the cause
-/// ([`crate::route::note_engine_failure`], so `state()` and `error_now` still answer) and the
-/// playhead a retry resumes from (the unpresented-resume slot `retry_failed_playback` reads).
-/// Try again, Play automatically and a quality pick start a new playback from scratch, and Back
-/// ends the session with a real stop, so none of them needs the loaded pipeline.
-/// Returns whether an Engine was released.
-pub fn release_failed_engine(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> bool {
-    if !FAILED_ENGINE_RELEASE_ARMED.load(Ordering::Acquire) {
-        return false;
-    }
-    // Armed by an Engine that has since been replaced (an automatic retry started a new playback
-    // in the same frame): not this Engine's end, and nothing left to release.
-    if !pa.is_live() {
-        FAILED_ENGINE_RELEASE_ARMED.store(false, Ordering::Release);
-        return false;
-    }
-    // Not this Engine's end: a preview, one a recovery is still flying for, or one that never put
-    // a picture up (a Load that failed, an open that never produced a frame) and so holds nothing
-    // the television mistakes for playback.
-    if crate::route::is_preview(ps)
-        || SHARED.pb_state.load(Ordering::Relaxed) != super::shared::PlaybackState::Error as u8
-        || SHARED.frames.load(Ordering::Relaxed) == 0
-        || crate::route::recovery_flight_outstanding()
-        || crate::route::engineless_flight_outstanding()
-    {
-        return false;
-    }
-    FAILED_ENGINE_RELEASE_ARMED.store(false, Ordering::Release);
-    let cause = super::live_runtime_failure(ps);
-    crate::route::note_engine_failure(ps, cause, super::intended_pos_ns(ps));
-    log("player: the failed Engine's pipeline is released under the failure read-out");
-    teardown(ps, pa, true);
-    true
+pub(super) fn failed_engine_release_armed() -> bool {
+    FAILED_ENGINE_RELEASE_ARMED.load(Ordering::Acquire)
 }
-
-/// Retire a failed foreground Engine only if it still owns the exact Load the foreground reducer
-/// observed. A later route action may have replaced it between `player::pump` and the app poll;
-/// tearing down unconditionally there would destroy the healthy replacement.
-pub fn suspend_bufferfeed_if_attempt(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut super::adapter::PlayerAdapter,
-    attempt: crate::route::RouteStartAttempt,
-) -> bool {
-    let owns_attempt = pa.active_feed_attempt() == Some(attempt);
-    if owns_attempt {
-        teardown(ps, pa, true);
-    }
-    owns_attempt
-}
-
-/// The foreground lifecycle follows `attempt` (it launched that Load, or took over following it):
-/// from now on the Load call's own synchronous refusal is the lifecycle's to settle
-/// ([`Engine::foreground_follows_load`]). True when the live Engine owns that exact attempt; a
-/// replaced Engine (a different attempt) is not marked.
-pub fn foreground_follows_load(pa: &mut super::adapter::PlayerAdapter, attempt: crate::route::RouteStartAttempt) -> bool {
-    pa.mark_foreground_follows_feed_load(attempt)
-}
-
-/// The common route owner runs teardown and calls this physical stop in its original order.
-pub(super) use super::route_start::teardown;
 
 pub(super) fn clear_failed_engine_release_arm() {
     FAILED_ENGINE_RELEASE_ARMED.store(false, Ordering::Release);

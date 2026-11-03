@@ -375,7 +375,7 @@ fn reload_transcode_start(ps: &mut crate::route::PlaybackSession, pa: &mut super
         "reload_transcode: fresh Load at offset {}s",
         offset_ns / 1_000_000_000
     ));
-    engine::teardown(ps, pa, true); // keep the session; reload mode
+    teardown(ps, pa, true); // keep the session; reload mode
     SHARED.disp_base.store(offset_ns, Ordering::Relaxed); // transcode is 0-based at content=offset
     SHARED.playpos_ns.store(offset_ns, Ordering::Relaxed);
     Some(start_bufferfeed_for(ps, pa, ticket))
@@ -415,7 +415,7 @@ pub fn reload_at(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter
         "reload_at: fresh Load at {}s",
         target_ns / 1_000_000_000
     ));
-    engine::teardown(ps, pa, true); // reload mode: preserve the session (no url-clear / stop-scrobble)
+    teardown(ps, pa, true); // reload mode: preserve the session (no url-clear / stop-scrobble)
     engine::arm_seek(target_ns);
     reload_start_outcome(ps, pa, ticket)
 }
@@ -481,7 +481,7 @@ pub fn reload_transcode_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
 /// [`poll_release`] (`PendingRelease`), so the object may still exist when this returns; anything
 /// that needs it gone is queued behind it in the release machine (`Deferred`), never waited for.
 pub fn stop_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
-    engine::teardown(ps, pa, false);
+    teardown(ps, pa, false);
 }
 
 /// Suspend for an app-switch: tear the pipeline down (webOS reclaims the video plane while we're
@@ -489,7 +489,7 @@ pub fn stop_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut super::a
 /// don't scrobble "stopped". This makes the foreground restore a clean same-item reload
 /// (begin_resume + start_bufferfeed), the known-good path, instead of resurrecting a stopped session.
 pub fn suspend_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
-    engine::teardown(ps, pa, true);
+    teardown(ps, pa, true);
 }
 
 
@@ -719,6 +719,70 @@ pub(crate) fn finish_release_for_test(pa: &mut super::adapter::PlayerAdapter) {
         let _ = super::route_start::run_release_effects(&mut ps, pa, fx, joined, false);
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
+}
+
+/// **A terminal playback error lets go of the pipeline.** The failure read-out stands on the
+/// session, but an Engine left loaded behind it keeps the native pipeline and the video plane,
+/// which the television reads as playback still going: its screensaver never starts.
+///
+/// Releases them the frame after the Engine failed, the same teardown an app switch uses
+/// ([`suspend_bufferfeed`]: the session, URL and transcode session stay, nothing is reported as
+/// stopped). What the read-out and its actions need survives it, in the session: the cause
+/// ([`crate::route::note_engine_failure`], so `state()` and `error_now` still answer) and the
+/// playhead a retry resumes from (the unpresented-resume slot `retry_failed_playback` reads).
+/// Try again, Play automatically and a quality pick start a new playback from scratch, and Back
+/// ends the session with a real stop, so none of them needs the loaded pipeline.
+/// Returns whether an Engine was released.
+pub fn release_failed_engine(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> bool {
+    if !engine::failed_engine_release_armed() {
+        return false;
+    }
+    // Armed by an Engine that has since been replaced (an automatic retry started a new playback
+    // in the same frame): not this Engine's end, and nothing left to release.
+    if !pa.is_live() {
+        engine::clear_failed_engine_release_arm();
+        return false;
+    }
+    // Not this Engine's end: a preview, one a recovery is still flying for, or one that never put
+    // a picture up (a Load that failed, an open that never produced a frame) and so holds nothing
+    // the television mistakes for playback.
+    if crate::route::is_preview(ps)
+        || SHARED.pb_state.load(Ordering::Relaxed) != super::shared::PlaybackState::Error as u8
+        || SHARED.frames.load(Ordering::Relaxed) == 0
+        || crate::route::recovery_flight_outstanding()
+        || crate::route::engineless_flight_outstanding()
+    {
+        return false;
+    }
+    engine::clear_failed_engine_release_arm();
+    let cause = super::live_runtime_failure(ps);
+    crate::route::note_engine_failure(ps, cause, super::intended_pos_ns(ps));
+    log("player: the failed Engine's pipeline is released under the failure read-out");
+    teardown(ps, pa, true);
+    true
+}
+
+/// Retire a failed foreground Engine only if it still owns the exact Load the foreground reducer
+/// observed. A later route action may have replaced it between `player::pump` and the app poll;
+/// tearing down unconditionally there would destroy the healthy replacement.
+pub fn suspend_bufferfeed_if_attempt(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    attempt: crate::route::RouteStartAttempt,
+) -> bool {
+    let owns_attempt = pa.active_feed_attempt() == Some(attempt);
+    if owns_attempt {
+        teardown(ps, pa, true);
+    }
+    owns_attempt
+}
+
+/// The foreground lifecycle follows `attempt` (it launched that Load, or took over following it):
+/// from now on the Load call's own synchronous refusal is the lifecycle's to settle
+/// (`PlayerAdapter::mark_foreground_follows_feed_load`). True when the live Engine owns that exact attempt; a
+/// replaced Engine (a different attempt) is not marked.
+pub fn foreground_follows_load(pa: &mut super::adapter::PlayerAdapter, attempt: crate::route::RouteStartAttempt) -> bool {
+    pa.mark_foreground_follows_feed_load(attempt)
 }
 
 /// Common teardown owns the route fence, final report and scrobble ordering. The opaque native
