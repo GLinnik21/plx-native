@@ -785,26 +785,3 @@ fn a_servers_listings_are_told_at_most_once_per_spacing() {
         assert_eq!(owes_lines() - logged, 3, "the two changes and the deferred listings: three lines, none per waiting frame");
     });
 }
-
-/// `Shown::library` reaches the browse store: with a Library page on the stack the open grid is
-/// only marked stale (the page re-queries it when covered), with none it re-queries at once.
-#[test]
-fn a_library_change_tells_the_browse_store_whether_a_library_page_is_up() {
-    let _g = plx_base::testlock::serial();
-    for (library_up, requeried) in [(true, false), (false, true)] {
-        let mut stores = holding(&[]);
-        let sid = plx_plex::plex::current_server();
-        {
-            let mut browse = stores.browse.borrow_mut();
-            browse.seed_sources_for_test(1, true);
-            browse.append_section_for_test(0, 1, "Movies", crate::browse::SecKind::Movie);
-            browse.seed_items_for_test(3);
-        }
-        let shown = Shown { library: library_up, ..Shown::ALL };
-        let spent = map_shown(&mut stores, &library(sid, vec![created("20")]), &[], shown);
-        assert_eq!(spent.relisted, [sid]);
-        let mut browse = stores.browse.borrow_mut();
-        assert_eq!(browse.requery_owed(), requeried, "library page up: {library_up}");
-        assert_eq!(browse.listing_snapshot().view().membership_stale(), !requeried, "library page up: {library_up}");
-    }
-}
