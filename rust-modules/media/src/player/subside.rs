@@ -408,7 +408,15 @@ fn run(spec: Spec, stop: Arc<SideStop>) {
             let s = &crate::player::SHARED;
             (s.pts_shift.load(Ordering::Relaxed), s.disp_base.load(Ordering::Relaxed))
         };
-        let end = read_once(&cfg, &stop, &anchor, &mut delta, &resume, &playpos, &clock);
+        let retention = || {
+            let seeking = crate::player::SHARED.seeking.load(Ordering::Acquire);
+            let target = crate::player::SHARED.seek_display_ns.load(Ordering::Relaxed);
+            plx_playback_contract::subtitle::CaptionRetention {
+                playhead_ns: Some(playpos()),
+                seek_target_ns: (seeking && target >= 0).then_some(target),
+            }
+        };
+        let end = read_once(&cfg, &stop, &anchor, &mut delta, &resume, &playpos, &clock, &retention);
         save(delta);
         match end {
             RunEnd::Stopped | RunEnd::Measured => return,

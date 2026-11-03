@@ -10,6 +10,14 @@ impl DemuxObserver for FixtureDemuxObserver {
         plx_playback_contract::AttemptId::new(0, 0)
     }
     fn playpos_ns(&self) -> Option<i64> { Some(SHARED.playpos_ns.load(Ordering::Relaxed)) }
+    fn caption_retention(&self) -> Option<plx_playback_contract::subtitle::CaptionRetention> {
+        let seeking = SHARED.seeking.load(Ordering::Acquire);
+        let target = SHARED.seek_display_ns.load(Ordering::Relaxed);
+        Some(plx_playback_contract::subtitle::CaptionRetention {
+            playhead_ns: Some(SHARED.playpos_ns.load(Ordering::Relaxed)),
+            seek_target_ns: (seeking && target >= 0).then_some(target),
+        })
+    }
     fn hold_epoch(&self) -> Option<u64> {
         Some(SHARED.hls_internal_hold_epoch.load(Ordering::Acquire))
     }

@@ -621,8 +621,8 @@ pub(crate) fn commit_prepared(prepared: PreparedBegin) -> Result<(u64, Store), P
 /// [`Store::push_text`]. Logs `sub cue [a..bms] len=N` for the selected track when the cue is new:
 /// the cue's length, never its text (subtitle text is viewing content and the event log is shared
 /// in issue threads), which `tests/run.py` reads to see that a text cue arrived.
-pub fn push_text(generation: u64, track: i32, start_ns: i64, end_ns: i64, text: &str, identity: u64) {
-    let floor_ms = super::subtitle_floor_ns() / 1_000_000;
+pub fn push_text(generation: u64, track: i32, start_ns: i64, end_ns: i64, text: &str, identity: u64, retention: plx_playback_contract::subtitle::CaptionRetention) {
+    let floor_ms = super::subtitle_floor_ns(retention) / 1_000_000;
     let (start_ms, end_ms) = (start_ns / 1_000_000, end_ns / 1_000_000);
     let selected = Some(super::desired_sub_idx()).filter(|&t| t >= 0);
     let shown = {
@@ -637,7 +637,7 @@ pub fn push_text(generation: u64, track: i32, start_ns: i64, end_ns: i64, text: 
         super::log(&format!("sub cue [{start_ms}..{end_ms}ms] len={len}"));
     }
 }
-pub fn push(generation: u64, track: i32, start_ns: i64, end_ns: i64, payload: &[u8]) {
+pub fn push(generation: u64, track: i32, start_ns: i64, end_ns: i64, payload: &[u8], retention: plx_playback_contract::subtitle::CaptionRetention) {
     if payload.len() > MAX_PACKET_BYTES {
         return;
     }
@@ -659,7 +659,7 @@ pub fn push(generation: u64, track: i32, start_ns: i64, end_ns: i64, payload: &[
             duration_ms: end_ns.saturating_sub(start_ns) / 1_000_000,
             payload: payload.into(),
         },
-        super::subtitle_floor_ns() / 1_000_000,
+        super::subtitle_floor_ns(retention) / 1_000_000,
     );
 }
 pub fn seek(generation: u64) {
@@ -1688,9 +1688,12 @@ mod tests {
         );
         super::super::request_subtitle(1);
         let log = plx_base::eventlog::with_private_log(|| {
-            push_text(generation, 0, 1_000_000_000, 2_500_000_000, "not the selected track", packet_identity("not the selected track".as_bytes()));
-            push_text(generation, 1, 1_000_000_000, 2_500_000_000, "Secret <i>dialogue</i>", packet_identity("Secret <i>dialogue</i>".as_bytes()));
-            push_text(generation, 1, 1_000_000_000, 2_500_000_000, "Secret <i>dialogue</i>", packet_identity("Secret <i>dialogue</i>".as_bytes()));
+            let retention = plx_playback_contract::subtitle::CaptionRetention {
+                playhead_ns: Some(0), seek_target_ns: None,
+            };
+            push_text(generation, 0, 1_000_000_000, 2_500_000_000, "not the selected track", packet_identity("not the selected track".as_bytes()), retention);
+            push_text(generation, 1, 1_000_000_000, 2_500_000_000, "Secret <i>dialogue</i>", packet_identity("Secret <i>dialogue</i>".as_bytes()), retention);
+            push_text(generation, 1, 1_000_000_000, 2_500_000_000, "Secret <i>dialogue</i>", packet_identity("Secret <i>dialogue</i>".as_bytes()), retention);
             std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
         });
         super::super::request_subtitle(-1);

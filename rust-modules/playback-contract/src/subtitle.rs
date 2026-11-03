@@ -118,3 +118,10 @@ pub enum RawCue {
     Bytes { track: usize, start: i64, end: i64, payload: Vec<u8> },
     Bitmap { track: usize, pts: i64, display: crate::subtitle::BitmapDisplay },
 }
+/// Timing observed by a caption producer when it publishes a cue. An absent
+/// playhead cannot justify retiring cues by time; store byte budgets still apply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CaptionRetention {
+    pub playhead_ns: Option<i64>,
+    pub seek_target_ns: Option<i64>,
+}

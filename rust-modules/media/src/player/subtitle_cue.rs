@@ -76,25 +76,25 @@ impl<'a> SubCue<'a> {
 impl SubCue<'_> {
     /// Hand the cue to the render store. `ass_generation` is the `ass_source::begin` token a
     /// `Text` or `Ass` cue is pushed under; the image kinds ignore it.
-    pub(crate) fn push(self, ass_generation: u64) {
-        self.push_with_bitmap_generation(ass_generation, None);
+    pub(crate) fn push(self, ass_generation: u64, retention: plx_playback_contract::subtitle::CaptionRetention) {
+        self.push_with_bitmap_generation(ass_generation, None, retention);
     }
 
     /// The main demux's bitmap store is generation-fenced independently of
     /// ASS. Charset and image decode have already completed outside native
     /// retirement; the store mutex serializes this check with reset.
-    pub(crate) fn push_addressed(self, ass_generation: u64, bitmap_generation: u64) {
-        self.push_with_bitmap_generation(ass_generation, Some(bitmap_generation));
+    pub(crate) fn push_addressed(self, ass_generation: u64, bitmap_generation: u64, retention: plx_playback_contract::subtitle::CaptionRetention) {
+        self.push_with_bitmap_generation(ass_generation, Some(bitmap_generation), retention);
     }
 
-    fn push_with_bitmap_generation(self, ass_generation: u64, bitmap_generation: Option<u64>) {
+    fn push_with_bitmap_generation(self, ass_generation: u64, bitmap_generation: Option<u64>, retention: plx_playback_contract::subtitle::CaptionRetention) {
         match self {
             SubCue::Text { track, start, end, payload, identity } => {
                 let text = String::from_utf8_lossy(&payload);
-                crate::player::ass_source::push_text(ass_generation, track, start, end, &text, identity);
+                crate::player::ass_source::push_text(ass_generation, track, start, end, &text, identity, retention);
             }
             SubCue::Ass { track, start, end, payload } => {
-                crate::player::ass_source::push(ass_generation, track, start, end, &payload);
+                crate::player::ass_source::push(ass_generation, track, start, end, &payload, retention);
             }
             SubCue::BitmapClear { track, pts } => {
                 if let Some(generation) = bitmap_generation {
@@ -107,9 +107,9 @@ impl SubCue<'_> {
                 let rects_kept = rects.len();
                 let first_rect = rects.first().map(|r| (r.w, r.h, r.x, r.y));
                 let accepted = if let Some(generation) = bitmap_generation {
-                    crate::player::push_subtitle_bitmap_for_generation(generation, track, pts, cw, ch, rects)
+                    crate::player::push_subtitle_bitmap_for_generation(generation, track, pts, cw, ch, rects, retention)
                 } else {
-                    crate::player::push_subtitle_bitmap(track, pts, cw, ch, rects);
+                    crate::player::push_subtitle_bitmap(track, pts, cw, ch, rects, retention);
                     true
                 };
                 if !accepted { return; }

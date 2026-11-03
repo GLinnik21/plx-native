@@ -6,7 +6,7 @@ use super::{HlsAutomaticTransition, HlsClockFenceError, UserPauseCursor, SHARED,
 use plx_playback_contract::adaptive::{AutomaticTransition, BufferFact, FenceHandle, FenceSettlement, LeaseHandle, PhysicalFailure};
 use plx_playback_contract::demux::{AddressedSampler, DemuxAdaptive, DemuxCallbackEffect, DemuxClock, DemuxEffect, DemuxFault, DemuxMedia, DemuxObserver, DemuxSession, DemuxSubtitle, HlsBufferClocks, PauseClock, PauseEvent, PauseLane};
 use plx_playback_contract::AttemptId;
-use plx_playback_contract::subtitle::{DecodeKind, Manifest, RawCue, TrackInfo};
+use plx_playback_contract::subtitle::{CaptionRetention, DecodeKind, Manifest, RawCue, TrackInfo};
 use plx_telemetry::telemetry::classes::DemuxExitClass;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -109,10 +109,11 @@ impl DemuxSubtitle for PlayerDemuxSession {
     fn bitmap_budget(&self) -> usize { super::SUB_BITMAP_BUDGET }
 
     fn emit(&mut self, generation: u64, raw: RawCue) {
+        let Some(retention) = self.observer.caption_retention() else { return; };
         let Some(tracks) = self.subtitle_tracks.as_ref() else { return; };
         let Some(bitmap_generation) = self.bitmap_generation else { return; };
         let cue = tracks.decode(raw);
-        cue.push_addressed(generation, bitmap_generation);
+        cue.push_addressed(generation, bitmap_generation, retention);
     }
 
     fn seek(&mut self, generation: u64) {
@@ -129,6 +130,16 @@ impl DemuxObserver for PlayerDemuxObserver {
     fn attempt(&self) -> AttemptId { self.attempt }
     fn playpos_ns(&self) -> Option<i64> {
         SHARED.with_active_demux_epoch(self.native_epoch, || SHARED.playpos_ns.load(Ordering::Relaxed))
+    }
+    fn caption_retention(&self) -> Option<CaptionRetention> {
+        SHARED.with_active_demux_epoch(self.native_epoch, || {
+            let seeking = SHARED.seeking.load(Ordering::Acquire);
+            let target = SHARED.seek_display_ns.load(Ordering::Relaxed);
+            CaptionRetention {
+                playhead_ns: Some(SHARED.playpos_ns.load(Ordering::Relaxed)),
+                seek_target_ns: (seeking && target >= 0).then_some(target),
+            }
+        })
     }
     fn hold_epoch(&self) -> Option<u64> {
         SHARED.with_active_demux_epoch(self.native_epoch, || SHARED.hls_internal_hold_epoch.load(Ordering::Acquire))

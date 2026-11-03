@@ -4,7 +4,7 @@
 
 use crate::adaptive::{AutomaticTransition, FenceHandle, LeaseHandle, PhysicalFailure};
 use crate::AttemptId;
-use crate::subtitle::{Anchor, DecodeKind, Manifest, RawCue, TrackInfo};
+use crate::subtitle::{Anchor, CaptionRetention, DecodeKind, Manifest, RawCue, TrackInfo};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -37,6 +37,8 @@ pub struct HlsBufferClocks {
 pub trait DemuxObserver: Send + Sync {
     fn attempt(&self) -> AttemptId;
     fn playpos_ns(&self) -> Option<i64>;
+    /// One addressed caption retention sample; `None` means the demux epoch retired.
+    fn caption_retention(&self) -> Option<CaptionRetention>;
     fn hold_epoch(&self) -> Option<u64>;
     fn rebuffering(&self) -> Option<bool>;
     fn audio_expected(&self) -> Option<bool>;

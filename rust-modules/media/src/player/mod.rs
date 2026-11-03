@@ -2315,12 +2315,9 @@ pub fn sidecar_clock_ns(ps: &crate::route::PlaybackSession, playhead_ns: i64) ->
 /// raised mid-playback to show until the window had refilled. A negative offset (sidecar only)
 /// reads ahead of the playhead, which this floor never prunes. What bounds memory is each store's
 /// budget and eviction order ([`SUB_BITMAP_BUDGET`]), not this floor.
-fn subtitle_floor_ns() -> i64 {
-    subtitle_floor_for(
-        SHARED.playpos_ns.load(Relaxed),
-        SHARED.seeking.load(Relaxed),
-        SHARED.seek_display_ns.load(Relaxed),
-    )
+fn subtitle_floor_ns(retention: plx_playback_contract::subtitle::CaptionRetention) -> i64 {
+    let Some(playhead_ns) = retention.playhead_ns else { return i64::MIN; };
+    subtitle_floor_for(playhead_ns, retention.seek_target_ns.is_some(), retention.seek_target_ns.unwrap_or(-1))
 }
 
 fn subtitle_floor_for(position_ns: i64, seeking: bool, target_ns: i64) -> i64 {
@@ -2491,24 +2488,27 @@ pub fn push_subtitle_bitmap(
     cw: i32,
     ch: i32,
     rects: Vec<SubRect>,
+    retention: plx_playback_contract::subtitle::CaptionRetention,
 ) {
     let mut v = SHARED.sub_bitmaps.lock().unwrap();
-    push_subtitle_bitmap_locked(&mut v, track, start_ns, cw, ch, rects);
+    push_subtitle_bitmap_locked(&mut v, track, start_ns, cw, ch, rects, retention);
 }
 
 /// Publish from a captured demux only while its bitmap store generation still
 /// owns the slot. Reset changes the generation under this same store mutex.
 pub(crate) fn push_subtitle_bitmap_for_generation(
     generation: u64, track: i32, start_ns: i64, cw: i32, ch: i32, rects: Vec<SubRect>,
+    retention: plx_playback_contract::subtitle::CaptionRetention,
 ) -> bool {
     let mut v = SHARED.sub_bitmaps.lock().unwrap();
     if SHARED.bitmap_generation.load(std::sync::atomic::Ordering::Acquire) != generation { return false; }
-    push_subtitle_bitmap_locked(&mut v, track, start_ns, cw, ch, rects);
+    push_subtitle_bitmap_locked(&mut v, track, start_ns, cw, ch, rects, retention);
     true
 }
 
 fn push_subtitle_bitmap_locked(
     v: &mut Vec<SubBitmap>, track: i32, start_ns: i64, cw: i32, ch: i32, rects: Vec<SubRect>,
+    retention: plx_playback_contract::subtitle::CaptionRetention,
 ) {
     if rects.is_empty() {
         return;
@@ -2518,7 +2518,7 @@ fn push_subtitle_bitmap_locked(
             c.end_ns = start_ns; // this set replaces the one still showing
         }
     }
-    let floor = subtitle_floor_ns();
+    let floor = subtitle_floor_ns(retention);
     v.retain(|c| c.end_ns >= floor);
     v.push(SubBitmap {
         track,
@@ -2543,8 +2543,10 @@ fn push_subtitle_bitmap_locked(
     // 30 s of captions the viewer has not seen yet, and evicting it (what this did) blanked them.
     // `SUB_BITMAP_BUDGET` is sized so step 3 does not happen over the supported window.
     let mut total: usize = v.iter().map(|c| c.bytes()).sum();
-    let now = SHARED.playpos_ns.load(Relaxed);
-    let passed = now.min(subtitle_clock_ns(now));
+    let passed = retention.playhead_ns.map_or(i64::MIN, |now| {
+        let anchor = retention.seek_target_ns.map_or(now, |target| now.min(target));
+        anchor.min(subtitle_clock_ns(anchor))
+    });
     let sel = SHARED.desired_sub_idx.load(Relaxed);
     while total > SUB_BITMAP_BUDGET && v.len() > 1 {
         let i = v
@@ -2981,6 +2983,20 @@ pub fn every_failure_row() -> Vec<(FailureKind, FailureContext, Vec<FailureActio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn caption_retention() -> plx_playback_contract::subtitle::CaptionRetention {
+        let seeking = SHARED.seeking.load(Relaxed);
+        let target = SHARED.seek_display_ns.load(Relaxed);
+        plx_playback_contract::subtitle::CaptionRetention {
+            playhead_ns: Some(SHARED.playpos_ns.load(Relaxed)),
+            seek_target_ns: (seeking && target >= 0).then_some(target),
+        }
+    }
+
+    // Keep the existing store scenarios' clock writes explicit at each publication.
+    fn push_subtitle_bitmap(track: i32, start_ns: i64, cw: i32, ch: i32, rects: Vec<SubRect>) {
+        super::push_subtitle_bitmap(track, start_ns, cw, ch, rects, caption_retention());
+    }
 
     #[test]
     fn uri_failure_does_not_inherit_retired_feed_worker_flags() {
@@ -4370,6 +4386,27 @@ mod tests {
 
         set_subtitle_offset(0);
         SHARED.playpos_ns.store(0, Relaxed);
+        SHARED.sub_bitmaps.lock().unwrap().clear();
+        SHARED.desired_sub_idx.store(-1, Relaxed);
+    }
+
+    #[test]
+    fn a_backward_seek_keeps_new_target_image_cues_while_native_clock_is_old() {
+        let _g = plx_base::testlock::serial();
+        SHARED.sub_bitmaps.lock().unwrap().clear();
+        SHARED.desired_sub_idx.store(0, Relaxed);
+        set_subtitle_offset(0);
+        let retention = plx_playback_contract::subtitle::CaptionRetention {
+            playhead_ns: Some(90 * SEC), seek_target_ns: Some(10 * SEC),
+        };
+        super::push_subtitle_bitmap(0, 10 * SEC, 1920, 1080, vec![rect(0, 0, 8, 8)], retention);
+        close_subtitle_bitmap(0, 12 * SEC);
+        super::push_subtitle_bitmap(0, 13 * SEC, 1920, 1080, vec![rect(0, 0, 8, 8)], retention);
+        assert_eq!(active_bitmap_key(10 * SEC + SEC / 2), Some(10 * SEC));
+        assert_eq!(subtitle_floor_ns(retention), 10 * SEC - (SUBTITLE_OFFSET_LATEST_MS + 2_000) * 1_000_000);
+        assert_eq!(subtitle_floor_ns(plx_playback_contract::subtitle::CaptionRetention {
+            playhead_ns: None, seek_target_ns: Some(10 * SEC),
+        }), i64::MIN, "an unknown playhead cannot justify time pruning");
         SHARED.sub_bitmaps.lock().unwrap().clear();
         SHARED.desired_sub_idx.store(-1, Relaxed);
     }
