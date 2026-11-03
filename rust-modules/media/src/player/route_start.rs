@@ -1074,11 +1074,18 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
     // resource and Session projection. A real stop must retire that ownership exactly once;
     // returning here used to leak the candidate forever while the reducer remained Failed.
     if !pa.is_live() {
+        #[cfg(feature = "play-uri")]
+        let uri_attempt = (ps.attempt_view().backend() == Some(super::attempt_view::Backend::Uri))
+            .then(|| ps.attempt_view().attempt()).flatten();
+        #[cfg(feature = "play-uri")]
+        let mut uri_report_th = uri_attempt.and_then(|attempt| pa.stop_timeline(attempt));
         // An Engine-less flight (a resume, or a rollback no Engine waits on) has no Engine to take down with it, and an app-switch suspend
         // keeps the session for the foreground restore, which reserves its own start transaction:
         // drop the flight as a live Engine's suspend would (`Stable`, landing discarded, only its
         // replacement stopped). A full stop below clears it itself.
-        if for_reload && crate::route::engineless_flight_outstanding() {
+        if for_reload && (crate::route::engineless_flight_outstanding()
+            || cfg!(feature = "play-uri") && ps.attempt_view().backend()
+                == Some(super::attempt_view::Backend::Uri)) {
             crate::route::begin_engine_teardown(true);
         }
         if !for_reload {
@@ -1086,6 +1093,23 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
             // ([`release_failed_engine`]) ends the playback the Engine would have ended: the
             // position it stopped at is the one the server keeps.
             let mut final_report = None;
+            #[cfg(feature = "play-uri")]
+            if uri_attempt.is_some() && pa.finalize_uri_once() {
+                let facts = ps.attempt_view().facts();
+                let pos = facts.position_ns.unwrap_or_else(|| crate::route::unpresented_resume_ns(ps));
+                let dur = facts.duration_ns.unwrap_or(0);
+                crate::player::report::ended(ps, pos, dur);
+                let rk = crate::route::cur_rk(ps);
+                final_report = (!rk.is_empty() && dur > 0)
+                    .then(|| (rk, pos / 1_000_000, dur / 1_000_000));
+            } else if crate::route::engine_failure(ps).is_some() {
+                let dur = SHARED.duration_ns.load(Ordering::Relaxed);
+                let pos = crate::route::unpresented_resume_ns(ps);
+                crate::player::report::ended(ps, pos, dur);
+                let rk = crate::route::cur_rk(ps);
+                final_report = (!rk.is_empty() && dur > 0).then(|| (rk, pos / 1_000_000, dur / 1_000_000));
+            }
+            #[cfg(not(feature = "play-uri"))]
             if crate::route::engine_failure(ps).is_some() {
                 let dur = SHARED.duration_ns.load(Ordering::Relaxed);
                 let pos = crate::route::unpresented_resume_ns(ps);
@@ -1093,6 +1117,9 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
                 let rk = crate::route::cur_rk(ps);
                 final_report = (!rk.is_empty() && dur > 0).then(|| (rk, pos / 1_000_000, dur / 1_000_000));
             }
+            #[cfg(feature = "play-uri")]
+            crate::route::scrobble_stop(ps, final_report, uri_report_th.take());
+            #[cfg(not(feature = "play-uri"))]
             crate::route::scrobble_stop(ps, final_report, None);
             crate::route::begin_engine_teardown(false);
             crate::route::drop_original_recovery(ps);
@@ -1118,6 +1145,9 @@ fn mark_attempt_stopped(ps: &mut crate::route::PlaybackSession) {
     let Some(backend) = ps.attempt_view().backend() else { return; };
     let mut facts = *ps.attempt_view().facts();
     facts.started = Some(false);
+    if backend == super::attempt_view::Backend::Uri && facts.runtime_failure.is_none() {
+        facts.status = Some(plx_playback_contract::readout::PlaybackState::Idle);
+    }
     let _ = ps.ingest_attempt_facts(attempt, backend, facts);
 }
 

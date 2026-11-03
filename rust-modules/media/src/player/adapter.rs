@@ -36,6 +36,8 @@ use plx_playback_contract::{AttemptId, BackendEvent, BackendKind, Capabilities, 
     DispatchResult, DriverSet, ExitDisposition, Failure, Intent, Operation, ReleaseStatus,
     SourceKey, StopReason};
 #[cfg(feature = "play-uri")]
+use plx_playback_contract::Playback;
+#[cfg(feature = "play-uri")]
 use plx_play_uri::backend::{Binding as UriBinding, Config as UriConfig,
     MonotonicClock, UriBackend, UriSource};
 
@@ -339,6 +341,8 @@ pub struct PlayerAdapter {
     uri_route_settled: bool,
     #[cfg(feature = "play-uri")]
     uri_stop_requested: bool,
+    #[cfg(feature = "play-uri")]
+    uri_finalized: bool,
     /// Route identity and product trace for the installed physical attempt. The feed itself
     /// receives only the canonical contract ID and native epoch.
     feed_attempt: Option<(crate::route::RouteStartAttempt, u32)>,
@@ -406,6 +410,8 @@ impl PlayerAdapter {
             uri_route_settled: false,
             #[cfg(feature = "play-uri")]
             uri_stop_requested: false,
+            #[cfg(feature = "play-uri")]
+            uri_finalized: false,
             feed_attempt: None,
             timeline: None,
             repair: None,
@@ -426,6 +432,28 @@ impl PlayerAdapter {
 
     pub fn backend_snapshot(&self) -> &plx_playback_contract::Snapshot {
         self.backend.snapshot()
+    }
+
+    /// Product URI plane ownership is separate from the diagnostic probe and panel evidence.
+    #[cfg(feature = "play-uri")]
+    pub fn uri_product_plane_owned(&self) -> bool {
+        self.uri_backend.as_ref().is_some_and(UriBackend::plane_owned)
+    }
+
+    /// A mounted page is not the owner of a physical attempt. A URI EOS may have already
+    /// released its native session while its final Plex stop still belongs to the route.
+    pub fn playback_needs_teardown(&self, ps: &crate::route::PlaybackSession) -> bool {
+        #[cfg(feature = "play-feed")]
+        if self.is_live() { return true; }
+        #[cfg(feature = "play-uri")]
+        if self.uri_route_attempt.is_some()
+            || (!self.uri_finalized
+                && ps.attempt_view().backend() == Some(super::attempt_view::Backend::Uri)
+                && ps.attempt_view().facts().ended == Some(true)) {
+            return true;
+        }
+        let _ = ps;
+        false
     }
 
     /// A pending first Play keeps the native pause hold until its exact startup command is
@@ -655,6 +683,15 @@ impl PlayerAdapter {
         self.uri_route_attempt = Some(attempt);
         self.uri_route_settled = false;
         self.uri_stop_requested = false;
+        self.uri_finalized = false;
+    }
+
+    #[cfg(feature = "play-uri")]
+    pub(super) fn finalize_uri_once(&mut self) -> bool {
+        if self.uri_finalized { false } else {
+            self.uri_finalized = true;
+            true
+        }
     }
 
     #[cfg(feature = "play-uri")]
@@ -720,6 +757,28 @@ impl PlayerAdapter {
                             ps, route_attempt, crate::route::RouteStartResult::StartFailed);
                     }
                 }
+                plx_playback_contract::Fx::AcceptedSeekLanded {
+                    backend: BackendKind::Uri, attempt, position, ..
+                } => {
+                    if let Some(route_attempt) = self.uri_route_attempt.filter(|route|
+                        route.contract_id() == attempt) {
+                        let mut facts = *ps.attempt_view().facts();
+                        facts.seek_pending_ns = None;
+                        facts.seek_display_ns = None;
+                        if let Some(position) = position {
+                            facts.position_ns = position.value.as_millis()
+                                .checked_mul(1_000_000)
+                                .and_then(|ns| i64::try_from(ns).ok());
+                        }
+                        facts.status = Some(match self.backend.snapshot().playback.map(|p| p.value) {
+                            Some(Playback::Playing) => plx_playback_contract::readout::PlaybackState::Playing,
+                            Some(Playback::Paused) => plx_playback_contract::readout::PlaybackState::Paused,
+                            _ => plx_playback_contract::readout::PlaybackState::Buffering,
+                        });
+                        let _ = ps.ingest_attempt_facts(route_attempt,
+                            super::attempt_view::Backend::Uri, facts);
+                    }
+                }
                 plx_playback_contract::Fx::ReleaseOutcome {
                     backend: BackendKind::Uri, attempt, status,
                 } => {
@@ -744,9 +803,29 @@ impl PlayerAdapter {
                 _ => {}
             }
         }
+        #[cfg(feature = "play-uri")]
+        self.publish_uri_timeline(ps);
         #[cfg(not(feature = "play-uri"))]
         let _ = ps;
         result
+    }
+
+    /// The existing attempt-bound reporter consumes normalized URI clocks too. Missing native
+    /// position or a non-playing state clears its mailbox, so it cannot repeat an old playhead.
+    #[cfg(feature = "play-uri")]
+    fn publish_uri_timeline(&self, ps: &crate::route::PlaybackSession) {
+        if ps.attempt_view().backend() != Some(super::attempt_view::Backend::Uri) { return; }
+        let Some(attempt) = ps.attempt_view().attempt() else { return; };
+        let facts = ps.attempt_view().facts();
+        let snapshot = match (facts.position_ns, facts.duration_ns, facts.status) {
+            (Some(position), Some(duration), Some(status)) if matches!(status,
+                plx_playback_contract::readout::PlaybackState::Playing
+                | plx_playback_contract::readout::PlaybackState::Paused) =>
+                timeline::TimelineSnapshot::from_content_ns(position, duration,
+                    status == plx_playback_contract::readout::PlaybackState::Paused),
+            _ => None,
+        };
+        self.publish_timeline(attempt, snapshot);
     }
 
     /// Map only addressed URI reports into the session's sparse readout. Playing and clock

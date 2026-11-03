@@ -1937,7 +1937,7 @@ fn link_session_stands(app: &App) -> bool {
     super::deeplink::session_stands(
         super::bridge::player(&app.pages).is_some(),
         app.player.lifecycle.awaiting_load(),
-        app.adapters.player.is_live(),
+        app.adapters.player.playback_needs_teardown(&app.player.session),
         plx_media::route::is_preview(&app.player.session),
     )
 }
@@ -2082,7 +2082,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         } else if playback_may_run(app)
             && plx_media::player::ended(&app.player.session) == Some(true)
             && super::content::off_route_orphan(
-                app.adapters.player.is_live(),
+                app.adapters.player.playback_needs_teardown(&app.player.session),
                 plx_media::route::is_preview(&app.player.session),
                 super::bridge::player(&app.pages).is_some(),
             )

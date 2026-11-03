@@ -129,6 +129,10 @@ impl UriBackend {
         }
     }
 
+    /// The exported plane remains owned after service Playing until native release destroys
+    /// its window. This is an ownership fact, not proof that a picture reached the panel.
+    pub fn plane_owned(&self) -> bool { self.window && self.played_once }
+
     fn observe(&mut self, observation: Observation) {
         if let Some(attempt) = self.active {
             self.pending.push_back(DriverEvent::Observation { attempt, observation });
