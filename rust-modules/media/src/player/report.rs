@@ -69,6 +69,10 @@ pub use plx_telemetry::telemetry::classes::{
 };
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU8, Ordering::Relaxed};
 
+/// Common request history spans physical backend reloads and survives their resource resets.
+/// The existing consent eraser and every append serialize on this same owner.
+static TRACE: std::sync::Mutex<PlaybackTrace> = std::sync::Mutex::new(PlaybackTrace::new());
+
 /// The current attempt's opaque id — random, per attempt, never stored. See `DiagEvent`'s playback
 /// block: it joins one attempt's lifecycle events and cannot link two playbacks, let alone two sets.
 static ATTEMPT: AtomicI64 = AtomicI64::new(0);
@@ -401,8 +405,7 @@ fn delivery_class(ps: &crate::route::PlaybackSession) -> DeliveryClass {
 }
 
 fn push_trace_for(generation: u32, event: TraceEvent) {
-    let mut trace = super::SHARED
-        .playback_trace
+    let mut trace = TRACE
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     // Check consent while holding the same trace lock used by withdrawal's clear. Either this
@@ -417,8 +420,7 @@ fn push_trace_for(generation: u32, event: TraceEvent) {
 /// An engine open begins: the attempt that follows has shown nothing yet. Same consent and
 /// generation discipline as the breadcrumbs, but no step is added.
 fn note_engine_opening() {
-    let mut trace = super::SHARED
-        .playback_trace
+    let mut trace = TRACE
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     if !plx_telemetry::telemetry::consent::allows_errors() || trace.generation == 0 || trace.sealed {
@@ -428,8 +430,7 @@ fn note_engine_opening() {
 }
 
 fn push_trace(event: TraceEvent) {
-    let mut trace = super::SHARED
-        .playback_trace
+    let mut trace = TRACE
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     if !plx_telemetry::telemetry::consent::allows_errors() || trace.generation == 0 {
@@ -443,8 +444,7 @@ fn push_trace(event: TraceEvent) {
 /// snapshot under one lock. A split append/snapshot lets an ABR worker put an event *after*
 /// `playback failed`, producing a causal sequence that never happened.
 fn finish_trace(event: TraceEvent) -> Vec<TraceStep> {
-    let mut trace = super::SHARED
-        .playback_trace
+    let mut trace = TRACE
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     if !plx_telemetry::telemetry::consent::allows_errors() {
@@ -458,8 +458,7 @@ fn finish_trace(event: TraceEvent) -> Vec<TraceStep> {
 /// reaches this through the hook [`install_trace_eraser`] registers
 /// (`telemetry::playback::clear_error_trace`); the app's own call sites name it directly.
 pub fn clear_error_trace() {
-    super::SHARED
-        .playback_trace
+    TRACE
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clear();
@@ -621,8 +620,7 @@ fn error_context(ps: &crate::route::PlaybackSession) -> PlaybackErrorContext {
     );
     let refusal = refusal_context(ps);
     let (noted, attempt_started) = {
-        let trace = super::SHARED
-            .playback_trace
+        let trace = TRACE
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         (trace.attempted_delivery(), trace.attempt_started())
@@ -716,7 +714,7 @@ pub fn note_presented_for_test(ps: &crate::route::PlaybackSession) {
 /// error reporting is consented, so a test installs that consent first.
 #[cfg(any(test, feature = "test-support"))]
 pub fn last_delivery_requested_for_test() -> Option<(DeliveryReason, DeliveryClass)> {
-    let trace = super::SHARED.playback_trace.lock().unwrap_or_else(|e| e.into_inner());
+    let trace = TRACE.lock().unwrap_or_else(|e| e.into_inner());
     trace.snapshot().iter().rev().find_map(|step| match step.event {
         TraceEvent::DeliveryRequested { reason, delivery, .. } => Some((reason, delivery)),
         _ => None,
@@ -826,8 +824,7 @@ pub fn requested(
     REBUFFER_TOTAL_MS.store(0, Relaxed);
     REQUESTED_MS.store(at, Relaxed);
     LAST.store(super::shared::PlaybackState::Resolving as u8, Relaxed);
-    let mut trace = super::SHARED
-        .playback_trace
+    let mut trace = TRACE
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     if plx_telemetry::telemetry::consent::allows_errors() {
@@ -1279,6 +1276,16 @@ pub fn watched_class(position_ns: i64, duration_ns: i64) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn physical_feed_reset_preserves_common_request_trace() {
+        let _serial = plx_base::testlock::serial();
+        TRACE.lock().unwrap_or_else(|e| e.into_inner()).seed_for_reset_test();
+        super::super::SHARED.reset_session();
+        let steps = TRACE.lock().unwrap_or_else(|e| e.into_inner()).step_count_for_test();
+        clear_error_trace();
+        assert_eq!(steps, 1, "a physical reset cannot erase the request's causal history");
+    }
 
     fn begin_view(ps: &mut crate::route::PlaybackSession) -> crate::route::RouteStartAttempt {
         let attempt = crate::route::RouteStartAttempt::fixture();
@@ -1774,8 +1781,7 @@ mod tests {
 
     /// The sealed trace the shared slot now holds.
     fn trace_steps() -> Vec<TraceStep> {
-        super::super::SHARED
-            .playback_trace
+        TRACE
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .snapshot()
@@ -2695,8 +2701,7 @@ mod tests {
         });
         install_trace_eraser();
         plx_telemetry::telemetry::playback::clear_error_trace();
-        let left = super::super::SHARED
-            .playback_trace
+        let left = TRACE
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .step_count_for_test();
