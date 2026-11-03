@@ -64,6 +64,7 @@ impl AcbSource { pub fn text(&self) -> &str { &self.text } }
 
 /// Pinned Stremio051818e descriptor, allowed ONLY for the explicitly controlled SDR720p24 fixture.
 /// Arbitrary URI/HDR streams require an actual validated sourceInfo envelope instead.
+#[cfg(any(test, feature = "devtriggers"))]
 pub fn build_acb_fixture_video(media_id: &MediaId, video: VideoFacts) -> Option<String> {
     if video.width != 1280 || video.height != 720 || video.frame_rate != 24.0 { return None; }
     Some(json!({"content":"movie","context":media_id,"video":{
