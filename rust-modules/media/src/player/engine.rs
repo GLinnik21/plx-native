@@ -244,6 +244,12 @@ pub struct Engine {
     pub hs: Box<HttpStream>, // demux socket (M owns; D uses via raw ptr)
     pub pending_video: Option<AuBox>, // bf_pending, VIDEO lane (held across BufferFull)
     pub pending_audio: Option<AuBox>, // bf_pending, AUDIO lane
+    /// Whether this tick's run of each lane ended on Starfish's `BufferFull` for the AU the lane
+    /// holds pending. [`feed_both_lanes`] clears both before the lanes run, so neither is ever a
+    /// previous tick's answer; [`try_prime`] reads them to tell a saturated pipeline from one
+    /// still filling ([`pipeline_saturated`]).
+    pub video_sink_full: bool,
+    pub audio_sink_full: bool,
     #[allow(dead_code)]
     pub payload: std::ffi::CString, // bf_payload (kept alive for the session)
     pub source: Source,
@@ -2338,6 +2344,8 @@ fn start_bufferfeed_inner(
         hs,
         pending_video: None,
         pending_audio: None,
+        video_sink_full: false,
+        audio_sink_full: false,
         payload: payload_c,
         source,
         stream_th,
@@ -3830,6 +3838,16 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine) {
     } else {
         playable_vbuf >= observed_runway_ns
     };
+    // A ResumePrime can only wait for media that can still arrive. The observed runway is a sum
+    // over every acquisition on the rung, so it grows with the session, and nothing bounds it by
+    // what Starfish and the queue caps can hold: on 2026-11-02 it reached 14 754 ms against about
+    // 10.8 s held, and the viewer's Play stayed fenced for good (#1216). Once the pipeline is
+    // saturated (`pipeline_saturated`), the high-water above is all the media there can be before
+    // Play, so the hold releases on it. An automatic rebuffer keeps its own recovery epoch, which
+    // measures only the acquisitions since it began, and a fresh boundary keeps accepted-only.
+    let saturated = prime_kind == HlsPrimeKind::Resume
+        && !balanced_runway_ready
+        && pipeline_saturated(eng);
     let boundary_ready = match prime_kind {
         HlsPrimeKind::Rebuffer => {
             let playable = if audio_expected {
@@ -3839,7 +3857,8 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine) {
             };
             recovery.ready(playable)
         }
-        HlsPrimeKind::Fresh | HlsPrimeKind::Resume => balanced_runway_ready,
+        HlsPrimeKind::Fresh => balanced_runway_ready,
+        HlsPrimeKind::Resume => balanced_runway_ready || saturated,
     };
     if decoder_ready && boundary_ready && TX.feed_allowed() {
         let Some((play_token, recovery)) =
@@ -3870,10 +3889,11 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine) {
                     ));
                 } else {
                     log(&format!(
-                        "primed: v={}ms a={}ms runway={}ms -> Play",
+                        "primed: v={}ms a={}ms runway={}ms{} -> Play",
                         playable_vbuf / 1_000_000,
                         playable_abuf / 1_000_000,
                         observed_runway_ns / 1_000_000,
+                        if saturated { " (pipeline saturated)" } else { "" },
                     ));
                 }
             }
@@ -3885,6 +3905,21 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine) {
             }
         }
     }
+}
+
+/// **Whether nothing more can enter either lane before Play.** Some lane's Feed was refused with
+/// `BufferFull` this tick AND the demuxer is parked on that lane's AU queue (over its cap). The
+/// lane keeps the refused AU pending and pops nothing behind it, so the queue cannot drain, the
+/// producer stays parked, and it fills both lanes from one sequential read: neither the accepted
+/// high-water nor either queued tail can rise until the clock runs. A refusal with room left in
+/// the queue is not saturation, because the demuxer can still extend the tails.
+fn pipeline_saturated(eng: &mut Engine) -> bool {
+    fn parked(q: &mut Option<Box<AuQueue>>) -> bool {
+        q.as_mut()
+            .is_some_and(|q| crate::aq::aq_would_park(&mut **q as *mut AuQueue))
+    }
+    (eng.video_sink_full && parked(&mut eng.aq_video))
+        || (eng.audio_sink_full && parked(&mut eng.aq_audio))
 }
 
 /// **One tick's feeding, as a unit: video lane, audio lane, then the prime attempt.**
@@ -3908,6 +3943,8 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine) {
 /// the regression test — which calls this wrapper — stayed green. Private, that revert does not
 /// compile.
 pub fn feed_both_lanes(mt: &MainThread, eng: &mut Engine) {
+    eng.video_sink_full = false;
+    eng.audio_sink_full = false;
     feed_stream(mt, eng);
     feed_audio_lane(mt, eng);
     try_prime(mt, eng);
@@ -4173,6 +4210,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
         }
         if (r as u8) != b'O' {
             // 'B' BufferFull -> keep pending, retry next tick (VIDEO lane only)
+            eng.video_sink_full = (r as u8) == b'B';
             SHARED
                 .dg_feed_state
                 .store(if (r as u8) == b'B' { 2 } else { 3 }, Ordering::Relaxed);
@@ -4304,6 +4342,7 @@ fn feed_audio_lane(mt: &MainThread, eng: &mut Engine) {
             }
         }
         if (r as u8) != b'O' {
+            eng.audio_sink_full = (r as u8) == b'B';
             break; // 'B' BufferFull -> keep pending, retry next tick (AUDIO lane only)
         }
         eng.pending_audio = None;
@@ -5378,6 +5417,8 @@ mod prime_livelock_tests {
             hs: plx_net::stream::http_stream_boxed(),
             pending_video: None,
             pending_audio: None,
+            video_sink_full: false,
+            audio_sink_full: false,
             payload: std::ffi::CString::new("").unwrap(),
             source: Source::Stream,
             stream_th: None,
@@ -6085,6 +6126,119 @@ mod prime_livelock_tests {
             !eng.prime_play,
             "balanced accepted A/V plus validated queued runway did not release ResumePrime",
         );
+    }
+
+    /// #1216, from a device log (0.8.0, OLED65CX, webOS 5.6.2, a 1080p HLS transcode on the 20 Mbps
+    /// rung): Pause at 21:15, Resume 1.5 s later, and Play never came. The finite-bag runway had grown
+    /// over 558 segments on that rung to 14 754 ms, while Starfish (`reply=B` on one retained AU) and
+    /// the video queue (`qbytes=10488086`, over `AQ_VIDEO_BYTES`) held about 10.8 s. The queue
+    /// cannot drain while Starfish refuses the AU the lane holds, so the demuxer stays parked on it
+    /// and neither tail can rise before Play. Every later press logged `physical Play remains
+    /// fenced`.
+    ///
+    /// Two phases pin both sides of the release. While the queue still has room, more media can
+    /// arrive, so the hold keeps waiting for the runway. Once the queue is over its cap as well,
+    /// nothing more can, and the hold releases on what the pipeline holds.
+    #[test]
+    fn a_resume_prime_on_a_saturated_pipeline_plays_below_the_runway() {
+        let _serial = plx_base::testlock::serial();
+        struct Restore {
+            runway: i64,
+            video_tail: i64,
+            audio_tail: i64,
+            audio_expected: bool,
+            pts_shift: i64,
+            presented: i64,
+            paused: bool,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                SHARED
+                    .hls_prime_runway_ms
+                    .store(self.runway, Ordering::Relaxed);
+                SHARED
+                    .hls_video_tail_ns
+                    .store(self.video_tail, Ordering::Relaxed);
+                SHARED
+                    .hls_audio_tail_ns
+                    .store(self.audio_tail, Ordering::Relaxed);
+                SHARED
+                    .hls_audio_expected
+                    .store(self.audio_expected, Ordering::Relaxed);
+                SHARED.pts_shift.store(self.pts_shift, Ordering::Relaxed);
+                SHARED.pres_fed.store(self.presented, Ordering::Relaxed);
+                TX.commit_paused(self.paused);
+                SHARED.reset_hls_clock_for_test();
+                crate::player::ffi_host::refuse_feed_past_for_test(1, None);
+                crate::player::ffi_host::force_clocksink_for_test(false);
+            }
+        }
+
+        crate::player::ffi_host::force_clocksink_for_test(true);
+        SHARED.reset_hls_clock_for_test();
+        let base = 10_000_000_000;
+        let tails = base + 10_800_000_000;
+        let _restore = Restore {
+            runway: SHARED.hls_prime_runway_ms.swap(14_754, Ordering::Relaxed),
+            video_tail: SHARED.hls_video_tail_ns.swap(tails, Ordering::Relaxed),
+            audio_tail: SHARED.hls_audio_tail_ns.swap(tails, Ordering::Relaxed),
+            audio_expected: SHARED.hls_audio_expected.swap(true, Ordering::Relaxed),
+            pts_shift: SHARED.pts_shift.swap(0, Ordering::Relaxed),
+            presented: SHARED.pres_fed.swap(base, Ordering::Relaxed),
+            paused: TX.paused.swap(true, Ordering::Relaxed),
+        };
+        let pause = match SHARED.prepare_hls_user_pause().expect("reserve user Pause") {
+            super::super::shared::HlsUserPause::Issue(token) => token,
+            other => panic!("unexpected Pause reservation: {other:?}"),
+        };
+        assert_eq!(
+            SHARED.complete_hls_user_pause(pause, true),
+            super::super::shared::HlsPauseCompletion::Accepted
+        );
+        assert_eq!(
+            SHARED.prepare_hls_user_resume(true),
+            Some(super::super::shared::HlsUserResume::Prime)
+        );
+
+        let mt = unsafe { plx_base::task::MainThread::assume() };
+        let mut eng = engine_after_reload();
+        eng.prime_play = false;
+        arm_live_clock_prime(&mut eng);
+        // Starfish's source buffer is full 1.5 s past the paused frame: past the decoder prime.
+        crate::player::ffi_host::refuse_feed_past_for_test(1, Some(base + 1_500_000_000));
+        push_segment_at(&mut eng, base);
+        TX.commit_paused(false);
+        let before = crate::player::ffi_host::play_calls_for_test();
+
+        // Phase 1: Starfish refuses, but the queue is under its cap, so the demuxer can still add.
+        for _ in 0..600 {
+            tick(&mt, &mut eng);
+        }
+        assert!(eng.pending_video.is_some(), "the lane holds the AU Starfish refused");
+        assert!(
+            eng.max_fed_video_pts - base >= PRIME_NS
+                && eng.max_fed_audio_pts - base >= PRIME_AUDIO_NS,
+            "the decoder prime is met; only the runway holds the clock",
+        );
+        assert_eq!(
+            crate::player::ffi_host::play_calls_for_test(),
+            before,
+            "a queue with room can still grow the tails: the hold must wait for the runway",
+        );
+
+        // Phase 2: the demuxer fills the queue past its cap and parks. Nothing more can arrive.
+        let filler = vec![0u8; AQ_VIDEO_BYTES as usize];
+        let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut crate::aq::AuQueue;
+        crate::aq::aq_push(qv, filler.as_ptr(), filler.len() as c_int, tails, 0, 1);
+        assert!(crate::aq::aq_would_park(qv));
+        tick(&mt, &mut eng);
+
+        assert_eq!(
+            crate::player::ffi_host::play_calls_for_test(),
+            before + 1,
+            "a saturated pipeline held the clock below a runway it can never reach",
+        );
+        assert!(!eng.prime_play);
     }
 
     /// A `Play` request is an actuator command, not confirmation that the media clock moved. If

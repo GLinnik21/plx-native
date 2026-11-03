@@ -81,6 +81,15 @@ use std::sync::{Condvar, Mutex};
 const FEED_ERROR: c_char = b'e' as c_char;
 /// `sf_feed`'s acceptance code.
 const FEED_OK: c_char = b'O' as c_char;
+/// `sf_feed`'s backpressure code (`BufferFull`). The host answers it only past a test's
+/// [`refuse_feed_past_for_test`] limit, which bounds the spin the note above warns about.
+#[cfg(any(test, feature = "test-support"))]
+const FEED_FULL: c_char = b'B' as c_char;
+/// Per stream (`es_data` 1 video, 2 audio): the sink pts past which a host Feed answers
+/// `BufferFull`. `i64::MAX` is no limit. A test's model of a paused pipeline whose source buffer is
+/// full (#1216).
+#[cfg(any(test, feature = "test-support"))]
+static FULL_PAST_NS: [AtomicI64; 2] = [AtomicI64::new(i64::MAX), AtomicI64::new(i64::MAX)];
 
 /// How often the sink reports a position, milliseconds.
 ///
@@ -319,6 +328,13 @@ pub(super) fn load_in_flight_for_test() -> bool {
 #[cfg(test)]
 pub(super) fn force_clocksink_for_test(on: bool) {
     FORCE_ENABLED.store(on, Relaxed);
+}
+/// **Test-only: refuse one stream's Feeds past a sink pts** (`es_data` 1 video, 2 audio) with
+/// `BufferFull`, as a paused pipeline with a full source buffer does; `None` lifts the limit.
+#[cfg(test)]
+pub(super) fn refuse_feed_past_for_test(es_data: c_int, past_ns: Option<i64>) {
+    let lane = usize::try_from(es_data - 1).expect("es_data is 1 (video) or 2 (audio)");
+    FULL_PAST_NS[lane].store(past_ns.unwrap_or(i64::MAX), Relaxed);
 }
 /// Forget the seek probes (#568) and optionally force LG's `Seek` answer (`Some(0)` = refuse).
 #[cfg(test)]
@@ -991,6 +1007,13 @@ unsafe fn sf_feed(p: *const u8, size: c_uint, pts: i64, es_data: c_int) -> c_cha
         let mut feeds = FEED_LOG.lock().unwrap_or_else(|e| e.into_inner());
         if feeds.len() < FEED_LOG_ROOM {
             feeds.push((es_data, pts));
+        }
+        drop(feeds);
+        let limit = usize::try_from(es_data - 1)
+            .ok()
+            .and_then(|lane| FULL_PAST_NS.get(lane));
+        if limit.is_some_and(|limit| pts > limit.load(Relaxed)) {
+            return FEED_FULL;
         }
     }
     if es_data == 1 {
