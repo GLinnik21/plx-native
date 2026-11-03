@@ -670,8 +670,7 @@ struct SecState {
     items: SecItems,
     cursor: Option<Arc<Cursor>>,
     /// A read-back changed a row this section's QUERY depends on (see
-    /// [`BrowseState::apply_view_local`]), or the server created or removed items
-    /// ([`BrowseState::listings_changed`]): what it lists is out of date though every row on
+    /// [`BrowseState::apply_view_local`]): what it lists is out of date though every row on
     /// screen is right. Cleared by any re-query.
     membership_stale: bool,
     /// Items were created or removed on the server ([`BrowseState::listings_changed`]): the rows
@@ -1581,7 +1580,7 @@ impl BrowseState {
         true
     }
     /// Items were created or removed on `sid`: re-list the current section without emptying it
-    /// (its rows stay on screen until the new first page replaces them, so the grid absorbs the
+    /// (its rows stay on screen until the replacement window is ready, so the grid absorbs the
     /// change in place) and make every other section of the server forget its pages.
     fn listings_changed(&mut self, sid: ServerId, _library_on_stack: bool) -> bool {
         let current = self.cur();
