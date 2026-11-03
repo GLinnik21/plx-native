@@ -507,6 +507,18 @@ impl Coordinator {
                 && proposal.rung.at_floor(),
         }
     }
+    /// A setup-bearing first object earns one ordinary continuation only while
+    /// the original trial clock still funds it. An exhausted clock is censored
+    /// budget evidence; the physical reader supplies that clock verdict.
+    pub(crate) fn fund_followup(
+        &mut self, proposal: abr::Proposal, funded: bool, now_ms: u64,
+    ) -> Result<(), bool> {
+        if funded { return Ok(()); }
+        let refreshing_same_request = self.reject(
+            proposal, abr::RejectCause::Censored, now_ms,
+        );
+        Err(refreshing_same_request)
+    }
     pub(crate) fn abandon(&self, encoder: &str) { self.control.abandon(encoder); }
     pub(crate) fn retire(&self, encoder: String) { self.control.retire(encoder); }
     pub(crate) fn trace_generation(&self) -> u32 { self.control.trace_generation() }

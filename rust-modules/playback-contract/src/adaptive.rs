@@ -95,6 +95,8 @@ mod tests {
         ] {
             trial.observe(id, observation).unwrap();
         }
+        assert_eq!(trial.observe(id, TrialObservation::FollowupRequested),
+            Err(TrialProtocolError::OutOfOrder));
         assert_eq!(trial.observe(TrialId::new(id.attempt, 4), TrialObservation::Published),
             Err(TrialProtocolError::Stale));
         assert_eq!(trial.observe(id, TrialObservation::Published), Ok(TrialPhase::Published));

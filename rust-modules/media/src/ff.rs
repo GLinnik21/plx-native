@@ -6446,15 +6446,14 @@ fn hls_demux(
         let mut verdict = first_grade.verdict;
 
         if first_grade.needs_followup {
-            if exploration_reserve.is_none() || exploration_expired(&mut exploration_reserve) {
+            let funded = exploration_reserve.is_some()
+                && !exploration_expired(&mut exploration_reserve);
+            if !funded { tx.mark_decided(); }
+            if let Err(refreshing) = state.fund_followup(proposal, funded, now_ms()) {
+                trial_protocol.observe(trial_id, TrialEvent::Ended)
+                    .expect("unfunded follow-up has not entered the queue");
                 state.abandon(&primed.encoder_session);
-                reject_hls_abr_after_transaction(
-                    state,
-                    proposal,
-                    crate::abr::RejectCause::Censored,
-                    &mut tx,
-                    now_ms(),
-                );
+                publish_hls_abr_action(proposal, refreshing, Some(false));
                 tx.finish("repeatable_unfunded");
                 crate::player::log(
                     "abr: setup-bearing candidate exhausted its original exploration budget",
