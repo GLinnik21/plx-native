@@ -431,7 +431,7 @@ fn reload_transcode_start(ps: &mut crate::route::PlaybackSession, pa: &mut super
         "reload_transcode: fresh Load at offset {}s",
         offset_ns / 1_000_000_000
     ));
-    teardown(ps, pa, true); // keep the session; reload mode
+    teardown(ps, pa, true, plx_playback_contract::StopReason::Replace); // keep the session; reload mode
     SHARED.disp_base.store(offset_ns, Ordering::Relaxed); // transcode is 0-based at content=offset
     SHARED.playpos_ns.store(offset_ns, Ordering::Relaxed);
     Some(start_bufferfeed_for(ps, pa, ticket))
@@ -480,7 +480,7 @@ pub fn reload_at(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter
         "reload_at: fresh Load at {}s",
         target_ns / 1_000_000_000
     ));
-    teardown(ps, pa, true); // reload mode: preserve the session (no url-clear / stop-scrobble)
+    teardown(ps, pa, true, plx_playback_contract::StopReason::Replace); // reload mode: preserve the session (no url-clear / stop-scrobble)
     engine::arm_seek(target_ns);
     reload_start_outcome(ps, pa, ticket)
 }
@@ -546,7 +546,7 @@ pub fn reload_transcode_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
 /// [`poll_release`] (`PendingRelease`), so the object may still exist when this returns; anything
 /// that needs it gone is queued behind it in the release machine (`Deferred`), never waited for.
 pub fn stop_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
-    teardown(ps, pa, false);
+    teardown(ps, pa, false, plx_playback_contract::StopReason::Stop);
 }
 
 /// Suspend for an app-switch: tear the pipeline down (webOS reclaims the video plane while we're
@@ -554,7 +554,7 @@ pub fn stop_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut super::a
 /// don't scrobble "stopped". This makes the foreground restore a clean same-item reload
 /// (begin_resume + start_bufferfeed), the known-good path, instead of resurrecting a stopped session.
 pub fn suspend_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
-    teardown(ps, pa, true);
+    teardown(ps, pa, true, plx_playback_contract::StopReason::Suspend);
 }
 
 
@@ -828,7 +828,7 @@ pub fn release_failed_engine(ps: &mut crate::route::PlaybackSession, pa: &mut su
     let cause = super::live_runtime_failure(ps);
     crate::route::note_engine_failure(ps, cause, super::intended_pos_ns(ps));
     log("player: the failed Engine's pipeline is released under the failure read-out");
-    teardown(ps, pa, true);
+    teardown(ps, pa, true, plx_playback_contract::StopReason::Replace);
     true
 }
 
@@ -842,7 +842,7 @@ pub fn suspend_bufferfeed_if_attempt(
 ) -> bool {
     let owns_attempt = pa.active_feed_attempt() == Some(attempt);
     if owns_attempt {
-        teardown(ps, pa, true);
+        teardown(ps, pa, true, plx_playback_contract::StopReason::Suspend);
     }
     owns_attempt
 }
@@ -858,7 +858,7 @@ pub fn foreground_follows_load(pa: &mut super::adapter::PlayerAdapter, attempt: 
 /// Common teardown owns the route fence, final report and scrobble ordering. The opaque native
 /// stop owns the Engine, worker joins, transport close, native release and AU destruction.
 pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAdapter,
-    for_reload: bool) {
+    for_reload: bool, reason: plx_playback_contract::StopReason) {
     engine::clear_failed_engine_release_arm();
     if let Some(route_attempt) = pa.active_feed_attempt() {
         let attempt = route_attempt.contract_id();
@@ -867,11 +867,7 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
             plx_playback_contract::Intent::Stop {
                 backend: plx_playback_contract::BackendKind::Feed,
                 attempt,
-                reason: if for_reload {
-                    plx_playback_contract::StopReason::Replace
-                } else {
-                    plx_playback_contract::StopReason::Stop
-                },
+                reason,
             },
             super::attempt_metrics::Origin::Fresh,
             at,

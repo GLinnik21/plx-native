@@ -104,6 +104,8 @@ impl FeedDriver {
                 DispatchResult::Queued
             }
             Operation::Stop(reason) if self.active == Some(attempt) => {
+                // A transport request queued earlier on this frame must not run after Stop.
+                self.transport_actions.clear();
                 self.stop_requested = Some((attempt, reason));
                 DispatchResult::Queued
             }
@@ -199,6 +201,7 @@ impl FeedDriver {
         if self.active != Some(attempt) { return; }
         self.events.push_back(BackendEvent { backend: BackendKind::Feed,
             event: DriverEvent::Release { attempt, status } });
+        self.transport_actions.clear();
         if status == ReleaseStatus::Released {
             self.active = None;
             self.stop_requested = None;
