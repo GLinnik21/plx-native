@@ -38,8 +38,8 @@
 //! The first design put `playback.started` on the engine's `load:` line. That line is the wrong
 //! seam and the name would have been a lie: it is emitted BEFORE the source is opened and before
 //! anything plays, so a television that never produced a frame would report a start. It is
-//! `requested` now, and `started` fires on the first transition into `Playing` — the same value the
-//! HUD renders, so the event says what the viewer saw.
+//! `requested` now, and `started` fires on the first transition into backend-reported `Playing` —
+//! the same value the HUD renders. A URI service's Playing report does not prove a panel picture.
 //!
 //! # Observed at the DERIVED state, not at `pump::set_state`
 //!
@@ -994,9 +994,9 @@ fn tick_with(ps: &crate::route::PlaybackSession, report_preview_failures: bool) 
     if !claim_held {
         note_rebuffer(prev, now, SAW_START.load(Relaxed));
     }
-    // `Resolving` and `Connecting` are the states of an engine being opened, whether the first or
-    // a reload after a quality switch; a rebuffer or a seek is neither, so an open that never
-    // reaches a picture is told apart from a session that had one.
+    // `Resolving` and `Connecting` mark an open, whether the first or a reload after a quality
+    // switch; a rebuffer or seek is neither. A later Feed picture can then be attributed to
+    // this open. A URI service state alone cannot establish that picture.
     if prev != now
         && matches!(
             now,
@@ -1005,9 +1005,12 @@ fn tick_with(ps: &crate::route::PlaybackSession, report_preview_failures: bool) 
     {
         note_engine_opening();
     }
-    if prev != now && now == super::attempt_view::PlaybackState::Playing {
-        // Unlike the usage funnel's once-per-attempt `Started`, every return to actual presented
-        // video is useful causal evidence after a seek or delivery reload.
+    if prev != now
+        && now == super::attempt_view::PlaybackState::Playing
+        && ps.attempt_view().backend() != Some(super::attempt_view::Backend::Uri)
+    {
+        // Feed's Playing transition follows its reported frame. A URI service Playing report,
+        // even with an advancing position, cannot establish panel presentation.
         push_trace(presented_event(ps));
     }
     match transition(prev, now, SAW_START.load(Relaxed), SAW_FAIL.load(Relaxed)) {
@@ -1260,7 +1263,7 @@ pub fn fps_rung(fps: f64) -> &'static str {
         .unwrap_or("other")
 }
 
-/// How long the viewer waited for a picture. The boundaries are where the EXPERIENCE changes, not
+/// How long the viewer waited for backend-reported playback. The boundaries are where the EXPERIENCE changes, not
 /// round numbers: under a second reads as instant, three seconds is where a person starts to wonder,
 /// ten is where they press something.
 pub fn startup_class(ms: i64) -> &'static str {
@@ -1416,7 +1419,14 @@ mod tests {
     fn uri_playing_starts_lifecycle_without_claiming_panel_presentation() {
         use plx_telemetry::telemetry::consent::{self, Consent};
         let _g = plx_base::testlock::serial();
-        let previous = consent::current();
+        struct Restore(Option<Consent>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                reset_latches_for_test();
+                consent::install(self.0.take().unwrap_or_default());
+            }
+        }
+        let _restore = Restore(consent::current());
         let mut enabled = Consent::default();
         enabled.errors = true;
         enabled.asked_version = consent::POLICY_VERSION;
@@ -1443,8 +1453,6 @@ mod tests {
             !trace_steps().iter().any(|step| matches!(step.event, TraceEvent::Presented { .. })),
             "service Playing and a position report are not independent panel evidence",
         );
-        reset_latches_for_test();
-        consent::install(previous.unwrap_or_default());
     }
 
     /// A paused session with no picture yet (`PlaybackState::Paused`) is not playing: it reports no
