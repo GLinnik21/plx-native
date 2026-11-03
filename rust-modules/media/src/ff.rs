@@ -16,6 +16,7 @@ use plx_playback_contract::demux::DemuxFault;
 use std::ffi::CString;
 use std::os::raw::{c_int, c_long, c_uchar, c_uint, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 pub use plx_media_codecs::ffi::*;
 pub use plx_media_codecs::Venc;
 
@@ -722,7 +723,7 @@ impl ReserveDeadlineState {
     /// rebuffer hold and a genuinely starved native clock all freeze the same physical balance.
     fn from_playhead(budget: std::time::Duration, yields_to_rebuffer: bool) -> Self {
         Self::from_playhead_at(
-            crate::player::playpos_ns().max(0),
+            crate::player::feed_playpos_ns().max(0),
             budget,
             yields_to_rebuffer,
         )
@@ -768,7 +769,7 @@ impl ReserveDeadlineState {
                 at.map(|at| at.saturating_duration_since(std::time::Instant::now()))
             }
             ReserveDeadlineClock::Playhead { started_ns, budget } => {
-                let spent_ns = crate::player::playpos_ns()
+                let spent_ns = crate::player::feed_playpos_ns()
                     .max(0)
                     .saturating_sub(started_ns);
                 let spent =
@@ -803,7 +804,7 @@ impl ReserveDeadlineState {
         match self.clock {
             ReserveDeadlineClock::Wall(at) => at.is_some_and(|at| std::time::Instant::now() >= at),
             ReserveDeadlineClock::Playhead { started_ns, budget } => {
-                let spent_ns = crate::player::playpos_ns()
+                let spent_ns = crate::player::feed_playpos_ns()
                     .max(0)
                     .saturating_sub(started_ns);
                 let spent =

@@ -1434,7 +1434,7 @@ impl TxTrace {
     ) -> Self {
         Self {
             started: std::time::Instant::now(),
-            buffered_ms, record,
+            buffered_ms: buffered_ms.clone(), record,
             prime_done_ms: None,
             master_done_ms: None,
             control_plane_ms: None,
