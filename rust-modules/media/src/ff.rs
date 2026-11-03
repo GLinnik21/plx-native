@@ -4325,7 +4325,7 @@ impl HlsRoundPort<'_> {
             return FeedObservation::Failed { trial, failure: FeedFailure::SourceMoved };
         }
         match hls_cursor_open(
-            &parsed.origin, &parsed.path, self.aq, self.net, false, &mut self.reserve,
+            &parsed.origin, &parsed.path, self.aq, self.net, false, self.reserve.as_mut(),
         ) {
             Ok(candidate) => {
                 let declared_bps = candidate.declared_bps;
@@ -4342,7 +4342,7 @@ impl HlsRoundPort<'_> {
         let Some(candidate) = self.candidate.as_mut() else {
             return FeedObservation::Failed { trial, failure: FeedFailure::Protocol };
         };
-        match hls_cursor_next(candidate, self.aq, self.net, &mut self.reserve) {
+        match hls_cursor_next(candidate, self.aq, self.net, self.reserve.as_mut()) {
             Ok(Some(segment)) => {
                 let duration = segment.duration;
                 self.segment = Some(segment);
