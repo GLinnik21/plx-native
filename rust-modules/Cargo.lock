@@ -808,6 +808,7 @@ version = "0.0.0"
 dependencies = [
  "libc",
  "plx_base",
+ "plx_media_codecs",
  "plx_net",
  "plx_platform",
  "plx_playback_contract",

@@ -24,7 +24,7 @@ default = []
 # behaviour here, not plumbing: the quality-override, track-name, playurl and forced-route triggers
 # read their files through `plx_base::devtrig`, which is compile-time `None` without it, and
 # 130-odd `cfg`s select the dev surface.
-devtriggers = ["dep:plx_play_uri", "plx_play_uri/devtriggers", "plx_media_codecs/devtriggers", "plx_base/devtriggers", "plx_machine/devtriggers", "plx_net/devtriggers", "plx_platform/devtriggers", "plx_gfx?/devtriggers", "plx_plex/devtriggers", "plx_telemetry/devtriggers", "plx_data/devtriggers"]
+devtriggers = ["plx_play_feed/devtriggers", "dep:plx_play_uri", "plx_play_uri/devtriggers", "plx_media_codecs/devtriggers", "plx_base/devtriggers", "plx_machine/devtriggers", "plx_net/devtriggers", "plx_platform/devtriggers", "plx_gfx?/devtriggers", "plx_plex/devtriggers", "plx_telemetry/devtriggers", "plx_data/devtriggers"]
 # `player::ffi_host` (the simulator's `VideoSink`) and `player::sim_video` replace the platform webOS port's native sink
 # (Starfish/ACB) under it. `sim_video` is the one thing here that draws, so `plx_gfx` is a
 # dependency of this feature only.
