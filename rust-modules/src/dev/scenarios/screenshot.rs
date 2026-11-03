@@ -316,7 +316,7 @@ pub(crate) fn libmenu_arm(app: &mut App, fr: &Frame) {
 /// there. The stop is a stall of the sink's own making (`ffi_host.rs::stop_clock_at`), re-armed
 /// every frame because a Load (a seek) starts a fresh fed timeline.
 pub(crate) fn clockstop_arm(app: &mut App, fr: &Frame) {
-    #[cfg(feature = "hostsim")]
+    #[cfg(all(feature = "hostsim", feature = "play-feed"))]
     {
         let arms = &mut app.scenarios.shots;
         if arms.clockstop.is_none() {
@@ -347,16 +347,22 @@ pub(crate) fn clockstop_arm(app: &mut App, fr: &Frame) {
             plx_base::eventlog::log(&format!("clockstop: gave up; the playhead never reached {ms} ms"));
         }
     }
-    #[cfg(not(feature = "hostsim"))]
+    #[cfg(not(all(feature = "hostsim", feature = "play-feed")))]
     {
         let _ = fr;
-        app.scenarios.shots.clockstop = Some(None);
+        if app.scenarios.shots.clockstop.is_none() {
+            #[cfg(all(feature = "hostsim", not(feature = "play-feed")))]
+            if plx_base::devtrig::read("clockstop").is_some() {
+                plx_base::eventlog::log("clockstop: unavailable without Feed simulator clock");
+            }
+            app.scenarios.shots.clockstop = Some(None);
+        }
     }
 }
 
 /// How long `clockstop` waits for the playhead. Longer than [`CEILING_MS`]: its position is
 /// usually reached through `autoseek`, which only fires 12 s into a run.
-#[cfg(feature = "hostsim")]
+#[cfg(all(feature = "hostsim", feature = "play-feed"))]
 const CLOCKSTOP_CEILING_MS: u32 = 60_000;
 
 #[cfg(test)]

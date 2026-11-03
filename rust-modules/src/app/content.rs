@@ -96,7 +96,16 @@ pub(super) fn halt_preview_now(
     ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
 ) {
+    #[cfg(feature = "play-feed")]
     plx_media::player::preview::halt(ps, pa);
+    #[cfg(not(feature = "play-feed"))]
+    {
+        // PreviewStart is declined below without Feed. An already marked preview still owns an
+        // addressed attempt and must be retired through the common playback stop door.
+        if plx_media::route::is_preview(ps) {
+            plx_media::player::stop_playback(ps, pa);
+        }
+    }
 }
 
 /// Queue a play for [`drain_held_feature`] to perform once a still-abandoning preview's Load
@@ -206,7 +215,7 @@ pub(super) fn clear_engine_for_play(
         PlayClearance::Clear => true,
         PlayClearance::RetireOrphan => {
             log("play: stopping an off-route engine nothing owns before the new Load");
-            plx_media::player::stop_bufferfeed(ps, pa);
+            plx_media::player::stop_playback(ps, pa);
             true
         }
     }
@@ -555,6 +564,15 @@ pub(crate) fn content_requests(app: &mut App, fr: &mut Frame) {
                     Some(ret), &mut app.pages, &mut app.bridge);
             }
             ContentReq::PreviewStart { sid, rk, part, vcodec, acodec, title } => {
+                #[cfg(not(feature = "play-feed"))]
+                {
+                    let _ = (sid, rk, part, vcodec, acodec, title);
+                    // Hero previews have a Feed-only physical budget and no URI qualification.
+                    // Decline this effect before it can create a preview route or machine phase.
+                    continue;
+                }
+                #[cfg(feature = "play-feed")]
+                {
                 if part.is_empty() {
                     plx_media::player::preview::note_no_extra(sid, &rk);
                     continue;
@@ -581,26 +599,33 @@ pub(crate) fn content_requests(app: &mut App, fr: &mut Frame) {
                 } else {
                     plx_media::player::preview::note_admission_refused();
                 }
+                }
             }
             ContentReq::PreviewStop => halt_preview(app),
             // Full-trailer mode's transport. Unlike every neighbour here it does NOT halt the
             // preview — it is the one request whose whole point is that the session survives it.
             ContentReq::PreviewTransport(play) => {
+                #[cfg(feature = "play-feed")]
                 plx_media::player::preview::transport(
                     &mut app.player.session,
                     &mut app.adapters.player,
                     play,
                 );
+                #[cfg(not(feature = "play-feed"))]
+                let _ = play;
             }
             // Full-trailer mode's LEFT/RIGHT scrub commit. Also does not halt the preview on its
             // own — `player::preview::seek` decides that (a refused/failed seek's own outcome),
             // exactly as `PreviewTransport` above never halts on a bare pause.
             ContentReq::PreviewSeek(target_ns) => {
+                #[cfg(feature = "play-feed")]
                 plx_media::player::preview::seek(
                     &mut app.player.session,
                     &mut app.adapters.player,
                     target_ns,
                 );
+                #[cfg(not(feature = "play-feed"))]
+                let _ = target_ns;
             }
             ContentReq::Panel(panel) => {
                 halt_preview(app);
@@ -1848,7 +1873,7 @@ mod library_publication_tests {
         // and wait its worker out, or the next test to read the player's state finds it Resolving.
         plx_media::route::cancel_play(&mut ps);
         let _ = plx_media::route::wait_resolve_workers_for_test(std::time::Duration::from_secs(10));
-        plx_media::player::stop_bufferfeed(&mut ps, &mut pa);
+        plx_media::player::stop_playback(&mut ps, &mut pa);
         let played = rig.metadata_mut().view().now_playing()
             .map(|n| (n.title.clone(), n.ep_title.clone()));
 
