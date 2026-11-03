@@ -675,7 +675,6 @@ mod subs;
 pub(crate) mod native_audio;
 pub(crate) use crate::subtitle_job as subside;
 use subs::SubTracks;
-#[cfg(test)]
 use acquisition::{AcquisitionRuntime, Phase, SegmentAcquisition};
 
 /// A rollback-reserve deadline is monotone in one direction: a floor downshift that reaches an
