@@ -983,14 +983,21 @@ fn force_audio_refusal(codec: &str, no_audio: bool) -> Option<ForceAudioRefusal>
 enum ForceOpenRefusal {
     Speed,
     Audio(ForceAudioRefusal),
+    OriginalEnhancementLayer,
 }
 
 fn force_open_refusal(
     requested_rate: i32,
     audio_codec: &str,
     no_audio: bool,
-    _original_dovi: plx_data::metadata::Dovi,
+    original_dovi: plx_data::metadata::Dovi,
 ) -> Option<ForceOpenRefusal> {
+    // The payload decision describes the *converted* presentation. Force keeps the source
+    // bytes, so a known Profile 7 or enhancement layer cannot truthfully use that declaration.
+    // This says nothing about what a device could decode through a different, qualified wire.
+    if original_dovi.present && (original_dovi.profile == 7 || original_dovi.el_present) {
+        return Some(ForceOpenRefusal::OriginalEnhancementLayer);
+    }
     if force_speed_refused(requested_rate) {
         return Some(ForceOpenRefusal::Speed);
     }
@@ -1014,11 +1021,30 @@ mod force_video_wire_tests {
             true, plx_platform::devcaps::dv::DvCapability::Supported, true,
         );
         assert_eq!(declared.declared().expect("Auto can convert P7").profile_id, 8);
-        assert!(force_open_refusal(super::super::RATE_NORMAL, "ac3", false, original).is_some(),
-            "Force preserves original P7 bytes, so a converted P8 Load declaration is untrue");
+        assert!(matches!(
+            force_open_refusal(super::super::RATE_NORMAL, "ac3", false, original),
+            Some(ForceOpenRefusal::OriginalEnhancementLayer),
+        ), "Force preserves original P7 bytes, so a converted P8 Load declaration is untrue");
         assert!(original.presentation(
             false, plx_platform::devcaps::dv::DvCapability::Unsupported, true,
         ).declared().is_none(), "an undeclared P7 still leaves the original P7 wire bytes");
+    }
+
+    #[test]
+    fn force_refuses_any_known_original_enhancement_layer_but_not_plain_p8() {
+        let original = |profile, el_present| plx_data::metadata::Dovi {
+            present: true, profile, el_present, bl_compat: 1,
+            ..plx_data::metadata::Dovi::NONE
+        };
+        for source in [original(7, false), original(8, true)] {
+            assert!(matches!(
+                force_open_refusal(super::super::RATE_NORMAL, "ac3", false, source),
+                Some(ForceOpenRefusal::OriginalEnhancementLayer),
+            ));
+        }
+        for source in [plx_data::metadata::Dovi::NONE, original(8, false)] {
+            assert!(force_open_refusal(super::super::RATE_NORMAL, "ac3", false, source).is_none());
+        }
     }
 }
 
@@ -1564,6 +1590,9 @@ fn start_bufferfeed_inner(
                 }
                 ForceOpenRefusal::Audio(why) => {
                     log(&format!("start_bufferfeed: Force Direct Play refused original audio {}: {}", open.audio_codec, why.message()));
+                }
+                ForceOpenRefusal::OriginalEnhancementLayer => {
+                    log("start_bufferfeed: Force Direct Play refused original Dolby Vision Profile 7/enhancement-layer wire: no qualified buffer-feed declaration for unchanged bytes");
                 }
             }
             SHARED.fail_demux(DemuxExitClass::LoadRefused);
