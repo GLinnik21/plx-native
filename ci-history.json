@@ -1,4 +1,4 @@
-{"updated":"2026-11-03T11:22:17Z",
+{"updated":"2026-11-03T11:43:26Z",
 "ci":[
 {"id":31025719515,"at":"2026-08-05T16:31:58Z","sha":"363548b32","title":"ff: prove the ABI table instead of asserting it, and refuse a foreign FFmpeg","jobs":{"cross-build (armv7) + artifact assertions":86,"host checks (NOT a device gate)":64},"pr":null,"conclusion":"success","attempt":1},
 {"id":31093855724,"at":"2026-08-06T10:35:26Z","sha":"bdbf8a099","title":"docs: the README promised a ceiling the binary no longer has","jobs":{"cross-build (armv7) + artifact assertions":124,"host checks (NOT a device gate)":73},"pr":null,"conclusion":"success","attempt":1},
@@ -4453,7 +4453,9 @@
 {"id":41568609503,"at":"2026-11-03T02:50:54Z","sha":"af223be7a","title":"Wrap a fixture doc line at 100 columns","pr":1217,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{}},
 {"id":41569669256,"at":"2026-11-03T03:01:32Z","sha":"8a2e88cca","title":"player: stop fencing viewer HLS Resume on historical runway","pr":1218,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":325,"macOS tests against bundled FFmpeg and ASS":207,"Windows launcher syntax":20,"macOS simulator build + launch":237}},
 {"id":41570494637,"at":"2026-11-03T03:09:32Z","sha":"a7572c88a","title":"player: stop fencing viewer HLS Resume on historical runway","pr":1218,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":21,"macOS simulator build + launch":158,"macOS tests against bundled FFmpeg and ASS":175,"Linux simulator build + launch":296}},
-{"id":41625848079,"at":"2026-11-03T11:14:11Z","sha":"1a68f3e4e","title":"Clarify the library replacement window publication contract","pr":1215,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":240,"Windows launcher syntax":22,"macOS simulator build + launch":277,"macOS tests against bundled FFmpeg and ASS":126}}
+{"id":41625848079,"at":"2026-11-03T11:14:11Z","sha":"1a68f3e4e","title":"Clarify the library replacement window publication contract","pr":1215,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":240,"Windows launcher syntax":22,"macOS simulator build + launch":277,"macOS tests against bundled FFmpeg and ASS":126}},
+{"id":41629098740,"at":"2026-11-03T11:38:03Z","sha":"47b25e825","title":"test: query the addressed hero menu without screen-local IDs","pr":1220,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":158,"Linux simulator build + launch":309,"Windows launcher syntax":18},"failed":["macOS simulator build + launch"]},
+{"id":41629117909,"at":"2026-11-03T11:38:12Z","sha":"edbe98f4c","title":"Preserve relists after page failures and reseed animation on enable","pr":1215,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":209,"Windows launcher syntax":21,"Linux simulator build + launch":310,"macOS simulator build + launch":184}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
