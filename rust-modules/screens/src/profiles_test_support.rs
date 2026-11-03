@@ -36,6 +36,7 @@ pub fn snapshot(phase: Phase, users: Vec<auth::UserTile>) -> auth::owner::Sessio
         png: Arc::from(Vec::<u8>::new()),
         code_replaced: false,
         users: Arc::from(users),
+        seated: Arc::from(""),
         error: Arc::from(""),
         pin_denied: false,
         profile: None,
@@ -93,6 +94,7 @@ pub fn cx(focus: Option<FocusKey<u32>>) -> Cx<'static, SessionHost> {
 pub fn bare(pad: Pad) -> ProfilesScreen {
     ProfilesScreen {
         entry: EntryId(0),
+        roster_seated: false,
         row: AvatarRow::new(),
         footer_pop: CtlPop::new(),
         spin_ms: 0.0,
@@ -100,6 +102,7 @@ pub fn bare(pad: Pad) -> ProfilesScreen {
         ground: RouteGround::new(),
         pad,
         users: Arc::from(Vec::<auth::UserTile>::new()),
+        seated: Arc::from(""),
         phase: Phase::Profiles,
         error: Arc::from(""),
         back_resumes: false,

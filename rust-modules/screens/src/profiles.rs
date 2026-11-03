@@ -687,6 +687,10 @@ impl PendingSelection {
 
 pub struct ProfilesScreen {
     entry: EntryId,
+    /// The seated user's uuid, which the roster opens on ([`Self::seated_tile`]).
+    seated: Arc<str>,
+    /// Focus has been put on that tile once since mounting, so the person's own moves stand.
+    roster_seated: bool,
     /// The avatar row's animation cache — focus-scale + scroll springs. A render cache, not
     /// logical state, exactly as `RootPage::table`'s `TableView` is: the engine owns WHICH avatar
     /// is focused, this owns how it gets there on screen.
@@ -736,6 +740,8 @@ impl ProfilesScreen {
         let snapshot = auth.0;
         let mut s = Self {
             entry,
+            seated: Arc::clone(&snapshot.seated),
+            roster_seated: false,
             row: AvatarRow::new(),
             footer_pop: CtlPop::new(),
             spin_ms: 0.0,
@@ -783,6 +789,11 @@ impl ProfilesScreen {
     fn shelf(&self, n: usize) -> geom::Shelf<'_> {
         let extent = Rect::new(0.0, ROW_Y, SCR_W as f32, AvatarRow::STYLE.h);
         self.row.focusable(n, ROW_Y, ROSTER_GROUP, self.entry, extent)
+    }
+
+    /// The roster's tile for the seated user.
+    fn seated_tile(&self) -> Option<usize> {
+        self.users.iter().position(|u| !self.seated.is_empty() && *u.uuid == *self.seated)
     }
 
     fn avatar_art(u: &auth::UserTile) -> Art<'_> {
@@ -848,6 +859,7 @@ impl ProfilesScreen {
     fn resync(&mut self, auth: auth::SessionRead<'_>) {
         let snapshot = auth.0;
         self.users = Arc::clone(&snapshot.users);
+        self.seated = Arc::clone(&snapshot.seated);
         self.phase = snapshot.phase;
         self.error = Arc::clone(&snapshot.error);
         self.back_resumes = snapshot.readout_back_resumes;
@@ -921,6 +933,20 @@ impl ProfilesScreen {
             ));
         }
         self.readout_seated = readout;
+
+        // The roster opens on the user who is watching; the mount's own seat is the first tile.
+        if !self.roster_seated && !self.pad.open && !readout && n > 0 {
+            self.roster_seated = true;
+            if let Some(i) = self.seated_tile().filter(|&i| i != 0) {
+                let me = fx.from();
+                fx.push(Fx::Deliver(
+                    me,
+                    Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
+                        focus: FocusTarget::Elem(plx_machine::machine::FocusKey { entry: self.entry, elem: i as u32 }),
+                    })),
+                ));
+            }
+        }
 
         if self.pad.open {
             Self::step_pin_flash(&mut self.pad, dt, fx);
