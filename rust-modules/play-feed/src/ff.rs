@@ -7110,3 +7110,13 @@ pub fn demux(
     crate::aq::aq_set_eof(aqa_p); // EOF on the audio lane too
     session.media().record("ff: demux ended");
 }
+
+#[cfg(any(test, feature = "test-support"))]
+#[path = "ff_fixture_bytes.rs"]
+pub mod test_support;
+#[cfg(test)]
+#[path = "ff_aac_timestamp_tests.rs"]
+mod aac_timestamp_tests;
+#[cfg(test)]
+#[path = "ff_packet_framing_tests.rs"]
+mod packet_framing_tests;

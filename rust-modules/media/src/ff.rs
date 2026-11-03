@@ -48,14 +48,6 @@ pub(crate) mod test_support;
 mod abr_reject_tests;
 
 #[cfg(test)]
-#[path = "ff_packet_framing_tests.rs"]
-mod packet_framing_tests;
-
-#[cfg(test)]
-#[path = "ff_aac_timestamp_tests.rs"]
-mod aac_timestamp_tests;
-
-#[cfg(test)]
 #[path = "ff_source_teardown_tests.rs"]
 mod source_teardown_tests;
 
