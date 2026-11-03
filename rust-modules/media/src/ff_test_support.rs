@@ -1,6 +1,7 @@
 //! Shared fixtures and helpers for the `ff` test modules split out below.
 
 use super::*;
+use crate::player::SHARED;
 
 struct FixtureDemuxObserver;
 
@@ -21,13 +22,24 @@ impl DemuxObserver for FixtureDemuxObserver {
     fn duration_ns(&self) -> Option<i64> {
         Some(SHARED.duration_ns.load(Ordering::Relaxed))
     }
+    fn declared_video_code(&self) -> Option<u8> {
+        Some(SHARED.dg_load_v.load(Ordering::Relaxed))
+    }
     fn paused(&self) -> Option<bool> { Some(crate::player::TX.paused.load(Ordering::Acquire)) }
     fn pause_clock(&self) -> Option<plx_playback_contract::demux::PauseClock> {
         let (at, elapsed) = crate::player::TX.pause_clock_sample();
         Some(plx_playback_contract::demux::PauseClock { at, elapsed })
     }
     fn hls_buffer_ms(&self) -> Option<Option<i64>> {
-        Some(hls_buffer_snapshot_with_playhead(None).0)
+        Some(hls_buffer_fact_at(self.hls_buffer_clocks()?, None).buffered_ms())
+    }
+    fn hls_buffer_clocks(&self) -> Option<plx_playback_contract::demux::HlsBufferClocks> {
+        Some(plx_playback_contract::demux::HlsBufferClocks {
+            playhead_ns: SHARED.playpos_ns.load(Ordering::Relaxed),
+            video_tail_ns: SHARED.hls_video_tail_ns.load(Ordering::Acquire),
+            audio_tail_ns: SHARED.hls_audio_tail_ns.load(Ordering::Acquire),
+            display_base_ns: SHARED.disp_base.load(Ordering::Relaxed),
+        })
     }
     fn remaining_playback_ms(&self) -> Option<i64> {
         let duration = SHARED.duration_ns.load(Ordering::Relaxed);

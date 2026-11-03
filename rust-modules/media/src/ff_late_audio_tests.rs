@@ -56,6 +56,7 @@
 //! (`make check-ffmpeg` stages the libraries into `pkg/`, which is the default directory).
 
 use super::*;
+use crate::player::SHARED;
 use super::image_subtitle_tests::bind_host_ffmpeg;
 use crate::aq::AuNode;
 use std::io::{Read, Write};

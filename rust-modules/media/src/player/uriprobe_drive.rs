@@ -49,7 +49,7 @@ impl UriSession {
     fn advance(&mut self, ps: &mut PlaybackSession, mt: &MainThread,
         poll: Result<plx_platform::tv::uri::UriPoll, String>, now_ms: u64) {
         self.0.advance(&mut |attempt, how| settle(ps, attempt, how), mt, poll, now_ms);
-        ps.ingest_attempt_facts(self.0.attempt(), super::attempt_view::AttemptFacts {
+        ps.ingest_attempt_facts(self.0.attempt(), super::attempt_view::Backend::Uri, super::attempt_view::AttemptFacts {
             position_ns: self.0.reported_position_ms().and_then(|ms| ms.checked_mul(1_000_000)),
             ..Default::default()
         });

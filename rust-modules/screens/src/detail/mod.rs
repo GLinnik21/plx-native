@@ -3180,7 +3180,7 @@ impl DetailScreen {
             );
     }
 
-    fn record_stops<H: ContentLike + crate::registry::MetadataLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
+    fn record_stops<H: ContentLike + crate::registry::MetadataLike + PlayerLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
         if !f.records_stops() { return; }
         let meta = H::metadata(f.cx);
         // Two placements per episode, each reading the section flow: one validation for all.
@@ -3795,7 +3795,7 @@ impl DetailScreen {
         self.strip_seat.done = done;
     }
 
-    fn tick<H: ContentLike + crate::registry::MetadataLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+    fn tick<H: ContentLike + crate::registry::MetadataLike + PlayerLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let meta = H::metadata(cx);
         self.refresh_spot_facts(meta);
         self.layout.set(None);
@@ -3963,7 +3963,7 @@ impl DetailScreen {
     /// `focused_episode` says its menu can open; the episode text stop, Extras, Cast, the hero,
     /// headings and the about rows have no hold action), never while full-trailer mode has taken the page off screen;
     /// and whether it has arrived (the page scroll and the card's own glide).
-    fn hint_input<H: ContentLike + crate::registry::MetadataLike>(
+    fn hint_input<H: ContentLike + crate::registry::MetadataLike + PlayerLike>(
         &self,
         cx: &Cx<'_, H>,
         focused: Option<Located>,

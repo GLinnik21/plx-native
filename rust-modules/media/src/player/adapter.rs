@@ -284,7 +284,7 @@ impl PlayerAdapter {
     pub(super) fn publish_feed_attempt_view(&self, ps: &mut crate::route::PlaybackSession) {
         let Some(attempt) = self.active_feed_attempt() else { return; };
         let Some(facts) = super::feed_pump::attempt_facts(&self.feed) else { return; };
-        let _ = ps.ingest_attempt_facts(attempt, facts);
+        let _ = ps.ingest_attempt_facts(attempt, crate::player::attempt_view::Backend::Feed, facts);
     }
 
     pub(super) fn feed_uses_stream_queues(&self) -> bool { self.feed.uses_stream_queues() }

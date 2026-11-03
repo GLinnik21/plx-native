@@ -825,7 +825,7 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
     native.unblock_join_close();
     let mut terminal_facts = native.terminal_facts();
     terminal_facts.started = Some(false);
-    let _ = ps.ingest_attempt_facts(route_attempt, terminal_facts);
+    let _ = ps.ingest_attempt_facts(route_attempt, crate::player::attempt_view::Backend::Feed, terminal_facts);
     after_physical_close(ps, for_reload, final_report, &mut report_th);
     native.report_dispatched();
     pa.release_native_stop(&mut native, for_reload);
@@ -908,7 +908,7 @@ fn mark_attempt_stopped(ps: &mut crate::route::PlaybackSession) {
     let Some(attempt) = ps.attempt_view().attempt() else { return; };
     let mut facts = *ps.attempt_view().facts();
     facts.started = Some(false);
-    let _ = ps.ingest_attempt_facts(attempt, facts);
+    let _ = ps.ingest_attempt_facts(attempt, crate::player::attempt_view::Backend::Feed, facts);
 }
 
 /// Capture final reporting facts before native teardown resets position and duration.
@@ -1017,7 +1017,7 @@ mod readout_stop_tests {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let attempt = crate::route::RouteStartAttempt::fixture();
         ps.begin_attempt_view(attempt, super::super::attempt_view::Backend::Feed);
-        assert!(ps.ingest_attempt_facts(attempt, super::super::attempt_view::AttemptFacts {
+        assert!(ps.ingest_attempt_facts(attempt, crate::player::attempt_view::Backend::Feed, super::super::attempt_view::AttemptFacts {
             started: Some(true),
             runtime_failure: Some(super::super::attempt_view::RuntimeFailure::TvPipeline),
             ..Default::default()

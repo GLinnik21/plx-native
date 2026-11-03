@@ -2,7 +2,7 @@
 //! addressed to the attempt that produced them; an absent fact remains unknown across a reset.
 //! This is a value owned by `PlaybackSession`, never a second process-wide mailbox.
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Backend { Feed, Uri }
 
 pub use plx_playback_contract::readout::{AttemptFacts, PlaybackState, RefusalPath, RuntimeFailure};
@@ -27,8 +27,8 @@ impl<A: Copy + Eq> AttemptView<A> {
     pub fn facts(&self) -> &AttemptFacts { &self.facts }
 
     /// An old worker or an unrelated backend cannot change the current readout.
-    pub fn ingest(&mut self, attempt: A, incoming: AttemptFacts) -> bool {
-        if self.attempt != Some(attempt) { return false; }
+    pub fn ingest(&mut self, attempt: A, backend: Backend, incoming: AttemptFacts) -> bool {
+        if self.attempt != Some(attempt) || self.backend != Some(backend) { return false; }
         self.facts = incoming;
         true
     }
@@ -43,16 +43,18 @@ mod tests {
         let (a, b) = (1_u64, 2_u64);
         let mut view = AttemptView::EMPTY;
         view.begin(a, Backend::Feed);
-        assert!(view.ingest(a, AttemptFacts { position_ns: Some(42), reported_frame: Some(true), ..Default::default() }));
+        assert!(view.ingest(a, Backend::Feed, AttemptFacts { position_ns: Some(42), reported_frame: Some(true), ..Default::default() }));
         view.begin(b, Backend::Uri);
         assert_eq!(view.facts().position_ns, None);
         assert_eq!(view.facts().reported_frame, None);
         assert!(view.backend() == Some(Backend::Uri));
-        assert!(!view.ingest(a, AttemptFacts { position_ns: Some(99), ..Default::default() }));
+        assert!(!view.ingest(a, Backend::Feed, AttemptFacts { position_ns: Some(99), ..Default::default() }));
         assert_eq!(view.facts().position_ns, None);
-        assert!(view.ingest(b, AttemptFacts { duration_ns: Some(100), ..Default::default() }));
+        assert!(view.ingest(b, Backend::Uri, AttemptFacts { duration_ns: Some(100), ..Default::default() }));
         assert_eq!(view.facts().duration_ns, Some(100));
-        assert!(view.ingest(b, AttemptFacts::default()));
+        assert!(!view.ingest(b, Backend::Feed, AttemptFacts { position_ns: Some(999), ..Default::default() }));
+        assert_eq!(view.facts().duration_ns, Some(100), "wrong backend cannot replace even a reused attempt identity");
+        assert!(view.ingest(b, Backend::Uri, AttemptFacts::default()));
         assert_eq!(view.facts().duration_ns, None, "a sparse replacement cannot carry stale evidence");
     }
 }

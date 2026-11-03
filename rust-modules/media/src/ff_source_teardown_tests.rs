@@ -2,6 +2,7 @@
 //! read/seek races, and stalled or IO-failed transports across both transports.
 
 use super::*;
+use crate::player::SHARED;
 #[allow(unused_imports)]
 use super::test_support::*;
 
@@ -375,8 +376,9 @@ fn a_prefetched_segment_does_not_move_the_published_buffer() {
         video_tail_ns: 2_000_000_000,
         audio_tail_ns: Some(2_000_000_000),
     };
-    let published = hls_buffer_fact(None).buffered_ms();
-    let if_counted = hls_buffer_fact(Some(&held)).buffered_ms();
+    let observer = super::test_support::demux_observer();
+    let published = hls_buffer_fact(observer.as_ref(), None).unwrap().buffered_ms();
+    let if_counted = hls_buffer_fact(observer.as_ref(), Some(&held)).unwrap().buffered_ms();
     SHARED
         .hls_video_tail_ns
         .store(prev_video, Ordering::Release);

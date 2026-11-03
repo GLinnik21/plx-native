@@ -5,10 +5,9 @@
 #![deny(clippy::debug_assert_with_mut_call)]
 use crate::aq::AuQueue;
 use plx_playback_contract::adaptive::{Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, AdaptivePhysicalPort, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, ExplorationFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, RoundId, TrialActuatorPort, TrialClock, TrialId, VariantFact};
-use plx_playback_contract::demux::{DemuxCallbackEffect, DemuxClock, DemuxEffect, DemuxObserver, DemuxSession, PauseLane};
+use plx_playback_contract::demux::{DemuxCallbackEffect, DemuxClock, DemuxEffect, DemuxObserver, DemuxSession, HlsBufferClocks, PauseLane};
 use plx_playback_contract::SourceKey;
 use plx_play_feed::SendPtr;
-use crate::player::SHARED;
 use plx_net::stream::HttpStream;
 use plx_net::net::origin::Origin;
 use plx_net::range_io::{self, RangeFactory, RangeReader};
@@ -4452,7 +4451,11 @@ impl FeedPort for HlsRoundPort<'_> {
                 trial, expired: exploration_expired(&mut self.reserve),
             },
             FeedAction::BudgetSnapshot { trial } => {
-                let (buffer, started_ns) = hls_buffer_snapshot_with_playhead(None);
+                let Some((buffer, started_ns)) = hls_buffer_snapshot_with_playhead(
+                    self.session.observer().as_ref(), None,
+                ) else {
+                    return FeedObservation::Failed { trial, failure: FeedFailure::Aborted };
+                };
                 FeedObservation::BudgetSnapshot {
                     trial, buffered_ms: buffer, started_ns,
                     remaining: self.reserve.as_ref().and_then(ReserveDeadlineState::remaining),
@@ -4556,7 +4559,9 @@ impl HlsRoundPort<'_> {
         ) else {
             return FeedObservation::Failed { trial, failure: FeedFailure::Protocol };
         };
-        let buffer = hls_buffer_fact(Some(&output));
+        let Some(buffer) = hls_buffer_fact(self.session.observer().as_ref(), Some(&output)) else {
+            return FeedObservation::Failed { trial, failure: FeedFailure::Aborted };
+        };
         self.staged.push((output, clock, segment.duration));
         FeedObservation::Staged { trial, buffer, count: self.staged.len() }
     }
@@ -4845,11 +4850,11 @@ fn hls_cursor_next_duration_ms(
 }
 
 fn hls_buffer_fact_at(
+    clocks: HlsBufferClocks,
     output: Option<&HlsSegmentOutput>,
-    playhead_ns: i64,
 ) -> BufferFact {
-    let mut video = SHARED.hls_video_tail_ns.load(Ordering::Acquire);
-    let mut audio = SHARED.hls_audio_tail_ns.load(Ordering::Acquire);
+    let mut video = clocks.video_tail_ns;
+    let mut audio = clocks.audio_tail_ns;
     let mut audio_expected = audio >= 0;
     if let Some(candidate) = output {
         video = video.max(candidate.video_tail_ns);
@@ -4861,9 +4866,9 @@ fn hls_buffer_fact_at(
     // Starfish consumes a zero-based feed after a resume/seek while `playpos_ns` is already on the
     // movie timeline (`disp_base + fed PTS`). Translate both demux tails by the same display base
     // before the controller compares them; raw FFmpeg PTS still never cross this boundary.
-    let display_base = SHARED.disp_base.load(Ordering::Relaxed).max(0);
+    let display_base = clocks.display_base_ns.max(0);
     BufferFact {
-        playback_ms: playhead_ns.max(0) / 1_000_000,
+        playback_ms: clocks.playhead_ns.max(0) / 1_000_000,
         video_tail_ms: video.max(0).saturating_add(display_base) / 1_000_000,
         audio_tail_ms: (audio >= 0).then_some(
             audio.max(0).saturating_add(display_base) / 1_000_000,
@@ -4873,15 +4878,18 @@ fn hls_buffer_fact_at(
 }
 
 fn hls_buffer_snapshot_with_playhead(
+    observer: &dyn DemuxObserver,
     output: Option<&HlsSegmentOutput>,
-) -> (Option<i64>, i64) {
-    let playhead_ns = SHARED.playpos_ns.load(Ordering::Relaxed).max(0);
-    (hls_buffer_fact_at(output, playhead_ns).buffered_ms(), playhead_ns)
+) -> Option<(Option<i64>, i64)> {
+    let clocks = observer.hls_buffer_clocks()?;
+    Some((hls_buffer_fact_at(clocks, output).buffered_ms(), clocks.playhead_ns.max(0)))
 }
 
-fn hls_buffer_fact(output: Option<&HlsSegmentOutput>) -> BufferFact {
-    let playhead_ns = SHARED.playpos_ns.load(Ordering::Relaxed).max(0);
-    hls_buffer_fact_at(output, playhead_ns)
+fn hls_buffer_fact(
+    observer: &dyn DemuxObserver,
+    output: Option<&HlsSegmentOutput>,
+) -> Option<BufferFact> {
+    Some(hls_buffer_fact_at(observer.hls_buffer_clocks()?, output))
 }
 
 /// Progressive Original uses absolute movie PTS, unlike offset-zero HLS, so no display-base
@@ -4996,8 +5004,8 @@ impl AdaptiveRoundPort for HlsRoundPort<'_> {
         )
     }
 
-    fn buffer_snapshot(&self) -> (Option<i64>, i64) {
-        hls_buffer_snapshot_with_playhead(None)
+    fn buffer_snapshot(&self) -> Option<(Option<i64>, i64)> {
+        hls_buffer_snapshot_with_playhead(self.session.observer().as_ref(), None)
     }
 
     fn pause_fact(&mut self) -> PauseFact {
@@ -5102,7 +5110,8 @@ where
     // that skips the evaluation. (This is precisely what was missing before: the lookahead used
     // to build `ReserveDeadlineState::new(None, false), None` here unconditionally, which is how
     // `pipe_abr_down_collapse` never aborted a fetch that had already exhausted the reserve.)
-    let acquisition = SegmentAcquisition::for_cursor(at_floor, observer);
+    let acquisition = SegmentAcquisition::for_cursor(at_floor, observer)
+        .ok_or(HlsExit::Aborted)?;
     let stall_reserve_ms = acquisition
         .stall()
         .map(|guard| guard.reserve_ms_at_start)
@@ -5181,7 +5190,8 @@ fn hls_read_active(
     let Some(segment) = hls_cursor_next(cursor, aq, net, None)? else { return Ok(None); };
     let mut clock = timeline.begin(segment.duration)
         .map_err(|_| HlsExit::Failed("HLS content timeline overflow"))?;
-    let acquisition = SegmentAcquisition::for_cursor(at_floor, net.observer.clone());
+    let acquisition = SegmentAcquisition::for_cursor(at_floor, net.observer.clone())
+        .ok_or(HlsExit::Aborted)?;
     let stall_reserve_ms = acquisition.stall()
         .map(|guard| guard.reserve_ms_at_start).unwrap_or(-1);
     match unsafe { hls_demux_segment(
@@ -5233,7 +5243,9 @@ impl HlsRoundPort<'_> {
                 let Some((_, output, _, _)) = self.current.as_ref() else {
                     return Err(HlsExit::Failed("adaptive active buffer without read"));
                 };
-                Ok(ActiveObservation::Buffer { round, fact: hls_buffer_fact(Some(output)) })
+                let fact = hls_buffer_fact(self.session.observer().as_ref(), Some(output))
+                    .ok_or(HlsExit::Aborted)?;
+                Ok(ActiveObservation::Buffer { round, fact })
             }
             ActiveAction::Pause { .. } => {
                 let snapshot = self.session.clock_mut().pause_event(PauseLane::Hls);
@@ -6372,9 +6384,7 @@ pub(crate) fn demux(
                 }
                 let dur = fmt_duration(fmt);
                 if dur > 0 {
-                    SHARED
-                        .duration_ns
-                        .store(dur.saturating_mul(1000), Ordering::Relaxed);
+                    session.media().publish(DemuxEffect::DurationNs(dur.saturating_mul(1000)));
                 }
                 // The NAME as well as the id, and the name is what anything downstream should grade.
                 // A raw AV_CODEC_ID is an FFmpeg enum, and that enum RENUMBERS between majors — H264
@@ -6438,11 +6448,16 @@ pub(crate) fn demux(
                 // What the Load declared (`dg_load_v`, 0 when this start sent a static payload) must
                 // be what the file is: a Load that says one codec over another codec's bitstream is a
                 // black screen, so stop and name both.
-                let declared = SHARED.dg_load_v.load(Ordering::Relaxed);
+                let Some(declared) = session.observer().declared_video_code() else {
+                    avformat_close_input(&mut fmt);
+                    free_avio(avio);
+                    break;
+                };
                 if declared != 0 && declared != framing.load_video().diag_code() {
                     session.media().record(&format!(
                         "ff: the Load declared {} but the file is {cname}; refusing the stream",
-                        crate::player::load_v_name(declared)
+                        plx_play_feed::LoadVideo::from_diag_code(declared)
+                            .map_or("—", plx_play_feed::LoadVideo::payload_name)
                     ));
                     session.media().publish(DemuxEffect::FailFault(DemuxFault::LoadMismatch));
                     avformat_close_input(&mut fmt);

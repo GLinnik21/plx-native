@@ -716,9 +716,6 @@ pub fn video_viewport(ps: &crate::route::PlaybackSession, width: i32, height: i3
         .map(|aspect| aspect.fit(width, height))
 }
 
-pub(crate) fn feed_playpos_ns() -> i64 {
-    SHARED.playpos_ns.load(Relaxed)
-}
 pub fn playpos_ns(ps: &crate::route::PlaybackSession) -> Option<i64> {
     ps.attempt_view().facts().position_ns
 }
@@ -1551,13 +1548,8 @@ pub use ffi_host::stop_clock_at as stop_sim_clock_at;
 /// The video codec a `dg_load_v` code names (video 1 = H264, 2 = H265, 3 = AV1, 4 = VP9; 0 = not built).
 /// The codes are written from `engine::LoadVideo::diag_code`, the names from its `payload_name`.
 pub fn load_v_name(code: u8) -> &'static str {
-    match code {
-        1 => "H264",
-        2 => "H265",
-        3 => "AV1",
-        4 => "VP9",
-        _ => "—",
-    }
+    plx_play_feed::LoadVideo::from_diag_code(code)
+        .map_or("—", plx_play_feed::LoadVideo::payload_name)
 }
 
 /// One consistent read of everything the on-screen diagnostics overlay shows (`app::diagnostics`).
@@ -3022,7 +3014,7 @@ mod tests {
         TX.started.store(true, Relaxed);
         let attempt = crate::route::RouteStartAttempt::fixture();
         ps.begin_attempt_view(attempt, attempt_view::Backend::Feed);
-        assert!(ps.ingest_attempt_facts(attempt, attempt_view::AttemptFacts {
+        assert!(ps.ingest_attempt_facts(attempt, crate::player::attempt_view::Backend::Feed, attempt_view::AttemptFacts {
             position_ns: Some(42_000_000_000), ..Default::default()
         }));
         assert!(set_play_rate(&ps, 1500));
