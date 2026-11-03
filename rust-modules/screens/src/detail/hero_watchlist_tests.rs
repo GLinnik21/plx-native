@@ -15,7 +15,9 @@ fn sets() -> Vec<HeroSet> {
                 for trailer in [false, true] {
                     for alt in [false, true] {
                         for go_show in [false, true] {
-                            v.push(HeroSet { watchlist: true, go_show, version, restart, trailer, alt, mark });
+                            for more in [false, true] {
+                                v.push(HeroSet { more, watchlist: true, go_show, version, restart, trailer, alt, mark });
+                            }
                         }
                     }
                 }
@@ -41,6 +43,7 @@ fn the_disc_is_second_after_play_in_every_row() {
         if s.alt { want.push(HeroCtl::Alt); }
         want.push(if s.mark == PosterMark::Watched { HeroCtl::MarkUnwatched } else { HeroCtl::MarkWatched });
         if s.version { want.push(HeroCtl::Version); }
+        if s.more { want.push(HeroCtl::More); }
         assert_eq!(rest, want, "{s:?}");
         assert!(n <= MAX_CTLS);
     }
@@ -50,7 +53,7 @@ fn the_disc_is_second_after_play_in_every_row() {
 /// membership flip because it is one elem for both faces.
 #[test]
 fn focus_walks_play_then_disc_then_the_rest() {
-    let s = HeroSet { watchlist: true, go_show: false, version: false, restart: true, trailer: false, alt: false, mark: PosterMark::None };
+    let s = HeroSet { more: false, watchlist: true, go_show: false, version: false, restart: true, trailer: false, alt: false, mark: PosterMark::None };
     assert_eq!(ctl_at(s, 0), Some(HeroCtl::Play));
     assert_eq!(ctl_at(s, 1), Some(HeroCtl::Watchlist));
     assert_eq!(ctl_at(s, 2), Some(HeroCtl::Restart));
@@ -63,7 +66,7 @@ fn focus_walks_play_then_disc_then_the_rest() {
 fn the_elem_id_is_fresh_in_the_hero_range_and_round_trips() {
     let all = [
         ELEM_PLAY, ELEM_RESTART, ELEM_ALT, ELEM_MARK_WATCHED, ELEM_MARK_UNWATCHED, ELEM_TRAILER,
-        ELEM_WATCHLIST, ELEM_GO_TO_SHOW, ELEM_VERSION,
+        ELEM_WATCHLIST, ELEM_GO_TO_SHOW, ELEM_VERSION, ELEM_MORE,
     ];
     let mut seen = std::collections::BTreeSet::new();
     for e in all {
@@ -93,14 +96,15 @@ fn the_disc_has_no_label_and_never_widens() {
     for named in [false, true] {
         assert!(disc_verb(HeroCtl::Watchlist, named).is_none());
     }
-    let s = HeroSet { watchlist: true, go_show: false, version: false, restart: true, trailer: true, alt: true, mark: PosterMark::None };
-    let widths = HeroWidths { pill: 236.0, alt: 300.0, disc: [CD + 90.0, CD + 60.0, CD + 120.0, CD + 70.0, CD + 80.0] };
+    let s = HeroSet { go_show: false, more: false, watchlist: true, version: false, restart: true, trailer: true, alt: true, mark: PosterMark::None };
+    let widths = HeroWidths { pill: 236.0, alt: 150.0, disc: [CD + 90.0, CD + 60.0, CD + 120.0, CD + 70.0, CD + 80.0] };
     let r = hero_btn_rect_at(s, 1, 0.0, widths);
     assert_eq!((r.w, r.h), (CD, CD));
     let play = hero_btn_rect_at(s, 0, 0.0, widths);
-    assert_eq!(r.x, play.x + play.w + CGAP, "the disc sits one gap after Play");
-    let next = hero_btn_rect_at(s, 2, 0.0, widths);
-    assert_eq!(next.x, r.x + r.w + CGAP);
+    let play = play.scaled(plx_ui::widgets::CTRL_FOCUS_SCALE);
+    assert!((r.x - (play.x + play.w) - CGAP).abs() < 0.001, "focus keeps one clear gap after Play");
+    let next = hero_btn_rect_at(s, 2, 0.0, widths).scaled(plx_ui::widgets::CTRL_FOCUS_SCALE);
+    assert!((next.x - (r.x + r.w) - CGAP).abs() < 0.001);
 }
 
 /// Membership x press: Add from Off and Unknown, Remove from On; no usable guid, no press.

@@ -170,3 +170,29 @@ fn a_detail_related_card_opens_its_menu_at_the_drawn_rect_and_other_shelves_open
     plx_data::metadata::set_current_for_test(rig.stores.metadata.state_mut(), None);
     plx_plex::plex::reset_servers_for_test();
 }
+
+#[test]
+fn pdf_proposal_more_opens_the_on_deck_episode_even_outside_the_loaded_season() {
+    let _guard = plx_base::testlock::serial();
+    plx_plex::plex::reset_servers_for_test();
+    let sid = plx_plex::plex::register_for_test("hero-more", "127.0.0.1", 9, "synthetic", "fixture");
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    plx_data::metadata::set_current_for_test(rig.stores.metadata.state_mut(), Some(plx_data::metadata::Detail {
+        sid, rk: "show".into(), kind: "show".into(), is_show: true,
+        on_deck: Some(plx_data::metadata::Episode { rk: "on-deck".into(), resume_ms: 60_000, dur_ms: 120_000, ..Default::default() }),
+        ..Default::default()
+    }));
+    d.request(MachineId::Nav, NavOp::Root(AppArg::Content(ContentArg::Detail { sid, rk: "show".into() })));
+    for now in 0..6 { d.frame_with(&mut rig, tick(now), Vec::new(), Vec::new(), &mut NoTap, false); }
+    // The screen owns its element IDs (Go to Show and More are independent controls).
+    let entry = d.nav.top_page().unwrap().id;
+    let arg = (0..4096u32).find_map(|elem| {
+        let ret = ReturnState { focus: Some(FocusKey { entry, elem }), ..Default::default() };
+        rig.content_menu_arg(&d, entry, &ret).filter(|arg| arg.rk == "on-deck")
+    }).expect("More opens the on-deck episode's menu");
+    assert_eq!(arg.rk, "on-deck");
+    assert!(matches!(arg.kind, ItemMenuKind::Episode { mark: plx_ui::widgets::PosterMark::InProgress, .. }));
+    assert!(!arg.loaded_episode, "the on-deck item uses the addressed fetch path, independent of the season window");
+    plx_plex::plex::reset_servers_for_test();
+}

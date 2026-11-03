@@ -47,7 +47,8 @@ fn the_disc_is_second_in_the_row_when_the_hero_has_a_title() {
     let disc = disc_rect(&s, view).expect("a movie hero with a guid draws the disc");
     let info = s.hero_button_rect(view, 1, m).unwrap();
     assert_eq!((disc.w, disc.h), (HERO_CTRL_D, HERO_CTRL_D));
-    assert_eq!(disc.x, play.x + play.w + HERO_CTRL_GAP);
+    let painted = play.scaled(plx_ui::widgets::CTRL_FOCUS_SCALE);
+    assert!((disc.x - (painted.x + painted.w) - HERO_CTRL_GAP).abs() < 0.001);
     assert_eq!(info.x, disc.x + disc.w + HERO_CTRL_GAP);
     assert_eq!(s.hero_len(view), 3);
     assert_eq!(s.hero_slots(view), ([0, 2, 1], 3));

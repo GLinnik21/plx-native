@@ -633,6 +633,10 @@ COVER_ANCHORS = {"right": (1.0, 0.5), "left": (0.0, 0.5), "upper": (0.5, 0.3)}
 HERO_CENTRE_MIN_X = 0.60 * ART[0]
 # ffmpeg rounds the scaled picture to whole pixels, so the mapped box is good to about one.
 HERO_FRAME_EPS = 1.0
+# Composition policy for these stills: keep the focal subject out of the lower-right 35%.
+# This is an art-selection reserve, not the live bounds of variable-length People text.
+# Text contrast is checked separately against the actual UI geometry in widgets_hero_scrim_tests.
+HERO_SUBJECT_FOOT = 0.65 * ART[1]
 
 # The layout numbers the zones come from, each COPIED here and pinned to where it lives in the Rust
 # source: `check_hero_pins` re-reads the source and fails when a copy has drifted, so a layout change
@@ -645,17 +649,20 @@ HERO_PINS = {
     "SCR_W": ["rust-modules/base/src/surface.rs", "const", "LOGICAL_W", 1920.0],
     "SCR_H": ["rust-modules/base/src/surface.rs", "const", "LOGICAL_H", 1080.0],
     "MARGIN_X": ["rust-modules/ui/src/consts.rs", "const", "MARGIN_X", 96.0],
-    "PEEK_Y": ["rust-modules/ui/src/consts.rs", "const", "PEEK_Y", 811.0],
+    "PEEK_Y": ["rust-modules/ui/src/consts.rs", "const", "PEEK_Y", 791.0],
     "TITLE_DY": ["rust-modules/ui/src/consts.rs", "const", "TITLE_DY", 34.0],
-    "COL_W": ["rust-modules/ui/src/landing_hero.rs", "const", "COL_W", 660.0],
+    "TEXT_W": ["rust-modules/ui/src/theme.rs", "const", "hero::TEXT_W", 943.0],
+    "COL_W": ["rust-modules/ui/src/landing_hero.rs", "const", "COL_W", 943.0],
     "TEXT_BOTTOM": ["rust-modules/ui/src/landing_hero.rs", "const", "TEXT_BOTTOM", 692.0],
     "SPACE_MD": ["rust-modules/ui/src/theme.rs", "const", "space::MD", 24.0],
     "CTRL_H": ["rust-modules/ui/src/widgets.rs", "const", "CTRL_H", 60.0],
-    "HERO_SCRIM_W": ["rust-modules/ui/src/widgets.rs", "const", "HERO_SCRIM_W", 1536.0],
+    "HERO_SCRIM_W": ["rust-modules/ui/src/widgets.rs", "const", "HERO_SCRIM_W", 1920.0],
     "HERO_SCRIM_TOP": ["rust-modules/ui/src/widgets.rs", "const", "HERO_SCRIM_TOP", 162.0],
-    "HERO_SCRIM_R_TOP": ["rust-modules/ui/src/widgets.rs", "const", "HERO_SCRIM_R_TOP", 702.0],
-    "HERO_LOGO_TOP_DETAIL": ["rust-modules/ui/src/widgets.rs", "literal", r"y=(\d+) on detail", 298.0],
-    "HERO_LOGO_TOP_HOME": ["rust-modules/ui/src/hero_logo.rs", "literal", r"tall\.y,\s*([0-9.]+),", 260.0],
+    "HERO_SCRIM_R_TOP": ["rust-modules/ui/src/widgets.rs", "const", "HERO_SCRIM_R_TOP", 302.4],
+    "DETAIL_TITLE_BOTTOM": ["rust-modules/ui/src/detail_layout.rs", "const", "TITLE_BOTTOM", 566.0],
+    "HERO_LOGO_H_MAX": ["rust-modules/ui/src/theme.rs", "const", "logo::HERO_H_MAX", 240.0],
+    "DETAIL_FACTS_TOP": ["rust-modules/ui/src/detail_layout.rs", "literal", r"minimum\.facts_y,\s*([0-9.]+)", 714.0],
+    "HERO_LOGO_TOP_HOME": ["rust-modules/ui/src/hero_logo.rs", "literal", r"tall\.y,\s*([0-9.]+),", 206.0],
     "HERO_TEXT_W": ["rust-modules/ui/src/detail_layout.rs", "const", "HERO_TEXT_W", 943.0],
     "PEOPLE_W": ["rust-modules/ui/src/detail_layout.rs", "const", "PEOPLE_W", 560.0],
     "PEOPLE_LEAD": ["rust-modules/ui/src/detail_layout.rs", "const", "PEOPLE_LEAD", 32.0],
@@ -766,28 +773,30 @@ def hero_zones(pins=None):
     def zone(name, rect, uses, **extra):
         return dict(name=name, rect=rect, uses=uses, **extra)
     return [
-        # Home: the logo (paints up from the band to y 260), title, meta, synopsis and the CTA row
+        # Home: the logo (paints up from the band to y 178), title, meta, synopsis and the CTA row
         # (HERO_ROW_Y = TEXT_BOTTOM + MD, CTRL_H tall), all in the COL_W column from the margin.
         zone("home text column", [v["MARGIN_X"], v["HERO_LOGO_TOP_HOME"], v["MARGIN_X"] + v["COL_W"],
                                   v["TEXT_BOTTOM"] + v["SPACE_MD"] + v["CTRL_H"]],
-             ["MARGIN_X", "HERO_LOGO_TOP_HOME", "COL_W", "TEXT_BOTTOM", "SPACE_MD", "CTRL_H"]),
+             ["MARGIN_X", "HERO_LOGO_TOP_HOME", "TEXT_W", "COL_W", "TEXT_BOTTOM", "SPACE_MD", "CTRL_H"]),
         # The peek shelf: its heading draws TITLE_DY above the row origin PEEK_Y, its cards below.
         zone("home shelf row", [0.0, v["PEEK_Y"] - v["TITLE_DY"], w, h], ["PEEK_Y", "TITLE_DY", "SCR_H", "SCR_W"]),
         # Detail: logo, identity line, synopsis and buttons, to the synopsis' wrap edge. The chain
         # below the title is measured at run time, so this runs to the foot of the frame.
-        zone("detail text column", [v["MARGIN_X"], v["HERO_LOGO_TOP_DETAIL"], text_r, h],
-             ["MARGIN_X", "HERO_LOGO_TOP_DETAIL", "HERO_TEXT_W", "SCR_H"]),
+        zone("detail text column", [v["MARGIN_X"], v["DETAIL_TITLE_BOTTOM"] - v["HERO_LOGO_H_MAX"], text_r, h],
+             ["MARGIN_X", "DETAIL_TITLE_BOTTOM", "HERO_LOGO_H_MAX", "HERO_TEXT_W", "SCR_H"]),
         # The facts row runs from there to the people column and sits level with that column's top
         # line (a 4-line block reaches PEOPLE_MAX_LINES * PEOPLE_LEAD below it).
-        zone("detail facts row", [text_r, v["HERO_SCRIM_R_TOP"], people_l,
-                                  v["HERO_SCRIM_R_TOP"] + v["PEOPLE_MAX_LINES"] * v["PEOPLE_LEAD"]],
-             ["MARGIN_X", "HERO_TEXT_W", "SCR_W", "PEOPLE_W", "HERO_SCRIM_R_TOP", "PEOPLE_MAX_LINES", "PEOPLE_LEAD"]),
-        # The right-aligned Starring block, from where the right wedge starts to the frame's foot.
-        zone("detail starring column", [people_l, v["HERO_SCRIM_R_TOP"], w - v["MARGIN_X"], h],
-             ["SCR_W", "MARGIN_X", "PEOPLE_W", "HERO_SCRIM_R_TOP", "SCR_H"]),
+        zone("detail facts row", [text_r, v["DETAIL_FACTS_TOP"], people_l,
+                                  v["DETAIL_FACTS_TOP"] + v["PEOPLE_MAX_LINES"] * v["PEOPLE_LEAD"]],
+             ["MARGIN_X", "HERO_TEXT_W", "SCR_W", "PEOPLE_W", "DETAIL_FACTS_TOP", "PEOPLE_MAX_LINES", "PEOPLE_LEAD"]),
+        # The existing lower-right art-selection reserve, independent of variable People text.
+        zone("detail starring column", [people_l, HERO_SUBJECT_FOOT, w - v["MARGIN_X"], h],
+             ["SCR_W", "MARGIN_X", "PEOPLE_W", "SCR_H"]),
         # The left wedge's scrim: it darkens, it does not hide, so its share is only printed.
         zone("hero scrim", [0.0, v["HERO_SCRIM_TOP"], v["HERO_SCRIM_W"], h],
              ["HERO_SCRIM_TOP", "HERO_SCRIM_W", "SCR_H"], advisory=True),
+        zone("right scrim feather", [people_l, v["HERO_SCRIM_R_TOP"], w, h],
+             ["HERO_SCRIM_R_TOP", "SCR_W", "SCR_H", "MARGIN_X", "PEOPLE_W"], advisory=True),
     ]
 
 
@@ -855,7 +864,8 @@ def hero_geometry(assets, rec):
     for z in hero_zones():
         hit = _overlap(box, z["rect"])
         if z.get("advisory"):
-            out["scrim_share"] = hit / area
+            if z["name"] == "hero scrim":
+                out["scrim_share"] = hit / area
         else:
             out["overlaps"][z["name"]] = hit
             if hit:

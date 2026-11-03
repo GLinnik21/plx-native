@@ -91,6 +91,9 @@ pub struct PmsMovie {
     /// only thing that can keep an UNPINNED library's items off Home without a per-library fetch.
     pub sec: i64,
     pub title: String,
+    /// Edition identity, presented in the hero's metadata rather than appended to its title.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub edition: String,
     pub year: c_int,
     pub rating: String,
     pub dur_ns: i64,
@@ -578,6 +581,7 @@ pub fn parse_item(it: &plx_plex::plex::Metadata, sid: ServerId) -> PmsMovie {
         sec: it.library_section_id,
         ..Default::default()
     };
+    m.edition = clean(&it.edition_title);
     m.aired = clean(&it.originally_available_at);
     m.guid = it.guid_hex();
     m.show_guid = it.show_guid_hex();
@@ -4524,10 +4528,11 @@ mod caption_fact_tests {
 
     #[test]
     fn a_movie_carries_genre_resolution_hdr_score_and_added_at() {
-        let m = row(r#"{"type":"movie","title":"M","ratingKey":"1","audienceRating":7.8,"addedAt":1700000000,
+        let m = row(r#"{"type":"movie","title":"M","editionTitle":"Director’s Cut","ratingKey":"1","audienceRating":7.8,"addedAt":1700000000,
             "Genre":[{"tag":"Drama"},{"tag":"Crime"}],
             "Media":[{"videoResolution":"4k","Part":[{"Stream":[
                 {"streamType":1,"colorTrc":"smpte2084"},{"streamType":2}]}]}]}"#);
+        assert_eq!(m.edition, "Director’s Cut");
         assert_eq!(m.genre.as_deref(), Some("Drama"), "the FIRST genre");
         assert_eq!(m.video_resolution.as_deref(), Some("4k"));
         assert!(m.hdr);
