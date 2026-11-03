@@ -9,7 +9,8 @@ pub(super) fn seek_stays_hidden(ps: &plx_media::route::PlaybackSession, dismisse
     if !dismissed { return false; }
     let state = player::state(ps);
     state == PlaybackState::Seeking
-        || (state == PlaybackState::Buffering && !player::rebuffering() && player::seek_display_ns() >= 0)
+        || (state == PlaybackState::Buffering && player::rebuffering(ps) == Some(false)
+            && player::seek_display_ns(ps).is_some())
 }
 
 /// One scrub step toward `forward`'s end of the bar.
@@ -50,7 +51,7 @@ impl PlayerScreen {
     /// it up and extends its linger. Both share the burst: presses inside
     /// [`BURST_GAP_MS`](plx_appkit::player_hud::seek_jump::BURST_GAP_MS) accumulate into one target, so keyframe rounding never eats the requested travel.
     pub fn jump_by(&mut self, ps: &plx_media::route::PlaybackSession, step_ns: i64, keep_hud: bool, now: u32) -> Option<i64> {
-        let duration = plx_media::player::duration_ns();
+        let duration = plx_media::player::duration_ns(ps)?;
         if duration <= 0 { return None; }
         let target = self.seek_burst.jump(now, plx_media::player::intended_pos_ns(ps), step_ns, duration);
         self.scrub.cancel();
@@ -71,7 +72,7 @@ impl PlayerScreen {
             _ => return false,
         };
         if transport {
-            if plx_media::player::duration_ns() <= 0 {
+            if !plx_media::player::duration_ns(ps).is_some_and(|dur| dur > 0) {
                 self.transport_tap = false;
                 self.scrub.cancel();
                 return true;
@@ -95,7 +96,10 @@ impl PlayerScreen {
                 }
                 Edge::Repeat => {
                     if self.transport_tap && self.hud.visible_at_press {
-                        self.scrub.ns = Scrub::clamp_target(self.scrub.ns.saturating_add(signed_step(forward)), plx_media::player::duration_ns());
+                        if let Some(duration) = plx_media::player::duration_ns(ps) {
+                            self.scrub.ns = Scrub::clamp_target(
+                                self.scrub.ns.saturating_add(signed_step(forward)), duration);
+                        }
                         self.scrub.reveal = false;
                     }
                     self.hud.dismissed = false;
