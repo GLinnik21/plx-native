@@ -230,6 +230,11 @@ impl PlayerAdapter {
         self.feed.engine()
     }
 
+    /// Route identity of the active physical feed, without lending Engine state to admission.
+    pub(super) fn active_feed_attempt(&self) -> Option<crate::route::RouteStartAttempt> {
+        self.feed.active_attempt()
+    }
+
     /// Is a session live? Distinct from [`engine`](Self::engine) because it answers without taking
     /// the exclusive borrow — `start_bufferfeed`'s double-start guard only needs to ask.
     #[inline]

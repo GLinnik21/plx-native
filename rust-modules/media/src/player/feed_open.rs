@@ -3,6 +3,8 @@
 //! URLs and reader credentials are deliberately absent from `Debug` output.
 
 use crate::route;
+use plx_base::eventlog::log;
+use plx_play_feed::bf_split;
 
 pub(super) struct FeedOpenRequest {
     pub url: String,
@@ -108,4 +110,134 @@ mod tests {
         assert_eq!(open.video_codec, "h264");
         assert_eq!(open.audio_codec, "aac");
     }
+}
+
+/// One source selected under the route transaction, before any native resource is built.
+pub(super) struct PreparedSource {
+    pub url: String,
+    pub sample: Option<SampleSource>,
+    pub is_h265: bool,
+}
+
+pub(super) struct SampleSource {
+    pub data: Vec<u8>,
+    pub au: Vec<usize>,
+}
+
+pub(super) fn prepare_source(
+    ps: &mut route::PlaybackSession,
+    route_start: route::RouteStartTransaction,
+) -> Result<PreparedSource, route::RouteStartResult> {
+    // resolve the URL, in precedence order: route (a selected movie) wins, then
+    // /tmp/plxnative-playurl (a URL + its declaration), then /tmp/plxnative-url (a URL
+    // alone), then a local sample.
+    let mut url = crate::route::url(ps);
+    if url.is_empty() {
+        // dev: /tmp/plxnative-playurl — a URL *and the Load declaration to play it with*, with no
+        // library item behind it. This is the player-PIPELINE test tier's entry (tests/README.md):
+        // `plxnative-url` below hands over a URL only, which leaves the payload describing
+        // whatever the route happened to hold — an empty string, i.e. H264 + "AC3" — so a 4K HEVC
+        // or a Dolby file could never be declared honestly without Plex. Read HERE rather than at
+        // the app.rs entry point because the declaration has to be in `route` before the payload
+        // is composed a few lines below, and because a reload (a seek that escalates) comes back
+        // through this same function and must re-apply it.
+        //
+        // `route::url()` still wins: a real selection is never overridden by a stale trigger.
+        match crate::player::playurl::playurl() {
+            Some(Ok(p)) => {
+                url = install_synthetic_playurl(ps, &p)?;
+                if let Some([w, h]) = p.source_raster {
+                    crate::route::set_stream_source_raster(ps, w, h);
+                }
+                if p.auto_source_kbps > 0 && !p.auto_hls_base.is_empty() {
+                    // A fixture that starts in HLS hands back the playlist to open: the route's
+                    // own `url` has already moved, and this local copy is what everything below
+                    // reads.
+                    if let Some(hls) = crate::route::arm_auto_fixture(
+                        ps,
+                        &p.url,
+                        p.auto_source_kbps,
+                        &p.auto_hls_base,
+                        p.auto_start_hls,
+                        p.source_raster.map_or((1_920, 1_080), |[w, h]| (w, h)),
+                    ) {
+                        url = hls;
+                    }
+                }
+            }
+            // Log and fall through rather than refuse: the next candidate may well be armed. The
+            // harness grades this as a failure anyway, because the `load:` line below will not say
+            // what the case expected.
+            Some(Err(e)) => log(&format!("playurl: unreadable spec ({e}) — ignored")),
+            None => {}
+        }
+    }
+    if url.is_empty() {
+        if let Some(t) = plx_base::devtrig::read("url") {
+            if !t.is_empty() {
+                url = t;
+                crate::route::set_url(ps, &url);
+            }
+        }
+    }
+    let mut sample: Option<SampleSource> = None;
+    let mut is_h265 = false;
+    if url.is_empty() {
+        if let Some(data) = plx_base::devtrig::read_sample("sample.h264") {
+            let au = bf_split(&data, 0x09);
+            log(&format!(
+                "bf_split h264: {} AUs in {} bytes",
+                au.len(),
+                data.len()
+            ));
+            if au.len() < 2 {
+                return Err(crate::route::RouteStartResult::StartFailed);
+            }
+            sample = Some(SampleSource { data, au });
+        } else if let Some(data) = plx_base::devtrig::read_sample("sample.h265") {
+            // Phase 0 probe: feed a local HEVC Annex-B sample to test native HEVC decode.
+            let au = bf_split(&data, 0x46);
+            log(&format!(
+                "bf_split h265: {} AUs in {} bytes",
+                au.len(),
+                data.len()
+            ));
+            if au.len() < 2 {
+                return Err(crate::route::RouteStartResult::StartFailed);
+            }
+            is_h265 = true;
+            sample = Some(SampleSource { data, au });
+        } else {
+            // nothing to play: no selected item, no /tmp/plxnative-url, no local sample. (The old
+            // baked-in demo-movie fallback is gone — the binary carries no URLs/credentials.)
+            #[cfg(feature = "devtriggers")]
+            log("start_bufferfeed: no URL — select an item (or set /tmp/plxnative-url)");
+            return Err(crate::route::RouteStartResult::NoRoute);
+        }
+    }
+    if !crate::route::prepare_route_start(route_start) {
+        log("start_bufferfeed: prepared route no longer owns the transaction");
+        return Err(crate::route::RouteStartResult::StartFailed);
+    }
+    Ok(PreparedSource { url, sample, is_h265 })
+
+}
+
+fn install_synthetic_playurl(
+    ps: &mut crate::route::PlaybackSession,
+    play: &crate::player::playurl::PlayUrl,
+) -> Result<String, crate::route::RouteStartResult> {
+    if !crate::route::set_stream_declaration(
+        ps,
+        &play.vcodec,
+        &play.acodec,
+        play.fps,
+        play.dovi.to_dovi(),
+        play.atmos,
+    ) {
+        return Err(crate::route::RouteStartResult::StartFailed);
+    }
+    let url = play.url.clone();
+    crate::route::set_url(ps, &url);
+    Ok(url)
 }
