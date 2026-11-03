@@ -410,7 +410,7 @@ pub use engine::{
     acb_init, foreground_follows_load, start_bufferfeed, start_bufferfeed_tracked, stop_bufferfeed,
     suspend_bufferfeed, suspend_bufferfeed_if_attempt, BufferfeedStartOutcome,
 };
-pub use route_start::{begin_resume, land_resume, ResumeOutcome, ResumeStart};
+pub use route_start::{begin_resume, exit_native, land_resume, poll_release_frame, NativeExit, ResumeOutcome, ResumeStart};
 
 pub use pump::{
     drain_engineless_rollback, land_engineless_rollback, pump, recover_failed_foreground_original, ForegroundOriginalRecovery,
