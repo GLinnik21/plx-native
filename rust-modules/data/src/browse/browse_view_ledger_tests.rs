@@ -328,3 +328,36 @@ fn relist_regression_initial_load_can_continue_past_the_first_page() {
     assert!(format!("{:?}", browse.jobs[0]).contains(&format!("start: {PAGE},")),
         "the pending window must read page two, not loop on the initial page: {:?}", browse.jobs);
 }
+
+#[test]
+fn relist_regression_a_failed_later_page_still_retains_notifications() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, client) = loopback_page_source();
+    {
+        let state = browse.state.state_mut(0).unwrap();
+        state.fetch = SecFetch::Ready;
+        state.total = (2 * PAGE) as i64;
+        state.items = SecItems::from_vec((0..2 * PAGE)
+            .map(|i| (i < PAGE).then(|| row(sid, &i.to_string()))).collect());
+    }
+    browse.state.want(PAGE, 2 * PAGE, Some(PAGE));
+    browse.maybe_spawn();
+    browse.adapter.page.post(PageResult {
+        client, token_gen: client.token_gen(), gen: browse.state.query_gen(), sec: 0, start: PAGE,
+        items: Vec::new(), total: -1,
+        sorts: None, restored: None, genres: None, genre: None, resolved: Default::default(),
+    }, |_| true);
+    let _ = browse.state.pump_owned(&browse.adapter);
+    assert_eq!(browse.state.states()[0].fetch, SecFetch::Failed);
+    let backoff = browse.state.retry_cd;
+    assert!(backoff > 0);
+    browse.jobs.clear();
+    browse.state.want(0, PAGE, Some(5));
+    assert!(browse.state.listings_changed(sid, true),
+        "a failed page must not discard membership changes to the retained grid");
+    assert!(browse.state.requery_owed());
+    assert_eq!(browse.state.states()[0].items.get(5).unwrap().rk, "5");
+    assert_eq!(browse.state.retry_cd, backoff, "the server's existing backoff is respected");
+    browse.maybe_spawn();
+    assert!(browse.jobs.is_empty(), "the re-list waits for that backoff before reading");
+}

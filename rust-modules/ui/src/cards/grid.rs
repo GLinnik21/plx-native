@@ -240,7 +240,8 @@ impl Grid {
 
     /// Turn the landing play ([`GridSpec::animate_landings`]) on or off at run time, for an owner
     /// that plays only some of its landings (the Library plays a server's re-list, not a page
-    /// fill or a query edit). A landing already playing finishes either way.
+    /// fill or a query edit). Enabling adopts the current rows before later changes play.
+    /// A landing already playing finishes either way.
     pub fn set_animate_landings(&mut self, on: bool) {
         self.spec.landings = on;
         self.landing.set_enabled(on);

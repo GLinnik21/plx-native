@@ -1597,7 +1597,7 @@ impl BrowseState {
             } else if state.relist {
                 // One is owed already: the one out is kept, and one more follows it.
                 state.relist_again = true;
-            } else if state.fetch == SecFetch::Ready && state.total >= 0 {
+            } else if state.total >= 0 {
                 state.relist = true;
                 relist = true;
             } else if state.fetch == SecFetch::Loading {

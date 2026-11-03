@@ -528,3 +528,41 @@ fn relist_regression_each_coalesced_relist_keeps_its_removed_card() {
     settle(&mut page, &mut engine, &fixture, 7032);
     assert_eq!(page.pair.detail.relist_probe(), (false, Vec::new()));
 }
+
+#[test]
+fn relist_regression_reenabling_after_a_query_cut_adopts_current_rows() {
+    let _guard = plx_base::testlock::serial();
+    let mut fixture = Fixture::new();
+    fixture.listing = numbered(0..8);
+    let mut page = fixture.screen();
+    page.initial = false;
+    let mut engine = FocusEngine::new();
+    settle(&mut page, &mut engine, &fixture, 0);
+    fixture.listing = fixture.listing.clone().with_relist();
+    page.sync(&fixture.cx(engine.current(OWNER)));
+    settle(&mut page, &mut engine, &fixture, 2000);
+    fixture.listing = numbered(0..7);
+    page.sync(&fixture.cx(engine.current(OWNER)));
+    settle(&mut page, &mut engine, &fixture, 4000);
+
+    // An ordinary query edit cuts to different cards while landing play is disabled.
+    fixture.listing = numbered(10..18).with_query(9);
+    page.sync(&fixture.cx(engine.current(OWNER)));
+    settle(&mut page, &mut engine, &fixture, 6000);
+    assert_eq!(page.pair.detail.relist_probe(), (false, Vec::new()));
+
+    // The next notification leaves these rows in place while its answer is out.
+    fixture.listing = fixture.listing.clone().with_relist();
+    page.sync(&fixture.cx(engine.current(OWNER)));
+    frame(&mut page, &mut engine, &fixture, 8000);
+    frame(&mut page, &mut engine, &fixture, 8016);
+    assert_eq!(page.pair.detail.relist_probe(), (false, Vec::new()),
+        "arming the next re-list must not animate the previous query's stale keys");
+
+    fixture.listing = numbered(11..18).with_query(9);
+    page.sync(&fixture.cx(engine.current(OWNER)));
+    frame(&mut page, &mut engine, &fixture, 9000);
+    frame(&mut page, &mut engine, &fixture, 9016);
+    assert_eq!(page.pair.detail.relist_probe().1, [Some("10".to_string())],
+        "the new answer still plays against the current query's rows");
+}
