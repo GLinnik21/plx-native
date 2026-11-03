@@ -45,8 +45,7 @@
 //!   overlay and below content belongs to its card (the template op's origin lies under the strip's node:
 //!   it is checked against every OTHER target).
 //!
-//! A Skip state is read in both layouts (the Intro pill with the layout as compiled, the Credits pill with
-//! `skip_variant(Credits)`): the two labels have two widths. A fault is reported ONCE, by the first state that
+//! A Skip state is read under every distinct Skip/Watch layout (`skip_variants`). A fault is reported ONCE, by the first state that
 //! shows it ([`dedupe`], shared with `lint_safe` and `lint_text`).
 
 use plx_ui::consts::EDGE_TOL;
@@ -57,7 +56,6 @@ use super::compile::{CompiledState, DrawOp, SkipKind};
 use super::lint::testing::{Base, InvalidCase};
 use super::lint::{ctx_for, named, LangCtx, StateCtx};
 use super::parse::{Package, Val};
-use super::reach::Slot;
 use super::validate::each_object;
 use super::{codes, Context, Finding};
 
@@ -186,14 +184,12 @@ pub(super) struct Surfaces {
     pub strips: Vec<StripFacts>,
 }
 
-/// Every layout of the package in this language: each state once, and a Skip state a second time under the
-/// Credits pill.
+/// Every distinct layout of the package in this language, including Skip and Watch faces.
 pub(super) fn views<'a>(cx: &LangCtx<'a>) -> Vec<View<'a>> {
     let mut views = Vec::new();
     for state in cx.states() {
-        views.push(View { state, shown: state.state, skip: SkipKind::Intro });
-        if state.key.slot == Slot::Skip {
-            views.push(View { state, shown: state.state.skip_variant(SkipKind::Credits), skip: SkipKind::Credits });
+        for (skip, shown) in state.state.skip_variants() {
+            views.push(View { state, shown, skip });
         }
     }
     views
@@ -329,6 +325,8 @@ pub(super) fn surfaces(cx: &LangCtx<'_>, view: &View<'_>) -> Surfaces {
                 let name = match view.skip {
                     SkipKind::Intro => "skip pill (intro)",
                     SkipKind::Credits => "skip pill (credits)",
+                    SkipKind::WatchIntro => "watch pill (intro)",
+                    SkipKind::WatchCredits => "watch pill (credits)",
                 };
                 let pill = rects[view.skip as usize];
                 let pill = Target::flat(TargetKind::Skip, name, origin, pill, bands.standin_z());

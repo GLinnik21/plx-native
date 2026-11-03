@@ -256,7 +256,7 @@ mod tests {
                             asked += 1;
                             let at = format!("{} {slot:?} chapters={chapters} episode={episode} paused={paused}", language.tag());
                             let state = hud.compiled.lookup(0, slot, chapters, episode, paused).unwrap_or_else(|| panic!("no state for {at}"));
-                            for skip in [SkipKind::Intro, SkipKind::Credits] {
+                            for skip in SkipKind::ALL {
                                 assert_eq!(state.geometry(skip).band, hud.compiled.band(), "{at} {skip:?}");
                             }
                         }

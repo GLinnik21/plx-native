@@ -2719,7 +2719,9 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // Opt-in playback diagnostics adds Root status and addressed command replies.
 // Replay anchors are re-recorded through tools/plxnative-rec rerecord.
 // Contextual Library favorites editor adds a distinct SettingsPage address.
-const SCREEN_SHAPES_PIN: u64 = 0x8254b08e0c3f196d;
+// Automatic marker skipping adds per-kind preferences, addressed grant scope and timer/offer state.
+// Incompatible replay anchors are re-recorded through tools/plxnative-rec rerecord.
+const SCREEN_SHAPES_PIN: u64 = 0x1802f17ee583f977;
 
 #[cfg(test)]
 mod arg_tests {

@@ -9450,14 +9450,17 @@ mod frame_publication_tests {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/run.rs"),
         )
         .expect("read run.rs");
-        const CALL: &str = "        publish_frame(&mut app.bridge, &app.player.session, was_player);
-        publish_player_model(app);";
+        const CALL: &str = "        publish_product_frame(app, was_player);";
         assert_eq!(
             src.lines().filter(|l| *l == CALL).count(),
             1,
             "`publish_frame` must be called exactly once, at the loop body's own depth: unnested, \
              so no route skips the date",
         );
+        let phase = src.split("fn publish_product_frame(").nth(1).expect("the publication phase")
+            .split("fn begin_product_frame(").next().unwrap();
+        assert_eq!(phase.matches("publish_frame(&mut app.bridge, &app.player.session, was_player);").count(), 1);
+        assert_eq!(phase.matches("publish_player_model(app);").count(), 1);
         let call = src.find(CALL.trim_start()).expect("the call");
         let frame = src.find("let supplied = match app.rec.replay_results(").expect("the dispatcher's frame");
         let draw = src.find("let (_vx, _vy, _vw, _vh) = draw(app, fr);").expect("the loop's draw");

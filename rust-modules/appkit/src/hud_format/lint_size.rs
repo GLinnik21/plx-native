@@ -91,10 +91,7 @@ struct Smallest<'a> {
 fn undersized(cx: &LangCtx<'_>, out: &mut Vec<Finding>) {
     let mut worst: Vec<Smallest<'_>> = Vec::new();
     for state in cx.states() {
-        let credits = state.state.skip_variant(SkipKind::Credits);
-        // `skip_variant` answers the state itself when it has no credits layout of its own
-        let layouts = [Some(state.state), (!std::ptr::eq(credits, state.state)).then_some(credits)];
-        for laid in layouts.into_iter().flatten() {
+        for (_, laid) in state.state.skip_variants() {
             for (i, c) in laid.controls.iter().enumerate() {
                 let side = c.rect.w.min(c.rect.h);
                 if side >= MIN_CONTROL_SIZE {

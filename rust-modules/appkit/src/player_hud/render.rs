@@ -10,7 +10,7 @@
 //! as well: [`HudMotion::presented`]), then its [`Span`]s in draw
 //! order, through [`draw_state`], which walks any state, an open section's included. A `Fades` span draws on
 //! the scrub's chrome alpha and is skipped when that alpha is spent; a `Steady` one draws at full alpha.
-//! In a Skip state it walks [`CompiledState::skip_variant`], because the two labels have two widths. A MODAL
+//! In a Skip state it walks [`CompiledState::skip_variant`], to select the displayed Skip or Watch face. A MODAL
 //! section's page owns the middle: `transport` is false AND the state is the section's, and it draws whole. A
 //! compact state with the middle withheld (`!transport`, `open == 0`) draws only the scrim and the section tabs
 //! when nothing moves, which only a test constructs now; while the page or a section spring moves
@@ -617,7 +617,7 @@ fn walk<H: Host>(
                 }
                 DrawOp::SkipPill { rects } => {
                     if let ControlSlot::Skip(pr) = f.slot {
-                        let shown = rects[usize::from(pr.kind == plx_data::metadata::MarkerKind::Credits)];
+                        let shown = rects[crate::hud_format::compile::SkipKind::for_prompt(pr) as usize];
                         skip_pill::draw_at(row, q, pr, shown, f.focus == GROUP_ROW, f.model.skip_progress);
                         let (rect, _, clip) = q.to_screen(shown);
                         let hit = rect.intersect(clip);

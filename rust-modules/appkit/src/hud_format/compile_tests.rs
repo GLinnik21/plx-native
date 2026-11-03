@@ -591,7 +591,7 @@ fn the_skip_pill_is_end_anchored_at_both_widths() {
         for measure in [&FM as &dyn Measure, &ShippedMeasure] {
             let compiled = build(CLASSIC, measure);
             let state = compiled.lookup(0, Slot::Skip, true, false, false).unwrap();
-            let [intro, credits] = state.standin.skip.expect("both pills");
+            let [intro, credits, _, _] = state.standin.skip.expect("all faces");
             assert_eq!(intro.x + intro.w, credits.x + credits.w, "{language:?}: one right edge");
             assert!(intro.w >= state.standin.row.w && credits.w >= state.standin.row.w, "{language:?}: never narrower than the row it replaces");
             assert_eq!(state.geometry(SkipKind::Intro).items[0], Some(intro));
@@ -933,7 +933,7 @@ fn every_state_tiles_its_ops_with_band_spans() {
     for package in [CLASSIC, REFERENCE, HERO, TABS, PALETTE, MINIMAL] {
         let c = build(package, &FM);
         for state in c.states() {
-            for s in std::iter::once(state).chain(state.skip_alt.as_deref()) {
+            for (_, s) in state.skip_variants() {
                 let mut next = 0;
                 for span in &s.spans {
                     assert_eq!(span.ops.start, next, "{:?}: spans are contiguous", s.key);
@@ -1145,20 +1145,50 @@ fn bands_fill_in_z_order_and_equal_z_keep_their_declared_order() {
     assert_eq!(seen, 1 + 3 + 9 + 27 + 81 + 243);
 }
 
-/// **A Skip state carries a credits layout exactly when its two pill rects differ.** The kind reaches the layout
-/// only through the pill's rect, so equal rects mean one layout, and the compile does not work the second out.
+/// Marker faces with equal rects share a layout; every distinct rect gets its own title exclusion.
 #[test]
 fn a_skip_state_carries_a_credits_layout_exactly_when_its_pill_rects_differ() {
     let mut alt = 0;
     for text in [CLASSIC, REFERENCE] {
         let compiled = build(text, &FM);
         for state in compiled.states().iter().filter(|s| s.key.slot == Slot::Skip) {
-            let [intro, credits] = state.standin.skip.expect("a Skip state places the pill");
-            assert_eq!(state.skip_alt.is_some(), intro != credits, "{:?}", state.key);
-            alt += usize::from(state.skip_alt.is_some());
+            let rects = state.standin.skip.expect("a Skip state places the pill");
+            let unique = rects.iter().enumerate().filter(|(i, rect)| !rects[..*i].contains(rect)).count();
+            assert_eq!(state.skip_alt.len() + 1, unique, "{:?}", state.key);
+            for kind in SkipKind::ALL {
+                assert_eq!(state.geometry(kind).items[0], Some(rects[kind as usize]));
+            }
+            alt += state.skip_alt.len();
         }
     }
     assert!(alt > 0, "no Skip state differs between the two labels: the test saw nothing");
+}
+
+/// Watch labels reserve their own width without changing the Manual baseline.
+#[test]
+fn watch_faces_use_their_own_hit_and_title_exclusion_geometry() {
+    let mut labels = labels();
+    labels.watch_intro = "W".repeat(32);
+    labels.watch_credits = "W".repeat(40);
+    let package = package(CLASSIC);
+    let compiled = compile(&package, &FM, CompileCtx { labels });
+    for state in compiled.states().iter().filter(|s| s.key.slot == Slot::Skip) {
+        let rects = state.standin.skip.unwrap();
+        assert!(rects[2].w > rects[0].w && rects[3].w > rects[1].w);
+        for kind in SkipKind::ALL {
+            let shown = state.skip_variant(kind);
+            let rect = rects[kind as usize];
+            assert_eq!(state.geometry(kind).items[0], Some(rect));
+            for op in &shown.ops {
+                if let DrawOp::Text { bind, rect: title, .. } = op {
+                    if bind == "title.main" {
+                        assert!(title.x + title.w <= rect.scaled(CTRL_FOCUS_SCALE).x);
+                    }
+                }
+            }
+            assert!(shown.ops.iter().any(|op| matches!(op, DrawOp::SkipPill { rects: painted } if painted[kind as usize] == rect)));
+        }
+    }
 }
 
 /// **The clocks' reserved line is a whole number of pixels at every rung.** `CLOCK_LINE` is a ratio, and 1.25 of
