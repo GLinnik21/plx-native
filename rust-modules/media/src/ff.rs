@@ -5431,7 +5431,7 @@ fn open_input_failure_note(r: c_int, lane_aborted: bool) -> String {
 /// and undrained. Withdrawing the headroom at the first audio push dropped the video cap under what
 /// the lane held, the next video push parked, and the audio lane got two packets and no more (device
 /// log: `feed a#1`, `feed a#2`, then nothing). The grant is therefore released once the audio lane
-/// has been pushed [`AUDIO_LEAD_IN_NS`](crate::player::engine::AUDIO_LEAD_IN_NS) plus
+/// has been pushed [`AUDIO_LEAD_IN_NS`](plx_play_feed::feed_state::AUDIO_LEAD_IN_NS) plus
 /// [`LEAD_IN_MARGIN_NS`] of audio, and the release is `aq_release_headroom`: the cap follows the
 /// consumer's drain down to the base rather than dropping under the lane's occupancy.
 const PRE_AUDIO_VIDEO_HEADROOM: c_long = 24 * 1024 * 1024;
@@ -5512,9 +5512,9 @@ struct PreAudioHeadroom {
 fn audio_push_gate(video_lane: *mut AuQueue, video_reach_ns: i64) -> crate::aq::PushGate {
     crate::aq::PushGate {
         other: video_lane,
-        starved_below_ns: crate::player::engine::MAX_FEED_AHEAD_NS,
+        starved_below_ns: plx_play_feed::feed_state::MAX_FEED_AHEAD_NS,
         headroom: AUDIO_AHEAD_HEADROOM,
-        fail_at_ceiling: video_reach_ns < crate::player::engine::PRIME_VIDEO_MAX_NS,
+        fail_at_ceiling: video_reach_ns < plx_play_feed::feed_state::PRIME_VIDEO_MAX_NS,
     }
 }
 
@@ -5578,7 +5578,7 @@ impl PreAudioHeadroom {
         let start = *self.first_audio_ns.get_or_insert(pts_ns);
         let release = self.granted
             && !self.released
-            && pts_ns - start >= crate::player::engine::AUDIO_LEAD_IN_NS + LEAD_IN_MARGIN_NS;
+            && pts_ns - start >= plx_play_feed::feed_state::AUDIO_LEAD_IN_NS + LEAD_IN_MARGIN_NS;
         self.released |= release;
         AudioStep { first, release }
     }
@@ -5686,7 +5686,7 @@ mod averror_errno_tests {
 mod pre_audio_headroom_tests {
     use super::*;
 
-    const LEAD: i64 = crate::player::engine::AUDIO_LEAD_IN_NS + LEAD_IN_MARGIN_NS;
+    const LEAD: i64 = plx_play_feed::feed_state::AUDIO_LEAD_IN_NS + LEAD_IN_MARGIN_NS;
 
     const GRANT: VideoStep = VideoStep::Grant(PRE_AUDIO_VIDEO_HEADROOM);
 
@@ -5695,7 +5695,7 @@ mod pre_audio_headroom_tests {
     /// lane to be starved below the pump's own feed-ahead target.
     #[test]
     fn the_audio_gate_follows_how_much_video_the_consumer_has_been_given() {
-        let prime = crate::player::engine::PRIME_VIDEO_MAX_NS;
+        let prime = plx_play_feed::feed_state::PRIME_VIDEO_MAX_NS;
         let mut h = PreAudioHeadroom::default();
         assert_eq!(h.video_reach_ns(), 0);
         let lane = std::ptr::null_mut();
@@ -5706,7 +5706,7 @@ mod pre_audio_headroom_tests {
         h.video_pushed(1_000 + prime);
         let g = audio_push_gate(lane, h.video_reach_ns());
         assert!(!g.fail_at_ceiling, "the prime depth has been read: the clock may be running");
-        assert_eq!(g.starved_below_ns, crate::player::engine::MAX_FEED_AHEAD_NS);
+        assert_eq!(g.starved_below_ns, plx_play_feed::feed_state::MAX_FEED_AHEAD_NS);
         assert_eq!(g.headroom, AUDIO_AHEAD_HEADROOM);
         h.restart(std::ptr::null_mut());
         assert_eq!(h.video_reach_ns(), 0, "a seek starts the count over");
@@ -5758,7 +5758,7 @@ mod pre_audio_headroom_tests {
         assert_eq!(h.before_video(true, true, 0), GRANT);
         let first = h.after_audio(11_008_000_000);
         assert!(first.first && !first.release, "the first AU alone releases nothing");
-        assert!(!h.after_audio(11_008_000_000 + crate::player::engine::AUDIO_LEAD_IN_NS).release,
+        assert!(!h.after_audio(11_008_000_000 + plx_play_feed::feed_state::AUDIO_LEAD_IN_NS).release,
             "the engine's lead-in without the margin is not yet enough");
         let done = h.after_audio(11_008_000_000 + LEAD);
         assert!(!done.first && done.release, "lead-in plus margin pushed: release");
@@ -5879,7 +5879,7 @@ mod pre_audio_headroom_tests {
         assert!(film > base, "the plain cap alone cannot hold it");
         assert!(film < cap);
         // the fixture: 12 Mbit/s, same delay, and then the lead-in's worth of video as well
-        let lead_s = (crate::player::engine::AUDIO_LEAD_IN_NS + LEAD_IN_MARGIN_NS) as f64 / 1e9;
+        let lead_s = (plx_play_feed::feed_state::AUDIO_LEAD_IN_NS + LEAD_IN_MARGIN_NS) as f64 / 1e9;
         assert!(bytes(12.0, 11.008 + lead_s) < cap, "headroom spans the pre-audio stretch AND the lead-in");
         assert!(bytes(35.0, 11.008) > cap, "a bound, not a promise");
     }

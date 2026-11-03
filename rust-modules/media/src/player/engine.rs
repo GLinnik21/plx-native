@@ -1549,13 +1549,13 @@ const PRIME_NS: i64 = 700_000_000;
 // start anyway once video buffers PRIME_VIDEO_MAX_NS without audio (audioless / briefly starved),
 // so a genuinely audioless region can't hang.
 const PRIME_AUDIO_NS: i64 = 300_000_000;
-pub(crate) const PRIME_VIDEO_MAX_NS: i64 = 2_500_000_000;
+pub(crate) use plx_play_feed::feed_state::PRIME_VIDEO_MAX_NS;
 // Feed-ahead throttle (Kodi-parity): keep the VIDEO lane at most this far ahead of the presented
 // position (SHARED.pres_fed) instead of feeding greedily to BufferFull. Bounding the buffer to
 // ~1.6s (was ~10-20s: aq 6MB + the pipeline's own ~8MB) makes seeks flush far less, keeps the
 // clock from running ahead, and cuts latency. AUDIO gets a looser bound so it can ride slightly
 // ahead (audio buffer is cheap and it's the master clock) without unbounded race on odd muxes.
-pub(crate) const MAX_FEED_AHEAD_NS: i64 = 1_600_000_000;
+pub(crate) use plx_play_feed::feed_state::MAX_FEED_AHEAD_NS;
 pub(crate) const AUDIO_SLACK_NS: i64 = 2_000_000_000;
 // A fed pts this far below a lane's high-water is a stale pre-seek AU (past the B-frame reorder
 // distance) → drop it rather than feed a backward jump.
@@ -1591,7 +1591,7 @@ const AUDIO_STALE_AHEAD_NS: i64 = 5_000_000_000;
 /// video lane already past its base cap and nobody draining it (no clock yet): `ff::demux` keeps
 /// the video lane's pre-audio headroom until the audio lane has been pushed this much plus a
 /// margin (`ff::LEAD_IN_MARGIN_NS`), and only then releases it as the consumer drains.
-pub(crate) const AUDIO_LEAD_IN_NS: i64 = 2_000_000_000;
+pub(crate) use plx_play_feed::feed_state::AUDIO_LEAD_IN_NS;
 // The lead-in is only sound between these two: under the throttle's own audio lead (a track that
 // starts on time is fed exactly as before), and over the audio the clock is primed with (else
 // "ahead of the clock" would not be enough audio to start it).

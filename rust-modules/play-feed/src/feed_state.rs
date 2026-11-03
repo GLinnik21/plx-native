@@ -10,6 +10,13 @@ use std::sync::atomic::Ordering;
 
 pub const PRES_NONE: i64 = i64::MIN;
 
+/// Post-seek video depth allowed before an absent audio lane stops blocking Play.
+pub const PRIME_VIDEO_MAX_NS: i64 = 2_500_000_000;
+/// Maximum video lead beyond the presented position in the native feed.
+pub const MAX_FEED_AHEAD_NS: i64 = 1_600_000_000;
+/// Audio lead-in read and feed window when a track begins late.
+pub const AUDIO_LEAD_IN_NS: i64 = 2_000_000_000;
+
 /// The longest the throttle's reference runs on past the last position report, in ms. The
 /// pipeline reports every ~201 ms, so against this cap the run-on bridges a report up to ~49 ms
 /// late (not a missed one); a paused or stalled clock stops changing `pres_fed`, and the
