@@ -826,6 +826,9 @@ dependencies = [
 [[package]]
 name = "plx_playback_contract"
 version = "0.0.0"
+dependencies = [
+ "plx_base",
+]
 
 [[package]]
 name = "plx_plex"
