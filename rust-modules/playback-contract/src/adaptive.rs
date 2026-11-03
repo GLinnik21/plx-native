@@ -250,6 +250,19 @@ pub struct BufferFact {
     pub audio_expected: bool,
 }
 
+impl BufferFact {
+    /// The playable tail is the shorter required lane. An expected but absent
+    /// audio tail is unknown, never a fabricated zero-length reserve.
+    pub fn buffered_ms(self) -> Option<i64> {
+        let tail = match (self.audio_expected, self.audio_tail_ms) {
+            (true, None) => return None,
+            (_, Some(audio)) => audio.min(self.video_tail_ms),
+            (false, None) => self.video_tail_ms,
+        };
+        Some(tail.saturating_sub(self.playback_ms).max(0))
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ActiveQuantum {
     pub acquisition: Acquisition,
@@ -322,6 +335,58 @@ pub trait CandidateMediaPort: FeedPort<Locator = String> {
     fn stage_queued_timeline(&mut self) -> bool;
     fn promote_candidate(&mut self) -> bool;
     fn publication_gate(&mut self) -> &mut dyn PublicationGate;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VariantFact {
+    pub width: i32,
+    pub height: i32,
+    pub declared_bps: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExplorationFact {
+    pub target_kbps: u32,
+    pub started_ns: i64,
+    pub buffered_ms: i64,
+    pub runway_ms: i64,
+    pub budget_ms: i64,
+}
+
+/// One worker's physical HLS state. The common session issues every policy
+/// action; the implementation retains cursor, network, AU and queue objects.
+pub trait AdaptivePhysicalPort:
+    ActiveFeedPort<Error = PhysicalFailure>
+    + AdaptiveRoundPort<Lease = LeaseHandle, TrialReserve = LeaseHandle>
+    + CandidateMediaPort
+    + CandidateFencePort<Fence = FenceHandle, Error = PhysicalFailure>
+{
+    fn begin_round(&mut self, round: RoundId);
+    fn finish_active(&mut self) -> Option<VariantFact>;
+    fn begin_trial(&mut self, trial: TrialId, exploration: Option<ExplorationFact>);
+    fn candidate_offset_micros(&self) -> Option<i64>;
+    fn buffer_sampler(&self) -> fn() -> Option<i64>;
+    fn remaining_playback_sampler(&self) -> fn() -> i64;
+    fn user_sequence_sampler(&self) -> fn() -> u64;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AdaptiveProgress {
+    Continue,
+    Ended,
+    OriginalPublished,
+    Aborted,
+    PhysicalFailure(PhysicalFailure),
+    Failed(&'static str),
+}
+
+/// The route/controller owner moves into the existing feed worker. Every
+/// round is driven synchronously on that worker through one addressed port.
+pub trait AdaptiveSession: Send {
+    fn drive_round(
+        &mut self, off: &plx_base::task::OffFrame,
+        physical: &mut dyn AdaptivePhysicalPort,
+    ) -> AdaptiveProgress;
 }
 
 /// The feed worker's physical clock fence. It is armed before candidate AUs

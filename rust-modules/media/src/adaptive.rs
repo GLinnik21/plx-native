@@ -5,10 +5,11 @@
 use crate::{abr, route};
 use plx_playback_contract::adaptive::PublicationGate;
 use plx_playback_contract::adaptive::{
-    ActionReadout, AdaptiveDirection, AdaptiveEffects, Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, ActiveQuantum, AdaptiveRoundPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, CommitReadout, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
+    ActionReadout, AdaptiveDirection, AdaptiveEffects, AdaptivePhysicalPort, AdaptiveProgress, AdaptiveSession, Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, ActiveQuantum, AdaptiveRoundPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, CommitReadout, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
     RoundId, SeedReadout, TrialObservation, TrialPhase, TrialProtocol, TrialProtocolError,
 };
 use plx_playback_contract::SourceKey;
+use std::sync::atomic::Ordering;
 
 /// The player sink for common adaptive effects. Only the common worker invokes
 /// these callbacks; the physical feed does not choose when a seed or committed
@@ -34,6 +35,158 @@ impl AdaptiveEffects for PlayerAdaptiveEffects {
             readout.refreshing,
         );
     }
+}
+
+fn publish_action(action: ActionReadout) {
+    use AdaptiveDirection::{Down, Up};
+    let ActionReadout { direction, target_kbps, refreshing, committed } = action;
+    let code = if refreshing {
+        match committed {
+            None => crate::player::ABR_ACTION_PRIME_REFRESH,
+            Some(true) => crate::player::ABR_ACTION_COMMIT_REFRESH,
+            Some(false) => crate::player::ABR_ACTION_REJECT_REFRESH,
+        }
+    } else {
+        match (direction, committed) {
+            (Down, None) => crate::player::ABR_ACTION_PRIME_DOWN,
+            (Up, None) => crate::player::ABR_ACTION_PRIME_UP,
+            (Down, Some(true)) => crate::player::ABR_ACTION_COMMIT_DOWN,
+            (Up, Some(true)) => crate::player::ABR_ACTION_COMMIT_UP,
+            (Down, Some(false)) => crate::player::ABR_ACTION_REJECT_DOWN,
+            (Up, Some(false)) => crate::player::ABR_ACTION_REJECT_UP,
+        }
+    };
+    crate::player::SHARED.dg_abr_action.store(code, Ordering::Relaxed);
+    crate::player::SHARED.dg_abr_target_kbps.store(i64::from(target_kbps), Ordering::Relaxed);
+}
+
+fn publish_sample(sample: SampleReadout) {
+    let shared = &crate::player::SHARED;
+    shared.dg_abr_net_kbps.store(sample.network_kbps, Ordering::Relaxed);
+    shared.dg_abr_media_kbps.store(sample.media_kbps, Ordering::Relaxed);
+    shared.dg_abr_buffer_ms.store(sample.buffer_ms, Ordering::Relaxed);
+    shared.dg_abr_ratio_pm.store(sample.ratio_pm, Ordering::Relaxed);
+}
+
+fn why_code(reason: Option<WhyReadout>) -> u8 {
+    use WhyReadout as R;
+    match reason {
+        None => crate::player::ABR_WHY_NONE,
+        Some(R::SafeBudget) => crate::player::ABR_WHY_SAFE_BUDGET,
+        Some(R::UnsafeState) => crate::player::ABR_WHY_UNSAFE_STATE,
+        Some(R::Production) => crate::player::ABR_WHY_PRODUCTION,
+        Some(R::Buffer) => crate::player::ABR_WHY_BUFFER,
+        Some(R::LadderFloor) => crate::player::ABR_WHY_LADDER_FLOOR,
+        Some(R::RejectBackoff) => crate::player::ABR_WHY_REJECT_BACKOFF,
+        Some(R::Starvation) => crate::player::ABR_WHY_STARVATION,
+        Some(R::Evidence) => crate::player::ABR_WHY_EVIDENCE,
+        Some(R::AtBest) => crate::player::ABR_WHY_AT_BEST,
+        Some(R::ReserveUnknown) => crate::player::ABR_WHY_RESERVE_UNKNOWN,
+        Some(R::DeadlineRollback) => crate::player::ABR_WHY_DEADLINE_ROLLBACK,
+        Some(R::ResponseLimited) => crate::player::ABR_WHY_RESPONSE_LIMITED,
+        Some(R::SwitchCost) => crate::player::ABR_WHY_SWITCH_COST,
+    }
+}
+
+fn publish_model(model: ModelReadout) {
+    let shared = &crate::player::SHARED;
+    let rel = Ordering::Relaxed;
+    shared.dg_abr_safe_kbps.store(model.safe_kbps, rel);
+    shared.dg_abr_optimal_kbps.store(model.optimal_kbps, rel);
+    shared.dg_abr_unc_pm.store(model.uncertainty_pm, rel);
+    shared.dg_abr_samples.store(model.samples, rel);
+    shared.dg_abr_slope_ms_per_s.store(model.slope_ms_per_s, rel);
+    shared.dg_abr_starve_secs.store(model.starvation_secs, rel);
+    shared.dg_abr_pred_pm.store(model.production_pm, rel);
+    shared.dg_abr_risk.store(model.risk, rel);
+    shared.dg_abr_why.store(why_code(model.reason), rel);
+}
+
+struct PlayerActiveDiagnostics<'a> { cleanup_wait_logged: &'a mut bool }
+
+impl ActiveDiagnostics for PlayerActiveDiagnostics<'_> {
+    fn cleanup(&mut self, ready: bool) {
+        if !ready && !*self.cleanup_wait_logged {
+            *self.cleanup_wait_logged = true;
+            crate::player::log(
+                "abr: waiting for PMS to release the stopped encoder before another experiment",
+            );
+        } else if ready && *self.cleanup_wait_logged {
+            *self.cleanup_wait_logged = false;
+            crate::player::log("abr: PMS encoder release observed; exploration may resume");
+        }
+    }
+
+    fn accepted_pause(&mut self, after_lookup: bool, sequence: u64, elapsed_ms: u64) {
+        if after_lookup {
+            crate::player::log(&format!(
+                "abr: consumed accepted pause sequence={} elapsed={}ms after rollback lookup; delivery estimate aged",
+                sequence, elapsed_ms,
+            ));
+        } else {
+            crate::player::log(&format!(
+                "abr: consumed accepted pause sequence={} elapsed={}ms; delivery estimate aged",
+                sequence, elapsed_ms,
+            ));
+        }
+    }
+
+    fn sample(&mut self, sample: SampleReadout) { publish_sample(sample); }
+
+    fn fresh_boundary(&mut self) {
+        crate::player::log(
+            "abr: fresh-session boundary buffered; waiting for the first repeatable HLS acquisition",
+        );
+    }
+
+    fn observed(&mut self, readout: ActiveReadout) {
+        if let Some(runway_ms) = readout.prime_runway_ms {
+            crate::player::SHARED.hls_prime_runway_ms.store(runway_ms, Ordering::Release);
+        }
+        publish_model(readout.model);
+        crate::player::log(&readout.sample_line);
+        crate::player::log(&readout.window_line);
+    }
+}
+
+struct PlayerOriginalProbeDiagnostics;
+
+impl OriginalProbeDiagnostics for PlayerOriginalProbeDiagnostics {
+    fn action(&mut self, action: ProbeTraceAction, target_kbps: u32) {
+        let shared = &crate::player::SHARED;
+        match action {
+            ProbeTraceAction::Start => {
+                shared.dg_abr_action.store(crate::player::ABR_ACTION_PROBE_ORIGINAL, Ordering::Relaxed);
+                shared.dg_abr_target_kbps.store(i64::from(target_kbps), Ordering::Relaxed);
+                crate::player::clear_original_failure();
+            }
+            ProbeTraceAction::Failed => {
+                shared.dg_abr_action.store(crate::player::ABR_ACTION_ORIGINAL_PROBE_FAILED, Ordering::Relaxed);
+                shared.dg_abr_target_kbps.store(0, Ordering::Relaxed);
+            }
+            ProbeTraceAction::Steady => {
+                shared.dg_abr_action.store(crate::player::ABR_ACTION_STEADY, Ordering::Relaxed);
+                shared.dg_abr_target_kbps.store(0, Ordering::Relaxed);
+            }
+            ProbeTraceAction::RecoverOriginal => {
+                shared.dg_abr_action.store(crate::player::ABR_ACTION_RECOVER_ORIGINAL, Ordering::Relaxed);
+            }
+        }
+    }
+
+    fn failure(&mut self, failure: ProbeFailure) {
+        use ProbeFailure as F;
+        let (kind, status) = match failure {
+            F::HttpStatus(status) => (crate::player::ABR_FAILURE_ORIGINAL_HTTP, status),
+            F::Deadline => (crate::player::ABR_FAILURE_ORIGINAL_DEADLINE, 0),
+            F::Transport => (crate::player::ABR_FAILURE_ORIGINAL_TRANSPORT, 0),
+            F::NoBody => (crate::player::ABR_FAILURE_ORIGINAL_NO_BODY, 0),
+            F::Other => (crate::player::ABR_FAILURE_ORIGINAL_OPEN, 0),
+        };
+        crate::player::note_original_failure(kind, status);
+    }
+
+    fn record(&mut self, line: &str) { crate::player::log(line); }
 }
 
 /// The route owner's captured inputs at a worker start. No second route identity is
@@ -179,12 +332,12 @@ pub(crate) fn classify_prime_failure(
 
 /// One worker-local trial runner. It owns phase and address validation while the
 /// feed holds the opaque cursor, timeline, and staged access units in its port.
-pub(crate) struct TrialRunner<'a, P: FeedPort> {
+pub(crate) struct TrialRunner<'a, P: FeedPort + ?Sized> {
     port: &'a mut P,
     protocol: &'a mut TrialProtocol,
 }
 
-impl<'a, P: FeedPort> TrialRunner<'a, P> {
+impl<'a, P: FeedPort + ?Sized> TrialRunner<'a, P> {
     pub(crate) fn new(port: &'a mut P, protocol: &'a mut TrialProtocol) -> Self {
         Self { port, protocol }
     }
@@ -1594,7 +1747,7 @@ pub(crate) enum RoundCourse<L, R> {
     },
 }
 
-fn active_step<P: ActiveFeedPort>(
+fn active_step<P: ActiveFeedPort + ?Sized>(
     port: &mut P, round: RoundId, action: ActiveAction,
 ) -> Result<ActiveObservation, ActiveRunError<P::Error>> {
     let observed = port.step_active(action).map_err(ActiveRunError::Physical)?;
@@ -1608,7 +1761,7 @@ fn active_step<P: ActiveFeedPort>(
 /// physical order. The port may block on a queue or playlist; no controller or
 /// route lock spans a port call. The two buffer samples bracket the rollback
 /// lookup, and both accepted-pause samples precede the policy decision.
-pub(crate) fn run_active_round<P: ActiveFeedPort>(
+pub(crate) fn run_active_round<P: ActiveFeedPort + ?Sized>(
     coordinator: &mut Coordinator, port: &mut P, round: RoundId,
     now_ms: impl Fn() -> u64, remaining_ms: impl Fn() -> i64,
     user_sequence: impl Fn() -> u64, session_boundary_pending: &mut bool,
@@ -2091,7 +2244,7 @@ impl Coordinator {
             proposal, reserve_policy, candidate_duration, reserve, rebuffering,
         )
     }
-    pub(crate) fn begin_candidate<P: AdaptiveRoundPort>(
+    pub(crate) fn begin_candidate<P: AdaptiveRoundPort + ?Sized>(
         &mut self, proposal: abr::Proposal, port: &mut P,
         expected_user_sequence: u64,
         now_ms: impl Fn() -> u64,
@@ -2383,7 +2536,7 @@ impl Coordinator {
     /// A source latch wins a physical lease before cancelling a competing rung.
     /// Publication itself is short and runs under the feed's AQ abort fence;
     /// a Busy or moved clock retains source evidence for a later boundary.
-    pub(crate) fn run_latched_original<P: AdaptiveRoundPort>(
+    pub(crate) fn run_latched_original<P: AdaptiveRoundPort + ?Sized>(
         &mut self, source: LatchedOriginalRecovery, port: &mut P,
         expected_user_sequence: u64, now_ms: impl FnOnce() -> u64,
         on_published: impl FnOnce(),
@@ -2417,7 +2570,7 @@ impl Coordinator {
     /// A bounded Original probe keeps its actuator lease through physical GET,
     /// fresh pause settlement and the AQ-fenced route request. A stale resource
     /// produces no source evidence; Busy and clock movement retain a recovery.
-    pub(crate) fn run_original_probe<P: AdaptiveRoundPort>(
+    pub(crate) fn run_original_probe<P: AdaptiveRoundPort + ?Sized>(
         &mut self, permit: abr::ProbePermit, port: &mut P,
         expected_user_sequence: u64, telemetry: &abr::ControllerTelemetry,
         remaining_ms: i64, decision: abr::Decision, cleanup_ready: bool,
@@ -2545,7 +2698,7 @@ impl Coordinator {
     /// Called after the higher-priority latched source switch had its publication
     /// opportunity. A probe spends its permit only on a Stay boundary; a quality
     /// transaction receives its pending reserve policy from the same controller.
-    pub(crate) fn advance_round<P: AdaptiveRoundPort>(
+    pub(crate) fn advance_round<P: AdaptiveRoundPort + ?Sized>(
         &mut self, cycle: ActiveCycle, port: &mut P,
         now_ms: impl Fn() -> u64,
         on_recover_original: impl FnOnce(),
@@ -2966,6 +3119,262 @@ impl Coordinator {
         deadline: Option<std::time::Instant>,
     ) -> Result<route::PrimedHls, PrimeFailure> {
         prime(&self.control, &self.ticket, off, proposal, offset_micros, deadline)
+    }
+}
+
+struct Session {
+    coordinator: Coordinator,
+    /// One monotonic origin for observe, commit, reject and switch history.
+    history_since: std::time::Instant,
+    /// The first completed object carries encoder startup and does not certify
+    /// repeatable acquisition; the next object opens that evidence window.
+    session_boundary_pending: bool,
+    /// PMS cleanup can finish after its stop ACK; log one wait/release pair.
+    cleanup_wait_logged: bool,
+}
+
+/// Construct the single adaptive owner before entering the feed loop. This
+/// box moves with the playback attempt; no controller or route ticket is
+/// reconstructed from a feed-side snapshot.
+pub fn boxed_session(
+    start: Start, effects: Box<dyn AdaptiveEffects>,
+) -> Box<dyn AdaptiveSession> {
+    let history_since = std::time::Instant::now();
+    let info = start.info();
+    crate::player::log(&format!(
+        "abr: history switches={} since_last={} advanced=0ms",
+        info.history.visible_switches,
+        info.history.since_last_ms.map(|ms| ms.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+    ));
+    if !info.original_candidate || info.original_source_kbps == 0 {
+        crate::player::log(&format!(
+            "abr: no Original recovery for this playback (candidate={} source={}kbps) — \
+             HLS is the ceiling until the next resolve",
+            u8::from(info.original_candidate), info.original_source_kbps,
+        ));
+    }
+    let pin = abr::abr_pin();
+    let coordinator = Coordinator::start(start, pin, effects);
+    if info.original_refused && coordinator.has_recovery() {
+        crate::player::log(
+            "abr: Original was refused on this HLS route; not asked again until the route changes",
+        );
+    }
+    let seeded = coordinator.telemetry();
+    crate::player::log(&format!(
+        "abr: seed rung={}kbps prior={} slow={}kbps fast={}kbps unc={}pm n={} pin={}",
+        info.initial.kbps(),
+        info.prior.map(|p| format!("{}kbps", p.slow_kbps))
+            .unwrap_or_else(|| "none".to_string()),
+        seeded.delivery.slow_kbps,
+        seeded.delivery.fast_kbps,
+        seeded.delivery.uncertainty_pm,
+        seeded.delivery.samples,
+        pin.map(|r| format!("{}kbps", r.kbps()))
+            .unwrap_or_else(|| "none".to_string()),
+    ));
+    Box::new(Session {
+        coordinator,
+        history_since,
+        session_boundary_pending: true,
+        cleanup_wait_logged: false,
+    })
+}
+
+impl AdaptiveSession for Session {
+    fn drive_round(
+        &mut self, off: &plx_base::task::OffFrame,
+        physical: &mut dyn AdaptivePhysicalPort,
+    ) -> AdaptiveProgress {
+        let history_since = &self.history_since;
+        let now_ms = || history_since.elapsed().as_millis() as u64;
+        let Some(round_id) = self.coordinator.next_round_id() else {
+            return AdaptiveProgress::Failed("adaptive active round generation exhausted");
+        };
+        physical.begin_round(round_id);
+        let mut diagnostics = PlayerActiveDiagnostics {
+            cleanup_wait_logged: &mut self.cleanup_wait_logged,
+        };
+        let remaining_playback_ms = physical.remaining_playback_sampler();
+        let user_sequence = physical.user_sequence_sampler();
+        let cycle = match run_active_round(
+            &mut self.coordinator, physical, round_id, || now_ms(),
+            remaining_playback_ms, user_sequence,
+            &mut self.session_boundary_pending, &mut diagnostics,
+        ) {
+            Ok(ActiveRun::Ended) => return AdaptiveProgress::Ended,
+            Ok(ActiveRun::InvalidSample) => {
+                crate::player::log("abr: ignoring invalid segment timing sample");
+                return AdaptiveProgress::Continue;
+            }
+            Ok(ActiveRun::Observed(cycle)) => cycle,
+            Err(ActiveRunError::Physical(error)) => return AdaptiveProgress::PhysicalFailure(error),
+            Err(ActiveRunError::Protocol(message)) => return AdaptiveProgress::Failed(message),
+        };
+        let Some(current) = physical.finish_active() else {
+            return AdaptiveProgress::Failed("adaptive active round lost physical media");
+        };
+        let (proposal, reserve_policy, sample, start) = match self.coordinator.advance_round(
+            cycle, physical, || now_ms(),
+            || crate::player::SHARED.dg_abr_action.store(
+                crate::player::ABR_ACTION_RECOVER_ORIGINAL, Ordering::Relaxed,
+            ),
+            publish_action,
+            |diagnostic| match diagnostic {
+                RoundDiagnostic::Line(line) => crate::player::log(&line),
+                RoundDiagnostic::Steady(line) => {
+                    crate::player::SHARED.dg_abr_action.store(
+                        crate::player::ABR_ACTION_STEADY, Ordering::Relaxed,
+                    );
+                    crate::player::SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
+                    crate::player::log(&line);
+                }
+            },
+            &mut PlayerOriginalProbeDiagnostics,
+        ) {
+            RoundCourse::Stay => return AdaptiveProgress::Continue,
+            RoundCourse::OriginalPublished => return AdaptiveProgress::OriginalPublished,
+            RoundCourse::Aborted => return AdaptiveProgress::Aborted,
+            RoundCourse::Candidate { proposal, reserve_policy, sample, start } =>
+                (proposal, reserve_policy, sample, start),
+        };
+        let mut trial_reserve = start.trial_reserve;
+        let _automatic_lease = start.automatic_lease;
+        let automatic_token = start.token;
+        let refreshing = proposal.rung == self.coordinator.current();
+        let Some(mut trial_protocol) = self.coordinator.begin_trial_protocol() else {
+            return AdaptiveProgress::Failed("adaptive trial generation exhausted");
+        };
+        let trial_id = trial_protocol.id();
+        physical.begin_trial(trial_id, start.exploration.map(|clock| {
+            plx_playback_contract::adaptive::ExplorationFact {
+                target_kbps: proposal.rung.kbps(),
+                started_ns: clock.started_ns,
+                buffered_ms: clock.buffered_ms,
+                runway_ms: clock.runway_ms,
+                budget_ms: clock.budget_ms,
+            }
+        }));
+        let mut tx = TxTrace::open(
+            proposal, self.coordinator.current(), sample, &self.coordinator.delivery(),
+            physical.buffer_sampler(), crate::player::log,
+        );
+        publish_action(action_readout(proposal, refreshing, None));
+        let Some(offset_micros) = physical.candidate_offset_micros() else {
+            return AdaptiveProgress::Failed("HLS candidate content offset overflow");
+        };
+        let mut runner = TrialRunner::new(physical, &mut trial_protocol);
+        let first = runner.run_first(
+            &mut self.coordinator, off, proposal, reserve_policy, offset_micros, || now_ms(),
+            |event, physical| match event {
+                TrialTrace::Prime => tx.mark_prime(),
+                TrialTrace::Master(declared_bps) => {
+                    assert!(physical.candidate_declared_bps().is_some(),
+                        "an opened trial owns its cursor");
+                    tx.mark_master(declared_bps);
+                }
+                TrialTrace::ControlPlane => tx.mark_control_plane(),
+                TrialTrace::WarmupDeadline(deadline) => tx.mark_warmup_deadline(deadline),
+                TrialTrace::FirstMedia(acquisition) =>
+                    tx.mark_media(acquisition.bytes, acquisition.total_us, false),
+                TrialTrace::Decided => tx.mark_decided(),
+                TrialTrace::Rejected { refreshing } =>
+                    publish_action(action_readout(proposal, refreshing, Some(false))),
+                TrialTrace::Finish(outcome) => tx.finish(outcome),
+                TrialTrace::Log(line) => crate::player::log(&line),
+            },
+        );
+        let (primed, declared_bps, first_acquisition, first_buffer) = match first {
+            FirstPhase::Ready { primed, declared_bps, acquisition, buffer } =>
+                (primed, declared_bps, acquisition, buffer),
+            FirstPhase::Stay => return AdaptiveProgress::Continue,
+            FirstPhase::Aborted => return AdaptiveProgress::Aborted,
+            FirstPhase::Failed(message) => return AdaptiveProgress::Failed(message),
+        };
+        let current_variant = VariantFacts {
+            width: current.width, height: current.height, declared_bps: current.declared_bps,
+        };
+        let staged = runner.grade_staged(
+            &mut self.coordinator, proposal, reserve_policy, current_variant,
+            first_acquisition, first_buffer, declared_bps,
+            |remaining_ms| crate::player::log(&format!(
+                "abr: setup-bearing candidate retains one staged observation budget={}ms",
+                remaining_ms.unwrap_or(0),
+            )),
+            |moment| match moment {
+                TrialTraceMoment::FollowupMedia(acquisition) =>
+                    tx.mark_media(acquisition.bytes, acquisition.total_us, true),
+                TrialTraceMoment::FinalEvidence(acquisition) => tx.mark_candidate_evidence(
+                    acquisition.bytes, acquisition.total_us, acquisition.duration,
+                ),
+            },
+        );
+        let judgment = runner.settle_staged(
+            &mut self.coordinator, &primed, proposal, staged, current_variant,
+            declared_bps, || now_ms(),
+            |event, _| match event {
+                TrialTrace::Decided => tx.mark_decided(),
+                TrialTrace::Rejected { refreshing } =>
+                    publish_action(action_readout(proposal, refreshing, Some(false))),
+                TrialTrace::Finish(outcome) => tx.finish(outcome),
+                TrialTrace::Log(line) => crate::player::log(&line),
+                _ => unreachable!("settling staged media cannot emit acquisition timing"),
+            },
+        );
+        let (final_acquisition, sample, candidate_variant) = match judgment {
+            CandidateJudgment::Queue { final_acquisition, sample, variant } =>
+                (final_acquisition, sample, variant),
+            CandidateJudgment::Stay => return AdaptiveProgress::Continue,
+            CandidateJudgment::Aborted => return AdaptiveProgress::Aborted,
+            CandidateJudgment::Failed(message) => return AdaptiveProgress::Failed(message),
+        };
+        let queued = runner.queue_publish(
+            &mut self.coordinator, automatic_token, &primed, proposal, sample,
+            candidate_variant, || now_ms(),
+            |event| match event {
+                QueueTrace::Decided => tx.mark_decided(),
+                QueueTrace::FeedCompleted(started) => tx.mark_feed(started),
+                QueueTrace::Finish(outcome) => tx.finish(outcome),
+            },
+        );
+        let (previous, fence) = match queued {
+            QueueAttempt::Published { previous, fence } => (previous, fence),
+            QueueAttempt::Aborted => return AdaptiveProgress::Aborted,
+            QueueAttempt::Failed(message) => return AdaptiveProgress::Failed(message),
+            QueueAttempt::FenceFailed(error) => return AdaptiveProgress::PhysicalFailure(error),
+        };
+        drop(runner);
+        if let Some(runway_ms) = self.coordinator.prime_runway_ms() {
+            crate::player::SHARED.hls_prime_runway_ms.store(runway_ms, Ordering::Release);
+        }
+        tx.finish("committed");
+        let candidate_declared_bps = physical.candidate_declared_bps()
+            .expect("published trial retains its candidate cursor");
+        let committed = self.coordinator.commit_readout(
+            proposal, refreshing, candidate_declared_bps, final_acquisition,
+        );
+        crate::player::SHARED.dg_abr_kbps.store(i64::from(committed.target_kbps), Ordering::Relaxed);
+        crate::player::SHARED.dg_abr_declared_kbps.store(
+            i64::try_from(committed.declared_bps / 1_000).unwrap_or(i64::MAX), Ordering::Relaxed,
+        );
+        publish_action(ActionReadout {
+            direction: committed.direction, target_kbps: committed.target_kbps,
+            refreshing: committed.refreshing, committed: Some(true),
+        });
+        self.coordinator.emit_committed(committed);
+        assert!(physical.promote_candidate(), "published trial promotes its candidate cursor");
+        self.coordinator.on_hls_commit(proposal.direction);
+        physical.settle(fence);
+        drop(trial_reserve.take());
+        self.coordinator.retire(previous);
+        crate::player::log(&format!(
+            "abr: committed {:?} to {}kbps {}x{} out={}x{}",
+            proposal.direction, committed.target_kbps,
+            proposal.rung.raster().0, proposal.rung.raster().1,
+            committed.observed_width, committed.observed_height,
+        ));
+        AdaptiveProgress::Continue
     }
 }
 
