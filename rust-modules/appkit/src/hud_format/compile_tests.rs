@@ -1182,7 +1182,7 @@ fn watch_faces_use_their_own_hit_and_title_exclusion_geometry() {
             for op in &shown.ops {
                 if let DrawOp::Text { bind, rect: title, .. } = op {
                     if bind == "title.main" {
-                        assert!(title.x + title.w <= rect.scaled(CTRL_FOCUS_SCALE).x);
+                        assert!(title.x + title.w <= rect.scaled(plx_ui::widgets::CTRL_FOCUS_SCALE).x);
                     }
                 }
             }

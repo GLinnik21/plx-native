@@ -143,7 +143,7 @@ impl MarkerAccessRunner {
         let Some(scope) = self.state.begin(now) else {
             return;
         };
-        let Some(request) = PreferenceRequest::capture().filter(|r| r.matches_profile(profile))
+        let Some(request) = PreferenceRequest::capture_marker_access().filter(|r| r.matches_profile(profile))
         else {
             self.state
                 .land(scope, Err(PreferenceError::Unavailable), now);

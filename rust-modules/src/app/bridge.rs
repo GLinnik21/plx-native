@@ -2173,10 +2173,6 @@ impl Bridge {
         }
     }
 
-    /// **Publish this frame's calendar date** — see `AppViews::today`. Called once per iteration by
-    /// the loop, beside [`Self::publish_playback`] and before the dispatcher frame and the draw, with
-    /// `clock::today()` (the loop is that door's one caller). Time arrives as an input: a screen
-    /// that words a date reads it from its views and reads no clock.
     pub(crate) fn marker_preferences(&self) -> plx_appkit::skip_policy::MarkerPrefsView { self.marker_prefs }
     /// Runner boundary: capture the seated profile and live choices once, then publish values.
     pub(crate) fn publish_marker_preferences(&mut self, now: u32) {
@@ -2190,6 +2186,10 @@ impl Bridge {
         self.marker_prefs = view;
     }
 
+    /// **Publish this frame's calendar date** — see `AppViews::today`. Called once per iteration by
+    /// the loop, beside [`Self::publish_playback`] and before the dispatcher frame and the draw, with
+    /// `clock::today()` (the loop is that door's one caller). Time arrives as an input: a screen
+    /// that words a date reads it from its views and reads no clock.
     pub(crate) fn publish_today(&mut self, today: Option<[i32; 3]>) {
         self.today = today;
     }

@@ -72,10 +72,29 @@ impl PreferenceRequest {
             client_id, credential, user })
     }
 
+    /// Marker reads may prove the implicit owner through the captured account's Home roster.
+    /// The request key still names the original seat, so no preference is moved to another profile.
+    pub fn capture_marker_access() -> Option<Self> {
+        Self::capture()?.bind_marker_owner(&crate::plex::session::peek())
+    }
+    fn bind_marker_owner(mut self, stored: &crate::plex::session::Session) -> Option<Self> {
+        if self.user.id != 0 || !self.user.uuid.is_empty() { return Some(self); }
+        if stored.user.id != 0 || !stored.user.uuid.is_empty() || !stored.active_profile_is_admin()
+            || stored.account_token.is_empty() || self.credential != stored.account_token
+            || self.stamp != crate::plex::grant::account_key(&stored.account_token) {
+            return None;
+        }
+        let mut admins = stored.home_users.iter().filter(|user| user.admin);
+        let admin = admins.next()?;
+        if admins.next().is_some() || (admin.id == 0 && admin.uuid.is_empty()) { return None; }
+        self.user.id = admin.id;
+        self.user.uuid = admin.uuid.clone();
+        Some(self)
+    }
     pub fn is_current(&self) -> bool { self.key.is_current() }
     pub fn matches_profile(&self, profile: &crate::plex::session::CurrentProfile) -> bool {
         profile.stamp == self.stamp && profile.generation == self.key.generation && profile.user.as_ref().is_some_and(|u|
-            u.id == self.user.id && u.uuid == self.user.uuid)
+            u.id == self.key.id && u.uuid == self.key.uuid)
     }
 
     /// A fully synthetic receipt for composed UI tests; neither credentials nor preferences are
@@ -458,6 +477,36 @@ impl PreferenceRequest {
 #[cfg(test)]
 mod marker_access_tests {
     use super::*;
+    #[test]
+    fn implicit_owner_uses_only_its_proven_admin_identity_and_preserves_the_seat() {
+        use crate::plex::session::{CurrentProfile, HomeUserRef, Session, UserRef};
+        let _guard = plx_base::testlock::serial();
+        let (mut raw, _) = PreferenceRequest::fixture_for_test(UserRef::default(), 1, Default::default());
+        let mut stored = Session { account_token: raw.credential.clone(), home_users: vec![HomeUserRef {
+            id: 1, uuid: "demo-user".into(), admin: true, ..Default::default() }], ..Default::default() };
+        raw.stamp = crate::plex::grant::account_key(&stored.account_token);
+        let seat = CurrentProfile { user: Some(UserRef::default()), generation: 1, stamp: raw.stamp.clone() };
+        assert_eq!(raw.load_marker_access_with(|| true, |_| Ok(br#"{"id":1,"uuid":"demo-user"}"#.to_vec())),
+            Err(PreferenceError::Refused), "the raw unknown identity cannot authorize features");
+        let proven = raw.clone().bind_marker_owner(&stored).expect("the implicit owner is proved");
+        assert!(proven.matches_profile(&seat), "the account proof does not change the seat key");
+        assert_eq!(proven.load_marker_access_with(|| true, |path| Ok(if path.ends_with("features") {
+            br#"[{"id":"intro-markers"}]"#.to_vec()
+        } else { br#"{"id":1,"uuid":"demo-user"}"#.to_vec() })), Ok(MarkerAccess { intro: true, credits: false }));
+        for identity in [r#"{"id":2,"uuid":"demo-user"}"#, r#"{"id":1,"uuid":"other"}"#] {
+            assert_eq!(proven.load_marker_access_with(|| true, |path| {
+                assert_eq!(path, "/api/v2/user"); Ok(identity.as_bytes().to_vec())
+            }), Err(PreferenceError::Refused));
+        }
+        let mut changed = seat.clone(); changed.stamp.push('x');
+        assert!(!proven.matches_profile(&changed));
+        let mut bad = raw.clone(); bad.stamp.push('x'); assert!(bad.bind_marker_owner(&stored).is_none());
+        let mut bad = raw.clone(); bad.credential.push('x'); assert!(bad.bind_marker_owner(&stored).is_none());
+        stored.home_users.push(stored.home_users[0].clone());
+        assert!(raw.clone().bind_marker_owner(&stored).is_none());
+        stored.home_users.clear(); assert!(raw.clone().bind_marker_owner(&stored).is_none());
+        stored.user.uuid = "managed".into(); assert!(raw.bind_marker_owner(&stored).is_none());
+    }
     #[test]
     fn viewer_features_are_separate_identity_checked_and_fail_closed() {
         let _guard = plx_base::testlock::serial();

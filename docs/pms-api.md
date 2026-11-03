@@ -1779,3 +1779,9 @@ credential, requiring at least one known ID/UUID to match and neither to conflic
 refuses its result. The runner coalesces requests per seated identity, uses the account cache's
 five-minute success lifetime and 45-second failure cooldown, and publishes fresh, independent
 intro/credits grants as frame inputs. It never logs a response body or credentials.
+
+An implicit owner (no Home profile selected) keeps its original blank profile key. Marker access
+uses the unique admin roster identity only when the captured credential is the same account token,
+the account stamp matches, and the stored session confirms that implicit owner. The `/api/v2/user`
+response must match that roster identity before the features read. Missing or ambiguous owner proof
+leaves marker access unavailable; selected profiles never borrow an owner identity.
