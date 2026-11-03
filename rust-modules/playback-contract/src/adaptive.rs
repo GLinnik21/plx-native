@@ -2,6 +2,7 @@
 //! this contract carries only identities, normalized measurements, and ordering.
 
 use crate::{AttemptId, SourceKey};
+use std::time::Duration;
 
 /// A worker-local trial serial under the route owner's existing playback attempt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -17,15 +18,41 @@ impl TrialId {
 pub enum FeedAction {
     Open { trial: TrialId, source: SourceKey },
     ReadNext { trial: TrialId },
+    AcquireFirst {
+        trial: TrialId,
+        media_budget: Option<Duration>,
+        yields_to_rebuffer: bool,
+        started_ns: i64,
+        clock: TrialClock,
+    },
+    AcquireFollowup { trial: TrialId },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FeedFailure { Aborted, Deadline, Ended, NotReady, Parse, SourceMoved, Protocol }
+pub enum TrialClock { Playhead, UnpausedElapsed }
+
+/// Physical transfer and output geometry before a candidate policy verdict.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Acquisition {
+    pub bytes: u64,
+    pub active_us: u64,
+    pub total_us: u64,
+    pub duration: Duration,
+    pub width: i32,
+    pub height: i32,
+    pub declared_bps: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FeedFailure {
+    Aborted, Deadline, Ended, NotReady, Parse, SourceMoved, Protocol, TimelineOverflow,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FeedObservation {
     Opened { trial: TrialId, declared_bps: u64 },
     SegmentReady { trial: TrialId, duration: std::time::Duration },
+    Acquired { trial: TrialId, acquisition: Acquisition },
     Failed { trial: TrialId, failure: FeedFailure },
 }
 
@@ -34,6 +61,7 @@ impl FeedObservation {
         match self {
             Self::Opened { trial, .. }
             | Self::SegmentReady { trial, .. }
+            | Self::Acquired { trial, .. }
             | Self::Failed { trial, .. } => trial,
         }
     }

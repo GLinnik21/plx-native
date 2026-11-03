@@ -416,7 +416,7 @@ fn a_user_pause_does_not_spend_media_reserve_but_the_playhead_does() {
         Some(std::time::Duration::from_millis(1)),
         false,
         start_ns,
-        Direction::Up,
+        TrialClock::Playhead,
     );
     let attempted_deadline = reserve.active(false).expect("one millisecond reserve");
 
@@ -789,7 +789,7 @@ fn a_pause_cannot_turn_an_upshift_control_snapshot_into_a_media_deadline() {
         Some(std::time::Duration::ZERO),
         false,
         start_ns,
-        Direction::Up,
+        TrialClock::Playhead,
     );
     assert!(!media.expired);
     assert!(

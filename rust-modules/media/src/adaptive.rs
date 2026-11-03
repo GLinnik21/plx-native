@@ -4,7 +4,7 @@
 
 use crate::{abr, route};
 use plx_playback_contract::adaptive::PublicationGate;
-use plx_playback_contract::adaptive::{FeedAction, FeedObservation, FeedPort, TrialId};
+use plx_playback_contract::adaptive::{Acquisition, FeedAction, FeedObservation, FeedPort, TrialClock, TrialId};
 use plx_playback_contract::SourceKey;
 
 /// The route owner's captured inputs at a worker start. No second route identity is
@@ -164,6 +164,36 @@ pub(crate) fn next_candidate_segment(
     port: &mut impl FeedPort, trial: TrialId,
 ) -> FeedObservation {
     port.step(FeedAction::ReadNext { trial })
+}
+
+pub(crate) fn acquire_first_candidate(
+    port: &mut impl FeedPort, trial: TrialId, budget: CandidateBudget, started_ns: i64,
+) -> FeedObservation {
+    port.step(FeedAction::AcquireFirst {
+        trial, media_budget: budget.media_deadline,
+        yields_to_rebuffer: budget.yields_to_rebuffer,
+        started_ns, clock: budget.clock,
+    })
+}
+
+pub(crate) fn acquire_followup_candidate(
+    port: &mut impl FeedPort, trial: TrialId,
+) -> FeedObservation {
+    port.step(FeedAction::AcquireFollowup { trial })
+}
+
+/// Project physical acquisition onto the controller's whole-millisecond reserve lattice.
+pub(crate) fn candidate_sample(
+    acquisition: Acquisition, buffer: abr::BufferSnapshot,
+) -> Option<abr::SegmentSample> {
+    let duration_ms = u32::try_from(acquisition.duration.as_millis()).ok()?;
+    let obligation_ms = u32::try_from(
+        acquisition.duration.as_nanos().checked_add(999_999)? / 1_000_000,
+    ).ok()?;
+    abr::SegmentSample::new_with_obligation(
+        acquisition.bytes, acquisition.active_us, acquisition.total_us,
+        duration_ms, obligation_ms, buffer,
+    )
 }
 
 pub(crate) fn reject_cause_for_acquisition(failure: AcquisitionFailure) -> abr::RejectCause {
@@ -377,6 +407,7 @@ pub(crate) struct FinalCandidateGrade {
 pub(crate) struct CandidateBudget {
     pub(crate) media_deadline: Option<std::time::Duration>,
     pub(crate) yields_to_rebuffer: bool,
+    pub(crate) clock: TrialClock,
 }
 
 pub(crate) struct ExplorationGrant {
@@ -523,8 +554,11 @@ impl Coordinator {
     pub(crate) fn final_candidate_grade(
         &self, proposal: abr::Proposal, reserve_policy: abr::ReservePolicy,
         current: VariantFacts, candidate: VariantFacts,
-        outputs_inside_rung: bool, verdict: abr::CandidateVerdict,
+        acquisitions: &[Acquisition], verdict: abr::CandidateVerdict,
     ) -> FinalCandidateGrade {
+        let outputs_inside_rung = acquisitions.iter().all(|output| {
+            hls_raster_within(output.width, output.height, proposal.rung)
+        });
         let raster_ready = !hls_candidate_requires_rung_box(proposal, reserve_policy)
             || outputs_inside_rung;
         let quality_improves = proposal.direction != abr::Direction::Up
@@ -557,6 +591,10 @@ impl Coordinator {
             ),
             yields_to_rebuffer: proposal.direction == abr::Direction::Down
                 && proposal.rung.at_floor(),
+            clock: match proposal.direction {
+                abr::Direction::Up => TrialClock::Playhead,
+                abr::Direction::Down => TrialClock::UnpausedElapsed,
+            },
         }
     }
     /// A setup-bearing first object earns one ordinary continuation only while
