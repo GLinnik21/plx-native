@@ -21,7 +21,7 @@
 use plx_ui::widgets::{StatusOverlay, TAB_PILL_H};
 use plx_ui::Rect;
 
-use super::compile::{CompileFinding, SkipKind};
+use super::compile::CompileFinding;
 use super::lint::{ctx_for, named, LangCtx, StateCtx};
 use super::{codes, Finding};
 use crate::player_hud::classic;
