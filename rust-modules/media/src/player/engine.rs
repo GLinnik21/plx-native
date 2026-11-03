@@ -7204,7 +7204,7 @@ mod pcm_info_tests {
         assert_eq!(app_pcm_for_rate(crate::player::RATE_NORMAL, f()), f(), "1x: the FLAC decoder's shape");
         assert!(app_pcm_for_rate(1500, f()).is_none(), "1.5x: the speed decoder declares its own");
         // a FLAC track whose facts are missing only fails at 1x, where the FLAC decoder needs them
-        let missing = || Some(Err("unknown".to_string()));
+        let missing = || Some(Err::<crate::route::PcmFormat, _>("unknown".to_string()));
         assert!(app_pcm_for_rate(crate::player::RATE_NORMAL, missing()).is_some_and(|r| r.is_err()));
         assert!(app_pcm_for_rate(750, missing()).is_none());
     }
