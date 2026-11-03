@@ -734,7 +734,7 @@ fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::rec
 /// which the caller still holds the Engine's borrow of, so the caller runs [`decode_in_app`].
 fn recover_failed_open(
     ps: &mut crate::route::PlaybackSession,
-    eng: &Engine,
+    loading: bool,
     refusal: super::recovery::LoadRefusal,
     native_audio: Option<plx_platform::devcaps::Facet>,
     why: &str,
@@ -742,7 +742,7 @@ fn recover_failed_open(
     let facts = open_facts(ps, native_audio);
     let run = drive_open_recovery(ps, super::recovery::RecoveryEvent::Refused { refusal, facts }, why);
     match run {
-        OpenRecoveryRun::Flying => hold_connecting_state(eng),
+        OpenRecoveryRun::Flying => hold_connecting_state(loading),
         OpenRecoveryRun::Failed | OpenRecoveryRun::DecodeInApp { .. } => {}
         OpenRecoveryRun::Quiet => fail_engine_for_good(),
     }
@@ -797,69 +797,6 @@ fn confirm_refusal(
     record(facet)
 }
 
-/// The native surround audio watchdog ([`super::native_stall`]): the pipeline took the Load and a few
-/// access units of a native Opus track with more than two channels, then stopped
-/// accepting with both our queues full and no picture. True when it fired, with the refusal flag
-/// raised: the caller hands the audio to the failed-open ladder, whose named write is the learner
-/// ([`confirm_refusal`]).
-fn native_audio_stall_fired(eng: &Engine, now: u32) -> bool {
-    use super::native_stall::{Probe, Step, NATIVE_AUDIO_STALL_MS, SIZES, WATCH};
-    let fed = crate::ff::native_audio::fed();
-    let queue = |q: &Option<Box<crate::aq::AuQueue>>| q.as_ref().map_or(0, |q| crate::aq::aq_bytes(&**q as *const _ as *mut _) as i64);
-    let (qa, qv) = (queue(&eng.aq_audio), queue(&eng.aq_video));
-    let accepted = super::engine::fed_totals().1;
-    let probe = Probe {
-        now,
-        channels: fed.map_or(0, |(_, c)| c),
-        load_returned: SHARED.native_load_returned(eng.native_epoch),
-        frames: SHARED.frames.load(Relaxed),
-        accepted,
-        audio_queue_bytes: qa,
-        video_queue_bytes: qv,
-    };
-    match WATCH.lock().unwrap_or_else(|e| e.into_inner()).step(&probe) {
-        Step::Quiet => false,
-        Step::Armed => {
-            if let Some((kind, channels)) = fed {
-                super::log(&format!(
-                    "native audio: watching {} with {channels} channels ({} accepted AUs, audio queue {qa} B, video queue {qv} B); \
-                     fires if nothing is accepted for {} ms with no picture",
-                    kind.ffmpeg_name(),
-                    accepted,
-                    NATIVE_AUDIO_STALL_MS
-                ));
-            }
-            false
-        }
-        Step::Fire { armed_ms, stalled_ms, accepted } => {
-            let sizes = SIZES.lock().unwrap_or_else(|e| e.into_inner()).summary().unwrap_or_else(|| "none".into());
-            super::log(&format!(
-                "native audio: STALL, no picture: {accepted} AUs accepted, none for {stalled_ms} ms (watching for {armed_ms} ms), \
-                 audio queue {qa} B, video queue {qv} B, fed packet sizes {sizes}"
-            ));
-            SHARED.native_audio_refused.store(true, Release);
-            true
-        }
-    }
-}
-
-/// The one event-log line for an era-chosen sink counter that never arrived in a played session
-/// ([`super::era_callbacks`]). It only reads counters and logs; nothing branches on it.
-fn note_missing_era_callback(eng: &mut Engine) {
-    use super::era_callbacks::{line, Probe, Step};
-    let major = plx_platform::tv::device::info().major;
-    let probe = Probe {
-        ticks: SHARED.dg_pos_ticks.load(Relaxed),
-        displayed: SHARED.dg_sink_displayed_cb.load(Relaxed),
-        other_numbering: SHARED.dg_sink_other_cb.load(Relaxed),
-        major,
-        expected_type: super::displayed_counter_type(major),
-    };
-    if let Step::Missing(m) = eng.era_watch.step(&probe) {
-        super::log(&line(&m));
-    }
-}
-
 /// The Engine fails for good: any flight ends, the viewer gets the read-out, and the Engine's
 /// pipeline is released next frame ([`super::engine::release_failed_engine`]).
 fn fail_engine_for_good() {
@@ -871,8 +808,8 @@ fn fail_engine_for_good() {
 /// What the viewer sees while a recovery flies: the connecting spinner the failed open left, not a
 /// frozen frame and not the failure read-out. Mirrors the ladder at the foot of [`pump`] for a
 /// stream that has decoded nothing.
-fn hold_connecting_state(eng: &Engine) {
-    set_state(if eng.stage == Stage::Loading {
+fn hold_connecting_state(loading: bool) {
+    set_state(if loading {
         super::shared::PlaybackState::Connecting
     } else {
         super::shared::PlaybackState::Buffering
@@ -1360,39 +1297,6 @@ fn paused_and_idle() -> bool {
 /// once: its converted reload carries the same generation, so it plays.
 static REFUSED_FOR: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// **`plxnative-refuse601` (dev builds): the pipeline's `type=18 num=601` after the Load returned,
-/// once per request.** The refusal webOS 10.3.1 gives a stream it cannot allocate a decoder for
-/// (#695, DTS), reproduced on a set that would take the stream: once the Load has returned and
-/// before any picture, it publishes through [`super::sf_on_event`], the entry the firmware calls, so
-/// the callback's own latches (`dg_cb_err_num`, `load_failed`) and the failed-open ladder see exactly
-/// what a real refusal gives them.
-///
-/// The read is a `devtrig::flag` (a `stat`), and a latched flag could not be armed per test: a
-/// process-wide latch hands whichever test ran first its answer for all of them. So the cheap
-/// atomic guards come first and the file is read only inside the open window (after the Load
-/// returned, before a picture, and for a request not yet refused), never on a playing frame. The
-/// latch is written only after the flag holds, so an unarmed request is never marked refused.
-fn inject_refuse601(ps: &crate::route::PlaybackSession, eng: &Engine) {
-    let generation = crate::route::playback_trace_generation();
-    if generation == 0
-        || crate::route::is_preview(ps)
-        || !SHARED.native_load_returned(eng.native_epoch)
-        || SHARED.seen_frame.load(Relaxed)
-        || REFUSED_FOR.load(Acquire) == generation
-    {
-        return;
-    }
-    if !plx_base::devtrig::flag("refuse601") {
-        return;
-    }
-    if REFUSED_FOR.swap(generation, std::sync::atomic::Ordering::AcqRel) == generation {
-        return;
-    }
-    #[cfg(feature = "devtriggers")]
-    super::log("devtrig refuse601: publishing type=18 num=601 after the Load");
-    super::sf_on_event(eng.native_epoch, 18, 601, std::ptr::null());
-}
-
 pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, now: u32) {
     // Capture before a terminal release can clear the callback mailbox, then capture every
     // surviving/replacement Engine after the frame, including its early-return paths. A callback
@@ -1440,15 +1344,10 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         );
         pa.publish_timeline(attempt, snapshot);
     }
-    // ONE `&mut PlayerAdapter`, split into the live session and the seam token. Everything below
-    // that replaces the session (`reload_*`) takes `pa` back, which the borrow checker only allows
-    // where neither half is read afterwards — the "`eng` dangles after it, return immediately"
-    // rule this function used to state in three comments and enforce by hand.
-    let (eng, mut mt) = pa.split();
-    let mut eng = eng.expect("live adapter checked before splitting it");
-    // The addressed Load inbox was drained before splitting the adapter above. Route settlement
-    // still precedes every failure/recovery branch below and every foreground result read.
-    inject_refuse601(ps, eng);
+    // The physical refusal probe precedes a route flight landing that may replace this feed.
+    pa.inject_refuse601(
+        crate::route::playback_trace_generation(), crate::route::is_preview(ps), &REFUSED_FOR,
+    );
     // A failed open's recovery flight (the Original rollback's rebase, the unopened source's HLS
     // fallback, the refused native audio's conversion): land it, or wait for it. Ahead of every
     // failure branch below, whose flags stay up
@@ -1458,7 +1357,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         return;
     }
     if crate::route::recovery_flight_outstanding() {
-        hold_connecting_state(eng);
+        hold_connecting_state(pa.feed_loading());
         return;
     }
     // `sf_load == 0` may leave no callable object, so this must precede the sf_ready wait below;
@@ -1470,7 +1369,10 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         }
         // The Load CALL's own refusal, on a Load the foreground lifecycle follows, is that
         // lifecycle's (#1018's retry). Only a refusal observed after the call returned is the ladder's.
-        if settled_by_foreground(eng.foreground_follows_load, crate::route::route_start_status(eng.route_start)) {
+        if settled_by_foreground(
+            pa.foreground_follows_feed_load(),
+            crate::route::route_start_status(pa.active_feed_attempt().expect("live feed attempt")),
+        ) {
             return;
         }
         // The pipeline refused the open: the failed-open ladder decides. A refusal of natively fed
@@ -1481,13 +1383,13 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         // lacks, a rebuild that cannot fly, or a request with no rung left ends on the read-out the
         // viewer would have had; a refusal the machine does not handle (it is in `Failed`, or a
         // flight is outstanding) fails the Engine again, never silence.
-        let run = recover_failed_open(ps, eng, load_refusal(), native_audio_fact(), "Audio Codec Not Supported");
+        let run = recover_failed_open(ps, pa.feed_loading(), load_refusal(), native_audio_fact(), "Audio Codec Not Supported");
         if let OpenRecoveryRun::DecodeInApp { offset_ns } = run {
             decode_in_app(ps, pa, offset_ns);
         }
         return;
     }
-    if !eng.preview_abandon && native_audio_stall_fired(eng, now) {
+    if pa.native_audio_stall_fired(now) {
         // A trailer preview is direct-play only: its stall ends the preview, never the player's
         // read-out (as in the failure branches below).
         if crate::route::preview_request(ps) {
@@ -1501,21 +1403,17 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         // frame goes on.
         if let Some(audio) = native_audio_fact() {
             let why = "it swallowed the feed: no picture";
-            let run = recover_failed_open(ps, eng, super::recovery::LoadRefusal::Stalled, Some(audio), why);
+            let run = recover_failed_open(ps, pa.feed_loading(), super::recovery::LoadRefusal::Stalled, Some(audio), why);
             if let OpenRecoveryRun::DecodeInApp { offset_ns } = run {
                 decode_in_app(ps, pa, offset_ns);
             }
             return;
         }
     }
-    // wait for the media-thread ctor
-    if unsafe { super::sink().ready(mt) } == 0 {
-        // Same `!eng.preview_abandon` reasoning as the loadCompleted arms below: an abandoned
-        // trailer-preview Load must not drive the D.1.4 deferral logging/budget clock just
-        // because this earlier ctor-wait poll happens to run first.
-        if eng.stage == Stage::Loading && !eng.preview_abandon {
-            native_load_gate_ready(eng.native_epoch);
-        }
+    // A constructor still in flight yields its exact native epoch for the existing Load budget
+    // gate; no route decision below may treat it as a callable object.
+    if let super::feed_pump::CtorGate::Awaiting { budget_epoch } = pa.feed_ctor_gate() {
+        if let Some(epoch) = budget_epoch { native_load_gate_ready(epoch); }
         set_state(PlaybackState::Connecting);
         return;
     }
@@ -1548,9 +1446,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         // `Playing` the event is unhandled and asks for nothing.
         let _ = drive_open_recovery(ps, super::recovery::RecoveryEvent::FirstPicture, "");
     }
-    if !eng.preview_abandon {
-        note_missing_era_callback(eng);
-    }
+    pa.note_missing_era_callback();
 
     // The producer died before publishing a duration: the EOS path is gated on `duration_ns > 0`
     // so it can NEVER fire, and the player used to sit on a black screen forever with no error
@@ -1569,7 +1465,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
             finish_preview_open_failure(ps, pa);
             return;
         }
-        let run = recover_failed_open(ps, eng, super::recovery::LoadRefusal::SourceFailed, None, "");
+        let run = recover_failed_open(ps, pa.feed_loading(), super::recovery::LoadRefusal::SourceFailed, None, "");
         if let OpenRecoveryRun::DecodeInApp { offset_ns } = run {
             decode_in_app(ps, pa, offset_ns);
         }
@@ -1580,12 +1476,16 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
             finish_preview_open_failure(ps, pa);
             return;
         }
-        let run = recover_failed_open(ps, eng, super::recovery::LoadRefusal::SourceFailed, None, "");
+        let run = recover_failed_open(ps, pa.feed_loading(), super::recovery::LoadRefusal::SourceFailed, None, "");
         if let OpenRecoveryRun::DecodeInApp { offset_ns } = run {
             decode_in_app(ps, pa, offset_ns);
         }
         return;
     }
+    // The route's opening verdicts are settled. Borrow the physical feed for route claims and
+    // native seek/feed operations; any reload drops this borrow and returns immediately.
+    let (eng, mut mt) = pa.split();
+    let mut eng = eng.expect("live adapter checked before splitting it");
     let stream = matches!(eng.source, Source::Stream);
 
     // ---------- one synchronized route/action state machine ----------

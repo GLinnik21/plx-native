@@ -48,6 +48,12 @@ impl FeedResources {
     pub fn engine(&mut self) -> Option<&mut engine::Engine> { self.engine.as_mut() }
     pub fn is_live(&self) -> bool { self.engine.is_some() }
     pub fn active_attempt(&self) -> Option<RouteStartAttempt> { self.engine.as_ref().map(|e| e.route_start) }
+    pub fn loading(&self) -> bool {
+        self.engine.as_ref().is_some_and(|e| e.stage == super::shared::Stage::Loading)
+    }
+    pub fn foreground_follows_load(&self) -> bool {
+        self.engine.as_ref().is_some_and(|e| e.foreground_follows_load)
+    }
     pub fn install(&mut self, value: engine::Engine) { self.engine = Some(value); }
     pub fn take(&mut self) -> Option<engine::Engine> { self.engine.take() }
 

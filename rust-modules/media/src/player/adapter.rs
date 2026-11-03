@@ -235,6 +235,12 @@ impl PlayerAdapter {
         self.feed.active_attempt()
     }
 
+    /// Whether the current physical feed has yet to leave its Load stage.
+    pub(super) fn feed_loading(&self) -> bool { self.feed.loading() }
+    pub(super) fn foreground_follows_feed_load(&self) -> bool {
+        self.feed.foreground_follows_load()
+    }
+
     /// One physical seek-preroll tick. The common pump supplies route-flight facts and applies
     /// the returned finish request after this borrow of feed resources ends.
     pub(super) fn paused_seek_step(&mut self, now: u32, route_flight: bool,
@@ -246,6 +252,28 @@ impl PlayerAdapter {
     pub(super) fn publish_feed_diag(&mut self, now: u32,
         last_frames: &std::sync::atomic::AtomicI32) {
         super::feed_pump::publish_diag(&mut self.feed, now, last_frames);
+    }
+
+    /// Feed the dev firmware-refusal probe with route facts, before any route landing can replace
+    /// this physical Engine in the same frame.
+    pub(super) fn inject_refuse601(&mut self, generation: u32, preview: bool,
+        refused_for: &std::sync::atomic::AtomicU32) {
+        super::feed_pump::inject_refuse601(&mut self.feed, generation, preview, refused_for);
+    }
+
+    /// Probe the native audio feed's own stall evidence after common Load-refusal handling.
+    pub(super) fn native_audio_stall_fired(&mut self, now: u32) -> bool {
+        super::feed_pump::native_audio_stall_fired(&mut self.feed, now)
+    }
+
+    /// Gate the active physical tick on native constructor readiness.
+    pub(super) fn feed_ctor_gate(&mut self) -> super::feed_pump::CtorGate {
+        super::feed_pump::ctor_gate(&mut self.feed, &self.mt)
+    }
+
+    /// Emit the physical callback-cadence diagnostic after first-picture route settlement.
+    pub(super) fn note_missing_era_callback(&mut self) {
+        super::feed_pump::note_missing_era_callback(&mut self.feed);
     }
 
     /// Is a session live? Distinct from [`engine`](Self::engine) because it answers without taking

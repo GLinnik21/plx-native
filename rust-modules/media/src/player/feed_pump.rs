@@ -6,7 +6,7 @@ use super::feed_resources::FeedResources;
 use super::{ACB_OK, SHARED, TX};
 use super::shared::Stage;
 use plx_base::task::MainThread;
-use std::sync::atomic::Ordering::{Relaxed, Release};
+use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::time::Duration;
 
 pub(super) struct LoadGate {
@@ -55,6 +55,21 @@ pub(super) fn load_gate(epoch: u32, budget: Duration) -> LoadGate {
         }
     };
     LoadGate { native_epoch: epoch, verdict }
+}
+
+/// Whether native construction is callable yet. A blocked Load exposes its exact epoch only
+/// while the live non-preview Engine still owes the Load budget check.
+pub(super) enum CtorGate {
+    Ready,
+    Awaiting { budget_epoch: Option<u32> },
+}
+
+pub(super) fn ctor_gate(feed: &mut FeedResources, mt: &MainThread) -> CtorGate {
+    let Some(eng) = feed.engine() else { return CtorGate::Awaiting { budget_epoch: None }; };
+    if unsafe { super::sink().ready(mt) } != 0 { return CtorGate::Ready; }
+    CtorGate::Awaiting {
+        budget_epoch: (eng.stage == Stage::Loading && !eng.preview_abandon).then_some(eng.native_epoch),
+    }
 }
 
 /// Place the webOS 5+ exported window at the native Load's completion, before decoded frames.
@@ -222,5 +237,110 @@ pub(super) fn publish_diag(
     let f = SHARED.frames.load(Relaxed);
     if last_frames.swap(f, Relaxed) != f {
         SHARED.dg_frame_at.store(now, Relaxed);
+    }
+}
+
+/// **`plxnative-refuse601` (dev builds): the pipeline's `type=18 num=601` after the Load returned,
+/// once per request.** The refusal webOS 10.3.1 gives a stream it cannot allocate a decoder for
+/// (#695, DTS), reproduced on a set that would take the stream: once the Load has returned and
+/// before any picture, it publishes through [`super::sf_on_event`], the entry the firmware calls, so
+/// the callback's own latches (`dg_cb_err_num`, `load_failed`) and the failed-open ladder see exactly
+/// what a real refusal gives them.
+///
+/// The read is a `devtrig::flag` (a `stat`), and a latched flag could not be armed per test: a
+/// process-wide latch hands whichever test ran first its answer for all of them. So the cheap
+/// atomic guards come first and the file is read only inside the open window (after the Load
+/// returned, before a picture, and for a request not yet refused), never on a playing frame. The
+/// latch is written only after the flag holds, so an unarmed request is never marked refused.
+pub(super) fn inject_refuse601(
+    feed: &mut FeedResources,
+    generation: u32,
+    preview: bool,
+    refused_for: &std::sync::atomic::AtomicU32,
+) {
+    let Some(eng) = feed.engine() else { return; };
+    if generation == 0
+        || preview
+        || !SHARED.native_load_returned(eng.native_epoch)
+        || SHARED.seen_frame.load(Relaxed)
+        || refused_for.load(Acquire) == generation
+    {
+        return;
+    }
+    if !plx_base::devtrig::flag("refuse601") {
+        return;
+    }
+    if refused_for.swap(generation, std::sync::atomic::Ordering::AcqRel) == generation {
+        return;
+    }
+    #[cfg(feature = "devtriggers")]
+    super::log("devtrig refuse601: publishing type=18 num=601 after the Load");
+    super::sf_on_event(eng.native_epoch, 18, 601, std::ptr::null());
+}
+
+/// The native surround audio watchdog ([`super::native_stall`]): the pipeline took the Load and a few
+/// access units of a native Opus track with more than two channels, then stopped
+/// accepting with both our queues full and no picture. True when it fired, with the refusal flag
+/// raised: the caller hands the audio to the failed-open ladder, whose named write is the learner
+/// ([`confirm_refusal`]).
+pub(super) fn native_audio_stall_fired(feed: &mut FeedResources, now: u32) -> bool {
+    let Some(eng) = feed.engine() else { return false; };
+    if eng.preview_abandon { return false; }
+    use super::native_stall::{Probe, Step, NATIVE_AUDIO_STALL_MS, SIZES, WATCH};
+    let fed = crate::ff::native_audio::fed();
+    let queue = |q: &Option<Box<crate::aq::AuQueue>>| q.as_ref().map_or(0, |q| crate::aq::aq_bytes(&**q as *const _ as *mut _) as i64);
+    let (qa, qv) = (queue(&eng.aq_audio), queue(&eng.aq_video));
+    let accepted = super::engine::fed_totals().1;
+    let probe = Probe {
+        now,
+        channels: fed.map_or(0, |(_, c)| c),
+        load_returned: SHARED.native_load_returned(eng.native_epoch),
+        frames: SHARED.frames.load(Relaxed),
+        accepted,
+        audio_queue_bytes: qa,
+        video_queue_bytes: qv,
+    };
+    match WATCH.lock().unwrap_or_else(|e| e.into_inner()).step(&probe) {
+        Step::Quiet => false,
+        Step::Armed => {
+            if let Some((kind, channels)) = fed {
+                super::log(&format!(
+                    "native audio: watching {} with {channels} channels ({} accepted AUs, audio queue {qa} B, video queue {qv} B); \
+                     fires if nothing is accepted for {} ms with no picture",
+                    kind.ffmpeg_name(),
+                    accepted,
+                    NATIVE_AUDIO_STALL_MS
+                ));
+            }
+            false
+        }
+        Step::Fire { armed_ms, stalled_ms, accepted } => {
+            let sizes = SIZES.lock().unwrap_or_else(|e| e.into_inner()).summary().unwrap_or_else(|| "none".into());
+            super::log(&format!(
+                "native audio: STALL, no picture: {accepted} AUs accepted, none for {stalled_ms} ms (watching for {armed_ms} ms), \
+                 audio queue {qa} B, video queue {qv} B, fed packet sizes {sizes}"
+            ));
+            SHARED.native_audio_refused.store(true, Release);
+            true
+        }
+    }
+}
+
+/// The one event-log line for an era-chosen sink counter that never arrived in a played session
+/// ([`super::era_callbacks`]). It only reads counters and logs; nothing branches on it.
+pub(super) fn note_missing_era_callback(feed: &mut FeedResources) {
+    let Some(eng) = feed.engine() else { return; };
+    if eng.preview_abandon { return; }
+    use super::era_callbacks::{line, Probe, Step};
+    let major = plx_platform::tv::device::info().major;
+    let probe = Probe {
+        ticks: SHARED.dg_pos_ticks.load(Relaxed),
+        displayed: SHARED.dg_sink_displayed_cb.load(Relaxed),
+        other_numbering: SHARED.dg_sink_other_cb.load(Relaxed),
+        major,
+        expected_type: super::displayed_counter_type(major),
+    };
+    if let Step::Missing(m) = eng.era_watch.step(&probe) {
+        super::log(&line(&m));
     }
 }
