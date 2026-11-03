@@ -686,7 +686,7 @@ pub struct ReserveDeadlineState {
     observer: Arc<dyn DemuxObserver>,
     yields_to_rebuffer: bool,
     hold_epoch_at_start: Option<u64>,
-    expired: bool,
+    pub expired: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1233,7 +1233,7 @@ impl AvioState {
         n
     }
 
-    fn bounce_remaining(&self) -> bool {
+    pub fn bounce_remaining(&self) -> bool {
         self.bounce_pos < self.bounce.len()
     }
 
@@ -1296,7 +1296,7 @@ impl AvioState {
     /// more body is still expected. Cap, abort, I/O fail, Idle, or a finished body `cond_wait`.
     /// A long pause at CAP can let the server keep-alive timer FIN the socket; reuse already
     /// redials on `Transport`. Do not raise CAP.
-    fn drain_wire(&mut self) -> bool {
+    pub fn drain_wire(&mut self) -> bool {
         const CAP: usize = 384 * 1024;
         if matches!(self.src, Src::Idle) {
             return false;
@@ -4378,7 +4378,7 @@ pub struct HlsCursor {
     auth: crate::hls::InheritedAuth,
     pub media: crate::hls::Resource,
     tracker: crate::hls::MediaTracker,
-    pending: std::collections::VecDeque<crate::hls::Segment>,
+    pub pending: std::collections::VecDeque<crate::hls::Segment>,
     ended: bool,
     target_duration_secs: u64,
     start_applied: bool,
