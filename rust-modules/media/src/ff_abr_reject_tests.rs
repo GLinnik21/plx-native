@@ -72,8 +72,9 @@ fn an_incomplete_prefix_is_unknown_on_the_unqualified_debug_panel() {
     )
     .expect("valid transfer")
     .abandoned();
+    let panel = crate::adaptive::SampleReadout::from_sample(sample);
     assert_eq!(
-        hls_abr_rate_readout(sample),
+        (panel.network_kbps, panel.media_kbps, panel.ratio_pm),
         (-1, -1, -1),
         "without a complete= column, a right-censored prefix must not look measured",
     );

@@ -1223,7 +1223,7 @@ impl ActiveReadout {
 }
 
 impl SampleReadout {
-    fn from_sample(sample: abr::SegmentSample) -> Self {
+    pub(crate) fn from_sample(sample: abr::SegmentSample) -> Self {
         let (network_kbps, media_kbps, ratio_pm) = if sample.completed() {
             (
                 i64::from(sample.network_kbps()),
