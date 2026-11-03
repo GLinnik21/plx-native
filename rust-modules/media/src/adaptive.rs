@@ -354,7 +354,7 @@ impl OriginalSession for ProgressiveOriginalSession {
     }
 
     fn observe(
-        &mut self, quantum: OriginalQuantum, position_ns: fn() -> i64,
+        &mut self, quantum: OriginalQuantum, position_ns: &dyn Fn() -> i64,
     ) -> OriginalProgress {
         self.begin_on_worker();
         let watch = self.coordinator.as_mut()

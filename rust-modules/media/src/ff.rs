@@ -5193,7 +5193,7 @@ fn hls_demux(
     let mut prefetched: Option<ActiveMedia> = None;
 
     loop {
-        let Some(session) = adaptive.as_mut() else {
+        let Some(adaptive_session) = adaptive.as_mut() else {
             let Some((segment, output, clock, fetch_abandoned)) = hls_read_active(
                 &mut cursor, &mut net, timeline, &mut prefetched, aq, acodec, None,
             )? else { break; };
@@ -5229,7 +5229,7 @@ fn hls_demux(
             source: None, candidate: None, segment: None,
             candidate_timeline: None, clock: None, output: None, staged: Vec::new(),
         };
-        match session.drive_round(off, &mut physical) {
+        match adaptive_session.drive_round(off, &mut physical) {
             plx_playback_contract::adaptive::AdaptiveProgress::Continue => continue,
             plx_playback_contract::adaptive::AdaptiveProgress::Ended
             | plx_playback_contract::adaptive::AdaptiveProgress::OriginalPublished => break,
@@ -6896,7 +6896,7 @@ pub(crate) fn demux(
                                 paused: pause_state.paused,
                                 completed_pause_ms,
                             };
-                            match watch.observe(quantum, || {
+                            match watch.observe(quantum, &|| {
                                 session.clock().playpos_ns().max(0)
                             }) {
                                 plx_playback_contract::adaptive::OriginalProgress::Continue => {}
