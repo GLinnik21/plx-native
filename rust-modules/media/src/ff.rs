@@ -683,16 +683,18 @@ use acquisition::{AcquisitionRuntime, Phase, SegmentAcquisition};
 /// actual internal rebuffer may stop protecting the old cursor, but a later user Resume cannot
 /// make that already-spent reserve exist again. One instance follows the whole segment transaction
 /// through open, wait, probe, body and final validation; promotion is latched as an unarmed clock.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone)]
 struct ReserveDeadlineState {
     clock: ReserveDeadlineClock,
+    observer: Arc<dyn DemuxObserver>,
     yields_to_rebuffer: bool,
-    hold_epoch_at_start: u64,
+    hold_epoch_at_start: Option<u64>,
     expired: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
 enum ReserveDeadlineClock {
+    Retired,
     Wall(Option<std::time::Instant>),
     Playhead {
         started_ns: i64,
@@ -710,51 +712,71 @@ enum ReserveDeadlineClock {
 }
 
 impl ReserveDeadlineState {
-    fn new(at: Option<std::time::Instant>, yields_to_rebuffer: bool) -> Self {
+    fn new(at: Option<std::time::Instant>, yields_to_rebuffer: bool,
+        observer: Arc<dyn DemuxObserver>) -> Self {
+        let hold_epoch_at_start = observer.hold_epoch();
         Self {
-            clock: ReserveDeadlineClock::Wall(at),
+            clock: if hold_epoch_at_start.is_some() {
+                ReserveDeadlineClock::Wall(at)
+            } else {
+                ReserveDeadlineClock::Retired
+            },
+            observer,
             yields_to_rebuffer,
-            hold_epoch_at_start: SHARED.hls_internal_hold_epoch.load(Ordering::Acquire),
+            hold_epoch_at_start,
             expired: false,
         }
     }
 
     /// A media-reserve deadline spends presentation time, not wall time. User Pause, an internal
     /// rebuffer hold and a genuinely starved native clock all freeze the same physical balance.
-    fn from_playhead(budget: std::time::Duration, yields_to_rebuffer: bool) -> Self {
-        Self::from_playhead_at(
-            crate::player::feed_playpos_ns().max(0),
-            budget,
-            yields_to_rebuffer,
-        )
+    fn from_playhead(budget: std::time::Duration, yields_to_rebuffer: bool,
+        observer: Arc<dyn DemuxObserver>) -> Self {
+        let Some(started_ns) = observer.playpos_ns() else {
+            return Self {
+                clock: ReserveDeadlineClock::Retired,
+                observer,
+                yields_to_rebuffer,
+                hold_epoch_at_start: None,
+                expired: false,
+            };
+        };
+        Self::from_playhead_at(started_ns, budget, yields_to_rebuffer, observer)
     }
 
     fn from_playhead_at(
         started_ns: i64,
         budget: std::time::Duration,
         yields_to_rebuffer: bool,
+        observer: Arc<dyn DemuxObserver>,
     ) -> Self {
+        let hold_epoch_at_start = observer.hold_epoch();
         Self {
-            clock: ReserveDeadlineClock::Playhead {
+            clock: if hold_epoch_at_start.is_some() { ReserveDeadlineClock::Playhead {
                 started_ns: started_ns.max(0),
                 budget,
-            },
+            }} else { ReserveDeadlineClock::Retired },
+            observer,
             yields_to_rebuffer,
-            hold_epoch_at_start: SHARED.hls_internal_hold_epoch.load(Ordering::Acquire),
+            hold_epoch_at_start,
             expired: false,
         }
     }
 
-    fn from_unpaused_elapsed(budget: std::time::Duration, yields_to_rebuffer: bool) -> Self {
-        let (started_at, paused_at_start) = crate::player::TX.pause_clock_sample();
+    fn from_unpaused_elapsed(budget: std::time::Duration, yields_to_rebuffer: bool,
+        observer: Arc<dyn DemuxObserver>) -> Self {
+        let pause = observer.pause_clock();
+        let hold_epoch_at_start = observer.hold_epoch();
         Self {
-            clock: ReserveDeadlineClock::UnpausedElapsed {
-                started_at,
-                paused_at_start,
+            clock: if let (Some(pause), Some(_)) = (pause, hold_epoch_at_start) {
+                ReserveDeadlineClock::UnpausedElapsed {
+                started_at: pause.at,
+                paused_at_start: pause.elapsed,
                 budget,
-            },
+            }} else { ReserveDeadlineClock::Retired },
+            observer,
             yields_to_rebuffer,
-            hold_epoch_at_start: SHARED.hls_internal_hold_epoch.load(Ordering::Acquire),
+            hold_epoch_at_start,
             expired: false,
         }
     }
@@ -765,11 +787,12 @@ impl ReserveDeadlineState {
     /// pause into either spent reserve or a newly granted budget.
     fn remaining(&self) -> Option<std::time::Duration> {
         match self.clock {
+            ReserveDeadlineClock::Retired => None,
             ReserveDeadlineClock::Wall(at) => {
                 at.map(|at| at.saturating_duration_since(std::time::Instant::now()))
             }
             ReserveDeadlineClock::Playhead { started_ns, budget } => {
-                let spent_ns = crate::player::feed_playpos_ns()
+                let spent_ns = self.observer.playpos_ns()?
                     .max(0)
                     .saturating_sub(started_ns);
                 let spent =
@@ -781,17 +804,21 @@ impl ReserveDeadlineState {
                 paused_at_start,
                 budget,
             } => {
-                let (now, paused_now) = crate::player::TX.pause_clock_sample();
-                let elapsed = now.saturating_duration_since(started_at);
-                let paused = paused_now.saturating_sub(paused_at_start);
+                let pause = self.observer.pause_clock()?;
+                let elapsed = pause.at.saturating_duration_since(started_at);
+                let paused = pause.elapsed.saturating_sub(paused_at_start);
                 Some(budget.saturating_sub(elapsed.saturating_sub(paused)))
             }
         }
     }
 
     fn release_to_rebuffer(&mut self, rebuffering: bool) {
-        let hold_happened =
-            SHARED.hls_internal_hold_epoch.load(Ordering::Acquire) != self.hold_epoch_at_start;
+        if matches!(self.clock, ReserveDeadlineClock::Retired) { return; }
+        let Some(hold_epoch) = self.observer.hold_epoch() else {
+            self.clock = ReserveDeadlineClock::Retired;
+            return;
+        };
+        let hold_happened = Some(hold_epoch) != self.hold_epoch_at_start;
         if self.yields_to_rebuffer && (rebuffering || hold_happened) {
             self.clock = ReserveDeadlineClock::Wall(None);
         }
@@ -802,9 +829,13 @@ impl ReserveDeadlineState {
     /// wall time may pass while the native presentation clock is stopped.
     fn clock_is_spent(&self) -> bool {
         match self.clock {
+            ReserveDeadlineClock::Retired => true,
             ReserveDeadlineClock::Wall(at) => at.is_some_and(|at| std::time::Instant::now() >= at),
             ReserveDeadlineClock::Playhead { started_ns, budget } => {
-                let spent_ns = crate::player::feed_playpos_ns()
+                let Some(position_ns) = self.observer.playpos_ns() else {
+                    return true;
+                };
+                let spent_ns = position_ns
                     .max(0)
                     .saturating_sub(started_ns);
                 let spent =
@@ -812,7 +843,7 @@ impl ReserveDeadlineState {
                 spent >= budget
             }
             ReserveDeadlineClock::UnpausedElapsed { .. } => {
-                self.remaining() == Some(std::time::Duration::ZERO)
+                self.remaining().is_none_or(|left| left.is_zero())
             }
         }
     }
@@ -820,11 +851,12 @@ impl ReserveDeadlineState {
     fn active(&mut self, rebuffering: bool) -> Option<std::time::Instant> {
         self.release_to_rebuffer(rebuffering);
         match self.clock {
+            ReserveDeadlineClock::Retired => Some(std::time::Instant::now()),
             ReserveDeadlineClock::Wall(at) => at,
             ReserveDeadlineClock::Playhead { .. }
             | ReserveDeadlineClock::UnpausedElapsed { .. } => {
                 let mut left = self.remaining().unwrap_or(std::time::Duration::ZERO);
-                if crate::player::TX.paused.load(Ordering::Acquire) {
+                if self.observer.paused().unwrap_or(true) {
                     // Pause is published only after the native call succeeds, but the final
                     // playhead sample can land between our first read and that flag. Re-read once
                     // after observing Pause so equality cannot be hidden by the state change.
@@ -1001,16 +1033,20 @@ fn candidate_reserve_deadline(
     yields_to_rebuffer: bool,
     started_ns: i64,
     clock: TrialClock,
+    observer: Arc<dyn DemuxObserver>,
 ) -> ReserveDeadlineState {
     exploration.unwrap_or_else(|| {
+        let unbounded_observer = observer.clone();
         media_budget.map_or_else(
-            || ReserveDeadlineState::new(None, yields_to_rebuffer),
+            || ReserveDeadlineState::new(None, yields_to_rebuffer, unbounded_observer),
             |budget| match clock {
                 TrialClock::Playhead => {
-                    ReserveDeadlineState::from_playhead_at(started_ns, budget, yields_to_rebuffer)
+                    ReserveDeadlineState::from_playhead_at(started_ns, budget,
+                        yields_to_rebuffer, observer)
                 }
                 TrialClock::UnpausedElapsed => {
-                    ReserveDeadlineState::from_unpaused_elapsed(budget, yields_to_rebuffer)
+                    ReserveDeadlineState::from_unpaused_elapsed(budget,
+                        yields_to_rebuffer, observer)
                 }
             },
         )
@@ -3434,6 +3470,9 @@ fn hls_source_read(
         }
         return Err(HlsExit::Aborted);
     }
+    if observer.hold_epoch().is_none() {
+        return Err(HlsExit::Aborted);
+    }
     if read == plx_net::stream::HTTP_READ_DEADLINE || read == range_io::READ_DEADLINE {
         Err(HlsExit::PrimeExpired)
     } else if read < 0 {
@@ -3444,7 +3483,9 @@ fn hls_source_read(
         // while visibly downloading playlists and segments. Count at the shared source seam so
         // socket and curl HLS mean the same thing: bytes actually handed to the demux fetcher.
         if read > 0 {
-            observer.publish(DemuxCallbackEffect::NetworkBytes(read as i64));
+            if !observer.publish(DemuxCallbackEffect::NetworkBytes(read as i64)) {
+                return Err(HlsExit::Aborted);
+            }
         }
         Ok(read as usize)
     }
@@ -3467,6 +3508,7 @@ fn hls_fetch_text(
         if unsafe { crate::aq::aq_is_aborted(aq) } {
             return Err(HlsExit::Aborted);
         }
+        if net.observer.hold_epoch().is_none() { return Err(HlsExit::Aborted); }
         if reserve
             .as_deref_mut()
             .is_some_and(|reserve| reserve.expire_if_due(false))
@@ -3480,14 +3522,16 @@ fn hls_fetch_text(
         // A playlist is not a segment acquisition: it has no reserve-funded guard to consult, and
         // its own reserve deadline and watchdog already bound every wait. `NoCheckpoint` keeps it
         // exactly as it was.
-        match hls_open_source(
+        let opened = hls_open_source(
             resource,
             &request_path,
             aq,
             net,
             Some(effective.at),
             &mut plx_base::checkpoint::NoCheckpoint,
-        ) {
+        );
+        if net.observer.hold_epoch().is_none() { return Err(HlsExit::Aborted); }
+        match opened {
             Ok(opened) => {
                 // A complete response head is transport progress and begins a fresh inactivity
                 // epoch for the body. Neither a stale reserve wake nor a reconnect attempt does.
@@ -3515,6 +3559,7 @@ fn hls_fetch_text(
         if unsafe { crate::aq::aq_is_aborted(aq) } {
             return Err(HlsExit::Aborted);
         }
+        if net.observer.hold_epoch().is_none() { return Err(HlsExit::Aborted); }
         if reserve
             .as_deref_mut()
             .is_some_and(|reserve| reserve.expire_if_due(false))
@@ -3944,6 +3989,7 @@ unsafe fn hls_demux_segment(
             Some(effective.at),
             &mut runtime,
         );
+        if net.observer.hold_epoch().is_none() { return Err(HlsExit::Aborted); }
         // Every unsuccessful open is SETTLED by a fresh check before it is classified: a transport
         // deadline shorter than the checkpoint slice ends the wait without asking again.
         let opened = opened.map_err(|error| settle_hls_segment(&mut runtime, error,
@@ -4483,13 +4529,14 @@ impl HlsRoundPort<'_> {
         yields_to_rebuffer: bool, started_ns: i64, clock: TrialClock,
     ) -> FeedObservation {
         let deadline = candidate_reserve_deadline(
-            self.reserve, media_budget, yields_to_rebuffer, started_ns, clock,
+            self.reserve.clone(), media_budget, yields_to_rebuffer, started_ns, clock,
+            self.session.observer(),
         );
         self.acquire(trial, deadline)
     }
 
     fn acquire_followup(&mut self, trial: TrialId) -> FeedObservation {
-        let Some(deadline) = self.reserve else {
+        let Some(deadline) = self.reserve.clone() else {
             return FeedObservation::Failed { trial, failure: FeedFailure::Protocol };
         };
         self.acquire(trial, deadline)
@@ -4595,6 +4642,7 @@ impl AdaptivePhysicalPort for HlsRoundPort<'_> {
     fn begin_trial(&mut self, trial: TrialId, exploration: Option<ExplorationFact>) {
         self.trial = Some(trial);
         self.candidate_timeline = Some(*self.timeline);
+        let observer = self.session.observer();
         self.reserve = exploration.map(|clock| {
             crate::player::log(&format!(
                 "abr: exploration target={}kbps buf={}ms runway={}ms budget={}ms",
@@ -4606,6 +4654,7 @@ impl AdaptivePhysicalPort for HlsRoundPort<'_> {
                     u64::try_from(clock.budget_ms).unwrap_or(u64::MAX),
                 ),
                 false,
+                observer,
             )
         });
     }
@@ -6050,7 +6099,7 @@ pub(crate) fn demux(
                     body_active_us: 0,
                     body_bytes: 0,
                     first_byte_at: None,
-                    reserve_deadline: ReserveDeadlineState::new(None, false),
+                    reserve_deadline: ReserveDeadlineState::new(None, false, session.observer()),
                     transport_watchdog: None,
                     // A progressive part is not on a ladder, so there is no cheaper rung to run to
                     // and the abort rule's escape does not exist. R12's terminal case, structurally.

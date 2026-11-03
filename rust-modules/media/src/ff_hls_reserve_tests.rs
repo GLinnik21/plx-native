@@ -347,7 +347,7 @@ fn unwind_after_candidate_media_publication_stays_fenced_until_teardown() {
 #[test]
 fn a_floor_deadline_can_only_promote_while_the_fetch_is_in_flight() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-    let mut floor = ReserveDeadlineState::new(Some(deadline), true);
+    let mut floor = ReserveDeadlineState::new(Some(deadline), true, super::test_support::demux_observer());
     assert_eq!(
         floor.active(false),
         Some(deadline),
@@ -364,7 +364,7 @@ fn a_floor_deadline_can_only_promote_while_the_fetch_is_in_flight() {
         "a later Resume cannot resurrect reserve already released by this transaction",
     );
 
-    let mut ordinary = ReserveDeadlineState::new(Some(deadline), false);
+    let mut ordinary = ReserveDeadlineState::new(Some(deadline), false, super::test_support::demux_observer());
     assert_eq!(
         ordinary.active(true),
         Some(deadline),
@@ -375,7 +375,7 @@ fn a_floor_deadline_can_only_promote_while_the_fetch_is_in_flight() {
 #[test]
 fn a_hold_racing_a_blocking_timeout_releases_instead_of_expiring_the_floor() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
-    let mut floor = ReserveDeadlineState::new(Some(deadline), true);
+    let mut floor = ReserveDeadlineState::new(Some(deadline), true, super::test_support::demux_observer());
     let attempted_deadline = floor.active(false);
 
     assert!(attempted_deadline.is_some());
@@ -391,7 +391,7 @@ fn a_hold_racing_a_blocking_timeout_releases_instead_of_expiring_the_floor() {
     );
 
     let expired_at = std::time::Instant::now();
-    let mut ordinary = ReserveDeadlineState::new(Some(expired_at), false);
+    let mut ordinary = ReserveDeadlineState::new(Some(expired_at), false, super::test_support::demux_observer());
     assert!(ordinary.note_transport_deadline(Some(expired_at), true));
     assert!(
         ordinary.expired,
@@ -433,6 +433,7 @@ fn a_user_pause_does_not_spend_media_reserve_but_the_playhead_does() {
         false,
         start_ns,
         TrialClock::Playhead,
+        super::test_support::demux_observer(),
     );
     let attempted_deadline = reserve.active(false).expect("one millisecond reserve");
 
@@ -492,8 +493,8 @@ fn a_pause_cannot_revive_reserve_already_spent_by_the_playhead() {
     };
 
     let budget = std::time::Duration::from_millis(1);
-    let mut polled = ReserveDeadlineState::from_playhead(budget, false);
-    let mut blocked = ReserveDeadlineState::from_playhead(budget, false);
+    let mut polled = ReserveDeadlineState::from_playhead(budget, false, super::test_support::demux_observer());
+    let mut blocked = ReserveDeadlineState::from_playhead(budget, false, super::test_support::demux_observer());
     let attempted_deadline = blocked.active(false).expect("running reserve snapshot");
 
     SHARED
@@ -544,7 +545,7 @@ fn wall_time_between_projection_and_classification_cannot_spend_playhead_reserve
     };
 
     let mut reserve =
-        ReserveDeadlineState::from_playhead(std::time::Duration::from_nanos(1), false);
+        ReserveDeadlineState::from_playhead(std::time::Duration::from_nanos(1), false, super::test_support::demux_observer());
     let attempted_deadline = reserve
         .active(false)
         .expect("positive balance projects a wake");
@@ -589,6 +590,7 @@ fn stale_reserve_wakes_cannot_renew_transport_liveness() {
         start_ns,
         std::time::Duration::from_millis(2),
         false,
+        super::test_support::demux_observer(),
     );
     // The liveness boundary is placed by hand instead of being measured against wall sleeps. The
     // first version of this test armed an 18 ms watchdog and slept 3 + 3 + 15 ms, so it only held
@@ -654,6 +656,7 @@ fn spent_playhead_reserve_wins_before_live_transport_watchdog() {
         start_ns,
         std::time::Duration::from_millis(1),
         false,
+        super::test_support::demux_observer(),
     );
     let watchdog = TransportWatchdog::with_inactivity(std::time::Duration::from_secs(1));
     let attempted = watchdog.effective(reserve.active(false));
@@ -689,6 +692,7 @@ fn an_earlier_liveness_boundary_stays_transport_even_if_reserve_spends_before_cl
         start_ns,
         std::time::Duration::from_millis(20),
         false,
+        super::test_support::demux_observer(),
     );
     let watchdog = TransportWatchdog::with_inactivity(std::time::Duration::from_millis(1));
     let attempted = watchdog.effective(reserve.active(false));
@@ -731,6 +735,7 @@ fn bounded_downshift_spends_internal_hold_but_excludes_a_hidden_user_pause_cycle
     let mut reserve = ReserveDeadlineState::from_unpaused_elapsed(
         std::time::Duration::from_millis(80),
         false,
+        super::test_support::demux_observer(),
     );
     let attempted = reserve.active(false).expect("bounded recovery deadline");
     clock.advance(std::time::Duration::from_millis(20));
@@ -787,6 +792,7 @@ fn a_pause_cannot_turn_an_upshift_control_snapshot_into_a_media_deadline() {
     let mut exploration = Some(ReserveDeadlineState::from_playhead(
         std::time::Duration::from_millis(1),
         false,
+        super::test_support::demux_observer(),
     ));
     let control_snapshot = exploration_snapshot(&mut exploration).expect("running clock");
     crate::player::TX
@@ -806,6 +812,7 @@ fn a_pause_cannot_turn_an_upshift_control_snapshot_into_a_media_deadline() {
         false,
         start_ns,
         TrialClock::Playhead,
+        super::test_support::demux_observer(),
     );
     assert!(!media.expired);
     assert!(
@@ -861,6 +868,7 @@ fn resume_during_a_blocked_pause_projection_cannot_overspend_reserve() {
         start_ns,
         std::time::Duration::from_millis(100),
         false,
+        super::test_support::demux_observer(),
     );
     let watchdog = TransportWatchdog::with_inactivity(std::time::Duration::from_secs(1));
     let attempted = reserve
@@ -915,6 +923,7 @@ fn a_pause_projection_spends_neither_reserve_nor_transport_liveness() {
         start_ns,
         std::time::Duration::from_millis(1),
         false,
+        super::test_support::demux_observer(),
     );
     let watchdog = TransportWatchdog::with_inactivity(std::time::Duration::from_millis(50));
     let liveness_deadline = watchdog.deadline;
@@ -925,4 +934,32 @@ fn a_pause_projection_spends_neither_reserve_nor_transport_liveness() {
     assert!(classify_hls_deadline(wake).is_none());
     assert!(!reserve.expired);
     assert_eq!(watchdog.deadline, liveness_deadline);
+}
+
+#[test]
+fn retired_reserve_does_not_sample_successor_playhead() {
+    let _serial = plx_base::testlock::serial();
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) { SHARED.reset_session(); }
+    }
+    let _reset = Reset;
+    SHARED.reset_session();
+    let first_epoch = SHARED.begin_native_session().expect("first native epoch");
+    let first = crate::player::demux_session::PlayerDemuxSession::capture(
+        plx_playback_contract::AttemptId::new(8, 1), first_epoch,
+    );
+    let mut reserve = ReserveDeadlineState::from_playhead_at(
+        40_000_000_000, std::time::Duration::from_millis(500), false,
+        first.observer(),
+    );
+    SHARED.playpos_ns.store(40_000_000_000, Ordering::Release);
+    assert_eq!(reserve.remaining(), Some(std::time::Duration::from_millis(500)));
+
+    SHARED.reset_session();
+    let _next_epoch = SHARED.begin_native_session().expect("successor native epoch");
+    SHARED.playpos_ns.store(40_100_000_000, Ordering::Release);
+    assert_eq!(reserve.remaining(), None);
+    assert!(reserve.clock_is_spent());
+    assert!(reserve.active(false).is_some(), "retired reserve fails closed");
 }
