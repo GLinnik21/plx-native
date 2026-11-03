@@ -21,7 +21,7 @@ impl Tick {
 pub enum Backend { Uri, Feed, Unknown }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Origin { Fresh, UserRetry, QualityChange, AutomaticHandoff, Recovery, ForegroundResume, Preview }
+pub enum Origin { Fresh, UserRetry, QualityChange, ViewerReconfigure, AutomaticHandoff, Recovery, ForegroundResume, Preview }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage { Planning, Open, Decode, Presentation, Release, Unknown }
