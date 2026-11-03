@@ -42,7 +42,7 @@ use plx_platform::devcaps::AudioStack;
 use plx_platform::tv::sink::UnloadTicket;
 use plx_telemetry::telemetry::classes::DemuxExitClass;
 use plx_telemetry::telemetry::window::Stage as WindowStage;
-use std::os::raw::{c_char, c_int, c_long, c_void};
+use std::os::raw::{c_char, c_int, c_void};
 use std::sync::atomic::{AtomicI64, Ordering};
 
 // ACCEPTED AUs — what the pipeline took. This is what `app::diagnostics` reports, because a count of
@@ -81,7 +81,7 @@ pub fn fed_totals() -> (i64, i64) {
 /// this ahead of its video (issue #600) runs the lane up to `ff::AUDIO_AHEAD_HEADROOM` (16 MiB)
 /// beyond it for as long as the video lane holds less than `MAX_FEED_AHEAD_NS` of media.
 pub const fn aq_caps() -> (i64, i64) {
-    (AQ_VIDEO_BYTES as i64, AQ_AUDIO_BYTES as i64)
+    plx_play_feed::feed_state::aq_caps()
 }
 
 /// **The feed-ahead throttle's two leads, milliseconds** — video, then audio.
@@ -122,8 +122,7 @@ pub const fn feed_leads_ms() -> (i64, i64) {
 // levers are one decision and neither is worth landing alone.
 // `docs/measurements/p0-plant-sizing.md` is the record; `requiredMemory` is 160 MB, so +2 MiB RSS
 // on a 32-bit set is inside the budget already declared.
-const AQ_VIDEO_BYTES: c_long = 10 * 1024 * 1024;
-const AQ_AUDIO_BYTES: c_long = 1024 * 1024;
+use plx_play_feed::feed_state::{AQ_VIDEO_BYTES, AQ_AUDIO_BYTES};
 
 pub use plx_play_feed::feed_state::{AuBox, Engine, FeedPace, SampleBuf, Source};
 #[cfg(test)]
@@ -1520,13 +1519,13 @@ const PRIME_NS: i64 = 700_000_000;
 // start anyway once video buffers PRIME_VIDEO_MAX_NS without audio (audioless / briefly starved),
 // so a genuinely audioless region can't hang.
 const PRIME_AUDIO_NS: i64 = 300_000_000;
-pub(crate) const PRIME_VIDEO_MAX_NS: i64 = 2_500_000_000;
+pub(crate) use plx_play_feed::feed_state::PRIME_VIDEO_MAX_NS;
 // Feed-ahead throttle (Kodi-parity): keep the VIDEO lane at most this far ahead of the presented
 // position (SHARED.pres_fed) instead of feeding greedily to BufferFull. Bounding the buffer to
 // ~1.6s (was ~10-20s: aq 6MB + the pipeline's own ~8MB) makes seeks flush far less, keeps the
 // clock from running ahead, and cuts latency. AUDIO gets a looser bound so it can ride slightly
 // ahead (audio buffer is cheap and it's the master clock) without unbounded race on odd muxes.
-pub(crate) const MAX_FEED_AHEAD_NS: i64 = 1_600_000_000;
+pub(crate) use plx_play_feed::feed_state::MAX_FEED_AHEAD_NS;
 pub(crate) const AUDIO_SLACK_NS: i64 = 2_000_000_000;
 // A fed pts this far below a lane's high-water is a stale pre-seek AU (past the B-frame reorder
 // distance) → drop it rather than feed a backward jump.
@@ -1562,7 +1561,7 @@ const AUDIO_STALE_AHEAD_NS: i64 = 5_000_000_000;
 /// video lane already past its base cap and nobody draining it (no clock yet): `ff::demux` keeps
 /// the video lane's pre-audio headroom until the audio lane has been pushed this much plus a
 /// margin (`ff::LEAD_IN_MARGIN_NS`), and only then releases it as the consumer drains.
-pub(crate) const AUDIO_LEAD_IN_NS: i64 = 2_000_000_000;
+pub(crate) use plx_play_feed::feed_state::AUDIO_LEAD_IN_NS;
 // The lead-in is only sound between these two: under the throttle's own audio lead (a track that
 // starts on time is fed exactly as before), and over the audio the clock is primed with (else
 // "ahead of the clock" would not be enough audio to start it).

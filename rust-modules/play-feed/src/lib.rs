@@ -5,6 +5,8 @@ pub mod aq;
 pub mod era_callbacks;
 pub mod feed_resources;
 pub mod feed_state;
+pub mod ff_pcm;
+pub mod ff;
 pub mod hls;
 pub mod native_gate;
 pub mod native_load;
