@@ -118,4 +118,3 @@ pub enum RawCue {
     Bytes { track: usize, start: i64, end: i64, payload: Vec<u8> },
     Bitmap { track: usize, pts: i64, display: crate::subtitle::BitmapDisplay },
 }
-
