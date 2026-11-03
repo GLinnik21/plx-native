@@ -5,7 +5,6 @@
 #![deny(clippy::debug_assert_with_mut_call)]
 use crate::aq::AuQueue;
 use crate::adaptive;
-use plx_playback_contract::adaptive::TrialObservation as TrialEvent;
 use plx_playback_contract::adaptive::{Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, AutomaticPort, AutomaticTransition, BufferFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, RoundId, TrialActuatorPort, TrialClock, TrialId};
 use plx_playback_contract::SourceKey;
 use crate::player::threads::SendPtr;
@@ -5424,24 +5423,6 @@ impl Drop for TxTrace {
     }
 }
 
-/// Candidate rejection after a transaction has actually run. Freeze the transaction's decision
-/// snapshot before publishing the controller result so the tx diagnostic and action describe the
-/// same instant.
-fn reject_hls_abr_after_transaction(
-    coordinator: &mut crate::adaptive::Coordinator,
-    proposal: crate::abr::Proposal,
-    cause: crate::abr::RejectCause,
-    tx: &mut TxTrace,
-    now_ms: u64,
-) {
-    // Freeze one reserve snapshot and use it for both the controller certificate and the tx log.
-    // Two adjacent live reads can differ while playback advances and would make the diagnostic
-    // line disagree with the quantity that actually released the next experiment.
-    tx.mark_decided();
-    let refreshing_same_request = coordinator.reject(proposal, cause, now_ms);
-    publish_hls_abr_action(proposal, refreshing_same_request, Some(false));
-}
-
 /// **One shared reducer for a `StallAbort` returned against the ACTIVE cursor.** The ordinary
 /// fetch and the same-encoder lookahead observe the identical terminal boundary and must handle
 /// it identically: log it, requeue the segment (exactly once — it is put back here, and nowhere
@@ -6239,8 +6220,9 @@ fn hls_demux(
                 }
             },
         );
-        let staged = runner.settle_staged(
-            state, &primed, proposal, staged, || now_ms(),
+        let judgment = runner.settle_staged(
+            state, &primed, proposal, staged, current_variant,
+            opened_declared_bps, || now_ms(),
             |event, _| match event {
                 adaptive::TrialTrace::Decided => tx.mark_decided(),
                 adaptive::TrialTrace::Rejected { refreshing } =>
@@ -6250,67 +6232,12 @@ fn hls_demux(
                 _ => unreachable!("settling staged media cannot emit acquisition timing"),
             },
         );
-        let (final_acquisition, candidate_buffer, verdict, grade) = match staged {
-            adaptive::StagedCandidate::Ready {
-                final_acquisition, final_buffer, verdict, grade,
-            } => (final_acquisition, final_buffer, verdict, grade),
-            adaptive::StagedCandidate::Settled(adaptive::FirstPhase::Stay) => continue 'segments,
-            adaptive::StagedCandidate::Settled(adaptive::FirstPhase::Aborted) =>
-                return Err(HlsExit::Aborted),
-            adaptive::StagedCandidate::Settled(adaptive::FirstPhase::Failed(message)) =>
-                return Err(HlsExit::Failed(message)),
-            _ => return Err(HlsExit::Failed("adaptive staged trial unsettled")),
-        };
-        let staged_count = runner.physical().staged.len();
-        let candidate_sample = adaptive::candidate_sample(
-            final_acquisition, adaptive::buffer_snapshot(candidate_buffer),
-        );
-        let adaptive::FinalCandidateGrade { raster_ready, quality_improves, disposition } = grade;
-        if let adaptive::HlsCandidateDisposition::Discard { cause, outcome } = disposition {
-            runner.observe(TrialEvent::Ended)
-                .expect("a rejected candidate has not entered the queue");
-            state.abandon(&primed.encoder_session);
-            reject_hls_abr_after_transaction(state, proposal, cause, &mut tx, now_ms());
-            if !raster_ready {
-                crate::player::log(&format!(
-                    "abr: candidate raster {}x{} exceeds {}x{}; staying on current rung",
-                    final_acquisition.width,
-                    final_acquisition.height,
-                    proposal.rung.raster().0,
-                    proposal.rung.raster().1,
-                ));
-            } else if !quality_improves {
-                crate::player::log(&format!(
-                    "abr: candidate request {}kbps produced {}x{} @ {}kbps versus current {}x{} @ \
-                     {}kbps; no measured quality gain, staying on current rung",
-                    proposal.rung.kbps(),
-                    final_acquisition.width,
-                    final_acquisition.height,
-                    opened_declared_bps / 1_000,
-                    output.video_width,
-                    output.video_height,
-                    cursor.declared_bps / 1_000,
-                ));
-            } else {
-                crate::player::log(&format!(
-                    "abr: candidate verdict={verdict:?}; discarded {} staged segment(s) without \
-                     changing the active media owner",
-                    staged_count,
-                ));
-            }
-            tx.finish(outcome);
-            continue;
-        }
-        let sample = candidate_sample.expect("a ready candidate has a completed segment sample");
-        let Some(candidate_variant) = crate::abr::ObservedHlsVariant::new(
-            final_acquisition.declared_bps,
-            final_acquisition.width,
-            final_acquisition.height,
-        ) else {
-            state.abandon(&primed.encoder_session);
-            return Err(HlsExit::Failed(
-                "ABR candidate committed invalid output geometry",
-            ));
+        let (final_acquisition, sample, candidate_variant) = match judgment {
+            adaptive::CandidateJudgment::Queue { final_acquisition, sample, variant } =>
+                (final_acquisition, sample, variant),
+            adaptive::CandidateJudgment::Stay => continue 'segments,
+            adaptive::CandidateJudgment::Aborted => return Err(HlsExit::Aborted),
+            adaptive::CandidateJudgment::Failed(message) => return Err(HlsExit::Failed(message)),
         };
         // Validation ends here. Freeze the decision timestamp before the feed loop, which can
         // block on `aq_push` against a full queue; `feed=` records that backpressure separately.
