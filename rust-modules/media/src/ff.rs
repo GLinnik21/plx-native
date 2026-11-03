@@ -6824,20 +6824,12 @@ fn hls_demux(
                 }
             };
         }
-        runner.observe(TrialEvent::QueueAuthorized)
-            .expect("only graded candidate media may enter the queue");
+        runner.authorize_queue();
         let feed_started = std::time::Instant::now();
-        runner.observe(TrialEvent::QueueStarted)
-            .expect("queueing follows candidate authorization");
         runner.physical().staged = candidate_outputs
             .into_iter().map(|(output, _, _)| output).collect();
         let queued = runner.queue_staged();
         if queued != (FeedObservation::Queued { trial: trial_id }) {
-            let terminal = runner.observe(TrialEvent::Ended);
-            debug_assert_eq!(
-                terminal,
-                Err(plx_playback_contract::adaptive::TrialProtocolError::TerminalAfterQueue),
-            );
             state.abandon(&primed.encoder_session);
             let aborted = queued == (FeedObservation::Failed {
                 trial: trial_id, failure: FeedFailure::Aborted,
@@ -6847,8 +6839,6 @@ fn hls_demux(
                 HlsExit::Failed("adaptive feed queue protocol violation")
             });
         }
-        runner.observe(TrialEvent::QueueCompleted)
-            .expect("all staged candidate media was queued");
         tx.mark_feed(feed_started);
         drop(runner);
         let mut candidate = port.candidate.take().expect("queued trial retains its candidate cursor");

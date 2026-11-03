@@ -213,9 +213,24 @@ impl<'a, P: FeedPort> TrialRunner<'a, P> {
         self.step(FeedAction::AcquireFollowup { trial })
     }
 
+    pub(crate) fn authorize_queue(&mut self) {
+        self.observe(TrialObservation::QueueAuthorized)
+            .expect("only graded candidate media may enter the queue");
+    }
+
     pub(crate) fn queue_staged(&mut self) -> FeedObservation {
+        self.observe(TrialObservation::QueueStarted)
+            .expect("queueing follows candidate authorization");
         let trial = self.protocol.id();
-        self.step(FeedAction::QueueStaged { trial })
+        let observed = self.step(FeedAction::QueueStaged { trial });
+        if observed == (FeedObservation::Queued { trial }) {
+            self.observe(TrialObservation::QueueCompleted)
+                .expect("all staged candidate media was queued");
+        } else {
+            let terminal = self.observe(TrialObservation::Ended);
+            debug_assert_eq!(terminal, Err(TrialProtocolError::TerminalAfterQueue));
+        }
+        observed
     }
 }
 
@@ -1062,17 +1077,15 @@ mod trial_runner_tests {
         let mut protocol = TrialProtocol::new(current);
         for phase in [
             TrialObservation::Prepared, TrialObservation::FirstAcquired,
-            TrialObservation::QueueAuthorized, TrialObservation::QueueStarted,
         ] {
             protocol.observe(current, phase).unwrap();
         }
         let mut port = LateReplyPort { response: FeedObservation::Queued { trial: previous } };
         let mut runner = TrialRunner::new(&mut port, &mut protocol);
+        runner.authorize_queue();
         assert_eq!(runner.queue_staged(), FeedObservation::Failed {
             trial: current, failure: FeedFailure::Protocol,
         });
-        assert_eq!(runner.observe(TrialObservation::Ended),
-            Err(TrialProtocolError::TerminalAfterQueue));
         drop(runner);
         assert_eq!(protocol.phase(), TrialPhase::Ended);
         assert_eq!(protocol.observe(current, TrialObservation::Published),
