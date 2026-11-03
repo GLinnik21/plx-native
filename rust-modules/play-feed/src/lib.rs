@@ -44,6 +44,7 @@ pub mod ff_test_support {
 pub mod hls;
 pub mod native_gate;
 pub mod native_load;
+pub mod native_executor;
 pub mod native_release;
 pub mod open;
 pub mod pcm_lead;

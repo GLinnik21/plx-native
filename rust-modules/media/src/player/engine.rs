@@ -133,66 +133,7 @@ use plx_play_feed::feed_state::engines_dropped_for_test;
 // four `static mut` accessors used to carry here, and says what the owned slot proves that the
 // `&MainThread` argument could only assert.
 
-/// Owns the explicit `Held(Initial)` clock state until the matching Engine is installed. Every
-/// early return after worker creation runs this guard only after its local handles have been
-/// stopped/joined, so a failed start cannot poison the next attempt with a phantom held clock.
-struct ClockStartGuard {
-    shared: &'static PhysicalShared,
-    armed: bool,
-}
-
-impl ClockStartGuard {
-    fn arm(shared: &'static PhysicalShared, user_held: bool, seek_preroll: bool) -> Option<Self> {
-        shared
-            .arm_initial_clock_hold(user_held, seek_preroll)
-            .then_some(Self { shared, armed: true })
-    }
-
-    fn commit(mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for ClockStartGuard {
-    fn drop(&mut self) {
-        if self.armed {
-            self.shared.cancel_clock_session_start();
-        }
-    }
-}
-
-/// Own the native callback generation until the matching Engine has been installed.  Every early
-/// return then retires it automatically, and retirement is also a barrier for a callback already
-/// executing on Starfish's library thread.
-struct NativeSessionStartGuard {
-    shared: &'static PhysicalShared,
-    epoch: u32,
-    armed: bool,
-}
-
-impl NativeSessionStartGuard {
-    fn arm(shared: &'static PhysicalShared) -> Option<Self> {
-        shared
-            .begin_native_session()
-            .map(|epoch| Self { shared, epoch, armed: true })
-    }
-
-    fn epoch(&self) -> u32 {
-        self.epoch
-    }
-
-    fn commit(mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for NativeSessionStartGuard {
-    fn drop(&mut self) {
-        if self.armed {
-            self.shared.retire_native_session(self.epoch);
-        }
-    }
-}
+use plx_play_feed::native_executor::{ClockStartGuard, NativeSessionStartGuard};
 
 #[cfg(test)]
 use plx_play_feed::native_release::{native_object_disposition, NativeObjectDisposition};
