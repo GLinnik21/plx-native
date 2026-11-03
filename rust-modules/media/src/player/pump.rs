@@ -3295,22 +3295,17 @@ mod flight_tests {
         super::super::sf_on_event(epoch, 18, 601, std::ptr::null());
     }
 
-    /// **The pipeline takes the Load a test just started.** The hostsim sink refuses every Load the
-    /// rig starts after its first Engine (the rig's Engine was never built by a real `sf_load`, so its
-    /// teardown cannot prove the release and quarantines the host object). The refusal is published
-    /// from the MEDIA thread (`ok=0`, no `type=18` callback: `num=0`), so it lands a moment after the
-    /// start, at a time no frame chooses. A test that stands for "the pipeline took that Load" awaits
-    /// the refusal and takes it down BEFORE its next frame: left to chance, a frame that runs after it
-    /// reads a second refusal of an open whose facet is spent and ends on the read-out (a runner whose
-    /// media thread is scheduled first did exactly that to the restore and reload tests below, one run
-    /// in sixty under load). Call it after every `start_bufferfeed_tracked` / reload the test goes on
-    /// to grade; the refusal that then ends the open is the test's own (`pipeline_refuses_601`).
-    fn pipeline_takes_the_load() {
+    /// **The pipeline takes the exact Load a test just started.** A host Load can now either
+    /// succeed after a proved release or refuse when the initial synthetic Engine left an object.
+    /// Wait for the current epoch's worker result, then retire only a synchronous host refusal:
+    /// the next failure these tests grade is their own callback (`pipeline_refuses_601`).
+    fn pipeline_takes_the_load(rig: &mut Rig) {
+        let epoch = engine_epoch(rig).expect("the started Load's Engine");
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while !SHARED.load_failed.load(Acquire) && std::time::Instant::now() < deadline {
+        while !SHARED.native_load_returned(epoch) && std::time::Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(2));
         }
-        assert!(SHARED.load_failed.load(Acquire), "the sink's refusal of the started Load never arrived");
+        assert!(SHARED.native_load_returned(epoch), "the exact native Load never returned");
         SHARED.load_failed.store(false, Release);
     }
 
@@ -3483,7 +3478,7 @@ mod flight_tests {
         }
         assert!(!replacement.contains("scopeName%3Dh264"), "the video is not the suspect, so it is not bounded: {replacement}");
 
-        pipeline_takes_the_load();
+        pipeline_takes_the_load(&mut rig);
         let second = refuse_100_and_land_next_flight(&mut rig, 2);
         for needle in [
             "scopeName%3Ddca%26type%3DupperBound%26name%3Daudio.channels%26value%3D2",
@@ -3509,7 +3504,7 @@ mod flight_tests {
         FlightRig::declare_video(&mut rig.ps, "h264", 1920, 1080);
         FlightRig::offer_original_of_video(&mut rig.ps, false, "h264");
         refuse_601_and_land_flight(&mut rig, 1);
-        pipeline_takes_the_load();
+        pipeline_takes_the_load(&mut rig);
         let second = refuse_601_and_land_flight(&mut rig, 2);
         for needle in [
             "scopeName%3Ddca%26type%3DupperBound%26name%3Daudio.channels%26value%3D2",
@@ -3522,7 +3517,7 @@ mod flight_tests {
         assert!(!second.contains("scopeName%3Dh264"), "a 1080p raster is not lowered: {second}");
         assert!(second.contains("videoResolution=3840x2160"), "nothing was lowered, so the route keeps its own ceiling: {second}");
 
-        pipeline_takes_the_load();
+        pipeline_takes_the_load(&mut rig);
         let reloaded = engine_epoch(&mut rig).expect("the encoded route's Engine");
         rig.frame();
         super::super::sf_on_event(reloaded, 18, 601, std::ptr::null());
@@ -3676,7 +3671,7 @@ mod flight_tests {
     /// sink refuses the reload's Load (nothing decodes in a host test); the pipeline this stands for
     /// took it ([`pipeline_takes_the_load`]).
     fn first_picture(rig: &mut Rig) {
-        pipeline_takes_the_load();
+        pipeline_takes_the_load(rig);
         super::super::ffi_host::force_clocksink_for_test(true);
         super::super::ffi_host::force_object_ready_for_test(true);
         SHARED.frames.store(1, Relaxed);
@@ -3843,7 +3838,7 @@ mod flight_tests {
             matches!(restored, super::super::engine::BufferfeedStartOutcome::Launched(_)),
             "the restore's Load did not start: {restored:?}"
         );
-        pipeline_takes_the_load();
+        pipeline_takes_the_load(rig);
     }
 
     /// Drain frames with no Engine until the late landing of a flight a park dropped is reaped (the
@@ -3917,7 +3912,7 @@ mod flight_tests {
         reap_the_dropped_flight(&mut rig);
         let restored = crate::player::start_bufferfeed_tracked(&mut rig.ps, &mut rig.pa);
         assert!(matches!(restored, super::super::engine::BufferfeedStartOutcome::Launched(_)), "{restored:?}");
-        pipeline_takes_the_load();
+        pipeline_takes_the_load(&mut rig);
         rig.frame();
         assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error, "sanity: the restore re-opens");
         pipeline_refuses_601(&mut rig);
@@ -4075,7 +4070,7 @@ mod flight_tests {
                 rig.frames_until("the conversion's landing", |_| !crate::route::flight_outstanding());
                 let reloaded = engine_epoch(&mut rig).expect("the reloaded Engine");
                 assert_ne!(reloaded, epoch, "the landing reloaded the Engine");
-                pipeline_takes_the_load();
+                pipeline_takes_the_load(&mut rig);
                 assert!(SHARED.mark_native_load_returned(reloaded, None).is_some(), "the reload's Load returned");
                 for _ in 0..4 {
                     rig.frame();
@@ -4329,7 +4324,7 @@ mod flight_tests {
         let first = refused_601_until_settled(&mut rig);
         assert_decoding_in_the_app(&mut rig, epoch, &first);
         let reloaded = engine_epoch(&mut rig).expect("the reloaded Engine");
-        pipeline_takes_the_load();
+        pipeline_takes_the_load(&mut rig);
         assert!(SHARED.mark_native_load_returned(reloaded, None).is_some(), "the reload's Load returned");
         let second = plx_base::eventlog::with_private_log(|| {
             super::super::sf_on_event(reloaded, 18, 601, std::ptr::null());
