@@ -814,6 +814,32 @@ impl Coordinator {
         publish_candidate(port, &self.control, &mut self.controller, &mut self.ticket,
             candidate, proposal, sample, variant, now_ms)
     }
+    /// Queue completion is the only entry into the AQ publication fence. A
+    /// failed fence makes the trial terminal; neither its cursor nor its
+    /// controller evidence can be reused for another publication attempt.
+    pub(crate) fn publish_queued_candidate(
+        &mut self, protocol: &mut TrialProtocol, port: &mut dyn PublicationGate,
+        candidate: &route::PrimedHls, proposal: abr::Proposal,
+        sample: abr::SegmentSample, variant: abr::ObservedHlsVariant, now_ms: u64,
+    ) -> CandidatePublication {
+        assert_eq!(protocol.phase(), TrialPhase::Queued, "publication requires queued media");
+        let publication = self.publish_candidate(
+            port, candidate, proposal, sample, variant, now_ms,
+        );
+        let observation = if matches!(&publication, CandidatePublication::Active { .. }) {
+            TrialObservation::Published
+        } else {
+            TrialObservation::Ended
+        };
+        let trial = protocol.id();
+        let result = protocol.observe(trial, observation);
+        if matches!(&publication, CandidatePublication::Active { .. }) {
+            assert_eq!(result, Ok(TrialPhase::Published));
+        } else {
+            assert_eq!(result, Err(TrialProtocolError::TerminalAfterQueue));
+        }
+        publication
+    }
     pub(crate) fn publish_original(
         &self, port: &mut dyn PublicationGate, authorized: bool,
         kbps: u32, position_ns: impl FnOnce() -> i64,

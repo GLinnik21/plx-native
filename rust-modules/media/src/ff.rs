@@ -6850,7 +6850,8 @@ fn hls_demux(
         // live encoder while holding that SAME mutex, so exactly one side wins: either teardown
         // prevents the route change, or publication captures the old encoder before teardown can
         // join this worker. No cleanup/network work is allowed inside the closure.
-        let publication = state.publish_candidate(
+        let publication = state.publish_queued_candidate(
+            &mut trial_protocol,
             &mut AqPublicationPort(aq),
             &primed,
             proposal,
@@ -6858,13 +6859,6 @@ fn hls_demux(
             candidate_variant,
             now_ms(),
         );
-        if !matches!(&publication, adaptive::CandidatePublication::Active { .. }) {
-            let terminal = trial_protocol.observe(trial_id, TrialEvent::Ended);
-            debug_assert_eq!(
-                terminal,
-                Err(plx_playback_contract::adaptive::TrialProtocolError::TerminalAfterQueue),
-            );
-        }
         let previous = match publication {
             adaptive::CandidatePublication::Aborted => {
                 state.abandon(&primed.encoder_session);
@@ -6893,8 +6887,6 @@ fn hls_demux(
             }
             adaptive::CandidatePublication::Active { previous } => previous,
         };
-        trial_protocol.observe(trial_id, TrialEvent::Published)
-            .expect("a candidate may publish only after queue completion");
         // The committed candidate is already the first completed acquisition at the new
         // operating point. Publish its exact replay boundary before the trial lifetime marker and
         // explicit candidate-generation settlement. Leaving the old rung's value here would authorize
