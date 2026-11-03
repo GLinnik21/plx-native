@@ -23,7 +23,8 @@ impl UriSession {
         let input = DriverConfig {
             attempt, variant, kind, url: url.to_owned(),
             app_id: plx_base::paths::app_id().to_owned(), transport,
-            sink: super::sink(), log: super::log, acb_facts,
+            sink: super::sink() as &dyn plx_platform::tv::sink::DisplaySink,
+            log: super::log, acb_facts,
             release_allowance_ms: u64::try_from(super::release::RELEASE_DEADLINE.as_millis()).unwrap_or(u64::MAX),
         };
         Self(CoreSession::open(input, mt))

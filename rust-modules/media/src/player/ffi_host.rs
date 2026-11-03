@@ -66,7 +66,7 @@
 //! they touch, and the tests reach them as `crate::player::ffi_host::<hook>`.
 
 use plx_base::task::MainThread;
-use plx_platform::tv::sink::VideoSink;
+use plx_platform::tv::sink::{DisplaySink, VideoSink};
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_long, c_uint};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering::Relaxed};
@@ -1232,6 +1232,9 @@ impl VideoSink for HostSink {
     unsafe fn quarantine(&self, _: &MainThread) {
         sf_quarantine()
     }
+}
+
+impl DisplaySink for HostSink {
     fn window_mode(&self) -> c_int {
         unsafe { vp_mode() }
     }

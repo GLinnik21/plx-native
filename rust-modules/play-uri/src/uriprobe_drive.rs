@@ -24,7 +24,7 @@
 use super::uri_lifecycle::{Event as LifeEvent, Fx as LifeFx, Lifecycle};
 use super::uriprobe::{build_load, Config, Kind, Scheme, Settle, UriCall, UriEffect, UriEvent, UriProbe, Variant, AcbOp};
 use plx_base::task::MainThread;
-use plx_platform::tv::sink::{VideoSink, VP_ACB, VP_EXPORTED};
+use plx_platform::tv::sink::{DisplaySink, VP_ACB, VP_EXPORTED};
 use plx_platform::tv::uri::{CloseStatus, UriMedia, UriPoll};
 use std::collections::VecDeque;
 use std::os::raw::c_int;
@@ -58,7 +58,7 @@ pub struct DriverConfig<A: Copy> {
     pub url: String,
     pub app_id: String,
     pub transport: &'static dyn UriMedia,
-    pub sink: &'static dyn VideoSink,
+    pub sink: &'static dyn DisplaySink,
     pub log: fn(&str),
     pub acb_facts: fn() -> AcbFacts,
     pub release_allowance_ms: u64,
@@ -76,7 +76,7 @@ pub struct UriSession<A: Copy> {
     app_id: String,
     /// The route-start attempt this session stands in for; the machine settles it exactly once.
     attempt: A,
-    sink: &'static dyn VideoSink,
+    sink: &'static dyn DisplaySink,
     log: fn(&str),
     acb_facts: fn() -> AcbFacts,
     release_allowance_ms: u64,

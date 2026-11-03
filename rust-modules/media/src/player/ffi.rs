@@ -187,7 +187,9 @@ impl plx_platform::tv::sink::VideoSink for StarfishSink {
     unsafe fn quarantine(&self, _: &MainThread) {
         sys::sf_quarantine()
     }
+}
 
+impl plx_platform::tv::sink::DisplaySink for StarfishSink {
     /// Resolved once inside the seam and cached there, so this is cheap to call repeatedly. Takes no
     /// token: it only reads a memoized int and touches no pipeline state.
     #[inline]
