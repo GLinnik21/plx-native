@@ -707,14 +707,15 @@ impl LibraryScreen {
             self.layout.rows
         } else { rows };
         let episodes = self.layout.is_episodes();
+        let library_context = self.layout.has_library_context();
         let values = self.values;
         let band_h = if values { plx_ui::cards::SORT_VALUE_BAND_H }
             else { self.grid_policy().as_ref().map_or(plx_ui::cards::LEGACY_BAND_H, plx_ui::caption_policy::band_h) };
         self.layout = if self.readout == Readout::Failed {
             Layout::failed(true)
-        } else { Layout::new(true, rows) }.with_episodes(episodes).with_band_h(band_h).with_value_line(values)
+        } else { Layout::new(true, rows) }.with_library_context(library_context).with_episodes(episodes).with_band_h(band_h).with_value_line(values)
             .with_grid_bands(self.pair.detail.band_geometry());
-        self.target_layout = Layout::new(true, rows).with_episodes(episodes).with_band_h(band_h).with_value_line(values)
+        self.target_layout = Layout::new(true, rows).with_library_context(library_context).with_episodes(episodes).with_band_h(band_h).with_value_line(values)
             .with_grid_focus(grid_focus.map(|index| index / self.layout.cols()));
         if self.grid_reset_pending {
             self.scroll_target = self.target_layout.row_reveal(0);
@@ -1028,9 +1029,7 @@ impl LibraryScreen {
         // and none of them moves focus, so no `FocusMoved` will release it.
         self.provisional = None;
         self.placed.retain(|(_, placed)| *placed != elem);
-        // A singleton selector never exists (`refresh_header` names 2+ libraries or none), so
-        // `MORE` is the only way into the Sources menu: an ordinary library name below always
-        // requests a section transition, never a menu.
+        // Options opens its menu; each favorite name requests a section transition.
         match elem {
             // The Collections page lists the library's collections (type 18).
             COLLECTIONS => { self.open_listing(Listing::Collections, cx, fx); return Handled::Yes; }

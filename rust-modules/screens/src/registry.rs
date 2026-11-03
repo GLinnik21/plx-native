@@ -1481,7 +1481,7 @@ pub enum LoopReq {
     AccountSignIn,
     AccountSignOut,
     /// PRESENTS the Settings surface, rooted at the page, over the same page, so the host route
-    /// does not move: `Root` for the account menu's Settings row, `Favourites` for the Library's
+    /// does not move: `Root` for the account menu's Settings row, `LibraryFavourites` for the
     /// Library options menu's Favorite libraries row.
     /// Reachable signed OUT as well: a person who cannot sign in has still received a copy of this
     /// software, and LG requires the privacy notice to be readable in the app rather than only on

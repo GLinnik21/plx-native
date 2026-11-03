@@ -249,10 +249,8 @@ impl OnboardScreen {
             .collect()
     }
 
-    /// Whether this editor has anything to offer *Done* for: the draft DIFFERS from what the rows
-    /// read when it opened. Not [`answered`](Self::answered) — a viewer who toggles a row and
-    /// toggles it back has answered (they pressed it), but has nothing left to show, and a band
-    /// control that stays behind an undone edit is a control for a change nobody can see.
+    /// Whether the staged choices differ from their entry values. First run stages until its
+    /// forward action; Settings saves switches immediately and always retains its Done action.
     fn dirty(&self) -> bool {
         !self.settings
             || self.draft.iter().any(|(section, now)| {

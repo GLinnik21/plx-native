@@ -287,6 +287,9 @@ impl LibraryScreen {
         }
         self.header_of = of;
         self.header.install(key, row);
+        let context = self.library_context(cx).is_some();
+        self.layout = self.layout.with_library_context(context);
+        self.target_layout = self.target_layout.with_library_context(context);
     }
 
     /// The row of the Library page itself: the library names that fit, then the controls.

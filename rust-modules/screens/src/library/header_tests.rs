@@ -81,6 +81,20 @@ fn long_favorite_names_leave_room_for_options_in_every_language() {
 }
 
 #[test]
+fn a_hidden_library_name_clears_the_focused_first_poster() {
+    let _guard = plx_base::testlock::serial();
+    let mut fixture = Fixture::new(3, 36, 0);
+    fixture.sections[2].row.pinned = false;
+    fixture.publish(2, 36);
+    let page = fixture.screen();
+    assert!(page.library_context(&fixture.cx(&FocusEngine::new())).is_some());
+    let lifted_top = page.layout.row_y(0, 0.0)
+        - page.layout.card_h() * (plx_ui::widgets::CARD_FOCUS_SCALE - 1.0) * 0.5;
+    assert!(lifted_top >= plx_ui::page_header::GRID_TOP + plx_ui::theme::space::XS,
+        "the focused poster reaches {lifted_top}, overlapping the library identity band");
+}
+
+#[test]
 fn the_header_row_stands_at_148_and_the_grid_starts_at_244() {
     let _guard = plx_base::testlock::serial();
     let (fixture, page, engine) = grid_page(2);
