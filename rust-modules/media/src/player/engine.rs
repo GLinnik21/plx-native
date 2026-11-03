@@ -6209,7 +6209,8 @@ mod prime_livelock_tests {
     }
 
     /// One AU of `len` bytes on a lane (`es` 1 video, 2 audio): with the queue under its cap the
-    /// push is admitted, and the queue then holds more than the cap, as a demuxer parked on it does.
+    /// push is admitted, and the queue then holds more than the cap, as when a demuxer is parked
+    /// on it.
     fn overfill(eng: &mut Engine, es: c_int, len: c_long, pts: i64) {
         let q = if es == 1 { &mut eng.aq_video } else { &mut eng.aq_audio };
         let q = &mut **q.as_mut().unwrap() as *mut crate::aq::AuQueue;
