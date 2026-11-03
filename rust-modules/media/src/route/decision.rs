@@ -529,6 +529,17 @@ pub struct PlaybackSession {
     resolved_as_preview: bool,
 }
 
+/// The resolved source and selected streams an external URI qualifier must bind its exact URL
+/// and native track map to. A capability row for another Part or selection cannot reuse it.
+#[cfg(feature = "play-uri")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UriSelection {
+    pub server: ServerId,
+    pub part_id: i64,
+    pub audio_sid: i64,
+    pub subtitle_sid: i64,
+}
+
 /// What the server actually did with a requested Plex Pass audio enhancement (issue #266) — as
 /// opposed to `EncodeContract::audio`, which is what was ASKED for. Distinguishing "on and
 /// working" from "the server ignored it" matters because PMS 1.43.4 does both: measurement M2
@@ -577,11 +588,30 @@ impl PlaybackSession {
         self.planned_feed_offer
     }
 
+    #[cfg(feature = "play-uri")]
+    pub fn uri_selection(&self) -> UriSelection {
+        UriSelection { server: self.cur_sid, part_id: self.cur_part_id,
+            audio_sid: self.cur_audio.as_ref().map_or(0, |audio| audio.sid),
+            subtitle_sid: self.cur_sub_sid }
+    }
+
     pub fn planned_feed_fidelity(&self) -> Option<(plx_playback_contract::Fidelity,
         plx_playback_contract::Fidelity)> {
         let id = self.planned_feed_offer?;
         let offer = self.backend_policy.as_ref()?.offer(plx_playback_contract::BackendKind::Feed, id)?;
         Some((offer.video, offer.audio))
+    }
+
+    /// Publish a Feed recipe only after a route has resolved an exact source for these selected
+    /// streams. Ordinary plans and explicit test sources use this same admission input.
+    pub fn qualify_resolved_feed_offer(&mut self, id: super::backend_policy::OfferId) -> bool {
+        if !cfg!(feature = "play-feed") || self.url.is_empty() { return false; }
+        let force_original = self.direct_play_mode == DirectPlayMode::Forced;
+        let policy = self.backend_policy.get_or_insert_with(||
+            super::backend_policy::BackendPolicy::for_request(force_original));
+        policy.qualify_planned_feed(id);
+        self.planned_feed_offer = Some(id);
+        true
     }
 
     /// A normal seek/foreground reload reuses its admitted source recipe. A changed recovery
@@ -9293,10 +9323,9 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             && s.cur_audio.as_ref().map(|audio| audio.sid)
                 == plan.audio.as_ref().map(|audio| audio.sid)
             && s.cur_sub_sid == plan.sub_sid;
-        let mut backend_policy = if same_selection { s.backend_policy.take() } else { None }
+        let backend_policy = if same_selection { s.backend_policy.take() } else { None }
             .unwrap_or_else(|| super::backend_policy::BackendPolicy::for_request(
                 plan.direct_play_mode == DirectPlayMode::Forced));
-        if let Some(id) = planned_feed_offer { backend_policy.qualify_planned_feed(id); }
         let admitted_feed_offer = if same_selection { s.admitted_feed_offer } else { None };
         // "" = this plan fetched no id — either one was already known, or it never got as far as
         // asking — so leave the cache alone (`Plan::machine_id` says the same). What IS cached is
@@ -9431,6 +9460,9 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             resolved_as_preview: preview,
         };
     } };
+    if let Some(id) = planned_feed_offer {
+        let _ = ps.qualify_resolved_feed_offer(id);
+    }
     if let (plx_plex::plex::TranscodeDelivery::FixedHls { .. }, Some(rung)) = (
         ps.cur_contract.delivery,
         ps
