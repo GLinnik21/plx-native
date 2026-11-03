@@ -119,7 +119,9 @@ impl FeedOpenRequest {
             feed_payload,
             original_dv,
             side_reader,
-            session: Some(super::demux_session::PlayerDemuxSession::capture()),
+            // The exact route attempt and native epoch do not exist until after claim. The
+            // common owner attaches their addressed observer before launching the worker.
+            session: None,
             hls_abr: route::hls_abr_control(ps).map(|control| {
                 crate::adaptive::boxed_session(
                     crate::adaptive::Start::from(control),

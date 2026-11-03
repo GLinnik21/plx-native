@@ -236,7 +236,7 @@ pub(super) fn start_bufferfeed_inner(
     // aborts it; a later supersession drops both guards without launching a worker.
     let session_rate = if stream { super::session_rate_for(ps) } else { super::RATE_NORMAL };
     let trace_generation = crate::route::playback_trace_generation();
-    let prepared_native = engine::prepare_native_open(pa.mt(), open, sample, is_h265, session_rate)
+    let mut prepared_native = engine::prepare_native_open(pa.mt(), open, sample, is_h265, session_rate)
         .map_err(|_| crate::route::RouteStartResult::StartFailed)?;
     // The route reducer alone mints the physical attempt. The native constructor consumes this
     // identity; no backend-owned logical counter can alias a later route.
@@ -244,6 +244,7 @@ pub(super) fn start_bufferfeed_inner(
         log("start_bufferfeed: prepared route lost before native construction");
         return Err(crate::route::RouteStartResult::StartFailed);
     };
+    prepared_native.bind_demux_session(route_attempt.contract_id());
     ps.begin_attempt_view(route_attempt, super::attempt_view::Backend::Feed);
     pa.launch_native_feed(route_attempt.contract_id(), prepared_native)
         .map_err(|_| crate::route::RouteStartResult::StartFailed)?;
