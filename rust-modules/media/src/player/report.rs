@@ -1286,7 +1286,7 @@ mod tests {
         attempt
     }
 
-    fn observe(ps: &mut crate::route::PlaybackSession, attempt: crate::route::RouteStartAttempt, facts: crate::player::attempt_view::AttemptFacts) {
+    fn observe_facts(ps: &mut crate::route::PlaybackSession, attempt: crate::route::RouteStartAttempt, facts: crate::player::attempt_view::AttemptFacts) {
         assert!(ps.ingest_attempt_facts(attempt, facts));
     }
 
@@ -1660,7 +1660,7 @@ mod tests {
         assert_eq!(error_context(&ps).pipeline_error, 0, "no callback, nothing to report");
         let epoch = super::super::SHARED.begin_native_session().expect("session");
         super::super::sf_on_event(epoch, 18, 601, c"Resource Allocation Error".as_ptr());
-        observe(&mut ps, attempt, crate::player::attempt_view::AttemptFacts {
+        observe_facts(&mut ps, attempt, crate::player::attempt_view::AttemptFacts {
             pipeline_error: Some(super::super::SHARED.dg_cb_err_num.load(Relaxed)),
             ..Default::default()
         });
@@ -1686,7 +1686,7 @@ mod tests {
 
         shared.fail_demux(DemuxExitClass::HttpsOpenFailed);
         assert!(shared.demux_failed.load(Relaxed), "the helper still raises the flag");
-        observe(&mut ps, attempt, crate::player::attempt_view::AttemptFacts {
+        observe_facts(&mut ps, attempt, crate::player::attempt_view::AttemptFacts {
             demux_exit: Some(shared.dg_demux_exit.load(Relaxed)), ..Default::default()
         });
         assert_eq!(error_context(&ps).demux_exit, DemuxExitClass::HttpsOpenFailed);
@@ -1703,7 +1703,7 @@ mod tests {
         assert_eq!(error_context(&ps).demux_exit, DemuxExitClass::None, "cleared per session");
         shared.note_demux_exit(DemuxExitClass::NoVideoStream);
         assert!(!shared.demux_failed.load(Relaxed), "a note alone does not fail the session");
-        observe(&mut ps, attempt, crate::player::attempt_view::AttemptFacts {
+        observe_facts(&mut ps, attempt, crate::player::attempt_view::AttemptFacts {
             demux_exit: Some(shared.dg_demux_exit.load(Relaxed)), ..Default::default()
         });
         assert_eq!(error_context(&ps).demux_exit, DemuxExitClass::NoVideoStream);
@@ -2016,6 +2016,11 @@ mod tests {
             super::super::SHARED.reset_session();
             let epoch = super::super::SHARED.begin_native_session().expect("session");
             super::super::sf_on_event(epoch, 18, 601, c"Resource Allocation Error".as_ptr());
+            let attempt = begin_view(&mut ps);
+            observe_facts(&mut ps, attempt, crate::player::attempt_view::AttemptFacts {
+                pipeline_error: Some(super::super::SHARED.dg_cb_err_num.load(Relaxed)),
+                ..Default::default()
+            });
             observe(&ps, S::Resolving);
             let (_, events) = plx_telemetry::diag::test_events::capture(|| observe(&ps, S::Error));
             super::super::SHARED.retire_native_session(epoch);
@@ -2507,7 +2512,7 @@ mod tests {
             (i32::MIN, 0),
         ] {
             status.store(raw, Relaxed);
-            observe(&mut ps, attempt, crate::player::attempt_view::AttemptFacts {
+            observe_facts(&mut ps, attempt, crate::player::attempt_view::AttemptFacts {
                 http_status: Some(raw), ..Default::default()
             });
             let ctx = error_context(&ps);
@@ -2515,7 +2520,7 @@ mod tests {
             assert_eq!(ctx.http, HttpClass::from_status(raw), "the class is unchanged for raw {raw}");
         }
         status.store(404, Relaxed);
-        observe(&mut ps, attempt, crate::player::attempt_view::AttemptFacts {
+        observe_facts(&mut ps, attempt, crate::player::attempt_view::AttemptFacts {
             http_status: Some(404), ..Default::default()
         });
         assert_eq!(error_context(&ps).http.code(), "4xx");

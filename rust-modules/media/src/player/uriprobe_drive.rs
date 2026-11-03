@@ -72,6 +72,7 @@ pub(super) fn start(ps: &mut PlaybackSession, pa: &mut super::adapter::PlayerAda
         super::log("uriprobe: the prepared route lost its start before the probe began");
         return Err(RouteStartResult::StartFailed);
     };
+    ps.begin_attempt_view(attempt, super::attempt_view::Backend::Uri);
     pa.install_uri(UriSession::open(ps, pa.mt(), plx_platform::tv::uri::installed(), attempt, variant, url));
     Ok(attempt)
 }

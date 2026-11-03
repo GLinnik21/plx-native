@@ -16,7 +16,8 @@
 //!   ([`SubCue::shifted`]); a SIDECAR (file time, fetched by the app) is not read here at all —
 //!   a [`ReadCfg::clock_only`] pass measures the same `delta`, publishes it only when the keyframe
 //!   matched byte for byte, and `player::sidecar_clock_ns` adds it to the sidecar's render clock.
-//! - the pacing rule ([`pacing_parks`]): the reader stays [`WINDOW_NS`] ahead of the playhead.
+//! - the pacing rule ([`pacing_parks`]): the reader stays
+//!   [`plx_playback_contract::subtitle::WINDOW_NS`] ahead of the playhead.
 //!
 //! No URL, host, token or session identifier is ever logged from here.
 
@@ -30,9 +31,8 @@ use std::sync::{Arc, Mutex};
 // Clock evidence is shared with presentation; this FFmpeg reader only supplies bytes and times.
 pub(crate) use plx_playback_contract::subtitle::{Anchor, delta_exact, playhead_of};
 use plx_playback_contract::subtitle::{delta_assumed, judged_clock, pacing_parks};
-
-/// The reader lead budget, shared with the neutral pacing rule.
-pub(super) const WINDOW_NS: i64 = plx_playback_contract::subtitle::WINDOW_NS;
+#[cfg(test)]
+use plx_playback_contract::subtitle::WINDOW_NS;
 
 /// How long it parks per decision.
 pub(super) const PARK_MS: u64 = 250;
@@ -42,7 +42,8 @@ pub(crate) const SCAN_NS: i64 = 15_000_000_000;
 // ---- the clock mapping ----------------------------------------------------------------------
 
 /// The last keyframe at or before `offset_ns`, from keyframe times in any order.
-pub(super) fn keyframe_at_or_before(keyframes: &[i64], offset_ns: i64) -> Option<i64> {
+#[cfg(test)]
+fn keyframe_at_or_before(keyframes: &[i64], offset_ns: i64) -> Option<i64> {
     keyframes.iter().copied().filter(|k| *k <= offset_ns).max()
 }
 
@@ -208,10 +209,6 @@ impl SideIo {
         }
     }
 
-    /// Is this source's stop set? (Test and lifecycle use.)
-    pub(crate) fn stopped(&self) -> bool {
-        self.stop.is_set()
-    }
 }
 
 enum Followed {
@@ -430,7 +427,7 @@ impl Delivery {
 
 /// One pass of the side reader: open the Part, map its clock onto the remux's (the first pass only:
 /// `delta` is kept across a reopen), then decode the drawn track's cues from `resume_part_ns()` on,
-/// staying [`WINDOW_NS`] ahead of the playhead. Returns when stopped or on failure; a Part that
+/// staying [`plx_playback_contract::subtitle::WINDOW_NS`] ahead of the playhead. Returns when stopped or on failure; a Part that
 /// simply ends idles until the stop.
 ///
 /// `playpos` is the remux playhead, `clock` its `(pts_shift, disp_base)`. A
@@ -762,7 +759,7 @@ mod tests {
             let mut buf = [0u8; 4];
             assert_eq!(io.read(&mut buf), ReadOutcome::Bytes(4), "fixture: reads work before the stop");
             stop.trigger();
-            assert!(io.stopped());
+            assert!(io.cancelled());
             assert_eq!(io.read(&mut buf), ReadOutcome::End);
             assert!(!io.seek(0));
             assert!(!io.seek(2));
