@@ -84,6 +84,17 @@ pub struct UriDriverSettings {
     pub source_ttl_ms: u64,
 }
 
+/// Product clock lives at the player IO boundary; the URI reducer receives elapsed values.
+#[cfg(feature = "play-uri")]
+struct ProductUriClock(std::time::Instant);
+
+#[cfg(feature = "play-uri")]
+impl MonotonicClock for ProductUriClock {
+    fn now_ms(&self) -> u64 {
+        self.0.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+    }
+}
+
 /// An external IO qualifier's verdict for one resolved Part and its exact selected streams.
 /// The owned URL and native track map never enter the route machine or a Debug value. No
 /// production qualifier currently supplies this value; absence preserves the Feed choice.
@@ -958,6 +969,44 @@ impl PlayerAdapter {
             return ExitDisposition::PreserveNativeOwnership;
         }
         ExitDisposition::Clean
+    }
+
+    /// Capture the installed display and URI bus at the playback IO boundary. Current product
+    /// evidence remains unqualified; returning a port never certifies a source by itself.
+    #[cfg(feature = "play-uri")]
+    pub fn install_uri_product(&mut self, session: &mut crate::route::PlaybackSession) -> bool {
+        let display = plx_platform::tv::sink::display_installed();
+        let evidence = crate::route::uri_preflight::ProductEvidence::unqualified(
+            display.window_mode());
+        let port = crate::route::uri_preflight::ResolvePort::new(evidence,
+            std::sync::Arc::new(crate::route::uri_preflight::ProductQualifier));
+        self.install_uri_product_with_ports(session, port,
+            plx_platform::tv::uri::installed(), display)
+    }
+
+    /// One boot composition for both real and injected ports. The exact evidence configures the
+    /// driver and is handed to the resolver only after physical installation succeeds.
+    #[cfg(feature = "play-uri")]
+    pub fn install_uri_product_with_ports(&mut self,
+        session: &mut crate::route::PlaybackSession,
+        port: crate::route::uri_preflight::ResolvePort,
+        transport: &'static dyn plx_platform::tv::uri::UriMedia,
+        display: &'static dyn plx_platform::tv::sink::DisplaySink) -> bool {
+        let evidence = port.evidence();
+        let settings = UriDriverSettings {
+            clock: Box::new(ProductUriClock(std::time::Instant::now())),
+            app_id: plx_base::paths::app_id().to_owned(),
+            binding: evidence.binding,
+            capabilities: evidence.certified,
+            startup_timeout_ms: 15_000,
+            release_allowance_ms: 10_000,
+            source_ttl_ms: 30_000,
+        };
+        if self.install_uri_backend_with_ports(settings, transport, display).is_err() {
+            return false;
+        }
+        session.install_uri_preflight_port(port);
+        true
     }
 
     /// Install only an explicitly configured URI transport/display pair while no physical
