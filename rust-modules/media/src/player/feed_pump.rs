@@ -5,6 +5,8 @@ use super::engine::Engine;
 use super::feed_resources::FeedResources;
 use super::{ACB_OK, SHARED, TX};
 use super::shared::Stage;
+use super::shared::{HlsPauseCompletion, HlsSeekPause};
+use super::SeekMode;
 use plx_base::task::MainThread;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::time::Duration;
@@ -70,6 +72,64 @@ pub(super) fn ctor_gate(feed: &mut FeedResources, mt: &MainThread) -> CtorGate {
     CtorGate::Awaiting {
         budget_epoch: (eng.stage == Stage::Loading && !eng.preview_abandon).then_some(eng.native_epoch),
     }
+}
+
+/// Native seek reopen watchdog. A closed feed gate cannot make progress, so its clock is reset
+/// without consuming the route owner's pending target.
+pub(super) fn stuck_seek_due(feed: &mut FeedResources, now: u32, feed_allowed: bool,
+    route_flight: bool, budget_ms: u32) -> bool {
+    let Some(eng) = feed.engine() else { return false; };
+    if eng.flushed && eng.rebase_pending && !feed_allowed {
+        eng.seek_armed_at = now;
+    }
+    eng.flushed && eng.rebase_pending
+        && now.wrapping_sub(eng.seek_armed_at) > budget_ms
+        && !route_flight
+}
+
+pub(super) enum StuckSeekAction { Retried(u32), Reload }
+
+/// Re-arm only the native demux target after common has committed any newer route seek.
+pub(super) fn retry_stuck_seek(feed: &mut FeedResources, now: u32, target_ns: i64,
+    can_retry: bool) -> StuckSeekAction {
+    let eng = feed.engine().expect("stuck seek belongs to live feed");
+    if eng.seek_retries < 2 && can_retry {
+        eng.seek_retries += 1;
+        SHARED.seek_to_ns.store(target_ns, Release);
+        SHARED.seek_target_ns.store(target_ns, Relaxed);
+        eng.seek_armed_at = now;
+        StuckSeekAction::Retried(eng.seek_retries)
+    } else {
+        StuckSeekAction::Reload
+    }
+}
+
+/// Eligibility for applying a pending direct-play/transcode seek on this physical feed.
+pub(super) fn pending_seek_ready(feed: &FeedResources, seek_reloads: bool) -> bool {
+    feed.pending_seek_ready(seek_reloads)
+}
+
+pub(super) enum SeekPause { Ready, Refused, Stale, Busy }
+
+/// One native Pause transition before an in-place seek. The common route owner chooses any
+/// fallback reload from this typed verdict.
+pub(super) fn prepare_seek_pause(mt: &MainThread) -> SeekPause {
+    match SHARED.prepare_seek_pause() {
+        Some(HlsSeekPause::AlreadyHeld) => SeekPause::Ready,
+        Some(HlsSeekPause::Issue(token)) => {
+            let accepted = unsafe { super::sink().pause(mt) } != 0;
+            match SHARED.complete_seek_pause(token, accepted) {
+                HlsPauseCompletion::Accepted => SeekPause::Ready,
+                HlsPauseCompletion::Refused => SeekPause::Refused,
+                HlsPauseCompletion::Stale => SeekPause::Stale,
+            }
+        }
+        None => SeekPause::Busy,
+    }
+}
+
+pub(super) fn begin_seek_discontinuity(feed: &FeedResources) -> bool {
+    feed.begin_seek_discontinuity()
 }
 
 /// Place the webOS 5+ exported window at the native Load's completion, before decoded frames.
@@ -343,4 +403,68 @@ pub(super) fn note_missing_era_callback(feed: &mut FeedResources) {
     if let Step::Missing(m) = eng.era_watch.step(&probe) {
         super::log(&line(&m));
     }
+}
+
+/// Apply native flush and demux rebase only after the route owner committed the seek.
+pub(super) fn apply_inplace_seek_pre(feed: &mut FeedResources, mt: &MainThread,
+    t: i64, mode: SeekMode, coalesced: u32) {
+    let eng = feed.engine().expect("in-place seek belongs to live feed");
+        // `NativeSeek` does not flush here: LG's public `Seek` flushes the pipeline itself when
+        // `feed_stream` calls it on the landed keyframe, and a `flush()` is itself a seek to 0, so
+        // flushing after (or instead of re-anchoring) leaves the stale segment at 0 (#568).
+        if mode != SeekMode::NativeSeek {
+            unsafe {
+                super::sink().flush(mt); // drop decoded/queued frames only after the clock is really held
+            }
+        }
+        super::engine::drain_aq(eng);
+        // in-place direct-play seek: publish the target and let the DEMUX THREAD av_seek_frame
+        // between two reads (ff.rs's inner loop). Nothing here interrupts the socket: the pump
+        // used to shutdown(2) it to break the read so the outer loop would reopen+seek, but our
+        // AVIO is seekable, so libavformat just healed the broken read through `seek_cb` and read
+        // on — no reopen, no seek, and every direct-play seek escalated to a reload. See ff.rs.
+        // eng.flushed → feed_stream fires setTimeToDecode+sendSegmentEvent on the first post-seek
+        // keyframe. disp_base=0 (rebase to the landed keyframe).
+        eng.flushed = true;
+        eng.presentation_rearm_pending = false;
+        SHARED.seek_to_ns.store(t, Release); // the demux thread's av_seek target
+        SHARED.seek_target_ns.store(t, Relaxed); // rebase guard: reject stale drifted keyframes
+        SHARED.disp_base.store(0, Relaxed);
+        super::log(&format!(
+            "seek(in-place): av_seek t={t} coalesced={coalesced}"
+        ));
+        // zero-base the fed timeline on the first post-seek keyframe (feed_stream), so it
+        // presents against the flush-reset clock immediately — no catch-up freeze
+        eng.rebase_pending = true;
+        eng.rebase_drops = 0;
+        // A seek armed under a viewer Pause: the pump opens the preroll and closes it on the landing.
+}
+
+/// Finish the physical seek arm after common has opened any viewer-paused preroll.
+pub(super) fn apply_inplace_seek_post(feed: &mut FeedResources, t: i64, now: u32) {
+    let eng = feed.engine().expect("in-place seek belongs to live feed");
+        eng.seek_armed_at = now; // stuck-watchdog start (see the coalesce/escape above)
+        eng.seek_retries = 0;
+        eng.max_fed_video_pts = 0;
+        eng.max_fed_audio_pts = 0;
+        eng.audio_start_fp = None;
+        // Drop any AU held from BEFORE the seek (the per-lane BufferFull retry). drain_aq cleared the
+        // QUEUES but not these pending AUs; feeding a stale pre-seek AU after the seek re-bases it to
+        // the NEW pts_shift → a big A/V desync — the stale audio pts advances max_fed_audio_pts, then
+        // the STALE_BACKJUMP guard drops the fresh post-seek audio as "too far back" → no sound. The
+        // reopened stream supplies fresh post-seek AUs.
+        eng.pending_video = None;
+        eng.pending_audio = None;
+        eng.prime_play = true; // paused above; Play once PRIME_NS is buffered (no fast-forward)
+                               // "no post-seek frame presented yet" — the feed-ahead throttle feeds freely until the first
+                               // real presented pts lands, instead of comparing the new fed pts against the STALE pre-seek
+                               // presented position (which would wrongly break feeding on a forward in-place seek).
+        SHARED.pres_fed.store(super::engine::PRES_NONE, Relaxed);
+        eng.feed_pace = super::engine::FeedPace::default(); // the run-on belongs to the pre-seek report
+        SHARED.frames.store(0, Relaxed); // count only POST-seek frames (rebind + resume re-pause gate)
+                                         // …and forget the last presentation stamp with it. The plane goes dark across a seek by
+                                         // design, so the first frame after one would otherwise post a gap the size of the seek and
+                                         // read as a stutter (`Shared`'s `dg_vpres_*` block).
+        SHARED.dg_vpres_at.store(0, Relaxed);
+        SHARED.playpos_ns.store(t, Relaxed); // displayed position jumps; wall clock takes over
 }

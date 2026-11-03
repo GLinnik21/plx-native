@@ -2,9 +2,9 @@
 //! plex_run: the pending-seek handler, the ACB-bind state machine (Stage), and the
 //! feed dispatch. All ACB/Starfish control calls happen here on the main thread.
 use super::engine::{
-    arm_live_clock_prime, drain_aq, feed_both_lanes, feed_sample, Engine, Source,
+    arm_live_clock_prime, feed_both_lanes, feed_sample, Engine, Source,
 };
-use super::shared::{HlsPauseCompletion, HlsPrimeKind, HlsSeekPause, Stage};
+use super::shared::{HlsPauseCompletion, HlsPrimeKind, Stage};
 use super::{seek_mode, SeekMode, ACB_OK, SHARED, TX};
 use plx_base::task::MainThread;
 use std::os::raw::c_char;
@@ -1696,11 +1696,6 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         }
     }
 
-    // Route actions may replace the physical feed. Borrow it only after their decision and
-    // settlement are complete; the remaining seek/feed phase runs against the current object.
-    let (eng, mut mt) = pa.split();
-    let mut eng = eng.expect("live adapter checked before splitting it");
-    let stream = matches!(eng.source, Source::Stream);
     // ---------- an in-place seek is still resolving (flushed, not yet re-anchored): COALESCE.
     // Firing another now would race the demux reopen (rapid tap-seeks) and the rebase guard would
     // then eat everything → stuck. Hold the latest requested target (it stays in TX.seek_to_ns) and
@@ -1717,56 +1712,23 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
     // `TX.seek_to_ns` stays exactly where it is and the retranscode/native-audio tail re-checks it
     // once the claim lands (`commit_or_carry_seek`).
     const SEEK_STUCK_MS: u32 = 1200;
-    // The watchdog measures time the seek COULD progress. While the feed gate is shut (a viewer
-    // Pause with no preroll open) the keyframe can never be fed, so the reopen is not "lost" and
-    // neither a retry nor a reload (itself gated the same way) could help: keep the clock at zero.
-    if eng.flushed && eng.rebase_pending && !TX.feed_allowed() {
-        eng.seek_armed_at = now;
-    }
-    if eng.flushed && eng.rebase_pending
-        && now.wrapping_sub(eng.seek_armed_at) > SEEK_STUCK_MS
-        && !crate::route::flight_outstanding()
-    {
-        // Adopt the NEWEST coalesced target if later taps landed while this seek was resolving
-        // (TX.seek_to_ns holds the latest request): retrying/reloading at the original armed
-        // target would land where the user already tapped away from, then seek AGAIN.
+    // Route owns the pending target and commits it before the native demux can read a retry.
+    if pa.stuck_seek_due(now, TX.feed_allowed(), crate::route::flight_outstanding(), SEEK_STUCK_MS) {
         let pending = TX.seek_to_ns.swap(-1, Relaxed);
-        let tgt = if pending >= 0 {
-            pending
-        } else {
-            SHARED.seek_target_ns.load(Relaxed)
-        }
-        .max(0);
-        if pending >= 0 {
-            // The coalesced tap is a distinct desired timeline. It used to replace the demux
-            // target below without crossing the reducer boundary, leaving `pending_seek_ns`
-            // permanently Busy and old ABR evidence authorized against the new bytes.
-            crate::route::commit_user_seek();
-        }
-        // A refused native `Seek` leaves the engine flushed with the target re-posted for the
-        // reload: never retry the reopen (it would re-open the feed and re-publish an av_seek
-        // into a session whose mode no longer anchors in place), go straight to `reload_at`.
-        if eng.seek_retries < 2 && !seek_reloads(seek_mode()) {
-            eng.seek_retries += 1;
-            SHARED.seek_to_ns.store(tgt, Release); // re-publish; the demux thread seeks on it
-            SHARED.seek_target_ns.store(tgt, Relaxed); // rebase guard keys on the retried target
-            eng.seek_armed_at = now;
-            super::log(&format!(
-                "seek: in-place stuck → retry reopen at {}s (#{}) coalesced={}",
-                tgt / 1_000_000_000,
-                eng.seek_retries,
-                take_coalesced()
-            ));
-        } else {
-            super::log(&format!(
-                "seek: in-place stuck → reload at {}s",
-                tgt / 1_000_000_000
-            ));
-            settle_reload(
-                super::engine::reload_at(ps, pa, tgt),
-                "stuck in-place seek reload",
-            ); // REPLACES the engine — eng dangles, return
-            return;
+        let tgt = if pending >= 0 { pending } else { SHARED.seek_target_ns.load(Relaxed) }.max(0);
+        if pending >= 0 { crate::route::commit_user_seek(); }
+        match pa.retry_stuck_seek(now, tgt, !seek_reloads(seek_mode())) {
+            super::feed_pump::StuckSeekAction::Retried(retries) => {
+                super::log(&format!(
+                    "seek: in-place stuck → retry reopen at {}s (#{}) coalesced={}",
+                    tgt / 1_000_000_000, retries, take_coalesced(),
+                ));
+            }
+            super::feed_pump::StuckSeekAction::Reload => {
+                super::log(&format!("seek: in-place stuck → reload at {}s", tgt / 1_000_000_000));
+                settle_reload(super::engine::reload_at(ps, pa, tgt), "stuck in-place seek reload");
+                return;
+            }
         }
     }
     // ---------- pending seek: flush, drop queued AUs, re-point the demux ----------
@@ -1775,14 +1737,12 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
     // only and seek by RESTARTING the transcode at a time &offset (below). Direct-play
     // seeks in place via av_seek.
     let is_transcode = crate::route::is_transcoding(ps);
-    if stream
+    if pa.pending_seek_ready(seek_reloads(seek_mode()))
         && t >= 0
         && !crate::route::original_recovery_pending()
         && !crate::route::flight_outstanding() // see the SEEK_STUCK_MS branch's doc above
         // coalesce: don't stack in-place seeks. Not in `Reload` mode: a refused native `Seek`
         // leaves the engine flushed and re-posts the target for exactly this branch to reload at.
-        && !(eng.flushed && eng.rebase_pending && !seek_reloads(seek_mode()))
-        && eng.stage >= Stage::Playing
         && SHARED.duration_ns.load(Relaxed) > 0
         && (is_transcode || SHARED.file_size.load(Relaxed) > 0)
     {
@@ -1824,44 +1784,30 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         // Pause, user-held seek reuse and eventual prime all share one actuator state. In
         // particular a seek from Paused must not issue a redundant native Pause, and a result from
         // an older transition must not authorize flushing this session's queues.
-        match SHARED.prepare_seek_pause() {
-            Some(HlsSeekPause::AlreadyHeld) => {}
-            Some(HlsSeekPause::Issue(token)) => {
-                let accepted = unsafe { super::sink().pause(mt) } != 0;
-                match SHARED.complete_seek_pause(token, accepted) {
-                    HlsPauseCompletion::Accepted => {}
-                    HlsPauseCompletion::Refused => {
-                        super::log("seek(in-place): Starfish refused Pause → reload fallback");
-                        crate::route::commit_user_seek();
-                        own_seek_under_pause(t);
-                        settle_reload(
-                            super::engine::reload_at(ps, pa, t),
-                            "seek reload after native Pause refusal",
-                        );
-                        return;
-                    }
-                    HlsPauseCompletion::Stale => {
-                        super::log("seek(in-place): stale Pause result → reload fallback");
-                        crate::route::commit_user_seek();
-                        own_seek_under_pause(t);
-                        settle_reload(
-                            super::engine::reload_at(ps, pa, t),
-                            "seek reload after stale Pause",
-                        );
-                        return;
-                    }
-                }
+        match pa.prepare_seek_pause() {
+            super::feed_pump::SeekPause::Ready => {}
+            super::feed_pump::SeekPause::Refused => {
+                super::log("seek(in-place): Starfish refused Pause → reload fallback");
+                crate::route::commit_user_seek();
+                own_seek_under_pause(t);
+                settle_reload(super::engine::reload_at(ps, pa, t), "seek reload after native Pause refusal");
+                return;
             }
-            None => {
-                // The main-thread transition in flight will settle before the next pump tick. Keep
-                // the newest seek mailbox intact rather than consuming it into no operation.
+            super::feed_pump::SeekPause::Stale => {
+                super::log("seek(in-place): stale Pause result → reload fallback");
+                crate::route::commit_user_seek();
+                own_seek_under_pause(t);
+                settle_reload(super::engine::reload_at(ps, pa, t), "seek reload after stale Pause");
+                return;
+            }
+            super::feed_pump::SeekPause::Busy => {
                 TX.seek_to_ns.store(t, Release);
                 TX.seek_reqs.store(1, Release);
                 super::log("seek(in-place): clock transition busy; retrying");
                 return;
             }
         }
-        if !SHARED.begin_native_media_discontinuity(eng.native_epoch) {
+        if !pa.begin_seek_discontinuity() {
             crate::route::commit_user_seek();
             super::log("seek(in-place): native callback epoch retired → reload fallback");
             own_seek_under_pause(t);
@@ -1875,62 +1821,16 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         // Advancing earlier would strand the live worker when PMS/native refused; advancing later
         // would let pre-seek ABR evidence publish while queues are already being reset.
         crate::route::commit_user_seek();
-        // `NativeSeek` does not flush here: LG's public `Seek` flushes the pipeline itself when
-        // `feed_stream` calls it on the landed keyframe, and a `flush()` is itself a seek to 0, so
-        // flushing after (or instead of re-anchoring) leaves the stale segment at 0 (#568).
-        if seek_mode() != SeekMode::NativeSeek {
-            unsafe {
-                super::sink().flush(mt); // drop decoded/queued frames only after the clock is really held
-            }
-        }
-        drain_aq(eng);
-        // in-place direct-play seek: publish the target and let the DEMUX THREAD av_seek_frame
-        // between two reads (ff.rs's inner loop). Nothing here interrupts the socket: the pump
-        // used to shutdown(2) it to break the read so the outer loop would reopen+seek, but our
-        // AVIO is seekable, so libavformat just healed the broken read through `seek_cb` and read
-        // on — no reopen, no seek, and every direct-play seek escalated to a reload. See ff.rs.
-        // eng.flushed → feed_stream fires setTimeToDecode+sendSegmentEvent on the first post-seek
-        // keyframe. disp_base=0 (rebase to the landed keyframe).
-        eng.flushed = true;
-        eng.presentation_rearm_pending = false;
-        SHARED.seek_to_ns.store(t, Release); // the demux thread's av_seek target
-        SHARED.seek_target_ns.store(t, Relaxed); // rebase guard: reject stale drifted keyframes
-        SHARED.disp_base.store(0, Relaxed);
-        super::log(&format!(
-            "seek(in-place): av_seek t={t} coalesced={coalesced}"
-        ));
-        // zero-base the fed timeline on the first post-seek keyframe (feed_stream), so it
-        // presents against the flush-reset clock immediately — no catch-up freeze
-        eng.rebase_pending = true;
-        eng.rebase_drops = 0;
-        // A seek armed under a viewer Pause: the pump opens the preroll and closes it on the landing.
+        pa.apply_inplace_seek_pre(t, seek_mode(), coalesced);
         own_seek_under_pause(t);
-        eng.seek_armed_at = now; // stuck-watchdog start (see the coalesce/escape above)
-        eng.seek_retries = 0;
-        eng.max_fed_video_pts = 0;
-        eng.max_fed_audio_pts = 0;
-        eng.audio_start_fp = None;
-        // Drop any AU held from BEFORE the seek (the per-lane BufferFull retry). drain_aq cleared the
-        // QUEUES but not these pending AUs; feeding a stale pre-seek AU after the seek re-bases it to
-        // the NEW pts_shift → a big A/V desync — the stale audio pts advances max_fed_audio_pts, then
-        // the STALE_BACKJUMP guard drops the fresh post-seek audio as "too far back" → no sound. The
-        // reopened stream supplies fresh post-seek AUs.
-        eng.pending_video = None;
-        eng.pending_audio = None;
-        eng.prime_play = true; // paused above; Play once PRIME_NS is buffered (no fast-forward)
-                               // "no post-seek frame presented yet" — the feed-ahead throttle feeds freely until the first
-                               // real presented pts lands, instead of comparing the new fed pts against the STALE pre-seek
-                               // presented position (which would wrongly break feeding on a forward in-place seek).
-        SHARED.pres_fed.store(super::engine::PRES_NONE, Relaxed);
-        eng.feed_pace = super::engine::FeedPace::default(); // the run-on belongs to the pre-seek report
-        SHARED.frames.store(0, Relaxed); // count only POST-seek frames (rebind + resume re-pause gate)
-                                         // …and forget the last presentation stamp with it. The plane goes dark across a seek by
-                                         // design, so the first frame after one would otherwise post a gap the size of the seek and
-                                         // read as a stutter (`Shared`'s `dg_vpres_*` block).
-        SHARED.dg_vpres_at.store(0, Relaxed);
-        SHARED.playpos_ns.store(t, Relaxed); // displayed position jumps; wall clock takes over
+        pa.apply_inplace_seek_post(t, now);
     }
 
+    // Common route seek decisions are complete. The rest of this tick borrows the physical feed
+    // for native Load, ACB, feeding and EOS; any replacement below returns at once.
+    let (eng, mt) = pa.split();
+    let eng = eng.expect("live adapter checked before splitting it");
+    let stream = matches!(eng.source, Source::Stream);
     // ---------- load -> Play (decode fed frames as soon as loaded) ----------
     // issue #74 D.1: the gate below requires `SHARED.native_load_returned(eng.native_epoch)`
     // BEFORE this arm may even poll `sf_is_load_completed` — that poll is itself a concurrent

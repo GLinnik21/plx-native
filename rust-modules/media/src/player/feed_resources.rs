@@ -46,6 +46,16 @@ impl FeedResources {
     }
 
     pub fn engine(&mut self) -> Option<&mut engine::Engine> { self.engine.as_mut() }
+    pub fn pending_seek_ready(&self, seek_reloads: bool) -> bool {
+        self.engine.as_ref().is_some_and(|eng| {
+            matches!(&eng.source, engine::Source::Stream)
+                && eng.stage >= super::shared::Stage::Playing
+                && !(eng.flushed && eng.rebase_pending && !seek_reloads)
+        })
+    }
+    pub fn begin_seek_discontinuity(&self) -> bool {
+        self.engine.as_ref().is_some_and(|eng| super::SHARED.begin_native_media_discontinuity(eng.native_epoch))
+    }
     pub fn is_live(&self) -> bool { self.engine.is_some() }
     pub fn active_attempt(&self) -> Option<RouteStartAttempt> { self.engine.as_ref().map(|e| e.route_start) }
     pub fn loading(&self) -> bool {
@@ -56,7 +66,7 @@ impl FeedResources {
     }
     pub fn route_actions_ready(&self) -> bool {
         self.engine.as_ref().is_some_and(|e| {
-            matches!(e.source, engine::Source::Stream)
+            matches!(&e.source, engine::Source::Stream)
                 && e.stage >= super::shared::Stage::Playing
                 && !(e.flushed && e.rebase_pending)
         })
