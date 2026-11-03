@@ -1,4 +1,4 @@
-//! Product URI boot and resolve regressions using the app lifecycle loopback rig.
+// Product URI boot and resolve regressions using the app lifecycle loopback rig.
 
 #[cfg(feature = "play-uri")]
 mod uri_boot_tests {
