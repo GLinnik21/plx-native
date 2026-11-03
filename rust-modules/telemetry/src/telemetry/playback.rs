@@ -1472,7 +1472,7 @@ mod tests {
         let codes: Vec<_> = AttemptOrigin::ALL.iter().map(|o| o.code()).collect();
         assert_eq!(
             codes,
-            ["fresh", "user_retry", "quality_change", "auto_handoff", "recovery", "resume", "preview"],
+            ["fresh", "user_retry", "quality_change", "viewer_reconfigure", "auto_handoff", "recovery", "resume", "preview"],
         );
         assert_eq!(AttemptOrdinal::all().count(), 10, "1..=9 and the saturated value");
     }
@@ -1540,7 +1540,7 @@ mod tests {
         // Every origin and every ordinal the producer can send is listed, in the enum's own order.
         assert!(
             legend.contains(
-                "fresh / user_retry / quality_change / auto_handoff / recovery / resume / preview"
+                "fresh / user_retry / quality_change / viewer_reconfigure / auto_handoff / recovery / resume / preview"
             ),
             "the attempt_origin domain",
         );

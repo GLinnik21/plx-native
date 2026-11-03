@@ -363,6 +363,8 @@ pub enum AttemptOrigin {
     /// The viewer chose a quality, from the menu or from the failure screen, and the open follows
     /// from that choice (including an Original they asked for).
     QualityChange,
+    /// The viewer changed playback speed or audio processing, requiring a new route.
+    ViewerReconfigure,
     /// The app changed the delivery on its own: a link fallback or an automatic Original attempt.
     AutoHandoff,
     /// The app reopened a route after a failed open: the rollback from Original, or the HLS that
@@ -377,10 +379,11 @@ pub enum AttemptOrigin {
 }
 
 impl AttemptOrigin {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Fresh,
         Self::UserRetry,
         Self::QualityChange,
+        Self::ViewerReconfigure,
         Self::AutoHandoff,
         Self::Recovery,
         Self::Resume,
@@ -392,6 +395,7 @@ impl AttemptOrigin {
             Self::Fresh => "fresh",
             Self::UserRetry => "user_retry",
             Self::QualityChange => "quality_change",
+            Self::ViewerReconfigure => "viewer_reconfigure",
             Self::AutoHandoff => "auto_handoff",
             Self::Recovery => "recovery",
             Self::Resume => "resume",
