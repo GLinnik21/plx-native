@@ -1291,7 +1291,7 @@ pub fn watched_class(position_ns: i64, duration_ns: i64) -> &'static str {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "play-feed"))]
 mod tests {
     use super::*;
 

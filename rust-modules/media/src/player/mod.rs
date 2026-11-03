@@ -2225,6 +2225,7 @@ pub fn reset_subtitle() {
 /// select the audio stream index the demuxer feeds at the FIRST Load (before start_bufferfeed) —
 /// used by the decision to direct-play a non-default direct-playable track (e.g. an AC3 track on
 /// a TrueHD-default item). -1 = default/best.
+#[cfg(feature = "play-feed")]
 pub fn set_audio_track(idx: i32) {
     SHARED.desired_audio_idx.store(idx, Relaxed);
 }
@@ -3090,7 +3091,7 @@ pub fn every_failure_row() -> Vec<(FailureKind, FailureContext, Vec<FailureActio
     out
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "play-feed"))]
 mod tests {
     use super::*;
 
@@ -4820,7 +4821,7 @@ mod tests {
     }
 }
 
-#[cfg(all(test, feature = "hostsim"))]
+#[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
 mod native_failure_regressions {
     use super::*;
     struct JailGuard;
@@ -4863,7 +4864,7 @@ mod native_failure_regressions {
 /// before #568 every seek was a reload. The guard still applies to every reload-based seek: `Reload`
 /// mode (a refused native `Seek`, `sendSegment=0`, an untested old-ABI release), a stuck in-place
 /// seek's reload, and every seek at a speed other than 1x.
-#[cfg(test)]
+#[cfg(all(test, feature = "play-feed"))]
 mod seek_hud_regressions {
     use super::*;
 
@@ -4934,6 +4935,7 @@ mod audio_switch_tests {
         assert_eq!(busy_caption_with(S::Resolving, true), state_caption(S::Resolving));
     }
 
+    #[cfg(feature = "play-feed")]
     #[test]
     fn a_pick_names_the_rebuild_through_the_reload_until_the_first_frame() {
         let _g = plx_base::testlock::serial();
