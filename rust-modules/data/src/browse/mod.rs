@@ -2145,10 +2145,10 @@ impl BrowseState {
     }
     /// **Where a tab press lands for a content type**, when the profile has not already chosen.
     ///
-    /// [`remembered_section`](Self::remembered_section) wins first and unconditionally — a person
-    /// who picked a library from the Sources panel gets that library back, and no rule here may
-    /// second-guess it. What follows is only the tiebreak among the *pinned* libraries of the
-    /// type, and it prefers the HOUSEHOLD's over an outsider's.
+    /// The current Library visit wins first, including a non-favorite selected through Library
+    /// options. Once that visit ends, [`remembered_section`](Self::remembered_section) restores
+    /// the last-used favorite. The remaining tiebreak among the *pinned* libraries of the type
+    /// prefers the HOUSEHOLD's over an outsider's.
     ///
     /// The tiebreak is issue #68's mechanism, one household wider. 0.6.x's `tab_section` sorted on
     /// raw `!owned` with no `pinned` filter at all, so two equally-graded libraries tied and the
