@@ -6385,9 +6385,7 @@ pub(crate) fn demux(
                 }
                 let dur = fmt_duration(fmt);
                 if dur > 0 {
-                    SHARED
-                        .duration_ns
-                        .store(dur.saturating_mul(1000), Ordering::Relaxed);
+                    session.media().publish(DemuxEffect::DurationNs(dur.saturating_mul(1000)));
                 }
                 // The NAME as well as the id, and the name is what anything downstream should grade.
                 // A raw AV_CODEC_ID is an FFmpeg enum, and that enum RENUMBERS between majors — H264
@@ -6451,11 +6449,16 @@ pub(crate) fn demux(
                 // What the Load declared (`dg_load_v`, 0 when this start sent a static payload) must
                 // be what the file is: a Load that says one codec over another codec's bitstream is a
                 // black screen, so stop and name both.
-                let declared = SHARED.dg_load_v.load(Ordering::Relaxed);
+                let Some(declared) = session.observer().declared_video_code() else {
+                    avformat_close_input(&mut fmt);
+                    free_avio(avio);
+                    break;
+                };
                 if declared != 0 && declared != framing.load_video().diag_code() {
                     session.media().record(&format!(
                         "ff: the Load declared {} but the file is {cname}; refusing the stream",
-                        crate::player::load_v_name(declared)
+                        plx_play_feed::LoadVideo::from_diag_code(declared)
+                            .map_or("—", plx_play_feed::LoadVideo::payload_name)
                     ));
                     session.media().publish(DemuxEffect::FailFault(DemuxFault::LoadMismatch));
                     avformat_close_input(&mut fmt);

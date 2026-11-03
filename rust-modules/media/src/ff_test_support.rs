@@ -21,6 +21,9 @@ impl DemuxObserver for FixtureDemuxObserver {
     fn duration_ns(&self) -> Option<i64> {
         Some(SHARED.duration_ns.load(Ordering::Relaxed))
     }
+    fn declared_video_code(&self) -> Option<u8> {
+        Some(SHARED.dg_load_v.load(Ordering::Relaxed))
+    }
     fn paused(&self) -> Option<bool> { Some(crate::player::TX.paused.load(Ordering::Acquire)) }
     fn pause_clock(&self) -> Option<plx_playback_contract::demux::PauseClock> {
         let (at, elapsed) = crate::player::TX.pause_clock_sample();

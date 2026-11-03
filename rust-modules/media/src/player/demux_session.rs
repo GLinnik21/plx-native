@@ -69,6 +69,10 @@ impl DemuxObserver for PlayerDemuxObserver {
         SHARED.with_active_demux_epoch(self.native_epoch, ||
             SHARED.duration_ns.load(Ordering::Relaxed))
     }
+    fn declared_video_code(&self) -> Option<u8> {
+        SHARED.with_active_demux_epoch(self.native_epoch, ||
+            SHARED.dg_load_v.load(Ordering::Relaxed))
+    }
     fn paused(&self) -> Option<bool> {
         SHARED.with_active_demux_epoch(self.native_epoch, || TX.paused.load(Ordering::Acquire))
     }
