@@ -133,11 +133,13 @@ impl Lifecycle {
     pub fn session(&self) -> Option<SessionId> {
         self.session
     }
+    /// Only the correlated load reply may supply the active service identity.
+    pub fn media_id(&self) -> Option<&MediaId> { self.media_id.as_ref() }
     pub fn released(&self) -> bool {
         self.phase == Phase::Released
     }
     fn request(&mut self) -> RequestId {
-        // Exhaustion is unreachable in a bounded developer script, but never aliases an old call.
+        // Exhaustion is unreachable in practice, but never aliases an old native call.
         self.next = self
             .next
             .checked_add(1)
@@ -315,8 +317,9 @@ impl Lifecycle {
                 // A matching event may have preceded the ACK.
                 if let Some(request) = self.requests.get(&reply.request) {
                     if request.confirmed && request.ack == Some(true) {
-                        if let UriCall::SelectTrack { kind, .. } = request.call {
+                        if let UriCall::SelectTrack { kind, index, .. } = request.call {
                             message.confirmed_track = Some(kind);
+                            message.selected_track = Some((kind, index));
                         }
                     }
                 }
