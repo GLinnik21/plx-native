@@ -87,6 +87,12 @@ impl DemuxObserver for PlayerDemuxObserver {
             }
             DemuxCallbackEffect::IoFailed =>
                 SHARED.demux_io_failed.store(true, Ordering::Release),
+            DemuxCallbackEffect::RequestTerminalHold => {
+                SHARED.hls_rebuffer_request_tail_ns.store(
+                    SHARED.hls_video_tail_ns.load(Ordering::Acquire), Ordering::Release,
+                );
+                SHARED.hls_rebuffer_requested.store(true, Ordering::Release);
+            }
         }).is_some()
     }
 }

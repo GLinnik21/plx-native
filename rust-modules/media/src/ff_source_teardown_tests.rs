@@ -1009,7 +1009,7 @@ fn a_cut_hls_segment_read_is_not_reopened_by_the_read_callback() {
     let size = cs.size();
     let mut aq = crate::aq::aq_new(1 << 20);
     let (reserve_deadline, runtime) =
-        SegmentAcquisition::for_test(None, false, false).begin(&mut *aq);
+        SegmentAcquisition::for_test(None, false, false, super::test_support::demux_observer()).begin(&mut *aq);
     let mut st = AvioState {
         observer: super::test_support::demux_observer(),
         src: Src::Curl(cs),

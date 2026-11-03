@@ -22,7 +22,7 @@ fn a_server_paced_prefix_cannot_forecast_its_unseen_remainder() {
     crate::player::SHARED
         .playpos_ns
         .store(pos, std::sync::atomic::Ordering::Relaxed);
-    let guard = StallGuard::arm(6_376).expect("a live reserve arms");
+    let guard = StallGuard::arm(6_376, super::test_support::demux_observer()).expect("a live reserve arms");
     assert!(
         !guard.should_abort(false, false),
         "a censored JIT prefix cannot prove that the complete response will miss the reserve",
@@ -37,25 +37,25 @@ fn a_server_paced_prefix_cannot_forecast_its_unseen_remainder() {
 #[test]
 fn an_empty_reserve_at_the_start_of_a_fetch_arms_nothing() {
     assert!(
-        StallGuard::arm(0).is_none(),
+        StallGuard::arm(0, super::test_support::demux_observer()).is_none(),
         "so the guard must refuse to be armed"
     );
-    assert!(StallGuard::arm(-1).is_none());
+    assert!(StallGuard::arm(-1, super::test_support::demux_observer()).is_none());
     assert!(
-        StallGuard::arm(1).is_some(),
+        StallGuard::arm(1, super::test_support::demux_observer()).is_some(),
         "and must arm as soon as there is a picture to keep"
     );
 }
 
 #[test]
 fn the_floor_guard_holds_the_clock_without_abandoning_the_only_rung() {
-    let hold = StallGuard::arm_clock_hold(2_000).expect("a live floor reserve arms");
+    let hold = StallGuard::arm_clock_hold(2_000, super::test_support::demux_observer()).expect("a live floor reserve arms");
     assert!(
         !hold.aborts_fetch(),
         "the floor has no cheaper object to re-fetch"
     );
     assert!(
-        StallGuard::arm(2_000)
+        StallGuard::arm(2_000, super::test_support::demux_observer())
             .expect("a live non-floor reserve arms")
             .aborts_fetch(),
         "above the floor the same signal must still release the controller to downshift",
@@ -65,11 +65,11 @@ fn the_floor_guard_holds_the_clock_without_abandoning_the_only_rung() {
 #[test]
 fn an_existing_terminal_hold_arms_no_second_abort() {
     assert!(
-        arm_active_stall_guard(Some(2_000), false, true).is_none(),
+        arm_active_stall_guard(Some(2_000), false, true, super::test_support::demux_observer()).is_none(),
         "the response rebuilding an empty reserve must be allowed to complete",
     );
     assert!(
-        arm_active_stall_guard(Some(2_000), false, false).is_some(),
+        arm_active_stall_guard(Some(2_000), false, false, super::test_support::demux_observer()).is_some(),
         "a running clock still needs its terminal boundary",
     );
 }
@@ -230,10 +230,10 @@ fn the_lookahead_policy_must_abort_under_a_terminal_hold_like_the_ordinary_polic
         aborted
     }
 
-    let ordinary_policy = SegmentAcquisition::for_test(Some(6_000), false, false);
+    let ordinary_policy = SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer());
     assert_eq!(
         ordinary_policy.stall(),
-        arm_active_stall_guard(Some(6_000), false, false),
+        arm_active_stall_guard(Some(6_000), false, false, super::test_support::demux_observer()),
         "fixture: the acquisition arms exactly the ordinary branch's guard"
     );
     assert!(
@@ -245,7 +245,7 @@ fn the_lookahead_policy_must_abort_under_a_terminal_hold_like_the_ordinary_polic
     // (via the test-only `for_test` escape hatch, which is `active` under a name `ff` cannot
     // reach — see `ff_acquisition.rs`) — not a hand-built guard, the same evaluation the
     // production constructor runs for both the ordinary fetch and the lookahead.
-    let lookahead_policy = SegmentAcquisition::for_test(Some(6_000), false, false);
+    let lookahead_policy = SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer());
     assert!(
         drive_two_reads_across_a_terminal_hold(lookahead_policy),
         "the same-encoder lookahead must abort under a terminal hold exactly like the ordinary \
@@ -261,25 +261,25 @@ fn the_lookahead_policy_must_abort_under_a_terminal_hold_like_the_ordinary_polic
 #[test]
 fn the_active_acquisition_constructor_preserves_arm_active_stall_guards_exclusions() {
     assert!(
-        SegmentAcquisition::for_test(None, false, false)
+        SegmentAcquisition::for_test(None, false, false, super::test_support::demux_observer())
             .stall()
             .is_none(),
         "an unknowable reserve arms nothing"
     );
     assert!(
-        SegmentAcquisition::for_test(Some(0), false, false)
+        SegmentAcquisition::for_test(Some(0), false, false, super::test_support::demux_observer())
             .stall()
             .is_none(),
         "a reserve of zero at the start of a fetch arms nothing"
     );
     assert!(
-        SegmentAcquisition::for_test(Some(2_000), false, true)
+        SegmentAcquisition::for_test(Some(2_000), false, true, super::test_support::demux_observer())
             .stall()
             .is_none(),
         "an already-held clock arms no second abort"
     );
     assert!(
-        SegmentAcquisition::for_test(Some(2_000), false, false)
+        SegmentAcquisition::for_test(Some(2_000), false, false, super::test_support::demux_observer())
             .stall()
             .is_some(),
         "a live reserve with no existing hold must still arm"
@@ -292,7 +292,7 @@ fn the_active_acquisition_constructor_preserves_arm_active_stall_guards_exclusio
 #[test]
 fn for_cursor_with_no_controller_is_unarmed() {
     assert!(
-        SegmentAcquisition::for_cursor(None).stall().is_none(),
+        SegmentAcquisition::for_cursor(None, super::test_support::demux_observer()).stall().is_none(),
         "non-adaptive playback must never arm a stall guard"
     );
 }
@@ -371,6 +371,7 @@ fn the_lookahead_wiring_aborts_through_the_shared_reducer_when_the_guard_is_arme
             .begin(std::time::Duration::from_secs(0))
             .expect("fixture clock"),
         Some(controller.current().at_floor()),
+        super::test_support::demux_observer(),
         |_segment, _clock, acquisition| {
             let armed = acquisition.stall().is_some();
             observed_armed = Some(armed);
@@ -433,7 +434,7 @@ fn a_terminal_hold_aborts_only_an_incomplete_response() {
     crate::player::SHARED
         .playpos_ns
         .store(5_000_000_000, std::sync::atomic::Ordering::Relaxed);
-    let guard = StallGuard::arm(6_000).expect("a live reserve arms");
+    let guard = StallGuard::arm(6_000, super::test_support::demux_observer()).expect("a live reserve arms");
     assert!(
         guard.should_abort(false, true),
         "B=0 with bytes remaining is terminal"
@@ -846,7 +847,7 @@ fn a_hold_accepted_while_the_open_waits_for_headers_abandons_the_fetch() {
     let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let mut pms = ScriptedPms::start(|_| Reply::Withhold);
-    let acquisition = SegmentAcquisition::for_test(Some(6_000), false, false);
+    let acquisition = SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer());
     let run = demux_against(&mut pms, acquisition, publish_accepted_hold);
     assert_prompt_zero_byte_stall_abort(&run, "open, accepted hold");
 }
@@ -858,7 +859,7 @@ fn a_playhead_that_spends_the_reserve_during_the_open_abandons_the_fetch() {
     let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let mut pms = ScriptedPms::start(|_| Reply::Withhold);
-    let acquisition = SegmentAcquisition::for_test(Some(2_000), false, false);
+    let acquisition = SegmentAcquisition::for_test(Some(2_000), false, false, super::test_support::demux_observer());
     fn spend_the_reserve() {
         crate::player::SHARED
             .playpos_ns
@@ -881,7 +882,7 @@ fn a_hold_accepted_during_the_not_ready_wait_abandons_the_fetch_without_another_
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let mut pms =
         ScriptedPms::start(|_| Reply::Send(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"));
-    let acquisition = SegmentAcquisition::for_test(Some(6_000), false, false);
+    let acquisition = SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer());
     // Strictly inside the wait: after the runtime entered it AND answered its first Continue.
     let fire = Fire::AfterContinue(Phase::RetryWaiting, 1);
     let run = demux_against_when(&mut pms, acquisition, fire, publish_accepted_hold);
@@ -1000,7 +1001,7 @@ fn a_hold_accepted_during_a_blocked_body_read_ends_that_read() {
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let run = blocked_body_read(
         Reply::SendThenWithhold(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCD"),
-        SegmentAcquisition::for_test(Some(6_000), false, false),
+        SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer()),
         None,
         |_| {},
     );
@@ -1032,7 +1033,7 @@ fn a_hold_before_a_body_reads_short_deadline_settles_as_a_stall_abort() {
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let run = blocked_body_read(
         Reply::SendThenWithhold(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCD"),
-        SegmentAcquisition::for_test(Some(6_000), false, false),
+        SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer()),
         Some(SHORT_DEADLINE),
         |_| {},
     );
@@ -1054,7 +1055,7 @@ fn at_the_floor_a_body_reads_short_deadline_keeps_its_transport_classification()
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let run = blocked_body_read(
         Reply::SendThenWithhold(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCD"),
-        SegmentAcquisition::for_test(Some(6_000), true, false),
+        SegmentAcquisition::for_test(Some(6_000), true, false, super::test_support::demux_observer()),
         Some(SHORT_DEADLINE),
         |_| {},
     );
@@ -1078,7 +1079,7 @@ fn at_the_floor_a_blocked_body_read_asks_once_and_keeps_reading() {
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let run = blocked_body_read(
         Reply::PrefixThenRelease(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCD", b"EFGH"),
-        SegmentAcquisition::for_test(Some(6_000), true, false),
+        SegmentAcquisition::for_test(Some(6_000), true, false, super::test_support::demux_observer()),
         None,
         |released| {
             let asked_by = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -1126,7 +1127,7 @@ fn at_the_floor_the_not_ready_wait_asks_once_and_retries() {
             b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n"
         })
     });
-    let acquisition = SegmentAcquisition::for_test(Some(6_000), true, false);
+    let acquisition = SegmentAcquisition::for_test(Some(6_000), true, false, super::test_support::demux_observer());
     let fire = Fire::AfterContinue(Phase::RetryWaiting, 1);
     let run = demux_against_when(&mut pms, acquisition, fire, publish_accepted_hold);
     assert!(!run.torn_down, "{}", describe(&run.result));
@@ -1156,6 +1157,7 @@ fn a_hold_before_an_opens_short_deadline_settles_as_a_stall_abort() {
         false,
         false,
         ReserveDeadlineState::new(Some(std::time::Instant::now() + SHORT_DEADLINE), false),
+        super::test_support::demux_observer(),
     );
     let fire = Fire::AfterContinue(Phase::Opening, 1);
     let run = demux_against_when(&mut pms, acquisition, fire, publish_accepted_hold);
@@ -1174,6 +1176,7 @@ fn at_the_floor_an_opens_short_deadline_keeps_its_classification() {
         true,
         false,
         ReserveDeadlineState::new(Some(std::time::Instant::now() + SHORT_DEADLINE), false),
+        super::test_support::demux_observer(),
     );
     let fire = Fire::AfterContinue(Phase::Opening, 1);
     let run = demux_against_when(&mut pms, acquisition, fire, publish_accepted_hold);
@@ -1249,6 +1252,7 @@ fn a_zero_byte_abort_reaches_the_controller_as_an_abandoned_sample() {
         crate::hls::SegmentTimeline::default(),
         clock(),
         Some(controller.current().at_floor()),
+        super::test_support::demux_observer(),
         |_, _, _| Err(HlsExit::StallAbort(pre_body)),
     )
     .expect("a StallAbort is a round, not an error")
@@ -1324,7 +1328,7 @@ fn at_the_floor_the_open_asks_for_the_hold_once_and_keeps_its_connection() {
         torn_down
     });
     let mut runtime = runtime_for(
-        SegmentAcquisition::for_test(Some(6_000), true, false),
+        SegmentAcquisition::for_test(Some(6_000), true, false, super::test_support::demux_observer()),
         &mut aq,
     );
     let mut net = HlsNet {
@@ -1373,7 +1377,7 @@ fn a_floor_runtime_requests_the_hold_once_then_disarms() {
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let mut aq = crate::aq::aq_new(1 << 20);
     let mut runtime = runtime_for(
-        SegmentAcquisition::for_test(Some(6_000), true, false),
+        SegmentAcquisition::for_test(Some(6_000), true, false, super::test_support::demux_observer()),
         &mut aq,
     );
     publish_accepted_hold();
@@ -1402,7 +1406,7 @@ fn unarmed_runtimes_never_stop_and_armed_ones_recheck_within_a_slice() {
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let mut aq = crate::aq::aq_new(1 << 20);
     let mut armed = runtime_for(
-        SegmentAcquisition::for_test(Some(60_000), false, false),
+        SegmentAcquisition::for_test(Some(60_000), false, false, super::test_support::demux_observer()),
         &mut aq,
     );
     let before = std::time::Instant::now();
@@ -1420,7 +1424,7 @@ fn unarmed_runtimes_never_stop_and_armed_ones_recheck_within_a_slice() {
         &mut aq,
     );
     let mut held = runtime_for(
-        SegmentAcquisition::for_test(Some(2_000), false, true),
+        SegmentAcquisition::for_test(Some(2_000), false, true, super::test_support::demux_observer()),
         &mut aq,
     );
     assert!(!candidate.armed() && !held.armed());
@@ -1445,7 +1449,7 @@ fn a_hold_that_came_and_went_between_checks_is_still_seen() {
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let mut aq = crate::aq::aq_new(1 << 20);
     let mut runtime = runtime_for(
-        SegmentAcquisition::for_test(Some(6_000), false, false),
+        SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer()),
         &mut aq,
     );
     assert!(!stops(&mut runtime));
@@ -1464,7 +1468,7 @@ fn a_completed_body_outranks_a_later_hold_and_an_unsized_one_needs_its_end() {
     let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let mut aq = crate::aq::aq_new(1 << 20);
-    let armed = || SegmentAcquisition::for_test(Some(6_000), false, false);
+    let armed = || SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer());
     let mut sized = runtime_for(armed(), &mut aq);
     let mut unsized_open = runtime_for(armed(), &mut aq);
     let mut unsized_ended = runtime_for(armed(), &mut aq);
@@ -1491,7 +1495,7 @@ fn teardown_outranks_a_simultaneous_hold() {
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let mut aq = crate::aq::aq_new(1 << 20);
     let mut runtime = runtime_for(
-        SegmentAcquisition::for_test(Some(6_000), false, false),
+        SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer()),
         &mut aq,
     );
     publish_accepted_hold();
@@ -1667,7 +1671,7 @@ fn read_across_a_hold_with_the_body(
         src,
         &mut *aq,
         8,
-        SegmentAcquisition::for_test(Some(6_000), false, false),
+        SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer()),
     );
     let op = &mut state as *mut AvioState as *mut c_void;
     let mut dst = [0u8; 4];
@@ -1815,7 +1819,7 @@ fn transfer_work_a_receipt_takes_is_counted_in_body_time() {
         Src::Curl(cs),
         &mut *aq,
         BODY as i64,
-        SegmentAcquisition::for_test(Some(6_000), false, false),
+        SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer()),
     );
     let op = &mut state as *mut AvioState as *mut c_void;
     let mut dst = [0u8; 4];
@@ -1888,7 +1892,7 @@ fn a_non_stepping_receipt_contributes_nothing_only_the_read_does() {
         src,
         &mut *aq,
         8,
-        SegmentAcquisition::for_test(Some(6_000), false, false),
+        SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer()),
     );
     let op = &mut state as *mut AvioState as *mut c_void;
     let mut dst = [0u8; 4];
@@ -1929,7 +1933,7 @@ fn a_failed_read_credits_nothing_and_its_settlement_receipt_is_credited_once() {
         Src::Curl(cs),
         &mut *aq,
         8,
-        SegmentAcquisition::for_test(Some(6_000), false, false),
+        SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer()),
     );
     let op = &mut state as *mut AvioState as *mut c_void;
     let mut dst = [0u8; 4];

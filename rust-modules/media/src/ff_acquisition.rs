@@ -71,12 +71,15 @@ impl SegmentAcquisition {
     ///
     /// **Still out of scope:** the synchronous `getaddrinfo` inside a plaintext open's connect
     /// cannot be interrupted by any checkpoint; the guard is consulted as soon as it returns.
-    pub(super) fn for_cursor(at_floor: Option<bool>) -> Self {
+    pub(super) fn for_cursor(
+        at_floor: Option<bool>, observer: Arc<dyn DemuxObserver>,
+    ) -> Self {
         match at_floor {
             Some(at_floor) => Self::active(
                 hls_buffer_fact(None).buffered_ms(),
                 at_floor,
-                SHARED.hls_rebuffering.load(Ordering::Acquire),
+                observer.rebuffering().unwrap_or(true),
+                observer,
             ),
             None => SegmentAcquisition(Policy::Fixed),
         }
@@ -84,10 +87,13 @@ impl SegmentAcquisition {
 
     /// Private: the only callers are [`SegmentAcquisition::for_cursor`] and, under `#[cfg(test)]`,
     /// [`SegmentAcquisition::for_test`]. Not reachable from `ff`.
-    fn active(reserve_ms: Option<i64>, at_floor: bool, already_held: bool) -> Self {
+    fn active(
+        reserve_ms: Option<i64>, at_floor: bool, already_held: bool,
+        observer: Arc<dyn DemuxObserver>,
+    ) -> Self {
         SegmentAcquisition(Policy::Active(ActiveAcquisition {
             reserve_deadline: ReserveDeadlineState::new(None, false),
-            stall: arm_active_stall_guard(reserve_ms, at_floor, already_held),
+            stall: arm_active_stall_guard(reserve_ms, at_floor, already_held, observer),
         }))
     }
 
@@ -100,7 +106,7 @@ impl SegmentAcquisition {
     /// or replace the guard itself.
     pub(super) fn stall(&self) -> Option<StallGuard> {
         match &self.0 {
-            Policy::Active(active) => active.stall,
+            Policy::Active(active) => active.stall.clone(),
             Policy::Candidate(_) | Policy::Fixed => None,
         }
     }
@@ -133,8 +139,11 @@ impl SegmentAcquisition {
     /// without wiring up a real cursor, controller and `SHARED` state. Never reachable outside
     /// `#[cfg(test)]`; the shipping constructor is always `for_cursor`.
     #[cfg(any(test, feature = "test-support"))]
-    pub(super) fn for_test(reserve_ms: Option<i64>, at_floor: bool, already_held: bool) -> Self {
-        Self::active(reserve_ms, at_floor, already_held)
+    pub(super) fn for_test(
+        reserve_ms: Option<i64>, at_floor: bool, already_held: bool,
+        observer: Arc<dyn DemuxObserver>,
+    ) -> Self {
+        Self::active(reserve_ms, at_floor, already_held, observer)
     }
 
     /// [`Self::for_test`] with an explicit reserve deadline, so a test can make the open's own
@@ -146,10 +155,11 @@ impl SegmentAcquisition {
         at_floor: bool,
         already_held: bool,
         reserve_deadline: ReserveDeadlineState,
+        observer: Arc<dyn DemuxObserver>,
     ) -> Self {
         SegmentAcquisition(Policy::Active(ActiveAcquisition {
             reserve_deadline,
-            stall: arm_active_stall_guard(reserve_ms, at_floor, already_held),
+            stall: arm_active_stall_guard(reserve_ms, at_floor, already_held, observer),
         }))
     }
 }
@@ -286,11 +296,11 @@ impl AcquisitionRuntime {
         if self.phase == Phase::BodyComplete {
             return Flow::Continue { next_check: None };
         }
-        let Some(guard) = self.stall else {
+        let Some(guard) = self.stall.as_ref() else {
             return Flow::Continue { next_check: None };
         };
-        if guard.should_abort(false, SHARED.hls_rebuffering.load(Ordering::Acquire)) {
-            request_terminal_hold();
+        if guard.should_abort(false, guard.observer.rebuffering().unwrap_or(true)) {
+            guard.observer.publish(DemuxCallbackEffect::RequestTerminalHold);
             if guard.aborts_fetch() {
                 self.stop = Some(StopReason::StallAbort);
                 return Flow::Stop;
