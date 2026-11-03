@@ -6,7 +6,7 @@
 use crate::aq::AuQueue;
 use crate::adaptive;
 use plx_playback_contract::adaptive::TrialObservation as TrialEvent;
-use plx_playback_contract::adaptive::{Acquisition, AutomaticTransition, BufferFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock, TrialId};
+use plx_playback_contract::adaptive::{Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, AutomaticTransition, BufferFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, RoundId, TrialClock, TrialId};
 use plx_playback_contract::SourceKey;
 use crate::player::threads::SendPtr;
 use crate::player::SHARED;
@@ -5364,6 +5364,92 @@ fn reject_hls_abr_after_transaction(
     publish_hls_abr_action(proposal, refreshing_same_request, Some(false));
 }
 
+/// Apply the common trial policy to physical cleanup and trace publication.
+/// Every rejection discards the candidate encoder exactly once before the
+/// controller records the cause; a fatal response leaves no resumable cursor.
+fn settle_trial_failure(
+    state: &mut adaptive::Coordinator, encoder: &str,
+    proposal: crate::abr::Proposal, tx: &mut TxTrace,
+    step: adaptive::TrialStep, failure: FeedFailure,
+    now_ms: impl FnOnce() -> u64,
+) -> Result<(), HlsExit> {
+    use adaptive::{TrialFailureAction as A, TrialRejectReason as R, TrialStep as S};
+    let action = adaptive::trial_failure_action(step, failure);
+    state.abandon(encoder);
+    match action {
+        A::Abort => {
+            tx.finish("aborted");
+            Err(HlsExit::Aborted)
+        }
+        A::Protocol => {
+            tx.finish("feed_protocol");
+            Err(HlsExit::Failed(match step {
+                S::Open => "adaptive feed open protocol violation",
+                S::FirstRead => "adaptive feed read protocol violation",
+                S::FirstAcquire => "adaptive feed acquisition protocol violation",
+                S::FollowupRead => "adaptive feed follow-up protocol violation",
+                S::FollowupAcquire => "adaptive feed follow-up acquisition protocol violation",
+            }))
+        }
+        A::TimelineOverflow => {
+            reject_hls_abr_after_transaction(
+                state, proposal, crate::abr::RejectCause::Circumstance, tx, now_ms(),
+            );
+            tx.finish(if step == S::FollowupAcquire {
+                "repeatable_timeline_overflow"
+            } else {
+                "timeline_overflow"
+            });
+            Err(HlsExit::Failed("HLS candidate timeline overflow"))
+        }
+        A::Reject { cause, reason } => {
+            reject_hls_abr_after_transaction(state, proposal, cause, tx, now_ms());
+            let deadline = reason == R::Deadline;
+            tx.finish(match (step, reason) {
+                (S::Open, R::SourceMoved) => "origin_changed",
+                (S::Open, _) if deadline => "master_deadline",
+                (S::Open, _) => "no_master_playlist",
+                (S::FirstRead, R::Ended) => "candidate_ended",
+                (S::FirstRead, _) if deadline => "playlist_deadline",
+                (S::FirstRead, _) => "no_media_playlist",
+                (S::FirstAcquire, _) if deadline => "warmup_deadline",
+                (S::FirstAcquire, _) => "warmup_failed",
+                (S::FollowupRead, R::Ended) => "candidate_ended_after_setup",
+                (S::FollowupRead, _) if deadline => "repeatable_playlist_deadline",
+                (S::FollowupRead, _) => "repeatable_playlist_failed",
+                (S::FollowupAcquire, _) if deadline => "repeatable_deadline",
+                (S::FollowupAcquire, _) => "repeatable_failed",
+            });
+            match (step, reason) {
+                (S::Open, R::SourceMoved) => crate::player::log(
+                    "abr: candidate changed origin; rejected",
+                ),
+                (S::Open, _) => crate::player::log(
+                    "abr: candidate master failed; staying on current rung",
+                ),
+                (S::FirstRead, R::Ended) => crate::player::log(
+                    "abr: candidate stream ended before media; staying",
+                ),
+                (S::FirstRead, _) => crate::player::log(
+                    "abr: candidate produced no segment; staying on current rung",
+                ),
+                (S::FirstAcquire, R::Deadline) => crate::player::log(&format!(
+                    "abr: {:?} candidate warm-up exceeded deadline; staying on current rung",
+                    proposal.direction,
+                )),
+                (S::FirstAcquire, _) => crate::player::log(
+                    "abr: candidate segment failed; staying on current rung",
+                ),
+                (S::FollowupAcquire, _) => crate::player::log(
+                    "abr: candidate produced no complete repeatable object; staying current",
+                ),
+                (S::FollowupRead, _) => {}
+            }
+            Ok(())
+        }
+    }
+}
+
 /// **One shared reducer for a `StallAbort` returned against the ACTIVE cursor.** The ordinary
 /// fetch and the same-encoder lookahead observe the identical terminal boundary and must handle
 /// it identically: log it, requeue the segment (exactly once — it is put back here, and nowhere
@@ -5517,6 +5603,167 @@ unsafe fn hls_prefetch_same_encoder(
     })
 }
 
+type ActiveMedia = (
+    crate::hls::Segment,
+    HlsSegmentOutput,
+    crate::hls::SegmentClock,
+    bool,
+);
+
+/// The physical read shared by adaptive and fixed HLS. It leaves an aborted
+/// object on the cursor and returns its censored transfer without feeding it.
+fn hls_read_active(
+    cursor: &mut HlsCursor, net: &mut HlsNet, timeline: crate::hls::SegmentTimeline,
+    prefetched: &mut Option<ActiveMedia>, aq: *mut AuQueue, acodec: &str,
+    at_floor: Option<bool>,
+) -> Result<Option<ActiveMedia>, HlsExit> {
+    if let Some(round) = prefetched.take() { return Ok(Some(round)); }
+    let Some(segment) = hls_cursor_next(cursor, aq, net, None)? else { return Ok(None); };
+    let mut clock = timeline.begin(segment.duration)
+        .map_err(|_| HlsExit::Failed("HLS content timeline overflow"))?;
+    let acquisition = SegmentAcquisition::for_cursor(at_floor);
+    let stall_reserve_ms = acquisition.stall()
+        .map(|guard| guard.reserve_ms_at_start).unwrap_or(-1);
+    match unsafe { hls_demux_segment(
+        &segment, &cursor.auth, &mut clock, aq, net, acodec, acquisition,
+    ) } {
+        Ok(output) => Ok(Some((segment, output, clock, false))),
+        Err(HlsExit::StallAbort(transfer)) => Ok(Some(hls_stall_abort_outcome(
+            segment, clock, transfer, stall_reserve_ms, cursor,
+        ))),
+        Err(other) => Err(other),
+    }
+}
+
+/// All active-cursor handles stay in this feed worker. The addressed common
+/// runner sees only transfer facts and physical completion acknowledgements.
+struct HlsActivePort<'a> {
+    round: RoundId,
+    cursor: &'a mut HlsCursor,
+    net: &'a mut HlsNet,
+    timeline: &'a mut crate::hls::SegmentTimeline,
+    prefetched: &'a mut Option<ActiveMedia>,
+    pause_cursor: &'a mut crate::player::UserPauseCursor,
+    aq: *mut AuQueue,
+    aqa: *mut AuQueue,
+    acodec: &'a str,
+    current: Option<ActiveMedia>,
+}
+
+impl ActiveFeedPort for HlsActivePort<'_> {
+    type Error = HlsExit;
+
+    fn step_active(&mut self, action: ActiveAction) -> Result<ActiveObservation, HlsExit> {
+        if action.round() != self.round {
+            return Err(HlsExit::Failed("adaptive active round address mismatch"));
+        }
+        let round = self.round;
+        match action {
+            ActiveAction::Read { at_floor, .. } => {
+                if self.current.is_some() {
+                    return Err(HlsExit::Failed("adaptive active round read repeated"));
+                }
+                let Some(media) = hls_read_active(
+                    self.cursor, self.net, *self.timeline, self.prefetched,
+                    self.aq, self.acodec, at_floor,
+                )? else { return Ok(ActiveObservation::Ended { round }); };
+                let acquisition = hls_acquisition(&media.1, media.0.duration, self.cursor.declared_bps);
+                let delivered = !media.1.aus.is_empty();
+                let abandoned = media.3;
+                self.current = Some(media);
+                Ok(ActiveObservation::Ready { round, acquisition, delivered, abandoned })
+            }
+            ActiveAction::Feed { .. } => {
+                let Some((segment, output, clock, _)) = self.current.as_ref() else {
+                    return Err(HlsExit::Failed("adaptive active feed without read"));
+                };
+                if !output.aus.is_empty() {
+                    hls_feed_segment(output, self.aq, self.aqa)?;
+                    SHARED.observe_hls_recovery(output.transfer.total_us, segment.duration);
+                    self.timeline.commit(*clock);
+                }
+                Ok(ActiveObservation::Fed { round })
+            }
+            ActiveAction::Buffer { .. } => {
+                let Some((_, output, _, _)) = self.current.as_ref() else {
+                    return Err(HlsExit::Failed("adaptive active buffer without read"));
+                };
+                Ok(ActiveObservation::Buffer { round, fact: hls_buffer_fact(Some(output)) })
+            }
+            ActiveAction::Pause { .. } => {
+                let snapshot = crate::player::TX.pause_state_sample();
+                let completed_ms = self.pause_cursor.consume_completed(snapshot)
+                    .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX));
+                Ok(ActiveObservation::Pause {
+                    round, paused: snapshot.paused, sequence: snapshot.sequence, completed_ms,
+                })
+            }
+            ActiveAction::RollbackDuration { .. } => {
+                let duration_ms = hls_cursor_next_duration_ms(self.cursor, self.aq, self.net)?;
+                Ok(ActiveObservation::RollbackDuration { round, duration_ms })
+            }
+            ActiveAction::Prefetch { at_floor, .. } => {
+                let Some((_, _, clock, _)) = self.current.as_ref() else {
+                    return Err(HlsExit::Failed("adaptive active prefetch without read"));
+                };
+                *self.prefetched = unsafe { hls_prefetch_same_encoder(
+                    self.cursor, self.aq, self.net, self.acodec, *self.timeline, *clock, at_floor,
+                )? };
+                Ok(ActiveObservation::Prefetched { round })
+            }
+        }
+    }
+}
+
+struct HlsActiveDiagnostics<'a> { cleanup_wait_logged: &'a mut bool }
+
+impl adaptive::ActiveDiagnostics for HlsActiveDiagnostics<'_> {
+    fn cleanup(&mut self, ready: bool) {
+        if !ready && !*self.cleanup_wait_logged {
+            *self.cleanup_wait_logged = true;
+            crate::player::log(
+                "abr: waiting for PMS to release the stopped encoder before another experiment",
+            );
+        } else if ready && *self.cleanup_wait_logged {
+            *self.cleanup_wait_logged = false;
+            crate::player::log("abr: PMS encoder release observed; exploration may resume");
+        }
+    }
+
+    fn accepted_pause(&mut self, after_lookup: bool, sequence: u64, elapsed_ms: u64) {
+        if after_lookup {
+            crate::player::log(&format!(
+                "abr: consumed accepted pause sequence={} elapsed={}ms after rollback lookup; delivery estimate aged",
+                sequence, elapsed_ms,
+            ));
+        } else {
+            crate::player::log(&format!(
+                "abr: consumed accepted pause sequence={} elapsed={}ms; delivery estimate aged",
+                sequence, elapsed_ms,
+            ));
+        }
+    }
+
+    fn sample(&mut self, sample: crate::abr::SegmentSample) {
+        publish_hls_abr_sample(sample);
+    }
+
+    fn fresh_boundary(&mut self) {
+        crate::player::log(
+            "abr: fresh-session boundary buffered; waiting for the first repeatable HLS acquisition",
+        );
+    }
+
+    fn observed(&mut self, round: &adaptive::RoundDecision, sample: crate::abr::SegmentSample) {
+        if let Some(runway_ms) = round.prime_runway_ms {
+            SHARED.hls_prime_runway_ms.store(runway_ms, Ordering::Release);
+        }
+        publish_hls_abr_model(&round.telemetry);
+        log_hls_abr_sample(&round.telemetry, sample, round.decision);
+        log_hls_abr_window(&round.telemetry, sample);
+    }
+}
+
 fn hls_demux(
     off: &plx_base::task::OffFrame,
     origin: &plx_plex::plex::Origin,
@@ -5621,83 +5868,19 @@ fn hls_demux(
     // buffered and measured, but the repeatable acquisition window begins with the next object;
     // see `Controller::observe_session_boundary`.
     let mut session_boundary_pending = adaptive.is_some();
-    let mut prefetched: Option<(
-        crate::hls::Segment,
-        HlsSegmentOutput,
-        crate::hls::SegmentClock,
-        bool,
-    )> = None;
+    let mut prefetched: Option<ActiveMedia> = None;
 
     'segments: loop {
-        let (segment, output, clock, fetch_abandoned) = if let Some(prefetched_round) =
-            prefetched.take()
-        {
-            prefetched_round
-        } else {
-            let Some(segment) = hls_cursor_next(&mut cursor, aq, &mut net, None)? else {
-                break;
-            };
-            let mut clock = timeline
-                .begin(segment.duration)
-                .map_err(|_| HlsExit::Failed("HLS content timeline overflow"))?;
-            // **Arm the terminal guard only while the clock is running.** During an existing internal
-            // hold the response is rebuilding reserve, not spending it, and abandoning that response
-            // would make the depleted state absorbing. An unreadable reserve has no boundary to arm.
-            // Above the floor, a later physical B=0 hold abandons the oversized object; at the floor
-            // the same event keeps reading because no cheaper response exists.
-            // `SegmentAcquisition::for_cursor` decides `Active` vs `Fixed` from the session's own
-            // adaptive context, never per call, and samples the live reserve/hold itself.
-            let acquisition = SegmentAcquisition::for_cursor(adaptive.as_ref().map(|state| state.at_floor()));
-            let stall_reserve_ms = acquisition
-                .stall()
-                .map(|guard| guard.reserve_ms_at_start)
-                .unwrap_or(-1);
-            // **An abort is not a failure and not a delivery — it is the observed terminal boundary
-            // arriving instead of a segment.** The segment goes back on the cursor unconsumed,
-            // nothing is fed and the content timeline does not advance (we delivered no media); what
-            // continues is the ordinary censored-event -> transact path below. The controller only
-            // ever decides between segments, so the fetch that already exhausted the picture's
-            // reserve is converted into the one thing it was withholding: a recovery decision.
-            //
-            // **What it must NOT do is enter the capacity estimate as a completed transfer.** The
-            // response is incomplete by construction, so its bytes may be a receive-buffer burst or
-            // a PMS JIT production interval rather than path service — device-measured
-            // `bytes=1448 ... at 42277kbps` while the shaper held the link at 500 kbps. Entered as
-            // complete it kept `conservative_kbps` near 16 Mbit/s, so every correct downshift picked a
-            // target 30x too dear. See `SegmentSample::abandoned`.
-            match unsafe {
-                hls_demux_segment(
-                    &segment,
-                    &cursor.auth,
-                    &mut clock,
-                    aq,
-                    &mut net,
-                    acodec,
-                    acquisition,
-                )
-            } {
-                Ok(output) => (segment, output, clock, false),
-                Err(HlsExit::StallAbort(transfer)) => {
-                    hls_stall_abort_outcome(segment, clock, transfer, stall_reserve_ms, &mut cursor)
-                }
-                Err(other) => return Err(other),
+        let Some(state) = adaptive.as_mut() else {
+            let Some((segment, output, clock, fetch_abandoned)) = hls_read_active(
+                &mut cursor, &mut net, timeline, &mut prefetched, aq, acodec, None,
+            )? else { break; };
+            let delivered = !output.aus.is_empty();
+            if delivered {
+                hls_feed_segment(&output, aq, aqa)?;
+                SHARED.observe_hls_recovery(output.transfer.total_us, segment.duration);
+                timeline.commit(clock);
             }
-        };
-        let delivered = !output.aus.is_empty();
-        // Feed N, then ABR, then same-encoder N+1. Prefetch in front of ABR downloaded a
-        // segment a commit would throw away and aged recovery across the GET. Held off-queue:
-        // tails stay off SHARED until `hls_feed_segment`.
-        if delivered {
-            hls_feed_segment(&output, aq, aqa)?;
-            // A recovery epoch accepts only complete media from the stream that owns playback.
-            // Candidate acquisitions are deliberately excluded below: until commit they are not
-            // the process that will have to sustain the resumed clock.
-            SHARED.observe_hls_recovery(output.transfer.total_us, segment.duration);
-            timeline.commit(clock);
-        }
-
-        let Some(state) = adaptive.as_mut()
-        else {
             if hls_should_prefetch_after_abr(delivered, fetch_abandoned, true) {
                 prefetched = unsafe {
                     hls_prefetch_same_encoder(
@@ -5713,111 +5896,37 @@ fn hls_demux(
             }
             continue;
         };
-        // Advance recovery and record the active acquisition before the rollback
-        // playlist lookup, which may wait on the server.
-        let active_now_ms = now_ms();
-        let Some(active) = state.begin_active_quantum(
-            hls_acquisition(&output, segment.duration, cursor.declared_bps),
-            || hls_buffer_fact(Some(&output)),
-            fetch_abandoned, delivered, active_now_ms,
-        ) else {
-            crate::player::log("abr: ignoring invalid segment timing sample");
-            continue;
+        let round_id = state.next_round_id()
+            .ok_or(HlsExit::Failed("adaptive active round generation exhausted"))?;
+        let mut active_port = HlsActivePort {
+            round: round_id, cursor: &mut cursor, net: &mut net,
+            timeline: &mut timeline, prefetched: &mut prefetched,
+            pause_cursor: &mut pause_cursor, aq, aqa, acodec, current: None,
         };
-        // The route cleanup runner coalesces a physical ping and exact close.
-        let encoder_cleanup_ready = active.cleanup_ready;
-        if !encoder_cleanup_ready && !cleanup_wait_logged {
-            cleanup_wait_logged = true;
-            crate::player::log(
-                "abr: waiting for PMS to release the stopped encoder before another experiment",
-            );
-        } else if encoder_cleanup_ready && cleanup_wait_logged {
-            cleanup_wait_logged = false;
-            crate::player::log("abr: PMS encoder release observed; exploration may resume");
-        }
-        // A pause between two segments really is unmeasured wall-clock time. Age the estimate by
-        // it rather than letting a rate measured before the interruption decide what happens after.
-        let pause_before_lookup = crate::player::TX.pause_state_sample();
-        if let Some(elapsed) = pause_cursor.consume_completed(pause_before_lookup) {
-            let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
-            state.on_resume(elapsed_ms);
-            crate::player::log(&format!(
-                "abr: consumed accepted pause sequence={} elapsed={}ms; delivery estimate aged",
-                pause_before_lookup.sequence, elapsed_ms,
-            ));
-        }
-        // The rollback law protects the NEXT object on the old cursor. Parse that exact EXTINF
-        // before the controller grants any private quality/source transaction; substituting the
-        // object which just completed is unsound for variable-duration HLS. A user-held playback
-        // starts no automatic experiment, so it needs no speculative playlist refresh here.
-        let rollback_media_ms = if pause_before_lookup.paused {
-            None
-        } else {
-            hls_cursor_next_duration_ms(&mut cursor, aq, &mut net)?
+        let mut diagnostics = HlsActiveDiagnostics { cleanup_wait_logged: &mut cleanup_wait_logged };
+        let cycle = match adaptive::run_active_round(
+            state, &mut active_port, round_id, || now_ms(), remaining_playback_ms,
+            || SHARED.hls_user_sequence(), &mut session_boundary_pending, &mut diagnostics,
+        ) {
+            Ok(adaptive::ActiveRun::Ended) => break,
+            Ok(adaptive::ActiveRun::InvalidSample) => {
+                crate::player::log("abr: ignoring invalid segment timing sample");
+                continue;
+            }
+            Ok(adaptive::ActiveRun::Observed(cycle)) => cycle,
+            Err(adaptive::ActiveRunError::Physical(error)) => return Err(error),
+            Err(adaptive::ActiveRunError::Protocol(message)) => return Err(HlsExit::Failed(message)),
         };
-        // The exact next-object lookup above may refresh a live playlist and wait.  Its `D_next`
-        // still belongs to the rollback cursor, and this sample's A/D/bytes still belong to the
-        // completed object, but the reserve is a decision-time fact.  Re-read it after the wait so
-        // neither the rung controller nor Original admission spends buffer which elapsed while
-        // discovering the obligation.  Include `output`: its exact segment-end tail is newer than
-        // the last AU PTS stored in SHARED and must not be rounded back merely by refreshing B.
-        let active = active.refresh(hls_buffer_fact(Some(&output)));
-        // A complete Pause -> Resume may have occurred wholly inside the playlist refresh above.
-        // Consume it before this sample can act, and name the synchronized HLS user sequence that
-        // every later lease must still match.  Returning to `Running` is not the same boundary.
-        let pause_state = crate::player::TX.pause_state_sample();
-        if let Some(elapsed) = pause_cursor.consume_completed(pause_state) {
-            let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
-            state.on_resume(elapsed_ms);
-            crate::player::log(&format!(
-                "abr: consumed accepted pause sequence={} elapsed={}ms after rollback lookup; delivery estimate aged",
-                pause_state.sequence, elapsed_ms,
-            ));
-        }
-        let paused_now = pause_state.paused;
-        let expected_user_sequence = SHARED.hls_user_sequence();
-        publish_hls_abr_sample(active.sample());
-        let remaining_ms = remaining_playback_ms();
-        let boundary = session_boundary_pending && delivered && active.sample().completed();
-        if boundary {
-            session_boundary_pending = false;
-            crate::player::log(
-                "abr: fresh-session boundary buffered; waiting for the first repeatable HLS acquisition",
-            );
-        }
-        let (sample, round, prefetch_allowed) =
-            active.observe(state, rollback_media_ms, now_ms(), boundary);
+        let (_, output, _, _) = active_port.current.take()
+            .expect("an active round holds its physical media until after prefetch");
+        drop(active_port);
+        let adaptive::ActiveCycle {
+            sample, round, delivered, rollback_media_ms, remaining_ms,
+            paused: paused_now, expected_user_sequence,
+            cleanup_ready: encoder_cleanup_ready, after_prefetch,
+        } = cycle;
         let decision = round.decision;
-        if let Some(runway_ms) = round.prime_runway_ms {
-            SHARED.hls_prime_runway_ms.store(runway_ms, Ordering::Release);
-        }
         let telemetry = round.telemetry;
-        let at_floor = state.at_floor();
-        publish_hls_abr_model(&telemetry);
-        log_hls_abr_sample(&telemetry, sample, decision);
-        log_hls_abr_window(&telemetry, sample);
-        if prefetch_allowed {
-            prefetched = unsafe {
-                hls_prefetch_same_encoder(
-                    &mut cursor,
-                    aq,
-                    &mut net,
-                    acodec,
-                    timeline,
-                    clock,
-                    Some(at_floor),
-                )?
-            };
-        }
-        // An upward candidate commit invalidates the HLS half of a terminal Original comparison,
-        // not the completed source measurement. The first ordinary completed object from the new
-        // live stream is the linearization boundary at which both sides are observable again.
-        // Re-score here before either an HLS proposal or the source latch is acted on; no source
-        // request and no probe counter are spent. From the same terminal state, a downward commit
-        // clears its old-regime source evidence instead and therefore never enters this branch.
-        let after_prefetch = state.after_active_prefetch(
-            &round, sample, delivered, remaining_ms, paused_now, encoder_cleanup_ready,
-        );
         if let Some(reconsidered) = after_prefetch.reconsidered {
             last_probe_block = None;
             if let Some(cmp) = reconsidered.comparison {
@@ -6249,46 +6358,18 @@ fn hls_demux(
                 assert!(runner.physical().candidate.is_some(), "an opened trial owns its cursor");
                 declared_bps
             }
-            FeedObservation::Failed { failure: FeedFailure::SourceMoved, .. } => {
-                state.abandon(&primed.encoder_session);
-                reject_hls_abr_after_transaction(
-                    state, proposal, crate::abr::RejectCause::Circumstance,
-                    &mut tx, now_ms(),
-                );
-                tx.finish("origin_changed");
-                crate::player::log("abr: candidate changed origin; rejected");
-                continue;
-            }
-            FeedObservation::Failed {
-                failure: FeedFailure::Protocol | FeedFailure::Ended | FeedFailure::TimelineOverflow,
-                ..
-            }
-            | FeedObservation::SegmentReady { .. }
-            | FeedObservation::Acquired { .. }
-            | FeedObservation::FollowupReserve { .. }
-            | FeedObservation::Queued { .. } => {
-                state.abandon(&primed.encoder_session);
-                tx.finish("feed_protocol");
-                return Err(HlsExit::Failed("adaptive feed open protocol violation"));
-            }
-            FeedObservation::Failed { failure, .. } => {
-                if failure == FeedFailure::Aborted {
-                    state.abandon(&primed.encoder_session);
-                    tx.finish("aborted");
-                    return Err(HlsExit::Aborted);
+            other => {
+                let failure = match other {
+                    FeedObservation::Failed { failure, .. } => failure,
+                    _ => FeedFailure::Protocol,
+                };
+                match settle_trial_failure(
+                    state, &primed.encoder_session, proposal, &mut tx,
+                    adaptive::TrialStep::Open, failure, || now_ms(),
+                ) {
+                    Ok(()) => continue 'segments,
+                    Err(error) => return Err(error),
                 }
-                state.abandon(&primed.encoder_session);
-                reject_hls_abr_after_transaction(
-                    state, proposal, adaptive::reject_cause_for_feed_failure(failure),
-                    &mut tx, now_ms(),
-                );
-                tx.finish(if failure == FeedFailure::Deadline {
-                    "master_deadline"
-                } else {
-                    "no_master_playlist"
-                });
-                crate::player::log("abr: candidate master failed; staying on current rung");
-                continue 'segments;
             }
         };
         tx.mark_master(opened_declared_bps);
@@ -6316,46 +6397,18 @@ fn hls_demux(
                 assert!(runner.physical().segment.is_some(), "ready segment carries its physical object");
                 duration
             }
-            FeedObservation::Failed { failure: FeedFailure::Aborted | FeedFailure::SourceMoved, .. }
-            => {
-                state.abandon(&primed.encoder_session);
-                tx.finish("aborted");
-                return Err(HlsExit::Aborted);
-            }
-            FeedObservation::Failed {
-                failure: FeedFailure::Protocol | FeedFailure::TimelineOverflow, ..
-            }
-            | FeedObservation::Opened { .. }
-            | FeedObservation::Acquired { .. }
-            | FeedObservation::FollowupReserve { .. }
-            | FeedObservation::Queued { .. } => {
-                state.abandon(&primed.encoder_session);
-                tx.finish("feed_protocol");
-                return Err(HlsExit::Failed("adaptive feed read protocol violation"));
-            }
-            FeedObservation::Failed { failure: FeedFailure::Ended, .. } => {
-                state.abandon(&primed.encoder_session);
-                reject_hls_abr_after_transaction(
-                    state, proposal, crate::abr::RejectCause::Circumstance,
-                    &mut tx, now_ms(),
-                );
-                tx.finish("candidate_ended");
-                crate::player::log("abr: candidate stream ended before media; staying");
-                continue 'segments;
-            }
-            FeedObservation::Failed { failure, .. } => {
-                state.abandon(&primed.encoder_session);
-                reject_hls_abr_after_transaction(
-                    state, proposal, adaptive::reject_cause_for_feed_failure(failure),
-                    &mut tx, now_ms(),
-                );
-                tx.finish(if failure == FeedFailure::Deadline {
-                    "playlist_deadline"
-                } else {
-                    "no_media_playlist"
-                });
-                crate::player::log("abr: candidate produced no segment; staying on current rung");
-                continue 'segments;
+            other => {
+                let failure = match other {
+                    FeedObservation::Failed { failure, .. } => failure,
+                    _ => FeedFailure::Protocol,
+                };
+                match settle_trial_failure(
+                    state, &primed.encoder_session, proposal, &mut tx,
+                    adaptive::TrialStep::FirstRead, failure, || now_ms(),
+                ) {
+                    Ok(()) => continue 'segments,
+                    Err(error) => return Err(error),
+                }
             }
         };
         // The whole control plane shares one playhead-funded exploration reserve. Each blocking
@@ -6443,51 +6496,18 @@ fn hls_demux(
                     .expect("acquired media has a staged content clock");
                 (output, clock, acquisition)
             }
-            FeedObservation::Failed { failure: FeedFailure::TimelineOverflow, .. } => {
-                state.abandon(&primed.encoder_session);
-                reject_hls_abr_after_transaction(
-                    state, proposal, crate::abr::RejectCause::Circumstance,
-                    &mut tx, now_ms(),
-                );
-                tx.finish("timeline_overflow");
-                return Err(HlsExit::Failed("HLS candidate timeline overflow"));
-            }
-            FeedObservation::Failed { failure: FeedFailure::Aborted, .. } => {
-                state.abandon(&primed.encoder_session);
-                tx.finish("aborted");
-                return Err(HlsExit::Aborted);
-            }
-            FeedObservation::Failed { failure: FeedFailure::Protocol | FeedFailure::SourceMoved | FeedFailure::Ended, .. }
-            | FeedObservation::Opened { .. }
-            | FeedObservation::SegmentReady { .. }
-            | FeedObservation::FollowupReserve { .. }
-            | FeedObservation::Queued { .. } => {
-                state.abandon(&primed.encoder_session);
-                tx.finish("feed_protocol");
-                return Err(HlsExit::Failed("adaptive feed acquisition protocol violation"));
-            }
-            FeedObservation::Failed { failure: FeedFailure::Deadline, .. } => {
-                state.abandon(&primed.encoder_session);
-                reject_hls_abr_after_transaction(
-                    state, proposal, crate::abr::RejectCause::Censored,
-                    &mut tx, now_ms(),
-                );
-                tx.finish("warmup_deadline");
-                crate::player::log(&format!(
-                    "abr: {:?} candidate warm-up exceeded deadline; staying on current rung",
-                    proposal.direction,
-                ));
-                continue;
-            }
-            FeedObservation::Failed { failure, .. } => {
-                state.abandon(&primed.encoder_session);
-                reject_hls_abr_after_transaction(
-                    state, proposal, adaptive::reject_cause_for_feed_failure(failure),
-                    &mut tx, now_ms(),
-                );
-                tx.finish("warmup_failed");
-                crate::player::log("abr: candidate segment failed; staying on current rung");
-                continue;
+            other => {
+                let failure = match other {
+                    FeedObservation::Failed { failure, .. } => failure,
+                    _ => FeedFailure::Protocol,
+                };
+                match settle_trial_failure(
+                    state, &primed.encoder_session, proposal, &mut tx,
+                    adaptive::TrialStep::FirstAcquire, failure, || now_ms(),
+                ) {
+                    Ok(()) => continue 'segments,
+                    Err(error) => return Err(error),
+                }
             }
         };
         tx.mark_media(&candidate_output, false);
@@ -6565,44 +6585,18 @@ fn hls_demux(
                         .expect("ready follow-up carries its physical object");
                     debug_assert_eq!(segment.duration, duration);
                 }
-                FeedObservation::Failed { failure: FeedFailure::Ended, .. } => {
-                    state.abandon(&primed.encoder_session);
-                    reject_hls_abr_after_transaction(
-                        state, proposal, crate::abr::RejectCause::Circumstance,
-                        &mut tx, now_ms(),
-                    );
-                    tx.finish("candidate_ended_after_setup");
-                    continue;
-                }
-                FeedObservation::Failed { failure: FeedFailure::Aborted | FeedFailure::SourceMoved, .. }
-                => {
-                    state.abandon(&primed.encoder_session);
-                    tx.finish("aborted");
-                    return Err(HlsExit::Aborted);
-                }
-                FeedObservation::Failed {
-                    failure: FeedFailure::Protocol | FeedFailure::TimelineOverflow, ..
-                }
-                | FeedObservation::Opened { .. }
-                | FeedObservation::Acquired { .. }
-                | FeedObservation::FollowupReserve { .. }
-                | FeedObservation::Queued { .. } => {
-                    state.abandon(&primed.encoder_session);
-                    tx.finish("feed_protocol");
-                    return Err(HlsExit::Failed("adaptive feed follow-up protocol violation"));
-                }
-                FeedObservation::Failed { failure, .. } => {
-                    state.abandon(&primed.encoder_session);
-                    reject_hls_abr_after_transaction(
-                        state, proposal, adaptive::reject_cause_for_feed_failure(failure),
-                        &mut tx, now_ms(),
-                    );
-                    tx.finish(if failure == FeedFailure::Deadline {
-                        "repeatable_playlist_deadline"
-                    } else {
-                        "repeatable_playlist_failed"
-                    });
-                    continue;
+                other => {
+                    let failure = match other {
+                        FeedObservation::Failed { failure, .. } => failure,
+                        _ => FeedFailure::Protocol,
+                    };
+                    match settle_trial_failure(
+                        state, &primed.encoder_session, proposal, &mut tx,
+                        adaptive::TrialStep::FollowupRead, failure, || now_ms(),
+                    ) {
+                        Ok(()) => continue 'segments,
+                        Err(error) => return Err(error),
+                    }
                 }
             };
             let acquired = runner.acquire_followup();
@@ -6614,49 +6608,18 @@ fn hls_demux(
                         .expect("acquired repeatable media has a staged content clock"),
                     acquisition,
                 ),
-                FeedObservation::Failed { failure: FeedFailure::TimelineOverflow, .. } => {
-                    state.abandon(&primed.encoder_session);
-                    reject_hls_abr_after_transaction(
-                        state, proposal, crate::abr::RejectCause::Circumstance,
-                        &mut tx, now_ms(),
-                    );
-                    tx.finish("repeatable_timeline_overflow");
-                    return Err(HlsExit::Failed("HLS candidate timeline overflow"));
-                }
-                FeedObservation::Failed { failure: FeedFailure::Aborted, .. } => {
-                    state.abandon(&primed.encoder_session);
-                    tx.finish("aborted");
-                    return Err(HlsExit::Aborted);
-                }
-                FeedObservation::Failed {
-                    failure: FeedFailure::Protocol | FeedFailure::SourceMoved | FeedFailure::Ended, ..
-                }
-                | FeedObservation::Opened { .. }
-                | FeedObservation::SegmentReady { .. }
-                | FeedObservation::FollowupReserve { .. }
-                | FeedObservation::Queued { .. } => {
-                    state.abandon(&primed.encoder_session);
-                    tx.finish("feed_protocol");
-                    return Err(HlsExit::Failed("adaptive feed follow-up acquisition protocol violation"));
-                }
-                FeedObservation::Failed { failure, .. } => {
-                    state.abandon(&primed.encoder_session);
-                    reject_hls_abr_after_transaction(
-                        state,
-                        proposal,
-                        adaptive::reject_cause_for_feed_failure(failure),
-                        &mut tx,
-                        now_ms(),
-                    );
-                    tx.finish(if failure == FeedFailure::Deadline {
-                        "repeatable_deadline"
-                    } else {
-                        "repeatable_failed"
-                    });
-                    crate::player::log(
-                        "abr: candidate produced no complete repeatable object; staying current",
-                    );
-                    continue;
+                other => {
+                    let failure = match other {
+                        FeedObservation::Failed { failure, .. } => failure,
+                        _ => FeedFailure::Protocol,
+                    };
+                    match settle_trial_failure(
+                        state, &primed.encoder_session, proposal, &mut tx,
+                        adaptive::TrialStep::FollowupAcquire, failure, || now_ms(),
+                    ) {
+                        Ok(()) => continue 'segments,
+                        Err(error) => return Err(error),
+                    }
                 }
             };
             tx.mark_media(&repeatable_output, true);
