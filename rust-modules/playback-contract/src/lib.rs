@@ -9,6 +9,7 @@ mod time;
 pub use time::MediaTimeMs;
 pub mod adaptive;
 pub mod subtitle;
+pub mod readout;
 pub mod tracks;
 pub use state::{BackendState, Event, Fx, Intent, Phase, Snapshot, TrackFact};
 
