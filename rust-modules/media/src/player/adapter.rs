@@ -388,7 +388,7 @@ impl PlayerAdapter {
         let (Some(backend), Some(attempt)) = (snapshot.backend, snapshot.attempt) else {
             return None;
         };
-        self.backend.startup_viewer_paused(backend, attempt)
+        self.backend.viewer_paused(backend, attempt)
     }
 
     /// Route a viewer transport change through the active common attempt. An absent attempt
@@ -657,6 +657,17 @@ impl PlayerAdapter {
                     backend: BackendKind::Uri, attempt,
                     observation: plx_playback_contract::Observation::Failed(_),
                 } => {
+                    if let Some(route_attempt) = self.uri_route_attempt.filter(|route|
+                        route.contract_id() == attempt && !self.uri_route_settled) {
+                        self.uri_route_settled = crate::route::settle_route_start(
+                            ps, route_attempt, crate::route::RouteStartResult::StartFailed);
+                    }
+                }
+                plx_playback_contract::Fx::StartupFailed {
+                    backend: BackendKind::Uri, attempt, failure, ..
+                } => {
+                    self.publish_uri_observation(ps, attempt,
+                        plx_playback_contract::Observation::Failed(failure));
                     if let Some(route_attempt) = self.uri_route_attempt.filter(|route|
                         route.contract_id() == attempt && !self.uri_route_settled) {
                         self.uri_route_settled = crate::route::settle_route_start(

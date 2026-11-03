@@ -540,6 +540,45 @@ pub struct UriSelection {
     pub subtitle_sid: i64,
 }
 
+#[cfg(all(test, feature = "play-feed"))]
+mod backend_offer_session_tests {
+    use super::*;
+    use super::super::backend_policy::{OfferId, Qualification, Selection};
+    use plx_playback_contract::BackendKind;
+
+    #[test]
+    fn a_spent_feed_recipe_cannot_reopen_after_handoff_to_uri() {
+        let mut session = PlaybackSession::IDLE;
+        set_url(&mut session, "https://example.invalid/original.mkv");
+        assert!(session.qualify_resolved_feed_offer(OfferId::FEED_ORIGINAL));
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+        assert!(session.backend_planned_feed_allowed(), "a physical seek may reopen Feed");
+
+        session.qualify_backend_offer(BackendKind::Uri, OfferId::URI_ORIGINAL,
+            Qualification::Qualified);
+        assert!(matches!(session.backend_offer(), Selection::Open(offer)
+            if offer.backend == BackendKind::Uri));
+        assert!(session.backend_offer_admitted(BackendKind::Uri, OfferId::URI_ORIGINAL));
+        assert!(!session.backend_planned_feed_allowed(),
+            "an old Feed admission cannot reverse the one cross-backend handoff");
+        assert!(!session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+    }
+
+    #[test]
+    fn a_new_resolve_cannot_replay_the_same_spent_feed_recipe() {
+        let mut session = PlaybackSession::IDLE;
+        set_url(&mut session, "https://example.invalid/original.mkv");
+        assert!(session.qualify_resolved_feed_offer(OfferId::FEED_ORIGINAL));
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+        assert!(session.backend_planned_feed_allowed());
+
+        assert!(session.qualify_resolved_feed_offer(OfferId::FEED_ORIGINAL));
+        assert!(!session.backend_planned_feed_allowed(),
+            "a new source decision is not an ordinary physical reload");
+        assert!(!session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+    }
+}
+
 /// What the server actually did with a requested Plex Pass audio enhancement (issue #266) — as
 /// opposed to `EncodeContract::audio`, which is what was ASKED for. Distinguishing "on and
 /// working" from "the server ignored it" matters because PMS 1.43.4 does both: measurement M2
@@ -618,6 +657,9 @@ impl PlaybackSession {
         if !cfg!(feature = "play-feed") || !self.ensure_backend_offers() { return false; }
         self.backend_policy.as_mut().expect("catalog exists").qualify_planned_feed(id);
         self.planned_feed_offer = Some(id);
+        // A fresh resolve is a new candidate decision, even when its fixed recipe ID matches
+        // the previous physical open. Reopen permission belongs only to an unplanned reload.
+        self.admitted_feed_offer = None;
         true
     }
 
@@ -625,7 +667,9 @@ impl PlaybackSession {
     /// plan must be the next qualified catalog choice before it may acquire another native owner.
     pub fn backend_planned_feed_allowed(&self) -> bool {
         let Some(id) = self.planned_feed_offer else { return false };
-        self.admitted_feed_offer == Some(id)
+        (self.admitted_feed_offer == Some(id)
+            && self.backend_policy.as_ref().is_some_and(|policy|
+                policy.can_reopen(plx_playback_contract::BackendKind::Feed, id)))
             || matches!(self.backend_offer(), super::backend_policy::Selection::Open(offer)
                 if offer.backend == plx_playback_contract::BackendKind::Feed && offer.id == id)
     }
@@ -635,7 +679,10 @@ impl PlaybackSession {
         id: super::backend_policy::OfferId) -> bool {
         if backend == plx_playback_contract::BackendKind::Feed {
             if self.planned_feed_offer != Some(id) { return false; }
-            if self.admitted_feed_offer == Some(id) { return true; }
+            if self.admitted_feed_offer == Some(id)
+                && self.backend_policy.as_ref().is_some_and(|policy| policy.can_reopen(backend, id)) {
+                return true;
+            }
         }
         let admitted = self.backend_policy.as_mut().is_some_and(|policy| policy.admitted(backend, id));
         if admitted && backend == plx_playback_contract::BackendKind::Feed {
@@ -9333,7 +9380,9 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
         let backend_policy = if same_selection { s.backend_policy.take() } else { None }
             .unwrap_or_else(|| super::backend_policy::BackendPolicy::for_request(
                 plan.direct_play_mode == DirectPlayMode::Forced));
-        let admitted_feed_offer = if same_selection { s.admitted_feed_offer } else { None };
+        // A new resolved plan is a new candidate decision, even if it chose the same recipe.
+        // Only a physical reload that skips planning may reuse the previously admitted recipe.
+        let admitted_feed_offer = None;
         // "" = this plan fetched no id — either one was already known, or it never got as far as
         // asking — so leave the cache alone (`Plan::machine_id` says the same). What IS cached is
         // cached AGAINST its server: the next playback only reuses it when it is playing from the

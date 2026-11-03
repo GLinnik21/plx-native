@@ -61,6 +61,15 @@ impl BackendPolicy {
         self.offers.iter().copied().find(|offer| offer.backend == backend && offer.id == id)
     }
 
+    /// A physical seek or foreground reload may reopen only the recipe most recently admitted
+    /// on this backend. A handoff to the other backend retires this exception, even though the
+    /// old recipe remains spent in the finite recovery catalog.
+    pub fn can_reopen(&self, backend: BackendKind, id: OfferId) -> bool {
+        self.last_backend == Some(backend)
+            && self.offers.iter().zip(&self.tried).any(|(offer, tried)|
+                *tried && offer.backend == backend && offer.id == id)
+    }
+
     /// Finite recipes for one selected source and its selected streams. The URI offer begins
     /// unknown: a feed declaration, PMS decision, or native queue answer cannot qualify it.
     /// A resolve qualifies only the Feed recipe it actually prepared.

@@ -52,9 +52,10 @@ fn native_index(tracks: &[NativeTrackIndex], selected: TrackSelection) -> Option
 }
 
 #[derive(Clone, Copy)]
-enum ControlKind { Track(TrackSelection), Seek { ack: bool, done: bool } }
+enum ControlKind { Transport, Track(TrackSelection), Seek { ack: bool, done: bool } }
 #[derive(Clone, Copy)]
-struct PendingControl { command: CommandId, kind: ControlKind, deadline_ms: u64 }
+struct PendingControl { command: CommandId, operation: Operation, kind: ControlKind,
+    deadline_ms: u64 }
 
 /// The active URL and the staged URL are deliberately excluded from `Debug` and all notices.
 /// The caller must keep this object until `Release::Released`, or retain it in quarantine.
@@ -71,6 +72,7 @@ pub struct UriBackend {
     start_deadline_ms: Option<u64>,
     loaded: bool,
     play_sent: bool,
+    played_once: bool,
     subscribed: bool,
     dispatching: Option<PendingControl>,
     controls: BTreeMap<plx_platform::tv::uri::RequestId, PendingControl>,
@@ -88,7 +90,8 @@ impl UriBackend {
         Self { config, lifecycle: Lifecycle::new(), staged: None, active: None,
             last_started: None, url: None, tracks: Vec::new(),
             window: false, window_id: None,
-            start_deadline_ms: None, loaded: false, play_sent: false, subscribed: false,
+            start_deadline_ms: None, loaded: false, play_sent: false, played_once: false,
+            subscribed: false,
             dispatching: None, controls: BTreeMap::new(), track_refused: false,
             pending: VecDeque::new(), close_reported: false, quarantine_reported: false }
     }
@@ -193,6 +196,7 @@ impl UriBackend {
         self.start_deadline_ms = Some(self.config.clock.now_ms().saturating_add(self.config.startup_timeout_ms));
         self.loaded = false;
         self.play_sent = false;
+        self.played_once = false;
         self.subscribed = false;
         self.dispatching = None;
         self.controls.clear();
@@ -227,14 +231,43 @@ impl UriBackend {
         }
     }
 
-    fn control_message(&mut self, method: Method, denied: bool, message: &Message) {
+    /// A delivered method reply is useful only when its native request still names this exact
+    /// command. Callback play state and clock reports remain separate observations.
+    fn control_message(&mut self, method: Method, denied: bool, message: &Message) -> bool {
         if let Some(request) = message.reply_request {
-            if denied && matches!(method, Method::Seek | Method::SelectTrack) {
-                if let Some(pending) = self.controls.remove(&request) {
-                    if matches!(pending.kind, ControlKind::Track(_)) { self.track_refused = true; }
+            if let Some(pending) = self.controls.get(&request).copied() {
+                let matches_method = matches!((method, pending.kind),
+                    (Method::Play, ControlKind::Transport) if pending.operation == Operation::Play)
+                    || matches!((method, pending.kind),
+                        (Method::Pause, ControlKind::Transport) if pending.operation == Operation::Pause)
+                    || matches!((method, pending.kind),
+                        (Method::Seek, ControlKind::Seek { .. })
+                            | (Method::SelectTrack, ControlKind::Track(_)));
+                if matches_method && denied {
+                    self.controls.remove(&request);
+                    if matches!(pending.kind, ControlKind::Track(_)) && !self.played_once {
+                        self.track_refused = true;
+                    }
                     self.retire_control(request);
+                    if let Some(attempt) = self.active {
+                        self.pending.push_back(DriverEvent::ControlRefused { attempt,
+                            command: pending.command, operation: pending.operation,
+                            failure: Failure::Refused });
+                    }
+                    return true;
                 }
-            } else if method == Method::Seek {
+                if matches_method && matches!(pending.kind, ControlKind::Transport)
+                    && message.accepted() == Some(true) {
+                    self.controls.remove(&request);
+                    self.retire_control(request);
+                    if let Some(attempt) = self.active {
+                        self.pending.push_back(DriverEvent::ControlAccepted { attempt,
+                            command: pending.command, operation: pending.operation,
+                            native_acknowledged: true });
+                    }
+                }
+            }
+            if method == Method::Seek && !denied {
                 let landed = if let Some(pending) = self.controls.get_mut(&request) {
                     if let ControlKind::Seek { ack, done } = &mut pending.kind {
                         if message.accepted() == Some(true) { *ack = true; }
@@ -283,6 +316,7 @@ impl UriBackend {
                 }
             }
         }
+        false
     }
 
     fn retire_control(&mut self, request: plx_platform::tv::uri::RequestId) {
@@ -294,12 +328,17 @@ impl UriBackend {
     fn delivered(&mut self, method: Method, ok: bool, message: Message,
         mt: &MainThread, now_ms: u64) {
         let denied = !ok || message.accepted() == Some(false);
-        self.control_message(method, denied, &message);
+        let refused_control = self.control_message(method, denied, &message);
         if denied {
-            if method == Method::Play { self.play_sent = false; }
+            if matches!(method, Method::Play | Method::Pause | Method::Seek | Method::SelectTrack) {
+                if refused_control && !self.played_once {
+                    if method == Method::Play { self.play_sent = false; }
+                    self.begin_close(mt, now_ms);
+                }
+                return;
+            }
             self.observe(Observation::Failed(Failure::Refused));
-            if matches!(method, Method::Register | Method::Load | Method::Subscribe | Method::SelectTrack)
-                || (method == Method::Play && !self.loaded) {
+            if matches!(method, Method::Register | Method::Load | Method::Subscribe) {
                 self.begin_close(mt, now_ms);
             }
             return;
@@ -326,6 +365,7 @@ impl UriBackend {
                         ended = true;
                         None
                     } else {
+                        self.played_once = true;
                         Some(Playback::Playing)
                     }
                 }
@@ -364,7 +404,9 @@ impl UriBackend {
                 if let LifeFx::Call { request, call, .. } = &effect {
                     if let Some(pending) = self.dispatching {
                         let matches = matches!((call, pending.kind),
-                            (UriCall::Seek { .. }, ControlKind::Seek { .. })
+                            (UriCall::Play { .. }, ControlKind::Transport)
+                                | (UriCall::Pause { .. }, ControlKind::Transport)
+                                | (UriCall::Seek { .. }, ControlKind::Seek { .. })
                                 | (UriCall::SelectTrack { .. }, ControlKind::Track(_)));
                         if matches { self.controls.insert(*request, pending); }
                     }
@@ -390,6 +432,7 @@ impl UriBackend {
                         self.track_refused = false;
                         self.loaded = false;
                         self.play_sent = false;
+                        self.played_once = false;
                         self.subscribed = false;
                     }
                     LifeFx::Fault => {
@@ -441,9 +484,10 @@ impl UriBackend {
                     return DispatchResult::Refused(Failure::Busy);
                 }
                 self.play_sent = true;
-                (UriCall::Play { media_id }, None)
+                (UriCall::Play { media_id }, Some(ControlKind::Transport))
             }
-            Operation::Pause if self.config.capabilities.pause => (UriCall::Pause { media_id }, None),
+            Operation::Pause if self.config.capabilities.pause =>
+                (UriCall::Pause { media_id }, Some(ControlKind::Transport)),
             Operation::Seek(time) if self.config.capabilities.seek => {
                 let Ok(position) = i64::try_from(time.as_millis()) else { return DispatchResult::Refused(Failure::Unsupported); };
                 (UriCall::Seek { media_id, position }, Some(ControlKind::Seek { ack: false, done: false }))
@@ -469,7 +513,7 @@ impl UriBackend {
             }
             _ => return DispatchResult::Refused(Failure::Unsupported),
         };
-        self.dispatching = control.map(|kind| PendingControl { command, kind,
+        self.dispatching = control.map(|kind| PendingControl { command, operation, kind,
             deadline_ms: now_ms.saturating_add(self.config.startup_timeout_ms) });
         self.feed(LifeEvent::Call(call), mt, now_ms);
         self.dispatching = None;
@@ -496,10 +540,25 @@ impl UriBackend {
             self.observe(Observation::Failed(Failure::TimedOut));
             self.begin_close(mt, now_ms);
         }
-        if self.controls.values().any(|pending| now_ms >= pending.deadline_ms)
-            && self.lifecycle.phase() == Phase::Open {
-            self.observe(Observation::Failed(Failure::TimedOut));
-            self.begin_close(mt, now_ms);
+        if self.lifecycle.phase() == Phase::Open {
+            let expired: Vec<_> = self.controls.iter().filter_map(|(request, pending)|
+                (now_ms >= pending.deadline_ms).then_some(*request)).collect();
+            let mut failed_startup_control = false;
+            for request in expired {
+                let Some(pending) = self.controls.remove(&request) else { continue };
+                self.retire_control(request);
+                if let Some(attempt) = self.active {
+                    self.pending.push_back(DriverEvent::ControlRefused { attempt,
+                        command: pending.command, operation: pending.operation,
+                        failure: Failure::TimedOut });
+                }
+                if !self.played_once {
+                    failed_startup_control = true;
+                    if matches!(pending.kind, ControlKind::Track(_)) { self.track_refused = true; }
+                    if pending.operation == Operation::Play { self.play_sent = false; }
+                }
+            }
+            if failed_startup_control { self.begin_close(mt, now_ms); }
         }
         self.pending.drain(..).collect()
     }
@@ -901,11 +960,48 @@ mod tests {
         };
         rig.bus.0.lock().unwrap().replies.push_back(reply);
         let notices = rig.driver.poll(&rig.mt);
-        assert!(notices.contains(&DriverEvent::Observation { attempt: A,
-            observation: Observation::Failed(Failure::Refused) }));
+        assert!(notices.contains(&DriverEvent::ControlRefused { attempt: A,
+            command: rig.command,
+            operation: Operation::SelectTrack { kind: TrackKind::Audio,
+                choice: TrackChoice::Selected(3) }, failure: Failure::Refused }));
         assert!(notices.contains(&DriverEvent::Release { attempt: A,
             status: ReleaseStatus::Closing }));
         assert_eq!(rig.bus.calls("play"), 0);
+    }
+
+    #[test]
+    fn later_pause_refusal_is_correlated_and_does_not_end_playback() {
+        let mut rig = Rig::new(); rig.opened();
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, Operation::Play), DispatchResult::Queued);
+        rig.bus.say("play", r#"{"returnValue":true,"mediaId":"m1","playing":true}"#);
+        assert!(rig.driver.poll(&rig.mt).contains(&DriverEvent::ControlAccepted { attempt: A,
+            command: rig.command, operation: Operation::Play, native_acknowledged: true }));
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, Operation::Pause), DispatchResult::Queued);
+        let (session, old_request) = {
+            let state = rig.bus.0.lock().unwrap();
+            (state.session, state.calls.iter().rev().find(|(method, _, _)| *method == "pause").unwrap().1)
+        };
+        rig.bus.0.lock().unwrap().replies.push_back(UriReply { session,
+            request: old_request, method: "pause", payload: "refused".into(), ok: false });
+        assert_eq!(rig.driver.poll(&rig.mt), [DriverEvent::ControlRefused { attempt: A,
+            command: rig.command, operation: Operation::Pause, failure: Failure::Refused }]);
+        assert_eq!(rig.driver.exit_disposition(), ExitDisposition::PreserveNativeOwnership);
+
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, Operation::Pause), DispatchResult::Queued);
+        rig.bus.0.lock().unwrap().replies.push_back(UriReply { session,
+            request: old_request, method: "pause", payload: "refused".into(), ok: false });
+        assert!(rig.driver.poll(&rig.mt).is_empty(), "retired native request cannot refuse a retry");
+        rig.bus.say("pause", r#"{"returnValue":true,"mediaId":"m1","paused":true}"#);
+        assert_eq!(rig.driver.poll(&rig.mt), [DriverEvent::ControlAccepted { attempt: A,
+            command: rig.command, operation: Operation::Pause, native_acknowledged: true },
+            DriverEvent::Observation { attempt: A, observation: Observation::Playback(Observed {
+                value: Playback::Paused, from: EvidenceSource::BackendReport }) }]);
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, Operation::Play), DispatchResult::Queued);
+        rig.bus.say("play", r#"{"returnValue":false,"mediaId":"m1"}"#);
+        assert_eq!(rig.driver.poll(&rig.mt), [DriverEvent::ControlRefused { attempt: A,
+            command: rig.command, operation: Operation::Play, failure: Failure::Refused }]);
+        assert_eq!(rig.driver.exit_disposition(), ExitDisposition::PreserveNativeOwnership,
+            "a later Play refusal leaves the live attempt available for another viewer press");
     }
 
     #[test]
@@ -948,8 +1044,10 @@ mod tests {
         assert!(rig.driver.poll(&rig.mt).is_empty());
         rig.clock.store(500, Ordering::Relaxed);
         let notices = rig.driver.poll(&rig.mt);
-        assert!(notices.contains(&DriverEvent::Observation { attempt: A,
-            observation: Observation::Failed(Failure::TimedOut) }));
+        assert!(notices.contains(&DriverEvent::ControlRefused { attempt: A,
+            command: rig.command,
+            operation: Operation::SelectTrack { kind: TrackKind::Audio,
+                choice: TrackChoice::Selected(3) }, failure: Failure::TimedOut }));
         assert!(notices.contains(&DriverEvent::Release { attempt: A,
             status: ReleaseStatus::Closing }));
         assert_eq!(rig.bus.calls("play"), 0);
