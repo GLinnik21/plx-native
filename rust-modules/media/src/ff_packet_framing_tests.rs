@@ -886,6 +886,20 @@ fn hdr10plus_is_found_alone_and_behind_another_message() {
 }
 
 #[test]
+fn force_original_keeps_hdr10plus_inside_native_annex_b_framing() {
+    let metadata = sei_nal(&[(4, HDR10PLUS)]);
+    let packet = avcc(&[&metadata]);
+    let mut framed = Vec::new();
+    let _ = unsafe { packet_to_annexb(
+        packet.as_ptr(), packet.len(), 4, true, false, false, false,
+        &[], &mut framed,
+    ) };
+    assert_eq!(framed, [&[0, 0, 0, 1][..], metadata.as_slice()].concat());
+    assert!(to_annexb(&packet, true, &[]).1.is_empty(),
+        "ordinary playback still strips unsupported HDR10+ SEI");
+}
+
+#[test]
 fn static_hdr_metadata_and_other_t35_messages_are_kept() {
     let both = sei_nal(&[(137, &[0u8; 24]), (144, &[0u8; 4])]);
     assert_eq!(strip_hdr10plus_sei(&both), SeiStrip::Keep);

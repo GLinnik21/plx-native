@@ -5,7 +5,7 @@
 use crate::{abr, route};
 use plx_playback_contract::adaptive::PublicationGate;
 use plx_playback_contract::adaptive::{
-    Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, ActiveQuantum, AutomaticTransition, BufferFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
+    Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, ActiveQuantum, AutomaticPort, AutomaticTransition, BufferFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
     RoundId, TrialObservation, TrialPhase, TrialProtocol, TrialProtocolError,
 };
 use plx_playback_contract::SourceKey;
@@ -614,6 +614,17 @@ pub(crate) struct PreparedOriginalSwitch {
     pub(crate) cancelled: Option<(abr::Proposal, bool)>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OriginalSwitchOutcome {
+    NoSwitch,
+    LeaseBusy,
+    Published { kbps: u32 },
+    Busy,
+    ClockMoved,
+    Aborted,
+    RouteMoved,
+}
+
 pub(crate) struct ActiveQuantumResult {
     sample: abr::SegmentSample,
     pub(crate) cleanup_ready: bool,
@@ -700,6 +711,32 @@ pub(crate) enum ProbeRecoveryAction {
     Held,
     Retained,
     Switch { kbps: u32, measured_kbps: u32 },
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum ProbeTraceAction { Start, Failed, Steady, RecoverOriginal }
+
+pub(crate) trait OriginalProbeDiagnostics {
+    fn action(&mut self, action: ProbeTraceAction, target_kbps: u32);
+    fn failure(&mut self, failure: ProbeFailure);
+    fn log(&mut self, line: &str);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OriginalProbeOutcome { LeaseBusy, Stale, Continue, Published, Aborted }
+
+pub(crate) fn mode_comparison_line(cmp: abr::ModeComparison) -> String {
+    let loser = cmp.loser.unwrap_or_default();
+    format!(
+        "abr: mode chose={:?} why={:?} vs_hls={}kbps scale={}pm \
+         win[q={} f={} r={} s={} t={} tot={}] \
+         lose[q={} f={} r={} s={} t={} tot={}]",
+        cmp.chosen, cmp.reason, cmp.hls_rung.kbps(), cmp.scale_pm,
+        cmp.winner.quality, cmp.winner.features, cmp.winner.risk,
+        cmp.winner.server, cmp.winner.transition, cmp.winner.total,
+        loser.quality, loser.features, loser.risk, loser.server,
+        loser.transition, loser.total,
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -1071,6 +1108,142 @@ impl Coordinator {
             (proposal, refreshing)
         });
         Some(PreparedOriginalSwitch { kbps, cancelled })
+    }
+
+    /// A source latch wins a physical lease before cancelling a competing rung.
+    /// Publication itself is short and runs under the feed's AQ abort fence;
+    /// a Busy or moved clock retains source evidence for a later boundary.
+    pub(crate) fn run_latched_original<P: AutomaticPort>(
+        &mut self, source: LatchedOriginalRecovery, port: &mut P,
+        expected_user_sequence: u64, now_ms: impl FnOnce() -> u64,
+        position_ns: impl FnOnce() -> i64,
+        on_published: impl FnOnce(),
+        on_cancelled_rung: impl FnOnce(abr::Proposal, bool),
+    ) -> OriginalSwitchOutcome {
+        if !matches!(source, LatchedOriginalRecovery::Switch { .. }) {
+            return OriginalSwitchOutcome::NoSwitch;
+        }
+        let Some(lease) = port.begin(AutomaticTransition::Original, expected_user_sequence) else {
+            return OriginalSwitchOutcome::LeaseBusy;
+        };
+        let prepared = self.prepare_original_switch(source, now_ms())
+            .expect("a source latch was checked before acquiring its lease");
+        if let Some((proposal, refreshing)) = prepared.cancelled {
+            on_cancelled_rung(proposal, refreshing);
+        }
+        let authorized = port.authorize(&lease);
+        match self.publish_original(
+            port.gate(), authorized, prepared.kbps, position_ns, on_published,
+        ) {
+            OriginalPublication::Published => OriginalSwitchOutcome::Published { kbps: prepared.kbps },
+            OriginalPublication::Busy => OriginalSwitchOutcome::Busy,
+            OriginalPublication::ClockMoved => OriginalSwitchOutcome::ClockMoved,
+            OriginalPublication::Aborted => OriginalSwitchOutcome::Aborted,
+            OriginalPublication::RouteMoved => OriginalSwitchOutcome::RouteMoved,
+        }
+    }
+
+
+    /// A bounded Original probe keeps its actuator lease through physical GET,
+    /// fresh pause settlement and the AQ-fenced route request. A stale resource
+    /// produces no source evidence; Busy and clock movement retain a recovery.
+    pub(crate) fn run_original_probe<P: AutomaticPort>(
+        &mut self, permit: abr::ProbePermit, port: &mut P,
+        expected_user_sequence: u64, telemetry: &abr::ControllerTelemetry,
+        remaining_ms: i64, decision: abr::Decision, cleanup_ready: bool,
+        buffered_ms: Option<i64>, media_duration_ms: u32,
+        pause: impl FnOnce() -> PauseFact,
+        position_ns: impl FnOnce() -> i64,
+        diagnostics: &mut impl OriginalProbeDiagnostics,
+    ) -> OriginalProbeOutcome {
+        let Some(lease) = port.begin(AutomaticTransition::Original, expected_user_sequence) else {
+            diagnostics.log("abr: Original probe deferred behind a playback-clock transition");
+            return OriginalProbeOutcome::LeaseBusy;
+        };
+        diagnostics.action(ProbeTraceAction::Start, self.original_source_kbps());
+        diagnostics.log("abr: checking finite actual Original range on the live HLS resource");
+        let probe = match self.probe_original(permit.plan, || port.aborted()) {
+            ProbeResult::Measured(sample) => sample,
+            ProbeResult::Stale => {
+                diagnostics.log("abr: discarded Original probe from a superseded HLS resource");
+                return OriginalProbeOutcome::Stale;
+            }
+            ProbeResult::Failed { outcome, failure } => {
+                diagnostics.failure(failure);
+                let grade = self.probe_failed();
+                diagnostics.action(ProbeTraceAction::Failed, 0);
+                diagnostics.log(&format!(
+                    "abr: Original probe #{} produced no body outcome={}; retaining best HLS \
+                     request left={}s verdict={:?}",
+                    grade.as_ref().map(|grade| grade.probes).unwrap_or(0),
+                    outcome, remaining_ms / 1_000,
+                    grade.as_ref().map(|grade| grade.verdict),
+                ));
+                return OriginalProbeOutcome::Continue;
+            }
+        };
+        let grade = self.grade_probe(probe, telemetry, remaining_ms);
+        if let Some(cmp) = grade.as_ref().and_then(|grade| grade.comparison) {
+            diagnostics.log(&mode_comparison_line(cmp));
+        }
+        let (slow, unc, n, cons, need) = grade.as_ref()
+            .map(|grade| grade.basis).unwrap_or_default();
+        diagnostics.log(&format!(
+            "abr: Original probe #{} measured={}kbps {}KiB/{}ms complete={} left={}s \
+             slow={}kbps unc={}pm n={} cons={}kbps need={}kbps verdict={:?}",
+            grade.as_ref().map(|grade| grade.probes).unwrap_or(0),
+            probe.kbps, probe.bytes / 1024, probe.active_us / 1_000,
+            probe.completed as i32, remaining_ms / 1_000,
+            slow, unc, n, cons, need,
+            grade.as_ref().map(|grade| grade.verdict),
+        ));
+        let recovery = self.settle_probe_recovery(
+            grade.as_ref(), probe.kbps, pause, decision, cleanup_ready,
+            buffered_ms, media_duration_ms,
+        );
+        match recovery {
+            ProbeRecoveryAction::Steady => {
+                diagnostics.action(ProbeTraceAction::Steady, 0);
+                OriginalProbeOutcome::Continue
+            }
+            ProbeRecoveryAction::Held => {
+                diagnostics.log(
+                    "abr: Original recovery measured during a user hold; retained until Resume",
+                );
+                OriginalProbeOutcome::Continue
+            }
+            ProbeRecoveryAction::Retained => OriginalProbeOutcome::Continue,
+            ProbeRecoveryAction::Switch { kbps, measured_kbps } => {
+                let authorized = port.authorize(&lease);
+                let publication = self.publish_probed_original(
+                    port.gate(), authorized, kbps, measured_kbps, position_ns,
+                    || diagnostics.action(ProbeTraceAction::RecoverOriginal, 0),
+                );
+                match publication {
+                    OriginalPublication::Published => {
+                        diagnostics.log(&format!(
+                            "abr: source sustainable again at {}kbps; requesting Original on the probe boundary",
+                            kbps,
+                        ));
+                        OriginalProbeOutcome::Published
+                    }
+                    OriginalPublication::Busy => {
+                        diagnostics.log(
+                            "abr: Original recovery retained behind another route transition",
+                        );
+                        OriginalProbeOutcome::Continue
+                    }
+                    OriginalPublication::ClockMoved => {
+                        diagnostics.log(
+                            "abr: Original recovery retained after playback clock moved",
+                        );
+                        OriginalProbeOutcome::Continue
+                    }
+                    OriginalPublication::Aborted | OriginalPublication::RouteMoved =>
+                        OriginalProbeOutcome::Aborted,
+                }
+            }
+        }
     }
 
     /// The active observation is complete and any same-encoder lookahead has
