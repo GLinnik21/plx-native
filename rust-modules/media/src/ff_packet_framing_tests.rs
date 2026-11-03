@@ -407,6 +407,21 @@ fn an_armed_profile_7_feed_drops_the_enhancement_layer() {
     assert_eq!(out, vec![0, 0, 0, 1, 0x02, 0x01, 0xAA]);
 }
 
+#[test]
+fn force_original_refuses_dual_layer_header_or_late_packet_evidence() {
+    let header = parse_dovi_conf(&dovi_bytes(7, 6, 1, 1, 1, 1)).unwrap();
+    assert!(force_original_dovi_unsupported(&header));
+    let p7_rpu = rpu_fixture_nal(include_bytes!("../../../tests/fixtures/dovi-p7-mel-rpu.bin"));
+    let p81_rpu = rpu_fixture_nal(include_bytes!("../../../tests/fixtures/dovi-p7-mel-to-81-rpu.bin"));
+    let enhancement = [0x7e, 0x01, 0x02, 0x01, 0xbb];
+    let base = [0x02, 0x01, 0xaa];
+    assert!(force_original_hevc_has_unsupported_dv(&avcc(&[&p7_rpu]), 4));
+    assert!(force_original_hevc_has_unsupported_dv(&avcc(&[&base, &enhancement]), 4));
+    assert!(!force_original_hevc_has_unsupported_dv(&avcc(&[&base, &p81_rpu]), 4));
+    assert!(force_original_hevc_has_unsupported_dv(&[0, 0, 0, 8, 0x7e], 4),
+        "a truncated packet cannot silently lose its enhancement layer");
+}
+
 /// The rewrite is `dovi_tool -m 2`'s, byte for byte: dovi_tool's own MEL test RPU comes out as
 /// the 8.1 RPU dovi_tool's test suite expects of that conversion (`tests/fixtures/dovi-p7-*`, from
 /// quietvoid/dovi_tool `assets/tests/`), and the packet carries it in the RPU's place.

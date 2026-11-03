@@ -2221,6 +2221,34 @@ fn is_dv_enhancement_layer(nal: &[u8]) -> bool {
     nal.len() >= 2 && (((nal[0] >> 1) & 0x3f) == HEVC_NAL_DV_EL || hevc_layer_id(nal) > 0)
 }
 
+/// A missed container/metadata DV record must not let Force Original feed a
+/// dual-layer or P7 RPU stream under the only native descriptor we can send
+/// (single-layer P8.1 or ordinary HEVC). Reject before this packet enters AQ.
+fn force_original_hevc_has_unsupported_dv(packet: &[u8], nls: usize) -> bool {
+    if !(1..=4).contains(&nls) { return true; }
+    let mut i = 0usize;
+    while i < packet.len() {
+        let Some(length_end) = i.checked_add(nls).filter(|end| *end <= packet.len()) else {
+            return true;
+        };
+        let mut length = 0usize;
+        for &byte in &packet[i..length_end] {
+            length = (length << 8) | usize::from(byte);
+        }
+        let Some(end) = nal_end(length_end, length, packet.len()) else { return true; };
+        let nal = &packet[length_end..end];
+        if nal.len() < 2 || is_dv_enhancement_layer(nal) { return true; }
+        if ((nal[0] >> 1) & 0x3f) == HEVC_NAL_DV_RPU {
+            let Ok(rpu) = dolby_vision::rpu::dovi_rpu::DoviRpu::parse_unspec62_nalu(nal) else {
+                return true;
+            };
+            if rpu.dovi_profile == 7 { return true; }
+        }
+        i = end;
+    }
+    false
+}
+
 /// PURE: does this configuration record describe a Dolby Vision **Profile 7 that is converted to
 /// Profile 8.1 on the feed path** — dual layer (`el_present_flag`) with a cross-compatible base
 /// layer? The demuxer-side twin of `plx_data::metadata::Dovi::converts_to_p81`, which decides the
@@ -2228,6 +2256,10 @@ fn is_dv_enhancement_layer(nal: &[u8]) -> bool {
 /// what the file itself carries.
 fn dovi_converts_to_p81(d: &AVDOVIDecoderConfigurationRecord) -> bool {
     d.dv_profile == 7 && d.el_present_flag != 0 && d.dv_bl_signal_compatibility_id != 0
+}
+
+fn force_original_dovi_unsupported(d: &AVDOVIDecoderConfigurationRecord) -> bool {
+    d.dv_profile == 7 || d.el_present_flag != 0
 }
 
 /// Rewrite a Dolby Vision RPU NAL (`UNSPEC62`; `nal` = 2-byte header + payload, emulation-
@@ -4228,6 +4260,7 @@ impl FeedPort for HlsTrialPort<'_> {
         let trial = match action {
             FeedAction::CheckAbort { trial } | FeedAction::CheckExpired { trial }
             | FeedAction::BudgetSnapshot { trial }
+            | FeedAction::PrimeDeadline { trial } | FeedAction::DeadlineFinal { trial, .. }
             | FeedAction::Open { trial, .. } | FeedAction::ReadNext { trial }
             | FeedAction::AcquireFirst { trial, .. }
             | FeedAction::AcquireFollowup { trial }
@@ -4253,6 +4286,12 @@ impl FeedPort for HlsTrialPort<'_> {
                     rebuffering: SHARED.hls_rebuffering.load(Ordering::Acquire),
                 }
             }
+            FeedAction::PrimeDeadline { trial } => FeedObservation::PrimeDeadline {
+                trial, deadline: exploration_snapshot(self.reserve),
+            },
+            FeedAction::DeadlineFinal { trial, snapshot } => FeedObservation::DeadlineFinal {
+                trial, final_expiry: exploration_timeout_is_final(self.reserve, snapshot),
+            },
             FeedAction::Open { trial, source } => self.open(trial, source),
             FeedAction::ReadNext { trial } => self.read_next(trial),
             FeedAction::AcquireFirst {
@@ -6222,227 +6261,35 @@ fn hls_demux(
             clock: None, output: None, staged: Vec::new(),
         };
         let mut runner = adaptive::TrialRunner::new(&mut port, &mut trial_protocol);
-        let prime_deadline = exploration_snapshot(&mut *runner.physical().reserve);
-        let primed = match runner.prime(state, off, proposal, offset_micros, prime_deadline) {
-            Ok(primed) => primed,
-            Err(refusal) => {
-                if runner.aborted().map_err(|_| HlsExit::Failed(
-                    "adaptive feed abort status protocol violation",
-                ))? {
-                    tx.finish("aborted");
-                    return Err(HlsExit::Aborted);
+        let first = runner.run_first(
+            state, off, proposal, reserve_policy, offset_micros, || now_ms(),
+            |event, physical| match event {
+                adaptive::TrialTrace::Prime => tx.mark_prime(),
+                adaptive::TrialTrace::Master(declared_bps) => {
+                    assert!(physical.candidate.is_some(), "an opened trial owns its cursor");
+                    tx.mark_master(declared_bps);
                 }
-                // **The cause is the SERVER's answer, not a guess at this call site.** `prime`
-                // has four exits and only one — a PMS refusal of this rung's ceiling — says
-                // anything about the candidate. Reading a bare failure as `Candidate` charged the
-                // other three a full `E_tx` refill debt (up to ~4x `E_tx` of blocked climbing) for
-                // an encoder that moved underneath, a missing client or an unresolved
-                // control-plane result. None is ordinal evidence about the requested rung.
-                // A stale snapshot after Pause or hold is not a spent candidate reserve.
-                // The physical clock supplies that fact; policy classifies the refusal.
-                let deadline_final = !matches!(refusal, adaptive::PrimeFailure::Deadline)
-                    || exploration_timeout_is_final(&mut *runner.physical().reserve, prime_deadline);
-                let (cause, why) = adaptive::classify_prime_failure(refusal, deadline_final);
-                reject_hls_abr_after_transaction(state, proposal, cause, &mut tx, now_ms());
-                tx.finish(why);
-                crate::player::log("abr: candidate registration rejected; staying on current rung");
-                continue;
-            }
-        };
-        tx.mark_prime();
-        if runner.aborted().map_err(|_| HlsExit::Failed(
-            "adaptive feed abort status protocol violation",
-        ))? {
-            state.abandon(&primed.encoder_session);
-            tx.finish("aborted");
-            return Err(HlsExit::Aborted);
-        }
-        if runner.expired().map_err(|_| HlsExit::Failed(
-            "adaptive feed expiry status protocol violation",
-        ))? {
-            state.abandon(&primed.encoder_session);
-            reject_hls_abr_after_transaction(
-                state,
-                proposal,
-                crate::abr::RejectCause::Censored,
-                &mut tx,
-                now_ms(),
-            );
-            tx.finish("control_deadline");
-            crate::player::log("abr: candidate spent its exploration reserve in the control plane");
-            continue;
-        }
-        let opened = runner.open(primed.url.clone());
-        let opened_declared_bps = match opened {
-            FeedObservation::Opened { declared_bps, .. } => {
-                assert!(runner.physical().candidate.is_some(), "an opened trial owns its cursor");
-                declared_bps
-            }
-            other => {
-                let failure = match other {
-                    FeedObservation::Failed { failure, .. } => failure,
-                    _ => FeedFailure::Protocol,
-                };
-                match settle_trial_failure(
-                    state, &primed.encoder_session, proposal, &mut tx,
-                    adaptive::TrialStep::Open, failure, || now_ms(),
-                ) {
-                    Ok(()) => continue 'segments,
-                    Err(error) => return Err(error),
-                }
-            }
-        };
-        tx.mark_master(opened_declared_bps);
-        if runner.aborted().map_err(|_| HlsExit::Failed(
-            "adaptive feed abort status protocol violation",
-        ))? {
-            state.abandon(&primed.encoder_session);
-            tx.finish("aborted");
-            return Err(HlsExit::Aborted);
-        }
-        if runner.expired().map_err(|_| HlsExit::Failed(
-            "adaptive feed expiry status protocol violation",
-        ))? {
-            state.abandon(&primed.encoder_session);
-            reject_hls_abr_after_transaction(
-                state,
-                proposal,
-                crate::abr::RejectCause::Censored,
-                &mut tx,
-                now_ms(),
-            );
-            tx.finish("master_deadline");
-            crate::player::log("abr: candidate spent its exploration reserve before media");
-            continue;
-        }
-        let next = runner.read_next();
-        let candidate_duration = match next {
-            FeedObservation::SegmentReady { duration, .. } => {
-                assert!(runner.physical().segment.is_some(), "ready segment carries its physical object");
-                duration
-            }
-            other => {
-                let failure = match other {
-                    FeedObservation::Failed { failure, .. } => failure,
-                    _ => FeedFailure::Protocol,
-                };
-                match settle_trial_failure(
-                    state, &primed.encoder_session, proposal, &mut tx,
-                    adaptive::TrialStep::FirstRead, failure, || now_ms(),
-                ) {
-                    Ok(()) => continue 'segments,
-                    Err(error) => return Err(error),
-                }
-            }
-        };
-        // The whole control plane shares one playhead-funded exploration reserve. Each blocking
-        // layer receives a fresh absolute snapshot, so a timeout retains the budget actually
-        // executed while a Pause or native hold moves the boundary instead of spending it.
-        tx.mark_control_plane();
-        if runner.aborted().map_err(|_| HlsExit::Failed(
-            "adaptive feed abort status protocol violation",
-        ))? {
-            state.abandon(&primed.encoder_session);
-            tx.finish("aborted");
-            return Err(HlsExit::Aborted);
-        }
-        if runner.expired().map_err(|_| HlsExit::Failed(
-            "adaptive feed expiry status protocol violation",
-        ))? {
-            state.abandon(&primed.encoder_session);
-            reject_hls_abr_after_transaction(
-                state,
-                proposal,
-                crate::abr::RejectCause::Censored,
-                &mut tx,
-                now_ms(),
-            );
-            tx.finish("playlist_deadline");
-            crate::player::log("abr: candidate spent its exploration reserve before media");
-            continue;
-        }
-        // The remaining candidate media budget is whatever is left of the same end-to-end
-        // exploration surplus after session creation and both playlists. A remote PMS may spend a
-        // material fraction of it registering the encoder; that time consumes the viewer's
-        // reserve even though it transfers no media, so excluding it would over-grant the trial.
-        //
-        // **The buffer is read HERE for recovery.** Upward exploration instead carries the same
-        // fixed clock it armed before the control plane, whose remaining value already subtracts
-        // exactly Δplayhead. Reading a fresh buffer as a new exploration grant would let segments
-        // arriving on some future concurrent implementation silently enlarge `E` mid-transaction.
-        let (buffered_ms, reserve_started_ns, remaining, rebuffering) =
-            runner.budget_snapshot().map_err(|_| HlsExit::Failed(
-                "adaptive feed budget snapshot protocol violation",
-            ))?;
-        let Some(reserve_ms) = buffered_ms else {
-            // No readable reserve means nothing can be said about what this transaction can
-            // afford, and a transaction with no affordability bound is the unbounded case being
-            // removed. **Refusing costs nothing**, which is what `RejectCause::Circumstance` on the
-            // next line exists to say: the controller cannot have proposed on an unknown reserve in
-            // the first place, so the lane fell silent between the proposal and here — a seek —
-            // and that says nothing about the RUNG. No backoff is armed and the next sample
-            // resolves it. (This read "sets a one-sample cooldown" until I6, describing a mechanism
-            // that never blocked a segment even before it was deleted: the decrement ran before
-            // the check, so `K = 1` was a no-op.)
-            state.abandon(&primed.encoder_session);
-            reject_hls_abr_after_transaction(
-                state,
-                proposal,
-                crate::abr::RejectCause::Circumstance,
-                &mut tx,
-                now_ms(),
-            );
-            tx.finish("reserve_unreadable");
-            crate::player::log(
-                "abr: candidate reserve unreadable; cannot bound the transfer, staying on current rung",
-            );
-            continue;
-        };
-        // The floor is a DOWNSHIFT's only protection against the reserve it is trying to refill:
-        // see `candidate_warmup_budget`. The coordinator receives the transaction's current
-        // reserve and internally held clock, so its prediction uses the actual candidate and
-        // completed delivery evidence instead of the request ceiling.
-        let budget = state.candidate_budget_from_snapshot(
-            proposal, reserve_policy, candidate_duration,
-            reserve_ms, remaining, rebuffering,
+                adaptive::TrialTrace::ControlPlane => tx.mark_control_plane(),
+                adaptive::TrialTrace::WarmupDeadline(deadline) =>
+                    tx.mark_warmup_deadline(deadline),
+                adaptive::TrialTrace::FirstMedia => tx.mark_media(
+                    physical.output.as_ref()
+                        .expect("acquired media has staged access units"),
+                    false,
+                ),
+                adaptive::TrialTrace::Decided => tx.mark_decided(),
+                adaptive::TrialTrace::Rejected { refreshing } =>
+                    publish_hls_abr_action(proposal, refreshing, Some(false)),
+                adaptive::TrialTrace::Finish(outcome) => tx.finish(outcome),
+                adaptive::TrialTrace::Log(line) => crate::player::log(&line),
+            },
         );
-        if let Some(media_budget) = budget.media_deadline {
-            tx.mark_warmup_deadline(media_budget);
-        } else {
-            crate::player::log(
-                "abr: terminal floor recovery keeps the only candidate response alive",
-            );
-        }
-        let acquired = runner.acquire_first(budget, reserve_started_ns);
-        let first_acquisition = match acquired {
-            FeedObservation::Acquired { acquisition, .. } => acquisition,
-            other => {
-                let failure = match other {
-                    FeedObservation::Failed { failure, .. } => failure,
-                    _ => FeedFailure::Protocol,
-                };
-                match settle_trial_failure(
-                    state, &primed.encoder_session, proposal, &mut tx,
-                    adaptive::TrialStep::FirstAcquire, failure, || now_ms(),
-                ) {
-                    Ok(()) => continue 'segments,
-                    Err(error) => return Err(error),
-                }
-            }
-        };
-        tx.mark_media(
-            runner.physical().output.as_ref().expect("acquired media has staged access units"),
-            false,
-        );
-        runner.observe(TrialEvent::FirstAcquired)
-            .expect("the first candidate acquisition follows prime");
-        let first_buffer = match runner.stage_acquired() {
-            FeedObservation::Staged { buffer, count: 1, .. } => buffer,
-            _ => {
-                state.abandon(&primed.encoder_session);
-                tx.finish("feed_protocol");
-                return Err(HlsExit::Failed("adaptive feed stage protocol violation"));
-            }
+        let (primed, opened_declared_bps, first_acquisition, first_buffer) = match first {
+            adaptive::FirstPhase::Ready { primed, declared_bps, acquisition, buffer } =>
+                (primed, declared_bps, acquisition, buffer),
+            adaptive::FirstPhase::Stay => continue 'segments,
+            adaptive::FirstPhase::Aborted => return Err(HlsExit::Aborted),
+            adaptive::FirstPhase::Failed(message) => return Err(HlsExit::Failed(message)),
         };
         let mut candidate_transition: Option<HlsCandidateTransition> = None;
 
@@ -7857,6 +7704,17 @@ pub(crate) fn demux(
                     (*vcp).color_space,
                     SHARED.duration_ns.load(Ordering::Relaxed)
                 ));
+                if force_original && dovi_conf(vcp).is_some_and(|d| {
+                    force_original_dovi_unsupported(&d)
+                }) {
+                    crate::player::log(
+                        "ff: Force Original refused — source has Dolby Vision P7 or an enhancement layer without a native descriptor",
+                    );
+                    SHARED.fail_demux(DemuxExitClass::Other);
+                    avformat_close_input(&mut fmt);
+                    free_avio(avio);
+                    break;
+                }
 
                 // Client-rendered subtitles (direct-play only): enumerate subtitle streams in FILE
                 // order so their 0-based position maps 1:1 to the track menu's desired_sub_idx (which
@@ -8058,6 +7916,17 @@ pub(crate) fn demux(
                         } else {
                             std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize)
                         };
+                        if force_original && is_hevc
+                            && force_original_hevc_has_unsupported_dv(pkt_bytes, nal_len_size)
+                        {
+                            crate::player::log(
+                                "ff: Force Original refused — packet has a Dolby Vision enhancement layer or P7 RPU without a native descriptor",
+                            );
+                            SHARED.fail_demux(DemuxExitClass::Other);
+                            SHARED.demux_io_failed.store(true, Ordering::Release);
+                            av_packet_unref(pkt);
+                            break;
+                        }
                         let is_key = if is_av1 {
                             av1_packet_to_tu(
                                 pkt_bytes,
