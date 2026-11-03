@@ -1,8 +1,10 @@
 # URI-first playback migration
 
 The target is a URI-first player with independently removable URI and buffer-feed executors.
-This is a staged migration: extracting code does not qualify a native playback route or change
-the production default. The existing buffer-feed route remains the default during extraction.
+This is a staged migration. Boot installs the URI executor and a source qualification port, but
+the production qualifier currently returns Unknown and certifies no URI controls or release.
+Ordinary playback therefore still selects buffer-feed. Injected source and firmware evidence
+exercise the URI route in host tests; they do not qualify the production device.
 
 ## Dependency boundary
 
@@ -15,21 +17,22 @@ another. Neither driver owns Plex route selection, timeline writes or recovery p
 audio conversion primitives. It cannot import either playback executor. Keeping a separately
 enabled subtitle or capture codec consumer does not imply keeping the feed executor.
 
-The independent URI product driver implements the neutral `DriverSet` protocol. Its diagnostic
-probe retains a media facade with a route settlement callback. The shared runner now sequences
-load readiness, addressed track confirmation, exact seek completion and the desired foreground
-Play goal. Its local metrics distinguish logical requests, physical attempts, clock progress and
-picture evidence. Queuing work is never counted as a native acknowledgment.
+The URI product driver is composed into the adapter's one neutral `DriverSet`. Its separate
+diagnostic probe retains a media facade with a route settlement callback. The shared runner
+sequences load readiness, addressed track confirmation, exact seek completion and the desired
+foreground Play goal. Its local metrics distinguish logical requests, physical attempts, clock
+progress and picture evidence. Queuing work is never counted as a native acknowledgment.
 
 The application composes the common runner with the URI and feed drivers. Addressed resource
-mapping, timeline/Plex writes and recovery stay common; physical demux, engine and transport
-resources live in `plx_play_feed`. Source IO and demux observations travel through injected ports.
+mapping, timeline/Plex writes and recovery stay common. `plx_play_feed` owns demux, queues and
+native state; `media/player` still contains the Feed Engine and some physical execution pending
+the final move. Source IO and demux observations travel through injected ports.
 Caption stores receive explicit playhead and seek-target facts rather than reading feed clocks.
 Both playback drivers are optional Cargo dependencies, and the URI-only normal dependency graph
-excludes `plx_play_feed`. URI-only source compilation is still being finished: dependency exclusion
-alone does not prove a working build or physical removability. `plx_media_codecs` remains required
-for independent codec consumers. The production build/package and deletion matrices below remain
-completion work.
+excludes `plx_play_feed`. URI-only and Feed-only host source checks have passed checkpoints, but
+the current combined tree still needs its full feature matrix and ARM package checks. Source
+compilation alone does not prove physical removability. `plx_media_codecs` remains required for
+independent codec consumers. The production package and deletion matrices below remain work.
 
 ## Ordered checkpoints
 
@@ -87,8 +90,10 @@ original-stream feed offers, with permitted conversion afterward. The common own
 finite offer catalog and stable recipe IDs, rather than treating a new transient URL as a new
 candidate. Selection does not acquire a resource lease. Admission spends a recipe exactly once;
 capability refresh preserves that history. At most one cross-executor handoff is permitted per
-recovery episode. The application supplies this catalog at route admission; recovery integration
-is still under test. This composition does not promote URI.
+recovery episode. The route owner builds the catalog for the selected source; the application
+installs an owned qualified URI source against its route ticket before start. The production
+qualifier still returns Unknown, and recovery integration remains under test. This composition
+does not promote URI.
 
 Each attempt starts with fresh observations. Unknown remains unknown; an acknowledgment or
 advancing clock is not picture evidence. Separate logical-request metrics from backend attempts,
@@ -102,10 +107,11 @@ Run committed-tree host gates, shipping-feature checks and ARM builds. Prove mat
 simulation trajectories and the transaction races above. Review firmware compatibility and
 documentation claims before publishing changes.
 
-Build both backends, URI-only and feed-only independently; host tests also support neither,
-whereas production packaging must refuse neither. Audit production features separately from
-test feature unification. Inspect native objects, loader tables and packaged files: FFmpeg is
-loaded dynamically, so ELF imports alone cannot prove exclusion.
+Build both backends, URI-only and feed-only independently; host tests also support neither.
+The Makefile now refuses `PLAYBACK_BACKENDS=none` for the television package. Audit production
+features separately from test feature unification. The URI ELF import gate is present, but the
+ARM artifact and package matrix still need verification. Inspect native objects, loader tables
+and packaged files: FFmpeg is loaded dynamically, so ELF imports alone cannot prove exclusion.
 
 In disposable verification checkouts, delete each backend directory plus only its workspace,
 composition, native-build and package registrations. The other backend, shared orchestration,

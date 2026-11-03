@@ -17,19 +17,21 @@ fork. The engine, the pump and the drivers beside them execute their effects.
 
 ## Pipeline
 
-Normal playback uses in-process buffer-feed. Earlier URI/out-of-process experiments
-(`com.webos.media/load`) failed to bind, prompting the pivot recorded in `docs/buffer-feed-plan.md`
+Ordinary production playback still uses in-process buffer-feed. Earlier experiments with URI
+playback (`com.webos.media/load`) failed to bind, prompting the pivot recorded in `docs/buffer-feed-plan.md`
 (history, not spec). The controlled 2026-11-02 experiment later displayed its SDR720p24 fixture
 through ACB on the webOS 4.5 dev set, both with and without `connectDass`; see
-`docs/measurements/uri-acb-dass-2026-11-02.md`. URI mode exists in the tree only as a
-developer probe: the pure machine and driver live in `plx_play_uri`; `player/uriprobe_drive.rs`
-is their thin media adapter, invoked from `engine::start_bufferfeed_inner` by the `plxnative-uriprobe` trigger) play one stream through
-`com.webos.media` with no Engine behind it, to learn what webOS 5+ does with the exported window id
-(issue #1064). Its `drive` variant goes one step further and drives the transport the way a real
-URI backend would have to — pause, resume, a seek, a text and an audio `selectTrack`, and
-`setSubtitleEnable` — logging the position around each call, because the binding question is
-settled and the remaining question is whether the pipeline can be controlled. It is
-`devtriggers`-only, so a release build carries none of it, and it reports nothing to Plex.
+`docs/measurements/uri-acb-dass-2026-11-02.md`. That proves this fixture's display path on one
+set, not production source, control or release coverage. Boot now installs a product URI driver
+and source qualification port. Its production qualifier returns Unknown and its certified
+capabilities are empty, so ordinary routes still choose Feed. Host fixtures inject qualified source
+and firmware evidence to exercise source, control and release logic.
+
+The separate `player/uriprobe_drive.rs` developer probe is invoked by the
+`plxnative-uriprobe` trigger. It plays one stream through `com.webos.media` with no Engine and
+can log pause, resume, seek, track selection and `setSubtitleEnable` behavior (issue #1064).
+That probe is `devtriggers`-only and reports nothing to Plex; the product driver is separate and
+uses common attempt reporting. `plx_play_uri` holds their protocol and driver implementation.
 `play-uri/src/uri_protocol.rs` holds pure builders/strict decoding; `play-uri/src/uri_lifecycle.rs` owns registration
 and request correlation, close deadlines and quarantine. The probe's logical Done does not release
 its adapter slot or exported window: the driver waits for successful bus unregister, keeps polling
@@ -885,11 +887,11 @@ something.
   `player/lifecycle.rs`, its drivers (`drive_foreground` and the `poll_`/`park_` fns) are
   `player/foreground.rs`, and the transport-pause contract is `player/transport.rs`; `app::lifecycle`
   re-exports all three; details in the `docs/agent-reference.md` gotchas): OS
-  background suspends the buffer-feed preserving the session. Foreground tracks one exact Load
+  background suspends the active backend preserving the session. Foreground tracks one exact start
   attempt at a time, follows reducer-approved superseding or rollback attempts, retries an exact
-  failure without repeating route preparation, and issues the clock's native Play only after
-  `Started` (a Playing restore over a standing pause publishes the viewer's resume BEFORE the
-  Load, `before_load`, so the Load is not armed under it).
+  failure without repeating route preparation, and sends the addressed Play goal after readiness.
+  Feed additionally arms its native hold before a paused restore Load and opens that hold after
+  its exact start settles (`before_load` and `play_clock`).
   The opposite edge is `ForegroundInput::Superseded(Successor)`: `exit_player` sends
   `Superseded(Exit)` FIRST, retiring whatever a restore parked (a refused Load's `Prepared`, a
   `Suspended`, a pending Load, via the `Retire` effect), and the accepted-resolve boundary in the
@@ -911,11 +913,11 @@ count), `stream.rs`'s socket lifecycle, `route/plan.rs`'s direct-play-vs-transco
 `task.rs`'s `MainThread` token being genuinely `!Send`. Cheap enough that there is no reason to skip
 it before a deploy.
 
-But there is **no host *runtime*** — nothing above decodes a frame or touches Starfish/ACB (`play-feed/src/ff.rs`
-once gated `#[link]` directives out of `cfg(test)` to keep the pure logic host-testable; with
-everything on `dynlib!` those are gone, so a test that actually calls FFmpeg now fails by taking
-`dlopen`'s `None` branch on Darwin rather than by failing to link), and the host is Darwin while the TV is
-Linux, which is why `tools/sockprobe.c` exists. So anything about *playback behaviour* is only
-observable on device: deploy and read `/tmp/plxnative-events.log` (feed stats, bind steps,
-seek/rebase, `RECEIVE_GOOD_VIDEO`). The `tests/` harness drives real playback per case — see the root
-`docs/agent-reference.md` testing section (run as GUEST by default; never run two harness jobs at once).
+Host tests run the Feed sink simulator and fake URI transport/display ports, so they can grade
+attempt ownership, control correlation, source handoff and release ordering. They do not decode
+a frame through the television's Starfish/ACB pipeline or prove URI picture presentation and
+reusable release on firmware. The host is Darwin while the TV is Linux, which is why
+`tools/sockprobe.c` exists. For device playback behavior, deploy and read
+`/tmp/plxnative-events.log` (feed stats, bind steps, seek/rebase, `RECEIVE_GOOD_VIDEO`). The
+`tests/` harness drives real playback per case — see the root `docs/agent-reference.md` testing
+section (run as GUEST by default; never run two harness jobs at once).
