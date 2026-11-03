@@ -1637,13 +1637,9 @@ pub fn restore_state_for_test(raw: u8) {
 pub use engine::aq_caps;
 /// The two feed-ahead throttles, as milliseconds.
 ///
-/// **Not test-only any more, and the reason is the point of N3.** These were `#[cfg(test)]` because
-/// only `abr::sim`'s plant read them, to pin half of `B_max` against the pipeline's own values.
-/// `abr::plant::b_max_est_ms` now computes the reachable reserve inside the CONTROLLER, from these
-/// and `aq_caps()` at run time rather than from a transcription — which is what makes `B*` a
-/// property of the plant instead of a number somebody chose. `sim.rs` still keeps its own copy by
-/// value, deliberately, so the plant grading the controller is not the controller agreeing with
-/// itself.
+/// The Feed open adapter captures these with `aq_caps()` as one value for the pure ABR plant.
+/// `abr::sim` keeps its own copy by value, so its parity test can catch a changed physical
+/// throttle without making the simulated plant read its subject's geometry.
 #[cfg(feature = "play-feed")]
 pub use engine::feed_leads_ms;
 #[cfg(feature = "play-feed")]

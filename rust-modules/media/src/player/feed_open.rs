@@ -124,6 +124,11 @@ impl FeedOpenRequest {
         let payload_options = payload_options(&feed_payload);
         let original_dv = original_dv(payload.dovi);
         let source = plx_plex::plex::StreamUrl::parse(&url);
+        let (video_bytes, audio_bytes) = super::aq_caps();
+        let (video_lead_ms, audio_lead_ms) = super::feed_leads_ms();
+        let plant_geometry = crate::abr::PlantGeometry::from_feed(
+            video_bytes, audio_bytes, video_lead_ms, audio_lead_ms,
+        );
         Self {
             physical: plx_play_feed::open::PhysicalOpen {
                 origin: source.origin,
@@ -140,12 +145,14 @@ impl FeedOpenRequest {
                 session: None,
                 hls_abr: route::hls_abr_control(ps).map(|control| {
                     crate::adaptive::boxed_session(
-                        crate::adaptive::Start::from(control),
+                        crate::adaptive::Start::from(control).with_plant_geometry(plant_geometry),
                         Box::new(crate::adaptive::PlayerAdaptiveEffects),
                     )
                 }),
                 auto_original: route::auto_original_watch(ps).map(|watch| {
-                    crate::adaptive::boxed_original_session(crate::adaptive::OriginalStart::from(watch))
+                    crate::adaptive::boxed_original_session(
+                        crate::adaptive::OriginalStart::from(watch).with_plant_geometry(plant_geometry)
+                    )
                 }),
             },
         }

@@ -207,6 +207,11 @@ pub(crate) struct StartInfo {
 }
 
 impl Start {
+    pub(crate) fn with_plant_geometry(mut self, geometry: Option<abr::PlantGeometry>) -> Self {
+        self.control.catalog = self.control.catalog.with_plant_geometry(geometry);
+        self
+    }
+
     pub(crate) fn info(&self) -> StartInfo {
         StartInfo {
             initial: self.control.initial_rung,
@@ -234,6 +239,11 @@ impl From<route::AutoOriginalWatch> for OriginalStart {
 
 impl OriginalStart {
     pub(crate) fn source_kbps(&self) -> u32 { self.0.source_kbps }
+
+    pub(crate) fn with_plant_geometry(mut self, geometry: Option<abr::PlantGeometry>) -> Self {
+        self.0.catalog = self.0.catalog.with_plant_geometry(geometry);
+        self
+    }
 
     pub(crate) fn start(self) -> OriginalCoordinator {
         let controller = abr::OriginalModeController::new(
