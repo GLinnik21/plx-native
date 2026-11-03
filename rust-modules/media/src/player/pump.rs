@@ -2022,7 +2022,7 @@ mod flight_tests {
                 assert!(std::time::Instant::now() < deadline,
                     "timed out waiting for {what}: phase={}, decisions={}, answered={}, live={}, stage={:?}, recovery={}, state={:?}, requests={:?}",
                     crate::route::control_phase_label(), self.flight.decisions(),
-                    self.flight.answered(), self.pa.is_live(), self.pa.feed_stage(),
+                    self.flight.answered(), self.pa.is_live(), self.pa.feed_stage().map(|stage| stage as u8),
                     crate::route::recovery_flight_outstanding(), crate::player::state(&self.ps),
                     self.flight.requests());
                 std::thread::sleep(Duration::from_millis(2));

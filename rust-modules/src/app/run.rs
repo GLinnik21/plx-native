@@ -4571,7 +4571,7 @@ mod lifecycle_regression_tests {
         let _serial = plx_base::testlock::serial();
         let mut app = app();
         use plx_plex::plex::session::{SubtitlePosition, SubtitleSize, SubtitleTone};
-        let _paused = TransportPaused::set(true);
+        let _paused = TransportPaused::set(false);
         let (size, position, tone) =
             (plx_media::route::subtitle_size(), plx_media::route::subtitle_position(), plx_media::player::subtitle_tone());
         let state = plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Buffering);
@@ -4588,8 +4588,9 @@ mod lifecycle_regression_tests {
             position_ns: Some(7_000_000_000), seek_display_ns: Some(9_000_000_000),
             duration_ns: Some(100_000_000_000), ..Default::default()
         }));
-        let model = hud_model(&app.player.session, app.bridge.metadata_view(),
-            app.adapters.player.backend_viewer_paused().unwrap_or(false));
+        // A projected attempt alone does not install a common backend runner.
+        // Supply the viewer goal explicitly, opposite to the idle physical mailbox.
+        let model = hud_model(&app.player.session, app.bridge.metadata_view(), true);
         // restore before grading: a failed assertion must not leak a scrub target into the next test
         plx_media::player::restore_state_for_test(state);
         plx_media::route::restore_subtitle_size(size);
@@ -4597,7 +4598,7 @@ mod lifecycle_regression_tests {
         plx_media::player::restore_subtitle_tone(tone);
         tx.scrub_ns.store(before.0, Relaxed);
         shared.desired_sub_idx.store(before.1, Relaxed);
-        assert!(model.paused, "TX.paused");
+        assert!(model.paused, "the common viewer pause goal");
         assert_eq!(model.scrub_ns, 42_000_000_000, "TX.scrub_ns");
         assert_eq!(model.playpos_ns, 7_000_000_000, "playpos_ns()");
         assert_eq!(model.seek_display_ns, 9_000_000_000, "seek_display_ns()");
