@@ -407,9 +407,10 @@ pub fn clock_user_held_for_test() -> bool {
 }
 
 pub use engine::{
-    acb_init, begin_resume, foreground_follows_load, land_resume, start_bufferfeed, start_bufferfeed_tracked, stop_bufferfeed,
-    suspend_bufferfeed, suspend_bufferfeed_if_attempt, BufferfeedStartOutcome, ResumeOutcome, ResumeStart,
+    acb_init, foreground_follows_load, start_bufferfeed, start_bufferfeed_tracked, stop_bufferfeed,
+    suspend_bufferfeed, suspend_bufferfeed_if_attempt, BufferfeedStartOutcome,
 };
+pub use route_start::{begin_resume, land_resume, ResumeOutcome, ResumeStart};
 
 pub use pump::{
     drain_engineless_rollback, land_engineless_rollback, pump, recover_failed_foreground_original, ForegroundOriginalRecovery,
