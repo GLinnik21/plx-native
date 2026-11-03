@@ -865,12 +865,12 @@ impl Shared {
         self.native_session.native_load_elapsed(epoch)
     }
 
-    #[cfg(all(any(test, feature = "test-support"), feature = "hostsim"))]
+    #[cfg(all(feature = "test-support", feature = "hostsim"))]
     pub fn test_backdate_native_load_issued(&self, epoch: u32, by: Duration) -> bool {
         self.native_session.test_backdate_native_load_issued(epoch, by)
     }
 
-    #[cfg(all(any(test, feature = "test-support"), feature = "hostsim"))]
+    #[cfg(all(feature = "test-support", feature = "hostsim"))]
     pub fn test_backdate_native_load_returned(&self, epoch: u32, by: Duration) -> bool {
         self.native_session.test_backdate_native_load_returned(epoch, by)
     }
@@ -895,7 +895,7 @@ impl Shared {
         self.native_session.native_load_abandoned()
     }
 
-    #[cfg(all(any(test, feature = "test-support"), feature = "hostsim"))]
+    #[cfg(all(feature = "test-support", feature = "hostsim"))]
     pub fn test_force_native_idle(&self) {
         self.native_session.test_force_native_idle();
     }
@@ -908,7 +908,7 @@ impl Shared {
         self.native_session.begin_native_media_discontinuity(epoch)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(feature = "test-support")]
     pub fn arm_native_presentations(&self, epoch: u32) -> bool {
         self.native_session.arm_native_presentations(epoch)
     }
