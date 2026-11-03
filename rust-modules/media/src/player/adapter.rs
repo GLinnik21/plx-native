@@ -261,6 +261,22 @@ impl PlayerAdapter {
         self.feed_attempt = None;
     }
 
+    pub(super) fn take_native_stop(&mut self) -> super::engine::NativeStop {
+        let stop = super::engine::NativeStop::take(&mut self.feed);
+        self.clear_feed_attempt();
+        stop
+    }
+
+    pub(super) fn release_native_stop(&mut self, stop: &mut super::engine::NativeStop,
+        for_reload: bool) {
+        stop.release_and_drain(&self.mt, &mut self.feed, for_reload);
+    }
+
+    pub(super) fn finish_native_stop(&mut self, stop: super::engine::NativeStop,
+        for_reload: bool) {
+        stop.finish(&mut self.feed, for_reload);
+    }
+
     /// Address the physical callback snapshot to the current route-owned attempt.
     pub(super) fn publish_feed_attempt_view(&self, ps: &mut crate::route::PlaybackSession) {
         let Some(attempt) = self.active_feed_attempt() else { return; };

@@ -1869,189 +1869,132 @@ pub fn foreground_follows_load(pa: &mut super::adapter::PlayerAdapter, attempt: 
     pa.mark_foreground_follows_feed_load(attempt)
 }
 
-/// The teardown body. `for_reload` = this is a direct-play seek reload (reload_at), NOT a real
-/// stop: preserve the playback session so start_bufferfeed can restart the SAME item — skip
-/// the "stopped" timeline scrobble, the server transcode stop, and the URL clear.
-pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, for_reload: bool) {
+/// The common route owner runs teardown and calls this physical stop in its original order.
+pub(super) use super::route_start::teardown;
+
+pub(super) fn clear_failed_engine_release_arm() {
     FAILED_ENGINE_RELEASE_ARMED.store(false, Ordering::Release);
-    if !super::route_start::begin_teardown(ps, pa, for_reload) { return; }
-    // A preview Load that has not returned yet must not be joined on this frame. Bind is skipped
-    // while the flag is set, so the picture never reaches the plane. The next halt joins once
-    // the thread has already finished.
-    if crate::route::is_preview(ps) {
-        if let Some((loading, finished)) = pa.feed.preview_load_join_state() {
-            if crate::player::preview::defer_media_join(loading, finished) {
-                pa.feed.abandon_preview();
-                return;
+}
+
+/// Owns a removed Engine through worker joins, native release and queue destruction. Common
+/// route/report work may run between its phases without receiving the Engine or native handles.
+pub(super) struct NativeStop {
+    eng: Engine,
+    stream: bool,
+    spans: TeardownSpans,
+    abandoned_load: Option<std::thread::JoinHandle<()>>,
+    unload_th: Option<std::thread::JoinHandle<()>>,
+}
+
+impl NativeStop {
+    pub(super) fn take(feed: &mut super::feed_resources::FeedResources) -> Self {
+        let eng = feed.take().expect("main-thread live check and take are one transaction");
+        feed.retire_load_attempt(eng.attempt);
+        let stream = matches!(eng.source, Source::Stream { .. });
+        Self { eng, stream, spans: TeardownSpans::new(), abandoned_load: None, unload_th: None }
+    }
+
+    /// The side reader must stop before the paired demux reader is joined.
+    pub(super) fn stop_side_reader(&mut self, for_reload: bool) {
+        self.spans.mark("begin");
+        super::subside::stop(if for_reload { "reload" } else { "stop" });
+        self.spans.mark("subside");
+    }
+
+    /// Wake both transports and queues before either worker join; close the socket only after
+    /// the demux reader no longer owns its fd. A timed-out Load remains parked and unjoined.
+    pub(super) fn unblock_join_close(&mut self) {
+        if self.stream {
+            for q in [self.eng.aq_video.as_mut(), self.eng.aq_audio.as_mut()].into_iter().flatten() {
+                crate::aq::aq_abort(&mut **q);
+            }
+            let p = SHARED.hs_ptr.load(Ordering::Acquire);
+            if !p.is_null() { plx_net::stream::http_shutdown(p); }
+            crate::curlio::abort_active();
+        }
+        self.spans.mark("unblock");
+        if let Some(thread) = self.eng.stream_th.take() {
+            plx_base::task::join("demux", thread);
+        }
+        self.spans.mark("join_demux");
+        self.abandoned_load = match self.eng.load_th.take() {
+            Some(thread) if !thread.is_finished() && SHARED.load_timed_out.load(Ordering::Acquire) => Some(thread),
+            Some(thread) => {
+                plx_base::task::join("media", thread);
+                None
+            }
+            None => None,
+        };
+        self.spans.mark("join_media");
+        if self.stream {
+            let p = SHARED.hs_ptr.load(Ordering::Acquire);
+            if !p.is_null() { plx_net::stream::http_close(p); }
+        }
+        self.spans.mark("http_close");
+    }
+
+    /// The stopped Engine still owns this attempt after its workers join. Capture physical
+    /// mailboxes before the common owner resets them and addresses the final readout.
+    pub(super) fn terminal_facts(&self) -> plx_playback_contract::readout::AttemptFacts {
+        super::feed_pump::native_attempt_facts()
+    }
+
+    pub(super) fn report_dispatched(&mut self) { self.spans.mark("scrobble"); }
+
+    /// Release only after common reporting has handed its final write to the off-frame worker.
+    pub(super) fn release_and_drain(&mut self, mt: &MainThread,
+        feed: &mut super::feed_resources::FeedResources, for_reload: bool) {
+        if let Some(load_th) = self.abandoned_load.take() {
+            if !SHARED.abandon_native_session(self.eng.native_epoch) {
+                log(&format!(
+                    "native lifecycle: abandoned Load epoch={} no longer owned the Active phase",
+                    self.eng.native_epoch,
+                ));
+            }
+            log(&format!(
+                "native lifecycle: Load epoch={} still in flight at teardown — not joining; the \
+                 object stays parked (and native playback refused) until Load returns",
+                self.eng.native_epoch,
+            ));
+            feed.park_abandoned_load(AbandonedLoad {
+                epoch: self.eng.native_epoch,
+                load_th,
+                _payload: std::mem::take(&mut self.eng.payload),
+                abandoned_at: std::time::Instant::now(),
+            });
+        } else if !for_reload {
+            self.unload_th = release_off_frame(mt, self.eng.native_epoch, &mut self.spans);
+        } else {
+            release_native_object_timed(mt, self.eng.native_epoch, &mut self.spans);
+        }
+        if self.stream {
+            drain_aq(&mut self.eng);
+            for q in [self.eng.aq_video.as_mut(), self.eng.aq_audio.as_mut()].into_iter().flatten() {
+                crate::aq::aq_destroy(&mut **q);
             }
         }
+        self.spans.mark("drain_aq");
     }
-    // Revoke every worker ticket before asking those workers to stop. This is the synchronization
-    // boundary that makes a late HLS candidate/fallback an ordinary stale event instead of a
-    // mutation of the route the next Load is about to own.
-    let mut sp = TeardownSpans::new();
-    let mut unload_th = None;
-    super::route_start::begin_feed_teardown(for_reload);
-    SHARED.stop_hls_clock();
-    let route_attempt = pa.active_feed_attempt().expect("live feed has a route owner");
-    let mut eng = pa.feed.take().expect("main-thread live check and take are one transaction");
-    pa.clear_feed_attempt();
-    pa.retire_load_attempt(eng.attempt);
-    let stream = matches!(eng.source, Source::Stream { .. });
 
-    let final_report = super::route_start::final_report(ps, for_reload);
-
-    // The side subtitle reader first: it reads the original Part over its own transport and must
-    // be gone (its socket shut, its cues cleared) before the demux it was paired with is joined.
-    sp.mark("begin");
-    super::subside::stop(if for_reload { "reload" } else { "stop" });
-    sp.mark("subside");
-    // 1. unblock every thread (abort queues, close the demux socket)
-    let mut report_th = super::route_start::stop_feed_timeline(pa, route_attempt);
-    if stream {
-        // abort BOTH lanes: unblock the demux if it's parked in aq_push on a full lane
-        for q in [eng.aq_video.as_mut(), eng.aq_audio.as_mut()]
-            .into_iter()
-            .flatten()
-        {
-            crate::aq::aq_abort(&mut **q);
-        }
-        let p = SHARED.hs_ptr.load(Ordering::Acquire);
-        if !p.is_null() {
-            // shutdown, not close: the demux thread is still inside recv here and is joined
-            // below. Closing now would free the fd number for another thread to claim while
-            // this one is still reading it. The real close happens after the join.
-            plx_net::stream::http_shutdown(p);
-        }
-        // …and the same interrupt for the OTHER transport. An https demux is parked in
-        // `curl_multi_wait`, where no `shutdown(2)` of ours can reach it — this writes a byte to
-        // the wake pipe it is polling. A no-op when the live source is a plaintext socket, or when
-        // there is none; exactly one of these two lines ever has anything to do. `curlio`'s module
-        // doc explains why the handle lives in a registry rather than being passed up to here.
-        crate::curlio::abort_active();
-    }
-    sp.mark("unblock");
-    // 2. JOIN every worker before freeing anything they hold raw ptrs into
-    // Through `task::join` so a stall leaves a number behind: this is the main thread, and every
-    // teardown freeze the engine has had was one of these three.
-    if let Some(t) = eng.stream_th.take() {
-        plx_base::task::join("demux", t);
-    }
-    sp.mark("join_demux");
-    // A Load the D.1.4 budget already gave up on, still inside `sf_load`: do NOT join it here.
-    // This is the main thread, and on the set where the budget fires the call may never return —
-    // BACK from the timeout read-out used to freeze the app on this line. The native object is
-    // parked instead and released by `reap_abandoned_load` once the thread has returned; nothing
-    // below may touch it before then (issue #74). Every other Load keeps the ordinary ordering:
-    // one that has returned joins at once, and one that is merely slow is still joined.
-    let abandoned_load = match eng.load_th.take() {
-        Some(t) if !t.is_finished() && SHARED.load_timed_out.load(Ordering::Acquire) => Some(t),
-        Some(t) => {
-            plx_base::task::join("media", t);
-            None
-        }
-        None => None,
-    };
-    sp.mark("join_media");
-    // 2b. every reader is now joined, so this thread is the sole owner: do the real close.
-    // (Before the join it could only shutdown — see step 1.)
-    if stream {
-        let p = SHARED.hs_ptr.load(Ordering::Acquire);
-        if !p.is_null() {
-            plx_net::stream::http_close(p);
-        }
-    }
-    // Final position report (state=stopped, so the server commits the resume point) + the
-    // server-side transcode stop, both dispatched to a worker. They used to run inline HERE and
-    // twelve lines below — two blocking PMS round trips on the SDL thread, ~17 s each worst case,
-    // on 100% of real stops. `scrobble_stop` reads and clears route's session statics on THIS
-    // thread and hands the worker owned copies; `plex_run` drains it at exit so the report still
-    // lands. Skipped for a reload, which is not a stop.
-    // The reporter is NOT joined here. Its handle rides out with the scrobble worker, which
-    // joins it before posting `stopped` — so the last `playing` report still lands first, but the
-    // MAIN thread stops paying for it. It parked the frame loop for the remainder of SO_RCVTIMEO
-    // whenever that POST had stalled (measured: `THREADJOIN timeline 6974ms`, tools/netcond.py in
-    // `stall@/:/timeline` — whose scope was broken until 2026-08-23, so that run stalled EVERY
-    // connection. The named `THREADJOIN` line is what keeps the attribution good, and step 1 above
-    // is why: demux and the AU lanes are woken before they are joined, so `timeline` was the only
-    // one that could park). Safe to outlive the Engine: the adapter-owned reporter keeps its own
-    // stop and samples; the route reducer revalidates its lease
-    // before each network effect.
-    sp.mark("http_close");
-    super::route_start::after_physical_close(ps, for_reload, final_report, &mut report_th);
-    sp.mark("scrobble");
-    // 3. Release the native object (see `release_native_object` for the proof chain), unless its
-    // Load is still in flight — then hand it, its thread and its payload to the adapter.
-    if let Some(load_th) = abandoned_load {
-        if !SHARED.abandon_native_session(eng.native_epoch) {
-            log(&format!(
-                "native lifecycle: abandoned Load epoch={} no longer owned the Active phase",
-                eng.native_epoch,
-            ));
-        }
-        log(&format!(
-            "native lifecycle: Load epoch={} still in flight at teardown — not joining; the \
-             object stays parked (and native playback refused) until Load returns",
-            eng.native_epoch,
-        ));
-        pa.park_abandoned_load(AbandonedLoad {
-            epoch: eng.native_epoch,
-            load_th,
-            _payload: std::mem::take(&mut eng.payload),
-            abandoned_at: std::time::Instant::now(),
-        });
-    } else if !for_reload {
-        unload_th = release_off_frame(pa.mt(), eng.native_epoch, &mut sp);
-    } else {
-        release_native_object_timed(pa.mt(), eng.native_epoch, &mut sp);
-    }
-    // 4. drain + destroy both queues (drain_aq also clears both pendings)
-    if stream {
-        drain_aq(&mut eng);
-        for q in [eng.aq_video.as_mut(), eng.aq_audio.as_mut()]
-            .into_iter()
-            .flatten()
-        {
-            crate::aq::aq_destroy(&mut **q);
-        }
-    }
-    sp.mark("drain_aq");
-    // 5. reset shared + transport. On a real stop also stop the server transcode + clear the
-    // URL; on a reload KEEP them so start_bufferfeed restarts the same item (a direct-play
-    // reload has no transcode session anyway, so the skip only matters for the URL).
-    // The DURATION is a fact about the FILE, and a reload plays the same file: keep it across
-    // the reset so the playbar has a denominator while the demuxer reopens. Without this every
-    // reload-based seek (a refused native Seek, a speed seek, a transcode seek) drew
-    // the playhead at position ÷ 0, i.e. the far left, for the few hundred ms until `ff.rs`
-    // re-published it, while the clock beside it (position alone, seeded by `arm_seek`) read
-    // correctly. Reported on an LG C3 (webOS 23). A real stop still zeroes it: the next item is
-    // a new file.
-    if for_reload {
-        SHARED.reset_session_for_reload();
-        TX.reset_for_reload();
-    } else {
-        SHARED.reset_session();
-        TX.reset();
-        super::claim_hold::clear();
-    }
-    super::route_start::finish_feed_teardown(ps, for_reload, report_th);
-    sp.mark("reset");
-    sp.emit(if for_reload { "reload" } else { "stop" });
-    match unload_th {
-        Some(unload_th) => {
+    /// Keep the Engine and payload alive under an off-frame Unload; otherwise drop only after
+    /// every worker has joined and the queues are destroyed.
+    pub(super) fn finish(mut self, feed: &mut super::feed_resources::FeedResources, for_reload: bool) {
+        self.spans.mark("reset");
+        self.spans.emit(if for_reload { "reload" } else { "stop" });
+        if let Some(unload_th) = self.unload_th.take() {
             log(&format!(
                 "stop_bufferfeed: torn down (native Unload epoch={} continues off-frame)",
-                eng.native_epoch,
+                self.eng.native_epoch,
             ));
-            pa.park_release(PendingRelease {
-                epoch: eng.native_epoch,
+            feed.park_release(PendingRelease {
+                epoch: self.eng.native_epoch,
                 unload_th: Some(unload_th),
                 handed_off_at: std::time::Instant::now(),
-                _engine: eng,
+                _engine: self.eng,
             });
+        } else {
+            log("stop_bufferfeed: torn down");
         }
-        // Engine (hs/aq boxes, payload) drops here — after all joins
-        None => log("stop_bufferfeed: torn down"),
     }
 }
 

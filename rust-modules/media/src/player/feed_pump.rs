@@ -1030,6 +1030,12 @@ pub(super) struct PresentationTick {
 /// The common adapter addresses this sparse value to the currently installed attempt.
 pub(super) fn attempt_facts(feed: &FeedResources) -> Option<plx_playback_contract::readout::AttemptFacts> {
     if !feed.is_live() { return None; }
+    Some(native_attempt_facts())
+}
+
+/// The native stop retains the exact Engine while its workers join, so it may capture one last
+/// addressed mailbox snapshot after they finish and before teardown clears the process mailboxes.
+pub(super) fn native_attempt_facts() -> plx_playback_contract::readout::AttemptFacts {
     use super::attempt_view::AttemptFacts;
     let reported_frame = SHARED.seen_frame.load(Relaxed);
     let position = SHARED.playpos_ns.load(Relaxed);
@@ -1087,5 +1093,5 @@ pub(super) fn attempt_facts(feed: &FeedResources) -> Option<plx_playback_contrac
         transfer_age_ms: (transfer_age_ms > 0).then_some(transfer_age_ms),
         transport_reopen_failed: SHARED.dg_transport_reopen_failed.load(Relaxed).then_some(true),
     };
-    Some(facts)
+    facts
 }
