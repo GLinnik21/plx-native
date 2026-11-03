@@ -29,6 +29,8 @@ pub enum Event {
     Intent(Intent),
     CommandAnswer { backend: BackendKind, attempt: AttemptId, command: CommandId, result: DispatchResult },
     Observation { backend: BackendKind, attempt: AttemptId, observation: Observation },
+    ControlAccepted { backend: BackendKind, attempt: AttemptId, command: CommandId,
+        operation: Operation, native_acknowledged: bool },
     ControlRefused { backend: BackendKind, attempt: AttemptId, command: CommandId,
         operation: Operation, failure: Failure },
     TrackSettled { backend: BackendKind, attempt: AttemptId, command: CommandId,
@@ -47,6 +49,11 @@ pub enum Fx {
     /// A synchronous queue refusal still leaves native resource release to the driver.
     CommandRefused { backend: BackendKind, attempt: AttemptId, command: CommandId,
         operation: Operation, failure: Failure },
+    AcceptedControl { backend: BackendKind, attempt: AttemptId, command: CommandId,
+        operation: Operation, native_acknowledged: bool },
+    /// The common startup plan identifies its mandatory initial Play by command ID.
+    StartupFailed { backend: BackendKind, attempt: AttemptId, command: CommandId,
+        failure: Failure },
     AcceptedObservation { backend: BackendKind, attempt: AttemptId, observation: Observation },
     AcceptedTrackSettled { backend: BackendKind, attempt: AttemptId, command: CommandId,
         kind: TrackKind, choice: TrackChoice },
@@ -256,14 +263,44 @@ impl BackendState {
             }
             Event::Observation { .. } => {}
             Event::ControlRefused { backend, attempt, command, operation, failure }
-                if self.owns(backend, attempt) && self.snapshot.phase == Phase::Active
-                    && self.latest_queued_transport == Some((command, operation)) =>
+                if self.owns(backend, attempt) && self.snapshot.phase == Phase::Active =>
             {
-                self.latest_queued_transport = None;
+                let correlated = match operation {
+                    Operation::Play | Operation::Pause => {
+                        if self.latest_queued_transport == Some((command, operation)) {
+                            self.latest_queued_transport = None;
+                            true
+                        } else { false }
+                    }
+                    Operation::Seek(_) => {
+                        if self.latest_queued_seek == Some(command) {
+                            self.latest_queued_seek = None;
+                            true
+                        } else { false }
+                    }
+                    Operation::SelectTrack { kind, choice } => {
+                        let slot = Self::track_slot(kind);
+                        if self.latest_queued_track[slot] == Some((command, choice)) {
+                            self.latest_queued_track[slot] = None;
+                            true
+                        } else { false }
+                    }
+                    Operation::Start { .. } | Operation::Stop(_) => false,
+                };
+                if !correlated { return; }
                 self.snapshot.failure = Some(failure);
                 effects.push(Fx::CommandRefused { backend, attempt, command, operation, failure });
             }
             Event::ControlRefused { .. } => {}
+            Event::ControlAccepted { backend, attempt, command, operation, native_acknowledged }
+                if self.owns(backend, attempt) && self.snapshot.phase == Phase::Active
+                    && self.latest_queued_transport == Some((command, operation)) =>
+            {
+                self.latest_queued_transport = None;
+                effects.push(Fx::AcceptedControl { backend, attempt, command, operation,
+                    native_acknowledged });
+            }
+            Event::ControlAccepted { .. } => {}
             Event::TrackSettled { backend, attempt, command, kind, choice }
                 if self.owns(backend, attempt) && self.snapshot.phase == Phase::Active =>
             {
@@ -414,6 +451,32 @@ mod tests {
             ]);
         assert_eq!(*state.snapshot(), Snapshot::default());
         start(&mut state, URI, attempt);
+    }
+
+    #[test]
+    fn native_control_acceptance_is_exactly_correlated_and_is_not_playback() {
+        let mut state = BackendState::new();
+        let attempt = AttemptId::new(2, 2);
+        start(&mut state, FEED, attempt);
+        ready(&mut state, FEED, attempt);
+        let effects = step(&mut state, Event::Intent(Intent::Control { backend: FEED,
+            attempt, operation: Operation::Play }), Some(CAPS));
+        let [Fx::Dispatch { command, .. }] = effects.as_slice() else { panic!("play dispatch") };
+        let command = *command;
+        step(&mut state, Event::CommandAnswer { backend: FEED, attempt, command,
+            result: DispatchResult::Queued }, None);
+        assert!(step(&mut state, Event::ControlAccepted { backend: URI, attempt, command,
+            operation: Operation::Play, native_acknowledged: true }, None).is_empty());
+        assert!(step(&mut state, Event::ControlAccepted { backend: FEED, attempt,
+            command, operation: Operation::Pause, native_acknowledged: true }, None).is_empty());
+        assert_eq!(step(&mut state, Event::ControlAccepted { backend: FEED, attempt, command,
+            operation: Operation::Play, native_acknowledged: true }, None),
+            [Fx::AcceptedControl { backend: FEED, attempt, command,
+                operation: Operation::Play, native_acknowledged: true }]);
+        assert!(step(&mut state, Event::ControlAccepted { backend: FEED, attempt, command,
+            operation: Operation::Play, native_acknowledged: true }, None).is_empty());
+        assert_eq!(state.snapshot.playback.unwrap().value, Playback::ReadyAwaitPlay);
+        assert!(!state.snapshot.presented);
     }
 
     #[test]

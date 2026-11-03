@@ -281,6 +281,9 @@ pub struct Shared {
     native_session: NativeGate,
     // library callback thread (K) -> main (M)
     pub playpos_ns: AtomicI64, // g_playpos_ns
+    /// Last content position from a native type=0 callback. Unlike playpos_ns, seek and HUD
+    /// code never writes this mailbox. dg_pos_ticks publishes each new sample.
+    pub reported_playpos_ns: AtomicI64,
     // the presented frame's fed PTS (0-based, raw `num` from the type=0 callback). The feed
     // loop throttles on max_fed_pts - pres_fed so it stays ~MAX_FEED_AHEAD ahead of the
     // decoder (feeding further overfills the 4K HEVC DPB/CPB and stalls the sink).
@@ -817,6 +820,7 @@ impl Shared {
             dg_placed_w: AtomicI32::new(0),
             dg_placed_h: AtomicI32::new(0),
             playpos_ns: AtomicI64::new(0),
+            reported_playpos_ns: AtomicI64::new(0),
             pres_fed: AtomicI64::new(0),
             frames: AtomicI32::new(0),
             seen_frame: AtomicBool::new(false),
@@ -1102,6 +1106,7 @@ impl Shared {
         self.dg_stage.store(0, Ordering::Relaxed);
         self.dg_cb_count.store(0, Ordering::Relaxed);
         self.dg_pos_ticks.store(0, Ordering::Relaxed);
+        self.reported_playpos_ns.store(0, Ordering::Relaxed);
         self.dg_sink_displayed_cb.store(0, Ordering::Relaxed);
         self.dg_sink_other_cb.store(0, Ordering::Relaxed);
         self.dg_feed_state.store(0, Ordering::Relaxed);
