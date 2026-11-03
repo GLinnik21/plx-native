@@ -176,7 +176,8 @@ pub enum DriverEvent {
     /// it says nothing about the playback clock or a presented picture.
     ControlAccepted { attempt: AttemptId, command: CommandId, operation: Operation,
         native_acknowledged: bool },
-    /// A queued transport verb later reached the native boundary and was refused.
+    /// A queued command later reached the driver boundary and was refused. Track and seek
+    /// refusals remain correlated to their exact request, including during startup.
     ControlRefused { attempt: AttemptId, command: CommandId, operation: Operation,
         failure: Failure },
     /// Completion of the exact queued track command, after native confirmation. A plain
