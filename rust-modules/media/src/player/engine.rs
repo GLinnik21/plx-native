@@ -882,23 +882,15 @@ fn build_av_payload_at(
     ps: &crate::route::PlaybackSession, video: &str, audio: &str, env: SinkEnvelope, rate: i32,
 ) -> String {
     let facts = PayloadFacts::capture(ps).to_feed();
-    build_av_payload_from_facts(&facts, video, audio, env, rate)
+    build_av_payload_from_facts(&facts, video, audio, env, rate, super::feed_open::payload_options(&facts))
 }
 
 fn build_av_payload_from_facts(
     facts: &plx_play_feed::PayloadFacts, video: &str, audio: &str, env: SinkEnvelope, rate: i32,
+    options: plx_play_feed::PayloadOptions,
 ) -> String {
-    let with_fps = !plx_base::devtrig::flag("nofps");
-    if !with_fps {
-        #[cfg(feature = "devtriggers")]
-        log("esInfo: videoFps WITHHELD by /tmp/plxnative-nofps");
-    }
     let built = plx_play_feed::build_av_payload(
-        facts, video, audio, env, rate,
-        plx_play_feed::PayloadOptions {
-            with_fps,
-            suppress_dv_node: facts.dv.is_some() && plx_data::metadata::dv_node_suppressed(),
-        },
+        facts, video, audio, env, rate, options,
     );
     for line in built.notices {
         log(&line);
@@ -1058,15 +1050,6 @@ pub use super::route_start::{start_bufferfeed, start_bufferfeed_tracked, Bufferf
 /// `tests/run.py`'s `op_audio_enhancement_burn` grader looks for.
 fn stream_open_log_line(origin_log_form: &str, path: &str) -> String {
     format!("stream: {origin_log_form} path={path}")
-}
-
-#[cfg(test)]
-pub(super) fn start_bufferfeed_inner(
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut super::adapter::PlayerAdapter,
-    route_start: crate::route::RouteStartTransaction,
-) -> Result<crate::route::RouteStartAttempt, crate::route::RouteStartResult> {
-    super::route_start::start_bufferfeed_inner(ps, pa, route_start)
 }
 
 pub(super) fn begin_native_open(pa: &mut super::adapter::PlayerAdapter) -> bool {
@@ -1248,7 +1231,7 @@ pub(super) fn prepare_native_open(
             // path and is false here for every streamed HEVC playback (device-measured 2026-09-03:
             // three HEVC cells declared FHD before this read the right flag).
             sink_env = sink_envelope_now(&open.feed_payload, lv, session_rate);
-            let av = build_av_payload_from_facts(&open.feed_payload, lv.payload_name(), ac, sink_env, session_rate);
+            let av = build_av_payload_from_facts(&open.feed_payload, lv.payload_name(), ac, sink_env, session_rate, open.payload_options);
             stream_payload = if ac == "OPUS" {
                 let channels = open.audio_channels;
                 let Some(p) = with_opus_info(&av, channels) else {
@@ -5804,7 +5787,7 @@ mod load_in_flight_tests {
         let start = crate::route::begin_route_start().expect("a completed stop grants a start owner");
         // No URL is set, so an unguarded start would answer `NoRoute`; `StartFailed` is the refusal.
         assert_eq!(
-            start_bufferfeed_inner(&mut ps, &mut pa, start).err(),
+            crate::player::route_start::start_bufferfeed_inner(&mut ps, &mut pa, start).err(),
             Some(crate::route::RouteStartResult::StartFailed),
             "a later playback must not be handed the object an abandoned Load still owns"
         );
