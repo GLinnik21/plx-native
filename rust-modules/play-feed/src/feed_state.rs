@@ -5,6 +5,7 @@ use crate::aq::{AuNode, AuQueue};
 use crate::shared::{PhysicalShared, Stage};
 use plx_net::stream::HttpStream;
 use std::os::raw::{c_int, c_void};
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::atomic::Ordering;
 
 pub const PRES_NONE: i64 = i64::MIN;
