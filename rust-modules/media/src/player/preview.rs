@@ -829,7 +829,7 @@ pub fn transport(
     if !crate::route::is_preview(ps) || !bound_or_playing() || !pa.is_live() {
         return false;
     }
-    let want = super::transport::transport_target(play, super::transport::paused());
+    let want = super::transport::transport_target(play, super::transport::viewer_paused_for(pa));
     super::transport::set_transport_paused(pa, want)
 }
 

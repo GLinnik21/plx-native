@@ -172,6 +172,10 @@ pub enum ExitDisposition { Clean, PreserveNativeOwnership }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DriverEvent {
     Observation { attempt: AttemptId, observation: Observation },
+    /// The exact queued transport verb reached the driver. This is command evidence only;
+    /// it says nothing about the playback clock or a presented picture.
+    ControlAccepted { attempt: AttemptId, command: CommandId, operation: Operation,
+        native_acknowledged: bool },
     /// A queued transport verb later reached the native boundary and was refused.
     ControlRefused { attempt: AttemptId, command: CommandId, operation: Operation,
         failure: Failure },
@@ -190,6 +194,9 @@ impl From<BackendEvent> for Event {
         let backend = value.backend;
         match value.event {
             DriverEvent::Observation { attempt, observation } => Event::Observation { backend, attempt, observation },
+            DriverEvent::ControlAccepted { attempt, command, operation, native_acknowledged } =>
+                Event::ControlAccepted { backend, attempt, command, operation,
+                    native_acknowledged },
             DriverEvent::ControlRefused { attempt, command, operation, failure } =>
                 Event::ControlRefused { backend, attempt, command, operation, failure },
             DriverEvent::TrackSettled { attempt, command, kind, choice } =>

@@ -58,7 +58,7 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
     // A URI-mode probe session (dev trigger `plxnative-uriprobe`) holds the route-start attempt and
     // the exported window without an Engine in the slot. Active double-start stays a no-op;
     // closing or quarantined ownership refuses a new start until actual release.
-    #[cfg(feature = "devtriggers")]
+    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
     if pa.uri_live() {
         log("start_bufferfeed: a URI-mode registration still owns its resources");
         if pa.uri_closing() {
@@ -137,7 +137,7 @@ pub(super) fn start_bufferfeed_for(
     pa: &mut super::adapter::PlayerAdapter,
     route_start: crate::route::RouteStartTransaction,
 ) -> BufferfeedStartOutcome {
-    #[cfg(feature = "devtriggers")]
+    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
     if pa.uri_live() {
         // Reload/foreground starts reach this seam directly too. URI ownership never queues one.
         let _ = crate::route::abort_route_start(route_start, crate::route::RouteStartResult::StartFailed);
@@ -304,7 +304,7 @@ pub(super) fn start_bufferfeed_inner(
     // URL and the foreground play which owns the screen. The content names the variant; text which
     // names none leaves the probe unarmed and the play normal rather than running a variant nobody
     // asked for.
-    #[cfg(feature = "devtriggers")]
+    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
     if stream && !crate::route::is_preview(ps) {
         if let Some(text) = plx_base::devtrig::read("uriprobe") {
             match super::uriprobe::Variant::from_trigger(&text) {
@@ -814,7 +814,7 @@ pub(super) fn exit_native_with(
     mut clock: impl FnMut() -> std::time::Instant,
     mut idle: impl FnMut(),
 ) -> NativeExit {
-    #[cfg(feature = "devtriggers")]
+    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
     if pa.uri_live() {
         let started = clock();
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -1052,7 +1052,7 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
     // still pending and requests unload/close; the adapter retains its window until release. It owns no Engine, so the
     // Engine-less ritual below then finishes the stop (the transcode session, the route) as it does
     // for a start which failed before an Engine existed.
-    #[cfg(feature = "devtriggers")]
+    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
     super::uriprobe_drive::stop(ps, pa);
     // A start still queued behind the previous object's `Unload` is the playback this stop ends.
     // Always sent: the machine owns whether anything is queued (a no-op otherwise), and no copy of

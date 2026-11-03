@@ -23,6 +23,10 @@ impl BackendRunner {
 
     pub fn snapshot(&self) -> &Snapshot { self.state.snapshot() }
 
+    pub fn startup_viewer_paused(&self, backend: BackendKind, attempt: AttemptId) -> Option<bool> {
+        self.startup.viewer_paused(backend, attempt)
+    }
+
     pub fn metrics_snapshot(&self) -> Option<&measure::RequestSummary<LogicalRequestId, AttemptId>> {
         self.metrics.snapshot()
     }
@@ -167,16 +171,22 @@ impl BackendRunner {
                     drivers.discard_staged(backend, attempt, key);
                 }
                 notice @ (Fx::Rejected { .. } | Fx::CommandRefused { .. }
+                    | Fx::AcceptedControl { .. } | Fx::StartupFailed { .. }
                     | Fx::AcceptedObservation { .. } | Fx::AcceptedTrackSettled { .. }
                     | Fx::AcceptedSeekLanded { .. } | Fx::ReleaseOutcome { .. }) => {
-                    let initial_play_refusal = self.startup.is_initial_play_refusal(&notice);
+                    let mandatory_refusal = self.startup.is_mandatory_refusal(&notice);
                     self.startup.on_notice(&notice);
                     if let (Event::Intent(Intent::Start { .. }), Fx::Rejected { backend, attempt, failure })
                         = (event, notice) {
                         self.metrics.rejected_start(backend, attempt, failure, &mut result.metrics);
                     }
-                    self.metrics.notice(&notice, initial_play_refusal, at, &mut result.metrics);
+                    self.metrics.notice(&notice, mandatory_refusal, at, &mut result.metrics);
                     result.playback.push(notice);
+                    if mandatory_refusal {
+                        if let Fx::CommandRefused { backend, attempt, command, failure, .. } = notice {
+                            result.playback.push(Fx::StartupFailed { backend, attempt, command, failure });
+                        }
+                    }
                 }
             }
         }
@@ -459,8 +469,10 @@ mod tests {
         runner.set_foreground(&mut drivers, &(), false);
         runner.send(&mut drivers, &(), Intent::Start { backend: URI, attempt: A,
             source: SourceKey::new(1), requirements: REQ, initial: INITIAL });
+        assert_eq!(runner.startup_viewer_paused(URI, A), Some(false));
         runner.send(&mut drivers, &(), Intent::Control { backend: URI, attempt: A,
             operation: Operation::Pause });
+        assert_eq!(runner.startup_viewer_paused(URI, A), Some(true));
         drivers.events.push(BackendEvent { backend: URI, event: DriverEvent::Observation {
             attempt: A, observation: Observation::Playback(Observed { value: Playback::ReadyAwaitPlay,
                 from: EvidenceSource::BackendReport }) } });
@@ -472,6 +484,8 @@ mod tests {
             operation: Operation::Play });
         assert_eq!(drivers.sent.last().unwrap().3, Operation::Play);
         assert_eq!(drivers.sent.len(), 2);
+        assert_eq!(runner.startup_viewer_paused(URI, A), None,
+            "an intentionally paused session's later interactive Play is ordinary control");
     }
 
     #[test]
@@ -488,12 +502,18 @@ mod tests {
                 from: EvidenceSource::BackendReport }) } });
         runner.poll_at(&mut drivers, &(), tick(2));
         let initial = drivers.sent.last().unwrap().2;
+        assert_eq!(runner.startup_viewer_paused(FEED, A), Some(false),
+            "pending native Play still leaves the viewer's unpaused goal visible");
         assert_eq!(drivers.sent.last().unwrap().3, Operation::Play);
         drivers.events.push(BackendEvent { backend: FEED, event: DriverEvent::ControlRefused {
             attempt: A, command: initial, operation: Operation::Play, failure: Failure::Refused } });
         let refused = runner.poll_at(&mut drivers, &(), tick(3));
-        assert_eq!(refused.playback, [Fx::CommandRefused { backend: FEED, attempt: A,
-            command: initial, operation: Operation::Play, failure: Failure::Refused }]);
+        assert_eq!(refused.playback, [
+            Fx::CommandRefused { backend: FEED, attempt: A,
+                command: initial, operation: Operation::Play, failure: Failure::Refused },
+            Fx::StartupFailed { backend: FEED, attempt: A,
+                command: initial, failure: Failure::Refused },
+        ]);
         assert_eq!(runner.metrics_snapshot().unwrap().current_attempt.unwrap().outcome,
             Some(measure::AttemptOutcome::Failed(measure::Failure {
                 stage: measure::Stage::Presentation, cause: measure::Cause::Refused })));
@@ -531,7 +551,91 @@ mod tests {
             operation: Operation::Play });
         assert_eq!(drivers.sent.len(), before + 1, "later refusal did not poison the startup plan");
     }
+
+    #[test]
+    fn mandatory_track_refusal_is_terminal_but_later_track_refusal_is_not() {
+        let mut runner = BackendRunner::new();
+        let mut drivers = FakeSet::new();
+        let requirements = Requirements { audio_track: TrackChoice::Selected(3), ..REQ };
+        runner.begin_request_at(LogicalRequestId::new(41), measure::Origin::Fresh, tick(0));
+        runner.send_at(&mut drivers, &(), Intent::Start { backend: URI, attempt: A,
+            source: SourceKey::new(41), requirements, initial: INITIAL },
+            measure::Origin::Fresh, tick(1));
+        drivers.events.push(BackendEvent { backend: URI, event: DriverEvent::Observation {
+            attempt: A, observation: Observation::Playback(Observed {
+                value: Playback::ReadyAwaitPlay, from: EvidenceSource::BackendReport }) } });
+        runner.poll_at(&mut drivers, &(), tick(2));
+        let (command, operation) = (drivers.sent.last().unwrap().2, drivers.sent.last().unwrap().3);
+        drivers.events.push(BackendEvent { backend: URI, event: DriverEvent::ControlRefused {
+            attempt: A, command, operation, failure: Failure::Refused } });
+        let result = runner.poll_at(&mut drivers, &(), tick(3));
+        assert!(result.playback.contains(&Fx::StartupFailed { backend: URI, attempt: A,
+            command, failure: Failure::Refused }));
+        assert!(runner.metrics_snapshot().unwrap().current_attempt.unwrap().outcome.is_some());
+
+        let mut runner = BackendRunner::new();
+        let mut drivers = FakeSet::new();
+        runner.begin_request_at(LogicalRequestId::new(42), measure::Origin::Fresh, tick(0));
+        runner.send_at(&mut drivers, &(), Intent::Start { backend: URI, attempt: A,
+            source: SourceKey::new(42), requirements: REQ, initial: INITIAL },
+            measure::Origin::Fresh, tick(1));
+        drivers.events.push(BackendEvent { backend: URI, event: DriverEvent::Observation {
+            attempt: A, observation: Observation::Playback(Observed {
+                value: Playback::ReadyAwaitPlay, from: EvidenceSource::BackendReport }) } });
+        runner.poll_at(&mut drivers, &(), tick(2));
+        let initial_play = drivers.sent.last().unwrap().2;
+        drivers.events.push(BackendEvent { backend: URI, event: DriverEvent::ControlAccepted {
+            attempt: A, command: initial_play, operation: Operation::Play,
+            native_acknowledged: true } });
+        runner.poll_at(&mut drivers, &(), tick(3));
+        let operation = Operation::SelectTrack { kind: plx_playback_contract::TrackKind::Audio,
+            choice: TrackChoice::Selected(3) };
+        runner.send_at(&mut drivers, &(), Intent::Control { backend: URI, attempt: A,
+            operation }, measure::Origin::Fresh, tick(4));
+        let command = drivers.sent.last().unwrap().2;
+        drivers.events.push(BackendEvent { backend: URI, event: DriverEvent::ControlRefused {
+            attempt: A, command, operation, failure: Failure::Refused } });
+        let result = runner.poll_at(&mut drivers, &(), tick(5));
+        assert!(!result.playback.iter().any(|notice| matches!(notice, Fx::StartupFailed { .. })));
+        assert_eq!(runner.metrics_snapshot().unwrap().current_attempt.unwrap().outcome, None);
+    }
     fn tick(ms: u64) -> measure::Tick { measure::Tick::from_millis(ms) }
+
+    #[test]
+    fn feed_native_ack_and_position_progress_do_not_invent_playback_or_picture() {
+        let mut runner = BackendRunner::new();
+        let mut drivers = FakeSet::new();
+        runner.begin_request_at(LogicalRequestId::new(40), measure::Origin::Fresh, tick(0));
+        runner.send_at(&mut drivers, &(), Intent::Start { backend: FEED, attempt: A,
+            source: SourceKey::new(40), requirements: REQ, initial: INITIAL },
+            measure::Origin::Fresh, tick(1));
+        drivers.events.push(BackendEvent { backend: FEED, event: DriverEvent::Observation {
+            attempt: A, observation: Observation::Playback(Observed {
+                value: Playback::ReadyAwaitPlay, from: EvidenceSource::BackendReport }) } });
+        runner.poll_at(&mut drivers, &(), tick(2));
+        let play = drivers.sent.last().unwrap().2;
+        assert_eq!(drivers.sent.last().unwrap().3, Operation::Play);
+        drivers.events.extend([
+            BackendEvent { backend: FEED, event: DriverEvent::ControlAccepted {
+                attempt: A, command: play, operation: Operation::Play,
+                native_acknowledged: true } },
+            BackendEvent { backend: FEED, event: DriverEvent::Observation { attempt: A,
+                observation: Observation::Position(Observed { value: ContentTime::from_millis(100),
+                    from: EvidenceSource::BackendReport }) } },
+            BackendEvent { backend: FEED, event: DriverEvent::Observation { attempt: A,
+                observation: Observation::Position(Observed { value: ContentTime::from_millis(200),
+                    from: EvidenceSource::BackendReport }) } },
+        ]);
+        let notices = runner.poll_at(&mut drivers, &(), tick(3));
+        assert!(matches!(notices.playback.first(), Some(Fx::AcceptedControl {
+            backend: FEED, attempt: A, command, operation: Operation::Play,
+            native_acknowledged: true }) if *command == play));
+        let evidence = runner.metrics_snapshot().unwrap().current_attempt.unwrap().evidence;
+        assert!(evidence.command_acknowledged && evidence.clock_advanced);
+        assert!(!evidence.playback_observed && !evidence.picture_presented);
+        assert_eq!(runner.snapshot().playback.unwrap().value, Playback::ReadyAwaitPlay);
+        assert!(!runner.snapshot().presented);
+    }
 
     #[test]
     fn metrics_keep_picture_separate_and_terminal_failure_survives_same_poll_release() {

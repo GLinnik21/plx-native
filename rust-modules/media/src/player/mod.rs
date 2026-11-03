@@ -41,13 +41,13 @@ pub mod preview;
 pub mod recovery; // the failed-open ladder (pure machine); `pump` drives it
 pub mod release; // the native object's off-frame release lifecycle (pure machine); `engine` runs it
 mod route_start; // common transaction admission and release-queued start policy
-#[cfg(feature = "devtriggers")]
+#[cfg(all(feature = "devtriggers", feature = "play-uri"))]
 pub mod uri_protocol;
-#[cfg(feature = "devtriggers")]
+#[cfg(all(feature = "devtriggers", feature = "play-uri"))]
 pub mod uri_lifecycle;
-#[cfg(feature = "devtriggers")]
+#[cfg(all(feature = "devtriggers", feature = "play-uri"))]
 pub mod uriprobe; // the URI-mode probe (issue #1064, dev trigger `plxnative-uriprobe`): what to say to com.webos.media (pure machine); `uriprobe_drive` runs it
-#[cfg(feature = "devtriggers")]
+#[cfg(all(feature = "devtriggers", feature = "play-uri"))]
 pub mod uriprobe_drive; // runs the probe: the transport, the window verbs and the route-start settle the machine leaves to a driver
 #[cfg(feature = "hostsim")]
 pub mod ffi_host;
@@ -480,12 +480,29 @@ pub fn set_audio_switch_for_test(state: u8) {
     SHARED.audio_pick_ms.store(i64::from(vclock_ms()), Relaxed);
     SHARED.audio_switch.store(state, Relaxed);
 }
+#[derive(Clone, Copy)]
+pub(crate) struct TransportResult {
+    pub accepted: bool,
+    pub native_acknowledged: bool,
+}
+impl TransportResult {
+    const fn deferred(accepted: bool) -> Self {
+        Self { accepted, native_acknowledged: false }
+    }
+    const fn native(accepted: bool) -> Self {
+        Self { accepted, native_acknowledged: accepted }
+    }
+}
+
 pub fn pause(pa: &mut adapter::PlayerAdapter) -> bool {
+    pause_result(pa).accepted
+}
+pub(crate) fn pause_result(pa: &mut adapter::PlayerAdapter) -> TransportResult {
     match SHARED.prepare_hls_user_pause() {
         Some(HlsUserPause::AlreadyHeld) => {
             TX.commit_paused(true);
             acb_mirror_playstate(pa, false);
-            return true;
+            return TransportResult::deferred(true);
         }
         Some(HlsUserPause::Issue(token)) => {
             let accepted = unsafe { sink().pause(pa.mt()) } != 0;
@@ -493,24 +510,24 @@ pub fn pause(pa: &mut adapter::PlayerAdapter) -> bool {
                 HlsPauseCompletion::Accepted => {}
                 HlsPauseCompletion::Refused => {
                     log("player: Starfish refused Pause");
-                    return false;
+                    return TransportResult::deferred(false);
                 }
                 HlsPauseCompletion::Stale => {
                     log("player: Pause result lost its clock token");
-                    return false;
+                    return TransportResult::deferred(false);
                 }
             }
         }
         None => {
             log("player: Pause deferred by an in-flight clock transition");
-            return false;
+            return TransportResult::deferred(false);
         }
     }
     // Publish the feed gate at the same accepted actuator boundary. Leaving this to app.rs after
     // the ACB call let a deadline transaction charge accepted Pause time as active playback.
     TX.commit_paused(true);
     acb_mirror_playstate(pa, false);
-    true
+    TransportResult::native(true)
 } // playback_pause
 /// Mute the sink for a paused preroll's Play window (`engine::try_prime`, immediately before that
 /// Play): the preroll plays ONE picture for a viewer who is paused, and the ~0.2-0.3 s until the
@@ -537,6 +554,9 @@ pub(crate) fn restore_preroll_volume(mt: &plx_base::task::MainThread) {
 }
 
 pub fn resume(pa: &mut adapter::PlayerAdapter) -> bool {
+    resume_result(pa).accepted
+}
+pub(crate) fn resume_result(pa: &mut adapter::PlayerAdapter) -> TransportResult {
     // First, whichever branch follows: the viewer asked for sound, and a Play below must not run muted.
     restore_preroll_volume(pa.mt());
     let queued_stream = pa.feed_uses_stream_queues();
@@ -549,7 +569,7 @@ pub fn resume(pa: &mut adapter::PlayerAdapter) -> bool {
             }
             TX.commit_paused(false);
             log("player: user Resume accepted; physical Play remains fenced");
-            true
+            TransportResult::deferred(true)
         }
         Some(HlsUserResume::Prime) => {
             // Keep Starfish and ACB physically Paused. Opening TX first lets the two AU lanes fill
@@ -557,14 +577,14 @@ pub fn resume(pa: &mut adapter::PlayerAdapter) -> bool {
             // Resume. Starting the clock here recreates the pause-to-fill A/V drift race.
             if !pa.arm_feed_live_clock_prime() {
                 log("player: queued Resume lost its Engine before prime could arm");
-                return false;
+                return TransportResult::deferred(false);
             }
             if TX.seek_preroll_active() {
                 TX.finish_seek_preroll();
             }
             TX.commit_paused(false);
             log("player: queued Resume feeding; physical Play awaits balanced prime");
-            true
+            TransportResult::deferred(true)
         }
         Some(HlsUserResume::Issue(token)) => {
             let accepted = unsafe { sink().play(pa.mt()) } != 0;
@@ -577,15 +597,15 @@ pub fn resume(pa: &mut adapter::PlayerAdapter) -> bool {
                     if resume_acb {
                         acb_mirror_playstate(pa, true);
                     }
-                    true
+                    TransportResult::native(true)
                 }
                 HlsPlayCompletion::Refused => {
                     log("player: Starfish refused Play");
-                    false
+                    TransportResult::deferred(false)
                 }
                 HlsPlayCompletion::Stale => {
                     log("player: Resume result lost its clock token");
-                    false
+                    TransportResult::deferred(false)
                 }
             }
         }
@@ -595,11 +615,11 @@ pub fn resume(pa: &mut adapter::PlayerAdapter) -> bool {
             // needed here; the prime owns Play if it has not happened yet.
             TX.finish_seek_preroll();
             TX.commit_paused(false);
-            true
+            TransportResult::deferred(true)
         }
         None => {
             log("player: Resume has no accepted user hold");
-            false
+            TransportResult::deferred(false)
         }
     }
 } // playback_resume
@@ -694,7 +714,7 @@ pub fn observe_video_plane(
     pa: &mut adapter::PlayerAdapter,
 ) -> Option<bool> {
     let bound = pa.feed_stage().is_some_and(acb_playstate_ready);
-    #[cfg(feature = "devtriggers")]
+    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
     let bound = bound || pa.uri_plane_open();
     pl.set_video_plane_bound(bound)
 }
@@ -2800,7 +2820,6 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::Event
             SHARED.dg_vpres_gap.fetch_max(gap, Relaxed);
         }
         SHARED.frames.fetch_add(1, Relaxed);
-        SHARED.dg_pos_ticks.fetch_add(1, Relaxed);
         SHARED.seen_frame.store(true, Relaxed); // session-scoped: unlike `frames`, a seek won't clear it
         // the rebuild an audio pick asked for has put its picture up: the switch is over
         let _ = SHARED.audio_switch.compare_exchange(
@@ -2812,10 +2831,10 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::Event
         // back from the pipeline's timeline to film time (`from_sink_ns`; identity at 1x)
         let num = from_sink_ns(num);
         SHARED.pres_fed.store(num, Relaxed); // raw fed pts, for the feed-ahead throttle
-        SHARED.playpos_ns.store(
-            num - SHARED.pts_shift.load(Relaxed) + SHARED.disp_base.load(Relaxed),
-            Relaxed,
-        );
+        let content_ns = num - SHARED.pts_shift.load(Relaxed) + SHARED.disp_base.load(Relaxed);
+        SHARED.playpos_ns.store(content_ns, Relaxed);
+        SHARED.reported_playpos_ns.store(content_ns, Relaxed);
+        SHARED.dg_pos_ticks.fetch_add(1, std::sync::atomic::Ordering::Release);
     }
     if s.is_null() {
         return;
