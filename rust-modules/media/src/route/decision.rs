@@ -122,6 +122,8 @@ pub enum StartRefusal {
 }
 
 pub struct PlaybackSession {
+    /// Main-thread observation for the exact physical attempt currently shown by this session.
+    attempt_view: crate::player::attempt_view::AttemptView<RouteStartAttempt>,
     /// Frozen for one logical playback, including its retries and track changes.
     direct_play_mode: DirectPlayMode,
     /// This playback was refused by the cached device sandbox preflight. No Engine exists.
@@ -544,9 +546,28 @@ pub(super) enum EnhancementOutcome {
 }
 
 impl PlaybackSession {
+    /// Start one physical open's readout at Unknown. URI and buffer-feed starts use the same
+    /// address gate; a retry cannot inherit its predecessor's position or failure evidence.
+    pub fn begin_attempt_view(&mut self, attempt: RouteStartAttempt, backend: crate::player::attempt_view::Backend) {
+        self.attempt_view.begin(attempt, backend);
+    }
+
+    pub fn attempt_view(&self) -> &crate::player::attempt_view::AttemptView<RouteStartAttempt> {
+        &self.attempt_view
+    }
+
+    pub fn ingest_attempt_facts(
+        &mut self,
+        attempt: RouteStartAttempt,
+        facts: crate::player::attempt_view::AttemptFacts,
+    ) -> bool {
+        self.attempt_view.ingest(attempt, facts)
+    }
+
     /// Nothing playing: what the module holds before the first play, and the value the static is
     /// born as. Every String empty, every id 0 or `UNSET`, both HUD buffers NUL.
     pub const IDLE: PlaybackSession = PlaybackSession {
+        attempt_view: crate::player::attempt_view::AttemptView::EMPTY,
         direct_play_mode: DirectPlayMode::Auto,
         jail_load_blocked: false,
         native_start_refused: None,
@@ -636,6 +657,7 @@ impl PlaybackSession {
     /// it or silently dropping it.
     pub fn publication(&self) -> PlaybackSession {
         let PlaybackSession {
+            attempt_view,
             direct_play_mode,
             jail_load_blocked,
             native_start_refused,
@@ -707,6 +729,7 @@ impl PlaybackSession {
             resolved_as_preview,
         } = self;
         PlaybackSession {
+            attempt_view: *attempt_view,
             direct_play_mode: *direct_play_mode,
             jail_load_blocked: *jail_load_blocked,
             native_start_refused: *native_start_refused,
@@ -9178,6 +9201,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
         let now_ms = s.now_ms;
         let preview = request.as_ref().is_some_and(|r| r.preview);
         *s = PlaybackSession {
+            attempt_view: crate::player::attempt_view::AttemptView::EMPTY,
             direct_play_mode: plan.direct_play_mode,
             jail_load_blocked: false,
             native_start_refused: None,

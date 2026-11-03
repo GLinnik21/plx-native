@@ -19,6 +19,7 @@
 //! and `sink()` answers a no-op sink to every other main-thread verb until it is done.
 #![allow(non_upper_case_globals)]
 pub mod adapter;
+pub mod attempt_view;
 pub mod backend;
 pub mod claim_hold;
 pub mod ass; // pinned libass worker and immutable rendered frames
@@ -702,6 +703,20 @@ pub fn video_viewport(width: i32, height: i32) -> video_geometry::Viewport {
 
 pub fn playpos_ns() -> i64 {
     SHARED.playpos_ns.load(Relaxed)
+}
+/// Content-time position reported by this session's current physical attempt, if observed.
+pub fn observed_position_ns(ps: &crate::route::PlaybackSession) -> Option<i64> {
+    ps.attempt_view().facts().position_ns
+}
+pub fn observed_duration_ns(ps: &crate::route::PlaybackSession) -> Option<i64> {
+    ps.attempt_view().facts().duration_ns
+}
+pub fn observed_playable_buffer_ms(ps: &crate::route::PlaybackSession) -> Option<i64> {
+    ps.attempt_view().facts().playable_buffer_ms
+}
+/// A decoder callback reported a frame; this does not prove it reached the panel.
+pub fn reported_frame(ps: &crate::route::PlaybackSession) -> Option<bool> {
+    ps.attempt_view().facts().reported_frame
 }
 pub fn frames() -> i32 {
     SHARED.frames.load(Relaxed)
@@ -1551,6 +1566,9 @@ pub fn load_v_name(code: u8) -> &'static str {
 /// `starfish.c` symbols that do not exist on the dev Mac.
 #[derive(Default)]
 pub struct Diag {
+    /// Origin and sparse facts of the session's current physical attempt.
+    pub backend: Option<attempt_view::Backend>,
+    pub observed: attempt_view::AttemptFacts,
     pub vp_mode: c_int,
     pub window_id: String,
     pub acb_ok: bool,
@@ -1706,35 +1724,39 @@ impl Diag {
 }
 
 pub fn diag(ps: &crate::route::PlaybackSession) -> Diag {
+    let view = ps.attempt_view();
+    let backend = view.backend();
+    let observed = *view.facts();
+    if backend != Some(attempt_view::Backend::Feed) {
+        // No buffer-feed Engine owns these callback mailboxes. In particular a URI open must
+        // never display the previous Engine's feed counts or a guessed zero as an observation.
+        return Diag { backend, observed, source_kbps: crate::route::transport_kbps(ps), ..Default::default() };
+    }
     let (fed_v, fed_a) = engine::fed_totals();
     // The sink hands back the seam's own static buffer — never NULL, "" when no window was
     // created — so this is a copy of a bounded char[64], not a borrow with a lifetime to reason about.
     let window_id = sink().window_id().to_string_lossy().into_owned();
     let load_a = SHARED.dg_load_a.load(Relaxed);
-    let playable_buffer_ms = playable_buffer_ms(
-        SHARED.hls_video_tail_ns.load(Relaxed),
-        SHARED.hls_audio_tail_ns.load(Relaxed),
-        load_a != 0,
-        SHARED.disp_base.load(Relaxed),
-        SHARED.playpos_ns.load(Relaxed),
-    );
-    let (video_w, video_h) = SHARED.video_raster();
+    let playable_buffer_ms = observed.playable_buffer_ms;
+    let (video_w, video_h) = observed.raster.unwrap_or((0, 0));
     Diag {
+        backend,
+        observed,
         vp_mode: sink().window_mode(),
         window_id,
         acb_ok: ACB_OK.load(Relaxed),
         place_rv: SHARED.dg_place_rv.load(Relaxed),
         placed_w: SHARED.dg_placed_w.load(Relaxed),
         placed_h: SHARED.dg_placed_h.load(Relaxed),
-        stage: SHARED.dg_stage.load(Relaxed),
+        stage: observed.pipeline_stage.unwrap_or(0),
         load_completed: SHARED.load_completed.load(Relaxed),
         load_failed: SHARED.load_failed.load(Relaxed),
         cb_count: SHARED.dg_cb_count.load(Relaxed),
         pushed_any: crate::ff::pushed_any(),
         fed_v,
         fed_a,
-        frames: SHARED.frames.load(Relaxed),
-        seen_frame: SHARED.seen_frame.load(Relaxed),
+        frames: observed.frames.unwrap_or(0),
+        seen_frame: observed.reported_frame.unwrap_or(false),
         aq_video: SHARED.dg_aq_video.load(Relaxed),
         aq_audio: SHARED.dg_aq_audio.load(Relaxed),
         fed_v_pts: SHARED.dg_fed_v_pts.load(Relaxed),
@@ -1744,7 +1766,7 @@ pub fn diag(ps: &crate::route::PlaybackSession) -> Diag {
         feed_state: SHARED.dg_feed_state.load(Relaxed),
         cb_err: SHARED.dg_cb_err.load(Relaxed),
         cb_err_at: SHARED.dg_cb_err_at.load(Relaxed),
-        http_status: SHARED.dg_http_status.load(Relaxed),
+        http_status: observed.http_status.unwrap_or(0),
         net_rx: SHARED.dg_net_rx.load(Relaxed),
         playable_buffer_ms,
         load_at: SHARED.dg_load_at.load(Relaxed),
@@ -1752,8 +1774,8 @@ pub fn diag(ps: &crate::route::PlaybackSession) -> Diag {
         video_w,
         video_h,
         video_fps_milli: SHARED.video_fps_milli.load(Relaxed),
-        pos_ns: SHARED.playpos_ns.load(Relaxed),
-        dur_ns: SHARED.duration_ns.load(Relaxed),
+        pos_ns: observed.position_ns.unwrap_or(0),
+        dur_ns: observed.duration_ns.unwrap_or(0),
         source_kbps: crate::route::transport_kbps(ps),
         abr_mode: SHARED.dg_abr_mode.load(Relaxed),
         abr_kbps: SHARED.dg_abr_kbps.load(Relaxed),

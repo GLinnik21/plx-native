@@ -610,13 +610,14 @@ fn transport_classes(
 }
 
 fn error_context(ps: &crate::route::PlaybackSession) -> PlaybackErrorContext {
+    let facts = ps.attempt_view().facts();
     let delivery = delivery_class(ps);
     let selected = selected_quality_class(crate::route::quality());
     let requested = requested_quality(delivery, selected);
     let (transport, transfer_age) = transport_classes(
-        super::SHARED.dg_transport_rc.load(Relaxed),
-        super::SHARED.dg_transport_age_ms.load(Relaxed),
-        super::SHARED.dg_transport_reopen_failed.load(Relaxed),
+        facts.transport_rc.unwrap_or(0),
+        facts.transfer_age_ms.unwrap_or(0),
+        facts.transport_reopen_failed.unwrap_or(false),
     );
     let refusal = refusal_context(ps);
     let (noted, attempt_started) = {
@@ -626,21 +627,21 @@ fn error_context(ps: &crate::route::PlaybackSession) -> PlaybackErrorContext {
             .unwrap_or_else(|e| e.into_inner());
         (trace.attempted_delivery(), trace.attempt_started())
     };
-    let http_status = super::SHARED.dg_http_status.load(Relaxed);
+    let http_status = facts.http_status.unwrap_or(0);
     let (attempt_origin, attempt_ordinal) = attempt_snapshot();
     let context = PlaybackErrorContext {
         delivery,
         selected,
         requested,
-        declared_rate: RateClass::from_kbps(super::SHARED.dg_abr_declared_kbps.load(Relaxed)),
-        media_rate: RateClass::from_kbps(super::SHARED.dg_abr_media_kbps.load(Relaxed)),
-        raster: RasterClass::from_height(super::SHARED.video_raster().1),
-        pipeline: PipelineClass::from_stage(super::SHARED.dg_stage.load(Relaxed)),
+        declared_rate: RateClass::from_kbps(facts.declared_kbps.unwrap_or(0)),
+        media_rate: RateClass::from_kbps(facts.media_kbps.unwrap_or(0)),
+        raster: RasterClass::from_height(facts.raster.map_or(0, |(_, h)| h)),
+        pipeline: PipelineClass::from_stage(facts.pipeline_stage.unwrap_or(0)),
         http: HttpClass::from_status(http_status),
-        buffer: BufferClass::from_ms(super::SHARED.dg_abr_buffer_ms.load(Relaxed)),
+        buffer: BufferClass::from_ms(facts.abr_buffer_ms.unwrap_or(0)),
         transport,
         transfer_age,
-        demux_exit: DemuxExitClass::from_latch(super::SHARED.dg_demux_exit.load(Relaxed)),
+        demux_exit: DemuxExitClass::from_latch(facts.demux_exit.unwrap_or(0)),
         started: SAW_START.load(Relaxed),
         // A refusal names the route it asked the server for; else the route a noted switch is
         // opening; else the session's own, which is also the attempt's when nothing was switched.
@@ -649,7 +650,7 @@ fn error_context(ps: &crate::route::PlaybackSession) -> PlaybackErrorContext {
         attempt_origin,
         attempt_ordinal,
         http_status: HttpClass::exact_status(http_status),
-        pipeline_error: super::SHARED.dg_cb_err_num.load(Relaxed),
+        pipeline_error: facts.pipeline_error.unwrap_or(0),
         refusal,
     };
     if crate::route::preview_request(ps) {
@@ -760,13 +761,14 @@ fn refusal_context(ps: &crate::route::PlaybackSession) -> Option<RefusalContext>
 }
 
 fn presented_event(ps: &crate::route::PlaybackSession) -> TraceEvent {
+    let facts = ps.attempt_view().facts();
     let delivery = delivery_class(ps);
     let requested = requested_quality(delivery, selected_quality_class(crate::route::quality()));
     TraceEvent::Presented {
         delivery,
         requested,
-        declared_rate: RateClass::from_kbps(super::SHARED.dg_abr_declared_kbps.load(Relaxed)),
-        raster: RasterClass::from_height(super::SHARED.video_raster().1),
+        declared_rate: RateClass::from_kbps(facts.declared_kbps.unwrap_or(0)),
+        raster: RasterClass::from_height(facts.raster.map_or(0, |(_, h)| h)),
     }
 }
 
@@ -1003,7 +1005,7 @@ fn tick_with(ps: &crate::route::PlaybackSession, report_preview_failures: bool) 
             emit(DiagEvent::PlaybackStarted {
                 playback_id: ATTEMPT.load(Relaxed),
                 mode: mode(ps),
-                raster: raster_class(super::SHARED.video_raster().1),
+                raster: raster_class(ps.attempt_view().facts().raster.map_or(0, |(_, h)| h)),
                 fps: fps_rung(crate::route::stream_fps(ps)),
                 video: video_codec_class(&crate::route::stream_vcodec(ps)),
                 audio: audio_codec_class(&crate::route::stream_acodec(ps)),
@@ -1277,6 +1279,16 @@ pub fn watched_class(position_ns: i64, duration_ns: i64) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn begin_view(ps: &mut crate::route::PlaybackSession) -> crate::route::RouteStartAttempt {
+        let attempt = crate::route::RouteStartAttempt::fixture();
+        ps.begin_attempt_view(attempt, crate::player::attempt_view::Backend::Feed);
+        attempt
+    }
+
+    fn observe(ps: &mut crate::route::PlaybackSession, attempt: crate::route::RouteStartAttempt, facts: crate::player::attempt_view::AttemptFacts) {
+        assert!(ps.ingest_attempt_facts(attempt, facts));
+    }
 
     /// PR #104 review: `ATTEMPT_CONNECTION` packs the server slot, link code and ip code into one
     /// `u32` so `requested`/`emit` publish/observe them with a single store/load. Every field must
@@ -1642,14 +1654,20 @@ mod tests {
     #[test]
     fn a_type_18_callback_number_reaches_the_error_context() {
         let _g = plx_base::testlock::serial();
-        let ps = crate::route::PlaybackSession::default();
+        let mut ps = crate::route::PlaybackSession::default();
+        let attempt = begin_view(&mut ps);
         super::super::SHARED.reset_session();
         assert_eq!(error_context(&ps).pipeline_error, 0, "no callback, nothing to report");
         let epoch = super::super::SHARED.begin_native_session().expect("session");
         super::super::sf_on_event(epoch, 18, 601, c"Resource Allocation Error".as_ptr());
+        observe(&mut ps, attempt, crate::player::attempt_view::AttemptFacts {
+            pipeline_error: Some(super::super::SHARED.dg_cb_err_num.load(Relaxed)),
+            ..Default::default()
+        });
         assert_eq!(error_context(&ps).pipeline_error, 601);
         super::super::SHARED.retire_native_session(epoch);
         super::super::SHARED.reset_session();
+        ps.begin_attempt_view(attempt, crate::player::attempt_view::Backend::Feed);
         assert_eq!(error_context(&ps).pipeline_error, 0, "the latch does not outlive its session");
     }
 
@@ -1660,13 +1678,17 @@ mod tests {
     #[test]
     fn the_first_demux_exit_reaches_the_error_context_and_resets_per_session() {
         let _g = plx_base::testlock::serial();
-        let ps = crate::route::PlaybackSession::default();
+        let mut ps = crate::route::PlaybackSession::default();
+        let attempt = begin_view(&mut ps);
         let shared = &super::super::SHARED;
         shared.reset_session();
         assert_eq!(error_context(&ps).demux_exit, DemuxExitClass::None, "nothing recorded");
 
         shared.fail_demux(DemuxExitClass::HttpsOpenFailed);
         assert!(shared.demux_failed.load(Relaxed), "the helper still raises the flag");
+        observe(&mut ps, attempt, crate::player::attempt_view::AttemptFacts {
+            demux_exit: Some(shared.dg_demux_exit.load(Relaxed)), ..Default::default()
+        });
         assert_eq!(error_context(&ps).demux_exit, DemuxExitClass::HttpsOpenFailed);
         shared.fail_demux(DemuxExitClass::NoAccessUnits);
         shared.note_demux_exit(DemuxExitClass::OpenInputFailed);
@@ -1677,9 +1699,13 @@ mod tests {
         );
 
         shared.reset_session();
+        ps.begin_attempt_view(attempt, crate::player::attempt_view::Backend::Feed);
         assert_eq!(error_context(&ps).demux_exit, DemuxExitClass::None, "cleared per session");
         shared.note_demux_exit(DemuxExitClass::NoVideoStream);
         assert!(!shared.demux_failed.load(Relaxed), "a note alone does not fail the session");
+        observe(&mut ps, attempt, crate::player::attempt_view::AttemptFacts {
+            demux_exit: Some(shared.dg_demux_exit.load(Relaxed)), ..Default::default()
+        });
         assert_eq!(error_context(&ps).demux_exit, DemuxExitClass::NoVideoStream);
         shared.reset_session();
     }
@@ -2464,7 +2490,8 @@ mod tests {
     #[test]
     fn the_exact_http_status_rides_beside_the_class_and_only_when_it_is_one() {
         let _g = plx_base::testlock::serial();
-        let ps = crate::route::PlaybackSession::default();
+        let mut ps = crate::route::PlaybackSession::default();
+        let attempt = begin_view(&mut ps);
         let status = &crate::player::SHARED.dg_http_status;
         for (raw, want) in [
             (404, 404u16),
@@ -2480,11 +2507,17 @@ mod tests {
             (i32::MIN, 0),
         ] {
             status.store(raw, Relaxed);
+            observe(&mut ps, attempt, crate::player::attempt_view::AttemptFacts {
+                http_status: Some(raw), ..Default::default()
+            });
             let ctx = error_context(&ps);
             assert_eq!(ctx.http_status, want, "raw {raw}");
             assert_eq!(ctx.http, HttpClass::from_status(raw), "the class is unchanged for raw {raw}");
         }
         status.store(404, Relaxed);
+        observe(&mut ps, attempt, crate::player::attempt_view::AttemptFacts {
+            http_status: Some(404), ..Default::default()
+        });
         assert_eq!(error_context(&ps).http.code(), "4xx");
         status.store(0, Relaxed);
     }

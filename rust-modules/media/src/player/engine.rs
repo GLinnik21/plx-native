@@ -2191,6 +2191,7 @@ fn start_bufferfeed_inner(
         log("start_bufferfeed: prepared route lost before native construction");
         return Err(crate::route::RouteStartResult::StartFailed);
     };
+    ps.begin_attempt_view(route_attempt, super::attempt_view::Backend::Feed);
 
     // fd = -1 (CLOSED) so a teardown before/without http_open doesn't close(0)
     let mut hs = plx_net::stream::http_stream_boxed();

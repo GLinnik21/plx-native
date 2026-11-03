@@ -1,0 +1,83 @@
+//! Main-thread readout for one physical playback attempt. A backend publishes sparse facts
+//! addressed to the attempt that produced them; an absent fact remains unknown across a reset.
+//! This is a value owned by `PlaybackSession`, never a second process-wide mailbox.
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Backend { Feed, Uri }
+
+#[derive(Clone, Copy, Default)]
+pub struct AttemptFacts {
+    pub position_ns: Option<i64>,
+    pub duration_ns: Option<i64>,
+    pub playable_buffer_ms: Option<i64>,
+    /// A callback reported a decoded frame. This does not independently prove panel presentation.
+    pub reported_frame: Option<bool>,
+    pub frames: Option<i32>,
+    pub raster: Option<(i32, i32)>,
+    pub pipeline_stage: Option<u8>,
+    pub pipeline_error: Option<i32>,
+    pub http_status: Option<i32>,
+    pub demux_exit: Option<u8>,
+    pub declared_kbps: Option<i64>,
+    pub media_kbps: Option<i64>,
+    pub abr_buffer_ms: Option<i64>,
+    pub transport_rc: Option<i32>,
+    pub transfer_age_ms: Option<i64>,
+    pub transport_reopen_failed: Option<bool>,
+}
+
+#[derive(Clone, Copy)]
+pub struct AttemptView<A> {
+    attempt: Option<A>,
+    backend: Option<Backend>,
+    facts: AttemptFacts,
+}
+
+impl<A: Copy + Eq> AttemptView<A> {
+    pub const EMPTY: Self = Self { attempt: None, backend: None, facts: AttemptFacts {
+        position_ns: None, duration_ns: None, playable_buffer_ms: None,
+        reported_frame: None, frames: None, raster: None, pipeline_stage: None,
+        pipeline_error: None, http_status: None, demux_exit: None,
+        declared_kbps: None, media_kbps: None, abr_buffer_ms: None,
+        transport_rc: None, transfer_age_ms: None, transport_reopen_failed: None,
+    } };
+
+    pub fn begin(&mut self, attempt: A, backend: Backend) {
+        *self = Self { attempt: Some(attempt), backend: Some(backend), ..Self::EMPTY };
+    }
+
+    pub fn attempt(&self) -> Option<A> { self.attempt }
+    pub fn backend(&self) -> Option<Backend> { self.backend }
+
+    pub fn facts(&self) -> &AttemptFacts { &self.facts }
+
+    /// An old worker or an unrelated backend cannot change the current readout.
+    pub fn ingest(&mut self, attempt: A, incoming: AttemptFacts) -> bool {
+        if self.attempt != Some(attempt) { return false; }
+        self.facts = incoming;
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_new_attempt_resets_every_fact_and_refuses_late_publishers() {
+        let (a, b) = (1_u64, 2_u64);
+        let mut view = AttemptView::EMPTY;
+        view.begin(a, Backend::Feed);
+        assert!(view.ingest(a, AttemptFacts { position_ns: Some(42), reported_frame: Some(true), ..Default::default() }));
+        view.begin(b, Backend::Uri);
+        assert_eq!(view.facts().position_ns, None);
+        assert_eq!(view.facts().reported_frame, None);
+        assert!(view.backend() == Some(Backend::Uri));
+        assert!(!view.ingest(a, AttemptFacts { position_ns: Some(99), ..Default::default() }));
+        assert_eq!(view.facts().position_ns, None);
+        assert!(view.ingest(b, AttemptFacts { duration_ns: Some(100), ..Default::default() }));
+        assert_eq!(view.facts().duration_ns, Some(100));
+        assert!(view.ingest(b, AttemptFacts::default()));
+        assert_eq!(view.facts().duration_ns, None, "a sparse replacement cannot carry stale evidence");
+    }
+}
