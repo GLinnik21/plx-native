@@ -269,5 +269,12 @@
   "browse.clock.notice_year": "A TV órája hibásnak tűnik ({year}). A kapcsolat a mentett kulccsal létrejött.",
   "browse.clock.notice": "A TV órája hibásnak tűnik. A kapcsolat a mentett kulccsal létrejött.",
   "browse.clock.no_key": "A TV órája hibásnak tűnik. Csatlakoztassa egyszer a TV-t az internethez, majd próbálja újra.",
-  "browse.clock.key_changed": "A szerver kulcsa megváltozott. Csatlakoztassa egyszer a TV-t az internethez, hogy az alkalmazás újra ellenőrizhesse."
+  "browse.clock.key_changed": "A szerver kulcsa megváltozott. Csatlakoztassa egyszer a TV-t az internethez, hogy az alkalmazás újra ellenőrizhesse.",
+  "browse.kind.other_videos": "Egyéb videók",
+  "browse.kind.videos": "Videók",
+  "browse.library.videos": {
+    "one": "{count} videó",
+    "other": "{count} videó"
+  },
+  "browse.library.no_videos": "Nincs videó itt: {library}"
 }

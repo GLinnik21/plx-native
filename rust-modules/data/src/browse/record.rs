@@ -105,3 +105,39 @@ pub fn apply_to(state: &mut BrowseState, adapter: &Arc<BrowseAdapter>, result: &
     state.apply_discovery(
         result.epoch, result.source, result.landing.clone(), session, user, adapter)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **A discovery recording of a server with an Other Videos library replays.** The section's kind
+    /// is the app's closed code (`video`), and `decode` refuses a code it does not know, so a code that
+    /// did not round-trip would reject the whole recording.
+    #[test]
+    fn a_discovery_record_with_a_video_section_round_trips() {
+        let _g = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test("record-video", "127.0.0.1", 1, "t", "cid");
+        let client = plx_plex::plex::client_for(sid).expect("registered");
+        let sections = vec![
+            (1, "Movies".to_string(), SecKind::Movie),
+            (2, "TV Shows".to_string(), SecKind::Show),
+            (3, "Other Videos".to_string(), SecKind::Video),
+        ];
+        let result = Result {
+            epoch: 3, source: 0, instance: client.instance_gen(),
+            landing: SrcLanding {
+                client, token_gen: client.token_gen(), name: "n".into(),
+                what: SrcWhat::Sections(Some(sections.clone())),
+            },
+            adapter: None,
+        };
+        let wire = encode(&result);
+        assert!(wire.to_string().contains(r#""video""#), "the wire carries the app's code: {wire}");
+        let back = decode(wire, |_| Some(client)).expect("a video section decodes");
+        match back.landing.what {
+            SrcWhat::Sections(Some(list)) => assert_eq!(list, sections),
+            _ => panic!("sections expected"),
+        }
+    }
+}

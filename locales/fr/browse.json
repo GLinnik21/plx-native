@@ -281,5 +281,13 @@
   "browse.clock.notice_year": "L’horloge de la TV semble incorrecte ({year}). Connecté grâce à la clé mémorisée.",
   "browse.clock.notice": "L’horloge de la TV semble incorrecte. Connecté grâce à la clé mémorisée.",
   "browse.clock.no_key": "L’horloge de cette TV semble incorrecte. Connectez la TV à internet une fois, puis réessayez.",
-  "browse.clock.key_changed": "La clé de votre serveur a changé. Connectez la TV à internet une fois pour que l’application puisse la vérifier de nouveau."
+  "browse.clock.key_changed": "La clé de votre serveur a changé. Connectez la TV à internet une fois pour que l’application puisse la vérifier de nouveau.",
+  "browse.kind.other_videos": "Autres vidéos",
+  "browse.kind.videos": "Vidéos",
+  "browse.library.videos": {
+    "one": "{count} vidéo",
+    "many": "{count} vidéos",
+    "other": "{count} vidéos"
+  },
+  "browse.library.no_videos": "Aucune vidéo dans {library}"
 }

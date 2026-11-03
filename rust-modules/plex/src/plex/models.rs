@@ -142,6 +142,38 @@ pub struct LibrarySection {
     /// firstCharacter rows: the letter's item count (PMS string-encodes it).
     #[serde(default, deserialize_with = "de_i64")]
     pub size: i64,
+    /// A library section's metadata agent ("tv.plex.agents.movie", "tv.plex.agents.none"). Together
+    /// with [`scanner`](Self::scanner) it is what tells an "Other Videos" library from a Movies one,
+    /// whose `type` is `movie` as well. "" on a row that carries none (an older server, a letter).
+    #[serde(default, deserialize_with = "de_str")]
+    pub agent: String,
+    /// A library section's scanner ("Plex Movie", "Plex Video Files"). "" when absent.
+    #[serde(default, deserialize_with = "de_str")]
+    pub scanner: String,
+}
+
+/// The two "no metadata agent" ids: Plex's current one and the legacy bundle's.
+const NONE_AGENTS: [&str; 2] = ["tv.plex.agents.none", "com.plexapp.agents.none"];
+/// The scanner Plex files Other Videos libraries under; the legacy spelling adds " Scanner".
+const VIDEO_FILES_SCANNER: &str = "plex video files";
+
+impl LibrarySection {
+    /// Whether this section is Plex's "Other Videos" library (personal media, home movies, clips)
+    /// rather than a Movies one: type `movie` AND a "none" agent AND a scanner that starts with
+    /// `Plex Video Files` (ASCII case-insensitive, trimmed). That pair is Plex's own definition of the
+    /// library type (measured on PMS 1.43.5: agent `tv.plex.agents.none`, scanner `Plex Video Files`).
+    ///
+    /// Both halves are required. A false negative leaves an Other Videos library under Movies, which
+    /// is what the app always did; a false positive would move a curated Movies library off its pill.
+    /// A curated library keeps the `Plex Movie` scanner even with the none agent, a hand-configured
+    /// one with the Movie agent and the Video Files scanner stays Movies too, and a row without
+    /// `agent` or `scanner` (an older server) reads as Movies.
+    pub fn is_other_videos(&self) -> bool {
+        let scanner = self.scanner.trim().to_ascii_lowercase();
+        self.kind == "movie"
+            && NONE_AGENTS.iter().any(|none| self.agent.trim().eq_ignore_ascii_case(none))
+            && scanner.starts_with(VIDEO_FILES_SCANNER)
+    }
 }
 
 /// `MediaContainer.Meta` — present with `includeMeta=1` on `/library/sections/{k}/all`.
@@ -1838,5 +1870,62 @@ mod tests {
                 "input {raw}"
             );
         }
+    }
+
+    fn sections(json: &str) -> Vec<super::LibrarySection> {
+        let json = format!(r#"{{"MediaContainer":{{"Directory":[{json}]}}}}"#);
+        serde_json::from_slice::<Envelope>(json.as_bytes()).expect("parse").media_container.directory
+    }
+
+    /// `agent` and `scanner` ride the plain `/library/sections` answer (measured, PMS 1.43.5): the
+    /// pair that tells an "Other Videos" library from a Movies one, whose `type` is `movie` too.
+    #[test]
+    fn section_row_carries_agent_and_scanner() {
+        let rows = sections(
+            r#"{"key":"3","type":"movie","title":"t","agent":"tv.plex.agents.none","scanner":"Plex Video Files","hidden":1}"#,
+        );
+        assert_eq!(rows[0].agent, "tv.plex.agents.none");
+        assert_eq!(rows[0].scanner, "Plex Video Files");
+    }
+
+    /// An older server, a shared token's answer, or a secondary `Directory` row (a letter, a genre)
+    /// has neither field: both read "" and the section classifies as it always did.
+    #[test]
+    fn a_row_without_agent_or_scanner_parses_to_empty_strings() {
+        let rows = sections(r#"{"key":"1","type":"movie","title":"t"},{"key":"a","title":"A","size":"3","agent":null}"#);
+        for row in &rows {
+            assert_eq!((row.agent.as_str(), row.scanner.as_str()), ("", ""));
+            assert!(!row.is_other_videos());
+        }
+    }
+
+    fn filed(kind: &str, agent: &str, scanner: &str) -> bool {
+        let row = format!(r#"{{"key":"3","type":"{kind}","title":"t","agent":"{agent}","scanner":"{scanner}"}}"#);
+        sections(&row).remove(0).is_other_videos()
+    }
+
+    /// **The rule is an AND of the two halves of Plex's own definition.** A false negative leaves an
+    /// Other Videos library under Movies (today's behaviour); a false positive would move a curated
+    /// Movies library off its pill, so every ambiguous row stays Movies.
+    #[test]
+    fn is_other_videos_needs_a_movie_type_the_none_agent_and_the_video_files_scanner() {
+        // the measured library, and the legacy spelling of both halves
+        assert!(filed("movie", "tv.plex.agents.none", "Plex Video Files"));
+        assert!(filed("movie", "com.plexapp.agents.none", "Plex Video Files Scanner"));
+        assert!(filed("movie", "TV.Plex.Agents.None", "plex video files"));
+        assert!(filed("movie", "tv.plex.agents.none", "  Plex Video Files  "));
+        // a curated library keeps the Movie scanner even with the none agent
+        assert!(!filed("movie", "tv.plex.agents.none", "Plex Movie"));
+        // the Movie agent with the Video Files scanner is hand-configured: stays Movies
+        assert!(!filed("movie", "tv.plex.agents.movie", "Plex Video Files"));
+        assert!(!filed("movie", "tv.plex.agents.movie", "Plex Movie"));
+        // an older server sends neither
+        assert!(!filed("movie", "", ""));
+        assert!(!filed("movie", "tv.plex.agents.none", ""));
+        assert!(!filed("movie", "", "Plex Video Files"));
+        // only a movie-type section can be Other Videos
+        assert!(!filed("show", "tv.plex.agents.none", "Plex Video Files"));
+        assert!(!filed("artist", "tv.plex.agents.none", "Plex Video Files"));
+        assert!(!filed("", "tv.plex.agents.none", "Plex Video Files"));
     }
 }

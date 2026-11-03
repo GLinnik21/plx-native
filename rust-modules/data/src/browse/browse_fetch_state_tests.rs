@@ -305,6 +305,26 @@ fn a_show_section_without_a_server_advertised_plays_sort_gains_it_too() {
     );
 }
 
+/// Other Videos accepts `sort=viewCount:desc|asc` (measured on PMS 1.43.5), so its listing gains the
+/// same client-side entry, and a remembered Plays sort restores on it.
+#[test]
+fn an_other_videos_section_gains_the_plays_sort_too() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, _, _) = registered_page_source_of_kind(SecKind::Video);
+    land_page_with_sorts(&mut browse, vec![SortEntry {
+        key: "titleSort".into(), desc_key: String::new(),
+        title: "Title".into(),
+        default_desc: false,
+    }]);
+    let sorts = browse.state.cur_state().unwrap().sorts.clone();
+    assert!(
+        sorts.iter().any(|sort| sort.key == "viewCount" && sort.title == "Plays" && sort.default_desc),
+        "{:?}", sorts.iter().map(|s| &s.key).collect::<Vec<_>>()
+    );
+    assert!(restorable(&[], "viewCount", SecKind::Video, true).is_some(), "a remembered Plays sort restores");
+    assert!(restorable(&[], "viewCount", SecKind::Video, false).is_none(), "…on the library's own listing only");
+}
+
 /// A section that ALREADY advertises `viewCount` (a future PMS) must not gain a duplicate row.
 #[test]
 fn a_section_that_already_advertises_view_count_gains_no_duplicate() {

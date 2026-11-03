@@ -104,6 +104,7 @@ fn stamp_kind(stamp: &mut Stamp, kind: Option<plx_data::browse::SecKind>) {
         None => 0,
         Some(plx_data::browse::SecKind::Movie) => 1,
         Some(plx_data::browse::SecKind::Show) => 2,
+        Some(plx_data::browse::SecKind::Video) => 3,
     });
 }
 
@@ -336,7 +337,7 @@ fn type_section(title: &str, section_kind: SecKind, current: LibraryType, offere
         );
     }
     stamp.tag(13);
-    stamp.tag(u8::from(section_kind == SecKind::Show));
+    stamp.tag(section_kind.canon() as u8);
     stamp.u32(current.code());
     section
 }
@@ -1530,7 +1531,7 @@ mod tests {
         let mut out = Vec::new();
         for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
-            for kind in [SecKind::Movie, SecKind::Show] {
+            for kind in plx_data::browse::TAB_KINDS {
                 let draft = lay(type_draft(kind, LibraryType::Collections));
                 let mut table = TableView::new();
                 table.set_sections(draft.sections, draft.selected, false);
@@ -1540,6 +1541,23 @@ mod tests {
             }
         }
         plx_ui::table::assert_no_fit_failures(&out);
+    }
+
+    /// The Type menu lists a kind's own listing and Collections, and its stamp tells kinds apart: a
+    /// menu built for one kind is never reused for another (the stamp is what the table compares).
+    #[test]
+    fn the_type_menu_of_other_videos_lists_its_clips_and_collections_and_stamps_apart() {
+        let _g = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let rows = |kind| -> Vec<String> {
+            lay(type_draft(kind, LibraryType::Primary)).rows.iter().map(|row| row.0.clone()).collect()
+        };
+        assert_eq!(rows(SecKind::Video), rows(SecKind::Movie), "the same two types as a Movies library");
+        let titles: Vec<String> = lay(type_draft(SecKind::Video, LibraryType::Primary)).sections.iter()
+            .flat_map(|section| section.rows.iter().map(|row| row.label.clone())).collect();
+        assert_eq!(titles, ["Other Videos", "Collections"]);
+        let stamps = [SecKind::Movie, SecKind::Show, SecKind::Video]
+            .map(|kind| type_draft(kind, LibraryType::Primary).stamp);
+        assert!(stamps[0] != stamps[1] && stamps[1] != stamps[2] && stamps[0] != stamps[2], "{stamps:?}");
     }
 
     /// **The one Sort & Filter popover's sections** (redesign spec, "Header"): Show appears only when
@@ -1557,6 +1575,8 @@ mod tests {
         assert_eq!(show[0], plx_platform::i18n::msg::library_header_show());
         assert_eq!(movie.len(), 3, "a Movies library has one type to show, so no Show section");
         assert_eq!(movie[0], plx_platform::i18n::msg::browse_library_sort());
+        let video = titles(sort_filter_draft(SecKind::Video, LibraryType::Primary, &sorts, 0, false, None, false, dir));
+        assert_eq!(video, movie, "Other Videos has one type besides Collections, like Movies: no Show section");
         let laid = lay(sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 0, false, None, false, dir));
         assert!(!laid.rows.iter().any(|(id, ..)| id == &format!("type:{}", LibraryType::Collections.code())), "Collections has its own control");
         assert_ne!(sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 0, false, None, false, dir).stamp,
@@ -1701,6 +1721,46 @@ mod tests {
         assert!(laid.rows.iter().any(|(id, ..)| id == "favourites"));
     }
 
+    /// **Other Videos switches among its own kind**: with two Other Videos libraries on offer (one a
+    /// favourite on view, one a non-favourite on a server that can be opened) the Sort & Filter menu
+    /// of an Other Videos library lists exactly those two, the film libraries beside them stay out,
+    /// and the Movies menu over the same directory lists the films and none of the clips.
+    #[test]
+    fn the_switcher_of_an_other_videos_library_lists_other_videos_libraries_only() {
+        let _guard = plx_base::testlock::serial();
+        let _lang = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let sorts = vec![SortEntry { key: "titleSort".into(), desc_key: String::new(), title: "Title".into(), default_desc: false }];
+        let (groups, mut sections) = source_sections();
+        sections[0].kind = SecKind::Video;
+        sections[0].row.title = "Home Clips".into();
+        let mut films = sections[1].clone();
+        films.key = 9;
+        films.row.section = 2;
+        films.row.title = "Own Films".into();
+        films.row.src = 0;
+        films.sid = Some(ServerId::from_raw(1));
+        sections.push(films);
+        let mut clips = sections[1].clone();
+        clips.key = 8;
+        clips.kind = SecKind::Video;
+        clips.row.section = 3;
+        clips.row.title = "Friend Clips".into();
+        clips.row.pinned = false;
+        sections.push(clips);
+        let directory = plx_data::stores::browse::DirectorySnapshot::fixture_with_sources(
+            11,
+            0,
+            [1, 2].map(ServerId::from_raw).into_iter().zip(groups).collect(),
+            sections,
+        );
+        let ids = |kind| -> Vec<String> {
+            lay(sort_filter_draft(kind, LibraryType::Primary, &sorts, 0, false, None, false, directory.view()))
+                .rows.iter().map(|(id, ..)| id.clone()).filter(|id| id.starts_with("section:")).collect()
+        };
+        assert_eq!(ids(SecKind::Video), ["section:1:7", "section:2:8"], "the two Other Videos libraries, nothing else");
+        assert_eq!(ids(SecKind::Movie), ["section:1:9", "section:2:7"], "the Movies menu lists the films");
+    }
+
     /// **The library on view stays in the switcher** when its server turns faulty: the header still
     /// names it, so the list does too, dimmed under its group's fault like a dead favourite.
     #[test]
@@ -1790,6 +1850,7 @@ mod tests {
                 ("genre one", lay(genre_draft(&genres, Some(&genres[0])))),
                 ("sort & filter show", lay(sort_filter_draft(SecKind::Show, LibraryType::Primary, &sorts, 1, false, Some(&genres[0]), true, DirectoryView::empty_for_test()))),
                 ("sort & filter movie", lay(sort_filter_draft(SecKind::Movie, LibraryType::Primary, &sorts, 0, true, None, false, DirectoryView::empty_for_test()))),
+                ("sort & filter video", lay(sort_filter_draft(SecKind::Video, LibraryType::Primary, &sorts, 1, false, Some(&genres[0]), true, DirectoryView::empty_for_test()))),
                 ("sort & filter libraries", switcher_menu(&switcher_directory(SourceState::Reachable))),
                 ("sort & filter unauthorized", switcher_menu(&switcher_directory(SourceState::Unauthorized))),
                 ("sort & filter unreachable", switcher_menu(&switcher_directory(SourceState::Unreachable))),

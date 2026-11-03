@@ -2556,6 +2556,7 @@ pub(crate) unsafe fn construct(
             auto_tried,
             replay_left,
             grid_tried,
+            library_boot: Default::default(),
             settings_tried,
             seek_tried,
             seek_script,

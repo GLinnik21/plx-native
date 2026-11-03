@@ -3138,7 +3138,8 @@ def main(argv=None):
         description="Generate the media shapes tests/manifest.json needs, from lavfi.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="integration tier: point two Plex libraries (Movies, TV Shows) at <out> with "
-               "the 'Personal Media' agents, then map the shape keys from fixtures.json into "
+               "the 'Personal Media' agents (the Movies one on the 'Plex Movie' scanner: a "
+               "'Plex Video Files' scanner makes the app show it as Other Videos), then map the shape keys from fixtures.json into "
                "tests/manifest.local.json. pipeline tier: no Plex — serve <out>/pipeline with "
                "tests/serve_fixtures.py. See README.md.")
     ap.add_argument("--tier", choices=sorted(TIERS), default="integration",
@@ -3524,6 +3525,8 @@ def main(argv=None):
             print("   firewall drops the TV's connections to a new python listener silently.")
         else:
             print("\n   Next: add TWO Plex libraries with the 'Personal Media' agents —")
+            print("   (keep the Movies one on the 'Plex Movie' scanner, not 'Plex Video Files':")
+            print("   the app files that scanner's library under Other Videos, so it leaves the Movies pill)")
             print("     Movies    -> %s" % (root / "Movies"))
             print("     TV Shows  -> %s" % (root / "TV Shows"))
             print("   then map the keys from fixtures.json into tests/manifest.local.json.")

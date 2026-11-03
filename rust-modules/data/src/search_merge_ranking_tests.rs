@@ -176,6 +176,23 @@ fn ranking_is_stable_so_each_servers_own_order_survives_the_pass() {
     );
 }
 
+/// **An Other Videos library the user hid is still searched; its hits rank after the favourites'.**
+/// Search is grant-wide and the switch only orders it, so a hidden library stays findable (a clip
+/// the user knows is there must not become a false negative).
+#[test]
+fn a_hidden_other_videos_library_is_still_searched_and_ranks_last() {
+    let mk = |title: &str, sec: i64| {
+        Item::Media(PmsMovie { sid: ServerId::from_raw(0), sec, title: title.into(), ..Default::default() })
+    };
+    let mut p: Projection = Default::default();
+    p[0] = vec![mk("Clip", 3), mk("Film", 1)];
+    let source = Source { status: Status::Answered, items: p, ..Source::EMPTY };
+    let favs = [(ServerId::from_raw(0), 1i64, true), (ServerId::from_raw(0), 3i64, false)];
+    let sh = merge(&[source], &favs);
+    let titles: Vec<&str> = sh[0].items.iter().map(|i| i.title()).collect();
+    assert_eq!(titles, vec!["Film", "Clip"], "returned, after the favourite");
+}
+
 /// **A tag that straddles the two is favourite-ranked, and its count stays grant-wide.** The
 /// bit is OR'd at both folds; the number is summed at both. Those are different operations on
 /// one row and conflating them is how "12 films" would silently become 5.

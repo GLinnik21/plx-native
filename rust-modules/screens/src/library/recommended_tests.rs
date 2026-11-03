@@ -361,3 +361,36 @@ fn the_crumb_row_is_built_once_per_key_not_once_per_question() {
     for _ in 0..10 { ask(&fixture); }
     assert_eq!(page.probe_header_builds(), built + 1, "and the questions after it build none");
 }
+
+/// **Every strip destination is a request from the Recommended page**, through the one `HomeTab`
+/// table (see `every_strip_destination_is_pressable_from_the_library_page`).
+#[test]
+fn every_strip_destination_is_pressable_from_the_recommended_page() {
+    use crate::registry::HomeTab;
+    let _guard = plx_base::testlock::serial();
+    let fixture = Fixture::shelves(&["movie.recentlyadded.1"], 3);
+    let mut page = fixture.screen();
+    let engine = FocusEngine::new();
+    for tab in HomeTab::ALL {
+        let fx = effects_of(&mut page, &fixture, &engine, ScreenEvent::Activate(tab.strip_key()));
+        assert!(fx.iter().any(|fx| matches!(fx, Fx::App(AppFx::Library(LibraryReq::Tab(asked))) if *asked == tab)),
+            "{tab:?} asks for its page");
+    }
+    let fx = effects_of(&mut page, &fixture, &engine, ScreenEvent::Activate(plx_ui::widgets::TAB_KEY_CHIP));
+    assert!(fx.iter().any(|fx| matches!(fx, Fx::App(AppFx::Library(LibraryReq::Account)))));
+}
+
+/// The Recommended page's header fingerprint reads the kind (the crumb root's fallback word): a Show
+/// and an Other Videos library must not hash alike.
+#[test]
+fn the_recommended_header_fingerprint_tells_every_kind_apart() {
+    let _guard = plx_base::testlock::serial();
+    let fixture = Fixture::shelves(&["movie.recentlyadded.1"], 3);
+    let engine = FocusEngine::new();
+    let keys = [SecKind::Movie, SecKind::Show, SecKind::Video].map(|kind| {
+        let mut page = fixture.screen();
+        page.kind = kind;
+        page.header_key(&fixture.cx(engine.current(OWNER)))
+    });
+    assert!(keys[0] != keys[1] && keys[1] != keys[2] && keys[0] != keys[2], "{keys:?}");
+}

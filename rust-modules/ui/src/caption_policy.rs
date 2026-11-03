@@ -19,7 +19,7 @@
 //! and a name its face cuts ([`CaptionFacts::name_cut`]) is told on the details line when the title
 //! line is off, since the face is the only other place it is told.
 //!
-//! **Poster tiles follow this policy except a movie or TV show library grid showing its sort value**
+//! **Poster tiles follow this policy except a movie, TV show or Other Videos library grid showing its sort value**
 //! (one value line under every card, `card_row::draw_sort_value`): the Library grid, the Collections page, the
 //! Watchlist, Home's shelves, the Library's Recommended shelves, Search's poster rows, the person
 //! page's filmography, Detail's Related and collection shelves and the Collection screen's members
@@ -353,5 +353,5 @@ mod tests {
     }
 }
 
-// A movie or TV show library sorted by a value draws one value line under every poster instead. That mode is
+// A movie, TV show or Other Videos library sorted by a value draws one value line under every poster instead. That mode is
 // owned by Grid and TileLabel (`SortValue`); this two-line policy continues to describe every ordinary poster surface.

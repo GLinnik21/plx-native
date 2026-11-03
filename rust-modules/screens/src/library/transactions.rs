@@ -87,7 +87,7 @@ impl plx_machine::machine::LogicalState for PendingTransactions {
             let SectionTarget { epoch, index, identity, kind } = target;
             let LibrarySectionIdentity { sid, key } = identity;
             c.u32(*epoch).u32(*index as u32).u32(u32::from(sid.raw())).u64(*key as u64)
-                .u32(match kind { SecKind::Movie => 0, SecKind::Show => 1 });
+                .u32(kind.canon());
         });
         c.option(grid.as_ref(), |c, (target, action)| {
             let GridTarget { epoch, sid, section, query } = target;

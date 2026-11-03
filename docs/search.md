@@ -44,15 +44,21 @@ the Watchlist bookmark (`TabFace::Icon(Icon::Bookmark)`, key `TAB_KEY_WATCHLIST`
 appended after the chip's `+4` so no existing key moved but drawn before Search), then
 `TabFace::Icon(Icon::Search)`. Nothing reads "the last face" as the Search pill: the strip's
 destinations are found by KEY (`widgets::TAB_KEY_SEARCH`, `STRIP_BASE + 3`, and `TAB_KEY_CHIP` at
-`+4`), `app/chrome.rs` builds the faces and the keys together from one `strip_keys` list, and
-`Pill::Search` resolves to wherever that key sits, so an icon pill inserted before it moves no
-other destination. The library and search pages map a pressed key to its destination with those
-constants. The row is
-`Home`, then one pill per type that has a FAVOURITE library, then the bookmark, then Search: three to
-five stops, because
+`+4`; the Other Videos pill is `TAB_KEY_VIDEOS`, `STRIP_BASE + 7`), `app/chrome.rs` builds the faces
+and the keys together from one `strip_keys` list, and `Pill::Search` resolves to wherever that key
+sits, so an icon pill inserted before it moves no other destination. Every key is declared in the one
+`strip_keys!` list of `widgets.rs`, whose compile-time assert refuses two destinations on one key, and
+every page maps a pressed key to its destination through the one `HomeTab::from_strip_key` table
+(`screens::registry`). The row is
+`Home`, then one pill per type that has a FAVOURITE library (Movies, TV Shows, Other Videos; there is an Other Videos pill only while the account has such a library and it is a favourite, and the user can hide it in Favorite libraries), then the
+bookmark, then Search: three to six stops, because
 `browse::tab_count()` now counts `tab_kinds()`, and a type whose last favourite is switched off
-draws no pill. Movies and TV Shows are still type destinations whose concrete owned/shared section
-is resolved later.
+draws no pill. The types are still type destinations whose concrete owned/shared section
+is resolved later. One exception to "a pill is a type": the Other Videos pill wears the library's own
+(server) title when exactly one favourite Other Videos library exists (`DirectoryView::tab_library_title`,
+the title cleaned and elided by `widgets::fit_title_face` to the room the strip leaves, never translated),
+and the translated type word otherwise; Movies and TV Shows always keep theirs. `tabs_gen` moves when that
+title does, so the faces are rebuilt on a rename or on a second library appearing.
 
 **So an INDEX is no longer a stable name for a destination** — this paragraph used to claim exactly
 that, and the claim was the load-bearing half. Store a `Pill` (`Pill::Section` carries a

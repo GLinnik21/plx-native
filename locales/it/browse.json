@@ -281,5 +281,13 @@
   "browse.clock.notice_year": "L'orologio della TV sembra errato ({year}). Connessione stabilita tramite la chiave memorizzata.",
   "browse.clock.notice": "L'orologio della TV sembra errato. Connessione stabilita tramite la chiave memorizzata.",
   "browse.clock.no_key": "L'orologio di questa TV sembra errato. Collega la TV a Internet una volta, poi riprova.",
-  "browse.clock.key_changed": "La chiave del tuo server è cambiata. Collega la TV a Internet una volta per consentire all'app di verificarla di nuovo."
+  "browse.clock.key_changed": "La chiave del tuo server è cambiata. Collega la TV a Internet una volta per consentire all'app di verificarla di nuovo.",
+  "browse.kind.other_videos": "Altri video",
+  "browse.kind.videos": "Video",
+  "browse.library.videos": {
+    "one": "{count} video",
+    "many": "{count} video",
+    "other": "{count} video"
+  },
+  "browse.library.no_videos": "Nessun video in {library}"
 }

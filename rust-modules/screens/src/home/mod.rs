@@ -92,12 +92,12 @@ const PLAINTEXT_CANCEL_ELEM: u32 = 0x0F00;
 const PLAINTEXT_CONNECT_ELEM: u32 = 0x0F01;
 
 /// Parent/container semantic strip keys. Positions are deliberately not encoded here.
-pub const STRIP_HOME_ELEM: u32 = plx_ui::dispatch::STRIP_BASE;
-pub const STRIP_MOVIES_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 1;
-pub const STRIP_SHOWS_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 2;
-pub const STRIP_SEARCH_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 3;
-pub const STRIP_ACCOUNT_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 4;
-pub const STRIP_WATCHLIST_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 5;
+pub const STRIP_HOME_ELEM: u32 = plx_ui::widgets::TAB_KEY_HOME;
+pub const STRIP_MOVIES_ELEM: u32 = plx_ui::widgets::TAB_KEY_MOVIES;
+pub const STRIP_SHOWS_ELEM: u32 = plx_ui::widgets::TAB_KEY_SHOWS;
+pub const STRIP_SEARCH_ELEM: u32 = plx_ui::widgets::TAB_KEY_SEARCH;
+pub const STRIP_ACCOUNT_ELEM: u32 = plx_ui::widgets::TAB_KEY_CHIP;
+pub const STRIP_WATCHLIST_ELEM: u32 = plx_ui::widgets::TAB_KEY_WATCHLIST;
 
 const MAX_ITEMS: usize = plx_data::pms::MAX_SHELF_ITEMS;
 /// **How much of a resting shelf's posters must stand above the bottom margin for the pointer to take
@@ -1854,15 +1854,10 @@ impl HomeScreen {
     }
 
     fn request_for_strip(elem: u32) -> Option<HomeReq> {
-        Some(match elem {
-            STRIP_HOME_ELEM => HomeReq::Tab(HomeTab::Home),
-            STRIP_MOVIES_ELEM => HomeReq::Tab(HomeTab::Movies),
-            STRIP_SHOWS_ELEM => HomeReq::Tab(HomeTab::Shows),
-            STRIP_SEARCH_ELEM => HomeReq::Tab(HomeTab::Search),
-            STRIP_WATCHLIST_ELEM => HomeReq::Tab(HomeTab::Watchlist),
-            STRIP_ACCOUNT_ELEM => HomeReq::Account,
-            _ => return None,
-        })
+        if elem == STRIP_ACCOUNT_ELEM {
+            return Some(HomeReq::Account);
+        }
+        HomeTab::from_strip_key(elem).map(HomeReq::Tab)
     }
 
     fn reseat<H: HomeLike>(&mut self, focus: FocusTarget<u32>, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
@@ -1915,13 +1910,7 @@ impl HomeScreen {
                 self.reseat(FocusTarget::ContainerGroup(HERO_GROUP), cx, fx);
             }
             HomeCmd::FocusStrip(tab) => {
-                let elem = match tab {
-                    HomeTab::Home => STRIP_HOME_ELEM,
-                    HomeTab::Movies => STRIP_MOVIES_ELEM,
-                    HomeTab::Shows => STRIP_SHOWS_ELEM,
-                    HomeTab::Search => STRIP_SEARCH_ELEM,
-                    HomeTab::Watchlist => STRIP_WATCHLIST_ELEM,
-                };
+                let elem = tab.strip_key();
                 self.strip_chosen = true;
                 self.reseat(
                     FocusTarget::Elem(FocusKey {

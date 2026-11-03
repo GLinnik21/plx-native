@@ -484,7 +484,8 @@ presentation in a design pass.
 6. **An icon tab and a bookmark disc are both a mark, never a label.** The strip's faces are
    `TabFace::{Label, Icon}` (the Watchlist bookmark and Search are `Icon` faces: square, 60 x 60,
    the mark at `TAB_ICON_D`), and a destination is found by its KEY (`TAB_KEY_WATCHLIST` is
-   `STRIP_BASE + 5`, drawn before Search), never by "the last face". The strip PULSES a mark once
+   `STRIP_BASE + 5`, drawn before Search; every key is one line of the `strip_keys!` list in
+   `widgets.rs`, and a key declared beside it fails a test), never by "the last face". The strip PULSES a mark once
    after a title is put on the list: `StripRender::pulse(idx)` (`TAB_PULSE_S` 0.4 s, the GLYPH
    grown to `TAB_PULSE_SCALE` about 1.35x with a soft white `TAB_PULSE_GLOW_A` glow around it,
    `tab_pulse_look`) is time-driven, ends at exactly rest, reports through `idle::note_motion`, and
@@ -726,7 +727,7 @@ screen's members; `Shelf::set_caption_policy(Some(policy))` sizes the band a she
 `caption_policy::band_h`, and a `Stack` page hands it to a shelf or grid section through `StackPage::caption_policy`; a shelf or grid with
 no policy (`None`: a landscape still row or a headshot row, and the Library's Episodes listing, a grid of stills) keeps the legacy 114 px
 band and its two-line block, under every setting; the band must follow the label, never the setting):
-only the focused row opens its caption (the one exception: the Library's Movies, TV Shows, Seasons and Episodes grids while they show their
+only the focused row opens its caption (the one exception: the Library's Movies, TV Shows, Other Videos, Seasons and Episodes grids while they show their
 sort value, Sort value On, draw one value line under EVERY card, a poster or an episode still, `card_row::draw_sort_value`, in place of the caption, whatever the grid's policy, the
 Episodes view's `None` included); a bounded set of springs closes rows left behind, and
 each LINE of a row's caption is drawn only once the room under its card holds the line's box, and

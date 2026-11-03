@@ -109,25 +109,25 @@ impl<H: LibraryLike> plx_ui::master_detail::KeyRegion<H> for Regions {
 enum Readout { Loading, Empty, Failed, Grid }
 
 /// **The kind of row (`PmsMovie::kind`) a listing of `listed` in a `kind` library holds, when that
-/// listing can show a sort value**: a movie library's movies, a TV library's shows, seasons or
-/// episodes. A section's collections never show one, and a movie library lists no seasons or
-/// episodes (`LibraryType::offered`). An exhaustive match on both, not a wildcard: a library kind or
+/// listing can show a sort value**: a movie library's movies, an Other Videos library's clips (movie
+/// rows too), a TV library's shows, seasons or episodes. A section's collections never show one, and a
+/// movie or Other Videos library lists no seasons or episodes (`LibraryType::offered`). An exhaustive match on both, not a wildcard: a library kind or
 /// a listing added later must decide for itself.
 fn value_row_kind(kind: SecKind, listed: plx_data::browse::LibraryType) -> Option<std::os::raw::c_int> {
     use plx_data::browse::LibraryType::{Collections, Episodes, Primary, Seasons};
     use plx_data::pms::{KIND_EPISODE, KIND_MOVIE, KIND_SEASON, KIND_SHOW};
     match (kind, listed) {
-        (SecKind::Movie | SecKind::Show, Collections) => None,
-        (SecKind::Movie, Primary) => Some(KIND_MOVIE),
+        (SecKind::Movie | SecKind::Video | SecKind::Show, Collections) => None,
+        (SecKind::Movie | SecKind::Video, Primary) => Some(KIND_MOVIE),
         (SecKind::Show, Primary) => Some(KIND_SHOW),
         (SecKind::Show, Seasons) => Some(KIND_SEASON),
         (SecKind::Show, Episodes) => Some(KIND_EPISODE),
-        (SecKind::Movie, Seasons | Episodes) => None,
+        (SecKind::Movie | SecKind::Video, Seasons | Episodes) => None,
     }
 }
 
 /// **Whether the grid shows the sort value under its cards**: the Sort value switch is On and the
-/// listing is a movie or TV show library's movies, shows, seasons or episodes (never its Collections),
+/// listing is a movie, TV show or Other Videos library's movies, shows, videos, seasons or episodes (never its Collections),
 /// sorted by a criterion the value table words FOR THAT KIND OF ROW (`sort_key`: the current sort's
 /// key, `None` before the listing declares one). Title, Random, the compound Show order Seasons and
 /// Episodes default to, a sort a later server declares and a sort the kind of row carries no fact for
@@ -145,8 +145,11 @@ fn sort_values_show_on_the_four_listings_with_the_switch_on_and_a_sort_worded_fo
     let show_seasons = "show.titleSort,index";
     let show_episodes = "show.titleSort,season.index:nullsLast,episode.index:nullsLast,episode.originallyAvailableAt:nullsLast,episode.titleSort,episode.id";
     // (library kind, listing, the sorts that show a value there, the ones that do not)
-    let table: [(SecKind, LibraryType, &[&str], &[&str]); 4] = [
+    let table: [(SecKind, LibraryType, &[&str], &[&str]); 5] = [
         (SecKind::Movie, Primary, &["addedAt", "movie.addedAt:desc", "rating", "duration", "year"],
+            &["titleSort", "random", "futureServerSort", "episode.addedAt", "episode.addedAt:desc", "unviewedLeafCount"]),
+        // An Other Videos clip is a movie row: the movie table's sorts, and none of a show's.
+        (SecKind::Video, Primary, &["addedAt", "movie.addedAt:desc", "rating", "duration", "year"],
             &["titleSort", "random", "futureServerSort", "episode.addedAt", "episode.addedAt:desc", "unviewedLeafCount"]),
         (SecKind::Show, Primary, &["addedAt", "show.addedAt:desc", "audienceRating", "unviewedLeafCount"],
             &["titleSort", "random", "futureServerSort", "episode.addedAt", "episode.addedAt:desc"]),
@@ -164,18 +167,18 @@ fn sort_values_show_on_the_four_listings_with_the_switch_on_and_a_sort_worded_fo
         assert!(!shows_sort_values(kind, listed, true, None), "{kind:?} {listed:?}: no sort declared yet");
     }
     // A section's collections never show one, whatever the sort; a movie library lists no seasons or episodes.
-    for kind in [SecKind::Movie, SecKind::Show] {
+    for kind in [SecKind::Movie, SecKind::Video, SecKind::Show] {
         for key in ["addedAt", "titleSort", "random", "rating"] {
             assert!(!shows_sort_values(kind, Collections, true, Some(key)), "{kind:?} collections {key}");
         }
     }
-    for listed in [Seasons, Episodes] {
-        assert!(!shows_sort_values(SecKind::Movie, listed, true, Some("addedAt")), "a movie library has no {listed:?}");
+    for (kind, listed) in [SecKind::Movie, SecKind::Video].into_iter().flat_map(|k| [Seasons, Episodes].map(move |l| (k, l))) {
+        assert!(!shows_sort_values(kind, listed, true, Some("addedAt")), "a {kind:?} library has no {listed:?}");
     }
     // The four listings hold four kinds of row.
-    assert_eq!([value_row_kind(SecKind::Movie, Primary), value_row_kind(SecKind::Show, Primary),
+    assert_eq!([value_row_kind(SecKind::Movie, Primary), value_row_kind(SecKind::Video, Primary), value_row_kind(SecKind::Show, Primary),
         value_row_kind(SecKind::Show, Seasons), value_row_kind(SecKind::Show, Episodes), value_row_kind(SecKind::Show, Collections)],
-        [Some(plx_data::pms::KIND_MOVIE), Some(plx_data::pms::KIND_SHOW), Some(plx_data::pms::KIND_SEASON),
+        [Some(plx_data::pms::KIND_MOVIE), Some(plx_data::pms::KIND_MOVIE), Some(plx_data::pms::KIND_SHOW), Some(plx_data::pms::KIND_SEASON),
             Some(plx_data::pms::KIND_EPISODE), None]);
 }
 
@@ -220,8 +223,8 @@ pub struct LibraryScreen {
     /// `sync` like the layout's episode geometry, so not logical state of its own. The toolbar
     /// reads it: collections take no filters, so FILTER leaves the row while they are listed.
     listed: plx_data::browse::LibraryType,
-    /// The grid shows the sort value under every card (`registry::sort_info`): a movie or TV show
-    /// library's movies, shows, seasons or episodes with Sort value On, sorted by something that has a
+    /// The grid shows the sort value under every card (`registry::sort_info`): a movie, TV show or Other Videos
+    /// library's movies, shows, videos, seasons or episodes with Sort value On, sorted by something that has a
     /// value for that kind of row. Read in `sync`, where
     /// the listing is, and handed to the layout by `relayout`.
     values: bool,
@@ -1075,16 +1078,8 @@ impl LibraryScreen {
             fx.push(Fx::App(AppFx::Library(req)));
             return Handled::Yes;
         }
-        use plx_ui::widgets::{TAB_KEY_CHIP, TAB_KEY_HOME, TAB_KEY_MOVIES, TAB_KEY_SEARCH, TAB_KEY_SHOWS, TAB_KEY_WATCHLIST};
-        let req = match elem {
-            TAB_KEY_HOME => Some(LibraryReq::Tab(HomeTab::Home)),
-            TAB_KEY_MOVIES => Some(LibraryReq::Tab(HomeTab::Movies)),
-            TAB_KEY_SHOWS => Some(LibraryReq::Tab(HomeTab::Shows)),
-            TAB_KEY_SEARCH => Some(LibraryReq::Tab(HomeTab::Search)),
-            TAB_KEY_WATCHLIST => Some(LibraryReq::Tab(HomeTab::Watchlist)),
-            TAB_KEY_CHIP => Some(LibraryReq::Account),
-            _ => None,
-        };
+        let req = if elem == plx_ui::widgets::TAB_KEY_CHIP { Some(LibraryReq::Account) }
+            else { HomeTab::from_strip_key(elem).map(LibraryReq::Tab) };
         if let Some(req) = req { fx.push(Fx::App(AppFx::Library(req))); return Handled::Yes; }
         if elem == RETRY && self.readout == Readout::Failed
             && super::plaintext_question::asks(self.plaintext.verdict())
@@ -1729,8 +1724,8 @@ impl<H: LibraryLike> Screen<H> for LibraryScreen {
 impl LogicalState for LibraryScreen {
     fn write(&self, c: &mut Canon) {
         c.u32(self.entry.0).u32(self.instance.0);
-        c.u32(match self.kind { SecKind::Movie => 0, SecKind::Show => 1 });
-        c.option(self.wanted_kind, |c, kind| { c.u32(match kind { SecKind::Movie => 0, SecKind::Show => 1 }); });
+        c.u32(self.kind.canon());
+        c.option(self.wanted_kind, |c, kind| { c.u32(kind.canon()); });
         c.f32(self.scroll.pos).f32(self.scroll.vel).f32(self.scroll_target);
         c.option(self.restore_scroll, |c, value| { c.f32(value); });
         c.bool(self.live).bool(self.initial);

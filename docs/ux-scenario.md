@@ -172,14 +172,15 @@ it never takes focus and it has no hit rect. The hero is paged by **RIGHT past t
 **LEFT off the Play pill**, and it also advances itself every **8 s** while the row sits idle. The
 dots under the row show the position.
 
-**Above it**, the top tab strip: **Home**, then **one pill per library section the server reports**
-(here *Movies* and *TV Shows*), then the **Search** pill — drawn as a magnifier mark, not a word.
-The strip is uncapped and scrolls once it outgrows the bar, so every discovered section is
-focusable. At the left margin, outside the group, sits the **profile chip** (§5.7).
+**Above it**, the top tab strip: **Home**, then **one pill per library type that has a favourite
+library** (here *Movies* and *TV Shows*; a Plex "Other Videos" library has its own pill after them,
+on by default like the others and hidden in Favorite libraries, named after the library when it is the only one you follow, else *Other Videos*), then the Watchlist bookmark and the **Search** pill — drawn as marks, not words.
+The strip scrolls once it outgrows the bar. At the left margin, outside the group, sits the
+**profile chip** (§5.7).
 
 **UP from the hero reaches the bar**, landing on the Home pill (UP from any page that wears the bar
 lands on that page's own pill); LEFT and RIGHT then walk the whole band — **chip → Home → Movies →
-TV Shows → … → Search**. DOWN leaves the bar: back to the hero action row from the chip, or into the
+TV Shows → Other Videos → Watchlist → Search** (a type with no favourite library has no stop). DOWN leaves the bar: back to the hero action row from the chip, or into the
 shelves from a pill. The bar is worn by Home, the Library family (the grid, its Collections page and
 its Recommended page), the Watchlist and Search, and by nothing else — the detail, person, player and
 onboarding screens have none, which is why moving to or from them fades the whole screen rather than

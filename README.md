@@ -41,7 +41,7 @@ page. The shelves live on Recommended: what you're partway through, with the tim
 the focused card, and what just landed
 ([pictured here](docs/screenshots/ux-library-grid.jpg)).
 Settings → Libraries → Under posters also has a **Sort value** switch (on by default, per
-profile). In a movie or TV show library sorted by something other than Title or Random (its movies, shows, seasons or
+profile). In a movie, TV show or Other Videos library sorted by something other than Title or Random (its movies, shows, seasons or
 episodes), every card shows the value it is sorted by on one line under it (a score, a length, a date as Today,
 Yesterday, 27 Oct or Oct 2024), in place of the title and details line; a sort with no value to show, such as
 the Show order of Seasons and Episodes, keeps the usual captions. It uses the existing sort menu; other poster
@@ -178,7 +178,9 @@ A re-encode still burns the selected subtitle on the server; over a remux the ap
 
 I built this for how *I* watch, so it's narrower than Plex's:
 
-- **Movies and TV shows.** No music, no photos, no live TV or DVR.
+- **Movies, TV shows and Other Videos libraries.** No music, no photos, no live TV or DVR. An Other Videos
+  library gets its own tab, named after the library when it is the only favourite one; hide it
+  in Settings > Favorite libraries, per profile. With no such library there is no tab.
 - **No typing in server addresses.** Servers come from your Plex account; set them up on a phone or
   PC and choose from what's there. Servers reached through Plex's relay, or that require an
   encrypted connection, are supported but haven't been watched end to end.

@@ -281,5 +281,13 @@
   "browse.clock.notice_year": "La hora del televisor parece incorrecta ({year}). Conectado con la clave guardada.",
   "browse.clock.notice": "La hora del televisor parece incorrecta. Conectado con la clave guardada.",
   "browse.clock.no_key": "La hora del televisor parece incorrecta. Conecta el televisor a internet una vez e inténtalo de nuevo.",
-  "browse.clock.key_changed": "La clave de tu servidor ha cambiado. Conecta el televisor a internet una vez para que la app pueda comprobarla de nuevo."
+  "browse.clock.key_changed": "La clave de tu servidor ha cambiado. Conecta el televisor a internet una vez para que la app pueda comprobarla de nuevo.",
+  "browse.kind.other_videos": "Otros vídeos",
+  "browse.kind.videos": "Vídeos",
+  "browse.library.videos": {
+    "one": "{count} vídeo",
+    "many": "{count} vídeos",
+    "other": "{count} vídeos"
+  },
+  "browse.library.no_videos": "No hay vídeos en {library}"
 }

@@ -211,7 +211,7 @@ Nothing. A release build compiles out the whole `/tmp` trigger surface, the remo
 
 ## Scope
 
-Movies and TV shows from a Plex Media Server your account can reach. No music, no photos, no live TV, no DVR.
+Movies, TV shows and Other Videos libraries from a Plex Media Server your account can reach. No music, no photos, no live TV, no DVR.
 
 There is deliberately nowhere on the television to type a server address — configure servers on a phone or PC, and the app offers what your Plex account already knows about.
 

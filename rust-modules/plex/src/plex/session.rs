@@ -2019,9 +2019,11 @@ pub struct LastLibrary {
 
 /// One remembered library, tagged with the TYPE whose tab it answers for.
 ///
-/// `kind` is the wire's own `Directory.type` string (`movie` / `show`) rather than an enum
+/// `kind` is the app's own code for the type (`SecKind::wire`: `movie` / `show` / `video`, where
+/// `video` is Plex's Other Videos, whose wire `Directory.type` is `movie`) rather than an enum
 /// discriminant, so a reordered `SecKind` cannot silently repoint an entry written by an older
-/// build — the same reason [`PinnedLib`] keys on a machine id rather than a roster position.
+/// build — the same reason [`PinnedLib`] keys on a machine id rather than a roster position. A code
+/// a build does not know is skipped when read and kept when the list is rewritten.
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
 #[serde(default)]
 pub struct TypedLib {

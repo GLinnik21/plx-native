@@ -63,6 +63,26 @@ pub fn listable(type_str: &str) -> bool {
     matches!(type_str, "movie" | "show" | "season" | "episode")
 }
 
+/// Whether a whole-server hub of this TYPE may become a Home row. The hub's type is the server's
+/// grouping word, not what its cards are: an Other Videos library's `home.videos.recent` is a hub of
+/// type `clip` whose items are `movie` rows of subtype `clip` (measured, PMS 1.43.5). The cards are
+/// admitted by [`shelf_card`] on the ITEM type, which still refuses a `clip`-typed extra, so a hub
+/// of trailers is an empty row and is dropped. Music and photo hubs stay out.
+fn hub_listable(hub_type: &str) -> bool {
+    hub_type == "mixed" || hub_type == "clip" || listable(hub_type)
+}
+
+/// Whether a hub is a library of personal videos' own row, by its locale-independent id: the
+/// whole-server `home.videos.*` family and a section's `video.*` family (`video.recent.<id>`,
+/// `video.inprogress.<id>`). Such a row is a Home row but never feeds the recently-added families'
+/// hero allowance and pool: a hero is a title worth leading Home with, and a recently added home
+/// clip is not (the hero pool and the refresh's hero allowance both read this ONE predicate). An
+/// in-progress clip of a visible library still reaches the hero through Continue Watching, the
+/// deck, as any resume does.
+fn personal_video_hub(hub_id: &str) -> bool {
+    hub_id.starts_with("home.videos.") || hub_id.starts_with("video.")
+}
+
 /// Items asked of each hub endpoint, per source. `/hubs?count=` is items-per-hub, so this bounds
 /// a shelf, never the number of shelves.
 pub(crate) const HUB_FETCH_COUNT: i64 = 12;
@@ -1547,7 +1567,7 @@ fn published_order(srcs: &[Src], pins: &[(ServerId, i64, bool)]) -> Vec<(usize, 
     for (i, source) in srcs.iter().enumerate() {
         let Some(build) = &source.last else { continue };
         for (j, shelf) in build.shelves.iter().enumerate() {
-            if shelf.released() || shelf.items.iter().any(|m| item_pinned(pins, m)) { order.push((i, j)); }
+            if shelf.released() || shelf.items.iter().any(|m| shelf_item_shown(pins, &shelf.hub_id, m)) { order.push((i, j)); }
         }
     }
     order
@@ -2060,7 +2080,7 @@ impl<'a> Projection<'a> {
     fn keeps(&mut self, shelf: &Shelf) -> bool {
         let Some(held) = self.held else { return true };
         if held.iter().any(|(id, key)| shelf.is(id, key)) { return true; }
-        if shelf.hub_id.contains("recent") && self.hero_left > 0 {
+        if shelf.hub_id.contains("recent") && !personal_video_hub(&shelf.hub_id) && self.hero_left > 0 {
             let eligible = shelf.items.iter().filter(|m| !m.art.is_empty() && m.kind != 2).count();
             self.hero_left = self.hero_left.saturating_sub(eligible);
             return true;
@@ -2077,7 +2097,7 @@ impl<'a> Projection<'a> {
         for hub in hubs { *self.counts.entry(hub.hub_identifier.clone()).or_insert(0) += 1; }
         let mut window = Vec::new();
         for hub in hubs {
-            if hub.kind != "mixed" && !listable(&hub.kind) {
+            if !hub_listable(&hub.kind) {
                 continue;
             }
             if hub.hub_identifier == "home.continue" || hub.hub_identifier == "home.ondeck" {
@@ -2224,7 +2244,7 @@ fn live_sources(srcs: &[Src]) -> Vec<(&str, &SourceBuild)> {
 /// gave its cards up to the ring holds none and publishes placeholder slots instead (see
 /// [`Shelf::released`]).
 fn publishable<'a>(sh: &'a Shelf, pins: &'a [(ServerId, i64, bool)]) -> impl Iterator<Item = &'a Arc<PmsMovie>> {
-    sh.items.iter().filter(move |m| item_pinned(pins, m)).take(MAX_SHELF_ITEMS)
+    sh.items.iter().filter(move |m| shelf_item_shown(pins, &sh.hub_id, m)).take(MAX_SHELF_ITEMS)
 }
 
 /// The card every released row of `sid`'s source publishes `shown` times: no rating key, and the
@@ -2372,8 +2392,10 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
     for hub in &new_hubs {
         // Match on the locale-independent hubIdentifier, not the localized display title:
         // "home.continue" plus every Recently Added variant (home.movies.recent,
-        // home.television.recent, promoted <type>.recentlyadded.<id>) all carry "recent".
-        let eligible = hub.hub_id == "home.continue" || hub.hub_id.contains("recent");
+        // home.television.recent, promoted <type>.recentlyadded.<id>) all carry "recent". The
+        // personal-video families (home.videos.*, video.*) carry it too and never feed the recently-added hero pool.
+        let eligible = (hub.hub_id == "home.continue" || hub.hub_id.contains("recent"))
+            && !personal_video_hub(&hub.hub_id);
         if !eligible {
             continue;
         }
@@ -2987,7 +3009,8 @@ pub fn registry_keys_for_test() -> ClientKeys {
 /// Unknown is ALLOWED, in both directions: a row whose server sent no `librarySectionID`, and a
 /// library the section table has not enumerated yet, both pass. The pin is a decision about
 /// libraries we know about, and the alternative — hiding what we cannot classify — empties Home on
-/// the frame it boots, which is the same mistake [`feeds_home`] documents one level up.
+/// the frame it boots, which is the same mistake [`feeds_home`] documents one level up. (The one
+/// exception is a personal-video hub's SHELF card, see [`shelf_item_shown`].)
 pub(crate) fn item_pinned(pins: &[(ServerId, i64, bool)], m: &PmsMovie) -> bool {
     if m.sec == 0 {
         return true; // the server said nothing about this row's library
@@ -2999,6 +3022,19 @@ pub(crate) fn item_pinned(pins: &[(ServerId, i64, bool)], m: &PmsMovie) -> bool 
         Some((_, _, pinned)) => *pinned,
         None => true, // not enumerated yet
     }
+}
+
+/// May this card appear on the SHELF it sits on? [`item_pinned`], plus one rule for a personal-video
+/// row ([`personal_video_hub`]): a card that names no library (`sec == 0`) cannot prove its library
+/// is a favourite, and unlike a movie row's the library behind it may well be one the user hid
+/// (Other Videos libraries are hideable like any other). Every item list measured on a real server carries the
+/// section id, so this is insurance, not a known leak. The Continue Watching deck is not a
+/// personal-video hub and keeps [`item_pinned`] as it was.
+fn shelf_item_shown(pins: &[(ServerId, i64, bool)], hub_id: &str, m: &PmsMovie) -> bool {
+    if m.sec == 0 && personal_video_hub(hub_id) {
+        return false;
+    }
+    item_pinned(pins, m)
 }
 
 /// The two server sets [`feeds_home`] takes, folded out of the retained directory's favourite
@@ -4460,6 +4496,10 @@ mod hero_pool_tests;
 #[cfg(test)]
 #[path = "pms_multi_source_merge_tests.rs"]
 mod multi_source_merge_tests;
+
+#[cfg(test)]
+#[path = "pms_clip_hub_tests.rs"]
+mod clip_hub_tests;
 
 #[cfg(test)]
 #[path = "pms_recent_paging_tests.rs"]

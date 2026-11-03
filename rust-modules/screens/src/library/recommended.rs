@@ -878,17 +878,9 @@ impl RecommendedScreen {
             fx.push(Fx::App(AppFx::Library(req)));
             return Handled::Yes;
         }
-        use plx_ui::widgets::{TAB_KEY_CHIP, TAB_KEY_HOME, TAB_KEY_MOVIES, TAB_KEY_SEARCH, TAB_KEY_SHOWS, TAB_KEY_WATCHLIST};
         use crate::registry::HomeTab;
-        let req = match elem {
-            TAB_KEY_HOME => Some(LibraryReq::Tab(HomeTab::Home)),
-            TAB_KEY_MOVIES => Some(LibraryReq::Tab(HomeTab::Movies)),
-            TAB_KEY_SHOWS => Some(LibraryReq::Tab(HomeTab::Shows)),
-            TAB_KEY_SEARCH => Some(LibraryReq::Tab(HomeTab::Search)),
-            TAB_KEY_WATCHLIST => Some(LibraryReq::Tab(HomeTab::Watchlist)),
-            TAB_KEY_CHIP => Some(LibraryReq::Account),
-            _ => None,
-        };
+        let req = if elem == plx_ui::widgets::TAB_KEY_CHIP { Some(LibraryReq::Account) }
+            else { HomeTab::from_strip_key(elem).map(LibraryReq::Tab) };
         if let Some(req) = req { fx.push(Fx::App(AppFx::Library(req))); return Handled::Yes; }
         Handled::No
     }
@@ -1214,7 +1206,7 @@ impl RecommendedScreen {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (std::ptr::from_ref(plx_platform::i18n::current()) as usize).hash(&mut h);
         Self::library_title(cx).hash(&mut h);
-        matches!(self.kind, SecKind::Movie).hash(&mut h);
+        self.kind.canon().hash(&mut h);
         h.finish()
     }
 
@@ -1339,7 +1331,7 @@ impl<H: LibraryLike> Screen<H> for RecommendedScreen {
 impl LogicalState for RecommendedScreen {
     fn write(&self, c: &mut Canon) {
         c.u32(self.entry.0).u32(self.instance.0);
-        c.u32(match self.kind { SecKind::Movie => 0, SecKind::Show => 1 });
+        c.u32(self.kind.canon());
         c.f32(self.scroll.pos).f32(self.scroll.vel).f32(self.scroll_target);
         c.option(self.restore_scroll, |c, value| { c.f32(value); });
         c.bool(self.live).bool(self.initial).bool(self.sweep_down);
