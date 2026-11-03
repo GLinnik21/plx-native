@@ -14,7 +14,7 @@ Media Server (PMS) entirely in-app.
 
 **Almost everything is Rust** in `rust-modules/` (UI, event loop, input, player orchestration,
 the streaming/demux pipeline, and the Plex data layer), compiled to a static lib and linked in
-(see the Makefile). Only two things stay C: `src/main.c` — a small **boot shim** (the event-log
+(see the Makefile). Native startup and playback ABI shims stay C: `src/main.c` — a small **boot shim** (the event-log
 handle, stderr capture, process bring-up) that then calls the Rust `plex_run()` — and
 `src/starfish.c`, the **buffer-feed StarfishMediaAPIs C++ seam**, and `src/video_plane.c`,
 the shared **ACB/exported-window display binding**. Two more `.c` files sit beside them:
