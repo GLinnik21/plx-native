@@ -1539,3 +1539,27 @@ fn a_non_favorite_visit_is_restored_by_kind_without_replacing_the_saved_favorite
     assert_eq!(browse.state.section_of_kind(SecKind::Movie), Some(1));
     assert_eq!(browse.state.remembered_section(SecKind::Movie), Some(0));
 }
+
+#[test]
+fn ending_a_library_visit_forgets_only_its_transient_choice_and_rejects_old_epochs() {
+    let _g = plx_base::testlock::serial();
+    let t = TempPins::new("end-library-visit");
+    t.watching("u-managed");
+    let mut browse = TestBrowse::default();
+    browse.seed_sources(vec![a_household_source("mac-mini"), a_source("nas-home", "friend", true)]);
+    browse.append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
+    browse.append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
+    browse.state.note_library_choice(0);
+    browse.state.note_library_choice(2);
+    browse.state.note_library_choice(1);
+    let epoch = browse.state.table_epoch();
+    let mut end = |epoch, kind| browse.state.run_owned(&browse.adapter,
+        crate::stores::browse::BrowseCmd::EndVisit { epoch, kind }, &browse.keys,
+        &plx_plex::plex::session::Session::default(), &mut browse.jobs);
+    assert!(!end(epoch.wrapping_add(1), SecKind::Movie));
+    assert!(end(epoch, SecKind::Movie));
+    assert_eq!(browse.state.section_of_kind(SecKind::Movie), Some(0));
+    assert_eq!(browse.state.remembered_section(SecKind::Movie), Some(0));
+    assert!(browse.state.visited.iter().any(|(kind, _, _)| *kind == SecKind::Show));
+    assert!(browse.jobs.is_empty(), "ending a visit performs no IO");
+}

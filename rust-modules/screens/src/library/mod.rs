@@ -501,6 +501,16 @@ impl LibraryScreen {
             Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus }))));
     }
 
+    /// Address only the committed listing this instance owns, never a foreign frame snapshot.
+    fn committed_address<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> Option<SectionAddress> {
+        let id = H::listing(cx).id()?;
+        if self.epoch != Some(id.epoch) || self.query != Some(id.query)
+            || self.section.as_ref().is_none_or(|section| section.sid != id.sid || section.key != id.section) {
+            return None;
+        }
+        self.address(cx)
+    }
+
     fn address<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> Option<SectionAddress> {
         let id = H::listing(cx).id()?;
         Some(SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section })
@@ -707,15 +717,14 @@ impl LibraryScreen {
             self.layout.rows
         } else { rows };
         let episodes = self.layout.is_episodes();
-        let library_context = self.layout.has_library_context();
         let values = self.values;
         let band_h = if values { plx_ui::cards::SORT_VALUE_BAND_H }
             else { self.grid_policy().as_ref().map_or(plx_ui::cards::LEGACY_BAND_H, plx_ui::caption_policy::band_h) };
         self.layout = if self.readout == Readout::Failed {
             Layout::failed(true)
-        } else { Layout::new(true, rows) }.with_library_context(library_context).with_episodes(episodes).with_band_h(band_h).with_value_line(values)
+        } else { Layout::new(true, rows) }.with_episodes(episodes).with_band_h(band_h).with_value_line(values)
             .with_grid_bands(self.pair.detail.band_geometry());
-        self.target_layout = Layout::new(true, rows).with_library_context(library_context).with_episodes(episodes).with_band_h(band_h).with_value_line(values)
+        self.target_layout = Layout::new(true, rows).with_episodes(episodes).with_band_h(band_h).with_value_line(values)
             .with_grid_focus(grid_focus.map(|index| index / self.layout.cols()));
         if self.grid_reset_pending {
             self.scroll_target = self.target_layout.row_reveal(0);
@@ -1134,11 +1143,22 @@ impl LibraryScreen {
         }
     }
 
+    /// Child pages and overlays retain the visit. Retiring the Library root or changing its
+    /// type ends it through the store's ordinary typed effect lane.
+    fn end_visit<H: LibraryLike>(&self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        if self.listing != Listing::All { return; }
+        if let Some(target) = self.committed_address(cx) {
+            fx.push(Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(
+                BrowseCmd::EndVisit { epoch: target.epoch, kind: self.kind }))));
+        }
+    }
+
     fn command<H: LibraryLike>(&mut self, command: LibraryCmd, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         match command {
             LibraryCmd::Enter(kind) => {
                 self.save_cursor(cx, fx);
                 self.flush(fx);
+                if kind != self.kind { self.end_visit(cx, fx); }
                 self.wanted_kind = Some(kind);
                 self.enter_remembered = false;
                 self.initial = true;
@@ -1347,6 +1367,7 @@ impl LibraryScreen {
                 if matches!(leave, plx_machine::machine::Leave::Deeper) { self.buried = true; }
                 self.save_cursor(cx, fx);
                 self.flush(fx);
+                if matches!(leave, plx_machine::machine::Leave::ForGood) { self.end_visit(cx, fx); }
             }
             ScreenEvent::App(AppMsg::Library(command)) => return self.command(*command, cx, fx),
             ScreenEvent::App(AppMsg::LibraryEdit { target, edit }) => {

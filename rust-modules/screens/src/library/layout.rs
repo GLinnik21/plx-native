@@ -54,16 +54,13 @@ pub(super) struct Layout {
     /// instead of 40 px, and the focused row opens [`plx_ui::cards::SORT_VALUE_BAND_H`]'s share. A pref
     /// and sort input, not motion: not in the canon.
     value_line: bool,
-    /// Derived from the installed header/current library, like the caption-policy geometry.
-    /// The header and section already carry its logical inputs; this reserves ink clearance.
-    library_context: bool,
 }
 
 impl Layout {
     pub(super) const SHAPE: &'static str = "LibraryLayout{libraries:bool,rows:u32,status:bool,episodes:bool,grid_bands:[(row:u32,expansion:f32)]}";
 
     pub(super) fn write(&self, c: &mut plx_machine::machine::Canon) {
-        let Self { libraries, rows, status, episodes, grid_bands, band_h: _, value_line: _, library_context: _ } = self;
+        let Self { libraries, rows, status, episodes, grid_bands, band_h: _, value_line: _ } = self;
         c.bool(*libraries).u32(*rows as u32).bool(*status).bool(*episodes);
         c.seq(grid_bands.iter().filter(|band| band.row != usize::MAX).count());
         for band in grid_bands.iter().filter(|band| band.row != usize::MAX) {
@@ -80,7 +77,6 @@ impl Layout {
             grid_bands: [GridBand::CLOSED; MAX_GRID_BANDS],
             band_h: plx_ui::cards::LEGACY_BAND_H,
             value_line: false,
-            library_context: false,
         }
     }
 
@@ -89,10 +85,6 @@ impl Layout {
     }
 
     pub(super) fn with_episodes(self, episodes: bool) -> Self { Self { episodes, ..self } }
-
-    pub(super) fn with_library_context(self, on: bool) -> Self { Self { library_context: on, ..self } }
-
-    pub(super) fn has_library_context(&self) -> bool { self.library_context }
 
     pub(super) fn with_value_line(self, on: bool) -> Self { Self { value_line: on, ..self } }
 
@@ -156,7 +148,7 @@ impl Layout {
     }
 
     pub(super) fn library_h(&self) -> f32 {
-        if self.libraries { LIBRARY_ROW_H + if self.library_context { theme::space::MD } else { 0.0 } } else { 0.0 }
+        if self.libraries { LIBRARY_ROW_H } else { 0.0 }
     }
 
     pub(super) fn grid_top(&self) -> f32 {

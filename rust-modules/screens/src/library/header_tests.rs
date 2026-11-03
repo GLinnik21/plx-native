@@ -38,19 +38,33 @@ fn library_options_stays_available_with_one_or_two_visible_favorites() {
 }
 
 #[test]
-fn visiting_a_non_favorite_keeps_the_favorite_shortcuts_unchanged() {
+fn a_non_favorite_gets_one_selected_temporary_pill_after_the_favorites() {
     let _guard = plx_base::testlock::serial();
-    let mut fixture = Fixture::new(3, 36, 0);
+    let mut fixture = Fixture::new(4, 36, 0);
     fixture.sections[2].row.pinned = false;
+    fixture.sections[3].row.pinned = false;
     fixture.publish(0, 36);
     let mut page = fixture.screen();
     let engine = FocusEngine::new();
+    let favorite_rects: Vec<_> = page.libraries.iter().filter(|(elem, _)| *elem != MORE)
+        .map(|(elem, index)| (*index, page.header_rect(*elem, At::Drawn).unwrap())).collect();
+    for current in [2, 3] {
+        fixture.publish(current, 36);
+        page.sync(&fixture.cx(&engine));
+        let names: Vec<_> = page.libraries.iter().filter(|(elem, _)| *elem != MORE).map(|(_, index)| *index).collect();
+        assert_eq!(names, [0, 1, current], "one selected visit pill follows the fixed favorites");
+        for (index, before) in &favorite_rects {
+            let elem = page.libraries.iter().find(|(_, section)| section == index).unwrap().0;
+            assert_eq!(page.header_rect(elem, At::Drawn).unwrap(), *before);
+        }
+        let items = &page.header.row().unwrap().page.spec().left;
+        assert_eq!(items.iter().filter(|item| item.selected_plate).count(), 1);
+        assert!(items[2].selected_plate);
+        assert_eq!(page.layout.row_y(0, 0.0), layout::LIBRARY_GRID_TOP, "no extra identity row");
+    }
+    fixture.publish(1, 36);
     page.sync(&fixture.cx(&engine));
-    let before = page.libraries.clone();
-    fixture.publish(2, 36);
-    page.sync(&fixture.cx(&engine));
-    assert_eq!(page.libraries, before, "a visit must never insert a temporary pill");
-    assert!(page.header.row().unwrap().page.spec().left.iter().all(|item| !item.selected_plate));
+    assert_eq!(page.libraries.iter().filter(|(elem, _)| *elem != MORE).count(), 2);
 }
 
 #[test]
@@ -63,7 +77,8 @@ fn long_favorite_names_leave_room_for_options_in_every_language() {
         for section in &mut fixture.sections {
             section.row.title = format!("{} — {}", section.row.title, "International cinema and restored classics ".repeat(5));
         }
-        fixture.publish(0, 36);
+        fixture.sections[2].row.pinned = false;
+        fixture.publish(2, 36);
         let engine = FocusEngine::new();
         let cx = Cx { measure: &measure, ..fixture.cx(&engine) };
         let mut page = LibraryScreen::new(ENTRY, InstanceId(19), SecKind::Movie);
@@ -76,22 +91,21 @@ fn long_favorite_names_leave_room_for_options_in_every_language() {
         let mut stops: Vec<_> = page.header_elems().into_iter().map(|elem| page.header_rect(elem, At::Drawn).unwrap()).collect();
         stops.sort_by(|a, b| a.x.total_cmp(&b.x));
         assert!(stops.windows(2).all(|pair| pair[0].x + pair[0].w <= pair[1].x), "{}: controls overlap", language.tag());
-        assert!(page.library_context(&cx).unwrap().contains("restored classics"));
+        assert_eq!(names.len(), 3, "{}: both favorites and the active visit fit", language.tag());
+        assert!(names[2].selected_plate);
     }
 }
 
 #[test]
-fn a_hidden_library_name_clears_the_focused_first_poster() {
+fn the_temporary_library_pill_keeps_the_single_row_grid_geometry() {
     let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new(3, 36, 0);
     fixture.sections[2].row.pinned = false;
     fixture.publish(2, 36);
     let page = fixture.screen();
-    assert!(page.library_context(&fixture.cx(&FocusEngine::new())).is_some());
-    let lifted_top = page.layout.row_y(0, 0.0)
-        - page.layout.card_h() * (plx_ui::widgets::CARD_FOCUS_SCALE - 1.0) * 0.5;
-    assert!(lifted_top >= plx_ui::page_header::GRID_TOP + plx_ui::theme::space::XS,
-        "the focused poster reaches {lifted_top}, overlapping the library identity band");
+    assert_eq!(page.layout.row_y(0, 0.0), layout::LIBRARY_GRID_TOP);
+    let selected = page.header.row().unwrap().page.spec().left.iter().filter(|item| item.selected_plate).count();
+    assert_eq!(selected, 1);
 }
 
 #[test]

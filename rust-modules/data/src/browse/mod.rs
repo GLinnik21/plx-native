@@ -2856,6 +2856,12 @@ impl BrowseState {
                 self.set_cur(index);
                 true
             }
+            BrowseCmd::EndVisit { epoch, kind } => {
+                if epoch != self.table_epoch() { return false; }
+                let before = self.visited.len();
+                self.visited.retain(|(candidate, _, _)| *candidate != kind);
+                self.visited.len() != before
+            }
             BrowseCmd::RecheckShares => {
                 self.recheck_shares();
                 true

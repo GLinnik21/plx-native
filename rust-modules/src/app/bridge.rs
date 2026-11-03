@@ -905,8 +905,9 @@ impl Bridge {
     pub(crate) fn aim_library(&mut self, kind: plx_data::browse::SecKind) {
         let target = {
             let directory = self.directory.view();
-            let current = directory.current().map(|i| directory.sections()[i].kind);
-            directory.kind_address(kind).filter(|_| current != Some(kind))
+            let current = directory.current().and_then(|index| directory.sections().get(index))
+                .and_then(|section| section.sid.map(|sid| (sid, section.key)));
+            directory.kind_address(kind).filter(|target| Some((target.sid, target.section)) != current)
         };
         if let Some(target) = target {
             self.browse_run(plx_data::stores::browse::BrowseCmd::Addressed { target,

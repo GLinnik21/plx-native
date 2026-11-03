@@ -287,9 +287,6 @@ impl LibraryScreen {
         }
         self.header_of = of;
         self.header.install(key, row);
-        let context = self.library_context(cx).is_some();
-        self.layout = self.layout.with_library_context(context);
-        self.target_layout = self.target_layout.with_library_context(context);
     }
 
     /// The row of the Library page itself: the library names that fit, then the controls.
@@ -316,21 +313,38 @@ impl LibraryScreen {
             let more = HeaderItem { glyph: Some(plx_ui::icons::Icon::More), value_only: true,
                 ..item(plx_platform::i18n::msg::browse_library_libraries()) };
             let more_w = page_header::cluster_width(&[more.clone()], measure);
-            let name_budget = ((budget - more_w - 2.0 * page_header::GAP) / 2.0).max(0.0);
-            let labels: Vec<String> = all.iter().map(|(_, section)| {
-                let label = self.library_label(*section, cx);
-                plx_machine::machine::elide_by(&label, name_budget, false, |text| {
-                    CString::new(text).map_or(0.0, |c| measure.width(&c, theme::size::BODY, false))
-                })
-            }).collect();
+            // Reserve a current-library slot whenever the roster can require one. The same
+            // reservation applies while a favorite is selected, so a visit never shifts or
+            // displaces the favorite shortcuts. Shared measurement/elision bounds every label.
+            let visit_slot = all.len() > 2 || directory.sections().iter().any(|section|
+                section.kind == directory.sections()[current].kind && !section.row.pinned);
+            let slots = if visit_slot { 3.0 } else { 2.0 };
+            let name_budget = ((budget - more_w - slots * page_header::GAP) / slots).max(0.0);
+            let label = |name: &str, room| plx_machine::machine::elide_by(name, room, false, |text| {
+                CString::new(text).map_or(0.0, |c| measure.width(&c, theme::size::BODY, false))
+            });
+            let labels: Vec<String> = all.iter().map(|(_, section)| label(&self.library_label(*section, cx), name_budget)).collect();
             let widths: Vec<f32> = labels.iter().map(|label|
                 page_header::cluster_width(&[item(label.as_str())], measure)).collect();
-            let picks = pack_names(&widths, 0, budget, more_w, layout::MAX_LIBRARY_PILLS);
-            self.folded = all.iter().enumerate().filter(|(i, _)| !picks.contains(i))
+            let reserve = if visit_slot { name_budget + page_header::GAP } else { 0.0 };
+            let picks = pack_names(&widths, 0, budget - reserve, more_w, layout::MAX_LIBRARY_PILLS);
+            let current_room = (budget - names_w(&widths, &picks, Some(more_w)) - page_header::GAP).max(0.0);
+            let current_label = label(&self.library_label(current, cx), current_room);
+            self.folded = all.iter().enumerate().filter(|(i, (_, section))|
+                !picks.contains(i) && *section != current)
                 .filter_map(|(_, (_, section))| u32::try_from(*section).ok()).collect();
             for &pick in &picks {
                 left.push(HeaderItem { selected_plate: all[pick].1 == current, ..item(labels[pick].as_str()) });
                 self.libraries.push(all[pick]);
+            }
+            if !self.libraries.iter().any(|(_, index)| *index == current) {
+                if let Some(sid) = directory.sections()[current].sid {
+                    let elem = self.keys.register(LibraryIdentity::Library(LibrarySectionIdentity {
+                        sid, key: directory.sections()[current].key,
+                    }), LIBRARY_GROUP, self.libraries.len());
+                    left.push(HeaderItem { selected_plate: true, ..item(current_label) });
+                    self.libraries.push((elem, current));
+                }
             }
             left.push(more);
             self.libraries.push((MORE, usize::MAX));
@@ -416,36 +430,6 @@ impl LibraryScreen {
         // rows and the row's motion HOLDS.
         let lifted = f.lifted.filter(|key| key.entry == self.entry).map(|key| key.elem);
         row.draw_with(p, self.scroll.pos, &self.header_capsules, self.header_pop.scale_with(0, f.press.scale), lifted, &self.header_swap);
-        if let Some(context) = self.library_context(f.cx) {
-            let room = Rect::new(page_header::TEXT_X0, top + page_header::HEIGHT,
-                page_header::TEXT_X1 - page_header::TEXT_X0,
-                page_header::GRID_TOP - layout::HEADER_Y - page_header::HEIGHT);
-            let text = plx_machine::machine::elide_by(&context, room.w, false, |text|
-                CString::new(text).map_or(0.0, |c| f.measure.width(&c, theme::size::CAPTION, false)));
-            if let Ok(text) = CString::new(text) {
-                plx_ui::label::Label::new(text.as_ptr(), theme::size::CAPTION, theme::TEXT_PRIMARY).draw(p, room);
-            }
-        }
-    }
-
-    /// A hidden or truncated current library is named over its content, never inserted among
-    /// the favorite shortcuts and never represented by a selected options button.
-    pub(super) fn library_context<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> Option<String> {
-        if self.listing != Listing::All { return None; }
-        let current = self.view_section(cx)?;
-        let full = self.library_label(current, cx);
-        let visible = self.libraries.iter().position(|(_, index)| *index == current);
-        if visible.is_some_and(|index| self.header.row().is_some_and(|row|
-            row.page.spec().left.get(index).is_some_and(|item| item.label == full))) {
-            return None;
-        }
-        let directory = H::directory(cx);
-        let source = directory.sections().get(current).and_then(|section| section.sid)
-            .and_then(|sid| directory.sources().iter().find(|(candidate, _)| *candidate == sid));
-        Some(match source {
-            Some((_, group)) if !group.name.is_empty() => format!("{full} · {}", group.name),
-            _ => full,
-        })
     }
 
     /// **The opener lift for a header control** (`Screen::redraw_focused`): `elem`, the control a

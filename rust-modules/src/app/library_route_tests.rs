@@ -346,18 +346,16 @@ fn many_libraries(w: &mut World) {
 
 /// Picking a non-favorite changes the store and preserves the favorite shortcuts and opener.
 fn the_pick_kept_the_favorite_shortcuts(w: &mut World) -> Vec<String> {
-    let mut fails = nothing_was_picked_names(w);
-    let current = w.bridge.stores.browse.borrow().current_for_test();
-    if current != 2 { fails.push(format!("the store is on {current}, not the non-favorite 2")); }
-    if here(w) != "header:more" { fails.push(format!("focus left the opener: {}", here(w))); }
+    let (names, folded) = w.library().probe_names();
+    let visible: Vec<_> = names.iter().map(|(_, index)| *index).collect();
+    let mut fails = Vec::new();
+    if visible != [0, 4, 2] || folded != [6, 8, 10, 12] {
+        fails.push(format!("temporary selection moved the favorite prefix: {visible:?}, folded {folded:?}"));
+    }
+    if w.bridge.stores.browse.borrow().current_for_test() != 2 { fails.push("the selected non-favorite is not on view".into()); }
+    if here(w) != "header:name2" { fails.push(format!("focus missed the selected pill: {}", here(w))); }
     if w.d.surface_up() { fails.push("the menu is still up".into()); }
     fails
-}
-fn nothing_was_picked_names(w: &mut World) -> Vec<String> {
-    let (names, folded) = w.library().probe_names();
-    let visible: Vec<_> = names.iter().map(|(_, section)| *section).collect();
-    if visible == [0, 4] && folded == [6, 8, 10, 12] { Vec::new() }
-    else { vec![format!("favorite shortcuts moved: {visible:?}, folded {folded:?}")] }
 }
 
 fn nothing_was_picked(w: &mut World) -> Vec<String> {
@@ -382,7 +380,7 @@ fn library_options_selects_a_non_favorite_without_moving_shortcuts_and_back_sele
                 press(Key::Right, "", "library", "header:more"),
                 // The list holds the folded libraries (6, 8, 10, 12) as `section:<source>:<key>`.
                 press(Key::Ok, "library:Menu { kind: Sources", "library", "menu:section:1:1"),
-                press(Key::Ok, "", "library", "header:more"),
+                press(Key::Ok, "", "library", "header:name2"),
             ],
             end: |w| { w.frames(90); the_pick_kept_the_favorite_shortcuts(w) },
         },
@@ -814,4 +812,35 @@ fn the_recommended_page_prints_the_librarys_fingerprint_on_a_shelf_card() {
     let crumb = probe(&w);
     assert!(crumb.contains(" region=crumb row=-1 col=-1 ") && crumb.contains(" card=0 "),
         "the crumb row is a region of its own: {crumb}");
+}
+
+#[test]
+fn a_non_favorite_visit_survives_child_returns_and_ends_when_leaving_library() {
+    for destination in [HomeTab::Home, HomeTab::Shows] {
+        let mut w = World::new("temporary-library-visit");
+        w.open_library();
+        w.climb_into_header();
+        header_stop(&mut w, "more");
+        w.press(Key::Ok);
+        assert!(here(&w).starts_with("menu:section:1:1"));
+        w.press(Key::Ok);
+        w.frames(90);
+        assert_eq!(w.bridge.stores.browse.borrow().current_for_test(), 2);
+        super::open_settings_at(&mut w.d, plx_screens::family::SettingsPage::LibraryFavourites);
+        w.frames(60);
+        w.press(Key::Back);
+        w.frames(90);
+        assert_eq!(w.bridge.stores.browse.borrow().current_for_test(), 2, "Back from Settings preserves the visit");
+        header_stop(&mut w, "collections");
+        w.press(Key::Ok);
+        w.frames(40);
+        w.press(Key::Back);
+        w.frames(90);
+        assert_eq!(w.bridge.stores.browse.borrow().current_for_test(), 2, "Back from a child preserves the visit");
+        super::nav_tab(&mut w.d, &mut w.bridge, destination, None, None);
+        w.frames(90);
+        super::nav_tab(&mut w.d, &mut w.bridge, HomeTab::Movies, None, None);
+        w.frames(90);
+        assert_eq!(w.bridge.stores.browse.borrow().current_for_test(), 0, "a new visit restores the favorite");
+    }
 }

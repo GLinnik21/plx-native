@@ -395,8 +395,10 @@ sort, the A–Z rail, and Search, which stays grant-wide and only RANKS favourit
 The grant decides what you can reach; the favourite decides what the app offers, with one
 exception: Library options (the persistent ellipsis) offers hidden favorites and available
 non-favorites of the viewed type. Favorite shortcuts stay in their original positions; a hidden
-current library is named above the grid and ticked in the picker. A non-favorite visit is retained
-for this session without replacing the saved favorite. Sort & Filter changes only the listing.
+current library appears as a selected temporary pill before the ellipsis and is ticked in the
+picker. A non-favorite visit survives child-page returns, including Settings, without replacing
+the saved favorite. Leaving Library or switching media types clears that visit; the next entry
+returns to the last-used favorite. Sort & Filter changes only the listing.
 Library options also refreshes shared libraries and opens the favorites editor with a library
 breadcrumb. Back and Done return directly to that opener.
 
