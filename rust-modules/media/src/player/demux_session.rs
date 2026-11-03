@@ -174,6 +174,30 @@ impl DemuxAdaptive for PlayerDemuxSession {
 impl DemuxMedia for PlayerDemuxSession {
     fn publish(&mut self, effect: DemuxEffect) {
         match effect {
+            DemuxEffect::AbrHlsStart { kbps } => {
+                SHARED.dg_abr_mode.store(super::ABR_MODE_HLS, Ordering::Relaxed);
+                SHARED.dg_abr_kbps.store(kbps, Ordering::Relaxed);
+                SHARED.dg_abr_declared_kbps.store(-1, Ordering::Relaxed);
+                SHARED.dg_abr_media_kbps.store(-1, Ordering::Relaxed);
+                SHARED.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
+                SHARED.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
+                SHARED.dg_abr_ratio_pm.store(-1, Ordering::Relaxed);
+                SHARED.dg_abr_action.store(super::ABR_ACTION_STEADY, Ordering::Relaxed);
+                SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
+                SHARED.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
+            }
+            DemuxEffect::AbrHlsDeclared { kbps } =>
+                SHARED.dg_abr_declared_kbps.store(kbps, Ordering::Relaxed),
+            DemuxEffect::AbrOriginalStart { kbps } => {
+                SHARED.dg_abr_mode.store(super::ABR_MODE_ORIGINAL, Ordering::Relaxed);
+                SHARED.dg_abr_kbps.store(kbps, Ordering::Relaxed);
+                SHARED.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
+                SHARED.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
+                SHARED.dg_abr_ratio_pm.store(-1, Ordering::Relaxed);
+                SHARED.dg_abr_action.store(super::ABR_ACTION_STEADY, Ordering::Relaxed);
+                SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
+                SHARED.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
+            }
             DemuxEffect::NoteFault(fault) => SHARED.note_demux_exit(demux_exit_class(fault)),
             DemuxEffect::FailFault(fault) => SHARED.fail_demux(demux_exit_class(fault)),
             DemuxEffect::IoFailed => SHARED.demux_io_failed.store(true, Ordering::Release),

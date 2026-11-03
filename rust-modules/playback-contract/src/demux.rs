@@ -73,6 +73,9 @@ pub enum DemuxFault {
 /// field-writing method per native gauge. The adapter preserves each variant's
 /// original atomic ordering and failure-latch rule.
 pub enum DemuxEffect {
+    AbrHlsStart { kbps: i64 },
+    AbrHlsDeclared { kbps: i64 },
+    AbrOriginalStart { kbps: i64 },
     NoteFault(DemuxFault),
     FailFault(DemuxFault),
     IoFailed,

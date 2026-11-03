@@ -5173,30 +5173,16 @@ fn hls_demux(
     // that runs exactly once per HLS demux, whatever ended the previous one.
     HLS_LAST_VIDEO.store(u64::MAX, Ordering::Relaxed);
     if let Some(start) = abr.as_ref() {
-        SHARED
-            .dg_abr_mode
-            .store(crate::player::ABR_MODE_HLS, Ordering::Relaxed);
-        SHARED
-            .dg_abr_kbps
-            .store(i64::from(start.initial_kbps()), Ordering::Relaxed);
-        SHARED.dg_abr_declared_kbps.store(-1, Ordering::Relaxed);
-        SHARED.dg_abr_media_kbps.store(-1, Ordering::Relaxed);
-        SHARED.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
-        SHARED.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
-        SHARED.dg_abr_ratio_pm.store(-1, Ordering::Relaxed);
-        SHARED
-            .dg_abr_action
-            .store(crate::player::ABR_ACTION_STEADY, Ordering::Relaxed);
-        SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
-        SHARED.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
+        session.media().publish(DemuxEffect::AbrHlsStart {
+            kbps: i64::from(start.initial_kbps()),
+        });
     }
     let mut net = HlsNet { hs, curl: None, range: transport.range, credential_gate: transport.credential_gate };
     let mut cursor = hls_cursor_open(origin, path, aq, &mut net, true, None)?;
     if abr.is_some() {
-        SHARED.dg_abr_declared_kbps.store(
-            i64::try_from(cursor.declared_bps / 1_000).unwrap_or(i64::MAX),
-            Ordering::Relaxed,
-        );
+        session.media().publish(DemuxEffect::AbrHlsDeclared {
+            kbps: i64::try_from(cursor.declared_bps / 1_000).unwrap_or(i64::MAX),
+        });
     }
     let mut timeline = crate::hls::SegmentTimeline::default();
     let mut adaptive = abr;
@@ -5877,23 +5863,10 @@ pub(crate) fn demux(
     }
     let mut original_watch = auto_original;
     if let Some(watch) = original_watch.as_ref() {
-        // Auto deliberately begins by trying Original. Publish that state before the first
-        // measurement window completes so Stats for Nerds says what the policy is doing instead
-        // of looking inactive during the exact startup interval a user is trying to diagnose.
-        SHARED
-            .dg_abr_mode
-            .store(crate::player::ABR_MODE_ORIGINAL, Ordering::Relaxed);
-        SHARED
-            .dg_abr_kbps
-            .store(i64::from(watch.source_kbps()), Ordering::Relaxed);
-        SHARED.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
-        SHARED.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
-        SHARED.dg_abr_ratio_pm.store(-1, Ordering::Relaxed);
-        SHARED
-            .dg_abr_action
-            .store(crate::player::ABR_ACTION_STEADY, Ordering::Relaxed);
-        SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
-        SHARED.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
+        // Publish Auto's Original source before its first measurement window.
+        session.media().publish(DemuxEffect::AbrOriginalStart {
+            kbps: i64::from(watch.source_kbps()),
+        });
     }
     if let Some(watch) = original_watch.as_mut() { watch.begin_on_worker(); }
     // Same accepted-event cursor as HLS. Progressive reads and queue pushes can hide an entire
