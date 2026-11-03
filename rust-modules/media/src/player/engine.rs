@@ -145,7 +145,7 @@ impl Drop for AuBox {
 pub struct Engine {
     /// Exact reducer attempt which constructed this native object. A duplicate start for this
     /// attempt is harmless; a different Prepared transaction must never be mistaken for it.
-    pub route_start: crate::route::RouteStartAttempt,
+    pub attempt: plx_playback_contract::AttemptId,
     /// Firmware callback context for this exact native `Load`.
     pub native_epoch: u32,
     pub stage: Stage,
@@ -868,8 +868,8 @@ fn sink_envelope_now(facts: &plx_play_feed::PayloadFacts, video: LoadVideo, rate
 /// stream itself (`pcm` is the shape [`crate::route::stream_pcm`] declared), whatever the codec
 /// is — DTS is `DTS` only when the set's own decoder takes it — else [`audio_payload_codec`]'s.
 /// PURE.
-fn audio_declaration(codec: &str, pcm: Option<&crate::route::PcmFormat>) -> Option<(&'static str, u8)> {
-    if pcm.is_some() {
+fn audio_declaration(codec: &str, pcm: bool) -> Option<(&'static str, u8)> {
+    if pcm {
         return Some(("PCM", 5));
     }
     audio_payload_codec(codec)
@@ -933,7 +933,7 @@ fn force_open_refusal(
     requested_rate: i32,
     audio_codec: &str,
     no_audio: bool,
-    original_dovi: plx_data::metadata::Dovi,
+    original_dovi: super::feed_open::OriginalDvFacts,
 ) -> Option<ForceOpenRefusal> {
     // The payload decision describes the *converted* presentation. Force keeps the source
     // bytes, so a known Profile 7 or enhancement layer cannot truthfully use that declaration.
@@ -965,7 +965,7 @@ mod force_video_wire_tests {
         );
         assert_eq!(declared.declared().expect("Auto can convert P7").profile_id, 8);
         assert!(matches!(
-            force_open_refusal(super::super::RATE_NORMAL, "ac3", false, original),
+            force_open_refusal(super::super::RATE_NORMAL, "ac3", false, original.into()),
             Some(ForceOpenRefusal::OriginalEnhancementLayer),
         ), "Force preserves original P7 bytes, so a converted P8 Load declaration is untrue");
         assert!(original.presentation(
@@ -981,12 +981,12 @@ mod force_video_wire_tests {
         };
         for source in [original(7, false), original(8, true)] {
             assert!(matches!(
-                force_open_refusal(super::super::RATE_NORMAL, "ac3", false, source),
+                force_open_refusal(super::super::RATE_NORMAL, "ac3", false, source.into()),
                 Some(ForceOpenRefusal::OriginalEnhancementLayer),
             ));
         }
         for source in [plx_data::metadata::Dovi::NONE, original(8, false)] {
-            assert!(force_open_refusal(super::super::RATE_NORMAL, "ac3", false, source).is_none());
+            assert!(force_open_refusal(super::super::RATE_NORMAL, "ac3", false, source.into()).is_none());
         }
     }
 }
@@ -1221,15 +1221,20 @@ pub(super) fn native_slot_available() -> Option<()> {
     NativeSessionStartGuard::arm().map(|guard| { drop(guard); })
 }
 
+/// Native construction failed before a usable Load could be installed. Route settlement is
+/// mapped by the common owner, never by the physical executor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum NativeOpenError { Refused }
+
 /// Construct one physical feed from facts and the route owner's addressed attempt. The request
 /// has already frozen its URL, codec declaration, playback rate, and trace identity.
 pub(super) fn prepare_native_open(
-    pa: &mut super::adapter::PlayerAdapter,
+    mt: &MainThread,
     open: Option<FeedOpenRequest>,
     sample: Option<super::feed_open::SampleSource>,
     is_h265: bool,
     session_rate: i32,
-) -> Result<NativePrepared, crate::route::RouteStartResult> {
+) -> Result<NativePrepared, NativeOpenError> {
     let stream = sample.is_none();
     let sample = sample.map(|sample| Box::new(SampleBuf {
         data: sample.data, au: sample.au, next: 0, loops: 0,
@@ -1241,9 +1246,9 @@ pub(super) fn prepare_native_open(
     // whether the audio ES (E-AC3/Atmos) is what stalls the sink on 4K HEVC.
     let no_audio = super::no_audio_armed();
     // Refuse incompatible Force configurations before publishing audio/rate facts to the demuxer.
-    if let Some(open) = open.as_ref().filter(|request| request.payload.force_direct_play) {
+    if let Some(open) = open.as_ref().filter(|request| request.feed_payload.force_direct_play) {
         if let Some(refusal) = force_open_refusal(
-            super::play_rate_permille(), &open.audio_codec, no_audio, open.payload.dovi,
+            super::play_rate_permille(), &open.audio_codec, no_audio, open.original_dv,
         ) {
             match refusal {
                 ForceOpenRefusal::Speed => {
@@ -1257,7 +1262,7 @@ pub(super) fn prepare_native_open(
                 }
             }
             SHARED.fail_demux(DemuxExitClass::LoadRefused);
-            return Err(crate::route::RouteStartResult::StartFailed);
+            return Err(NativeOpenError::Refused);
         }
     }
     crate::ff::set_feed_audio(!no_audio);
@@ -1291,15 +1296,15 @@ pub(super) fn prepare_native_open(
                 "start_bufferfeed: the pipeline cannot feed video codec {stream_vcodec:?}; refusing the Load instead of declaring it H.264"
             ));
             SHARED.fail_demux(DemuxExitClass::LoadRefused);
-            return Err(crate::route::RouteStartResult::StartFailed);
+            return Err(NativeOpenError::Refused);
         };
-        if video_declaration_refused(lv, &plx_platform::devcaps::caps(), open.payload.force_direct_play) {
+        if video_declaration_refused(lv, &plx_platform::devcaps::caps(), open.feed_payload.force_direct_play) {
             log(&format!(
                 "start_bufferfeed: {} stream but the device table lists no such decoder; refusing the Load",
                 lv.payload_name()
             ));
             SHARED.fail_demux(DemuxExitClass::LoadRefused);
-            return Err(crate::route::RouteStartResult::StartFailed);
+            return Err(NativeOpenError::Refused);
         }
         video_declared = lv.payload_name();
         // Record what the payload ACTUALLY says, for the diagnostics read-out — including the
@@ -1324,12 +1329,12 @@ pub(super) fn prepare_native_open(
             let codec = &open.audio_codec;
             // App-decoded audio: the Load must state the PCM shape, and the demuxer must produce
             // exactly that. Missing facts refuse the Load — a guessed rate plays at the wrong pitch.
-            let pcm = match app_pcm_for_load(open.payload.force_direct_play, session_rate, open.payload.pcm.clone()) {
+            let pcm = match app_pcm_for_load(open.feed_payload.force_direct_play, session_rate, open.feed_payload.pcm.clone()) {
                 Some(Ok(f)) => Some(f),
                 Some(Err(why)) => {
                     log(&format!("start_bufferfeed: PCM audio refused — {why}"));
                     SHARED.demux_failed.store(true, Ordering::Release);
-                    return Err(crate::route::RouteStartResult::StartFailed);
+                    return Err(NativeOpenError::Refused);
                 }
                 None => None,
             };
@@ -1337,11 +1342,11 @@ pub(super) fn prepare_native_open(
             // on an output the default was not filmed on.
             let lead_override = plx_base::devtrig::read("pcmavoffset");
             let Some(audio) = load_audio(
-                &codec, session_rate, pcm.as_ref(), lead_override.as_deref(), plx_platform::devcaps::audio_stack(),
+                &codec, session_rate, pcm.is_some(), lead_override.as_deref(), plx_platform::devcaps::audio_stack(),
             ) else {
                 log(&format!("start_bufferfeed: unsupported audio codec {codec:?}; refusing incorrect Load declaration"));
                 SHARED.fail_demux(DemuxExitClass::LoadRefused);
-                return Err(crate::route::RouteStartResult::StartFailed);
+                return Err(NativeOpenError::Refused);
             };
             crate::ff::set_pcm_out(
                 pcm.map(|f| crate::ff_pcm::PcmOut {
@@ -1350,7 +1355,7 @@ pub(super) fn prepare_native_open(
                 pcm.is_some() && open.pcm_is_lossy,
             );
             if let Some(f) = pcm {
-                log(&pcm_decode_line(&codec, &f));
+                log(&plx_play_feed::pcm_decode_line(&codec, &f));
             }
             SHARED.dg_load_a.store(audio.diagnostic, Ordering::Relaxed);
             // App-decoded audio (`pcm`) and a speed session (`ff::SpeedDecoder`) both declare PCM;
@@ -1382,7 +1387,7 @@ pub(super) fn prepare_native_open(
                 let Some(p) = with_opus_info(&av, channels) else {
                     log(&format!("start_bufferfeed: no Opus layout for {channels} channel(s); refusing the Load"));
                     SHARED.demux_failed.store(true, Ordering::Release);
-                    return Err(crate::route::RouteStartResult::StartFailed);
+                    return Err(NativeOpenError::Refused);
                 };
                 log(&format!("start_bufferfeed: opusInfo channels={channels}"));
                 p
@@ -1405,7 +1410,7 @@ pub(super) fn prepare_native_open(
     // ...and the appId substitution happens here for the same reason, and BEFORE the splice —
     // `with_window_id`'s anchor is the composed `"appId":"<id>"`, so the placeholder has to be
     // gone by then.
-    let payload_c = std::ffi::CString::new(with_window_id(pa.mt(), &with_app_id(payload_str))).unwrap();
+    let payload_c = std::ffi::CString::new(with_window_id(mt, &with_app_id(payload_str))).unwrap();
     if stream {
         let open = open.as_ref().expect("stream request was captured");
         // What the payload ACTUALLY declared, once, in the event log. Not test scaffolding: until
@@ -1416,17 +1421,17 @@ pub(super) fn prepare_native_open(
         // unconfigured and stalls the video sink through audioSync. Streamed only: the two static
         // sample payloads declare nothing chosen and would be claiming a declaration they never
         // consulted. Carries no URL and no token, and costs one line per playback.
-        let dv = open.payload.dovi;
+        let dv = open.original_dv;
         log(&format!(
             "load: v={} a={:?} fps={:.3} dv=present:{} P{}/{} el:{} atmos:{} max={}x{}@{}",
             video_declared,
             audio_declared,
-            open.payload.fps,
+            open.feed_payload.fps,
             dv.present as i32,
             dv.profile,
             dv.bl_compat,
             dv.el_present as i32,
-            open.payload.immersive as i32,
+            open.feed_payload.immersive as i32,
             sink_env.w,
             sink_env.h,
             sink_env.fps
@@ -1439,14 +1444,14 @@ pub(super) fn prepare_native_open(
         Some(guard) => guard,
         None => {
             log("start_bufferfeed: clock state is not idle (refusing overlapping start)");
-            return Err(crate::route::RouteStartResult::StartFailed);
+            return Err(NativeOpenError::Refused);
         }
     };
     let native_start = match NativeSessionStartGuard::arm() {
         Some(guard) => guard,
         None => {
             log("start_bufferfeed: native session is not idle (refusing overlapping Load)");
-            return Err(crate::route::RouteStartResult::StartFailed);
+            return Err(NativeOpenError::Refused);
         }
     };
 
@@ -1467,11 +1472,10 @@ pub(super) struct NativePrepared {
 
 /// Launch workers against the route's exact attempt; this owns no route/session policy.
 pub(super) fn launch_native_open(
-    pa: &mut super::adapter::PlayerAdapter,
-    route_attempt: crate::route::RouteStartAttempt,
-    trace_generation: u32,
+    feed: &mut super::feed_resources::FeedResources,
+    attempt: plx_playback_contract::AttemptId,
     prepared: NativePrepared,
-) -> Result<(), crate::route::RouteStartResult> {
+) -> Result<(), NativeOpenError> {
     let NativePrepared { mut open, sample, stream, payload_c, audio_lead, clock_start, native_start } = prepared;
     // fd = -1 (CLOSED) so a teardown before/without http_open doesn't close(0)
     let mut hs = plx_net::stream::http_stream_boxed();
@@ -1486,22 +1490,11 @@ pub(super) fn launch_native_open(
 
     if stream {
         let open = open.as_mut().expect("stream request was captured");
-        let su = plx_plex::plex::StreamUrl::parse(&open.url); // the typed layer's URL splitter
-                                                      // **The whole ORIGIN goes down, not a `(host, port)` pair, because the SCHEME chooses the
-                                                      // transport**: `ff::demux` reads http through `plx_net::stream`'s cleartext socket and https
-                                                      // through `crate::curlio`. This used to REFUSE an https origin outright — cleartext to a
-                                                      // TLS port is a hang or a garbage response with nothing in the log — and that refusal is
-                                                      // what a remote QA reviewer, with no PMS on their LAN, would have hit on every Play.
-                                                      // Rebuilding the origin from an address would put the refusal back in a subtler form: the
-                                                      // certificate is issued for the `plex.direct` NAME, so a TLS connection to the dotted quad
-                                                      // behind it fails validation however well the packets flow (`net/origin.rs`).
-        if !plx_plex::http::credential_transport_allowed(&su.origin, &su.path, &[]) {
-            plx_base::eventlog::log("stream: refused insecure credential transport");
-            return Err(crate::route::RouteStartResult::StartFailed);
-        }
-        let path = su.path;
-        log(&stream_open_log_line(&su.origin.log_form(), &path));
-        let origin = su.origin;
+        // The whole origin goes to the demuxer: its scheme chooses the byte transport, and
+        // HTTPS certificate validation needs the original `plex.direct` hostname.
+        let path = std::mem::take(&mut open.path);
+        log(&stream_open_log_line(&open.origin.log_form(), &path));
+        let origin = open.origin.clone();
         // Two-lane feed: the demuxer routes es=1 video to aq_video and es=2 audio to
         // aq_audio, each with its own cap + feeder.
         let mut qv = crate::aq::aq_new(AQ_VIDEO_BYTES);
@@ -1523,19 +1516,20 @@ pub(super) fn launch_native_open(
             // `teardown(true) + start_bufferfeed()` (reload_at / reload_transcode /
             // switch_audio_native), which respawns this thread with the new value.
             let acodec = std::mem::take(&mut open.audio_codec);
-            let force_original = open.payload.force_direct_play;
+            let force_original = open.feed_payload.force_direct_play;
             let demux_transport = crate::ff::DemuxTransport::new(
                 crate::curlio::range_factory(),
                 crate::curlio::CREDENTIAL_GATE,
             );
+            let session = open.session.take().expect("one demux session per captured feed open");
             let abr = open.hls_abr.take();
             let auto_original = open.auto_original.take();
             // Before the demuxer exists, so what it publishes is this session's.
             crate::ff::native_audio::reset();
             // A clock-only reader (a sidecar) reads no subtitle: the demuxer keeps what it enumerates.
-            SHARED.side_subs_owner.store(side_target.as_ref().is_some_and(|t| !t.clock_only()), Ordering::Release);
+            SHARED.side_subs_owner.store(side_target.as_ref().is_some_and(|t| !t.clock_only), Ordering::Release);
             stream_th = plx_base::task::spawn_off_frame_keeping("demux", move |off| {
-                crate::ff::demux(off, origin, path, acodec, force_original, demux_transport, abr.map(Into::into), auto_original.map(Into::into), aqp, aqap, hsp)
+                crate::ff::demux(off, origin, path, acodec, force_original, demux_transport, session, abr, auto_original, aqp, aqap, hsp)
             });
             if stream_th.is_none() {
                 SHARED.side_subs_owner.store(false, Ordering::Release);
@@ -1543,7 +1537,7 @@ pub(super) fn launch_native_open(
                 // about to drop with this early return, so retract the pointer first — the pump
                 // and teardown both read it straight off SHARED.
                 SHARED.hs_ptr.store(std::ptr::null_mut(), Ordering::Release);
-                return Err(crate::route::RouteStartResult::StartFailed);
+                return Err(NativeOpenError::Refused);
             }
         }
         aqv_box = Some(qv);
@@ -1556,13 +1550,13 @@ pub(super) fn launch_native_open(
     // the media thread constructs + loads + runs the loop (owns the GMainContext)
     let payload_ptr = threads::SendPtr(payload_c.as_ptr() as *mut c_char);
     let native_epoch = native_start.epoch();
-    let receipt = pa.load_receipt(route_attempt, native_epoch, trace_generation);
+    let receipt = feed.load_receipt(attempt, native_epoch);
     let receipt_token = receipt.token();
     let load_th = plx_base::task::spawn("media", move || {
         threads::load_thread(payload_ptr, native_epoch, Some(receipt), audio_lead)
     });
     if load_th.is_none() {
-        pa.cancel_load_receipt(receipt_token);
+        feed.cancel_load_receipt(receipt_token);
         // Without the media thread nothing is ever Loaded and nothing drains the AU queues, so the
         // demuxer would park in aq_push forever holding raw pointers into locals this return is
         // about to drop. Stop it exactly the way teardown's stream branch does — abort both lanes,
@@ -1582,18 +1576,18 @@ pub(super) fn launch_native_open(
         if !p.is_null() {
             plx_net::stream::http_close(p); // sole owner now: the reader is joined
         }
-        return Err(crate::route::RouteStartResult::StartFailed);
+        return Err(NativeOpenError::Refused);
     }
     // The side subtitle reader (dev trigger `plxnative-subside`), started once the demuxer is
     // spawned and the media thread exists: it waits for the demuxer's first keyframe before it
     // reads anything. (Its ownership flag was set before the demux spawn, below.)
     if let Some(target) = side_target {
-        start_side_reader(&target);
+        start_side_reader(target);
     }
 
     let (lead_at_start, lead_pending) = audio_lead.at_engine_start();
     let eng = Engine {
-        route_start: route_attempt,
+        attempt,
         native_epoch,
         stage: Stage::Loading,
         video_info_sent: false,
@@ -1644,7 +1638,7 @@ pub(super) fn launch_native_open(
     let mode = session_seek_mode(layout_known, old_abi_seek, sink().window_mode(), dev_seek_mode());
     log(&format!("seek mode: {mode:?} (layout_known={layout_known} old_abi_seek={old_abi_seek})"));
     super::set_seek_mode(mode);
-    pa.install(eng);
+    feed.install(eng);
     native_start.commit();
     clock_start.commit();
     TX.started.store(true, Ordering::Relaxed);
@@ -1782,9 +1776,9 @@ pub fn land_resume(ps: &mut crate::route::PlaybackSession) -> Option<ResumeOutco
 /// path, which never wedges. Heavier than a flush (a ~1 s re-preroll) but correct.
 /// Start the side subtitle reader for the live remux this engine run plays, drawing the track
 /// the route's target names (or, for a sidecar, measuring the clock only).
-fn start_side_reader(target: &crate::route::SideReaderTarget) {
-    let clock_only = target.clock_only();
-    let started = super::subside::spec_for(target).is_some_and(super::subside::start);
+fn start_side_reader(target: super::feed_open::SideReaderOpen) {
+    let clock_only = target.clock_only;
+    let started = target.spec.is_some_and(super::subside::start);
     if !started {
         // One place decides the label and the burn, so the two roles can never drift: a
         // clock-only reader that cannot start — no client for the running server, or a refused
@@ -1860,9 +1854,7 @@ pub fn suspend_bufferfeed_if_attempt(
     pa: &mut super::adapter::PlayerAdapter,
     attempt: crate::route::RouteStartAttempt,
 ) -> bool {
-    let owns_attempt = pa.engine()
-        .map(|engine| engine.route_start == attempt)
-        .unwrap_or(false);
+    let owns_attempt = pa.active_feed_attempt() == Some(attempt);
     if owns_attempt {
         teardown(ps, pa, true);
     }
@@ -1874,13 +1866,7 @@ pub fn suspend_bufferfeed_if_attempt(
 /// ([`Engine::foreground_follows_load`]). True when the live Engine owns that exact attempt; a
 /// replaced Engine (a different attempt) is not marked.
 pub fn foreground_follows_load(pa: &mut super::adapter::PlayerAdapter, attempt: crate::route::RouteStartAttempt) -> bool {
-    match pa.engine() {
-        Some(engine) if engine.route_start == attempt => {
-            engine.foreground_follows_load = true;
-            true
-        }
-        _ => false,
-    }
+    pa.mark_foreground_follows_feed_load(attempt)
 }
 
 /// The teardown body. `for_reload` = this is a direct-play seek reload (reload_at), NOT a real
@@ -1893,11 +1879,9 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::a
     // while the flag is set, so the picture never reaches the plane. The next halt joins once
     // the thread has already finished.
     if crate::route::is_preview(ps) {
-        if let Some(eng) = pa.engine() {
-            let loading = eng.stage == Stage::Loading;
-            let finished = eng.load_th.as_ref().is_none_or(|t| t.is_finished());
+        if let Some((loading, finished)) = pa.feed.preview_load_join_state() {
             if crate::player::preview::defer_media_join(loading, finished) {
-                eng.preview_abandon = true;
+                pa.feed.abandon_preview();
                 return;
             }
         }
@@ -1909,8 +1893,10 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::a
     let mut unload_th = None;
     super::route_start::begin_feed_teardown(for_reload);
     SHARED.stop_hls_clock();
-    let mut eng = pa.take().expect("main-thread live check and take are one transaction");
-    pa.retire_load_attempt(eng.route_start);
+    let route_attempt = pa.active_feed_attempt().expect("live feed has a route owner");
+    let mut eng = pa.feed.take().expect("main-thread live check and take are one transaction");
+    pa.clear_feed_attempt();
+    pa.retire_load_attempt(eng.attempt);
     let stream = matches!(eng.source, Source::Stream { .. });
 
     let final_report = super::route_start::final_report(ps, for_reload);
@@ -1921,7 +1907,7 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::a
     super::subside::stop(if for_reload { "reload" } else { "stop" });
     sp.mark("subside");
     // 1. unblock every thread (abort queues, close the demux socket)
-    let mut report_th = super::route_start::stop_feed_timeline(pa, eng.route_start);
+    let mut report_th = super::route_start::stop_feed_timeline(pa, route_attempt);
     if stream {
         // abort BOTH lanes: unblock the demux if it's parked in aq_push on a full lane
         for q in [eng.aq_video.as_mut(), eng.aq_audio.as_mut()]
@@ -2424,7 +2410,7 @@ struct LoadAudio {
 /// from, so every Load that declares `"audio":"PCM"` is planned a lead. `lead_override_ms` is
 /// the dev trigger's text and `stack` the set's audio stack ([`plx_platform::devcaps::audio_stack`]).
 fn load_audio(
-    codec: &str, session_rate: i32, app_pcm: Option<&crate::route::PcmFormat>, lead_override_ms: Option<&str>,
+    codec: &str, session_rate: i32, app_pcm: bool, lead_override_ms: Option<&str>,
     stack: AudioStack,
 ) -> Option<LoadAudio> {
     let declared = audio_declaration(codec, app_pcm);
@@ -4094,7 +4080,7 @@ mod prime_livelock_tests {
     pub(super) fn engine_after_reload() -> Engine {
         SHARED.ensure_initial_clock_hold_for_test();
         Engine {
-            route_start: crate::route::RouteStartAttempt::fixture(),
+            attempt: crate::route::RouteStartAttempt::fixture().contract_id(),
             native_epoch: 0,
             stage: Stage::Streaming,
             video_info_sent: true,
@@ -6490,7 +6476,7 @@ mod pcm_info_tests {
     fn app_decoded_dts_is_declared_as_pcm_and_native_dts_as_dts() {
         let mut ps = crate::route::PlaybackSession::IDLE;
         crate::route::set_stream_codecs(&mut ps, "h264", "dts");
-        assert_eq!(audio_declaration("dts", crate::route::stream_pcm(&ps).and_then(Result::ok).as_ref()), Some(("DTS", 4)));
+        assert_eq!(audio_declaration("dts", crate::route::stream_pcm(&ps).and_then(Result::ok).is_some()), Some(("DTS", 4)));
         let off = build_av_payload_at(&ps, "H264", "DTS", ENVELOPE_FHD60, crate::player::RATE_NORMAL);
         assert!(off.contains(r#""audio":"DTS""#) && !off.contains("pcmInfo"), "{off}");
 
@@ -6499,7 +6485,7 @@ mod pcm_info_tests {
         );
         let shape = crate::route::stream_pcm(&ps).and_then(Result::ok);
         assert_eq!(shape, Some(crate::route::PcmFormat::STEREO_48K));
-        assert_eq!(audio_declaration("dts", shape.as_ref()), Some(("PCM", 5)));
+        assert_eq!(audio_declaration("dts", shape.is_some()), Some(("PCM", 5)));
         let on = build_av_payload_at(&ps, "H264", "PCM", ENVELOPE_FHD60, crate::player::RATE_NORMAL);
         assert!(on.contains(r#""audio":"PCM""#), "{on}");
         assert_eq!(on.matches("pcmInfo").count(), 1, "{on}");
@@ -6572,7 +6558,7 @@ mod pcm_info_tests {
             crate::route::set_stream_codecs(&mut ps, "h264", codec);
             let off = crate::route::stream_pcm(&ps).and_then(Result::ok);
             assert_eq!(off, None, "{codec}: gate off");
-            assert_eq!(audio_declaration(codec, off.as_ref()).map(|d| d.0).filter(|n| *n == "PCM"), None, "{codec}");
+            assert_eq!(audio_declaration(codec, off.is_some()).map(|d| d.0).filter(|n| *n == "PCM"), None, "{codec}");
         }
         crate::route::begin_attempt_for_test(
             &mut ps, std::sync::Arc::new(plx_platform::devcaps::Caps::assumed().with_app_lossy()),
@@ -6581,12 +6567,12 @@ mod pcm_info_tests {
             crate::route::set_stream_codecs(&mut ps, "h264", codec);
             let shape = crate::route::stream_pcm(&ps).and_then(Result::ok);
             assert_eq!(shape, Some(crate::route::PcmFormat::STEREO_48K), "{codec}");
-            assert_eq!(audio_declaration(codec, shape.as_ref()), Some(("PCM", 5)), "{codec}");
+            assert_eq!(audio_declaration(codec, shape.is_some()), Some(("PCM", 5)), "{codec}");
             let on = build_av_payload_at(&ps, "H264", "PCM", ENVELOPE_FHD60, crate::player::RATE_NORMAL);
             assert_eq!(on.matches("pcmInfo").count(), 1, "{codec}: {on}");
             // declared PCM, so planned the stack's lead like a FLAC Load (`load_audio` is the one value)
             let planned =
-                load_audio(codec, crate::player::RATE_NORMAL, shape.as_ref(), None, AudioStack::Liblxa).unwrap();
+                load_audio(codec, crate::player::RATE_NORMAL, shape.is_some(), None, AudioStack::Liblxa).unwrap();
             assert_eq!((planned.name, planned.lead), ("PCM", PcmLead::FromOutput(AudioStack::Liblxa)), "{codec}");
         }
     }
@@ -6603,10 +6589,10 @@ mod pcm_info_tests {
         crate::route::set_stream_codecs(&mut ps, "h264", "truehd");
         let shape = crate::route::stream_pcm(&ps).and_then(Result::ok);
         assert_eq!(shape, Some(crate::route::PcmFormat::STEREO_48K));
-        assert_eq!(audio_declaration("truehd", shape.as_ref()), Some(("PCM", 5)));
+        assert_eq!(audio_declaration("truehd", shape.is_some()), Some(("PCM", 5)));
         let on = build_av_payload_at(&ps, "H264", "PCM", ENVELOPE_FHD60, crate::player::RATE_NORMAL);
         assert_eq!(on.matches("pcmInfo").count(), 1, "{on}");
-        let planned = load_audio("truehd", crate::player::RATE_NORMAL, shape.as_ref(), None, AudioStack::Liblxa).unwrap();
+        let planned = load_audio("truehd", crate::player::RATE_NORMAL, shape.is_some(), None, AudioStack::Liblxa).unwrap();
         assert_eq!((planned.name, planned.lead), ("PCM", PcmLead::FromOutput(AudioStack::Liblxa)), "planned the stack's lead");
     }
 
@@ -6629,7 +6615,7 @@ mod pcm_info_tests {
             for rate in [500, 1500, 2000] {
                 let pcm = app_pcm_for_rate(rate, crate::route::stream_pcm(&ps)).and_then(Result::ok);
                 assert_eq!(pcm, None, "{codec} at {rate}: the speed decoder declares the shape");
-                let planned = load_audio(codec, rate, pcm.as_ref(), None, AudioStack::Liblxa)
+                let planned = load_audio(codec, rate, pcm.is_some(), None, AudioStack::Liblxa)
                     .map(|a| (a.name, a.diagnostic, a.lead));
                 assert_eq!(
                     planned,
@@ -7655,7 +7641,7 @@ mod pcm_sink_lead_pure_tests {
     fn a_pcm_load_asks_for_the_output_only_on_a_stack_whose_lead_follows_it() {
         for stack in ALL_STACKS {
             let reads = std::cell::Cell::new(0);
-            let lead = load_audio("flac", crate::player::RATE_NORMAL, None, None, stack).unwrap().lead;
+            let lead = load_audio("flac", crate::player::RATE_NORMAL, false, None, stack).unwrap().lead;
             let resolved = lead.resolve(|| {
                 reads.set(reads.get() + 1);
                 Some("bt_soundbar".to_string())
@@ -7728,7 +7714,7 @@ mod pcm_sink_lead_pure_tests {
     #[test]
     fn the_engines_lead_follows_the_declared_audio_the_speed_override_and_the_stack() {
         use crate::player::RATE_NORMAL;
-        let plan = |codec: &str, rate: i32| load_audio(codec, rate, None, None, AudioStack::Liblxa).map(|a| (a.name, a.lead));
+        let plan = |codec: &str, rate: i32| load_audio(codec, rate, false, None, AudioStack::Liblxa).map(|a| (a.name, a.lead));
         let from_output = PcmLead::FromOutput(AudioStack::Liblxa);
         assert_eq!(plan("flac", RATE_NORMAL), Some(("PCM", from_output)));
         assert_eq!(plan("alac", RATE_NORMAL), Some(("PCM", from_output)));
@@ -7743,17 +7729,17 @@ mod pcm_sink_lead_pure_tests {
         // at every Load (`player::session_rate_for` -> `speed_offer` -> `ff::speed_decoder_available`).
         assert_eq!(plan("not-a-codec", 1500), Some(("PCM", from_output)), "a speed session declares PCM whatever the codec is called");
         let sink = AudioStack::LgAudioSink;
-        let on_sink = |codec: &str, rate: i32| load_audio(codec, rate, None, None, sink).map(|a| (a.name, a.lead));
+        let on_sink = |codec: &str, rate: i32| load_audio(codec, rate, false, None, sink).map(|a| (a.name, a.lead));
         assert_eq!(on_sink("flac", RATE_NORMAL), Some(("PCM", PcmLead::Fixed(sink))));
         assert_eq!(on_sink("ac3", 1500), Some(("PCM", PcmLead::Fixed(sink))), "a speed session declares PCM on this stack too");
         assert_eq!(on_sink("ac3", RATE_NORMAL), Some(("AC3", PcmLead::Off)), "a compressed Load keeps the set's own decoder");
         let y2018 = AudioStack::AudioSinkNew;
-        let on_2018 = |codec: &str, rate: i32| load_audio(codec, rate, None, None, y2018).map(|a| (a.name, a.lead));
+        let on_2018 = |codec: &str, rate: i32| load_audio(codec, rate, false, None, y2018).map(|a| (a.name, a.lead));
         assert_eq!(on_2018("flac", RATE_NORMAL), Some(("PCM", PcmLead::FromOutput(y2018))));
         assert_eq!(on_2018("ac3", 1500), Some(("PCM", PcmLead::FromOutput(y2018))));
         assert_eq!(on_2018("ac3", RATE_NORMAL), Some(("AC3", PcmLead::Off)));
         for stack in NO_LEAD_STACKS {
-            let on = |codec: &str, rate: i32| load_audio(codec, rate, None, None, stack).map(|a| (a.name, a.lead));
+            let on = |codec: &str, rate: i32| load_audio(codec, rate, false, None, stack).map(|a| (a.name, a.lead));
             assert_eq!(on("flac", RATE_NORMAL), Some(("PCM", PcmLead::NoLead(stack))), "{stack:?}");
             assert_eq!(on("ac3", 1500), Some(("PCM", PcmLead::NoLead(stack))), "{stack:?}");
             assert_eq!(on("ac3", RATE_NORMAL), Some(("AC3", PcmLead::Off)), "{stack:?}");
@@ -7767,18 +7753,17 @@ mod pcm_sink_lead_pure_tests {
     #[test]
     fn app_decoded_dts_takes_the_stacks_lead_and_native_dts_none() {
         use crate::player::RATE_NORMAL;
-        let shape = crate::route::PcmFormat::STEREO_48K;
         for stack in ALL_STACKS {
-            let app = load_audio("dts", RATE_NORMAL, Some(&shape), None, stack).unwrap();
-            let like_flac = load_audio("flac", RATE_NORMAL, Some(&shape), None, stack).unwrap();
+            let app = load_audio("dts", RATE_NORMAL, true, None, stack).unwrap();
+            let like_flac = load_audio("flac", RATE_NORMAL, true, None, stack).unwrap();
             assert_eq!((app.name, app.diagnostic), ("PCM", 5), "{stack:?}");
             assert_eq!(app.lead, like_flac.lead, "{stack:?}: the same plan as a FLAC Load");
             assert_eq!(app.lead, pcm_lead_plan("PCM", None, stack), "{stack:?}");
-            let native = load_audio("dts", RATE_NORMAL, None, None, stack).unwrap();
+            let native = load_audio("dts", RATE_NORMAL, false, None, stack).unwrap();
             assert_eq!((native.name, native.lead), ("DTS", PcmLead::Off), "{stack:?}: a compressed Load gets none");
         }
         assert_eq!(
-            load_audio("dts", RATE_NORMAL, Some(&shape), None, AudioStack::Liblxa).unwrap().lead,
+            load_audio("dts", RATE_NORMAL, true, None, AudioStack::Liblxa).unwrap().lead,
             PcmLead::FromOutput(AudioStack::Liblxa)
         );
     }
@@ -7789,11 +7774,11 @@ mod pcm_sink_lead_pure_tests {
     fn the_dev_override_reaches_the_engines_lead_through_the_declaration() {
         use crate::player::RATE_NORMAL;
         for stack in ALL_STACKS {
-            assert_eq!(load_audio("flac", RATE_NORMAL, None, Some("330"), stack).unwrap().lead, PcmLead::Override(330_000_000, stack));
-            assert_eq!(load_audio("ac3", 1500, None, Some("0"), stack).unwrap().lead, PcmLead::Override(0, stack));
-            assert_eq!(load_audio("ac3", RATE_NORMAL, None, Some("330"), stack).unwrap().lead, PcmLead::Off);
+            assert_eq!(load_audio("flac", RATE_NORMAL, false, Some("330"), stack).unwrap().lead, PcmLead::Override(330_000_000, stack));
+            assert_eq!(load_audio("ac3", 1500, false, Some("0"), stack).unwrap().lead, PcmLead::Override(0, stack));
+            assert_eq!(load_audio("ac3", RATE_NORMAL, false, Some("330"), stack).unwrap().lead, PcmLead::Off);
         }
-        let flac = load_audio("flac", RATE_NORMAL, None, None, AudioStack::Liblxa).unwrap();
+        let flac = load_audio("flac", RATE_NORMAL, false, None, AudioStack::Liblxa).unwrap();
         assert_eq!(flac.diagnostic, 5, "the diagnostics code is the same pair's");
     }
 

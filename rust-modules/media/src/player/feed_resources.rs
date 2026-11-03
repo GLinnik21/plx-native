@@ -2,7 +2,7 @@
 //! the common adapter still decides route settlement, reporting, release policy and admission.
 
 use super::{engine, threads};
-use crate::route::RouteStartAttempt;
+use plx_playback_contract::AttemptId;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::mpsc;
@@ -19,14 +19,12 @@ pub(super) struct FeedResources {
 }
 
 struct LoadTicket {
-    attempt: RouteStartAttempt,
+    attempt: AttemptId,
     native_epoch: u32,
-    trace_generation: u32,
 }
 
 pub(super) struct AcceptedLoadOutcome {
-    pub attempt: RouteStartAttempt,
-    pub trace_generation: u32,
+    pub attempt: AttemptId,
     pub ok: bool,
     pub elapsed_ms: Option<u64>,
 }
@@ -57,6 +55,10 @@ impl FeedResources {
     pub fn stage(&self) -> Option<super::shared::Stage> {
         self.engine.as_ref().map(|engine| engine.stage)
     }
+    pub fn load_thread_finished(&self) -> bool {
+        self.engine.as_ref().and_then(|engine| engine.load_th.as_ref())
+            .is_none_or(|thread| thread.is_finished())
+    }
     pub fn pending_seek_ready(&self, seek_reloads: bool) -> bool {
         self.engine.as_ref().is_some_and(|eng| {
             matches!(&eng.source, engine::Source::Stream)
@@ -68,12 +70,28 @@ impl FeedResources {
         self.engine.as_ref().is_some_and(|eng| super::SHARED.begin_native_media_discontinuity(eng.native_epoch))
     }
     pub fn is_live(&self) -> bool { self.engine.is_some() }
-    pub fn active_attempt(&self) -> Option<RouteStartAttempt> { self.engine.as_ref().map(|e| e.route_start) }
+    pub fn active_attempt(&self) -> Option<AttemptId> { self.engine.as_ref().map(|e| e.attempt) }
     pub fn loading(&self) -> bool {
         self.engine.as_ref().is_some_and(|e| e.stage == super::shared::Stage::Loading)
     }
     pub fn foreground_follows_load(&self) -> bool {
         self.engine.as_ref().is_some_and(|e| e.foreground_follows_load)
+    }
+    pub fn mark_foreground_follows_load(&mut self, attempt: AttemptId) -> bool {
+        let Some(engine) = self.engine.as_mut().filter(|engine| engine.attempt == attempt) else {
+            return false;
+        };
+        engine.foreground_follows_load = true;
+        true
+    }
+    pub fn preview_load_join_state(&self) -> Option<(bool, bool)> {
+        self.engine.as_ref().map(|engine| (
+            engine.stage == super::shared::Stage::Loading,
+            engine.load_th.as_ref().is_none_or(|thread| thread.is_finished()),
+        ))
+    }
+    pub fn abandon_preview(&mut self) {
+        if let Some(engine) = self.engine.as_mut() { engine.preview_abandon = true; }
     }
     pub fn route_actions_ready(&self) -> bool {
         self.engine.as_ref().is_some_and(|e| {
@@ -85,17 +103,16 @@ impl FeedResources {
     pub fn install(&mut self, value: engine::Engine) { self.engine = Some(value); }
     pub fn take(&mut self) -> Option<engine::Engine> { self.engine.take() }
 
-    pub fn load_receipt(&mut self, attempt: RouteStartAttempt, native_epoch: u32,
-        trace_generation: u32) -> threads::LoadReceipt {
+    pub fn load_receipt(&mut self, attempt: AttemptId, native_epoch: u32) -> threads::LoadReceipt {
         self.next_load_token = self.next_load_token.checked_add(1).expect("Load receipt IDs exhausted");
         let token = self.next_load_token;
-        self.load_tickets.insert(token, LoadTicket { attempt, native_epoch, trace_generation });
+        self.load_tickets.insert(token, LoadTicket { attempt, native_epoch });
         threads::LoadReceipt::new(token, self.load_tx.clone())
     }
 
     pub fn cancel_load_receipt(&mut self, token: u64) { self.load_tickets.remove(&token); }
 
-    pub fn retire_load_attempt(&mut self, attempt: RouteStartAttempt) {
+    pub fn retire_load_attempt(&mut self, attempt: AttemptId) {
         self.load_tickets.retain(|_, ticket| ticket.attempt != attempt);
     }
 
@@ -107,12 +124,11 @@ impl FeedResources {
         for outcome in outcomes {
             let Some(ticket) = self.load_tickets.remove(&outcome.token) else { continue; };
             if ticket.native_epoch != outcome.native_epoch
-                || !self.engine.as_ref().is_some_and(|engine| engine.route_start == ticket.attempt && engine.native_epoch == ticket.native_epoch) {
+                || !self.engine.as_ref().is_some_and(|engine| engine.attempt == ticket.attempt && engine.native_epoch == ticket.native_epoch) {
                 continue;
             }
             accepted.push(AcceptedLoadOutcome {
                 attempt: ticket.attempt,
-                trace_generation: ticket.trace_generation,
                 ok: outcome.ok,
                 elapsed_ms: outcome.elapsed_ms,
             });

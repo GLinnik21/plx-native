@@ -20,6 +20,7 @@ devtriggers = ["plx_base/devtriggers"]
 test-support = ["plx_base/test-support"]
 
 [dependencies]
+plx_playback_contract = { path = "../playback-contract" }
 plx_base = { path = "../base" }
 libc = "0.2"
 

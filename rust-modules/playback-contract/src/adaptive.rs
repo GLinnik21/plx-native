@@ -383,6 +383,7 @@ pub enum AdaptiveProgress {
 /// The route/controller owner moves into the existing feed worker. Every
 /// round is driven synchronously on that worker through one addressed port.
 pub trait AdaptiveSession: Send {
+    fn initial_kbps(&self) -> u32;
     fn drive_round(
         &mut self, off: &plx_base::task::OffFrame,
         physical: &mut dyn AdaptivePhysicalPort,

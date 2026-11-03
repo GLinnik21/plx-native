@@ -109,62 +109,6 @@ use super::feed_pump::{
 /// and the pump zeroes it applying a seek, which is motion, not a freeze.
 static LAST_FRAMES: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
-/// Translate legacy feed callback mailboxes into one addressed, sparse session observation.
-/// The callback fields remain private to this driver; common readouts consume the session value.
-fn publish_attempt_view(ps: &mut crate::route::PlaybackSession, attempt: crate::route::RouteStartAttempt) {
-    use super::attempt_view::AttemptFacts;
-    let reported_frame = SHARED.seen_frame.load(Relaxed);
-    let position = SHARED.playpos_ns.load(Relaxed);
-    let duration = SHARED.duration_ns.load(Relaxed);
-    let (width, height) = SHARED.video_raster();
-    let stage = SHARED.dg_stage.load(Relaxed);
-    let pipeline_error = SHARED.dg_cb_err_num.load(Relaxed);
-    let http_status = SHARED.dg_http_status.load(Relaxed);
-    let demux_exit = SHARED.dg_demux_exit.load(Relaxed);
-    let declared_kbps = SHARED.dg_abr_declared_kbps.load(Relaxed);
-    let media_kbps = SHARED.dg_abr_media_kbps.load(Relaxed);
-    let abr_buffer_ms = SHARED.dg_abr_buffer_ms.load(Relaxed);
-    let transport_rc = SHARED.dg_transport_rc.load(Relaxed);
-    let transfer_age_ms = SHARED.dg_transport_age_ms.load(Relaxed);
-    let failure = super::runtime_failure(
-        SHARED.demux_failed.load(std::sync::atomic::Ordering::Acquire),
-        SHARED.demux_io_failed.load(std::sync::atomic::Ordering::Acquire),
-        SHARED.load_failed.load(Relaxed),
-        SHARED.load_timed_out.load(Relaxed),
-    );
-    let requested_kbps = SHARED.dg_abr_kbps.load(Relaxed);
-    let facts = AttemptFacts {
-        status: Some(super::PlaybackState::from_u8(SHARED.pb_state.load(Relaxed))),
-        requested_kbps: (requested_kbps > 0).then_some(requested_kbps),
-        refusal_path: Some(SHARED.refusal_path()),
-        runtime_failure: (failure != super::RuntimeFailure::Unknown).then_some(failure),
-        no_video: SHARED.demux_no_video.load(Relaxed).then_some(true),
-        position_ns: reported_frame.then_some(position.max(0)),
-        duration_ns: (duration > 0).then_some(duration),
-        playable_buffer_ms: super::playable_buffer_ms(
-            SHARED.hls_video_tail_ns.load(Relaxed),
-            SHARED.hls_audio_tail_ns.load(Relaxed),
-            SHARED.dg_load_a.load(Relaxed) != 0,
-            SHARED.disp_base.load(Relaxed),
-            position,
-        ),
-        reported_frame: reported_frame.then_some(true),
-        frames: reported_frame.then_some(SHARED.frames.load(Relaxed)),
-        raster: (width > 0 && height > 0).then_some((width, height)),
-        pipeline_stage: (stage > 0).then_some(stage),
-        pipeline_error: (pipeline_error != 0).then_some(pipeline_error),
-        http_status: (http_status > 0).then_some(http_status),
-        demux_exit: (demux_exit != 0).then_some(demux_exit),
-        declared_kbps: (declared_kbps > 0).then_some(declared_kbps),
-        media_kbps: (media_kbps > 0).then_some(media_kbps),
-        abr_buffer_ms: (abr_buffer_ms > 0).then_some(abr_buffer_ms),
-        transport_rc: (transport_rc != 0).then_some(transport_rc),
-        transfer_age_ms: (transfer_age_ms > 0).then_some(transfer_age_ms),
-        transport_reopen_failed: SHARED.dg_transport_reopen_failed.load(Relaxed).then_some(true),
-    };
-    let _ = ps.ingest_attempt_facts(attempt, facts);
-}
-
 /// The failed half of the deferred Original recovery: put the old route back and say where to
 /// resume it, in nanoseconds. `None` means there was no recovery in flight, and the caller's
 /// failure means what it always did.
@@ -1060,13 +1004,9 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     // Capture before a terminal release can clear the callback mailbox, then capture every
     // surviving/replacement Engine after the frame, including its early-return paths. A callback
     // or timeout raised during this tick must reach reports before the app observes Error.
-    if let Some(attempt) = pa.active_feed_attempt() {
-        publish_attempt_view(ps, attempt);
-    }
+    pa.publish_feed_attempt_view(ps);
     pump_frame(ps, pa, now);
-    if let Some(attempt) = pa.active_feed_attempt() {
-        publish_attempt_view(ps, attempt);
-    }
+    pa.publish_feed_attempt_view(ps);
 }
 
 fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, now: u32) {
@@ -2051,7 +1991,7 @@ mod flight_tests {
             let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
             let epoch = SHARED.begin_native_session().expect("native session");
             let engine = super::super::engine::streaming_engine_for_test(epoch);
-            ps.begin_attempt_view(engine.route_start, super::super::attempt_view::Backend::Feed);
+            ps.begin_attempt_view(crate::route::RouteStartAttempt::fixture(), super::super::attempt_view::Backend::Feed);
             pa.install(engine);
             SHARED.duration_ns.store(7_200_000_000_000, Relaxed);
             SHARED.playpos_ns.store(60_000_000_000, Relaxed);

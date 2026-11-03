@@ -5,13 +5,14 @@
 #![deny(clippy::debug_assert_with_mut_call)]
 use crate::aq::AuQueue;
 use plx_playback_contract::adaptive::{Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, AdaptivePhysicalPort, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, ExplorationFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, RoundId, TrialActuatorPort, TrialClock, TrialId, VariantFact};
+use plx_playback_contract::demux::{DemuxClock, DemuxEffect, DemuxSession, PauseLane};
 use plx_playback_contract::SourceKey;
 use plx_play_feed::SendPtr;
 use crate::player::SHARED;
 use plx_net::stream::HttpStream;
 use plx_net::net::origin::Origin;
 use plx_net::range_io::{self, RangeFactory, RangeReader};
-use plx_telemetry::telemetry::classes::DemuxExitClass;
+use plx_playback_contract::demux::DemuxFault;
 use std::ffi::CString;
 use std::os::raw::{c_int, c_long, c_uchar, c_uint, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -574,7 +575,7 @@ impl StallGuard {
     /// response whose declared bytes all arrived (or whose unsized body reached a confirmed end);
     /// before the body exists nothing is complete. `terminal_hold_started` is the main thread's
     /// terminal observation — an exact arithmetic `B=0`, or a presentation clock that has
-    /// physically stopped (`pump::native_clock_stopped`) — and a hold epoch that moved since
+    /// physically stopped (`player::feed_pump::native_clock_stopped`) — and a hold epoch that moved since
     /// arming is the same observation, already released.
     /// The playhead form is the same arithmetic sampled by this worker, and on this pipeline it is
     /// a bound rather than a trigger: `reserve_ms_at_start` is measured to the demuxed tail, and
@@ -4199,10 +4200,9 @@ fn hls_feed_segment(
     output: &HlsSegmentOutput,
     aq: *mut AuQueue,
     aqa: *mut AuQueue,
+    session: &mut dyn DemuxSession,
 ) -> Result<(), HlsExit> {
-    SHARED
-        .hls_audio_expected
-        .store(output.transfer.audio_expected, Ordering::Release);
+    session.media().publish(DemuxEffect::AudioExpected(output.transfer.audio_expected));
     // Close the race with the main-thread pump: before the first AU can satisfy the decoder prime,
     // publish how long this acquisition actually cost.  The pump then requires at least that much
     // playable media.  Do NOT lower the published value at the end of this function: the AUs are
@@ -4213,9 +4213,7 @@ fn hls_feed_segment(
     // immediately after `observe` below.
     let acquisition_ms =
         i64::try_from(output.transfer.total_us.saturating_add(999) / 1_000).unwrap_or(i64::MAX);
-    SHARED
-        .hls_prime_runway_ms
-        .fetch_max(acquisition_ms, Ordering::AcqRel);
+    session.media().publish(DemuxEffect::PrimeRunwayMax(acquisition_ms));
     // A candidate is demuxed before it owns playback. Publish one coherent raster only after its
     // first video AU is accepted by the active queue; a rejected candidate and a failed first push
     // must remain invisible to the video-plane actuator.
@@ -4235,13 +4233,15 @@ fn hls_feed_segment(
         }
         if au.es == 1 {
             if !raster_published {
-                SHARED.publish_video_raster(output.video_width, output.video_height);
+                session.media().publish(DemuxEffect::VideoRaster {
+                    width: output.video_width, height: output.video_height,
+                });
                 raster_published = true;
             }
             PUSHED_ANY.store(true, Ordering::Relaxed);
-            SHARED.hls_video_tail_ns.store(au.pts_ns, Ordering::Release);
+            session.media().publish(DemuxEffect::VideoTailNs(au.pts_ns));
         } else {
-            SHARED.hls_audio_tail_ns.store(au.pts_ns, Ordering::Release);
+            session.media().publish(DemuxEffect::AudioTailNs(au.pts_ns));
         }
     }
     Ok(())
@@ -4289,7 +4289,7 @@ struct HlsRoundPort<'a> {
     cursor: &'a mut HlsCursor,
     timeline: &'a mut crate::hls::SegmentTimeline,
     prefetched: &'a mut Option<ActiveMedia>,
-    pause_cursor: &'a mut crate::player::UserPauseCursor,
+    session: &'a mut dyn DemuxSession,
     aq: *mut AuQueue,
     aqa: *mut AuQueue,
     publication_gate: AqPublicationPort,
@@ -4487,7 +4487,7 @@ impl HlsRoundPort<'_> {
             return FeedObservation::Failed { trial, failure: FeedFailure::Protocol };
         }
         for (output, _, _) in &self.staged {
-            if let Err(error) = hls_feed_segment(output, self.aq, self.aqa) {
+            if let Err(error) = hls_feed_segment(output, self.aq, self.aqa, self.session) {
                 return FeedObservation::Failed { trial, failure: hls_feed_failure(error) };
             }
         }
@@ -4555,12 +4555,16 @@ impl AdaptivePhysicalPort for HlsRoundPort<'_> {
     }
 
     fn buffer_sampler(&self) -> fn() -> Option<i64> {
-        || hls_buffer_fact(None).buffered_ms()
+        self.session.clock().hls_buffer_sampler()
     }
 
-    fn remaining_playback_sampler(&self) -> fn() -> i64 { remaining_playback_ms }
+    fn remaining_playback_sampler(&self) -> fn() -> i64 {
+        self.session.clock().remaining_playback_sampler()
+    }
 
-    fn user_sequence_sampler(&self) -> fn() -> u64 { || SHARED.hls_user_sequence() }
+    fn user_sequence_sampler(&self) -> fn() -> u64 {
+        self.session.clock().user_sequence_sampler()
+    }
 }
 
 fn hls_cursor_open(
@@ -4774,12 +4778,12 @@ fn hls_buffer_fact(output: Option<&HlsSegmentOutput>) -> BufferFact {
 /// translation belongs here. Both lanes must have produced post-open/post-seek timestamps before
 /// an A/V stream can claim a buffer duration; otherwise the absent lane is exactly the starvation
 /// the metric is meant to notice, but not yet enough evidence to start an encoder.
-fn progressive_buffered_ms(audio_expected: bool) -> Option<i64> {
-    let video = SHARED.hls_video_tail_ns.load(Ordering::Acquire);
+fn progressive_buffered_ms(clock: &dyn DemuxClock, audio_expected: bool) -> Option<i64> {
+    let video = clock.video_tail_ns();
     if video < 0 {
         return None;
     }
-    let audio = SHARED.hls_audio_tail_ns.load(Ordering::Acquire);
+    let audio = clock.audio_tail_ns();
     let tail = if audio_expected {
         if audio < 0 {
             return None;
@@ -4789,7 +4793,7 @@ fn progressive_buffered_ms(audio_expected: bool) -> Option<i64> {
         video
     };
     Some(
-        tail.saturating_sub(SHARED.playpos_ns.load(Ordering::Relaxed).max(0))
+        tail.saturating_sub(clock.playpos_ns().max(0))
             .max(0)
             / 1_000_000,
     )
@@ -4812,132 +4816,12 @@ fn hls_acquisition(
 /// Content still to play, from the one published duration and position. Feeds the utility model's
 /// benefit scaling: a visible mode switch has to earn back its cost out of what is LEFT, which is
 /// why "twenty seconds remaining" needs no special case anywhere below.
-fn remaining_playback_ms() -> i64 {
-    let duration = SHARED.duration_ns.load(Ordering::Relaxed);
-    if duration <= 0 {
-        return 0;
-    }
-    (duration - SHARED.playpos_ns.load(Ordering::Relaxed).max(0)).max(0) / 1_000_000
-}
-
-/// Lifetime marker for one exploratory upshift. The transaction's own deadline limits its spend
-/// to `B-max(R_s,D_next)`; the published retained reserve is diagnostic and prevents an already-held
-/// clock from restarting mid-transaction. It is not a second main-thread pause threshold.
-struct HlsTrialReserve {
-    token: u64,
-}
-
-impl HlsTrialReserve {
-    fn arm(runway_ms: i64, expected_user_sequence: u64) -> Option<Self> {
-        SHARED
-            .arm_hls_trial_at(runway_ms, expected_user_sequence)
-            .map(|token| Self { token })
-    }
-
-    fn token(&self) -> u64 {
-        self.token
-    }
-}
-
-impl Drop for HlsTrialReserve {
-    fn drop(&mut self) {
-        // A teardown may already have revoked this generation. A stale drop must never clear a
-        // newer session's trial reserve, which is why finish is token-checked.
-        let _ = SHARED.finish_hls_trial(self.token);
-    }
-}
-
-/// Exclusive ownership of one automatic actuator while its blocking PMS/native work runs outside
-/// the playback-clock mutex.  Acquisition and commit authorization are synchronized state-machine
-/// transitions; dropping the lease is the single rollback/finish edge on every return path.
-struct HlsAutomaticLease {
-    token: u64,
-}
-
-impl HlsAutomaticLease {
-    fn begin(
-        kind: crate::player::HlsAutomaticTransition,
-        expected_user_sequence: u64,
-    ) -> Option<Self> {
-        SHARED
-            .begin_hls_automatic_transition_at(kind, expected_user_sequence)
-            .map(|token| Self { token })
-    }
-
-    fn token(&self) -> u64 {
-        self.token
-    }
-}
-
-impl Drop for HlsAutomaticLease {
-    fn drop(&mut self) {
-        // Session teardown revokes every outstanding token before joining the worker; in that
-        // ordering `false` is the expected proof that this stale completion owns nothing.
-        let _ = SHARED.finish_hls_automatic_transition(self.token);
-    }
-}
-
-/// Fence the irreversible half of a candidate transition: arm immediately before the first
-/// candidate AU may be queued, then hold until controller/route ownership has committed or the old
-/// cursor has been realigned after a recoverable rejection. While armed, the main-thread pump
-/// cannot resume an internal clock from candidate tails combined with the previous actuator's
-/// recovery epoch.
-///
-/// Armed is deliberately fail-closed: an ordinary drop, including unwinding, leaves the generation
-/// odd until queue teardown resets it. Only [`Self::settle`] may release the fence, and callers do
-/// that only after the candidate commits or the old cursor is proven realigned with every published
-/// candidate AU.
-struct HlsCandidateTransition {
-    generation: u64,
-}
-
-impl HlsCandidateTransition {
-    fn arm(automatic_token: u64) -> Result<Self, HlsExit> {
-        Self::arm_for(Some(automatic_token))
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    fn arm_unowned_for_test() -> Result<Self, HlsExit> {
-        Self::arm_for(None)
-    }
-
-    fn arm_for(automatic_token: Option<u64>) -> Result<Self, HlsExit> {
-        match SHARED.begin_hls_candidate_transition(automatic_token) {
-            Ok(generation) => Ok(Self { generation }),
-            Err(crate::player::HlsClockFenceError::Stopping) => Err(HlsExit::Aborted),
-            Err(crate::player::HlsClockFenceError::Overlap) => {
-                Err(HlsExit::Failed("overlapping HLS candidate publication"))
-            }
-            Err(crate::player::HlsClockFenceError::Exhausted) => {
-                Err(HlsExit::Failed("HLS candidate generation exhausted"))
-            }
-            Err(crate::player::HlsClockFenceError::Superseded) => Err(HlsExit::Failed(
-                "HLS candidate automatic lease was superseded",
-            )),
-        }
-    }
-
-    fn settle(self) {
-        let settled = SHARED.settle_hls_candidate_transition(self.generation);
-        debug_assert!(
-            settled,
-            "candidate generation changed inside its sole writer"
-        );
-    }
-}
-
-impl plx_playback_contract::adaptive::FenceSettlement for HlsCandidateTransition {
-    fn settle(self: Box<Self>) { HlsCandidateTransition::settle(*self); }
-}
-
 impl CandidateFencePort for HlsRoundPort<'_> {
     type Fence = plx_playback_contract::adaptive::FenceHandle;
     type Error = plx_playback_contract::adaptive::PhysicalFailure;
 
     fn arm(&mut self, automatic_token: u64) -> Result<Self::Fence, Self::Error> {
-        HlsCandidateTransition::arm(automatic_token)
-            .map(plx_playback_contract::adaptive::FenceHandle::new)
-            .map_err(Into::into)
+        self.session.adaptive().arm_candidate(automatic_token)
     }
 
     fn settle(&mut self, fence: Self::Fence) { fence.settle(); }
@@ -4958,18 +4842,11 @@ impl AutomaticPort for HlsRoundPort<'_> {
     fn begin(
         &mut self, kind: AutomaticTransition, expected_user_sequence: u64,
     ) -> Option<Self::Lease> {
-        let kind = match kind {
-            AutomaticTransition::Original => crate::player::HlsAutomaticTransition::Original,
-            AutomaticTransition::QualityUp => crate::player::HlsAutomaticTransition::QualityUp,
-            AutomaticTransition::QualityDown => crate::player::HlsAutomaticTransition::QualityDown,
-        };
-        HlsAutomaticLease::begin(kind, expected_user_sequence).map(|lease| {
-            plx_playback_contract::adaptive::LeaseHandle::new(lease.token(), lease)
-        })
+        self.session.adaptive().begin(kind, expected_user_sequence)
     }
 
     fn authorize(&mut self, lease: &Self::Lease) -> bool {
-        SHARED.authorize_hls_automatic_transition_commit(lease.token())
+        self.session.adaptive().authorize(lease.token())
     }
 
     fn aborted(&self) -> bool { unsafe { crate::aq::aq_is_aborted(self.aq) } }
@@ -4985,9 +4862,7 @@ impl TrialActuatorPort for HlsRoundPort<'_> {
     fn arm_trial_reserve(
         &mut self, runway_ms: i64, expected_user_sequence: u64,
     ) -> Option<Self::TrialReserve> {
-        HlsTrialReserve::arm(runway_ms, expected_user_sequence).map(|reserve| {
-            plx_playback_contract::adaptive::LeaseHandle::new(reserve.token(), reserve)
-        })
+        self.session.adaptive().arm_trial(runway_ms, expected_user_sequence)
     }
 
     fn lease_token(&self, lease: &Self::Lease) -> u64 { lease.token() }
@@ -4997,21 +4872,17 @@ impl TrialActuatorPort for HlsRoundPort<'_> {
 
 impl AdaptiveRoundPort for HlsRoundPort<'_> {
     fn position_sampler(&self) -> fn() -> i64 {
-        || SHARED.playpos_ns.load(Ordering::Relaxed).max(0)
+        self.session.clock().playpos_sampler()
     }
 
     fn transition_permitted(&self, kind: AutomaticTransition) -> bool {
-        SHARED.hls_automatic_transition_permitted(match kind {
-            AutomaticTransition::Original => crate::player::HlsAutomaticTransition::Original,
-            AutomaticTransition::QualityUp => crate::player::HlsAutomaticTransition::QualityUp,
-            AutomaticTransition::QualityDown => crate::player::HlsAutomaticTransition::QualityDown,
-        })
+        self.session.adaptive_ref().transition_permitted(kind)
     }
 
     fn rebuffer_state(&self) -> (bool, bool) {
         (
-            SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
-            SHARED.hls_rebuffering.load(Ordering::Acquire),
+            self.session.clock().rebuffer_requested(),
+            self.session.clock().rebuffering(),
         )
     }
 
@@ -5020,11 +4891,10 @@ impl AdaptiveRoundPort for HlsRoundPort<'_> {
     }
 
     fn pause_fact(&mut self) -> PauseFact {
-        let commit_pause = crate::player::TX.pause_state_sample();
+        let commit_pause = self.session.clock_mut().pause_event(PauseLane::Hls);
         PauseFact {
             paused: commit_pause.paused,
-            completed_ms: self.pause_cursor.consume_completed(commit_pause)
-                .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)),
+            completed_ms: commit_pause.completed_ms,
         }
     }
 }
@@ -5240,8 +5110,10 @@ impl HlsRoundPort<'_> {
                     return Err(HlsExit::Failed("adaptive active feed without read"));
                 };
                 if !output.aus.is_empty() {
-                    hls_feed_segment(output, self.aq, self.aqa)?;
-                    SHARED.observe_hls_recovery(output.transfer.total_us, segment.duration);
+                    hls_feed_segment(output, self.aq, self.aqa, self.session)?;
+                    self.session.media().publish(DemuxEffect::RecoverySegment {
+                        total_us: output.transfer.total_us, duration: segment.duration,
+                    });
                     self.timeline.commit(*clock);
                 }
                 Ok(ActiveObservation::Fed { round })
@@ -5253,11 +5125,10 @@ impl HlsRoundPort<'_> {
                 Ok(ActiveObservation::Buffer { round, fact: hls_buffer_fact(Some(output)) })
             }
             ActiveAction::Pause { .. } => {
-                let snapshot = crate::player::TX.pause_state_sample();
-                let completed_ms = self.pause_cursor.consume_completed(snapshot)
-                    .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX));
+                let snapshot = self.session.clock_mut().pause_event(PauseLane::Hls);
                 Ok(ActiveObservation::Pause {
-                    round, paused: snapshot.paused, sequence: snapshot.sequence, completed_ms,
+                    round, paused: snapshot.paused, sequence: snapshot.sequence,
+                    completed_ms: snapshot.completed_ms,
                 })
             }
             ActiveAction::RollbackDuration { .. } => {
@@ -5295,44 +5166,30 @@ fn hls_demux(
     aqa: *mut AuQueue,
     hs: *mut HttpStream,
     transport: DemuxTransport,
+    session: &mut dyn DemuxSession,
 ) -> Result<(), HlsExit> {
     // The change detector is process-global, so a second playback of the same stream would
     // otherwise log nothing at all. Cleared here rather than on teardown: this is the one place
     // that runs exactly once per HLS demux, whatever ended the previous one.
     HLS_LAST_VIDEO.store(u64::MAX, Ordering::Relaxed);
     if let Some(start) = abr.as_ref() {
-        SHARED
-            .dg_abr_mode
-            .store(crate::player::ABR_MODE_HLS, Ordering::Relaxed);
-        SHARED
-            .dg_abr_kbps
-            .store(i64::from(start.info().initial.kbps()), Ordering::Relaxed);
-        SHARED.dg_abr_declared_kbps.store(-1, Ordering::Relaxed);
-        SHARED.dg_abr_media_kbps.store(-1, Ordering::Relaxed);
-        SHARED.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
-        SHARED.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
-        SHARED.dg_abr_ratio_pm.store(-1, Ordering::Relaxed);
-        SHARED
-            .dg_abr_action
-            .store(crate::player::ABR_ACTION_STEADY, Ordering::Relaxed);
-        SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
-        SHARED.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
+        session.media().publish(DemuxEffect::AbrHlsStart {
+            kbps: i64::from(start.initial_kbps()),
+        });
     }
     let mut net = HlsNet { hs, curl: None, range: transport.range, credential_gate: transport.credential_gate };
     let mut cursor = hls_cursor_open(origin, path, aq, &mut net, true, None)?;
     if abr.is_some() {
-        SHARED.dg_abr_declared_kbps.store(
-            i64::try_from(cursor.declared_bps / 1_000).unwrap_or(i64::MAX),
-            Ordering::Relaxed,
-        );
+        session.media().publish(DemuxEffect::AbrHlsDeclared {
+            kbps: i64::try_from(cursor.declared_bps / 1_000).unwrap_or(i64::MAX),
+        });
     }
     let mut timeline = crate::hls::SegmentTimeline::default();
     let mut adaptive = abr;
     // Consume native-accepted pause EVENTS, not a sampled bool. The worker can spend a complete
     // Pause→Resume cycle blocked in aq_push/network I/O and must still age the first post-resume
     // estimate by the exact cumulative interval.
-    let mut pause_cursor =
-        crate::player::UserPauseCursor::new(crate::player::TX.pause_state_sample());
+    session.clock_mut().begin_pause_lane(PauseLane::Hls);
     let mut prefetched: Option<ActiveMedia> = None;
 
     loop {
@@ -5342,8 +5199,10 @@ fn hls_demux(
             )? else { break; };
             let delivered = !output.aus.is_empty();
             if delivered {
-                hls_feed_segment(&output, aq, aqa)?;
-                SHARED.observe_hls_recovery(output.transfer.total_us, segment.duration);
+                hls_feed_segment(&output, aq, aqa, session)?;
+                session.media().publish(DemuxEffect::RecoverySegment {
+                    total_us: output.transfer.total_us, duration: segment.duration,
+                });
                 timeline.commit(clock);
             }
             if hls_should_prefetch_after_abr(delivered, fetch_abandoned, true) {
@@ -5364,7 +5223,7 @@ fn hls_demux(
         let mut physical = HlsRoundPort {
             round: None, trial: None, origin,
             cursor: &mut cursor, timeline: &mut timeline,
-            prefetched: &mut prefetched, pause_cursor: &mut pause_cursor,
+            prefetched: &mut prefetched, session,
             aq, aqa, publication_gate: AqPublicationPort(aq),
             net: &mut net, acodec, current: None, reserve: None,
             source: None, candidate: None, segment: None,
@@ -5919,6 +5778,7 @@ pub(crate) fn demux(
     acodec: String,
     force_original: bool,
     transport: DemuxTransport,
+    mut session: Box<dyn DemuxSession>,
     abr: Option<Box<dyn plx_playback_contract::adaptive::AdaptiveSession>>,
     auto_original: Option<Box<dyn plx_playback_contract::adaptive::OriginalSession>>,
     aq: SendPtr<AuQueue>,
@@ -5931,14 +5791,14 @@ pub(crate) fn demux(
     // set on both lanes or `pump` waits forever on a queue nothing will ever fill — the same
     // contract the panic barrier below exists to keep.
     if !abi_ok() {
-        crate::player::log("demux: refusing — bundled FFmpeg ABI is not the one built for");
+        session.media().record("demux: refusing — bundled FFmpeg ABI is not the one built for");
         crate::aq::aq_set_eof(aq.0);
         crate::aq::aq_set_eof(aqa.0);
         return;
     }
     if force_original && (abr.is_some() || auto_original.is_some()) {
-        crate::player::log("demux: Force Original refused an automatic adaptive route");
-        SHARED.fail_demux(DemuxExitClass::Other);
+        session.media().record("demux: Force Original refused an automatic adaptive route");
+        session.media().publish(DemuxEffect::FailFault(DemuxFault::Other));
         crate::aq::aq_set_eof(aq.0);
         crate::aq::aq_set_eof(aqa.0);
         return;
@@ -5954,78 +5814,64 @@ pub(crate) fn demux(
         .to_ascii_lowercase()
         .ends_with(".m3u8")
     {
-        crate::player::log("hls: segmented demux start");
+        session.media().record("hls: segmented demux start");
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            hls_demux(off, &origin, &path, &acodec, abr, aq_p, aqa_p, hs_p, transport)
+            hls_demux(off, &origin, &path, &acodec, abr, aq_p, aqa_p, hs_p, transport, session.as_mut())
         }));
         match outcome {
             Ok(Ok(())) | Ok(Err(HlsExit::Aborted)) => {}
             Ok(Err(HlsExit::Failed(why))) => {
-                crate::player::log(&format!("hls: demux failed: {why}"));
+                session.media().record(&format!("hls: demux failed: {why}"));
                 if PUSHED_ANY.load(Ordering::Relaxed) {
-                    SHARED.demux_io_failed.store(true, Ordering::Release);
+                    session.media().publish(DemuxEffect::IoFailed);
                 } else {
-                    SHARED.fail_demux(DemuxExitClass::HlsFailed);
+                    session.media().publish(DemuxEffect::FailFault(DemuxFault::HlsFailed));
                 }
             }
             Ok(Err(HlsExit::NotReady)) => {
-                crate::player::log("hls: demux failed: playlist resource was not ready");
+                session.media().record("hls: demux failed: playlist resource was not ready");
                 if PUSHED_ANY.load(Ordering::Relaxed) {
-                    SHARED.demux_io_failed.store(true, Ordering::Release);
+                    session.media().publish(DemuxEffect::IoFailed);
                 } else {
-                    SHARED.fail_demux(DemuxExitClass::HlsNotReady);
+                    session.media().publish(DemuxEffect::FailFault(DemuxFault::HlsNotReady));
                 }
             }
             Ok(Err(HlsExit::PrimeExpired)) => {
-                crate::player::log("hls: demux failed: unexpected active-stream prime deadline");
-                SHARED.demux_io_failed.store(true, Ordering::Release);
+                session.media().record("hls: demux failed: unexpected active-stream prime deadline");
+                session.media().publish(DemuxEffect::IoFailed);
             }
             Ok(Err(HlsExit::StallAbort(_))) => {
                 // The abort rule is handled where it fires, inside the segment loop; reaching here
                 // means it escaped one of the candidate paths, which do not arm it.
-                crate::player::log("hls: demux failed: stall abort escaped the segment loop");
-                SHARED.demux_io_failed.store(true, Ordering::Release);
+                session.media().record("hls: demux failed: stall abort escaped the segment loop");
+                session.media().publish(DemuxEffect::IoFailed);
             }
             Err(_) => {
-                crate::player::log("hls: demux panicked");
-                SHARED.fail_demux(DemuxExitClass::DemuxPanicked);
+                session.media().record("hls: demux panicked");
+                session.media().publish(DemuxEffect::FailFault(DemuxFault::DemuxPanicked));
             }
         }
         if unproductive_exit_failed(PUSHED_ANY.load(Ordering::Relaxed), unsafe {
             crate::aq::aq_is_aborted(aq_p)
         }) {
-            SHARED.fail_demux(DemuxExitClass::NoAccessUnits);
+            session.media().publish(DemuxEffect::FailFault(DemuxFault::NoAccessUnits));
         }
         crate::aq::aq_set_eof(aq_p);
         crate::aq::aq_set_eof(aqa_p);
-        crate::player::log("hls: segmented demux ended");
+        session.media().record("hls: segmented demux ended");
         return;
     }
     let mut original_watch = auto_original;
     if let Some(watch) = original_watch.as_ref() {
-        // Auto deliberately begins by trying Original. Publish that state before the first
-        // measurement window completes so Stats for Nerds says what the policy is doing instead
-        // of looking inactive during the exact startup interval a user is trying to diagnose.
-        SHARED
-            .dg_abr_mode
-            .store(crate::player::ABR_MODE_ORIGINAL, Ordering::Relaxed);
-        SHARED
-            .dg_abr_kbps
-            .store(i64::from(watch.source_kbps()), Ordering::Relaxed);
-        SHARED.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
-        SHARED.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
-        SHARED.dg_abr_ratio_pm.store(-1, Ordering::Relaxed);
-        SHARED
-            .dg_abr_action
-            .store(crate::player::ABR_ACTION_STEADY, Ordering::Relaxed);
-        SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
-        SHARED.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
+        // Publish Auto's Original source before its first measurement window.
+        session.media().publish(DemuxEffect::AbrOriginalStart {
+            kbps: i64::from(watch.source_kbps()),
+        });
     }
     if let Some(watch) = original_watch.as_mut() { watch.begin_on_worker(); }
     // Same accepted-event cursor as HLS. Progressive reads and queue pushes can hide an entire
     // pause cycle, so a local `paused_since` sampled around packets is not a valid clock.
-    let mut original_pause_cursor =
-        crate::player::UserPauseCursor::new(crate::player::TX.pause_state_sample());
+    session.clock_mut().begin_pause_lane(PauseLane::Original);
     // `base()` re-brackets a v6 host, which is what a URL needs; the plaintext arm hands the
     // `Origin` itself to `open_plain_progressive`, which dials its BARE `host()`.
     let url = format!("{}{}", origin.base(), path); // delivery identity; may carry a token, never logged
@@ -6069,8 +5915,8 @@ pub(crate) fn demux(
                     match transport.range.reserve_open() {
                         Ok(r) => Some(r),
                         Err(e) => {
-                            crate::player::log(&format!("ff: https reservation FAILED: {e:?}"));
-                            SHARED.fail_demux(DemuxExitClass::HttpsReserveFailed);
+                            session.media().record(&format!("ff: https reservation FAILED: {e:?}"));
+                            session.media().publish(DemuxEffect::FailFault(DemuxFault::HttpsReserveFailed));
                             break;
                         }
                     }
@@ -6081,7 +5927,7 @@ pub(crate) fn demux(
                 // then JOINS this thread on the main thread). The reservation above makes the HTTPS
                 // side as race-free as the socket's already-published `hs_ptr`.
                 if crate::aq::aq_is_aborted(aq_p) {
-                    crate::player::log("ff: aborted before reopen");
+                    session.media().record("ff: aborted before reopen");
                     break;
                 }
                 // ONE decision, here, from the scheme; the only later switch is a plaintext open
@@ -6096,19 +5942,19 @@ pub(crate) fn demux(
                     match transport.range.open_reserved(&url, 0, reservation) {
                         Ok(cs) => {
                             let (st, size) = (cs.status(), cs.size());
-                            SHARED.file_size.store(size, Ordering::Release);
-                            SHARED.dg_http_status.store(st, Ordering::Relaxed);
-                            crate::player::log(&format!("ff: open https status={st} clen={size}"));
+                            session.media().publish(DemuxEffect::FileSize(size));
+                            session.media().publish(DemuxEffect::HttpStatus(st));
+                            session.media().record(&format!("ff: open https status={st} clen={size}"));
                             (Src::Curl(cs), size)
                         }
                         Err(e) => {
                             // A status we could not stream is worth publishing; a transport failure has
                             // no status, and 0 is how the panel already spells "never answered".
                             if let range_io::OpenErr::Status(st) = e {
-                                SHARED.dg_http_status.store(st, Ordering::Relaxed);
+                                session.media().publish(DemuxEffect::HttpStatus(st));
                             }
-                            crate::player::log(&format!("ff: https open FAILED: {e:?}"));
-                            SHARED.fail_demux(DemuxExitClass::HttpsOpenFailed);
+                            session.media().record(&format!("ff: https open FAILED: {e:?}"));
+                            session.media().publish(DemuxEffect::FailFault(DemuxFault::HttpsOpenFailed));
                             break;
                         }
                     }
@@ -6117,17 +5963,17 @@ pub(crate) fn demux(
                     match open_plain_progressive(hs_p, &origin, &path, aq_p, &transport) {
                         Ok(opened) => opened,
                         Err(MediaOpenFail::Aborted) => {
-                            crate::player::log("ff: aborted during open");
+                            session.media().record("ff: aborted during open");
                             break;
                         }
                         Err(MediaOpenFail::Failed) => {
-                            SHARED.fail_demux(DemuxExitClass::HttpOpenFailed);
+                            session.media().publish(DemuxEffect::FailFault(DemuxFault::HttpOpenFailed));
                             break;
                         }
                     }
                 };
 
-                crate::player::log(&format!("ff: open ms={}", open_began.elapsed().as_millis()));
+                session.media().record(&format!("ff: open ms={}", open_began.elapsed().as_millis()));
 
                 let mut state = Box::new(AvioState {
                     src,
@@ -6152,8 +5998,8 @@ pub(crate) fn demux(
                 });
                 let buf = av_malloc(65536) as *mut u8;
                 if buf.is_null() {
-                    crate::player::log("ff: av_malloc failed");
-                    SHARED.note_demux_exit(DemuxExitClass::Other);
+                    session.media().record("ff: av_malloc failed");
+                    session.media().publish(DemuxEffect::NoteFault(DemuxFault::Other));
                     break;
                 }
                 let avio = avio_alloc_context(
@@ -6166,15 +6012,15 @@ pub(crate) fn demux(
                     Some(seek_cb),
                 );
                 if avio.is_null() {
-                    crate::player::log("ff: avio_alloc_context failed");
-                    SHARED.note_demux_exit(DemuxExitClass::Other);
+                    session.media().record("ff: avio_alloc_context failed");
+                    session.media().publish(DemuxEffect::NoteFault(DemuxFault::Other));
                     free_ptr(buf as *mut c_void);
                     break;
                 }
                 let mut fmt = avformat_alloc_context();
                 if fmt.is_null() {
-                    crate::player::log("ff: avformat_alloc_context failed");
-                    SHARED.note_demux_exit(DemuxExitClass::Other);
+                    session.media().record("ff: avformat_alloc_context failed");
+                    session.media().publish(DemuxEffect::NoteFault(DemuxFault::Other));
                     free_avio(avio);
                     break;
                 }
@@ -6187,18 +6033,18 @@ pub(crate) fn demux(
                 );
                 if r < 0 || fmt.is_null() {
                     let lane_aborted = crate::aq::aq_is_aborted(aq_p);
-                    crate::player::log(&open_input_failure_note(r, lane_aborted));
+                    session.media().record(&open_input_failure_note(r, lane_aborted));
                     // A stop teardown asked for is not the source failing to open.
                     if !lane_aborted {
-                        SHARED.note_demux_exit(DemuxExitClass::OpenInputFailed);
+                        session.media().publish(DemuxEffect::NoteFault(DemuxFault::OpenInputFailed));
                     }
                     free_avio(avio);
                     break;
                 }
                 if avformat_find_stream_info(fmt, std::ptr::null_mut()) < 0 {
-                    crate::player::log("ff: find_stream_info failed");
+                    session.media().record("ff: find_stream_info failed");
                     if !crate::aq::aq_is_aborted(aq_p) {
-                        SHARED.note_demux_exit(DemuxExitClass::FindStreamInfoFailed);
+                        session.media().publish(DemuxEffect::NoteFault(DemuxFault::FindStreamInfoFailed));
                     }
                     avformat_close_input(&mut fmt);
                     free_avio(avio);
@@ -6216,20 +6062,20 @@ pub(crate) fn demux(
                         .filter(|n| !n.is_empty())
                         .count();
                     if named > 0 {
-                        crate::player::log(&format!(
+                        session.media().record(&format!(
                             "ff: container names {named}/{} tracks (a={} s={})",
                             audio.len() + subs.len(),
                             audio.len(),
                             subs.len()
                         ));
                     }
-                    *SHARED.track_names.lock().unwrap() = crate::player::TrackNames { audio, subs };
+                    session.media().publish(DemuxEffect::TrackNames { audio, subs });
                 }
                 let vi =
                     av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, std::ptr::null_mut(), 0);
                 // native audio-track selection: feed the chosen Nth audio stream (SHARED.desired_
                 // audio_idx, set by the track menu), else the pipeline's best/default audio.
-                let want_aidx = SHARED.desired_audio_idx.load(Ordering::Relaxed);
+                let want_aidx = session.clock().desired_audio_idx();
                 let ai = if want_aidx >= 0 {
                     nth_audio_stream(fmt, want_aidx).unwrap_or_else(|| {
                         av_find_best_stream(
@@ -6262,12 +6108,12 @@ pub(crate) fn demux(
                     // issue #22: an HEVC-only target on a server without Plex Pass). Record which
                     // shape this is so the error the user sees can say so; the main thread words it.
                     if ai >= 0 {
-                        SHARED.demux_no_video.store(true, Ordering::Release);
-                        crate::player::log("ff: no video stream — the stream carries audio only");
+                        session.media().publish(DemuxEffect::NoVideo);
+                        session.media().record("ff: no video stream — the stream carries audio only");
                     } else {
-                        crate::player::log("ff: no video stream");
+                        session.media().record("ff: no video stream");
                     }
-                    SHARED.note_demux_exit(DemuxExitClass::NoVideoStream);
+                    session.media().publish(DemuxEffect::NoteFault(DemuxFault::NoVideoStream));
                     avformat_close_input(&mut fmt);
                     free_avio(avio);
                     break;
@@ -6289,8 +6135,8 @@ pub(crate) fn demux(
                     None
                 };
                 if force_original && ai >= 0 && !FEED_AUDIO.load(Ordering::Relaxed) {
-                    crate::player::log("ff: Force Original refused — audio feed is disabled");
-                    SHARED.demux_failed.store(true, Ordering::Release);
+                    session.media().record("ff: Force Original refused — audio feed is disabled");
+                    session.media().publish(DemuxEffect::Failed);
                     avformat_close_input(&mut fmt);
                     free_avio(avio);
                     break;
@@ -6303,15 +6149,15 @@ pub(crate) fn demux(
                     (*stream_codecpar(*streams.add(ai as usize))).codec_id
                 )).to_bytes() == b"dts";
                 if dts_audio && !force_original {
-                    crate::player::log("ff: DTS core extraction on (DTS-HD extensions discarded)");
+                    session.media().record("ff: DTS core extraction on (DTS-HD extensions discarded)");
                 }
                 // Playback speed: this session's Load declared PCM, so the audio must be decoded,
                 // stretched and fed as PCM. A stream with no bundled decoder cannot honour it — the
                 // engine refused the speed at Load (`player::session_rate`), so this is a guard.
-                let speed_permille = SHARED.applied_rate_permille.load(Ordering::Relaxed);
+                let speed_permille = session.clock().applied_rate_permille();
                 if force_original && speed_permille != crate::player::RATE_NORMAL {
-                    crate::player::log("ff: Force Original refused — playback speed would decode and transform audio");
-                    SHARED.demux_failed.store(true, Ordering::Release);
+                    session.media().record("ff: Force Original refused — playback speed would decode and transform audio");
+                    session.media().publish(DemuxEffect::Failed);
                     avformat_close_input(&mut fmt);
                     free_avio(avio);
                     break;
@@ -6342,10 +6188,10 @@ pub(crate) fn demux(
                     let name = std::ffi::CStr::from_ptr(avcodec_get_name(
                         (*stream_codecpar(*streams.add(ai as usize))).codec_id
                     )).to_string_lossy();
-                    crate::player::log(&format!(
+                    session.media().record(&format!(
                         "ff: {name} refused — the Load declared PCM but the app has no {name} decoder"
                     ));
-                    SHARED.demux_failed.store(true, Ordering::Release);
+                    session.media().publish(DemuxEffect::Failed);
                     avformat_close_input(&mut fmt);
                     free_avio(avio);
                     break;
@@ -6362,15 +6208,15 @@ pub(crate) fn demux(
                     };
                     match opened {
                         Ok(d) => {
-                            crate::player::log(&format!(
+                            session.media().record(&format!(
                                 "ff: {name} -> PCM decoding on{}",
                                 if d.core_only() { " (core only)" } else { "" }
                             ));
                             pcm_dec = Some(d);
                         }
                         Err(why) => {
-                            crate::player::log(&format!("ff: {name} refused — {why}"));
-                            SHARED.demux_failed.store(true, Ordering::Release);
+                            session.media().record(&format!("ff: {name} refused — {why}"));
+                            session.media().publish(DemuxEffect::Failed);
                             avformat_close_input(&mut fmt);
                             free_avio(avio);
                             break;
@@ -6381,14 +6227,14 @@ pub(crate) fn demux(
                 // gathered into AUs of about that length (`ff_pcm::AuBatcher`).
                 let mut pcm_batch = pcm_dec.as_ref().map(|d| d.au_batcher());
                 if let Some((fi, ch)) = aac_adts {
-                    crate::player::log(&format!(
+                    session.media().record(&format!(
                         "ff: AAC → ADTS reframing on (freq_idx={fi} ch={ch})"
                     ));
                 }
                 let mut speed_dec = if ai >= 0 && !force_original
                     && speed_permille != crate::player::RATE_NORMAL {
                     let d = SpeedDecoder::open(stream_codecpar(*streams.add(ai as usize)), speed_permille);
-                    crate::player::log(&format!(
+                    session.media().record(&format!(
                         "speed: audio decoder for {speed_permille} {}",
                         if d.is_some() { "open" } else { "UNAVAILABLE" }
                     ));
@@ -6404,7 +6250,7 @@ pub(crate) fn demux(
                     let aname = std::ffi::CStr::from_ptr(avcodec_get_name((*acp).codec_id)).to_string_lossy().into_owned();
                     if let Some(kind) = native_audio::Kind::from_ffmpeg_name(&aname) {
                         let channels = u32::try_from((*acp).ch_layout.nb_channels).unwrap_or(0);
-                        crate::player::log(&format!(
+                        session.media().record(&format!(
                             "ff: {aname} fed to the TV's own decoder (channels={channels} rate={})",
                             (*acp).sample_rate
                         ));
@@ -6426,18 +6272,20 @@ pub(crate) fn demux(
                 // Publish the coded size: the webOS 5+ exported window needs the frame it is being
                 // fed, and this is the only place that knows it for certain — a transcode's declared
                 // dimensions and its actual output need not agree.
-                SHARED.publish_video_raster((*vcp).width, (*vcp).height);
+                session.media().publish(DemuxEffect::VideoRaster {
+                    width: (*vcp).width, height: (*vcp).height,
+                });
                 let cname =
                     std::ffi::CStr::from_ptr(avcodec_get_name((*vcp).codec_id)).to_string_lossy();
                 // Refuse a stream the pipeline cannot be fed, BEFORE anything else is opened for it
                 // (subtitle decoders, ASS sources): the exit then has the same shape as the "no video
                 // stream" one above, with nothing to release but the input and its AVIO.
                 let Some(framing) = VideoFraming::of_codec_id((*vcp).codec_id) else {
-                    crate::player::log(&format!(
+                    session.media().record(&format!(
                         "ff: no framing for video codec {cname} (codec_id={}); refusing the stream",
                         (*vcp).codec_id
                     ));
-                    SHARED.fail_demux(DemuxExitClass::NoFraming);
+                    session.media().publish(DemuxEffect::FailFault(DemuxFault::NoFraming));
                     avformat_close_input(&mut fmt);
                     free_avio(avio);
                     break;
@@ -6460,16 +6308,16 @@ pub(crate) fn demux(
                 // Such a stream's clock is moved to 0 here, once (`stream_origin_ns`).
                 let origin_ns = stream_origin_ns(fmt_start_time(fmt), nal_input);
                 if origin_ns != 0 {
-                    crate::player::log(&format!(
+                    session.media().record(&format!(
                         "ff: the stream's clock starts at {}ms; rebased to 0",
                         origin_ns / 1_000_000
                     ));
                 }
                 if nal_input == NalInput::StartCodes && framing == (VideoFraming::AnnexB { hevc: true }) {
-                    crate::player::log(
+                    session.media().record(
                         "ff: HEVC with start codes and no hvcC record (a transport or elementary stream) has no framing here; refusing the stream",
                     );
-                    SHARED.fail_demux(DemuxExitClass::NoFraming);
+                    session.media().publish(DemuxEffect::FailFault(DemuxFault::NoFraming));
                     avformat_close_input(&mut fmt);
                     free_avio(avio);
                     break;
@@ -6479,11 +6327,11 @@ pub(crate) fn demux(
                 // black screen, so stop and name both.
                 let declared = SHARED.dg_load_v.load(Ordering::Relaxed);
                 if declared != 0 && declared != framing.load_video().diag_code() {
-                    crate::player::log(&format!(
+                    session.media().record(&format!(
                         "ff: the Load declared {} but the file is {cname}; refusing the stream",
                         crate::player::load_v_name(declared)
                     ));
-                    SHARED.fail_demux(DemuxExitClass::LoadMismatch);
+                    session.media().publish(DemuxEffect::FailFault(DemuxFault::LoadMismatch));
                     avformat_close_input(&mut fmt);
                     free_avio(avio);
                     break;
@@ -6518,7 +6366,7 @@ pub(crate) fn demux(
                     ),
                     None => String::new(),
                 };
-                crate::player::log(&format!(
+                session.media().record(&format!(
                     "ff: v=#{vi} codec={cname} codec_id={} {}x{} trc={} pri={} spc={}{dv} a=#{ai} dur_ns={}",
                     (*vcp).codec_id,
                     (*vcp).width,
@@ -6526,15 +6374,15 @@ pub(crate) fn demux(
                     (*vcp).color_trc,
                     (*vcp).color_primaries,
                     (*vcp).color_space,
-                    SHARED.duration_ns.load(Ordering::Relaxed)
+                    session.clock().duration_ns()
                 ));
                 if force_original && dovi_conf(vcp).is_some_and(|d| {
                     force_original_dovi_unsupported(&d)
                 }) {
-                    crate::player::log(
+                    session.media().record(
                         "ff: Force Original refused — source has Dolby Vision P7 or an enhancement layer without a native descriptor",
                     );
-                    SHARED.fail_demux(DemuxExitClass::Other);
+                    session.media().publish(DemuxEffect::FailFault(DemuxFault::Other));
                     avformat_close_input(&mut fmt);
                     free_avio(avio);
                     break;
@@ -6571,7 +6419,7 @@ pub(crate) fn demux(
                 let dv_p7 = !force_original && is_hevc
                     && dovi_conf(vcp).is_some_and(|d| dovi_converts_to_p81(&d));
                 if dv_p7 {
-                    crate::player::log(
+                    session.media().record(
                         "ff: Dolby Vision P7 -> P8.1 conversion armed (EL dropped, RPUs rewritten)",
                     );
                 }
@@ -6591,7 +6439,7 @@ pub(crate) fn demux(
                 #[cfg(feature = "devtriggers")]
                 {
                     if is_av1 && av1_framing != Av1Framing::DEFAULT {
-                        crate::player::log(&format!(
+                        session.media().record(&format!(
                             "ff: av1obu trigger: td={} seq={} raw={}",
                             av1_framing.td, av1_framing.seq, av1_framing.raw
                         ));
@@ -6601,7 +6449,7 @@ pub(crate) fn demux(
                 // the sourceInfo envelope ACB is sent. Always replaced, so a previous stream's colour
                 // cannot outlive it.
                 *SHARED.container_hdr.lock().unwrap() = if is_vp9 { Some(container_hdr(vcp)) } else { None };
-                crate::player::log(&format!(
+                session.media().record(&format!(
                     "ff: param_sets={} bytes nal_len={} is_hevc={} is_av1={} is_vp9={} av1_cfg={}B nal_input={:?}",
                     param_blob.len(),
                     nal_len_size,
@@ -6625,7 +6473,7 @@ pub(crate) fn demux(
 
                 let pkt = av_packet_alloc();
                 if pkt.is_null() {
-                    crate::player::log("ff: packet_alloc failed");
+                    session.media().record("ff: packet_alloc failed");
                     avformat_close_input(&mut fmt);
                     free_avio(avio);
                     break;
@@ -6656,13 +6504,13 @@ pub(crate) fn demux(
                     // direct-play seek ran out the stuck-watchdog on PRE-seek packets
                     // (`rebase: dropping stale kf` at the old position) and escalated to a full
                     // reload. Seeking here needs no interrupt at all, so nothing can race it.
-                    let seek_ns = SHARED.seek_to_ns.swap(-1, Ordering::Acquire);
+                    let seek_ns = session.clock().take_seek_ns().unwrap_or(-1);
                     if seek_ns >= 0 {
                         // These are content from the old seek epoch until the first new packets land.
                         // Reset both the buffer facts and the transfer-window hysteresis together so
                         // a seek cannot splice old reserve into a new low-rate observation.
-                        SHARED.hls_video_tail_ns.store(-1, Ordering::Release);
-                        SHARED.hls_audio_tail_ns.store(-1, Ordering::Release);
+                        session.media().publish(DemuxEffect::VideoTailNs(-1));
+                        session.media().publish(DemuxEffect::AudioTailNs(-1));
                         let ticket_refreshed = original_watch.as_mut().is_some_and(|watch| {
                             watch.seek(state.body_bytes, state.body_active_us)
                         });
@@ -6681,10 +6529,10 @@ pub(crate) fn demux(
                         let ts = av_rescale_q(seek_ns.saturating_add(origin_ns), NS_TB, stream_time_base(vst));
                         // Fence completed renders from the old position before new packets arrive.
                         crate::player::ass_source::seek(ass_generation);
-                        crate::player::log(&format!("ff: seek begin {}s", seek_ns / 1_000_000_000));
+                        session.media().record(&format!("ff: seek begin {}s", seek_ns / 1_000_000_000));
                         let seek_began = std::time::Instant::now();
                         let sr = av_seek_frame(fmt, vi, ts, AVSEEK_FLAG_BACKWARD);
-                        crate::player::log(&format!(
+                        session.media().record(&format!(
                             "ff: seek {}s rv={sr} ms={}",
                             seek_ns / 1_000_000_000,
                             seek_began.elapsed().as_millis()
@@ -6739,11 +6587,11 @@ pub(crate) fn demux(
                         if force_original && is_hevc
                             && force_original_hevc_has_unsupported_dv(pkt_bytes, nal_len_size)
                         {
-                            crate::player::log(
+                            session.media().record(
                                 "ff: Force Original refused — packet has a Dolby Vision enhancement layer or P7 RPU without a native descriptor",
                             );
-                            SHARED.fail_demux(DemuxExitClass::Other);
-                            SHARED.demux_io_failed.store(true, Ordering::Release);
+                            session.media().publish(DemuxEffect::FailFault(DemuxFault::Other));
+                            session.media().publish(DemuxEffect::IoFailed);
                             av_packet_unref(pkt);
                             break;
                         }
@@ -6766,7 +6614,7 @@ pub(crate) fn demux(
                                     aubuf.clear();
                                     annexb_rejected += 1;
                                     if annexb_rejected <= 3 {
-                                        crate::player::log(&format!(
+                                        session.media().record(&format!(
                                             "ff: dropped a start-code video packet ({} bytes): {why}",
                                             pkt_bytes.len()
                                         ));
@@ -6805,7 +6653,7 @@ pub(crate) fn demux(
                                     continue;
                                 }
                                 if *held_back > 0 {
-                                    crate::player::log(&format!(
+                                    session.media().record(&format!(
                                         "ff: start-code stream: first keyframe after {held_back} video packets that needed parameter sets not yet seen"
                                     ));
                                 }
@@ -6819,7 +6667,7 @@ pub(crate) fn demux(
                                 .map(|b| format!("{:02x}", b))
                                 .collect::<Vec<_>>()
                                 .join(" ");
-                            crate::player::log(&format!(
+                            session.media().record(&format!(
                                 "ff: AU#0 size={} key={} head=[{}]",
                                 aubuf.len(),
                                 is_key,
@@ -6838,7 +6686,7 @@ pub(crate) fn demux(
                                 // (a seek into an audioless stretch): not the hang the grant is
                                 // bounded for. Park like any full lane, as before the grant.
                                 crate::aq::aq_release_headroom(aq_p);
-                                crate::player::log(&format!(
+                                session.media().record(&format!(
                                     "ff: video headroom released with {} bytes queued: the lane is draining and no audio has come",
                                     crate::aq::aq_bytes(aq_p)
                                 ));
@@ -6850,14 +6698,14 @@ pub(crate) fn demux(
                                 // a spinner nobody can leave. Fail the open instead, the way an
                                 // unfeedable audio track does, so the route recovers (Auto
                                 // Original -> HLS) or the failure read-out shows.
-                                crate::player::log(&format!(
+                                session.media().record(&format!(
                                     "ff: no audio AU after {} bytes of video queued (cap {} = base + the {} byte pre-audio headroom); failing the open",
                                     crate::aq::aq_bytes(aq_p),
                                     crate::aq::aq_cap(aq_p),
                                     PRE_AUDIO_VIDEO_HEADROOM
                                 ));
-                                SHARED.fail_demux(DemuxExitClass::NoAudioAu);
-                                SHARED.demux_io_failed.store(true, Ordering::Release);
+                                session.media().publish(DemuxEffect::FailFault(DemuxFault::NoAudioAu));
+                                session.media().publish(DemuxEffect::IoFailed);
                                 av_packet_unref(pkt);
                                 break;
                             }
@@ -6876,7 +6724,7 @@ pub(crate) fn demux(
                             break;
                         }
                         PUSHED_ANY.store(true, Ordering::Relaxed);
-                        SHARED.hls_video_tail_ns.store(pts, Ordering::Release);
+                        session.media().publish(DemuxEffect::VideoTailNs(pts));
                         headroom.video_pushed(pts);
                     } else if si == ai && FEED_AUDIO.load(Ordering::Relaxed) {
                         let ast = *streams.add(ai as usize);
@@ -6920,12 +6768,12 @@ pub(crate) fn demux(
                             let (pcm_pts, pcm) = match dec.decode(pkt, pts) {
                                 Ok(decoded) => decoded,
                                 Err(why) => {
-                                    crate::player::log(&format!(
+                                    session.media().record(&format!(
                                         "ff: {} decode failed — {why}; refusing audio feed",
                                         app_decoded.as_deref().unwrap_or("audio")
                                     ));
-                                    SHARED.demux_failed.store(true, Ordering::Release);
-                                    SHARED.demux_io_failed.store(true, Ordering::Release);
+                                    session.media().publish(DemuxEffect::Failed);
+                                    session.media().publish(DemuxEffect::IoFailed);
                                     av_packet_unref(pkt);
                                     break;
                                 }
@@ -6941,20 +6789,20 @@ pub(crate) fn demux(
                             let raw = std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize);
                             let data = if force_original {
                                 if !force_original_dts_is_native(raw) {
-                                    crate::player::log(
+                                    session.media().record(
                                         "ff: Force Original refused — DTS packet is HD, packed, or lacks an exact native core",
                                     );
-                                    SHARED.fail_demux(DemuxExitClass::Other);
-                                    SHARED.demux_io_failed.store(true, Ordering::Release);
+                                    session.media().publish(DemuxEffect::FailFault(DemuxFault::Other));
+                                    session.media().publish(DemuxEffect::IoFailed);
                                     av_packet_unref(pkt);
                                     break;
                                 }
                                 std::borrow::Cow::Borrowed(raw)
                             } else {
                                 let Some(core) = dts_core_packet(raw) else {
-                                    crate::player::log("ff: DTS packet has no complete supported core; refusing audio feed");
-                                    SHARED.fail_demux(DemuxExitClass::DtsCoreMissing);
-                                    SHARED.demux_io_failed.store(true, Ordering::Release);
+                                    session.media().record("ff: DTS packet has no complete supported core; refusing audio feed");
+                                    session.media().publish(DemuxEffect::FailFault(DemuxFault::DtsCoreMissing));
+                                    session.media().publish(DemuxEffect::IoFailed);
                                     av_packet_unref(pkt);
                                     break;
                                 };
@@ -6983,15 +6831,15 @@ pub(crate) fn demux(
                             // video read so far cannot prime the clock: parking would be a spinner
                             // nobody can leave. Fail the way the video side does, so the route
                             // recovers (Auto Original -> HLS) or the failure read-out shows.
-                            crate::player::log(&format!(
+                            session.media().record(&format!(
                                 "ff: no usable video after {} bytes of audio queued (ceiling {} = base + the {} byte audio headroom; {} ms of video read); failing the stream",
                                 crate::aq::aq_bytes(aqa_p),
                                 crate::aq::aq_cap(aqa_p) + AUDIO_AHEAD_HEADROOM,
                                 AUDIO_AHEAD_HEADROOM,
                                 headroom.video_reach_ns() / 1_000_000
                             ));
-                            SHARED.fail_demux(DemuxExitClass::NoUsableVideo);
-                            SHARED.demux_io_failed.store(true, Ordering::Release);
+                            session.media().publish(DemuxEffect::FailFault(DemuxFault::NoUsableVideo));
+                            session.media().publish(DemuxEffect::IoFailed);
                             break;
                         }
                         if pushed != 0 {
@@ -7000,7 +6848,7 @@ pub(crate) fn demux(
                         let step = headroom.after_audio(pts);
                         if step.first && headroom.granted {
                             // The late audio arrived: say how far ahead video had to run.
-                            crate::player::log(&format!(
+                            session.media().record(&format!(
                                 "ff: first audio at {}ms after {} bytes of video queued ahead of it",
                                 pts / 1_000_000,
                                 crate::aq::aq_bytes(aq_p)
@@ -7011,13 +6859,13 @@ pub(crate) fn demux(
                             // falls back to its base cap as the consumer drains it, never under what
                             // it holds (see `PRE_AUDIO_VIDEO_HEADROOM`).
                             crate::aq::aq_release_headroom(aq_p);
-                            crate::player::log(&format!(
+                            session.media().record(&format!(
                                 "ff: audio lead-in pushed ({}ms past the first); video headroom released with {} bytes queued",
                                 (pts - headroom.first_audio_ns.unwrap_or(pts)) / 1_000_000,
                                 crate::aq::aq_bytes(aq_p)
                             ));
                         }
-                        SHARED.hls_audio_tail_ns.store(pts, Ordering::Release);
+                        session.media().publish(DemuxEffect::AudioTailNs(pts));
                     } else if let Some(sub_pos) = sub_tracks.position(si) {
                         // Subtitle packet: `SubTracks::decode` yields a cue for EVERY text track
                         // (not just the selected one) and decodes every image track while subtitles
@@ -7029,17 +6877,16 @@ pub(crate) fn demux(
                     } else {
                         av_packet_unref(pkt);
                     }
-                    if !SHARED.seeking.load(Ordering::Relaxed) {
+                    if !session.clock().seeking() {
                         if let Some(watch) = original_watch.as_mut() {
-                            let pause_state = crate::player::TX.pause_state_sample();
-                            let completed_pause_ms = original_pause_cursor
-                                .consume_completed(pause_state)
-                                .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX));
+                            let pause_state = session.clock_mut().pause_event(PauseLane::Original);
+                            let completed_pause_ms = pause_state.completed_ms;
                             let (buffered_ms, remaining_ms) = if pause_state.paused {
                                 (None, None)
                             } else {
                                 let audio_expected = ai >= 0 && FEED_AUDIO.load(Ordering::Relaxed);
-                                (progressive_buffered_ms(audio_expected), Some(remaining_playback_ms()))
+                                (progressive_buffered_ms(session.clock(), audio_expected),
+                                 Some(session.clock().remaining_playback_sampler()()))
                             };
                             let quantum = plx_playback_contract::adaptive::OriginalQuantum {
                                 bytes: state.body_bytes,
@@ -7050,7 +6897,7 @@ pub(crate) fn demux(
                                 completed_pause_ms,
                             };
                             match watch.observe(quantum, || {
-                                SHARED.playpos_ns.load(Ordering::Relaxed).max(0)
+                                session.clock().playpos_ns().max(0)
                             }) {
                                 plx_playback_contract::adaptive::OriginalProgress::Continue => {}
                                 plx_playback_contract::adaptive::OriginalProgress::Published => break,
@@ -7096,14 +6943,14 @@ pub(crate) fn demux(
             .map(|s| (*s).to_string())
             .or_else(|| e.downcast_ref::<String>().cloned())
             .unwrap_or_else(|| "<non-string payload>".to_string());
-        crate::player::log(&format!("ff: demux PANICKED — {what}"));
+        session.media().record(&format!("ff: demux PANICKED — {what}"));
         // The producer is gone before it could publish a duration or a single frame, which is the
         // one case EOF alone cannot resolve: `engine.rs` pushes EOS only once the pipeline has
         // reached `Stage::Streaming`, so a panic during open/find_stream_info would otherwise leave
         // the pump waiting on a stage it can never reach. This is the same flag the `http_open`
         // failure above raises, and `pump` turns it into `PlaybackState::Error` (gated on
         // `frames == 0`, so a panic MID-playback is left to the EOF/EOS path below instead).
-        SHARED.fail_demux(DemuxExitClass::DemuxPanicked);
+        session.media().publish(DemuxEffect::FailFault(DemuxFault::DemuxPanicked));
     }
     // A demux that ends having produced NOTHING is a failure, whatever route it took out.
     // Only two exits used to say so — the http_open failure and the panic handler — while every
@@ -7118,12 +6965,12 @@ pub(crate) fn demux(
     if unproductive_exit_failed(PUSHED_ANY.load(Ordering::Relaxed), unsafe {
         crate::aq::aq_is_aborted(aq_p)
     }) {
-        crate::player::log("ff: demux produced no access units — treating as a failure");
-        SHARED.fail_demux(DemuxExitClass::NoAccessUnits);
+        session.media().record("ff: demux produced no access units — treating as a failure");
+        session.media().publish(DemuxEffect::FailFault(DemuxFault::NoAccessUnits));
     }
     crate::aq::aq_set_eof(aq_p);
     crate::aq::aq_set_eof(aqa_p); // EOF on the audio lane too
-    crate::player::log("ff: demux ended");
+    session.media().record("ff: demux ended");
 }
 
 // ---------------------------------------------------------------------------------------
