@@ -1339,6 +1339,11 @@ pub struct ResolveEnv {
     /// process-wide capability answer: every direct-play gate, the audio pick and the transcode
     /// profile of this resolve are derived from this one value.
     pub caps: std::sync::Arc<plx_platform::devcaps::Caps>,
+    /// The same boot-captured URI IO port used to configure its physical executor.
+    #[cfg(feature = "play-uri")]
+    pub uri_preflight_port: Option<super::uri_preflight::ResolvePort>,
+    pub requested_rate_permille: i32,
+    pub resume_ns: i64,
     /// The SOURCE's whole-stream bitrate in **kbps**, or `0` when nobody has measured it — the
     /// other half of what [`quality_policy`] needs, beside the frame size the playing-item store
     /// already carries.
@@ -1470,6 +1475,13 @@ pub struct Plan {
     /// resolve lands, which carries no URL either and so never starts an engine.
     pub sid: ServerId,
     pub url: String,
+    /// Source intent is shared by URI and Feed; effective Feed streams may differ.
+    pub source_selection: Option<SourceSelection>,
+    /// Owned URI authorization. The URL remains in IO escrow and never becomes `url`.
+    #[cfg(feature = "play-uri")]
+    pub uri_original: Option<super::uri_preflight::KnownSource>,
+    /// A source was qualified without constructing a Feed URL or PMS encoder.
+    pub uri_source_ready: bool,
     pub tsession: String,
     pub sess: String,
     pub part_id: i64,
@@ -1909,6 +1921,62 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 remembered: audio_memory.as_ref().and_then(|m| m.as_ref().ok().copied()),
                 ..AudioLangPrefs::new(show_prefs.audio.as_deref(), account_audio.language())
             };
+            // Source intent precedes Feed's eligible-codec filter and possible sibling pick.
+            let source_audio = pick_forced_audio(tracks, acodec, audio_prefs, env.audio_sid);
+            let source_audio_lang = playing_audio_language(tracks, source_audio.as_ref(), env.audio_sid, audio_prefs);
+            let source_sub_decision = plan.playing.as_ref().map(|p| {
+                let account = account_subtitles.as_ref().map(|(language, mode, forced)| SubtitleLangPrefs {
+                    language: language.as_deref(), mode: *mode, forced: *forced,
+                }).unwrap_or_default();
+                pick_subtitle(p, &show_prefs, account, &source_audio_lang, env.subtitle_override, memory_sub)
+            });
+            let source_sub_pick = source_sub_decision.as_ref().and_then(|decision| decision.pick);
+            let source_selection = SourceSelection { server: env.sid, part_id: plan.part_id,
+                audio_sid: source_audio.as_ref().map_or(0, |(_, _, sid)| *sid),
+                subtitle_sid: source_sub_pick.map_or(0, |(sid, _)| sid),
+                audio_contract: env.audio_enhancements };
+            plan.source_selection = Some(source_selection);
+            #[cfg(feature = "play-uri")]
+            if let Some(port) = env.uri_preflight_port.as_ref().filter(|_| {
+                (env.audio_sid <= 0 || source_audio.is_some())
+                    && (env.subtitle_override.unwrap_or(0) <= 0 || source_sub_pick.is_some())
+            }) {
+                let source_kbps = plan.playing.as_ref().map_or(env.src_kbps, |p|
+                    if p.bitrate > 0 { p.bitrate } else { env.src_kbps });
+                let (width, height) = plan.playing.as_ref().map_or((0, 0), |p| (p.width, p.height));
+                let quality = if forced { Quality::Original } else { env.quality };
+                let request = super::uri_preflight::OriginalRequest {
+                    selection: source_selection,
+                    source_url: client.direct_play_url(part, &session).to_url(),
+                    duration_ms: plan.playing.as_ref().and_then(|p| p.duration_ms),
+                    video_codec: vcodec.to_owned(),
+                    audio_codec: source_audio.as_ref().map_or_else(|| acodec.to_owned(), |(_, codec, _)| codec.clone()),
+                    source_kbps: u32::try_from(source_kbps).ok().filter(|kbps| *kbps > 0),
+                    raster: u32::try_from(width).ok().zip(u32::try_from(height).ok())
+                        .filter(|(w, h)| *w > 0 && *h > 0),
+                    requested_rate_permille: env.requested_rate_permille,
+                    resume_ns: env.resume_ns,
+                    quality_allows_original: quality_policy(quality, true, source_kbps, width, height).direct_play
+                        && env.direct_play_mode != DirectPlayMode::Disabled,
+                    link_allows_original: client.link() != Some(plx_plex::plex::probe::Location::Relay),
+                    auto_allows_original: quality != Quality::Auto
+                        || client.link() == Some(plx_plex::plex::probe::Location::Local),
+                    requires_subtitle_burn: env.sub_sid > 0,
+                    preview: env.preview,
+                };
+                if let super::uri_preflight::Verdict::Known(known) = port.qualify(off, request) {
+                    plan.vcodec = vcodec.to_owned();
+                    plan.acodec = source_audio.as_ref().map_or_else(|| acodec.to_owned(), |(_, codec, _)| codec.clone());
+                    plan.fps = plan.src_fps;
+                    plan.audio = plan_track(tracks, source_selection.audio_sid, -1, true);
+                    plan.sub_sid = source_selection.subtitle_sid;
+                    plan.src_measure = (source_kbps, width, height);
+                    plan.transport_kbps = source_kbps;
+                    plan.uri_original = Some(known);
+                    plan.uri_source_ready = true;
+                    return plan;
+                }
+            }
             // The audio the TV will DECODE, decided in two steps so the subtitle pick (which reads the
             // audio's language) sits between them:
             //   1. here: the intended track. Unless the copy is blocked (forced direct play, or a video

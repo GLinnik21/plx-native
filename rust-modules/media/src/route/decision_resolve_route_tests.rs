@@ -366,7 +366,7 @@ fn quality_changed_during_resolve_cannot_land_the_old_contract() {
 
     // This is the reducer half of a quality edit after ResolveEnv was snapshotted.
     begin_user_contract_boundary();
-    assert_eq!(pump_play(&mut ps, &mut plx_data::stores::metadata::MetadataStore::default()), None);
+    assert!(pump_play(&mut ps, &mut plx_data::stores::metadata::MetadataStore::default()).is_none());
     assert!(
         url(&ps).is_empty(),
         "the stale plan must never become the applied URL"
@@ -1311,11 +1311,8 @@ fn abandoned_resolves_retire_the_streaming_resources_they_created() {
         rk: "abandoned-rk".into(),
     });
 
-    assert_eq!(
-        pump_play(&mut ps, &mut plx_data::stores::metadata::MetadataStore::default()),
-        None,
-        "the superseded plan may not be installed"
-    );
+    assert!(pump_play(&mut ps, &mut plx_data::stores::metadata::MetadataStore::default()).is_none(),
+        "the superseded plan may not be installed");
 
     PLAY_GEN.store(3, Ordering::SeqCst);
     *PLAY_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(PlayLanding {
@@ -1331,7 +1328,7 @@ fn abandoned_resolves_retire_the_streaming_resources_they_created() {
         },
         rk: "refused-rk".into(),
     });
-    assert_eq!(pump_play(&mut ps, &mut plx_data::stores::metadata::MetadataStore::default()), None, "a refusal has no playable URL");
+    assert!(pump_play(&mut ps, &mut plx_data::stores::metadata::MetadataStore::default()).is_none(), "a refusal has no playable URL");
     assert!(
         play_refused(&ps),
         "its server verdict still reaches the error read-out"
