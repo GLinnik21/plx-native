@@ -4,7 +4,6 @@
 use crate::ffi::{self, AVCodecContext, AVDictionary, AVFormatContext, AVIOContext, AVPacket, AVStream, AVERROR_EOF, AVERROR_IO};
 use std::ffi::c_void;
 use std::os::raw::c_int;
-use std::sync::Arc;
 
 const AVIO_BUFFER_BYTES: usize = 65_536;
 const AVSEEK_SIZE: c_int = 0x10000;
