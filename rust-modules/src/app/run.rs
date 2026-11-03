@@ -216,9 +216,11 @@ pub(crate) unsafe fn run(app: &mut App) {
         }
         // A timed-out native Load parked by teardown is released here, on the main thread, the
         // first frame after its media thread returns (`player::engine::AbandonedLoad`).
+        #[cfg(feature = "play-feed")]
         plx_media::player::reap_abandoned_load(&mut app.adapters.player);
         // …and a real stop's off-frame `Unload` gets its main-thread tail (gate, epoch, ACB,
         // D1) the first frame after it returns (`player::engine::PendingRelease`).
+        #[cfg(feature = "play-feed")]
         plx_media::player::poll_release_frame(&mut app.player.session, &mut app.adapters.player);
         app.player.session.repair_status = app.player.repair.state();
         publish_frame(&mut app.bridge, &app.player.session, was_player,
@@ -735,7 +737,7 @@ unsafe fn present_and_swap(
         app.instr.mark(plx_base::diag::heartbeat::Phase::Capture); // capture
         // `plxnative-simvideo`: the decoded picture goes UNDER the finished UI, as the television's
         // compositor puts its video plane under ours — before the capture, so shots include it.
-        #[cfg(feature = "hostsim")]
+        #[cfg(all(feature = "hostsim", feature = "play-feed"))]
         if fr.player {
             plx_media::player::sim_video::composite_under();
         }
@@ -1098,7 +1100,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // presence only governs the screen-local cleanup below, never resource suspension.
         if !plx_media::route::preview_request(&app.player.session)
             && (plx_media::route::play_pending()
-                || app.adapters.player.is_live()
+                || app.adapters.player.playback_needs_teardown(&app.player.session)
                 || plx_media::route::has_url(&app.player.session))
             && !app.player.lifecycle.awaiting_load()
         {
@@ -1761,7 +1763,7 @@ fn park_playback(app: &mut App) {
     }
     close_player_overlays(&mut app.pages);
     super::bridge::close_player_sections(&mut app.pages);
-    plx_media::player::suspend_bufferfeed(&mut app.player.session, &mut app.adapters.player);
+    plx_media::player::suspend_playback(&mut app.player.session, &mut app.adapters.player);
     // Also retire the resolve generation: its worker may finish after backgrounding,
     // including before the accepted start's Player page has ever mounted.
     plx_media::route::cancel_play(&mut app.player.session);
@@ -1774,6 +1776,7 @@ fn park_playback(app: &mut App) {
 /// dead pipeline refused every Play after it, so the only way back was closing the app. Not
 /// rebuilt at once: whatever took the decoder (the screensaver) may still hold it, and a Load it
 /// refuses ends on the failure read-out.
+#[cfg(feature = "play-feed")]
 fn park_on_decoder_release(app: &mut App) {
     if !plx_media::player::take_decoder_revoked() {
         return;
@@ -1982,10 +1985,12 @@ fn pointer_on_bar(app: &App, x: f32, y: f32) -> bool {
 }
 
 pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
+        #[cfg(feature = "play-feed")]
         park_on_decoder_release(app);
         let foreground = playback_may_run(app);
         let backend_at = app.adapters.player.backend_tick();
         let _ = app.adapters.player.backend_set_foreground_at(foreground, backend_at);
+        #[cfg(feature = "play-feed")]
         if foreground {
             if is_started(&app.player.session) == Some(true) {
                 plx_media::player::pump(&mut app.player.session, &mut app.adapters.player, fr.now);
@@ -2049,6 +2054,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         } else if playback_may_run(app) {
             // An Original rollback no foreground machine owns (`start_original_trial_reload`'s
             // Load failed before an Engine existed): its landing reloads onto the restored HLS.
+            #[cfg(feature = "play-feed")]
             plx_media::player::drain_engineless_rollback(&mut app.player.session, &mut app.adapters.player);
         }
         if playback_may_run(app) {
@@ -2096,7 +2102,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
             // The same end with no player page to leave: nothing else would ever stop this
             // engine, and its reporter would keep posting the final position forever.
             log("EOS: stopping an off-route engine nothing owns");
-            plx_media::player::stop_bufferfeed(&mut app.player.session, &mut app.adapters.player);
+            plx_media::player::stop_playback(&mut app.player.session, &mut app.adapters.player);
         }
         // Up Next countdown elapsed → start the queued episode on its own. Beside the EOS
         // handoff so the whole auto-advance chain reads in one place.
@@ -2275,6 +2281,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // `frames()` counts real "frame presented" callbacks, so >= 1 means the target frame is
         // already composited — re-freezing then shows it with the shortest possible play-blip
         // (a paused load must briefly Play to decode the frame; buffer-feed has no preroll).
+        #[cfg(feature = "play-feed")]
         if resume_pend()
             && matches!(app.route(), AppArg::Player)
             && plx_media::player::seek_preroll_active()
@@ -2791,13 +2798,14 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                     // A preview landing nobody is waiting for any more (the page halted it while
                     // the resolve was in flight) must not start an engine: nothing would track
                     // it, so nothing would stop it at its end or hand the engine to a later Play.
+                    #[cfg(feature = "play-feed")]
                     if plx_media::route::is_preview(&app.player.session)
                         && !plx_media::player::preview::expects_landing()
                     {
                         if let Some(transaction) = plx_media::route::pending_route_start() {
                             let _ = plx_media::route::reject_route_start_preparation(transaction);
                         }
-                        plx_media::player::stop_bufferfeed(&mut app.player.session, &mut app.adapters.player);
+                        plx_media::player::stop_playback(&mut app.player.session, &mut app.adapters.player);
                         plx_media::route::clear_preview(&mut app.player.session);
                         return;
                     }
@@ -2951,6 +2959,7 @@ fn finish_landed_play(app: &mut App, resume_prepared: bool) {
             // written for.
             super::bridge::show_page(&mut app.pages, AppArg::Player);
         }
+        #[cfg(feature = "play-feed")]
         if preview {
             // A host Load of 0 with the clock sink off is "no video path", not an
             // admitted slot. Counting it spends the cycle and the later failure
@@ -3531,12 +3540,17 @@ pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
             // that has stopped, and a steady 5 / 201 under a stutter report is the pipeline
             // saying the fault is not in anything this process can reach. Drained here, so it
             // must be taken every heartbeat while playing or the worst gap accumulates.
-            let vp = if plx_media::player::is_playing(&app.player.session) {
+            #[cfg(feature = "play-feed")]
+            let vp = if app.player.session.attempt_view().backend()
+                == Some(plx_media::player::attempt_view::Backend::Feed)
+                && plx_media::player::is_playing(&app.player.session) {
                 let (vtick, vgap) = plx_media::player::vplane_take();
                 format!(" vtick={vtick} vgap={vgap}ms")
             } else {
                 String::new()
             };
+            #[cfg(not(feature = "play-feed"))]
+            let vp = String::new();
             // `fps=<n>` — frames actually SWAPPED this second, which is what `plx_machine::idle` moves,
             // and the only field here that is a frame rate. `loop=` counts LOOP iterations: it
             // is the app's liveness signal and `pos=` is anchored to it, so it must not read 0
@@ -3617,7 +3631,7 @@ pub(crate) unsafe fn shutdown(
 ) {
     plx_media::player::report::abandon_pending(ps);
     if is_started(ps) == Some(true) {
-        plx_media::player::stop_bufferfeed(ps, pa);
+        plx_media::player::stop_playback(ps, pa);
     }
     // The stop's `Unload` runs off-frame; the process must not exit inside it, nor with the
     // object it is releasing left undestroyed. The wait is bounded, and a worker still inside
@@ -3752,7 +3766,7 @@ unsafe fn controlled_key_input(app: &mut App, event: plx_machine::machine::Input
     app.inputs.push(event);
 }
 
-#[cfg(all(test, feature = "hostsim"))]
+#[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
 mod lifecycle_regression_tests {
     use super::*;
 

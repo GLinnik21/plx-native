@@ -21,8 +21,10 @@ pub(crate) use plx_media::player::lifecycle::{
     ForegroundLoadStatus, Successor,
 };
 pub(crate) use plx_media::player::transport::{
-    resume_if_paused, set_paused, set_transport_paused, transport_target, viewer_paused_for,
+    resume_if_paused, set_transport_paused, transport_target, viewer_paused_for,
 };
+#[cfg(feature = "play-feed")]
+pub(crate) use plx_media::player::transport::set_paused;
 #[cfg(all(test, feature = "hostsim"))]
 pub(crate) use plx_media::player::transport::paused;
 // Only `app::run`'s hostsim lifecycle tests name the machine's state, so a re-export outside
@@ -39,6 +41,7 @@ pub(crate) struct PlayerForegroundActuator<'a> {
 
 /// What the foreground's `Load` does with the Original rollback's answer: the rebase is a flight
 /// (`Pending`), or — once it landed and reloaded — the exact attempt to follow.
+#[cfg(feature = "play-feed")]
 fn foreground_load_start(
     recovery: plx_media::player::ForegroundOriginalRecovery,
 ) -> ForegroundLoadStart<plx_media::route::RouteStartAttempt> {
@@ -59,6 +62,7 @@ impl PlayerForegroundActuator<'_> {
         &mut self,
         start: ForegroundLoadStart<plx_media::route::RouteStartAttempt>,
     ) -> ForegroundLoadStart<plx_media::route::RouteStartAttempt> {
+        #[cfg(feature = "play-feed")]
         if let ForegroundLoadStart::Launched(attempt) = start {
             plx_media::player::foreground_follows_load(self.pa, attempt);
         }
@@ -83,11 +87,12 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
         }
     }
 
-    fn land_recovery(&mut self, ps: &mut plx_media::route::PlaybackSession) -> FlightLanding<ForegroundLoadStart<Self::Attempt>> {
+    fn land_recovery(&mut self, _ps: &mut plx_media::route::PlaybackSession) -> FlightLanding<ForegroundLoadStart<Self::Attempt>> {
         // A start deferred behind the previous object's `Unload` lands the way a rollback does:
         // polled once a frame, started the frame the tail has run, failed typed at the deadline.
         if self.pa.watching_queued_start() {
             use plx_media::player::adapter::QueuedLanding;
+            #[cfg(feature = "play-feed")]
             plx_media::player::poll_release_frame(ps, self.pa);
             return match self.pa.take_queued_landing() {
                 QueuedLanding::Waiting => FlightLanding::Waiting,
@@ -98,18 +103,26 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
                 QueuedLanding::Failed => FlightLanding::Landed(ForegroundLoadStart::Failed),
             };
         }
-        use plx_media::player::RollbackLanding;
-        match plx_media::player::land_engineless_rollback(ps, self.pa) {
-            RollbackLanding::Waiting => FlightLanding::Waiting,
-            RollbackLanding::Stale => FlightLanding::Stale,
-            RollbackLanding::Landed(recovery) => FlightLanding::Landed(self.following(foreground_load_start(recovery))),
+        #[cfg(feature = "play-feed")]
+        {
+            use plx_media::player::RollbackLanding;
+            match plx_media::player::land_engineless_rollback(_ps, self.pa) {
+                RollbackLanding::Waiting => FlightLanding::Waiting,
+                RollbackLanding::Stale => FlightLanding::Stale,
+                RollbackLanding::Landed(recovery) => FlightLanding::Landed(self.following(foreground_load_start(recovery))),
+            }
         }
+        #[cfg(not(feature = "play-feed"))]
+        { FlightLanding::Stale }
     }
 
     fn before_load(&mut self, ps: &mut plx_media::route::PlaybackSession, _resume_ns: i64,
         clock: ForegroundClock) {
+        #[cfg(feature = "play-feed")]
         let feed_load = self.pa.planned_start_backend(ps)
             == Some(plx_playback_contract::BackendKind::Feed);
+        #[cfg(not(feature = "play-feed"))]
+        let _ = self.pa.planned_start_backend(ps);
         match clock {
             ForegroundClock::Paused => {
                 #[cfg(feature = "play-feed")]
@@ -131,12 +144,12 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
             // from `TX.paused`: a live Engine (a replacement the pump launched after a refused
             // restore) owns its clock, and `PlayClock` resumes it after `Started`, which it does
             // only while `TX.paused` still reads Paused.
-            ForegroundClock::Playing if feed_load
-                && viewer_paused_for(self.pa) && !self.pa.is_live() => {
+            ForegroundClock::Playing => {
                 #[cfg(feature = "play-feed")]
-                plx_media::player::transport::commit_viewer_resume_for_load();
+                if feed_load && viewer_paused_for(self.pa) && !self.pa.is_live() {
+                    plx_media::player::transport::commit_viewer_resume_for_load();
+                }
             }
-            ForegroundClock::Playing => {}
         }
     }
 
@@ -145,7 +158,10 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
         if matches!(first, plx_media::player::BufferfeedStartOutcome::Failed) {
             // A synchronous failure inside an Original trial has no Engine for player::pump to
             // recover. Take the same explicit rollback edge here and follow its exact HLS Load.
+            #[cfg(feature = "play-feed")]
             return self.following(foreground_load_start(plx_media::player::recover_failed_foreground_original(ps)));
+            #[cfg(not(feature = "play-feed"))]
+            return ForegroundLoadStart::Failed;
         }
         match first {
             plx_media::player::BufferfeedStartOutcome::AlreadyRunning => {
@@ -172,6 +188,7 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
             plx_media::route::RouteStartStatus::Superseded(replacement) => {
                 // The lifecycle now follows the replacement's Load, so its synchronous refusal is
                 // the lifecycle's too.
+                #[cfg(feature = "play-feed")]
                 plx_media::player::foreground_follows_load(self.pa, replacement);
                 ForegroundLoadStatus::Superseded(replacement)
             }
@@ -183,10 +200,11 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
         &mut self,
         ps: &mut plx_media::route::PlaybackSession,
         attempt: Option<Self::Attempt>,
-        clock: ForegroundClock,
+        _clock: ForegroundClock,
         started: bool,
     ) {
-        if matches!(clock, ForegroundClock::Paused) {
+        #[cfg(feature = "play-feed")]
+        if matches!(_clock, ForegroundClock::Paused) {
             if started {
                 set_resume_pend(true);
             } else {
@@ -197,7 +215,7 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
             // `sf_load == 0` publishes Error but intentionally leaves the Engine available for
             // diagnostics. Retire it only if it still owns the observed token: player::pump may
             // already have launched a healthy replacement before foreground polls this result.
-            let _ = plx_media::player::suspend_bufferfeed_if_attempt(ps, self.pa, attempt.unwrap());
+            let _ = plx_media::player::suspend_playback_if_attempt(ps, self.pa, attempt.unwrap());
         }
     }
 

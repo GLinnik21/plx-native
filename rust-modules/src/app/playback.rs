@@ -36,10 +36,12 @@ pub(crate) use plx_screens::registry::RepeatGate;
 
 
 #[inline]
+#[cfg(feature = "play-feed")]
 pub(crate) fn resume_pend() -> bool {
     plx_media::player::TX.resume_pend.load(Relaxed)
 }
 #[inline]
+#[cfg(feature = "play-feed")]
 pub(crate) fn set_resume_pend(v: bool) {
     plx_media::player::TX.resume_pend.store(v, Relaxed)
 }
@@ -171,7 +173,7 @@ pub(crate) fn retry_failed_playback(
     let resume_ns = intended_pos(ps)
         .max(plx_media::route::unpresented_resume_ns(ps))
         .max(0);
-    plx_media::player::stop_bufferfeed(ps, pa);
+    plx_media::player::stop_playback(ps, pa);
     if plx_media::route::retry_current_play(ps, meta, resume_ns, direct_play, origin) {
         plx_machine::idle::invalidate();
         true
@@ -464,6 +466,7 @@ pub(super) fn start_playback_with<R: PlaybackResources>(
     if sections_were_open {
         super::bridge::reseat_player_focus(pages);
     }
+    #[cfg(feature = "play-feed")]
     set_paused(false);
     entering
 }
@@ -740,7 +743,7 @@ pub(crate) fn exit_player(
     let ps = &mut player.session;
     plx_media::route::cancel_play(ps); // BACK during a load: supersede, drop the landing
     close_player_overlays(pages);
-    plx_media::player::stop_bufferfeed(ps, pa);
+    plx_media::player::stop_playback(ps, pa);
     // `stop_bufferfeed` reports/clears a real engine through `report::ended`, but a refusal or a
     // BACK during resolve has no engine for teardown to take. The exit ritual still ends that
     // attempt, so retire its in-memory trace here as the common backstop.
@@ -1460,7 +1463,7 @@ pub(crate) fn land_play_then_observe<S: ?Sized>(
 /// (`pump::native_seek_pump_tests` grades the arm, the landing and the re-pause). What is graded
 /// here is the app's half of that contract: the commit asks for the seek and nothing else, so no
 /// preroll, `resume_pend` or re-pause target is left for a caller to forget.
-#[cfg(test)]
+#[cfg(all(test, feature = "play-feed"))]
 mod paused_seek_tests {
     use super::*;
 
