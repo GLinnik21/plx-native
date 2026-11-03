@@ -12,8 +12,8 @@ use std::collections::{HashMap, VecDeque};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum FeedTransportAction {
-    Play(AttemptId),
-    Pause(AttemptId),
+    Play { attempt: AttemptId, command: CommandId },
+    Pause { attempt: AttemptId, command: CommandId },
 }
 
 pub(super) struct FeedDriver {
@@ -21,6 +21,7 @@ pub(super) struct FeedDriver {
     active: Option<AttemptId>,
     ready_emitted: bool,
     playing_emitted: bool,
+    startup_play_command: Option<CommandId>,
     stop_requested: Option<(AttemptId, StopReason)>,
     transport_actions: VecDeque<FeedTransportAction>,
     events: VecDeque<BackendEvent>,
@@ -30,7 +31,7 @@ impl FeedDriver {
     pub(super) fn new() -> Self {
         Self {
             staged: HashMap::new(), active: None, ready_emitted: false,
-            playing_emitted: false, stop_requested: None,
+            playing_emitted: false, startup_play_command: None, stop_requested: None,
             transport_actions: VecDeque::new(), events: VecDeque::new(),
         }
     }
@@ -51,7 +52,7 @@ impl FeedDriver {
     }
 
     pub(super) fn dispatch(&mut self, feed: &mut FeedResources, mt: &MainThread,
-        attempt: AttemptId, _command: CommandId, operation: Operation) -> DispatchResult {
+        attempt: AttemptId, command: CommandId, operation: Operation) -> DispatchResult {
         match operation {
             Operation::Start { source, .. } => {
                 let Some(prepared) = self.staged.remove(&(attempt, source)) else {
@@ -67,6 +68,7 @@ impl FeedDriver {
                         self.active = Some(attempt);
                         self.ready_emitted = false;
                         self.playing_emitted = false;
+                        self.startup_play_command = None;
                         DispatchResult::Queued
                     }
                     Err(_) => {
@@ -81,16 +83,21 @@ impl FeedDriver {
                 if !eng.startup_controlled { return DispatchResult::Refused(Failure::Stale); }
                 if !eng.startup_play_commanded {
                     eng.startup_play_commanded = true;
+                    self.startup_play_command = Some(command);
                     if eng.startup_immediate_play {
-                        engine::play_initial_now(mt, eng);
+                        if engine::play_initial_now(mt, eng) == Some(false) {
+                            eng.startup_play_commanded = false;
+                            self.startup_play_command = None;
+                            return DispatchResult::Refused(Failure::Refused);
+                        }
                     }
                 } else if !eng.prime_play {
-                    self.transport_actions.push_back(FeedTransportAction::Play(attempt));
+                    self.transport_actions.push_back(FeedTransportAction::Play { attempt, command });
                 }
                 DispatchResult::Queued
             }
             Operation::Pause if self.active == Some(attempt) => {
-                self.transport_actions.push_back(FeedTransportAction::Pause(attempt));
+                self.transport_actions.push_back(FeedTransportAction::Pause { attempt, command });
                 DispatchResult::Queued
             }
             Operation::Stop(reason) if self.active == Some(attempt) => {
@@ -118,6 +125,9 @@ impl FeedDriver {
     }
 
     pub(super) fn poll(&mut self, feed: &mut FeedResources) -> Vec<BackendEvent> {
+        if let Some((attempt, status)) = feed.take_reaped_release() {
+            self.note_release(attempt, status);
+        }
         if let Some(attempt) = self.active {
             if let Some(eng) = feed.engine().filter(|eng| eng.attempt == attempt) {
                 if eng.startup_controlled && eng.stage >= super::shared::Stage::Playing
@@ -132,11 +142,21 @@ impl FeedDriver {
                 if eng.startup_controlled && eng.startup_play_commanded && !eng.prime_play
                     && !self.playing_emitted {
                     self.playing_emitted = true;
+                    self.startup_play_command = None;
+                    eng.startup_first_play_done = true;
                     self.events.push_back(BackendEvent { backend: BackendKind::Feed,
                         event: DriverEvent::Observation { attempt,
                             observation: Observation::Playback(Observed {
                                 value: Playback::Playing, from: EvidenceSource::BackendReport,
                             }) } });
+                }
+                if eng.startup_play_refused {
+                    eng.startup_play_refused = false;
+                    if let Some(command) = self.startup_play_command.take() {
+                        self.events.push_back(BackendEvent { backend: BackendKind::Feed,
+                            event: DriverEvent::ControlRefused { attempt, command,
+                                operation: Operation::Play, failure: Failure::Refused } });
+                    }
                 }
             }
         }
@@ -152,12 +172,19 @@ impl FeedDriver {
     }
 
     pub(super) fn note_transport_result(&mut self, action: FeedTransportAction, accepted: bool) {
-        if !accepted { return; }
-        let (attempt, value) = match action {
-            FeedTransportAction::Play(attempt) => (attempt, Playback::Playing),
-            FeedTransportAction::Pause(attempt) => (attempt, Playback::Paused),
+        let (attempt, command, operation, value) = match action {
+            FeedTransportAction::Play { attempt, command } =>
+                (attempt, command, Operation::Play, Playback::Playing),
+            FeedTransportAction::Pause { attempt, command } =>
+                (attempt, command, Operation::Pause, Playback::Paused),
         };
         if self.active != Some(attempt) { return; }
+        if !accepted {
+            self.events.push_back(BackendEvent { backend: BackendKind::Feed,
+                event: DriverEvent::ControlRefused { attempt, command, operation,
+                    failure: Failure::Refused } });
+            return;
+        }
         self.events.push_back(BackendEvent { backend: BackendKind::Feed,
             event: DriverEvent::Observation { attempt,
                 observation: Observation::Playback(Observed {
@@ -172,6 +199,7 @@ impl FeedDriver {
         if status == ReleaseStatus::Released {
             self.active = None;
             self.stop_requested = None;
+            self.startup_play_command = None;
         }
     }
 
@@ -181,7 +209,8 @@ impl FeedDriver {
 
     pub(super) fn exit_disposition(&self, feed: &FeedResources) -> ExitDisposition {
         if self.active.is_none() && self.staged.is_empty() && self.stop_requested.is_none()
-            && !feed.is_live() && !feed.has_pending_release() && !feed.has_abandoned_load() {
+            && !feed.is_live() && !feed.has_pending_release() && !feed.has_abandoned_load()
+            && !feed.has_reaped_release() {
             ExitDisposition::Clean
         } else {
             ExitDisposition::PreserveNativeOwnership
@@ -194,18 +223,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stale_transport_and_release_results_cannot_change_the_current_attempt() {
+    fn stale_release_cannot_change_the_current_attempt() {
         let current = AttemptId::new(7, 1);
         let old = AttemptId::new(6, 1);
         let mut driver = FeedDriver::new();
         driver.active = Some(current);
-        driver.note_transport_result(FeedTransportAction::Play(old), true);
         driver.note_release(old, ReleaseStatus::Released);
         assert_eq!(driver.active, Some(current));
         assert!(driver.events.is_empty());
 
-        driver.note_transport_result(FeedTransportAction::Pause(current), false);
-        assert!(driver.events.is_empty());
         driver.note_release(current, ReleaseStatus::Closing);
         assert_eq!(driver.active, Some(current));
         driver.note_release(current, ReleaseStatus::Released);

@@ -161,6 +161,10 @@ pub struct Engine {
     /// clock protocol after that command has been admitted.
     pub startup_controlled: bool,
     pub startup_play_commanded: bool,
+    /// Physical first Play was accepted; later seek/rebuffer primes are independent.
+    pub startup_first_play_done: bool,
+    /// One refused first Play is reported against its common command on the next driver poll.
+    pub startup_play_refused: bool,
     /// Progressive initial playback kept its immediate Play boundary after LoadCompleted.
     pub startup_immediate_play: bool,
     // Two-lane feed (Kodi m_messageQueueVideo/Audio): the demuxer routes es=1 video to aq_video
@@ -225,6 +229,7 @@ pub fn engines_dropped_for_test() -> usize {
 }
 
 pub struct AbandonedLoad {
+    pub attempt: plx_playback_contract::AttemptId,
     pub epoch: u32,
     pub load_th: std::thread::JoinHandle<()>,
     /// The Load payload `sf_load` was handed as a raw pointer. Must outlive the thread.

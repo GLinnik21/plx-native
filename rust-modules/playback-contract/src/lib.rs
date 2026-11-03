@@ -172,6 +172,9 @@ pub enum ExitDisposition { Clean, PreserveNativeOwnership }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DriverEvent {
     Observation { attempt: AttemptId, observation: Observation },
+    /// A queued transport verb later reached the native boundary and was refused.
+    ControlRefused { attempt: AttemptId, command: CommandId, operation: Operation,
+        failure: Failure },
     /// Completion of the exact queued track command, after native confirmation. A plain
     /// TrackSelected observation remains useful evidence but cannot settle startup policy.
     TrackSettled { attempt: AttemptId, command: CommandId, kind: TrackKind, choice: TrackChoice },
@@ -187,6 +190,8 @@ impl From<BackendEvent> for Event {
         let backend = value.backend;
         match value.event {
             DriverEvent::Observation { attempt, observation } => Event::Observation { backend, attempt, observation },
+            DriverEvent::ControlRefused { attempt, command, operation, failure } =>
+                Event::ControlRefused { backend, attempt, command, operation, failure },
             DriverEvent::TrackSettled { attempt, command, kind, choice } =>
                 Event::TrackSettled { backend, attempt, command, kind, choice },
             DriverEvent::SeekLanded { attempt, command, position } => Event::SeekLanded { backend, attempt, command, position },

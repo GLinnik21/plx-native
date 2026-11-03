@@ -187,6 +187,10 @@ pub(super) fn start_bufferfeed_inner(
     if !pa.begin_native_open() {
         return Err(crate::route::RouteStartResult::StartFailed);
     }
+    // `begin_native_open` can reap a previously abandoned Load. Admit its exact D1/quarantine
+    // verdict before asking the common runner to admit another attempt.
+    let at = pa.backend_tick();
+    let _ = pa.backend_poll_at(at);
     // Guard a double-start: overwriting a live ENGINE slot would DROP the running
     // Engine, detaching its worker threads and freeing the hs/aq boxes those
     // threads still hold raw ptrs into -> use-after-free. If already running, no-op.
@@ -325,8 +329,8 @@ pub(super) fn run_release_effects(
                 if let Some(p) = joined.take() {
                     debug_assert_eq!(p.epoch(), epoch);
                     let attempt = p.attempt();
-                    engine::run_release_tail(pa.mt(), p);
-                    pa.note_backend_feed_release(attempt, plx_playback_contract::ReleaseStatus::Released);
+                    let status = engine::run_release_tail(pa.mt(), p);
+                    pa.note_backend_feed_release(attempt, status);
                     let at = pa.backend_tick();
                     let _ = pa.backend_poll_at(at);
                     pass.tail_ran = true;
@@ -895,6 +899,7 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
     after_physical_close(ps, for_reload, final_report, &mut report_th);
     native.report_dispatched();
     pa.release_native_stop(&mut native, for_reload);
+    let release_status = native.release_status();
     // A reload preserves the file's duration and viewer transport, then restarts the same item.
     // A real stop retires both along with the current claim hold.
     if for_reload {
@@ -907,11 +912,7 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
     }
     finish_feed_teardown(ps, for_reload, report_th);
     pa.finish_native_stop(native, for_reload);
-    pa.note_backend_feed_release(route_attempt.contract_id(), if pa.release_busy() {
-        plx_playback_contract::ReleaseStatus::Closing
-    } else {
-        plx_playback_contract::ReleaseStatus::Released
-    });
+    pa.note_backend_feed_release(route_attempt.contract_id(), release_status);
     let at = pa.backend_tick();
     let _ = pa.backend_poll_at(at);
 }

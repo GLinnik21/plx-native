@@ -565,7 +565,7 @@ pub(super) fn tick_load(feed: &mut FeedResources, mt: &MainThread, now: u32,
             eng.prime_play = true;
             super::log("SMP loadCompleted (priming before Play)");
         } else {
-            super::engine::play_initial_now(mt, eng);
+            let _ = super::engine::play_initial_now(mt, eng);
         }
     } else if eng.stage == Stage::Loading
         && !eng.preview_abandon
