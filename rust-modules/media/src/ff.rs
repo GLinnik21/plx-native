@@ -6479,7 +6479,9 @@ pub(crate) fn demux(
                 // A VP9 stream's PQ is in the container only; hand it to the pump, which writes it into
                 // the sourceInfo envelope ACB is sent. Always replaced, so a previous stream's colour
                 // cannot outlive it.
-                *SHARED.container_hdr.lock().unwrap() = if is_vp9 { Some(container_hdr(vcp)) } else { None };
+                session.media().publish(DemuxEffect::ContainerHdr(
+                    if is_vp9 { Some(container_hdr(vcp)) } else { None },
+                ));
                 session.media().record(&format!(
                     "ff: param_sets={} bytes nal_len={} is_hevc={} is_av1={} is_vp9={} av1_cfg={}B nal_input={:?}",
                     param_blob.len(),

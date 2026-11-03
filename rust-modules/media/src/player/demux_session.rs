@@ -272,6 +272,9 @@ impl DemuxMedia for PlayerDemuxSession {
             DemuxEffect::SideAnchor(anchor) => {
                 *SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) = anchor;
             }
+            DemuxEffect::ContainerHdr(hdr) => {
+                *SHARED.container_hdr.lock().unwrap() = hdr;
+            }
             DemuxEffect::FirstAudioPts(pts) =>
                 SHARED.first_audio_pts.store(pts, Ordering::Release),
             DemuxEffect::FileSize(size) => SHARED.file_size.store(size, Ordering::Release),
