@@ -36,6 +36,8 @@ use plx_playback_contract::{AttemptId, BackendEvent, BackendKind, Capabilities, 
     DispatchResult, DriverSet, ExitDisposition, Failure, Intent, Operation, ReleaseStatus,
     SourceKey, StopReason};
 #[cfg(feature = "play-uri")]
+use plx_playback_contract::Playback;
+#[cfg(feature = "play-uri")]
 use plx_play_uri::backend::{Binding as UriBinding, Config as UriConfig,
     MonotonicClock, UriBackend, UriSource};
 
@@ -57,11 +59,14 @@ pub struct UriDriverSettings {
 /// production qualifier currently supplies this value; absence preserves the Feed choice.
 #[cfg(feature = "play-uri")]
 pub struct QualifiedUriOffer {
+    pub(super) offer_id: crate::route::backend_policy::OfferId,
     pub(super) route_start: crate::route::RouteStartTransaction,
     pub(super) selection: crate::route::UriSelection,
     pub(super) source: UriSource,
     pub(super) requirements: plx_playback_contract::Requirements,
     pub(super) initial: plx_playback_contract::InitialPlayback,
+    /// The resolved item's PMS metadata duration, supplied with this source-specific offer.
+    pub(super) pms_duration_ns: i64,
     pub(super) expires_at: std::time::Instant,
 }
 
@@ -89,7 +94,8 @@ mod qualified_uri_offer_tests {
         let ticket = crate::route::begin_route_start().expect("route transaction");
         if cfg!(feature = "play-feed") {
             assert!(session.qualify_resolved_feed_offer(
-                crate::route::backend_policy::OfferId::FEED_ORIGINAL));
+                crate::route::backend_policy::OfferId::FEED_ORIGINAL,
+                crate::route::CandidatePurpose::NewCandidate));
             assert!(matches!(session.backend_offer(),
                 crate::route::backend_policy::Selection::Open(offer)
                     if offer.backend == BackendKind::Feed));
@@ -111,14 +117,16 @@ mod qualified_uri_offer_tests {
         stale.part_id += 1;
         let initial = InitialPlayback { position: None, paused: false };
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        let stale_offer = QualifiedUriOffer::new(ticket, stale,
+        let stale_offer = QualifiedUriOffer::new(
+            crate::route::backend_policy::OfferId::URI_ORIGINAL, ticket, stale,
             UriSource::new("https://example.invalid/wrong.mkv".to_owned(), vec![]),
-            requirements(TrackChoice::Unspecified), initial, deadline).expect("typed offer");
+            requirements(TrackChoice::Unspecified), initial, 60_000, deadline).expect("typed offer");
         assert!(matches!(adapter.offer_qualified_uri(&mut session, stale_offer), Err(Failure::Stale)));
 
-        let offered = QualifiedUriOffer::new(ticket, selection,
+        let offered = QualifiedUriOffer::new(
+            crate::route::backend_policy::OfferId::URI_ORIGINAL, ticket, selection,
             UriSource::new("https://example.invalid/original.mkv".to_owned(), vec![]),
-            requirements(TrackChoice::Unspecified), initial, deadline).expect("typed offer");
+            requirements(TrackChoice::Unspecified), initial, 60_000, deadline).expect("typed offer");
         assert!(adapter.offer_qualified_uri(&mut session, offered).is_ok());
         assert!(matches!(session.backend_offer(),
             crate::route::backend_policy::Selection::Open(offer)
@@ -157,38 +165,79 @@ mod qualified_uri_offer_tests {
         let source = || UriSource::new("https://example.invalid/track.mkv".to_owned(), vec![]);
         let initial = InitialPlayback { position: None, paused: true };
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        assert!(matches!(QualifiedUriOffer::new(ticket, selection, source(),
-            requirements(TrackChoice::Selected(42)), initial, deadline), Err(Failure::Unsupported)));
-        assert!(QualifiedUriOffer::new(ticket, selection, source(),
-            requirements(TrackChoice::Selected(41)), initial, deadline).is_ok());
+        assert!(matches!(QualifiedUriOffer::new(
+            crate::route::backend_policy::OfferId::URI_ORIGINAL, ticket, selection, source(),
+            requirements(TrackChoice::Selected(42)), initial, 60_000, deadline), Err(Failure::Unsupported)));
+        assert!(QualifiedUriOffer::new(
+            crate::route::backend_policy::OfferId::URI_ORIGINAL, ticket, selection, source(),
+            requirements(TrackChoice::Selected(41)), initial, 60_000, deadline).is_ok());
+        let converted = Requirements { source: SourceKind::HlsUri,
+            video: Fidelity::Compatible, audio: Fidelity::Compatible,
+            audio_track: TrackChoice::Unspecified, subtitle_track: TrackChoice::Unspecified };
+        assert!(QualifiedUriOffer::new(
+            crate::route::backend_policy::OfferId::URI_PMS_HLS, ticket, selection, source(),
+            converted, initial, 60_000, deadline).is_ok(),
+            "PMS has already selected the original source streams before its HLS output is qualified");
+        assert!(matches!(QualifiedUriOffer::new(
+            crate::route::backend_policy::OfferId::URI_PMS_HLS, ticket, selection, source(),
+            converted, initial, 0, deadline), Err(Failure::Unsupported)),
+            "a URI report needs an identified item duration for the common timeline");
     }
 }
 
 #[cfg(feature = "play-uri")]
 impl QualifiedUriOffer {
-    pub fn new(route_start: crate::route::RouteStartTransaction,
+    pub fn new(offer_id: crate::route::backend_policy::OfferId,
+        route_start: crate::route::RouteStartTransaction,
         selection: crate::route::UriSelection, source: UriSource,
         requirements: plx_playback_contract::Requirements,
         initial: plx_playback_contract::InitialPlayback,
+        pms_duration_ms: u64,
         expires_at: std::time::Instant) -> Result<Self, Failure> {
+        use crate::route::backend_policy::OfferId;
+        let required_fidelity = match offer_id {
+            OfferId::URI_ORIGINAL => plx_playback_contract::Fidelity::Exact,
+            OfferId::URI_PMS_REMUX | OfferId::URI_PMS_ENCODE | OfferId::URI_PMS_HLS =>
+                plx_playback_contract::Fidelity::Compatible,
+            _ => return Err(Failure::Unsupported),
+        };
         if requirements.source == plx_playback_contract::SourceKind::PacketFeed
-            || requirements.video != plx_playback_contract::Fidelity::Exact
-            || requirements.audio != plx_playback_contract::Fidelity::Exact {
+            || requirements.video != required_fidelity
+            || requirements.audio != required_fidelity
+            || (offer_id == OfferId::URI_PMS_HLS
+                && requirements.source != plx_playback_contract::SourceKind::HlsUri)
+            || (matches!(offer_id, OfferId::URI_PMS_REMUX | OfferId::URI_PMS_ENCODE)
+                && requirements.source != plx_playback_contract::SourceKind::ProgressiveUri) {
+            return Err(Failure::Unsupported);
+        }
+        let pms_duration_ns = pms_duration_ms.checked_mul(1_000_000)
+            .and_then(|ns| i64::try_from(ns).ok()).filter(|ns| *ns > 0)
+            .ok_or(Failure::Unsupported)?;
+        if initial.position.is_some_and(|position| position.as_millis()
+            .checked_mul(1_000_000)
+            .and_then(|ns| i64::try_from(ns).ok())
+            .is_none_or(|ns| ns > pms_duration_ns)) {
             return Err(Failure::Unsupported);
         }
         let selected_audio = (selection.audio_sid > 0).then(||
             plx_playback_contract::TrackChoice::Selected(selection.audio_sid as u64));
         let selected_subtitle = (selection.subtitle_sid > 0).then(||
             plx_playback_contract::TrackChoice::Selected(selection.subtitle_sid as u64));
-        if selected_audio.is_some_and(|choice| requirements.audio_track != choice)
-            || selected_subtitle.is_some_and(|choice| requirements.subtitle_track != choice)
+        if (offer_id == OfferId::URI_ORIGINAL
+                && (selected_audio.is_some_and(|choice| requirements.audio_track != choice)
+                    || selected_subtitle.is_some_and(|choice| requirements.subtitle_track != choice)))
+            || selected_audio.is_some_and(|choice| matches!(requirements.audio_track,
+                plx_playback_contract::TrackChoice::Selected(_) if requirements.audio_track != choice))
+            || selected_subtitle.is_some_and(|choice| matches!(requirements.subtitle_track,
+                plx_playback_contract::TrackChoice::Selected(_) if requirements.subtitle_track != choice))
             || (selection.audio_sid <= 0 && matches!(requirements.audio_track,
                 plx_playback_contract::TrackChoice::Selected(_)))
             || (selection.subtitle_sid <= 0 && matches!(requirements.subtitle_track,
                 plx_playback_contract::TrackChoice::Selected(_))) {
             return Err(Failure::Unsupported);
         }
-        Ok(Self { route_start, selection, source, requirements, initial, expires_at })
+        Ok(Self { offer_id, route_start, selection, source, requirements, initial,
+            pms_duration_ns, expires_at })
     }
 }
 
@@ -292,6 +341,8 @@ pub struct PlayerAdapter {
     uri_route_settled: bool,
     #[cfg(feature = "play-uri")]
     uri_stop_requested: bool,
+    #[cfg(feature = "play-uri")]
+    uri_finalized: bool,
     /// Route identity and product trace for the installed physical attempt. The feed itself
     /// receives only the canonical contract ID and native epoch.
     feed_attempt: Option<(crate::route::RouteStartAttempt, u32)>,
@@ -359,6 +410,8 @@ impl PlayerAdapter {
             uri_route_settled: false,
             #[cfg(feature = "play-uri")]
             uri_stop_requested: false,
+            #[cfg(feature = "play-uri")]
+            uri_finalized: false,
             feed_attempt: None,
             timeline: None,
             repair: None,
@@ -379,6 +432,28 @@ impl PlayerAdapter {
 
     pub fn backend_snapshot(&self) -> &plx_playback_contract::Snapshot {
         self.backend.snapshot()
+    }
+
+    /// Product URI plane ownership is separate from the diagnostic probe and panel evidence.
+    #[cfg(feature = "play-uri")]
+    pub fn uri_product_plane_owned(&self) -> bool {
+        self.uri_backend.as_ref().is_some_and(UriBackend::plane_owned)
+    }
+
+    /// A mounted page is not the owner of a physical attempt. A URI EOS may have already
+    /// released its native session while its final Plex stop still belongs to the route.
+    pub fn playback_needs_teardown(&self, ps: &crate::route::PlaybackSession) -> bool {
+        #[cfg(feature = "play-feed")]
+        if self.is_live() { return true; }
+        #[cfg(feature = "play-uri")]
+        if self.uri_route_attempt.is_some()
+            || (!self.uri_finalized
+                && ps.attempt_view().backend() == Some(super::attempt_view::Backend::Uri)
+                && ps.attempt_view().facts().ended == Some(true)) {
+            return true;
+        }
+        let _ = ps;
+        false
     }
 
     /// A pending first Play keeps the native pause hold until its exact startup command is
@@ -562,9 +637,13 @@ impl PlayerAdapter {
             return Err(Failure::Stale);
         }
         if !ps.ensure_backend_offers() { return Err(Failure::Stale); }
-        self.qualified_uri = Some(offer);
+        let offer_id = offer.offer_id;
+        if let Some(previous) = self.qualified_uri.replace(offer) {
+            ps.qualify_backend_offer(BackendKind::Uri, previous.offer_id,
+                crate::route::backend_policy::Qualification::Unknown);
+        }
         ps.qualify_backend_offer(BackendKind::Uri,
-            crate::route::backend_policy::OfferId::URI_ORIGINAL,
+            offer_id,
             crate::route::backend_policy::Qualification::Qualified);
         Ok(())
     }
@@ -574,18 +653,13 @@ impl PlayerAdapter {
     pub(super) fn take_qualified_uri(&mut self, ps: &mut crate::route::PlaybackSession,
         route_start: crate::route::RouteStartTransaction)
         -> Option<QualifiedUriOffer> {
-        let Some(offer) = self.qualified_uri.take() else {
-            ps.qualify_backend_offer(BackendKind::Uri,
-                crate::route::backend_policy::OfferId::URI_ORIGINAL,
-                crate::route::backend_policy::Qualification::Unknown);
-            return None;
-        };
+        let offer = self.qualified_uri.take()?;
         if offer.route_start == route_start && offer.selection == ps.uri_selection()
             && offer.expires_at > std::time::Instant::now() {
             Some(offer)
         } else {
             ps.qualify_backend_offer(BackendKind::Uri,
-                crate::route::backend_policy::OfferId::URI_ORIGINAL,
+                offer.offer_id,
                 crate::route::backend_policy::Qualification::Unknown);
             None
         }
@@ -597,10 +671,10 @@ impl PlayerAdapter {
             offer.expires_at <= std::time::Instant::now()
                 || offer.selection != ps.uri_selection()
                 || crate::route::pending_route_start() != Some(offer.route_start)) {
-            self.qualified_uri = None;
-            ps.qualify_backend_offer(BackendKind::Uri,
-                crate::route::backend_policy::OfferId::URI_ORIGINAL,
-                crate::route::backend_policy::Qualification::Unknown);
+            if let Some(expired) = self.qualified_uri.take() {
+                ps.qualify_backend_offer(BackendKind::Uri, expired.offer_id,
+                    crate::route::backend_policy::Qualification::Unknown);
+            }
         }
     }
 
@@ -609,6 +683,15 @@ impl PlayerAdapter {
         self.uri_route_attempt = Some(attempt);
         self.uri_route_settled = false;
         self.uri_stop_requested = false;
+        self.uri_finalized = false;
+    }
+
+    #[cfg(feature = "play-uri")]
+    pub(super) fn finalize_uri_once(&mut self) -> bool {
+        if self.uri_finalized { false } else {
+            self.uri_finalized = true;
+            true
+        }
     }
 
     #[cfg(feature = "play-uri")]
@@ -674,6 +757,28 @@ impl PlayerAdapter {
                             ps, route_attempt, crate::route::RouteStartResult::StartFailed);
                     }
                 }
+                plx_playback_contract::Fx::AcceptedSeekLanded {
+                    backend: BackendKind::Uri, attempt, position, ..
+                } => {
+                    if let Some(route_attempt) = self.uri_route_attempt.filter(|route|
+                        route.contract_id() == attempt) {
+                        let mut facts = *ps.attempt_view().facts();
+                        facts.seek_pending_ns = None;
+                        facts.seek_display_ns = None;
+                        if let Some(position) = position {
+                            facts.position_ns = position.value.as_millis()
+                                .checked_mul(1_000_000)
+                                .and_then(|ns| i64::try_from(ns).ok());
+                        }
+                        facts.status = Some(match self.backend.snapshot().playback.map(|p| p.value) {
+                            Some(Playback::Playing) => plx_playback_contract::readout::PlaybackState::Playing,
+                            Some(Playback::Paused) => plx_playback_contract::readout::PlaybackState::Paused,
+                            _ => plx_playback_contract::readout::PlaybackState::Buffering,
+                        });
+                        let _ = ps.ingest_attempt_facts(route_attempt,
+                            super::attempt_view::Backend::Uri, facts);
+                    }
+                }
                 plx_playback_contract::Fx::ReleaseOutcome {
                     backend: BackendKind::Uri, attempt, status,
                 } => {
@@ -698,9 +803,29 @@ impl PlayerAdapter {
                 _ => {}
             }
         }
+        #[cfg(feature = "play-uri")]
+        self.publish_uri_timeline(ps);
         #[cfg(not(feature = "play-uri"))]
         let _ = ps;
         result
+    }
+
+    /// The existing attempt-bound reporter consumes normalized URI clocks too. Missing native
+    /// position or a non-playing state clears its mailbox, so it cannot repeat an old playhead.
+    #[cfg(feature = "play-uri")]
+    fn publish_uri_timeline(&self, ps: &crate::route::PlaybackSession) {
+        if ps.attempt_view().backend() != Some(super::attempt_view::Backend::Uri) { return; }
+        let Some(attempt) = ps.attempt_view().attempt() else { return; };
+        let facts = ps.attempt_view().facts();
+        let snapshot = match (facts.position_ns, facts.duration_ns, facts.status) {
+            (Some(position), Some(duration), Some(status)) if matches!(status,
+                plx_playback_contract::readout::PlaybackState::Playing
+                | plx_playback_contract::readout::PlaybackState::Paused) =>
+                timeline::TimelineSnapshot::from_content_ns(position, duration,
+                    status == plx_playback_contract::readout::PlaybackState::Paused),
+            _ => None,
+        };
+        self.publish_timeline(attempt, snapshot);
     }
 
     /// Map only addressed URI reports into the session's sparse readout. Playing and clock

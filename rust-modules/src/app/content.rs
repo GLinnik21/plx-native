@@ -198,7 +198,7 @@ pub(super) fn clear_engine_for_play(
     halt_preview_now(ps, pa);
     match play_clearance(
         plx_media::player::preview::occupies(),
-        pa.is_live(),
+        pa.playback_needs_teardown(ps),
         plx_media::route::is_preview(ps),
         player_mounted,
     ) {

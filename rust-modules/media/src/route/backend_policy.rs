@@ -16,6 +16,9 @@ impl OfferId {
     pub const FEED_PMS_REMUX: Self = Self(4);
     pub const FEED_PMS_ENCODE: Self = Self(5);
     pub const FEED_PMS_HLS: Self = Self(6);
+    pub const URI_PMS_REMUX: Self = Self(7);
+    pub const URI_PMS_ENCODE: Self = Self(8);
+    pub const URI_PMS_HLS: Self = Self(9);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,7 +37,15 @@ pub struct Offer {
 
 impl Offer {
     fn exact(self) -> bool { self.video == Fidelity::Exact && self.audio == Fidelity::Exact }
-    fn rank(self) -> (bool, bool) { (!self.exact(), self.backend != BackendKind::Uri) }
+    fn rank(self) -> (u8, bool, u64) {
+        // Auto's Feed Original may be wire-compatible rather than bit-exact, yet it is still
+        // an original-source handoff and must precede a server conversion.
+        let tier = if self.exact() || (self.backend == BackendKind::Feed
+            && self.id == OfferId::FEED_ORIGINAL) { 0 }
+            else if self.backend == BackendKind::Uri { 1 }
+            else { 2 };
+        (tier, self.backend != BackendKind::Uri, self.id.0)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,6 +96,9 @@ impl BackendPolicy {
             (OfferId::FEED_PMS_REMUX, BackendKind::Feed, Fidelity::Compatible, Fidelity::Compatible),
             (OfferId::FEED_PMS_ENCODE, BackendKind::Feed, Fidelity::Compatible, Fidelity::Compatible),
             (OfferId::FEED_PMS_HLS, BackendKind::Feed, Fidelity::Compatible, Fidelity::Compatible),
+            (OfferId::URI_PMS_REMUX, BackendKind::Uri, Fidelity::Compatible, Fidelity::Compatible),
+            (OfferId::URI_PMS_ENCODE, BackendKind::Uri, Fidelity::Compatible, Fidelity::Compatible),
+            (OfferId::URI_PMS_HLS, BackendKind::Uri, Fidelity::Compatible, Fidelity::Compatible),
         ];
         Self::new(recipes.into_iter().map(|(id, backend, video, audio)| Offer {
             id, backend, video, audio, qualification: Qualification::Unknown,

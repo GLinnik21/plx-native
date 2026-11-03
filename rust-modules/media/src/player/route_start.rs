@@ -218,16 +218,16 @@ pub(super) fn start_bufferfeed_for(
 fn start_qualified_uri_inner(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAdapter,
     route_start: crate::route::RouteStartTransaction)
     -> Result<crate::route::RouteStartAttempt, crate::route::RouteStartResult> {
-    use crate::route::backend_policy::{OfferId, Selection};
+    use crate::route::backend_policy::Selection;
     let fail = crate::route::RouteStartResult::StartFailed;
     if !crate::route::prepare_route_start(route_start) { return Err(fail); }
     let route_attempt = crate::route::claim_route_start_attempt(route_start).ok_or(fail)?;
     let offer = pa.take_qualified_uri(ps, route_start).ok_or(fail)?;
     if !matches!(ps.backend_offer(), Selection::Open(choice)
         if choice.backend == plx_playback_contract::BackendKind::Uri
-            && choice.id == OfferId::URI_ORIGINAL) {
+            && choice.id == offer.offer_id) {
         ps.qualify_backend_offer(plx_playback_contract::BackendKind::Uri,
-            OfferId::URI_ORIGINAL, crate::route::backend_policy::Qualification::Unknown);
+            offer.offer_id, crate::route::backend_policy::Qualification::Unknown);
         return Err(fail);
     }
     let attempt = route_attempt.contract_id();
@@ -235,7 +235,7 @@ fn start_qualified_uri_inner(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
         Ok(source) => source,
         Err(_) => {
             ps.qualify_backend_offer(plx_playback_contract::BackendKind::Uri,
-                OfferId::URI_ORIGINAL, crate::route::backend_policy::Qualification::Unknown);
+                offer.offer_id, crate::route::backend_policy::Qualification::Unknown);
             return Err(fail);
         }
     };
@@ -252,13 +252,21 @@ fn start_qualified_uri_inner(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
         | plx_playback_contract::Fx::CommandRefused { attempt: id, .. } if *id == attempt
     )) {
         ps.qualify_backend_offer(plx_playback_contract::BackendKind::Uri,
-            OfferId::URI_ORIGINAL, crate::route::backend_policy::Qualification::Unknown);
+            offer.offer_id, crate::route::backend_policy::Qualification::Unknown);
         return Err(fail);
     }
     assert!(ps.backend_offer_admitted(plx_playback_contract::BackendKind::Uri,
-        OfferId::URI_ORIGINAL), "qualified URI offer must remain selected on the main thread");
+        offer.offer_id), "qualified URI offer must remain selected on the main thread");
     ps.begin_attempt_view(route_attempt, super::attempt_view::Backend::Uri);
+    let mut facts = *ps.attempt_view().facts();
+    facts.duration_ns = Some(offer.pms_duration_ns);
+    facts.ended = Some(false);
+    facts.seek_display_ns = offer.initial.position.and_then(|position|
+        position.as_millis().checked_mul(1_000_000))
+        .and_then(|ns| i64::try_from(ns).ok());
+    let _ = ps.ingest_attempt_facts(route_attempt, super::attempt_view::Backend::Uri, facts);
     pa.bind_uri_attempt(route_attempt);
+    pa.start_timeline(ps, route_attempt);
     Ok(route_attempt)
 }
 
@@ -1066,11 +1074,18 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
     // resource and Session projection. A real stop must retire that ownership exactly once;
     // returning here used to leak the candidate forever while the reducer remained Failed.
     if !pa.is_live() {
+        #[cfg(feature = "play-uri")]
+        let uri_attempt = (ps.attempt_view().backend() == Some(super::attempt_view::Backend::Uri))
+            .then(|| ps.attempt_view().attempt()).flatten();
+        #[cfg(feature = "play-uri")]
+        let mut uri_report_th = uri_attempt.and_then(|attempt| pa.stop_timeline(attempt));
         // An Engine-less flight (a resume, or a rollback no Engine waits on) has no Engine to take down with it, and an app-switch suspend
         // keeps the session for the foreground restore, which reserves its own start transaction:
         // drop the flight as a live Engine's suspend would (`Stable`, landing discarded, only its
         // replacement stopped). A full stop below clears it itself.
-        if for_reload && crate::route::engineless_flight_outstanding() {
+        if for_reload && (crate::route::engineless_flight_outstanding()
+            || cfg!(feature = "play-uri") && ps.attempt_view().backend()
+                == Some(super::attempt_view::Backend::Uri)) {
             crate::route::begin_engine_teardown(true);
         }
         if !for_reload {
@@ -1078,6 +1093,23 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
             // ([`release_failed_engine`]) ends the playback the Engine would have ended: the
             // position it stopped at is the one the server keeps.
             let mut final_report = None;
+            #[cfg(feature = "play-uri")]
+            if uri_attempt.is_some() && pa.finalize_uri_once() {
+                let facts = ps.attempt_view().facts();
+                let pos = facts.position_ns.unwrap_or_else(|| crate::route::unpresented_resume_ns(ps));
+                let dur = facts.duration_ns.unwrap_or(0);
+                crate::player::report::ended(ps, pos, dur);
+                let rk = crate::route::cur_rk(ps);
+                final_report = (!rk.is_empty() && dur > 0)
+                    .then(|| (rk, pos / 1_000_000, dur / 1_000_000));
+            } else if crate::route::engine_failure(ps).is_some() {
+                let dur = SHARED.duration_ns.load(Ordering::Relaxed);
+                let pos = crate::route::unpresented_resume_ns(ps);
+                crate::player::report::ended(ps, pos, dur);
+                let rk = crate::route::cur_rk(ps);
+                final_report = (!rk.is_empty() && dur > 0).then(|| (rk, pos / 1_000_000, dur / 1_000_000));
+            }
+            #[cfg(not(feature = "play-uri"))]
             if crate::route::engine_failure(ps).is_some() {
                 let dur = SHARED.duration_ns.load(Ordering::Relaxed);
                 let pos = crate::route::unpresented_resume_ns(ps);
@@ -1085,6 +1117,9 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
                 let rk = crate::route::cur_rk(ps);
                 final_report = (!rk.is_empty() && dur > 0).then(|| (rk, pos / 1_000_000, dur / 1_000_000));
             }
+            #[cfg(feature = "play-uri")]
+            crate::route::scrobble_stop(ps, final_report, uri_report_th.take());
+            #[cfg(not(feature = "play-uri"))]
             crate::route::scrobble_stop(ps, final_report, None);
             crate::route::begin_engine_teardown(false);
             crate::route::drop_original_recovery(ps);
@@ -1110,6 +1145,9 @@ fn mark_attempt_stopped(ps: &mut crate::route::PlaybackSession) {
     let Some(backend) = ps.attempt_view().backend() else { return; };
     let mut facts = *ps.attempt_view().facts();
     facts.started = Some(false);
+    if backend == super::attempt_view::Backend::Uri && facts.runtime_failure.is_none() {
+        facts.status = Some(plx_playback_contract::readout::PlaybackState::Idle);
+    }
     let _ = ps.ingest_attempt_facts(attempt, backend, facts);
 }
 
