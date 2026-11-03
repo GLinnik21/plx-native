@@ -15,6 +15,12 @@ impl DemuxObserver for FixtureDemuxObserver {
     fn rebuffering(&self) -> Option<bool> {
         Some(SHARED.hls_rebuffering.load(Ordering::Acquire))
     }
+    fn audio_expected(&self) -> Option<bool> {
+        Some(SHARED.hls_audio_expected.load(Ordering::Acquire))
+    }
+    fn duration_ns(&self) -> Option<i64> {
+        Some(SHARED.duration_ns.load(Ordering::Relaxed))
+    }
     fn paused(&self) -> Option<bool> { Some(crate::player::TX.paused.load(Ordering::Acquire)) }
     fn pause_clock(&self) -> Option<plx_playback_contract::demux::PauseClock> {
         let (at, elapsed) = crate::player::TX.pause_clock_sample();

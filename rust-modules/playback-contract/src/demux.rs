@@ -29,6 +29,8 @@ pub trait DemuxObserver: Send + Sync {
     fn playpos_ns(&self) -> Option<i64>;
     fn hold_epoch(&self) -> Option<u64>;
     fn rebuffering(&self) -> Option<bool>;
+    fn audio_expected(&self) -> Option<bool>;
+    fn duration_ns(&self) -> Option<i64>;
     fn paused(&self) -> Option<bool>;
     fn pause_clock(&self) -> Option<PauseClock>;
     fn hls_buffer_ms(&self) -> Option<Option<i64>>;

@@ -61,6 +61,14 @@ impl DemuxObserver for PlayerDemuxObserver {
     fn rebuffering(&self) -> Option<bool> {
         SHARED.with_active_demux_epoch(self.native_epoch, || SHARED.hls_rebuffering.load(Ordering::Acquire))
     }
+    fn audio_expected(&self) -> Option<bool> {
+        SHARED.with_active_demux_epoch(self.native_epoch, ||
+            SHARED.hls_audio_expected.load(Ordering::Acquire))
+    }
+    fn duration_ns(&self) -> Option<i64> {
+        SHARED.with_active_demux_epoch(self.native_epoch, ||
+            SHARED.duration_ns.load(Ordering::Relaxed))
+    }
     fn paused(&self) -> Option<bool> {
         SHARED.with_active_demux_epoch(self.native_epoch, || TX.paused.load(Ordering::Acquire))
     }

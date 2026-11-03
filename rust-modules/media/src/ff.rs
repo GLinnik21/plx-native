@@ -3636,7 +3636,7 @@ impl Drop for HlsInput {
 /// stream, and every consumer of that field treats it that way.
 static HLS_LAST_VIDEO: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
 
-unsafe fn log_hls_video_change(fmt: *mut AVFormatContext) {
+unsafe fn log_hls_video_change(fmt: *mut AVFormatContext, duration_ns: i64) {
     let streams = (*fmt).streams;
     for i in 0..(*fmt).nb_streams {
         let cp = stream_codecpar(*streams.add(i as usize));
@@ -3657,7 +3657,7 @@ unsafe fn log_hls_video_change(fmt: *mut AVFormatContext) {
             (*cp).color_trc,
             (*cp).color_primaries,
             (*cp).color_space,
-            SHARED.duration_ns.load(Ordering::Relaxed)
+            duration_ns
         ));
         return;
     }
@@ -3734,11 +3734,14 @@ unsafe fn hls_input(
     if crate::aq::aq_is_aborted(aq) {
         return Err(HlsExit::Aborted);
     }
+    let Some(audio_expected) = net.observer.audio_expected() else {
+        return Err(HlsExit::Aborted);
+    };
     if let Some(exit) = classify_hls_avio_operation(
         &input.state,
         opened < 0 || input.fmt.is_null(),
         request_started,
-        SHARED.hls_audio_expected.load(Ordering::Acquire) && FEED_AUDIO.load(Ordering::Relaxed),
+        audio_expected && FEED_AUDIO.load(Ordering::Relaxed),
     ) {
         return Err(exit);
     }
@@ -3751,11 +3754,14 @@ unsafe fn hls_input(
     if crate::aq::aq_is_aborted(aq) {
         return Err(HlsExit::Aborted);
     }
+    let Some(audio_expected) = net.observer.audio_expected() else {
+        return Err(HlsExit::Aborted);
+    };
     if let Some(exit) = classify_hls_avio_operation(
         &input.state,
         discovered < 0,
         request_started,
-        SHARED.hls_audio_expected.load(Ordering::Acquire) && FEED_AUDIO.load(Ordering::Relaxed),
+        audio_expected && FEED_AUDIO.load(Ordering::Relaxed),
     ) {
         return Err(exit);
     }
@@ -3763,7 +3769,10 @@ unsafe fn hls_input(
         return Err(HlsExit::Failed("segment stream discovery failed"));
     }
     input.state.io_failed = false;
-    log_hls_video_change(input.fmt);
+    let Some(duration_ns) = net.observer.duration_ns() else {
+        return Err(HlsExit::Aborted);
+    };
+    log_hls_video_change(input.fmt, duration_ns);
     input.pkt = av_packet_alloc();
     if input.pkt.is_null() {
         return Err(HlsExit::Failed("segment packet allocation failed"));
