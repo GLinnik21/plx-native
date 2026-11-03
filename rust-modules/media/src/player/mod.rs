@@ -29,6 +29,7 @@ pub mod ass_timing; // libass clock reading and the validity window of a rendere
 pub mod ass_script; // a sidecar script fed in windows around the playhead
 pub mod ass_source; // bounded embedded scripts and subtitle presentation clock
 pub mod engine;
+mod feed_driver;
 mod feed_open; // one resolved request for the prepared route's physical feed open
 mod feed_pump; // physical Load gate and exported-window placement
 mod feed_resources; // private ownership of the native feed slot and worker receipts

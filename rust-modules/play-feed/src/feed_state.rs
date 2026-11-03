@@ -157,6 +157,12 @@ pub struct Engine {
     // gap is what makes video "fast-forward" to catch the audio clock on resume). feed_stream
     // fires Play once max_fed_pts reaches PRIME_NS.
     pub prime_play: bool,
+    /// Common startup owns the first Play. Later seek/rebuffer primes retain their physical
+    /// clock protocol after that command has been admitted.
+    pub startup_controlled: bool,
+    pub startup_play_commanded: bool,
+    /// Progressive initial playback kept its immediate Play boundary after LoadCompleted.
+    pub startup_immediate_play: bool,
     // Two-lane feed (Kodi m_messageQueueVideo/Audio): the demuxer routes es=1 video to aq_video
     // and es=2 audio to aq_audio; each lane is fed independently so a video BufferFull can't stall
     // the audio lane (the audioSync master clock). Both are allocated for a stream. (None only
@@ -237,6 +243,10 @@ pub struct PendingRelease {
 }
 
 impl PendingRelease {
+    pub fn attempt(&self) -> plx_playback_contract::AttemptId {
+        self._engine.attempt
+    }
+
     pub fn epoch(&self) -> u32 {
         self.epoch
     }
