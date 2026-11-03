@@ -4,11 +4,13 @@
 use super::{engine, feed_resources::FeedResources};
 use plx_base::task::MainThread;
 use plx_playback_contract::{
-    AttemptId, BackendEvent, BackendKind, Capabilities, CommandId, DispatchResult,
+    AttemptId, BackendEvent, BackendKind, CommandId, DispatchResult,
     DriverEvent, EvidenceSource, ExitDisposition, Failure, Observation, Observed, Operation,
     Playback, ReleaseStatus, SourceKey, StopReason,
 };
 use std::collections::{HashMap, VecDeque};
+#[cfg(feature = "play-feed")]
+use plx_playback_contract::Capabilities;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum FeedTransportAction {
@@ -36,6 +38,7 @@ impl FeedDriver {
         }
     }
 
+    #[cfg(feature = "play-feed")]
     pub(super) fn capabilities(&self) -> Capabilities {
         Capabilities {
             progressive_uri: false, hls_uri: false, packet_feed: true,

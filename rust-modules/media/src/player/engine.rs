@@ -1160,10 +1160,6 @@ pub(super) struct NativePrepared {
 }
 
 impl NativePrepared {
-    pub(super) fn force_original(&self) -> bool {
-        self.open.as_ref().is_some_and(|open| open.feed_payload.force_direct_play)
-    }
-
     /// The route claim supplies the canonical attempt only after native preflight succeeds.
     /// Attach the observer while this prepared source is still owned on the main thread.
     pub(super) fn bind_demux_session(&mut self, attempt: plx_playback_contract::AttemptId) {
