@@ -162,13 +162,26 @@ impl OriginalQualifier for ProductQualifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use plx_play_uri::backend::NativeTrackIndex;
+    use plx_playback_contract::{TrackKind, TrackSelection};
 
     struct Certified { dovi: Option<plx_data::metadata::Dovi>,
-        subtitle: Option<SourceSubtitle>, expired: bool }
+        subtitle: Option<SourceSubtitle>, expired: bool, mapped: bool }
     impl OriginalQualifier for Certified {
         fn qualify(&self, _off: &OffFrame, request: OriginalRequest) -> Verdict {
+            let tracks = if self.mapped {
+                let mut tracks = vec![NativeTrackIndex {
+                    selection: TrackSelection { kind: TrackKind::Audio, id: 42 }, index: 1,
+                }];
+                if let Some(id) = u64::try_from(request.selection.subtitle_sid).ok().filter(|id| *id > 0) {
+                    tracks.push(NativeTrackIndex {
+                        selection: TrackSelection { kind: TrackKind::Subtitle, id }, index: 2,
+                    });
+                }
+                tracks
+            } else { Vec::new() };
             Verdict::Known(KnownSource { selection: request.selection,
-                source: UriSource::new(request.source_url, Vec::new()),
+                source: UriSource::new(request.source_url, tracks),
                 requirements: Requirements { source: SourceKind::ProgressiveUri,
                     video: Fidelity::Exact, audio: Fidelity::Exact,
                     audio_track: TrackChoice::Selected(42),
@@ -207,17 +220,21 @@ mod tests {
             requires_subtitle_burn: false, requires_client_subtitle: false, preview: false };
         let off = OffFrame::for_test();
         let unknown = ResolvePort::new(evidence, Arc::new(Certified { dovi: None,
-            subtitle: None, expired: false }));
+            subtitle: None, expired: false, mapped: true }));
         assert!(matches!(unknown.qualify(&off, request()), Verdict::Unknown));
         let certified = ResolvePort::new(evidence, Arc::new(Certified { dovi: Some(dovi),
-            subtitle: None, expired: false }));
+            subtitle: None, expired: false, mapped: true }));
         assert!(matches!(certified.qualify(&off, request()), Verdict::Known(_)));
+        let unmapped = ResolvePort::new(evidence, Arc::new(Certified { dovi: Some(dovi),
+            subtitle: None, expired: false, mapped: false }));
+        assert!(matches!(unmapped.qualify(&off, request()), Verdict::Unknown),
+            "a claimed selected audio track without its native index cannot reach the start door");
         let mut off_mode = request();
         off_mode.dolby_vision_mode = plx_plex::plex::session::DolbyVisionMode::Off;
         assert!(matches!(certified.qualify(&off, off_mode), Verdict::Refused),
             "a raw URI may not bypass the viewer's disabled-DV presentation");
         let expired = ResolvePort::new(evidence, Arc::new(Certified { dovi: Some(dovi),
-            subtitle: None, expired: true }));
+            subtitle: None, expired: true, mapped: true }));
         assert!(matches!(expired.qualify(&off, request()), Verdict::Unknown));
 
         let source_subtitle = SourceSubtitle { codec: "pgs".to_owned(), embedded: true };
@@ -226,14 +243,14 @@ mod tests {
             input.subtitle_choice = TrackChoice::Selected(77);
             input.subtitle_source = Some(source_subtitle.clone()); input };
         let no_render_proof = ResolvePort::new(evidence, Arc::new(Certified { dovi: None,
-            subtitle: None, expired: false }));
+            subtitle: None, expired: false, mapped: true }));
         assert!(matches!(no_render_proof.qualify(&off, subtitle_request()), Verdict::Unknown));
         let wrong_codec = ResolvePort::new(evidence, Arc::new(Certified { dovi: None,
             subtitle: Some(SourceSubtitle { codec: "vobsub".to_owned(), embedded: true }),
-            expired: false }));
+            expired: false, mapped: true }));
         assert!(matches!(wrong_codec.qualify(&off, subtitle_request()), Verdict::Unknown));
         let render_proof = ResolvePort::new(evidence, Arc::new(Certified { dovi: None,
-            subtitle: Some(source_subtitle.clone()), expired: false }));
+            subtitle: Some(source_subtitle.clone()), expired: false, mapped: true }));
         assert!(matches!(render_proof.qualify(&off, subtitle_request()), Verdict::Known(_)));
         let mut off_request = request();
         off_request.dolby_vision = plx_data::metadata::Dovi::NONE;
