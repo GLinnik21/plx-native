@@ -1577,17 +1577,17 @@ pub fn hero_identity(p: Painter, r: Rect, parts: &[&str], resolution: Option<&st
     let chip_w = HStack::new(&widths, theme::space::XS, StackAlign::Leading(0.0)).width();
     let budget = (r.w - chip_w - if labels.is_empty() { 0.0 } else { theme::space::SM }).max(0.0);
     let cy = r.y + r.h * 0.5;
-    let y = plx_gfx::text::text_vcenter_y(theme::size::BODY, 0, cy);
-    let run = DottedRun::new(theme::size::BODY, theme::TEXT_SECONDARY, theme::space::SM).measured(measure);
+    let y = plx_gfx::text::text_vcenter_y(theme::hero::IDENTITY_SIZE, 0, cy);
+    let run = DottedRun::new(theme::hero::IDENTITY_SIZE, theme::TEXT_SECONDARY, theme::space::SM).measured(measure);
     let natural = run.width(measure, parts);
     let text_w = if natural > budget {
         let joined = parts.iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" \u{b7} ");
         let elided = plx_gfx::text::elide_by(&joined, budget, false,
-            |text| measure.width_str(text, theme::size::BODY, false));
+            |text| measure.width_str(text, theme::hero::IDENTITY_SIZE, false));
         if let Ok(text) = CString::new(elided.as_str()) {
-            p.text(text.as_ptr(), r.x, y, theme::size::BODY, theme::TEXT_SECONDARY, 0, 0);
+            p.text(text.as_ptr(), r.x, y, theme::hero::IDENTITY_SIZE, theme::TEXT_SECONDARY, 0, 0);
         }
-        measure.width_str(&elided, theme::size::BODY, false)
+        measure.width_str(&elided, theme::hero::IDENTITY_SIZE, false)
     } else { run.draw(p, parts, r.x, y) };
     let mut flow = Flow::new(r.x, theme::space::XS);
     flow.push(if text_w > 0.0 { Item::new(text_w).after(theme::space::SM) } else { Item::absent() });
@@ -1595,6 +1595,24 @@ pub fn hero_identity(p: Painter, r: Rect, parts: &[&str], resolution: Option<&st
         flow.place(|x| Item::new(keyline_chip(p, x, cy, label, theme::TEXT_SECONDARY, measure)));
     }
     flow.end() - r.x
+}
+
+#[cfg(test)]
+#[test]
+fn pdf_proposal_identity_uses_regular_caption_for_fitting_and_elided_metadata() {
+    let measure = crate::fixture::FixtureMeasure;
+    for (width, parts) in [(943.0, vec!["Movie", "Drama", "PG"]),
+        (260.0, vec!["An exceptionally long edition name that must be elided", "Movie", "Drama", "PG"])] {
+        let runs = crate::draw_census::capture_runs(|| {
+            hero_identity(Painter::recording(), Rect::new(96.0, 582.0, width, BADGE_H),
+                &parts, Some("4K"), &["CC"], &measure);
+        });
+        assert!(!runs.is_empty());
+        for run in runs {
+            assert_eq!(run.size, theme::size::CAPTION, "PDF identity is 24 px, including {:?}", run.text);
+            assert!(!run.bold, "PDF metadata and chips use regular weight");
+        }
+    }
 }
 
 /// The year/episode date and length/remaining-time band, with source attribution last.

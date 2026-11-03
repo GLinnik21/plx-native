@@ -202,6 +202,8 @@ pub mod layout {
 pub mod hero {
     /// Both full-bleed heroes use the same reading column in the proposal.
     pub const TEXT_W: f32 = 943.0;
+    /// Edition, kind, genres and content rating in both heroes: regular 24 px, as in the PDF.
+    pub const IDENTITY_SIZE: i32 = super::size::CAPTION;
     /// Long titles without a clearLogo wrap over at most two DISPLAY lines.
     pub const TITLE_LINES: usize = 2;
     pub const TITLE_LEAD: f32 = super::size::DISPLAY as f32 * 1.06;
