@@ -733,20 +733,6 @@ mod backend_offer_session_tests {
         assert_eq!(retry.resume_ns, 5_000_000_000);
     }
 
-    #[test]
-    fn viewer_reconfigure_retains_selected_external_subtitle_across_retry() {
-        let mut session = PlaybackSession::IDLE;
-        session.bind_source_selection(SourceSelection {
-            server: ServerId::UNSET, part_id: 7, audio_sid: 71, subtitle_sid: 0,
-            audio_contract: plx_plex::plex::AudioEnhancements::NONE,
-        });
-        session.selection_known = true;
-        session.cur_sub_sid = 81;
-        session.cur_sub_sidecar = true;
-        assert_eq!(current_retry_context(&session, 5_000_000_000).selection,
-            Some((71, 81)), "an external source subtitle remains a viewer-selected sidecar");
-    }
-
     #[cfg(feature = "play-uri")]
     #[test]
     fn uri_original_enhancement_offer_uses_source_facts_without_feed_original_candidate() {
@@ -9492,13 +9478,8 @@ fn current_retry_context(ps: &PlaybackSession, resume_ns: i64) -> RetryContext {
     RetryContext {
         resume_ns: resume_ns.max(0),
         candidate_purpose: CandidatePurpose::ReopenCurrent,
-        selection: ps.source_selection.map(|selection| {
-            // A session resolved before external sidecars were retained in SourceSelection may
-            // still have a confirmed sidecar selection. Explicit Off has no sidecar flag.
-            let subtitle_sid = if selection.subtitle_sid == 0 && ps.cur_sub_sidecar
-                && ps.cur_sub_sid > 0 { ps.cur_sub_sid } else { selection.subtitle_sid };
-            (selection.audio_sid, subtitle_sid)
-        }).or_else(|| {
+        selection: ps.source_selection.map(|selection|
+            (selection.audio_sid, selection.subtitle_sid)).or_else(|| {
             if ps.selection_known { Some((cur_audio_sid(ps), cur_sub_sid(ps))) }
             else { ps.carried_selection }
         }),
