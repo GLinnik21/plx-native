@@ -23,6 +23,7 @@
 use super::subs::SubCue;
 use super::*;
 use std::sync::{Arc, Mutex};
+use plx_media_codecs::subtitle_extract::{AvioInput, ReadOutcome, ReadSeek};
 
 // Clock evidence is shared with presentation; this FFmpeg reader only supplies bytes and times.
 pub(crate) use plx_playback_contract::subtitle::{Anchor, delta_exact, playhead_of};
@@ -118,7 +119,6 @@ pub(crate) enum SideOpenErr {
 pub(crate) struct SideIo {
     src: SideSrc,
     stop: Arc<SideStop>,
-    off: i64,
     size: i64,
 }
 
@@ -172,7 +172,7 @@ impl SideIo {
                 }
             }
         };
-        Ok(Box::new(SideIo { src, stop: Arc::clone(stop), off: 0, size }))
+        Ok(Box::new(SideIo { src, stop: Arc::clone(stop), size }))
     }
 
     /// Redirect-following open of `path` on `origin` at `range_from`.
@@ -216,89 +216,55 @@ enum Followed {
     Tls(String),
 }
 
-/// `read_cb` for the side reader: bytes, `AVERROR_EOF` for a clean end or a stop, `AVERROR_IO` for a
-/// transport failure. Touches NONE of `SHARED`'s transfer diagnostics.
-pub(crate) extern "C" fn side_read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
-    // SAFETY: `op` is the `SideIo` the AVIO was allocated over, alive for the AVIO's life, and used
-    // by the one thread that drives libavformat.
-    let s = unsafe { &mut *(op as *mut SideIo) };
-    if s.stop.is_set() {
-        return AVERROR_EOF;
+/// The transport half of the subtitle job. AVIO owns this boxed source and checks the same
+/// cancellation flag around every call; `SideStop` wakes a blocked socket or curl read.
+impl ReadSeek for SideIo {
+    fn read(&mut self, dst: &mut [u8]) -> ReadOutcome {
+        if self.stop.is_set() { return ReadOutcome::End; }
+        if dst.is_empty() { return ReadOutcome::Bytes(0); }
+        let n = c_int::try_from(dst.len()).unwrap_or(c_int::MAX);
+        let r = unsafe {
+            match &mut self.src {
+                SideSrc::Socket { hs, .. } => plx_net::stream::http_read(&mut **hs, dst.as_mut_ptr(), n),
+                SideSrc::Curl(cs) => cs.read(dst),
+            }
+        };
+        if self.stop.is_set() { ReadOutcome::End }
+        else if r < 0 { ReadOutcome::Failed }
+        else if r == 0 { ReadOutcome::End }
+        else { ReadOutcome::Bytes(r as usize) }
     }
-    if dst.is_null() || n <= 0 {
-        return 0;
-    }
-    let r = unsafe {
-        match &mut s.src {
-            SideSrc::Socket { hs, .. } => plx_net::stream::http_read(&mut **hs, dst as *mut c_uchar, n),
-            SideSrc::Curl(cs) => cs.read(std::slice::from_raw_parts_mut(dst, n as usize)),
-        }
-    };
-    if s.stop.is_set() {
-        return AVERROR_EOF;
-    }
-    if r < 0 {
-        return AVERROR_IO;
-    }
-    if r == 0 {
-        return AVERROR_EOF;
-    }
-    s.off += r as i64;
-    r
-}
 
-/// `seek_cb` for the side reader: answers `AVSEEK_SIZE` from a field, and refuses every other seek
-/// once the stop is set (a seek is a new connection, which a teardown's one wake cannot reach).
-pub(crate) extern "C" fn side_seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
-    // SAFETY: as `side_read_cb`.
-    let s = unsafe { &mut *(op as *mut SideIo) };
-    if whence == AVSEEK_SIZE {
-        return s.size;
-    }
-    if s.stop.is_set() {
-        return -1;
-    }
-    let target = match whence {
-        SEEK_SET => offset,
-        SEEK_CUR => s.off + offset,
-        SEEK_END => s.size + offset,
-        _ => return -1,
-    };
-    if target < 0 {
-        return -1;
-    }
-    let stop = Arc::clone(&s.stop);
-    let mut hopped = None;
-    let ok = match &mut s.src {
-        SideSrc::Socket { hs, origin, path } => {
-            match SideIo::follow(&mut **hs, origin, path, Some(target), &stop) {
-                Ok((Followed::Socket { origin: o, path: p }, _)) => {
-                    *origin = o;
-                    *path = p;
-                    true
-                }
-                Ok((Followed::Tls(url), _)) => match open_curl_private(&url, target, &stop) {
-                    Ok(cs) => {
-                        hopped = Some(cs);
+    fn seek(&mut self, target: i64) -> bool {
+        if self.stop.is_set() || target < 0 { return false; }
+        let stop = Arc::clone(&self.stop);
+        let mut hopped = None;
+        let ok = match &mut self.src {
+            SideSrc::Socket { hs, origin, path } => {
+                match SideIo::follow(&mut **hs, origin, path, Some(target), &stop) {
+                    Ok((Followed::Socket { origin: o, path: p }, _)) => {
+                        *origin = o;
+                        *path = p;
                         true
                     }
+                    Ok((Followed::Tls(url), _)) => match open_curl_private(&url, target, &stop) {
+                        Ok(cs) => { hopped = Some(cs); true }
+                        Err(_) => false,
+                    },
                     Err(_) => false,
-                },
-                Err(_) => false,
+                }
             }
+            SideSrc::Curl(cs) => cs.seek(target),
+        };
+        if let Some(cs) = hopped {
+            self.stop.clear_sock();
+            self.src = SideSrc::Curl(cs);
         }
-        SideSrc::Curl(cs) => cs.seek(target),
-    };
-    if let Some(cs) = hopped {
-        // the socket stream is finished with: unregister it before it is replaced
-        s.stop.clear_sock();
-        s.src = SideSrc::Curl(cs);
+        ok && !self.stop.is_set()
     }
-    if !ok || s.stop.is_set() {
-        return -1;
-    }
-    s.off = target;
-    target
+
+    fn size(&self) -> i64 { self.size }
+    fn cancelled(&self) -> bool { self.stop.is_set() }
 }
 
 // ---- the reader -----------------------------------------------------------------------------
@@ -335,8 +301,7 @@ pub(crate) enum RunEnd {
 /// One open `AVFormatContext` over a [`SideIo`], freed in the one order libavformat needs.
 struct SideDemux {
     fmt: *mut AVFormatContext,
-    avio: *mut AVIOContext,
-    io: *mut SideIo,
+    input: Option<AvioInput>,
     pkt: *mut AVPacket,
     subs: Option<SubTracks>,
 }
@@ -356,10 +321,7 @@ impl Drop for SideDemux {
             if !self.fmt.is_null() {
                 avformat_close_input(&mut self.fmt);
             }
-            free_avio(self.avio);
-            if !self.io.is_null() {
-                drop(Box::from_raw(self.io));
-            }
+            drop(self.input.take());
         }
     }
 }
@@ -380,22 +342,13 @@ unsafe fn open_side(cfg: &ReadCfg, stop: &Arc<SideStop>) -> Result<(SideDemux, c
     if !abi_ok() {
         return Err(RunEnd::Unusable);
     }
-    let io = Box::into_raw(io);
-    let mut d = SideDemux { fmt: std::ptr::null_mut(), avio: std::ptr::null_mut(), io, pkt: std::ptr::null_mut(), subs: None };
-    let buf = av_malloc(65536) as *mut u8;
-    if buf.is_null() {
-        return Err(RunEnd::Failed);
-    }
-    d.avio = avio_alloc_context(buf, 65536, 0, io as *mut c_void, Some(side_read_cb), None, Some(side_seek_cb));
-    if d.avio.is_null() {
-        free_ptr(buf as *mut c_void);
-        return Err(RunEnd::Failed);
-    }
+    let input = AvioInput::new(io).ok_or(RunEnd::Failed)?;
+    let mut d = SideDemux { fmt: std::ptr::null_mut(), input: Some(input), pkt: std::ptr::null_mut(), subs: None };
     d.fmt = avformat_alloc_context();
     if d.fmt.is_null() {
         return Err(RunEnd::Failed);
     }
-    (*d.fmt).pb = d.avio;
+    (*d.fmt).pb = d.input.as_ref().expect("AVIO input installed").context();
     // No `avformat_find_stream_info`: it would read seconds of interleaved video just to learn what
     // a Matroska header already says. (Device-verify risk: a stream whose parameters only a probe
     // reveals; the subtitle decoders read theirs from the header.)
@@ -957,7 +910,7 @@ mod tests {
         assert!(!pacing_parks(i64::MIN, 1, play), "extreme times saturate rather than wrap");
     }
 
-    /// Open a stream to the listener and return the callbacks' opaque pointer pieces.
+    /// Open a stream to the listener for the injected AVIO source.
     fn open_side(port: u16, stop: &Arc<SideStop>) -> Box<SideIo> {
         SideIo::open(&format!("http://127.0.0.1:{port}/library/parts/1/file.mkv"), stop)
             .unwrap_or_else(|e| panic!("fixture: the side open must succeed: {e:?}"))
@@ -969,20 +922,19 @@ mod tests {
             let stop = SideStop::new();
             let mut io = open_side(port, &stop);
             assert_eq!(accepts.load(Ordering::Acquire), 1, "fixture: one connection so far");
-            let op = &mut *io as *mut SideIo as *mut c_void;
             let mut buf = [0u8; 4];
-            assert_eq!(side_read_cb(op, buf.as_mut_ptr(), 4), 4, "fixture: reads work before the stop");
+            assert_eq!(io.read(&mut buf), ReadOutcome::Bytes(4), "fixture: reads work before the stop");
             stop.trigger();
             assert!(io.stopped());
-            assert_eq!(side_read_cb(op, buf.as_mut_ptr(), 4), AVERROR_EOF);
-            assert_eq!(side_seek_cb(op, 0, SEEK_SET), -1);
-            assert_eq!(side_seek_cb(op, 2, SEEK_CUR), -1);
+            assert_eq!(io.read(&mut buf), ReadOutcome::End);
+            assert!(!io.seek(0));
+            assert!(!io.seek(2));
             assert_eq!(
                 accepts.load(Ordering::Acquire),
                 1,
                 "a seek after the stop opened a SECOND connection the stop cannot reach"
             );
-            assert_eq!(side_seek_cb(op, 0, AVSEEK_SIZE), 8, "a size query is a field read");
+            assert_eq!(io.size(), 8, "a size query is a field read");
         });
     }
 
@@ -995,11 +947,10 @@ mod tests {
             SHARED.dg_http_status.store(999, Ordering::Relaxed);
             let stop = SideStop::new();
             let mut io = open_side(port, &stop);
-            let op = &mut *io as *mut SideIo as *mut c_void;
             let mut buf = [0u8; 8];
-            assert_eq!(side_read_cb(op, buf.as_mut_ptr(), 8), 8);
-            assert_eq!(side_seek_cb(op, 0, SEEK_SET), 0, "a seek reopens with a Range");
-            assert_eq!(side_read_cb(op, buf.as_mut_ptr(), 8), 8);
+            assert_eq!(io.read(&mut buf), ReadOutcome::Bytes(8));
+            assert!(io.seek(0), "a seek reopens with a Range");
+            assert_eq!(io.read(&mut buf), ReadOutcome::Bytes(8));
             assert_eq!(SHARED.dg_net_rx.load(Ordering::Relaxed), 777, "side reads must not count as the movie's bytes");
             assert_eq!(SHARED.file_size.load(Ordering::Acquire), 888);
             assert_eq!(SHARED.dg_http_status.load(Ordering::Relaxed), 999);

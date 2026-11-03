@@ -4,6 +4,7 @@ pub mod ffi;
 pub mod pcm;
 pub mod speed_audio;
 pub mod subtitle;
+pub mod subtitle_extract;
 mod speed_decoder;
 mod venc;
 pub use speed_decoder::SpeedDecoder;
