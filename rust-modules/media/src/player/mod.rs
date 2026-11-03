@@ -205,12 +205,10 @@ pub fn seed_dev_track_names() {
     ));
     *SHARED.track_names.lock().unwrap() = TrackNames { audio, subs };
 }
-#[cfg(feature = "play-feed")]
 use std::ffi::CStr;
-use std::os::raw::c_int;
+use std::os::raw::{c_char, c_int, c_long};
 #[cfg(feature = "play-feed")]
-use std::os::raw::{c_char, c_long, c_uint};
-#[cfg(feature = "play-feed")]
+use std::os::raw::c_uint;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 #[cfg(feature = "play-feed")]
@@ -3050,8 +3048,8 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::Event
     }
 }
 
+// Shared display callback: video_plane.c references it independently of packet feeding.
 #[no_mangle]
-#[cfg(feature = "play-feed")]
 pub extern "C" fn acb_on_event(ev: c_long, reply: *const c_char) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         let (code, binding_error) = if reply.is_null() { (None, false) } else {
