@@ -742,7 +742,12 @@ mod tests {
         ]);
         assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
             Operation::Start { source: KEY, requirements: REQ }), DispatchResult::Refused(Failure::Stale));
+        assert_eq!(rig.driver.poll(&rig.mt), [DriverEvent::Release { attempt: A,
+            status: ReleaseStatus::Released }],
+            "even a duplicate direct Start gets a proven empty-owner verdict");
         assert_eq!(rig.start(B), DispatchResult::Queued);
+        assert_ne!(rig.bus.0.lock().unwrap().session, old_session,
+            "the transport assigns a new native session across lifecycle resets");
         rig.bus.0.lock().unwrap().replies.push_back(UriReply { session: old_session,
             request: RequestId::new(0), method: "register", payload: String::new(), ok: true });
         assert!(rig.driver.poll(&rig.mt).is_empty());
@@ -925,7 +930,10 @@ mod tests {
             ok: true });
         assert_eq!(rig.driver.poll(&rig.mt), [DriverEvent::SeekLanded { attempt: A,
             command: rig.command, position: Some(Observed {
-                value: ContentTime::from_millis(5000), from: EvidenceSource::BackendReport }) }]);
+                value: ContentTime::from_millis(5000), from: EvidenceSource::BackendReport }) },
+            DriverEvent::Observation { attempt: A, observation: Observation::Position(Observed {
+                value: ContentTime::from_millis(5000), from: EvidenceSource::BackendReport }) }],
+            "the same native reply both lands the addressed seek and reports sparse position");
         assert_eq!(rig.bus.calls("play"), 0, "seeking never chooses playback policy");
     }
 
