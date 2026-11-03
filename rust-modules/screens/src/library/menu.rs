@@ -169,6 +169,7 @@ fn source_draft(
     let (form, selected) =
         library_form(epoch, groups, sections, &source_rows, Tail::None, &mut stamp);
     stamp.bool(refreshing);
+    // placeholder-exempt: inline refresh status beside an action; the library list stays available.
     let actions = choice(MenuSection::new(""), "recheck".into(), Action::Recheck,
         Row::new(plx_platform::i18n::msg::widgets_source_new_shares())
             .value(if refreshing { plx_platform::i18n::msg::browse_library_loading() } else { "" }));
