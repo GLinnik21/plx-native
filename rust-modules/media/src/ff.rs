@@ -3333,6 +3333,7 @@ fn open_plain_progressive(
     path: &str,
     aq_p: *mut AuQueue,
     transport: &DemuxTransport,
+    observer: &dyn DemuxObserver,
 ) -> Result<(Src, i64), MediaOpenFail> {
     use plx_net::stream::redirect::Opened;
     plx_net::stream::http_close(hs_p);
@@ -3349,9 +3350,9 @@ fn open_plain_progressive(
     {
         Ok(Opened::Socket(t)) => {
             let size = plx_net::stream::hs_content_length(hs_p);
-            SHARED.file_size.store(size, Ordering::Release);
+            observer.publish(DemuxCallbackEffect::FileSize(size));
             let st = plx_net::stream::hs_status(hs_p);
-            SHARED.dg_http_status.store(st, Ordering::Relaxed);
+            observer.publish(DemuxCallbackEffect::HttpStatus(st));
             crate::player::log(&format!("ff: open status={st} clen={size}"));
             let (Ok(host), Ok(path)) = (CString::new(t.origin.host()), CString::new(t.path)) else {
                 return Err(MediaOpenFail::Failed);
@@ -3369,15 +3370,15 @@ fn open_plain_progressive(
         Ok(Opened::Tls(t)) => match open_curl_hop(transport.range.as_ref(), &t.url(), 0, aq_p) {
             Ok(cs) => {
                 let (st, size) = (cs.status(), cs.size());
-                SHARED.file_size.store(size, Ordering::Release);
-                SHARED.dg_http_status.store(st, Ordering::Relaxed);
+                observer.publish(DemuxCallbackEffect::FileSize(size));
+                observer.publish(DemuxCallbackEffect::HttpStatus(st));
                 crate::player::log(&format!("ff: open https status={st} clen={size}"));
                 Ok((Src::Curl(cs), size))
             }
             Err(range_io::OpenErr::Aborted) => Err(MediaOpenFail::Aborted),
             Err(e) => {
                 if let range_io::OpenErr::Status(st) = e {
-                    SHARED.dg_http_status.store(st, Ordering::Relaxed);
+                    observer.publish(DemuxCallbackEffect::HttpStatus(st));
                 }
                 crate::player::log(&format!("ff: https open FAILED: {e:?}"));
                 Err(MediaOpenFail::Failed)
@@ -3388,7 +3389,7 @@ fn open_plain_progressive(
                 return Err(MediaOpenFail::Aborted);
             }
             let st = plx_net::stream::hs_status(hs_p);
-            SHARED.dg_http_status.store(st, Ordering::Relaxed);
+            observer.publish(DemuxCallbackEffect::HttpStatus(st));
             crate::player::log(&format!("ff: http_open FAILED status={st} ({e:?})"));
             Err(MediaOpenFail::Failed)
         }
@@ -5988,7 +5989,8 @@ pub(crate) fn demux(
                     }
                 } else {
                     // Redirects followed; an https hop comes back as the curl source.
-                    match open_plain_progressive(hs_p, &origin, &path, aq_p, &transport) {
+                    match open_plain_progressive(hs_p, &origin, &path, aq_p, &transport,
+                        session.observer().as_ref()) {
                         Ok(opened) => opened,
                         Err(MediaOpenFail::Aborted) => {
                             session.media().record("ff: aborted during open");

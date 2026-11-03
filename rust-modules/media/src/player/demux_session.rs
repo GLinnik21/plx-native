@@ -478,5 +478,7 @@ mod tests {
         SHARED.dg_http_status.store(300, Ordering::Relaxed);
         session.media().publish(DemuxEffect::HttpStatus(499));
         assert_eq!(SHARED.dg_http_status.load(Ordering::Relaxed), 300);
+        assert!(!session.observer().publish(DemuxCallbackEffect::HttpStatus(498)));
+        assert_eq!(SHARED.dg_http_status.load(Ordering::Relaxed), 300);
     }
 }

@@ -154,7 +154,7 @@ fn progressive_open(port: u16, path: &str) -> Result<(String, i64), String> {
     let mut hs = plx_net::stream::http_stream_boxed();
     let mut aq = crate::aq::aq_new(1 << 20);
     let origin = plx_plex::plex::Origin::http("127.0.0.1", port as i32);
-    let opened = open_plain_progressive(&mut *hs, &origin, path, &mut *aq, &DemuxTransport::new(crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE));
+    let opened = open_plain_progressive(&mut *hs, &origin, path, &mut *aq, &DemuxTransport::new(crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE), super::test_support::demux_observer().as_ref());
     let outcome = match opened {
         Ok((Src::Socket { path, .. }, size)) => Ok((path.to_string_lossy().into_owned(), size)),
         Ok((Src::Curl(_), size)) => Ok(("<curl>".into(), size)),
@@ -175,7 +175,7 @@ fn progressive_open_uses_the_injected_credential_gate_before_connect() {
     let mut aq = crate::aq::aq_new(1 << 20);
     let origin = Origin::http("127.0.0.1", pms.port as i32);
     let transport = DemuxTransport::new(crate::curlio::range_factory(), refuse);
-    let opened = open_plain_progressive(&mut *hs, &origin, "/movie?X-Plex-Token=private", &mut *aq, &transport);
+    let opened = open_plain_progressive(&mut *hs, &origin, "/movie?X-Plex-Token=private", &mut *aq, &transport, super::test_support::demux_observer().as_ref());
     assert!(matches!(opened, Err(MediaOpenFail::Failed)));
     assert!(pms.requests().is_empty(), "refused URL must never reach the listener");
     plx_net::stream::http_close(&mut *hs);
@@ -332,6 +332,7 @@ fn a_progressive_open_follows_a_302() {
         "/library/parts/1/file.mp4?X-Plex-Token=tok",
         &mut *aq,
         &DemuxTransport::new(crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE),
+        super::test_support::demux_observer().as_ref(),
     );
     let outcome = match opened {
         Ok((Src::Socket { path, .. }, size)) => Some((path.to_string_lossy().into_owned(), size)),

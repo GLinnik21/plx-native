@@ -300,7 +300,7 @@ fn a_socket_seek_to_the_end_answers_the_size_without_a_request() {
     let mut hs = plx_net::stream::http_stream_boxed();
     let origin = plx_plex::plex::Origin::http("127.0.0.1", i32::from(server.port));
     let (src, size) =
-        open_plain_progressive(&mut *hs, &origin, "/library/parts/1/file.mp4", &mut *aq, &DemuxTransport::new(crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE))
+        open_plain_progressive(&mut *hs, &origin, "/library/parts/1/file.mp4", &mut *aq, &DemuxTransport::new(crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE), super::test_support::demux_observer().as_ref())
             .unwrap_or_else(|e| panic!("fixture: the plain open failed: {e:?}"));
     assert_eq!(
         size,
@@ -435,7 +435,7 @@ fn a_socket_seek_inside_the_file_still_reopens_with_a_range() {
     let mut hs = plx_net::stream::http_stream_boxed();
     let origin = plx_plex::plex::Origin::http("127.0.0.1", i32::from(server.port));
     let (src, size) =
-        open_plain_progressive(&mut *hs, &origin, "/library/parts/1/file.mp4", &mut *aq, &DemuxTransport::new(crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE))
+        open_plain_progressive(&mut *hs, &origin, "/library/parts/1/file.mp4", &mut *aq, &DemuxTransport::new(crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE), super::test_support::demux_observer().as_ref())
             .unwrap_or_else(|e| panic!("fixture: the plain open failed: {e:?}"));
     assert_eq!(
         size,
@@ -484,7 +484,7 @@ fn an_unsized_source_still_asks_the_transport() {
     let mut aq = crate::aq::aq_new(1 << 20);
     let mut hs = plx_net::stream::http_stream_boxed();
     let origin = plx_plex::plex::Origin::http("127.0.0.1", i32::from(server.port));
-    let (src, _) = open_plain_progressive(&mut *hs, &origin, "/library/parts/1/file.mp4", &mut *aq, &DemuxTransport::new(crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE))
+    let (src, _) = open_plain_progressive(&mut *hs, &origin, "/library/parts/1/file.mp4", &mut *aq, &DemuxTransport::new(crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE), super::test_support::demux_observer().as_ref())
         .unwrap_or_else(|e| panic!("fixture: the plain open failed: {e:?}"));
     let mut st = avio_over(src, -1, &mut *aq);
     let op = &mut st as *mut AvioState as *mut c_void;
