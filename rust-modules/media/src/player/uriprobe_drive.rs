@@ -808,7 +808,8 @@ mod tests {
                 crate::route::swap_cur_sid_for_test(&mut ps, sid);
                 crate::route::install_active_encoder_for_test("probe-encoder");
                 crate::route::set_url(&mut ps, URL);
-                assert!(ps.qualify_installed_feed_offer(crate::route::CandidatePurpose::NewCandidate),
+                assert!(ps.qualify_resolved_feed_offer(crate::route::backend_policy::OfferId::FEED_ORIGINAL,
+                    crate::route::CandidatePurpose::NewCandidate),
                     "the prepared fixture source must qualify its stable Feed recipe");
                 let pa = crate::player::adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
                 Fork { ps, pa, pms, _host: host }
