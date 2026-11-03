@@ -145,7 +145,7 @@ impl Bridge {
             directory: self.directory.view(), section_hubs: self.section_hubs.view(),
             search: self.search.view(), metadata: self.stores.metadata_view(),
             person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session,
-            transport_paused: plx_media::player::TX.paused.load(std::sync::atomic::Ordering::Relaxed),
+            transport_paused: self.transport_paused,
             today: self.today, beneath: None }
     }
 }
@@ -422,6 +422,9 @@ pub(crate) struct Bridge {
     /// This frame's publication of the playback session — see `AppViews::session`. Refreshed by
     /// [`Bridge::publish_playback`] from the loop, once per iteration.
     playback: plx_media::route::PlaybackSession,
+    /// The addressed backend viewer goal captured beside `playback`; false is the explicit UI
+    /// default when no active attempt has a goal.
+    transport_paused: bool,
     /// Was the publication above refreshed on the last frame? The one bit that lets the retirement
     /// of a stale publication be a single assignment rather than a per-frame one.
     playback_live: bool,
@@ -686,6 +689,7 @@ impl Bridge {
             stores,
             mounter: AppMounter::default(),
             playback: plx_media::route::PlaybackSession::IDLE,
+            transport_paused: false,
             playback_live: false,
             today: None,
             video_plane: false,
@@ -2152,7 +2156,9 @@ impl Bridge {
         self.video_plane = bound;
     }
 
-    pub(crate) fn publish_playback(&mut self, session: &plx_media::route::PlaybackSession, live: bool) {
+    pub(crate) fn publish_playback(&mut self, session: &plx_media::route::PlaybackSession,
+        live: bool, viewer_paused: Option<bool>) {
+        self.transport_paused = live && viewer_paused.unwrap_or(false);
         if live {
             self.playback = session.publication();
             self.playback_live = true;
@@ -2226,7 +2232,7 @@ impl Bridge {
             let cx = parts.cx::<AppHost>(AppViews { auth: publication.read(),
                 hubs: self.hubs.view(), listing: self.listing.view(), directory: self.directory.view(),
                 section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback,
-                transport_paused: plx_media::player::TX.paused.load(std::sync::atomic::Ordering::Relaxed),
+                transport_paused: self.transport_paused,
                 today: self.today, beneath: None,
             }, &self.measure);
             let handled = self.session.step(event, &cx, fx);
@@ -2426,7 +2432,7 @@ impl Rig<AppHost> for Bridge {
                 listing: self.listing.view(),
                 directory: self.directory.view(),
                 section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback,
-                transport_paused: plx_media::player::TX.paused.load(std::sync::atomic::Ordering::Relaxed),
+                transport_paused: self.transport_paused,
                 today: self.today, beneath: None,
             },
             measure: &self.measure,

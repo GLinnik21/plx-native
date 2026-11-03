@@ -221,7 +221,8 @@ pub(crate) unsafe fn run(app: &mut App) {
         // D1) the first frame after it returns (`player::engine::PendingRelease`).
         plx_media::player::poll_release_frame(&mut app.player.session, &mut app.adapters.player);
         app.player.session.repair_status = app.player.repair.state();
-        publish_frame(&mut app.bridge, &app.player.session, was_player);
+        publish_frame(&mut app.bridge, &app.player.session, was_player,
+            app.adapters.player.backend_viewer_paused());
         // The container runs its frame: the pending navigation's commit (at `PageDip`'s floor),
         // then the owned screens' inputs, ticks, timers and effects. `app/bridge.rs` is the seam.
         let supplied = match app.rec.replay_results(|id| app.bridge.recorded_client(id)) {
@@ -315,8 +316,9 @@ pub(crate) unsafe fn run(app: &mut App) {
 /// which this call is the one caller of: it answers [`clock::REPLAY_DATE`] under a replay (the
 /// recorded tick is set at the top of the iteration) and the platform's date, read at most once a
 /// minute, otherwise. A screen then receives the date through `AppViews::today` and reads no clock.
-fn publish_frame(bridge: &mut super::bridge::Bridge, session: &plx_media::route::PlaybackSession, was_player: bool) {
-    bridge.publish_playback(session, was_player);
+fn publish_frame(bridge: &mut super::bridge::Bridge, session: &plx_media::route::PlaybackSession,
+    was_player: bool, viewer_paused: Option<bool>) {
+    bridge.publish_playback(session, was_player, viewer_paused);
     bridge.publish_today(clock::today());
 }
 
@@ -501,7 +503,8 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
     // except `scrub_ns`, which the page's `prepare` takes from its own scrub (a held scrub moves the
     // target by seconds a frame, and the clock prewarm warms only the displayed second and the next).
     if fr.player {
-        let model = hud_model(&app.player.session, app.bridge.metadata_view());
+        let model = hud_model(&app.player.session, app.bridge.metadata_view(),
+            app.adapters.player.backend_viewer_paused().unwrap_or(false));
         refresh_hud(app);
         if let Some(player) = super::bridge::player_mut(&mut app.pages) {
             player.model = model;
@@ -647,10 +650,11 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
 fn hud_model(
     ps: &plx_media::route::PlaybackSession,
     meta: plx_data::metadata::MetadataView<'_>,
+    viewer_paused: bool,
 ) -> plx_appkit::player_hud::model::HudModel {
     let playpos_ns = plx_media::player::playpos_ns(ps).unwrap_or(0);
     plx_appkit::player_hud::model::HudModel {
-        paused: plx_media::player::TX.paused.load(Relaxed),
+        paused: viewer_paused,
         is_episode: meta.now_playing().is_some_and(|n| n.is_real_episode),
         scrub_ns: plx_media::player::TX.scrub_ns.load(Relaxed),
         playpos_ns,
@@ -2736,7 +2740,8 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // panel is a surface now and the dispatcher ticks it, containers before pages, once per
         // frame: `PlayerOverlayScreen::step`'s `Tick` arm.)
         // Re-samples on its own 2 Hz hold; a no-op when the panel is off.
-        app.diagnostics.update(&app.player.session, fr.now);
+        app.diagnostics.update(&app.player.session,
+            app.adapters.player.backend_viewer_paused(), fr.now);
         // …and the lab upload's toast, which expires on a clock rather than a spring.
         crate::lab::update(fr.now);
         #[cfg(feature = "threadcheck")]
@@ -4397,7 +4402,8 @@ mod lifecycle_regression_tests {
             facts.duration_ns = Some(100_000_000_000);
             facts.position_ns = Some(0);
         });
-        super::publish_frame(&mut app.bridge, &app.player.session, true);
+        super::publish_frame(&mut app.bridge, &app.player.session, true,
+            app.adapters.player.backend_viewer_paused());
         for (index, input) in std::mem::take(&mut app.inputs).into_iter().enumerate() {
             super::super::bridge::frame(&mut app.pages, &mut app.bridge,
                 Tick { ms: 1_000 + index as u32 * 500, dt_us: 16_000 }, vec![input]);
@@ -4548,7 +4554,8 @@ mod lifecycle_regression_tests {
             position_ns: Some(7_000_000_000), seek_display_ns: Some(9_000_000_000),
             duration_ns: Some(100_000_000_000), ..Default::default()
         }));
-        let model = hud_model(&app.player.session, app.bridge.metadata_view());
+        let model = hud_model(&app.player.session, app.bridge.metadata_view(),
+            app.adapters.player.backend_viewer_paused().unwrap_or(false));
         // restore before grading: a failed assertion must not leak a scrub target into the next test
         plx_media::player::restore_state_for_test(state);
         plx_media::route::restore_subtitle_size(size);
@@ -5975,7 +5982,8 @@ mod lifecycle_regression_tests {
         fr.dt = 0.016;
         let was_player = super::super::bridge::player(&app.pages).is_some();
         unsafe { playback_tick(app, &mut fr); }
-        super::publish_frame(&mut app.bridge, &app.player.session, was_player);
+        super::publish_frame(&mut app.bridge, &app.player.session, was_player,
+            app.adapters.player.backend_viewer_paused());
         super::super::bridge::frame(&mut app.pages, &mut app.bridge,
             plx_machine::machine::Tick { ms: *t, dt_us: 16_000 }, std::mem::take(&mut app.inputs));
         if was_player && super::super::bridge::player(&app.pages).is_none() {
@@ -9468,13 +9476,25 @@ mod frame_publication_tests {
         // A replay frame runs on the recorded tick, and with it the pinned date: the same on every
         // run and every day, whatever the wall clock says.
         clock::set_replay(100);
-        publish_frame(&mut bridge, session, false);
+        publish_frame(&mut bridge, session, false, None);
         assert_eq!(bridge.views().today, Some(clock::REPLAY_DATE));
         // The publication is the frame's: the next iteration replaces it, so a midnight is carried.
         bridge.publish_today(Some([2001, 2, 3]));
         assert_eq!(bridge.views().today, Some([2001, 2, 3]));
-        publish_frame(&mut bridge, session, false);
+        publish_frame(&mut bridge, session, false, None);
         assert_eq!(bridge.views().today, Some(clock::REPLAY_DATE), "every iteration publishes anew");
+    }
+
+    #[test]
+    fn viewer_pause_publication_is_addressed_and_retires_with_the_player() {
+        let mut bridge = Bridge::for_test(|| 0);
+        let session = plx_media::route::idle_session_for_test();
+        publish_frame(&mut bridge, session, true, Some(true));
+        assert!(bridge.views().transport_paused);
+        publish_frame(&mut bridge, session, true, None);
+        assert!(!bridge.views().transport_paused, "unknown goal is not a stale Feed pause");
+        publish_frame(&mut bridge, session, false, Some(true));
+        assert!(!bridge.views().transport_paused, "retired player has no viewer goal");
     }
 
     #[test]
@@ -9483,7 +9503,7 @@ mod frame_publication_tests {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/run.rs"),
         )
         .expect("read run.rs");
-        const CALL: &str = "        publish_frame(&mut app.bridge, &app.player.session, was_player);";
+        const CALL: &str = "        publish_frame(&mut app.bridge, &app.player.session, was_player,";
         assert_eq!(
             src.lines().filter(|l| *l == CALL).count(),
             1,
