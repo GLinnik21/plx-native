@@ -46,13 +46,6 @@ pub mod uri_lifecycle;
 pub mod uriprobe; // the URI-mode probe (issue #1064, dev trigger `plxnative-uriprobe`): what to say to com.webos.media (pure machine); `uriprobe_drive` runs it
 #[cfg(feature = "devtriggers")]
 pub mod uriprobe_drive; // runs the probe: the transport, the window verbs and the route-start settle the machine leaves to a driver
-// `test` here is THIS crate's own test build only, not `any(test, feature = "test-support")`: the
-// application crate's `port.rs` names `StarfishSink` in every build of its library that is not its
-// own test build, and `cargo check --lib --tests` builds that library with this crate's
-// `test-support` on. The application's test binaries therefore carry this module's code, but port.rs
-// installs `NoSink` there, so nothing reaches its externs and the linker drops them.
-#[cfg(all(not(feature = "hostsim"), not(test)))]
-pub mod ffi;
 #[cfg(feature = "hostsim")]
 pub mod ffi_host;
 pub mod attempt_metrics; // pure logical-request and physical-attempt measurement reducer
@@ -94,7 +87,7 @@ use shared::{
 };
 
 /// The video sink every seam call goes through. The port installs the television's
-/// (`player::ffi::StarfishSink`) or the simulator's (`player::ffi_host::HostSink`) once at boot; a
+/// native `StarfishSink` or the simulator's (`player::ffi_host::HostSink`) once at boot; a
 /// hostsim test binary reads the host sink directly, so it needs no port. Everything in `player/`
 /// reaches the seam as `sink().<verb>(mt, ..)`, and nothing branches on which platform it is.
 ///

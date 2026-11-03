@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Gleb Linnik
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Own Rust mirror of src/starfish.h, written from the public ABI contract.
-//! player::ffi — the starfish.c seam (sf_* / acb_* verbs). These stay C (the mangled-C++ + ACB
-//! ABI). The library thread calls back into our sf_on_event / acb_on_event (defined in mod.rs).
+//! webos::video_sink — the starfish.c seam (sf_* / acb_* verbs). These stay C (the mangled-C++ + ACB
+//! ABI). The library thread calls back into the media player's sf_on_event / acb_on_event.
 //! Signatures mirror `src/starfish.h` exactly; `long` is 32-bit on the arm target -> c_long.
 //!
 //! **Everything here but `load` and `unload` takes a [`MainThread`]** (`unload` takes an
@@ -10,7 +10,7 @@
 //! `sf-unload` worker — `engine::PendingRelease`), because the seam has no locking of
 //! its own: the ACB bind order is a bare call sequence, and `sf_feed` races the pump's own
 //! bookkeeping. The raw declarations live in a private `sys` module so the token is the only way
-//! to reach them — a `use super::ffi::sys` from elsewhere in `player/` does not compile, which is
+//! to reach them — a `use crate::webos::video_sink::sys` from elsewhere does not compile, which is
 //! what makes this a guarantee rather than a note.
 //!
 //! The wrappers are the methods of [`StarfishSink`], the television's `tv::sink::VideoSink`; the
@@ -21,9 +21,9 @@
 //! only says *where* from.
 //!
 //! This module is not compiled for the `hostsim` build or for this crate's own tests: the simulator's
-//! own `VideoSink` is `player::ffi_host`. The application's test binary does carry it (`cargo check --lib
-//! --tests` builds the application with this crate's `test-support`, and `port.rs` names `StarfishSink`),
-//! but `port.rs` installs `NoSink` there, so no live code reaches an extern and the linker drops them.
+//! own `VideoSink` is the media player's `ffi_host`. The application's test binary does carry it
+//! (its dependency is compiled without `cfg(test)`), but `port.rs` installs `NoSink` there, so no
+//! live code reaches an extern and the linker drops them.
 use plx_base::task::MainThread;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_long, c_uint};
@@ -93,7 +93,7 @@ mod sys {
 /// private `sys` declarations above.
 pub struct StarfishSink;
 
-impl plx_platform::tv::sink::VideoSink for StarfishSink {
+impl crate::tv::sink::VideoSink for StarfishSink {
     /// **One of the two verbs of this seam that is NOT main-thread (the other is `unload`, on its
     /// `UnloadTicket`), and the missing token is how you can tell.** `Load` blocks for the pipeline construction and the library owns its own GMainContext
     /// behind it, so it runs on the media worker (`threads::load_thread`) by design — putting it on
@@ -168,7 +168,7 @@ impl plx_platform::tv::sink::VideoSink for StarfishSink {
         sys::sf_feed(p, size, pts, es_data)
     }
     #[inline]
-    unsafe fn unload(&self, _: &plx_platform::tv::sink::UnloadTicket) {
+    unsafe fn unload(&self, _: &crate::tv::sink::UnloadTicket) {
         sys::sf_unload()
     }
     #[inline]
@@ -189,7 +189,7 @@ impl plx_platform::tv::sink::VideoSink for StarfishSink {
     }
 }
 
-impl plx_platform::tv::sink::DisplaySink for StarfishSink {
+impl crate::tv::sink::DisplaySink for StarfishSink {
     /// Resolved once inside the seam and cached there, so this is cheap to call repeatedly. Takes no
     /// token: it only reads a memoized int and touches no pipeline state.
     #[inline]

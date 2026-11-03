@@ -158,7 +158,7 @@ placeholder-sentinel = ["plx_ui/placeholder-sentinel"]
 # affected in any way; `cargo build --features hostsim` selects it.
 #
 # It is an ADDITIVE feature in the cargo sense only by convention — it makes `player::ffi_host` the
-# installed `VideoSink` instead of `player::ffi` rather than adding to it. That is safe here because this crate is a leaf with
+# installed `VideoSink` instead of the platform webOS native sink rather than adding to it. That is safe here because this crate is a leaf with
 # no dependents, so feature unification can never enable it behind someone's back. Do not give it
 # a mutually-exclusive partner feature; the television is the DEFAULT, and the simulator opts in.
 #
@@ -247,8 +247,7 @@ plx_data = { path = "data" }
 # that holds them. It reads no build variable: the version it reports is `plx_plex`'s.
 plx_session = { path = "session" }
 # The media layer (ci/module-layers.ini `[media]`): the bundled-FFmpeg demuxer, the HTTPS media plane,
-# HLS, adaptive bitrate, the buffer-feed player engine and route selection. It declares the Starfish/ACB
-# externs and the two C callbacks `src/starfish.c` calls, and links nothing on the television.
+# HLS, adaptive bitrate, the buffer-feed player engine and route selection. It exports the two C callbacks `src/starfish.c` calls, and links nothing on the television.
 plx_media = { path = "media" }
 plx_playback_contract = { path = "playback-contract" }
 plx_media_codecs = { path = "media-codecs" }

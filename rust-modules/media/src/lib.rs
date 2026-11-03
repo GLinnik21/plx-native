@@ -10,8 +10,8 @@
 //! `route`) share a crate. The bundled FFmpeg binding, encoder and pure
 //! audio DSP live in `plx_media_codecs` below this layer.
 //!
-//! The Starfish/ACB surface is declared here and nowhere else: `sf_on_event` and `acb_on_event`
-//! (`player`), which `src/starfish.c` calls, and the externs of `player::ffi`. The crate links nothing itself; the Makefile's final link resolves them.
+//! Starfish/ACB calls back into `player` through `sf_on_event` and `acb_on_event`. The native
+//! extern declarations live in the platform port; the Makefile's final link resolves them.
 //!
 //! `test-support` exposes the `cfg(test)` seams the layers above test through (`player::preview`,
 //! `player::restore_state_for_test`, ...). The application crate enables it in `[dev-dependencies]`

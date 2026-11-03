@@ -1,13 +1,13 @@
 //! The webOS port: the one table that fills the `tv` interfaces, and the C entry that installs it.
 //!
 //! Everything outside this module reaches the television through `plx_platform::tv`; this is the only
-//! place that names `webos`, `keymanager`, `system` and `player::ffi` together. Its functions keep
+//! place that names `webos`, `keymanager`, `system` and the native video sink together. Its functions keep
 //! their own `cfg(any(hostsim, test))` arms, so the simulator installs this same table and behaves
 //! as it always did.
 use std::os::raw::{c_char, c_int};
 
 #[cfg(all(not(feature = "hostsim"), not(test)))]
-const SINK: &dyn plx_platform::tv::sink::VideoSink = &plx_media::player::ffi::StarfishSink;
+const SINK: &dyn plx_platform::tv::sink::VideoSink = &plx_platform::webos::video_sink::StarfishSink;
 #[cfg(feature = "hostsim")]
 const SINK: &dyn plx_platform::tv::sink::VideoSink = &plx_media::player::ffi_host::HostSink;
 #[cfg(all(not(feature = "hostsim"), test))]

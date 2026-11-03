@@ -39,6 +39,8 @@ use crate::tv::device::{Hardware, Info, NyxFile};
 pub mod jail_repair;
 pub mod caps;
 pub mod toast;
+#[cfg(all(not(feature = "hostsim"), not(test)))]
+pub mod video_sink;
 
 const OS_INFO: &str = "/var/run/nyx/os_info.json";
 
