@@ -806,7 +806,9 @@ version = "0.0.0"
 dependencies = [
  "libc",
  "plx_base",
+ "plx_net",
  "plx_platform",
+ "plx_playback_contract",
 ]
 
 [[package]]
