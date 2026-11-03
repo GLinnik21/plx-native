@@ -381,8 +381,10 @@ pub(super) fn start_bufferfeed_inner(
     // Payload and native callback guards are resolved before the route mints an attempt, as in
     // the original Load path. A refusal here remains a Prepared transaction until the caller
     // aborts it; a later supersession drops both guards without launching a worker.
-    let session_rate = if stream { feed_start_rate(ps) } else { super::RATE_NORMAL };
+    let mut physical_start = FeedStartTransport::capture();
+    let session_rate = if stream { feed_start_rate(ps)? } else { super::RATE_NORMAL };
     let start_paused = feed_start_paused(ps);
+    physical_start.publish(session_rate, start_paused);
     let trace_generation = crate::route::playback_trace_generation();
     let mut prepared_native = engine::prepare_native_open(pa.mt(), pa.feed.shared(),
         start_paused, TX.seek_preroll_active(),
@@ -438,6 +440,8 @@ pub(super) fn start_bufferfeed_inner(
     }
     let admitted = ps.backend_offer_admitted(plx_playback_contract::BackendKind::Feed, offer);
     assert!(admitted, "the prechecked feed offer must remain admissible on the main thread");
+    physical_start.commit();
+    ps.clear_reconfigure_pause_goal();
     pa.bind_feed_attempt(route_attempt, trace_generation);
     // The app gates its first pump on this readout. Publish after physical start and exact
     // attempt binding, before the caller returns to that gate.
@@ -449,14 +453,67 @@ pub(super) fn start_bufferfeed_inner(
 /// Select the physical rate for the prepared Feed source. Route start is the boundary where
 /// the session's accepted speed is applied to a new native Load.
 #[cfg(feature = "play-feed")]
-fn feed_start_rate(ps: &crate::route::PlaybackSession) -> i32 {
-    super::session_rate_for(ps)
+fn feed_start_rate(ps: &crate::route::PlaybackSession)
+    -> Result<i32, crate::route::RouteStartResult> {
+    let want = ps.requested_rate_permille();
+    if want != super::RATE_NORMAL && !super::feed_speed_offer(ps).contains(&want) {
+        log("start_bufferfeed: requested playback speed is unavailable for this Feed source");
+        return Err(crate::route::RouteStartResult::StartFailed);
+    }
+    // Physical payload/Force preflight still consumes this mailbox. Publish the session's
+    // accepted value before that preflight, and restore it if native start is refused.
+    SHARED.play_rate_permille.store(want, Ordering::Relaxed);
+    let rate = super::session_rate_for(ps);
+    debug_assert_eq!(rate, want, "the prechecked Feed rate must be applied exactly");
+    Ok(rate)
 }
 
 /// Capture one pause goal for both the physical hold and common Start intent.
 #[cfg(feature = "play-feed")]
-fn feed_start_paused(_ps: &crate::route::PlaybackSession) -> bool {
-    TX.paused.load(Ordering::Acquire)
+fn feed_start_paused(ps: &crate::route::PlaybackSession) -> bool {
+    ps.reconfigure_pause_goal().unwrap_or_else(|| TX.paused.load(Ordering::Acquire))
+}
+
+/// Roll back physical transport setup when native preparation, staging or Start admission fails.
+/// A queued Start owns these values until its exact teardown; a failed candidate cannot change
+/// the outgoing attempt's Feed mailbox.
+#[cfg(feature = "play-feed")]
+struct FeedStartTransport {
+    old_rate: i32,
+    old_paused: bool,
+    published: bool,
+    committed: bool,
+}
+
+#[cfg(feature = "play-feed")]
+impl FeedStartTransport {
+    fn capture() -> Self {
+        Self {
+            old_rate: SHARED.play_rate_permille.load(Ordering::Relaxed),
+            old_paused: TX.paused.load(Ordering::Acquire),
+            published: false,
+            committed: false,
+        }
+    }
+
+    fn publish(&mut self, rate: i32, paused: bool) {
+        SHARED.play_rate_permille.store(rate, Ordering::Relaxed);
+        if self.old_paused != paused { TX.commit_paused(paused); }
+        self.published = true;
+    }
+
+    fn commit(&mut self) { self.committed = true; }
+}
+
+#[cfg(feature = "play-feed")]
+impl Drop for FeedStartTransport {
+    fn drop(&mut self) {
+        if self.committed { return; }
+        SHARED.play_rate_permille.store(self.old_rate, Ordering::Relaxed);
+        if self.published && TX.paused.load(Ordering::Acquire) != self.old_paused {
+            TX.commit_paused(self.old_paused);
+        }
+    }
 }
 
 
@@ -1493,11 +1550,16 @@ mod feed_start_controls_tests {
         let mut ps = crate::route::PlaybackSession::IDLE;
         crate::ff::force_speed_decoder_for_test(true);
         ps.accept_requested_rate(1500);
+        ps.begin_attempt_view(crate::route::RouteStartAttempt::fixture(),
+            super::super::attempt_view::Backend::Uri);
         // The previous Feed attempt or URI-to-Feed handoff left the physical mailbox at 1x.
         SHARED.play_rate_permille.store(super::super::RATE_NORMAL, Ordering::Relaxed);
-        assert!(super::super::speed_offer(&ps).contains(&1500), "fixture offers 1.5x");
+        assert!(super::super::speed_offer(&ps).is_empty(),
+            "the current URI UI must not offer Feed speed controls");
+        assert!(super::super::feed_speed_offer(&ps).contains(&1500),
+            "the resolved Feed candidate can satisfy 1.5x");
 
-        assert_eq!(feed_start_rate(&ps), 1500,
+        assert_eq!(feed_start_rate(&ps).expect("Feed rate is available"), 1500,
             "the accepted session rate must configure the next physical Feed Load");
         assert_eq!(SHARED.play_rate_permille.load(Ordering::Relaxed), 1500,
             "the physical payload preflight must see the same requested rate");
@@ -1524,5 +1586,29 @@ mod feed_start_controls_tests {
         ps.set_reconfigure_pause_goal(false);
         assert!(!feed_start_paused(&ps),
             "the new Feed attempt must not inherit an old physical Pause");
+    }
+
+    #[test]
+    fn an_unavailable_feed_rate_refuses_without_changing_the_physical_mailbox() {
+        let _serial = plx_base::testlock::serial();
+        struct Restore(i32);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                SHARED.play_rate_permille.store(self.0, Ordering::Relaxed);
+                crate::ff::force_speed_decoder_for_test(false);
+            }
+        }
+        let _restore = Restore(SHARED.play_rate_permille.load(Ordering::Relaxed));
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        crate::ff::force_speed_decoder_for_test(true);
+        ps.accept_requested_rate(1500);
+        crate::route::set_direct_play_mode_for_test(&mut ps, crate::route::DirectPlayMode::Forced);
+        SHARED.play_rate_permille.store(super::super::RATE_NORMAL, Ordering::Relaxed);
+
+        assert!(feed_start_rate(&ps).is_err(),
+            "Force cannot silently reinterpret a requested PCM speed as 1x");
+        assert_eq!(SHARED.play_rate_permille.load(Ordering::Relaxed), super::super::RATE_NORMAL);
+        assert_eq!(ps.requested_rate_permille(), 1500,
+            "a refused candidate does not alter the viewer's logical rate goal");
     }
 }
