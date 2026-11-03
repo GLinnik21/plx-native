@@ -1,8 +1,8 @@
 //! Local measurements derived from the common owner's accepted effects. The route owner supplies
 //! the logical request ID, each physical Start origin, and monotonic ticks. No clock or recorder
 //! is read here; results leave with the runner call that produced them.
-//! A queued dispatch is not a native command ACK, so `CommandAcknowledged` remains unknown until
-//! the contract can carry an independently confirmed, addressed native acknowledgment.
+//! A queued dispatch is not a native command ACK. Only an addressed ControlAccepted notice
+//! contributes CommandAcknowledged; position and picture evidence remain separate.
 use crate::player::attempt_metrics as m;
 use plx_playback_contract::{AttemptId, BackendKind, Failure, Fx, Observation,
     Operation, Playback, ReleaseStatus, StopReason};
@@ -182,10 +182,11 @@ impl Metrics {
         }
     }
 
-    pub(super) fn notice(&mut self, notice: &Fx, initial_play_refusal: bool,
+    pub(super) fn notice(&mut self, notice: &Fx, mandatory_refusal: bool,
         at: m::Tick, out: &mut Vec<MetricNotice>) {
         let (backend, attempt) = match *notice {
             Fx::AcceptedObservation { backend, attempt, .. }
+            | Fx::AcceptedControl { backend, attempt, .. }
             | Fx::CommandRefused { backend, attempt, .. }
             | Fx::AcceptedSeekLanded { backend, attempt, .. }
             | Fx::ReleaseOutcome { backend, attempt, .. } => (backend,attempt),
@@ -197,6 +198,12 @@ impl Metrics {
         let Some(request) = request else { return };
         let Some(mut physical) = self.physical.filter(|p| (p.backend,p.attempt)==(backend,attempt)) else { return };
         match *notice {
+            Fx::AcceptedControl { native_acknowledged, .. } => {
+                if native_acknowledged {
+                    self.step(m::Event::Evidence { request, attempt,
+                        evidence: m::Evidence::CommandAcknowledged, at }, out);
+                }
+            }
             Fx::AcceptedObservation { observation, .. } => match observation {
                 Observation::Playback(value) => match value.value {
                     Playback::ReadyAwaitPlay => physical.ready = true,
@@ -252,9 +259,14 @@ impl Metrics {
                             else { m::Condition::Unknown };
                         self.step(m::Event::Condition { request, attempt, condition, at }, out);
                     }
-                } else if operation == Operation::Play && !initial_play_refusal {
-                    // A viewer can retry Play on a paused live attempt; a refused press does
-                    // not turn the whole physical attempt into a failed open.
+                } else if !mandatory_refusal && matches!(operation,
+                    Operation::Play | Operation::Seek(_) | Operation::SelectTrack { .. }) {
+                    // Interactive controls can fail without ending an already live attempt.
+                    if matches!(operation, Operation::Seek(_)) {
+                        physical.seeking = false;
+                        physical.last_position = None;
+                        self.condition(backend, attempt, m::Condition::Unknown, at, out);
+                    }
                 } else {
                 let stage = match operation {
                     Operation::Start { .. } => m::Stage::Open,

@@ -184,29 +184,6 @@ pub(crate) fn speed_fps_ceiling_now(ps: &route::PlaybackSession) -> f64 {
     )
 }
 
-/// The developer switches are read once by the common open runner. The physical payload builder
-/// receives resolved values and never consults route metadata or trigger files.
-pub(super) fn payload_options(facts: &plx_play_feed::PayloadFacts) -> plx_play_feed::PayloadOptions {
-    let with_fps = !plx_base::devtrig::flag("nofps");
-    if !with_fps {
-        #[cfg(feature = "devtriggers")]
-        log("esInfo: videoFps WITHHELD by /tmp/plxnative-nofps");
-    }
-    plx_play_feed::PayloadOptions {
-        with_fps,
-        suppress_dv_node: facts.dv.is_some() && plx_data::metadata::dv_node_suppressed(),
-    }
-}
-
-/// Apply the current route's selected codec and Force policy to the native speed ceiling.
-pub(crate) fn speed_fps_ceiling_now(ps: &route::PlaybackSession) -> f64 {
-    super::engine::speed_fps_ceiling(
-        plx_play_feed::LoadVideo::of_stream(&route::stream_vcodec(ps)),
-        &plx_platform::devcaps::caps(),
-        plx_platform::devcaps::measured() && !route::forced_direct_play(ps),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

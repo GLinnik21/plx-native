@@ -6,7 +6,43 @@ pub mod era_callbacks;
 pub mod feed_resources;
 pub mod feed_state;
 pub mod ff_pcm;
-pub mod ff;
+mod ff;
+pub use ff::{boot, demux, pushed_any, set_feed_audio, set_pcm_out, DemuxTransport};
+pub use ff::native_audio;
+
+/// Physical mechanisms exercised by media's integration fixtures. No raw
+/// callback state is exported by the shipping feed crate.
+#[cfg(feature = "test-support")]
+pub mod ff_test_support {
+    pub use crate::ff::test_support::{avcc, dovi_bytes, rpu_fixture_nal, to_annexb,
+        to_annexb_flagged, to_annexb_p7};
+    pub mod acquisition {
+        pub use crate::ff::acquisition::{AcquisitionRuntime, Phase, SegmentAcquisition,
+            CHECK_SLICE};
+        pub mod observe {
+            pub use crate::ff::acquisition::observe::{unwatch, watch_this_thread};
+        }
+    }
+    pub use acquisition::{AcquisitionRuntime, Phase, SegmentAcquisition};
+    pub use crate::ff::subs::SubTracks;
+    pub use crate::ff::{annexb_start, arm_active_stall_guard, candidate_reserve_deadline,
+        classify_curl_open_err, classify_hls_avio_facts, classify_hls_deadline,
+        classify_plaintext_open_failure, drain_keep_polling,
+        exploration_snapshot, exploration_timeout_is_final, force_original_dovi_unsupported,
+        frame_read_failed, hls_acquisition, hls_body_complete, hls_buffer_fact_at, hls_buffer_fact,
+        hls_cursor_open, hls_demux_segment, hls_duration_obligation_ms, hls_feed_failure,
+        hls_open_source, hls_prefetch_is_fatal, hls_prefetch_same_encoder_with,
+        hls_should_prefetch_after_abr, hls_source_read, hls_stall_abort_outcome, hls_wait,
+        observe_hls_deadline, open_input_failure_note,
+        open_plain_progressive, packet_has_adts, park_read_fails_closed,
+        read_cb, seek_cb, unproductive_exit_failed, AvioState, BlockingDeadline, BlockingDeadlineOwner, BlockingWake,
+        HealBudget, HlsAu, HlsCursor, HlsExit, HlsNet, HlsSegmentOutput,
+        MediaOpenFail, ReserveDeadlineState, SegmentTransfer,
+        Src, StallAction, StallGuard, TransportWatchdog, VideoFraming,
+        AUDIO_AHEAD_HEADROOM, AVSEEK_SIZE, BODY_HEAL_ATTEMPTS,
+        FEED_AUDIO, PRE_AUDIO_VIDEO_HEADROOM, SEEK_END, SEEK_SET,
+        push_test_elapsed, drain_test_elapsed};
+}
 pub mod hls;
 pub mod native_gate;
 pub mod native_load;

@@ -17,7 +17,6 @@ use std::os::raw::{c_int, c_long, c_uchar, c_uint, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 pub use plx_media_codecs::ffi::*;
-pub use plx_media_codecs::Venc;
 
 /// Captured by the media composition and moved into one demux worker. Authorization is checked
 /// afresh on every request by the injected range factory and plaintext redirect gate.
@@ -34,7 +33,7 @@ impl DemuxTransport {
 
 /// Feed audio (es=2) to the pipeline. Cleared by the /tmp/plxnative-noaudio dev trigger to
 /// A/B whether the audio ES (E-AC3/Atmos) is what stalls the sink on 4K HEVC.
-static FEED_AUDIO: AtomicBool = AtomicBool::new(true);
+pub static FEED_AUDIO: AtomicBool = AtomicBool::new(true);
 /// Did this demux session hand a single video AU to a lane? Cleared by `demux` on entry.
 ///
 /// The tail uses it to tell "ended cleanly" from "ended having produced nothing", which EOF alone
@@ -93,7 +92,7 @@ fn pcm_out() -> Option<crate::ff_pcm::PcmOut> {
 /// admission, and reading nine bytes out of a seven-byte allocation is a heap overread that would
 /// report a plausible profile number rather than crash. A longer buffer is fine and expected: a
 /// future FFmpeg may append fields, and the nine we read keep their meaning.
-fn parse_dovi_conf(bytes: &[u8]) -> Option<AVDOVIDecoderConfigurationRecord> {
+pub fn parse_dovi_conf(bytes: &[u8]) -> Option<AVDOVIDecoderConfigurationRecord> {
     if bytes.len() < 9 {
         return None;
     }
@@ -422,10 +421,10 @@ fn probe(url: &str) {
 // ==== the demuxer (Phases B–D) ===================================================
 
 // whence values for the AVIO seek callback
-const SEEK_SET: c_int = 0;
+pub const SEEK_SET: c_int = 0;
 const SEEK_CUR: c_int = 1;
-const SEEK_END: c_int = 2;
-const AVSEEK_SIZE: c_int = 0x10000;
+pub const SEEK_END: c_int = 2;
+pub const AVSEEK_SIZE: c_int = 0x10000;
 
 /// **Which transport is under the AVIO.** The two are not interchangeable and the choice is made
 /// from the SCHEME of the URL actually served — the part URL's, unless a plaintext open was
@@ -442,7 +441,7 @@ const AVSEEK_SIZE: c_int = 0x10000;
 /// * [`Src::Idle`] is the placeholder after HLS HTTPS recycles the reader into [`HlsNet`].
 ///   `avformat_close_input` may still invoke AVIO; this arm refuses I/O instead of dialing a
 ///   dummy socket.
-enum Src {
+pub enum Src {
     Socket {
         /// The Engine's stream — NOT owned here. `player::engine` allocates it, publishes it in
         /// `SHARED.hs_ptr`, `http_shutdown`s it at teardown and closes it after the join.
@@ -473,7 +472,7 @@ impl Src {
         }
     }
 
-    fn take_curl(&mut self) -> Option<Box<dyn RangeReader>> {
+    pub fn take_curl(&mut self) -> Option<Box<dyn RangeReader>> {
         match std::mem::replace(self, Src::Idle) {
             Src::Curl(cs) => Some(cs),
             other => {
@@ -486,12 +485,12 @@ impl Src {
 
 /// One transport slot for the HLS session: the engine's plaintext socket plus at most one curl
 /// multi handle reused across playlist and segment URLs.
-struct HlsNet {
-    hs: *mut HttpStream,
-    curl: Option<Box<dyn RangeReader>>,
-    range: Arc<dyn RangeFactory>,
-    credential_gate: plx_net::stream::redirect::CredentialGate,
-    observer: Arc<dyn DemuxObserver>,
+pub struct HlsNet {
+    pub hs: *mut HttpStream,
+    pub curl: Option<Box<dyn RangeReader>>,
+    pub range: Arc<dyn RangeFactory>,
+    pub credential_gate: plx_net::stream::redirect::CredentialGate,
+    pub observer: Arc<dyn DemuxObserver>,
 }
 
 /// **The live-transfer terminal rule.** A partial response is right-censored evidence.  PMS may
@@ -510,19 +509,19 @@ struct HlsNet {
 /// controller can fetch a smaller one, even before any body byte exists.  At the floor it leaves
 /// the only useful response alive.  No prefix becomes a capacity sample in either direction.
 #[derive(Clone)]
-struct StallGuard {
-    observer: Arc<dyn DemuxObserver>,
+pub struct StallGuard {
+    pub observer: Arc<dyn DemuxObserver>,
     /// The playable reserve when this fetch began, in ms of media. `None` is never stored — an
     /// unknowable reserve (`BufferSnapshot::buffered_ms`'s `None`, the audio lane silent after an
     /// open or a seek) arms no guard at all, because the comparison has no left-hand side.
-    reserve_ms_at_start: i64,
+    pub reserve_ms_at_start: i64,
     /// Playhead at the fetch boundary.  Wall time is deliberately absent: queued media is spent
     /// by presentation, not by a blocked request, pause, seek or server wait.
-    playhead_at_start_ns: i64,
+    pub playhead_at_start_ns: i64,
     /// `SHARED.hls_internal_hold_epoch` when armed. A hold the main thread accepted AND already
     /// released between two checks still moved it, so a short hold cannot slip between samples.
-    hold_epoch_at_arm: u64,
-    action: StallAction,
+    pub hold_epoch_at_arm: u64,
+    pub action: StallAction,
 }
 
 impl std::fmt::Debug for StallGuard {
@@ -553,7 +552,7 @@ impl Eq for StallGuard {}
 /// floor abandoning can only re-request the same bytes; keep that response alive and hold the A/V
 /// clock instead.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum StallAction {
+pub enum StallAction {
     AbortFetch,
     HoldClock,
 }
@@ -574,7 +573,7 @@ impl StallGuard {
     /// Mid-playback a genuinely drained reserve declines the guard too, and that is the
     /// conservative direction rather than a gap: by then the picture has already stopped, the
     /// abort can no longer prevent anything, and `starving()` is the predicate that owns it.
-    fn arm(reserve_ms_at_start: i64, observer: Arc<dyn DemuxObserver>) -> Option<Self> {
+    pub fn arm(reserve_ms_at_start: i64, observer: Arc<dyn DemuxObserver>) -> Option<Self> {
         if reserve_ms_at_start <= 0 { return None; }
         Some(Self {
             playhead_at_start_ns: observer.playpos_ns()?,
@@ -587,14 +586,14 @@ impl StallGuard {
 
     /// At the terminal actuator the same observed boundary may stop presentation, but it must not
     /// discard the only response capable of producing more media.
-    fn arm_clock_hold(reserve_ms_at_start: i64, observer: Arc<dyn DemuxObserver>) -> Option<Self> {
+    pub fn arm_clock_hold(reserve_ms_at_start: i64, observer: Arc<dyn DemuxObserver>) -> Option<Self> {
         Self::arm(reserve_ms_at_start, observer).map(|mut guard| {
             guard.action = StallAction::HoldClock;
             guard
         })
     }
 
-    fn aborts_fetch(&self) -> bool {
+    pub fn aborts_fetch(&self) -> bool {
         self.action == StallAction::AbortFetch
     }
 
@@ -611,7 +610,7 @@ impl StallGuard {
     /// below the reserve and the hold has to come from the main thread. Device-measured
     /// 2026-09-02 (`pipe_abr_down_collapse`): reserve 5668 ms, playhead spent 5410 ms, then 77 s
     /// of `vtick=0` with neither branch firing. Neither branch predicts an unseen byte.
-    fn should_abort(&self, body_complete: bool, terminal_hold_started: bool) -> bool {
+    pub fn should_abort(&self, body_complete: bool, terminal_hold_started: bool) -> bool {
         if body_complete {
             return false;
         }
@@ -620,7 +619,7 @@ impl StallGuard {
             || self.spent_ms() >= self.reserve_ms_at_start
     }
 
-    fn spent_ms(&self) -> i64 {
+    pub fn spent_ms(&self) -> i64 {
         self.observer.playpos_ns().unwrap_or(i64::MAX)
             .saturating_sub(self.playhead_at_start_ns)
             .max(0)
@@ -629,7 +628,7 @@ impl StallGuard {
 
     /// The wall instant at which the playhead, at one speed, would spend what remains. A wake-up
     /// only: a paused or stopped playhead makes it stale, and the next check simply re-projects.
-    fn projected_boundary(&self) -> std::time::Instant {
+    pub fn projected_boundary(&self) -> std::time::Instant {
         let left_ms = self
             .reserve_ms_at_start
             .saturating_sub(self.spent_ms())
@@ -646,7 +645,7 @@ impl StallGuard {
 /// An already-held clock is a recovery state: the active response is rebuilding reserve and may
 /// not be abandoned by the boundary that has already fired. Kept pure at the call boundary so a
 /// regression cannot silently turn B=0 into an abort loop again.
-fn arm_active_stall_guard(
+pub fn arm_active_stall_guard(
     reserve_ms: Option<i64>,
     at_floor: bool,
     already_held: bool,
@@ -668,9 +667,9 @@ fn arm_active_stall_guard(
 // `ff_acquisition.rs` for why (the bypass a review round found: everything in `ff` could build
 // `Active { stall: None, .. }` by hand even with the role-typed enum in place).
 #[path = "ff_acquisition.rs"]
-mod acquisition;
+pub mod acquisition;
 #[path = "ff_subs.rs"]
-mod subs;
+pub mod subs;
 #[path = "ff_native_audio.rs"]
 pub mod native_audio;
 use plx_playback_contract::subtitle as subside;
@@ -682,7 +681,7 @@ use acquisition::{AcquisitionRuntime, Phase, SegmentAcquisition};
 /// make that already-spent reserve exist again. One instance follows the whole segment transaction
 /// through open, wait, probe, body and final validation; promotion is latched as an unarmed clock.
 #[derive(Clone)]
-struct ReserveDeadlineState {
+pub struct ReserveDeadlineState {
     clock: ReserveDeadlineClock,
     observer: Arc<dyn DemuxObserver>,
     yields_to_rebuffer: bool,
@@ -710,7 +709,7 @@ enum ReserveDeadlineClock {
 }
 
 impl ReserveDeadlineState {
-    fn new(at: Option<std::time::Instant>, yields_to_rebuffer: bool,
+    pub fn new(at: Option<std::time::Instant>, yields_to_rebuffer: bool,
         observer: Arc<dyn DemuxObserver>) -> Self {
         let hold_epoch_at_start = observer.hold_epoch();
         Self {
@@ -728,7 +727,7 @@ impl ReserveDeadlineState {
 
     /// A media-reserve deadline spends presentation time, not wall time. User Pause, an internal
     /// rebuffer hold and a genuinely starved native clock all freeze the same physical balance.
-    fn from_playhead(budget: std::time::Duration, yields_to_rebuffer: bool,
+    pub fn from_playhead(budget: std::time::Duration, yields_to_rebuffer: bool,
         observer: Arc<dyn DemuxObserver>) -> Self {
         let Some(started_ns) = observer.playpos_ns() else {
             return Self {
@@ -742,7 +741,7 @@ impl ReserveDeadlineState {
         Self::from_playhead_at(started_ns, budget, yields_to_rebuffer, observer)
     }
 
-    fn from_playhead_at(
+    pub fn from_playhead_at(
         started_ns: i64,
         budget: std::time::Duration,
         yields_to_rebuffer: bool,
@@ -761,7 +760,7 @@ impl ReserveDeadlineState {
         }
     }
 
-    fn from_unpaused_elapsed(budget: std::time::Duration, yields_to_rebuffer: bool,
+    pub fn from_unpaused_elapsed(budget: std::time::Duration, yields_to_rebuffer: bool,
         observer: Arc<dyn DemuxObserver>) -> Self {
         let pause = observer.pause_clock();
         let hold_epoch_at_start = observer.hold_epoch();
@@ -783,7 +782,7 @@ impl ReserveDeadlineState {
     /// still returns the balance while the user is paused: callers use it to carry one fixed
     /// end-to-end exploration budget from the control plane into the media leg without turning a
     /// pause into either spent reserve or a newly granted budget.
-    fn remaining(&self) -> Option<std::time::Duration> {
+    pub fn remaining(&self) -> Option<std::time::Duration> {
         match self.clock {
             ReserveDeadlineClock::Retired => None,
             ReserveDeadlineClock::Wall(at) => {
@@ -810,7 +809,7 @@ impl ReserveDeadlineState {
         }
     }
 
-    fn release_to_rebuffer(&mut self, rebuffering: bool) {
+    pub fn release_to_rebuffer(&mut self, rebuffering: bool) {
         if matches!(self.clock, ReserveDeadlineClock::Retired) { return; }
         let Some(hold_epoch) = self.observer.hold_epoch() else {
             self.clock = ReserveDeadlineClock::Retired;
@@ -825,7 +824,7 @@ impl ReserveDeadlineState {
     /// Whether the conservation clock itself is spent. A wall projection returned by `active`
     /// is only a wake-up mechanism; it is never evidence for a playhead-funded budget, because
     /// wall time may pass while the native presentation clock is stopped.
-    fn clock_is_spent(&self) -> bool {
+    pub fn clock_is_spent(&self) -> bool {
         match self.clock {
             ReserveDeadlineClock::Retired => true,
             ReserveDeadlineClock::Wall(at) => at.is_some_and(|at| std::time::Instant::now() >= at),
@@ -846,7 +845,7 @@ impl ReserveDeadlineState {
         }
     }
 
-    fn active(&mut self, rebuffering: bool) -> Option<std::time::Instant> {
+    pub fn active(&mut self, rebuffering: bool) -> Option<std::time::Instant> {
         self.release_to_rebuffer(rebuffering);
         match self.clock {
             ReserveDeadlineClock::Retired => Some(std::time::Instant::now()),
@@ -874,7 +873,7 @@ impl ReserveDeadlineState {
         }
     }
 
-    fn expire_if_due(&mut self, rebuffering: bool) -> bool {
+    pub fn expire_if_due(&mut self, rebuffering: bool) -> bool {
         self.release_to_rebuffer(rebuffering);
         if self.expired || self.clock_is_spent() {
             self.expired = true;
@@ -889,7 +888,7 @@ impl ReserveDeadlineState {
     /// have made the projection stale; a floor rebuffer hold may instead have released that clock.
     /// The caller retries with whatever reserve remains armed, composed with the unchanged
     /// transport-liveness epoch.
-    fn note_transport_deadline(
+    pub fn note_transport_deadline(
         &mut self,
         _attempted_deadline: Option<std::time::Instant>,
         rebuffering: bool,
@@ -913,13 +912,13 @@ impl ReserveDeadlineState {
 /// but only the clock that actually reached its own boundary classifies the result. Progress
 /// resets liveness exactly as `SO_RCVTIMEO`/curl low-speed do; an obsolete reserve retry does not.
 #[derive(Clone, Copy, Debug)]
-struct TransportWatchdog {
-    inactivity: std::time::Duration,
-    deadline: std::time::Instant,
+pub struct TransportWatchdog {
+    pub inactivity: std::time::Duration,
+    pub deadline: std::time::Instant,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum BlockingDeadlineOwner {
+pub enum BlockingDeadlineOwner {
     /// Reserve wins equality: when both clocks name the same instant and presentation really
     /// spends its balance, the completed observation is exactly reserve-censored.
     Reserve,
@@ -927,13 +926,13 @@ enum BlockingDeadlineOwner {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct BlockingDeadline {
-    at: std::time::Instant,
-    owner: BlockingDeadlineOwner,
+pub struct BlockingDeadline {
+    pub at: std::time::Instant,
+    pub owner: BlockingDeadlineOwner,
 }
 
 impl TransportWatchdog {
-    fn for_origin(origin: &Origin) -> Self {
+    pub fn for_origin(origin: &Origin) -> Self {
         let inactivity = if origin.is_tls() {
             range_io::media_stall_budget()
         } else {
@@ -942,7 +941,7 @@ impl TransportWatchdog {
         Self::with_inactivity(inactivity)
     }
 
-    fn with_inactivity(inactivity: std::time::Duration) -> Self {
+    pub fn with_inactivity(inactivity: std::time::Duration) -> Self {
         Self {
             inactivity,
             deadline: std::time::Instant::now()
@@ -951,13 +950,13 @@ impl TransportWatchdog {
         }
     }
 
-    fn reset(&mut self) {
+    pub fn reset(&mut self) {
         self.deadline = std::time::Instant::now()
             .checked_add(self.inactivity)
             .unwrap_or_else(std::time::Instant::now);
     }
 
-    fn effective(&self, reserve: Option<std::time::Instant>) -> BlockingDeadline {
+    pub fn effective(&self, reserve: Option<std::time::Instant>) -> BlockingDeadline {
         match reserve {
             Some(at) if at <= self.deadline => BlockingDeadline {
                 at,
@@ -970,7 +969,7 @@ impl TransportWatchdog {
         }
     }
 
-    fn expired(&self) -> bool {
+    pub fn expired(&self) -> bool {
         std::time::Instant::now() >= self.deadline
     }
 }
@@ -979,13 +978,13 @@ impl TransportWatchdog {
 /// separate from its later use prevents scheduler delay, AQ locking or native-clock catch-up from
 /// relabelling the boundary which actually ended this I/O operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct BlockingWake {
-    owner: BlockingDeadlineOwner,
-    reserve_spent: bool,
-    transport_due: bool,
+pub struct BlockingWake {
+    pub owner: BlockingDeadlineOwner,
+    pub reserve_spent: bool,
+    pub transport_due: bool,
 }
 
-fn observe_hls_deadline(
+pub fn observe_hls_deadline(
     reserve: Option<&mut ReserveDeadlineState>,
     attempted: BlockingDeadline,
     watchdog: &TransportWatchdog,
@@ -1006,7 +1005,7 @@ fn observe_hls_deadline(
 /// if reserve is spent later; that later fact can gate the next I/O but cannot turn an RST/stall
 /// into censored rung evidence. Reserve wins an issued equality, but only when its owning clock
 /// was actually spent at wake; a stale reserve projection then yields to due liveness.
-fn classify_hls_deadline(wake: BlockingWake) -> Option<HlsExit> {
+pub fn classify_hls_deadline(wake: BlockingWake) -> Option<HlsExit> {
     match wake.owner {
         BlockingDeadlineOwner::Transport if wake.transport_due => {
             Some(HlsExit::Failed("HLS transport stalled"))
@@ -1025,7 +1024,7 @@ fn classify_hls_deadline(wake: BlockingWake) -> Option<HlsExit> {
 /// after its actual candidate EXTINF and fresh reserve are known, so its media-only clock starts at
 /// this boundary and spends unpaused elapsed time: internal starvation is recovery cost, accepted
 /// user Pause is not.
-fn candidate_reserve_deadline(
+pub fn candidate_reserve_deadline(
     exploration: Option<ReserveDeadlineState>,
     media_budget: Option<std::time::Duration>,
     yields_to_rebuffer: bool,
@@ -1051,7 +1050,7 @@ fn candidate_reserve_deadline(
     })
 }
 
-fn exploration_snapshot(
+pub fn exploration_snapshot(
     exploration: &mut Option<ReserveDeadlineState>,
 ) -> Option<std::time::Instant> {
     exploration
@@ -1068,7 +1067,7 @@ fn exploration_expired(exploration: &mut Option<ReserveDeadlineState>) -> bool {
 /// Whether a blocking leg really consumed its playhead-funded exploration reserve. `false` means
 /// the leg returned on an obsolete wall-clock snapshot after Pause or a naturally stopped native
 /// clock moved the physical boundary; idempotent HTTP legs may retry with a fresh snapshot.
-fn exploration_timeout_is_final(
+pub fn exploration_timeout_is_final(
     exploration: &mut Option<ReserveDeadlineState>,
     attempted: Option<std::time::Instant>,
 ) -> bool {
@@ -1079,36 +1078,36 @@ fn exploration_timeout_is_final(
 
 /// AVIO backing state: wraps the demux transport so libavformat reads through it and can seek by
 /// byte offset. Boxed so its address is stable for the C callbacks.
-struct AvioState {
-    src: Src,
-    range: Arc<dyn RangeFactory>,
-    credential_gate: plx_net::stream::redirect::CredentialGate,
-    observer: Arc<dyn DemuxObserver>,
-    aq: *mut AuQueue,
-    off: i64,
-    size: i64,
+pub struct AvioState {
+    pub src: Src,
+    pub range: Arc<dyn RangeFactory>,
+    pub credential_gate: plx_net::stream::redirect::CredentialGate,
+    pub observer: Arc<dyn DemuxObserver>,
+    pub aq: *mut AuQueue,
+    pub off: i64,
+    pub size: i64,
     /// A callback saw a curl I/O failure during the current enclosing libavformat operation.
     /// FFmpeg may heal it through `seek_cb`; only an operation that still returns failure may
     /// publish it to the player.
-    io_failed: bool,
+    pub io_failed: bool,
     /// Time spent inside successful body reads only. Request setup, PMS JIT production, TTFB and
     /// demux/probe work intentionally stay out of this network-rate clock and remain in the
     /// enclosing segment's total acquisition clock.
-    body_active_us: u64,
-    body_bytes: u64,
+    pub body_active_us: u64,
+    pub body_bytes: u64,
     /// When the FIRST body byte reached the demuxer. Together with the open above it this splits
     /// acquisition into connect / server-think / transfer, which is the only way to see PMS
     /// just-in-time production as its own term: for a JIT encoder the wait before the first byte
     /// IS the production cost, and it is otherwise indistinguishable from a slow link.
-    first_byte_at: Option<std::time::Instant>,
+    pub first_byte_at: Option<std::time::Instant>,
     /// Only ABR candidate segments carry a reserve deadline. The active movie and every progressive
     /// stream retain their transport's normal stall budgets. A floor downshift may promote to
     /// unbounded-by-reserve while it is in flight; the state latches that transition.
-    reserve_deadline: ReserveDeadlineState,
+    pub reserve_deadline: ReserveDeadlineState,
     /// Independent wall-clock inactivity for HLS media. Its deadline is composed with the
     /// reserve projection on every blocking read, but only actual bytes reset it. Progressive
     /// sources keep `None` and use their transport's native liveness directly.
-    transport_watchdog: Option<TransportWatchdog>,
+    pub transport_watchdog: Option<TransportWatchdog>,
     /// Armed for the ACTIVE cursor whenever its reserve is knowable and the internal clock is not
     /// already held. Its action distinguishes an abort above the ladder floor from a clock-only
     /// hold at the terminal actuator. Candidate transactions use `reserve_deadline` instead: an
@@ -1118,31 +1117,34 @@ struct AvioState {
     ///
     /// This is the SAME runtime the segment's open and `NotReady` wait consulted, moved here
     /// unchanged; progressive playback has none. It also latches the abort (`stall_aborted`).
-    acquisition: Option<AcquisitionRuntime>,
+    pub acquisition: Option<AcquisitionRuntime>,
     /// Bounded socket/curl overflow while Original is parked in `aq_push`. HLS does not use it:
     /// a segment body is already complete before feed.
-    bounce: Vec<u8>,
-    bounce_pos: usize,
+    pub bounce: Vec<u8>,
+    pub bounce_pos: usize,
     /// `seek_cb` answered a seek to (or past) the known size without fetching, so the transport's
     /// stream is somewhere else and `read_cb` must answer the clean end itself. Any other read at
     /// the end still asks the transport, which is how a failure there stays an error.
-    parked_at_end: bool,
+    pub parked_at_end: bool,
+    /// Maximum silence while healing an incomplete progressive body. Captured
+    /// with this AVIO so fixture timing never changes production behavior.
+    pub body_silence: std::time::Duration,
     /// Reopens of a cut direct-play body that brought nothing back. See [`HealBudget`].
-    heal: HealBudget,
+    pub heal: HealBudget,
 }
 
 /// Reopens [`read_cb`] has spent at one byte of a cut body, across calls: libavformat retries a
 /// failed read with a fresh call, so a budget per call let a cut no reopen crosses be reopened
 /// round after round and then read as the end of the file. A byte read refills it.
 #[derive(Clone, Copy, Default)]
-struct HealBudget {
-    at: i64,
-    spent: u8,
+pub struct HealBudget {
+    pub at: i64,
+    pub spent: u8,
 }
 
 impl HealBudget {
     /// Charge one reopen at byte `at`, or `false` when the budget there is spent.
-    fn take(&mut self, at: i64) -> bool {
+    pub fn take(&mut self, at: i64) -> bool {
         if self.at != at {
             *self = HealBudget { at, spent: 0 };
         }
@@ -1352,15 +1354,15 @@ impl AvioState {
     }
 }
 
-fn drain_keep_polling(bounce_under_cap: bool, body_finished: bool) -> bool {
+pub fn drain_keep_polling(bounce_under_cap: bool, body_finished: bool) -> bool {
     bounce_under_cap && !body_finished
 }
 
-fn hls_should_prefetch_after_abr(delivered: bool, fetch_abandoned: bool, stay: bool) -> bool {
+pub fn hls_should_prefetch_after_abr(delivered: bool, fetch_abandoned: bool, stay: bool) -> bool {
     delivered && !fetch_abandoned && stay
 }
 
-fn park_read_fails_closed(bounce_remaining: bool, io_failed: bool) -> bool {
+pub fn park_read_fails_closed(bounce_remaining: bool, io_failed: bool) -> bool {
     io_failed && !bounce_remaining
 }
 
@@ -1399,7 +1401,7 @@ fn classify_hls_avio_operation(
 /// libavformat owns the thread; this reducer is the state-machine edge taken when control returns.
 /// Keeping the priority here makes `open`, `find_stream_info` and `read_frame` observe the same
 /// transition table, and lets the table be tested without constructing an FFmpeg AVIO context.
-fn classify_hls_avio_facts(
+pub fn classify_hls_avio_facts(
     stall: Option<SegmentTransfer>,
     reserve_expired: bool,
     io_failed: bool,
@@ -1438,13 +1440,10 @@ fn avio_stopped(s: &mut AvioState) -> c_int {
 
 /// Reopens [`read_cb`] tries at one byte, after the transfer is cut mid-body, before the cut is a
 /// transport failure.
-const BODY_HEAL_ATTEMPTS: u8 = 3;
+pub const BODY_HEAL_ATTEMPTS: u8 = 3;
 
 /// How long a direct-play socket read waits for a byte before the transfer counts as cut.
-#[cfg(not(test))]
 const BODY_SILENCE: std::time::Duration = std::time::Duration::from_secs(15);
-#[cfg(test)]
-const BODY_SILENCE: std::time::Duration = std::time::Duration::from_millis(400);
 
 /// Reopen the source at the byte reached, through the same path a seek takes.
 fn heal_at_offset(s: &mut AvioState) -> bool {
@@ -1453,7 +1452,7 @@ fn heal_at_offset(s: &mut AvioState) -> bool {
     seek_cb(s as *mut AvioState as *mut c_void, at, SEEK_SET) == at
 }
 
-extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
+pub extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
     unsafe {
         let s = &mut *(op as *mut AvioState);
         loop {
@@ -1515,7 +1514,7 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
             // silent that long while the PMS catches up, and cannot be reopened at a byte (its
             // restart would answer 200 from the head). It keeps the pre-heal behaviour.
             let direct_play = s.acquisition.is_none();
-            let silence_deadline = (s.may_heal_at_offset() && blocking_deadline.is_none()).then(|| std::time::Instant::now() + BODY_SILENCE);
+            let silence_deadline = (s.may_heal_at_offset() && blocking_deadline.is_none()).then(|| std::time::Instant::now() + s.body_silence);
             let live_deadline = blocking_deadline.map(|deadline| deadline.at).or(silence_deadline);
             // Both sources use the same three-way return — >0 bytes, 0 clean end, <0 error — so
             // the EOF decision below stays one branch rather than one per transport.
@@ -1675,7 +1674,7 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
     }
 }
 
-extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
+pub extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
     unsafe {
         let s = &mut *(op as *mut AvioState);
         if whence == AVSEEK_SIZE {
@@ -1825,7 +1824,7 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
 }
 
 /// Settle one `av_read_frame` result against errors observed by its AVIO callbacks.
-fn frame_read_failed(state: &mut AvioState, result: c_int) -> bool {
+pub fn frame_read_failed(state: &mut AvioState, result: c_int) -> bool {
     if result >= 0 {
         return false;
     }
@@ -1874,12 +1873,12 @@ const OBU_SEQUENCE_HEADER: u8 = 1;
 const OBU_TEMPORAL_DELIMITER: u8 = 2;
 const OBU_METADATA: u8 = 5;
 /// A temporal delimiter OBU with an empty payload: header 0x12 (type 2, size field), size 0.
-const AV1_TD: [u8; 2] = [0x12, 0x00];
+pub const AV1_TD: [u8; 2] = [0x12, 0x00];
 
 /// Read one leb128 value from the front of `b` (AV1 section 4.10.5), returning the value and the
 /// number of bytes it took. A run with no terminator inside eight bytes, a truncated run, and a
 /// value wider than 32 bits are all rejected: the spec bounds every leb128 field to 32 bits.
-fn read_leb128(b: &[u8]) -> Option<(u64, usize)> {
+pub fn read_leb128(b: &[u8]) -> Option<(u64, usize)> {
     let mut value = 0u64;
     for (i, &byte) in b.iter().take(8).enumerate() {
         value |= u64::from(byte & 0x7f) << (7 * i);
@@ -1891,7 +1890,7 @@ fn read_leb128(b: &[u8]) -> Option<(u64, usize)> {
 }
 
 /// Append `v` as a minimal leb128 encoding.
-fn write_leb128(mut v: u64, out: &mut Vec<u8>) {
+pub fn write_leb128(mut v: u64, out: &mut Vec<u8>) {
     loop {
         let byte = (v & 0x7f) as u8;
         v >>= 7;
@@ -1976,7 +1975,7 @@ fn push_obu_sized(b: &[u8], s: &ObuSpan, out: &mut Vec<u8>) {
 /// metadata OBU (HDR10 MDCV/CLL may live only in the record). Empty when the record carries no
 /// sequence header, because metadata alone is never inserted. Accepts both the av1C record
 /// (marker and version byte 0x81, three bytes of fixed fields, then the OBUs) and a bare OBU run.
-fn parse_av1c(ed: &[u8]) -> Vec<u8> {
+pub fn parse_av1c(ed: &[u8]) -> Vec<u8> {
     let obus = if ed.len() >= 4 && ed[0] == 0x81 {
         &ed[4..]
     } else if !ed.is_empty() && ed[0] & 0x80 == 0 {
@@ -2004,13 +2003,13 @@ fn parse_av1c(ed: &[u8]) -> Vec<u8> {
 /// The other settings exist so the reporter can A/B the Realtek decoder's expectations on a
 /// device; they come from the `av1obu` dev trigger and are never set in a release build.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-struct Av1Framing {
+pub struct Av1Framing {
     /// Prepend a temporal delimiter when the packet has none.
-    td: bool,
+    pub td: bool,
     /// Prepend the av1C config block on keyframes that carry no sequence header.
-    seq: bool,
+    pub seq: bool,
     /// Pass the packet bytes through exactly as demuxed.
-    raw: bool,
+    pub raw: bool,
 }
 
 impl Av1Framing {
@@ -2042,7 +2041,7 @@ impl Av1Framing {
 
 /// Frame one demuxed AV1 packet as a temporal unit in `out`, returning `key` unchanged.
 /// A packet that does not parse as OBUs is copied through untouched: it is never dropped.
-fn av1_packet_to_tu(pkt: &[u8], key: bool, cfg: &[u8], f: Av1Framing, out: &mut Vec<u8>) -> bool {
+pub fn av1_packet_to_tu(pkt: &[u8], key: bool, cfg: &[u8], f: Av1Framing, out: &mut Vec<u8>) -> bool {
     out.clear();
     let spans = match walk_obus(pkt) {
         Some(spans) if !f.raw => spans,
@@ -2079,7 +2078,7 @@ fn av1_packet_to_tu(pkt: &[u8], key: bool, cfg: &[u8], f: Av1Framing, out: &mut 
 /// falling into the Annex-B path (which on a bitstream that is not H.264/HEVC produces garbage the
 /// decoder rejects with nothing in the log naming the cause).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum VideoFraming {
+pub enum VideoFraming {
     /// NAL units rewritten to Annex-B with the parameter sets prepended at each keyframe. How the
     /// packet delimits them is [`NalInput`]: a length before each NAL (`packet_to_annexb`), or start
     /// codes already (`annexb_h264_access_unit`, H.264 only).
@@ -2117,7 +2116,7 @@ impl VideoFraming {
 
 /// How the NAL units inside one demuxed H.264/HEVC packet are delimited, decided once per stream.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum NalInput {
+pub enum NalInput {
     /// A big-endian length before each NAL (avcC / hvcC): Matroska and MP4.
     LengthPrefixed,
     /// Start codes between the NALs and the parameter sets in-band: MPEG-TS, a raw elementary stream.
@@ -2146,7 +2145,7 @@ impl NalInput {
 /// transmitter's did (the report's first audio unit was at 45171.69 s). **Only a stream with no
 /// config record is moved**: Matroska and MP4 keep the clock they have always had. An unknown
 /// (`AV_NOPTS_VALUE`, `i64::MIN`) or negative start moves nothing; a stream is never moved forward.
-fn stream_origin_ns(start_time_us: i64, input: NalInput) -> i64 {
+pub fn stream_origin_ns(start_time_us: i64, input: NalInput) -> i64 {
     if input == NalInput::StartCodes && start_time_us > 0 {
         start_time_us.saturating_mul(1_000)
     } else {
@@ -2155,7 +2154,7 @@ fn stream_origin_ns(start_time_us: i64, input: NalInput) -> i64 {
 }
 
 /// A packet timestamp moved back by `by` ticks; "no value" stays no value.
-fn rebase_ts(t: i64, by: i64) -> i64 {
+pub fn rebase_ts(t: i64, by: i64) -> i64 {
     if t == AV_NOPTS_VALUE {
         t
     } else {
@@ -2183,7 +2182,7 @@ unsafe fn rebase_packet(pkt: *mut AVPacket, st: *mut AVStream, origin_ns: i64) {
 /// has to be put back in-band). A Matroska/MP4 packet may be a SUPERFRAME, a shown frame and its
 /// hidden reference frames under one trailing index; it is passed whole, the way a WebM-aware
 /// hardware decoder is fed.
-fn vp9_packet_to_frame(pkt: &[u8], key: bool, out: &mut Vec<u8>) -> bool {
+pub fn vp9_packet_to_frame(pkt: &[u8], key: bool, out: &mut Vec<u8>) -> bool {
     out.clear();
     out.extend_from_slice(pkt);
     key
@@ -2290,7 +2289,7 @@ const HEVC_NAL_DV_EL: u8 = 63;
 
 /// `nuh_layer_id` of an HEVC NAL (`nal` starts at the 2-byte NAL header): bit 0 of byte 0 is the
 /// high bit, the top five bits of byte 1 the rest. Zero throughout a single-layer stream.
-fn hevc_layer_id(nal: &[u8]) -> u8 {
+pub fn hevc_layer_id(nal: &[u8]) -> u8 {
     if nal.len() < 2 {
         return 0;
     }
@@ -2300,14 +2299,14 @@ fn hevc_layer_id(nal: &[u8]) -> u8 {
 /// True if this HEVC NAL belongs to a Dolby Vision enhancement layer: wrapped in `UNSPEC63`, as a
 /// single-track dual layer stores it, or carried in a layer above the base (`nuh_layer_id > 0`),
 /// which a single-layer decoder never decodes either. `nal` starts at the 2-byte NAL header.
-fn is_dv_enhancement_layer(nal: &[u8]) -> bool {
+pub fn is_dv_enhancement_layer(nal: &[u8]) -> bool {
     nal.len() >= 2 && (((nal[0] >> 1) & 0x3f) == HEVC_NAL_DV_EL || hevc_layer_id(nal) > 0)
 }
 
 /// A missed container/metadata DV record must not let Force Original feed a
 /// dual-layer or P7 RPU stream under the only native descriptor we can send
 /// (single-layer P8.1 or ordinary HEVC). Reject before this packet enters AQ.
-fn force_original_hevc_has_unsupported_dv(packet: &[u8], nls: usize) -> bool {
+pub fn force_original_hevc_has_unsupported_dv(packet: &[u8], nls: usize) -> bool {
     if !(1..=4).contains(&nls) { return true; }
     let mut i = 0usize;
     while i < packet.len() {
@@ -2337,11 +2336,11 @@ fn force_original_hevc_has_unsupported_dv(packet: &[u8], nls: usize) -> bool {
 /// layer? The demuxer-side twin of `plx_data::metadata::Dovi::converts_to_p81`, which decides the
 /// route and the Load payload from what the server reported; this one decides what is fed, from
 /// what the file itself carries.
-fn dovi_converts_to_p81(d: &AVDOVIDecoderConfigurationRecord) -> bool {
+pub fn dovi_converts_to_p81(d: &AVDOVIDecoderConfigurationRecord) -> bool {
     d.dv_profile == 7 && d.el_present_flag != 0 && d.dv_bl_signal_compatibility_id != 0
 }
 
-fn force_original_dovi_unsupported(d: &AVDOVIDecoderConfigurationRecord) -> bool {
+pub fn force_original_dovi_unsupported(d: &AVDOVIDecoderConfigurationRecord) -> bool {
     d.dv_profile == 7 || d.el_present_flag != 0
 }
 
@@ -2352,7 +2351,7 @@ fn force_original_dovi_unsupported(d: &AVDOVIDecoderConfigurationRecord) -> bool
 /// parsed or converted; the caller DROPS it, because a frame without an RPU keeps the previous
 /// frame's dynamic metadata, which is far better than a Profile 8 declaration followed by a
 /// Profile 7 RPU.
-fn rewrite_dv_rpu_p7_to_p81(nal: &[u8]) -> Option<Vec<u8>> {
+pub fn rewrite_dv_rpu_p7_to_p81(nal: &[u8]) -> Option<Vec<u8>> {
     let mut rpu = dolby_vision::rpu::dovi_rpu::DoviRpu::parse_unspec62_nalu(nal).ok()?;
     if rpu.dovi_profile != 7 {
         return Some(nal.to_vec());
@@ -2363,7 +2362,7 @@ fn rewrite_dv_rpu_p7_to_p81(nal: &[u8]) -> Option<Vec<u8>> {
 
 /// What to do with one HEVC NAL on its way to the decoder.
 #[derive(Debug, PartialEq, Eq)]
-enum SeiStrip {
+pub enum SeiStrip {
     /// Not an SEI, or an SEI without HDR10+: emit the original bytes (nothing allocated for a non-SEI).
     Keep,
     /// Every message was HDR10+ (or the SEI could not be parsed cleanly): emit nothing.
@@ -2384,7 +2383,7 @@ enum SeiStrip {
 /// message behind another one reached the decoder. A list that does not parse cleanly (truncated
 /// header or payload, bytes after the trailing bits) falls back to the whole-NAL rule: dropped if
 /// an HDR10+ header was seen, kept unchanged otherwise.
-fn strip_hdr10plus_sei(nal: &[u8]) -> SeiStrip {
+pub fn strip_hdr10plus_sei(nal: &[u8]) -> SeiStrip {
     if nal.len() < 2 {
         return SeiStrip::Keep;
     }
@@ -2460,7 +2459,7 @@ fn strip_hdr10plus_sei(nal: &[u8]) -> SeiStrip {
 
 /// An SEI payload with its emulation-prevention bytes removed (`00 00 03` reads as `00 00`), so
 /// message sizes count the bytes they describe.
-fn sei_rbsp(ebsp: &[u8]) -> Vec<u8> {
+pub fn sei_rbsp(ebsp: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(ebsp.len());
     let mut zeros = 0;
     for &b in ebsp {
@@ -2480,7 +2479,7 @@ fn sei_rbsp(ebsp: &[u8]) -> Vec<u8> {
 /// to a small number, pass its own bounds check, and panic the demux thread inside the slice —
 /// killing the producer before it can EOF the queues, which hangs playback with no error path.
 /// Computing in `u64` makes the bound hold on every target. Never inline this back to `i + nl`.
-fn nal_end(i: usize, nl: usize, size: usize) -> Option<usize> {
+pub fn nal_end(i: usize, nl: usize, size: usize) -> Option<usize> {
     if nl == 0 {
         return None;
     }
@@ -2548,7 +2547,7 @@ fn h264_is_rap(nal: &[u8], intra_ok: bool) -> bool {
 /// single-layer stream the Load payload declares (`DolbyHdrInfo profileId 8`).
 /// `strip_hdr10plus` is false for Force Original, where even unsupported dynamic
 /// metadata is preserved rather than silently changing the source bitstream.
-unsafe fn packet_to_annexb(
+pub unsafe fn packet_to_annexb(
     data: *const u8,
     size: usize,
     nls: usize,
@@ -2894,7 +2893,7 @@ unsafe fn adts_params(acp: *const AVCodecParameters) -> Option<(u8, u8)> {
 /// 7-byte ADTS header for a raw AAC frame of `payload_len` bytes. LG's Starfish decodes
 /// ADTS-framed AAC (ss4s: aacInfo format="adts"); mp4/matroska carry RAW AAC, so we reframe.
 /// Emits AAC-LC (ADTS profile 1 = object type 2 - 1); buffer fullness = VBR (0x7FF).
-fn adts_header(freq_idx: u8, chan_cfg: u8, payload_len: usize) -> [u8; 7] {
+pub fn adts_header(freq_idx: u8, chan_cfg: u8, payload_len: usize) -> [u8; 7] {
     let frame_len = (payload_len + 7) as u32; // total incl. header, 13 bits
     [
         0xFF,
@@ -2908,12 +2907,12 @@ fn adts_header(freq_idx: u8, chan_cfg: u8, payload_len: usize) -> [u8; 7] {
 }
 
 #[derive(Default)]
-struct H264ParamSets {
-    sps: Vec<u8>,
-    pps: Vec<u8>,
+pub struct H264ParamSets {
+    pub sps: Vec<u8>,
+    pub pps: Vec<u8>,
 }
 
-fn annexb_start(data: &[u8], from: usize) -> Option<(usize, usize)> {
+pub fn annexb_start(data: &[u8], from: usize) -> Option<(usize, usize)> {
     let mut i = from;
     while i + 3 <= data.len() {
         if data[i..].starts_with(&[0, 0, 1]) {
@@ -2929,7 +2928,7 @@ fn annexb_start(data: &[u8], from: usize) -> Option<(usize, usize)> {
 
 /// An HLS segment's access unit: [`annexb_h264_access_unit`] where only an IDR is a keyframe, which
 /// is how PMS's x264 opens every segment.
-fn ts_h264_access_unit(
+pub fn ts_h264_access_unit(
     data: &[u8],
     params: &mut H264ParamSets,
     out: &mut Vec<u8>,
@@ -2939,7 +2938,7 @@ fn ts_h264_access_unit(
 
 /// What makes an H.264 slice a random access point.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Rap {
+pub enum Rap {
     /// An IDR slice only.
     IdrOnly,
     /// An IDR slice, or a non-IDR I-slice: one the container flagged (`container_key`), or one
@@ -2960,7 +2959,7 @@ impl Rap {
 /// cannot take such a packet: it reads the first `00 00 00 01` as a NAL length of one and the next
 /// four bytes as a length past the end, leaving every unit as `00 00 00 01 09` (#1084). Which of the
 /// two a stream needs is [`NalInput`]'s decision. `Err` names why the packet is not a usable unit.
-fn annexb_h264_access_unit(
+pub fn annexb_h264_access_unit(
     data: &[u8],
     rap: Rap,
     params: &mut H264ParamSets,
@@ -3030,7 +3029,7 @@ fn annexb_h264_access_unit(
 /// MPEG-TS carries ADTS itself, libavformat leaves the header on the packet, and a second one ahead
 /// of it would put `FF F1` where the raw data block begins (#1084). `None`: raw AAC and nothing to
 /// frame it with.
-fn adts_framed(raw: &[u8], params: Option<(u8, u8)>) -> Option<std::borrow::Cow<'_, [u8]>> {
+pub fn adts_framed(raw: &[u8], params: Option<(u8, u8)>) -> Option<std::borrow::Cow<'_, [u8]>> {
     if packet_has_adts(raw) {
         return Some(std::borrow::Cow::Borrowed(raw));
     }
@@ -3041,11 +3040,11 @@ fn adts_framed(raw: &[u8], params: Option<(u8, u8)>) -> Option<std::borrow::Cow<
     Some(std::borrow::Cow::Owned(framed))
 }
 
-fn packet_has_adts(data: &[u8]) -> bool {
+pub fn packet_has_adts(data: &[u8]) -> bool {
     data.len() >= 7 && data[0] == 0xff && data[1] & 0xf6 == 0xf0
 }
 
-fn adts_duration_ns(data: &[u8]) -> Option<i64> {
+pub fn adts_duration_ns(data: &[u8]) -> Option<i64> {
     if !packet_has_adts(data) {
         return None;
     }
@@ -3064,7 +3063,7 @@ fn adts_duration_ns(data: &[u8]) -> Option<i64> {
 }
 
 #[derive(Clone, Copy, Debug)]
-enum HlsExit {
+pub enum HlsExit {
     Aborted,
     NotReady,
     PrimeExpired,
@@ -3130,11 +3129,11 @@ impl From<plx_playback_contract::adaptive::PhysicalFailure> for HlsExit {
 const UNLATCHED_STOP: HlsExit = HlsExit::Failed("HLS acquisition stopped without a latched reason");
 
 /// Lookahead of N+1 must not tear down a session that already fed N. Only teardown is fatal.
-fn hls_prefetch_is_fatal(err: &HlsExit) -> bool {
+pub fn hls_prefetch_is_fatal(err: &HlsExit) -> bool {
     matches!(err, HlsExit::Aborted)
 }
 
-fn classify_plaintext_open_failure(error: plx_net::stream::HttpOpenError) -> HlsExit {
+pub fn classify_plaintext_open_failure(error: plx_net::stream::HttpOpenError) -> HlsExit {
     match error {
         plx_net::stream::HttpOpenError::Deadline => HlsExit::PrimeExpired,
         plx_net::stream::HttpOpenError::Status(404) => HlsExit::NotReady,
@@ -3146,7 +3145,7 @@ fn classify_plaintext_open_failure(error: plx_net::stream::HttpOpenError) -> Hls
     }
 }
 
-fn classify_curl_open_err(e: range_io::OpenErr, observer: &dyn DemuxObserver) -> HlsExit {
+pub fn classify_curl_open_err(e: range_io::OpenErr, observer: &dyn DemuxObserver) -> HlsExit {
     if e == range_io::OpenErr::Deadline {
         return HlsExit::PrimeExpired;
     }
@@ -3171,7 +3170,7 @@ fn hls_recycle_src(src: Src, net: &mut HlsNet) {
     }
 }
 
-fn hls_open_source(
+pub fn hls_open_source(
     resource: &crate::hls::Resource,
     request_path: &str,
     aq: *mut AuQueue,
@@ -3342,7 +3341,7 @@ fn hls_open_plain(
 
 /// Why a progressive media open produced no source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MediaOpenFail {
+pub enum MediaOpenFail {
     /// Teardown won; not a playback failure.
     Aborted,
     Failed,
@@ -3366,7 +3365,7 @@ fn open_curl_hop(
 /// The progressive (direct-play) open of a PLAINTEXT part URL, redirects followed. A PMS-hosted
 /// trailer answers its Part URL with a `302` to a presigned CDN URL — usually https, which lands
 /// on the curl source. Publishes the same two diagnostics the TLS arm of `demux` does.
-fn open_plain_progressive(
+pub fn open_plain_progressive(
     hs_p: *mut HttpStream,
     origin: &Origin,
     path: &str,
@@ -3435,7 +3434,7 @@ fn open_plain_progressive(
     }
 }
 
-fn hls_source_read(
+pub fn hls_source_read(
     src: &mut Src,
     aq: *mut AuQueue,
     dst: &mut [u8],
@@ -3605,7 +3604,7 @@ fn hls_fetch_text(
 /// Sleep `duration` (never past `absolute_deadline`) in 50 ms slices, consulting `checkpoint` as
 /// its `next_check` falls due. A recheck never moves the wait's end; a stop returns
 /// [`UNLATCHED_STOP`], which a caller with a runtime replaces with the reason it latched.
-fn hls_wait(
+pub fn hls_wait(
     aq: *mut AuQueue,
     duration: std::time::Duration,
     absolute_deadline: Option<std::time::Instant>,
@@ -3742,6 +3741,7 @@ unsafe fn hls_input(
             bounce: Vec::new(),
             bounce_pos: 0,
             parked_at_end: false,
+            body_silence: BODY_SILENCE,
             heal: HealBudget::default(),
         }),
         avio: std::ptr::null_mut(),
@@ -3829,18 +3829,18 @@ unsafe fn hls_input(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct SegmentTransfer {
-    bytes: u64,
-    active_us: u64,
-    total_us: u64,
-    audio_expected: bool,
+pub struct SegmentTransfer {
+    pub bytes: u64,
+    pub active_us: u64,
+    pub total_us: u64,
+    pub audio_expected: bool,
 }
 
-struct HlsAu {
-    data: Vec<u8>,
-    pts_ns: i64,
-    key: c_int,
-    es: c_int,
+pub struct HlsAu {
+    pub data: Vec<u8>,
+    pub pts_ns: i64,
+    pub key: c_int,
+    pub es: c_int,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3903,20 +3903,20 @@ fn resolve_audio_stamps(stamps: &mut [AudioStamp]) -> Result<usize, &'static str
     Ok(missing)
 }
 
-struct HlsSegmentOutput {
-    aus: Vec<HlsAu>,
-    transfer: SegmentTransfer,
-    video_width: i32,
-    video_height: i32,
-    video_tail_ns: i64,
-    audio_tail_ns: Option<i64>,
+pub struct HlsSegmentOutput {
+    pub aus: Vec<HlsAu>,
+    pub transfer: SegmentTransfer,
+    pub video_width: i32,
+    pub video_height: i32,
+    pub video_tail_ns: i64,
+    pub audio_tail_ns: Option<i64>,
 }
 
 /// A body with a declared length is complete only after every declared byte reached AVIO.  FFmpeg
 /// finding some packets is not a substitute: a socket timeout used to look like EOF, after which
 /// the caller credited the segment's full EXTINF and manufactured playable reserve that was never
 /// downloaded.
-fn hls_body_complete(declared_size: i64, delivered: i64) -> bool {
+pub fn hls_body_complete(declared_size: i64, delivered: i64) -> bool {
     declared_size < 0 || delivered >= declared_size
 }
 
@@ -3931,7 +3931,7 @@ fn settle_hls_segment(
     runtime.settle(error, expected && FEED_AUDIO.load(Ordering::Relaxed))
 }
 
-unsafe fn hls_demux_segment(
+pub unsafe fn hls_demux_segment(
     segment: &crate::hls::Segment,
     auth: &crate::hls::InheritedAuth,
     clock: &mut crate::hls::SegmentClock,
@@ -4352,7 +4352,7 @@ fn hls_feed_segment(
     Ok(())
 }
 
-struct HlsCursor {
+pub struct HlsCursor {
     /// Whether this cursor's media playlist is the one describing WHAT IS PLAYING.
     ///
     /// A candidate cursor opened during a quality transaction reads a freshly created encoder
@@ -4376,7 +4376,7 @@ struct HlsCursor {
     /// rate. That asymmetry is the specification's, not this field's.
     declared_bps: u64,
     auth: crate::hls::InheritedAuth,
-    media: crate::hls::Resource,
+    pub media: crate::hls::Resource,
     tracker: crate::hls::MediaTracker,
     pending: std::collections::VecDeque<crate::hls::Segment>,
     ended: bool,
@@ -4411,7 +4411,7 @@ struct HlsRoundPort<'a> {
     staged: Vec<(HlsSegmentOutput, crate::hls::SegmentClock, std::time::Duration)>,
 }
 
-fn hls_feed_failure(error: HlsExit) -> FeedFailure {
+pub fn hls_feed_failure(error: HlsExit) -> FeedFailure {
     match error {
         HlsExit::Aborted => FeedFailure::Aborted,
         HlsExit::PrimeExpired | HlsExit::StallAbort(_) => FeedFailure::Deadline,
@@ -4681,7 +4681,7 @@ impl AdaptivePhysicalPort for HlsRoundPort<'_> {
     }
 }
 
-fn hls_cursor_open(
+pub fn hls_cursor_open(
     origin: &Origin,
     path: &str,
     aq: *mut AuQueue,
@@ -4818,7 +4818,7 @@ fn hls_cursor_next(
 /// completed. Variable-duration HLS makes those different physical facts. When the next object is
 /// not already queued, perform the playlist refresh the outer loop would otherwise perform on its
 /// next iteration, then put the object back at the front unchanged.
-fn hls_duration_obligation_ms(duration: std::time::Duration) -> Option<u32> {
+pub fn hls_duration_obligation_ms(duration: std::time::Duration) -> Option<u32> {
     // BufferSnapshot lives on a whole-millisecond lattice and floors the playable reserve.  A
     // media obligation must therefore round in the opposite direction: flooring both B and an
     // EXTINF such as 1999.9 ms can manufacture almost one millisecond of exploration reserve.
@@ -4848,7 +4848,7 @@ fn hls_cursor_next_duration_ms(
     Ok(Some(duration_ms))
 }
 
-fn hls_buffer_fact_at(
+pub fn hls_buffer_fact_at(
     clocks: HlsBufferClocks,
     output: Option<&HlsSegmentOutput>,
 ) -> BufferFact {
@@ -4884,7 +4884,7 @@ fn hls_buffer_snapshot_with_playhead(
     Some((hls_buffer_fact_at(clocks, output).buffered_ms(), clocks.playhead_ns.max(0)))
 }
 
-fn hls_buffer_fact(
+pub fn hls_buffer_fact(
     observer: &dyn DemuxObserver,
     output: Option<&HlsSegmentOutput>,
 ) -> Option<BufferFact> {
@@ -4916,7 +4916,7 @@ fn progressive_buffered_ms(clock: &dyn DemuxClock, audio_expected: bool) -> Opti
     )
 }
 
-fn hls_acquisition(
+pub fn hls_acquisition(
     output: &HlsSegmentOutput, duration: std::time::Duration, declared_bps: u64,
 ) -> Acquisition {
     Acquisition {
@@ -5023,7 +5023,7 @@ impl AdaptiveRoundPort for HlsRoundPort<'_> {
 /// the caller's ordinary controller/transact path can treat it as an abandoned sample. Never call
 /// this against a `Candidate` acquisition's result: a candidate never carries a `StallGuard`, so
 /// it cannot produce `StallAbort`.
-fn hls_stall_abort_outcome(
+pub fn hls_stall_abort_outcome(
     segment: crate::hls::Segment,
     clock: crate::hls::SegmentClock,
     transfer: SegmentTransfer,
@@ -5069,7 +5069,7 @@ fn hls_stall_abort_outcome(
 /// Takes `n1` (the already-dequeued next segment) and `cursor` separately rather than dequeuing
 /// itself, so a test can drive this exact flow without also standing up an `HlsNet`/`AuQueue`
 /// just to satisfy [`hls_cursor_next`].
-fn hls_prefetch_same_encoder_with<F>(
+pub fn hls_prefetch_same_encoder_with<F>(
     cursor: &mut HlsCursor,
     n1: crate::hls::Segment,
     timeline: crate::hls::SegmentTimeline,
@@ -5370,7 +5370,7 @@ fn hls_demux(
 /// the HLS and the progressive tails read. A demuxer that produced nothing and ended on its own
 /// failed; one whose lane teardown aborted was told to stop (a reload, a seek, BACK), whatever
 /// early exit that took, and must neither log a failure nor raise `demux_failed`.
-fn unproductive_exit_failed(pushed_any: bool, lane_aborted: bool) -> bool {
+pub fn unproductive_exit_failed(pushed_any: bool, lane_aborted: bool) -> bool {
     !pushed_any && !lane_aborted
 }
 
@@ -5378,7 +5378,7 @@ fn unproductive_exit_failed(pushed_any: bool, lane_aborted: bool) -> bool {
 /// and `read_cb` answers the abort with EOF, so an open cut short that way returns whatever the
 /// truncated probe made of it (`AVERROR_INVALIDDATA` on a Matroska header) — a stop that must not
 /// read as the source failing to open. Issue #266's normalize run was misread exactly so.
-fn open_input_failure_note(r: c_int, lane_aborted: bool) -> String {
+pub fn open_input_failure_note(r: c_int, lane_aborted: bool) -> String {
     if lane_aborted {
         format!("ff: aborted during open_input r={r}")
     } else {
@@ -5434,7 +5434,7 @@ fn open_input_failure_note(r: c_int, lane_aborted: bool) -> String {
 /// has been pushed [`AUDIO_LEAD_IN_NS`](crate::feed_state::AUDIO_LEAD_IN_NS) plus
 /// [`LEAD_IN_MARGIN_NS`] of audio, and the release is `aq_release_headroom`: the cap follows the
 /// consumer's drain down to the base rather than dropping under the lane's occupancy.
-const PRE_AUDIO_VIDEO_HEADROOM: c_long = 24 * 1024 * 1024;
+pub const PRE_AUDIO_VIDEO_HEADROOM: c_long = 24 * 1024 * 1024;
 
 /// **How far the AUDIO lane may run past its soft cap while the video lane is starved** (issue
 /// #600): the mirror image of [`PRE_AUDIO_VIDEO_HEADROOM`], and unlike it a standing rule rather
@@ -5477,7 +5477,7 @@ const PRE_AUDIO_VIDEO_HEADROOM: c_long = 24 * 1024 * 1024;
 /// Once the video read spans the prime depth the clock may be running and the audio lane is
 /// draining at real time, so a ceiling reached then (an audio-only stretch, a sparse video track) is
 /// an ordinary full-lane park, not a failure.
-const AUDIO_AHEAD_HEADROOM: c_long = 16 * 1024 * 1024;
+pub const AUDIO_AHEAD_HEADROOM: c_long = 16 * 1024 * 1024;
 
 /// Audio pushed past the engine's lead-in before the video lane's headroom is released: the lead-in
 /// is measured from the AU the engine ACCEPTS, in its own timeline, and the lane is pushed in whole
@@ -6118,6 +6118,7 @@ pub fn demux(
                     bounce: Vec::new(),
                     bounce_pos: 0,
                     parked_at_end: false,
+                    body_silence: BODY_SILENCE,
                     heal: HealBudget::default(),
                 });
                 let buf = av_malloc(65536) as *mut u8;

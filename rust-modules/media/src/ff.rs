@@ -1,5 +1,11 @@
 //! Compatibility facade for the bundled FFmpeg physical feed owned by `plx_play_feed`.
-pub use plx_play_feed::ff::*;
+pub use plx_play_feed::{boot, demux, native_audio, pushed_any, set_feed_audio, set_pcm_out, DemuxTransport};
+pub use plx_media_codecs::ffi::*;
+pub use plx_media_codecs::{SpeedDecoder, Venc};
+#[cfg(test)]
+use plx_play_feed::ff_test_support::*;
+#[cfg(test)]
+use plx_media_codecs::subtitle_extract::pts_ns;
 #[cfg(test)]
 pub(crate) use crate::subtitle_job as subside;
 
@@ -9,16 +15,10 @@ pub(crate) use crate::subtitle_job as subside;
 #[cfg(test)]
 use crate::aq::AuQueue;
 #[cfg(test)]
-use plx_playback_contract::adaptive::{Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation,
-    AdaptivePhysicalPort, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact,
-    CandidateFencePort, CandidateMediaPort, ExplorationFact, FeedAction, FeedFailure,
-    FeedObservation, FeedPort, PauseFact, RoundId, TrialActuatorPort, TrialClock, TrialId,
-    VariantFact};
+use plx_playback_contract::adaptive::TrialClock;
 #[cfg(test)]
-use plx_playback_contract::demux::{DemuxCallbackEffect, DemuxClock, DemuxEffect, DemuxObserver,
-    DemuxSession, HlsBufferClocks, PauseLane};
-#[cfg(test)]
-use plx_playback_contract::SourceKey;
+use plx_playback_contract::demux::{DemuxCallbackEffect, DemuxObserver, DemuxSession,
+    HlsBufferClocks};
 #[cfg(test)]
 use plx_play_feed::SendPtr;
 #[cfg(test)]
@@ -26,13 +26,11 @@ use plx_net::stream::HttpStream;
 #[cfg(test)]
 use plx_net::net::origin::Origin;
 #[cfg(test)]
-use plx_net::range_io::{self, RangeFactory, RangeReader};
-#[cfg(test)]
-use plx_playback_contract::demux::DemuxFault;
+use plx_net::range_io;
 #[cfg(test)]
 use std::ffi::CString;
 #[cfg(test)]
-use std::os::raw::{c_int, c_long, c_uchar, c_uint, c_void};
+use std::os::raw::{c_int, c_long, c_void};
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]

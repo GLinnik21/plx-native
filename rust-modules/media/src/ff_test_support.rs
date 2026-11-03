@@ -95,8 +95,14 @@ pub(super) fn with_demux_session<R>(run: impl FnOnce(Box<dyn DemuxSession>) -> R
 }
 
 /// Build a length-prefixed (AVCC-style) packet: 4-byte big-endian length + payload, repeated.
-pub(super) use plx_play_feed::ff::test_support::{avcc, to_annexb, to_annexb_flagged,
+pub(super) use plx_play_feed::ff_test_support::{avcc, to_annexb, to_annexb_flagged,
     to_annexb_p7, rpu_fixture_nal, dovi_bytes};
+
+/// Short, explicit silence budget for loopback AVIO fixtures. Production AVIO
+/// captures its own 15-second budget when the worker is constructed.
+pub(super) fn fixture_body_silence() -> std::time::Duration {
+    std::time::Duration::from_millis(400)
+}
 
 // -- the AVIO callbacks under teardown -------------------------------------------------
 //

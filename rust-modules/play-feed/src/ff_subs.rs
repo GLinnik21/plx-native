@@ -7,14 +7,14 @@ use plx_playback_contract::subtitle::{DecodeKind, RawCue, TrackInfo};
 
 /// File-order subtitle streams and their image decoders. The player supplies
 /// one decode plan entry per inspected stream before any decoder is opened.
-pub(super) struct SubTracks {
+pub struct SubTracks {
     infos: Vec<TrackInfo>,
     plan: Vec<DecodeKind>,
     decoders: ImageDecoders,
 }
 
 impl SubTracks {
-    pub(super) unsafe fn inspect(fmt: *mut AVFormatContext, streams: *mut *mut AVStream) -> Vec<TrackInfo> {
+    pub unsafe fn inspect(fmt: *mut AVFormatContext, streams: *mut *mut AVStream) -> Vec<TrackInfo> {
         if fmt.is_null() || streams.is_null() { return Vec::new(); }
         let mut infos = Vec::new();
         for i in 0..(*fmt).nb_streams {
@@ -32,7 +32,7 @@ impl SubTracks {
         infos
     }
 
-    pub(super) unsafe fn open(streams: *mut *mut AVStream, infos: Vec<TrackInfo>, plan: Vec<DecodeKind>) -> Self {
+    pub unsafe fn open(streams: *mut *mut AVStream, infos: Vec<TrackInfo>, plan: Vec<DecodeKind>) -> Self {
         assert_eq!(infos.len(), plan.len(), "subtitle plan must cover every file-order track");
         let specs: Vec<_> = infos.iter().zip(&plan)
             .map(|(info, kind)| (info.stream_index, matches!(kind, DecodeKind::Bitmap)))
@@ -41,19 +41,19 @@ impl SubTracks {
         Self { infos, plan, decoders }
     }
 
-    pub(super) fn empty() -> Self {
+    pub fn empty() -> Self {
         Self { infos: Vec::new(), plan: Vec::new(), decoders: ImageDecoders::empty() }
     }
 
-    pub(super) fn entries(&self) -> &[TrackInfo] { &self.infos }
-    pub(super) fn plan(&self) -> &[DecodeKind] { &self.plan }
-    pub(super) fn position(&self, stream_index: c_int) -> Option<usize> {
+    pub fn entries(&self) -> &[TrackInfo] { &self.infos }
+    pub fn plan(&self) -> &[DecodeKind] { &self.plan }
+    pub fn position(&self, stream_index: c_int) -> Option<usize> {
         self.infos.iter().position(|info| info.stream_index == stream_index)
     }
 
     /// Every text track is observed; image tracks are decoded while subtitles
     /// are enabled, matching live track-switch behavior.
-    pub(super) unsafe fn decode(
+    pub unsafe fn decode(
         &self, pos: usize, pkt: *mut AVPacket, st: *mut AVStream,
         decode_image: bool, bitmap_budget: usize,
     ) -> Option<RawCue> {
@@ -75,5 +75,5 @@ impl SubTracks {
         }
     }
 
-    pub(super) unsafe fn close(&mut self) { self.decoders.close(); }
+    pub unsafe fn close(&mut self) { self.decoders.close(); }
 }

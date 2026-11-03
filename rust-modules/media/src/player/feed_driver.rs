@@ -6,9 +6,10 @@ use plx_base::task::MainThread;
 use plx_playback_contract::{
     AttemptId, BackendEvent, BackendKind, CommandId, DispatchResult,
     DriverEvent, EvidenceSource, ExitDisposition, Failure, Observation, Observed, Operation,
-    Playback, ReleaseStatus, SourceKey, StopReason,
+    Playback, ReleaseStatus, SourceKey, StopReason, ContentTime,
 };
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::Ordering::Acquire;
 #[cfg(feature = "play-feed")]
 use plx_playback_contract::Capabilities;
 
@@ -24,8 +25,9 @@ pub(super) struct FeedDriver {
     staged: HashMap<(AttemptId, SourceKey), engine::NativePrepared>,
     active: Option<AttemptId>,
     ready_emitted: bool,
-    playing_emitted: bool,
+    startup_acceptance_emitted: bool,
     startup_play_command: Option<CommandId>,
+    last_position_tick: u32,
     stop_requested: Option<(AttemptId, StopReason)>,
     transport_actions: VecDeque<FeedTransportAction>,
     events: VecDeque<BackendEvent>,
@@ -35,7 +37,8 @@ impl FeedDriver {
     pub(super) fn new() -> Self {
         Self {
             staged: HashMap::new(), active: None, ready_emitted: false,
-            playing_emitted: false, startup_play_command: None, stop_requested: None,
+            startup_acceptance_emitted: false, startup_play_command: None,
+            last_position_tick: 0, stop_requested: None,
             transport_actions: VecDeque::new(), events: VecDeque::new(),
         }
     }
@@ -72,8 +75,9 @@ impl FeedDriver {
                     Ok(()) => {
                         self.active = Some(attempt);
                         self.ready_emitted = false;
-                        self.playing_emitted = false;
+                        self.startup_acceptance_emitted = false;
                         self.startup_play_command = None;
+                        self.last_position_tick = 0;
                         DispatchResult::Queued
                     }
                     Err(_) => {
@@ -150,15 +154,14 @@ impl FeedDriver {
                             }) } });
                 }
                 if eng.startup_controlled && eng.startup_play_commanded && !eng.prime_play
-                    && !self.playing_emitted {
-                    self.playing_emitted = true;
-                    self.startup_play_command = None;
+                    && !self.startup_acceptance_emitted {
+                    self.startup_acceptance_emitted = true;
                     eng.startup_first_play_done = true;
-                    self.events.push_back(BackendEvent { backend: BackendKind::Feed,
-                        event: DriverEvent::Observation { attempt,
-                            observation: Observation::Playback(Observed {
-                                value: Playback::Playing, from: EvidenceSource::BackendReport,
-                            }) } });
+                    if let Some(command) = self.startup_play_command.take() {
+                        self.events.push_back(BackendEvent { backend: BackendKind::Feed,
+                            event: DriverEvent::ControlAccepted { attempt, command,
+                                operation: Operation::Play, native_acknowledged: true } });
+                    }
                 }
                 if eng.startup_play_refused {
                     eng.startup_play_refused = false;
@@ -167,6 +170,19 @@ impl FeedDriver {
                             event: DriverEvent::ControlRefused { attempt, command,
                                 operation: Operation::Play, failure: Failure::Refused } });
                     }
+                }
+                // The callback's type=0 position report is a real native clock sample, not a
+                // presented-frame proof. Its release-published sequence excludes seek/HUD writes.
+                let tick = eng.shared.dg_pos_ticks.load(Acquire);
+                if tick != 0 && tick != self.last_position_tick {
+                    self.last_position_tick = tick;
+                    let ns = eng.shared.reported_playpos_ns.load(Acquire).max(0) as u64;
+                    self.events.push_back(BackendEvent { backend: BackendKind::Feed,
+                        event: DriverEvent::Observation { attempt,
+                            observation: Observation::Position(Observed {
+                                value: ContentTime::from_millis(ns / 1_000_000),
+                                from: EvidenceSource::BackendReport,
+                            }) } });
                 }
             }
         }
@@ -182,7 +198,8 @@ impl FeedDriver {
     }
 
     pub(super) fn note_transport_result(&mut self, feed: &mut FeedResources,
-        mt: &MainThread, action: FeedTransportAction, accepted: bool) {
+        mt: &MainThread, action: FeedTransportAction, accepted: bool,
+        native_acknowledged: bool) {
         if let FeedTransportAction::ResumeInitial { attempt, command } = action {
             if self.active != Some(attempt) { return; }
             let Some(eng) = feed.engine().filter(|eng| eng.attempt == attempt) else { return };
@@ -204,12 +221,12 @@ impl FeedDriver {
             }
             return;
         }
-        let (attempt, command, operation, value) = match action {
+        let (attempt, command, operation) = match action {
             FeedTransportAction::ResumeInitial { .. } => unreachable!("handled above"),
             FeedTransportAction::Play { attempt, command } =>
-                (attempt, command, Operation::Play, Playback::Playing),
+                (attempt, command, Operation::Play),
             FeedTransportAction::Pause { attempt, command } =>
-                (attempt, command, Operation::Pause, Playback::Paused),
+                (attempt, command, Operation::Pause),
         };
         if self.active != Some(attempt) { return; }
         if !accepted {
@@ -219,10 +236,8 @@ impl FeedDriver {
             return;
         }
         self.events.push_back(BackendEvent { backend: BackendKind::Feed,
-            event: DriverEvent::Observation { attempt,
-                observation: Observation::Playback(Observed {
-                    value, from: EvidenceSource::BackendReport,
-                }) } });
+            event: DriverEvent::ControlAccepted { attempt, command, operation,
+                native_acknowledged } });
     }
 
     pub(super) fn note_release(&mut self, attempt: AttemptId, status: ReleaseStatus) {

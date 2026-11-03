@@ -44,6 +44,15 @@ impl Startup {
 
     pub(super) fn foreground(&self) -> bool { self.foreground }
 
+    /// The viewer's pending goal while startup still owns track/seek/initial Play ordering.
+    /// The physical TX pause remains a separate hold until the native verb is admitted.
+    pub(super) fn viewer_paused(&self, backend: BackendKind, attempt: AttemptId) -> Option<bool> {
+        self.plan.as_ref().filter(|plan| (plan.backend, plan.attempt) == (backend, attempt)
+            && (plan.stage != Stage::Halted
+                && (plan.stage != Stage::Done || plan.initial_play_command.is_some())))
+            .map(|plan| plan.initial.paused)
+    }
+
     pub(super) fn abort(&mut self, backend: BackendKind, attempt: AttemptId) {
         if let Some(plan) = self.plan.as_mut() {
             if (plan.backend, plan.attempt) == (backend, attempt) {
@@ -98,6 +107,8 @@ impl Startup {
         let (backend, attempt) = match *notice {
             Fx::Rejected { backend, attempt, .. }
             | Fx::CommandRefused { backend, attempt, .. }
+            | Fx::AcceptedControl { backend, attempt, .. }
+            | Fx::StartupFailed { backend, attempt, .. }
             | Fx::AcceptedObservation { backend, attempt, .. }
             | Fx::AcceptedTrackSettled { backend, attempt, .. }
             | Fx::AcceptedSeekLanded { backend, attempt, .. }
@@ -106,8 +117,8 @@ impl Startup {
         };
         if (plan.backend, plan.attempt) != (backend, attempt) { return; }
         match *notice {
-            Fx::AcceptedObservation { observation: Observation::Playback(value), .. }
-                if value.value == Playback::Playing => {
+            Fx::AcceptedControl { command, operation: Operation::Play, .. }
+                if plan.initial_play_command == Some(command) => {
                 plan.initial_play_command = None;
             }
             Fx::AcceptedObservation { observation: Observation::Playback(value), .. }
@@ -142,6 +153,7 @@ impl Startup {
                 plan.stage = Stage::Halted;
             }
             Fx::ReleaseOutcome { .. } => plan.stage = Stage::Halted,
+            Fx::StartupFailed { .. } => plan.stage = Stage::Halted,
             _ => {}
         }
         if matches!(*notice, Fx::ReleaseOutcome { .. }) { self.plan = None; }
@@ -185,11 +197,20 @@ impl Startup {
         }
     }
 
-    pub(super) fn is_initial_play_refusal(&self, notice: &Fx) -> bool {
+    pub(super) fn is_mandatory_refusal(&self, notice: &Fx) -> bool {
         let Some(plan) = self.plan.as_ref() else { return false };
-        matches!(*notice, Fx::CommandRefused { backend, attempt, command,
-            operation: Operation::Play, .. }
-            if (backend, attempt) == (plan.backend, plan.attempt)
-                && plan.initial_play_command == Some(command))
+        let Fx::CommandRefused { backend, attempt, command, operation, .. } = *notice else {
+            return false;
+        };
+        if (backend, attempt) != (plan.backend, plan.attempt) { return false; }
+        match (plan.stage, operation) {
+            (Stage::WaitAudio(Some(expected)), Operation::SelectTrack {
+                kind: TrackKind::Audio, .. })
+            | (Stage::WaitSubtitle(Some(expected)), Operation::SelectTrack {
+                kind: TrackKind::Subtitle, .. })
+            | (Stage::WaitSeek(Some(expected)), Operation::Seek(_)) => command == expected,
+            (Stage::Done, Operation::Play) => plan.initial_play_command == Some(command),
+            _ => false,
+        }
     }
 }
