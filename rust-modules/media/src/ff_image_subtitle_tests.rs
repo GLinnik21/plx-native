@@ -271,14 +271,14 @@ fn ass_packet_terminators_do_not_weaken_validation() {
                 track: 0,
                 start: 1_000_000_000,
                 end: 3_000_000_000,
-                payload,
+                payload: payload.into(),
             }
             .push(generation);
             SubCue::Ass {
                 track: 0,
                 start: 1_000_000_000,
                 end: 3_000_000_000,
-                payload: b"0,0,Default,,0,0,0,,VALID CAPTION",
+                payload: b"0,0,Default,,0,0,0,,VALID CAPTION"[..].into(),
             }
             .push(generation);
             let source = ass_source::selected(0).unwrap();
@@ -295,7 +295,7 @@ fn ass_packet_terminators_do_not_weaken_validation() {
                 track: 0,
                 start: 1_000_000_000,
                 end: 3_000_000_000,
-                payload,
+                payload: payload.into(),
             }
             .push(generation);
         }
@@ -304,7 +304,7 @@ fn ass_packet_terminators_do_not_weaken_validation() {
             track: 0,
             start: 1_000_000_000,
             end: 3_000_000_000,
-            payload: &oversized,
+            payload: oversized.as_slice().into(),
         }
         .push(generation);
         let source = ass_source::selected(0).unwrap();
@@ -319,7 +319,7 @@ fn ass_packet_terminators_do_not_weaken_validation() {
             track: 0,
             start: 1_000_000_000,
             end: 3_000_000_000,
-            payload: b"0,0,Default,,0,0,0,,MULTIPLE TERMINATORS\0\0\0",
+            payload: b"0,0,Default,,0,0,0,,MULTIPLE TERMINATORS\0\0\0"[..].into(),
         }
         .push(generation);
         assert_ass_caption(&ass_source::selected(0).unwrap(), 2000);
@@ -405,7 +405,7 @@ fn host_ffmpeg_binding_restores_the_abi_gate() {
     assert!(!abi_ok(), "the next host test must start with a closed ABI gate");
 }
 
-pub(super) struct HostFfmpeg {
+pub(crate) struct HostFfmpeg {
     previous_abi_ok: bool,
 }
 
@@ -418,7 +418,7 @@ impl Drop for HostFfmpeg {
 /// Bind the host libraries in dependency order and check their ABI majors.
 /// Keep the guard until all readers stop so the next test gets the previous ABI state.
 #[must_use]
-pub(super) fn bind_host_ffmpeg() -> HostFfmpeg {
+pub(crate) fn bind_host_ffmpeg() -> HostFfmpeg {
     plx_base::testlock::assert_held("bind_host_ffmpeg");
     let dir = host_ffmpeg_dir();
     for (what, verdict) in [

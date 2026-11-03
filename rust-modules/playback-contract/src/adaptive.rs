@@ -33,6 +33,9 @@ pub enum FeedAction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrialClock { Playhead, UnpausedElapsed }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AutomaticTransition { QualityUp, QualityDown }
+
 /// Physical transfer and output geometry before a candidate policy verdict.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Acquisition {
@@ -43,6 +46,31 @@ pub struct Acquisition {
     pub width: i32,
     pub height: i32,
     pub declared_bps: u64,
+}
+
+/// Normalized content-time tails sampled by the physical feed. A missing audio
+/// tail remains absent even when audio is expected; it is not an empty buffer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BufferFact {
+    pub playback_ms: i64,
+    pub video_tail_ms: i64,
+    pub audio_tail_ms: Option<i64>,
+    pub audio_expected: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ActiveQuantum {
+    pub acquisition: Acquisition,
+    pub buffer: BufferFact,
+    pub abandoned: bool,
+    pub delivered: bool,
+}
+
+/// Accepted user-pause evidence after a blocking probe or playlist read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PauseFact {
+    pub paused: bool,
+    pub completed_ms: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

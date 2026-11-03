@@ -77,7 +77,7 @@ pub(super) fn dovi_bytes(profile: u8, level: u8, rpu: u8, el: u8, bl: u8, compat
 /// bumped BEFORE the reply is written, so it is already final by the time any `http_open`
 /// against this listener can return — every assertion below is causally ordered behind that,
 /// and needs no sleep and no timing margin.
-pub(super) fn with_counting_listener(
+pub(crate) fn with_counting_listener(
     body: impl FnOnce(u16, &std::sync::atomic::AtomicUsize, &std::sync::atomic::AtomicUsize),
 ) {
     use std::io::{Read, Write};
@@ -289,7 +289,7 @@ pub(super) fn opened_curl_with_aborted_lane(port: u16) -> (Box<crate::curlio::Cu
 }
 
 /// Serve media bytes over HTTP with Range support for the native subtitle readers.
-pub(super) fn serve_file(body: Vec<u8>, stop: &'static AtomicBool) -> (u16, std::thread::JoinHandle<()>) {
+pub(crate) fn serve_file(body: Vec<u8>, stop: &'static AtomicBool) -> (u16, std::thread::JoinHandle<()>) {
     use std::io::{Read, Write};
     let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = srv.local_addr().unwrap().port();

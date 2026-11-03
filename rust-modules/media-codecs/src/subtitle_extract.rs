@@ -303,3 +303,221 @@ mod tests {
         assert_eq!(read_cb(op, dst.as_mut_ptr(), 1), AVERROR_EOF);
     }
 }
+
+/// File-order subtitle inventory copied while the format context is alive.
+/// The codec name is used by the caller's text dialect policy; none of these fields is logged.
+pub struct TrackInfo {
+    pub stream_index: c_int,
+    pub codec_name: String,
+    pub language: Option<String>,
+}
+
+/// The presentation owner's choice for one subtitle track. This keeps text dialect and charset
+/// policy outside the codec while letting the codec open only image decoders.
+pub enum DecodeKind {
+    Text { max_bytes: usize },
+    Ass { max_bytes: usize },
+    Bitmap,
+}
+
+/// One decoded, owned observation. Raw text stays in its container encoding for the caller's
+/// per-track charset step. Bitmap data has already passed its byte budget inside the decoder.
+pub enum RawCue {
+    Bytes { track: usize, start: i64, end: i64, payload: Vec<u8> },
+    Bitmap { track: usize, pts: i64, display: crate::subtitle::BitmapDisplay },
+}
+
+pub struct PacketObservation {
+    pub time_ns: Option<i64>,
+    pub cue: Option<RawCue>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum JobOpenError { Failed, NoVideo }
+
+/// One optional embedded subtitle extraction pass. Its only input is owned cancellable bytes;
+/// no URL, network client, route, player store, or worker is reachable from this type.
+pub struct Job {
+    fmt: *mut AVFormatContext,
+    pkt: *mut AVPacket,
+    input: Option<AvioInput>,
+    video_index: c_int,
+    tracks: Vec<TrackInfo>,
+    kinds: Vec<DecodeKind>,
+    decoders: ImageDecoders,
+}
+
+impl Job {
+    pub fn open(source: Box<dyn ReadSeek>, inspect_subtitles: bool) -> Result<Self, JobOpenError> {
+        let input = AvioInput::new(source).ok_or(JobOpenError::Failed)?;
+        let mut job = Self {
+            fmt: std::ptr::null_mut(), pkt: std::ptr::null_mut(), input: Some(input),
+            video_index: -1, tracks: Vec::new(), kinds: Vec::new(), decoders: ImageDecoders::empty(),
+        };
+        // SAFETY: the source and AVIO state outlive this format context; Drop reverses every
+        // allocation and the format pointer is updated after open_input even on failure.
+        unsafe {
+            job.fmt = ffi::avformat_alloc_context();
+            if job.fmt.is_null() { return Err(JobOpenError::Failed); }
+            (*job.fmt).pb = job.input.as_ref().expect("AVIO input installed").context();
+            let mut fmt = job.fmt;
+            let r = ffi::avformat_open_input(&mut fmt, std::ptr::null(), std::ptr::null_mut(), std::ptr::null_mut());
+            job.fmt = fmt;
+            if r < 0 || job.fmt.is_null() { return Err(JobOpenError::Failed); }
+            job.pkt = ffi::av_packet_alloc();
+            if job.pkt.is_null() { return Err(JobOpenError::Failed); }
+            let streams = (*job.fmt).streams;
+            for i in 0..(*job.fmt).nb_streams {
+                let st = *streams.add(i as usize);
+                let cp = ffi::stream_codecpar(st);
+                if (*cp).codec_type == ffi::AVMEDIA_TYPE_VIDEO && job.video_index < 0 {
+                    job.video_index = i as c_int;
+                }
+                if inspect_subtitles && (*cp).codec_type == ffi::AVMEDIA_TYPE_SUBTITLE {
+                    let name = std::ffi::CStr::from_ptr(ffi::avcodec_get_name((*cp).codec_id))
+                        .to_string_lossy().into_owned();
+                    job.tracks.push(TrackInfo {
+                        stream_index: i as c_int,
+                        codec_name: name,
+                        language: stream_language(st),
+                    });
+                }
+            }
+        }
+        if job.video_index < 0 { return Err(JobOpenError::NoVideo); }
+        Ok(job)
+    }
+
+    pub fn tracks(&self) -> &[TrackInfo] { &self.tracks }
+
+    /// The caller configures dialects after seeing the inventory. Decoder contexts belong to
+    /// this job and close before its format context.
+    pub fn configure(&mut self, kinds: Vec<DecodeKind>) {
+        assert_eq!(kinds.len(), self.tracks.len());
+        let specs: Vec<_> = self.tracks.iter().zip(&kinds)
+            .map(|(track, kind)| (track.stream_index, matches!(kind, DecodeKind::Bitmap)))
+            .collect();
+        self.decoders = unsafe { ImageDecoders::open((*self.fmt).streams, &specs) };
+        self.kinds = kinds;
+    }
+
+    pub fn manifest(&self, max_header_bytes: usize, admit_font: impl FnMut(usize) -> bool) -> Manifest {
+        let tracks: Vec<_> = self.tracks.iter().zip(&self.kinds).map(|(track, kind)| AssTrack {
+            stream_index: track.stream_index, authored: matches!(kind, DecodeKind::Ass { .. }),
+        }).collect();
+        unsafe { collect_manifest(self.fmt, (*self.fmt).streams, &tracks, max_header_bytes, admit_font) }
+    }
+
+    /// Seek the video clock to a nonnegative time. The caller distinguishes cancellation from
+    /// transport failure by its own stop token after a false return.
+    pub fn seek_video(&mut self, from_ns: i64) -> bool {
+        unsafe {
+            let vst = *(*self.fmt).streams.add(self.video_index as usize);
+            let ts = ffi::av_rescale_q(from_ns.max(0), ffi::NS_TB, ffi::stream_time_base(vst));
+            ffi::av_seek_frame(self.fmt, self.video_index, ts, ffi::AVSEEK_FLAG_BACKWARD) >= 0
+        }
+    }
+
+    /// Scan keyframes near the requested start and compare packet bytes through the caller's
+    /// fingerprint policy. `None` means cancelled or a demux error; EOF returns the partial scan.
+    pub fn scan_keyframes(
+        &mut self, offset_ns: i64, window_ns: i64,
+        cancelled: impl Fn() -> bool,
+        matches_anchor: impl Fn(&[u8]) -> bool,
+    ) -> Option<Scan> {
+        if !self.seek_video(offset_ns.saturating_sub(window_ns)) { return None; }
+        let mut scan = Scan { matched: None, k_le: None, bytes: 0 };
+        unsafe {
+            let vst = *(*self.fmt).streams.add(self.video_index as usize);
+            loop {
+                if cancelled() { return None; }
+                let r = ffi::av_read_frame(self.fmt, self.pkt);
+                if r < 0 { return (r == AVERROR_EOF && !cancelled()).then_some(scan); }
+                let size = (*self.pkt).size.max(0);
+                scan.bytes += i64::from(size);
+                if (*self.pkt).stream_index == self.video_index && (*self.pkt).flags & ffi::AV_PKT_FLAG_KEY != 0 {
+                    if let Some(t) = pts_ns_opt(self.pkt, vst) {
+                        if t > offset_ns.saturating_add(window_ns) {
+                            ffi::av_packet_unref(self.pkt);
+                            return Some(scan);
+                        }
+                        if t <= offset_ns { scan.k_le = Some(scan.k_le.map_or(t, |k| k.max(t))); }
+                        if !(*self.pkt).data.is_null() && matches_anchor(std::slice::from_raw_parts((*self.pkt).data, size as usize)) {
+                            scan.matched = Some(t);
+                            ffi::av_packet_unref(self.pkt);
+                            return Some(scan);
+                        }
+                    }
+                }
+                ffi::av_packet_unref(self.pkt);
+            }
+        }
+    }
+
+    /// Read one interleaved packet. EOF is `Ok(None)`; a transport/demux failure is `Err(())`.
+    /// All returned cue payloads are owned before the FFmpeg packet is released. Admission is
+    /// checked before a raw text/ASS copy; bitmap budget is enforced in the decoder before pixels
+    /// are copied. Non-subtitle packet times still advance the caller's pacing and held-set rule.
+    pub fn next(&mut self, ordinal: usize, decode_image: bool, bitmap_budget: usize) -> Result<Option<PacketObservation>, ()> {
+        unsafe {
+            let r = ffi::av_read_frame(self.fmt, self.pkt);
+            if r < 0 { return if r == AVERROR_EOF { Ok(None) } else { Err(()) }; }
+            let si = (*self.pkt).stream_index;
+            if si < 0 || si as u32 >= (*self.fmt).nb_streams {
+                ffi::av_packet_unref(self.pkt);
+                return Ok(Some(PacketObservation { time_ns: None, cue: None }));
+            }
+            let st = *(*self.fmt).streams.add(si as usize);
+            let time_ns = pts_ns_opt(self.pkt, st);
+            let cue = if self.tracks.get(ordinal).is_some_and(|track| track.stream_index == si) {
+                match self.kinds.get(ordinal) {
+                    Some(DecodeKind::Bitmap) if decode_image => self.decoders.decode(ordinal, self.pkt, bitmap_budget)
+                        .map(|display| RawCue::Bitmap { track: ordinal, pts: pts_ns(self.pkt, st), display }),
+                    Some(DecodeKind::Text { max_bytes }) | Some(DecodeKind::Ass { max_bytes }) => {
+                        let sz = (*self.pkt).size.max(0) as usize;
+                        if sz == 0 || sz > *max_bytes || (*self.pkt).data.is_null() { None }
+                        else {
+                            let raw = std::slice::from_raw_parts((*self.pkt).data, sz);
+                            let start = pts_ns(self.pkt, st);
+                            let dur = (*self.pkt).duration;
+                            let end = if dur > 0 {
+                                start + ffi::av_rescale_q(dur, ffi::stream_time_base(st), ffi::NS_TB)
+                            } else { start + 4_000_000_000 };
+                            Some(RawCue::Bytes { track: ordinal, start, end, payload: raw.to_vec() })
+                        }
+                    }
+                    _ => None,
+                }
+            } else { None };
+            ffi::av_packet_unref(self.pkt);
+            Ok(Some(PacketObservation { time_ns, cue }))
+        }
+    }
+}
+
+impl Drop for Job {
+    fn drop(&mut self) {
+        // Decoders first, then packet, format, AVIO and finally the caller's transport.
+        unsafe {
+            self.decoders.close();
+            if !self.pkt.is_null() { ffi::av_packet_free(&mut self.pkt); }
+            if !self.fmt.is_null() { ffi::avformat_close_input(&mut self.fmt); }
+        }
+        drop(self.input.take());
+    }
+}
+
+pub struct Scan {
+    pub matched: Option<i64>,
+    pub k_le: Option<i64>,
+    pub bytes: i64,
+}
+
+unsafe fn stream_language(st: *mut AVStream) -> Option<String> {
+    let dict = *((st as *const u8).add(ffi::OFF_STREAM_METADATA) as *const *const AVDictionary);
+    if dict.is_null() { return None; }
+    let entry = ffi::av_dict_get(dict, c"language".as_ptr(), std::ptr::null(), 0);
+    if entry.is_null() || (*entry).value.is_null() { return None; }
+    let language = std::ffi::CStr::from_ptr((*entry).value).to_string_lossy().trim().to_string();
+    (!language.is_empty()).then_some(language)
+}

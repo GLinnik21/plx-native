@@ -5,7 +5,7 @@
 use crate::{abr, route};
 use plx_playback_contract::adaptive::PublicationGate;
 use plx_playback_contract::adaptive::{
-    Acquisition, FeedAction, FeedFailure, FeedObservation, FeedPort, TrialClock,
+    Acquisition, ActiveQuantum, AutomaticTransition, BufferFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
     TrialObservation, TrialPhase, TrialProtocol, TrialProtocolError,
 };
 use plx_playback_contract::SourceKey;
@@ -304,6 +304,36 @@ pub(crate) fn candidate_sample(
     )
 }
 
+pub(crate) fn buffer_snapshot(fact: BufferFact) -> abr::BufferSnapshot {
+    abr::BufferSnapshot {
+        playback: abr::MediaTimeMs(fact.playback_ms),
+        video_tail: abr::MediaTimeMs(fact.video_tail_ms),
+        audio_tail: fact.audio_tail_ms.map(abr::MediaTimeMs),
+        audio_expected: fact.audio_expected,
+    }
+}
+
+pub(crate) fn active_sample(
+    acquisition: Acquisition, buffer: BufferFact, abandoned: bool,
+) -> Option<abr::SegmentSample> {
+    let duration_ms = u32::try_from(acquisition.duration.as_millis()).ok()?;
+    let obligation_ms = u32::try_from(
+        acquisition.duration.as_nanos().checked_add(999_999)? / 1_000_000,
+    ).ok()?;
+    let buffer = buffer_snapshot(buffer);
+    if abandoned {
+        abr::SegmentSample::abandoned_acquisition(
+            acquisition.bytes, acquisition.active_us, acquisition.total_us,
+            duration_ms, obligation_ms, buffer,
+        )
+    } else {
+        abr::SegmentSample::new_with_obligation(
+            acquisition.bytes, acquisition.active_us, acquisition.total_us,
+            duration_ms, obligation_ms, buffer,
+        )
+    }
+}
+
 /// A physical feed failure is a circumstance unless the candidate's reserve clock expired.
 pub(crate) fn reject_cause_for_feed_failure(failure: FeedFailure) -> abr::RejectCause {
     if failure == FeedFailure::Deadline {
@@ -456,6 +486,58 @@ pub(crate) struct RoundDecision {
     pub(crate) prime_runway_ms: Option<i64>,
 }
 
+pub(crate) struct ActiveAfterPrefetch {
+    pub(crate) reconsidered: Option<Reconsideration>,
+    pub(crate) steady: bool,
+    pub(crate) source: LatchedOriginalRecovery,
+}
+
+pub(crate) struct PreparedOriginalSwitch {
+    pub(crate) kbps: u32,
+    pub(crate) cancelled: Option<(abr::Proposal, bool)>,
+}
+
+pub(crate) struct ActiveQuantumResult {
+    sample: abr::SegmentSample,
+    pub(crate) cleanup_ready: bool,
+    delivered: bool,
+    abandoned: bool,
+}
+
+pub(crate) struct RefreshedQuantum {
+    sample: abr::SegmentSample,
+    delivered: bool,
+    abandoned: bool,
+}
+
+impl ActiveQuantumResult {
+    /// The rollback playlist may have blocked. It supplies a second buffer
+    /// fact after that wait without changing this acquisition's transfer.
+    pub(crate) fn refresh(self, buffer: BufferFact) -> RefreshedQuantum {
+        RefreshedQuantum {
+            sample: self.sample.with_buffer(buffer_snapshot(buffer)),
+            delivered: self.delivered,
+            abandoned: self.abandoned,
+        }
+    }
+}
+
+impl RefreshedQuantum {
+    pub(crate) fn sample(&self) -> abr::SegmentSample { self.sample }
+
+    pub(crate) fn observe(
+        self, coordinator: &mut Coordinator, rollback_media_ms: Option<u32>,
+        now_ms: u64, boundary: bool,
+    ) -> (abr::SegmentSample, RoundDecision, bool) {
+        let round = coordinator.observe(
+            self.sample, rollback_media_ms, now_ms, boundary,
+        );
+        let prefetch = self.delivered && !self.abandoned
+            && matches!(round.decision, abr::Decision::Stay);
+        (self.sample, round, prefetch)
+    }
+}
+
 pub(crate) struct Reconsideration {
     pub(crate) verdict: abr::RecoveryVerdict,
     pub(crate) measured_kbps: u32,
@@ -496,6 +578,13 @@ pub(crate) struct ProbeGrade {
     pub(crate) probes: u8,
 }
 
+pub(crate) enum ProbeRecoveryAction {
+    Steady,
+    Held,
+    Retained,
+    Switch { kbps: u32, measured_kbps: u32 },
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct VariantFacts {
     pub(crate) width: i32,
@@ -532,6 +621,11 @@ pub(crate) struct ExplorationGrant {
     pub(crate) buffered_ms: i64,
     pub(crate) runway_ms: i64,
     pub(crate) budget_ms: i64,
+}
+
+pub(crate) enum PreprimePlan {
+    Recovery,
+    Exploration { grant: ExplorationGrant, started_ns: i64 },
 }
 
 pub(crate) enum ExplorationFailure {
@@ -606,7 +700,7 @@ impl Coordinator {
         );
         Some(plx_playback_contract::adaptive::TrialProtocol::new(id))
     }
-    pub(crate) fn grant_exploration(
+    fn grant_exploration(
         &mut self, proposal: abr::Proposal, buffered_ms: Option<i64>, now_ms: u64,
     ) -> Result<ExplorationGrant, ExplorationFailure> {
         let Some(buffered_ms) = buffered_ms else {
@@ -631,6 +725,20 @@ impl Coordinator {
             return Err(ExplorationFailure::BudgetMoved { budget_ms });
         }
         Ok(ExplorationGrant { buffered_ms, runway_ms, budget_ms })
+    }
+    pub(crate) fn preprime_plan(
+        &mut self, proposal: abr::Proposal,
+        buffer: impl FnOnce() -> (Option<i64>, i64),
+        now_ms: impl FnOnce() -> u64,
+    ) -> Result<PreprimePlan, ExplorationFailure> {
+        match proposal.direction {
+            abr::Direction::Down => Ok(PreprimePlan::Recovery),
+            abr::Direction::Up => {
+                let (buffered_ms, started_ns) = buffer();
+                let grant = self.grant_exploration(proposal, buffered_ms, now_ms())?;
+                Ok(PreprimePlan::Exploration { grant, started_ns })
+            }
+        }
     }
     pub(crate) fn reject(&mut self, proposal: abr::Proposal, cause: abr::RejectCause, now_ms: u64) -> bool {
         let refreshing = proposal.rung == self.controller.current();
@@ -736,7 +844,7 @@ impl Coordinator {
         if let Some(gate) = self.recovery.as_mut() { gate.on_hls_commit(direction); }
         self.recover_kbps = 0;
     }
-    pub(crate) fn reconsider_original(
+    fn reconsider_original(
         &mut self, telemetry: &abr::ControllerTelemetry, remaining_ms: i64,
     ) -> Option<Reconsideration> {
         let current = self.controller.catalog().candidate(self.controller.current());
@@ -778,10 +886,76 @@ impl Coordinator {
         )
     }
 
+    /// A latched source recovery wins over a pending rung proposal only after
+    /// the physical automatic lease is acquired. Return its diagnostic receipt
+    /// before the caller enters the AQ publication fence.
+    pub(crate) fn prepare_original_switch(
+        &mut self, source: LatchedOriginalRecovery, now_ms: u64,
+    ) -> Option<PreparedOriginalSwitch> {
+        let LatchedOriginalRecovery::Switch { kbps, cancel } = source else {
+            return None;
+        };
+        let cancelled = cancel.map(|proposal| {
+            let refreshing = self.reject(proposal, abr::RejectCause::Circumstance, now_ms);
+            (proposal, refreshing)
+        });
+        Some(PreparedOriginalSwitch { kbps, cancelled })
+    }
+
+    /// The active observation is complete and any same-encoder lookahead has
+    /// finished. Reconsider a retained Original verdict before choosing the
+    /// higher-priority source switch or the next quality action.
+    pub(crate) fn after_active_prefetch(
+        &mut self, round: &RoundDecision, sample: abr::SegmentSample,
+        delivered: bool, remaining_ms: i64, paused: bool, cleanup_ready: bool,
+    ) -> ActiveAfterPrefetch {
+        let reconsidered = if delivered && sample.completed() {
+            self.reconsider_original(&round.telemetry, remaining_ms)
+        } else {
+            None
+        };
+        let source = if paused {
+            LatchedOriginalRecovery::Wait
+        } else {
+            self.source_switch(
+                None, round.decision, cleanup_ready,
+                sample.buffer.buffered_ms(), sample.media_duration_ms(),
+            )
+        };
+        ActiveAfterPrefetch {
+            reconsidered,
+            steady: matches!(round.decision, abr::Decision::Stay),
+            source,
+        }
+    }
+
     /// Called after the higher-priority latched source switch had its publication
     /// opportunity. A probe spends its permit only on a Stay boundary; a quality
     /// transaction receives its pending reserve policy from the same controller.
-    pub(crate) fn next_action(
+    pub(crate) fn next_round_action(
+        &mut self, round: &RoundDecision, sample: abr::SegmentSample,
+        rollback_media_ms: Option<u32>, remaining_ms: i64,
+        now_ms: impl FnOnce() -> u64, paused: bool, cleanup_ready: bool,
+        permission: impl FnOnce(AutomaticTransition) -> bool,
+        rebuffer: impl FnOnce() -> (bool, bool),
+    ) -> RoundAction {
+        let automatic_permitted = match round.decision {
+            abr::Decision::Stay => true,
+            abr::Decision::Prime(proposal) => permission(match proposal.direction {
+                abr::Direction::Up => AutomaticTransition::QualityUp,
+                abr::Direction::Down => AutomaticTransition::QualityDown,
+            }),
+        };
+        let now_ms = now_ms();
+        let (rebuffer_requested, rebuffering) = rebuffer();
+        self.next_action(
+            round.decision, &round.telemetry, sample, rollback_media_ms,
+            remaining_ms, now_ms, paused, cleanup_ready, automatic_permitted,
+            rebuffer_requested, rebuffering,
+        )
+    }
+
+    fn next_action(
         &mut self, decision: abr::Decision, telemetry: &abr::ControllerTelemetry,
         sample: abr::SegmentSample, rollback_media_ms: Option<u32>, remaining_ms: i64,
         now_ms: u64, paused: bool, cleanup_ready: bool,
@@ -859,6 +1033,40 @@ impl Coordinator {
             verdict, comparison: gate.comparison(), basis: gate.basis(), probes: gate.probes(),
         })
     }
+    /// A measured Original verdict gets a fresh pause snapshot only when it
+    /// actually requests recovery. A user hold retains the result; a completed
+    /// hidden pause cycle ages the controller before considering publication.
+    pub(crate) fn settle_probe_recovery(
+        &mut self, grade: Option<&ProbeGrade>, probe_kbps: u32,
+        pause: impl FnOnce() -> PauseFact, decision: abr::Decision,
+        cleanup_ready: bool, buffered_ms: Option<i64>, media_duration_ms: u32,
+    ) -> ProbeRecoveryAction {
+        if !grade.is_some_and(|grade| grade.verdict == abr::RecoveryVerdict::Recover) {
+            return ProbeRecoveryAction::Steady;
+        }
+        let measured_kbps = probe_kbps.max(1);
+        let pause = pause();
+        if let Some(elapsed_ms) = pause.completed_ms {
+            self.on_resume(elapsed_ms);
+        }
+        if pause.paused {
+            self.retain_original_recovery(measured_kbps);
+            return ProbeRecoveryAction::Held;
+        }
+        match self.source_switch(
+            Some(measured_kbps), decision, cleanup_ready,
+            buffered_ms, media_duration_ms,
+        ) {
+            LatchedOriginalRecovery::Switch { kbps, cancel } => {
+                debug_assert!(cancel.is_none(), "a source probe is issued only from Stay");
+                ProbeRecoveryAction::Switch { kbps, measured_kbps }
+            }
+            LatchedOriginalRecovery::Wait => {
+                self.retain_original_recovery(measured_kbps);
+                ProbeRecoveryAction::Retained
+            }
+        }
+    }
     pub(crate) fn probe_original(
         &self, plan: abr::SourceProbePlan, cancelled: impl FnOnce() -> bool,
     ) -> ProbeResult {
@@ -913,6 +1121,20 @@ impl Coordinator {
             kbps, position_ns, on_published)
     }
 
+    pub(crate) fn publish_probed_original(
+        &mut self, port: &mut dyn PublicationGate, authorized: bool,
+        kbps: u32, measured_kbps: u32,
+        position_ns: impl FnOnce() -> i64, on_published: impl FnOnce(),
+    ) -> OriginalPublication {
+        let publication = self.publish_original(
+            port, authorized, kbps, position_ns, on_published,
+        );
+        if matches!(publication, OriginalPublication::Busy | OriginalPublication::ClockMoved) {
+            self.retain_original_recovery(measured_kbps);
+        }
+        publication
+    }
+
     pub(crate) fn advance_to(&mut self, now_ms: u64) {
         if let Some(gate) = self.recovery.as_mut() { gate.advance_to(now_ms); }
     }
@@ -933,6 +1155,39 @@ impl Coordinator {
         }
     }
 
+    /// The first active-boundary step runs before the rollback playlist lookup.
+    /// That lookup may block, so cleanup and variant evidence use this earlier
+    /// measurement instant exactly as they did in the feed loop.
+    pub(crate) fn begin_active_quantum(
+        &mut self, acquisition: Acquisition, buffer: impl FnOnce() -> BufferFact,
+        abandoned: bool, delivered: bool, now_ms: u64,
+    ) -> Option<ActiveQuantumResult> {
+        self.advance_to(now_ms);
+        let quantum = ActiveQuantum {
+            acquisition, buffer: buffer(), abandoned, delivered,
+        };
+        let sample = active_sample(
+            quantum.acquisition, quantum.buffer, quantum.abandoned,
+        )?;
+        if quantum.delivered {
+            if let Some(variant) = abr::ObservedHlsVariant::new(
+                quantum.acquisition.declared_bps,
+                quantum.acquisition.width,
+                quantum.acquisition.height,
+            ) {
+                self.observe_active_variant(variant, sample.network_kbps());
+            }
+        }
+        let cleanup_ready = self.encoder_cleanup_ready(
+            quantum.delivered && sample.completed(),
+        );
+        Some(ActiveQuantumResult {
+            sample, cleanup_ready,
+            delivered: quantum.delivered, abandoned: quantum.abandoned,
+        })
+    }
+
+
     pub(crate) fn on_resume(&mut self, elapsed_ms: u64) {
         self.controller.on_resume(elapsed_ms);
     }
@@ -940,7 +1195,7 @@ impl Coordinator {
     /// The pure controller step: the caller supplies the completed acquisition,
     /// current rollback obligation, and its monotonic time. No clock or registry
     /// is read here, and candidate media is never counted as active evidence.
-    pub(crate) fn observe(
+    fn observe(
         &mut self, sample: abr::SegmentSample, rollback_media_ms: Option<u32>,
         now_ms: u64, session_boundary: bool,
     ) -> RoundDecision {
