@@ -38,6 +38,137 @@ use plx_playback_contract::{AttemptId, BackendEvent, BackendKind, Capabilities, 
 #[cfg(feature = "play-uri")]
 use plx_play_uri::backend::{Config as UriConfig, UriBackend, UriSource};
 
+/// An external IO qualifier's verdict for one resolved Part and its exact selected streams.
+/// The owned URL and native track map never enter the route machine or a Debug value. No
+/// production qualifier currently supplies this value; absence preserves the Feed choice.
+#[cfg(feature = "play-uri")]
+pub struct QualifiedUriOffer {
+    pub(super) route_start: crate::route::RouteStartTransaction,
+    pub(super) selection: crate::route::UriSelection,
+    pub(super) source: UriSource,
+    pub(super) requirements: plx_playback_contract::Requirements,
+    pub(super) initial: plx_playback_contract::InitialPlayback,
+    pub(super) expires_at: std::time::Instant,
+}
+
+#[cfg(all(test, feature = "play-uri"))]
+mod qualified_uri_offer_tests {
+    use super::*;
+    use plx_playback_contract::{Fidelity, InitialPlayback, Requirements, SourceKind, TrackChoice};
+    use plx_play_uri::backend::{Binding, MonotonicClock};
+
+    struct Clock;
+    impl MonotonicClock for Clock { fn now_ms(&self) -> u64 { 0 } }
+
+    fn requirements(audio: TrackChoice) -> Requirements {
+        Requirements { source: SourceKind::ProgressiveUri,
+            video: Fidelity::Exact, audio: Fidelity::Exact,
+            audio_track: audio, subtitle_track: TrackChoice::Unspecified }
+    }
+
+    #[test]
+    fn qualified_source_is_bound_to_resolved_selection_and_never_inferred_from_feed() {
+        let _serial = plx_base::testlock::serial();
+        let mut session = crate::route::PlaybackSession::IDLE;
+        crate::route::reset_player_control_for_test(&session);
+        crate::route::set_url(&mut session, "https://example.invalid/original.mkv");
+        let ticket = crate::route::begin_route_start().expect("route transaction");
+        if cfg!(feature = "play-feed") {
+            assert!(session.qualify_resolved_feed_offer(
+                crate::route::backend_policy::OfferId::FEED_ORIGINAL));
+            assert!(matches!(session.backend_offer(),
+                crate::route::backend_policy::Selection::Open(offer)
+                    if offer.backend == BackendKind::Feed));
+        }
+        let mut adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
+        let config = UriConfig {
+            transport: &plx_platform::tv::uri::NoUriMedia,
+            display: &plx_platform::tv::sink::NoSink,
+            clock: Box::new(Clock), app_id: "fixture".to_owned(),
+            binding: Binding::Unbound,
+            capabilities: Capabilities { progressive_uri: true, hls_uri: false,
+                packet_feed: false, pause: true, seek: true, audio_track: true,
+                subtitle_track: true, audio_off: false, subtitle_off: false },
+            startup_timeout_ms: 100, release_allowance_ms: 100, source_ttl_ms: 100,
+        };
+        assert!(adapter.install_uri_backend(config).is_ok());
+        let selection = session.uri_selection();
+        let mut stale = selection;
+        stale.part_id += 1;
+        let initial = InitialPlayback { position: None, paused: false };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let stale_offer = QualifiedUriOffer::new(ticket, stale,
+            UriSource::new("https://example.invalid/wrong.mkv".to_owned(), vec![]),
+            requirements(TrackChoice::Unspecified), initial, deadline).expect("typed offer");
+        assert!(matches!(adapter.offer_qualified_uri(&mut session, stale_offer), Err(Failure::Stale)));
+
+        let offered = QualifiedUriOffer::new(ticket, selection,
+            UriSource::new("https://example.invalid/original.mkv".to_owned(), vec![]),
+            requirements(TrackChoice::Unspecified), initial, deadline).expect("typed offer");
+        assert!(adapter.offer_qualified_uri(&mut session, offered).is_ok());
+        assert!(matches!(session.backend_offer(),
+            crate::route::backend_policy::Selection::Open(offer)
+                if offer.backend == BackendKind::Uri
+                    && offer.id == crate::route::backend_policy::OfferId::URI_ORIGINAL));
+        assert_eq!(super::super::route_start::start_bufferfeed_tracked(&mut session, &mut adapter),
+            super::super::route_start::BufferfeedStartOutcome::Failed,
+            "the explicit URI branch reaches a refusing IO fake and reports its failure");
+        assert!(adapter.qualified_uri.is_none(), "failed Start consumed the source authorization");
+        assert!(adapter.take_qualified_uri(&mut session, ticket).is_none(), "the URL is owned once");
+        if cfg!(feature = "play-feed") {
+            assert!(matches!(session.backend_offer(),
+                crate::route::backend_policy::Selection::Open(offer)
+                    if offer.backend == BackendKind::Feed),
+                "URI refusal retains the qualified Feed choice");
+        } else {
+            assert_eq!(session.backend_offer(), crate::route::backend_policy::Selection::Unqualified);
+        }
+        crate::route::reset_player_control_for_test(&session);
+    }
+
+    #[test]
+    fn original_selected_track_cannot_be_silently_changed_by_a_uri_offer() {
+        let selection = crate::route::UriSelection { server: plx_plex::plex::ServerId::UNSET,
+            part_id: 17, audio_sid: 41, subtitle_sid: 0 };
+        let ticket = crate::route::RouteStartTransaction::fixture(17);
+        let source = || UriSource::new("https://example.invalid/track.mkv".to_owned(), vec![]);
+        let initial = InitialPlayback { position: None, paused: true };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        assert!(matches!(QualifiedUriOffer::new(ticket, selection, source(),
+            requirements(TrackChoice::Selected(42)), initial, deadline), Err(Failure::Unsupported)));
+        assert!(QualifiedUriOffer::new(ticket, selection, source(),
+            requirements(TrackChoice::Selected(41)), initial, deadline).is_ok());
+    }
+}
+
+#[cfg(feature = "play-uri")]
+impl QualifiedUriOffer {
+    pub fn new(route_start: crate::route::RouteStartTransaction,
+        selection: crate::route::UriSelection, source: UriSource,
+        requirements: plx_playback_contract::Requirements,
+        initial: plx_playback_contract::InitialPlayback,
+        expires_at: std::time::Instant) -> Result<Self, Failure> {
+        if requirements.source == plx_playback_contract::SourceKind::PacketFeed
+            || requirements.video != plx_playback_contract::Fidelity::Exact
+            || requirements.audio != plx_playback_contract::Fidelity::Exact {
+            return Err(Failure::Unsupported);
+        }
+        let selected_audio = (selection.audio_sid > 0).then(||
+            plx_playback_contract::TrackChoice::Selected(selection.audio_sid as u64));
+        let selected_subtitle = (selection.subtitle_sid > 0).then(||
+            plx_playback_contract::TrackChoice::Selected(selection.subtitle_sid as u64));
+        if selected_audio.is_some_and(|choice| requirements.audio_track != choice)
+            || selected_subtitle.is_some_and(|choice| requirements.subtitle_track != choice)
+            || (selection.audio_sid <= 0 && matches!(requirements.audio_track,
+                plx_playback_contract::TrackChoice::Selected(_)))
+            || (selection.subtitle_sid <= 0 && matches!(requirements.subtitle_track,
+                plx_playback_contract::TrackChoice::Selected(_))) {
+            return Err(Failure::Unsupported);
+        }
+        Ok(Self { route_start, selection, source, requirements, initial, expires_at })
+    }
+}
+
 /// Temporary borrow of the adapter's persistent physical resources. The runner remains the
 /// single admission owner; each driver only executes addressed commands and reports evidence.
 struct PhysicalDrivers<'a> {
@@ -130,6 +261,12 @@ pub struct PlayerAdapter {
     backend_epoch: std::time::Instant,
     #[cfg(feature = "play-uri")]
     uri_backend: Option<UriBackend>,
+    #[cfg(feature = "play-uri")]
+    qualified_uri: Option<QualifiedUriOffer>,
+    #[cfg(feature = "play-uri")]
+    uri_route_attempt: Option<crate::route::RouteStartAttempt>,
+    #[cfg(feature = "play-uri")]
+    uri_route_settled: bool,
     /// Route identity and product trace for the installed physical attempt. The feed itself
     /// receives only the canonical contract ID and native epoch.
     feed_attempt: Option<(crate::route::RouteStartAttempt, u32)>,
@@ -189,6 +326,12 @@ impl PlayerAdapter {
             backend_epoch: std::time::Instant::now(),
             #[cfg(feature = "play-uri")]
             uri_backend: None,
+            #[cfg(feature = "play-uri")]
+            qualified_uri: None,
+            #[cfg(feature = "play-uri")]
+            uri_route_attempt: None,
+            #[cfg(feature = "play-uri")]
+            uri_route_settled: false,
             feed_attempt: None,
             timeline: None,
             repair: None,
@@ -327,6 +470,128 @@ impl PlayerAdapter {
         self.uri_backend.as_mut().ok_or(Failure::Unavailable)?
             .stage_source(attempt, key, source)?;
         Ok(key)
+    }
+
+    /// Accept source-specific qualification only for this session's current Part and selected
+    /// streams. The external qualifier supplies an expiry; a deferred native release cannot
+    /// retain an authorization past that deadline.
+    #[cfg(feature = "play-uri")]
+    pub fn offer_qualified_uri(&mut self, ps: &mut crate::route::PlaybackSession,
+        offer: QualifiedUriOffer) -> Result<(), Failure> {
+        if self.uri_backend.is_none() { return Err(Failure::Unavailable); }
+        if offer.selection != ps.uri_selection()
+            || crate::route::pending_route_start() != Some(offer.route_start)
+            || offer.expires_at <= std::time::Instant::now() {
+            return Err(Failure::Stale);
+        }
+        if !ps.ensure_backend_offers() { return Err(Failure::Stale); }
+        self.qualified_uri = Some(offer);
+        ps.qualify_backend_offer(BackendKind::Uri,
+            crate::route::backend_policy::OfferId::URI_ORIGINAL,
+            crate::route::backend_policy::Qualification::Qualified);
+        Ok(())
+    }
+
+    /// Consume only the exact still-authorized source after the route has won its native claim.
+    #[cfg(feature = "play-uri")]
+    pub(super) fn take_qualified_uri(&mut self, ps: &mut crate::route::PlaybackSession,
+        route_start: crate::route::RouteStartTransaction)
+        -> Option<QualifiedUriOffer> {
+        let Some(offer) = self.qualified_uri.take() else {
+            ps.qualify_backend_offer(BackendKind::Uri,
+                crate::route::backend_policy::OfferId::URI_ORIGINAL,
+                crate::route::backend_policy::Qualification::Unknown);
+            return None;
+        };
+        if offer.route_start == route_start && offer.selection == ps.uri_selection()
+            && offer.expires_at > std::time::Instant::now() {
+            Some(offer)
+        } else {
+            ps.qualify_backend_offer(BackendKind::Uri,
+                crate::route::backend_policy::OfferId::URI_ORIGINAL,
+                crate::route::backend_policy::Qualification::Unknown);
+            None
+        }
+    }
+
+    #[cfg(feature = "play-uri")]
+    pub(super) fn bind_uri_attempt(&mut self, attempt: crate::route::RouteStartAttempt) {
+        self.uri_route_attempt = Some(attempt);
+        self.uri_route_settled = false;
+    }
+
+    #[cfg(feature = "play-uri")]
+    pub(super) fn active_uri_attempt(&self) -> Option<crate::route::RouteStartAttempt> {
+        self.uri_route_attempt
+    }
+
+    #[cfg(feature = "play-uri")]
+    pub(super) fn uri_backend_exit_pending(&self) -> bool {
+        self.uri_backend.as_ref().is_some_and(|driver|
+            driver.exit_disposition() == ExitDisposition::PreserveNativeOwnership)
+    }
+
+    /// A quarantined native registration must survive the stack unwind before `_exit`.
+    #[cfg(feature = "play-uri")]
+    pub(super) fn park_uri_backend_for_exit(&mut self) {
+        if let Some(driver) = self.uri_backend.take() { std::mem::forget(driver); }
+    }
+
+    /// Land URI readiness/failure against the same route transaction as a Feed Load receipt.
+    /// A generic queue answer or clock observation cannot settle the start.
+    pub fn backend_poll_session_at(&mut self, ps: &mut crate::route::PlaybackSession,
+        at: super::attempt_metrics::Tick) -> backend::RunResult {
+        #[cfg(feature = "play-uri")]
+        if self.qualified_uri.as_ref().is_some_and(|offer|
+            offer.expires_at <= std::time::Instant::now()) {
+            self.qualified_uri = None;
+            ps.qualify_backend_offer(BackendKind::Uri,
+                crate::route::backend_policy::OfferId::URI_ORIGINAL,
+                crate::route::backend_policy::Qualification::Unknown);
+        }
+        let result = self.backend_poll_at(at);
+        #[cfg(feature = "play-uri")]
+        for notice in &result.playback {
+            match *notice {
+                plx_playback_contract::Fx::AcceptedObservation {
+                    backend: BackendKind::Uri, attempt,
+                    observation: plx_playback_contract::Observation::Playback(observed),
+                } if observed.value == plx_playback_contract::Playback::ReadyAwaitPlay => {
+                    if let Some(route_attempt) = self.uri_route_attempt.filter(|route|
+                        route.contract_id() == attempt && !self.uri_route_settled) {
+                        self.uri_route_settled = crate::route::settle_route_start(
+                            ps, route_attempt, crate::route::RouteStartResult::Started);
+                    }
+                }
+                plx_playback_contract::Fx::AcceptedObservation {
+                    backend: BackendKind::Uri, attempt,
+                    observation: plx_playback_contract::Observation::Failed(_),
+                } => {
+                    if let Some(route_attempt) = self.uri_route_attempt.filter(|route|
+                        route.contract_id() == attempt && !self.uri_route_settled) {
+                        self.uri_route_settled = crate::route::settle_route_start(
+                            ps, route_attempt, crate::route::RouteStartResult::StartFailed);
+                    }
+                }
+                plx_playback_contract::Fx::ReleaseOutcome {
+                    backend: BackendKind::Uri, attempt, ..
+                } => {
+                    if let Some(route_attempt) = self.uri_route_attempt.filter(|route|
+                        route.contract_id() == attempt && !self.uri_route_settled) {
+                        self.uri_route_settled = crate::route::settle_route_start(
+                            ps, route_attempt, crate::route::RouteStartResult::StartFailed);
+                    }
+                    if matches!(notice, plx_playback_contract::Fx::ReleaseOutcome {
+                        status: ReleaseStatus::Released, .. }) {
+                        self.uri_route_attempt = None;
+                    }
+                }
+                _ => {}
+            }
+        }
+        #[cfg(not(feature = "play-uri"))]
+        let _ = ps;
+        result
     }
 
     /// A locator is only an escrow key, never another playback attempt identity.

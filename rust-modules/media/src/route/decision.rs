@@ -602,14 +602,21 @@ impl PlaybackSession {
         Some((offer.video, offer.audio))
     }
 
+    /// A resolved source begins the finite catalog once; later capability refreshes and
+    /// recovery landings keep its spent history.
+    pub fn ensure_backend_offers(&mut self) -> bool {
+        if self.url.is_empty() { return false; }
+        let force_original = self.direct_play_mode == DirectPlayMode::Forced;
+        self.backend_policy.get_or_insert_with(||
+            super::backend_policy::BackendPolicy::for_request(force_original));
+        true
+    }
+
     /// Publish a Feed recipe only after a route has resolved an exact source for these selected
     /// streams. Ordinary plans and explicit test sources use this same admission input.
     pub fn qualify_resolved_feed_offer(&mut self, id: super::backend_policy::OfferId) -> bool {
-        if !cfg!(feature = "play-feed") || self.url.is_empty() { return false; }
-        let force_original = self.direct_play_mode == DirectPlayMode::Forced;
-        let policy = self.backend_policy.get_or_insert_with(||
-            super::backend_policy::BackendPolicy::for_request(force_original));
-        policy.qualify_planned_feed(id);
+        if !cfg!(feature = "play-feed") || !self.ensure_backend_offers() { return false; }
+        self.backend_policy.as_mut().expect("catalog exists").qualify_planned_feed(id);
         self.planned_feed_offer = Some(id);
         true
     }
