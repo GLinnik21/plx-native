@@ -13,6 +13,9 @@
 //! to reach them — a `use crate::webos::video_sink::sys` from elsewhere does not compile, which is
 //! what makes this a guarantee rather than a note.
 //!
+//! Shared display methods remain available without `feed-sink`; packet-feed declarations and
+//! the `VideoSink` implementation require that feature.
+//!
 //! The wrappers are the methods of [`StarfishSink`], the television's `tv::sink::VideoSink`; the
 //! port table installs it (`port.rs`) and `player::sink()` reaches it. They stay `unsafe fn`,
 //! one-for-one with the declarations. Several take raw pointers, and the pointer-free ones still
@@ -26,12 +29,17 @@
 //! live code reaches an extern and the linker drops them.
 use plx_base::task::MainThread;
 use std::ffi::CStr;
-use std::os::raw::{c_char, c_int, c_long, c_uint};
+use std::os::raw::{c_char, c_int, c_long};
+#[cfg(feature = "feed-sink")]
+use std::os::raw::c_uint;
 
 /// The declarations themselves — private ON PURPOSE. See the module doc.
 mod sys {
-    use std::os::raw::{c_char, c_int, c_long, c_uint};
+    use std::os::raw::{c_char, c_int, c_long};
+    #[cfg(feature = "feed-sink")]
+    use std::os::raw::c_uint;
 
+    #[cfg(feature = "feed-sink")]
     extern "C" {
         pub(super) fn sf_load(payload: *const c_char, epoch: c_uint) -> c_int;
         pub(super) fn sf_ready() -> c_int;
@@ -53,6 +61,9 @@ mod sys {
         pub(super) fn sf_destroy() -> c_int;
         pub(super) fn sf_quarantine();
 
+    }
+
+    extern "C" {
         pub(super) fn vp_mode() -> c_int;
         pub(super) fn vp_create_window() -> *const c_char;
         pub(super) fn vp_window_id() -> *const c_char;
@@ -93,6 +104,7 @@ mod sys {
 /// private `sys` declarations above.
 pub struct StarfishSink;
 
+#[cfg(feature = "feed-sink")]
 impl crate::tv::sink::VideoSink for StarfishSink {
     /// **One of the two verbs of this seam that is NOT main-thread (the other is `unload`, on its
     /// `UnloadTicket`), and the missing token is how you can tell.** `Load` blocks for the pipeline construction and the library owns its own GMainContext

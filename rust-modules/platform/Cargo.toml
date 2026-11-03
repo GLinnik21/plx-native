@@ -16,6 +16,8 @@ crate-type = ["rlib"]
 
 [features]
 default = []
+# Native packet-feed bindings; display binding is independently available.
+feed-sink = []
 # Forwarded from the application crate, which is the only one that sets them. Each is named here
 # only because some code in this crate has a `cfg` on it.
 devtriggers = ["uri-transport", "plx_base/devtriggers", "plx_machine/devtriggers"]

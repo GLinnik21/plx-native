@@ -855,7 +855,7 @@ fn every_fed_codec_has_a_framing_and_nothing_else_does() {
 /// built from, so the two cannot be edited apart.
 #[test]
 fn a_framing_names_the_load_declaration_it_goes_with() {
-    use crate::player::engine::LoadVideo;
+    use crate::LoadVideo;
     for (id, lv) in [
         (AV_CODEC_ID_H264, LoadVideo::H264),
         (AV_CODEC_ID_HEVC, LoadVideo::H265),

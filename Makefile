@@ -210,6 +210,9 @@ print-sentry-handler: ; @echo '$(SENTRY_HANDLER)'
 print-ffmpeg-staged:  ; @echo '$(FFMPEG_STAGED)'
 print-sentry-project: ; @echo '$(SENTRY_PROJECT)'
 print-rust-toolchain: ; @echo '$(RUST_TOOLCHAIN)'
+print-playback-config:
+	@printf '%s\n' 'backends=$(PLAYBACK_BACKENDS)' 'features=$(RUST_FEATFLAGS)' 'target=$(RUST_TDIR)' 'native=$(SRCS)' 'libraries=$(LIBS_REAL)' 'interposer=$(SMP_INTERPOSER_LDFLAG)'
+
 print-rust-codegen: ; @echo '$(RUST_CODEGEN)'
 print-cargo-env: ; @env $(TELEMETRY_ENV) env | grep '^PLX_' | sort || true
 # What `tools/build-bench.py` needs to run the recipes' cargo invocations without restating their
@@ -399,7 +402,7 @@ RUST_ENV = RUSTFLAGS="$(RUST_CODEGEN) $(RUST_DEBUGINFO) $(RUST_CAPLINTS) $(RUST_
 # them normally — with real link-time symbol checking — the right call.
 #   libpf-1.0 carries mediapipeline::CustomPipeline (the webOS<11 seek path).
 LIBS_REAL = -lSDL2 -lSDL2_ttf -lGLESv2 -lluna-service2 -lglib-2.0 \
-            -lwayland-client -lplayerAPIs -lpf-1.0
+            -lwayland-client $(if $(PLAYBACK_HAS_FEED),-lplayerAPIs -lpf-1.0,)
 # NOT LISTED, DELIBERATELY — but for TWO different reasons, and this comment used to give only
 # the first, for all three.
 #
@@ -557,8 +560,28 @@ $(if $(findstring nightly,$(RUST_TOOLCHAIN)),,$(error HOST_THREADS=$(HOST_THREAD
 endif
 HOST_ENV = $(if $(filter-out 0 1,$(HOST_THREADS)),CARGO_BUILD_RUSTFLAGS='-Zthreads=$(HOST_THREADS)')
 
-RUST_FEATFLAGS = $(if $(RELEASE),--no-default-features,)$(if $(LAB), --features lab-diagnostics,)
-RUST_TDIR      = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOLS),-sym,)
+# Backend inclusion is explicit even when RELEASE drops diagnostic defaults. These names also
+# key target directories and native objects, so changing a backend cannot reuse another binary.
+PLAYBACK_BACKENDS ?= both
+ifneq ($(words $(PLAYBACK_BACKENDS)),1)
+$(error PLAYBACK_BACKENDS must name one backend configuration)
+endif
+ifneq ($(filter $(PLAYBACK_BACKENDS),both uri feed none),$(PLAYBACK_BACKENDS))
+$(error PLAYBACK_BACKENDS must be both, uri, feed or none)
+endif
+PLAYBACK_FEATURES_both = play-uri,play-feed
+PLAYBACK_FEATURES_uri = play-uri
+PLAYBACK_FEATURES_feed = play-feed
+PLAYBACK_FEATURES_none =
+RUST_BACKEND_FEATURES = $(PLAYBACK_FEATURES_$(PLAYBACK_BACKENDS))
+PLAYBACK_HAS_FEED = $(filter both feed,$(PLAYBACK_BACKENDS))
+PLAYBACK_EMPTY :=
+PLAYBACK_SPACE := $(PLAYBACK_EMPTY) $(PLAYBACK_EMPTY)
+PLAYBACK_COMMA := ,
+RUST_BUILD_FEATURES = $(subst $(PLAYBACK_SPACE),$(PLAYBACK_COMMA),$(strip $(subst $(PLAYBACK_COMMA),$(PLAYBACK_SPACE),$(RUST_BACKEND_FEATURES)) $(if $(RELEASE),,devtools devtriggers threadcheck) $(if $(LAB),lab-diagnostics,)))
+RUST_FEATFLAGS = --no-default-features $(if $(RUST_BUILD_FEATURES),--features $(RUST_BUILD_FEATURES),)
+RUST_TDIR = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOLS),-sym,)$(if $(filter both,$(PLAYBACK_BACKENDS)),,-$(PLAYBACK_BACKENDS))
+
 # OVERRIDING RUST_FEATFLAGS BY HAND? PASS RUST_TDIR TOO. This dir is keyed on RELEASE, not on the
 # flag set, so `make RUST_FEATFLAGS=...` alone lands in the SAME target/ as an ordinary build:
 # cargo's staticlib looks up to date, the stamp below deletes pkg/plxnative, and make relinks the
@@ -848,7 +871,7 @@ RUST_LIB    = rust-modules/$(RUST_TDIR)/$(RUST_TARGET)/$(ARM_PROFILE)/libplxnati
 # Every ordinary C translation unit ships; gpdebug remains an opt-in allocator guard.
 # ass.c, ass_fonts.c and ass_text.c belong to the privately bundled renderer, never the application
 # ELF (ci/test_renderer_sources.py holds this list to ci/build-libass.py's).
-SRCS = $(filter-out src/gpdebug.c src/ass.c src/ass_fonts.c src/ass_text.c,$(wildcard src/*.c)) src/compat/getauxval.c
+SRCS = $(filter-out src/gpdebug.c src/ass.c src/ass_fonts.c src/ass_text.c $(if $(PLAYBACK_HAS_FEED),,src/starfish.c),$(wildcard src/*.c)) src/compat/getauxval.c
 OBJS = $(SRCS:.c=.o)
 
 all: pkg/plxnative pkg/plxnative-storage
@@ -1046,7 +1069,7 @@ pkg/plxnative-storage: LICENSE $(STORAGE_INPUTS) rust-modules/Cargo.toml rust-mo
 # interposer resolves the firmware implementation with RTLD_NEXT before every Load. Do not widen
 # this to -E/--export-dynamic: no other executable-private symbol is part of the native ABI.
 SMP_CALLBACK_HOOK = _ZN17StarfishMediaAPIs20callbackFunctionHookEixPKc
-SMP_INTERPOSER_LDFLAG = -Wl,--export-dynamic-symbol=$(SMP_CALLBACK_HOOK)
+SMP_INTERPOSER_LDFLAG = $(if $(PLAYBACK_HAS_FEED),-Wl$(PLAYBACK_COMMA)--export-dynamic-symbol=$(SMP_CALLBACK_HOOK),)
 # --gc-sections: this link is gcc's, not rustc's. rustc passes --gc-sections itself when IT links an
 # executable (which is why pkg/plxnative-storage above never needed the flag), but here the Rust
 # code arrives as a finished staticlib, so without the flag every section of every archive member
@@ -1070,10 +1093,19 @@ GC_SECTIONS_LDFLAG = -Wl,--gc-sections
 # call to __aeabi_fadd). With libm.so first, those names are already defined when the archive is
 # scanned and the members are never extracted, so every call (Rust's and svg.c's) binds to glibc's
 # VFP libm. `ci/check-elf.sh` fails if a local definition of one of them comes back.
+ifeq ($(PLAYBACK_BACKENDS),none)
+.PHONY: playback-no-backend
+playback-no-backend:
+	@echo 'A television package requires a URI or feed playback backend.' >&2
+	@exit 1
+pkg/plxnative: playback-no-backend
+else
 pkg/plxnative: $(OBJS) $(RUST_LIB) $(FFMPEG_STAGED) $(LIBASS_STAGED) $(SENTRY_NATIVE_STAMP) Makefile ci/arm-cc.py ci/check-link-evidence.py
 	$(CC) $(CFLAGS) -Wl,--build-id=sha1 $(GC_SECTIONS_LDFLAG) $(SMP_INTERPOSER_LDFLAG) \
 	  $(OBJS) -lm $(RUST_LIB) $(SENTRY_NATIVE_LIB) \
 	  $(SENTRY_UNWIND_LIB) $(LIBS_REAL) -ldl -lrt -lpthread -lm -o $@
+
+endif
 
 # --- NDK bootstrap -----------------------------------------------------------
 # Download + extract + relocate the webosbrew native-toolchain into $(WEBOS_SDK).
@@ -1821,7 +1853,7 @@ test-hostsim:
 check-nodef:
 	$(CARGO_SEED) restore target rust-modules/target --env-var CARGO_TARGET_DIR --env-base rust-modules
 	@set -e; cd rust-modules && CARGO_INCREMENTAL=0 PATH="$$HOME/.cargo/bin:$$PATH" \
-	  cargo +$(RUST_TOOLCHAIN) check --lib --no-default-features
+	  cargo +$(RUST_TOOLCHAIN) check --lib --no-default-features $(if $(RUST_BACKEND_FEATURES),--features $(RUST_BACKEND_FEATURES),)
 
 # `make build-bench [ARGS='--runs 5 --json out.json']` -- the repeatable local build benchmark
 # (tools/build-bench.py; docs/agent-reference.md says what it measures and when a PR must paste its
