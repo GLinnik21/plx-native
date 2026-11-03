@@ -1041,6 +1041,9 @@ pub(super) fn native_attempt_facts() -> plx_playback_contract::readout::AttemptF
     let position = SHARED.playpos_ns.load(Relaxed);
     let duration = SHARED.duration_ns.load(Relaxed);
     let (width, height) = SHARED.video_raster();
+    let aspect = SHARED.video_aspect.load(std::sync::atomic::Ordering::Acquire);
+    let aspect_num = (aspect >> 32) as u32;
+    let aspect_den = aspect as u32;
     let stage = SHARED.dg_stage.load(Relaxed);
     let pipeline_error = SHARED.dg_cb_err_num.load(Relaxed);
     let http_status = SHARED.dg_http_status.load(Relaxed);
@@ -1080,8 +1083,10 @@ pub(super) fn native_attempt_facts() -> plx_playback_contract::readout::AttemptF
             position,
         ),
         reported_frame: reported_frame.then_some(true),
+        seen_frame: Some(reported_frame),
         frames: reported_frame.then_some(SHARED.frames.load(Relaxed)),
         raster: (width > 0 && height > 0).then_some((width, height)),
+        display_aspect: (aspect_num > 0 && aspect_den > 0).then_some((aspect_num, aspect_den)),
         pipeline_stage: (stage > 0).then_some(stage),
         pipeline_error: (pipeline_error != 0).then_some(pipeline_error),
         http_status: (http_status > 0).then_some(http_status),
