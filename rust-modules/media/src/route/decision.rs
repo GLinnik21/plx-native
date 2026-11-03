@@ -798,6 +798,32 @@ mod backend_offer_session_tests {
         assert!(!session.backend_planned_feed_allowed(),
             "conversion cannot buy a return handoff to Feed");
     }
+
+    #[cfg(feature = "play-feed")]
+    #[test]
+    fn admitted_original_trial_remux_keeps_its_recipe_for_normal_reopen() {
+        let mut session = PlaybackSession::IDLE;
+        set_url(&mut session, "https://example.invalid/remux-a.mkv");
+        session.tsession = "pms-a".into();
+        session.cur_contract.remux = true;
+        assert!(session.qualify_resolved_feed_offer(OfferId::FEED_PMS_REMUX,
+            CandidatePurpose::NewCandidate));
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_PMS_REMUX));
+        set_url(&mut session, "https://example.invalid/original-b.mkv");
+        session.tsession = "pms-b".into();
+        assert!(session.qualify_resolved_feed_offer(OfferId::FEED_ORIGINAL_TRIAL_REMUX,
+            CandidatePurpose::NewCandidate));
+        assert!(session.backend_offer_admitted(BackendKind::Feed,
+            OfferId::FEED_ORIGINAL_TRIAL_REMUX));
+        assert_eq!(session.installed_feed_recipe(), OfferId::FEED_ORIGINAL_TRIAL_REMUX);
+        assert!(session.qualify_installed_feed_offer(CandidatePurpose::ReopenCurrent));
+        assert!(session.backend_planned_feed_allowed(),
+            "seek and foreground reopen the admitted trial without replenishing recovery");
+        assert!(session.qualify_resolved_feed_offer(OfferId::FEED_ORIGINAL_TRIAL_REMUX,
+            CandidatePurpose::NewCandidate));
+        assert!(!session.backend_planned_feed_allowed(),
+            "another automatic trial of the same source is still spent");
+    }
 }
 
 /// What the server actually did with a requested Plex Pass audio enhancement (issue #266) — as
@@ -946,7 +972,12 @@ impl PlaybackSession {
             plx_plex::plex::TranscodeDelivery::FixedHls { .. }) {
             super::backend_policy::OfferId::FEED_PMS_HLS
         } else if self.cur_contract.remux {
-            super::backend_policy::OfferId::FEED_PMS_REMUX
+            if self.planned_feed_offer == Some(
+                super::backend_policy::OfferId::FEED_ORIGINAL_TRIAL_REMUX) {
+                super::backend_policy::OfferId::FEED_ORIGINAL_TRIAL_REMUX
+            } else {
+                super::backend_policy::OfferId::FEED_PMS_REMUX
+            }
         } else {
             super::backend_policy::OfferId::FEED_PMS_ENCODE
         }
@@ -5402,7 +5433,8 @@ pub(super) fn install_original_recovery(
         return None;
     }
     install_original_remux(ps, &plan.candidate, plan.watched, &prepared);
-    let _ = ps.qualify_resolved_feed_offer(super::backend_policy::OfferId::FEED_PMS_REMUX,
+    let _ = ps.qualify_resolved_feed_offer(
+        super::backend_policy::OfferId::FEED_ORIGINAL_TRIAL_REMUX,
         CandidatePurpose::NewCandidate);
     rollback.replacement_encoder = prepared.replacement;
     set_pending_original(ps, rollback, automatic);

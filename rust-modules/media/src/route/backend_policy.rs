@@ -19,6 +19,9 @@ impl OfferId {
     pub const URI_PMS_REMUX: Self = Self(7);
     pub const URI_PMS_ENCODE: Self = Self(8);
     pub const URI_PMS_HLS: Self = Self(9);
+    /// Original candidate's own progressive PMS remux after an HLS/remux route. It is a
+    /// distinct source recipe from the route being replaced, even when both use start.mkv.
+    pub const FEED_ORIGINAL_TRIAL_REMUX: Self = Self(10);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,6 +118,8 @@ impl BackendPolicy {
             (OfferId::URI_PMS_REMUX, BackendKind::Uri, Fidelity::Compatible, Fidelity::Compatible),
             (OfferId::URI_PMS_ENCODE, BackendKind::Uri, Fidelity::Compatible, Fidelity::Compatible),
             (OfferId::URI_PMS_HLS, BackendKind::Uri, Fidelity::Compatible, Fidelity::Compatible),
+            (OfferId::FEED_ORIGINAL_TRIAL_REMUX, BackendKind::Feed,
+                Fidelity::Compatible, Fidelity::Compatible),
         ];
         Self::new(recipes.into_iter().map(|(id, backend, video, audio)| Offer {
             id, backend, video, audio, qualification: Qualification::Unknown,
@@ -275,6 +280,26 @@ mod tests {
         assert!(!policy.can_reopen(BackendKind::Feed, OfferId::FEED_ORIGINAL));
         assert!(!policy.admit_rollback_existing(BackendKind::Feed, OfferId::FEED_ORIGINAL));
         assert_eq!(policy.choose(), Selection::Unqualified);
+    }
+
+    #[test]
+    fn original_trial_remux_is_distinct_from_spent_initial_remux_and_rollback_is_bounded() {
+        let mut policy = BackendPolicy::for_request(false);
+        policy.qualify_planned_feed(OfferId::FEED_PMS_REMUX);
+        assert!(policy.admitted(BackendKind::Feed, OfferId::FEED_PMS_REMUX));
+        policy.qualify_planned_feed(OfferId::FEED_ORIGINAL_TRIAL_REMUX);
+        assert!(matches!(policy.choose(), Selection::Open(offer)
+            if offer.id == OfferId::FEED_ORIGINAL_TRIAL_REMUX));
+        assert!(policy.admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL_TRIAL_REMUX));
+        assert!(policy.can_reopen(BackendKind::Feed, OfferId::FEED_ORIGINAL_TRIAL_REMUX));
+        policy.qualify_planned_feed(OfferId::FEED_ORIGINAL_TRIAL_REMUX);
+        assert_eq!(policy.choose(), Selection::Unqualified,
+            "a refreshed URL for the same Original source recipe cannot buy a second trial");
+        policy.qualify_planned_feed(OfferId::FEED_PMS_REMUX);
+        assert!(policy.admit_rollback_existing(BackendKind::Feed, OfferId::FEED_PMS_REMUX));
+        assert!(!policy.admit_rollback_existing(BackendKind::Feed, OfferId::FEED_ORIGINAL_TRIAL_REMUX));
+        assert_eq!(policy.choose(), Selection::Unqualified,
+            "neither remux recipe regains a recovery open after rollback");
     }
 
     #[test]
