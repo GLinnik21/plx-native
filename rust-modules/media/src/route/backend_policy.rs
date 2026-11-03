@@ -9,6 +9,15 @@ use plx_playback_contract::{BackendKind, Fidelity};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OfferId(pub u64);
 
+impl OfferId {
+    pub const URI_ORIGINAL: Self = Self(1);
+    pub const FEED_ORIGINAL: Self = Self(2);
+    pub const FEED_APP_AUDIO: Self = Self(3);
+    pub const FEED_PMS_REMUX: Self = Self(4);
+    pub const FEED_PMS_ENCODE: Self = Self(5);
+    pub const FEED_PMS_HLS: Self = Self(6);
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Qualification { Unknown, Refused, Qualified }
 
@@ -48,6 +57,45 @@ pub struct BackendPolicy {
 }
 
 impl BackendPolicy {
+    pub fn offer(&self, backend: BackendKind, id: OfferId) -> Option<Offer> {
+        self.offers.iter().copied().find(|offer| offer.backend == backend && offer.id == id)
+    }
+
+    /// Finite recipes for one selected source and its selected streams. The URI offer begins
+    /// unknown: a feed declaration, PMS decision, or native queue answer cannot qualify it.
+    /// A resolve qualifies only the Feed recipe it actually prepared.
+    pub fn for_request(force_original: bool) -> Self {
+        let recipes = [
+            (OfferId::URI_ORIGINAL, BackendKind::Uri, Fidelity::Exact, Fidelity::Exact),
+            // Auto's native feed can rewrite an original packet (for example P7 or DTS core),
+            // so only Forced's no-transform path may claim exact wire fidelity here.
+            (OfferId::FEED_ORIGINAL, BackendKind::Feed,
+                if force_original { Fidelity::Exact } else { Fidelity::Compatible },
+                if force_original { Fidelity::Exact } else { Fidelity::Compatible }),
+            (OfferId::FEED_APP_AUDIO, BackendKind::Feed, Fidelity::Exact, Fidelity::Compatible),
+            (OfferId::FEED_PMS_REMUX, BackendKind::Feed, Fidelity::Compatible, Fidelity::Compatible),
+            (OfferId::FEED_PMS_ENCODE, BackendKind::Feed, Fidelity::Compatible, Fidelity::Compatible),
+            (OfferId::FEED_PMS_HLS, BackendKind::Feed, Fidelity::Compatible, Fidelity::Compatible),
+        ];
+        Self::new(recipes.into_iter().map(|(id, backend, video, audio)| Offer {
+            id, backend, video, audio, qualification: Qualification::Unknown,
+        }).collect(), force_original)
+    }
+
+    /// A newer route plan replaces unspent Feed evidence without replenishing a spent recipe.
+    /// No URI evidence is touched by a Feed capability refresh or PMS decision.
+    pub fn qualify_planned_feed(&mut self, id: OfferId) {
+        for offer in &mut self.offers {
+            if offer.backend == BackendKind::Feed {
+                offer.qualification = if offer.id == id {
+                    Qualification::Qualified
+                } else {
+                    Qualification::Unknown
+                };
+            }
+        }
+    }
+
     pub fn new(offers: Vec<Offer>, force_original: bool) -> Self {
         Self { tried: vec![false; offers.len()], offers, force_original,
             last_backend: None, crossed: false }
@@ -154,6 +202,38 @@ mod tests {
         consume(&mut policy, feed);
         policy.qualify(uri.backend, uri.id, Qualification::Qualified);
         consume(&mut policy, Offer { qualification: Qualification::Qualified, ..uri });
+        assert_eq!(policy.choose(), Selection::Exhausted);
+    }
+
+    #[test]
+    fn production_catalog_never_invents_uri_qualification_or_replenishes_recovery() {
+        let mut policy = BackendPolicy::for_request(false);
+        policy.qualify_planned_feed(OfferId::FEED_ORIGINAL);
+        let Selection::Open(feed) = policy.choose() else { panic!("prepared Feed must open") };
+        assert_eq!((feed.backend, feed.id), (BackendKind::Feed, OfferId::FEED_ORIGINAL));
+        assert!(policy.admitted(feed.backend, feed.id));
+
+        // A new resolved rung qualifies its own fixed recipe. Refreshing the earlier recipe
+        // cannot buy a retry, even when URI remains unknown and its source was never staged.
+        policy.qualify_planned_feed(OfferId::FEED_PMS_REMUX);
+        let Selection::Open(remux) = policy.choose() else { panic!("remux rung must open") };
+        assert_eq!(remux.id, OfferId::FEED_PMS_REMUX);
+        assert!(policy.admitted(remux.backend, remux.id));
+        policy.qualify_planned_feed(OfferId::FEED_ORIGINAL);
+        assert_eq!(policy.choose(), Selection::Unqualified);
+    }
+
+    #[test]
+    fn qualified_original_uri_can_handoff_from_feed_but_cannot_return() {
+        let mut policy = BackendPolicy::for_request(true);
+        policy.qualify_planned_feed(OfferId::FEED_ORIGINAL);
+        let Selection::Open(feed) = policy.choose() else { panic!("forced feed must open") };
+        assert!(policy.admitted(feed.backend, feed.id));
+        policy.qualify(BackendKind::Uri, OfferId::URI_ORIGINAL, Qualification::Qualified);
+        let Selection::Open(uri) = policy.choose() else { panic!("qualified URI handoff must open") };
+        assert_eq!(uri.id, OfferId::URI_ORIGINAL);
+        assert!(policy.admitted(uri.backend, uri.id));
+        policy.qualify_planned_feed(OfferId::FEED_ORIGINAL);
         assert_eq!(policy.choose(), Selection::Exhausted);
     }
 }

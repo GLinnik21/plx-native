@@ -1977,7 +1977,10 @@ fn pointer_on_bar(app: &App, x: f32, y: f32) -> bool {
 
 pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         park_on_decoder_release(app);
-        if playback_may_run(app) {
+        let foreground = playback_may_run(app);
+        let backend_at = app.adapters.player.backend_tick();
+        let _ = app.adapters.player.backend_set_foreground_at(foreground, backend_at);
+        if foreground {
             if is_started(&app.player.session) == Some(true) {
                 plx_media::player::pump(&mut app.player.session, &mut app.adapters.player, fr.now);
             }
@@ -1995,6 +1998,11 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // by itself must still be released.
         #[cfg(feature = "devtriggers")]
         plx_media::player::uriprobe_drive::drive(&mut app.player.session, &mut app.adapters.player);
+        // Physical Load/prime evidence arrives after the feed pump. The persistent common
+        // owner then advances exact startup controls, including its first Play. URI has no
+        // Engine and is polled here on every frame as well.
+        let backend_at = app.adapters.player.backend_tick();
+        let _ = app.adapters.player.backend_poll_at(backend_at);
         // **The ONE place the Player machine is asked whether the hardware video plane is bound**
         // (spec §9), immediately after the pump that advances the ACB bind transaction and BEFORE
         // the container tree's frame, so the whole iteration reads one answer. Outside the

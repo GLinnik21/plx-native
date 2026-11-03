@@ -81,6 +81,9 @@ pub fn set_transport_paused(
     if paused() == value {
         return true;
     }
+    if let Some(accepted) = pa.backend_transport_control(value) {
+        return accepted;
+    }
     if value {
         crate::player::pause(pa)
     } else {

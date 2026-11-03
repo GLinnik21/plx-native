@@ -179,6 +179,11 @@ pub(super) fn start_bufferfeed_inner(
     pa: &mut super::adapter::PlayerAdapter,
     route_start: crate::route::RouteStartTransaction,
 ) -> Result<crate::route::RouteStartAttempt, crate::route::RouteStartResult> {
+    if !cfg!(feature = "play-feed") || !ps.backend_planned_feed_allowed() {
+        log("start_bufferfeed: no qualified feed offer for this resolved route");
+        return Err(crate::route::RouteStartResult::StartFailed);
+    }
+    let offer = ps.planned_feed_offer().expect("qualified feed has a recipe");
     // The previous object's release is finished or the start was deferred before this point
     // (`start_bufferfeed_for`), so the epoch is retired and the object destroyed already.
     // A timed-out Load from an earlier Engine may still own the one native object the C seam
@@ -187,6 +192,10 @@ pub(super) fn start_bufferfeed_inner(
     if !pa.begin_native_open() {
         return Err(crate::route::RouteStartResult::StartFailed);
     }
+    // `begin_native_open` can reap a previously abandoned Load. Admit its exact D1/quarantine
+    // verdict before asking the common runner to admit another attempt.
+    let at = pa.backend_tick();
+    let _ = pa.backend_poll_at(at);
     // Guard a double-start: overwriting a live ENGINE slot would DROP the running
     // Engine, detaching its worker threads and freeing the hs/aq boxes those
     // threads still hold raw ptrs into -> use-after-free. If already running, no-op.
@@ -247,10 +256,50 @@ pub(super) fn start_bufferfeed_inner(
         log("start_bufferfeed: prepared route lost before native construction");
         return Err(crate::route::RouteStartResult::StartFailed);
     };
-    prepared_native.bind_demux_session(route_attempt.contract_id());
+    let attempt = route_attempt.contract_id();
+    let (video_fidelity, audio_fidelity) = ps.planned_feed_fidelity()
+        .expect("qualified feed has fidelity requirements");
+    prepared_native.bind_demux_session(attempt);
     ps.begin_attempt_view(route_attempt, super::attempt_view::Backend::Feed);
-    pa.launch_native_feed(route_attempt.contract_id(), prepared_native)
+    let source = pa.next_source_key();
+    pa.stage_native_feed(attempt, source, prepared_native)
         .map_err(|_| crate::route::RouteStartResult::StartFailed)?;
+    let backend_at = pa.backend_tick();
+    let result = pa.backend_send_at(
+        plx_playback_contract::Intent::Start {
+            backend: plx_playback_contract::BackendKind::Feed,
+            attempt,
+            source,
+            requirements: plx_playback_contract::Requirements {
+                source: plx_playback_contract::SourceKind::PacketFeed,
+                video: video_fidelity,
+                audio: audio_fidelity,
+                // Route preparation has already selected the feed's streams. The native
+                // driver has no separate track command to confirm during startup.
+                audio_track: plx_playback_contract::TrackChoice::Unspecified,
+                subtitle_track: plx_playback_contract::TrackChoice::Unspecified,
+            },
+            // Resume/seek rebasing is already encoded in the prepared physical source.
+            initial: plx_playback_contract::InitialPlayback {
+                position: None,
+                paused: TX.paused.load(Ordering::Acquire),
+            },
+        },
+        if crate::route::is_preview(ps) {
+            super::attempt_metrics::Origin::Preview
+        } else {
+            super::attempt_metrics::Origin::Fresh
+        },
+        backend_at,
+    );
+    if result.playback.iter().any(|fx| matches!(fx,
+        plx_playback_contract::Fx::Rejected { attempt: id, .. }
+        | plx_playback_contract::Fx::CommandRefused { attempt: id, .. } if *id == attempt
+    )) {
+        return Err(crate::route::RouteStartResult::StartFailed);
+    }
+    let admitted = ps.backend_offer_admitted(plx_playback_contract::BackendKind::Feed, offer);
+    assert!(admitted, "the prechecked feed offer must remain admissible on the main thread");
     pa.bind_feed_attempt(route_attempt, trace_generation);
     // The app gates its first pump on this readout. Publish after physical start and exact
     // attempt binding, before the caller returns to that gate.
@@ -282,7 +331,11 @@ pub(super) fn run_release_effects(
             E::RunTail { epoch } => {
                 if let Some(p) = joined.take() {
                     debug_assert_eq!(p.epoch(), epoch);
-                    engine::run_release_tail(pa.mt(), p);
+                    let attempt = p.attempt();
+                    let status = engine::run_release_tail(pa.mt(), p);
+                    pa.note_backend_feed_release(attempt, status);
+                    let at = pa.backend_tick();
+                    let _ = pa.backend_poll_at(at);
                     pass.tail_ran = true;
                 }
             }
@@ -378,7 +431,7 @@ fn reload_transcode_start(ps: &mut crate::route::PlaybackSession, pa: &mut super
         "reload_transcode: fresh Load at offset {}s",
         offset_ns / 1_000_000_000
     ));
-    teardown(ps, pa, true); // keep the session; reload mode
+    teardown(ps, pa, true, plx_playback_contract::StopReason::Replace); // keep the session; reload mode
     SHARED.disp_base.store(offset_ns, Ordering::Relaxed); // transcode is 0-based at content=offset
     SHARED.playpos_ns.store(offset_ns, Ordering::Relaxed);
     Some(start_bufferfeed_for(ps, pa, ticket))
@@ -427,7 +480,7 @@ pub fn reload_at(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter
         "reload_at: fresh Load at {}s",
         target_ns / 1_000_000_000
     ));
-    teardown(ps, pa, true); // reload mode: preserve the session (no url-clear / stop-scrobble)
+    teardown(ps, pa, true, plx_playback_contract::StopReason::Replace); // reload mode: preserve the session (no url-clear / stop-scrobble)
     engine::arm_seek(target_ns);
     reload_start_outcome(ps, pa, ticket)
 }
@@ -493,7 +546,7 @@ pub fn reload_transcode_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
 /// [`poll_release`] (`PendingRelease`), so the object may still exist when this returns; anything
 /// that needs it gone is queued behind it in the release machine (`Deferred`), never waited for.
 pub fn stop_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
-    teardown(ps, pa, false);
+    teardown(ps, pa, false, plx_playback_contract::StopReason::Stop);
 }
 
 /// Suspend for an app-switch: tear the pipeline down (webOS reclaims the video plane while we're
@@ -501,7 +554,7 @@ pub fn stop_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut super::a
 /// don't scrobble "stopped". This makes the foreground restore a clean same-item reload
 /// (begin_resume + start_bufferfeed), the known-good path, instead of resurrecting a stopped session.
 pub fn suspend_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
-    teardown(ps, pa, true);
+    teardown(ps, pa, true, plx_playback_contract::StopReason::Suspend);
 }
 
 
@@ -775,7 +828,7 @@ pub fn release_failed_engine(ps: &mut crate::route::PlaybackSession, pa: &mut su
     let cause = super::live_runtime_failure(ps);
     crate::route::note_engine_failure(ps, cause, super::intended_pos_ns(ps));
     log("player: the failed Engine's pipeline is released under the failure read-out");
-    teardown(ps, pa, true);
+    teardown(ps, pa, true, plx_playback_contract::StopReason::Replace);
     true
 }
 
@@ -789,7 +842,7 @@ pub fn suspend_bufferfeed_if_attempt(
 ) -> bool {
     let owns_attempt = pa.active_feed_attempt() == Some(attempt);
     if owns_attempt {
-        teardown(ps, pa, true);
+        teardown(ps, pa, true, plx_playback_contract::StopReason::Suspend);
     }
     owns_attempt
 }
@@ -805,8 +858,22 @@ pub fn foreground_follows_load(pa: &mut super::adapter::PlayerAdapter, attempt: 
 /// Common teardown owns the route fence, final report and scrobble ordering. The opaque native
 /// stop owns the Engine, worker joins, transport close, native release and AU destruction.
 pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAdapter,
-    for_reload: bool) {
+    for_reload: bool, reason: plx_playback_contract::StopReason) {
     engine::clear_failed_engine_release_arm();
+    if let Some(route_attempt) = pa.active_feed_attempt() {
+        let attempt = route_attempt.contract_id();
+        let at = pa.backend_tick();
+        let _ = pa.backend_send_at(
+            plx_playback_contract::Intent::Stop {
+                backend: plx_playback_contract::BackendKind::Feed,
+                attempt,
+                reason,
+            },
+            super::attempt_metrics::Origin::Fresh,
+            at,
+        );
+        let _ = pa.take_backend_feed_stop();
+    }
     if !begin_teardown(ps, pa, for_reload) { return; }
     // An abandoned preview Load is never joined on the frame while native Load is in flight.
     if crate::route::is_preview(ps) {
@@ -831,6 +898,7 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
     after_physical_close(ps, for_reload, final_report, &mut report_th);
     native.report_dispatched();
     pa.release_native_stop(&mut native, for_reload);
+    let release_status = native.release_status();
     // A reload preserves the file's duration and viewer transport, then restarts the same item.
     // A real stop retires both along with the current claim hold.
     if for_reload {
@@ -843,6 +911,9 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
     }
     finish_feed_teardown(ps, for_reload, report_th);
     pa.finish_native_stop(native, for_reload);
+    pa.note_backend_feed_release(route_attempt.contract_id(), release_status);
+    let at = pa.backend_tick();
+    let _ = pa.backend_poll_at(at);
 }
 
 

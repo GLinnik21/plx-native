@@ -29,6 +29,8 @@ pub enum Event {
     Intent(Intent),
     CommandAnswer { backend: BackendKind, attempt: AttemptId, command: CommandId, result: DispatchResult },
     Observation { backend: BackendKind, attempt: AttemptId, observation: Observation },
+    ControlRefused { backend: BackendKind, attempt: AttemptId, command: CommandId,
+        operation: Operation, failure: Failure },
     TrackSettled { backend: BackendKind, attempt: AttemptId, command: CommandId,
         kind: TrackKind, choice: TrackChoice },
     SeekLanded { backend: BackendKind, attempt: AttemptId, command: CommandId,
@@ -91,12 +93,14 @@ pub struct BackendState {
     snapshot: Snapshot,
     pending: BTreeMap<CommandId, Operation>,
     latest_queued_seek: Option<CommandId>,
+    latest_queued_transport: Option<(CommandId, Operation)>,
     latest_queued_track: [Option<(CommandId, TrackChoice)>; 2],
 }
 impl BackendState {
     pub fn new() -> Self {
         Self { last_attempt: None, next_command: 0, snapshot: Snapshot::default(),
             pending: BTreeMap::new(), latest_queued_seek: None,
+            latest_queued_transport: None,
             latest_queued_track: [None; 2] }
     }
 
@@ -176,6 +180,7 @@ impl BackendState {
                     || !matches!(self.snapshot.phase, Phase::Starting | Phase::Active) { return; }
                 self.pending.clear();
                 self.latest_queued_seek = None;
+                self.latest_queued_transport = None;
                 self.latest_queued_track = [None; 2];
                 if capabilities.is_none() {
                     self.snapshot.phase = Phase::Quarantined;
@@ -195,6 +200,9 @@ impl BackendState {
                         if matches!(operation, Operation::Seek(_)) {
                             self.latest_queued_seek = Some(command);
                             self.snapshot.seek_landed = None;
+                        }
+                        if matches!(operation, Operation::Play | Operation::Pause) {
+                            self.latest_queued_transport = Some((command, operation));
                         }
                         if let Operation::SelectTrack { kind, choice } = operation {
                             self.latest_queued_track[Self::track_slot(kind)] = Some((command, choice));
@@ -247,6 +255,15 @@ impl BackendState {
                 effects.push(Fx::AcceptedObservation { backend, attempt, observation });
             }
             Event::Observation { .. } => {}
+            Event::ControlRefused { backend, attempt, command, operation, failure }
+                if self.owns(backend, attempt) && self.snapshot.phase == Phase::Active
+                    && self.latest_queued_transport == Some((command, operation)) =>
+            {
+                self.latest_queued_transport = None;
+                self.snapshot.failure = Some(failure);
+                effects.push(Fx::CommandRefused { backend, attempt, command, operation, failure });
+            }
+            Event::ControlRefused { .. } => {}
             Event::TrackSettled { backend, attempt, command, kind, choice }
                 if self.owns(backend, attempt) && self.snapshot.phase == Phase::Active =>
             {
@@ -273,6 +290,7 @@ impl BackendState {
                         self.snapshot.phase = Phase::Releasing;
                         self.pending.clear();
                         self.latest_queued_seek = None;
+                        self.latest_queued_transport = None;
                         self.latest_queued_track = [None; 2];
                     }
                     ReleaseStatus::Quarantined => {
@@ -280,11 +298,13 @@ impl BackendState {
                         self.snapshot.failure = Some(Failure::ReleaseUncertain);
                         self.pending.clear();
                         self.latest_queued_seek = None;
+                        self.latest_queued_transport = None;
                         self.latest_queued_track = [None; 2];
                     }
                     ReleaseStatus::Released => {
                         self.pending.clear();
                         self.latest_queued_seek = None;
+                        self.latest_queued_transport = None;
                         self.latest_queued_track = [None; 2];
                         self.snapshot = Snapshot::default();
                     }
@@ -513,5 +533,32 @@ mod tests {
             observation: Observation::TrackOff(Observed { value: TrackKind::Audio,
                 from: EvidenceSource::BackendReport }) }, None);
         assert_eq!(state.snapshot.audio_track.unwrap().value, TrackFact::Off);
+    }
+
+    #[test]
+    fn queued_play_refusal_is_correlated_and_does_not_claim_playback_failed() {
+        let mut state = BackendState::new();
+        let attempt = AttemptId::new(9, 1);
+        let start_command = start(&mut state, URI, attempt);
+        step(&mut state, Event::CommandAnswer { backend: URI, attempt,
+            command: start_command, result: DispatchResult::Queued }, None);
+        ready(&mut state, URI, attempt);
+        let sent = step(&mut state, Event::Intent(Intent::Control { backend: URI, attempt,
+            operation: Operation::Play }), Some(CAPS));
+        let [Fx::Dispatch { command, .. }] = sent.as_slice() else { panic!("play dispatch") };
+        let command = *command;
+        step(&mut state, Event::CommandAnswer { backend: URI, attempt, command,
+            result: DispatchResult::Queued }, None);
+        for (backend, addressed, id) in [(FEED, attempt, command),
+            (URI, AttemptId::new(9, 2), command), (URI, attempt, start_command)] {
+            assert!(step(&mut state, Event::ControlRefused { backend, attempt: addressed,
+                command: id, operation: Operation::Play, failure: Failure::Refused }, None).is_empty());
+        }
+        assert_eq!(step(&mut state, Event::ControlRefused { backend: URI, attempt,
+            command, operation: Operation::Play, failure: Failure::Refused }, None),
+            [Fx::CommandRefused { backend: URI, attempt, command,
+                operation: Operation::Play, failure: Failure::Refused }]);
+        assert_eq!(state.snapshot.playback.unwrap().value, Playback::ReadyAwaitPlay);
+        assert_eq!(state.snapshot.failure, Some(Failure::Refused));
     }
 }

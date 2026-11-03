@@ -5,7 +5,7 @@ use super::engine::{arm_live_clock_prime, feed_both_lanes, feed_sample, Engine};
 use super::feed_resources::FeedResources;
 use super::{ACB_OK, SHARED, TX};
 use super::shared::Stage;
-use super::shared::{HlsPauseCompletion, HlsPrimeKind, HlsSeekPause};
+use super::shared::{HlsPauseCompletion, HlsSeekPause};
 use super::SeekMode;
 use plx_base::task::MainThread;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -553,36 +553,19 @@ pub(super) fn tick_load(feed: &mut FeedResources, mt: &MainThread, now: u32,
         // before AAC is present produced silent initial playback that recovered only after a seek
         // (the seek path already primed both lanes). Progressive initial play keeps its proven
         // immediate-start behavior.
-        if prime_before_play(eng.rebase_pending, segmented_hls) {
+        if eng.startup_controlled {
+            // The common runner owns the first Play. A progressive source is ready to issue it
+            // immediately; a seek or segmented stream still waits for the existing prime proof.
+            eng.startup_immediate_play = !prime_before_play(eng.rebase_pending, segmented_hls);
+            eng.prime_play = true;
+            if !eng.startup_immediate_play {
+                super::log("SMP loadCompleted (priming before Play)");
+            }
+        } else if prime_before_play(eng.rebase_pending, segmented_hls) {
             eng.prime_play = true;
             super::log("SMP loadCompleted (priming before Play)");
         } else {
-            let generation = SHARED.hls_candidate_generation.load(Acquire);
-            let recovery = SHARED.hls_recovery();
-            if let Some((token, _)) =
-                SHARED.reserve_hls_prime_play(HlsPrimeKind::Fresh, generation, recovery)
-            {
-                let accepted = unsafe { super::sink().play(mt) } != 0;
-                match SHARED.complete_hls_prime_play(token, accepted) {
-                    super::shared::HlsPlayCompletion::Accepted { resume_acb } => {
-                        if resume_acb {
-                            super::acb_mirror_playstate_at(mt, eng.stage, true);
-                        }
-                        super::log("SMP Play");
-                    }
-                    super::shared::HlsPlayCompletion::Refused => {
-                        eng.prime_play = true;
-                        super::log("SMP Play refused; priming for retry");
-                    }
-                    super::shared::HlsPlayCompletion::Stale => {
-                        eng.prime_play = true;
-                        super::log("SMP Play result stale; priming for retry");
-                    }
-                }
-            } else {
-                eng.prime_play = true;
-                super::log("SMP Play fenced; priming before retry");
-            }
+            let _ = super::engine::play_initial_now(mt, eng);
         }
     } else if eng.stage == Stage::Loading
         && !eng.preview_abandon

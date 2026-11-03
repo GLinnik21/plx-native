@@ -230,7 +230,8 @@ pub(super) fn reap_abandoned_load_resource(feed: &mut super::feed_resources::Fee
         parked.epoch,
         parked.abandoned_at.elapsed().as_millis(),
     ));
-    release_native_object(mt, parked.epoch);
+    let status = release_native_object_timed(mt, parked.epoch, &mut TeardownSpans::new());
+    feed.note_reaped_release(parked.attempt, status);
     // `parked._payload` drops here, after the thread that read it has been joined.
     true
 }
@@ -259,9 +260,10 @@ static FAIL_UNLOAD_SPAWN_FOR_TEST: std::sync::atomic::AtomicBool = std::sync::at
 /// Start the off-frame release of `epoch`'s object, or release it here when it cannot be handed
 /// off (no dispatchable object, an epoch that no longer owns `Active`, or the OS refusing the
 /// thread). `Some` = the worker is running and the caller must park it with the Engine.
-fn release_off_frame(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) -> Option<std::thread::JoinHandle<()>> {
+fn release_off_frame(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans,
+    status: &mut plx_playback_contract::ReleaseStatus) -> Option<std::thread::JoinHandle<()>> {
     if unsafe { super::raw_sink().ready(mt) } == 0 || !SHARED.begin_native_release(epoch) {
-        release_native_object_timed(mt, epoch, sp);
+        *status = release_native_object_timed(mt, epoch, sp);
         return None;
     }
     let ticket = UnloadTicket::issue(mt);
@@ -285,17 +287,18 @@ fn release_off_frame(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) -> Opt
         log("native lifecycle: no thread for the off-frame Unload; unloading on the main thread");
         unsafe { super::raw_sink().unload(&UnloadTicket::issue(mt)) };
         sp.mark("sf_unload");
-        finish_unloaded_object(mt, epoch, sp);
+        *status = finish_unloaded_object(mt, epoch, sp);
         destroy_native_window(mt, sp);
     }
     th
 }
 
 /// The main-thread tail of a finished off-frame release: gate, epoch, ACB, D1, window.
-pub(super) fn run_release_tail(mt: &MainThread, p: PendingRelease) {
+pub(super) fn run_release_tail(mt: &MainThread, p: PendingRelease)
+    -> plx_playback_contract::ReleaseStatus {
     let mut sp = TeardownSpans::new();
     sp.mark("join");
-    finish_unloaded_object(mt, p.epoch, &mut sp);
+    let status = finish_unloaded_object(mt, p.epoch, &mut sp);
     destroy_native_window(mt, &mut sp);
     sp.emit("release");
     log(&format!(
@@ -304,15 +307,19 @@ pub(super) fn run_release_tail(mt: &MainThread, p: PendingRelease) {
         p.handed_off_at.elapsed().as_millis(),
     ));
     // `p._engine` drops here, after the object it belonged to is gone.
+    status
+}
+
+/// Existing hostsim release fixtures run the same physical release without inspecting its
+/// returned status; the production owner passes the status to BackendRunner.
+#[cfg(test)]
+fn release_native_object(mt: &MainThread, epoch: u32) {
+    let _ = release_native_object_timed(mt, epoch, &mut TeardownSpans::new());
 }
 
 /// Unload and retire the native object of `epoch`, then destroy it only with complete evidence.
 /// The engine's own teardown and the abandoned-Load release share this so the order below is one
 /// definition.
-fn release_native_object(mt: &MainThread, epoch: u32) {
-    release_native_object_timed(mt, epoch, &mut TeardownSpans::new());
-}
-
 /// **Where a teardown's frame goes, one step at a time.** Each step's wall time is appended as
 /// `label:ms` and the whole run is logged as ONE `teardown spans:` line at the end, so a slow BACK
 /// frame names the call that held the main thread instead of being inferred from a sched trace.
@@ -347,7 +354,8 @@ impl TeardownSpans {
     }
 }
 
-fn release_native_object_timed(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) {
+fn release_native_object_timed(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans)
+    -> plx_playback_contract::ReleaseStatus {
     // Stop the pipeline, close native callback admission, then drain the Rust epoch.
     //
     // `Unload` waits for the GStreamer state transition, but neither libpf's raw callback fields nor
@@ -362,17 +370,22 @@ fn release_native_object_timed(mt: &MainThread, epoch: u32, sp: &mut TeardownSpa
     // runtime evidence that this firmware followed the audited path. If any proof is missing, C
     // retains the constructed object forever and permanently refuses another Load. Leaking one
     // object is preferable to letting D1 turn a late producer callback into a use-after-free.
-    if unsafe { super::raw_sink().ready(mt) } != 0 {
+    let status = if unsafe { super::raw_sink().ready(mt) } != 0 {
         sp.mark("pre_unload");
         unsafe { super::raw_sink().unload(&UnloadTicket::issue(mt)) };
         sp.mark("sf_unload");
-        finish_unloaded_object(mt, epoch, sp);
-    } else if !SHARED.retire_native_session(epoch) {
-        log(&format!(
-            "native lifecycle: no dispatchable object and epoch={epoch} was already retired",
-        ));
-    }
+        finish_unloaded_object(mt, epoch, sp)
+    } else {
+        if !SHARED.retire_native_session(epoch) {
+            log(&format!(
+                "native lifecycle: no dispatchable object and epoch={epoch} was already retired",
+            ));
+        }
+        // `ready=0` also describes a C object retained after quarantine. No D1 proof exists.
+        plx_playback_contract::ReleaseStatus::Quarantined
+    };
     destroy_native_window(mt, sp);
+    status
 }
 
 /// Everything after `Unload` returns, in the audited order: close and drain the C callback gate,
@@ -403,19 +416,27 @@ impl plx_play_feed::native_release::NativeReleasePort for PlayerReleasePort {
     }
 }
 
-fn finish_unloaded_object(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) {
+fn finish_unloaded_object(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans)
+    -> plx_playback_contract::ReleaseStatus {
     use plx_play_feed::native_release::ReleaseStep;
+    let mut status = plx_playback_contract::ReleaseStatus::Quarantined;
     plx_play_feed::native_release::finish_unloaded_object(
         &PlayerReleasePort, &SHARED.feed, mt, epoch,
         || ACB_OK.load(Ordering::Relaxed),
         |label| sp.mark(label),
-        |step| window_step(match step {
-            ReleaseStep::NativeUnload => WindowStage::NativeUnload,
-            ReleaseStep::AcbPlaneUnload => WindowStage::AcbPlaneUnload,
-            ReleaseStep::NativeQuarantined => WindowStage::NativeQuarantined,
-            ReleaseStep::NativeDestroyed => WindowStage::NativeDestroyed,
-        }),
+        |step| {
+            if step == ReleaseStep::NativeDestroyed {
+                status = plx_playback_contract::ReleaseStatus::Released;
+            }
+            window_step(match step {
+                ReleaseStep::NativeUnload => WindowStage::NativeUnload,
+                ReleaseStep::AcbPlaneUnload => WindowStage::AcbPlaneUnload,
+                ReleaseStep::NativeQuarantined => WindowStage::NativeQuarantined,
+                ReleaseStep::NativeDestroyed => WindowStage::NativeDestroyed,
+            });
+        },
     );
+    status
 }
 
 fn destroy_native_window(mt: &MainThread, sp: &mut TeardownSpans) {
@@ -1291,6 +1312,11 @@ pub(super) fn launch_native_open(
         feed_pace: FeedPace::default(),
         seek_base_pts: 0,
         prime_play: false,
+        startup_controlled: true,
+        startup_play_commanded: false,
+        startup_first_play_done: false,
+        startup_play_refused: false,
+        startup_immediate_play: false,
         aq_video: aqv_box,
         aq_audio: aqa_box,
         hs,
@@ -1369,6 +1395,7 @@ pub(super) struct NativeStop {
     spans: TeardownSpans,
     abandoned_load: Option<std::thread::JoinHandle<()>>,
     unload_th: Option<std::thread::JoinHandle<()>>,
+    release_status: plx_playback_contract::ReleaseStatus,
 }
 
 impl NativeStop {
@@ -1376,7 +1403,8 @@ impl NativeStop {
         let eng = feed.take().expect("main-thread live check and take are one transaction");
         feed.retire_load_attempt(eng.attempt);
         let stream = matches!(eng.source, Source::Stream { .. });
-        Self { eng, stream, spans: TeardownSpans::new(), abandoned_load: None, unload_th: None }
+        Self { eng, stream, spans: TeardownSpans::new(), abandoned_load: None, unload_th: None,
+            release_status: plx_playback_contract::ReleaseStatus::Closing }
     }
 
     /// The side reader must stop before the paired demux reader is joined.
@@ -1427,6 +1455,10 @@ impl NativeStop {
 
     pub(super) fn report_dispatched(&mut self) { self.spans.mark("scrobble"); }
 
+    pub(super) fn release_status(&self) -> plx_playback_contract::ReleaseStatus {
+        self.release_status
+    }
+
     /// Release only after common reporting has handed its final write to the off-frame worker.
     pub(super) fn release_and_drain(&mut self, mt: &MainThread,
         feed: &mut super::feed_resources::FeedResources, for_reload: bool) {
@@ -1444,15 +1476,17 @@ impl NativeStop {
                 self.eng.native_epoch,
             ));
             feed.park_abandoned_load(AbandonedLoad {
+                attempt: self.eng.attempt,
                 epoch: self.eng.native_epoch,
                 load_th,
                 _payload: std::mem::take(&mut self.eng.payload),
                 abandoned_at: std::time::Instant::now(),
             });
         } else if !for_reload {
-            self.unload_th = release_off_frame(mt, self.eng.native_epoch, &mut self.spans);
+            self.unload_th = release_off_frame(mt, self.eng.native_epoch, &mut self.spans,
+                &mut self.release_status);
         } else {
-            release_native_object_timed(mt, self.eng.native_epoch, &mut self.spans);
+            self.release_status = release_native_object_timed(mt, self.eng.native_epoch, &mut self.spans);
         }
         if self.stream {
             drain_aq(&mut self.eng);
@@ -1840,6 +1874,43 @@ pub fn arm_live_clock_prime(eng: &mut Engine) {
     eng.prime_play = true;
 }
 
+/// Execute the first immediate Play only after the common startup runner has commanded it.
+/// The same clock reservation and completion rule is used by the progressive legacy fixture.
+/// `Some(false)` is a native refusal; `None` means the clock gate deferred the verb.
+pub(super) fn play_initial_now(mt: &MainThread, eng: &mut Engine) -> Option<bool> {
+    let shared = eng.shared;
+    let generation = shared.hls_candidate_generation.load(Ordering::Acquire);
+    let recovery = shared.hls_recovery();
+    if let Some((token, _)) =
+        shared.reserve_hls_prime_play(HlsPrimeKind::Fresh, generation, recovery)
+    {
+        let accepted = unsafe { sink().play(mt) } != 0;
+        match shared.complete_hls_prime_play(token, accepted) {
+            HlsPlayCompletion::Accepted { resume_acb } => {
+                if resume_acb {
+                    super::acb_mirror_playstate_at(mt, eng.stage, true);
+                }
+                eng.prime_play = false;
+                log("SMP Play");
+                return Some(true);
+            }
+            HlsPlayCompletion::Refused => {
+                eng.prime_play = true;
+                log("SMP Play refused; priming for retry");
+                return Some(false);
+            }
+            HlsPlayCompletion::Stale => {
+                eng.prime_play = true;
+                log("SMP Play result stale; priming for retry");
+            }
+        }
+    } else {
+        eng.prime_play = true;
+        log("SMP Play fenced; priming before retry");
+    }
+    None
+}
+
 /// **Start the clock once both lanes are buffered past the seek base** — video to [`PRIME_NS`]
 /// AND audio to [`PRIME_AUDIO_NS`], with a video-only escape at [`PRIME_VIDEO_MAX_NS`] so an
 /// audioless or briefly-starved stream still starts.
@@ -1861,6 +1932,9 @@ pub fn arm_live_clock_prime(eng: &mut Engine) {
 pub fn try_prime(mt: &MainThread, eng: &mut Engine) {
     let shared = eng.shared;
     if !eng.prime_play {
+        return;
+    }
+    if eng.startup_controlled && !eng.startup_play_commanded {
         return;
     }
     let Some(prime_kind) = shared.hls_prime_kind() else {
@@ -1990,7 +2064,13 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine) {
                 }
             }
             HlsPlayCompletion::Refused => {
-                log("primed: Starfish refused Play; keeping the clock held and retrying");
+                if eng.startup_controlled && !eng.startup_first_play_done {
+                    eng.startup_play_refused = true;
+                    eng.startup_play_commanded = false;
+                    log("primed: Starfish refused initial Play; common startup must settle it");
+                } else {
+                    log("primed: Starfish refused Play; keeping the clock held and retrying");
+                }
             }
             HlsPlayCompletion::Stale => {
                 log("primed: Play result lost its clock token; teardown/transition won");
@@ -2767,7 +2847,8 @@ mod native_lifecycle_host_seam_tests {
         let consent = Consented::grant_in_cycle();
         let mt = unsafe { MainThread::assume() };
         let epoch = loaded_epoch(&mt);
-        release_native_object(&mt, epoch);
+        assert_eq!(release_native_object_timed(&mt, epoch, &mut TeardownSpans::new()),
+            plx_playback_contract::ReleaseStatus::Released);
         assert_eq!(
             plx_telemetry::telemetry::window::take_recorded_for_test(),
             ["native_unload", "native_destroyed", "exported_window_destroy"],
@@ -2787,7 +2868,8 @@ mod native_lifecycle_host_seam_tests {
         let epoch = loaded_epoch(&mt);
         // No callback ever crossed the gate: the evidence is incomplete and the object is kept.
         crate::player::ffi_host::force_callback_intercepts_for_test(0);
-        release_native_object(&mt, epoch);
+        assert_eq!(release_native_object_timed(&mt, epoch, &mut TeardownSpans::new()),
+            plx_playback_contract::ReleaseStatus::Quarantined);
         assert_eq!(
             plx_telemetry::telemetry::window::take_recorded_for_test(),
             ["native_unload", "native_quarantined", "exported_window_destroy"],
@@ -2808,7 +2890,8 @@ mod native_lifecycle_host_seam_tests {
         // Rust's three proofs hold, but the C seam's own evidence does not: `destroy` answers 0,
         // and the crumb must say so rather than "destroyed".
         crate::player::ffi_host::force_destroy_refusal_for_test(true);
-        release_native_object(&mt, epoch);
+        assert_eq!(release_native_object_timed(&mt, epoch, &mut TeardownSpans::new()),
+            plx_playback_contract::ReleaseStatus::Quarantined);
         let recorded = plx_telemetry::telemetry::window::take_recorded_for_test();
         assert!(recorded.contains(&"native_quarantined"), "{recorded:?}");
         assert!(!recorded.contains(&"native_destroyed"), "{recorded:?}");
@@ -3488,6 +3571,11 @@ mod prime_livelock_tests {
             feed_pace: FeedPace::default(),
             seek_base_pts: 0,
             prime_play: true,
+            startup_controlled: false,
+            startup_play_commanded: false,
+            startup_first_play_done: false,
+            startup_play_refused: false,
+            startup_immediate_play: false,
             aq_video: Some(crate::aq::aq_new(AQ_VIDEO_BYTES)),
             aq_audio: Some(crate::aq::aq_new(AQ_AUDIO_BYTES)),
             hs: plx_net::stream::http_stream_boxed(),
