@@ -119,6 +119,10 @@ pub struct AttemptFacts {
     pub rebuffering: Option<bool>,
     /// The target the viewer sees while a physical seek resolves.
     pub seek_display_ns: Option<i64>,
+    /// Source display aspect ratio reported by the physical video plane.
+    pub display_aspect: Option<(u32, u32)>,
+    /// A native frame callback was seen; this is not independent panel presentation proof.
+    pub seen_frame: Option<bool>,
     pub requested_kbps: Option<i64>,
     pub refusal_path: Option<RefusalPath>,
     pub runtime_failure: Option<RuntimeFailure>,
@@ -146,7 +150,7 @@ impl AttemptFacts {
     pub const EMPTY: Self = Self {
         status: None, runtime_failure: None, no_video: None, requested_kbps: None, refusal_path: None,
         started: None, ended: None, seek_pending_ns: None, rebuffering: None,
-        seek_display_ns: None,
+        seek_display_ns: None, display_aspect: None, seen_frame: None,
         position_ns: None, duration_ns: None, playable_buffer_ms: None,
         reported_frame: None, frames: None, raster: None, pipeline_stage: None,
         pipeline_error: None, http_status: None, demux_exit: None,
