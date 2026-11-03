@@ -194,26 +194,8 @@ impl Drop for NativeSessionStartGuard {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum NativeObjectDisposition {
-    Destroy,
-    Quarantine,
-}
-
-/// D1 frees private state which a late firmware hook dereferences before it reaches our Rust
-/// callback. Every independent proof is therefore mandatory; this deliberately has no
-/// best-effort or timeout branch.
-fn native_object_disposition(
-    unload_completed: bool,
-    callback_gate_proven: bool,
-    rust_epoch_retired: bool,
-) -> NativeObjectDisposition {
-    if unload_completed && callback_gate_proven && rust_epoch_retired {
-        NativeObjectDisposition::Destroy
-    } else {
-        NativeObjectDisposition::Quarantine
-    }
-}
+#[cfg(test)]
+use plx_play_feed::native_release::{native_object_disposition, NativeObjectDisposition};
 
 /// A native `Load` that teardown could not wait for.
 ///
@@ -397,54 +379,43 @@ fn release_native_object_timed(mt: &MainThread, epoch: u32, sp: &mut TeardownSpa
 /// retire the Rust epoch, unload the ACB plane, then D1 with complete evidence or quarantine. The
 /// synchronous release and the off-frame release's main-thread tail ([`run_release_tail`]) share
 /// it, so the order is one definition.
-fn finish_unloaded_object(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) {
-    {
-        window_step(WindowStage::NativeUnload);
-        let callback_gate_proven = unsafe { super::raw_sink().callback_gate_retire(mt) } != 0;
-        sp.mark("gate_retire");
-        let callback_intercepts = unsafe { super::raw_sink().callback_intercepts(mt) };
-        let unload_completed = SHARED.native_unload_completed(epoch);
-        let rust_epoch_retired = SHARED.retire_native_session(epoch);
-        if !unload_completed {
-            log(&format!(
-                "native lifecycle: Unload returned without type=23 epoch={epoch}",
-            ));
-        }
-        if !callback_gate_proven {
-            log(&format!(
-                "native lifecycle: callback interposition unproven epoch={epoch} intercepted={callback_intercepts}",
-            ));
-        }
-        if !rust_epoch_retired {
-            log(&format!(
-                "native lifecycle: failed to retire epoch={epoch} after Unload",
-            ));
-        }
-        sp.mark("retire");
-        if ACB_OK.load(Ordering::Relaxed) {
-            unsafe { super::raw_sink().plane_unload(mt) };
-            sp.mark("acb_unload");
-            window_step(WindowStage::AcbPlaneUnload);
-        }
-        match native_object_disposition(unload_completed, callback_gate_proven, rust_epoch_retired)
-        {
-            NativeObjectDisposition::Destroy => {
-                let destroyed = unsafe { super::raw_sink().destroy(mt) } != 0;
-                sp.mark("sf_destroy");
-                if !destroyed {
-                    log("native lifecycle: C seam rejected D1 and quarantined the object");
-                    window_step(WindowStage::NativeQuarantined);
-                } else {
-                    window_step(WindowStage::NativeDestroyed);
-                }
-            }
-            NativeObjectDisposition::Quarantine => {
-                unsafe { super::raw_sink().quarantine(mt) };
-                sp.mark("quarantine");
-                window_step(WindowStage::NativeQuarantined);
-            }
-        }
+struct PlayerReleasePort;
+
+impl plx_play_feed::native_release::NativeReleasePort for PlayerReleasePort {
+    fn callback_gate_retire(&self, mt: &MainThread) -> bool {
+        unsafe { super::raw_sink().callback_gate_retire(mt) != 0 }
     }
+
+    fn callback_intercepts(&self, mt: &MainThread) -> u32 {
+        unsafe { super::raw_sink().callback_intercepts(mt) }
+    }
+
+    fn plane_unload(&self, mt: &MainThread) {
+        unsafe { super::raw_sink().plane_unload(mt) };
+    }
+
+    fn destroy(&self, mt: &MainThread) -> bool {
+        unsafe { super::raw_sink().destroy(mt) != 0 }
+    }
+
+    fn quarantine(&self, mt: &MainThread) {
+        unsafe { super::raw_sink().quarantine(mt) };
+    }
+}
+
+fn finish_unloaded_object(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) {
+    use plx_play_feed::native_release::ReleaseStep;
+    plx_play_feed::native_release::finish_unloaded_object(
+        &PlayerReleasePort, &SHARED.feed, mt, epoch,
+        || ACB_OK.load(Ordering::Relaxed),
+        |label| sp.mark(label),
+        |step| window_step(match step {
+            ReleaseStep::NativeUnload => WindowStage::NativeUnload,
+            ReleaseStep::AcbPlaneUnload => WindowStage::AcbPlaneUnload,
+            ReleaseStep::NativeQuarantined => WindowStage::NativeQuarantined,
+            ReleaseStep::NativeDestroyed => WindowStage::NativeDestroyed,
+        }),
+    );
 }
 
 fn destroy_native_window(mt: &MainThread, sp: &mut TeardownSpans) {

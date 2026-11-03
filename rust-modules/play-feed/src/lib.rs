@@ -9,6 +9,7 @@ pub mod ff_pcm;
 pub mod hls;
 pub mod native_gate;
 pub mod native_load;
+pub mod native_release;
 pub mod open;
 pub mod pcm_lead;
 pub mod side_reader;
