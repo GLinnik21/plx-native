@@ -5694,6 +5694,10 @@ struct PendingOriginal {
     /// `commit_in_place_route_projection`), so the restore site puts those two fields back the
     /// way it found them.
     previous: AppliedRouteProjection,
+    /// The exact previously admitted Feed recipe. The Original trial replaces `planned_feed_offer`
+    /// before its Load, so the route projection alone cannot distinguish two progressive remuxes
+    /// when rollback restores the earlier one.
+    previous_feed_offer: Option<super::backend_policy::OfferId>,
     /// A manual Original pick can adopt an automatic trial without issuing a second Load. The
     /// first decoded frame then transfers the applied contract to Manual and invalidates the
     /// Auto worker ticket which was captured when the trial started.
@@ -5755,6 +5759,7 @@ fn snapshot_route(ps: &PlaybackSession, encoder: String, offset_secs: i64) -> Pe
         replacement_encoder: String::new(),
         offset_secs,
         previous: route_projection(s),
+        previous_feed_offer: s.planned_feed_offer.or(s.admitted_feed_offer),
         adopted_by_user: false,
         charge_visible_switch_on_commit: false,
         deferred_quality: None,
@@ -5922,6 +5927,11 @@ pub fn rollback_original_recovery(ps: &mut PlaybackSession) -> Option<OriginalRo
     let kept_side_refused = ps.side_subs_refused;
     let kept_auto_original = ps.auto_original.clone();
     install_route_projection(ps, &pending.previous);
+    ps.planned_feed_offer = pending.previous_feed_offer;
+    ps.planned_feed_purpose = CandidatePurpose::RollbackExisting;
+    // Rollback has yet to obtain its new physical Start. The policy will spend its one
+    // rollback allowance only at admission, never by inheriting the old admitted marker.
+    ps.admitted_feed_offer = None;
     ps.cur_sub_sid = kept_subtitle_sid;
     ps.cur_sub_sidecar = kept_subtitle_sidecar;
     ps.cur_sub_client_drawable = kept_subtitle_drawable;
