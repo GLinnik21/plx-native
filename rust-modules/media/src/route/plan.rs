@@ -1874,11 +1874,14 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                         .filter(|decision| decision.source == SubPickSource::Server)
                         .and_then(|_| item.subs.iter().find(|sub| sub.selected && sub.id > 0)))
             });
+            #[cfg(feature = "play-uri")]
             let source_sub_sid = source_sub_stream.filter(|sub| !sub.external).map_or(0, |sub| sub.id);
+            #[cfg(feature = "play-uri")]
             let requires_client_subtitle = source_sub_stream.is_some_and(|sub| sub.external);
             // A selected source stream requires its exact native index. Off is an explicit
             // viewer decision when the file contains subtitles; Unspecified is safe only when
             // there is no source subtitle for the native decoder to auto-select.
+            #[cfg(feature = "play-uri")]
             let subtitle_choice = if source_sub_sid > 0 {
                 plx_playback_contract::TrackChoice::Selected(source_sub_sid as u64)
             } else if plan.playing.as_ref().is_some_and(|item| !item.subs.is_empty()) {

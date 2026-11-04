@@ -9741,12 +9741,14 @@ pub fn pump_play(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata
         trace_generation,
         contract_revision,
         candidate_purpose,
-        mut plan,
+        plan,
         rk,
     }) = taken
     else {
         return None;
     };
+    #[cfg(feature = "play-uri")]
+    let mut plan = plan;
     if gen != PLAY_GEN.load(Ordering::SeqCst) {
         let mut resume = PLAY_RESUME.lock().unwrap_or_else(|e| e.into_inner());
         if resume.as_ref().is_some_and(|(owner, _)| *owner == gen) {
