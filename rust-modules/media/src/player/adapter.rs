@@ -1420,6 +1420,13 @@ impl PlayerAdapter {
                     }
                     if matches!(notice, plx_playback_contract::Fx::ReleaseOutcome {
                         status: ReleaseStatus::Released, .. }) {
+                        if let Some(route_attempt) = self.uri_route_attempt.filter(|route|
+                            route.contract_id() == attempt) {
+                            // Replacement did not run the full stop ritual. Retire this exact
+                            // reporter before the release queue starts another backend; its
+                            // mailbox stop is sticky and dropping the handle does not join here.
+                            let _ = self.stop_timeline(route_attempt);
+                        }
                         self.uri_route_attempt = None;
                         self.uri_stop_requested = false;
                         self.pending_uri_audio = None;
