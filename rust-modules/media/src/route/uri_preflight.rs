@@ -169,6 +169,9 @@ pub struct PmsRequest {
     pub adaptive: bool,
     pub video_codec: String,
     pub audio_codec: String,
+    pub source_dovi: plx_data::metadata::Dovi,
+    pub output_dovi: Option<plx_data::metadata::Dovi>,
+    pub dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode,
     pub applied_audio: plx_plex::plex::AudioEnhancements,
     pub subtitle_choice: TrackChoice,
     pub requires_client_subtitle: bool,
@@ -187,6 +190,7 @@ pub struct PmsCertificate {
     pub requirements: Requirements,
     pub native_tracks: Vec<NativeTrackIndex>,
     pub applied_audio: plx_plex::plex::AudioEnhancements,
+    pub output_dovi: Option<plx_data::metadata::Dovi>,
     pub time_domain: PmsTimeDomain,
     pub hls_controller: Option<HlsController>,
     pub hls_master: Option<HlsMasterEvidence>,
@@ -426,13 +430,16 @@ mod tests {
                 requirements: Requirements {
                     source: if is_hls { SourceKind::HlsUri } else { SourceKind::ProgressiveUri },
                     video: Fidelity::Compatible, audio: Fidelity::Compatible,
-                    audio_track: TrackChoice::Selected(42),
+                    audio_track: if request.selection.audio_sid > 0 {
+                        TrackChoice::Selected(42)
+                    } else { TrackChoice::Unspecified },
                     subtitle_track: TrackChoice::Unspecified,
                 },
                 native_tracks: vec![NativeTrackIndex {
                     selection: TrackSelection { kind: TrackKind::Audio, id: 42 }, index: 1,
                 }],
                 applied_audio: request.applied_audio,
+                output_dovi: request.output_dovi,
                 time_domain: if matches!(self.0, PmsCase::UnknownClock) {
                     PmsTimeDomain::Unknown
                 } else { PmsTimeDomain::ContentAbsolute },
@@ -458,6 +465,8 @@ mod tests {
             resource_session: "current-transcode".to_owned(), duration_ms: Some(60_000),
             resume_ns: 20_000_000_000, recipe, adaptive: recipe == PmsRecipe::Hls,
             video_codec: "h264".to_owned(), audio_codec: "aac".to_owned(),
+            source_dovi: plx_data::metadata::Dovi::NONE, output_dovi: None,
+            dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode::Auto,
             applied_audio: plx_plex::plex::AudioEnhancements::NONE,
             subtitle_choice: TrackChoice::Unspecified, requires_client_subtitle: false,
             burned_subtitle: false, requested_rate_permille: plx_playback_contract::RATE_NORMAL,
@@ -522,6 +531,43 @@ mod tests {
         assert_eq!(pms_port(PmsCase::FixedHls).qualify_pms(&off,
             pms_request(PmsRecipe::Hls)).err(), Some(PmsDecline::AppFixedControllerUnavailable),
             "AppFixed has no common URI controller/observation actuator yet");
+    }
+
+    #[test]
+    fn accepted_burn_needs_no_native_subtitle_selection() {
+        let off = OffFrame::for_test();
+        let mut request = pms_request(PmsRecipe::Encode);
+        request.selection.subtitle_sid = 77;
+        request.subtitle_choice = TrackChoice::Selected(77);
+        request.burned_subtitle = true;
+        let source = pms_port(PmsCase::Valid).qualify_pms(&off, request)
+            .expect("accepted server burn is carried in the video");
+        assert_eq!(source.requirements.subtitle_track, TrackChoice::Unspecified);
+    }
+
+    #[test]
+    fn copied_profile_seven_cannot_use_a_generic_pms_certificate() {
+        let off = OffFrame::for_test();
+        let mut request = pms_request(PmsRecipe::Remux);
+        let p7 = plx_data::metadata::Dovi { present: true, profile: 7, bl_compat: 6,
+            el_present: true, rpu_present: true, bl_present: true,
+            ..plx_data::metadata::Dovi::NONE };
+        request.source_dovi = p7;
+        request.output_dovi = Some(p7);
+        assert_eq!(pms_port(PmsCase::Valid).qualify_pms(&off, request).err(),
+            Some(PmsDecline::UnsupportedIntent),
+            "copied P7 needs the Feed-only enhancement-layer/RPU transformation");
+    }
+
+    #[test]
+    fn explicitly_silent_pms_output_is_not_missing_audio_evidence() {
+        let off = OffFrame::for_test();
+        let mut request = pms_request(PmsRecipe::Encode);
+        request.selection.audio_sid = 0;
+        request.audio_codec.clear();
+        let source = pms_port(PmsCase::Valid).qualify_pms(&off, request)
+            .expect("a source with no audio and an accepted video-only output is silent");
+        assert_eq!(source.requirements.audio_track, TrackChoice::Unspecified);
     }
 
     struct Certified { dovi: Option<plx_data::metadata::Dovi>,

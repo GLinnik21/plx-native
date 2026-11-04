@@ -2952,6 +2952,11 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                         adaptive,
                         video_codec: plan.vcodec.clone(),
                         audio_codec: plan.acodec.clone(),
+                        source_dovi: plan.src_dovi,
+                        // The accepted output's DOVI record is resolved separately from
+                        // the route's Feed declaration before it can authorize URI playback.
+                        output_dovi: None,
+                        dolby_vision_mode: env.dolby_vision_mode,
                         applied_audio: plan.contract.audio,
                         subtitle_choice,
                         requires_client_subtitle: requires_client_subtitle || client_draws,

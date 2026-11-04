@@ -240,6 +240,7 @@ impl crate::route::uri_preflight::OriginalQualifier for QualifiedNativeMaster {
                 selection: TrackSelection { kind: TrackKind::Audio, id: 31342 }, index: 1,
             }],
             applied_audio: request.applied_audio, time_domain: PmsTimeDomain::ContentAbsolute,
+            output_dovi: request.output_dovi,
             hls_controller: Some(HlsController::NativeMaster), hls_master: Some(master),
             release_certified: true,
             expires_at: std::time::Instant::now() + std::time::Duration::from_secs(10) })
@@ -275,6 +276,7 @@ impl crate::route::uri_preflight::OriginalQualifier for QualifiedPms {
                 selection: TrackSelection { kind: TrackKind::Audio, id: 31342 }, index: 1,
             }],
             applied_audio: request.applied_audio, time_domain: PmsTimeDomain::ContentAbsolute,
+            output_dovi: request.output_dovi,
             hls_controller: None, hls_master: None, release_certified: true,
             expires_at: std::time::Instant::now() + std::time::Duration::from_secs(10) })
     }
