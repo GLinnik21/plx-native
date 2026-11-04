@@ -2632,6 +2632,7 @@ fn the_stale_arms_of_the_drain_stop_their_encoder_off_the_frame_thread() {
         pending_seek: -1,
         user_target: 0,
         result: RetranscodeClaimResult::Retranscode(AppliedRetranscode {
+            recovery_offer: None,
             qsess: qsess.to_owned(),
             url: String::new(),
             vcodec: "hevc".into(),
@@ -2755,6 +2756,7 @@ fn a_stale_landing_at_drain_time_stops_the_leaked_encoder_instead_of_installing_
         pending_seek: -1,
         user_target: 0,
         result: RetranscodeClaimResult::Retranscode(AppliedRetranscode {
+            recovery_offer: None,
             qsess: "leaked-worker-session".to_string(),
             url: format!(
                 "http://127.0.0.1:{}/video/:/transcode/universal/start.mkv?session=leaked-worker-session",
