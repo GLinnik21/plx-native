@@ -1971,6 +1971,15 @@ mod flight_tests {
             Rig::on(ps, flight)
         }
 
+        /// A real host object with a pending Rust Load-return gate. The host emits
+        /// `loadCompleted` inside Load; this leaves the callback visible while the pump must
+        /// still wait for the worker's returned receipt.
+        fn new_load_return_pending(delay_ms: u64) -> Rig {
+            let mut ps = crate::route::PlaybackSession::IDLE;
+            let flight = FlightRig::start(&mut ps, Duration::from_millis(delay_ms));
+            Rig::on_with_load_return(ps, flight, false)
+        }
+
         /// [`Rig::new`] on a direct play of the Part, no transcode session (`FlightRig::start_direct`).
         fn direct(delay_ms: u64) -> Rig {
             let mut ps = crate::route::PlaybackSession::IDLE;
@@ -1987,7 +1996,12 @@ mod flight_tests {
         }
 
         /// The Engine streaming the route `flight` installed in `ps`.
-        fn on(mut ps: crate::route::PlaybackSession, flight: FlightRig) -> Rig {
+        fn on(ps: crate::route::PlaybackSession, flight: FlightRig) -> Rig {
+            Rig::on_with_load_return(ps, flight, true)
+        }
+
+        fn on_with_load_return(mut ps: crate::route::PlaybackSession, flight: FlightRig,
+            load_returned: bool) -> Rig {
             SHARED.reset_session();
             TX.reset();
             super::super::claim_hold::clear();
@@ -1998,7 +2012,9 @@ mod flight_tests {
             // The installed Engine represents a completed Load. Give the host sink that same
             // object and callback epoch so a later rollback must prove its real Unload/D1.
             assert_eq!(unsafe { super::super::sink().load(c"{}".as_ptr(), epoch) }, 1);
-            assert!(SHARED.mark_native_load_returned(epoch, None).is_some());
+            if load_returned {
+                assert!(SHARED.mark_native_load_returned(epoch, None).is_some());
+            }
             let engine = super::super::engine::streaming_engine_for_test(epoch);
             assert!(ps.qualify_installed_feed_offer(crate::route::CandidatePurpose::NewCandidate));
             let offer = ps.planned_feed_offer().expect("installed Feed recipe");
@@ -3262,17 +3278,23 @@ mod flight_tests {
         crate::ff::native_audio::publish_fed(crate::ff::native_audio::Kind::Opus, 6);
         let epoch = engine_epoch(&mut rig).expect("the rig's Engine");
         assert!(SHARED.mark_native_load_returned(epoch, None).is_some(), "the Load returned: the watchdog's precondition");
-        // Both AU queues hold data and the pipeline accepts nothing: what the demuxer sees of a
-        // decoder that swallowed the feed. The Engine is still `Loading`, so no frame feeds them.
+        // The pipeline takes one AU per lane, then presents nothing. Keep later AUs beyond the
+        // feed-ahead limit and one more queued behind each pending AU, as a demuxer sees when a
+        // decoder swallows the feed. The first frame completes Load and accepts the first pair;
+        // the second establishes the watchdog's unchanged accepted-count baseline.
         let eng = rig.pa.engine().expect("the rig's Engine");
         eng.stage = Stage::Loading;
-        for (queue, es) in [(eng.aq_video.as_mut(), 0), (eng.aq_audio.as_mut(), 1)] {
+        for (queue, es) in [(eng.aq_video.as_mut(), 1), (eng.aq_audio.as_mut(), 0)] {
             let q = &mut **queue.expect("the Engine's AU queues") as *mut crate::aq::AuQueue;
-            assert_eq!(crate::aq::aq_push(q, [0u8; 64].as_ptr(), 64, 0, 1, es), 0);
+            for pts in [1_000_000_000, 6_000_000_000, 6_100_000_000] {
+                assert_eq!(crate::aq::aq_push(q, [0u8; 64].as_ptr(), 64, pts, 1, es), 0);
+            }
         }
         let log = plx_base::eventlog::with_private_log(|| {
             rig.frame();
             assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error, "the watchdog only armed");
+            rig.frame();
+            assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error, "accepted progress is not a stall");
             rig.now += NATIVE_AUDIO_STALL_MS + 100;
             rig.frame();
             std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
@@ -4095,7 +4117,7 @@ mod flight_tests {
     fn refuse601_publishes_once_per_request_after_the_load() {
         plx_base::devtrig::with_private_triggers(|| {
             std::fs::write(plx_base::devtrig::path("refuse601"), "").expect("arm the trigger");
-            let mut rig = dts_rig(Rig::new(60));
+            let mut rig = dts_rig(Rig::new_load_return_pending(60));
             let refusals = |log: &str| log.matches("Load refused by the pipeline before any picture (type=18 num=601)").count();
             let log = plx_base::eventlog::with_private_log(|| {
                 let epoch = engine_epoch(&mut rig).expect("the rig's Engine");
