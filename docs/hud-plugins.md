@@ -735,7 +735,10 @@ Skip. Edges are app-owned: OK or a click on a `toggle_section` control; BACK (cl
 then hides the HUD; over a Skip or Up Next offer it first retires that segment in the metadata store's
 `skipped` set and returns the slot to Discs); for modal sections, a direction that leaves the section's groups
 (closes it); the slot changes involuntarily with the marker (`slot_for`, F19), and every stand-in slot returns
-to Discs when its marker ends, when Watch Credits dismisses the offer, or when BACK dismisses it.
+to Discs when its marker ends or BACK dismisses it. A standalone automatic Watch button dismisses
+its single-button offer; Watch Credits in the Up Next pair cancels the countdown and leaves
+Next Episode available. Automatic credits retains that pair and its geometry, using five presented
+seconds on the primary button instead of the legacy ten-second clock.
 
 - R1. `open_more` is placed, at or above `MIN_CONTROL_SIZE`, in the root state (compact, Discs) under EVERY valuation
   of the content conditions the package names (`chapters.present`, actual `title.is_episode`) and independent

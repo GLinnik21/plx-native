@@ -50,7 +50,7 @@ use plx_ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, FocusSource, Focusable, GroupKind, GroupSpec,
     HitSource, Hover, Link, Placed, RenderStrategy, Screen, ScreenEvent, Seat, Step, Stop,
 };
-use plx_appkit::up_next::Countdown;
+use plx_appkit::up_next::{self, Countdown};
 use plx_ui::Rect;
 
 use input::{HudState, Scrub, Sections};
@@ -70,7 +70,7 @@ pub const WORD: &str = "player";
 pub const SHAPE: &str =
     "PlayerScreen{hud:{focus:i32,btn:i32,tab:i32,until:u32,dismissed:bool,visible_at_press:bool,\
      exit_armed:bool,back_leaves_at_press:bool,offer:Option<(u32,i64)>,was_standin:bool},scrub:{dir:i32,hold:bool,reveal:bool,drag:bool,\
-     ns:i64},seek_burst:Option<(i64,u32)>,auto_skip:{elapsed:u32,consumed:bool,presented:bool,in_flight:bool,offer:Option<(u64,u32,u32,u32,i64,i64,bool)>,drawn:Option<(u64,u32,u32,u32,i64,i64,bool)>},transport_tap:bool,origin:Option<u32>,repair_alert:{open:bool,confirm:bool,scroll:u32}}";
+     ns:i64},seek_burst:Option<(i64,u32)>,auto_skip:{elapsed:u32,consumed:bool,presented:bool,in_flight:bool,offer:Option<(u64,u32,u32,u32,i64,i64,bool)>,drawn:Option<(u64,u32,u32,u32,i64,i64,bool)>,declined_pair:Option<(u64,u32,u32,u32,i64,i64,bool)>},transport_tap:bool,origin:Option<u32>,repair_alert:{open:bool,confirm:bool,scroll:u32}}";
 
 /// **The page this playback was launched from**, as the container's own identity.
 ///
@@ -119,6 +119,7 @@ pub enum HudPolicy {
 pub struct PlayerScreen {
     auto_skip: plx_appkit::skip_policy::OfferTimer,
     drawn_watch: Option<plx_appkit::skip_policy::OfferId>,
+    declined_pair: Option<plx_appkit::skip_policy::OfferId>,
     entry: EntryId,
     /// The transport HUD's timer, cursor, dismissal and control-row edges.
     pub hud: HudState,
@@ -197,7 +198,7 @@ impl PlayerScreen {
             repeat: RepeatGate::IDLE,
             row: HudMotion::new(),
             up_next: Countdown::default(),
-            auto_skip: Default::default(), drawn_watch: None,
+            auto_skip: Default::default(), drawn_watch: None, declined_pair: None,
             slot: ControlSlot::Discs(player_hud::Controls::NONE),
             busy: plx_appkit::player_hud::Busy::None,
             hud_policy: HudPolicy::Normal,
@@ -258,6 +259,7 @@ impl PlayerScreen {
         self.transport_tap = false;
         self.auto_skip.reset();
         self.drawn_watch = None;
+        self.declined_pair = None;
         self.scrub.cancel();
         self.row.reset_title();
         if !for_reload {
@@ -322,7 +324,7 @@ impl PlayerScreen {
     {
         let measure = df.measure;
         let mut model = self.model;
-        model.skip_progress = matches!(self.draw_slot(), ControlSlot::Skip(pr) if pr.automatic)
+        model.skip_progress = (self.draw_slot().automatic_marker().is_some() && self.auto_skip.pending())
             .then(|| self.auto_skip.progress());
         let frame = plx_appkit::player_hud::render::Frame {
             entry: self.entry,
@@ -341,7 +343,7 @@ impl PlayerScreen {
             meta,
         };
         let receipt = plx_appkit::player_hud::render::draw_with_receipt(&self.compiled, &frame, df, &mut self.row, plx_ui::Painter::root());
-        self.drawn_watch = if receipt.skip_drawn && self.watch_visible() {
+        self.drawn_watch = if receipt.offer_drawn && self.watch_visible() {
             self.auto_skip.presented();
             self.draw_slot().marker().map(|marker| plx_appkit::skip_policy::OfferId {
                 scope: self.model.marker_prefs.scope, entry: self.entry.0,
@@ -525,6 +527,7 @@ impl PlayerScreen {
             ControlSlot::Discs(controls) => 4 + u64::from(controls.pair()) + 2 * u64::from(controls.previous) + 4 * u64::from(controls.next) + 8 * u64::from(controls.restart),
             ControlSlot::Skip(_) => 2,
             ControlSlot::UpNext(_) => 3,
+            ControlSlot::AutomaticUpNext(_) => 32,
         });
         mix(match plx_appkit::player_hud::busy(ps) {
             plx_appkit::player_hud::Busy::None => 1,
@@ -817,6 +820,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                 // segment. Stepped for the whole route, not per-overlay: the countdown must keep
                 // running whichever panel is up (`up_next::tick`).
                 self.up_next.tick(self.slot, tick.ms);
+                if self.pair_declined() { self.up_next.cancel(); }
                 if self.model.marker_prefs.needs_refresh {
                     fx.push(Fx::App(AppFx::Preferences(crate::registry::PreferenceCmd::EnsureMarkerAccess)));
                 }
@@ -888,16 +892,46 @@ fn continues_seek_burst(key: consts::Key, command: Option<player_hud::command::H
 }
 
 impl PlayerScreen {
+    fn pair_declined(&self) -> bool {
+        self.declined_pair.is_some_and(|id| id.scope == self.model.marker_prefs.scope
+            && id.entry == self.entry.0 && id.playback == self.model.playback_id
+            && self.slot.marker().is_some_and(|m| m.kind == id.marker.kind && m.start_ms == id.marker.start_ms))
+    }
+    /// Watch and taking hold of the old pair stop its clock, while keeping manual Next available.
+    /// The identity survives a grant refresh, a timer-mode change and temporary buffering.
+    pub fn decline_pair(&mut self) {
+        if !self.slot.is_up_next_pair() { return; }
+        self.declined_pair = self.slot.marker().map(|marker| plx_appkit::skip_policy::OfferId {
+            scope: self.model.marker_prefs.scope, entry: self.entry.0, playback: self.model.playback_id, marker });
+        self.up_next.cancel();
+        self.auto_skip.cancel();
+    }
+    fn hold_pair_for_next(&mut self, elem: Option<u32>) {
+        if self.slot.is_up_next_pair() && elem.and_then(player_hud::row_index) == Some(up_next::BTN_NEXT) {
+            self.decline_pair();
+        }
+    }
     fn watch_visible(&self) -> bool {
         !self.model.covered && !self.hud.sections.any() && !self.hud.dismissed
-            && self.middle_up() && matches!(self.draw_slot(), ControlSlot::Skip(pr) if pr.automatic)
+            && self.middle_up() && self.draw_slot().automatic_marker().is_some()
     }
     fn auto_skip_visible(&self) -> bool {
         self.watch_visible() && self.hud.nav.focus == GROUP_ROW
+            && (!self.slot.is_up_next_pair() || self.hud.nav.btn == up_next::BTN_NEXT)
     }
     fn cancel_watch<H: AppLike>(&mut self, now: u32, fx: &mut Effects<'_, H>) -> bool {
         let Some(id) = self.drawn_watch else { return false; };
         self.auto_skip.cancel();
+        if self.slot.is_up_next_pair() {
+            // Declining a rendered alternative needs no current entitlement. A refreshed end
+            // offset is still the same segment; native automatic execution remains stricter.
+            if id.scope == self.model.marker_prefs.scope && id.entry == self.entry.0
+                && id.playback == self.model.playback_id
+                && self.slot.offer() == Some((id.marker.kind, id.marker.start_ms)) {
+                self.decline_pair();
+            }
+            return true;
+        }
         // A stale drawn Watch is spent, never reinterpreted as a disc or manual Skip.
         if id.scope == self.model.marker_prefs.scope && id.playback == self.model.playback_id
             && self.slot.marker() == Some(id.marker)
@@ -910,10 +944,26 @@ impl PlayerScreen {
     fn step_auto_skip<H: AppLike>(&mut self, meta: plx_data::metadata::MetadataView<'_>, tick: plx_machine::machine::Tick, fx: &mut Effects<'_, H>) {
         let marker = meta.active_marker(plx_data::metadata::Playhead { playing: true,
             pos_ns: self.model.playpos_ns, dur_ns: self.model.duration_ns });
+        if self.declined_pair.is_some_and(|id| id.scope != self.model.marker_prefs.scope
+            || id.playback != self.model.playback_id || self.model.seeking || self.scrub.ns >= 0
+            || marker.is_some_and(|m| m.kind != id.marker.kind || m.start_ms != id.marker.start_ms)
+            || (marker.is_none() && self.model.advancing && !self.model.loading
+                && !(id.marker.start_ms..id.marker.end_ms).contains(&(self.model.playpos_ns / 1_000_000)))) {
+            self.declined_pair = None;
+            self.up_next.reset();
+        }
         let id = marker.filter(|m| self.model.marker_prefs.mode(m.kind) == plx_plex::plex::session::MarkerSkipMode::Automatic)
             .map(|marker| plx_appkit::skip_policy::OfferId { scope: self.model.marker_prefs.scope,
                 entry: self.entry.0, playback: self.model.playback_id, marker });
         if self.model.seeking || self.scrub.ns >= 0 { self.auto_skip.reset(); }
+        if matches!(self.slot, ControlSlot::AutomaticUpNext(_)) && !self.model.paused && !self.model.loading
+            && (self.drawn_watch.is_some_and(|shown| Some(shown) == id)
+                || (id.is_some() && self.auto_skip.id() == id && self.auto_skip.progress() > 0.0))
+            && !up_next::countdown_may_run(self.watch_visible(), self.hud.nav.focus == GROUP_ROW,
+                self.hud.nav.btn == up_next::BTN_NEXT) {
+            self.decline_pair();
+        }
+        if self.pair_declined() { self.auto_skip.cancel(); }
         if self.auto_skip.pending() && self.auto_skip_visible() {
             self.hud.extend(tick.ms, input::HUD_LINGER_MS);
         }
@@ -926,7 +976,7 @@ impl PlayerScreen {
     pub fn auto_skip_entry(&self) -> u32 { self.entry.0 }
     pub fn accepts_auto_skip(&self, id: plx_appkit::skip_policy::OfferId) -> bool {
         id.entry == self.entry.0 && id.playback == self.model.playback_id && self.auto_skip.id() == Some(id)
-            && self.auto_skip_visible() && !self.model.paused && !self.model.loading
+            && !self.pair_declined() && self.auto_skip_visible() && !self.model.paused && !self.model.loading
     }
     fn ask<H: AppLike>(fx: &mut Effects<'_, H>, req: PlayerReq) {
         fx.push(Fx::App(AppFx::Player(req)));
@@ -1038,7 +1088,8 @@ impl PlayerScreen {
         // reset `hud.nav` to HOME — opening Subtitles for a click on Audio.
         self.hud.extend(now, input::HUD_LINGER_MS);
         self.publish();
-        if player_hud::row_index(elem).is_some() && self.cancel_watch(now, fx) { return Handled::Yes; }
+        self.hold_pair_for_next(Some(elem));
+        if player_hud::row_index(elem) == Some(up_next::BTN_CREDITS) && self.cancel_watch(now, fx) { return Handled::Yes; }
         match elem {
             e if (ELEM_FAILURE_BASE..ELEM_FAILURE_END).contains(&e) => {
                 // the same gate `group_drawn` registers the row behind: a row that is not drawn
@@ -1364,7 +1415,8 @@ impl PlayerScreen {
         let vis = self.hud.visible_at_press;
         let focused = focused.filter(|_| vis);
         let mut handled = Handled::Yes;
-        if focused.and_then(player_hud::row_index).is_some() && self.cancel_watch(now, fx) {
+        self.hold_pair_for_next(focused);
+        if focused.and_then(player_hud::row_index) == Some(up_next::BTN_CREDITS) && self.cancel_watch(now, fx) {
             // Watch is intent now, never a deferred press on a row that can change under it.
         } else if self.take_target(now, fx) {
             // OK confirmed the target and the film plays on from it; that is all this press means
@@ -1421,7 +1473,7 @@ impl PlayerScreen {
             return;
         };
         self.hud.nav.btn = ordinal;
-        if self.cancel_watch(now, fx) { return; }
+        if ordinal == up_next::BTN_CREDITS && self.cancel_watch(now, fx) { return; }
         match self.row_command(ordinal) {
             Some(command) => Self::ask(fx, PlayerReq::Command(command)),
             None => Self::ask(fx, PlayerReq::StandIn),
@@ -2462,6 +2514,8 @@ impl LogicalState for PlayerScreen {
         c.option(offer.as_ref(), |c, id| { c.u64(id.scope).u32(id.entry).u32(id.playback)
             .u32(id.marker.kind as u32).u64(id.marker.start_ms as u64).u64(id.marker.end_ms as u64).bool(id.marker.final_seg); });
         c.option(self.drawn_watch.as_ref(), |c, id| { c.u64(id.scope).u32(id.entry).u32(id.playback)
+            .u32(id.marker.kind as u32).u64(id.marker.start_ms as u64).u64(id.marker.end_ms as u64).bool(id.marker.final_seg); });
+        c.option(self.declined_pair.as_ref(), |c, id| { c.u64(id.scope).u32(id.entry).u32(id.playback)
             .u32(id.marker.kind as u32).u64(id.marker.start_ms as u64).u64(id.marker.end_ms as u64).bool(id.marker.final_seg); });
         c.bool(self.transport_tap);
         c.option(self.origin.as_ref(), |c, o| {
@@ -5394,6 +5448,158 @@ mod automatic_marker_tests {
         page.step_auto_skip::<TestHost>(meta.view(), Tick { ms: 1_000, dt_us },
             &mut Effects::new(&mut out, MachineId::Instance(InstanceId(3)), &mut present));
         out.into_iter().filter_map(|e| if let Fx::App(AppFx::Player(req)) = e.fx { Some(req) } else { None }).collect()
+    }
+    fn pair() -> (PlayerScreen, plx_data::stores::metadata::MetadataStore, OfferId) {
+        let (mut page, mut meta, mut id) = page();
+        id.marker.kind = plx_data::metadata::MarkerKind::Credits;
+        id.marker.final_seg = true;
+        plx_data::metadata::set_playing_markers_for_test(meta.state_mut(), vec![id.marker]);
+        page.model.marker_prefs.credits_granted = true;
+        page.model.marker_prefs.credits = Automatic;
+        page.slot = ControlSlot::AutomaticUpNext(id.marker);
+        page.hud.nav.btn = up_next::BTN_NEXT;
+        page.up_next.tick(page.slot, 1_000);
+        assert!(!page.up_next.armed(), "only the five-second clock owns this pair");
+        assert!(step(&mut page, &meta, 0).is_empty());
+        page.drawn_watch = Some(id);
+        (page, meta, id)
+    }
+    #[test]
+    fn automatic_marker_pair_fires_after_five_presented_seconds() {
+        let _guard = plx_base::testlock::serial();
+        let (mut page, meta, id) = pair();
+        page.auto_skip.presented();
+        assert!(step(&mut page, &meta, 4_999_000).is_empty());
+        page.auto_skip.presented();
+        assert!(matches!(step(&mut page, &meta, 1_000).as_slice(), [PlayerReq::AutoSkip { id: got, .. }] if *got == id));
+        assert_eq!(page.slot.items(), 2);
+    }
+    #[test]
+    fn automatic_marker_pair_watch_keeps_next_and_next_press_wins_the_deadline() {
+        let _guard = plx_base::testlock::serial();
+        for button in [up_next::BTN_CREDITS, up_next::BTN_NEXT] {
+            let (mut page, meta, id) = pair();
+            page.auto_skip.presented();
+            assert!(step(&mut page, &meta, 4_999_000).is_empty());
+            let mut rig = Rig::on(&page, EntryId(42));
+            rig.seat_on(player_hud::control_elem(button));
+            let (handled, reqs) = rig.key(&mut page, plx_ui::consts::SDLK_RETURN, 0, Edge::Down, 6_000);
+            assert_eq!(handled, if button == up_next::BTN_CREDITS { Handled::Yes } else { Handled::No });
+            assert!(reqs.is_empty());
+            assert_eq!(page.slot.items(), 2, "Watch never removes manual Next");
+            page.auto_skip.presented();
+            assert!(step(&mut page, &meta, 1_000).is_empty());
+            assert!(!page.accepts_auto_skip(id));
+            rig.seat_on(player_hud::control_elem(up_next::BTN_NEXT));
+            let (_, reqs) = rig.deliver(&mut page, ScreenEvent::PressCommit(plx_machine::machine::PressId(1)));
+            assert_eq!(reqs, vec![PlayerReq::StandIn]);
+        }
+    }
+    #[test]
+    fn automatic_marker_pair_decline_survives_both_grant_directions_and_buffering() {
+        let _guard = plx_base::testlock::serial();
+        for decline_legacy in [false, true] {
+            let (mut page, mut meta, id) = pair();
+            if decline_legacy { page.slot = ControlSlot::UpNext(id.marker); }
+            page.decline_pair();
+            page.model.marker_prefs.credits_granted = false;
+            page.slot = ControlSlot::UpNext(id.marker);
+            page.up_next.tick(page.slot, 10_000);
+            if page.pair_declined() { page.up_next.cancel(); }
+            assert!(!page.up_next.armed());
+            page.model.loading = true;
+            page.slot = ControlSlot::Discs(player_hud::Controls::NONE);
+            assert!(step(&mut page, &meta, 1_000_000).is_empty());
+            page.model.loading = false;
+            page.model.marker_prefs.credits_granted = true;
+            page.slot = ControlSlot::AutomaticUpNext(id.marker);
+            let mut updated = id.marker;
+            updated.end_ms += 10_000;
+            page.model.playpos_ns = 65_000_000_000;
+            plx_data::metadata::set_playing_markers_for_test(meta.state_mut(), vec![updated]);
+            page.slot = ControlSlot::AutomaticUpNext(updated);
+            page.auto_skip.presented();
+            assert!(step(&mut page, &meta, 5_000_000).is_empty());
+            page.auto_skip.presented();
+            assert!(step(&mut page, &meta, 5_000_000).is_empty());
+            assert!(page.pair_declined());
+            page.model.playback_id += 1;
+            assert!(step(&mut page, &meta, 0).is_empty());
+            assert!(!page.pair_declined(), "the next playback owns a fresh decision");
+        }
+    }
+    #[test]
+    fn automatic_marker_pair_pointer_actions_and_back_keep_the_existing_meanings() {
+        let _guard = plx_base::testlock::serial();
+        for button in [up_next::BTN_CREDITS, up_next::BTN_NEXT] {
+            let (mut page, meta, _) = pair();
+            let mut rig = Rig::on(&page, EntryId(42));
+            let (_, reqs) = rig.deliver(&mut page, ScreenEvent::Input(InputEvent {
+                at: Tick { ms: 2_000, dt_us: 0 }, source: Source::Sdl,
+                kind: InputKind::Click { x: 1_600.0, y: 830.0, hit: Some(player_hud::control_elem(button)) },
+            }));
+            assert_eq!(reqs, if button == up_next::BTN_NEXT { vec![PlayerReq::ArmControlRow] } else { vec![] });
+            page.auto_skip.presented();
+            assert!(step(&mut page, &meta, 5_000_000).is_empty());
+            assert_eq!(page.slot.items(), 2);
+        }
+        let (mut page, _, id) = pair();
+        let mut rig = Rig::on(&page, EntryId(42));
+        rig.seat_on(player_hud::control_elem(up_next::BTN_NEXT));
+        let (_, reqs) = rig.key(&mut page, 0, plx_ui::consts::WCODE_BACK, Edge::Down, 2_000);
+        assert_eq!(reqs, vec![PlayerReq::CancelAutoSkip(id)]);
+        assert!(page.slot.is_discs(), "BACK dismisses both controls");
+    }
+    #[test]
+    fn automatic_marker_pair_focus_and_cover_cancel_only_after_presentation() {
+        let _guard = plx_base::testlock::serial();
+        for cover in [false, true] {
+            let (mut page, meta, _) = pair();
+            if cover { page.model.covered = true; }
+            else { page.hud.nav.btn = up_next::BTN_CREDITS; }
+            assert!(step(&mut page, &meta, 1_000).is_empty());
+            assert!(page.pair_declined());
+            page.model.covered = false;
+            page.hud.nav.btn = up_next::BTN_NEXT;
+            page.auto_skip.presented();
+            assert!(step(&mut page, &meta, 5_000_000).is_empty());
+        }
+        let (mut page, meta, id) = pair();
+        page.drawn_watch = None;
+        page.hud.nav.focus = GROUP_SCRUB;
+        assert!(step(&mut page, &meta, 1_000).is_empty());
+        assert!(!page.pair_declined(), "the initial shared focus reseat has not presented the pair yet");
+        page.hud.nav.focus = GROUP_ROW;
+        page.drawn_watch = Some(id);
+        page.model.paused = true;
+        page.auto_skip.presented();
+        assert!(step(&mut page, &meta, 10_000_000).is_empty());
+        assert!(!page.pair_declined());
+    }
+    #[test]
+    fn automatic_marker_pair_drawn_watch_cancels_across_grant_loss_and_marker_revision() {
+        let _guard = plx_base::testlock::serial();
+        for lose_grant in [false, true] {
+            let (mut page, mut meta, id) = pair();
+            let mut marker = id.marker;
+            marker.end_ms += 10_000;
+            plx_data::metadata::set_playing_markers_for_test(meta.state_mut(), vec![marker]);
+            page.model.marker_prefs.credits_granted = !lose_grant;
+            page.slot = if lose_grant { ControlSlot::UpNext(marker) } else { ControlSlot::AutomaticUpNext(marker) };
+            let mut rig = Rig::on(&page, EntryId(42));
+            let (_, reqs) = rig.deliver(&mut page, ScreenEvent::Input(InputEvent {
+                at: Tick { ms: 2_000, dt_us: 0 }, source: Source::Sdl,
+                kind: InputKind::Click { x: 1_600.0, y: 830.0, hit: Some(player_hud::control_elem(up_next::BTN_CREDITS)) },
+            }));
+            assert!(reqs.is_empty());
+            assert!(page.pair_declined(), "a drawn Watch remains a refusal for that segment");
+            page.up_next.tick(ControlSlot::UpNext(marker), 3_000);
+            assert!(!page.up_next.armed());
+            page.model.marker_prefs.credits_granted = true;
+            page.slot = ControlSlot::AutomaticUpNext(marker);
+            page.auto_skip.presented();
+            assert!(step(&mut page, &meta, 5_000_000).is_empty());
+        }
     }
     #[test]
     fn automatic_marker_watch_key_pointer_and_back_win_at_the_deadline() {

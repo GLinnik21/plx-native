@@ -407,8 +407,8 @@ fn lift<'c>(compiled: &Compiled, state: &'c CompiledState, base: u8, f: &Frame<'
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DrawReceipt {
     pub state_exists: bool,
-    /// The actual SkipPill op was painted, legible and inside its hit clip.
-    pub skip_drawn: bool,
+    /// An actual SkipPill or both Up Next controls were painted legibly inside their clips.
+    pub offer_drawn: bool,
 }
 pub fn draw<H: Host>(compiled: &Compiled, f: &Frame<'_>, df: &DrawFrame<'_, '_, H>, row: &mut HudMotion, p: Painter) -> bool
 where H::Elem: IndexElem {
@@ -419,7 +419,7 @@ pub fn draw_with_receipt<H: Host>(compiled: &Compiled, f: &Frame<'_>, df: &DrawF
 where
     H::Elem: IndexElem,
 {
-    let mut receipt = DrawReceipt { state_exists: true, skip_drawn: false };
+    let mut receipt = DrawReceipt { state_exists: true, offer_drawn: false };
     // A FAILURE owns the frame: the read-out is `draw_readout`'s, drawn by the caller AFTER this.
     if readout_owns_frame(f.busy) {
         row.reset_title();
@@ -439,7 +439,7 @@ where
         for source in inline_sources(compiled, base, f).into_iter().filter(|source| source.key.open != base) {
             let fading = owed(source, &layers, |id| held.contains(&id));
             if !fading.is_empty() {
-                receipt.skip_drawn |= walk(compiled, source, f, df, row, p, &layers, Pick::Bands(&fading));
+                receipt.offer_drawn |= walk(compiled, source, f, df, row, p, &layers, Pick::Bands(&fading));
                 held.extend(fading);
             }
         }
@@ -447,11 +447,11 @@ where
         if let Some(compact) = compact {
             let fading = owed(compact, &layers, |id| y_in(state, id).is_some());
             if !fading.is_empty() {
-                receipt.skip_drawn |= walk(compiled, compact, f, df, row, p, &layers, Pick::Bands(&fading));
+                receipt.offer_drawn |= walk(compiled, compact, f, df, row, p, &layers, Pick::Bands(&fading));
             }
         }
     }
-    receipt.skip_drawn |= walk(compiled, state, f, df, row, p, &layers, Pick::All);
+    receipt.offer_drawn |= walk(compiled, state, f, df, row, p, &layers, Pick::All);
     if !inline {
         let mut walked: Vec<&str> = Vec::new();
         for section in [Section::Chapters, Section::Info] {
@@ -463,7 +463,7 @@ where
                 let only_here = owed(leaving, &layers, |id| {
                     y_in(state, id).is_some() || compact.is_some_and(|c| y_in(c, id).is_some()) || walked.contains(&id)
                 });
-                receipt.skip_drawn |= walk(compiled, leaving, f, df, row, p, &layers, Pick::Leaving(bit, &only_here));
+                receipt.offer_drawn |= walk(compiled, leaving, f, df, row, p, &layers, Pick::Leaving(bit, &only_here));
                 walked.extend(only_here);
             }
         }
@@ -533,7 +533,7 @@ fn walk<H: Host>(
     H::Elem: IndexElem,
 {
     let e = hud_env();
-    let mut skip_drawn = false;
+    let mut offer_drawn = false;
     // a panel owning the middle hides the compact state's transport, unless that transport is fading out under it; a
     // section state IS the panel
     let hides_transport = state.key.open == 0 && !f.transport && !layers.moving;
@@ -598,7 +598,7 @@ fn walk<H: Host>(
                 },
                 DrawOp::Control(c) => draw_control(compiled, f, row, &e, q, state, c),
                 DrawOp::UpNext { rects, credits_rest, next_rest, credits_focus, next_focus, countdown } => {
-                    if let ControlSlot::UpNext(_) = f.slot {
+                    if f.slot.is_up_next_pair() {
                         let layout = Layout {
                             still: rects.still.unwrap_or_default(),
                             caption: rects.caption.unwrap_or_default(),
@@ -612,7 +612,10 @@ fn walk<H: Host>(
                             credits: up_next::ButtonLook { rest: rest(*credits_rest), focus: focus(*credits_focus) },
                             next: up_next::ButtonLook { rest: rest(*next_rest), focus: focus(*next_focus) }, countdown: *countdown,
                         };
-                        up_next::draw_over(f.ps, &layout, decor, look, row, f.up, q, f.focus == GROUP_ROW, f.btn, f.now, f.measure);
+                        let timer = if matches!(f.slot, ControlSlot::AutomaticUpNext(_)) {
+                            up_next::CountdownView::automatic(f.model.skip_progress)
+                        } else { f.up.view(f.now) };
+                        offer_drawn |= up_next::draw_over(f.ps, &layout, decor, look, row, timer, q, f.focus == GROUP_ROW, f.btn, f.measure);
                     }
                 }
                 DrawOp::SkipPill { rects } => {
@@ -621,7 +624,7 @@ fn walk<H: Host>(
                         skip_pill::draw_at(row, q, pr, shown, f.focus == GROUP_ROW, f.model.skip_progress);
                         let (rect, _, clip) = q.to_screen(shown);
                         let hit = rect.intersect(clip);
-                        skip_drawn |= q.opacity() >= 0.5 && hit.w > 0.0 && hit.h > 0.0;
+                        offer_drawn |= q.opacity() >= 0.5 && hit.w > 0.0 && hit.h > 0.0;
                     }
                 }
                 DrawOp::Playbar { track, fill, track_ink, clock_size, knob, clocks, mark, .. } => {
@@ -673,7 +676,7 @@ fn walk<H: Host>(
             }
         }
     }
-    skip_drawn
+    offer_drawn
 }
 
 /// A section tab: the one control that draws while a panel owns the middle.

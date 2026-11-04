@@ -2193,7 +2193,8 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // re-dismiss it is the cancel's business, one line below — a dismissed HUD is focus
         // off the row.
         //
-        // …and that cancel is `up_next::countdown_may_run`, the ONE rule, applied here rather
+        // …and that cancel is `up_next::countdown_may_run`, applied here for the legacy clock
+        // and by the player screen for its five-presented-second automatic clock, rather
         // than at each key arm because every way of taking hold of the row (arrows, a click,
         // walking away to the tabs, opening a panel) ends up as a cursor position and a route
         // by the time this frame draws. Reading it as a steady state is what makes that true.
@@ -2224,7 +2225,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
                         player.hud.dismissed = false;
                         player.hud.extend(fr.now, HUD_LINGER_MS);
                     } else {
-                        player.up_next.cancel();
+                        player.decline_pair();
                     }
                 }
                 // when the HUD auto-hides, park focus back on the scrubber so the next reveal
@@ -6853,10 +6854,13 @@ mod lifecycle_regression_tests {
         let marker = fr.ctrl.marker().expect("the injected Up Next segment");
         let mut prompt = plx_appkit::skip_pill::prompt_for(marker);
         prompt.automatic = true;
-        fr.ctrl = plx_appkit::player_hud::ControlSlot::Skip(prompt);
-        unsafe { playback_tick(&mut rig.app, &mut fr); }
-        assert!(!plx_media::route::play_pending(), "Watch Credits needs its own presented countdown");
-        assert_eq!(plx_media::route::cur_rk(&rig.app.player.session), "1");
+        for slot in [plx_appkit::player_hud::ControlSlot::Skip(prompt),
+            plx_appkit::player_hud::ControlSlot::AutomaticUpNext(marker)] {
+            fr.ctrl = slot;
+            unsafe { playback_tick(&mut rig.app, &mut fr); }
+            assert!(!plx_media::route::play_pending(), "Automatic credits need their own presented countdown");
+            assert_eq!(plx_media::route::cur_rk(&rig.app.player.session), "1");
+        }
     }
 
     /// The first half of every foreground restore below: playback, an OS background and a DID

@@ -182,7 +182,26 @@ mod policy_tests {
     use crate::player_hud::{slot_for, slot_for_preferences, ControlSlot};
     use plx_media::route::NextEpisodeMode;
     #[test]
-    fn automatic_marker_policy_preserves_legacy_and_owns_real_final_credits() {
+    fn automatic_final_credits_keep_both_existing_up_next_controls() {
+        let marker = Marker {
+            kind: MarkerKind::Credits,
+            start_ms: 100_000,
+            end_ms: 120_000,
+            final_seg: true,
+        };
+        let prefs = MarkerPrefsView {
+            scope: 1,
+            credits_granted: true,
+            credits: MarkerSkipMode::Automatic,
+            ..Default::default()
+        };
+        let slot = slot_for_preferences(Some(marker), true, true, NextEpisodeMode::Countdown, prefs);
+        assert!(matches!(slot, ControlSlot::AutomaticUpNext(m) if m == marker));
+        assert_eq!(slot.items(), 2, "Watch Credits and Next Episode stay available");
+        assert_eq!(slot.primary_btn(), crate::up_next::BTN_NEXT);
+    }
+    #[test]
+    fn automatic_marker_policy_preserves_legacy_and_the_existing_pair() {
         for kind in [MarkerKind::Intro, MarkerKind::Credits] {
             for final_seg in [false, true] {
                 let marker = Marker {
@@ -208,9 +227,9 @@ mod policy_tests {
                             credits_granted: true,
                             ..stored
                         };
-                        assert!(
-                            matches!(slot_for_preferences(Some(marker), true, has_next, next, granted), ControlSlot::Skip(pr) if pr.automatic)
-                        );
+                        let automatic = slot_for_preferences(Some(marker), true, has_next, next, granted);
+                        assert_eq!(automatic.automatic_marker(), Some(marker));
+                        assert_eq!(automatic.is_up_next_pair(), slot_for(Some(marker), has_next, next).is_up_next_pair());
                         assert!(
                             slot_for_preferences(Some(marker), false, has_next, next, granted)
                                 == slot_for(Some(marker), has_next, next),

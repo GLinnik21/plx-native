@@ -2721,7 +2721,9 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // Contextual Library favorites editor adds a distinct SettingsPage address.
 // Automatic marker skipping adds per-kind preferences, addressed grant scope and timer/offer state.
 // Incompatible replay anchors are re-recorded through tools/plxnative-rec rerecord.
-const SCREEN_SHAPES_PIN: u64 = 0x1802f17ee583f977;
+// The restored Up Next pair retains a scoped declined segment across timer/grant changes.
+// Previous screen pin: 0x1802_f17e_e583_f977; re-record incompatible replay anchors.
+const SCREEN_SHAPES_PIN: u64 = 0xf852_85cc_f116_356b;
 
 #[cfg(test)]
 mod arg_tests {

@@ -102,9 +102,10 @@ pub enum ControlSlot {
     Discs(Controls),
     /// a marker segment is under the playhead
     Skip(crate::skip_pill::Prompt),
-    /// Final credits with a queued successor under Countdown, unless authorized Automatic
-    /// credits owns the row. Carries the segment so the row has a stable IDENTITY.
+    /// Final credits with a queued successor under the existing ten-second countdown.
     UpNext(plx_data::metadata::Marker),
+    /// The same two controls, driven by the viewer's five presented second automatic policy.
+    AutomaticUpNext(plx_data::metadata::Marker),
 }
 
 impl ControlSlot {
@@ -114,7 +115,7 @@ impl ControlSlot {
         match self {
             ControlSlot::Discs(_) => BTN_N,
             // Watch Credits + Next Episode — the one stand-in with a pair
-            ControlSlot::UpNext(_) => 2,
+            ControlSlot::UpNext(_) | ControlSlot::AutomaticUpNext(_) => 2,
             ControlSlot::Skip(_) => 1,
         }
     }
@@ -124,7 +125,7 @@ impl ControlSlot {
     /// would disarm the timer on the frame after it armed.
     pub fn primary_btn(self) -> c_int {
         match self {
-            ControlSlot::UpNext(_) => crate::up_next::PRIMARY_BTN,
+            ControlSlot::UpNext(_) | ControlSlot::AutomaticUpNext(_) => crate::up_next::PRIMARY_BTN,
             ControlSlot::Discs(controls) => controls.primary(),
             _ => 0,
         }
@@ -156,7 +157,17 @@ impl ControlSlot {
         match self {
             ControlSlot::Discs(_) => None,
             ControlSlot::Skip(pr) => Some(pr.marker),
-            ControlSlot::UpNext(m) => Some(m),
+            ControlSlot::UpNext(m) | ControlSlot::AutomaticUpNext(m) => Some(m),
+        }
+    }
+    pub fn is_up_next_pair(self) -> bool {
+        matches!(self, Self::UpNext(_) | Self::AutomaticUpNext(_))
+    }
+    pub fn automatic_marker(self) -> Option<plx_data::metadata::Marker> {
+        match self {
+            Self::AutomaticUpNext(marker) => Some(marker),
+            Self::Skip(prompt) if prompt.automatic => Some(prompt.marker),
+            _ => None,
         }
     }
 }
@@ -228,6 +239,9 @@ pub fn slot_for_preferences(marker: Option<plx_data::metadata::Marker>, real: bo
     if let Some(m) = marker.filter(|_| real) {
         match prefs.mode(m.kind) {
             MarkerSkipMode::Automatic => {
+                if matches!(slot_for(Some(m), has_next, next), ControlSlot::UpNext(_)) {
+                    return ControlSlot::AutomaticUpNext(m);
+                }
                 let mut prompt = crate::skip_pill::prompt_for(m);
                 prompt.automatic = true;
                 return ControlSlot::Skip(prompt);

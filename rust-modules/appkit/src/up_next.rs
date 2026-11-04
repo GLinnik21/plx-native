@@ -1,8 +1,9 @@
 //! **Up Next** — the next-episode tile in the transport HUD (`Player Screen.dc.html`, the control
 //! row's third occupant). It appears when the playing episode reaches a FINAL credits marker (one
 //! that runs to the end of the item) and the PlayQueue has another episode behind it, under the
-//! default Next episode preference (Up Next countdown), unless authorized Automatic credits
-//! owns the row: the next episode's still, its address and name, and a countdown that starts it on its own.
+//! default Next episode preference (Up Next countdown): the next episode's still, its address and
+//! name, and both Watch Credits and Next Episode. Authorized Automatic credits uses the same
+//! controls with five presented seconds instead of the legacy ten-second clock.
 //!
 //! The data is `route::up_next()` — lifted from the `continuous=1` PlayQueue that every playback
 //! already creates, so nothing here asks the server what plays next.
@@ -26,7 +27,8 @@
 //! **The row's cursor is not kept here.** It is `hud_nav.btn`, exactly as it is for the discs, so
 //! LEFT/RIGHT need no special case and [`ControlSlot::items`](crate::player_hud::ControlSlot)
 //! answers for the clamp. This module owns the countdown and nothing else — which is also why the
-//! cancel rule lives at `app.rs`'s one frame block rather than being spread across the key arms.
+//! shared cancel rule is applied by the app's legacy-clock block and the player screen's automatic
+//! policy. The screen retains a declined segment across grant and timer-mode changes.
 //!
 //! *(A full-screen post-play CARD — show poster, DISPLAY title, countdown ring — was built for the
 //! cross-show case and lives at commit `84ff9328`. It is not here because its trigger does not
@@ -82,10 +84,23 @@ pub struct Countdown {
     cancelled: bool,
 }
 
+/// The one active clock's presentation, shared by the legacy and automatic pair.
+#[derive(Clone, Copy)]
+pub struct CountdownView {
+    remaining_ms: Option<u32>,
+    duration_ms: u32,
+}
+impl CountdownView {
+    pub fn automatic(progress: Option<f32>) -> Self {
+        let duration_ms = crate::skip_policy::COUNTDOWN_US / 1000;
+        Self { remaining_ms: progress.map(|p| ((1.0 - p.clamp(0.0, 1.0)) * duration_ms as f32) as u32), duration_ms }
+    }
+}
+
 /// Whether this owns the control row this frame. The precedence itself lives in ONE place —
 /// [`crate::player_hud::slot_for_preferences`] — so this is just a read of the resolved slot.
 pub fn is_shown(slot: crate::player_hud::ControlSlot) -> bool {
-    matches!(slot, crate::player_hud::ControlSlot::UpNext(_))
+    slot.is_up_next_pair()
 }
 
 /// Per-frame tick: arm the countdown the moment the tile appears, and forget everything about it
@@ -95,6 +110,10 @@ pub fn is_shown(slot: crate::player_hud::ControlSlot) -> bool {
 /// episode on its own. Focus only ever [`cancel`]s it.
 impl Countdown {
 pub fn tick(&mut self, slot: crate::player_hud::ControlSlot, now: u32) {
+    if matches!(slot, crate::player_hud::ControlSlot::AutomaticUpNext(_)) {
+        self.deadline = 0;
+        return;
+    }
     if !is_shown(slot) {
         // segment over (or the queue emptied): drop the deadline AND the cancel latch, so the
         // next episode's credits arm normally instead of inheriting this one's refusal
@@ -143,6 +162,10 @@ pub fn cancel(&mut self) {
 /// True while the countdown is running (drives holding the HUD up, so the timer is never invisible).
 pub fn armed(&self) -> bool {
     self.deadline != 0
+}
+
+pub fn view(&self, now: u32) -> CountdownView {
+    CountdownView { remaining_ms: self.armed().then(|| self.remaining_ms(now)), duration_ms: COUNTDOWN_MS }
 }
 
 /// Milliseconds left (0 when disarmed or elapsed).
@@ -325,15 +348,14 @@ pub fn draw_over(
     decor: Decor,
     look: Look,
     row: &crate::player_hud::motion::HudMotion,
-    up: &Countdown,
+    timer: CountdownView,
     p: Painter,
     focused: bool,
     btn: c_int,
-    now: u32,
     measure: &dyn plx_machine::machine::Measure,
-) {
+) -> bool {
     let Some(u) = plx_media::route::up_next(ps) else {
-        return;
+        return false;
     };
     // NOT scaled: `CARD_FOCUS_SCALE` is the terminal value of a focus spring the shelves drive, and
     // passing it as a constant drew the still permanently 7% oversized — overhanging the column on
@@ -364,13 +386,18 @@ pub fn draw_over(
         }
     }
 
-    draw_buttons(l, look, row, up, p, focused, btn, now);
+    if !draw_buttons(l, look, row, timer, p, focused, btn) { return false; }
+    p.opacity() >= 0.5 && [l.credits, l.next].into_iter().all(|r| {
+        let (rect, _, clip) = p.to_screen(r);
+        let hit = rect.intersect(clip);
+        hit.w > 0.0 && hit.h > 0.0
+    })
 }
 
 /// The fixed command pair's presentation, factored so a host census can exercise every countdown without a decoder.
 #[allow(clippy::too_many_arguments)]
-fn draw_buttons(l: &Layout, look: Look, row: &crate::player_hud::motion::HudMotion, up: &Countdown,
-    p: Painter, focused: bool, btn: c_int, now: u32) {
+fn draw_buttons(l: &Layout, look: Look, row: &crate::player_hud::motion::HudMotion, timer: CountdownView,
+    p: Painter, focused: bool, btn: c_int) -> bool {
     let (pop_credits, pop_next) = (row.scale(BTN_CREDITS), row.scale(BTN_NEXT));
     let e = Env::inert();
     // The focus pop is the CONTROL ROW's, not this card's: these two stand in the transport's own
@@ -389,17 +416,17 @@ fn draw_buttons(l: &Layout, look: Look, row: &crate::player_hud::motion::HudMoti
     // a package can instead trace the ring, use the shared progress rail, or replace the primary label
     // with its numeric countdown. The compiler reserves the widest numeric label before drawing,
     // so neither the button nor its neighbouring controls resize as the seconds change.
-    let label = if up.armed() && look.countdown == CountdownFace::Numeric {
-        plx_platform::i18n::msg::player_up_next_seconds_left(i64::from(up.remaining_ms(now).div_ceil(1000)))
+    let label = if let Some(left) = timer.remaining_ms.filter(|_| look.countdown == CountdownFace::Numeric) {
+        plx_platform::i18n::msg::player_up_next_seconds_left(i64::from(left.div_ceil(1000)))
     } else { plx_platform::i18n::msg::widgets_next_episode().to_owned() };
     let Ok(label) = CString::new(label) else {
-        return;
+        return false;
     };
     let mut b = Button::new(label.as_ptr(), theme::size::BODY, l.next)
         .focused(focused && btn == BTN_NEXT)
         .ground(ControlGround::Unkeyed)
         .scale(pop_next);
-    if up.armed() {
+    if let Some(left) = timer.remaining_ms {
         // It animates from a CLOCK, so `plx_machine::idle`'s spring instrumentation cannot see it — the trap
         // `Xfade::tick` and `Spinner::draw` both shipped frozen in. The player route bypasses the
         // frame gate outright today, so this changes nothing now; it is what keeps that reversible.
@@ -408,7 +435,7 @@ fn draw_buttons(l: &Layout, look: Look, row: &crate::player_hud::motion::HudMoti
         if !plx_machine::motion::phase_clocks_held() {
             plx_machine::idle::invalidate();
         }
-        let progress = 1.0 - (up.remaining_ms(now) as f32 / COUNTDOWN_MS as f32).clamp(0.0, 1.0);
+        let progress = 1.0 - (left as f32 / timer.duration_ms as f32).clamp(0.0, 1.0);
         b = match look.countdown {
             CountdownFace::FillSweep => b.progress(progress),
             CountdownFace::Ring => b.progress_ring(progress),
@@ -417,6 +444,7 @@ fn draw_buttons(l: &Layout, look: Look, row: &crate::player_hud::motion::HudMoti
         };
     }
     styled(b, look.next).draw(&e, p);
+    true
 }
 
 /// Preserve the native widget path exactly for the Classic looks; other packages name transport faces.
@@ -440,7 +468,7 @@ mod tests {
             let look = Look { countdown: face, ..Look::CLASSIC };
             let mut runs = Vec::new();
             let prims = plx_ui::record_walk(|| plx_ui::draw_census::capture(|| {
-                runs = plx_ui::draw_census::capture_runs(|| draw_buttons(&l, look, &row, &up, Painter::root(), true, BTN_NEXT, now));
+                runs = plx_ui::draw_census::capture_runs(|| { draw_buttons(&l, look, &row, up.view(now), Painter::root(), true, BTN_NEXT); });
             }));
             (prims, runs)
         };
@@ -567,5 +595,28 @@ mod tests {
             "Up Next \u{b7} Laura",
             "no address, no empty ordinal"
         );
+    }
+}
+
+#[cfg(test)]
+mod automatic_pair_clock_tests {
+    use super::*;
+    use crate::player_hud::ControlSlot;
+    #[test]
+    fn automatic_pair_uses_one_five_second_face_and_never_the_legacy_deadline() {
+        let marker = plx_data::metadata::Marker { kind: plx_data::metadata::MarkerKind::Credits,
+            start_ms: 100_000, end_ms: 120_000, final_seg: true };
+        let mut legacy = Countdown::default();
+        legacy.tick(ControlSlot::UpNext(marker), 1_000);
+        assert!(legacy.armed());
+        legacy.tick(ControlSlot::AutomaticUpNext(marker), 11_000);
+        assert!(!legacy.armed());
+        assert!(!legacy.expired(11_000));
+        let auto = CountdownView::automatic(Some(0.4));
+        assert_eq!(auto.duration_ms, 5_000);
+        assert_eq!(auto.remaining_ms, Some(3_000));
+        assert_eq!(CountdownView::automatic(None).remaining_ms, None);
+        legacy.tick(ControlSlot::UpNext(marker), 12_000);
+        assert_eq!(legacy.view(12_000).remaining_ms, Some(10_000));
     }
 }

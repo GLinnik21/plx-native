@@ -166,7 +166,7 @@ pub fn frame_state_content(compiled: &Compiled, open: u8, slot: ControlSlot, cha
     let (kind, skip) = match slot {
         _ if open != 0 => (Slot::Discs, SkipKind::Intro),
         ControlSlot::Discs(_) => (Slot::Discs, SkipKind::Intro),
-        ControlSlot::UpNext(_) => (Slot::UpNext, SkipKind::Intro),
+        ControlSlot::UpNext(_) | ControlSlot::AutomaticUpNext(_) => (Slot::UpNext, SkipKind::Intro),
         ControlSlot::Skip(pr) => (
             Slot::Skip,
             SkipKind::for_prompt(pr),

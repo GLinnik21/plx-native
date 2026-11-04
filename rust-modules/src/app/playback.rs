@@ -594,7 +594,7 @@ pub(crate) fn player_requests(
     // Accepted user intent always wins the frame, even if its terminal effect was queued later.
     let auto_retired = reqs.iter().any(|r| matches!(r, PlayerReq::Exit | PlayerReq::CancelAutoSkip(_)));
     let auto_blocked = reqs.iter().any(|r| matches!(r, PlayerReq::Exit | PlayerReq::SeekTo(_)
-        | PlayerReq::Transport(_) | PlayerReq::Command(_) | PlayerReq::CancelAutoSkip(_)));
+        | PlayerReq::Transport(_) | PlayerReq::Command(_) | PlayerReq::ArmControlRow | PlayerReq::StandIn | PlayerReq::CancelAutoSkip(_)));
     for req in reqs {
         match req {
             PlayerReq::CancelAutoSkip(id) => {
@@ -963,12 +963,12 @@ pub(crate) fn activate_ctrl_row(
         // for it — the button exists so that "let it run" is a THING YOU CAN PRESS rather
         // than an absence, which on a countdown is the difference between choosing and
         // being caught out.
-        ControlSlot::UpNext(_) => {
+        ControlSlot::UpNext(_) | ControlSlot::AutomaticUpNext(_) => {
             if btn == plx_appkit::up_next::BTN_NEXT {
                 play_up_next(&mut player.session, pa, HUD_LINGER_MS, pages, bridge)
             } else {
                 if let Some(player) = super::bridge::player_mut(pages) {
-                    player.up_next.cancel();
+                    player.decline_pair();
                 }
                 false
             }

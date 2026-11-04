@@ -161,14 +161,20 @@ Requested in [discussion #826](https://github.com/GLinnik21/plx-native/discussio
 Playback settings offers **Skip intros** and **Skip credits** separately for a viewer whose
 Plex account feature list grants the corresponding capability. These are per-profile choices:
 **Manual** is the default, **Disabled** hides the skip button, and **Automatic** offers a
-**Watch Intro** or **Watch Credits** button with a five-second countdown fill. Pressing that button
-or BACK keeps watching the segment and withdraws its offer for this playback.
+**Watch Intro** or **Watch Credits** button with a five-second countdown fill. Where the existing
+player offers **Watch Credits + Next Episode**, both controls stay available and the five-second
+fill appears on Next Episode. Watch Credits cancels that countdown while leaving Next Episode
+available to press. BACK dismisses the offer; choosing a standalone Watch button dismisses its
+single-button offer too.
 
 Only time with an actionable, presented Watch button and advancing playback counts. Pause,
-buffering and a covering player panel freeze the remaining opportunity. Seeking or leaving the
+buffering freeze the remaining opportunity. The pair retains its existing cancellation behavior:
+moving away from Next Episode or opening a panel cancels its countdown. A panel covering a
+standalone Watch button freezes its countdown. Seeking or leaving the
 marker resets it. Intro and intermediate credits expiry seek to the marker end; final credits
 use the existing playback-finished path, respecting the Next episode preference. Automatic final
-credits take precedence over the usual ten-second Up Next offer. Disabled and Manual retain
+credits use five presented seconds on the Up Next controls wherever that pair is available; other
+final-credits offers keep their standalone Watch control. Disabled and Manual retain
 Next episode's independent policy, and synthetic end-of-item tails never auto-skip.
 
 The app checks the **viewer’s** `intro-markers` and `credits-markers` grants; a shared server
