@@ -439,7 +439,7 @@ pub(super) fn start_bufferfeed_inner(
     let (video_fidelity, audio_fidelity) = ps.planned_feed_fidelity()
         .expect("qualified feed has fidelity requirements");
     let epoch = prepared_native.native_epoch();
-    prepared_native.bind_demux_session(super::demux_session::PlayerDemuxSession::capture(attempt, epoch));
+    prepared_native.bind_demux_session(super::demux_session::capture(attempt, epoch));
     ps.begin_attempt_view(route_attempt, super::attempt_view::Backend::Feed);
     let source = pa.next_source_key();
     pa.stage_native_feed(attempt, source, prepared_native)

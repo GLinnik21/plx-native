@@ -161,3 +161,22 @@ impl AttemptFacts {
         transport_rc: None, transfer_age_ms: None, transport_reopen_failed: None,
     };
 }
+
+// Diagnostics-only Auto state. These codes cross the demux/UI thread boundary through the `dg_abr_*`
+// atomics; named constants keep the writers (the demux effect sink, the adaptive controller) and the
+// photograph formatter from growing separate vocabularies.
+pub const ABR_MODE_ORIGINAL: u8 = 1;
+pub const ABR_MODE_HLS: u8 = 2;
+pub const ABR_ACTION_STEADY: u8 = 1;
+pub const ABR_ACTION_PRIME_DOWN: u8 = 2;
+pub const ABR_ACTION_PRIME_UP: u8 = 3;
+pub const ABR_ACTION_COMMIT_DOWN: u8 = 4;
+pub const ABR_ACTION_COMMIT_UP: u8 = 5;
+pub const ABR_ACTION_REJECT_DOWN: u8 = 6;
+pub const ABR_ACTION_REJECT_UP: u8 = 7;
+pub const ABR_ACTION_PROBE_ORIGINAL: u8 = 8;
+pub const ABR_ACTION_RECOVER_ORIGINAL: u8 = 9;
+pub const ABR_ACTION_ORIGINAL_PROBE_FAILED: u8 = 10;
+pub const ABR_ACTION_PRIME_REFRESH: u8 = 11;
+pub const ABR_ACTION_COMMIT_REFRESH: u8 = 12;
+pub const ABR_ACTION_REJECT_REFRESH: u8 = 13;
