@@ -676,8 +676,16 @@ fn rows(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::Diag, pre
     columns(ps, d, prev, now, paused).into_iter().flatten().collect()
 }
 
+/// Whether the feed backend's own measurements describe this attempt: the build carries the
+/// backend and the attempt was not played by the URI one. A named predicate rather than a local
+/// `cfg!` binding, because `ci/check-localization.py` follows a `let` into the `Field::new` its
+/// value reaches and would read the feature name `"play-feed"` as on-screen text.
+fn feed_attempt(d: &plx_media::player::Diag) -> bool {
+    cfg!(feature = "play-feed") && d.backend != Some(plx_media::player::attempt_view::Backend::Uri)
+}
+
 fn pipeline_rows(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::Diag, prev: (i64, i64, u32), now: u32, paused: Option<bool>) -> Vec<Field> {
-    let feed = cfg!(feature = "play-feed") && d.backend != Some(plx_media::player::attempt_view::Backend::Uri);
+    let feed = feed_attempt(d);
     #[cfg(not(feature = "play-feed"))]
     let _ = (prev, now, paused);
     let mut v = Vec::with_capacity(LEFT_ROWS);
