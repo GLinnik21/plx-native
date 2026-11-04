@@ -19,6 +19,22 @@ pub use state::{BackendState, Event, Fx, Intent, Phase, Snapshot, TrackFact};
 /// an old backend cannot publish into a successor even if a malformed event reused its attempt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BackendKind { Uri, Feed }
+
+/// The physical backends one composition supplies. Route policy reads it as a runtime fact (a
+/// backend absent from the set is never offered, planned for or waited on) instead of knowing which
+/// drivers were compiled in; the application's composition is what supplies it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct BackendSet { pub uri: bool, pub feed: bool }
+impl BackendSet {
+    pub const NONE: Self = Self { uri: false, feed: false };
+    pub const URI: Self = Self { uri: true, feed: false };
+    pub const FEED: Self = Self { uri: false, feed: true };
+    pub const BOTH: Self = Self { uri: true, feed: true };
+
+    pub const fn contains(self, backend: BackendKind) -> bool {
+        match backend { BackendKind::Uri => self.uri, BackendKind::Feed => self.feed }
+    }
+}
 pub mod demux;
 
 /// One logical start, supplied by the existing route owner. Its pair matches a route

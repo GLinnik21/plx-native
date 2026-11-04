@@ -94,7 +94,7 @@ pub(super) fn fresh_registry(ps: &mut PlaybackSession) -> plx_base::testlock::Se
     // mid-flight leaves both — belongs to nothing this test owns.
     drop(take_claim_landing());
     clear_injected_fault();
-    crate::player::claim_hold::clear();
+    crate::player::route_fx::clear_claim_hold();
     // Establish the idle projection before resetting the reducer: its applied snapshot must
     // describe this test's empty route, not the previous test's final encoder.  Quality is
     // part of the same baseline; cases which need Auto opt in after this boundary and then

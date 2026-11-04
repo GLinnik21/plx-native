@@ -7,7 +7,6 @@ use super::test_support::*;
 use super::test_support::apply_plan;
 
 #[test]
-#[cfg(feature = "play-uri")]
 fn a_uri_original_logical_resource_is_closed_once_on_stop() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -32,7 +31,6 @@ fn a_uri_original_logical_resource_is_closed_once_on_stop() {
 }
 
 #[test]
-#[cfg(feature = "play-uri")]
 fn expired_uri_landing_retires_its_unstarted_logical_resource_once() {
     use plx_playback_contract::{Fidelity, Requirements, SourceKind, TrackChoice};
     let mut ps = crate::route::PlaybackSession::IDLE;
@@ -78,12 +76,12 @@ fn expired_uri_landing_retires_its_unstarted_logical_resource_once() {
 }
 
 #[test]
-#[cfg(feature = "play-feed")]
 fn same_source_intent_keeps_spent_candidates_across_effective_audio_and_failed_retry() {
     use super::super::backend_policy::{BackendPolicy, OfferId};
     use plx_playback_contract::BackendKind;
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
+    ps.install_backends(plx_playback_contract::BackendSet::BOTH);
     let source = crate::route::SourceSelection { server: plx_plex::plex::ServerId::from_raw(1),
         part_id: 3134, audio_sid: 42, subtitle_sid: 0,
         audio_contract: plx_plex::plex::AudioEnhancements::NONE };

@@ -151,14 +151,12 @@ fn no_pick_is_the_default_version_exactly_as_before() {
     assert_eq!((plan.part_id, plan.media_index), (3134, 0));
 }
 
-#[cfg(feature = "play-uri")]
 const URI_DTS: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-v","type":"movie","duration":600000,"Media":[
   {"id":3086,"duration":450000,"bitrate":2372,"width":1920,"height":1080,"videoCodec":"h264","audioCodec":"dca","container":"mkv",
    "Part":[{"id":3134,"duration":450000,"key":"/library/parts/3134/1/file.mkv","container":"mkv","Stream":[
      {"id":31341,"streamType":1,"codec":"h264","index":0},
      {"id":31342,"streamType":2,"codec":"dca","channels":6,"index":1,"languageCode":"eng","default":true,"selected":true}]}]}]}]}}"#;
 
-#[cfg(feature = "play-uri")]
 const URI_DTS_SELECTED_SUBTITLE: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-v","type":"episode","grandparentRatingKey":"show-off","duration":600000,"Media":[
   {"id":3086,"duration":450000,"bitrate":2372,"width":1920,"height":1080,"videoCodec":"h264","audioCodec":"dca","container":"mkv",
    "Part":[{"id":3134,"duration":450000,"key":"/library/parts/3134/1/file.mkv","container":"mkv","Stream":[
@@ -166,7 +164,6 @@ const URI_DTS_SELECTED_SUBTITLE: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ra
      {"id":31342,"streamType":2,"codec":"dca","channels":6,"index":1,"languageCode":"eng","default":true,"selected":true},
      {"id":31343,"streamType":3,"codec":"srt","index":2,"languageCode":"eng","selected":true}]}]}]}]}}"#;
 
-#[cfg(feature = "play-uri")]
 const URI_DTS_EXTERNAL_SUBTITLE: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-v","type":"movie","duration":600000,"Media":[
   {"id":3086,"duration":450000,"bitrate":2372,"width":1920,"height":1080,"videoCodec":"h264","audioCodec":"dca","container":"mkv",
    "Part":[{"id":3134,"duration":450000,"key":"/library/parts/3134/1/file.mkv","container":"mkv","Stream":[
@@ -174,7 +171,6 @@ const URI_DTS_EXTERNAL_SUBTITLE: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ra
      {"id":31342,"streamType":2,"codec":"dca","channels":6,"index":1,"languageCode":"eng","default":true,"selected":true},
      {"id":31343,"streamType":3,"codec":"srt","index":2,"languageCode":"eng","selected":true,"key":"/library/streams/31343"}]}]}]}]}}"#;
 
-#[cfg(feature = "play-uri")]
 const URI_AV1_EXTERNAL_SUBTITLE: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-v","type":"movie","duration":600000,"Media":[
   {"id":3086,"duration":450000,"bitrate":2372,"width":1920,"height":1080,"videoCodec":"av1","audioCodec":"dca","container":"mkv",
    "Part":[{"id":3134,"duration":450000,"key":"/library/parts/3134/1/file.mkv","container":"mkv","Stream":[
@@ -182,32 +178,28 @@ const URI_AV1_EXTERNAL_SUBTITLE: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ra
      {"id":31342,"streamType":2,"codec":"dca","channels":6,"index":1,"languageCode":"eng","default":true,"selected":true},
      {"id":31343,"streamType":3,"codec":"srt","index":2,"languageCode":"eng","selected":true,"key":"/library/streams/31343"}]}]}]}]}}"#;
 
-#[cfg(feature = "play-uri")]
 const URI_AV1: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-v","type":"movie","duration":450000,"Media":[
   {"id":3086,"bitrate":2372,"width":1920,"height":1080,"videoCodec":"av1","audioCodec":"aac","container":"mkv",
    "Part":[{"id":3134,"duration":450000,"key":"/library/parts/3134/1/file.mkv","container":"mkv","Stream":[
      {"id":31341,"streamType":1,"codec":"av1","index":0},
      {"id":31342,"streamType":2,"codec":"aac","channels":2,"index":1,"languageCode":"eng","default":true,"selected":true}]}]}]}]}}"#;
 
-#[cfg(feature = "play-uri")]
 const MDE_PMS_OUTPUT: &[u8] = br#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"transcode","Stream":[{"streamType":1,"decision":"copy","codec":"h264"},{"streamType":2,"decision":"transcode","codec":"ac3"}]}]}]}]}}"#;
 
-#[cfg(feature = "play-uri")]
 const MDE_PMS_BURNED_EXTERNAL: &[u8] = br#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"transcode","Stream":[{"streamType":1,"decision":"transcode","codec":"h264"},{"streamType":2,"decision":"transcode","codec":"ac3"},{"streamType":3,"id":31343,"decision":"burn"}]}]}]}]}}"#;
 
-#[cfg(feature = "play-uri")]
 const MDE_PMS_HLS_OUTPUT: &[u8] = br#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"transcode","Stream":[{"streamType":1,"decision":"transcode","codec":"h264"},{"streamType":2,"decision":"transcode","codec":"aac"}]}]}]}]}}"#;
 
-#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+#[cfg(feature = "devtriggers")]
 const TWO_VARIANT_MASTER: &[u8] = b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nlow/index.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=3000000\nhigh/index.m3u8\n";
 
-#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+#[cfg(feature = "devtriggers")]
 const FIXED_MEDIA_PLAYLIST: &[u8] = b"#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2,\nsegment.ts\n";
 
-#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+#[cfg(feature = "devtriggers")]
 struct QualifiedNativeMaster;
 
-#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+#[cfg(feature = "devtriggers")]
 impl crate::route::uri_preflight::OriginalQualifier for QualifiedNativeMaster {
     fn qualify(&self, _: &plx_base::task::OffFrame,
         _: crate::route::uri_preflight::OriginalRequest) -> crate::route::uri_preflight::Verdict {
@@ -260,10 +252,10 @@ impl crate::route::uri_preflight::OriginalQualifier for QualifiedNativeMaster {
     }
 }
 
-#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+#[cfg(feature = "devtriggers")]
 struct QualifiedPms(std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)>>>);
 
-#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+#[cfg(feature = "devtriggers")]
 impl crate::route::uri_preflight::OriginalQualifier for QualifiedPms {
     fn qualify(&self, _: &plx_base::task::OffFrame,
         _: crate::route::uri_preflight::OriginalRequest) -> crate::route::uri_preflight::Verdict {
@@ -301,10 +293,10 @@ impl crate::route::uri_preflight::OriginalQualifier for QualifiedPms {
     }
 }
 
-#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+#[cfg(feature = "devtriggers")]
 struct QualifiedOriginal { video: &'static str, audio: &'static str }
 
-#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+#[cfg(feature = "devtriggers")]
 impl crate::route::uri_preflight::OriginalQualifier for QualifiedOriginal {
     fn qualify(&self, _: &plx_base::task::OffFrame,
         request: crate::route::uri_preflight::OriginalRequest) -> crate::route::uri_preflight::Verdict {
@@ -345,7 +337,7 @@ impl crate::route::uri_preflight::OriginalQualifier for QualifiedOriginal {
 }
 
 #[test]
-#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+#[cfg(feature = "devtriggers")]
 fn remembered_subtitle_off_remains_off_during_uri_source_qualification() {
     use plx_playback_contract::uri::Binding;
     use plx_playback_contract::Capabilities;
@@ -389,7 +381,6 @@ fn remembered_subtitle_off_remains_off_during_uri_source_qualification() {
 }
 
 #[test]
-#[cfg(feature = "play-uri")]
 fn selected_external_subtitle_remains_common_source_intent_across_resolve() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -414,13 +405,13 @@ fn selected_external_subtitle_remains_common_source_intent_across_resolve() {
     plx_plex::plex::reset_servers_for_test();
 }
 
-#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+#[cfg(feature = "devtriggers")]
 struct CountingQualified {
     original: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     pms: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
-#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+#[cfg(feature = "devtriggers")]
 impl crate::route::uri_preflight::OriginalQualifier for CountingQualified {
     fn qualify(&self, off: &plx_base::task::OffFrame,
         request: crate::route::uri_preflight::OriginalRequest) -> crate::route::uri_preflight::Verdict {
@@ -439,7 +430,7 @@ impl crate::route::uri_preflight::OriginalQualifier for CountingQualified {
 }
 
 #[test]
-#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+#[cfg(feature = "devtriggers")]
 fn a_qualified_dts_original_lands_from_the_real_resolve_worker_before_feed_decision() {
     use plx_playback_contract::uri::Binding;
     use plx_playback_contract::Capabilities;
@@ -482,7 +473,7 @@ fn a_qualified_dts_original_lands_from_the_real_resolve_worker_before_feed_decis
 }
 
 #[test]
-#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+#[cfg(feature = "devtriggers")]
 fn a_certified_av1_uri_original_does_not_inherit_feeds_video_refusal() {
     use plx_playback_contract::uri::Binding;
     use plx_playback_contract::Capabilities;
@@ -518,7 +509,7 @@ fn a_certified_av1_uri_original_does_not_inherit_feeds_video_refusal() {
 }
 
 #[test]
-#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+#[cfg(feature = "devtriggers")]
 fn an_accepted_pms_decision_produces_an_owned_uri_offer_from_its_output() {
     use plx_playback_contract::uri::Binding;
     use plx_playback_contract::Capabilities;
@@ -560,7 +551,7 @@ fn an_accepted_pms_decision_produces_an_owned_uri_offer_from_its_output() {
 }
 
 #[test]
-#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+#[cfg(feature = "devtriggers")]
 fn an_explicit_external_source_pick_can_use_a_server_accepted_burned_wire() {
     use plx_playback_contract::uri::Binding;
     use plx_playback_contract::Capabilities;
@@ -593,7 +584,7 @@ fn an_explicit_external_source_pick_can_use_a_server_accepted_burned_wire() {
 }
 
 #[test]
-#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+#[cfg(feature = "devtriggers")]
 fn viewer_off_re_resolves_a_burned_pms_uri_without_reusing_its_subtitle() {
     use plx_playback_contract::uri::Binding;
     use plx_playback_contract::{BackendKind, Capabilities};
@@ -653,7 +644,7 @@ fn viewer_off_re_resolves_a_burned_pms_uri_without_reusing_its_subtitle() {
 }
 
 #[test]
-#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+#[cfg(feature = "devtriggers")]
 fn native_hls_master_offer_requires_the_fetched_multi_variant_response() {
     use plx_playback_contract::uri::Binding;
     use plx_playback_contract::Capabilities;
@@ -683,7 +674,7 @@ fn native_hls_master_offer_requires_the_fetched_multi_variant_response() {
         let start = pump_play(&mut ps, &mut meta);
         assert_eq!(start.as_ref().is_some_and(|landed| landed.uri_offer.is_some()), qualifies,
             "only the actual multi-variant response certifies NativeMaster");
-        if !qualifies && !cfg!(feature = "play-feed") {
+        if !qualifies && !ps.backends().feed {
             assert_eq!(ps.play_verdict, Some(PlayVerdict::NoQualifiedBackend));
         }
         scrobble_stop(&mut ps, None, None);
@@ -698,12 +689,13 @@ fn native_hls_master_offer_requires_the_fetched_multi_variant_response() {
 }
 
 #[test]
-#[cfg(all(feature = "play-uri", feature = "play-feed", feature = "devtriggers"))]
+#[cfg(feature = "devtriggers")]
 fn unknown_uri_qualification_keeps_the_existing_feed_decision_path() {
     use plx_playback_contract::uri::Binding;
     use plx_playback_contract::Capabilities;
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
+    ps.install_backends(plx_playback_contract::BackendSet::BOTH);
     assert!(plx_net::net::global_init());
     let callable = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
         pause: true, seek: true, audio_track: true, subtitle_track: true,
@@ -730,17 +722,16 @@ fn unknown_uri_qualification_keeps_the_existing_feed_decision_path() {
     plx_plex::plex::reset_servers_for_test();
 }
 
-#[test]
-#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
-fn expired_original_skips_its_spent_recipe_but_qualifies_unspent_pms_uri() {
+#[cfg(feature = "devtriggers")]
+fn expired_original_skips_its_spent_recipe_but_qualifies_unspent_pms_uri(backends: plx_playback_contract::BackendSet) {
     use plx_playback_contract::uri::Binding;
     use plx_playback_contract::{BackendKind, Capabilities};
     use super::super::backend_policy::{BackendPolicy, OfferId, Qualification};
-    #[cfg(feature = "play-feed")]
     use super::super::backend_policy::Selection;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
+    ps.install_backends(backends);
     assert!(plx_net::net::global_init());
     let capabilities = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
         pause: true, seek: true, audio_track: true, subtitle_track: true,
@@ -766,8 +757,7 @@ fn expired_original_skips_its_spent_recipe_but_qualifies_unspent_pms_uri() {
     // already crossed from Feed to URI; both variants have spent URI Original and learned
     // a refusal for another URI recipe.
     let mut policy = BackendPolicy::for_request(false);
-    #[cfg(feature = "play-feed")]
-    {
+    if backends.feed {
     policy.qualify_planned_feed(OfferId::FEED_ORIGINAL);
     assert!(policy.admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
     }
@@ -817,8 +807,7 @@ fn expired_original_skips_its_spent_recipe_but_qualifies_unspent_pms_uri() {
         "the admitted URI recipe remains in history");
     assert_eq!(policy.offer(BackendKind::Uri, OfferId::URI_PMS_ENCODE)
         .expect("catalog recipe").qualification, Qualification::Refused);
-    #[cfg(feature = "play-feed")]
-    {
+    if backends.feed {
         policy.qualify(BackendKind::Feed, OfferId::FEED_PMS_REMUX, Qualification::Qualified);
         assert!(!policy.admitted(BackendKind::Feed, OfferId::FEED_PMS_REMUX),
             "crossing back to Feed cannot replenish a spent handoff");
@@ -844,10 +833,25 @@ fn expired_original_skips_its_spent_recipe_but_qualifies_unspent_pms_uri() {
 }
 
 #[test]
-#[cfg(all(feature = "play-uri", not(feature = "play-feed"), feature = "devtriggers"))]
+#[cfg(feature = "devtriggers")]
+fn expired_original_skips_its_spent_recipe_but_qualifies_unspent_pms_uri_with_both_backends() {
+    expired_original_skips_its_spent_recipe_but_qualifies_unspent_pms_uri(
+        plx_playback_contract::BackendSet::BOTH);
+}
+
+#[test]
+#[cfg(feature = "devtriggers")]
+fn expired_original_skips_its_spent_recipe_but_qualifies_unspent_pms_uri_in_uri_only() {
+    expired_original_skips_its_spent_recipe_but_qualifies_unspent_pms_uri(
+        plx_playback_contract::BackendSet::URI);
+}
+
+#[test]
+#[cfg(feature = "devtriggers")]
 fn unknown_uri_without_feed_has_a_named_refusal_before_pms_encoder_work() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
+    ps.install_backends(plx_playback_contract::BackendSet::URI);
     assert!(plx_net::net::global_init());
     let evidence = crate::route::uri_preflight::ProductEvidence::unqualified(
         plx_platform::tv::sink::VP_EXPORTED);
@@ -870,12 +874,13 @@ fn unknown_uri_without_feed_has_a_named_refusal_before_pms_encoder_work() {
 }
 
 #[test]
-#[cfg(all(feature = "play-uri", not(feature = "play-feed"), feature = "devtriggers"))]
+#[cfg(feature = "devtriggers")]
 fn unknown_pms_output_in_uri_only_retires_the_accepted_encoder_once() {
     use plx_playback_contract::uri::Binding;
     use plx_playback_contract::Capabilities;
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
+    ps.install_backends(plx_playback_contract::BackendSet::URI);
     assert!(plx_net::net::global_init());
     let capabilities = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
         pause: true, seek: true, audio_track: true, subtitle_track: true,
