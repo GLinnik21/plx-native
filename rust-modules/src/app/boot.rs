@@ -2558,6 +2558,7 @@ pub(crate) unsafe fn construct(
             acct_rest: None,
             shots: Default::default(),
             auto_tried,
+            playurl_armed: None,
             replay_left,
             grid_tried,
             settings_tried,

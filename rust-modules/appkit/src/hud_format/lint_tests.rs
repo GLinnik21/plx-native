@@ -390,7 +390,7 @@ fn every_op_and_control_of_every_fixture_names_the_node_that_produced_it() {
         for state in compiled.states() {
             check_provenance(name, &package, state, &nodes);
             checked += 1;
-            if let Some(alt) = &state.skip_alt {
+            for (_, alt) in &state.skip_alt {
                 check_provenance(name, &package, alt, &nodes);
                 checked += 1;
             }

@@ -788,6 +788,9 @@ pub enum NavOp<A> {
     Push(A),
     Pop,
     PopTo(EntryId),
+    /// Reveal the nearest committed ancestor with the same screen argument. Focus identities
+    /// need not be navigation-entry identities (nested route surfaces deliberately remap them).
+    PopToArg(A),
     Replace(A),
     SelectTab(A),
     Present(A),

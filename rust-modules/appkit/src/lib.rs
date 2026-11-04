@@ -32,6 +32,7 @@ pub mod player_hud;
 pub mod scrub_preview; // the still above the knob while scrubbing, from the part's BIF index
 pub mod knob_spring; // the knob's spring to the playhead when a scrub is cancelled
 pub mod scrub_thumbs; // the picture above the playhead while scrubbing, cut from the server's thumbnail sheets
+pub mod skip_policy;
 pub mod skip_pill; // the Skip Intro / Skip Credits pill — a `ControlSlot` occupant of the player HUD's control row
 pub mod source_list; // the Sources ROW MODEL, shared by the Library panel and that route
 pub mod timing_capsule; // the on-video Subtitle Timing capsule (plan `subtitle-menu-capsule` §4)

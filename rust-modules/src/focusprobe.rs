@@ -291,7 +291,7 @@ fn push_player(ps: &plx_media::route::PlaybackSession, s: &mut String, overlay: 
     let slot = match ctrl {
         ControlSlot::Discs(_) => "discs",
         ControlSlot::Skip(_) => "skip",
-        ControlSlot::UpNext(_) => "upnext",
+        ControlSlot::UpNext(_) | ControlSlot::AutomaticUpNext(_) => "upnext",
     };
     // `hidden` is `player_hud::transport_hidden()`, read here for the reason
     // `PlayerScreen::handle_key` reads it: it is that page's FIRST test, so while it is true every
@@ -315,7 +315,7 @@ fn push_player(ps: &plx_media::route::PlaybackSession, s: &mut String, overlay: 
     // so an occupant change is a value change and never a schema change.
     let controls = match ctrl {
         ControlSlot::Discs(controls) => controls,
-        ControlSlot::Skip(_) | ControlSlot::UpNext(_) => plx_appkit::player_hud::Controls::NONE,
+        ControlSlot::Skip(_) | ControlSlot::UpNext(_) | ControlSlot::AutomaticUpNext(_) => plx_appkit::player_hud::Controls::NONE,
     };
     let _ = write!(s, " pair={} previous={} next={} restart={}",
         b(controls.pair()), b(controls.previous), b(controls.next), b(controls.restart));

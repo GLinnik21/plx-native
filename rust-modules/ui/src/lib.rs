@@ -89,6 +89,7 @@ pub mod popover_morph; // the morph open style (pill -> panel) beside the shared
 pub mod popover; // shared modal open/appear choreography (track menu / info / chapters / account)
 pub mod press; // tvOS-style click: OK-down dips the focused card, OK-up springs it back + activates
 pub use plx_gfx::gfx::profile; // the draw-phase profiler lives in `gfx` now (module-layers step L5)
+pub mod preview_controls;
 pub mod route_screen;
 pub mod rec; // RESTRUCTURE (spec §5.3): the recorder — format, bounded writer, loader, TableMeasure
 pub mod replay; // RESTRUCTURE (spec §5.5): `--targets` replay of a recording over the dispatcher

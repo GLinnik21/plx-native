@@ -258,5 +258,6 @@
   "widgets.region.nl": "Holandia",
   "widgets.region.latin_america": "Ameryka Łacińska",
   "widgets.failure.play_auto": "Ustaw Auto i odtwórz",
-  "widgets.failure.change_quality": "Zmień jakość"
+  "widgets.failure.change_quality": "Zmień jakość",
+  "widgets.watch.intro": "Oglądaj czołówkę"
 }

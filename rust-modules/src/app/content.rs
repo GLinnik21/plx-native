@@ -631,7 +631,7 @@ pub(crate) fn content_requests(app: &mut App, fr: &mut Frame) {
     }
     if slot_refresh {
         if let Some(player) = super::bridge::player_mut(&mut app.pages) {
-            fr.ctrl = plx_appkit::player_hud::slot(&app.player.session, app.bridge.metadata_view());
+            fr.ctrl = plx_appkit::player_hud::slot_with_preferences(&app.player.session, app.bridge.metadata_view(), app.bridge.marker_preferences());
             // Hand the page the row it will draw and park the ring on THAT row's primary; the
             // app's element seat keeps the ring, the engine and OK on the same control.
             player.slot = fr.ctrl;

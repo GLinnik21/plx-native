@@ -36,7 +36,7 @@
 //! assignment. `subtitle_offsets` is the other tenant of the door and is declared the same way
 //! ([`SubtitleOffsetsPref`]).
 use super::{
-    DolbyVisionMode, AudioConversion, InstantDpadSeeking, DeckPress, DirectPlayMode, HdrOverlayBrightness, LastLibrary, LibraryViews, NativeAudioRefusal, NextEpisodeMode, OpaqueExtensions,
+    MarkerSkipMode, DolbyVisionMode, AudioConversion, InstantDpadSeeking, DeckPress, DirectPlayMode, HdrOverlayBrightness, LastLibrary, LibraryViews, NativeAudioRefusal, NextEpisodeMode, OpaqueExtensions,
     PlaintextConsent, HoldHintTaught, PlaybackQuality, ServerKeyPin, Session, SkipInterval, SubtitleOffsetEntry, SubtitleOffsets, SubtitlePosition,
     SubtitleSize, SubtitleTone, UiResolution, UnderPosters,
 };
@@ -133,6 +133,10 @@ pub struct Preferences {
     /// Dolby Vision override (`Auto` or `Off`); `Auto` by default.
     #[serde(default, deserialize_with = "de_soft_dolby_vision_mode", skip_serializing_if = "DolbyVisionMode::is_default")]
     pub dolby_vision_mode: DolbyVisionMode,
+    #[serde(default, deserialize_with = "de_soft_marker_skip", skip_serializing_if = "MarkerSkipMode::is_default")]
+    pub intro_skip: MarkerSkipMode,
+    #[serde(default, deserialize_with = "de_soft_marker_skip", skip_serializing_if = "MarkerSkipMode::is_default")]
+    pub credits_skip: MarkerSkipMode,
     /// **What OK does on a Continue Watching card** — see [`DeckPress`]. A frozen fallback like
     /// [`Preferences::playback_quality`]: each profile keeps its own pick in `profile_prefs`, and a
     /// profile that has not picked reads this top-level key. Absence is Details, so a session written
@@ -525,6 +529,10 @@ setting!(NextEpisodeModePref: NextEpisodeMode = next_episode_mode, "next_episode
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
 setting!(InstantDpadSeekingPref: InstantDpadSeeking = instant_dpad_seeking, "instant_dpad_seeking", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
+setting!(IntroSkipPref: MarkerSkipMode = intro_skip, "intro_skip", Profile fallback LegacyInstallKey,
+    account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
+setting!(CreditsSkipPref: MarkerSkipMode = credits_skip, "credits_skip", Profile fallback LegacyInstallKey,
+    account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
 setting!(DolbyVisionModePref: DolbyVisionMode = dolby_vision_mode, "dolby_vision_mode", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
 setting!(SkipIntervalPref: SkipInterval = skip_interval, "skip_interval", Profile fallback LegacyInstallKey,
@@ -659,6 +667,8 @@ pub const DESCRIPTORS: &[Descriptor] = &[
     Descriptor::of::<SkipIntervalPref>(),
     Descriptor::of::<InstantDpadSeekingPref>(),
     Descriptor::of::<DolbyVisionModePref>(),
+    Descriptor::of::<IntroSkipPref>(),
+    Descriptor::of::<CreditsSkipPref>(),
     Descriptor::of::<DeckPressPref>(),
     Descriptor::of::<UnderPostersPref>(),
     Descriptor::of::<AudioEnhancementsPref>(),
@@ -1478,3 +1488,8 @@ where
     Ok(serde_json::from_value::<crate::plex::AudioEnhancements>(v).unwrap_or(crate::plex::AudioEnhancements::NONE))
 }
 
+
+fn de_soft_marker_skip<'de, D: serde::Deserializer<'de>>(d: D) -> Result<MarkerSkipMode, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(v).unwrap_or_default())
+}

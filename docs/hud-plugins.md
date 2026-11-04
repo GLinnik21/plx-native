@@ -264,8 +264,8 @@ Other subsystems the plan touches
   `draw_title`, `Playbar`/`draw_playbar`, `TransportButton`, `TabPill`, `skip_pill::draw_at`). The trailer
   keeps drawing through those primitives at classic geometry (F35); a user HUD does not restyle trailers.
 - D3. **The contract has two halves, versioned together**: `HudModel`, a per-frame read-only snapshot of
-  exactly the values presentation reads (every F3 global becomes a field `src/app/run.rs` fills once a frame and
-  pushes into the player screen as a value, as it already pushes `busy` and `transport`, `run.rs:2805-2816`: the screen
+  the values presentation and automatic-skip timing read (every F3 global becomes a field `src/app/run.rs`
+  publishes before input/Tick and refreshes before drawing, alongside `busy` and `transport`: the screen
   is a machine and reads no global, `docs/sans-io.md`), and `HudGeometry`, what the compiled layout reports back (group, item and section rects, the
   caption band, the menu anchors, the safe-area rects). The FocusEngine groups, the pointer stops, the
   caption lift, both menus and the overscan audit read `HudGeometry` only. `HudMotion` (the springs,
@@ -735,7 +735,10 @@ Skip. Edges are app-owned: OK or a click on a `toggle_section` control; BACK (cl
 then hides the HUD; over a Skip or Up Next offer it first retires that segment in the metadata store's
 `skipped` set and returns the slot to Discs); for modal sections, a direction that leaves the section's groups
 (closes it); the slot changes involuntarily with the marker (`slot_for`, F19), and every stand-in slot returns
-to Discs when its marker ends, when Watch Credits dismisses the offer, or when BACK dismisses it.
+to Discs when its marker ends or BACK dismisses it. A standalone automatic Watch button dismisses
+its single-button offer; Watch Credits in the Up Next pair cancels the countdown and leaves
+Next Episode available. Automatic credits retains that pair and its geometry, using five presented
+seconds on the primary button instead of the legacy ten-second clock.
 
 - R1. `open_more` is placed, at or above `MIN_CONTROL_SIZE`, in the root state (compact, Discs) under EVERY valuation
   of the content conditions the package names (`chapters.present`, actual `title.is_episode`) and independent
@@ -1577,7 +1580,7 @@ this session, no network).
   redirect-following request may carry no headers (F40); the URL is pinned to the host that serves it, and a
   3xx is an error. It refreshes only when HUD settings open, at most once per 24 h, never at boot or during
   playback, with backoff. The 24 h rule lives in the HudStore machine, which reads no clock (F31): the runner
-  hands `now` in on the event that opens HUD settings (PR13 adds the field to `Refresh`). A package is fetched by hash and checked with `plx_base::sha256` before
+  hands `now` in on `catalog::Event::Open` when HUD settings open. Boot-time `Load` reads cached revocations without requesting the network. A package is fetched by hash and checked with `plx_base::sha256` before
   it is written. Offline, installed HUDs keep working; the gallery shows the cached index with its date.
 - Why: TVs reading GitHub directly hit API rate limits (UNVERIFIED figure: 60 unauthenticated requests per
   hour per IP) and need tree walks; a bespoke backend means hosting and moderation for no gain over static

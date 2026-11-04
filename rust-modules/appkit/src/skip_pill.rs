@@ -6,11 +6,11 @@
 //! Replacing them rather than joining them is the design call: one wide unmissable target in the
 //! spot the eye already goes for transport controls. The cost is that CC/Audio are covered for the
 //! length of the segment, so BACK over the pill DISMISSES the offer for that segment and puts the
-//! discs back (`PlayerScreen::dismiss_offer` asks `PlayerReq::DismissOffer`, which marks the
-//! segment skipped in the metadata store — the same set a Skip press uses) — the row stays at five
+//! discs back (`PlayerScreen::dismiss_offer` asks `DismissOffer` for Manual, or `CancelAutoSkip`
+//! for Automatic; both retire the segment in the metadata store) — the row stays at five
 //! controls and the viewer never has to wait an intro out to change tracks. The button only exists
 //! while the HUD is up, which is why `app.rs` RAISES the HUD once when a segment begins and parks
-//! focus here, so a bare OK still skips in one press instead of three.
+//! focus here. Manual skips on OK; Automatic offers Watch and lets the viewer cancel its timer.
 #![allow(dead_code)]
 use plx_data::metadata::{self, MarkerKind};
 use plx_ui::theme;
@@ -18,7 +18,8 @@ use plx_ui::widgets::{Button, ControlGround};
 use plx_ui::{Env, Painter, Rect, View};
 use std::ffi::CString;
 
-/// What pressing the button does. The distinction is the `final` flag on a credits marker: an
+/// The skip performed by a Manual press or Automatic expiry. A Watch press cancels instead.
+/// The distinction is the `final` flag on a credits marker: an
 /// ordinary segment is a seek and playback continues past it, but a `final` one runs to the end of
 /// the item, so "skip" means **the episode is over** — seeking to its end would race the decoder
 /// against its own last frames for no benefit.
@@ -40,11 +41,18 @@ pub struct Prompt {
     pub marker: metadata::Marker,
     pub kind: MarkerKind,
     pub action: SkipAction,
+    pub automatic: bool,
 }
 
 impl Prompt {
     /// The button's copy — presentation, derived from the kind at the point of drawing.
     pub fn label(&self) -> &'static str {
+        if self.automatic {
+            return match self.kind {
+                MarkerKind::Intro => plx_platform::i18n::msg::widgets_watch_intro(),
+                MarkerKind::Credits => plx_platform::i18n::msg::widgets_next_credits(),
+            };
+        }
         match self.kind {
             MarkerKind::Intro => plx_platform::i18n::msg::widgets_skip_intro(),
             MarkerKind::Credits => plx_platform::i18n::msg::widgets_skip_credits(),
@@ -63,6 +71,7 @@ impl Prompt {
 pub fn prompt_for(m: metadata::Marker) -> Prompt {
     Prompt {
         marker: m,
+        automatic: false,
         kind: m.kind,
         action: match m.kind {
             // a `final` credits segment runs to the end of the item, so "skip" means the episode is
@@ -75,7 +84,7 @@ pub fn prompt_for(m: metadata::Marker) -> Prompt {
 
 /// **Draw the button** at a rect the caller already has: the compiled package's pill (`Standin::skip`,
 /// one per label width), placed at compile time, in the control row's place.
-pub fn draw_at(row: &crate::player_hud::motion::HudMotion, p: Painter, pr: Prompt, slot: Rect, focused: bool) {
+pub fn draw_at(row: &crate::player_hud::motion::HudMotion, p: Painter, pr: Prompt, slot: Rect, focused: bool, progress: Option<f32>) {
     let Ok(label) = CString::new(pr.label()) else {
         return;
     };
@@ -84,11 +93,12 @@ pub fn draw_at(row: &crate::player_hud::motion::HudMotion, p: Painter, pr: Promp
     // Its slot's only item, so index 0 — the pop is the control ROW's (`HudMotion::scale`),
     // shared with the transport discs this pill stands in for.
     let pop = row.scale(0);
-    Button::new(label.as_ptr(), theme::size::BODY, slot)
+    let button = Button::new(label.as_ptr(), theme::size::BODY, slot)
         .scale(pop)
         .focused(focused)
         // It stands in the transport discs' own slot, over the video plane and on the HUD's ramp,
         // so it wears their ground as well as their pop — see `ControlGround`.
-        .ground(ControlGround::Unkeyed)
-        .draw(&Env::inert(), p);
+        .ground(ControlGround::Unkeyed);
+    let button = if let Some(fraction) = progress { button.progress(fraction) } else { button };
+    button.draw(&Env::inert(), p);
 }

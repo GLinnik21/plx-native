@@ -574,9 +574,8 @@ mod tests {
         let serve = |reply: Vec<u8>| {
             let srv = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let port = srv.local_addr().unwrap().port();
-            let h = std::thread::spawn(move || {
-                // A blocking listener: the accepted socket is blocking too.
-                let (mut s, _) = srv.accept().unwrap();
+            // Bounded accept: a hop that is never dialled fails its join instead of blocking it.
+            let h = plx_base::testnet::serve_once(srv, plx_base::testnet::CLIENT_WAIT, move |mut s| {
                 let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(2)));
                 let mut raw = Vec::new();
                 let mut c = [0u8; 2048];

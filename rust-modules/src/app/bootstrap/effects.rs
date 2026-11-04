@@ -301,6 +301,7 @@ pub(crate) fn encode(effect: &Fx<super::super::bridge::AppHost>) -> Result<Value
                 NavOp::SelectTab(a) => json!({"select_tab":argument(a)?}),
                 NavOp::Pop => json!({"pop":true}),
                 NavOp::PopTo(id) => json!({"pop_to":id.0}),
+                NavOp::PopToArg(a) => json!({"pop_to_arg":argument(a)?}),
                 NavOp::Dismiss(id) => json!({"dismiss":id.0}),
                 NavOp::Cancel => json!({"cancel":true}),
             }
