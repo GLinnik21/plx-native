@@ -384,7 +384,7 @@ impl FlightRig {
     /// A newer play request arrives while a cold resume's flight is outstanding: the one reducer
     /// step every `request_play*` begins with. `true` when it was admitted (the flight is superseded).
     pub(crate) fn begin_newer_play_request() -> bool {
-        begin_playback_request()
+        begin_playback_request().is_some()
     }
 
     /// Refuse the next `n` live `/decision` calls (answered after the delay like any other).

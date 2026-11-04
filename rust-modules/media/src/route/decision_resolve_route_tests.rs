@@ -60,7 +60,7 @@ fn expired_uri_landing_retires_its_unstarted_logical_resource_once() {
         uri_original: Some(known), uri_source_ready: true,
         playing: Some(playing),
         sess: "expired-uri-resource".to_owned(), ..Default::default() };
-    assert!(begin_playback_request());
+    assert!(begin_playback_request().is_some());
     PLAY_GEN.store(41, Ordering::SeqCst);
     PLAY_BUSY.store(true, Ordering::SeqCst);
     *PLAY_SLOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(PlayLanding {
@@ -113,7 +113,7 @@ fn same_source_intent_keeps_spent_candidates_across_effective_audio_and_failed_r
 fn a_user_contract_requested_during_resolve_survives_the_landing() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    begin_playback_request();
+    begin_playback_request().expect("request admission");
     request_user_route_intent(&ps, UserRouteIntent::Retranscode);
 
     assert!(
@@ -135,7 +135,7 @@ fn a_user_contract_requested_during_resolve_survives_the_landing() {
 fn a_cancelled_resolve_has_an_explicit_terminal_phase() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    begin_playback_request();
+    begin_playback_request().expect("request admission");
     cancel_playback_request(&mut ps, false);
     assert!(
         claim_route_action().is_none(),
@@ -143,7 +143,7 @@ fn a_cancelled_resolve_has_an_explicit_terminal_phase() {
     );
 
     reset_player_control_for_test(&ps);
-    begin_playback_request();
+    begin_playback_request().expect("request admission");
     request_user_route_intent(&ps, UserRouteIntent::AdaptiveReload);
     cancel_playback_request(&mut ps, true);
     let action = claim_route_action().expect("the retained route lands Stable");
@@ -171,7 +171,7 @@ fn cancelling_resolve_restores_failed_even_when_its_projection_has_a_url() {
         control.phase = ControlPhase::Failed(73);
     }
 
-    begin_playback_request();
+    begin_playback_request().expect("request admission");
     { let s = &mut ps; {
         s.url = "https://example.invalid/incoming.mkv".into();
         s.cur_audio = None;
@@ -306,7 +306,7 @@ fn resolve_cannot_hide_a_live_start_transaction() {
     let attempt = claim_route_start_attempt(transaction).expect("physical Load attempt");
     let before_revision = desired_contract_revision();
 
-    assert!(!begin_playback_request());
+    assert!(begin_playback_request().is_none());
     assert_eq!(desired_contract_revision(), before_revision);
     assert_eq!(route_start_status(attempt), RouteStartStatus::Pending);
     assert!(settle_route_start(&mut ps, attempt, RouteStartResult::Started));
@@ -397,7 +397,7 @@ fn a_failed_resolve_spawn_preserves_the_old_playable_route() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     { let s = &mut ps; s.url = "https://example.invalid/still-playing.mkv".into() };
-    begin_playback_request();
+    begin_playback_request().expect("request admission");
     request_user_route_intent(&ps, UserRouteIntent::AdaptiveReload);
 
     settle_failed_resolve_spawn(&mut ps);
@@ -420,7 +420,7 @@ fn a_failed_resolve_spawn_without_an_old_url_lands_idle() {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .phase = ControlPhase::Idle;
-    begin_playback_request();
+    begin_playback_request().expect("request admission");
 
     settle_failed_resolve_spawn(&mut ps);
 
@@ -442,7 +442,7 @@ fn quality_changed_during_resolve_cannot_land_the_old_contract() {
     let _g = fresh_registry(&mut ps);
     reset_session(&mut ps);
     reset_player_control_for_test(&ps);
-    begin_playback_request();
+    begin_playback_request().expect("request admission");
     let old_contract = desired_contract_revision();
     let gen = 41;
     PLAY_GEN.store(gen, Ordering::SeqCst);

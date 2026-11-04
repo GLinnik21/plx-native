@@ -1914,7 +1914,7 @@ fn request_play_clears_displaced_pick() {
     let _g = fresh_registry(&mut ps);
     queue_user_route_intent(&ps, UserRouteIntent::Retranscode, true);
     assert!(PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).displaced_pick);
-    assert!(begin_playback_request());
+    assert!(begin_playback_request().is_some());
     assert!(!PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).displaced_pick);
     queue_user_route_intent(&ps, UserRouteIntent::Retranscode, true);
     begin_engine_teardown(false);
@@ -2591,7 +2591,7 @@ fn a_landing_from_a_torn_down_item_never_reaches_the_next_playback() {
     {
         let _frame = plx_base::task::FrameScope::enter();
         begin_engine_teardown(false);
-        assert!(begin_playback_request());
+        assert!(begin_playback_request().is_some());
     }
     assert!(
         RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner()).is_none(),
@@ -4611,7 +4611,7 @@ fn a_cancelled_resolve_restores_the_retained_remuxs_reader_target() {
     install_truehd_remux(&mut ps, &live);
     admit_side_reader(&mut ps);
     pick_embedded(&mut ps);
-    assert!(begin_playback_request());
+    assert!(begin_playback_request().is_some());
     // What `request_play_inner` resets for the incoming item.
     ps.cur_sub_sid = 0;
     ps.cur_sub_sidecar = false;
