@@ -53,6 +53,7 @@ mod uri_boot_tests {
             state.3.push(UriReply { session: SessionId::new(1), request,
                 method, payload: payload.to_owned(), ok: true });
         }
+        #[cfg(feature = "play-feed")]
         fn release(&self) { self.0.lock().unwrap().1 = CloseStatus::Released; }
     }
     impl UriMedia for Bus {
