@@ -346,5 +346,11 @@
   "settings.trace.exported": "Mentve",
   "settings.trace.unavailable": "Nem érhető el",
   "settings.trace.failed": "Hiba",
-  "settings.trace.saving": "Mentés"
+  "settings.trace.saving": "Mentés",
+  "settings.playback.intro_skip": "Bevezetők átugrása",
+  "settings.playback.credits_skip": "Stáblista átugrása",
+  "settings.playback.marker.manual": "Kézi",
+  "settings.playback.marker.automatic": "Automatikus",
+  "settings.playback.intro_skip.copy": "Kikapcsolva elrejti az átugrás gombját. Kézi módban felajánlja az átugrást. Automatikus módban öt másodperc után átugrik, ha nem választod a bevezető megtekintését. A beállítás ehhez a profilhoz tartozik.",
+  "settings.playback.credits_skip.copy": "Kikapcsolva elrejti a stáblista átugrását. Kézi módban megmaradnak a jelenlegi vezérlők. Automatikus módban öt másodperc után átugrik, ha nem választod a stáblista megtekintését. A következő rész és a visszaszámlálása külön állítható."
 }

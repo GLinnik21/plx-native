@@ -347,7 +347,7 @@ pub struct StateCtx<'a> {
 
 impl<'a> LangCtx<'a> {
     /// Every compiled state, in `Compiled::states()` order (state x slot, valuation by valuation). A Skip
-    /// state's credits layout is `state.skip_variant(SkipKind::Credits)`.
+    /// state's other marker faces come from `state.skip_variants()`.
     pub fn states(&self) -> impl Iterator<Item = StateCtx<'a>> {
         states_of(self.compiled)
     }

@@ -81,6 +81,8 @@ pub enum PickerKind {
     InstantDpadSeeking,
     /// Manual Dolby Vision override (Auto / Off).
     DolbyVision,
+    IntroSkip,
+    CreditsSkip,
 }
 
 impl SettingsPage {
@@ -103,7 +105,7 @@ impl PickerKind {
     /// The page that lists this field (its picker is pushed from there and returns there).
     pub fn parent(self) -> SettingsPage {
         match self {
-            PickerKind::Quality | PickerKind::DirectPlay | PickerKind::SubtitleSize | PickerKind::SubtitlePosition | PickerKind::HdrOverlay | PickerKind::NextEpisode | PickerKind::DeckPress | PickerKind::SkipInterval | PickerKind::InstantDpadSeeking | PickerKind::DolbyVision => SettingsPage::Playback,
+            PickerKind::Quality | PickerKind::DirectPlay | PickerKind::SubtitleSize | PickerKind::SubtitlePosition | PickerKind::HdrOverlay | PickerKind::NextEpisode | PickerKind::DeckPress | PickerKind::SkipInterval | PickerKind::InstantDpadSeeking | PickerKind::DolbyVision | PickerKind::IntroSkip | PickerKind::CreditsSkip => SettingsPage::Playback,
             PickerKind::AudioLanguage | PickerKind::SubtitleMode | PickerKind::SubtitleLanguage | PickerKind::ForcedSubtitles => SettingsPage::AudioSubtitles,
             PickerKind::UiResolution => SettingsPage::Root,
         }
@@ -210,6 +212,16 @@ impl LogicalState for SettingsPage {
 /// its Onboard child reads. It has no initial conditions of its own (the surface's `LogicalState`
 /// covers its pages).
 pub struct InnerHost;
+#[derive(Clone, Copy)]
+pub struct InnerViews<'a> {
+    pub directory: plx_data::stores::browse::DirectoryView<'a>,
+    pub marker_prefs: plx_appkit::skip_policy::MarkerPrefsView,
+}
+impl<'a> From<plx_data::stores::browse::DirectoryView<'a>> for InnerViews<'a> {
+    fn from(directory: plx_data::stores::browse::DirectoryView<'a>) -> Self {
+        Self { directory, marker_prefs: Default::default() }
+    }
+}
 
 #[derive(Default)]
 pub struct NoInit;
@@ -224,7 +236,7 @@ impl Host for InnerHost {
     type Fx = AppFx;
     type Msg = AppMsg;
     type Elem = u32;
-    type Views<'a> = plx_data::stores::browse::DirectoryView<'a>;
+    type Views<'a> = InnerViews<'a>;
     type Init = NoInit;
     // No family page remembers anything on its own `ReturnState` today (`machine/src/machine.rs`'s
     // `Host::Memory` doc) — the surface's own `NavStack<InnerHost>` restores its child pages by
@@ -234,8 +246,9 @@ impl Host for InnerHost {
 
 impl DirectoryLike for InnerHost {
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> {
-        cx.views
+        cx.views.directory
     }
+    fn marker_prefs(cx: &Cx<'_, Self>) -> plx_appkit::skip_policy::MarkerPrefsView { cx.views.marker_prefs }
 }
 
 /// The outer context as the inner pages see it, carrying the same retained Browse directory the
@@ -245,7 +258,7 @@ impl DirectoryLike for InnerHost {
 /// borrow to hand it to a `DrawFrame`.
 pub fn inner_cx<'o, 'a: 'o, H: DirectoryLike>(cx: &Cx<'a, H>) -> Cx<'o, InnerHost> {
     Cx {
-        views: H::directory(cx),
+        views: InnerViews { directory: H::directory(cx), marker_prefs: H::marker_prefs(cx) },
         tick: cx.tick,
         measure: cx.measure,
         press: cx.press,

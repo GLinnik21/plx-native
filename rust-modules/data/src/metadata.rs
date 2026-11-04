@@ -2108,7 +2108,7 @@ pub fn edit_current_for_test(state: &mut MetadataState, f: impl FnOnce(&mut Deta
 /// TEST-ONLY installer for the playing item's markers: lets a rig put a segment under the playhead
 /// so the REAL `player_hud::slot` (not a hand-built slot) decides the control row. Crate-global,
 /// so callers hold [`plx_base::testlock::serial`].
-#[cfg(all(any(test, feature = "test-support"), feature = "hostsim"))]
+#[cfg(any(test, feature = "test-support"))]
 pub fn set_playing_markers_for_test(state: &mut MetadataState, markers: Vec<Marker>) {
     plx_base::testlock::assert_held("the playing store (set_playing_markers_for_test)");
     state.playing = Some(PlayingItem { markers, ..PlayingItem::with_subs(Vec::new()) });

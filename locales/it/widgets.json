@@ -254,5 +254,6 @@
   "widgets.region.nl": "Paesi Bassi",
   "widgets.region.latin_america": "America Latina",
   "widgets.failure.play_auto": "Passa ad Automatico e riproduci",
-  "widgets.failure.change_quality": "Cambia qualità"
+  "widgets.failure.change_quality": "Cambia qualità",
+  "widgets.watch.intro": "Guarda introduzione"
 }

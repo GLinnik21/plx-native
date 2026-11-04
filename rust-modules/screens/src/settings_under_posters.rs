@@ -389,7 +389,7 @@ fn draw_preview(p: Painter, v: UnderPosters, posters: &[&PmsMovie], foot: Option
 
 /// The posters a page's preview shows: the current library's first cached ones.
 fn preview_posters<'a>(cx: &Cx<'a, InnerHost>) -> Vec<&'a PmsMovie> {
-    cx.views.sample(PREVIEW_TILES).collect()
+    cx.views.directory.sample(PREVIEW_TILES).collect()
 }
 
 impl Machine<InnerHost> for UnderPostersPage {

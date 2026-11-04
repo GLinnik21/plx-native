@@ -39,8 +39,8 @@
 //! **M5 is not here.** The overscan audit's menu rects coming from the placer rather than from constants is the
 //! renderer's (PR7): this lint cannot see the renderer and does not pretend to.
 //!
-//! **Which states.** Every compiled state of the language (state x slot x valuation, and a Skip state's credits
-//! layout, `CompiledState::skip_alt`): a menu opens from any state that draws its opener, and the reference
+//! **Which states.** Every compiled state of the language (state x slot x valuation, and every distinct
+//! Skip/Watch layout from `CompiledState::skip_variants`): a menu opens from any state that draws its opener, and the reference
 //! needs the Start side in its chapters-plus-info state. A violation is reported ONCE per (code, opener
 //! item) in the first state, in `Compiled::states` order, that has it; fixing the node fixes it everywhere,
 //! and the finding's context names that one state. The pointer is always the opener's item.
@@ -65,7 +65,7 @@ use super::lint::testing::{Base, InvalidCase};
 pub(super) fn check(cx: &LangCtx<'_>, out: &mut Vec<Finding>) {
     for state in cx.states() {
         // a Skip state whose credits pill changes the layout is a second layout of the same state
-        for variant in std::iter::once(state.state).chain(state.state.skip_alt.as_deref()) {
+        for (_, variant) in state.state.skip_variants() {
             let here = StateCtx { key: state.key, state: variant };
             // More's root grows with the folded rows (R2), so its room is asked at every count from none up to
             // the most the package folds: the rows a movie or a playback leaves out shorten the root, and each

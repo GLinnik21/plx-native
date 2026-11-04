@@ -930,7 +930,7 @@ mod tests {
         directory: DirectoryView<'a>,
     ) -> Cx<'a, InnerHost> {
         Cx {
-            views: directory,
+            views: directory.into(),
             tick: plx_machine::machine::Tick::default(),
             measure: m,
             press: PressRead::default(),

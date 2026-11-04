@@ -45,8 +45,7 @@
 //!   overlay and below content belongs to its card (the template op's origin lies under the strip's node:
 //!   it is checked against every OTHER target).
 //!
-//! A Skip state is read in both layouts (the Intro pill with the layout as compiled, the Credits pill with
-//! `skip_variant(Credits)`): the two labels have two widths. A fault is reported ONCE, by the first state that
+//! A Skip state is read under every distinct Skip/Watch layout (`skip_variants`). A fault is reported ONCE, by the first state that
 //! shows it ([`dedupe`], shared with `lint_safe` and `lint_text`).
 
 use plx_ui::consts::EDGE_TOL;
@@ -57,7 +56,6 @@ use super::compile::{CompiledState, DrawOp, SkipKind};
 use super::lint::testing::{Base, InvalidCase};
 use super::lint::{ctx_for, named, LangCtx, StateCtx};
 use super::parse::{Package, Val};
-use super::reach::Slot;
 use super::validate::each_object;
 use super::{codes, Context, Finding};
 
@@ -186,14 +184,12 @@ pub(super) struct Surfaces {
     pub strips: Vec<StripFacts>,
 }
 
-/// Every layout of the package in this language: each state once, and a Skip state a second time under the
-/// Credits pill.
+/// Every distinct layout of the package in this language, including Skip and Watch faces.
 pub(super) fn views<'a>(cx: &LangCtx<'a>) -> Vec<View<'a>> {
     let mut views = Vec::new();
     for state in cx.states() {
-        views.push(View { state, shown: state.state, skip: SkipKind::Intro });
-        if state.key.slot == Slot::Skip {
-            views.push(View { state, shown: state.state.skip_variant(SkipKind::Credits), skip: SkipKind::Credits });
+        for (skip, shown) in state.state.skip_variants() {
+            views.push(View { state, shown, skip });
         }
     }
     views
@@ -329,6 +325,8 @@ pub(super) fn surfaces(cx: &LangCtx<'_>, view: &View<'_>) -> Surfaces {
                 let name = match view.skip {
                     SkipKind::Intro => "skip pill (intro)",
                     SkipKind::Credits => "skip pill (credits)",
+                    SkipKind::WatchIntro => "watch pill (intro)",
+                    SkipKind::WatchCredits => "watch pill (credits)",
                 };
                 let pill = rects[view.skip as usize];
                 let pill = Target::flat(TargetKind::Skip, name, origin, pill, bands.standin_z());
@@ -895,17 +893,20 @@ mod tests {
                 assert!(held.iter().all(|(_, s)| count(s, kind) >= 1), "{base:?}: a {slot:?} state without its target");
             }
             let skips = all.iter().filter(|(s, _)| *s == Slot::Skip).count();
-            let states = census_states(base);
-            assert_eq!(skips, 2 * states, "{base:?}: each Skip state is read under both pills");
+            let layouts = census_layouts(base);
+            assert_eq!(skips, layouts, "{base:?}: each distinct Skip/Watch face is read");
         }
     }
 
-    /// How many Skip states `base` compiles to.
-    fn census_states(base: Base) -> usize {
+    /// How many distinct pill rectangles the compiled Skip states contain.
+    fn census_layouts(base: Base) -> usize {
         let package = parse(base.text().as_bytes()).package.expect("the shipped package parses");
         let lang = LintLang::for_tag("en").expect("English is shipped");
         let compiled = compile(&package, &ShippedMeasure, CompileCtx { labels: lang.labels.clone() });
-        compiled.states().iter().filter(|s| s.key.slot == Slot::Skip).count()
+        compiled.states().iter().filter(|s| s.key.slot == Slot::Skip).map(|state| {
+            let rects = state.standin.skip.unwrap();
+            rects.iter().enumerate().filter(|(i, rect)| !rects[..*i].contains(rect)).count()
+        }).sum()
     }
 
     // ---- a fault is one finding, however many states show it

@@ -32,12 +32,16 @@ enum OptionId { Choice(Value), Retry }
 enum PickAction { Pick(Value), Retry }
 
 struct PickerState {
+    shown_marker_scope: u64,
+    marker_prefs: MarkerPrefsView,
     field: PickerKind, selected: u32, io: Io, quality: Quality, direct_play: DirectPlayMode,
     /// Position of the checked option (`u32::MAX` while none is).
     checked: u32, confirming: bool, affirmative: bool, alert_scroll: u32,
 }
 impl LogicalState for PickerState {
     fn write(&self, c: &mut Canon) {
+        write_marker_prefs(c, self.marker_prefs);
+        c.u64(self.shown_marker_scope);
         c.u8(self.field as u8).u32(self.selected).bool(self.io.busy).str(&self.io.status)
             .u8(self.quality as u8).u8(self.direct_play as u8).u32(self.checked)
             .bool(self.confirming).bool(self.affirmative).u32(self.alert_scroll);
@@ -47,9 +51,10 @@ impl LogicalState for PickerState {
     }
 }
 
-pub const SHAPE: &str = "PickerV2{field:u8,selection:u32,busy:bool,status:str,quality:u8,direct_play:u8,checked:u32,confirm:bool,affirm:bool,alert_scroll:u32}";
+pub const SHAPE: &str = "PickerV3{field:u8,selection:u32,busy:bool,status:str,quality:u8,direct_play:u8,checked:u32,confirm:bool,affirm:bool,alert_scroll:u32,shown_marker_scope:u64,marker:{scope:u64,needs_refresh:bool,intro_grant:bool,credits_grant:bool,intro:u8,credits:u8}}";
 
 pub struct PickerPage {
+    marker_prefs: MarkerPrefsView,
     entry: EntryId,
     form: FormTable<OptionId, PickAction, SettingsPage>,
     state: PickerState,
@@ -73,8 +78,8 @@ fn option_form(options: Vec<(String, Value)>, current: &Value, busy: bool, retry
 
 impl PickerPage {
     pub fn new(entry: EntryId, field: PickerKind) -> Self {
-        let mut s = Self { entry, form: FormTable::new(BAND),
-            state: PickerState { field, selected: 0, io: Io { busy: false, status: String::new() },
+        let mut s = Self { marker_prefs: Default::default(), entry, form: FormTable::new(BAND),
+            state: PickerState { shown_marker_scope: 0, marker_prefs: Default::default(), field, selected: 0, io: Io { busy: false, status: String::new() },
                 quality: plx_media::route::quality(), direct_play: plx_media::route::direct_play_mode(),
                 checked: u32::MAX, confirming: false, affirmative: false, alert_scroll: 0 },
             copy: String::new(), txn: Txn::new(true),
@@ -83,7 +88,7 @@ impl PickerPage {
         s
     }
     fn current(&self) -> Value {
-        resolve_value(self.state.field, self.state.quality, self.state.direct_play, self.txn.prefs())
+        resolve_with_marker(self.state.field, self.state.quality, self.state.direct_play, self.txn.prefs(), self.marker_prefs)
     }
     /// Whether the STORED setting already is `value`, for the profile seated now. Only Size and
     /// Position can differ from [`Self::current`]: they publish the live value before the write
@@ -104,7 +109,7 @@ impl PickerPage {
     /// moment a pick is made (before the write lands), so this can move without a receipt.
     fn checked_position(&self) -> u32 {
         let current = self.current();
-        field_options(self.state.field, self.state.quality, self.state.direct_play, self.txn.prefs())
+        options_with_marker(self.state.field, self.state.quality, self.state.direct_play, self.txn.prefs(), self.marker_prefs)
             .iter().position(|(_, v)| *v == current).map_or(u32::MAX, |i| i as u32)
     }
     fn view(&self) -> TableScreen<'_> {
@@ -128,13 +133,14 @@ impl PickerPage {
     /// Rebuild the list. `seat_current` opens it on the checked option (construction, a snapshot
     /// landing); otherwise the cursor stays on its row by identity.
     fn rebuild(&mut self, seat_current: bool) {
+        self.state.marker_prefs = self.marker_prefs;
         self.state.quality = plx_media::route::quality();
         self.state.direct_play = plx_media::route::direct_play_mode();
         self.copy = copy_text(Subject::Picker(self.state.field), &self.state.io.status, self.state.direct_play, &Whose::Nobody).into_owned();
         self.state.confirming = self.alert.is_open(); self.state.affirmative = self.alert.choice();
         self.state.alert_scroll = self.alert.scroll_target_bits();
         let current = self.current();
-        let options = field_options(self.state.field, self.state.quality, self.state.direct_play, self.txn.prefs());
+        let options = options_with_marker(self.state.field, self.state.quality, self.state.direct_play, self.txn.prefs(), self.marker_prefs);
         self.state.checked = options.iter().position(|(_, v)| *v == current).map_or(u32::MAX, |i| i as u32);
         let keep = if seat_current { OptionId::Choice(current.clone()) } else {
             self.form.selected_id().cloned().unwrap_or_else(|| OptionId::Choice(current.clone())) };
@@ -161,6 +167,9 @@ impl PickerPage {
         }
     }
     fn pick(&mut self, value: Value, fx: &mut Effects<'_, InnerHost>) {
+        if let Value::IntroSkip(_, scope) | Value::CreditsSkip(_, scope) = &value {
+            if *scope != self.state.shown_marker_scope || *scope == 0 { return; }
+        }
         // OK on the checked row is not a change. Compared against the CANONICAL current value, so a
         // stored deprecated code (`pb`) is not rewritten to `pt-BR` on the user's account by a pick
         // that changed nothing.
@@ -178,7 +187,7 @@ impl PickerPage {
     }
     fn commit(&mut self, value: Value, fx: &mut Effects<'_, InnerHost>) {
         match value {
-            Value::InstantDpadSeeking(_) | Value::DolbyVision(_) | Value::Quality(_) | Value::DirectPlay(_) | Value::NextEpisode(_) | Value::DeckPress(_) | Value::SkipInterval(_) | Value::UiResolution(_) | Value::SubtitleSize(_) | Value::SubtitlePosition(_) | Value::HdrOverlay(_) => self.txn.save_local(&mut self.state.io, value, fx),
+            Value::IntroSkip(_, _) | Value::CreditsSkip(_, _) | Value::InstantDpadSeeking(_) | Value::DolbyVision(_) | Value::Quality(_) | Value::DirectPlay(_) | Value::NextEpisode(_) | Value::DeckPress(_) | Value::SkipInterval(_) | Value::UiResolution(_) | Value::SubtitleSize(_) | Value::SubtitlePosition(_) | Value::HdrOverlay(_) => self.txn.save_local(&mut self.state.io, value, fx),
             value => {
                 let mut update = PreferenceUpdate::default();
                 match (self.state.field, value) {
@@ -206,6 +215,14 @@ impl PickerPage {
 impl Machine<InnerHost> for PickerPage {
     type Ev = ScreenEvent<InnerHost>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, InnerHost>, fx: &mut Effects<'_, InnerHost>) -> Handled {
+        if cx.views.marker_prefs != self.marker_prefs {
+            self.marker_prefs = cx.views.marker_prefs;
+            self.rebuild(false);
+            fx.invalidate(plx_machine::present::Provenance::Input);
+        }
+        if matches!(ev, ScreenEvent::Tick(_)) && self.marker_prefs.needs_refresh {
+            fx.push(Fx::App(AppFx::Preferences(PreferenceCmd::EnsureMarkerAccess)));
+        }
         match self.alert.step(ev, cx) {
             PromptStep::Pass => (),
             PromptStep::Done(handled) => {
@@ -330,6 +347,7 @@ impl Screen<InnerHost> for PickerPage {
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
+        self.state.shown_marker_scope = self.marker_prefs.scope;
         plx_ui::screen::Part::<InnerHost>::draw(&mut self.view(), f, Rect::FULL);
         self.alert.draw(f, self.entry);
     }

@@ -1432,5 +1432,29 @@
   "settings.trace.saving": {
     "value": "Saving",
     "description": "Local playback diagnostics save in progress."
+  },
+  "settings.playback.intro_skip": {
+    "value": "Skip intros",
+    "description": "Playback marker skipping preference or cancellation action."
+  },
+  "settings.playback.credits_skip": {
+    "value": "Skip credits",
+    "description": "Playback marker skipping preference or cancellation action."
+  },
+  "settings.playback.marker.manual": {
+    "value": "Manual",
+    "description": "Playback marker skipping preference or cancellation action."
+  },
+  "settings.playback.marker.automatic": {
+    "value": "Automatic",
+    "description": "Playback marker skipping preference or cancellation action."
+  },
+  "settings.playback.intro_skip.copy": {
+    "value": "Disabled hides the skip button. Manual offers Skip Intro. Automatic skips after five seconds unless you choose Watch Intro. Saved for this profile.",
+    "description": "Playback marker skipping preference or cancellation action."
+  },
+  "settings.playback.credits_skip.copy": {
+    "value": "Disabled hides Skip Credits. Manual keeps the current credit controls. Automatic skips after five seconds unless you choose Watch Credits. Next episode settings still control what plays next; their Up Next countdown is independent.",
+    "description": "Playback marker skipping preference or cancellation action."
   }
 }
