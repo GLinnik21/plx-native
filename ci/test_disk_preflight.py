@@ -387,14 +387,21 @@ class Preflight(Repo):
         self.assertIn("PLX_FLEET_DIR", out.stderr)
 
     def test_a_checkout_outside_the_named_roots_is_not_planned_under_an_override(self):
-        # The roots are disposable, the checkout is not (here: the real one): `git worktree list` would
-        # hand the planner every real lane.
+        # The roots are disposable, the checkout is not: `git worktree list` from a real one would hand the
+        # planner every real lane. This one is a stand-in beside the fixture, on the SAME volume as the tree
+        # it builds for, wherever TMPDIR is. (The real checkout would not do: on another volume than TMPDIR,
+        # a checkout on /Volumes/DAS against the default TMPDIR, the preflight judges the tree on its own
+        # free space and never reaches the guard under test. That path is
+        # `test_a_tree_on_another_volume_is_judged_on_its_own_free_space_and_not_planned`.)
+        checkout = os.path.realpath(tempfile.mkdtemp(prefix="standin-checkout-", dir=os.path.dirname(self.tmp)))
+        self.addCleanup(shutil.rmtree, checkout, ignore_errors=True)
+        self.assertEqual(os.stat(checkout).st_dev, os.stat(self.main).st_dev, "the stand-in must share the tree's volume")
         env = self.environment(free_gib=2)
-        out = subprocess.run([sys.executable, SCRIPT, "preflight", "--root", ROOT,
+        out = subprocess.run([sys.executable, SCRIPT, "preflight", "--root", checkout,
                               "--tree", os.path.join(self.main, "rust-modules", "target")],
                              cwd=self.main, capture_output=True, text=True, env=env)
         self.assertEqual(out.returncode, 2, out.stderr)
-        self.assertIn("outside", out.stderr)
+        self.assertIn("lies outside", out.stderr)
 
     # -- evicting ------------------------------------------------------------------------------------------
     def build_fleet(self):
