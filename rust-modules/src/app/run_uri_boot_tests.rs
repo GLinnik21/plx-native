@@ -224,6 +224,59 @@ mod uri_boot_tests {
 
     #[cfg(feature = "play-feed")]
     #[test]
+    fn refused_product_uri_load_recovers_the_same_request_only_after_native_release() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else { return };
+        plx_plex::plex::client_for(rig.sid).unwrap()
+            .set_link(plx_plex::plex::probe::Location::Local);
+        let bus: &'static Bus = Box::leak(Box::new(Bus::new()));
+        let display: &'static Display = Box::leak(Box::new(Display));
+        let caps = Capabilities { progressive_uri: true, hls_uri: false,
+            packet_feed: false, pause: true, seek: true, audio_track: true,
+            subtitle_track: true, audio_off: false, subtitle_off: false };
+        let port = ResolvePort::new(ProductEvidence { display_exported: true,
+            binding: Binding::Exported { canvas: (1920, 1080) },
+            callable: caps, certified: caps, preview_rectangle: false },
+            Arc::new(QualifiedOriginal));
+        assert!(rig.app.adapters.player.install_uri_product_with_ports(
+            &mut rig.app.player.session, port, bus, display));
+        rig.request();
+        let request = rig.app.player.session.metric_request().expect("logical request");
+        rig.release.send(()).unwrap();
+        let mut resolved = None;
+        poll_until("qualified URI source did not resolve", || {
+            resolved = plx_media::route::pump_play(&mut rig.app.player.session,
+                rig.app.bridge.metadata_mut());
+            resolved.is_some()
+        });
+        let offer = resolved.unwrap().uri_offer.expect("qualified original source");
+        assert!(rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session,
+            offer).is_ok());
+        assert!(matches!(plx_media::player::start_playback_tracked(
+            &mut rig.app.player.session, &mut rig.app.adapters.player),
+            plx_media::player::BufferfeedStartOutcome::Launched(_)));
+        let frame = |rig: &mut Rig| {
+            let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+            unsafe { playback_tick(&mut rig.app, &mut fr); }
+        };
+        frame(&mut rig); // register opens the actual native Load
+        bus.say("load", r#"{"returnValue":false}"#);
+        frame(&mut rig); // fatal addressed Load response begins native close
+        assert!(bus.0.lock().unwrap().1 == CloseStatus::Closing);
+        assert_eq!(rig.app.player.session.metric_request(), Some(request),
+            "Closing is not a handled terminal error while a Feed candidate remains");
+        assert!(!plx_media::route::play_pending(),
+            "the replacement resolve must wait for exact native release");
+        bus.release();
+        frame(&mut rig);
+        assert!(plx_media::route::play_pending(),
+            "an exact Released proof starts the same-episode Feed resolve");
+        assert_eq!(rig.app.player.session.metric_request(), Some(request),
+            "automatic handoff retains the logical request identity");
+    }
+
+    #[cfg(feature = "play-feed")]
+    #[test]
     fn viewer_speed_edit_re_resolves_qualified_uri_source_for_feed_at_its_known_pause_and_clock() {
         let _serial = plx_base::testlock::serial();
         struct RestoreDecoder;
