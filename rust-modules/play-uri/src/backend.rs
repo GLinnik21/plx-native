@@ -1049,7 +1049,7 @@ mod tests {
     }
 
     #[test]
-    fn acknowledged_track_without_confirmation_times_out_and_releases() {
+    fn acknowledged_track_without_confirmation_times_out_and_waits_for_owner_stop() {
         let mut rig = Rig::new(); rig.opened();
         assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
             Operation::SelectTrack { kind: TrackKind::Audio, choice: TrackChoice::Selected(3) }),
@@ -1062,9 +1062,13 @@ mod tests {
             command: rig.command,
             operation: Operation::SelectTrack { kind: TrackKind::Audio,
                 choice: TrackChoice::Selected(3) }, failure: Failure::TimedOut }));
-        assert!(notices.contains(&DriverEvent::Release { attempt: A,
-            status: ReleaseStatus::Closing }));
+        assert!(!notices.iter().any(|event| matches!(event, DriverEvent::Release { .. })),
+            "the common startup owner decides if this was mandatory or interactive");
         assert_eq!(rig.bus.calls("play"), 0);
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
+            Operation::Stop(StopReason::Replace)), DispatchResult::Queued);
+        assert!(rig.driver.poll(&rig.mt).contains(&DriverEvent::Release { attempt: A,
+            status: ReleaseStatus::Closing }));
     }
 
     #[test]
