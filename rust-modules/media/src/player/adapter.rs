@@ -2010,6 +2010,35 @@ mod repair_receipt_tests {
     }
 }
 
+#[cfg(all(test, feature = "play-uri"))]
+mod uri_stop_refusal_tests {
+    use super::*;
+
+    #[test]
+    fn unavailable_uri_driver_cannot_begin_release_or_queue_a_successor() {
+        let _serial = plx_base::testlock::serial();
+        let mut adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
+        // The route still names the old physical attempt, but no URI driver can accept Stop.
+        // This is the same unavailable-driver result the normal PhysicalDrivers set returns.
+        let route = crate::route::RouteStartAttempt::fixture();
+        adapter.uri_route_attempt = Some(route);
+        let at = adapter.backend_tick();
+        let result = adapter.backend_send_at(Intent::Stop {
+            backend: BackendKind::Uri,
+            attempt: route.contract_id(),
+            reason: plx_playback_contract::StopReason::Replace,
+        }, crate::player::attempt_metrics::Origin::Fresh, at);
+        assert!(result.playback.iter().any(|notice| matches!(notice,
+            plx_playback_contract::Fx::Rejected {
+                backend: BackendKind::Uri, attempt, ..
+            } if *attempt == route.contract_id())));
+        assert!(!adapter.uri_stop_requested,
+            "a rejected Stop cannot suppress a later physical failure report");
+        assert!(!adapter.release_busy(), "no native release began");
+        assert!(!adapter.release_has_queued_start(), "no successor was admitted");
+    }
+}
+
 #[cfg(all(test, feature = "hostsim"))]
 mod load_outcome_tests {
     use super::*;
