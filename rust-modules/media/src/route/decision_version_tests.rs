@@ -20,8 +20,8 @@ const TWO_VERSIONS: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-
 
 /// A loopback PMS that serves [`TWO_VERSIONS`] for the item, `mde` for every `/decision`, a
 /// bounded body for `start.mkv`, and records every request line until it is told to stop.
-fn versions_pms_observed(body: &'static [u8], mde: &'static [u8],
-    observed: Option<std::sync::mpsc::Sender<String>>)
+fn versions_pms_observed_with_master(body: &'static [u8], mde: &'static [u8],
+    observed: Option<std::sync::mpsc::Sender<String>>, master: Option<&'static [u8]>)
     -> (i32, std::sync::mpsc::Sender<()>, std::thread::JoinHandle<Vec<String>>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port() as i32;
@@ -37,6 +37,8 @@ fn versions_pms_observed(body: &'static [u8], mde: &'static [u8],
                         body
                     } else if line.contains("/decision?") {
                         mde
+                    } else if line.starts_with("GET /video/:/transcode/universal/start.m3u8?") {
+                        master.unwrap_or(EMPTY_MC)
                     } else {
                         EMPTY_MC
                     };
@@ -56,6 +58,12 @@ fn versions_pms_observed(body: &'static [u8], mde: &'static [u8],
         requests
     });
     (port, done, handle)
+}
+
+fn versions_pms_observed(body: &'static [u8], mde: &'static [u8],
+    observed: Option<std::sync::mpsc::Sender<String>>)
+    -> (i32, std::sync::mpsc::Sender<()>, std::thread::JoinHandle<Vec<String>>) {
+    versions_pms_observed_with_master(body, mde, observed, None)
 }
 
 fn versions_pms_with(body: &'static [u8], mde: &'static [u8]) -> (i32, std::sync::mpsc::Sender<()>, std::thread::JoinHandle<Vec<String>>) {
@@ -175,6 +183,68 @@ const URI_AV1: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-v","t
 
 #[cfg(feature = "play-uri")]
 const MDE_PMS_OUTPUT: &[u8] = br#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"transcode","Stream":[{"streamType":1,"decision":"copy","codec":"h264"},{"streamType":2,"decision":"transcode","codec":"ac3"}]}]}]}]}}"#;
+
+#[cfg(feature = "play-uri")]
+const MDE_PMS_HLS_OUTPUT: &[u8] = br#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"transcode","Stream":[{"streamType":1,"decision":"transcode","codec":"h264"},{"streamType":2,"decision":"transcode","codec":"aac"}]}]}]}]}}"#;
+
+#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+const TWO_VARIANT_MASTER: &[u8] = b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nlow/index.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=3000000\nhigh/index.m3u8\n";
+
+#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+const FIXED_MEDIA_PLAYLIST: &[u8] = b"#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2,\nsegment.ts\n";
+
+#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+struct QualifiedNativeMaster;
+
+#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+impl crate::route::uri_preflight::OriginalQualifier for QualifiedNativeMaster {
+    fn qualify(&self, _: &plx_base::task::OffFrame,
+        _: crate::route::uri_preflight::OriginalRequest) -> crate::route::uri_preflight::Verdict {
+        crate::route::uri_preflight::Verdict::Unknown
+    }
+
+    fn qualify_pms(&self, _: &plx_base::task::OffFrame,
+        request: crate::route::uri_preflight::PmsRequest) -> crate::route::uri_preflight::PmsVerdict {
+        use crate::route::uri_preflight::{HlsController, HlsMasterEvidence, PmsCertificate,
+            PmsRecipe, PmsTimeDomain, PmsVerdict};
+        use plx_playback_contract::{Fidelity, Requirements, SourceKind, TrackChoice, TrackKind,
+            TrackSelection};
+        use std::io::{Read, Write};
+        if request.recipe != PmsRecipe::Hls || !request.adaptive {
+            return PmsVerdict::Unknown;
+        }
+        let (origin, path) = plx_net::net::origin::split(&request.source_url);
+        assert_eq!(origin.host(), "127.0.0.1", "test qualifier fetches only its loopback PMS");
+        let mut socket = std::net::TcpStream::connect((origin.host(), origin.port() as u16))
+            .expect("fetch accepted PMS HLS source");
+        socket.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        write!(socket, "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+            .expect("master request");
+        let mut response = Vec::new();
+        socket.read_to_end(&mut response).expect("master response");
+        let Some(body_at) = response.windows(4).position(|bytes| bytes == b"\r\n\r\n") else {
+            return PmsVerdict::Unknown;
+        };
+        let Some(master) = HlsMasterEvidence::from_response(request.source_url.clone(),
+            request.resource_session.clone(), &response[body_at + 4..]) else {
+            return PmsVerdict::Unknown;
+        };
+        PmsVerdict::Known(PmsCertificate { selection: request.selection,
+            source_url: request.source_url, resource_session: request.resource_session,
+            recipe: request.recipe,
+            requirements: Requirements { source: SourceKind::HlsUri,
+                video: Fidelity::Compatible, audio: Fidelity::Compatible,
+                audio_track: TrackChoice::Selected(31342),
+                subtitle_track: TrackChoice::Unspecified },
+            native_tracks: vec![plx_play_uri::backend::NativeTrackIndex {
+                selection: TrackSelection { kind: TrackKind::Audio, id: 31342 }, index: 1,
+            }],
+            applied_audio: request.applied_audio, time_domain: PmsTimeDomain::ContentAbsolute,
+            hls_controller: Some(HlsController::NativeMaster), hls_master: Some(master),
+            release_certified: true,
+            expires_at: std::time::Instant::now() + std::time::Duration::from_secs(10) })
+    }
+}
 
 #[cfg(all(feature = "play-uri", feature = "devtriggers"))]
 struct QualifiedPms(std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)>>>);
@@ -449,6 +519,51 @@ fn an_accepted_pms_decision_produces_an_owned_uri_offer_from_its_output() {
     assert!(requests.iter().any(|line| line.contains("/video/:/transcode/universal/stop?")),
         "the accepted PMS encoder is retired at the ordinary timeline-before-stop boundary");
     plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
+#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+fn native_hls_master_offer_requires_the_fetched_multi_variant_response() {
+    use plx_play_uri::backend::Binding;
+    use plx_playback_contract::Capabilities;
+    for (master_body, qualifies) in [
+        (TWO_VARIANT_MASTER as &[u8], true), (FIXED_MEDIA_PLAYLIST as &[u8], false)
+    ] {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        assert!(plx_net::net::global_init());
+        restore_quality(Quality::Auto);
+        let capabilities = Capabilities { progressive_uri: true, hls_uri: true, packet_feed: false,
+            pause: true, seek: true, audio_track: true, subtitle_track: true,
+            audio_off: false, subtitle_off: false };
+        ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
+            crate::route::uri_preflight::ProductEvidence { display_exported: true,
+                binding: Binding::Exported { canvas: (1920, 1080) },
+                callable: capabilities, certified: capabilities, preview_rectangle: false },
+            std::sync::Arc::new(QualifiedNativeMaster)));
+        let (port, done, server) = versions_pms_observed_with_master(URI_DTS,
+            MDE_PMS_HLS_OUTPUT, None, Some(master_body));
+        let sid = plx_plex::plex::register_for_test("native-master", "127.0.0.1", port,
+            "token", "native-master-client");
+        let mut meta = plx_data::stores::metadata::MetadataStore::default();
+        assert!(request_play(&mut ps, &mut meta, plx_platform::devcaps::caps(), sid,
+            "rk-v", "/library/parts/3134/1/file.mkv", "h264", "dca", "Film", "", None));
+        assert!(wait_resolve_workers_for_test(std::time::Duration::from_secs(15)));
+        let start = pump_play(&mut ps, &mut meta);
+        assert_eq!(start.as_ref().is_some_and(|landed| landed.uri_offer.is_some()), qualifies,
+            "only the actual multi-variant response certifies NativeMaster");
+        if !qualifies && !cfg!(feature = "play-feed") {
+            assert_eq!(ps.play_verdict, Some(PlayVerdict::NoQualifiedBackend));
+        }
+        scrobble_stop(&mut ps, None, None);
+        drain_scrobble();
+        done.send(()).unwrap();
+        let requests = server.join().unwrap();
+        assert!(requests.iter().any(|line|
+            line.starts_with("GET /video/:/transcode/universal/start.m3u8?")),
+            "qualifier fetched the exact resolved master locator");
+        plx_plex::plex::reset_servers_for_test();
+    }
 }
 
 #[test]
