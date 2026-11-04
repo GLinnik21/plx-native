@@ -161,6 +161,15 @@ impl BackendPolicy {
             && !(self.crossed && self.last_backend.is_some_and(|last| last != offer.backend))
     }
 
+    /// Whether a backend still has a finite recipe the next resolve may qualify. Unknown
+    /// evidence is possible, never proof that a particular native source is supported.
+    /// A refused or spent recipe and a forbidden second backend crossing cannot rescue playback.
+    pub fn has_remaining_backend(&self, backend: BackendKind) -> bool {
+        self.offers.iter().zip(&self.tried).any(|(offer, tried)|
+            offer.backend == backend && !*tried && self.permitted(*offer)
+                && offer.qualification != Qualification::Refused)
+    }
+
     /// Inspect the next choice without consuming it. Busy admission and staged-source expiry
     /// must not spend a candidate or silently grant a different native owner.
     pub fn choose(&self) -> Selection {
@@ -325,5 +334,25 @@ mod tests {
         assert!(policy.admitted(uri.backend, uri.id));
         policy.qualify_planned_feed(OfferId::FEED_ORIGINAL);
         assert_eq!(policy.choose(), Selection::Exhausted);
+    }
+
+    #[test]
+    fn remaining_feed_prospect_respects_force_spent_recipes_and_one_crossing() {
+        let mut forced = BackendPolicy::for_request(true);
+        forced.qualify(BackendKind::Uri, OfferId::URI_ORIGINAL, Qualification::Qualified);
+        assert!(forced.admitted(BackendKind::Uri, OfferId::URI_ORIGINAL));
+        assert!(forced.has_remaining_backend(BackendKind::Feed),
+            "the unknown exact Feed original may be resolved");
+        forced.qualify(BackendKind::Feed, OfferId::FEED_ORIGINAL, Qualification::Refused);
+        assert!(!forced.has_remaining_backend(BackendKind::Feed),
+            "Force cannot use a compatible conversion as a rescue");
+
+        let mut crossed = BackendPolicy::for_request(false);
+        crossed.qualify_planned_feed(OfferId::FEED_ORIGINAL);
+        assert!(crossed.admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+        crossed.qualify(BackendKind::Uri, OfferId::URI_ORIGINAL, Qualification::Qualified);
+        assert!(crossed.admitted(BackendKind::Uri, OfferId::URI_ORIGINAL));
+        assert!(!crossed.has_remaining_backend(BackendKind::Feed),
+            "a Feed→URI handoff cannot buy a reverse handoff");
     }
 }
