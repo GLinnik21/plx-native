@@ -1419,12 +1419,12 @@ mod payload_tests {
     #[test]
     fn refused_synthetic_p5_start_cannot_be_retried_past_validation() {
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let play = crate::player::playurl::PlayUrl {
+        let play = plx_play_feed::playurl::PlayUrl {
             url: "http://192.0.2.1/refused-p5.mkv".into(),
             vcodec: "hevc".into(),
             acodec: "eac3".into(),
             fps: 23.976,
-            dovi: crate::player::playurl::PlayDovi {
+            dovi: plx_play_feed::playurl::PlayDovi {
                 profile: 5,
                 bl_compat: 0,
                 el_present: false,

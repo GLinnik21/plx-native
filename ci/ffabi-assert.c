@@ -277,7 +277,7 @@ SAME(AV_CODEC_ID_H264, 27, "AV_CODEC_ID_H264 != 27");
 SAME(AV_CODEC_ID_HEVC, 172, "AV_CODEC_ID_HEVC != 172 (173 on FFmpeg 6 — the enum shifts again)");
 SAME(AV_PKT_DATA_MASTERING_DISPLAY_METADATA, 20, "AV_PKT_DATA_MASTERING_DISPLAY_METADATA != 20");
 SAME(AV_PKT_DATA_CONTENT_LIGHT_LEVEL, 22, "AV_PKT_DATA_CONTENT_LIGHT_LEVEL != 22");
-/* `player/vp9_hdr.rs` parses these two structs out of raw bytes at hard-coded offsets, so a size
+/* `play-feed/src/vp9_hdr.rs` parses these two structs out of raw bytes at hard-coded offsets, so a size
    alone cannot pin them: a reorder that keeps 88 bytes would swap fields silently. Every member is
    4-byte aligned, so the offsets are the same at both pointer widths. */
 SAME(sizeof(AVMasteringDisplayMetadata), 88, "AVMasteringDisplayMetadata size moved");

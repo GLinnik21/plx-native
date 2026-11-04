@@ -47,8 +47,6 @@ mod feed_resources; // private ownership of the native feed slot and worker rece
 pub mod foreground;
 pub mod lifecycle;
 pub mod machine;
-#[cfg(feature = "play-feed")]
-pub mod playurl; // the `plxnative-playurl` dev trigger: a stream and its Load declaration, parsed beside the engine that acts on it
 pub mod preview;
 #[cfg(all(test, feature = "play-feed"))]
 mod abr_plant_tests; // pins the ABR plant's constants to the Feed pipeline's
@@ -105,8 +103,6 @@ pub mod threads;
 mod timeline;
 pub mod transport;
 pub mod video_geometry;
-#[cfg(feature = "play-feed")]
-pub mod vp9_hdr; // HDR10 for a VP9 stream: the container's PQ tag, written into the sourceInfo envelope ACB is sent
 
 #[cfg(feature = "play-feed")]
 use plx_base::task::MainThread;

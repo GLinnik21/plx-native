@@ -208,6 +208,25 @@ mod tests {
         assert_eq!(open.physical.video_codec, "h264");
         assert_eq!(open.physical.audio_codec, "aac");
     }
+
+    /// `present` is DERIVED, so it cannot disagree with the profile in either direction.
+    #[test]
+    fn dovi_presence_follows_the_profile() {
+        use plx_play_feed::playurl::PlayDovi;
+        let none = play_dovi(PlayDovi { profile: 0, bl_compat: 1, el_present: true });
+        assert!(!none.present, "profile 0 is not Dolby Vision whatever else is set");
+        let p7 = play_dovi(PlayDovi { profile: 7, bl_compat: 6, el_present: true });
+        assert!(p7.present);
+        assert_eq!((p7.profile, p7.bl_compat, p7.el_present), (7, 6, true));
+        let p8 = play_dovi(PlayDovi { profile: 8, bl_compat: 1, el_present: false });
+        assert!(p8.present, "profile 8 must derive present=true");
+        assert_eq!((p8.profile, p8.bl_compat, p8.el_present), (8, 1, false));
+        assert_eq!(
+            play_dovi(PlayDovi::default()),
+            plx_data::metadata::Dovi::NONE,
+            "an absent dovi node must be silence itself"
+        );
+    }
 }
 
 /// One source selected under the route transaction, before any native resource is built.
@@ -241,7 +260,7 @@ pub(super) fn prepare_source(
         // through this same function and must re-apply it.
         //
         // `route::url()` still wins: a real selection is never overridden by a stale trigger.
-        match crate::player::playurl::playurl() {
+        match plx_play_feed::playurl::playurl() {
             Some(Ok(p)) => {
                 url = install_synthetic_playurl(ps, &p)?;
                 if let Some([w, h]) = p.source_raster {
@@ -321,16 +340,30 @@ pub(super) fn prepare_source(
 
 }
 
+/// The `plxnative-playurl` trigger's DV declaration as the data layer's record. `present` is
+/// DERIVED from a non-zero profile rather than carried separately: two fields that can disagree is a
+/// way to declare "Dolby Vision, profile 0", which is not a thing, and the harness would have to
+/// keep them in step by hand in every case.
+fn play_dovi(d: plx_play_feed::playurl::PlayDovi) -> plx_data::metadata::Dovi {
+    plx_data::metadata::Dovi {
+        present: d.profile > 0,
+        profile: d.profile,
+        bl_compat: d.bl_compat,
+        el_present: d.el_present,
+        ..plx_data::metadata::Dovi::NONE
+    }
+}
+
 pub(super) fn install_synthetic_playurl(
     ps: &mut crate::route::PlaybackSession,
-    play: &crate::player::playurl::PlayUrl,
+    play: &plx_play_feed::playurl::PlayUrl,
 ) -> Result<String, crate::route::RouteStartResult> {
     if !crate::route::set_stream_declaration(
         ps,
         &play.vcodec,
         &play.acodec,
         play.fps,
-        play.dovi.to_dovi(),
+        play_dovi(play.dovi),
         play.atmos,
     ) {
         return Err(crate::route::RouteStartResult::StartFailed);

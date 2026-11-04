@@ -952,8 +952,8 @@ pub(super) fn tick_presentation(feed: &mut FeedResources, mt: &MainThread,
             let container_hdr = *FEED_SHARED.container_hdr.lock().unwrap();
             if let Some(h) = container_hdr {
                 if !plx_base::devtrig::flag("novp9hdr") {
-                    if let Some(rewritten) = super::vp9_hdr::rewrite_source_info(&bytes, &h) {
-                        super::log(&super::vp9_hdr::log_line(&h));
+                    if let Some(rewritten) = plx_play_feed::vp9_hdr::rewrite_source_info(&bytes, &h) {
+                        super::log(&plx_play_feed::vp9_hdr::log_line(&h));
                         bytes = rewritten;
                     }
                 }

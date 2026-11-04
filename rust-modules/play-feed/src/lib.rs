@@ -51,6 +51,7 @@ pub mod native_stall;
 pub mod native_executor;
 pub mod native_release;
 pub mod open;
+pub mod playurl;
 pub mod pcm_lead;
 pub mod side_reader;
 pub mod shared;
