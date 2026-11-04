@@ -2799,12 +2799,15 @@ mod flight_tests {
         assert_eq!(engine_epoch(&mut rig), epoch, "nothing reloads before the landing");
         rig.flight.release_answers();
 
-        rig.frames_until("the rollback's landing", |_| !crate::route::flight_outstanding());
+        let landing_log = plx_base::eventlog::with_private_log(|| {
+            rig.frames_until("the rollback's landing", |_| !crate::route::flight_outstanding());
+            std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
+        });
         assert_eq!(rig.flight.decisions(), decisions + 1, "exactly one rebuild /decision for the rollback");
         assert!(!crate::route::original_recovery_pending(), "the way back was taken");
         assert_ne!(engine_epoch(&mut rig), epoch, "the landing reloaded onto the restored HLS");
         assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error,
-            "{}", rig.recovery_diag());
+            "{}\nlanding log:\n{}", rig.recovery_diag(), landing_log);
         rig.flight.wait_for("the restored HLS's retirement", |f| f.stopped().iter().any(|s| s == "rig-1"));
     }
 
@@ -3434,13 +3437,16 @@ mod flight_tests {
         let answered = rig.flight.answered();
         let epoch = engine_epoch(rig);
         rig.flight.hold_answers();
-        super::super::sf_on_event(epoch.expect("the rig's Engine"), 18, num, std::ptr::null());
-        rig.frame();
+        let refusal_log = plx_base::eventlog::with_private_log(|| {
+            super::super::sf_on_event(epoch.expect("the rig's Engine"), 18, num, std::ptr::null());
+            rig.frame();
+            std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
+        });
         assert_ne!(
             crate::player::state(&rig.ps),
             crate::player::PlaybackState::Error,
-            "a refused stream must not end on the failure read-out (flight {n}): {}",
-            rig.recovery_diag()
+            "a refused stream must not end on the failure read-out (flight {n}): {}\nrefusal log:\n{}",
+            rig.recovery_diag(), refusal_log
         );
         assert!(crate::route::flight_outstanding(), "the conversion's PMS half must be a recovery flight");
         assert_eq!(rig.flight.answered(), answered, "the failure frame waited for a PMS answer: {:?}", rig.flight.requests());
