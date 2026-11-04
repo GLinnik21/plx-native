@@ -20,11 +20,14 @@ use super::feed_open::PayloadFacts;
 #[cfg(test)]
 use super::feed_open::install_synthetic_playurl;
 use plx_play_feed::{
-    app_pcm_for_rate, audio_payload_codec, decoder_row, fed_fps,
-    parse_sinkmax, renamed_static_payload, sink_envelope, static_envelope,
+    decoder_row, renamed_static_payload, static_envelope,
     with_opus_info, SinkEnvelope, PAYLOAD_H265, PAYLOAD_V,
 };
-use plx_play_feed::pcm_lead::{pcm_lead_plan, PcmLead};
+#[cfg(test)]
+use plx_play_feed::{app_pcm_for_rate, audio_payload_codec, fed_fps, parse_sinkmax, sink_envelope};
+use plx_play_feed::pcm_lead::PcmLead;
+#[cfg(test)]
+use plx_play_feed::pcm_lead::pcm_lead_plan;
 #[cfg(test)]
 use plx_play_feed::pcm_lead::{pcm_output_lead, PCM_LEAD_BY_OUTPUT, PCM_SINK_LEAD_NS};
 #[cfg(test)]
@@ -36,9 +39,8 @@ pub(crate) use plx_play_feed::{load_video_refused, LoadVideo};
 use super::shared::Stage;
 use super::SeekMode;
 use super::{log, sink, threads, ACB_OK, PTYPE, SHARED, TX};
-#[cfg(test)]
-use crate::aq::AuQueue;
 use plx_base::task::MainThread;
+#[cfg(test)]
 use plx_platform::devcaps::AudioStack;
 use plx_platform::tv::sink::UnloadTicket;
 use plx_telemetry::telemetry::classes::DemuxExitClass;
@@ -303,110 +305,14 @@ pub(crate) fn speed_fps_ceiling(
     (f64::from(row_fps) + 0.5).min(super::SPEED_MAX_FPS)
 }
 
-/// The sink envelope for THIS Load, from the route (main thread), with the dev override applied.
-fn sink_envelope_now(facts: &plx_play_feed::PayloadFacts, video: LoadVideo, rate: i32) -> SinkEnvelope {
-    if let Some(spec) = plx_base::devtrig::read("sinkmax") {
-        if let Some(env) = parse_sinkmax(&spec) {
-            #[cfg(feature = "devtriggers")]
-            log(&format!(
-                "sinkmax: envelope OVERRIDDEN to {}x{}@{} by /tmp/plxnative-sinkmax",
-                env.w, env.h, env.fps
-            ));
-            return env;
-        }
-        log(&format!("sinkmax: unparseable spec {spec:?} — ignored"));
-    }
-    sink_envelope(
-        video,
-        facts.max_raster,
-        fed_fps(facts.fps, rate),
-        &plx_platform::devcaps::caps(),
-        plx_platform::devcaps::measured() && !facts.force_direct_play,
-    )
-}
-
-/// The audio name and diagnostic code a Load declares for `codec`: PCM whenever the app decodes the
-/// stream itself (`pcm` is the shape [`crate::route::stream_pcm`] declared), whatever the codec
-/// is — DTS is `DTS` only when the set's own decoder takes it — else [`audio_payload_codec`]'s.
-/// PURE.
-fn audio_declaration(codec: &str, pcm: bool) -> Option<(&'static str, u8)> {
-    if pcm {
-        return Some(("PCM", 5));
-    }
-    audio_payload_codec(codec)
-}
-
-/// Force never declares app PCM even if an older route projection still contains a PCM shape.
-fn app_pcm_for_load<T>(
-    force_original: bool, session_rate: i32, pcm: Option<Result<T, String>>,
-) -> Option<Result<T, String>> {
-    if force_original { None } else { app_pcm_for_rate(session_rate, pcm) }
-}
-
-/// A non-normal rate requires app decoding and time stretching, which Force forbids.
-fn force_speed_refused(requested_rate: i32) -> bool {
-    requested_rate != super::RATE_NORMAL
-}
-
-/// A decoder-table omission is only a declaration veto in Auto. Force attempts the exact
-/// known feed format and lets the native Load answer; an unknown format is rejected earlier.
-fn video_declaration_refused(
-    video: LoadVideo, caps: &plx_platform::devcaps::Caps, force_original: bool,
-) -> bool {
-    !force_original && load_video_refused(video, caps)
-}
-
-/// A Force Load either declares the source's native audio wire format or refuses it. In
-/// particular, the ordinary PCM fallback for FLAC/ALAC/LPCM cannot represent original bytes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ForceAudioRefusal {
-    AudioSuppressed,
-    NoNativeWire,
-}
-
-impl ForceAudioRefusal {
-    fn message(self) -> &'static str {
-        match self {
-            Self::AudioSuppressed => "video-only Load would drop the selected audio",
-            Self::NoNativeWire => "no native buffer-feed declaration for its original wire format",
-        }
-    }
-}
-
-fn force_audio_refusal(codec: &str, no_audio: bool) -> Option<ForceAudioRefusal> {
-    if no_audio {
-        return Some(ForceAudioRefusal::AudioSuppressed);
-    }
-    match audio_payload_codec(codec) {
-        Some((name, _)) if name != "PCM" => None,
-        _ => Some(ForceAudioRefusal::NoNativeWire),
-    }
-}
-
-/// One Force preflight decision, using the original source facts captured before native Load.
-enum ForceOpenRefusal {
-    Speed,
-    Audio(ForceAudioRefusal),
-    OriginalEnhancementLayer,
-}
-
-fn force_open_refusal(
-    requested_rate: i32,
-    audio_codec: &str,
-    no_audio: bool,
-    original_dovi: OriginalDvFacts,
-) -> Option<ForceOpenRefusal> {
-    // The payload decision describes the *converted* presentation. Force keeps the source
-    // bytes, so a known Profile 7 or enhancement layer cannot truthfully use that declaration.
-    // This says nothing about what a device could decode through a different, qualified wire.
-    if original_dovi.present && (original_dovi.profile == 7 || original_dovi.el_present) {
-        return Some(ForceOpenRefusal::OriginalEnhancementLayer);
-    }
-    if force_speed_refused(requested_rate) {
-        return Some(ForceOpenRefusal::Speed);
-    }
-    force_audio_refusal(audio_codec, no_audio).map(ForceOpenRefusal::Audio)
-}
+use plx_play_feed::native_executor::{
+    sink_envelope_now, audio_declaration, app_pcm_for_load, force_open_refusal,
+    video_declaration_refused, load_audio,
+};
+#[cfg(test)]
+use plx_play_feed::native_executor::{
+    ForceAudioRefusal, ForceOpenRefusal, force_audio_refusal, force_speed_refused,
+};
 
 #[cfg(test)]
 mod force_video_wire_tests {
@@ -475,18 +381,7 @@ fn build_av_payload_at(
     build_av_payload_from_facts(&facts, video, audio, env, rate, super::feed_open::payload_options(&facts))
 }
 
-fn build_av_payload_from_facts(
-    facts: &plx_play_feed::PayloadFacts, video: &str, audio: &str, env: SinkEnvelope, rate: i32,
-    options: plx_play_feed::PayloadOptions,
-) -> String {
-    let built = plx_play_feed::build_av_payload(
-        facts, video, audio, env, rate, options,
-    );
-    for line in built.notices {
-        log(&line);
-    }
-    built.json
-}
+use plx_play_feed::native_executor::build_av_payload_from_facts;
 
 /// The `contents.immersive` node — **the Dolby Atmos half of the same envelope**, and the reason
 /// the television's Atmos read-out never appeared while its Dolby Vision one did.
@@ -565,23 +460,7 @@ fn with_dolby_hdr_info(p: &str, video: &str, dv: plx_data::metadata::DvPresentat
     payload
 }
 
-/// `"appId":"<this install's id>"` — the payload key, and the anchor `with_window_id` splices onto.
-///
-/// One expression, called from both places, so the two cannot disagree.
-fn app_id_key() -> String {
-    format!(r#""appId":"{}""#, plx_base::paths::app_id())
-}
-
-/// Substitute the `@APPID@` placeholder with the id of the install this process actually is.
-///
-/// Exactly once per payload, asserted at build time: a `replace` that matched twice would leave a
-/// second `appId` key for `with_window_id` to splice a duplicate `windowId` onto, and one that
-/// matched nothing would hand LG's JSON parser the placeholder as a literal app id. Both are
-/// silent — the pipeline reports no error for either — which is why this is graded in the host
-/// suite rather than left to be noticed on a television.
-fn with_app_id(p: &str) -> String {
-    p.replace("@APPID@", plx_base::paths::app_id())
-}
+use plx_play_feed::native_executor::{app_id_key, with_app_id};
 
 /// Create the exported window and splice its id into the Load payload — the webOS 5+ binding, in
 /// one place.
@@ -1008,13 +887,15 @@ pub use plx_play_feed::native_executor::drain_aq;
 
 pub(crate) use plx_play_feed::feed_state::MAX_FEED_AHEAD_NS;
 #[cfg(test)]
-use plx_play_feed::feed_state::{AUDIO_LEAD_IN_NS, PRIME_VIDEO_MAX_NS};
+pub(crate) use plx_play_feed::feed_state::{AUDIO_LEAD_IN_NS, PRIME_VIDEO_MAX_NS};
 pub use plx_play_feed::feed_state::PRES_NONE;
 #[cfg(test)]
 use plx_play_feed::feed_state::FEED_PACE_CAP_MS;
-use plx_play_feed::native_executor::AUDIO_SLACK_NS;
+pub(crate) use plx_play_feed::native_executor::AUDIO_SLACK_NS;
 #[cfg(test)]
-use plx_play_feed::native_executor::{FEED_LANE_SLICE_US, PRIME_AUDIO_NS, PRIME_NS};
+use plx_play_feed::native_executor::{
+    AUDIO_STALE_AHEAD_NS, FEED_LANE_SLICE_US, FEED_LOW_WATER_NS, PRIME_AUDIO_NS, PRIME_NS,
+};
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
@@ -1050,39 +931,6 @@ fn feed_clock_us() -> u64 {
 #[cfg(test)]
 fn audio_sink_pts(fp: i64, pcm_lead_ns: i64) -> i64 {
     plx_play_feed::native_executor::audio_sink_pts(fp, pcm_lead_ns, super::applied_rate_permille())
-}
-
-/// What a Load declares for its audio, and the plan for the sink lead that follows from it: ONE
-/// value, so the payload's `"audio"` name and the Engine's lead cannot disagree. PURE.
-struct LoadAudio {
-    /// The LG-side name the payload carries; `"PCM"` for app-decoded audio.
-    name: &'static str,
-    /// The `dg_load_a` diagnostics code for the codec (`audio_payload_codec`).
-    diagnostic: u8,
-    /// [`pcm_lead_plan`] of `name` on the set's stack.
-    lead: PcmLead,
-}
-
-/// [`LoadAudio`] for a track of `codec` at `session_rate` (permille); `None` only at 1x, when the pipeline has
-/// no name for the codec and the app does not decode it. A speed session decodes and stretches the sound in the app
-/// (`ff::SpeedDecoder`), so at any speed but 1x every codec declares `"PCM"`; so does a track the app
-/// decodes itself at 1x (`app_pcm`, the shape [`crate::route::stream_pcm`] declared: DTS under the
-/// lossy gate, FLAC and the like), whatever its codec, and that name is what the lead plan is made
-/// from, so every Load that declares `"audio":"PCM"` is planned a lead. `lead_override_ms` is
-/// the dev trigger's text and `stack` the set's audio stack ([`plx_platform::devcaps::audio_stack`]).
-fn load_audio(
-    codec: &str, session_rate: i32, app_pcm: bool, lead_override_ms: Option<&str>,
-    stack: AudioStack,
-) -> Option<LoadAudio> {
-    let declared = audio_declaration(codec, app_pcm);
-    // A speed session declares PCM whatever the codec is called, so it needs no payload name for it
-    // (`mp3`, `vorbis` and `truehd` have none): its diagnostic code stays the codec's when it has one.
-    let (name, diagnostic) = if session_rate != super::RATE_NORMAL {
-        ("PCM", declared.map_or(5, |(_, code)| code))
-    } else {
-        declared?
-    };
-    Some(LoadAudio { name, diagnostic, lead: pcm_lead_plan(name, lead_override_ms, stack) })
 }
 
 #[cfg(test)]
