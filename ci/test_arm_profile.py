@@ -274,6 +274,96 @@ class PlaybackBackendSelection(ScratchTree):
         self.assertNotIn("cargo", proc.stdout)
 
 
+class PackageGateDecodesTheStampTheMakefileWrites(ScratchTree):
+    """`ci/check-package.py` decodes `pkg/.build-config` into dev / release / none, and every gate that
+    grades "a RELEASE build" or "a dev build" rests on the answer.
+
+    It once matched two literal flag strings (`""` and `--no-default-features`). When the playback
+    backends became explicit features the Makefile's stamp turned into `features:--no-default-features
+    --features play-uri,play-feed,...`, every build decoded None, CI's nightly job failed with "decoded
+    as None" and the cross-build job's dev-trigger, dev-only-library and reported-version gates SKIPPED.
+    Here the stamp is the one a real `make` writes into a scratch tree (the reset runs at parse time, so
+    `make -n clean` writes it), for every backend the package matrix builds, so the test cannot agree with
+    a decoder that is wrong in the same way as its table.
+    """
+
+    def decode(self, *make_args: str) -> str:
+        proc = self.make(*make_args, "clean")  # `clean` is not exempt, so this writes the stamp
+        self.assertEqual(proc.returncode, 0, proc.stderr[-300:])
+        out = subprocess.run([sys.executable, str(ROOT / "ci" / "check-package.py"), "--print-build-config",
+                              str(self.tree / STAMP)], capture_output=True, text=True, env=self.env, timeout=120)
+        self.assertEqual(out.returncode, 0, out.stderr[-300:])
+        return out.stdout.strip()
+
+    def test_every_packaged_backend_decodes_as_the_configuration_that_wrote_it(self):
+        sys.path.insert(0, str(ROOT / "ci"))
+        import rust_toolchain
+        for backend in rust_toolchain.PACKAGED_BACKENDS:
+            for release, want in ((False, "dev"), (True, "release")):
+                for profile in ("tvdev", "release"):  # a plain local build is tvdev; CI and every cut are release
+                    with self.subTest(backend=backend, release=release, profile=profile):
+                        got = self.decode(f"PLAYBACK_BACKENDS={backend}", f"ARM_PROFILE={profile}",
+                                          "RELEASE=1" if release else "RELEASE=")
+                        self.assertEqual(got, want)
+
+    def test_the_shipped_cuts_decode_as_release(self):
+        for label, args in (
+            ("release cut", ("FLAVOR=stable", "RELEASE=1", "SYMBOLS=1")),
+            ("nightly cut", ("FLAVOR=nightly", "RELEASE=1", "SYMBOLS=1", "PLX_NIGHTLY_DATE=20260919")),
+            ("release candidate", ("FLAVOR=stable", "RELEASE=1", "SYMBOLS=1", "RC=2")),
+            ("submission candidate", ("FLAVOR=debug", "RELEASE=1")),
+        ):
+            with self.subTest(label):
+                self.assertEqual(self.decode(*args), "release")
+
+    def test_no_backend_is_refused_in_both_configurations(self):
+        """The Makefile refuses to link a television binary with `PLAYBACK_BACKENDS=none`
+        (`test_no_backend_cannot_produce_a_television_binary`), so its stamp is no configuration to grade.
+        Under `RELEASE=1` it is the bare `--no-default-features` the old decoder called "release"."""
+        for release in ("RELEASE=1", "RELEASE="):
+            with self.subTest(release):
+                self.assertEqual(self.decode("PLAYBACK_BACKENDS=none", release), "none")
+
+    def test_lab_and_the_shots_recipe_are_neither_shipped_configuration(self):
+        self.assertEqual(self.decode("LAB=1"), "none")
+        self.assertEqual(self.decode("LAB=1", "RELEASE=1"), "none")
+        # the recipe in the Makefile's header: only the trigger surface, none of the release's backends
+        self.assertEqual(self.decode("RUST_FEATFLAGS=--no-default-features --features devtriggers"), "none")
+
+    def test_the_packaged_backends_are_the_makefiles_minus_none(self):
+        """`rust_toolchain.PACKAGED_BACKENDS` is the one list the decoder enumerates; a backend the
+        Makefile gains (a `PLAYBACK_FEATURES_<name>`) must be added there or its builds decode None."""
+        sys.path.insert(0, str(ROOT / "ci"))
+        import rust_toolchain
+        names = set(re.findall(r"^PLAYBACK_FEATURES_(\w+)\s*=", (ROOT / "Makefile").read_text(), flags=re.M))
+        self.assertEqual(names - {"none"}, set(rust_toolchain.PACKAGED_BACKENDS))
+        self.assertIn("none", names)
+
+    def test_the_query_ignores_the_configuration_of_the_make_that_runs_it(self):
+        """`make ipk` runs check-package.py, whose make query inherits that make's variables: a LAB build
+        must not derive a dev set that already carries `lab-diagnostics`, an inherited RC with RELEASE
+        blank must not trip the Makefile's parse-time refusal, and RELEASE=1 must not turn the DEV half
+        of the table into the release flags."""
+        sys.path.insert(0, str(ROOT / "ci"))
+        import rust_toolchain
+        clean = rust_toolchain.featflags(ROOT, release=False, backends="feed")
+        self.assertEqual(clean, ["--no-default-features", "--features", "play-feed,devtools,devtriggers,threadcheck"])
+        inherited = {"RELEASE": "1", "LAB": "1", "RC": "2", "FLAVOR": "stable", "PLAYBACK_BACKENDS": "uri",
+                     "MAKEFLAGS": " -- RELEASE=1 LAB=1", "MAKELEVEL": "1"}
+        saved = {k: os.environ.get(k) for k in inherited}
+        os.environ.update(inherited)
+        try:
+            self.assertEqual(rust_toolchain.featflags(ROOT, release=False, backends="feed"), clean)
+            self.assertEqual(rust_toolchain.featflags(ROOT, release=True, backends="feed"),
+                             ["--no-default-features", "--features", "play-feed"])
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+
 class DeviceControlGoalsKeepTheBuild(ScratchTree):
     """`tools/tv-session.sh` closes the app with a plain `make kill` right after a
     `make ARM_PROFILE=release` build. `kill` builds nothing, but it was not in `SIDE_EFFECT_FREE`, so
