@@ -3281,12 +3281,18 @@ mod flight_tests {
         // The pipeline takes one AU per lane, then presents nothing. Keep later AUs beyond the
         // feed-ahead limit and one more queued behind each pending AU, as a demuxer sees when a
         // decoder swallows the feed. The first frame completes Load and accepts the first pair;
-        // the second establishes the watchdog's unchanged accepted-count baseline.
+        // the second establishes the watchdog's unchanged accepted-count baseline. The audio
+        // lane DROPS an AU more than `AUDIO_STALE_AHEAD_NS` (5 s) past the fed video instead of
+        // holding it, so its later AUs sit under that bound yet past its own feed-ahead budget
+        // (`MAX_FEED_AHEAD_NS` + `AUDIO_SLACK_NS`, 3.6 s).
         let eng = rig.pa.engine().expect("the rig's Engine");
         eng.stage = Stage::Loading;
-        for (queue, es) in [(eng.aq_video.as_mut(), 1), (eng.aq_audio.as_mut(), 0)] {
+        for (queue, es, later) in [
+            (eng.aq_video.as_mut(), 1, [6_000_000_000, 6_100_000_000]),
+            (eng.aq_audio.as_mut(), 0, [5_000_000_000, 5_100_000_000]),
+        ] {
             let q = &mut **queue.expect("the Engine's AU queues") as *mut crate::aq::AuQueue;
-            for pts in [1_000_000_000, 6_000_000_000, 6_100_000_000] {
+            for pts in [1_000_000_000, later[0], later[1]] {
                 assert_eq!(crate::aq::aq_push(q, [0u8; 64].as_ptr(), 64, pts, 1, es), 0);
             }
         }
