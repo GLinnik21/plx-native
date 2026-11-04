@@ -89,6 +89,15 @@ impl BackendRunner {
         result
     }
 
+    /// The common owner accepted recovery before its successor has a physical attempt ID.
+    /// Address the gap to the failed attempt now; a later Start cannot count it twice.
+    pub fn handoff_begun_at(&mut self, request: LogicalRequestId, from: AttemptId,
+        at: measure::Tick) -> RunResult {
+        let mut result = RunResult::default();
+        self.metrics.handoff_begun(request, from, at, &mut result.metrics);
+        result
+    }
+
     /// Viewer/claim facts that the physical backend cannot infer. Held, paused, seeking and
     /// unknown intervals are excluded from involuntary stall time by the pure reducer.
     pub fn condition_at(&mut self, backend: BackendKind, attempt: AttemptId,

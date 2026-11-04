@@ -76,6 +76,9 @@ pub enum Event<R, A> {
     AttemptStarted { request: R, attempt: A, backend: Backend, origin: Origin, at: Tick },
     Evidence { request: R, attempt: A, evidence: Evidence, at: Tick },
     Condition { request: R, attempt: A, condition: Condition, at: Tick },
+    /// Recovery was accepted while the failed physical attempt still owns the route. The next
+    /// attempt has no ID yet; begin the gap before native release and source resolution.
+    HandoffBegun { request: R, from: A, at: Tick },
     Handoff { request: R, from: A, to: A, at: Tick },
     AttemptFinished { request: R, attempt: A, outcome: AttemptOutcome, at: Tick },
     RequestFinished { request: R, outcome: RequestOutcome, at: Tick },
@@ -85,7 +88,8 @@ impl<R, A> Event<R, A> {
         match self {
             Self::RequestStarted { at, .. } | Self::AttemptStarted { at, .. }
             | Self::Evidence { at, .. } | Self::Condition { at, .. }
-            | Self::Handoff { at, .. } | Self::AttemptFinished { at, .. }
+            | Self::HandoffBegun { at, .. } | Self::Handoff { at, .. }
+            | Self::AttemptFinished { at, .. }
             | Self::RequestFinished { at, .. } => *at,
         }
     }
@@ -263,6 +267,11 @@ impl<R: Copy + Ord, A: Copy + Ord> AttemptMetrics<R, A> {
                 r.id == *request && r.outcome.is_none()
                     && r.current_attempt.is_some_and(|a| a.id == *attempt && a.outcome.is_none())
             }),
+            Event::HandoffBegun { request, from, .. } => self.request.as_ref().is_some_and(|r| {
+                r.id == *request && r.outcome.is_none()
+                    && r.current_attempt.is_some_and(|a| a.id == *from)
+                    && self.handoff.is_none()
+            }),
             Event::Handoff { request, from, to, .. } => self.request.as_ref().is_some_and(|r| {
                 r.id == *request && r.outcome.is_none() && to > from
                     && r.current_attempt.is_some_and(|a| a.id == *from)
@@ -349,6 +358,12 @@ impl<R: Copy + Ord, A: Copy + Ord> AttemptMetrics<R, A> {
                     r.rebuffer_count = r.rebuffer_count.saturating_add(1);
                 }
                 self.condition = condition;
+            }
+            Event::HandoffBegun { request, from, .. } => {
+                let Some(r) = self.request.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
+                if !r.current_attempt.is_some_and(|a| a.id == from) || self.handoff.is_some() { return; }
+                r.handoff_count = r.handoff_count.saturating_add(1);
+                self.handoff = Some(Handoff { from });
             }
             Event::Handoff { request, from, to, .. } => {
                 let Some(r) = self.request.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
@@ -463,7 +478,11 @@ mod tests {
             outcome: AttemptOutcome::Failed(Failure { stage: Stage::Decode, cause: Cause::Native }),
             at: t(recovery_decided_at) });
         // Native Closing and source resolution occupy 20..40; the physical successor has no
-        // AttemptId until after that work, so the current late handoff starts only at 40.
+        // AttemptId until after that work. Duplicates and a stale request cannot move the clock.
+        send(&mut model, Event::HandoffBegun { request: 6, from: 61,
+            at: t(recovery_decided_at) });
+        send(&mut model, Event::HandoffBegun { request: 6, from: 61, at: t(21) });
+        send(&mut model, Event::HandoffBegun { request: 5, from: 61, at: t(100) });
         send(&mut model, Event::Handoff { request: 6, from: 61, to: 62, at: t(40) });
         send(&mut model, Event::AttemptStarted { request: 6, attempt: 62,
             backend: Backend::Feed, origin: Origin::AutomaticHandoff, at: t(40) });

@@ -630,6 +630,16 @@ impl PlayerAdapter {
         }
     }
 
+    /// The common recovery owner has accepted an addressed automatic switch while the failed
+    /// physical attempt still owns release. Start its visible gap before Closing and resolve;
+    /// the future Feed attempt is not claimed yet. Stale request/attempt pairs are ignored by
+    /// the reducer before its clock can affect the current request.
+    pub fn begin_automatic_handoff(&mut self, request: backend::LogicalRequestId,
+        from: AttemptId) {
+        let result = self.backend.handoff_begun_at(request, from, self.backend_tick());
+        self.record_backend_metrics(&result.metrics);
+    }
+
     /// Project the addressed common readout into intentional/eligible time for the active
     /// physical attempt. An old session view cannot classify its successor's interval.
     pub fn observe_backend_condition(&mut self, ps: &crate::route::PlaybackSession,

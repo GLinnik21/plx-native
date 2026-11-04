@@ -104,6 +104,11 @@ impl Metrics {
         self.step(m::Event::Handoff { request, from, to, at }, out);
     }
 
+    pub(super) fn handoff_begun(&mut self, request: LogicalRequestId, from: AttemptId,
+        at: m::Tick, out: &mut Vec<MetricNotice>) {
+        self.step(m::Event::HandoffBegun { request, from, at }, out);
+    }
+
     pub(super) fn condition(&mut self, backend: BackendKind, attempt: AttemptId,
         condition: m::Condition, at: m::Tick, out: &mut Vec<MetricNotice>) {
         if self.physical.is_some_and(|p| (p.backend, p.attempt) == (backend, attempt)) {
