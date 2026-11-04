@@ -421,3 +421,89 @@ fn a_repick_keeps_the_entrys_other_keys_and_an_unchanged_one_writes_nothing() {
     assert_eq!(serde_json::to_value(&session::peek().prefs.subtitle_offsets).unwrap(), before);
     tidy();
 }
+
+// ---- #830: the mirror follows the OWNER, not the sign-in token -----------------------------------
+
+const OWNER_7: &str = "o1:19afc47bcea99412";
+
+/// A session of `token` whose roster names admin `owner`, holding one offset for the owner profile
+/// stamped as an owner-stamped build writes it.
+fn owned(token: &str, owner: i64, rating_key: &str, offset_ms: i64) -> Session {
+    let stamp = match owner {
+        7 => OWNER_7.to_string(),
+        _ => "o1:38e53b36e68382ab".to_string(),
+    };
+    let mut session = signed_in(token);
+    session.home_users = vec![session::HomeUserRef { id: owner, uuid: format!("synthetic-owner-{owner}"), admin: true, ..Default::default() }];
+    session.prefs.subtitle_offsets = vec![session::prefs::ProfileList {
+        user: String::new(), account: stamp, items: vec![offset("m", rating_key, offset_ms)], ..Default::default()
+    }];
+    session
+}
+
+/// **T6, by owner.** A sign-in by the same person mints a new token and keeps the stamp, so the
+/// restore that follows does NOT reseed the mirror (it is ahead of the file by the writes still
+/// queued, and a reseed would lose them); a sign-in by another owner moves the stamp and does.
+#[test]
+fn t6_by_owner_the_mirror_is_kept_across_a_same_owner_resignin_and_reseeded_for_another_owner() {
+    let _g = plx_base::testlock::serial();
+    let _session = session::TempSession::new("memory-t6-owner");
+    session::save(&signed_in("tok-1"));
+    _session.seated("", "tok-1");
+    let _ = session::peek();
+    let first = owned("tok-1", 7, "from-file-1", 100);
+    seed_memory_for_test::<SubtitleOffsetEntry>(&first);
+    let seen = |rk: &str| recall::<SubtitleOffsetEntry>("", &key("m", rk)).map(|e| e.offset_ms);
+    assert_eq!(seen("from-file-1"), Some(100), "setup: the mirror was seeded under the owner stamp");
+    assert!(remember::<SubtitleOffsetEntry>("", key("m", "ahead"), |_| Some(offset("m", "ahead", 300))));
+
+    restore_install_rows(&owned("tok-2", 7, "from-file-2", 200));
+    assert_eq!((seen("from-file-1"), seen("ahead")), (Some(100), Some(300)),
+        "the same owner under a new token: not reseeded, the mirror keeps its writes in flight");
+
+    restore_install_rows(&owned("tok-3", 8, "from-file-3", 400));
+    assert_eq!(seen("from-file-3"), Some(400), "another owner: reseeded from the new record");
+    assert_eq!((seen("from-file-1"), seen("ahead")), (None, None), "and the previous owner's picks are gone");
+    plx_base::storage_worker::drain_for_test();
+    tidy();
+}
+
+/// **G3, the queued write.** The mirror was seeded under one stamp and the file's own stamp moved
+/// before the write ran (the roster landed: the owner became known). The pick is in the mirror,
+/// stamped as the mirror is, so the file write must not re-derive a stamp of its own: it is
+/// dropped, never written under either, and the mirror keeps the pick until the next restore
+/// reseeds it (the bounded loss `queue_update`'s token guard already has).
+#[test]
+fn remember_drops_the_edit_when_the_file_stamp_differs_from_the_mirror_seed() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let _session = session::TempSession::new("memory-g3-drop");
+    session::save(&signed_in("acct"));
+    _session.seated("", "acct");
+    seed_memory_for_test::<SubtitleOffsetEntry>(&session::peek());
+    let _sid = playing(&mut ps, "machine-g3", "rk-g3");
+
+    let parked = Parked::new();
+    persist_subtitle_offset(&ps, 1_800);
+    assert!(session::update(|cur| Some(Session {
+        home_users: vec![session::HomeUserRef { id: 7, uuid: "synthetic-owner-7".into(), admin: true, ..Default::default() }],
+        ..cur.clone()
+    })), "the roster lands while the write is queued");
+    parked.release();
+    plx_base::storage_worker::drain_for_test();
+
+    let stored = session::peek().prefs.subtitle_offsets.clone();
+    assert!(stored.iter().all(|r| r.items.is_empty()), "the file's stamp moved under the queued write, which was dropped: {stored:?}");
+    assert_eq!(recall::<SubtitleOffsetEntry>("", &key("machine-g3", "rk-g3")).map(|e| e.offset_ms), Some(1_800),
+        "and the mirror keeps the pick");
+
+    // After a restore the mirror is seeded under the stamp the file has, and the door writes again.
+    session::publish_seat_for_test(Some(session::UserRef::default()), session::current_gen().wrapping_add(1), OWNER_7.into());
+    seed_memory_for_test::<SubtitleOffsetEntry>(&session::peek());
+    persist_subtitle_offset(&ps, 2_400);
+    plx_base::storage_worker::drain_for_test();
+    let stored = session::peek().prefs.subtitle_offsets.clone();
+    assert_eq!(stored.len(), 1, "{stored:?}");
+    assert_eq!(stored[0].account, OWNER_7, "reseeded under the owner stamp, the pick lands under it");
+    tidy();
+}

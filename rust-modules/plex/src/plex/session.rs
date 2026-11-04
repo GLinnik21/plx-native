@@ -75,8 +75,10 @@ static CURRENT: Mutex<Option<std::sync::Arc<CurrentProfile>>> = Mutex::new(None)
 pub struct CurrentProfile {
     pub user: Option<UserRef>,
     pub generation: u32,
-    /// `grant::account_key` of the account token the owner published this profile under: the half of
-    /// the [`Seat`] that says WHICH sign-in the profile belongs to. Empty before a sign-in and in a
+    /// [`account_stamp`] of the persisted session the owner published this profile under: the half of
+    /// the [`Seat`] that says WHICH account the profile belongs to. It follows the OWNER (the roster
+    /// admin) once the roster names one, so a new sign-in by the same person publishes the same stamp,
+    /// and is the token fingerprint while the owner is unknown. Empty before a sign-in and in a
     /// publication recorded before the field existed.
     pub stamp: String,
 }
@@ -98,8 +100,11 @@ impl CurrentProfile {
 ///   change-profile, a sign-out, a dev token and a controlled replay. Nothing is restored for it and
 ///   nothing may be written for it.
 /// * [`Seat::Seated`] names the Plex Home user's `uuid` (`""` for the account owner) and the
-///   account stamp. Two seats are the same seat only when both match, so a re-login as the same
-///   person with a different token is a new seat.
+///   account stamp ([`account_stamp`]). Two seats are the same seat only when both match. The stamp
+///   follows the OWNER, so a re-login as the same person with a different token is the SAME seat
+///   (nothing is restored again, a pick in flight lands), while another owner's sign-in is a new
+///   one; while the roster has not named the owner yet the stamp is the token's, and the owner
+///   republishes the seat when the roster lands.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub enum Seat {
     #[default]
@@ -183,7 +188,7 @@ impl ProfilePublisher {
         }
     }
     /// Publish `user` as the active profile under the owner's `generation` and the account `stamp`
-    /// (`grant::account_key` of the account token) the owner published it under.
+    /// ([`account_stamp`] of the persisted session) the owner published it under.
     pub fn publish(&mut self, user: Option<UserRef>, generation: u32, stamp: String) {
         #[cfg(any(test, feature = "test-support"))]
         self.publish_with(user, generation, stamp, |_, _| {});
@@ -474,17 +479,19 @@ impl TempSession {
     }
 
     /// **Sign the fixture in and seat `uuid`**: store `account_token` in the scratch record, then
-    /// publish the profile with the stamp of that token, so [`current_seat`] is
+    /// publish the profile with the stamp of that session ([`account_stamp`]: the token's fingerprint
+    /// while the fixture has no roster), so [`current_seat`] is
     /// [`Seat::Seated`] and a per-profile write has somewhere to land. [`TempSession::watching`]
     /// publishes no stamp (an unstamped publication seats nobody), which is what every test that
     /// does not care about a seat wants. Returns the stamp.
     pub fn seated(&self, uuid: &str, account_token: &str) -> String {
+        let mut stamp = String::new();
         assert!(update(|cur| {
             let mut next = cur.clone();
             next.account_token = account_token.into();
+            stamp = account_stamp(&next);
             Some(next)
         }), "the fixture session takes the account token");
-        let stamp = super::grant::account_key(account_token);
         publish_seat_for_test(Some(UserRef { uuid: uuid.into(), ..Default::default() }),
             current_gen().wrapping_add(1), stamp.clone());
         stamp
@@ -2876,7 +2883,7 @@ impl Session {
     /// other profile's alone — [`Session::set_view_for`]'s reason. A profile whose last entry is
     /// forgotten loses its record entirely, so the list never carries empties. The in-memory
     /// half of the memory door's `upsert_with` ([`prefs::ProfileMemory`]), stamping the record with
-    /// this session's own account (`grant::account_key`; none without an account token).
+    /// this session's own account stamp ([`account_stamp`]; none without an account token).
     pub fn set_subtitle_offset_for(&mut self, user: &str, machine_id: &str, rating_key: &str, offset_ms: Option<i64>) {
         let entry = offset_ms.map(|offset_ms| SubtitleOffsetEntry {
             machine_id: machine_id.to_string(),
@@ -2885,7 +2892,7 @@ impl Session {
             extensions: Default::default(),
         });
         let key = (machine_id.to_string(), rating_key.to_string());
-        let account = super::grant::account_key(&self.account_token);
+        let account = account_stamp(self);
         self.prefs.subtitle_offsets.upsert_with(user, &account, &key, |_| entry);
     }
 }
@@ -2894,7 +2901,8 @@ impl Session {
 /// with no Home selection AND for "no profile published yet" (the boot picker, a sign-out), which
 /// this cannot tell apart from the owner. It does not say whether anyone is SEATED either: a profile
 /// published without a sign-in stamp (a dev token) has a key here and seats nobody. Who is seated,
-/// as a comparable value that also names the sign-in, is [`current_seat`] / [`Seat`]; the ten
+/// as a comparable value that also names the account (the owner's stamp, not the sign-in's
+/// token), is [`current_seat`] / [`Seat`]; the ten
 /// per-profile settings (the player's nine and trailer autoplay) key on that, never on this. One accessor, so the reader and the
 /// writer cannot key on different things — which would look exactly like the leak this scoping
 /// exists to prevent.
@@ -3844,14 +3852,14 @@ enum ReadState {
 fn read_locked(canonical: persistence::CanonicalRead) -> ReadState {
     match canonical {
         persistence::CanonicalRead::Opened { session, .. } => ReadState::Ready {
-            session: std::sync::Arc::new(session),
+            session: std::sync::Arc::new(session.adopt_stamps()),
             plaintext: false,
             retry_canonical: false,
         },
         persistence::CanonicalRead::Data { payload, .. } => {
             match serde_json::from_str::<Session>(&payload) {
                 Ok(session) => ReadState::Ready {
-                    session: std::sync::Arc::new(session),
+                    session: std::sync::Arc::new(session.adopt_stamps()),
                     plaintext: true,
                     retry_canonical: false,
                 },
@@ -3983,7 +3991,7 @@ fn read_legacy_filtered_locked(fallback_only: bool) -> ReadState {
                 };
                 return serde_json::from_slice::<Session>(&plain)
                     .map(|session| ReadState::Ready {
-                        session: std::sync::Arc::new(session),
+                        session: std::sync::Arc::new(session.adopt_stamps()),
                         plaintext: false,
                         retry_canonical: marked,
                     })
@@ -3996,7 +4004,7 @@ fn read_legacy_filtered_locked(fallback_only: bool) -> ReadState {
         }
         if let Ok(session) = serde_json::from_value::<Session>(value) {
             return ReadState::Ready {
-                session: std::sync::Arc::new(session),
+                session: std::sync::Arc::new(session.adopt_stamps()),
                 plaintext: true,
                 retry_canonical: marked,
             };
@@ -4409,6 +4417,12 @@ pub fn replace_after_reauthentication_guarded_with_outcome(
     // never the token: a fresh QR sign-in always mints a new plex.tv token, so the same person
     // signing in again differs by token and must keep their pins, searches and library memory.
     // Unknown on either side (a roster not yet fetched, or one without a nameable admin) clears.
+    //
+    // The three STAMPED lists (`profile_prefs`, `track_memory`, `subtitle_offsets`) need none of this:
+    // their stamp is the owner's (`account_stamp`), so the same person keeps them across the new
+    // token, a different owner's read as nothing, and that owner's first write prunes them. `cur`
+    // is the adopted read (`read_live_locked`), so the older build's token-stamped records are the
+    // owner's by now, BEFORE the credentials below are swapped.
     if !cur.account_token.is_empty() && !same_owner(&cur.home_users, &next.home_users) {
         next.prefs.last_library.clear();
         next.prefs.library_views.clear();
@@ -4424,15 +4438,29 @@ pub fn replace_after_reauthentication_guarded_with_outcome(
 /// carries no id. `None` when the roster is empty ("unknown", not "nobody"), has no admin, or the
 /// admin names neither. A token is NOT an identity: every sign-in mints a new one.
 pub fn owner_identity(roster: &[HomeUserRef]) -> Option<String> {
-    let admin = roster.iter().find(|u| u.admin)?;
-    if admin.id != 0 { Some(format!("id:{}", admin.id)) }
-    else if !admin.uuid.is_empty() { Some(format!("uuid:{}", admin.uuid)) }
-    else { None }
+    owner_identities(roster).into_iter().next()
+}
+
+/// Every spelling of the roster admin's identity, primary first: `id:N` when the admin carries a
+/// plex.tv id, then `uuid:U` when it carries a uuid. The id is the account's identity proper; the
+/// uuid is the only name a roster written before ids existed has, and the same admin can appear
+/// under the second spelling and later under both. [`owner_identity`] is the first of them.
+/// Empty exactly when [`owner_identity`] is `None`.
+pub fn owner_identities(roster: &[HomeUserRef]) -> Vec<String> {
+    let Some(admin) = roster.iter().find(|u| u.admin) else { return Vec::new() };
+    let mut names = Vec::new();
+    if admin.id != 0 { names.push(format!("id:{}", admin.id)); }
+    if !admin.uuid.is_empty() { names.push(format!("uuid:{}", admin.uuid)); }
+    names
 }
 
 /// Do two rosters name the SAME account? Fails safe: an identity either side cannot name is "no".
+/// Compared by EVERY spelling of the admin ([`owner_identities`]): the same admin named by uuid in a
+/// roster written before ids existed and by id (and uuid) in a later one is the same account, which
+/// is also how the owner stamp treats it (the aliases are adopted into one stamp).
 pub fn same_owner(a: &[HomeUserRef], b: &[HomeUserRef]) -> bool {
-    matches!((owner_identity(a), owner_identity(b)), (Some(x), Some(y)) if x == y)
+    let (a, b) = (owner_identities(a), owner_identities(b));
+    a.iter().any(|name| b.contains(name))
 }
 
 /// What the routine-authority write actually did — the canonical verdict beside the
@@ -4487,6 +4515,18 @@ fn save_locked_with_authority(
     s: &Session,
     authority: SaveAuthority,
 ) -> async_persistence::LiveWrite {
+    // This write may be the one that makes the owner known (a roster landing, a sign-in's discovery
+    // save): adopt the older stamps first, so that what it persists AND installs in the cache is
+    // already under the owner stamp. A restore that a republication triggers right after reads the
+    // cache, and an edit made over an adopted read would otherwise hand it records still stamped
+    // with the token. Nothing changes unless something is pending, and no copy is made then.
+    let adopted;
+    let s = if s.adoption_pending() {
+        adopted = s.clone().adopt_stamps();
+        &adopted
+    } else {
+        s
+    };
     // A sign-out can revoke the cache while disk I/O is in flight. Even a durable write must
     // not overwrite that newer local decision when it returns; its owner still gets the receipt.
     let cache_generation = CACHE_GENERATION.load(std::sync::atomic::Ordering::Relaxed);
@@ -5693,6 +5733,10 @@ pub mod prefs;
 mod prefs_tests;
 #[cfg(test)]
 mod memory_tests;
+mod stamp;
+pub use stamp::{account_stamp, is_owner_stamp};
+#[cfg(test)]
+mod stamp_tests;
 
 #[cfg(test)]
 mod v0;

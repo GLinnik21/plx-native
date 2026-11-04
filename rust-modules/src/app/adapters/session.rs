@@ -1463,6 +1463,57 @@ mod tests {
         assert_eq!(plx_plex::plex::session::load().account_token, "old");
     }
 
+    /// **#830, S-13b: what a republication's restore reads.** The owner republishes the seat when a
+    /// roster landing moves the stamp, and the restore that publication triggers reads the session
+    /// cache. With the credential write parked behind the session lock the cache still holds the
+    /// OLD pair (no roster, records under the token's fingerprint) and no completion exists, so a
+    /// publication before the write lands would restore from it; once the write has run, the
+    /// cache holds the NEW pair and the records under the stamp that pair names.
+    #[test]
+    fn a_roster_commit_is_in_the_cache_with_its_records_adopted_by_the_time_its_completion_exists() {
+        use plx_plex::plex::session::{self, HomeUserRef, ProfilePrefs, ProfilePrefsRecord, SubtitleSize};
+        const OWNER_7: &str = "o1:19afc47bcea99412";
+        let _serial = plx_base::testlock::serial();
+        let _session = session::TempSession::new("seat-restore-reads-the-written-pair");
+        let legacy = plx_plex::plex::grant::account_key("tok");
+        let mut disk = session::Session { client_id: "install".into(), account_token: "tok".into(), ..Default::default() };
+        disk.prefs.profile_prefs = vec![ProfilePrefsRecord { user: "kid".into(), account: legacy.clone(),
+            prefs: ProfilePrefs { subtitle_size: Some(SubtitleSize::Large), ..Default::default() } }];
+        session::save(&disk);
+        assert_eq!(session::peek().account_token, "tok", "setup: the cache holds the roster-less pair");
+
+        let mut next = disk.clone();
+        next.home_users = vec![HomeUserRef { id: 7, uuid: "synthetic-owner-7".into(), admin: true, ..Default::default() }];
+        let plan = CommitPlan { registry_client_id: disk.client_id.clone(),
+            expected_disk: plx_session::auth::owner::Identity::of(&disk),
+            credentials: Some(plx_session::auth::owner::CredentialPatch::of(&next)),
+            lifecycle: None, registry: Vec::new(), writes_durable: true,
+            purpose: plx_plex::plex::session::async_persistence::PersistencePurpose::Seat,
+            authority: plx_plex::plex::session::SaveAuthority::Routine };
+        let mt = unsafe { plx_base::task::MainThread::assume() };
+        let mut adapter = SessionAdapter::live_resources_for_test(&mt, false);
+        enqueue_test_commit(&mut adapter, plan);
+        let (started, entered) = std::sync::mpsc::channel();
+        *CREDENTIAL_IO_STARTED.lock().unwrap() = Some(started);
+        session::with_io_for_test(|| {
+            adapter.submit_commit();
+            entered.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+            assert!(adapter.take_committed().is_none(), "the worker is parked: there is no completion to deliver");
+            let parked = session::peek();
+            assert_eq!(session::account_stamp(&parked), legacy, "and the cache still holds the old pair");
+            assert_eq!(parked.prefs.profile_prefs[0].account, legacy);
+        });
+        plx_base::storage_worker::drain_for_test();
+        let completed = adapter.take_committed().expect("released: the write ran");
+        assert!(matches!(completed.disk, Ok(Some(_))), "and landed");
+
+        let landed = session::peek();
+        let stamp = session::account_stamp(&landed);
+        assert_eq!(stamp, OWNER_7, "the cache holds the new pair, which names the owner");
+        assert_eq!(session::own_prefs(&landed.prefs.profile_prefs, "kid", &stamp).and_then(|p| p.subtitle_size),
+            Some(SubtitleSize::Large), "and the record written in the owner-unknown window reads under that stamp");
+    }
+
     #[test]
     fn a_refused_erase_keeps_later_credentials_out_of_the_worker_queue() {
         let _serial = plx_base::testlock::serial();

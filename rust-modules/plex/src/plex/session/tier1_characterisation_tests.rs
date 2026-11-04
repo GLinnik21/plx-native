@@ -593,8 +593,9 @@ fn tier1_negative_control_a_new_public_slot_or_state_field_fails_decode() {
 #[test]
 fn tier1_real_shape_stamped_offsets_are_read_by_the_old_build_and_the_codec() {
     let original = rich();
-    let stamp = crate::plex::grant::account_key("tier1-account");
-    assert!(!stamp.is_empty());
+    // `rich()` names its Home's admin, so the record carries the OWNER stamp (#830), not the token's.
+    let stamp = crate::plex::session::account_stamp(&original);
+    assert!(stamp.starts_with("o1:"), "{stamp}");
     let (public, auth) = split_canonical(&original).unwrap();
     assert_eq!(public.preferences["subtitle_offsets"][0]["account"], serde_json::json!(stamp),
         "the real record is stamped with its own account");
@@ -642,8 +643,11 @@ fn relogin_without_clear_keeps_library_views() {
         persistence::CanonicalCommit::Durable { .. }));
     let before = stored_public(&mut transport);
 
+    // A different ACCOUNT logs in over it: another token and another Home admin (the same admin
+    // under a new token keeps the records, which is the point of the owner stamp).
     let mut second = first.clone();
     second.account_token = "tier1-account-2".into();
+    second.home_users = vec![HomeUserRef { uuid: "u-8".into(), title: "Other".into(), admin: true, ..Default::default() }];
     assert!(matches!(
         persistence::commit_session_with(&second, false, SaveAuthority::FreshReauthentication, 4, &mut transport),
         persistence::CanonicalCommit::Durable { .. }));
@@ -655,9 +659,9 @@ fn relogin_without_clear_keeps_library_views() {
     }
     let offsets: Vec<SubtitleOffsets> = serde_json::from_value(after.preferences["subtitle_offsets"].clone()).unwrap();
     let key = (MACHINE.to_string(), "rk-1".to_string());
-    assert_eq!(offsets.get("u-7", &crate::plex::grant::account_key("tier1-account"), &key).map(|e| e.offset_ms), Some(1_500),
+    assert_eq!(offsets.get("u-7", &crate::plex::session::account_stamp(&first), &key).map(|e| e.offset_ms), Some(1_500),
         "the previous account's record is still in the file, under its own stamp");
-    assert!(offsets.get("u-7", &crate::plex::grant::account_key("tier1-account-2"), &key).is_none(),
+    assert!(offsets.get("u-7", &crate::plex::session::account_stamp(&second), &key).is_none(),
         "and reads as nothing to the account that logged in over it");
 
     // The new account's first writes: the view it inherited is still there beside its own, and the
@@ -675,7 +679,7 @@ fn relogin_without_clear_keeps_library_views() {
     assert_eq!(views[0]["sort"], serde_json::json!("addedAt"), "the previous account's view is still there");
     let offsets: Vec<SubtitleOffsets> = serde_json::from_value(written.preferences["subtitle_offsets"].clone()).unwrap();
     assert_eq!(offsets.len(), 1, "the previous account's offsets are pruned: {offsets:?}");
-    assert_eq!(offsets[0].account, crate::plex::grant::account_key("tier1-account-2"));
+    assert_eq!(offsets[0].account, crate::plex::session::account_stamp(&second));
     assert_eq!(offsets[0].items.len(), 1);
     assert_eq!(offsets[0].items[0].rating_key, "rk-2");
 }
