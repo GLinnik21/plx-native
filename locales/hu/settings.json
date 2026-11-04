@@ -369,5 +369,11 @@
   "settings.hud.up_next": "Következő epizód",
   "settings.hud.unavailable": "Ez a HUD már nem érhető el a katalógusban.",
   "settings.hud.catalog_cached": "A HUD-ok nem frissíthetők. A mentett katalógus látható.",
-  "settings.hud.catalog_unavailable": "A HUD-ok nem tölthetők be. Próbálja újra később."
+  "settings.hud.catalog_unavailable": "A HUD-ok nem tölthetők be. Próbálja újra később.",
+  "settings.playback.intro_skip": "Bevezetők átugrása",
+  "settings.playback.credits_skip": "Stáblista átugrása",
+  "settings.playback.marker.manual": "Kézi",
+  "settings.playback.marker.automatic": "Automatikus",
+  "settings.playback.intro_skip.copy": "Kikapcsolva elrejti az átugrás gombját. Kézi módban felajánlja az átugrást. Automatikus módban öt másodperc után átugrik, ha nem választod a bevezető megtekintését. A beállítás ehhez a profilhoz tartozik.",
+  "settings.playback.credits_skip.copy": "Kikapcsolva elrejti a stáblista átugrását. Kézi módban megmaradnak a jelenlegi vezérlők. Automatikus módban öt másodperc után átugrik, ha nem választod a stáblista megtekintését. A következő rész és a visszaszámlálása külön állítható."
 }

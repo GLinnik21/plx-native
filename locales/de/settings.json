@@ -369,5 +369,11 @@
   "settings.hud.up_next": "Nächste Folge",
   "settings.hud.unavailable": "Dieses HUD ist nicht mehr im Katalog verfügbar.",
   "settings.hud.catalog_cached": "HUDs konnten nicht aktualisiert werden. Der gespeicherte Katalog wird angezeigt.",
-  "settings.hud.catalog_unavailable": "HUDs konnten nicht geladen werden. Bitte später erneut versuchen."
+  "settings.hud.catalog_unavailable": "HUDs konnten nicht geladen werden. Bitte später erneut versuchen.",
+  "settings.playback.intro_skip": "Vorspann überspringen",
+  "settings.playback.credits_skip": "Abspann überspringen",
+  "settings.playback.marker.manual": "Manuell",
+  "settings.playback.marker.automatic": "Automatisch",
+  "settings.playback.intro_skip.copy": "Deaktiviert blendet die Schaltfläche aus. Manuell bietet das Überspringen an. Automatisch überspringt nach fünf Sekunden, sofern du nicht „Vorspann ansehen“ wählst. Wird für dieses Profil gespeichert.",
+  "settings.playback.credits_skip.copy": "Deaktiviert blendet „Abspann überspringen“ aus. Manuell behält die bisherigen Steuerelemente bei. Automatisch überspringt nach fünf Sekunden, sofern du nicht „Abspann ansehen“ wählst. Die nächste Folge und ihr Countdown werden separat eingestellt."
 }

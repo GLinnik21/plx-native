@@ -250,5 +250,6 @@
   "widgets.region.nl": "Hollandia",
   "widgets.region.latin_america": "Latin-Amerika",
   "widgets.failure.play_auto": "Automatikusra váltás és lejátszás",
-  "widgets.failure.change_quality": "Minőség módosítása"
+  "widgets.failure.change_quality": "Minőség módosítása",
+  "widgets.watch.intro": "Bevezető megtekintése"
 }

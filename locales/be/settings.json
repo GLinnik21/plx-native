@@ -375,5 +375,11 @@
   "settings.hud.up_next": "Наступная серыя",
   "settings.hud.unavailable": "Гэты HUD больш не даступны ў каталогу.",
   "settings.hud.catalog_cached": "Не ўдалося абнавіць HUD. Паказаны захаваны каталог.",
-  "settings.hud.catalog_unavailable": "Не ўдалося загрузіць HUD. Паспрабуйце пазней."
+  "settings.hud.catalog_unavailable": "Не ўдалося загрузіць HUD. Паспрабуйце пазней.",
+  "settings.playback.intro_skip": "Прапускаць уступы",
+  "settings.playback.credits_skip": "Прапускаць тытры",
+  "settings.playback.marker.manual": "Уручную",
+  "settings.playback.marker.automatic": "Аўтаматычна",
+  "settings.playback.intro_skip.copy": "Выключана хавае кнопку пропуску. Уручную прапануе прапусціць уступ. Аўтаматычна прапускае праз пяць секунд, калі не выбраць «Глядзець уступ». Захоўваецца для гэтага профілю.",
+  "settings.playback.credits_skip.copy": "Выключана хавае кнопку пропуску тытраў. Уручную захоўвае цяперашнія элементы кіравання. Аўтаматычна прапускае праз пяць секунд, калі не выбраць «Глядзець тытры». Наступны эпізод і яго адлік наладжваюцца асобна."
 }

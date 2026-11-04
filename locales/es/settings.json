@@ -372,5 +372,11 @@
   "settings.hud.up_next": "Siguiente episodio",
   "settings.hud.unavailable": "Este HUD ya no está disponible en el catálogo.",
   "settings.hud.catalog_cached": "No se pudo actualizar el catálogo. Se muestra la copia guardada.",
-  "settings.hud.catalog_unavailable": "No se pudieron cargar los HUD. Inténtalo más tarde."
+  "settings.hud.catalog_unavailable": "No se pudieron cargar los HUD. Inténtalo más tarde.",
+  "settings.playback.intro_skip": "Saltar introducciones",
+  "settings.playback.credits_skip": "Saltar créditos",
+  "settings.playback.marker.manual": "Manual",
+  "settings.playback.marker.automatic": "Automático",
+  "settings.playback.intro_skip.copy": "Desactivado oculta el botón. Manual permite saltar la introducción. Automático la salta tras cinco segundos, salvo que elijas Ver introducción. Se guarda para este perfil.",
+  "settings.playback.credits_skip.copy": "Desactivado oculta Saltar créditos. Manual conserva los controles actuales. Automático salta tras cinco segundos, salvo que elijas Ver créditos. El siguiente episodio y su cuenta atrás se configuran por separado."
 }

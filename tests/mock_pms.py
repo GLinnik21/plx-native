@@ -2791,6 +2791,9 @@ class MockPms:
         # #266: myPlexSubscription on `/`/`/identity`; `serve(plex_pass=False)` or
         # `POST /_mock/config {"plex_pass": false}` flips it live.
         self.plex_pass = True
+        # Viewer capabilities are independent of the connected server owner's subscription.
+        self.viewer_intro_skip = True
+        self.viewer_credits_skip = True
         # #266: `/decision` behaviour for a live boostDialog/normalizeLoudness param — both
         # runtime-togglable through `POST /_mock/config`, so one test case can resolve once and
         # only then start refusing/ignoring.
@@ -3080,7 +3083,7 @@ class MockPms:
                 return j({"error": "invalid JSON body"}, 400)
             if not isinstance(patch, dict):
                 return j({"error": "body must be a JSON object"}, 400)
-            allowed = {"refuse_enhancements", "ignore_enhancements", "refuse_conversions", "plex_pass"}
+            allowed = {"refuse_enhancements", "ignore_enhancements", "refuse_conversions", "plex_pass", "viewer_intro_skip", "viewer_credits_skip"}
             unknown = set(patch) - allowed
             if unknown:
                 return j({"error": f"unknown config key(s): {sorted(unknown)}"}, 400)
@@ -3145,6 +3148,11 @@ class MockPms:
         if p == f"/api/v2/pins/qr/{DEMO_PIN_CODE}":
             import demo_library.qr as qr
             return (200, "image/png", qr.png(qr.encode(DEMO_QR_TEXT, "M"), scale=8, border=0, plex_style=True))
+        if p == "/api/v2/features":
+            with self.lock:
+                return j([{"id": name, "uuid": "mock-feature-" + name}
+                          for name, enabled in (("intro-markers", self.viewer_intro_skip),
+                                                ("credits-markers", self.viewer_credits_skip)) if enabled])
         if p == "/api/v2/user":
             with self.lock:
                 profile = dict(self.user_profile)

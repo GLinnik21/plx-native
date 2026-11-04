@@ -147,7 +147,7 @@ impl HudGeometry {
 /// **The compiled state the transport is in this frame**, with the Skip pill's kind: the compile's
 /// [`Compiled::lookup`] over the frame's open sections, slot and content. `open` is the bits of the sections
 /// that are open (`StateKey::open`; `0` is the compact state). The state returned is the BASE state;
-/// [`CompiledState::skip_variant`] picks the credits layout of a Skip state, and [`CompiledState::geometry`]
+/// [`CompiledState::skip_variant`] picks the displayed Skip/Watch layout, and [`CompiledState::geometry`]
 /// does so itself from the kind.
 ///
 /// **A stand-in waits behind an open section** (D7): the compile has no Skip or Up Next state with a section
@@ -166,10 +166,10 @@ pub fn frame_state_content(compiled: &Compiled, open: u8, slot: ControlSlot, cha
     let (kind, skip) = match slot {
         _ if open != 0 => (Slot::Discs, SkipKind::Intro),
         ControlSlot::Discs(_) => (Slot::Discs, SkipKind::Intro),
-        ControlSlot::UpNext(_) => (Slot::UpNext, SkipKind::Intro),
+        ControlSlot::UpNext(_) | ControlSlot::AutomaticUpNext(_) => (Slot::UpNext, SkipKind::Intro),
         ControlSlot::Skip(pr) => (
             Slot::Skip,
-            if pr.kind == plx_data::metadata::MarkerKind::Credits { SkipKind::Credits } else { SkipKind::Intro },
+            SkipKind::for_prompt(pr),
         ),
     };
     let episode = matches!(slot, ControlSlot::Discs(c) if c.pair());

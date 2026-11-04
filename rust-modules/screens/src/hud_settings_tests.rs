@@ -11,7 +11,7 @@ use plx_ui::fixture::FixtureMeasure;
 fn context(focus: u32) -> Cx<'static, InnerHost> {
     static MEASURE: FixtureMeasure = FixtureMeasure;
     Cx {
-        views: plx_data::stores::browse::DirectoryView::empty_for_test(),
+        views: plx_data::stores::browse::DirectoryView::empty_for_test().into(),
         tick: Tick::default(),
         measure: &MEASURE,
         press: PressRead::default(),

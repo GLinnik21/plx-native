@@ -369,5 +369,11 @@
   "settings.hud.up_next": "Volgende aflevering",
   "settings.hud.unavailable": "Deze HUD is niet meer beschikbaar in de catalogus.",
   "settings.hud.catalog_cached": "HUD’s konden niet worden vernieuwd. De opgeslagen catalogus wordt getoond.",
-  "settings.hud.catalog_unavailable": "HUD’s konden niet worden geladen. Probeer het later opnieuw."
+  "settings.hud.catalog_unavailable": "HUD’s konden niet worden geladen. Probeer het later opnieuw.",
+  "settings.playback.intro_skip": "Intro’s overslaan",
+  "settings.playback.credits_skip": "Aftiteling overslaan",
+  "settings.playback.marker.manual": "Handmatig",
+  "settings.playback.marker.automatic": "Automatisch",
+  "settings.playback.intro_skip.copy": "Uitgeschakeld verbergt de knop. Handmatig biedt aan de intro over te slaan. Automatisch slaat na vijf seconden over, tenzij je Intro bekijken kiest. Wordt voor dit profiel opgeslagen.",
+  "settings.playback.credits_skip.copy": "Uitgeschakeld verbergt Aftiteling overslaan. Handmatig behoudt de huidige knoppen. Automatisch slaat na vijf seconden over, tenzij je Aftiteling bekijken kiest. De volgende aflevering en de aftelling worden apart ingesteld."
 }

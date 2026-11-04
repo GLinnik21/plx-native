@@ -372,5 +372,11 @@
   "settings.hud.up_next": "Épisode suivant",
   "settings.hud.unavailable": "Ce HUD n’est plus disponible dans le catalogue.",
   "settings.hud.catalog_cached": "Impossible d’actualiser les HUD. Le catalogue enregistré est affiché.",
-  "settings.hud.catalog_unavailable": "Impossible de charger les HUD. Réessayez plus tard."
+  "settings.hud.catalog_unavailable": "Impossible de charger les HUD. Réessayez plus tard.",
+  "settings.playback.intro_skip": "Passer les génériques de début",
+  "settings.playback.credits_skip": "Passer les génériques de fin",
+  "settings.playback.marker.manual": "Manuel",
+  "settings.playback.marker.automatic": "Automatique",
+  "settings.playback.intro_skip.copy": "Désactivé masque le bouton. Manuel propose de passer le générique. Automatique le passe après cinq secondes, sauf si vous choisissez de le regarder. Ce réglage est enregistré pour ce profil.",
+  "settings.playback.credits_skip.copy": "Désactivé masque le bouton de saut. Manuel conserve les commandes actuelles. Automatique passe après cinq secondes, sauf si vous choisissez de regarder le générique. L’épisode suivant et son compte à rebours se règlent séparément."
 }

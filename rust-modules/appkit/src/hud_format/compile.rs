@@ -46,8 +46,8 @@
 //! **Stand-ins.** Up Next and Skip replace the segments `up_next.replaces` names. Those segments keep
 //! their place in the layout (the others stay where they are) but draw and focus nothing; the stand-in
 //! lands on the union of their Discs-slot rects, at the edge `up_next.align` names, so the transport
-//! never jumps when a segment begins. Skip has TWO labels and so two widths: the state carries both
-//! rects ([`SkipKind`]).
+//! never jumps when a segment begins. Skip and Watch each have Intro/Credits labels: the state
+//! carries their rects and shares equal layouts ([`SkipKind`]).
 //!
 //! **Cost** ([`Cost`]) is REPORTED per state; the compile enforces nothing. The ceilings are the television's
 //! measured maxima per state class (`lint_cost`, I12), and the lint holds each state to them. Its terms: draw
@@ -102,6 +102,7 @@ pub struct AppLabels {
     pub watch_credits: String,
     /// the Skip pill over an intro
     pub skip_intro: String,
+    pub watch_intro: String,
     /// the Skip pill over credits
     pub skip_credits: String,
     /// the Info card's From the Beginning button
@@ -127,6 +128,7 @@ impl AppLabels {
             next_seconds: (0..=crate::up_next::COUNTDOWN_MS / 1000).map(|s| msg::player_up_next_seconds_left_in(cx, i64::from(s))).collect(),
             watch_credits: msg::widgets_next_credits_in(cx).to_owned(),
             skip_intro: msg::widgets_skip_intro_in(cx).to_owned(),
+            watch_intro: msg::widgets_watch_intro_in(cx).to_owned(),
             skip_credits: msg::widgets_skip_credits_in(cx).to_owned(),
             from_beginning: msg::widgets_info_from_beginning_in(cx).to_owned(),
             go_to_show: msg::widgets_info_go_show_in(cx).to_owned(),
@@ -208,11 +210,24 @@ pub struct StateKey {
     pub paused: bool,
 }
 
-/// Which Skip pill: the two labels have two widths.
+/// Which localized Skip or Watch face occupies the marker pill.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SkipKind {
     Intro,
     Credits,
+    WatchIntro,
+    WatchCredits,
+}
+impl SkipKind {
+    pub const ALL: [Self; 4] = [Self::Intro, Self::Credits, Self::WatchIntro, Self::WatchCredits];
+    pub fn for_prompt(prompt: crate::skip_pill::Prompt) -> Self {
+        match (prompt.kind, prompt.automatic) {
+            (plx_data::metadata::MarkerKind::Intro, false) => Self::Intro,
+            (plx_data::metadata::MarkerKind::Credits, false) => Self::Credits,
+            (plx_data::metadata::MarkerKind::Intro, true) => Self::WatchIntro,
+            (plx_data::metadata::MarkerKind::Credits, true) => Self::WatchCredits,
+        }
+    }
 }
 
 /// A control's widget (`docs/hud-plugins.md`, "Control item").
@@ -389,7 +404,7 @@ pub struct Standin {
     pub anchor: RowAnchor,
     pub up_next: Option<UpNextRects>,
     /// The Skip pill per [`SkipKind`] (index `SkipKind as usize`).
-    pub skip: Option<[Rect; 2]>,
+    pub skip: Option<[Rect; 4]>,
 }
 
 /// One thing to draw, in draw order. Coordinates are the logical 1920 x 1080 canvas.
@@ -450,8 +465,8 @@ pub enum DrawOp {
     Control(ControlRect),
     /// The Up Next offer (slot UpNext only); its inside is app-drawn.
     UpNext { rects: UpNextRects, credits_rest: Rest, next_rest: Rest, credits_focus: Focus, next_focus: Focus, countdown: crate::up_next::CountdownFace },
-    /// The Skip pill (slot Skip only), at both widths.
-    SkipPill { rects: [Rect; 2] },
+    /// The marker pill (slot Skip only), at each Skip/Watch face width.
+    SkipPill { rects: [Rect; 4] },
 }
 
 /// One op of a strip card's template and whether THIS card draws it: the card's `item.*` conditions
@@ -584,9 +599,8 @@ pub struct CompiledState {
     pub spans: Vec<Span>,
     /// The package's caption band ([`Compiled::band`]): the same in every state.
     pub band: HudBand,
-    /// A Skip state only, and only when the credits pill changes anything: the whole state as laid out
-    /// when the pill is the CREDITS one (see [`CompiledState::skip_variant`]).
-    pub skip_alt: Option<Box<CompiledState>>,
+    /// Distinct marker-face layouts beside Intro. Equal pill rects share one compiled layout.
+    pub skip_alt: Vec<(SkipKind, CompiledState)>,
     /// `origins[i]` is the pointer of the node that produced `ops[i]` ([`CompiledState::origin`])
     origins: Vec<String>,
     /// `control_origins[i]` is the pointer of the item that produced `controls[i]`
@@ -621,15 +635,16 @@ impl CompiledState {
         parts
     }
 
-    /// The state as it draws under `skip`: the Skip pill's two labels have two widths, and a start-aligned
-    /// fill in the pill's band (a title) stops short of the one actually shown. `self` is the
-    /// [`SkipKind::Intro`] layout and every non-Skip state's; a Skip state whose two pill rects differ (the
-    /// kind's only way into the layout) carries the credits layout in [`CompiledState::skip_alt`].
+    /// The layout for the face actually shown, including the title's exclusion around its pill.
     pub fn skip_variant(&self, skip: SkipKind) -> &CompiledState {
-        match (skip, &self.skip_alt) {
-            (SkipKind::Credits, Some(alt)) => alt,
-            _ => self,
-        }
+        let rect = self.standin.skip.map(|rects| rects[skip as usize]);
+        self.skip_alt.iter().find(|(kind, _)| self.standin.skip.map(|rects| rects[*kind as usize]) == rect)
+            .map_or(self, |(_, state)| state)
+    }
+
+    /// Every geometry-distinct face, once; non-Skip states have only the base layout.
+    pub fn skip_variants(&self) -> impl Iterator<Item = (SkipKind, &CompiledState)> {
+        std::iter::once((SkipKind::Intro, self)).chain(self.skip_alt.iter().map(|(kind, state)| (*kind, state)))
     }
 
     /// **Provenance of a draw op:** the RFC 6901 pointer, into the package, of the node that produced
@@ -808,10 +823,10 @@ impl CompiledState {
         out.into_iter()
     }
 
-    /// Set the package's one caption band on this state (and on the credits layout it carries).
+    /// Set the package's caption band on every distinct marker-face layout.
     fn set_band(&mut self, band: HudBand) {
         self.band = band;
-        if let Some(alt) = self.skip_alt.as_deref_mut() {
+        for (_, alt) in &mut self.skip_alt {
             alt.band = band;
         }
     }
@@ -2161,15 +2176,17 @@ impl<'e, 'p> Env<'e, 'p> {
         out
     }
 
-    /// This state, and for a Skip state the credits layout beside it when the longer or shorter pill
-    /// changes anything (see [`CompiledState::skip_variant`]).
+    /// Compile one layout per distinct marker-face rect, keeping Manual's historic geometry.
     fn compile_state(&self) -> CompiledState {
         let mut state = self.compile_for(SkipKind::Intro);
-        // The kind reaches the layout through ONE input: the pill's own rect, whose left edge a start-aligned
-        // fill stops at (`compile_for`). The state carries both rects, so equal rects mean the two layouts are
-        // the same and the credits one is not worked out.
-        if self.state.slot == Slot::Skip && state.standin.skip.is_some_and(|[intro, credits]| intro != credits) {
-            state.skip_alt = Some(Box::new(self.compile_for(SkipKind::Credits)));
+        if self.state.slot == Slot::Skip {
+            if let Some(rects) = state.standin.skip {
+                for (index, kind) in SkipKind::ALL.into_iter().enumerate().skip(1) {
+                    if !rects[..index].contains(&rects[index]) {
+                        state.skip_alt.push((kind, self.compile_for(kind)));
+                    }
+                }
+            }
         }
         state
     }
@@ -2294,7 +2311,7 @@ impl<'e, 'p> Env<'e, 'p> {
             cost,
             spans,
             band: HudBand::CLASSIC,
-            skip_alt: None,
+            skip_alt: Vec::new(),
             origins,
             control_origins: out.control_origins,
             groups: out
@@ -2375,8 +2392,9 @@ impl<'e, 'p> Env<'e, 'p> {
         let still = (up.get("still").and_then(Val::as_bool) == Some(true)).then_some(l.still);
         let caption = (up.get("caption").and_then(Val::as_bool) == Some(true)).then_some(l.caption);
         let up_next = UpNextRects { still, caption, credits: l.credits, next: l.next };
-        let skip = [&self.labels.skip_intro, &self.labels.skip_credits].map(|label| {
-            let w = stand_in_w(self.measure.width_str(label, theme::size::BODY, true), floor.unwrap_or(0.0));
+        let skip = [&self.labels.skip_intro, &self.labels.skip_credits, &self.labels.watch_intro, &self.labels.watch_credits].map(|label| {
+            let width = self.measure.width_str(label, theme::size::BODY, true);
+            let w = stand_in_w(width, floor.unwrap_or(0.0));
             let x = match align {
                 "start" => union.x,
                 "center" => union.x + union.w * 0.5 - w * 0.5,
@@ -2519,6 +2537,9 @@ fn weigh(op: &DrawOp) -> Contributor {
                 + if extra > 0 { area(rects.next) } else { 0 };
         }
         DrawOp::SkipPill { rects } => {
+            // Watch uses the shared fill-sweep face, as Classic's Up Next does. Price it through
+            // that face's existing cost model; the measured class ceilings remain unchanged.
+            c.draw_ops += plx_ui::widgets::ButtonProgress::FillSweep.extra_draw_ops();
             c.glyph_runs = 1;
             c.blended_px = rects.iter().map(|r| area(*r)).max().unwrap_or(0);
         }

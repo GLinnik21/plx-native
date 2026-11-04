@@ -375,5 +375,11 @@
   "settings.hud.up_next": "Następny odcinek",
   "settings.hud.unavailable": "Ten HUD nie jest już dostępny w katalogu.",
   "settings.hud.catalog_cached": "Nie można odświeżyć HUD-ów. Wyświetlany jest zapisany katalog.",
-  "settings.hud.catalog_unavailable": "Nie można wczytać HUD-ów. Spróbuj ponownie później."
+  "settings.hud.catalog_unavailable": "Nie można wczytać HUD-ów. Spróbuj ponownie później.",
+  "settings.playback.intro_skip": "Pomijanie czołówek",
+  "settings.playback.credits_skip": "Pomijanie napisów końcowych",
+  "settings.playback.marker.manual": "Ręcznie",
+  "settings.playback.marker.automatic": "Automatycznie",
+  "settings.playback.intro_skip.copy": "Wyłączone ukrywa przycisk. Ręcznie proponuje pominięcie czołówki. Automatycznie pomija ją po pięciu sekundach, chyba że wybierzesz oglądanie czołówki. Ustawienie jest zapisywane dla tego profilu.",
+  "settings.playback.credits_skip.copy": "Wyłączone ukrywa pomijanie napisów. Ręcznie zachowuje obecne przyciski. Automatycznie pomija po pięciu sekundach, chyba że wybierzesz oglądanie napisów. Następny odcinek i jego odliczanie ustawia się osobno."
 }

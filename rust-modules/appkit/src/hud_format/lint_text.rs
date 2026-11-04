@@ -120,10 +120,10 @@ pub fn metrics(measure: &dyn Measure, langs: &[super::lint::LintLang]) -> Vec<Me
     for lang in langs {
         // Exhaustive destructuring makes a new compiler label require a corpus decision.
         let AppLabels { tab_info, tab_chapters, next_episode, next_seconds, watch_credits,
-            skip_intro, skip_credits, from_beginning, go_to_show, go_to_movie, commands } = &lang.labels;
+            skip_intro, watch_intro, skip_credits, from_beginning, go_to_show, go_to_movie, commands } = &lang.labels;
         let mut strings: Vec<(String, String)> = [
             ("label.info", tab_info), ("label.chapters", tab_chapters), ("next", next_episode),
-            ("credits", watch_credits), ("skip.intro", skip_intro), ("skip.credits", skip_credits),
+            ("credits", watch_credits), ("skip.intro", skip_intro), ("watch.intro", watch_intro), ("skip.credits", skip_credits),
             ("from_beginning", from_beginning), ("go_to_show", go_to_show), ("go_to_movie", go_to_movie),
         ].into_iter().map(|(role, text)| (role.to_owned(), text.clone())).collect();
         strings.extend(commands.iter().map(|(role, text)| (format!("command.{role}"), text.clone())));
@@ -172,9 +172,8 @@ pub(super) fn check(cx: &LangCtx<'_>, out: &mut Vec<Finding>) {
             texts: &texts,
         };
         let mut found = Vec::new();
-        scan.layout(state.state, SkipKind::Intro, &mut found);
-        if let Some(credits) = state.state.skip_alt.as_deref() {
-            scan.layout(credits, SkipKind::Credits, &mut found);
+        for (kind, layout) in state.state.skip_variants() {
+            scan.layout(layout, kind, &mut found);
         }
         out.extend(found);
     }
@@ -559,7 +558,7 @@ struct Scan<'a, 'b> {
 }
 
 impl Scan<'_, '_> {
-    /// Judge every app text of `layout` (the state, or its credits layout) and push the findings `found` does
+    /// Judge every app text of `layout` (one marker-face layout) and push the findings `found` does
     /// not hold yet.
     fn layout(&self, layout: &CompiledState, skip: SkipKind, found: &mut Vec<Finding>) {
         let obstacles = obstacles(layout, skip);
@@ -667,10 +666,11 @@ impl Scan<'_, '_> {
             measured,
             room,
         });
-        let own = if skip == SkipKind::Credits {
-            format!("{} (credits layout)", control.id)
-        } else {
-            control.id.clone()
+        let own = match skip {
+            SkipKind::Intro => control.id.clone(),
+            SkipKind::Credits => format!("{} (credits layout)", control.id),
+            SkipKind::WatchIntro => format!("{} (watch intro layout)", control.id),
+            SkipKind::WatchCredits => format!("{} (watch credits layout)", control.id),
         };
         ctx.rects.push(named(&own, control.rect));
         ctx.rects.push(named(
@@ -832,10 +832,11 @@ impl Scan<'_, '_> {
             measured,
             room: tightest,
         });
-        let own = if skip == SkipKind::Credits {
-            "text (credits layout)"
-        } else {
-            "text"
+        let own = match skip {
+            SkipKind::Intro => "text",
+            SkipKind::Credits => "text (credits layout)",
+            SkipKind::WatchIntro => "text (watch intro layout)",
+            SkipKind::WatchCredits => "text (watch credits layout)",
         };
         ctx.rects.push(named(own, op.rect));
         // the limits the text reaches, nearest first; for a margin, the one it is close to

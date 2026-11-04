@@ -372,5 +372,11 @@
   "settings.hud.up_next": "Próximo episódio",
   "settings.hud.unavailable": "Este HUD já não está disponível no catálogo.",
   "settings.hud.catalog_cached": "Não foi possível atualizar os HUDs. É mostrado o catálogo guardado.",
-  "settings.hud.catalog_unavailable": "Não foi possível carregar os HUDs. Tente novamente mais tarde."
+  "settings.hud.catalog_unavailable": "Não foi possível carregar os HUDs. Tente novamente mais tarde.",
+  "settings.playback.intro_skip": "Pular introduções",
+  "settings.playback.credits_skip": "Pular créditos",
+  "settings.playback.marker.manual": "Manual",
+  "settings.playback.marker.automatic": "Automático",
+  "settings.playback.intro_skip.copy": "Desativado oculta o botão. Manual oferece a opção de pular a introdução. Automático pula após cinco segundos, a menos que você escolha assistir à introdução. A configuração é salva para este perfil.",
+  "settings.playback.credits_skip.copy": "Desativado oculta Pular créditos. Manual mantém os controles atuais. Automático pula após cinco segundos, a menos que você escolha assistir aos créditos. O próximo episódio e sua contagem regressiva são configurados separadamente."
 }
