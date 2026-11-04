@@ -1327,7 +1327,16 @@ impl PlayerAdapter {
         let Some(offer_id) = self.uri_offer_id else { return; };
         let phase = if self.uri_played_once { crate::route::UriFailurePhase::Runtime }
             else { crate::route::UriFailurePhase::Startup };
-        let known_position_ns = super::intended_pos_known_ns(ps);
+        // A URI service clock is content-time evidence even though it cannot prove panel
+        // presentation. Once Playing was observed, the unpresented startup resume slot may be
+        // older than this clock; an absent runtime clock must stay unknown, not become that old
+        // resume point or an invented zero. A pending viewer seek is the intended target.
+        let known_position_ns = if self.uri_played_once {
+            let facts = ps.attempt_view().facts();
+            facts.seek_display_ns.or(facts.position_ns)
+        } else {
+            super::intended_pos_known_ns(ps)
+        };
         if !ps.can_retry_uri_as_feed(route_attempt, offer_id, phase, known_position_ns) { return; }
         let Some(viewer_paused) = viewer_paused else {
             return;
