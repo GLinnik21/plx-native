@@ -277,6 +277,78 @@ mod uri_boot_tests {
 
     #[cfg(feature = "play-feed")]
     #[test]
+    fn failed_playing_uri_recovers_its_known_clock_pause_and_selected_source() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else { return };
+        plx_plex::plex::client_for(rig.sid).unwrap()
+            .set_link(plx_plex::plex::probe::Location::Local);
+        let bus: &'static Bus = Box::leak(Box::new(Bus::new()));
+        let display: &'static Display = Box::leak(Box::new(Display));
+        let caps = Capabilities { progressive_uri: true, hls_uri: false,
+            packet_feed: false, pause: true, seek: true, audio_track: true,
+            subtitle_track: true, audio_off: false, subtitle_off: false };
+        let port = ResolvePort::new(ProductEvidence { display_exported: true,
+            binding: Binding::Exported { canvas: (1920, 1080) },
+            callable: caps, certified: caps, preview_rectangle: false },
+            Arc::new(QualifiedOriginal));
+        assert!(rig.app.adapters.player.install_uri_product_with_ports(
+            &mut rig.app.player.session, port, bus, display));
+        rig.request();
+        let request = rig.app.player.session.metric_request().expect("logical request");
+        rig.release.send(()).unwrap();
+        let mut resolved = None;
+        poll_until("qualified URI source did not resolve", || {
+            resolved = plx_media::route::pump_play(&mut rig.app.player.session,
+                rig.app.bridge.metadata_mut());
+            resolved.is_some()
+        });
+        assert!(rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session,
+            resolved.unwrap().uri_offer.expect("qualified source")).is_ok());
+        assert!(matches!(plx_media::player::start_playback_tracked(
+            &mut rig.app.player.session, &mut rig.app.adapters.player),
+            plx_media::player::BufferfeedStartOutcome::Launched(_)));
+        let frame = |rig: &mut Rig| {
+            let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+            unsafe { playback_tick(&mut rig.app, &mut fr); }
+        };
+        frame(&mut rig);
+        bus.say("load", r#"{"returnValue":true,"mediaId":"m1","loadCompleted":true}"#);
+        frame(&mut rig);
+        bus.say("selectTrack", r#"{"returnValue":true,"mediaId":"m1"}"#);
+        bus.say("subscribe", r#"{"mediaId":"m1","trackSelected":{"type":"audio","index":0}}"#);
+        frame(&mut rig);
+        bus.say("play", r#"{"returnValue":true,"mediaId":"m1","playing":true,"currentTime":12000}"#);
+        frame(&mut rig);
+        assert_eq!(plx_media::player::intended_pos_known_ns(&rig.app.player.session),
+            Some(12_000_000_000));
+        assert_eq!(rig.app.adapters.player.backend_transport_control(true), Some(true));
+        bus.say("pause", r#"{"returnValue":true,"mediaId":"m1","paused":true}"#);
+        frame(&mut rig);
+        let source = rig.app.player.session.source_selection();
+        bus.say("subscribe", r#"{"mediaId":"m1","error":"native playback failed","errorCode":104}"#);
+        frame(&mut rig);
+        assert_eq!(rig.app.player.session.metric_request(), Some(request));
+        assert!(!plx_media::route::play_pending());
+        bus.release();
+        frame(&mut rig);
+        assert!(plx_media::route::play_pending());
+        assert_eq!(rig.app.player.session.metric_request(), Some(request));
+        assert_eq!(rig.app.player.session.reconfigure_pause_goal(), Some(true));
+        let mut replacement = None;
+        poll_until("automatic Feed rescue did not resolve", || {
+            replacement = plx_media::route::pump_play(&mut rig.app.player.session,
+                rig.app.bridge.metadata_mut());
+            replacement.is_some()
+        });
+        let replacement = replacement.unwrap();
+        assert!(replacement.uri_offer.is_none(), "automatic rescue cannot loop back to URI");
+        assert_eq!(replacement.resume_ns, 12_000_000_000);
+        assert_eq!(rig.app.player.session.source_selection(), source);
+        assert_eq!(rig.app.player.session.metric_request(), Some(request));
+    }
+
+    #[cfg(feature = "play-feed")]
+    #[test]
     fn viewer_speed_edit_re_resolves_qualified_uri_source_for_feed_at_its_known_pause_and_clock() {
         let _serial = plx_base::testlock::serial();
         struct RestoreDecoder;
