@@ -166,7 +166,7 @@ pub(crate) struct Scenarios {
     pub(crate) hold_bench: Option<bench::PressBench>,
     /// The boot-time trigger flags the loop consults every frame after.
     pub(crate) dev: DevFlags,
-    /// The screenshot pipeline's arms (`plxnative-libtype`, `-libgrid`, `-libshelf`, `-libmenu`, `-clockstop`) — see [`screenshot`].
+    /// The screenshot pipeline's arms (`plxnative-libtype`, `-libgrid`, `-libshelf`, `-libmenu`, `-clockstop`) and the debt `-autopause` owes the settled capture — see [`screenshot`].
     pub(crate) shots: screenshot::ScreenshotArms,
 }
 
@@ -2200,6 +2200,10 @@ pub(crate) unsafe fn each_frame(app: &mut App, fr: &mut Frame) -> bool {
     screenshot::libshelf_arm(app, fr);
     screenshot::libmenu_arm(app, fr);
     screenshot::clockstop_arm(app, fr);
+    // Before the arms that can return early below: the debt must be known on every frame, or a
+    // frame that returns first leaves the settled capture waiting on an unread trigger for good.
+    #[cfg(feature = "hostsim")]
+    screenshot::autopause_debt(app, fr);
     if !detail_arm(app, fr) {
         return false;
     }

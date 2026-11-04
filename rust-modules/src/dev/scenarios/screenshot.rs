@@ -40,6 +40,9 @@ pub(crate) struct ScreenshotArms {
     clockstop: Option<Option<u32>>,
     #[cfg(feature = "hostsim")]
     clockstop_reached: bool,
+    /// What `autopause` still owes the settled capture — see [`PauseDebt`].
+    #[cfg(feature = "hostsim")]
+    autopause: PauseDebt,
 }
 
 impl ScreenshotArms {
@@ -56,6 +59,70 @@ impl ScreenshotArms {
             || !self.libmenu_done
             || self.clockstop.is_none()
             || (matches!(self.clockstop, Some(Some(_))) && !self.clockstop_reached)
+            || self.autopause != PauseDebt::Paid
+    }
+}
+
+/// **What `autopause` still owes the settled capture: its Pause.**
+///
+/// The pause is the state a pause scene photographs (a `hold=` pause is photographed paused, so its
+/// Resume is not owed), and it cannot land early: the arm only arms itself six seconds into the
+/// run (`autopause_arm`), then waits for the playhead (`at=`). The capture's quiet is WALL clock
+/// (`shot::tick`: nothing changed for `PLXNATIVE_SHOT_SETTLE` ms), and a host that is slow to start
+/// playback satisfies it before the Pause: with the host busy the debug simulator runs a frame a
+/// second (`fps=1`) and a Play start stalls the main thread for seconds (`main-thread hang`), so
+/// the first tick after the stall finds the screen unchanged for longer than the quiet and
+/// captures the player still loading — `shot: settled (7866 ms at rest, 7866 ms after the first
+/// frame)`, no picture, no pause. So the capture waits on the debt, as it waits on a seat or a
+/// clock stop ([`ScreenshotArms::pending`]).
+///
+/// `Unread` is the trigger not read yet, which counts as owed, as an unread `clockstop` does: a
+/// frame that has not reached the arm cannot say there is nothing to wait for.
+#[cfg(feature = "hostsim")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum PauseDebt {
+    #[default]
+    Unread,
+    Owed,
+    Paid,
+}
+
+#[cfg(feature = "hostsim")]
+impl PauseDebt {
+    /// The debt after one frame. `armed` reads whether a trigger asks for a pause at all (called
+    /// once, while `Unread`); `edges_left` says the Pause has not landed (the arm is not armed yet,
+    /// or armed and waiting on the playhead); `expired` is the ceiling
+    /// ([`AUTOPAUSE_CEILING_MS`]), after which the arm stops holding the capture back so a scene
+    /// whose playhead never arrives fails on its `expect` lines, with the arm's own give-up line
+    /// in the log, instead of on the driver's timeout.
+    fn step(self, armed: impl FnOnce() -> bool, edges_left: bool, expired: bool) -> Self {
+        match self {
+            Self::Unread if armed() => Self::Owed,
+            Self::Unread => Self::Paid,
+            Self::Owed if !edges_left || expired => Self::Paid,
+            held => held,
+        }
+    }
+}
+
+/// How long `autopause` waits for its Pause, counted from the app's start. Far longer than
+/// [`CEILING_MS`], which is for a screen that is already there: the playhead this waits on is
+/// reached through a Load, an open and playback in real time from the resume point.
+#[cfg(feature = "hostsim")]
+const AUTOPAUSE_CEILING_MS: u32 = 60_000;
+
+/// Keep [`ScreenshotArms`]' `autopause` debt current. Called every frame by `each_frame` BEFORE
+/// the arms that can return early, so the debt is known on every frame. Simulator only, as the
+/// settled capture is.
+#[cfg(feature = "hostsim")]
+pub(crate) fn autopause_debt(app: &mut App, fr: &Frame) {
+    let sc = &mut app.scenarios;
+    let edges_left = !sc.pause_tried || sc.pause_script.is_some();
+    let expired = fr.now.wrapping_sub(app.t0) > AUTOPAUSE_CEILING_MS;
+    let before = sc.shots.autopause;
+    sc.shots.autopause = before.step(|| crate::dev::pause_script().is_some(), edges_left, expired);
+    if before == PauseDebt::Owed && sc.shots.autopause == PauseDebt::Paid && edges_left {
+        plx_base::eventlog::log("autopause: gave up; the pause never landed");
     }
 }
 
@@ -385,5 +452,62 @@ mod tests {
         assert!(!due(Some(1_000), 1_000 + RESEND_MS - 1));
         assert!(due(Some(1_000), 1_000 + RESEND_MS));
         assert!(due(Some(u32::MAX - 10), RESEND_MS), "across the tick wrap");
+    }
+
+    /// The arms of a scene that armed nothing but `autopause`: everything else has landed or was
+    /// never asked for, so `pending` is exactly the debt under test.
+    #[cfg(feature = "hostsim")]
+    fn only_autopause_unlanded() -> super::ScreenshotArms {
+        let landed = || super::SeatArm { done: true, ..Default::default() };
+        super::ScreenshotArms {
+            libtype_done: true,
+            libgrid: landed(),
+            libshelf: landed(),
+            libmenu_done: true,
+            clockstop: Some(None),
+            ..Default::default()
+        }
+    }
+
+    /// The `player` scene's flake. Its settled capture fired on a quiet player that was still
+    /// loading (the Pause could not even arm: it opens six seconds in), so the figure had no
+    /// picture and no pause. A trigger that is armed holds the capture through every frame before
+    /// its Pause lands, including the frames before the arm has armed itself, and releases it when
+    /// the Pause has landed.
+    #[cfg(feature = "hostsim")]
+    #[test]
+    fn an_armed_autopause_holds_the_settled_capture_until_its_pause_lands() {
+        use super::PauseDebt;
+        let mut arms = only_autopause_unlanded();
+        assert!(arms.pending(), "unread: a frame that has not reached the arm owes nothing known");
+
+        arms.autopause = arms.autopause.step(|| true, true, false);
+        assert_eq!(arms.autopause, PauseDebt::Owed);
+        assert!(arms.pending(), "armed, and the arm has not armed itself yet");
+
+        for _ in 0..3 {
+            arms.autopause = arms.autopause.step(|| panic!("the trigger is read once"), true, false);
+            assert!(arms.pending(), "a loading player at rest is not the state the scene names");
+        }
+
+        arms.autopause = arms.autopause.step(|| panic!("the trigger is read once"), false, false);
+        assert_eq!(arms.autopause, PauseDebt::Paid);
+        assert!(!arms.pending(), "the Pause landed: the capture may take the rest it is waiting for");
+    }
+
+    #[cfg(feature = "hostsim")]
+    #[test]
+    fn a_scene_without_autopause_is_not_held_and_a_pause_that_never_lands_gives_up() {
+        use super::PauseDebt;
+        let mut arms = only_autopause_unlanded();
+        arms.autopause = arms.autopause.step(|| false, true, false);
+        assert_eq!(arms.autopause, PauseDebt::Paid, "no trigger, nothing owed");
+        assert!(!arms.pending());
+
+        let mut arms = only_autopause_unlanded();
+        arms.autopause = arms.autopause.step(|| true, true, false);
+        arms.autopause = arms.autopause.step(|| true, true, true);
+        assert_eq!(arms.autopause, PauseDebt::Paid, "past the ceiling the arm stops holding the capture");
+        assert!(!arms.pending());
     }
 }
