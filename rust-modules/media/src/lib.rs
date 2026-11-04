@@ -37,10 +37,5 @@ pub mod player; // buffer-feed video engine (was playback.c) -- step 5
 pub mod speed_audio; // compatibility facade for the independent codec DSP
 pub mod route; // play_movie route selection (direct-play vs transcode) -- step 3
 
-/// The playback backends this build composes. Route policy never reads the Cargo features: a
-/// session starts from this value and the composition may replace it (`PlaybackSession::install_backends`).
-pub const COMPOSED_BACKENDS: plx_playback_contract::BackendSet = plx_playback_contract::BackendSet {
-    uri: cfg!(feature = "play-uri"), feed: cfg!(feature = "play-feed") };
-
 #[cfg(test)]
 mod http_test_support;

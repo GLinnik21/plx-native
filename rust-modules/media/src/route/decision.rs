@@ -367,7 +367,7 @@ pub struct PlaybackSession {
     /// physical backend chooses a different effective stream. Both backends use this one intent;
     /// `cur_audio` remains the stream the current Feed route actually carries.
     source_selection: Option<SourceSelection>,
-    /// The playback backends composed for this session ([`crate::COMPOSED_BACKENDS`] unless the
+    /// The playback backends composed for this session ([`crate::player::route_fx::COMPOSED_BACKENDS`] unless the
     /// composition installed another set). Policy asks it which physical backend can be offered, never
     /// which drivers were compiled in.
     backends: plx_playback_contract::BackendSet,
@@ -1111,7 +1111,7 @@ impl PlaybackSession {
     }
 
     /// The playback backends the composition supplies. Boot installs the set its drivers form;
-    /// a session that is never told keeps [`crate::COMPOSED_BACKENDS`].
+    /// a session that is never told keeps [`crate::player::route_fx::COMPOSED_BACKENDS`].
     pub fn install_backends(&mut self, backends: plx_playback_contract::BackendSet) {
         self.backends = backends;
     }
@@ -1274,7 +1274,7 @@ impl PlaybackSession {
         metric_request: None,
         pending_metric_lifecycle: Vec::new(),
         reconfigure_pause_goal: None,
-        backends: crate::COMPOSED_BACKENDS,
+        backends: crate::player::route_fx::COMPOSED_BACKENDS,
         uri_preflight_port: None,
         direct_play_mode: DirectPlayMode::Auto,
         jail_load_blocked: false,
