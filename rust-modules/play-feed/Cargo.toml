@@ -16,6 +16,8 @@ name = "plx_play_feed"
 crate-type = ["rlib"]
 
 [features]
+# The simulator's stand-in for the Starfish/ACB seam (`ffi_host`, which the application hands its
+# callback, rebase and frame sink as `Hooks`) and the `hostsim` test hooks of `shared`.
 hostsim = []
 test-support = ["plx_media_codecs/test-support"]
 devtriggers = ["plx_media_codecs/devtriggers"]
