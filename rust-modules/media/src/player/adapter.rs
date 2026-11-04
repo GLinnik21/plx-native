@@ -30,7 +30,9 @@ use plx_play_feed::shared::FEED_SHARED;
 #[cfg(all(test, feature = "play-feed"))]
 use super::engine::Engine;
 #[cfg(feature = "play-feed")]
-use super::feed_resources::FeedResources;
+use plx_play_feed::feed_resources::FeedResources;
+#[cfg(feature = "play-feed")]
+use plx_play_feed::native_executor::NativeStop;
 #[cfg(any(feature = "play-feed", feature = "play-uri"))]
 use super::timeline;
 use super::backend;
@@ -1827,21 +1829,20 @@ impl PlayerAdapter {
     }
 
     #[cfg(feature = "play-feed")]
-    pub(super) fn take_native_stop(&mut self) -> super::engine::NativeStop {
-        let stop = super::engine::NativeStop::take(&mut self.feed);
+    pub(super) fn take_native_stop(&mut self) -> NativeStop {
+        let stop = NativeStop::take(&mut self.feed);
         self.clear_feed_attempt();
         stop
     }
 
     #[cfg(feature = "play-feed")]
-    pub(super) fn release_native_stop(&mut self, stop: &mut super::engine::NativeStop,
-        for_reload: bool) {
-        stop.release_and_drain(&self.mt, &mut self.feed, for_reload);
+    pub(super) fn release_native_stop(&mut self, stop: &mut NativeStop, for_reload: bool) {
+        let hooks = self.feed.hooks();
+        stop.release_and_drain(&self.mt, &mut self.feed, for_reload, &hooks.release);
     }
 
     #[cfg(feature = "play-feed")]
-    pub(super) fn finish_native_stop(&mut self, stop: super::engine::NativeStop,
-        for_reload: bool) {
+    pub(super) fn finish_native_stop(&mut self, stop: NativeStop, for_reload: bool) {
         if let Some(release) = stop.finish(for_reload) {
             // This event is the release machine's admission fence for the next start.
             self.park_release(release);
@@ -2138,7 +2139,7 @@ impl PlayerAdapter {
 
     #[cfg(feature = "play-feed")]
     pub(super) fn begin_native_open(&mut self) -> bool {
-        super::engine::begin_native_open(&mut self.feed, &self.mt)
+        plx_play_feed::native_executor::begin_native_open(&mut self.feed, &self.mt)
     }
 
     #[cfg(feature = "play-feed")]

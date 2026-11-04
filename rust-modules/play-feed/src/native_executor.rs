@@ -103,11 +103,12 @@ pub enum PrepareRefusal {
 }
 
 /// Common composition supplies these three already-existing IO seams. The physical executor
-/// never reads a route, credential registry, or common seek-mode global.
+/// never reads a route or credential registry; `sink` is the fenced display sink the seek mode is
+/// selected from ([`crate::seek::select_seek_mode_for_load`]).
 pub struct LaunchHooks {
     pub demux_transport: fn() -> DemuxTransport,
     pub load_thread: fn(SendPtr<c_char>, u32, Option<LoadReceipt>, PcmLead),
-    pub select_seek_mode: fn(),
+    pub sink: fn() -> &'static dyn VideoSink,
 }
 
 /// Captured native Load inputs and the installed display sink's window event.
@@ -228,10 +229,14 @@ impl NativePrepared {
         seek_preroll: bool,
         side_reader: Box<dyn SideReaderPort>,
     ) -> Result<Self, PrepareRefusal> {
-        let clock_start = ClockStartGuard::arm(shared, user_held, seek_preroll)
-            .ok_or(PrepareRefusal::ClockBusy)?;
-        let native_start = NativeSessionStartGuard::arm(shared)
-            .ok_or(PrepareRefusal::NativeBusy)?;
+        let clock_start = ClockStartGuard::arm(shared, user_held, seek_preroll).ok_or_else(|| {
+            plx_base::eventlog::log("start_bufferfeed: clock state is not idle (refusing overlapping start)");
+            PrepareRefusal::ClockBusy
+        })?;
+        let native_start = NativeSessionStartGuard::arm(shared).ok_or_else(|| {
+            plx_base::eventlog::log("start_bufferfeed: native session is not idle (refusing overlapping Load)");
+            PrepareRefusal::NativeBusy
+        })?;
         Ok(Self {
             open, sample, stream, payload_c, audio_lead, clock_start, native_start,
             user_held, side_reader,
@@ -502,7 +507,7 @@ pub fn launch_native_open(
     // about the TV, so it is re-selected here for every session. Placed HERE rather than at the
     // top of this function on purpose: the `engine_is_live` no-op return above must NOT re-select,
     // or a stray PLAY landing mid-session would cancel a downgrade that is still needed.
-    (hooks.select_seek_mode)();
+    crate::seek::select_seek_mode_for_load((hooks.sink)());
     feed.install(eng);
     native_start.commit();
     clock_start.commit();
@@ -574,6 +579,21 @@ pub fn reap_abandoned_load_resource(
     ));
     let status = release_native_object_timed(mt, parked.epoch, &mut TeardownSpans::new(), feed.shared(), hooks);
     feed.note_reaped_release(parked.attempt, status);
+    true
+}
+
+/// Everything a native open does before it prepares anything: release an abandoned Load that has
+/// returned, refuse (`false`) while one has not (it still owns the one native object the C seam
+/// holds), and zero the per-session fed counters and the stall watchdog's window.
+pub fn begin_native_open(feed: &mut FeedResources, mt: &MainThread) -> bool {
+    reap_abandoned_load_resource(feed, mt, &feed.hooks().release);
+    if feed.has_abandoned_load() {
+        plx_base::eventlog::log(
+            "start_bufferfeed: an abandoned Load has not returned yet (refusing native start)");
+        return false;
+    }
+    reset_fed_counters();
+    crate::native_stall::reset();
     true
 }
 

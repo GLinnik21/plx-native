@@ -1508,7 +1508,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         // later → permanent BufferFull + "Playing error" (root-caused by decompiling
         // libpipeline/lxvideosink; see engine::reload_at). `Reload` mode — selected for a set
         // with no video plane or a layout-unknown library `Seek` is not tested on (see
-        // engine::select_seek_mode), or set by feed_stream when sendSegmentEvent can't find the
+        // plx_play_feed::seek::select_seek_mode), or set by feed_stream when sendSegmentEvent can't find the
         // pipeline or a native Seek is refused — is reload-per-seek. reload_at REPLACES the ENGINE,
         // so `eng` dangles after it: return immediately.
         if seek_must_reload(seek_mode(), super::play_rate_permille(), rate_reload) {
@@ -3274,7 +3274,7 @@ mod flight_tests {
     /// refusal the ladder has no rung for: the Engine fails and the read-out shows.
     #[test]
     fn a_native_audio_stall_of_a_known_combination_ends_on_the_read_out_not_the_spinner() {
-        use super::super::native_stall::{Watch, NATIVE_AUDIO_STALL_MS, WATCH};
+        use plx_play_feed::native_stall::{Watch, NATIVE_AUDIO_STALL_MS, WATCH};
         let reset_watch = || *WATCH.lock().unwrap_or_else(|e| e.into_inner()) = Watch::new();
         let mut rig = Rig::new(40);
         let _set = firmware_announcing_opus();
@@ -4652,7 +4652,7 @@ mod native_seek_pump_tests {
         assert_eq!(reloads(), vec![TARGET_NS]);
 
         // The reload starts a NEW session in the same playback: it must not re-offer the Seek.
-        let mode = super::super::engine::session_seek_mode(true, false, crate::player::VP_EXPORTED, None);
+        let mode = plx_play_feed::seek::session_seek_mode(true, false, crate::player::VP_EXPORTED, None);
         assert_eq!(mode, SeekMode::Reload, "the downgrade survives reload_at");
         plx_play_feed::seek::set_seek_mode(mode);
         // Stand in for the reload's new Engine.

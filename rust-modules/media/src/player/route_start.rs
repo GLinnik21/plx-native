@@ -415,9 +415,12 @@ pub(super) fn start_bufferfeed_inner(
     let start_paused = feed_start_paused(ps);
     physical_start.publish(session_rate, start_paused);
     let trace_generation = crate::route::playback_trace_generation();
-    let mut prepared_native = engine::prepare_native_open(pa.mt(), pa.feed.shared(), &pa.feed.hooks().prepare,
-        start_paused, FEED_TX.seek_preroll_active(),
-        open.map(super::feed_open::FeedOpenRequest::into_physical), sample, is_h265, session_rate, side_reader)
+    // A native refusal is mapped here, by the common owner: the executor logs why, and the route
+    // only learns that the start failed.
+    let mut prepared_native = plx_play_feed::native_executor::prepare_native_open(
+        pa.mt(), pa.feed.shared(), start_paused, FEED_TX.seek_preroll_active(),
+        open.map(super::feed_open::FeedOpenRequest::into_physical), sample, is_h265, session_rate,
+        side_reader, super::no_audio_armed(), super::play_rate_permille(), &pa.feed.hooks().prepare)
         .map_err(|_| crate::route::RouteStartResult::StartFailed)?;
     // The route reducer alone mints the physical attempt. The native constructor consumes this
     // identity; no backend-owned logical counter can alias a later route.
@@ -1295,7 +1298,7 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
     native.stop_side_reader(for_reload);
     let mut report_th = stop_feed_timeline(pa, route_attempt);
     native.unblock_join_close();
-    let mut terminal_facts = native.terminal_facts();
+    let mut terminal_facts = plx_play_feed::feed_pump::native_attempt_facts();
     terminal_facts.started = Some(false);
     let _ = ps.ingest_attempt_facts(route_attempt, crate::player::attempt_view::Backend::Feed, terminal_facts);
     after_physical_close(ps, for_reload, final_report, &mut report_th);
