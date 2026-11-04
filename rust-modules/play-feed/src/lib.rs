@@ -3,7 +3,9 @@
 
 pub mod aq;
 pub mod era_callbacks;
+pub mod feed_driver;
 pub mod feed_resources;
+pub mod feed_pump;
 pub mod feed_state;
 /// The simulator's stand-in for the Starfish/ACB seam (`hostsim` builds only; see its module doc).
 #[cfg(feature = "hostsim")]
@@ -54,6 +56,7 @@ pub mod open;
 pub mod seek;
 pub mod sf_event;
 pub mod playurl;
+pub mod readout;
 pub mod pcm_lead;
 pub mod side_reader;
 pub mod shared;

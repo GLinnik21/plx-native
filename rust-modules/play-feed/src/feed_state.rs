@@ -84,6 +84,13 @@ pub struct SampleBuf {
     pub loops: i64,
 }
 
+impl SampleBuf {
+    /// The local validation sample, positioned at its first AU.
+    pub fn new(data: Vec<u8>, au: Vec<usize>) -> Self {
+        Self { data, au, next: 0, loops: 0 }
+    }
+}
+
 pub enum Source {
     Stream, // host/port/path are consumed by the demux thread at spawn
     Sample(Box<SampleBuf>),

@@ -422,9 +422,12 @@ pub(super) fn start_bufferfeed_inner(
     let start_paused = feed_start_paused(ps);
     physical_start.publish(session_rate, start_paused);
     let trace_generation = crate::route::playback_trace_generation();
-    let mut prepared_native = engine::prepare_native_open(pa.mt(), pa.feed.shared(),
-        start_paused, FEED_TX.seek_preroll_active(),
-        open.map(super::feed_open::FeedOpenRequest::into_physical), sample, is_h265, session_rate, side_reader)
+    // A native refusal is mapped here, by the common owner: the executor logs why, and the route
+    // only learns that the start failed.
+    let mut prepared_native = plx_play_feed::native_executor::prepare_native_open(
+        pa.mt(), pa.feed.shared(), start_paused, FEED_TX.seek_preroll_active(),
+        open.map(super::feed_open::FeedOpenRequest::into_physical), sample, is_h265, session_rate,
+        side_reader, super::no_audio_armed(), super::play_rate_permille(), &pa.feed.hooks().prepare)
         .map_err(|_| crate::route::RouteStartResult::StartFailed)?;
     // The route reducer alone mints the physical attempt. The native constructor consumes this
     // identity; no backend-owned logical counter can alias a later route.
@@ -435,7 +438,8 @@ pub(super) fn start_bufferfeed_inner(
     let attempt = route_attempt.contract_id();
     let (video_fidelity, audio_fidelity) = ps.planned_feed_fidelity()
         .expect("qualified feed has fidelity requirements");
-    prepared_native.bind_demux_session(attempt);
+    let epoch = prepared_native.native_epoch();
+    prepared_native.bind_demux_session(super::demux_session::PlayerDemuxSession::capture(attempt, epoch));
     ps.begin_attempt_view(route_attempt, super::attempt_view::Backend::Feed);
     let source = pa.next_source_key();
     pa.stage_native_feed(attempt, source, prepared_native)
@@ -618,7 +622,9 @@ pub(super) fn run_release_effects(
                 if let Some(p) = joined.take() {
                     debug_assert_eq!(p.epoch(), epoch);
                     let attempt = p.attempt();
-                    let status = engine::run_release_tail(pa.mt(), p);
+                    let hooks = pa.feed.hooks();
+                    let status = plx_play_feed::native_executor::run_release_tail(
+                        pa.mt(), p, pa.feed.shared(), &hooks.release);
                     pa.note_backend_feed_release(attempt, status);
                     let at = pa.backend_tick();
                     let _ = pa.backend_poll_at(at);
@@ -1299,7 +1305,7 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
     native.stop_side_reader(for_reload);
     let mut report_th = stop_feed_timeline(pa, route_attempt);
     native.unblock_join_close();
-    let mut terminal_facts = native.terminal_facts();
+    let mut terminal_facts = plx_play_feed::feed_pump::native_attempt_facts();
     terminal_facts.started = Some(false);
     let _ = ps.ingest_attempt_facts(route_attempt, crate::player::attempt_view::Backend::Feed, terminal_facts);
     after_physical_close(ps, for_reload, final_report, &mut report_th);

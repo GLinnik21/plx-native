@@ -6,6 +6,7 @@ use plx_play_feed::shared::FEED_SHARED;
 use crate::route;
 use plx_base::eventlog::log;
 use plx_play_feed::bf_split;
+use plx_play_feed::feed_state::SampleBuf;
 
 pub(super) struct FeedOpenRequest {
     pub physical: plx_play_feed::open::PhysicalOpen,
@@ -233,13 +234,8 @@ mod tests {
 /// resource is built.
 pub(super) struct ResolvedSource {
     pub url: String,
-    pub sample: Option<SampleSource>,
+    pub sample: Option<Box<SampleBuf>>,
     pub is_h265: bool,
-}
-
-pub(super) struct SampleSource {
-    pub data: Vec<u8>,
-    pub au: Vec<usize>,
 }
 
 /// Choose the source of a start, and qualify the Feed recipe of one that no plan resolved.
@@ -310,7 +306,7 @@ pub(super) fn resolve_source(
             }
         }
     }
-    let mut sample: Option<SampleSource> = None;
+    let mut sample: Option<Box<SampleBuf>> = None;
     let mut is_h265 = false;
     if url.is_empty() {
         if let Some(data) = plx_base::devtrig::read_sample("sample.h264") {
@@ -323,7 +319,7 @@ pub(super) fn resolve_source(
             if au.len() < 2 {
                 return Err(crate::route::RouteStartResult::StartFailed);
             }
-            sample = Some(SampleSource { data, au });
+            sample = Some(Box::new(SampleBuf::new(data, au)));
         } else if let Some(data) = plx_base::devtrig::read_sample("sample.h265") {
             // Phase 0 probe: feed a local HEVC Annex-B sample to test native HEVC decode.
             let au = bf_split(&data, 0x46);
@@ -336,7 +332,7 @@ pub(super) fn resolve_source(
                 return Err(crate::route::RouteStartResult::StartFailed);
             }
             is_h265 = true;
-            sample = Some(SampleSource { data, au });
+            sample = Some(Box::new(SampleBuf::new(data, au)));
         } else {
             // nothing to play: no selected item, no /tmp/plxnative-url, no local sample. (The old
             // baked-in demo-movie fallback is gone — the binary carries no URLs/credentials.)

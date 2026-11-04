@@ -1,28 +1,28 @@
 //! Persistent physical feed driver behind the common attempt runner. The route owner stages
 //! one prepared native source under its canonical attempt and a private source key.
 
-use super::{engine, feed_resources::FeedResources};
+use crate::feed_resources::FeedResources;
+use crate::native_executor::{launch_native_open, play_initial_now, NativePrepared};
+use crate::shared::{Stage, FEED_TX};
 use plx_base::task::MainThread;
 use plx_playback_contract::{
-    AttemptId, BackendEvent, BackendKind, CommandId, DispatchResult,
+    AttemptId, BackendEvent, BackendKind, Capabilities, CommandId, ContentTime, DispatchResult,
     DriverEvent, EvidenceSource, ExitDisposition, Failure, Observation, Observed, Operation,
-    Playback, ReleaseStatus, SourceKey, StopReason, ContentTime,
+    Playback, ReleaseStatus, SourceKey, StopReason,
 };
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::Ordering::Acquire;
-#[cfg(feature = "play-feed")]
-use plx_playback_contract::Capabilities;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum FeedTransportAction {
+pub enum FeedTransportAction {
     /// Release the captured viewer hold before the initial physical prime may Play.
     ResumeInitial { attempt: AttemptId, command: CommandId },
     Play { attempt: AttemptId, command: CommandId },
     Pause { attempt: AttemptId, command: CommandId },
 }
 
-pub(super) struct FeedDriver {
-    staged: HashMap<(AttemptId, SourceKey), engine::NativePrepared>,
+pub struct FeedDriver {
+    staged: HashMap<(AttemptId, SourceKey), NativePrepared>,
     active: Option<AttemptId>,
     ready_emitted: bool,
     startup_acceptance_emitted: bool,
@@ -35,7 +35,7 @@ pub(super) struct FeedDriver {
 }
 
 impl FeedDriver {
-    pub(super) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             staged: HashMap::new(), active: None, ready_emitted: false,
             startup_acceptance_emitted: false, startup_play_command: None,
@@ -45,8 +45,7 @@ impl FeedDriver {
         }
     }
 
-    #[cfg(feature = "play-feed")]
-    pub(super) fn capabilities(&self) -> Capabilities {
+    pub fn capabilities(&self) -> Capabilities {
         Capabilities {
             progressive_uri: false, hls_uri: false, packet_feed: true,
             pause: true, seek: false, audio_track: false, subtitle_track: false,
@@ -54,14 +53,14 @@ impl FeedDriver {
         }
     }
 
-    pub(super) fn stage(&mut self, attempt: AttemptId, key: SourceKey,
-        prepared: engine::NativePrepared) -> Result<(), Failure> {
+    pub fn stage(&mut self, attempt: AttemptId, key: SourceKey,
+        prepared: NativePrepared) -> Result<(), Failure> {
         if self.staged.contains_key(&(attempt, key)) { return Err(Failure::Busy); }
         self.staged.insert((attempt, key), prepared);
         Ok(())
     }
 
-    pub(super) fn dispatch(&mut self, feed: &mut FeedResources, mt: &MainThread,
+    pub fn dispatch(&mut self, feed: &mut FeedResources, mt: &MainThread,
         attempt: AttemptId, command: CommandId, operation: Operation) -> DispatchResult {
         match operation {
             Operation::Start { source, .. } => {
@@ -73,7 +72,9 @@ impl FeedDriver {
                     self.release_refused_start(attempt);
                     return DispatchResult::Refused(Failure::Busy);
                 }
-                match engine::launch_native_open(feed, attempt, prepared) {
+                let hooks = feed.hooks();
+                match launch_native_open(
+                    feed, &FEED_TX, attempt, prepared, &hooks.launch) {
                     Ok(()) => {
                         self.active = Some(attempt);
                         self.ready_emitted = false;
@@ -92,6 +93,7 @@ impl FeedDriver {
             }
             Operation::Play if self.active == Some(attempt) => {
                 self.deferred_transport_play = None;
+                let hooks = feed.hooks();
                 let Some(eng) = feed.engine() else { return DispatchResult::Refused(Failure::Stale); };
                 if !eng.startup_controlled { return DispatchResult::Refused(Failure::Stale); }
                 if !eng.startup_play_commanded {
@@ -101,7 +103,7 @@ impl FeedDriver {
                         self.transport_actions.push_back(FeedTransportAction::ResumeInitial {
                             attempt, command });
                     } else if eng.startup_immediate_play {
-                        if engine::play_initial_now(mt, eng) == Some(false) {
+                        if play_initial_now(mt, eng, &hooks.feed) == Some(false) {
                             eng.startup_play_commanded = false;
                             self.startup_play_command = None;
                             return DispatchResult::Refused(Failure::Refused);
@@ -130,7 +132,7 @@ impl FeedDriver {
         }
     }
 
-    pub(super) fn note_load_outcome(&mut self, attempt: AttemptId, ok: bool) {
+    pub fn note_load_outcome(&mut self, attempt: AttemptId, ok: bool) {
         if self.active != Some(attempt) { return; }
         if !ok {
             self.events.push_back(BackendEvent { backend: BackendKind::Feed,
@@ -144,13 +146,13 @@ impl FeedDriver {
             event: DriverEvent::Release { attempt, status: ReleaseStatus::Released } });
     }
 
-    pub(super) fn poll(&mut self, feed: &mut FeedResources) -> Vec<BackendEvent> {
+    pub fn poll(&mut self, feed: &mut FeedResources) -> Vec<BackendEvent> {
         if let Some((attempt, status)) = feed.take_reaped_release() {
             self.note_release(attempt, status);
         }
         if let Some(attempt) = self.active {
             if let Some(eng) = feed.engine().filter(|eng| eng.attempt == attempt) {
-                if eng.startup_controlled && eng.stage >= super::shared::Stage::Playing
+                if eng.startup_controlled && eng.stage >= Stage::Playing
                     && !eng.preview_abandon && !self.ready_emitted {
                     self.ready_emitted = true;
                     self.events.push_back(BackendEvent { backend: BackendKind::Feed,
@@ -204,19 +206,20 @@ impl FeedDriver {
         self.events.drain(..).collect()
     }
 
-    pub(super) fn take_stop_request(&mut self) -> Option<(AttemptId, StopReason)> {
+    pub fn take_stop_request(&mut self) -> Option<(AttemptId, StopReason)> {
         self.stop_requested.take()
     }
 
-    pub(super) fn take_transport_action(&mut self) -> Option<FeedTransportAction> {
+    pub fn take_transport_action(&mut self) -> Option<FeedTransportAction> {
         self.transport_actions.pop_front()
     }
 
-    pub(super) fn note_transport_result(&mut self, feed: &mut FeedResources,
+    pub fn note_transport_result(&mut self, feed: &mut FeedResources,
         mt: &MainThread, action: FeedTransportAction, accepted: bool,
         native_acknowledged: bool) {
         if let FeedTransportAction::ResumeInitial { attempt, command } = action {
             if self.active != Some(attempt) { return; }
+            let hooks = feed.hooks();
             let Some(eng) = feed.engine().filter(|eng| eng.attempt == attempt) else { return };
             if !accepted {
                 eng.startup_play_commanded = false;
@@ -227,7 +230,7 @@ impl FeedDriver {
                 return;
             }
             eng.startup_user_held = false;
-            if eng.startup_immediate_play && engine::play_initial_now(mt, eng) == Some(false) {
+            if eng.startup_immediate_play && play_initial_now(mt, eng, &hooks.feed) == Some(false) {
                 eng.startup_play_commanded = false;
                 self.startup_play_command = None;
                 self.events.push_back(BackendEvent { backend: BackendKind::Feed,
@@ -260,7 +263,7 @@ impl FeedDriver {
                 native_acknowledged } });
     }
 
-    pub(super) fn note_release(&mut self, attempt: AttemptId, status: ReleaseStatus) {
+    pub fn note_release(&mut self, attempt: AttemptId, status: ReleaseStatus) {
         if self.active != Some(attempt) { return; }
         self.events.push_back(BackendEvent { backend: BackendKind::Feed,
             event: DriverEvent::Release { attempt, status } });
@@ -273,11 +276,11 @@ impl FeedDriver {
         }
     }
 
-    pub(super) fn discard_staged(&mut self, attempt: AttemptId, key: SourceKey) {
+    pub fn discard_staged(&mut self, attempt: AttemptId, key: SourceKey) {
         self.staged.remove(&(attempt, key));
     }
 
-    pub(super) fn exit_disposition(&self, feed: &FeedResources) -> ExitDisposition {
+    pub fn exit_disposition(&self, feed: &FeedResources) -> ExitDisposition {
         if self.active.is_none() && self.staged.is_empty() && self.stop_requested.is_none()
             && !feed.is_live() && !feed.has_pending_release() && !feed.has_abandoned_load()
             && !feed.has_reaped_release() {

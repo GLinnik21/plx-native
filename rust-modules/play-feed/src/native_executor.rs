@@ -103,11 +103,12 @@ pub enum PrepareRefusal {
 }
 
 /// Common composition supplies these three already-existing IO seams. The physical executor
-/// never reads a route, credential registry, or common seek-mode global.
+/// never reads a route or credential registry; `sink` is the fenced display sink the seek mode is
+/// selected from ([`crate::seek::select_seek_mode_for_load`]).
 pub struct LaunchHooks {
     pub demux_transport: fn() -> DemuxTransport,
     pub load_thread: fn(SendPtr<c_char>, u32, Option<LoadReceipt>, PcmLead),
-    pub select_seek_mode: fn(),
+    pub sink: fn() -> &'static dyn VideoSink,
 }
 
 /// Captured native Load inputs and the installed display sink's window event.
@@ -117,20 +118,10 @@ pub struct PrepareHooks {
     pub load_refusal_latch: u8,
 }
 
-/// Physical release verbs supplied by the installed native sink adapter. The lower stop owner
-/// keeps the lifetime and ordering of its Engine, workers, sockets, queues and payload.
-pub struct StopHooks {
-    pub release_off_frame: fn(
-        &MainThread, &crate::feed_resources::FeedResources, u32, &mut TeardownSpans,
-        &mut plx_playback_contract::ReleaseStatus,
-    ) -> Option<std::thread::JoinHandle<()>>,
-    pub release_native_object_timed: fn(
-        &MainThread, u32, &mut TeardownSpans,
-    ) -> plx_playback_contract::ReleaseStatus,
-}
-
 /// Native release uses the installed raw sink while the public sink is fenced for other verbs.
 /// Each call asks the provider afresh; no native object pointer survives across transitions.
+/// `Copy`, so a per-owner override (the unload spawner of a `FeedResources`) is a struct update.
+#[derive(Clone, Copy)]
 pub struct ReleaseHooks {
     pub raw_sink: fn() -> &'static dyn VideoSink,
     /// The process's plane owner: whether this device's plane is ACB, and the one that records
@@ -148,6 +139,18 @@ pub struct FeedHooks {
     pub mirror_playstate: fn(&MainThread, Stage, bool),
     pub mute_for_preroll: fn(&MainThread),
     pub feed_clock_us: fn() -> u64,
+}
+
+/// Everything the common composition lends the physical executor, as one value. The composition
+/// builds it once as a `const`; the owner of the native session (`FeedResources`) holds the
+/// `&'static` reference, so no process-global registry carries it and every caller that reaches
+/// the executor through the owner reaches the same hooks. Each executor entry point still takes the
+/// one part it uses (`&hooks.feed`, `&hooks.release`, ...).
+pub struct NativeHooks {
+    pub prepare: PrepareHooks,
+    pub launch: LaunchHooks,
+    pub feed: FeedHooks,
+    pub release: ReleaseHooks,
 }
 
 /// One accepted native audio packet's size, while the stall watchdog's evidence window is open and
@@ -226,10 +229,14 @@ impl NativePrepared {
         seek_preroll: bool,
         side_reader: Box<dyn SideReaderPort>,
     ) -> Result<Self, PrepareRefusal> {
-        let clock_start = ClockStartGuard::arm(shared, user_held, seek_preroll)
-            .ok_or(PrepareRefusal::ClockBusy)?;
-        let native_start = NativeSessionStartGuard::arm(shared)
-            .ok_or(PrepareRefusal::NativeBusy)?;
+        let clock_start = ClockStartGuard::arm(shared, user_held, seek_preroll).ok_or_else(|| {
+            plx_base::eventlog::log("start_bufferfeed: clock state is not idle (refusing overlapping start)");
+            PrepareRefusal::ClockBusy
+        })?;
+        let native_start = NativeSessionStartGuard::arm(shared).ok_or_else(|| {
+            plx_base::eventlog::log("start_bufferfeed: native session is not idle (refusing overlapping Load)");
+            PrepareRefusal::NativeBusy
+        })?;
         Ok(Self {
             open, sample, stream, payload_c, audio_lead, clock_start, native_start,
             user_held, side_reader,
@@ -500,7 +507,7 @@ pub fn launch_native_open(
     // about the TV, so it is re-selected here for every session. Placed HERE rather than at the
     // top of this function on purpose: the `engine_is_live` no-op return above must NOT re-select,
     // or a stray PLAY landing mid-session would cancel a downgrade that is still needed.
-    (hooks.select_seek_mode)();
+    crate::seek::select_seek_mode_for_load((hooks.sink)());
     feed.install(eng);
     native_start.commit();
     clock_start.commit();
@@ -572,6 +579,21 @@ pub fn reap_abandoned_load_resource(
     ));
     let status = release_native_object_timed(mt, parked.epoch, &mut TeardownSpans::new(), feed.shared(), hooks);
     feed.note_reaped_release(parked.attempt, status);
+    true
+}
+
+/// Everything a native open does before it prepares anything: release an abandoned Load that has
+/// returned, refuse (`false`) while one has not (it still owns the one native object the C seam
+/// holds), and zero the per-session fed counters and the stall watchdog's window.
+pub fn begin_native_open(feed: &mut FeedResources, mt: &MainThread) -> bool {
+    reap_abandoned_load_resource(feed, mt, &feed.hooks().release);
+    if feed.has_abandoned_load() {
+        plx_base::eventlog::log(
+            "start_bufferfeed: an abandoned Load has not returned yet (refusing native start)");
+        return false;
+    }
+    reset_fed_counters();
+    crate::native_stall::reset();
     true
 }
 
@@ -757,7 +779,7 @@ impl NativeStop {
 
     /// Release only after common reporting has handed its final write to the off-frame worker.
     pub fn release_and_drain(&mut self, mt: &MainThread,
-        feed: &mut FeedResources, for_reload: bool, hooks: &StopHooks) {
+        feed: &mut FeedResources, for_reload: bool, hooks: &ReleaseHooks) {
         let shared = self.eng.shared;
         if let Some(load_th) = self.abandoned_load.take() {
             if !shared.abandon_native_session(self.eng.native_epoch) {
@@ -779,10 +801,16 @@ impl NativeStop {
                 abandoned_at: std::time::Instant::now(),
             });
         } else if !for_reload {
-            self.unload_th = (hooks.release_off_frame)(mt, feed, self.eng.native_epoch, &mut self.spans,
-                &mut self.release_status);
+            // A per-owner spawner (a test's, or a composition's) replaces the default task start.
+            let hooks = ReleaseHooks {
+                spawn_unload: feed.unload_spawner().unwrap_or(hooks.spawn_unload),
+                ..*hooks
+            };
+            self.unload_th = release_off_frame(mt, self.eng.native_epoch, &mut self.spans,
+                &mut self.release_status, feed.shared(), &hooks);
         } else {
-            self.release_status = (hooks.release_native_object_timed)(mt, self.eng.native_epoch, &mut self.spans);
+            self.release_status = release_native_object_timed(
+                mt, self.eng.native_epoch, &mut self.spans, feed.shared(), hooks);
         }
         if self.stream {
             drain_aq(&mut self.eng);
