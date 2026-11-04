@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-04T18:46:11Z",
+ "generated": "2026-11-04T18:52:38Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -144,18 +144,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -57.9,
-   "change7_pct": 18.2,
+   "change30_pct": -57.8,
+   "change7_pct": 18.3,
    "d30": 988.0,
-   "delta30": -572.0,
-   "delta7": 64,
+   "delta30": -571.5,
+   "delta7": 64.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 75,
+   "n_now": 74,
    "n_prev": 89,
-   "now": 416,
+   "now": 416.5,
    "prev7": 352,
    "shown": true,
    "state": "worse",
@@ -908,7 +908,7 @@
    "to": 189.5
   },
   {
-   "change_pct": 18.2,
+   "change_pct": 18.3,
    "commits": [
     {
      "pr": 1215,
@@ -966,7 +966,7 @@
    "label": "Wait after merge",
    "since": "2026-11-04",
    "threshold_pct": 15.0,
-   "to": 416
+   "to": 416.5
   }
  ],
  "schema": 2,
