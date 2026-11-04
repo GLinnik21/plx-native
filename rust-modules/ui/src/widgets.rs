@@ -403,14 +403,15 @@ impl Art<'_> {
 pub struct ArtCycle {
     frames: Vec<String>,
     current: usize,
-    age: f32,
+    clock: plx_machine::motion::Ramp,
+    mix: f32,
     fading: bool,
     ready: std::cell::Cell<bool>,
 }
 
 impl ArtCycle {
-    const HOLD: f32 = 6.0;
-    const FADE: f32 = 1.2;
+    const HOLD_MS: u32 = 6000;
+    const FADE_MS: u32 = 1200;
 
     pub fn set_frames(&mut self, frames: &[&str]) {
         let mut unique = Vec::new();
@@ -420,7 +421,8 @@ impl ArtCycle {
         if self.frames.iter().map(String::as_str).eq(unique.iter().copied()) { return; }
         self.frames = unique.into_iter().map(str::to_owned).collect();
         self.current = 0;
-        self.age = 0.0;
+        self.clock = plx_machine::motion::Ramp::default();
+        self.mix = 0.0;
         self.fading = false;
         self.ready.set(false);
         plx_machine::idle::invalidate();
@@ -428,20 +430,31 @@ impl ArtCycle {
 
     pub fn is_empty(&self) -> bool { self.frames.is_empty() }
 
-    pub fn tick(&mut self, dt: f32, active: bool) {
-        if !active || self.frames.len() < 2 || !self.ready.get() || !dt.is_finite() { return; }
-        self.age += dt.max(0.0);
+    /// Pause at the lifecycle event itself; no ticks are required while suspended.
+    pub fn pause(&mut self, t: plx_machine::machine::Tick) { self.clock.pause(t); }
+
+    pub fn tick(&mut self, t: plx_machine::machine::Tick, active: bool,
+        present: &mut plx_machine::machine::PresentHandle<'_>) {
+        if !active || self.frames.len() < 2 || !self.ready.get() {
+            self.clock.pause(t);
+            return;
+        }
+        self.clock.resume(t);
+        if self.clock.len_ms == 0 { self.clock.start(t, Self::HOLD_MS); }
         if !self.fading {
-            if self.age < Self::HOLD { return; }
-            self.age = 0.0;
+            if self.clock.sample(t) < 1.0 { return; }
             self.fading = true;
-        } else if self.age >= Self::FADE {
+            self.clock.start(t, Self::FADE_MS);
+        }
+        self.mix = self.clock.advance(t, present);
+        if self.mix >= 1.0 {
             self.current = (self.current + 1) % self.frames.len();
-            self.age = 0.0;
+            self.clock = plx_machine::motion::Ramp::default();
+            self.mix = 0.0;
             self.fading = false;
             self.ready.set(false);
+            present.note(plx_machine::present::PresentEvent::Motion);
         }
-        plx_machine::idle::invalidate();
     }
 
     pub fn draw(&self, p: Painter, r: Rect, radius: f32) {
@@ -458,7 +471,7 @@ impl ArtCycle {
         let ready = image.tex != 0 && next.tex != 0 && image.w == next.w && image.h == next.h;
         self.ready.set(ready);
         if self.fading && ready && p.tex_carded_blend(image.tex, next.tex,
-            crate::xfade::smooth(self.age / Self::FADE), art_uv(&art, image.w, image.h, r), r, radius) { return; }
+            crate::xfade::smooth(self.mix), art_uv(&art, image.w, image.h, r), r, radius) { return; }
         card_named_led(p, r, art, None, radius, false, 1.0, 0.0, Some(image));
     }
 }
@@ -466,62 +479,66 @@ impl ArtCycle {
 #[cfg(test)]
 mod art_cycle_tests {
     use super::ArtCycle;
+    use plx_machine::machine::{PresentHandle, Tick};
+    use plx_machine::present::Present;
 
-    fn repaint() -> bool {
-        plx_machine::idle::frame_begin(1.0 / 60.0);
-        plx_machine::idle::note_present(0);
-        plx_machine::idle::should_present(0)
-    }
+    fn tick(ms: u32) -> Tick { Tick { ms, dt_us: 16_000 } }
 
     #[test]
     fn equivalent_frames_cycle_without_changing_the_owners_scene() {
         let _g = plx_base::testlock::serial();
         let mut cycle = ArtCycle::default();
+        let mut present = Present::new();
         cycle.set_frames(&["coast", "painted", "city"]);
         cycle.ready.set(true);
-        repaint();
-        for _ in 0..300 { cycle.tick(1.0 / 60.0, true); }
+        let _ = present.take(0);
+        cycle.tick(tick(16), true, &mut PresentHandle(&mut present));
+        cycle.tick(tick(5000), true, &mut PresentHandle(&mut present));
         assert_eq!(cycle.current, 0);
         assert!(!cycle.fading);
-        assert!(!repaint(), "the hold must not redraw at 60 FPS");
-        cycle.tick(1.1, true);
+        assert!(!present.take(0), "the hold must not redraw at 60 FPS");
+        cycle.tick(tick(6000), true, &mut PresentHandle(&mut present));
         assert!(cycle.fading);
-        assert!(repaint(), "the first fade frame must wake the idle gate");
-        for _ in 0..60 {
-            cycle.tick(1.0 / 60.0, true);
-            assert!(repaint(), "every overlapping frame must be presented");
+        assert!(present.take(0), "the first fade frame must wake the idle gate");
+        for frame in 1..60 {
+            cycle.tick(tick(6000 + frame * 16), true, &mut PresentHandle(&mut present));
+            assert!(present.take(0), "every overlapping frame must be presented");
         }
-        cycle.tick(0.3, true);
+        cycle.tick(tick(7300), true, &mut PresentHandle(&mut present));
         assert_eq!(cycle.current, 1);
         assert!(!cycle.fading);
-        assert!(repaint(), "the final frame must be presented too");
+        assert!(present.take(0), "the final frame must be presented too");
         cycle.ready.set(true);
-        cycle.tick(1.0, true);
-        assert!(!repaint());
+        cycle.tick(tick(7316), true, &mut PresentHandle(&mut present));
+        assert!(!present.take(0));
     }
 
     #[test]
     fn slow_images_hidden_owners_and_single_frames_never_animate() {
         let _g = plx_base::testlock::serial();
         let mut cycle = ArtCycle::default();
+        let mut present = Present::new();
         cycle.set_frames(&["one", "two"]);
-        repaint();
-        cycle.tick(100.0, true);
-        assert_eq!(cycle.age, 0.0);
-        assert!(!repaint());
+        let _ = present.take(0);
+        cycle.tick(tick(1000), true, &mut PresentHandle(&mut present));
+        assert_eq!(cycle.clock.len_ms, 0);
+        assert!(!present.take(0));
         cycle.ready.set(true);
-        cycle.tick(100.0, false);
-        assert_eq!(cycle.age, 0.0);
-        assert!(!repaint());
+        cycle.tick(tick(1016), true, &mut PresentHandle(&mut present));
+        cycle.pause(tick(1100));
+        cycle.tick(tick(20000), false, &mut PresentHandle(&mut present));
+        cycle.tick(tick(21000), true, &mut PresentHandle(&mut present));
+        assert!(!cycle.fading, "suspension must not consume the hold");
+        assert!(!present.take(0));
         cycle.set_frames(&["one", "one"]);
-        repaint();
+        let _ = present.take(0);
         cycle.ready.set(true);
-        cycle.tick(100.0, true);
+        cycle.tick(tick(100000), true, &mut PresentHandle(&mut present));
         assert_eq!(cycle.frames.len(), 1);
-        assert!(!repaint());
+        assert!(!present.take(0));
         cycle.set_frames(&["two", "three"]);
         assert_eq!(cycle.current, 0);
-        assert_eq!(cycle.age, 0.0);
+        assert_eq!(cycle.clock.len_ms, 0);
         assert!(!cycle.ready.get(), "a new pack cannot inherit readiness");
     }
 }

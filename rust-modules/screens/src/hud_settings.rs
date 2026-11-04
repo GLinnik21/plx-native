@@ -834,13 +834,14 @@ impl Machine<InnerHost> for HudPage {
                 }
                 let mut cycle = std::mem::take(&mut self.preview_cycle);
                 cycle.set_frames(&self.preview_frames());
-                cycle.tick(t.dt(), self.preview_active());
+                cycle.tick(*t, self.preview_active(), &mut fx.present());
                 self.preview_cycle = cycle;
                 self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
                 Handled::Yes
             }
             ScreenEvent::Input(InputEvent { kind, .. }) if self.state.editing || matches!(kind, InputKind::SystemKeyboard(_)) => self.typing(kind, cx, fx),
             ScreenEvent::Suspend => {
+                self.preview_cycle.pause(cx.tick);
                 self.state.suspended = true;
                 self.leave_field(fx);
                 Handled::No
@@ -850,6 +851,7 @@ impl Machine<InnerHost> for HudPage {
                 Handled::No
             }
             ScreenEvent::WillLeave(_) | ScreenEvent::Unmount | ScreenEvent::Cover => {
+                self.preview_cycle.pause(cx.tick);
                 self.state.visible = false;
                 if matches!(ev, ScreenEvent::Unmount) {
                     if let SettingsPage::HudDetail(sha) = self.page { fx.push(Fx::App(AppFx::Huds(HudCmd::CancelRegistry(sha)))); }
