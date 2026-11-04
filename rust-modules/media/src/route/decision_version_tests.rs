@@ -386,14 +386,20 @@ fn selected_external_subtitle_remains_common_source_intent_across_resolve() {
     let (port, done, server) = versions_pms_with(URI_DTS_EXTERNAL_SUBTITLE, MDE_TRANSCODE_VIDEO);
     let sid = plx_plex::plex::register_for_test("external-source", "127.0.0.1", port,
         "token", "external-source-client");
-    let env = ResolveEnv::snapshot(&ps,
+    let mut env = ResolveEnv::snapshot(&ps,
         plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-v");
     let plan = build_stream(&plx_base::task::OffFrame::for_test(), "rk-v",
+        "/library/parts/3134/1/file.mkv", "h264", "dca", &env);
+    env.subtitle_override = Some(31343);
+    env.sub_sid = 31343;
+    let explicit = build_stream(&plx_base::task::OffFrame::for_test(), "rk-v",
         "/library/parts/3134/1/file.mkv", "h264", "dca", &env);
     done.send(()).unwrap();
     let _ = server.join().unwrap();
     assert_eq!(plan.source_selection.expect("source intent").subtitle_sid, 31343,
         "a client-drawn sidecar is still the viewer's selected source track");
+    assert_eq!(explicit.source_selection.expect("explicit source intent").subtitle_sid, 31343,
+        "a viewer reconfiguration must retain the selected external source SID");
     plx_plex::plex::reset_servers_for_test();
 }
 
