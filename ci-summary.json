@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-04T12:33:53Z",
+ "generated": "2026-11-04T12:34:14Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -99,6 +99,48 @@
    "state30": "flat",
    "threshold_abs": 20.0,
    "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 31.9,
+   "d30": null,
+   "delta30": null,
+   "delta7": 20.3,
+   "group": "local",
+   "id": "bench.ui",
+   "kind": "local",
+   "label": "Rebuild after editing plx_ui",
+   "n_now": 6,
+   "n_prev": 7,
+   "now": 84.1,
+   "prev7": 63.7,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 28.7,
+   "d30": null,
+   "delta30": null,
+   "delta7": 42.3,
+   "group": "local",
+   "id": "bench.leaf",
+   "kind": "local",
+   "label": "Rebuild after editing plx_base",
+   "n_now": 6,
+   "n_prev": 7,
+   "now": 189.5,
+   "prev7": 147.2,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
    "unit": "s"
   },
   {
@@ -145,17 +187,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -16.5,
+   "change7_pct": -14.1,
    "d30": null,
    "delta30": null,
-   "delta7": -4.3,
+   "delta7": -3.7,
    "group": "local",
    "id": "bench.app",
    "kind": "local",
    "label": "Rebuild after editing the app crate",
-   "n_now": 5,
+   "n_now": 6,
    "n_prev": 7,
-   "now": 21.8,
+   "now": 22.4,
    "prev7": 26.1,
    "shown": true,
    "state": "flat",
@@ -166,17 +208,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -10.5,
+   "change7_pct": -7.0,
    "d30": null,
    "delta30": null,
-   "delta7": -5.5,
+   "delta7": -3.6,
    "group": "local",
    "id": "bench.screens",
    "kind": "local",
    "label": "Rebuild after editing plx_screens",
-   "n_now": 5,
+   "n_now": 6,
    "n_prev": 7,
-   "now": 46.7,
+   "now": 48.6,
    "prev7": 52.2,
    "shown": true,
    "state": "flat",
@@ -187,59 +229,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 17.4,
+   "change7_pct": -0.9,
    "d30": null,
    "delta30": null,
-   "delta7": 11.1,
-   "group": "local",
-   "id": "bench.ui",
-   "kind": "local",
-   "label": "Rebuild after editing plx_ui",
-   "n_now": 5,
-   "n_prev": 7,
-   "now": 74.8,
-   "prev7": 63.7,
-   "shown": true,
-   "state": "flat",
-   "state30": "new",
-   "threshold_abs": 5.0,
-   "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": 14.8,
-   "d30": null,
-   "delta30": null,
-   "delta7": 21.8,
-   "group": "local",
-   "id": "bench.leaf",
-   "kind": "local",
-   "label": "Rebuild after editing plx_base",
-   "n_now": 5,
-   "n_prev": 7,
-   "now": 168.9,
-   "prev7": 147.2,
-   "shown": true,
-   "state": "flat",
-   "state30": "new",
-   "threshold_abs": 5.0,
-   "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": 0.6,
-   "d30": null,
-   "delta30": null,
-   "delta7": 0.9,
+   "delta7": -1.4,
    "group": "local",
    "id": "bench.tests",
    "kind": "local",
    "label": "Unit suite",
-   "n_now": 5,
+   "n_now": 6,
    "n_prev": 7,
-   "now": 155.7,
+   "now": 153.4,
    "prev7": 154.8,
    "shown": true,
    "state": "flat",
@@ -642,7 +642,7 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 1.8,
+   "change7_pct": 5.5,
    "d30": null,
    "delta30": null,
    "delta7": 0.0,
@@ -650,7 +650,7 @@
    "id": "bench.noop",
    "kind": "local",
    "label": "No-op build",
-   "n_now": 5,
+   "n_now": 6,
    "n_prev": 7,
    "now": 0.6,
    "prev7": 0.6,
@@ -786,6 +786,128 @@
    "to": 294
   },
   {
+   "change_pct": 31.9,
+   "commits": [
+    {
+     "pr": 1213,
+     "sha": "f0e9b85b9",
+     "title": "Player: add native URI probes and retain display ownership"
+    },
+    {
+     "pr": 1214,
+     "sha": "e3bb1aebc",
+     "title": "Profiles: Change profile opens on the profile that is watching"
+    },
+    {
+     "pr": 1218,
+     "sha": "a7572c88a",
+     "title": "player: stop fencing viewer HLS Resume on historical runway"
+    },
+    {
+     "pr": 1215,
+     "sha": "01e91f1c4",
+     "title": "Refresh the open library grid atomically after server changes"
+    },
+    {
+     "pr": 1220,
+     "sha": "3b651de0a",
+     "title": "Align Home and Detail heroes and normalize logo sizing"
+    },
+    {
+     "pr": 1222,
+     "sha": "7004bc986",
+     "title": "Use initial 1.0 resource bundles for Player HUD plugins"
+    },
+    {
+     "pr": 1223,
+     "sha": "5d66b9619",
+     "title": "Report diagnostic export failures and add DV CRA/IDR controls"
+    },
+    {
+     "pr": 1224,
+     "sha": "a97bc1b49",
+     "title": "Separate library navigation from Sort & Filter"
+    },
+    {
+     "pr": 1225,
+     "sha": "579f44b97",
+     "title": "Avoid flashing hold-options hint on short OK presses"
+    },
+    {
+     "pr": 1227,
+     "sha": "9ac44e870",
+     "title": "Add automatic intro and credits skipping for Plex Pass viewers"
+    }
+   ],
+   "from": 63.7,
+   "id": "bench.ui",
+   "label": "Rebuild after editing plx_ui",
+   "since": "2026-11-02",
+   "threshold_pct": 25.0,
+   "to": 84.1
+  },
+  {
+   "change_pct": 28.7,
+   "commits": [
+    {
+     "pr": 1213,
+     "sha": "f0e9b85b9",
+     "title": "Player: add native URI probes and retain display ownership"
+    },
+    {
+     "pr": 1214,
+     "sha": "e3bb1aebc",
+     "title": "Profiles: Change profile opens on the profile that is watching"
+    },
+    {
+     "pr": 1218,
+     "sha": "a7572c88a",
+     "title": "player: stop fencing viewer HLS Resume on historical runway"
+    },
+    {
+     "pr": 1215,
+     "sha": "01e91f1c4",
+     "title": "Refresh the open library grid atomically after server changes"
+    },
+    {
+     "pr": 1220,
+     "sha": "3b651de0a",
+     "title": "Align Home and Detail heroes and normalize logo sizing"
+    },
+    {
+     "pr": 1222,
+     "sha": "7004bc986",
+     "title": "Use initial 1.0 resource bundles for Player HUD plugins"
+    },
+    {
+     "pr": 1223,
+     "sha": "5d66b9619",
+     "title": "Report diagnostic export failures and add DV CRA/IDR controls"
+    },
+    {
+     "pr": 1224,
+     "sha": "a97bc1b49",
+     "title": "Separate library navigation from Sort & Filter"
+    },
+    {
+     "pr": 1225,
+     "sha": "579f44b97",
+     "title": "Avoid flashing hold-options hint on short OK presses"
+    },
+    {
+     "pr": 1227,
+     "sha": "9ac44e870",
+     "title": "Add automatic intro and credits skipping for Plex Pass viewers"
+    }
+   ],
+   "from": 147.2,
+   "id": "bench.leaf",
+   "label": "Rebuild after editing plx_base",
+   "since": "2026-11-02",
+   "threshold_pct": 25.0,
+   "to": 189.5
+  },
+  {
    "change_pct": 18.5,
    "commits": [
     {
@@ -891,25 +1013,25 @@
    "group": "local",
    "id": "bench.leaf",
    "label": "Rebuild after editing plx_base",
-   "now": 168.9
+   "now": 189.5
   },
   {
    "group": "local",
    "id": "bench.tests",
    "label": "Unit suite",
-   "now": 155.7
+   "now": 153.4
   },
   {
    "group": "local",
    "id": "bench.ui",
    "label": "Rebuild after editing plx_ui",
-   "now": 74.8
+   "now": 84.1
   },
   {
    "group": "local",
    "id": "bench.screens",
    "label": "Rebuild after editing plx_screens",
-   "now": 46.7
+   "now": 48.6
   }
  ],
  "thresholds": {
