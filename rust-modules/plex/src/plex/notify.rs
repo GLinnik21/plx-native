@@ -437,6 +437,7 @@ mod tests {
     use crate::plex::servers::ServerId;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use plx_base::testnet::{self, CLIENT_WAIT};
 
     use super::fixtures;
 
@@ -751,8 +752,7 @@ mod tests {
         let _g = plx_base::testlock::serial();
         let l = TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = l.local_addr().unwrap().port();
-        let server = std::thread::spawn(move || {
-            let (mut s, _) = l.accept().expect("accept");
+        let server = testnet::serve_once(l, CLIENT_WAIT, move |mut s| {
             let mut req = Vec::new();
             let mut b = [0u8; 1024];
             while !req.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -789,8 +789,7 @@ mod tests {
         let _g = plx_base::testlock::serial();
         let l = TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = l.local_addr().unwrap().port();
-        let server = std::thread::spawn(move || {
-            let (mut s, _) = l.accept().expect("accept");
+        let server = testnet::serve_once(l, CLIENT_WAIT, move |mut s| {
             let mut b = [0u8; 2048];
             let _ = s.read(&mut b);
             s.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
