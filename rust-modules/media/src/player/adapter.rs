@@ -35,7 +35,7 @@ use super::feed_resources::FeedResources;
 use super::timeline;
 use super::backend;
 #[cfg(feature = "play-feed")]
-use super::feed_driver::{FeedDriver, FeedTransportAction};
+use plx_play_feed::feed_driver::{FeedDriver, FeedTransportAction};
 #[cfg(all(test, feature = "play-feed", feature = "hostsim"))]
 use super::threads;
 use plx_base::task::MainThread;
@@ -1648,7 +1648,7 @@ impl PlayerAdapter {
 
     #[cfg(feature = "play-feed")]
     pub(super) fn stage_native_feed(&mut self, attempt: AttemptId, key: SourceKey,
-        prepared: super::engine::NativePrepared) -> Result<(), Failure> {
+        prepared: plx_play_feed::native_executor::NativePrepared) -> Result<(), Failure> {
         self.feed_driver.stage(attempt, key, prepared)
     }
 

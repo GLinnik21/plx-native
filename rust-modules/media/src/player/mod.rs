@@ -37,8 +37,6 @@ pub mod ass_source; // bounded embedded scripts and subtitle presentation clock
 pub mod engine;
 mod plane_boot; // the backend-neutral boot of the ACB plane owner (was Feed's `acb_init`)
 #[cfg(feature = "play-feed")]
-mod feed_driver;
-#[cfg(feature = "play-feed")]
 mod feed_open; // one resolved request for the prepared route's physical feed open
 #[cfg(feature = "play-feed")]
 mod feed_resources; // private ownership of the native feed slot and worker receipts

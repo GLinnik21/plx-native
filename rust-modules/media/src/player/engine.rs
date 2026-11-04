@@ -490,9 +490,7 @@ pub(super) fn prepare_native_open(
     })
 }
 
-/// One physical Load declaration and its native callback guards, prepared before the route owner
-/// mints an attempt. Dropping it on a superseded route retracts both guards automatically.
-pub(super) use plx_play_feed::native_executor::NativePrepared;
+use plx_play_feed::native_executor::NativePrepared;
 
 fn select_seek_mode_for_load() {
     let major = plx_platform::tv::device::info().major;

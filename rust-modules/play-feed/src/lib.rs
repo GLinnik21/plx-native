@@ -3,6 +3,7 @@
 
 pub mod aq;
 pub mod era_callbacks;
+pub mod feed_driver;
 pub mod feed_resources;
 pub mod feed_pump;
 pub mod feed_state;
