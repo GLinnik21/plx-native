@@ -398,15 +398,26 @@ fn selected_external_subtitle_remains_common_source_intent_across_resolve() {
 }
 
 #[cfg(all(feature = "play-uri", feature = "play-feed", feature = "devtriggers"))]
-struct CountingQualified(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+struct CountingQualified {
+    original: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    pms: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
 
 #[cfg(all(feature = "play-uri", feature = "play-feed", feature = "devtriggers"))]
 impl crate::route::uri_preflight::OriginalQualifier for CountingQualified {
     fn qualify(&self, off: &plx_base::task::OffFrame,
         request: crate::route::uri_preflight::OriginalRequest) -> crate::route::uri_preflight::Verdict {
-        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.original.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         crate::route::uri_preflight::OriginalQualifier::qualify(
             &QualifiedOriginal { video: "h264", audio: "dca" }, off, request)
+    }
+
+    fn qualify_pms(&self, off: &plx_base::task::OffFrame,
+        request: crate::route::uri_preflight::PmsRequest)
+        -> crate::route::uri_preflight::PmsVerdict {
+        self.pms.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let prior = QualifiedPms(std::sync::Arc::new(std::sync::Mutex::new(Vec::new())));
+        crate::route::uri_preflight::OriginalQualifier::qualify_pms(&prior, off, request)
     }
 }
 
@@ -611,7 +622,7 @@ fn unknown_uri_qualification_keeps_the_existing_feed_decision_path() {
 
 #[test]
 #[cfg(all(feature = "play-uri", feature = "play-feed", feature = "devtriggers"))]
-fn expired_qualified_landing_retries_feed_once_without_refilling_a_spent_episode() {
+fn expired_original_skips_its_spent_recipe_but_qualifies_unspent_pms_uri() {
     use plx_play_uri::backend::Binding;
     use plx_playback_contract::{BackendKind, Capabilities};
     use super::super::backend_policy::{BackendPolicy, OfferId, Qualification, Selection};
@@ -623,13 +634,16 @@ fn expired_qualified_landing_retries_feed_once_without_refilling_a_spent_episode
         pause: true, seek: true, audio_track: true, subtitle_track: true,
         audio_off: false, subtitle_off: false };
     let qualification_calls = std::sync::Arc::new(AtomicUsize::new(0));
+    let pms_calls = std::sync::Arc::new(AtomicUsize::new(0));
     ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
         crate::route::uri_preflight::ProductEvidence { display_exported: true,
             binding: Binding::Exported { canvas: (1920, 1080) }, callable: capabilities,
             certified: capabilities, preview_rectangle: false },
-        std::sync::Arc::new(CountingQualified(qualification_calls.clone()))));
+        std::sync::Arc::new(CountingQualified {
+            original: qualification_calls.clone(), pms: pms_calls.clone(),
+        })));
     let (seen_tx, seen_rx) = std::sync::mpsc::channel();
-    let (port, done, server) = versions_pms_observed(URI_DTS, MDE_TRANSCODE_VIDEO, Some(seen_tx));
+    let (port, done, server) = versions_pms_observed(URI_DTS, MDE_PMS_OUTPUT, Some(seen_tx));
     let sid = plx_plex::plex::register_for_test("expiring-dts", "127.0.0.1", port,
         "token", "expiring-dts-client");
     let mut meta = plx_data::stores::metadata::MetadataStore::default();
@@ -645,7 +659,7 @@ fn expired_qualified_landing_retries_feed_once_without_refilling_a_spent_episode
     policy.qualify(BackendKind::Uri, OfferId::URI_ORIGINAL, Qualification::Qualified);
     assert!(policy.admitted(BackendKind::Uri, OfferId::URI_ORIGINAL));
     policy.qualify(BackendKind::Uri, OfferId::URI_ORIGINAL, Qualification::Refused);
-    policy.qualify(BackendKind::Uri, OfferId::URI_PMS_REMUX, Qualification::Refused);
+    policy.qualify(BackendKind::Uri, OfferId::URI_PMS_ENCODE, Qualification::Refused);
     ps.backend_policy = Some(policy);
     let source_selection = crate::route::SourceSelection { server: sid, part_id: 3134,
         audio_sid: 31342, subtitle_sid: 0,
@@ -663,24 +677,28 @@ fn expired_qualified_landing_retries_feed_once_without_refilling_a_spent_episode
     };
     assert!(!first_session.is_empty(), "the qualified Part owns a resource identity");
     assert!(pump_play(&mut ps, &mut meta).is_none(), "expired URI must not start natively");
-    assert!(play_pending(), "the same episode begins a bounded Feed-only re-resolve");
+    assert!(play_pending(), "the same episode begins a bounded re-resolve");
     assert!(wait_resolve_workers_for_test(std::time::Duration::from_secs(15)));
     {
         let slot = PLAY_SLOT.lock().unwrap_or_else(|e| e.into_inner());
         assert!(slot.as_ref().is_some_and(|landing| landing.plan.uri_original.is_none()),
-            "the Feed retry's captured worker input omits URI qualification");
+            "the captured eligibility skips the spent Original recipe");
+        assert!(slot.as_ref().is_some_and(|landing| landing.plan.uri_pms.is_some()),
+            "an unspent compatible PMS URI offer still receives source qualification");
     }
     let _ = pump_play(&mut ps, &mut meta);
     assert_ne!(ps.sess, first_session, "the Feed retry owns a fresh resource identity");
     assert_eq!(qualification_calls.load(AtomicOrdering::SeqCst), 1,
         "the same source episode may not loop through an expired URI offer");
+    assert_eq!(pms_calls.load(AtomicOrdering::SeqCst), 1,
+        "the refreshed accepted PMS source is certified once");
     assert_eq!(ps.source_selection(), Some(source_selection));
     assert!(std::sync::Arc::ptr_eq(&recovery_caps,
         &ps.recovery.as_ref().expect("same recovery episode").attempt()));
     let policy = ps.backend_policy.as_mut().expect("same finite catalog");
     assert!(policy.can_reopen(BackendKind::Uri, OfferId::URI_ORIGINAL),
         "the admitted URI crossing remains in history");
-    assert_eq!(policy.offer(BackendKind::Uri, OfferId::URI_PMS_REMUX)
+    assert_eq!(policy.offer(BackendKind::Uri, OfferId::URI_PMS_ENCODE)
         .expect("catalog recipe").qualification, Qualification::Refused);
     policy.qualify(BackendKind::Feed, OfferId::FEED_PMS_REMUX, Qualification::Qualified);
     assert!(!policy.admitted(BackendKind::Feed, OfferId::FEED_PMS_REMUX),
