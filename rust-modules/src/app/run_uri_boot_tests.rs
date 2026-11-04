@@ -53,6 +53,7 @@ mod uri_boot_tests {
             state.3.push(UriReply { session: SessionId::new(1), request,
                 method, payload: payload.to_owned(), ok: true });
         }
+        fn release(&self) { self.0.lock().unwrap().1 = CloseStatus::Released; }
     }
     impl UriMedia for Bus {
         fn open(&self, _: Shape) -> Result<SessionId, String> {
@@ -74,7 +75,7 @@ mod uri_boot_tests {
             Ok(UriPoll { replies, close: state.1 })
         }
         fn close(&self, _: SessionId) -> Result<(), String> {
-            self.0.lock().unwrap().1 = CloseStatus::Released;
+            self.0.lock().unwrap().1 = CloseStatus::Closing;
             Ok(())
         }
     }
@@ -307,11 +308,24 @@ mod uri_boot_tests {
                 if choice.backend == BackendKind::Feed));
         assert_eq!(rig.app.player.session.reconfigure_pause_goal(), Some(true),
             "the next physical Start still owes the paused viewer goal");
+        assert!(matches!(plx_media::player::begin_resume(&mut rig.app.player.session,
+            revised.resume_ns), plx_media::player::ResumeStart::Settled(
+                plx_media::player::ResumeOutcome::Prepared)));
         let next = plx_media::player::start_playback_tracked(
             &mut rig.app.player.session, &mut rig.app.adapters.player);
         assert_eq!(next, plx_media::player::BufferfeedStartOutcome::Deferred,
             "the qualified Feed successor waits for addressed URI release");
         assert!(rig.app.adapters.player.release_has_queued_start());
+        poll(&mut rig);
+        assert!(rig.app.adapters.player.release_has_queued_start(),
+            "Closing alone cannot admit the successor");
+        bus.release();
+        poll(&mut rig);
+        assert!(!rig.app.adapters.player.release_has_queued_start());
+        assert_eq!(rig.app.adapters.player.backend_snapshot().backend, Some(BackendKind::Feed));
+        assert_eq!(rig.app.adapters.player.backend_viewer_paused(), Some(true));
+        assert_eq!(plx_media::player::play_rate_permille(), 1500,
+            "Feed physical preparation applied the requested rate before its first Play");
     }
 }
 
