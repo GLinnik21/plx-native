@@ -767,6 +767,8 @@ pub(crate) fn exit_player(
         &mut PlayerForegroundActuator { pa: &mut *pa, repause_at },
     );
     let ps = &mut player.session;
+    ps.finish_metric_request(plx_media::player::attempt_metrics::RequestOutcome::Cancelled);
+    pa.sync_request_metrics(ps);
     plx_media::route::cancel_play(ps); // BACK during a load: supersede, drop the landing
     close_player_overlays(pages);
     plx_media::player::stop_playback(ps, pa);
@@ -920,6 +922,9 @@ pub(crate) fn finish_playback(
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) -> bool {
+    player.session.finish_metric_request(
+        plx_media::player::attempt_metrics::RequestOutcome::Ended);
+    pa.sync_request_metrics(&mut player.session);
     if plx_media::route::next_episode_mode() != plx_media::route::NextEpisodeMode::Off
         && play_up_next(&mut player.session, pa, HUD_LINGER_MS, pages, bridge)
     {

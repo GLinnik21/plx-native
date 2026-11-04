@@ -2018,6 +2018,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // Engine and is polled here on every frame as well.
         let backend_at = app.adapters.player.backend_tick();
         let _ = app.adapters.player.backend_poll_session_at(&mut app.player.session, backend_at);
+        app.adapters.player.observe_backend_condition(&app.player.session, foreground);
         // **The ONE place the Player machine is asked whether the hardware video plane is bound**
         // (spec §9), immediately after the pump that advances the ACB bind transaction and BEFORE
         // the container tree's frame, so the whole iteration reads one answer. Outside the
@@ -2078,6 +2079,16 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // failure there is. It observes the value the HUD renders and reports only transitions,
         // so the steady-state cost is one atomic load.
         plx_media::player::report::tick(&mut app.player.session);
+        if plx_media::player::state(&app.player.session)
+            == plx_media::player::PlaybackState::Error {
+            app.player.session.finish_metric_request(
+                plx_media::player::attempt_metrics::RequestOutcome::Failed(
+                    plx_media::player::attempt_metrics::Failure {
+                        stage: plx_media::player::attempt_metrics::Stage::Unknown,
+                        cause: plx_media::player::attempt_metrics::Cause::Unknown,
+                    }));
+            app.adapters.player.sync_request_metrics(&mut app.player.session);
+        }
         // end-of-stream: the pipeline drained at the credits → hand off to Up Next when the
         // show has another episode queued and the Next episode preference is not Off, else leave
         // the player (back to the detail page or home, whichever is behind), instead of freezing
@@ -2106,6 +2117,9 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
             // The same end with no player page to leave: nothing else would ever stop this
             // engine, and its reporter would keep posting the final position forever.
             log("EOS: stopping an off-route engine nothing owns");
+            app.player.session.finish_metric_request(
+                plx_media::player::attempt_metrics::RequestOutcome::Ended);
+            app.adapters.player.sync_request_metrics(&mut app.player.session);
             plx_media::player::stop_playback(&mut app.player.session, &mut app.adapters.player);
         }
         // Up Next countdown elapsed → start the queued episode on its own. Beside the EOS

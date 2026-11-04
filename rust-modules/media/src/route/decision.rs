@@ -934,6 +934,17 @@ impl PlaybackSession {
         std::mem::take(&mut self.pending_metric_lifecycle)
     }
 
+    /// A common terminal verdict, after recovery is exhausted or the viewer leaves. Physical
+    /// command refusal alone must never call this; its source episode can still recover.
+    pub fn finish_metric_request(&mut self,
+        outcome: crate::player::attempt_metrics::RequestOutcome) {
+        if let Some(request) = self.metric_request.take() {
+            self.pending_metric_lifecycle.push(crate::player::backend::RequestLifecycle::Finish {
+                request, outcome,
+            });
+        }
+    }
+
     pub fn reconfigure_pause_goal(&self) -> Option<bool> { self.reconfigure_pause_goal }
 
     pub fn set_reconfigure_pause_goal(&mut self, paused: bool) {

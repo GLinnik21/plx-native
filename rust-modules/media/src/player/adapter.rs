@@ -623,6 +623,35 @@ impl PlayerAdapter {
         }
     }
 
+    /// Project the addressed common readout into intentional/eligible time for the active
+    /// physical attempt. An old session view cannot classify its successor's interval.
+    pub fn observe_backend_condition(&mut self, ps: &crate::route::PlaybackSession,
+        foreground: bool) {
+        let snapshot = self.backend.snapshot();
+        let (Some(backend), Some(attempt)) = (snapshot.backend, snapshot.attempt) else {
+            return;
+        };
+        if ps.attempt_view().attempt().map(|a| a.contract_id()) != Some(attempt) {
+            return;
+        }
+        use super::attempt_metrics::Condition;
+        let condition = if !foreground {
+            Condition::Held
+        } else if self.backend.viewer_paused(backend, attempt) == Some(true) {
+            Condition::Paused
+        } else {
+            match super::state(ps) {
+                super::PlaybackState::Seeking => Condition::Seeking,
+                super::PlaybackState::Playing => Condition::Playing,
+                super::PlaybackState::Buffering
+                    if super::rebuffering(ps) == Some(true) => Condition::Rebuffering,
+                _ => Condition::Unknown,
+            }
+        };
+        let result = self.backend.condition_at(backend, attempt, condition, self.backend_tick());
+        Self::record_backend_metrics(&result.metrics);
+    }
+
     /// The existing bounded, credential-scrubbed local diagnostic ring is the recorder for
     /// every typed backend metric notice. These values contain only IDs, enums and durations.
     fn record_backend_metrics(notices: &[backend::MetricNotice]) {
