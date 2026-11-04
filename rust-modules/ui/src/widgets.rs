@@ -396,6 +396,136 @@ impl Art<'_> {
     }
 }
 
+/// A display-only cycle of equivalent, content-addressed PNGs. The owner supplies the frames
+/// and Tick time; image requests still use the shared card source. Holds are quiet, hidden
+/// owners pause, and a slow next image never replaces the current picture with a skeleton.
+#[derive(Default)]
+pub struct ArtCycle {
+    frames: Vec<String>,
+    current: usize,
+    age: f32,
+    fading: bool,
+    ready: std::cell::Cell<bool>,
+}
+
+impl ArtCycle {
+    const HOLD: f32 = 6.0;
+    const FADE: f32 = 1.2;
+
+    pub fn set_frames(&mut self, frames: &[&str]) {
+        let mut unique = Vec::new();
+        for frame in frames {
+            if !unique.contains(frame) { unique.push(*frame); }
+        }
+        if self.frames.iter().map(String::as_str).eq(unique.iter().copied()) { return; }
+        self.frames = unique.into_iter().map(str::to_owned).collect();
+        self.current = 0;
+        self.age = 0.0;
+        self.fading = false;
+        self.ready.set(false);
+        plx_machine::idle::invalidate();
+    }
+
+    pub fn is_empty(&self) -> bool { self.frames.is_empty() }
+
+    pub fn tick(&mut self, dt: f32, active: bool) {
+        if !active || self.frames.len() < 2 || !self.ready.get() || !dt.is_finite() { return; }
+        self.age += dt.max(0.0);
+        if !self.fading {
+            if self.age < Self::HOLD { return; }
+            self.age = 0.0;
+            self.fading = true;
+        } else if self.age >= Self::FADE {
+            self.current = (self.current + 1) % self.frames.len();
+            self.age = 0.0;
+            self.fading = false;
+            self.ready.set(false);
+        }
+        plx_machine::idle::invalidate();
+    }
+
+    pub fn draw(&self, p: Painter, r: Rect, radius: f32) {
+        let Some(url) = self.frames.get(self.current) else { return };
+        let art = Art::content_png(url);
+        if p.is_recording() {
+            card(p, r, art, radius, false, 1.0, 0.0);
+            return;
+        }
+        let image = resolve_card_art(p, r, &art);
+        let next_url = &self.frames[(self.current + 1) % self.frames.len()];
+        let next_art = Art::content_png(next_url);
+        let next = if self.frames.len() > 1 { resolve_card_art(p, r, &next_art) } else { image };
+        let ready = image.tex != 0 && next.tex != 0 && image.w == next.w && image.h == next.h;
+        self.ready.set(ready);
+        if self.fading && ready && p.tex_carded_blend(image.tex, next.tex,
+            crate::xfade::smooth(self.age / Self::FADE), art_uv(&art, image.w, image.h, r), r, radius) { return; }
+        card_named_led(p, r, art, None, radius, false, 1.0, 0.0, Some(image));
+    }
+}
+
+#[cfg(test)]
+mod art_cycle_tests {
+    use super::ArtCycle;
+
+    fn repaint() -> bool {
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::idle::note_present(0);
+        plx_machine::idle::should_present(0)
+    }
+
+    #[test]
+    fn equivalent_frames_cycle_without_changing_the_owners_scene() {
+        let _g = plx_base::testlock::serial();
+        let mut cycle = ArtCycle::default();
+        cycle.set_frames(&["coast", "painted", "city"]);
+        cycle.ready.set(true);
+        repaint();
+        for _ in 0..300 { cycle.tick(1.0 / 60.0, true); }
+        assert_eq!(cycle.current, 0);
+        assert!(!cycle.fading);
+        assert!(!repaint(), "the hold must not redraw at 60 FPS");
+        cycle.tick(1.1, true);
+        assert!(cycle.fading);
+        assert!(repaint(), "the first fade frame must wake the idle gate");
+        for _ in 0..60 {
+            cycle.tick(1.0 / 60.0, true);
+            assert!(repaint(), "every overlapping frame must be presented");
+        }
+        cycle.tick(0.3, true);
+        assert_eq!(cycle.current, 1);
+        assert!(!cycle.fading);
+        assert!(repaint(), "the final frame must be presented too");
+        cycle.ready.set(true);
+        cycle.tick(1.0, true);
+        assert!(!repaint());
+    }
+
+    #[test]
+    fn slow_images_hidden_owners_and_single_frames_never_animate() {
+        let _g = plx_base::testlock::serial();
+        let mut cycle = ArtCycle::default();
+        cycle.set_frames(&["one", "two"]);
+        repaint();
+        cycle.tick(100.0, true);
+        assert_eq!(cycle.age, 0.0);
+        assert!(!repaint());
+        cycle.ready.set(true);
+        cycle.tick(100.0, false);
+        assert_eq!(cycle.age, 0.0);
+        assert!(!repaint());
+        cycle.set_frames(&["one", "one"]);
+        repaint();
+        cycle.ready.set(true);
+        cycle.tick(100.0, true);
+        assert_eq!(cycle.frames.len(), 1);
+        assert!(!repaint());
+        cycle.set_frames(&["two", "three"]);
+        assert_eq!(cycle.current, 0);
+        assert_eq!(cycle.age, 0.0);
+        assert!(!cycle.ready.get(), "a new pack cannot inherit readiness");
+    }
+}
+
 /// The one art-tile draw op. Resolves `art` to a texture (or a dark skeleton) and draws it at `frame`,
 /// scaled about its centre when `focused`. Textured tiles share the CARD COMPOSITE
 /// ([`Painter::tex_carded`], with [`Painter::tex_carded_still`] folding a still's label ground):

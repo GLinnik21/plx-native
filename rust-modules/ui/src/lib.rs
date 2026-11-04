@@ -1534,6 +1534,29 @@ impl Painter {
             dy,
         );
     }
+    /// A display-only card dissolving between equally sized images, using the card's own
+    /// coverage, sheen and parent cascade once. Returns false if the optional program failed.
+    pub fn tex_carded_blend(self, tex: u32, next: u32, mix: f32, uv: [f32; 4], r: Rect, rad: f32) -> bool {
+        if self.declare(r, 90, |data| {
+            use frame::backdrop::Value;
+            tex.record(data);
+            next.record(data);
+            plx_gfx::gfx::tex_ledger::revision(tex).record(data);
+            plx_gfx::gfx::tex_ledger::revision(next).record(data);
+            mix.record(data);
+            uv.record(data);
+            rad.record(data);
+        }) { return true; }
+        if self.records() { return true; }
+        let tint = self.c(theme::TINT_WHITE);
+        let (blur, _, sa, _) = card_shadow_params(r.h, 0.0, theme::CARD_SHADOW[3]);
+        let blur = self.px(blur);
+        let shadow = self.c(theme::with_a(theme::CARD_SHADOW, sa));
+        let m = self.place(r);
+        plx_gfx::gfx::draw_tex_carded_blend(tex, next, mix, uv, m.x, m.y, m.w, m.h,
+            self.px(rad), tint.as_ptr(), self.px(theme::CARD_SHEEN_W),
+            self.sheen_rim().as_ptr(), blur + 1.0, blur, shadow.as_ptr())
+    }
     /// The still specialization composes the label ground with the artwork. A fade or unsupported
     /// shader returns false so the component can retain its ordinary card and ground passes.
     #[must_use]

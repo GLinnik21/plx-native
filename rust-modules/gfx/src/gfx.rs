@@ -153,6 +153,8 @@ const VS_AMBIENT_DITHERED: &CStr =
 const VS_IMG_DITHERED: &CStr = glsl_vs_dithered!("shaders/vs_img.vert");
 const VS_SRC_DITHERED: &CStr = glsl_vs_dithered!("shaders/vs_src.vert");
 const FS_IMG: &CStr = glsl!("shaders/fs_img.frag");
+const FS_DISSOLVE_PLAIN: &CStr = glsl!("shaders/fs_tex.frag", "#define PLX_DISSOLVE\n");
+const FS_DISSOLVE: &CStr = glsl!("shaders/fs_img.frag", "#define PLX_DISSOLVE\n");
 const FS_FIELD: &CStr = glsl_dithered!("shaders/fs_field.frag");
 const FS_FIELD_PANEL: &CStr = glsl_dithered!("shaders/fs_field_panel.frag");
 const VS_STILL: &CStr = glsl!("shaders/vs_img.vert", "#define PLX_STILL_GROUND\n");
@@ -802,6 +804,10 @@ struct ImageUniforms {
     rimcol: c_int, shinv: c_int, shcol: c_int, focus: c_int,
 }
 // Optional still specialization; the ordinary image shader remains the fallback.
+// Linked only when two images actually overlap; ordinary images keep their existing program.
+static mut DISSOLVE_IMAGE: Option<(c_uint, ImageUniforms, c_int)> = None;
+static mut DISSOLVE_PLAIN: Option<(c_uint, ImageUniforms, c_int)> = None;
+static mut DISSOLVE_TRIED: bool = false;
 static mut STILL_IMAGE: Option<(c_uint, ImageUniforms, c_int, c_int)> = None;
 /// Optional FOCUSED-card specialization ([`VS_FOCUS`]/[`FS_FOCUS`]) — [`IPROG`] remains the
 /// fallback (the plain look, same as before this program existed) if this fails to link.
@@ -3340,6 +3346,52 @@ pub fn draw_tex_uv(
         0.0,
         None,
     );
+}
+
+/// Two equally sized images through the ordinary card compositor. One coverage/opacity
+/// calculation follows the image mix. A failed optional shader leaves the caller's static image.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_tex_carded_blend(tex: c_uint, next: c_uint, mix: f32, crop: [f32; 4],
+    x: f32, y: f32, w: f32, h: f32, radius: f32, tint: *const f32,
+    rimw: f32, rimcol: *const f32, pad: f32, blur: f32, shcol: *const f32) -> bool {
+    // SAFETY: the same render-thread-only lifecycle as the other image specializations.
+    unsafe {
+        if !DISSOLVE_TRIED {
+            DISSOLVE_TRIED = true;
+            let link = |source: &CStr| link_optional_program(VS_IMG.as_ptr(), source.as_ptr()).map(|program| {
+                let loc = |name: &CStr| glGetUniformLocation(program, name.as_ptr());
+                let uniforms = ImageUniforms {
+                    rect: loc(c"u_trect"), tint: loc(c"u_tint"), uvrect: loc(c"u_uvrect"),
+                    card: loc(c"u_card"), rimw: loc(c"u_rimw"), rimcol: loc(c"u_rimcol"),
+                    shinv: loc(c"u_shinv"), shcol: loc(c"u_shcol"), focus: loc(c"u_focus"),
+                };
+                use_prog(program);
+                glUniform2f(loc(c"u_tscreen"), SCR_W, SCR_H);
+                glUniform1i(loc(c"u_tex"), 0);
+                glUniform1i(loc(c"u_next"), 1);
+                (program, uniforms, loc(c"u_mix"))
+            });
+            DISSOLVE_IMAGE = link(FS_DISSOLVE);
+            DISSOLVE_PLAIN = link(FS_DISSOLVE_PLAIN);
+            if std::ptr::addr_of!(DISSOLVE_IMAGE).read().is_none() || std::ptr::addr_of!(DISSOLVE_PLAIN).read().is_none() {
+                log("image dissolve specialization unavailable — keeping static artwork there");
+            }
+        }
+        let image = if takes_plain_exit(radius) { std::ptr::addr_of!(DISSOLVE_PLAIN).read() }
+            else { std::ptr::addr_of!(DISSOLVE_IMAGE).read() };
+        let Some((program, uniforms, blend)) = image else { return false };
+        use_prog(program);
+        glUniform1f(blend, mix.clamp(0.0, 1.0));
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, next);
+        glActiveTexture(GL_TEXTURE0);
+        draw_tex_impl(tex, crop, x, y, w, h, radius, tint, rimw, rimcol, pad, blur,
+            shcol, 0.0, 0.0, Some((program, uniforms)));
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE0);
+        true
+    }
 }
 
 /// **Simulator only: composite `tex` UNDER everything drawn so far this frame** — the television
