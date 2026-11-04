@@ -8724,6 +8724,26 @@ mod lifecycle_regression_tests {
             plx_media::player::backend::MetricNotice::Measured(
                 plx_media::player::attempt_metrics::Fx::Finished(done)) if done.id == request)),
             "the app consumes the runner's terminal metric into bounded local history");
+        // Each Feed attempt that failed is exactly ONE typed record naming Feed and its stage.
+        use plx_media::player::attempt_metrics::{AttemptOutcome, Backend, Incident, Stage};
+        let failed: Vec<_> = rig.app.adapters.player.backend_metric_notices().filter_map(|n| match n {
+            plx_media::player::backend::MetricNotice::Measured(
+                plx_media::player::attempt_metrics::Fx::Incident(record))
+                if matches!(record.incident, Incident::Failed(_)) => Some(*record),
+            _ => None,
+        }).collect();
+        let attempts = summary.recent_attempts.iter().chain(summary.current_attempt.iter());
+        let failed_attempts: Vec<_> = attempts.filter(|a| matches!(a.outcome,
+            Some(AttemptOutcome::Failed(f)) if f.stage != Stage::Release)).map(|a| a.id).collect();
+        assert!(!failed.is_empty());
+        assert!(failed.iter().all(|r| r.backend == Backend::Feed));
+        let mut ids: Vec<_> = failed.iter().map(|r| r.attempt).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), failed.len(), "never two records for one attempt: {failed:?}");
+        let mut expected = failed_attempts.clone();
+        expected.sort();
+        assert_eq!(ids, expected, "every failed attempt has its record");
     }
 
     /// **The plan's headline test.** Library -> play -> the stream reaches its end -> back on the

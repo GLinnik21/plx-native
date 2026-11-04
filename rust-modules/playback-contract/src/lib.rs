@@ -175,6 +175,10 @@ pub enum Observation {
     Presented,
     TrackSelected(Observed<TrackSelection>),
     TrackOff(Observed<TrackKind>),
+    /// A running attempt's media supply ran dry (`true`) and recovered (`false`). Startup
+    /// buffering is not a rebuffer: a driver that cannot tell the two apart emits nothing, and
+    /// the absence stays unknown rather than becoming `false`.
+    Rebuffering(Observed<bool>),
     Failed(Failure),
 }
 

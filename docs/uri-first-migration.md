@@ -112,9 +112,12 @@ stays `Unknown` otherwise. A handoff is recorded once, at the first of its begin
 successor Start, and carries the source attempt's backend and stage. A release failure is
 recorded by the physical-lifecycle owner (`backend_metrics`) once per attempt, even when its
 verdict arrives after the logical request finished or was replaced, because the native release
-outlives the request. These records stay in the adapter's bounded local window; nothing new is
-transmitted, so the consent preview and privacy text are unchanged: a handled error still
-carries the existing backend and terminal-stage classes. The reducer counts a rebuffer only after
+outlives the request. These records stay in the adapter's bounded local window and add no transmitted field, so the
+consent preview and privacy text are unchanged. A URI attempt's mid-playback `bufferingStart`
+now moves the common state from Playing to Buffering, so the existing `playback.quality`
+event's `rebuffers` and `buffering` classes can be non-zero for URI playback, where URI had no
+source for them before; the handled error still carries the existing backend and terminal-stage
+classes. The reducer counts a rebuffer only after
 the request's first confirmed picture (`Observation::Presented`), and no production driver emits
 that observation yet, so rebuffer records, recovered refusals and request startup time have no
 production producer until one does. Preserve the existing local recorder limits and privacy policy;

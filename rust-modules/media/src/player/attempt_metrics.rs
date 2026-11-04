@@ -157,9 +157,9 @@ pub struct Record<R, A> {
 /// Typed local results. The runner decides whether a terminal failure becomes an existing
 /// consented handled report. A recovered refusal is a different observation, emitted only when
 /// a later physical attempt presents its first picture. An `Incident` is the per-event record:
-/// exactly one per accepted failure, rebuffer episode and handoff. Release failures and
-/// start rejections are recorded by the physical-lifecycle owner (`backend_metrics`), not here,
-/// because they outlive the logical request.
+/// exactly one per accepted failure, rebuffer episode and handoff. Start rejections never reach
+/// this reducer (no attempt exists) and release failures outlive the logical request; both are
+/// recorded by the physical-lifecycle owner (`backend_metrics`), not here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Fx<R, A> {
     Incident(Record<R, A>),

@@ -344,7 +344,10 @@ impl Metrics {
                     self.finish_attempt(request, &mut physical,
                         m::AttemptOutcome::Failed(m::Failure { stage, cause: map_cause(reason) }), at, out);
                 }
-                Observation::TrackSelected(_) | Observation::TrackOff(_) => {}
+                // The condition reaches the reducer through the addressed readout
+                // (`PlayerAdapter::observe_backend_condition`), which both drivers share.
+                Observation::Rebuffering(_) | Observation::TrackSelected(_)
+                | Observation::TrackOff(_) => {}
             },
             Fx::CommandRefused { operation, failure, .. } => {
                 if operation == Operation::Pause {
