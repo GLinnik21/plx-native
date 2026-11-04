@@ -1,4 +1,4 @@
-{"updated":"2026-11-04T02:40:32Z",
+{"updated":"2026-11-04T02:50:26Z",
 "ci":[
 {"id":31093855724,"at":"2026-08-06T10:35:26Z","sha":"bdbf8a099","title":"docs: the README promised a ceiling the binary no longer has","jobs":{"cross-build (armv7) + artifact assertions":124,"host checks (NOT a device gate)":73},"pr":null,"conclusion":"success","attempt":1},
 {"id":31099939125,"at":"2026-08-06T12:05:30Z","sha":"dd7266471","title":"docs: cite webosbrew's own guidance on the system FFmpeg","jobs":{"cross-build (armv7) + artifact assertions":122,"host checks (NOT a device gate)":81},"pr":null,"conclusion":"success","attempt":1},
@@ -4485,7 +4485,8 @@
 {"id":41735396072,"at":"2026-11-03T22:58:57Z","sha":"579f44b97","title":"Avoid flashing hold-options hint on short OK presses","pr":1225,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":167,"Windows launcher syntax":23,"Linux simulator build + launch":299,"macOS tests against bundled FFmpeg and ASS":213}},
 {"id":41756365784,"at":"2026-11-04T01:46:48Z","sha":"8128a42a3","title":"Keep installation reassurance in the confirmation only","pr":1226,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":253,"Windows launcher syntax":21,"Linux simulator build + launch":351,"macOS simulator build + launch":221}},
 {"id":41760676290,"at":"2026-11-04T02:25:43Z","sha":"f6fbfa5b7","title":"Merge remote-tracking branch 'origin/main' into codex/automatic-marker-skip","pr":1227,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"Windows launcher syntax":18,"Linux simulator build + launch":338,"macOS tests against bundled FFmpeg and ASS":204},"failed":["macOS simulator build + launch"]},
-{"id":41761442820,"at":"2026-11-04T02:32:47Z","sha":"653a7a2ae","title":"Record replay anchors with the standard simulator feature set","pr":1227,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":222,"Linux simulator build + launch":323,"macOS simulator build + launch":204,"Windows launcher syntax":18}}
+{"id":41761442820,"at":"2026-11-04T02:32:47Z","sha":"653a7a2ae","title":"Record replay anchors with the standard simulator feature set","pr":1227,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":222,"Linux simulator build + launch":323,"macOS simulator build + launch":204,"Windows launcher syntax":18}},
+{"id":41762722683,"at":"2026-11-04T02:44:45Z","sha":"9ac44e870","title":"Add automatic intro and credits skipping for Plex Pass viewers","pr":1227,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":253,"macOS tests against bundled FFmpeg and ASS":327,"macOS simulator build + launch":255,"Windows launcher syntax":19}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
