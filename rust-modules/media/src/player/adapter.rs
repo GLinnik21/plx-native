@@ -518,6 +518,8 @@ pub struct PlayerAdapter {
     #[cfg(feature = "play-uri")]
     uri_route_settled: bool,
     #[cfg(feature = "play-uri")]
+    uri_played_once: bool,
+    #[cfg(feature = "play-uri")]
     uri_stop_requested: bool,
     #[cfg(feature = "play-uri")]
     uri_finalized: bool,
@@ -607,6 +609,8 @@ impl PlayerAdapter {
             uri_recovery: None,
             #[cfg(feature = "play-uri")]
             uri_route_settled: false,
+            #[cfg(feature = "play-uri")]
+            uri_played_once: false,
             #[cfg(feature = "play-uri")]
             uri_stop_requested: false,
             #[cfg(feature = "play-uri")]
@@ -1292,15 +1296,11 @@ impl PlayerAdapter {
         self.uri_offer_id = Some(offer_id);
         self.uri_recovery = None;
         self.uri_route_settled = false;
+        self.uri_played_once = false;
         self.uri_stop_requested = false;
         self.uri_finalized = false;
         self.pending_uri_audio = None;
         self.pending_uri_subtitle = None;
-    }
-
-    #[cfg(feature = "play-uri")]
-    pub fn uri_recovery_pending(&self) -> bool {
-        self.uri_recovery.is_some_and(|pending| !pending.released)
     }
 
     #[cfg(feature = "play-uri")]
@@ -1319,17 +1319,17 @@ impl PlayerAdapter {
 
     #[cfg(feature = "play-uri")]
     fn note_uri_failure(&mut self, ps: &mut crate::route::PlaybackSession,
-        attempt: AttemptId) {
+        attempt: AttemptId, viewer_paused: Option<bool>) {
         let Some(route_attempt) = self.uri_route_attempt.filter(|route|
             route.contract_id() == attempt) else { return; };
         if self.uri_recovery.as_ref().is_some_and(|pending|
             pending.notice.attempt == route_attempt) { return; }
         let Some(offer_id) = self.uri_offer_id else { return; };
-        let phase = if self.uri_route_settled { crate::route::UriFailurePhase::Runtime }
+        let phase = if self.uri_played_once { crate::route::UriFailurePhase::Runtime }
             else { crate::route::UriFailurePhase::Startup };
         let known_position_ns = super::intended_pos_known_ns(ps);
         if !ps.can_retry_uri_as_feed(route_attempt, offer_id, phase, known_position_ns) { return; }
-        let Some(viewer_paused) = self.backend.viewer_paused(BackendKind::Uri, attempt) else {
+        let Some(viewer_paused) = viewer_paused else {
             return;
         };
         if !ps.mark_uri_recovery_pending(route_attempt) { return; }
@@ -1369,6 +1369,9 @@ impl PlayerAdapter {
         at: super::attempt_metrics::Tick) -> backend::RunResult {
         #[cfg(feature = "play-uri")]
         self.refresh_uri_qualification(ps);
+        #[cfg(feature = "play-uri")]
+        let uri_viewer_goal = self.uri_route_attempt.and_then(|route|
+            self.backend.viewer_paused(BackendKind::Uri, route.contract_id()));
         let result = self.backend_poll_at(at);
         #[cfg(feature = "play-uri")]
         let mut failed_startup = None;
@@ -1377,8 +1380,13 @@ impl PlayerAdapter {
             if let plx_playback_contract::Fx::AcceptedObservation {
                 backend: BackendKind::Uri, attempt, observation,
             } = *notice {
+                if matches!(observation, plx_playback_contract::Observation::Playback(observed)
+                    if observed.value == Playback::Playing)
+                    && self.uri_route_attempt.is_some_and(|route| route.contract_id() == attempt) {
+                    self.uri_played_once = true;
+                }
                 if matches!(observation, plx_playback_contract::Observation::Failed(_)) {
-                    self.note_uri_failure(ps, attempt);
+                    self.note_uri_failure(ps, attempt, uri_viewer_goal);
                 }
                 self.publish_uri_observation(ps, attempt, observation);
             }
@@ -1407,7 +1415,7 @@ impl PlayerAdapter {
                     backend: BackendKind::Uri, attempt, failure, ..
                 } => {
                     failed_startup = Some(attempt);
-                    self.note_uri_failure(ps, attempt);
+                    self.note_uri_failure(ps, attempt, uri_viewer_goal);
                     self.publish_uri_observation(ps, attempt,
                         plx_playback_contract::Observation::Failed(failure));
                     if let Some(route_attempt) = self.uri_route_attempt.filter(|route|
