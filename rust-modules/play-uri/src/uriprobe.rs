@@ -212,7 +212,6 @@ pub struct Config {
 // Payloads. The only place a URL is spelled into text.
 
 pub use super::uri_protocol::{build_load, parse_event, scrub_text, AbrBps, MediaId, Message, Method, UriCall, MAX_ABR_BPS};
-use super::uri_protocol::VideoFacts;
 use super::uri_protocol::{Ev, Seen};
 #[cfg(test)]
 use super::uri_protocol::SCRUBBED_TEXT_CHARS;
@@ -220,19 +219,9 @@ use super::uri_protocol::SCRUBBED_TEXT_CHARS;
 // ---------------------------------------------------------------------------------------------
 // Events in
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AcbRequest(u64);
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AcbStep { Check, MediaId, Loaded, Connect, VideoData, Display }
-#[derive(Clone, Debug, PartialEq)]
-pub enum AcbOp {
-    Check { dass: bool },
-    MediaId { media_id: MediaId },
-    Loaded,
-    Connect { enabled: bool },
-    VideoData { media_id: MediaId, video: VideoFacts },
-    Display,
-}
+// The ACB steps are the shared bind sequence's (`acb_bind`); this machine only reports them.
+pub use super::acb_bind::{AcbRequest, Op as AcbOp};
+use super::acb_bind::{AcbBind, Event as AcbEvent, Failure as AcbFailure, Fx as AcbFx};
 
 /// What the driver feeds [`UriProbe::step`].
 #[derive(Clone, Debug, PartialEq)]
@@ -321,9 +310,8 @@ enum Phase {
     Idle,
     Registering { deadline: u64 },
     AwaitingClose,
-    AcbBinding { request: AcbRequest, step: AcbStep, deadline: u64 },
-    AcbWaitingVideo { deadline: u64 },
-    AcbWait { next: AcbStep, deadline: u64 },
+    /// The shared ACB sequence ([`AcbBind`]) owns its own steps, paces and deadlines.
+    Acb,
     Loading { deadline: u64 },
     SettingWindow { deadline: u64 },
     Starting { deadline: u64 },
@@ -338,7 +326,7 @@ impl Phase {
     fn name(self) -> &'static str {
         match self {
             Phase::Idle | Phase::Registering { .. } | Phase::AwaitingClose => "register",
-            Phase::AcbBinding {..} | Phase::AcbWaitingVideo {..} | Phase::AcbWait {..} => "acb",
+            Phase::Acb => "acb",
             Phase::Loading { .. } => "load",
             Phase::SettingWindow { .. } => "setWindowId",
             Phase::Starting { .. } => "play",
@@ -508,8 +496,7 @@ pub struct UriProbe {
     time_unparsed_ms: Option<u64>,
     placed: Option<(u32, u32)>,
     facts: Facts,
-    acb_video: Option<VideoFacts>,
-    acb_sequence: u64,
+    acb: AcbBind,
     foreground_sent: bool,
     requests: std::collections::BTreeMap<(Method, Option<&'static str>), plx_platform::tv::uri::RequestId>,
 }
@@ -525,6 +512,7 @@ impl UriProbe {
         if config.variant == Variant::NoWindow {
             config.window_id = None;
         }
+        let acb = AcbBind::new(config.variant == Variant::AcbDass);
         UriProbe {
             config,
             phase: Phase::Idle,
@@ -538,8 +526,7 @@ impl UriProbe {
             time_unparsed_ms: None,
             placed: None,
             facts: Facts::default(),
-            acb_video: None,
-            acb_sequence: 0,
+            acb,
             foreground_sent: false,
             requests: std::collections::BTreeMap::new(),
         }
@@ -571,7 +558,7 @@ impl UriProbe {
             }
             UriEvent::Closed => {},
             UriEvent::AcbReleaseTail {..} => {},
-            UriEvent::AcbAnswered {request, invoked, completed_ms} => self.acb_answered(request, invoked, completed_ms, fx),
+            UriEvent::AcbAnswered {request, invoked, completed_ms} => self.acb_event(AcbEvent::Answered {request, invoked, completed_ms}, completed_ms, fx),
             UriEvent::Dispatched { method, kind, request } => { self.requests.insert((method, kind), request); },
             UriEvent::Tick => self.tick(now_ms, fx),
             UriEvent::Reply { method, ok, message } => self.reply(method, ok, &message, now_ms, fx),
@@ -599,7 +586,7 @@ impl UriProbe {
         };
         let armed = format!("armed variant={} scheme={} kind={kind} window={window} app={}{}", c.variant.label(), c.scheme.label(), c.app_id, c.bps.label());
         fx.push(self.line(now_ms, &armed));
-        if self.config.variant.acb() { self.acb_dispatch(AcbStep::Check, now_ms, fx); }
+        if self.config.variant.acb() { self.acb_event(AcbEvent::Start, now_ms, fx); }
         else {
             self.phase = Phase::Registering { deadline: now_ms + REGISTER_TIMEOUT_MS };
             fx.push(UriEffect::Open(self.shape));
@@ -627,9 +614,7 @@ impl UriProbe {
 
     fn tick(&mut self, now_ms: u64, fx: &mut Vec<UriEffect>) {
         match self.phase {
-            Phase::AcbBinding {deadline, ..} if now_ms >= deadline => self.stop(now_ms, End::Timeout("acb"), fx),
-            Phase::AcbWait {next, deadline} if now_ms >= deadline => self.acb_dispatch(next, now_ms, fx),
-            Phase::AcbWaitingVideo {deadline} if now_ms >= deadline => self.stop(now_ms, End::Timeout("acb-video"), fx),
+            Phase::Acb => self.acb_event(AcbEvent::Tick, now_ms, fx),
             Phase::Registering { deadline } if now_ms >= deadline => self.stop(now_ms, End::Timeout("register"), fx),
             Phase::Loading { deadline } if now_ms >= deadline => self.stop(now_ms, End::Timeout("load"), fx),
             Phase::SettingWindow { deadline } if now_ms >= deadline => {
@@ -710,7 +695,7 @@ impl UriProbe {
                 if ok {
                     fx.push(self.line(now_ms, &format!("register shape={shape} ok")));
                     self.phase = Phase::Loading { deadline: now_ms + LOAD_TIMEOUT_MS };
-                    let window_id = if self.config.variant.acb() { Some("window_id_dummy".to_owned()) }
+                    let window_id = if self.config.variant.acb() { Some(super::acb_bind::DUMMY_WINDOW_ID.to_owned()) }
                         else if self.config.variant.binds_at_load() { self.config.window_id.clone() } else { None };
                     fx.push(UriEffect::Call(UriCall::Load { window_id, bps: self.config.bps }));
                 } else {
@@ -718,7 +703,7 @@ impl UriProbe {
                     self.next_shape_or_stop(now_ms, End::Refused("register"), fx);
                 }
             }
-            Phase::Loading { .. } | Phase::SettingWindow { .. } | Phase::Starting { .. } | Phase::Playing { .. } | Phase::Driving { .. } | Phase::AcbBinding {..} | Phase::AcbWait {..} | Phase::AcbWaitingVideo {..} => {
+            Phase::Loading { .. } | Phase::SettingWindow { .. } | Phase::Starting { .. } | Phase::Playing { .. } | Phase::Driving { .. } | Phase::Acb => {
                 self.service_message(method, ok, message, now_ms, fx)
             }
             _ => {}
@@ -743,8 +728,7 @@ impl UriProbe {
         if self.requests.get(&(method, message.reply_track)).is_some_and(|request| message.reply_request != Some(*request)) { return; }
         if message.identity_conflict || (self.media_id.is_some() && message.media_id.is_some() && self.media_id != message.media_id) { return; }
         if let Some(video) = message.video_info {
-            self.acb_video = Some(video);
-            if matches!(self.phase, Phase::AcbWaitingVideo {..}) { self.acb_dispatch(AcbStep::MediaId, now_ms, fx); }
+            self.acb_event(AcbEvent::Video(video), now_ms, fx);
         }
         let denied = !ok || message.return_value == Some(false);
         let text = message.why();
@@ -910,7 +894,7 @@ impl UriProbe {
             Ev::EndOfStream => {
                 fx.push(self.line(now_ms, "ev=endOfStream"));
                 self.facts.eos_ev = true;
-                if matches!(self.phase, Phase::Starting { .. } | Phase::Playing { .. } | Phase::Driving { .. } | Phase::AcbBinding {..} | Phase::AcbWait {..} | Phase::AcbWaitingVideo {..}) {
+                if matches!(self.phase, Phase::Starting { .. } | Phase::Playing { .. } | Phase::Driving { .. } | Phase::Acb) {
                     self.stop(now_ms, End::Eos, fx);
                 }
             }
@@ -949,8 +933,8 @@ impl UriProbe {
         if self.config.variant.acb() {
             // Start service transport independently: some firmware emits videoInfo only after Play.
             self.play(now_ms, fx);
-            if self.acb_video.is_some() { self.acb_dispatch(AcbStep::MediaId, now_ms, fx); }
-            else { self.phase = Phase::AcbWaitingVideo {deadline: now_ms.saturating_add(LOAD_TIMEOUT_MS)}; fx.push(self.line(now_ms, "acb waiting for real videoInfo dimensions/rate")); }
+            let media_id = self.media_id.clone().expect("loaded identity");
+            self.acb_event(AcbEvent::Loaded {media_id}, now_ms, fx);
             return;
         }
         match (self.config.variant, self.config.window_id.clone(), self.media_id.clone()) {
@@ -963,44 +947,43 @@ impl UriProbe {
         }
     }
 
-    fn acb_dispatch(&mut self, step: AcbStep, now_ms: u64, fx: &mut Vec<UriEffect>) {
-        let op = match step {
-            AcbStep::Check => AcbOp::Check { dass: self.config.variant == Variant::AcbDass },
-            AcbStep::MediaId => AcbOp::MediaId {media_id: self.media_id.clone().expect("loaded identity")},
-            AcbStep::Loaded => AcbOp::Loaded,
-            AcbStep::Connect => AcbOp::Connect {enabled: self.config.variant == Variant::AcbDass},
-            AcbStep::VideoData => AcbOp::VideoData {media_id: self.media_id.clone().expect("loaded identity"), video: self.acb_video.expect("observed video facts")},
-            AcbStep::Display => AcbOp::Display,
-        };
-        self.acb_sequence = self.acb_sequence.checked_add(1).expect("bounded ACB script");
-        let request = AcbRequest(self.acb_sequence);
-        self.phase = Phase::AcbBinding {request, step, deadline: now_ms.saturating_add(LATE_ID_TIMEOUT_MS)};
-        fx.push(self.line(now_ms, &format!("acb request={} step={step:?}", self.acb_sequence)));
-        fx.push(UriEffect::Acb {request, op});
-    }
-
-    fn acb_answered(&mut self, request: AcbRequest, invoked: bool, now_ms: u64, fx: &mut Vec<UriEffect>) {
-        let Phase::AcbBinding {request: expected, step, deadline} = self.phase else { return };
-        if expected != request { return; }
-        if now_ms >= deadline { self.stop(now_ms, End::Timeout("acb"), fx); return; }
-        fx.push(self.line(now_ms, &format!("acb answer step={step:?} invoked={invoked} (not plane proof)")));
-        if !invoked { self.stop(now_ms, End::Refused("acb"), fx); return; }
-        let next = match step {
-            AcbStep::Check => {
-                self.phase = Phase::Registering {deadline: now_ms.saturating_add(REGISTER_TIMEOUT_MS)};
-                fx.push(UriEffect::Open(self.shape)); return;
+    /// Step the shared ACB sequence and turn what it reports into this machine's phases, log lines
+    /// and effects. `now_ms` is the event's own time (the call's completion for an answer).
+    fn acb_event(&mut self, event: AcbEvent, now_ms: u64, fx: &mut Vec<UriEffect>) {
+        let mut out = Vec::new();
+        self.acb.step(event, now_ms, &mut out);
+        for effect in out {
+            match effect {
+                AcbFx::Run {request, step, op, ..} => {
+                    self.phase = Phase::Acb;
+                    fx.push(self.line(now_ms, &format!("acb request={} step={step:?}", request.number())));
+                    fx.push(UriEffect::Acb {request, op});
+                }
+                AcbFx::WaitingVideo => {
+                    self.phase = Phase::Acb;
+                    fx.push(self.line(now_ms, "acb waiting for real videoInfo dimensions/rate"));
+                }
+                AcbFx::Answered {step, invoked} => {
+                    fx.push(self.line(now_ms, &format!("acb answer step={step:?} invoked={invoked} (not plane proof)")));
+                }
+                AcbFx::GatePassed => {
+                    self.phase = Phase::Registering {deadline: now_ms.saturating_add(REGISTER_TIMEOUT_MS)};
+                    fx.push(UriEffect::Open(self.shape));
+                }
+                AcbFx::Bound => {
+                    self.phase = if self.facts.playing_ms.is_some() { Phase::Playing {frozen_at: now_ms.saturating_add(FROZEN_TIME_MS)} }
+                        else { Phase::Starting {deadline: now_ms.saturating_add(PLAY_TIMEOUT_MS)} };
+                }
+                AcbFx::Failed(failure) => {
+                    let end = match failure {
+                        AcbFailure::Refused => End::Refused("acb"),
+                        AcbFailure::Timeout => End::Timeout("acb"),
+                        AcbFailure::VideoTimeout => End::Timeout("acb-video"),
+                    };
+                    self.stop(now_ms, end, fx);
+                }
             }
-            AcbStep::MediaId => AcbStep::Loaded,
-            AcbStep::Loaded => AcbStep::Connect,
-            AcbStep::Connect => AcbStep::VideoData,
-            AcbStep::VideoData => AcbStep::Display,
-            AcbStep::Display => {
-                self.phase = if self.facts.playing_ms.is_some() { Phase::Playing {frozen_at: now_ms.saturating_add(FROZEN_TIME_MS)} }
-                    else { Phase::Starting {deadline: now_ms.saturating_add(PLAY_TIMEOUT_MS)} };
-                return;
-            }
-        };
-        self.phase = Phase::AcbWait {next, deadline: now_ms.saturating_add(if step == AcbStep::VideoData {300} else {200})};
+        }
     }
 
     fn play(&mut self, now_ms: u64, fx: &mut Vec<UriEffect>) {
@@ -2222,7 +2205,7 @@ mod tests {
         assert!(!fx.iter().any(|fx| matches!(fx,UriEffect::Acb{..})));
         rig.msg("subscribe",r#"{"mediaId":"_m1","playing":true}"#);
         rig.msg("subscribe",r#"{"mediaId":"_m1","currentTime":100}"#);
-        assert!(matches!(rig.probe.phase,Phase::AcbWaitingVideo{..}));
+        assert!(rig.probe.acb.waiting_for_video());
         let mut fx=rig.msg("subscribe",r#"{"mediaId":"_m1","videoInfo":{"width":1280,"height":720,"frameRate":24}}"#);
         for step in 0..5 {
             let request=acb_request(&fx);
@@ -2291,7 +2274,7 @@ mod tests {
         ] {
             let (mut rig,_)=acb_loaded(Variant::AcbDass,false);
             let fx=rig.msg("subscribe",payload);
-            assert!(matches!(rig.probe.phase,Phase::AcbWaitingVideo{..}),"foreign video advanced binding: {fx:?}");
+            assert!(rig.probe.acb.waiting_for_video(),"foreign video advanced binding: {fx:?}");
             assert!(!fx.iter().any(|fx|matches!(fx,UriEffect::Acb{..})));
         }
     }
