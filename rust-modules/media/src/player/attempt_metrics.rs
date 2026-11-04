@@ -453,6 +453,29 @@ mod tests {
     }
 
     #[test]
+    fn automatic_handoff_gap_includes_release_and_resolve_after_recovery_decision() {
+        let mut model = Model::new();
+        start(&mut model, 6, 61);
+        send(&mut model, picture(6, 61, 10));
+        send(&mut model, condition(6, 61, 10, Condition::Playing));
+        let recovery_decided_at = 20;
+        send(&mut model, Event::AttemptFinished { request: 6, attempt: 61,
+            outcome: AttemptOutcome::Failed(Failure { stage: Stage::Decode, cause: Cause::Native }),
+            at: t(recovery_decided_at) });
+        // Native Closing and source resolution occupy 20..40; the physical successor has no
+        // AttemptId until after that work, so the current late handoff starts only at 40.
+        send(&mut model, Event::Handoff { request: 6, from: 61, to: 62, at: t(40) });
+        send(&mut model, Event::AttemptStarted { request: 6, attempt: 62,
+            backend: Backend::Feed, origin: Origin::AutomaticHandoff, at: t(40) });
+        send(&mut model, picture(6, 62, 60));
+        let summary = model.snapshot().unwrap();
+        assert_eq!(summary.handoff_count, 1);
+        assert_eq!(summary.handoff_gap_ms, 60 - recovery_decided_at,
+            "the visible gap begins when recovery is chosen, before native release");
+        assert_eq!(summary.current_attempt.unwrap().first_picture_at, Some(t(60)));
+    }
+
+    #[test]
     fn failed_handoff_target_keeps_one_gap_until_a_later_successor_picture() {
         let mut model = Model::new();
         start(&mut model, 9, 91);
