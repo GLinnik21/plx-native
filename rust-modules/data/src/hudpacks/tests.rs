@@ -1395,7 +1395,7 @@ fn registry_fixture(bytes: &[u8], revoked: bool) -> Vec<u8> {
 fn publish_catalog(store: &mut HudStore, bytes: Vec<u8>) -> Vec<HudEffect> {
     let mut fx=vec![];
     store.step(HudEvent::Catalog(catalog::Event::Open {candidates:vec![],now:10}),&mut fx);
-    let tag=fx.iter().find_map(|e| match e {HudEffect::Catalog(catalog::Effect::Get {tag,..})=>Some(*tag),_=>None}).unwrap();
+    let tag=fx.iter().find_map(|e| match e {HudEffect::Catalog(catalog::CatalogEffect::Get {tag,..})=>Some(*tag),_=>None}).unwrap();
     fx.clear();
     store.step(HudEvent::Catalog(catalog::Event::Reply {tag,result:Ok(catalog::Reply::http(200,None,bytes))}),&mut fx);
     fx

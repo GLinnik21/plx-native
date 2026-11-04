@@ -328,7 +328,7 @@ fn every_row_fits_its_column_in_every_language() {
         every.drops.push(drop_file("ok.plxhud", 40, Ok(())));
         let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
         form.table.compact = false;
-        form.set(hud_form(&every, None), None);
+        form.set(hud_form(&every, None, None), None);
         for e in form.table.app_fit_failures(RouteLayout::screen().sectioned_table().w, language.tag()) {
             out.push(e);
         }
@@ -340,7 +340,7 @@ fn every_row_fits_its_column_in_every_language() {
             let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
             form.table.compact = false;
             let draft = draft.map(|text| TextBuffer::new(text.to_owned(), text.len()));
-            form.set(hud_form(&busy, draft.as_ref()), None);
+            form.set(hud_form(&busy, draft.as_ref(), None), None);
             out.extend(form.table.app_fit_failures(RouteLayout::screen().sectioned_table().w, language.tag()));
         }
     }
@@ -575,8 +575,8 @@ fn gallery_is_shared_navigation_and_hides_incompatible_or_unfit_packages() {
     let mut root=gallery_page(SettingsPage::PlayerHud);
     let browse=root.form.key_at(root.form.index_of(&HudId::Browse).unwrap()).unwrap().0;
     let fx=drive(&mut root,ScreenEvent::Activate(browse),browse);
-    assert!(fx.iter().any(|e| matches!(e.fx,Fx::Nav(NavOp::Push(SettingsPage::HudGallery(EntryId(0)))))));
-    let mut page=gallery_page(SettingsPage::HudGallery(EntryId(0)));
+    assert!(fx.iter().any(|e| matches!(e.fx,Fx::Nav(NavOp::Push(SettingsPage::HudGallery)))));
+    let mut page=gallery_page(SettingsPage::HudGallery);
     assert_eq!(page.form.table.n_rows(),2);
     let mut index=page.list.catalog.index.as_deref().unwrap().clone();
     index.entries[0].package_format="2.0".into();
@@ -589,7 +589,7 @@ fn gallery_is_shared_navigation_and_hides_incompatible_or_unfit_packages() {
 #[test]
 fn gallery_install_and_use_are_separate_and_about_owns_package_metadata() {
     let list=gallery_list();let package=&list.catalog.index.as_ref().unwrap().entries[0];let sha=package.sha();
-    let mut page=gallery_page(SettingsPage::HudDetail(sha,EntryId(42)));
+    let mut page=gallery_page(SettingsPage::HudDetail(sha));
     drive(&mut page,ScreenEvent::Enter(Enter::Fresh {focus:FocusTarget::FirstInGroup(GroupId(0))}),0);
     let fx=drive(&mut page,ScreenEvent::Activate(1),1);
     assert!(matches!(huds(&fx).as_slice(),[HudCmd::FetchRegistry(s)] if *s == sha));
@@ -599,8 +599,8 @@ fn gallery_install_and_use_are_separate_and_about_owns_package_metadata() {
     page.rebuild(Some(HudId::Use));
     let fx=drive(&mut page,ScreenEvent::Activate(1),1);
     assert!(matches!(huds(&fx).as_slice(),[HudCmd::Select(id)] if *id == package.id));
-    assert!(fx.iter().any(|e|matches!(e.fx,Fx::Nav(NavOp::PopTo(EntryId(42))))));
-    let about=gallery_page(SettingsPage::HudAbout(sha,EntryId(42)));
+    assert!(fx.iter().any(|e|matches!(e.fx,Fx::Nav(NavOp::PopToArg(SettingsPage::PlayerHud)))));
+    let about=gallery_page(SettingsPage::HudAbout(sha));
     assert!(about.form.index_of(&HudId::Fact(0)).is_some());
     assert!(page.form.index_of(&HudId::Fact(0)).is_none(),"metadata is secondary");
 }
@@ -608,7 +608,7 @@ fn gallery_install_and_use_are_separate_and_about_owns_package_metadata() {
 #[test]
 fn preview_focus_and_back_never_choose_a_different_scene() {
     let list=gallery_list();let package=list.catalog.index.as_ref().unwrap().entries.iter().find(|p|p.name=="Reference").unwrap();
-    let mut page=gallery_page(SettingsPage::HudPreview(package.sha(),EntryId(9)));
+    let mut page=gallery_page(SettingsPage::HudPreview(package.sha()));
     drive(&mut page,tick(),1);assert_eq!(page.scenes().len(),3);
     drive(&mut page,ScreenEvent::Activate(2),2);assert_eq!(page.state.scene,1);
     let controls=page.controls.as_ref().unwrap();
@@ -626,11 +626,11 @@ fn gallery_forms_and_preview_controls_fit_every_shipped_language() {
     for language in SHIPPED {
         let _guard=language_on_this_thread_for_test(language);
         let list=gallery_list();let sha=list.catalog.index.as_ref().unwrap().entries[1].sha();
-        for dest in [SettingsPage::PlayerHud,SettingsPage::HudGallery(EntryId(0)),SettingsPage::HudDetail(sha,EntryId(0)),SettingsPage::HudAbout(sha,EntryId(0))] {
+        for dest in [SettingsPage::PlayerHud,SettingsPage::HudGallery,SettingsPage::HudDetail(sha),SettingsPage::HudAbout(sha)] {
             let page=gallery_page(dest);
             failures.extend(page.form.table.app_fit_failures(RouteLayout::screen().sectioned_table().w,language.tag()));
         }
-        let page=gallery_page(SettingsPage::HudPreview(sha,EntryId(0)));
+        let page=gallery_page(SettingsPage::HudPreview(sha));
         let controls=plx_ui::preview_controls::PreviewControls::new(page.scenes().iter().map(|(label,_)|(*label).into()),&ShippedMeasure);
         for elem in 0..controls.len() as u32 {
             let r=controls.place(elem).unwrap().rect;
@@ -638,4 +638,41 @@ fn gallery_forms_and_preview_controls_fit_every_shipped_language() {
         }
     }
     plx_ui::table::assert_no_fit_failures(&failures);
+}
+
+#[test]
+fn gallery_preview_never_uses_a_plex_server_slot() {
+    let page=gallery_page(SettingsPage::HudGallery);
+    match page.view().header.preview.expect("the first catalog appearance has a preview") {
+        plx_ui::widgets::Art::Thumb {sid,..} => assert_eq!(sid,plx_plex::plex::ServerId::UNSET.raw()),
+        _ => panic!("the native preview must use the public image source"),
+    }
+}
+
+#[test]
+fn a_failed_index_refresh_does_not_disable_an_explicit_cached_package_download() {
+    let list=gallery_list();let sha=list.catalog.index.as_ref().unwrap().entries[0].sha();
+    let mut page=gallery_page(SettingsPage::HudDetail(sha));
+    page.list.catalog.refresh_failed=true;page.rebuild(None);
+    let fx=drive(&mut page,ScreenEvent::Activate(1),1);
+    assert!(matches!(huds(&fx).as_slice(),[HudCmd::FetchRegistry(s)] if *s==sha));
+    for notice in [Notice::Refused {sha,reason:Refusal::Changed},Notice::NotWritten {sha:Some(sha)}] {
+        page.list.notice=Some(notice);page.rebuild(None);
+        assert_eq!(page.copy,copy_of(&page.list,None),"the initiating detail page must explain the failure");
+    }
+    let mut fresh=gallery_page(SettingsPage::HudDetail(sha));
+    fresh.list.notice=page.list.notice.clone();fresh.rebuild(None);
+    assert_ne!(fresh.copy,page.copy,"another view does not inherit an unrelated install failure");
+}
+
+#[test]
+fn the_first_hud_listing_seats_the_current_choice_until_the_reader_moves() {
+    let (page,_)=page_with(list());
+    assert_eq!(page.form.selected_id(),Some(&HudId::Pack("com.example.a".into())));
+    let mut page=HudPage::new(EntryId(0));
+    let emitted=drive(&mut page,ScreenEvent::Enter(Enter::Fresh{focus:FocusTarget::FirstInGroup(GroupId(0))}),ADDRESS_KEY);
+    let tx=match huds(&emitted).as_slice(){[HudCmd::Open(tx)]=>tx.clone(),_=>panic!("open")};
+    drive(&mut page,ScreenEvent::FocusMoved {from:None,to:FocusKey{entry:EntryId(0),elem:ADDRESS_KEY},by:plx_machine::machine::By::Dir},ADDRESS_KEY);
+    tx.send(list()).unwrap();drive(&mut page,tick(),ADDRESS_KEY);
+    assert_eq!(page.form.selected_id(),Some(&HudId::Address),"an intentional cursor is preserved across the listing");
 }

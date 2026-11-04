@@ -1256,7 +1256,7 @@
     "description": "Settings > Playback row and page title: the look of the playback controls (the player HUD)."
   },
   "settings.hud.copy": {
-    "value": "Choose how the playback controls look. Packages copied to this TV's HUD folder are listed here.",
+    "value": "Choose how the playback controls look.",
     "description": "Settings > Playback > Player HUD: the line under the page title."
   },
   "settings.hud.classic": {
@@ -1465,10 +1465,6 @@
     "value": "No HUDs are available for this app and language.",
     "description": "Player HUD gallery: empty"
   },
-  "settings.hud.offline": {
-    "value": "Offline. Saved previews are available; connect to install.",
-    "description": "Player HUD gallery: offline"
-  },
   "settings.hud.gallery_install_question": {
     "value": "Install this HUD?",
     "description": "Player HUD gallery: gallery install question"
@@ -1523,5 +1519,13 @@
   "settings.hud.unavailable": {
     "value": "This HUD is no longer available in the catalog.",
     "description": "A catalog refresh removed the package a detail view was showing. Its preview remains viewable; installation is disabled."
+  },
+  "settings.hud.catalog_cached": {
+    "value": "Couldn't refresh HUDs. Showing the saved catalog.",
+    "description": "Gallery index-refresh failure; does not claim the device is disconnected and does not disable explicit package downloads."
+  },
+  "settings.hud.catalog_unavailable": {
+    "value": "Couldn't load HUDs. Try again later.",
+    "description": "Gallery index-refresh failure; does not claim the device is disconnected and does not disable explicit package downloads."
   }
 }

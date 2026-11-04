@@ -100,8 +100,8 @@ enum HudAction {
     /// A row with nothing to do: a file that cannot be installed and has no hash to name.
     Inert,
     FetchRegistry(Sha),
-    Use(String, EntryId),
-    RemoveAndReturn(String, EntryId),
+    Use(String),
+    RemoveAndReturn(String),
 }
 
 /// Row keys: a package's position, then the removals and the drop files in their own ranges.
@@ -133,11 +133,13 @@ struct State {
     scene: u32,
     visible: bool,
     pending_select_focus: bool,
+    registry_request: bool,
+    provisional: bool,
 }
 impl LogicalState for State {
     fn write(&self, c: &mut Canon) {
         c.u32(self.selected).u32(self.rows).u8(self.notice).bool(self.confirming).bool(self.affirmative).u32(self.alert_scroll)
-            .bool(self.editing).bool(self.fetching).u8(self.kind).u32(self.scene).bool(self.visible).bool(self.pending_select_focus);
+            .bool(self.editing).bool(self.fetching).u8(self.kind).u32(self.scene).bool(self.visible).bool(self.pending_select_focus).bool(self.registry_request).bool(self.provisional);
     }
     fn probe(&self, out: &mut String) {
         out.push_str(&format!(
@@ -256,7 +258,7 @@ fn facts_of(entry: &Entry, list: &HudList) -> Vec<String> {
 
 /// The page's rows from the list alone: the packages (the built-in first), a removal row for each installed
 /// one, and the drop files under their own header when there are any.
-fn hud_form(list: &HudList, draft: Option<&TextBuffer>) -> Form<HudId, HudAction, SettingsPage> {
+fn hud_form(list: &HudList, draft: Option<&TextBuffer>, browse: Option<SettingsPage>) -> Form<HudId, HudAction, SettingsPage> {
     let mut packs = FormSection::new("");
     let mut removals = FormSection::new("");
     for (i, entry) in list.entries.iter().enumerate() {
@@ -267,7 +269,11 @@ fn hud_form(list: &HudList, draft: Option<&TextBuffer>) -> Form<HudId, HudAction
         }
         packs = packs.item_keyed(HudId::Pack(entry.id.clone()), RowKey(i as u32), RowKind::Choice, HudAction::Select(entry.id.clone()), row)
             .disabled(entry.loadable.is_err());
-        if entry.id != BUILTIN_CLASSIC {
+        let managed_in_gallery = list.gallery_enabled && entry.sha.is_some_and(|sha|
+            list.catalog.index.as_ref().is_some_and(|index| index.entries.iter().any(|p| p.sha() == sha
+                && p.compatible(&list.app_version, &list.language_tag, plx_appkit::hud_format::bundle::MAX_ARTIFACT_BYTES)))
+                && list.catalog.revoked(sha).is_none() && !list.unfit.contains(&sha));
+        if entry.id != BUILTIN_CLASSIC && !managed_in_gallery {
             let row = Row::new(&name).server_label().detail(plx_platform::i18n::msg::settings_hud_remove());
             removals = removals.item_keyed(HudId::Remove(entry.id.clone()), RowKey(REMOVE_KEY + i as u32), RowKind::Button, HudAction::Remove(entry.id.clone()), row);
         }
@@ -294,7 +300,12 @@ fn hud_form(list: &HudList, draft: Option<&TextBuffer>) -> Form<HudId, HudAction
         };
         folder = folder.item_keyed(id, RowKey(DROP_KEY + i as u32), RowKind::Button, action, row).disabled(file.status.is_err());
     }
-    Form::new().section(packs).section(removals).section(address).section(folder)
+    let mut gallery = FormSection::new("");
+    if let Some(page) = browse {
+        gallery = gallery.item_keyed(HudId::Browse, RowKey(0x4000), RowKind::Nav(page), HudAction::Inert,
+            Row::new(plx_platform::i18n::msg::settings_hud_browse()));
+    }
+    Form::new().section(packs).section(gallery).section(removals).section(address).section(folder)
 }
 
 /// What the line under the title says: the last notice, else what the page is.
@@ -319,7 +330,7 @@ impl HudPage {
             title: String::new(),
             parent: String::new(),
             form: FormTable::new(BAND),
-            state: State { selected: 0, rows: 0, notice: 0, confirming: false, affirmative: false, alert_scroll: 0, editing: false, fetching: false, kind: 0, scene: 0, visible: false, pending_select_focus: false },
+            state: State { selected: 0, rows: 0, notice: 0, confirming: false, affirmative: false, alert_scroll: 0, editing: false, fetching: false, kind: 0, scene: 0, visible: false, pending_select_focus: false, registry_request: false, provisional: true },
             list: HudList::default(),
             copy: String::new(),
             rx,
@@ -345,7 +356,7 @@ impl HudPage {
     pub fn at(entry: EntryId, page: SettingsPage) -> Self {
         let mut out = Self::new(entry);
         out.page = page;
-        out.state.kind = match page { SettingsPage::HudGallery(_) => 1, SettingsPage::HudDetail(..) => 2,
+        out.state.kind = match page { SettingsPage::HudGallery => 1, SettingsPage::HudDetail(..) => 2,
             SettingsPage::HudAbout(..) => 3, SettingsPage::HudPreview(..) => 4, _ => 0 };
         out.rebuild(None);
         out
@@ -353,32 +364,30 @@ impl HudPage {
 
     fn package(&self) -> Option<&plx_data::hudpacks::catalog::Package> {
         let sha = match self.page {
-            SettingsPage::HudDetail(sha, _) | SettingsPage::HudAbout(sha, _) | SettingsPage::HudPreview(sha, _) => sha,
+            SettingsPage::HudDetail(sha) | SettingsPage::HudAbout(sha) | SettingsPage::HudPreview(sha) => sha,
             _ => return None,
         };
         self.list.catalog.package(sha)
     }
 
     fn gallery_form(&self) -> (Form<HudId, HudAction, SettingsPage>, String, String, String) {
+        // placeholder-exempt: Selects copy only; Header::with_pending_copy counts and sentinel-paints its loading read-out.
         use plx_platform::i18n::msg;
         let mut rows = FormSection::new("");
         let (title, parent, mut copy) = match self.page {
             SettingsPage::PlayerHud => {
-                let form = hud_form(&self.list, self.state.editing.then_some(&self.draft));
-                if self.list.gallery_enabled {
-                    rows = rows.item_keyed(HudId::Browse, RowKey(0x4000), RowKind::Nav(SettingsPage::HudGallery(self.entry)),
-                        HudAction::Inert, Row::new(msg::settings_hud_browse()));
-                }
-                return (form.then(Form::new().section(rows)), msg::settings_hud_title().into(), parent_title().into(), copy_of(&self.list, self.address_error));
+                let browse = self.list.gallery_enabled.then_some(SettingsPage::HudGallery);
+                let form = hud_form(&self.list, self.state.editing.then_some(&self.draft), browse);
+                return (form, msg::settings_hud_title().into(), parent_title().into(), copy_of(&self.list, self.address_error));
             }
-            SettingsPage::HudGallery(owner) => {
+            SettingsPage::HudGallery => {
                 if self.list.gallery_enabled {
                     if let Some(index) = &self.list.catalog.index {
                         for (i, package) in index.entries.iter().enumerate().filter(|(_, p)|
                             p.compatible(&self.list.app_version, &self.list.language_tag, plx_appkit::hud_format::bundle::MAX_ARTIFACT_BYTES)
                                 && self.list.catalog.revoked(p.sha()).is_none() && !self.list.unfit.contains(&p.sha())) {
                             rows = rows.item_keyed(HudId::Catalog(package.sha()), RowKey(i as u32),
-                                RowKind::Nav(SettingsPage::HudDetail(package.sha(), owner)), HudAction::Inert,
+                                RowKind::Nav(SettingsPage::HudDetail(package.sha())), HudAction::Inert,
                                 Row::new(&package.name).server_label());
                         }
                     }
@@ -386,27 +395,27 @@ impl HudPage {
                 let empty = self.list.catalog.index.as_ref().is_none_or(|index| !index.entries.iter().any(|p|
                     p.compatible(&self.list.app_version, &self.list.language_tag, plx_appkit::hud_format::bundle::MAX_ARTIFACT_BYTES)
                         && self.list.catalog.revoked(p.sha()).is_none() && !self.list.unfit.contains(&p.sha())));
-                let copy = if self.list.catalog.offline { msg::settings_hud_offline() }
+                let copy = if self.list.catalog.refresh_failed { if self.list.catalog.index.is_some() { msg::settings_hud_catalog_cached() } else { msg::settings_hud_catalog_unavailable() } }
                     else if self.list.catalog.fetching && empty { msg::settings_hud_loading() }
                     else if empty { msg::settings_hud_empty() } else { msg::settings_hud_gallery_copy() };
                 (msg::settings_hud_gallery().into(), msg::settings_hud_title().into(), copy.into())
             }
-            SettingsPage::HudDetail(sha, owner) | SettingsPage::HudPreview(sha, owner) => {
+            SettingsPage::HudDetail(sha) | SettingsPage::HudPreview(sha) => {
                 let Some(package) = self.package() else {
                     return (Form::new(), msg::settings_hud_title().into(), msg::settings_hud_gallery().into(), msg::settings_hud_empty().into());
                 };
-                rows = rows.item_keyed(HudId::Preview, RowKey(0), RowKind::Nav(SettingsPage::HudPreview(sha, owner)),
+                rows = rows.item_keyed(HudId::Preview, RowKey(0), RowKind::Nav(SettingsPage::HudPreview(sha)),
                     HudAction::Inert, Row::new(msg::settings_hud_preview()));
                 let installed = self.list.entries.iter().find(|e| e.id == package.id);
                 if let Some(entry) = installed.filter(|e| e.sha == Some(sha)) {
-                    rows = rows.item_keyed(HudId::Use, RowKey(1), RowKind::Button, HudAction::Use(package.id.clone(), owner),
+                    rows = rows.item_keyed(HudId::Use, RowKey(1), RowKind::Button, HudAction::Use(package.id.clone()),
                         Row::new(msg::settings_hud_use()).checked(entry.selected).dim(entry.loadable.is_err()))
                         .disabled(entry.loadable.is_err());
                 } else {
                     let newer = installed.and_then(|e| e.meta.as_ref()).is_none_or(|m|
                         plx_data::hudpacks::Semver::parse(&m.version) < plx_data::hudpacks::Semver::parse(&package.version));
                     let listed = self.list.catalog.index.as_ref().is_some_and(|index| index.entries.iter().any(|p| p.sha() == sha));
-                    let can = listed && newer && !self.list.fetching && !self.list.catalog.offline
+                    let can = listed && newer && !self.list.fetching
                         && self.list.catalog.revoked(sha).is_none() && !self.list.unfit.contains(&sha)
                         && package.compatible(&self.list.app_version, &self.list.language_tag, plx_appkit::hud_format::bundle::MAX_ARTIFACT_BYTES);
                     let label = if self.list.fetching { msg::settings_hud_fetching() }
@@ -414,16 +423,16 @@ impl HudPage {
                     let row = Row::new(label).dim(!can);
                     rows = rows.item_keyed(HudId::InstallRegistry(sha), RowKey(1), RowKind::Button, HudAction::FetchRegistry(sha), row).disabled(!can);
                 }
-                rows = rows.item_keyed(HudId::About, RowKey(2), RowKind::Nav(SettingsPage::HudAbout(sha, owner)),
+                rows = rows.item_keyed(HudId::About, RowKey(2), RowKind::Nav(SettingsPage::HudAbout(sha)),
                     HudAction::Inert, Row::new(msg::settings_hud_about()));
                 let listed = self.list.catalog.index.as_ref().is_some_and(|index| index.entries.iter().any(|p| p.sha() == sha));
                 let copy = if !listed && self.list.catalog.revoked(sha).is_none() { msg::settings_hud_unavailable().into() }
                     else if let Some(why) = self.list.catalog.revoked(sha) { format!("{} {why}", msg::settings_hud_revoked()) }
-                    else if self.list.catalog.offline && installed.is_none() { msg::settings_hud_offline().into() }
+                    else if self.list.catalog.refresh_failed && installed.is_none() { msg::settings_hud_catalog_cached().into() }
                     else { msg::settings_hud_gallery_install_body().into() };
                 (package.name.clone(), msg::settings_hud_gallery().into(), copy)
             }
-            SettingsPage::HudAbout(_, owner) => {
+            SettingsPage::HudAbout(_) => {
                 let Some(package) = self.package() else {
                     return (Form::new(), msg::settings_hud_about().into(), msg::settings_hud_gallery().into(), msg::settings_hud_empty().into());
                 };
@@ -431,18 +440,23 @@ impl HudPage {
                     (msg::settings_hud_version(), package.version.clone()), (msg::settings_hud_license(), package.license.clone()),
                     (msg::settings_hud_download(), format!("{} B", plx_platform::i18n::current().number(package.bytes as i64)))].into_iter().enumerate() {
                     rows = rows.item_keyed(HudId::Fact(i as u32), RowKey(i as u32), RowKind::Button, HudAction::Inert,
-                        Row::new(label).value(&value).server_label());
+                        Row::new(label).value(&value));
                 }
                 if !self.list.catalog_date.is_empty() { rows = rows.note(msg::settings_hud_cached(&self.list.catalog_date)); }
                 if self.list.entries.iter().any(|e| e.id == package.id) {
                     rows = rows.item_keyed(HudId::Remove(package.id.clone()), RowKey(4), RowKind::Button,
-                        HudAction::RemoveAndReturn(package.id.clone(), owner), Row::new(msg::settings_hud_remove()));
+                        HudAction::RemoveAndReturn(package.id.clone()), Row::new(msg::settings_hud_remove()));
                 }
                 (msg::settings_hud_about().into(), package.name.clone(), String::new())
             }
             _ => unreachable!("HUD page only mounts its family"),
         };
-        if let Some(Notice::FetchFailed { reason }) = self.list.notice { copy = fetch_text(reason).into(); }
+        if matches!(self.page, SettingsPage::HudGallery) && self.list.catalog.refresh_failed && !self.list.catalog_date.is_empty() {
+            copy = format!("{}\n\n{}", copy, msg::settings_hud_cached(&self.list.catalog_date));
+        }
+        if self.state.registry_request && matches!(self.list.notice, Some(Notice::FetchFailed {..} | Notice::Refused {..} | Notice::NotWritten {..})) {
+            copy = copy_of(&self.list, None);
+        }
         (Form::new().section(rows), title, parent, copy)
     }
 
@@ -469,9 +483,12 @@ impl HudPage {
 
     fn view(&self) -> TableScreen<'_> {
         let mut header = Header::new(RouteLayout::screen(), Some(&self.parent), &self.title, &self.copy);
+        if matches!(self.page, SettingsPage::HudGallery) && self.list.catalog.fetching && self.form.table.n_rows() == 0 {
+            header = header.with_pending_copy("hud-gallery");
+        }
         if !matches!(self.page, SettingsPage::HudAbout(..)) {
             if let Some(art) = self.preview_package().and_then(|p| p.preview(&self.list.language_tag)) {
-                header = header.with_preview(plx_ui::widgets::Art::Thumb { sid: 0, key: &art.url, res: (1920, 1080) });
+                header = header.with_preview(plx_ui::widgets::Art::content_png(&art.url));
             }
         }
         TableScreen::new(header, &self.form.table, GroupId(0), self.entry).keyed(&self.form)
@@ -541,7 +558,7 @@ impl HudPage {
             return;
         };
         let owns = if offer.source == plx_data::hudpacks::Source::Registry {
-            matches!(self.page, SettingsPage::HudDetail(sha, _) if sha == offer.sha)
+            matches!(self.page, SettingsPage::HudDetail(sha) if sha == offer.sha)
         } else { self.page == SettingsPage::PlayerHud };
         if !owns { return }
         if self.offered == Some(offer.sha) {
@@ -644,15 +661,19 @@ impl HudPage {
     }
 
     fn activate(&mut self, key: u32, fx: &mut Effects<'_, InnerHost>) {
+        self.state.provisional = false;
         match form_activate(&self.form, key, fx) {
-            Some(HudAction::FetchRegistry(sha)) => fx.push(Fx::App(AppFx::Huds(HudCmd::FetchRegistry(sha)))),
-            Some(HudAction::RemoveAndReturn(id, owner)) => {
-                fx.push(Fx::App(AppFx::Huds(HudCmd::Remove(id))));
-                fx.push(Fx::Nav(NavOp::PopTo(owner)));
+            Some(HudAction::FetchRegistry(sha)) => {
+                self.state.registry_request = true;
+                fx.push(Fx::App(AppFx::Huds(HudCmd::FetchRegistry(sha))));
             }
-            Some(HudAction::Use(id, owner)) => {
+            Some(HudAction::RemoveAndReturn(id)) => {
+                fx.push(Fx::App(AppFx::Huds(HudCmd::Remove(id))));
+                fx.push(Fx::Nav(NavOp::PopToArg(SettingsPage::PlayerHud)));
+            }
+            Some(HudAction::Use(id)) => {
                 fx.push(Fx::App(AppFx::Huds(HudCmd::Select(id))));
-                fx.push(Fx::Nav(NavOp::PopTo(owner)));
+                fx.push(Fx::Nav(NavOp::PopToArg(SettingsPage::PlayerHud)));
             }
             Some(HudAction::Select(id)) => fx.push(Fx::App(AppFx::Huds(HudCmd::Select(id)))),
             Some(HudAction::Remove(id)) => fx.push(Fx::App(AppFx::Huds(HudCmd::Remove(id)))),
@@ -718,14 +739,10 @@ impl Machine<InnerHost> for HudPage {
             }
         }
         match ev {
-            ScreenEvent::Enter(_) => {
+            ScreenEvent::Enter(enter) => {
+                if matches!(enter, Enter::Restored) { self.state.provisional = false; }
                 self.state.visible = true;
-                if self.state.pending_select_focus {
-                    self.state.pending_select_focus = false;
-                    self.focus(fx, GroupId(0));
-                }
                 self.open(fx);
-                self.sync_offer(fx);
                 Handled::No
             }
             ScreenEvent::Tick(t) => {
@@ -739,29 +756,32 @@ impl Machine<InnerHost> for HudPage {
                 if let Some(list) = latest.filter(|l| *l != self.list) {
                     let before = self.list.entries.iter().find(|e| e.selected).map(|e| e.id.as_str());
                     let after = list.entries.iter().find(|e| e.selected).map(|e| e.id.as_str());
-                    let picked = (self.page == SettingsPage::PlayerHud && before.is_some() && (before != after || matches!(list.notice, Some(Notice::Removed {..}))))
+                    let picked = (self.page == SettingsPage::PlayerHud && ((before.is_some() && (before != after || matches!(list.notice, Some(Notice::Removed {..}))))
+                        || (self.state.provisional && after.is_some())))
                         .then(|| after.map(str::to_owned)).flatten();
                     let scene = self.scenes().get(self.state.scene as usize).map(|(_, art)| art.state.clone());
                     self.list = list;
                     self.state.scene = scene.and_then(|state| self.scenes().iter().position(|(_, art)| art.state == state)).unwrap_or(0) as u32;
                     self.controls = None;
                     let keep = if let Some(id) = picked {
+                        self.state.provisional = false;
                         self.state.pending_select_focus = true;
                         Some(HudId::Pack(id))
-                    } else if matches!(self.page, SettingsPage::HudDetail(sha, _) if matches!(self.list.notice, Some(Notice::Installed {sha: installed, ..}) if installed == sha)) {
+                    } else if matches!(self.page, SettingsPage::HudDetail(sha) if matches!(self.list.notice, Some(Notice::Installed {sha: installed, ..}) if installed == sha)) {
                         Some(HudId::Use)
                     } else { self.form.selected_id().cloned() };
                     self.rebuild(keep);
-                    if self.state.visible && self.state.pending_select_focus {
-                        self.state.pending_select_focus = false;
-                        self.focus(fx, GroupId(0));
-                    }
-                    self.sync_offer(fx);
                     if !had_rows && self.form.table.n_rows() > 0 && cx.focus.current.is_none() {
                         self.focus(fx, GroupId(0));
                     }
                     fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session));
                 }
+                // Run after the surface has finished restoring its remembered cursor on a pop.
+                if self.state.visible && self.state.pending_select_focus {
+                    self.state.pending_select_focus = false;
+                    self.focus(fx, GroupId(0));
+                }
+                self.sync_offer(fx);
                 if self.is_preview() {
                     if self.controls.is_none() {
                         self.controls = Some(plx_ui::preview_controls::PreviewControls::new(self.scenes().iter().map(|(label,_)| (*label).into()), cx.measure));
@@ -781,12 +801,13 @@ impl Machine<InnerHost> for HudPage {
             ScreenEvent::WillLeave(_) | ScreenEvent::Unmount | ScreenEvent::Cover | ScreenEvent::Suspend => {
                 self.state.visible = false;
                 if matches!(ev, ScreenEvent::Unmount) {
-                    if let SettingsPage::HudDetail(sha, _) = self.page { fx.push(Fx::App(AppFx::Huds(HudCmd::CancelRegistry(sha)))); }
+                    if let SettingsPage::HudDetail(sha) = self.page { fx.push(Fx::App(AppFx::Huds(HudCmd::CancelRegistry(sha)))); }
                 }
                 self.leave_field(fx);
                 Handled::No
             }
-            ScreenEvent::FocusMoved { to, .. } => {
+            ScreenEvent::FocusMoved { to, by, .. } => {
+                if matches!(by, plx_machine::machine::By::Dir | plx_machine::machine::By::Pointer) { self.state.provisional = false; }
                 form_focus(&mut self.form, to.elem);
                 self.state.selected = self.form.key_at(self.form.table.sel.max(0) as usize).map_or(0, |k| k.0);
                 Handled::Yes
@@ -859,7 +880,7 @@ impl Focusable<InnerHost> for HudPage {
 impl Screen<InnerHost> for HudPage {
     fn name(&self) -> &'static str {
         match self.page {
-            SettingsPage::HudGallery(_) => word::HUD_GALLERY,
+            SettingsPage::HudGallery => word::HUD_GALLERY,
             SettingsPage::HudDetail(..) => word::HUD_DETAIL,
             SettingsPage::HudAbout(..) => word::HUD_ABOUT,
             SettingsPage::HudPreview(..) => word::HUD_PREVIEW,
@@ -877,7 +898,7 @@ impl Screen<InnerHost> for HudPage {
         if self.is_preview() {
             let p = f.painter.alpha(f.page_alpha);
             if let Some((_,art)) = self.scenes().get(self.state.scene as usize) {
-                plx_ui::widgets::card(p, Rect::FULL, plx_ui::widgets::Art::Thumb { sid: 0, key: &art.url, res: (1920,1080) }, 0.0, false, 1.0, 0.0);
+                plx_ui::widgets::card(p, Rect::FULL, plx_ui::widgets::Art::content_png(&art.url), 0.0, false, 1.0, 0.0);
             }
             if let Some(controls) = &self.controls {
                 controls.draw(p, &self.strip, f.cx.focus.current.map(|k| k.elem));
@@ -906,7 +927,7 @@ impl Screen<InnerHost> for HudPage {
 #[cfg(test)]
 fn rows_for_test(list: &HudList) -> Vec<(u32, HudId)> {
     let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
-    form.set(hud_form(list, None), None);
+    form.set(hud_form(list, None, None), None);
     (0..form.table.n_rows() as usize).filter_map(|i| Some((form.key_at(i)?.0, form.binding_at(i)?.id.clone()))).collect()
 }
 

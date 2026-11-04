@@ -93,11 +93,11 @@ pub(crate) fn live_setup() -> Setup {
 /// One effect's blocking work. `None` is an effect with no answer (`Delete`).
 fn run_effect(effect: HudEffect, app_version: &str) -> Option<HudEvent> {
     match effect {
-        HudEffect::Catalog(catalog::Effect::Read { tag, at }) => Some(HudEvent::Catalog(catalog::Event::Read {
+        HudEffect::Catalog(catalog::CatalogEffect::Read { tag, at }) => Some(HudEvent::Catalog(catalog::Event::Read {
             tag, result: read_file(&at, catalog::CACHE_BYTE_LIMIT).and_then(|bytes| catalog::CacheRecord::decode(&bytes).ok_or(ReadError::Failed)) })),
-        HudEffect::Catalog(catalog::Effect::Write { tag, at, record }) => Some(HudEvent::Catalog(catalog::Event::Written {
+        HudEffect::Catalog(catalog::CatalogEffect::Write { tag, at, record }) => Some(HudEvent::Catalog(catalog::Event::Written {
             tag, outcome: write_file(&at, &record.encode()) })),
-        HudEffect::Catalog(catalog::Effect::Get { .. }) | HudEffect::FetchRegistry { .. } => None,
+        HudEffect::Catalog(catalog::CatalogEffect::Get { .. }) | HudEffect::FetchRegistry { .. } => None,
         HudEffect::ScanDir { tag, at } => Some(HudEvent::Scanned { tag, result: scan_dir(&at) }),
         HudEffect::ReadFile { tag, at, max_bytes } => Some(HudEvent::Read { tag, result: read_file(&at, max_bytes) }),
         HudEffect::WriteFile { tag, at, bytes } => Some(HudEvent::Written { tag, outcome: write_file(&at, &bytes) }),
@@ -459,7 +459,7 @@ impl HudRunner {
                 rest.push(effect);
                 continue;
             }
-            if let HudEffect::Catalog(catalog::Effect::Get { tag, etag }) = effect {
+            if let HudEffect::Catalog(catalog::CatalogEffect::Get { tag, etag }) = effect {
                 let get = self.catalog_get;
                 self.catalog_fetch = Some((tag, self.exec.run_net(move || {
                     let result = get(&format!("{}/index.json", catalog::ORIGIN), etag.as_deref(), catalog::INDEX_BYTE_LIMIT)
@@ -486,8 +486,8 @@ impl HudRunner {
             }
             let version = Arc::clone(&self.app_version);
             let fallback = match &effect {
-                HudEffect::Catalog(catalog::Effect::Read { tag, .. }) => Some(CacheFailure::Read(*tag)),
-                HudEffect::Catalog(catalog::Effect::Write { tag, .. }) => Some(CacheFailure::Write(*tag)),
+                HudEffect::Catalog(catalog::CatalogEffect::Read { tag, .. }) => Some(CacheFailure::Read(*tag)),
+                HudEffect::Catalog(catalog::CatalogEffect::Write { tag, .. }) => Some(CacheFailure::Write(*tag)),
                 _ => None,
             };
             self.effects.push_back((fallback, self.exec.run(move || run_effect(effect, &version))));

@@ -1029,6 +1029,13 @@ impl RouteLayout {
         copy_size: std::os::raw::c_int,
         measure: &dyn Measure,
     ) -> f32 {
+        self.draw_narrative_pending(p, back_to, title, copy, copy_size, measure, None)
+    }
+
+    /// The same narrative with a loading copy, counted and sentinel-painted separately from its title.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_narrative_pending(self, p: Painter, back_to: Option<&str>, title: &str, copy: &str,
+        copy_size: std::os::raw::c_int, measure: &dyn Measure, pending: Option<&str>) -> f32 {
         let title = Self::narrative_title(title);
         let title_h = title.measure_h(self.narrative.w);
         let flow = self.narrative_flow(back_to.is_some(), title_h);
@@ -1039,11 +1046,13 @@ impl RouteLayout {
 
         let copy_top = flow.copy_top;
         let copy_bottom = self.action.y - theme::space::XL;
-        let copy_h = TextView::new(copy, copy_size, theme::TEXT_READING)
+        let (copy_p, copy_ink) = pending.map_or((p, theme::TEXT_READING), |key|
+            crate::placeholder::ink(p, crate::placeholder::Reason::WorkingReadout, key, theme::TEXT_READING));
+        let copy_h = TextView::new(copy, copy_size, copy_ink)
             .leading(copy_size as f32 + theme::space::XS)
             .max_lines(12)
             .draw(
-                p,
+                copy_p,
                 Rect::new(
                     self.narrative.x,
                     copy_top,

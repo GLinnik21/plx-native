@@ -21,7 +21,7 @@
 //!
 //! **Layout** per candidate directory: `packs/<sha256>.plxhud` (content-addressed, so an update is
 //! a new file), `installed.json` (id -> sha, source, installed-at), `drop/` (the sideload drop folder).
-//! `index-cache.json` is the registry gallery's dated conditional-GET cache ([`catalog`]); only a settings visit opens it.
+//! `index-cache.json` is the registry gallery's dated conditional-GET cache ([`catalog`]); boot reads cached revocations, while only a settings visit authorizes an index GET.
 //! A listing reads every candidate; one sha found in two of them is one package; for one id the higher
 //! `version` wins, and on a tie the earlier candidate.
 //!
@@ -57,6 +57,10 @@
 //! | `DeclineOffer` | an offer held, the sha shown | idle, nothing written, no notice |
 //! | `Removed` | idle | `WriteFile(installed.json)` per candidate holding a record of the id (an unreadable one too), `Delete(pack)`; `Selection(builtin)` when the selected one went |
 //! | `Selected` | any | `Selection(id)` for the built-in or a listed, loadable package; else not handled |
+//!
+//! | `Catalog` | its own addressed phase | bounded cache read/write or conditional index GET; cached revocations apply at boot, network only on settings Open |
+//! | `FetchRegistry` | idle, compatible current index entry | exact-hash GET, validate identity and formats, then hold the same confirmation offer as an address fetch |
+//! | `CancelRegistry` | matching pending fetch/validation/offer | abandon unconfirmed work; confirmed atomic installs continue |
 //!
 //! A pair not listed (a result for a tag nothing awaits, an install while busy) is [`Handled::No`] and
 //! changes nothing. A runner that loses an answer is recovered by the next `Refresh`.
@@ -362,7 +366,7 @@ pub enum Notice {
 /// The events [`HudStore::step`] takes.
 #[derive(Debug)]
 pub enum HudEvent {
-    /// A registry settings visit or an addressed cache/HTTP result. Never emitted at boot.
+    /// A registry settings visit, boot cache load or addressed cache/HTTP result. Boot never authorizes a GET.
     Catalog(catalog::Event),
     /// Fetch a compatible catalog package. The hash is looked up again in the checked index.
     FetchRegistry { sha: Sha, app: String, language: String },
@@ -408,7 +412,7 @@ pub enum HudEvent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HudEffect {
     /// Registry cache IO or a conditional, redirect-free index request.
-    Catalog(catalog::Effect),
+    Catalog(catalog::CatalogEffect),
     /// A catalog-bound package GET; no redirects and no account headers.
     FetchRegistry { tag: Tag, package: catalog::Package, max_bytes: usize },
     /// List a directory: [`HudEvent::Scanned`].
@@ -660,9 +664,10 @@ impl HudStore {
 
     // -------- readers --------
 
-    /// Whether a listing, install or removal is running (installing and removing wait for the idle).
-    pub fn catalog(&self) -> &catalog::Snapshot { &self.catalog.snapshot() }
+    /// The current gallery view, including dated cache status and revocation reasons.
+    pub fn catalog(&self) -> &catalog::Snapshot { self.catalog.snapshot() }
 
+    /// Whether a listing, install or removal is running (installing and removing wait for the idle).
     pub fn busy(&self) -> bool {
         !matches!(self.op, Op::Idle)
     }

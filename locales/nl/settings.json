@@ -304,7 +304,7 @@
   "settings.consent.placeholder.app_version": "app-versie",
   "settings.consent.placeholder.webos_codename_short": "webOS-codenaam",
   "settings.hud.title": "Spelerinterface",
-  "settings.hud.copy": "Kies hoe de afspeelknoppen eruitzien. Pakketten in de HUD-map van deze tv staan hier.",
+  "settings.hud.copy": "Kies het uiterlijk van de afspeelbediening.",
   "settings.hud.classic": "Klassiek",
   "settings.hud.builtin": "Ingebouwd",
   "settings.hud.unreviewed": "Niet beoordeeld",
@@ -355,7 +355,6 @@
   "settings.hud.about": "Over deze HUD",
   "settings.hud.loading": "HUD’s laden…",
   "settings.hud.empty": "Geen HUD’s beschikbaar voor deze app en taal.",
-  "settings.hud.offline": "Offline. Opgeslagen voorbeelden zijn beschikbaar; maak verbinding om te installeren.",
   "settings.hud.gallery_install_question": "Deze HUD installeren?",
   "settings.hud.gallery_install_body": "Je huidige HUD blijft geselecteerd.",
   "settings.hud.revoked": "Deze HUD is ingetrokken.",
@@ -368,5 +367,7 @@
   "settings.hud.compact": "Compact",
   "settings.hud.expanded": "Hoofdstukken en info",
   "settings.hud.up_next": "Volgende aflevering",
-  "settings.hud.unavailable": "Deze HUD is niet meer beschikbaar in de catalogus."
+  "settings.hud.unavailable": "Deze HUD is niet meer beschikbaar in de catalogus.",
+  "settings.hud.catalog_cached": "HUD’s konden niet worden vernieuwd. De opgeslagen catalogus wordt getoond.",
+  "settings.hud.catalog_unavailable": "HUD’s konden niet worden geladen. Probeer het later opnieuw."
 }

@@ -307,7 +307,7 @@
   "settings.consent.placeholder.app_version": "versión de la app",
   "settings.consent.placeholder.webos_codename_short": "nombre en clave de webOS",
   "settings.hud.title": "HUD del reproductor",
-  "settings.hud.copy": "Elige el aspecto de los controles de reproducción. Aquí aparecen los paquetes copiados a la carpeta de HUD de este televisor.",
+  "settings.hud.copy": "Elige el aspecto de los controles de reproducción.",
   "settings.hud.classic": "Clásico",
   "settings.hud.builtin": "Integrado",
   "settings.hud.unreviewed": "Sin revisar",
@@ -358,7 +358,6 @@
   "settings.hud.about": "Acerca de este HUD",
   "settings.hud.loading": "Cargando HUD…",
   "settings.hud.empty": "No hay HUD disponibles para esta aplicación e idioma.",
-  "settings.hud.offline": "Sin conexión. Puedes ver las vistas guardadas; conéctate para instalar.",
   "settings.hud.gallery_install_question": "¿Instalar este HUD?",
   "settings.hud.gallery_install_body": "Tu HUD actual seguirá seleccionado.",
   "settings.hud.revoked": "Este HUD se ha retirado.",
@@ -371,5 +370,7 @@
   "settings.hud.compact": "Compacto",
   "settings.hud.expanded": "Capítulos e información",
   "settings.hud.up_next": "Siguiente episodio",
-  "settings.hud.unavailable": "Este HUD ya no está disponible en el catálogo."
+  "settings.hud.unavailable": "Este HUD ya no está disponible en el catálogo.",
+  "settings.hud.catalog_cached": "No se pudo actualizar el catálogo. Se muestra la copia guardada.",
+  "settings.hud.catalog_unavailable": "No se pudieron cargar los HUD. Inténtalo más tarde."
 }

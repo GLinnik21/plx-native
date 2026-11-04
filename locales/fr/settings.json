@@ -307,7 +307,7 @@
   "settings.consent.placeholder.app_version": "version de l’application",
   "settings.consent.placeholder.webos_codename_short": "nom de code webOS",
   "settings.hud.title": "Interface du lecteur",
-  "settings.hud.copy": "Choisissez l'apparence des commandes de lecture. Les paquets copiés dans le dossier HUD de ce téléviseur sont listés ici.",
+  "settings.hud.copy": "Choisissez l’apparence des commandes de lecture.",
   "settings.hud.classic": "Classique",
   "settings.hud.builtin": "Intégré",
   "settings.hud.unreviewed": "Non vérifié",
@@ -358,7 +358,6 @@
   "settings.hud.about": "À propos de ce HUD",
   "settings.hud.loading": "Chargement des HUD…",
   "settings.hud.empty": "Aucun HUD disponible pour cette application et cette langue.",
-  "settings.hud.offline": "Hors connexion. Les aperçus enregistrés restent disponibles. Connectez-vous pour installer.",
   "settings.hud.gallery_install_question": "Installer ce HUD ?",
   "settings.hud.gallery_install_body": "Votre HUD actuel restera sélectionné.",
   "settings.hud.revoked": "Ce HUD a été retiré.",
@@ -371,5 +370,7 @@
   "settings.hud.compact": "Compact",
   "settings.hud.expanded": "Chapitres et infos",
   "settings.hud.up_next": "Épisode suivant",
-  "settings.hud.unavailable": "Ce HUD n’est plus disponible dans le catalogue."
+  "settings.hud.unavailable": "Ce HUD n’est plus disponible dans le catalogue.",
+  "settings.hud.catalog_cached": "Impossible d’actualiser les HUD. Le catalogue enregistré est affiché.",
+  "settings.hud.catalog_unavailable": "Impossible de charger les HUD. Réessayez plus tard."
 }

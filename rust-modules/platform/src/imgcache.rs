@@ -4,7 +4,7 @@
 //!
 //! The index is scanned once, lazily on a worker's first access. Steady-state reads/writes use
 //! an in-memory ordered LRU, never a directory scan. Files contain only a versioned timestamp
-//! header and compressed image bytes; names hash the server, source, and transformation.
+//! header and compressed image bytes; transcode names hash the server, source, and transformation; immutable public content names its verified digest.
 //! Fetch time drives refresh independently of recency, which is persisted at most hourly.
 //! Limits cover committed files; one atomic-write temporary can additionally occupy MAX_FILE.
 
@@ -126,7 +126,7 @@ pub fn classify(server_namespace: &str, built_key: &str) -> Option<DiskKey> {
 /// A caller must verify the compressed bytes against this digest before decode or persistence.
 pub fn classify_content(sha256: &str) -> Option<DiskKey> {
     if sha256.len() != 64 || !sha256.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) { return None }
-    Some(DiskKey { name: format!("content-{sha256}.img"), legacy: None })
+    Some(DiskKey { name: format!("image-{}.img", hex_digest(format!("plx-content-v1:{sha256}").as_bytes())), legacy: None })
 }
 
 /// The durable key of an image the APP rendered (a collection fan), not one the server sent.

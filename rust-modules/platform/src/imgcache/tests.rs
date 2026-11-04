@@ -519,3 +519,18 @@ fn a_root_that_is_not_private_keeps_the_mode_it_has() {
     assert!(probe_dir(&dir.0, false));
     assert_eq!(fs::metadata(&dir.0).unwrap().mode() & 0o7777, 0o755);
 }
+
+#[test]
+fn public_content_images_survive_reopen_and_share_lru_byte_accounting() {
+    let dir=TestDir::new();let a=classify_content(&"a".repeat(64)).unwrap();
+    let b=classify_content(&"b".repeat(64)).unwrap();let c=classify_content(&"c".repeat(64)).unwrap();
+    let cache=dir.cache(2,MAX_BYTES);
+    assert!(cache.write_at(0,&a,b"first"));assert!(cache.write_at(0,&b,b"second"));drop(cache);
+    let reopened=dir.cache(2,MAX_BYTES);
+    assert_eq!(reopened.read_at(0,&a).unwrap().bytes,b"first");
+    assert_eq!(reopened.stats().entries,2);
+    assert_eq!(reopened.stats().bytes,2*HEADER_LEN as u64+11);
+    assert!(reopened.write_at(0,&c,b"third"));
+    assert!(reopened.read_at(0,&b).is_none());assert!(reopened.read_at(0,&a).is_some());
+    assert_eq!(reopened.stats().eviction,1);assert_eq!(reopened.stats().entries,2);
+}

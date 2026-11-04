@@ -1577,7 +1577,7 @@ this session, no network).
   redirect-following request may carry no headers (F40); the URL is pinned to the host that serves it, and a
   3xx is an error. It refreshes only when HUD settings open, at most once per 24 h, never at boot or during
   playback, with backoff. The 24 h rule lives in the HudStore machine, which reads no clock (F31): the runner
-  hands `now` in on the event that opens HUD settings (PR13 adds the field to `Refresh`). A package is fetched by hash and checked with `plx_base::sha256` before
+  hands `now` in on `catalog::Event::Open` when HUD settings open. Boot-time `Load` reads cached revocations without requesting the network. A package is fetched by hash and checked with `plx_base::sha256` before
   it is written. Offline, installed HUDs keep working; the gallery shows the cached index with its date.
 - Why: TVs reading GitHub directly hit API rate limits (UNVERIFIED figure: 60 unauthenticated requests per
   hour per IP) and need tree walks; a bespoke backend means hosting and moderation for no gain over static

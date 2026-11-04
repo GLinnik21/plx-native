@@ -28,15 +28,18 @@
 //! two or three `task::spawn` workers, [`workers_for`]). The decoded-pixel pointer is stored as an address (usize) so the
 //! shared `Store` stays `Send`.
 //!
-//! ## Every entry point names a SERVER, and none of them assumes one
+//! ## Plex artwork names its server; public immutable content names its verified digest
 //!
-//! Artwork is per-server in the strongest sense: `/photo/:/transcode?url=…` is a path on ONE
+//! Plex artwork is per-server in the strongest sense: `/photo/:/transcode?url=…` is a path on ONE
 //! PMS, its `url=` is that server's own thumb key, and the token baked into it is that server's
 //! grant. With a friend's shared server merged into one Home, "the current server" is the wrong
 //! host for half the tiles on screen — so a [`ServerId`] rides every call, sits in the slot as
 //! the other half of its identity, and is what the worker dials. Nothing in this file reads
 //! `plex::client()`; a caller that genuinely means "the server I am browsing" says so by passing
 //! `plex::current_server()`, at the call site, where it is visible.
+//!
+//! The explicit `ServerId::UNSET` namespace is credential-free public content, not a Plex slot. Its HTTPS PNG filename
+//! names its SHA-256, checked on every disk hit and network response; it uses the same workers and cache without PMS IO.
 //!
 //! The server is a FIELD on the slot, not a prefix on the key, deliberately: keys already run
 //! ~140 bytes (an ordinary relative thumb) to ~177 (an absolute headshot — see [`built_key`])
@@ -1981,6 +1984,7 @@ fn load_content_png<T>(url: &str, sha: plx_data::hudpacks::Sha, cache_gen: u64,
                 if let Some(key) = &disk { plx_platform::imgcache::write_at(cache_gen, key, &reply.body); }
             }
         }
+        Ok(reply) if matches!(reply.status, 408 | 429 | 500..=599) => out.transient = true,
         Err(_) => out.transient = true,
         _ => (),
     }

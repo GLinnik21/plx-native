@@ -376,12 +376,12 @@ impl RouteSurface {
             return;
         }
         let was_top = self.inner.top().map(|e| e.id);
+        let popping = matches!(op, NavOp::Pop | NavOp::PopTo(_) | NavOp::PopToArg(_));
+        if !self.inner.request_taken(op, ReturnState::default()) { return; }
         if let (Some(eid), Some(k)) = (was_top, cx.focus.current) {
             self.remembered.retain(|(e, _)| *e != eid);
             self.remembered.push((eid, k.elem));
         }
-        let popping = matches!(op, NavOp::Pop);
-        self.inner.request(op, ReturnState::default());
         // **Every page in this family shares the surface's OUTER `EntryId`, and every page's
         // table shares `GroupId(0)`** (module doc, and `FocusTarget`'s own doc on `machine.rs`).
         // That makes `(EntryId, GroupId(0))` the same `Seat::Remembered` key for Root, Legal,
@@ -482,7 +482,7 @@ fn mount_page(
         SettingsPage::LibraryFavourites => Box::new(super::onboard::OnboardScreen::library(entry, cx.views)),
         SettingsPage::Picker(kind) => Box::new(super::preferences::PickerPage::new(entry, kind)),
         SettingsPage::PlayerHud => Box::new(super::hud_settings::HudPage::new(entry)),
-        page @ (SettingsPage::HudGallery(_) | SettingsPage::HudDetail(..) | SettingsPage::HudAbout(..) | SettingsPage::HudPreview(..)) =>
+        page @ (SettingsPage::HudGallery | SettingsPage::HudDetail(..) | SettingsPage::HudAbout(..) | SettingsPage::HudPreview(..)) =>
             Box::new(super::hud_settings::HudPage::at(entry, page)),
     }
 }

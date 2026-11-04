@@ -304,7 +304,7 @@
   "settings.consent.placeholder.app_version": "alkalmazásverzió",
   "settings.consent.placeholder.webos_codename_short": "webOS-kódnév",
   "settings.hud.title": "Lejátszó HUD",
-  "settings.hud.copy": "Válaszd ki a lejátszásvezérlők megjelenését. Itt a tévé HUD mappájába másolt csomagok jelennek meg.",
+  "settings.hud.copy": "Válassza ki a lejátszásvezérlők megjelenését.",
   "settings.hud.classic": "Klasszikus",
   "settings.hud.builtin": "Beépített",
   "settings.hud.unreviewed": "Nem ellenőrzött",
@@ -355,7 +355,6 @@
   "settings.hud.about": "A HUD névjegye",
   "settings.hud.loading": "HUD-ok betöltése…",
   "settings.hud.empty": "Ehhez az alkalmazáshoz és nyelvhez nincs elérhető HUD.",
-  "settings.hud.offline": "Nincs kapcsolat. A mentett előnézetek elérhetők; telepítéshez csatlakozzon.",
   "settings.hud.gallery_install_question": "Telepíti ezt a HUD-ot?",
   "settings.hud.gallery_install_body": "A jelenlegi HUD marad kiválasztva.",
   "settings.hud.revoked": "Ezt a HUD-ot visszavonták.",
@@ -368,5 +367,7 @@
   "settings.hud.compact": "Kompakt",
   "settings.hud.expanded": "Fejezetek és információk",
   "settings.hud.up_next": "Következő epizód",
-  "settings.hud.unavailable": "Ez a HUD már nem érhető el a katalógusban."
+  "settings.hud.unavailable": "Ez a HUD már nem érhető el a katalógusban.",
+  "settings.hud.catalog_cached": "A HUD-ok nem frissíthetők. A mentett katalógus látható.",
+  "settings.hud.catalog_unavailable": "A HUD-ok nem tölthetők be. Próbálja újra később."
 }

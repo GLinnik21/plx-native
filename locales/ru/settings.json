@@ -310,7 +310,7 @@
   "settings.consent.placeholder.app_version": "версия приложения",
   "settings.consent.placeholder.webos_codename_short": "кодовое имя webOS",
   "settings.hud.title": "Интерфейс плеера",
-  "settings.hud.copy": "Выберите внешний вид элементов управления воспроизведением. Здесь показаны пакеты из папки HUD на этом телевизоре.",
+  "settings.hud.copy": "Выберите вид элементов управления воспроизведением.",
   "settings.hud.classic": "Классический",
   "settings.hud.builtin": "Встроенный",
   "settings.hud.unreviewed": "Не проверен",
@@ -361,7 +361,6 @@
   "settings.hud.about": "Об этом HUD",
   "settings.hud.loading": "Загрузка HUD…",
   "settings.hud.empty": "Для этой программы и языка нет доступных HUD.",
-  "settings.hud.offline": "Нет сети. Сохранённые предпросмотры доступны; подключитесь для установки.",
   "settings.hud.gallery_install_question": "Установить этот HUD?",
   "settings.hud.gallery_install_body": "Текущий HUD останется выбранным.",
   "settings.hud.revoked": "Этот HUD отозван.",
@@ -374,5 +373,7 @@
   "settings.hud.compact": "Компактный",
   "settings.hud.expanded": "Главы и сведения",
   "settings.hud.up_next": "Следующая серия",
-  "settings.hud.unavailable": "Этот HUD больше не доступен в каталоге."
+  "settings.hud.unavailable": "Этот HUD больше не доступен в каталоге.",
+  "settings.hud.catalog_cached": "Не удалось обновить HUD. Показан сохранённый каталог.",
+  "settings.hud.catalog_unavailable": "Не удалось загрузить HUD. Повторите попытку позже."
 }

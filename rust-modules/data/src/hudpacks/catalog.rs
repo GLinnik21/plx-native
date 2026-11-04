@@ -224,10 +224,11 @@ pub struct Snapshot {
     pub index: Option<Arc<Index>>,
     /// The catalog a detail view may have opened while this visit's one refresh was in flight.
     pub previous: Option<Arc<Index>>,
-    /// Last successful validation, UTC Unix seconds; retained on an offline visit.
+    /// Last successful validation, UTC Unix seconds; retained after a failed refresh.
     pub checked_at: Option<u64>,
     pub fetching: bool,
-    pub offline: bool,
+    /// The last catalog refresh failed or was interrupted; this says nothing about current connectivity.
+    pub refresh_failed: bool,
 }
 
 impl Snapshot {
@@ -359,7 +360,7 @@ impl Reply {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Effect {
+pub enum CatalogEffect {
     Read {
         tag: u64,
         at: Loc,
@@ -415,7 +416,7 @@ impl Catalog {
         &self.snapshot
     }
 
-    pub fn step(&mut self, ev: Event, fx: &mut Vec<Effect>) -> bool {
+    pub fn step(&mut self, ev: Event, fx: &mut Vec<CatalogEffect>) -> bool {
         match ev {
             Event::Load { candidates } if matches!(self.phase, Phase::Idle) => {
                 self.generation = self.generation.wrapping_add(1);
@@ -450,7 +451,7 @@ impl Catalog {
                     if cache.attempted_at >= self.attempted_at {
                         self.snapshot.index = cache.index;
                         self.snapshot.checked_at = cache.checked_at;
-                        self.snapshot.offline =
+                        self.snapshot.refresh_failed =
                             cache.attempted_at > cache.checked_at || cache.checked_at.is_none();
                         self.attempted_at = cache.attempted_at;
                         self.etag = cache.etag;
@@ -464,17 +465,17 @@ impl Catalog {
                 if tag == self.generation && matches!(self.phase, Phase::Fetching) =>
             {
                 self.snapshot.fetching = false;
-                self.snapshot.offline = true;
+                self.snapshot.refresh_failed = true;
                 if let Ok(reply) = result {
                     if reply.status == 304 && self.snapshot.index.is_some() && self.etag.is_some() {
                         self.snapshot.checked_at = Some(self.now);
-                        self.snapshot.offline = false;
+                        self.snapshot.refresh_failed = false;
                         self.etag = etag(reply.etag).or_else(|| self.etag.take());
                     } else if reply.status == 200 {
                         if let Some(index) = reply.index {
                             self.snapshot.previous = self.snapshot.index.replace(index);
                             self.snapshot.checked_at = Some(self.now);
-                            self.snapshot.offline = false;
+                            self.snapshot.refresh_failed = false;
                             self.etag = etag(reply.etag);
                             self.body = reply.body;
                         }
@@ -500,10 +501,10 @@ impl Catalog {
         }
     }
 
-    fn read(&mut self, at: usize, fx: &mut Vec<Effect>) {
+    fn read(&mut self, at: usize, fx: &mut Vec<CatalogEffect>) {
         if let Some(candidate) = self.candidates.get(at) {
             self.phase = Phase::Reading(at);
-            fx.push(Effect::Read {
+            fx.push(CatalogEffect::Read {
                 tag: self.generation,
                 at: Loc {
                     root: candidate.dir.clone(),
@@ -524,10 +525,10 @@ impl Catalog {
         }
     }
 
-    fn after_write(&mut self, fetch: bool, fx: &mut Vec<Effect>) {
+    fn after_write(&mut self, fetch: bool, fx: &mut Vec<CatalogEffect>) {
         if fetch {
             self.phase = Phase::Fetching;
-            fx.push(Effect::Get {
+            fx.push(CatalogEffect::Get {
                 tag: self.generation,
                 etag: self.etag.clone(),
             });
@@ -536,7 +537,7 @@ impl Catalog {
         }
     }
 
-    fn write(&mut self, at: usize, fetch: bool, fx: &mut Vec<Effect>) {
+    fn write(&mut self, at: usize, fetch: bool, fx: &mut Vec<CatalogEffect>) {
         if let Some(candidate) = self.candidates.get(at) {
             let record = CacheRecord {
                 checked_at: self.snapshot.checked_at,
@@ -546,7 +547,7 @@ impl Catalog {
                 index: self.snapshot.index.clone(),
             };
             self.phase = Phase::Writing(at, fetch);
-            fx.push(Effect::Write {
+            fx.push(CatalogEffect::Write {
                 tag: self.generation,
                 at: Loc {
                     root: candidate.dir.clone(),

@@ -75,7 +75,7 @@ fn compatibility_hides_future_formats_and_uses_latest_language_transition() {
     assert!(!package.compatible("0.10.2", "fr", 1000));
 }
 
-fn open(catalog: &mut Catalog, now: u64) -> Vec<Effect> {
+fn open(catalog: &mut Catalog, now: u64) -> Vec<CatalogEffect> {
     let mut fx = vec![];
     catalog.step(
         Event::Open {
@@ -87,7 +87,7 @@ fn open(catalog: &mut Catalog, now: u64) -> Vec<Effect> {
     fx
 }
 
-fn respond(catalog: &mut Catalog, status: u16, etag: Option<&str>, data: Vec<u8>) -> Vec<Effect> {
+fn respond(catalog: &mut Catalog, status: u16, etag: Option<&str>, data: Vec<u8>) -> Vec<CatalogEffect> {
     let mut fx = vec![];
     assert!(catalog.step(
         Event::Reply {
@@ -105,7 +105,7 @@ fn only_a_settings_open_fetches_and_daily_304_keeps_content_and_advances_date() 
     assert!(catalog.snapshot.index.is_none());
     assert_eq!(
         open(&mut catalog, 10),
-        vec![Effect::Get { tag: 1, etag: None }]
+        vec![CatalogEffect::Get { tag: 1, etag: None }]
     );
     assert!(
         open(&mut catalog, 11).is_empty(),
@@ -117,7 +117,7 @@ fn only_a_settings_open_fetches_and_daily_304_keeps_content_and_advances_date() 
     assert!(open(&mut catalog, 10 + REFRESH_SECONDS - 1).is_empty());
     assert_eq!(
         open(&mut catalog, 10 + REFRESH_SECONDS),
-        vec![Effect::Get {
+        vec![CatalogEffect::Get {
             tag: 3,
             etag: Some("W/\"one\"".into())
         }]
@@ -125,7 +125,7 @@ fn only_a_settings_open_fetches_and_daily_304_keeps_content_and_advances_date() 
     respond(&mut catalog, 304, None, vec![]);
     assert_eq!(catalog.snapshot.index, original);
     assert_eq!(catalog.snapshot.checked_at, Some(10 + REFRESH_SECONDS));
-    assert!(!catalog.snapshot.offline);
+    assert!(!catalog.snapshot.refresh_failed);
 }
 
 #[test]
@@ -141,10 +141,10 @@ fn failed_or_invalid_reply_keeps_cache_and_backs_off_even_after_restart() {
         };
         catalog.candidates = vec![candidate.clone()];
         let fx = respond(&mut catalog, status, None, b"broken".to_vec());
-        assert!(catalog.snapshot.offline);
+        assert!(catalog.snapshot.refresh_failed);
         assert!(catalog.snapshot.index.is_some());
         assert_eq!(catalog.snapshot.checked_at, Some(1));
-        let Effect::Write { record, .. } = &fx[0] else {
+        let CatalogEffect::Write { record, .. } = &fx[0] else {
             panic!("cache write")
         };
         let mut restarted = Catalog::default();
@@ -184,7 +184,7 @@ fn stale_replies_and_unbound_304_cannot_create_catalog_or_inject_request_headers
     ));
     respond(&mut catalog, 304, Some("\"unbound\""), vec![]);
     assert!(catalog.snapshot.index.is_none());
-    assert!(catalog.snapshot.offline);
+    assert!(catalog.snapshot.refresh_failed);
     open(&mut catalog, 1 + REFRESH_SECONDS);
     respond(
         &mut catalog,
@@ -224,7 +224,7 @@ fn boot_never_dials_and_a_crash_during_get_keeps_the_persisted_attempt_backoff()
         },
         &mut fx,
     );
-    assert!(matches!(fx.as_slice(), [Effect::Read { .. }]));
+    assert!(matches!(fx.as_slice(), [CatalogEffect::Read { .. }]));
     fx.clear();
     catalog.step(
         Event::Read {
@@ -253,7 +253,7 @@ fn boot_never_dials_and_a_crash_during_get_keeps_the_persisted_attempt_backoff()
         &mut fx,
     );
     let record = match &fx[0] {
-        Effect::Write { record, .. } => record.clone(),
+        CatalogEffect::Write { record, .. } => record.clone(),
         _ => panic!("attempt persisted before network"),
     };
     fx.clear();
@@ -264,7 +264,7 @@ fn boot_never_dials_and_a_crash_during_get_keeps_the_persisted_attempt_backoff()
         },
         &mut fx,
     );
-    assert_eq!(fx, vec![Effect::Get { tag: 2, etag: None }]);
+    assert_eq!(fx, vec![CatalogEffect::Get { tag: 2, etag: None }]);
     let mut restarted = Catalog::default();
     fx.clear();
     restarted.step(

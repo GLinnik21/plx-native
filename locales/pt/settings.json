@@ -307,7 +307,7 @@
   "settings.playback.hdr_overlay.half": "50%",
   "settings.playback.hdr_overlay.copy": "Quão brilhantes são os controlos e as legendas do leitor em HDR e Dolby Vision, quando o televisor os mostra muito mais brilhantes. Reduza se encandearem. 100% deixa-os como estão.",
   "settings.hud.title": "HUD do player",
-  "settings.hud.copy": "Escolha a aparência dos controles de reprodução. Os pacotes copiados para a pasta de HUD desta TV aparecem aqui.",
+  "settings.hud.copy": "Escolha o aspeto dos controlos de reprodução.",
   "settings.hud.classic": "Clássico",
   "settings.hud.builtin": "Integrado",
   "settings.hud.unreviewed": "Não revisado",
@@ -358,7 +358,6 @@
   "settings.hud.about": "Sobre este HUD",
   "settings.hud.loading": "A carregar HUDs…",
   "settings.hud.empty": "Não há HUDs disponíveis para esta aplicação e idioma.",
-  "settings.hud.offline": "Sem ligação. As pré-visualizações guardadas estão disponíveis; ligue-se para instalar.",
   "settings.hud.gallery_install_question": "Instalar este HUD?",
   "settings.hud.gallery_install_body": "O HUD atual continuará selecionado.",
   "settings.hud.revoked": "Este HUD foi retirado.",
@@ -371,5 +370,7 @@
   "settings.hud.compact": "Compacto",
   "settings.hud.expanded": "Capítulos e informação",
   "settings.hud.up_next": "Próximo episódio",
-  "settings.hud.unavailable": "Este HUD já não está disponível no catálogo."
+  "settings.hud.unavailable": "Este HUD já não está disponível no catálogo.",
+  "settings.hud.catalog_cached": "Não foi possível atualizar os HUDs. É mostrado o catálogo guardado.",
+  "settings.hud.catalog_unavailable": "Não foi possível carregar os HUDs. Tente novamente mais tarde."
 }
