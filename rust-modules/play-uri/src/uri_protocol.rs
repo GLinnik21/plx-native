@@ -190,6 +190,7 @@ pub enum Ev {
     TrackSelected,
     SourceInfo,
     StreamingInfo,
+    CustomizedStreamingInfo,
     VideoInfo,
     AudioInfo,
     UnloadCompleted,
@@ -197,7 +198,7 @@ pub enum Ev {
 }
 
 /// The key each event arrives under, and the text it logs as.
-const EVENT_KEYS: [(&str, Ev); 16] = [
+const EVENT_KEYS: [(&str, Ev); 17] = [
     ("loadCompleted", Ev::LoadCompleted),
     ("playing", Ev::Playing),
     ("paused", Ev::Paused),
@@ -210,6 +211,7 @@ const EVENT_KEYS: [(&str, Ev); 16] = [
     ("trackSelected", Ev::TrackSelected),
     ("sourceInfo", Ev::SourceInfo),
     ("streamingInfo", Ev::StreamingInfo),
+    ("customizedStreamingInfo", Ev::CustomizedStreamingInfo),
     ("videoInfo", Ev::VideoInfo),
     ("audioInfo", Ev::AudioInfo),
     ("unloadCompleted", Ev::UnloadCompleted),
@@ -291,8 +293,17 @@ fn scalar(value: &Value) -> Option<String> {
     }
 }
 
-/// `key=value` pairs for the listed keys of `value` (an object), in the listed order.
-fn details(value: &Value, keys: &[&str]) -> String {
+/// A JSON number and nothing else: no codec word, boolean or `{num, den}` pair.
+fn number(value: &Value) -> Option<String> {
+    match value {
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// `key=value` pairs for the listed keys of `value` (an object), in the listed order, each value
+/// shown by `show` (a value it returns `None` for is left out).
+fn details_by(value: &Value, keys: &[&str], show: fn(&Value) -> Option<String>) -> String {
     let Some(object) = value.as_object() else {
         return String::new();
     };
@@ -301,11 +312,23 @@ fn details(value: &Value, keys: &[&str]) -> String {
         .filter_map(|key| {
             object
                 .get(*key)
-                .and_then(scalar)
+                .and_then(show)
                 .map(|shown| format!("{key}={shown}"))
         })
         .collect();
     parts.join(" ")
+}
+
+/// [`details_by`] with [`scalar`]: numbers, booleans and the finite codec vocabulary.
+fn details(value: &Value, keys: &[&str]) -> String {
+    details_by(value, keys, scalar)
+}
+
+/// [`details_by`] with [`number`], for the events whose objects a firmware may also fill with
+/// other text (a streaming event can name the host it reads from): a string in a listed key is
+/// never shown, not even one of the codec words [`scalar`] lets through.
+fn numeric_details(value: &Value, keys: &[&str]) -> String {
+    details_by(value, keys, number)
 }
 
 /// The position of a `currentTime` event, in either shape a firmware may send: a bare number
@@ -429,9 +452,17 @@ pub fn parse_event(payload: &str) -> Message {
             continue;
         }
         let detail = match ev {
-            Ev::VideoInfo => details(value, &["width", "height", "codec", "frameRate", "hdr"]),
+            Ev::VideoInfo => details(
+                value,
+                &["width", "height", "codec", "frameRate", "hdr", "currentBitrate", "contentBitrate"],
+            ),
             Ev::AudioInfo => details(value, &["codec", "channels", "sampleRate"]),
-            Ev::BufferRange => details(value, &["beginTime", "endTime"]),
+            Ev::BufferRange => details(value, &["beginTime", "endTime", "remainingTime", "percent"]),
+            // Firmware decompile: `instantBitrate` is the measured download rate and `totalBitrate`
+            // the selected variant, both bit/s (the R-ABR-2 run tests that). Numbers only: this
+            // event can also carry a host.
+            Ev::StreamingInfo => numeric_details(value, &["instantBitrate", "totalBitrate"]),
+            Ev::CustomizedStreamingInfo => numeric_details(value, &["numOfRates", "currentIndexOfRate"]),
             Ev::CurrentTime => scalar(value)
                 .map(|v| format!("value={v}"))
                 .unwrap_or_default(),
@@ -453,6 +484,7 @@ pub fn parse_event(payload: &str) -> Message {
             | Ev::AudioInfo
             | Ev::SourceInfo
             | Ev::StreamingInfo
+            | Ev::CustomizedStreamingInfo
             | Ev::BufferRange => value.is_object(),
             _ => value == &Value::Bool(true) || value.is_object(),
         };

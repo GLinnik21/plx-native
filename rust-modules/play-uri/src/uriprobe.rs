@@ -1648,6 +1648,76 @@ mod tests {
         assert_eq!(logs(&fx), ["uriprobe: t=0 ev=unknown (unparsed)"]);
     }
 
+    // ------------------------------------------------------------------ adaptive-streaming facts
+
+    #[test]
+    fn buffer_range_logs_the_buffer_health_fields() {
+        let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
+        rig.loading();
+        let fx = rig.msg("subscribe", r#"{"mediaId":"_m1","bufferRange":{"beginTime":0,"endTime":58,"remainingTime":12,"percent":40}}"#);
+        assert_eq!(logs(&fx), ["uriprobe: t=0 ev=bufferRange beginTime=0 endTime=58 remainingTime=12 percent=40"]);
+        // a firmware which sends only the old pair still logs it
+        let fx = rig.msg("subscribe", r#"{"mediaId":"_m1","bufferRange":{"beginTime":3,"endTime":9}}"#);
+        assert_eq!(logs(&fx), ["uriprobe: t=0 ev=bufferRange beginTime=3 endTime=9"]);
+    }
+
+    #[test]
+    fn streaming_info_logs_the_two_bitrates_as_numbers_and_no_other_field() {
+        let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
+        rig.loading();
+        let payload = format!(r#"{{"mediaId":"_m1","streamingInfo":{{"instantBitrate":8000000,"totalBitrate":2000000.5,"host":"192.168.1.5","uri":"{URL}"}}}}"#);
+        let fx = rig.msg("subscribe", &payload);
+        assert_eq!(logs(&fx), ["uriprobe: t=0 ev=streamingInfo instantBitrate=8000000 totalBitrate=2000000.5"]);
+        assert_clean("streamingInfo", &logs(&fx).join("\n"));
+    }
+
+    #[test]
+    fn streaming_info_never_logs_a_string_even_under_a_listed_key() {
+        let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
+        rig.loading();
+        // A host under a key the probe reads, a word `scalar` would print for a codec, a boolean and
+        // a `{num, den}` pair: none is a bit rate, so none is shown.
+        let payload = format!(
+            r#"{{"mediaId":"_m1","streamingInfo":{{"instantBitrate":"{URL}","totalBitrate":"hevc"}}}}"#
+        );
+        let fx = rig.msg("subscribe", &payload);
+        assert_eq!(logs(&fx), ["uriprobe: t=0 ev=streamingInfo"]);
+        let fx = rig.msg("subscribe", r#"{"mediaId":"_m1","streamingInfo":{"instantBitrate":"192.168.1.5","totalBitrate":{"num":1,"den":2}}}"#);
+        assert_eq!(logs(&fx), ["uriprobe: t=0 ev=streamingInfo"]);
+        let fx = rig.msg("subscribe", r#"{"mediaId":"_m1","streamingInfo":{"instantBitrate":true,"totalBitrate":4000000}}"#);
+        assert_eq!(logs(&fx), ["uriprobe: t=0 ev=streamingInfo totalBitrate=4000000"]);
+        // the same through the decoder, whose diagnostic projection is what the machine prints
+        let message = parse_event(&payload);
+        let seen = message.seen.iter().find(|s| s.ev == Ev::StreamingInfo).unwrap();
+        assert_eq!(seen.detail, "");
+        assert_clean("Message", &format!("{message:?}"));
+    }
+
+    #[test]
+    fn customized_streaming_info_logs_the_ladder_size_and_position() {
+        let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
+        rig.loading();
+        let payload = format!(r#"{{"mediaId":"_m1","customizedStreamingInfo":{{"numOfRates":4,"currentIndexOfRate":1,"uri":"{URL}"}}}}"#);
+        let fx = rig.msg("subscribe", &payload);
+        assert_eq!(logs(&fx), ["uriprobe: t=0 ev=customizedStreamingInfo numOfRates=4 currentIndexOfRate=1"]);
+        assert_clean("customizedStreamingInfo", &logs(&fx).join("\n"));
+        let message = parse_event(&payload);
+        assert!(message.normalized.contains(&Ev::CustomizedStreamingInfo), "an object is a supported event");
+        // strings are not counts
+        let fx = rig.msg("subscribe", r#"{"mediaId":"_m1","customizedStreamingInfo":{"numOfRates":"4","currentIndexOfRate":"hevc"}}"#);
+        assert_eq!(logs(&fx), ["uriprobe: t=0 ev=customizedStreamingInfo"]);
+    }
+
+    #[test]
+    fn video_info_adds_the_bitrates_only_when_present() {
+        let mut rig = Rig::new(Variant::AtLoad, None);
+        rig.loading();
+        let fx = rig.msg("subscribe", r#"{"mediaId":"_m1","videoInfo":{"width":1280,"height":720,"codec":"H264","currentBitrate":2000000,"contentBitrate":8000000}}"#);
+        assert_eq!(logs(&fx), ["uriprobe: t=0 ev=videoInfo width=1280 height=720 codec=H264 currentBitrate=2000000 contentBitrate=8000000"]);
+        let fx = rig.msg("subscribe", r#"{"mediaId":"_m1","videoInfo":{"width":1280,"height":720,"codec":"H264"}}"#);
+        assert_eq!(logs(&fx), ["uriprobe: t=0 ev=videoInfo width=1280 height=720 codec=H264"]);
+    }
+
     // ------------------------------------------------------------------ privacy
 
     fn assert_clean(what: &str, text: &str) {
