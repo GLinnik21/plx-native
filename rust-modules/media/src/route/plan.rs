@@ -79,8 +79,7 @@ impl WorkerTicket {
 
     /// Address local adaptive trials under the engine and applied media epoch.
     /// The full ticket remains the route CAS fence, including route and revision.
-    #[cfg(feature = "play-feed")]
-    pub(crate) fn adaptive_attempt(&self) -> plx_playback_contract::AttemptId {
+    pub fn adaptive_attempt(&self) -> plx_playback_contract::AttemptId {
         plx_playback_contract::AttemptId::new(self.engine_epoch, self.media_epoch)
     }
 }
@@ -991,7 +990,6 @@ pub(super) fn decision_codecs(mc: &plx_plex::plex::MediaContainer) -> Option<(St
     }
 }
 
-#[cfg(feature = "play-uri")]
 fn decision_pms_output(mc: &plx_plex::plex::MediaContainer, source_has_audio: bool)
     -> Option<(String, super::uri_preflight::PmsAudioOutput, Option<plx_data::metadata::Dovi>)> {
     use super::uri_preflight::PmsAudioOutput;
@@ -1015,14 +1013,13 @@ fn decision_pms_output(mc: &plx_plex::plex::MediaContainer, source_has_audio: bo
     Some((video.codec.to_lowercase(), audio, dovi))
 }
 
-#[cfg(feature = "play-uri")]
 fn decision_burns_subtitle(mc: &plx_plex::plex::MediaContainer, selected_sid: i64) -> bool {
     selected_sid > 0 && mc.metadata.first().and_then(|m| m.decided_media())
         .and_then(|md| md.part.first()).is_some_and(|part| part.stream.iter().any(|stream|
             stream.stream_type == 3 && stream.id == selected_sid && stream.decision == "burn"))
 }
 
-#[cfg(all(test, feature = "play-uri"))]
+#[cfg(test)]
 mod pms_output_evidence_tests {
     use super::*;
     use super::super::uri_preflight::PmsAudioOutput;
@@ -1414,14 +1411,14 @@ pub struct ResolveEnv {
     /// process-wide capability answer: every direct-play gate, the audio pick and the transcode
     /// profile of this resolve are derived from this one value.
     pub caps: std::sync::Arc<plx_platform::devcaps::Caps>,
+    /// The playback backends composed for this session, copied off it like the capability value
+    /// above: the worker plans Feed work only when Feed is among them.
+    pub backends: plx_playback_contract::BackendSet,
     /// The same boot-captured URI IO port used to configure its physical executor.
-    #[cfg(feature = "play-uri")]
     pub uri_preflight_port: Option<super::uri_preflight::ResolvePort>,
-    #[cfg(feature = "play-uri")]
     pub uri_offers: super::uri_preflight::UriOfferEligibility,
     /// An exact Feed Original may win before a compatible PMS URI. Captured from the
     /// current finite catalog, including its explicit reopen/rollback exception.
-    #[cfg(feature = "play-uri")]
     pub feed_original_eligible: bool,
     pub requested_rate_permille: i32,
     pub resume_ns: i64,
@@ -1559,15 +1556,12 @@ pub struct Plan {
     /// Source intent is shared by URI and Feed; effective Feed streams may differ.
     pub source_selection: Option<SourceSelection>,
     /// Owned URI authorization. The URL remains in IO escrow and never becomes `url`.
-    #[cfg(feature = "play-uri")]
     pub uri_original: Option<super::uri_preflight::KnownSource>,
     /// A separately certified URI locator for the actual accepted PMS output. Its resource
     /// remains owned by this Plan until the main-thread landing installs it or retires it.
-    #[cfg(feature = "play-uri")]
     pub uri_pms: Option<super::uri_preflight::KnownPmsSource>,
     /// Why a PMS output was not URI-qualified, without interpreting an integration gap as a
     /// firmware refusal. Local diagnostics only; no report schema or consent field changes.
-    #[cfg(feature = "play-uri")]
     pub pms_decline: Option<super::uri_preflight::PmsDecline>,
     /// A source was qualified without constructing a Feed URL or PMS encoder.
     pub uri_source_ready: bool,
@@ -1959,14 +1953,11 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                         .filter(|decision| decision.source == SubPickSource::Server)
                         .and_then(|_| item.subs.iter().find(|sub| sub.selected && sub.id > 0)))
             });
-            #[cfg(feature = "play-uri")]
             let source_sub_sid = source_sub_stream.filter(|sub| !sub.external).map_or(0, |sub| sub.id);
-            #[cfg(feature = "play-uri")]
             let requires_client_subtitle = source_sub_stream.is_some_and(|sub| sub.external);
             // A selected source stream requires its exact native index. Off is an explicit
             // viewer decision when the file contains subtitles; Unspecified is safe only when
             // there is no source subtitle for the native decoder to auto-select.
-            #[cfg(feature = "play-uri")]
             let subtitle_choice = if source_sub_sid > 0 {
                 plx_playback_contract::TrackChoice::Selected(source_sub_sid as u64)
             } else if plan.playing.as_ref().is_some_and(|item| !item.subs.is_empty()) {
@@ -1982,7 +1973,6 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 subtitle_sid: source_sub_stream.map_or(0, |sub| sub.id),
                 audio_contract: env.audio_enhancements };
             plan.source_selection = Some(source_selection);
-            #[cfg(feature = "play-uri")]
             if let Some(port) = env.uri_preflight_port.as_ref().filter(|_| env.uri_offers.original && {
                 (env.audio_sid <= 0 || source_audio.is_some())
                     && (env.subtitle_override.unwrap_or(0) <= 0 || source_sub_stream.is_some())
@@ -2040,14 +2030,10 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     return plan;
                 }
             }
-            #[cfg(feature = "play-uri")]
             let pms_uri_possible = !forced && !env.preview
                 && env.uri_offers.any_pms()
                 && env.uri_preflight_port.as_ref().is_some_and(|port| port.could_qualify_pms());
-            #[cfg(not(feature = "play-uri"))]
-            let pms_uri_possible = false;
-            if !cfg!(feature = "play-feed") && !pms_uri_possible {
-                #[cfg(feature = "play-uri")]
+            if !env.backends.feed && !pms_uri_possible {
                 { plan.pms_decline = Some(super::uri_preflight::PmsDecline::UnavailableCapability); }
                 // No PMS encoder was acquired. The fresh session id was used only to ask for
                 // the PlayQueue; leave no fictional Streaming Resource for refusal cleanup.
@@ -2765,12 +2751,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 return plan;
             }
             if (directplay || rk.is_empty()) && !part.is_empty()
-                && (rk.is_empty() || !pms_uri_possible || {
-                    #[cfg(feature = "play-uri")]
-                    { env.feed_original_eligible }
-                    #[cfg(not(feature = "play-uri"))]
-                    { true }
-                }) {
+                && (rk.is_empty() || !pms_uri_possible || env.feed_original_eligible) {
                 // direct-play: the pipeline decodes the SOURCE codecs natively, so the Load payload uses
                 // them (h264/hevc + the chosen audio track's codec).
                 fill_direct_plan(&mut plan, client, part, &session, vcodec, acodec, audio_sel.as_ref(), dovi, dv_decision, sub_pick);
@@ -2972,9 +2953,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     audio,
                 );
             }
-            #[cfg(feature = "play-uri")]
             let mut accepted_pms_recipe = None;
-            #[cfg(feature = "play-uri")]
             let mut accepted_pms_output = None;
             if let Some(mc) = &decision {
                 // The server has already answered, and it is allowed to answer NO. Stop here rather than
@@ -2994,7 +2973,6 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     plan.vcodec = v;
                     plan.acodec = a;
                 }
-                #[cfg(feature = "play-uri")]
                 {
                     use crate::player::recovery::Lane;
                     use super::uri_preflight::PmsAudioOutput;
@@ -3034,7 +3012,6 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             (plan.dovi, plan.dv_decision) = copied_video_dv(decision.as_ref(), &plan.contract, dovi, dv_decision);
             plan.url = client.transcode_start_url(&sp).to_url();
             plan.tsession = session;
-            #[cfg(feature = "play-uri")]
             if !forced && !env.preview {
                 if let (Some(port), Some(selection), Some(recipe), Some((video_codec, audio_output, output_dovi))) = (
                     env.uri_preflight_port.as_ref(), plan.source_selection,
@@ -3077,8 +3054,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     plan.pms_decline = Some(super::uri_preflight::PmsDecline::MissingOutputEvidence);
                 }
             }
-            #[cfg(feature = "play-uri")]
-            if !cfg!(feature = "play-feed") && plan.uri_pms.is_none() {
+            if !env.backends.feed && plan.uri_pms.is_none() {
                 // The accepted PMS decision may already have registered both a logical
                 // Streaming Resource and an encoder. Keep their identities on the refused
                 // Plan for the existing abandoned-plan cleanup at the main-thread landing.

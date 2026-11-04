@@ -7,8 +7,6 @@
 //! 5.1 (`A2`), a capable AC3 5.1 (`A3`), a capable TrueHD the TV cannot decode (`A4`), and an AC3
 //! 2.0 the server has no loudness analysis for (`A5`). "Enhanced" = the Normalize Loudness pref.
 
-#[cfg(feature = "play-feed")]
-use plx_play_feed::shared::FEED_SHARED;
 use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
@@ -2539,7 +2537,7 @@ fn an_engine_failure_during_the_flight_ends_in_error_with_no_spinner() {
 
     // What the pump does on a terminal failure.
     fail_current_engine();
-    FEED_SHARED.pb_state.store(PlaybackState::Error as u8, std::sync::atomic::Ordering::Relaxed);
+    crate::player::swap_state_for_test(PlaybackState::Error);
 
     assert!(matches!(phase(), ControlPhase::Failed(_)), "the failure was hidden behind Applying: {:?}", phase());
     assert!(!crate::player::claim_hold::active(), "the hold's spinner outlived the failure");
@@ -2563,7 +2561,7 @@ fn an_engine_failure_during_the_flight_ends_in_error_with_no_spinner() {
         wait_until("the failed claim's encoder to be stopped", || any_stop_seen(&log));
     }
 
-    FEED_SHARED.pb_state.store(PlaybackState::Idle as u8, std::sync::atomic::Ordering::Relaxed);
+    crate::player::restore_state_for_test(PlaybackState::Idle as u8);
     crate::player::claim_hold::clear();
     live.finish();
     cleanup(&mut ps);
@@ -4289,11 +4287,8 @@ fn sidecar_over_admitted_remux(ps: &mut PlaybackSession) -> Live {
 /// the playhead of that first frame.
 fn remux_started_at(requested_ns: i64, first_pts_ns: i64) -> i64 {
     use plx_playback_contract::subtitle::playhead_of;
-    let s = &FEED_SHARED;
-    s.pts_shift.store(0, std::sync::atomic::Ordering::Relaxed);
-    s.disp_base.store(requested_ns, std::sync::atomic::Ordering::Relaxed);
     let playhead = playhead_of(first_pts_ns, 0, requested_ns);
-    s.playpos_ns.store(playhead, std::sync::atomic::Ordering::Relaxed);
+    crate::player::set_clock_for_test(Some(0), requested_ns, playhead);
     playhead
 }
 
@@ -4306,9 +4301,7 @@ fn measured(part_kf_ns: i64, first_pts_ns: i64, requested_ns: i64) -> i64 {
 
 fn clear_remux_run() {
     crate::player::subside::stop("test");
-    let s = &FEED_SHARED;
-    s.disp_base.store(0, std::sync::atomic::Ordering::Relaxed);
-    s.playpos_ns.store(0, std::sync::atomic::Ordering::Relaxed);
+    crate::player::set_clock_for_test(None, 0, 0);
 }
 
 /// **The measured case.** With Boost Dialog on, a direct play is a PMS remux that (re)starts on a

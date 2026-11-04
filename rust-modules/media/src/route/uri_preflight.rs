@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use plx_base::task::OffFrame;
-use plx_play_uri::backend::{Binding, NativeTrackIndex, UriSource};
+use plx_playback_contract::uri::{Binding, NativeTrackIndex, UriSource};
 use plx_playback_contract::{Capabilities, Fidelity, Requirements, SourceKind, TrackChoice, TrackKind};
 
 use super::SourceSelection;
@@ -26,16 +26,6 @@ pub struct ProductEvidence {
     pub preview_rectangle: bool,
 }
 
-/// The display path the URI executor is composed with. The ACB plane when the display is in ACB
-/// mode and the same gate the executor re-checks at every Start holds (a handle the library
-/// confirmed initialized, player type 0; `connectDass` is a developer arm and is not asked for);
-/// otherwise nothing: the exported window is not selected here because no source is certified for
-/// it either. `initialized` is the sink's `plane_initialized`, read by the caller at the IO boundary.
-pub fn product_binding(display_mode: i32, plane: plx_platform::tv::plane::PlaneFacts, initialized: bool) -> Binding {
-    let gate = plx_play_uri::acb_bind::gate(false, display_mode, plane.handle, plane.player_type, false, initialized);
-    if gate.ready { Binding::Acb } else { Binding::Unbound }
-}
-
 impl ProductEvidence {
     /// Current firmware has a real URI bus implementation, but no qualified production source,
     /// control and release certificate. A display window mode alone cannot certify playback.
@@ -44,7 +34,7 @@ impl ProductEvidence {
     }
 
     /// [`unqualified`](Self::unqualified) with the display path composition chose for the
-    /// executor ([`product_binding`]). The binding configures the executor only: `permits` and
+    /// executor (the URI driver's `product_binding`). The binding configures the executor only: `permits` and
     /// `could_qualify_pms` still require `Binding::Exported`, so no source is offered through it.
     pub fn unqualified_on(display_mode: i32, binding: Binding) -> Self {
         let exported = display_mode == plx_platform::tv::sink::VP_EXPORTED;
@@ -486,20 +476,11 @@ impl OriginalQualifier for ProductQualifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use plx_play_uri::backend::NativeTrackIndex;
     use plx_playback_contract::{TrackKind, TrackSelection};
 
     #[test]
-    fn composition_selects_the_acb_plane_only_when_the_gate_holds_and_offers_nothing_through_it() {
-        use plx_platform::tv::plane::PlaneFacts;
-        use plx_platform::tv::sink::{VP_ACB, VP_EXPORTED, VP_NONE};
-        let facts = PlaneFacts { handle: true, player_type: 0 };
-        assert_eq!(product_binding(VP_ACB, facts, true), Binding::Acb);
-        assert_eq!(product_binding(VP_ACB, facts, false), Binding::Unbound, "a created handle is not an initialized one");
-        assert_eq!(product_binding(VP_ACB, PlaneFacts { handle: true, player_type: 10 }, true), Binding::Unbound);
-        assert_eq!(product_binding(VP_ACB, PlaneFacts::ABSENT, true), Binding::Unbound);
-        assert_eq!(product_binding(VP_EXPORTED, facts, true), Binding::Unbound);
-        assert_eq!(product_binding(VP_NONE, facts, true), Binding::Unbound);
+    fn an_acb_binding_certifies_and_offers_nothing() {
+        use plx_platform::tv::sink::VP_ACB;
         // Configuring the executor with it certifies and offers nothing.
         let evidence = ProductEvidence::unqualified_on(VP_ACB, Binding::Acb);
         assert!(!evidence.permits(Requirements { source: SourceKind::ProgressiveUri, video: Fidelity::Exact,

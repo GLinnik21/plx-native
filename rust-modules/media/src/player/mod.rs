@@ -50,6 +50,9 @@ pub mod machine;
 #[cfg(feature = "play-feed")]
 pub mod playurl; // the `plxnative-playurl` dev trigger: a stream and its Load declaration, parsed beside the engine that acts on it
 pub mod preview;
+#[cfg(all(test, feature = "play-feed"))]
+mod abr_plant_tests; // pins the ABR plant's constants to the Feed pipeline's
+pub mod route_fx; // the physical effects route policy asks of Feed (no-ops without it)
 pub mod recovery; // the failed-open ladder (pure machine); `pump` drives it
 pub mod release; // the native object's off-frame release lifecycle (pure machine); `engine` runs it
 mod route_start; // common transaction admission and release-queued start policy
@@ -1687,6 +1690,26 @@ pub fn swap_state_for_test(s: shared::PlaybackState) -> u8 {
 #[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
 pub fn restore_state_for_test(raw: u8) {
     FEED_SHARED.pb_state.store(raw, Relaxed);
+}
+/// Test-only: the native audio-track index the Feed's demuxer reads (what `set_audio_track`
+/// stores; -1 feeds the file's own default). `route` tests read it here instead of naming the
+/// Feed's owner, which route may not.
+#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
+pub fn desired_audio_idx_for_test() -> i32 {
+    FEED_SHARED.desired_audio_idx.load(Relaxed)
+}
+/// Test-only: the kind of the last Original open failure the Feed carried (0 = none).
+#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
+pub fn abr_failure_kind_for_test() -> u8 {
+    FEED_SHARED.abr_failure_kind.load(Relaxed)
+}
+/// Test-only: put the Feed's playhead clock where a remux run leaves it (`playpos_ns` is
+/// `fed - pts_shift + disp_base`). `pts_shift` is left alone when `None`.
+#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
+pub fn set_clock_for_test(pts_shift: Option<i64>, disp_base: i64, playpos_ns: i64) {
+    if let Some(shift) = pts_shift { FEED_SHARED.pts_shift.store(shift, Relaxed); }
+    FEED_SHARED.disp_base.store(disp_base, Relaxed);
+    FEED_SHARED.playpos_ns.store(playpos_ns, Relaxed);
 }
 
 // ---- diagnostics --------------------------------------------------------------------------

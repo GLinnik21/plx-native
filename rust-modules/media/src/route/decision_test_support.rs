@@ -1,7 +1,5 @@
 //! Shared fixtures and helpers for the `route::decision` test modules split out below.
 
-#[cfg(feature = "play-feed")]
-use plx_play_feed::shared::FEED_SHARED;
 use super::*;
 
 /// Duplicated from `plan::tests` (a 3-line Dolby Vision Profile 8 fixture the shared-
@@ -96,7 +94,7 @@ pub(super) fn fresh_registry(ps: &mut PlaybackSession) -> plx_base::testlock::Se
     // mid-flight leaves both — belongs to nothing this test owns.
     drop(take_claim_landing());
     clear_injected_fault();
-    crate::player::claim_hold::clear();
+    crate::player::route_fx::clear_claim_hold();
     // Establish the idle projection before resetting the reducer: its applied snapshot must
     // describe this test's empty route, not the previous test's final encoder.  Quality is
     // part of the same baseline; cases which need Auto opt in after this boundary and then
@@ -115,7 +113,7 @@ pub(super) fn fresh_registry(ps: &mut PlaybackSession) -> plx_base::testlock::Se
 
 /// The demuxer ordinal the next native audio reload will feed (`-1`: none staged).
 pub(super) fn desired_audio_idx() -> i32 {
-    FEED_SHARED.desired_audio_idx.load(std::sync::atomic::Ordering::Relaxed)
+    crate::player::desired_audio_idx_for_test()
 }
 
 /// A `ServerId` naming a slot nothing is registered in — so `client_for` answers `None` and
