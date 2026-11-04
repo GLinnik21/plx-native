@@ -60,7 +60,7 @@ pub mod uriprobe; // the URI-mode probe (issue #1064, dev trigger `plxnative-uri
 #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
 pub mod uriprobe_drive; // runs the probe: the transport, the window verbs and the route-start settle the machine leaves to a driver
 #[cfg(all(feature = "hostsim", feature = "play-feed"))]
-pub mod ffi_host;
+pub use plx_play_feed::ffi_host; // the simulator's Starfish/ACB stand-in: the Feed backend's, so it lives in `plx_play_feed`
 pub mod attempt_metrics; // pure logical-request and physical-attempt measurement reducer
 #[cfg(feature = "play-feed")]
 mod era_callbacks; // the one diagnostic line for an era-chosen sink counter that never arrives (pure state)
@@ -170,7 +170,27 @@ fn raw_sink() -> &'static dyn plx_platform::tv::sink::VideoSink {
 }
 #[cfg(all(feature = "play-feed", any(test, feature = "test-support"), feature = "hostsim"))]
 fn raw_sink() -> &'static dyn plx_platform::tv::sink::VideoSink {
-    &ffi_host::HostSink
+    &HOST_SINK
+}
+
+/// The simulator's video sink ([`ffi_host::HostSink`]), built with this crate's side of what the
+/// Feed backend's stand-in cannot name: the pipeline-event entry [`sf_on_event`], the inverse of the
+/// position rebase that entry applies, and the simulator's decoded picture ([`sim_video`]). The
+/// simulator's port table holds it as `Port.sink`; a hostsim test binary reads it directly.
+#[cfg(all(feature = "hostsim", feature = "play-feed"))]
+pub static HOST_SINK: ffi_host::HostSink = ffi_host::HostSink::new(ffi_host::Hooks {
+    deliver_event: sf_on_event,
+    media_to_fed: host_media_to_fed,
+    frames: &sim_video::SimVideo,
+});
+
+/// The rebase `sf_on_event` applies to a reported position (`playpos = fed - pts_shift +
+/// disp_base`), inverted: the fed PTS at which the app will read `media_ns`.
+#[cfg(all(feature = "hostsim", feature = "play-feed"))]
+fn host_media_to_fed(media_ns: i64) -> i64 {
+    media_ns
+        .saturating_add(SHARED.pts_shift.load(Relaxed))
+        .saturating_sub(SHARED.disp_base.load(Relaxed))
 }
 
 /// `/tmp/plxnative-tracknames[=<audio>;<subs>]` — **stand in for the container's own track names**,
@@ -1673,9 +1693,11 @@ pub use engine::aq_caps;
 #[cfg(feature = "play-feed")]
 pub use engine::feed_leads_ms;
 pub use plx_platform::tv::sink::{VP_ACB, VP_EXPORTED, VP_NONE};
-#[cfg(all(feature = "hostsim", feature = "play-feed"))]
 /// The simulator's clock-sink stop; the television's pipeline has no such control.
-pub use ffi_host::stop_clock_at as stop_sim_clock_at;
+#[cfg(all(feature = "hostsim", feature = "play-feed"))]
+pub fn stop_sim_clock_at(media_ns: Option<i64>) -> bool {
+    HOST_SINK.stop_clock_at(media_ns)
+}
 
 /// The video codec a `dg_load_v` code names (video 1 = H264, 2 = H265, 3 = AV1, 4 = VP9; 0 = not built).
 /// The codes are written from `engine::LoadVideo::diag_code`, the names from its `payload_name`.

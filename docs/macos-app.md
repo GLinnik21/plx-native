@@ -7,9 +7,10 @@ television runs, packaged so it starts on a Mac that has none of this repo's bui
 no Homebrew, no SDL, no toolchain. `ci/mkmacapp.py` is the whole recipe; this note is why it looks
 the way it does and what the result is and is not.
 
-It is **not a new build of the app**. It is `--features hostsim` — the desktop simulator
+It is **not a new build of the app**. It is `--features hostsim,play-feed` — the desktop simulator
 (`docs/…`/`rust-modules/src/bin/sim.rs`, and the `ui-sim` skill) — with the dev features off and a
-bundle around it. Every UI change, every Plex data-layer change, is the same code the ipk ships.
+bundle around it. (`play-feed` is named because `--no-default-features` drops it, and the simulator's
+video sink belongs to that backend.) Every UI change, every Plex data-layer change, is the same code the ipk ships.
 
 ## What it can do, and the one thing it cannot
 
@@ -20,7 +21,7 @@ and comes back signed in.
 
 **Cannot: play video.** The decode path is LG's in-process `StarfishMediaAPIs` bound to the
 hardware video plane via ACB — 29 symbols that exist on a television and nowhere else.
-`player/ffi_host.rs` reports the same failure a firmware with no usable video path reports, so
+`play-feed/src/ffi_host.rs` reports the same failure a firmware with no usable video path reports, so
 **Play lands on the app's real full-screen failure read-out** rather than hanging. That was already
 the simulator's contract; the bundle inherits it. A Mac playback backend would be a new media
 engine, not a packaging change.

@@ -1632,7 +1632,7 @@ fn autopause_arm(app: &mut App, fr: &mut Frame) {
         }
         // In the simulator the clock sink is also told to stop on `at` exactly, so the pause
         // (accepted a little after the gate opens) freezes that position rather than wherever
-        // scheduling had got to: the same frame and clock every run (`ffi_host.rs::stop_clock_at`).
+        // scheduling had got to: the same frame and clock every run (`HostSink::stop_clock_at`).
         // Re-armed every frame until accepted: a Load in between rebases the fed timeline, and
         // the stop is kept in movie time, so re-arming is idempotent.
         #[cfg(all(feature = "hostsim", feature = "play-feed"))]

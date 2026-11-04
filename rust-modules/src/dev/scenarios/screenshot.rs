@@ -313,7 +313,7 @@ pub(crate) fn libmenu_arm(app: &mut App, fr: &Frame) {
 /// `/tmp/plxnative-clockstop=<ms>` — simulator only: stop the clock sink at that movie position
 /// and leave the transport PLAYING, so the player holds a moment of playback that pausing would
 /// change (the Up Next tile, which exists only while playing). Logs once when the playhead is
-/// there. The stop is a stall of the sink's own making (`ffi_host.rs::stop_clock_at`), re-armed
+/// there. The stop is a stall of the sink's own making (`HostSink::stop_clock_at`), re-armed
 /// every frame because a Load (a seek) starts a fresh fed timeline.
 pub(crate) fn clockstop_arm(app: &mut App, fr: &Frame) {
     #[cfg(all(feature = "hostsim", feature = "play-feed"))]

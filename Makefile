@@ -1719,7 +1719,7 @@ check-cargo-unit-default:
 # The `hostsim` unit suite (the host feed seam exists only there).
 check-cargo-unit-hostsim:
 	@# The SAME suite as `check-cargo-unit-default`'s `cargo test --lib`, again under `hostsim`, which is
-	@# not a duplicate run: the host feed seam (`player/ffi_host.rs`) only exists in that configuration,
+	@# not a duplicate run: the host feed seam (`play-feed/src/ffi_host.rs`) only exists in that configuration,
 	@# so every test that drives an AU through `sf_feed` is COMPILED OUT of the default pass and cannot fail it. The prime-livelock
 	@# regression is one of those, and it guards the 94-second freeze of 2026-08-29 — a defect that
 	@# was invisible to all 1398 default-feature tests because the seam it needs was not there.
@@ -2433,7 +2433,9 @@ check-replay: sim-macos
 # OUT or CHECK exported by some other script (tests/focusfp.sh has an OUT) would otherwise move
 # the figures elsewhere or silently render everything twice.
 # Its own simulator build: `--no-default-features` drops `devtools` (the on-screen frame counter is
-# not part of the product) and `devtriggers` comes back because scenes are reached through them.
+# not part of the product), `devtriggers` comes back because scenes are reached through them, and
+# `play-feed` comes back because the simulator's video sink is the Feed backend's (without it the build
+# selects no backend and Play can only reach the failure read-out; `ci/test_sim_backend.py`).
 # Its own target dir, for this file's feature-set rule. `CARGO_INCREMENTAL=0`: a one-shot build.
 SHOT_TDIR ?= $(SIM_TDIR)-shots
 SHOT_BIN   = $(SHOT_TDIR)/debug/plxnative-sim
@@ -2444,7 +2446,7 @@ SHOT_HERO   ?=
 SHOT_HERO_VARIANTS ?=
 screenshots-sim: $(FFMPEG_HOST_STAGED) $(LIBASS_HOST_STAGED) pkg/.ffabi-host-ok
 	CARGO_INCREMENTAL=0 cargo +$(RUST_TOOLCHAIN) build --manifest-path rust-modules/Cargo.toml --target-dir $(SHOT_TDIR) \
-	  --no-default-features --features hostsim,devtriggers --bin plxnative-sim
+	  --no-default-features --features hostsim,play-feed,devtriggers --bin plxnative-sim
 
 demo-library:
 	python3 tools/demo_library.py derive
@@ -2466,7 +2468,8 @@ sim-linux: $(LIBASS_HOST_STAGED)
 # The demo video's frame-dump simulator (`rust-modules/src/dev/framedump.rs`; `tools/site_video.py render`
 # drives it). Release, because a dump is a render of thousands of 1080p frames; its own target dir,
 # because the feature set differs from every other simulator build; `--no-default-features` because
-# `devtools` draws a frame counter into the picture, and `placeholder-sentinel` because the second
+# `devtools` draws a frame counter into the picture, `play-feed` because that also drops the Feed
+# backend the simulator's sink belongs to (`ci/test_sim_backend.py`), and `placeholder-sentinel` because the second
 # oracle is the sentinel colour. Like `sim-linux` it needs only libass: the storyboard plays no
 # video, so no host FFmpeg (whose staged names are `.dylib`s, which is what keeps
 # `screenshots-sim` macOS-only). It builds on macOS (previews) and on Linux, where
@@ -2476,7 +2479,7 @@ SITE_VIDEO_BIN   = $(SITE_VIDEO_TDIR)/release/plxnative-sim
 site-video-sim: $(LIBASS_HOST_STAGED)
 	CARGO_INCREMENTAL=0 cargo +$(RUST_TOOLCHAIN) build --release --manifest-path rust-modules/Cargo.toml \
 	  --target-dir $(SITE_VIDEO_TDIR) --no-default-features \
-	  --features hostsim,devtriggers,placeholder-sentinel --bin plxnative-sim
+	  --features hostsim,play-feed,devtriggers,placeholder-sentinel --bin plxnative-sim
 
 # Compatibility spelling used by the Windows launcher and existing documentation.
 sim-wsl: sim-linux
@@ -2508,7 +2511,7 @@ sim-macos-token:
 
 # `make sim-play` — a REAL playback session on this Mac, with no television and no Plex.
 #
-# Arms the CLOCK SINK (`rust-modules/media/src/player/ffi_host.rs`): access units are accepted, discarded,
+# Arms the CLOCK SINK (`rust-modules/play-feed/src/ffi_host.rs`): access units are accepted, discarded,
 # and a presentation clock advances at real time, reporting position at the television's own
 # measured 5 Hz. Nothing decodes. What that exercises is everything between the demuxer and the
 # decoder — the AU queues and their byte-cap backpressure, the feed-ahead throttle, the engine's
@@ -2548,7 +2551,7 @@ sim-macos-clean:
 # note (what it can and cannot do — chiefly: no video off-device).
 #
 # Its own target dir, per this file's rule for feature-set splits: this one is `--release
-# --no-default-features --features hostsim`, which is a fourth configuration, and sharing a dir
+# --no-default-features --features hostsim,play-feed`, which is a fourth configuration, and sharing a dir
 # with `sim` would make each invocation rebuild the crate the other way round.
 MACAPP_TDIR ?= rust-modules/target-macapp
 

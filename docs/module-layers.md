@@ -294,7 +294,7 @@ published values rather than hooks: the webOS code writes them into `tv::device`
 | device identity | `tv::device::{info, device, Info, Hardware}`, published by `webos::probe` | `telemetry`, `diag::schema`, `plex::identity`, `plex::session`'s tests, `screens::login`, `lab::snapshot`, `app`, `player` |
 | playback capability | `devcaps::dv::{capability, probe, DvCapability}`, published by `webos::caps`; `tv::start_capability_probe` starts the probe | `metadata`, `route`, `player::engine`, `app` |
 | native-video availability and repair | `tv::sandbox::{blocks_native_video, context, repair, Verdict, State, Failure, FORCE_BLOCKED}`; the verdict is published by `webos::probe` and the repair is a port hook | `player`, `route`, `appkit::player_hud`, `screens::player`, `app::playback` |
-| video sink | `tv::sink::VideoSink`, implemented by `player::ffi::StarfishSink` and `player::ffi_host::HostSink`, installed in `Port.sink` and read through `tv::sink::installed` | `player::{engine, pump, threads}`, `player::claim_hold`'s tests |
+| video sink | `tv::sink::VideoSink`, implemented by `player::ffi::StarfishSink` and `HostSink` (`plx_play_feed::ffi_host`, which `player::ffi_host` re-exports), installed in `Port.sink` and read through `tv::sink::installed` | `player::{engine, pump, threads}`, `player::claim_hold`'s tests |
 | secure store | `tv::secure::{seal, open, remove, Sealed, Backend}` | `plex::session` |
 | storage backend | `storage::client::install_activator`, which the port calls with `webos::activate_storage_helper` | `port::plex_run` |
 | locale | `tv::system_locale` and `tv::LocaleReply`; `i18n` still owns the parse and the log lines | `i18n` |
@@ -316,8 +316,12 @@ a real stop's Unload can run on a worker; the trait's own doc is the current lis
 ACB bind verbs that `pump` walks. Another TV OS cannot implement it as it stands. `player::ffi`
 keeps its `extern "C"` block unchanged and implements the trait as `StarfishSink`; `engine`, `pump`
 and `threads` call it through `player::sink()`. `player/ffi_host.rs` is no longer swapped in under
-`player::ffi`. It is `player::ffi_host`, the simulator's own `VideoSink` (`HostSink`), outside the
-fence. Call order, arguments and log text did not change. The deeper cut is L15b.
+`player::ffi`. It is `ffi_host`, the simulator's own `VideoSink` (`HostSink`), outside the
+fence. It is the Feed backend's stand-in, so it lives in `plx_play_feed` behind that crate's
+`hostsim` feature and names only the layers below it; the three things it needs from above arrive
+as `ffi_host::Hooks` its sink is built with (`player::HOST_SINK`): the media player's `sf_on_event`,
+the inverse of that callback's position rebase, and a `ffi_host::FrameSink` that `player::sim_video`
+implements (the one place that draws, so `plx_gfx` stays on the media side). Call order, arguments and log text did not change. The deeper cut is L15b.
 
 The verb cut was taken first because the bind sequence cannot be moved safely from here. It lives in
 `pump`'s `Stage` machine, is gated on state the firmware callback writes (`SHARED`) and interleaves

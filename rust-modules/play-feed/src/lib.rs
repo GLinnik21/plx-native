@@ -5,6 +5,9 @@ pub mod aq;
 pub mod era_callbacks;
 pub mod feed_resources;
 pub mod feed_state;
+/// The simulator's stand-in for the Starfish/ACB seam (`hostsim` builds only; see its module doc).
+#[cfg(feature = "hostsim")]
+pub mod ffi_host;
 pub mod ff_pcm;
 mod ff;
 pub use ff::{boot, demux, pushed_any, set_feed_audio, set_pcm_out, DemuxTransport};

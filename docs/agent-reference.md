@@ -222,7 +222,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   (`host-lint`, `host-unit-default`, `host-unit-hostsim`, `host-python`, `host-python-harness`) behind an aggregator named
   `host checks (NOT a device gate)`; `ci/test_ci_split.py` pins that no gate falls between them. The cargo half runs `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens`
   **twice: once on the default feature set and once with `--features hostsim`**, which is not a
-  duplicate run. The host feed seam (`player/ffi_host.rs`) exists ONLY in the hostsim
+  duplicate run. The host feed seam (`play-feed/src/ffi_host.rs`) exists ONLY in the hostsim
   configuration, so every test that drives an access unit through `sf_feed` is compiled out of the
   default pass and cannot fail it — which is how the prime-livelock regression
   (`player::engine::prime_livelock_tests`) sat outside the gate entirely while 1398 default-feature
@@ -1964,7 +1964,7 @@ controller.** `make sim-macos` builds a HOST copy of the same bundled FFmpeg 9.0
 `ci/build-ffmpeg.sh` component list (`HOST=1`, into `vendor/ffmpeg-prefix-host`, staged into
 `pkg/` as `libavformat-plx.63.dylib` beside the ARM `.so.63`), and `media-codecs/src/ffi.rs` carries a second ABI
 table selected on `target_pointer_width` with `ci/ffabi-assert.c` holding both. Arm
-`plxnative-clocksink` (`player/ffi_host.rs` — AUs accepted and discarded, a presentation clock
+`plxnative-clocksink` (`play-feed/src/ffi_host.rs` — AUs accepted and discarded, a presentation clock
 clamped to the last fed PTS, position reported at the television's measured 5 Hz) and the whole
 pipeline between the socket and the decoder runs on the Mac: both AVIO transports, `ff.rs`'s
 demux, the AU queues and their byte-cap backpressure, the feed-ahead throttle, rung transactions,
