@@ -246,21 +246,22 @@ long acb_create(const char *appId, int playerType) {
     }
     return g_acb;
 }
-/* Developer URI experiments use the same process-lifetime boot handle and callback as BF.
- * These split the existing bind solely to preserve observed inter-call delays. */
+/* The URI bind (the production backend and the developer probe, both through play-uri's
+ * `acb_bind`) uses the same process-lifetime boot handle and callback as BF. These split the
+ * existing bind solely to preserve observed inter-call delays. */
 /* Same device SHA pinned above: initialize wrapper@0x15c4c forwards core@0xcd5c.
  * Core returns exactly 1 only after valid parameters and callback installation; 0 refuses.
- * Keep this gate probe-only; normal acb_create still returns its historical handle result. */
-int acb_probe_initialized(void) { return g_acb && acb.probe_initialize_result == 1; }
+ * The URI gate reads it; normal acb_create still returns its historical handle result. */
+int acb_initialized(void) { return g_acb && acb.probe_initialize_result == 1; }
 int acb_probe_dass_available(void) { return g_acb && acb.connectDass; }
-int acb_probe_media_id(const char *mediaId) {
+int acb_media_id(const char *mediaId) {
     if (!g_acb || !mediaId) return 0;
     int sink = acb.setSinkType(g_acb, SINK_TYPE_MAIN);
     int rv = acb.setMediaId(g_acb, mediaId);
     if (elogf) { fprintf(elogf, "acb probe mediaId sink_rv=%d rv=%d\n", sink, rv); fflush(elogf); }
     return sink == 1 && rv == 1;
 }
-int acb_probe_loaded(void) {
+int acb_loaded(void) {
     if (!g_acb) return 0;
     int rv = acb.setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_LOADED, &g_taskId);
     if (elogf) { fprintf(elogf, "acb probe loaded rv=%d task=%ld\n", rv, g_taskId); fflush(elogf); }
@@ -273,8 +274,8 @@ int acb_probe_connect_dass(void) {
     return rv;
 }
 void acb_bind(const char *mediaId) {
-    (void)acb_probe_media_id(mediaId);
-    (void)acb_probe_loaded();
+    (void)acb_media_id(mediaId);
+    (void)acb_loaded();
 }
 /* Tell ACB the stream is Dolby Atmos — the AUDIO counterpart of acb_send_video_data(), and a
  * METADATA descriptor rather than anything resembling an audio sink.
@@ -336,7 +337,7 @@ static int acb_start_impl(long x, long y, long w, long h, int strict) {
     return display == 1 && playing == 1;
 }
 void acb_start(long x, long y, long w, long h) { (void)acb_start_impl(x, y, w, h, 0); }
-int acb_probe_finish(void) { return acb_start_impl(0, 0, 1280, 720, 1); }
+int acb_finish(void) { return acb_start_impl(0, 0, 1280, 720, 1); }
 int acb_unload(long *taskOut) {
     if (taskOut) *taskOut = 0;
     if (!g_acb) return 0;

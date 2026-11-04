@@ -120,28 +120,24 @@ mod uri_boot_tests {
             app_id: *const c_char, player_type: c_int) -> c_long {
             NoSink.plane_create(mt, app_id, player_type)
         }
-        #[cfg(feature = "devtriggers")]
-        unsafe fn plane_probe_initialized(&self, mt: &plx_base::task::MainThread) -> bool {
-            NoSink.plane_probe_initialized(mt)
+        unsafe fn plane_initialized(&self, mt: &plx_base::task::MainThread) -> bool {
+            NoSink.plane_initialized(mt)
         }
         #[cfg(feature = "devtriggers")]
         unsafe fn plane_probe_dass_available(&self, mt: &plx_base::task::MainThread) -> bool {
             NoSink.plane_probe_dass_available(mt)
         }
-        #[cfg(feature = "devtriggers")]
-        unsafe fn plane_probe_media_id(&self, mt: &plx_base::task::MainThread,
-            id: *const c_char) -> c_int { NoSink.plane_probe_media_id(mt, id) }
-        #[cfg(feature = "devtriggers")]
-        unsafe fn plane_probe_loaded(&self, mt: &plx_base::task::MainThread) -> c_int {
-            NoSink.plane_probe_loaded(mt)
+        unsafe fn plane_media_id(&self, mt: &plx_base::task::MainThread,
+            id: *const c_char) -> c_int { NoSink.plane_media_id(mt, id) }
+        unsafe fn plane_loaded(&self, mt: &plx_base::task::MainThread) -> c_int {
+            NoSink.plane_loaded(mt)
         }
         #[cfg(feature = "devtriggers")]
         unsafe fn plane_probe_connect_dass(&self, mt: &plx_base::task::MainThread) -> c_int {
             NoSink.plane_probe_connect_dass(mt)
         }
-        #[cfg(feature = "devtriggers")]
-        unsafe fn plane_probe_finish(&self, mt: &plx_base::task::MainThread) -> c_int {
-            NoSink.plane_probe_finish(mt)
+        unsafe fn plane_finish(&self, mt: &plx_base::task::MainThread) -> c_int {
+            NoSink.plane_finish(mt)
         }
         unsafe fn plane_bind(&self, mt: &plx_base::task::MainThread, id: *const c_char) {
             NoSink.plane_bind(mt, id)

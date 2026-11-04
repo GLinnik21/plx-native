@@ -66,19 +66,22 @@ void vp_destroy_window(void);
 /* ACB (App Common Binding) — VP_ACB only; every verb is a no-op in the other modes, so callers
  * need not branch. On webOS 5 this whole sequence has no replacement: it is deleted outright. */
 long acb_create(const char *appId, int playerType);        /* create+initialize; 0 = failed */
-int acb_probe_initialized(void);
-int acb_probe_dass_available(void);
-int acb_probe_media_id(const char *mediaId);
-int acb_probe_loaded(void);
-int acb_probe_connect_dass(void);
-int acb_probe_finish(void);
+/* The paced URI bind (play-uri `acb_bind`): the same calls acb_bind() makes, split so the caller can
+ * pace them. 1 = the library confirmed AcbAPI_initialize (a created handle alone is not that), 0 not. */
+int acb_initialized(void);
+int acb_probe_dass_available(void);                         /* developer arm only */
+int acb_media_id(const char *mediaId);                      /* setSinkType(MAIN)+setMediaId; 1 = both accepted */
+int acb_loaded(void);                                       /* setState(FOREGROUND, LOADED); setState's answer */
+int acb_probe_connect_dass(void);                           /* developer arm only */
+int acb_finish(void);                                       /* setDisplayWindow(0,0,1280,720,fullscreen)+setState(PLAYING); 1 = both accepted */
 void acb_bind(const char *mediaId);                        /* setSinkType(MAIN)+setMediaId+setState(LOADED) */
 int  acb_send_video_data(const char *sourceInfo);  /* setMediaVideoData; normal playback forwards the native envelope; explicit developer fixture descriptor is experimental. -1 = rejected */
 void acb_start(long x, long y, long w, long h);            /* setDisplayWindow + setState(PLAYING) */
 /* setState(UNLOADED). Returns setState's own answer: 1 accepted (the firmware will deliver a
  * completion callback carrying *taskOut), -2 not registered (nothing was sent, no callback comes),
  * 0 no ACB handle (nothing was sent). *taskOut (may be NULL) is set to the task id the call wrote
- * ONLY when the return is 1, else 0. */
+ * ONLY when the return is 1, else 0. The evidence for matching the release on that task id, and for
+ * the -2 rule, is docs/measurements/acb-release-fence-2026-11-04.md. */
 int acb_unload(long *taskOut);
 
 /* ---- library-thread callbacks the seam forwards to (consumer-defined) ---- */

@@ -1289,18 +1289,14 @@ impl DisplaySink for HostSink {
     ) -> c_long {
         acb_create(app_id, player_type)
     }
-    #[cfg(feature = "devtriggers")]
-    unsafe fn plane_probe_initialized(&self, _: &MainThread) -> bool { false }
+    unsafe fn plane_initialized(&self, _: &MainThread) -> bool { false }
     #[cfg(feature = "devtriggers")]
     unsafe fn plane_probe_dass_available(&self, _: &MainThread) -> bool { false }
-    #[cfg(feature = "devtriggers")]
-    unsafe fn plane_probe_media_id(&self, _: &MainThread, _media_id: *const c_char) -> c_int { 0 }
-    #[cfg(feature = "devtriggers")]
-    unsafe fn plane_probe_loaded(&self, _: &MainThread) -> c_int { 0 }
+    unsafe fn plane_media_id(&self, _: &MainThread, _media_id: *const c_char) -> c_int { 0 }
+    unsafe fn plane_loaded(&self, _: &MainThread) -> c_int { 0 }
     #[cfg(feature = "devtriggers")]
     unsafe fn plane_probe_connect_dass(&self, _: &MainThread) -> c_int { 0 }
-    #[cfg(feature = "devtriggers")]
-    unsafe fn plane_probe_finish(&self, _: &MainThread) -> c_int { 0 }
+    unsafe fn plane_finish(&self, _: &MainThread) -> c_int { 0 }
     unsafe fn plane_bind(&self, _: &MainThread, media_id: *const c_char) {
         acb_bind(media_id)
     }

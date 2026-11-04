@@ -25,8 +25,8 @@
 use super::uri_lifecycle::{Event as LifeEvent, Fx as LifeFx, Lifecycle};
 use super::uriprobe::{AbrBps, Config, Kind, Scheme, Settle, UriCall, UriEffect, UriEvent, UriProbe, Variant, AcbOp};
 use plx_base::task::MainThread;
-use plx_platform::tv::plane::{BindPolicy, BindVerdict, PlaneOwner};
-use plx_platform::tv::sink::{DisplaySink, VP_ACB, VP_EXPORTED};
+use plx_platform::tv::plane::PlaneOwner;
+use plx_platform::tv::sink::{DisplaySink, VP_EXPORTED};
 use plx_platform::tv::uri::{CloseStatus, UriMedia, UriPoll};
 use std::collections::VecDeque;
 use std::os::raw::c_int;
@@ -35,19 +35,6 @@ use std::time::Instant;
 /// The exported window is placed over the whole canvas; the coded size the service reports for the
 /// picture (`videoInfo`) only changes the SOURCE rectangle (`engine::place_exported` does the same).
 const CANVAS: (c_int, c_int) = (1_920, 1_080);
-
-// The actuator reads platform facts through this seam; the probe machine receives only its answer.
-#[derive(Clone,Copy)]
-enum AcbGateFact { Mode, BootHandle, PlayerType, DassAvailable, Initialized }
-struct AcbGateCheck { mode:i32, boot_handle:bool, ptype:i32, dass_available:bool, initialized:bool, ready:bool }
-fn check_acb_gate(dass:bool, read:impl Fn(AcbGateFact)->i32)->AcbGateCheck {
-    let mode=read(AcbGateFact::Mode); let boot_handle=read(AcbGateFact::BootHandle)!=0;
-    let ptype=read(AcbGateFact::PlayerType); let dass_available=read(AcbGateFact::DassAvailable)!=0;
-    let initialized=read(AcbGateFact::Initialized)==1;
-    let ready=mode==VP_ACB && boot_handle && initialized && ptype==0 && (!dass || dass_available);
-    AcbGateCheck {mode,boot_handle,ptype,dass_available,initialized,ready}
-}
-
 
 /// Inputs from the caller. The URL is kept private and erased on logical completion.
 pub struct DriverConfig<A: Copy> {
@@ -337,50 +324,33 @@ impl<A: Copy> UriSession<A> {
     }
 
     fn acb_execute(&mut self, op: &AcbOp, mt: &MainThread, now_ms: u64) -> bool {
-        let sink = self.sink;
+        use super::acb_drive::{execute, Descriptor, Stamp, Verdict};
+        let session = self.lifecycle.session();
         match op {
-            AcbOp::Check {dass} => {
-                let facts = self.plane.facts();
-                let check=check_acb_gate(*dass,|fact|match fact {
-                    AcbGateFact::Mode=>sink.window_mode(),
-                    AcbGateFact::BootHandle=>i32::from(facts.handle),
-                    AcbGateFact::PlayerType=>facts.player_type,
-                    AcbGateFact::DassAvailable=>i32::from(unsafe {sink.plane_probe_dass_available(mt)}),
-                    AcbGateFact::Initialized=>i32::from(unsafe {sink.plane_probe_initialized(mt)}),
-                });
-                (self.log)("uriprobe: ACB experiment requires known SDR H264720p24 fixture; fallback is explicit fixture data, not content detection");
-                (self.log)(&format!("uriprobe: t={now_ms} acb gate mode={} boot_handle={} actual_ptype={} dass_available={} initialized={}",check.mode,check.boot_handle,check.ptype,check.dass_available,check.initialized));
-                check.ready
-            }
-            AcbOp::MediaId {media_id} => {
-                let Some(session) = self.lifecycle.session() else { return false };
-                let Ok(id) = std::ffi::CString::new(&**media_id) else { return false };
-                // One binding at a time: the plane owner grants the bind only once the previous
-                // binding's release (either backend's) is proven.
-                match self.plane.bind(sink, mt, BindPolicy::Strict, media_id) {
-                    BindVerdict::Granted => {}
-                    verdict => {
-                        (self.log)(&format!("uriprobe: acb bind not granted ({verdict:?}); the experiment cannot bind"));
-                        return false;
-                    }
-                }
-                self.lifecycle(LifeEvent::AcbTouched {session}, now_ms);
-                unsafe { sink.plane_probe_media_id(mt, id.as_ptr()) == 1 }
-            }
-            AcbOp::Loaded => unsafe { sink.plane_probe_loaded(mt) == 1 },
-            AcbOp::Connect {enabled: false} => { (self.log)("uriprobe: acb control connectDass skipped (same timed slot)"); true }
-            AcbOp::Connect {enabled: true} => unsafe { sink.plane_probe_connect_dass(mt) == 1 },
-            AcbOp::VideoData {media_id, video} => {
-                (self.log)(&format!("uriprobe: acb video facts width={} height={} frameRate={} bitRate={:?}", video.width, video.height, video.frame_rate, video.bit_rate));
-                let observed = self.acb_source.as_ref().filter(|source| &source.media_id == media_id && source.video == *video);
-                let payload = observed.map(|source| source.text().to_owned()).or_else(|| super::uri_protocol::build_acb_fixture_video(media_id, *video));
-                let Some(payload) = payload else { (self.log)("uriprobe: acb invalid descriptor: no observed envelope or exact SDR720p24 fixture"); return false };
-                (self.log)(if observed.is_some() {"uriprobe: acb descriptor=observed-envelope"} else {"uriprobe: acb descriptor=explicit-SDR720p24-fixture"});
-                let Ok(payload) = std::ffi::CString::new(payload) else { return false };
-                unsafe { sink.plane_send_video_data(mt, payload.as_ptr()) == 1 }
-            }
-            AcbOp::Display => unsafe { sink.plane_probe_finish(mt) == 1 }
+            AcbOp::Check {..} => (self.log)("uriprobe: ACB experiment requires known SDR H264720p24 fixture; fallback is explicit fixture data, not content detection"),
+            // One binding at a time: the plane owner grants the bind only once the previous
+            // binding's release (either backend's) is proven.
+            AcbOp::MediaId {..} if session.is_none() => return false,
+            _ => {}
         }
+        let acb_source = self.acb_source.as_ref();
+        let mut descriptor = |media_id: &super::uri_protocol::MediaId, video: super::uri_protocol::VideoFacts| {
+            let observed = acb_source.filter(|source| &source.media_id == media_id && source.video == video);
+            let label = if observed.is_some() { "observed-envelope" } else { "explicit-SDR720p24-fixture" };
+            observed.map(|source| source.text().to_owned()).or_else(|| super::uri_protocol::build_acb_fixture_video(media_id, video))
+                .map(|text| Descriptor { text, label })
+                .ok_or("no observed envelope or exact SDR720p24 fixture")
+        };
+        let log = self.log;
+        let executed = execute(op, mt, self.sink, self.plane, &mut descriptor, &mut |stamp, line| match stamp {
+            Stamp::Plain => log(&format!("uriprobe: {line}")),
+            Stamp::Timed => log(&format!("uriprobe: t={now_ms} {line}")),
+        });
+        if let (true, Some(session)) = (executed.touched, session) {
+            self.lifecycle(LifeEvent::AcbTouched {session}, now_ms);
+        }
+        // A deferred bind is a failed experiment here: the probe never retries a bind.
+        matches!(executed.verdict, Verdict::Invoked(true))
     }
 
     /// Destroy the exported window only after the ownership reducer has observed release.
@@ -802,27 +772,6 @@ mod tests {
             rig.back();
         });
         assert!(line_with(&output," summary ").contains("resume=sent"),"delayed initial ACK changed resume: {output}");
-    }
-
-    #[test]
-    fn uri_acb_review_refused_initializer_invalidates_both_arms() {
-        for dass in [false,true] {
-            let check=check_acb_gate(dass,|fact|match fact {
-                AcbGateFact::Mode=>plx_platform::tv::sink::VP_ACB,
-                AcbGateFact::BootHandle|AcbGateFact::DassAvailable=>1,
-                AcbGateFact::PlayerType|AcbGateFact::Initialized=>0,
-            });
-            assert!(!check.ready,"created handle and playerType0 cannot prove initialization succeeded");
-        }
-        for dass in [false,true] {
-            let ready=check_acb_gate(dass,|fact|match fact {
-                AcbGateFact::Mode=>plx_platform::tv::sink::VP_ACB,
-                AcbGateFact::PlayerType=>0,
-                _=>1,
-            });
-            assert!(ready.ready,"valid initialized boot handle must remain usable");
-        }
-
     }
 
 }
