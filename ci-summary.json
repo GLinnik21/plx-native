@@ -57,22 +57,22 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-04T10:54:56Z",
+ "generated": "2026-11-04T12:30:34Z",
  "metrics": [
   {
    "change30_pct": null,
-   "change7_pct": 56.8,
+   "change7_pct": 46.0,
    "d30": null,
    "delta30": null,
-   "delta7": 122.5,
+   "delta7": 106.5,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 79,
-   "n_prev": 88,
+   "n_now": 77,
+   "n_prev": 86,
    "now": 338,
-   "prev7": 215.5,
+   "prev7": 231.5,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -82,18 +82,18 @@
   },
   {
    "change30_pct": 0.7,
-   "change7_pct": 36.4,
+   "change7_pct": 36.7,
    "d30": 292.0,
    "delta30": 2.0,
-   "delta7": 78.5,
+   "delta7": 79.0,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 79,
-   "n_prev": 88,
+   "n_now": 77,
+   "n_prev": 86,
    "now": 294,
-   "prev7": 215.5,
+   "prev7": 215.0,
    "shown": true,
    "state": "worse",
    "state30": "flat",
@@ -102,40 +102,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 32.9,
-   "change7_pct": 20.5,
-   "d30": 311.5,
-   "delta30": 102.5,
-   "delta7": 70.5,
-   "group": "ci",
-   "id": "ci|host unit tests (default features)",
-   "kind": "job",
-   "label": "CI: host unit tests (default features)",
-   "n_now": 79,
-   "n_prev": 88,
-   "now": 414,
-   "prev7": 343.5,
-   "shown": true,
-   "state": "worse",
-   "state30": "worse",
-   "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
    "change30_pct": -59.7,
-   "change7_pct": 18.9,
-   "d30": 1032,
-   "delta30": -616.0,
-   "delta7": 66.0,
+   "change7_pct": 18.5,
+   "d30": 1031,
+   "delta30": -615.0,
+   "delta7": 65.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 78,
-   "n_prev": 90,
+   "n_now": 76,
+   "n_prev": 88,
    "now": 416.0,
-   "prev7": 350.0,
+   "prev7": 351.0,
    "shown": true,
    "state": "worse",
    "state30": "better",
@@ -144,40 +123,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -1.3,
-   "change7_pct": 15.2,
-   "d30": 2584,
-   "delta30": -32.5,
-   "delta7": 337.0,
-   "group": "ci",
-   "id": "minutes",
-   "kind": "cost",
-   "label": "Runner time per push",
-   "n_now": 66,
-   "n_prev": 72,
-   "now": 2551.5,
-   "prev7": 2214.5,
-   "shown": true,
-   "state": "worse",
-   "state30": "flat",
-   "threshold_abs": 240.0,
-   "threshold_pct": 15.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": -61.4,
+   "change30_pct": -61.1,
    "change7_pct": 15.8,
-   "d30": 1101.0,
-   "delta30": -676.0,
+   "d30": 1094,
+   "delta30": -668.0,
    "delta7": 58.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 188,
-   "n_prev": 224,
-   "now": 425.0,
-   "prev7": 367.0,
+   "n_now": 184,
+   "n_prev": 225,
+   "now": 426.0,
+   "prev7": 368,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -324,10 +282,31 @@
    "unit": "s"
   },
   {
-   "change30_pct": 33.0,
+   "change30_pct": -1.1,
+   "change7_pct": 14.0,
+   "d30": 2584,
+   "delta30": -27.5,
+   "delta7": 314.5,
+   "group": "ci",
+   "id": "minutes",
+   "kind": "cost",
+   "label": "Runner time per push",
+   "n_now": 64,
+   "n_prev": 70,
+   "now": 2556.5,
+   "prev7": 2242.0,
+   "shown": true,
+   "state": "flat",
+   "state30": "flat",
+   "threshold_abs": 240.0,
+   "threshold_pct": 15.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": 33.9,
    "change7_pct": 5.3,
-   "d30": 748,
-   "delta30": 247,
+   "d30": 743,
+   "delta30": 252,
    "delta7": 50,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
@@ -345,18 +324,39 @@
    "unit": "s"
   },
   {
+   "change30_pct": 32.9,
+   "change7_pct": 19.3,
+   "d30": 311.5,
+   "delta30": 102.5,
+   "delta7": 67.0,
+   "group": "ci",
+   "id": "ci|host unit tests (default features)",
+   "kind": "job",
+   "label": "CI: host unit tests (default features)",
+   "n_now": 77,
+   "n_prev": 86,
+   "now": 414,
+   "prev7": 347.0,
+   "shown": true,
+   "state": "flat",
+   "state30": "worse",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
    "change30_pct": null,
-   "change7_pct": 5.0,
+   "change7_pct": 5.3,
    "d30": null,
    "delta30": null,
-   "delta7": 16.0,
+   "delta7": 17.0,
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 79,
-   "n_prev": 88,
-   "now": 339,
+   "n_now": 77,
+   "n_prev": 86,
+   "now": 340,
    "prev7": 323.0,
    "shown": true,
    "state": "flat",
@@ -366,19 +366,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 35.9,
-   "change7_pct": 11.7,
+   "change30_pct": 37.1,
+   "change7_pct": 10.9,
    "d30": 245.0,
-   "delta30": 88.0,
-   "delta7": 35,
+   "delta30": 91.0,
+   "delta7": 33,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 79,
-   "n_prev": 87,
-   "now": 333,
-   "prev7": 298,
+   "n_now": 77,
+   "n_prev": 85,
+   "now": 336,
+   "prev7": 303,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -387,19 +387,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 29.0,
-   "change7_pct": 11.2,
-   "d30": 227.5,
-   "delta30": 66.0,
-   "delta7": 29.5,
+   "change30_pct": 28.5,
+   "change7_pct": 11.3,
+   "d30": 229.5,
+   "delta30": 65.5,
+   "delta7": 30.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 70,
-   "n_prev": 79,
-   "now": 293.5,
-   "prev7": 264,
+   "n_now": 68,
+   "n_prev": 77,
+   "now": 295.0,
+   "prev7": 265,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -409,18 +409,18 @@
   },
   {
    "change30_pct": -78.8,
-   "change7_pct": 6.1,
+   "change7_pct": 6.7,
    "d30": 1017.0,
    "delta30": -801.0,
-   "delta7": 12.5,
+   "delta7": 13.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 70,
-   "n_prev": 78,
+   "n_now": 68,
+   "n_prev": 76,
    "now": 216.0,
-   "prev7": 203.5,
+   "prev7": 202.5,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -430,17 +430,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 18.4,
+   "change7_pct": 19.0,
    "d30": null,
    "delta30": null,
-   "delta7": 31.5,
+   "delta7": 32.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 70,
-   "n_prev": 79,
-   "now": 202.5,
+   "n_now": 68,
+   "n_prev": 77,
+   "now": 203.5,
    "prev7": 171,
    "shown": true,
    "state": "flat",
@@ -459,8 +459,8 @@
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 79,
-   "n_prev": 88,
+   "n_now": 77,
+   "n_prev": 86,
    "now": 191,
    "prev7": 165.0,
    "shown": true,
@@ -545,8 +545,8 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 70,
-   "n_prev": 79,
+   "n_now": 68,
+   "n_prev": 77,
    "now": 19.0,
    "prev7": 18,
    "shown": false,
@@ -579,18 +579,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 11.1,
+   "change7_pct": 25.0,
    "d30": null,
    "delta30": null,
-   "delta7": 0.5,
+   "delta7": 1.0,
    "group": "ci",
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 79,
-   "n_prev": 88,
+   "n_now": 77,
+   "n_prev": 86,
    "now": 5,
-   "prev7": 4.5,
+   "prev7": 4.0,
    "shown": false,
    "state": "flat",
    "state30": "new",
@@ -601,15 +601,15 @@
   {
    "change30_pct": -98.9,
    "change7_pct": 0.0,
-   "d30": 261.5,
-   "delta30": -258.5,
+   "d30": 261.0,
+   "delta30": -258.0,
    "delta7": 0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 79,
-   "n_prev": 87,
+   "n_now": 77,
+   "n_prev": 85,
    "now": 3,
    "prev7": 3,
    "shown": false,
@@ -629,8 +629,8 @@
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 79,
-   "n_prev": 87,
+   "n_now": 77,
+   "n_prev": 85,
    "now": 3,
    "prev7": 3,
    "shown": false,
@@ -664,7 +664,7 @@
  ],
  "regressions": [
   {
-   "change_pct": 56.8,
+   "change_pct": 46.0,
    "commits": [
     {
      "pr": 1213,
@@ -717,7 +717,7 @@
      "title": "Add automatic intro and credits skipping for Plex Pass viewers"
     }
    ],
-   "from": 215.5,
+   "from": 231.5,
    "id": "ci|host harness tests",
    "label": "CI: host harness tests",
    "since": "2026-11-03",
@@ -725,7 +725,7 @@
    "to": 338
   },
   {
-   "change_pct": 36.4,
+   "change_pct": 36.7,
    "commits": [
     {
      "pr": 1213,
@@ -778,7 +778,7 @@
      "title": "Add automatic intro and credits skipping for Plex Pass viewers"
     }
    ],
-   "from": 215.5,
+   "from": 215.0,
    "id": "ci|host python/shell/C gates",
    "label": "CI: host python/shell/C gates",
    "since": "2026-11-03",
@@ -786,7 +786,7 @@
    "to": 294
   },
   {
-   "change_pct": 20.5,
+   "change_pct": 18.5,
    "commits": [
     {
      "pr": 1213,
@@ -839,134 +839,12 @@
      "title": "Add automatic intro and credits skipping for Plex Pass viewers"
     }
    ],
-   "from": 343.5,
-   "id": "ci|host unit tests (default features)",
-   "label": "CI: host unit tests (default features)",
-   "since": "2026-11-03",
-   "threshold_pct": 20.0,
-   "to": 414
-  },
-  {
-   "change_pct": 18.9,
-   "commits": [
-    {
-     "pr": 1213,
-     "sha": "f0e9b85b9",
-     "title": "Player: add native URI probes and retain display ownership"
-    },
-    {
-     "pr": 1214,
-     "sha": "e3bb1aebc",
-     "title": "Profiles: Change profile opens on the profile that is watching"
-    },
-    {
-     "pr": 1218,
-     "sha": "a7572c88a",
-     "title": "player: stop fencing viewer HLS Resume on historical runway"
-    },
-    {
-     "pr": 1215,
-     "sha": "01e91f1c4",
-     "title": "Refresh the open library grid atomically after server changes"
-    },
-    {
-     "pr": 1220,
-     "sha": "3b651de0a",
-     "title": "Align Home and Detail heroes and normalize logo sizing"
-    },
-    {
-     "pr": 1222,
-     "sha": "7004bc986",
-     "title": "Use initial 1.0 resource bundles for Player HUD plugins"
-    },
-    {
-     "pr": 1223,
-     "sha": "5d66b9619",
-     "title": "Report diagnostic export failures and add DV CRA/IDR controls"
-    },
-    {
-     "pr": 1224,
-     "sha": "a97bc1b49",
-     "title": "Separate library navigation from Sort & Filter"
-    },
-    {
-     "pr": 1225,
-     "sha": "579f44b97",
-     "title": "Avoid flashing hold-options hint on short OK presses"
-    },
-    {
-     "pr": 1227,
-     "sha": "9ac44e870",
-     "title": "Add automatic intro and credits skipping for Plex Pass viewers"
-    }
-   ],
-   "from": 350.0,
+   "from": 351.0,
    "id": "push_wait",
    "label": "Wait after merge",
    "since": "2026-11-03",
    "threshold_pct": 15.0,
    "to": 416.0
-  },
-  {
-   "change_pct": 15.2,
-   "commits": [
-    {
-     "pr": 1213,
-     "sha": "f0e9b85b9",
-     "title": "Player: add native URI probes and retain display ownership"
-    },
-    {
-     "pr": 1214,
-     "sha": "e3bb1aebc",
-     "title": "Profiles: Change profile opens on the profile that is watching"
-    },
-    {
-     "pr": 1218,
-     "sha": "a7572c88a",
-     "title": "player: stop fencing viewer HLS Resume on historical runway"
-    },
-    {
-     "pr": 1215,
-     "sha": "01e91f1c4",
-     "title": "Refresh the open library grid atomically after server changes"
-    },
-    {
-     "pr": 1220,
-     "sha": "3b651de0a",
-     "title": "Align Home and Detail heroes and normalize logo sizing"
-    },
-    {
-     "pr": 1222,
-     "sha": "7004bc986",
-     "title": "Use initial 1.0 resource bundles for Player HUD plugins"
-    },
-    {
-     "pr": 1223,
-     "sha": "5d66b9619",
-     "title": "Report diagnostic export failures and add DV CRA/IDR controls"
-    },
-    {
-     "pr": 1224,
-     "sha": "a97bc1b49",
-     "title": "Separate library navigation from Sort & Filter"
-    },
-    {
-     "pr": 1225,
-     "sha": "579f44b97",
-     "title": "Avoid flashing hold-options hint on short OK presses"
-    },
-    {
-     "pr": 1227,
-     "sha": "9ac44e870",
-     "title": "Add automatic intro and credits skipping for Plex Pass viewers"
-    }
-   ],
-   "from": 2214.5,
-   "id": "minutes",
-   "label": "Runner time per push",
-   "since": "2026-11-03",
-   "threshold_pct": 15.0,
-   "to": 2551.5
   }
  ],
  "schema": 2,
@@ -987,7 +865,7 @@
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 339
+   "now": 340
   },
   {
    "group": "ci",
@@ -999,7 +877,7 @@
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 333
+   "now": 336
   }
  ],
  "slowest_local": [
