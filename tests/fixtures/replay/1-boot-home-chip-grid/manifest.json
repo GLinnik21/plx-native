@@ -6,6 +6,7 @@
   "start": 0
  },
  "features": [
+  "devtools",
   "devtriggers",
   "hostsim"
  ],
@@ -52,8 +53,8 @@
        "address": "127.0.0.1",
        "machine_id": "",
        "name": "",
-       "origin": "http://127.0.0.1:52735",
-       "port": 52735,
+       "origin": "http://127.0.0.1:49923",
+       "port": 49923,
        "tier": "local",
        "token": "s00000002"
       }
@@ -167,7 +168,7 @@
    ],
    "version": 1
   },
-  "hash": 11188819836749021953,
+  "hash": 3472100897483754670,
   "probe": "controlled=home version=1"
  },
  "schema": 3,
