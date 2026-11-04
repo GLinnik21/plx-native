@@ -1585,6 +1585,11 @@ this session, no network).
 - Why: TVs reading GitHub directly hit API rate limits (UNVERIFIED figure: 60 unauthenticated requests per
   hour per IP) and need tree walks; a bespoke backend means hosting and moderation for no gain over static
   files; content addressing makes caching, revocation and "the preview is this exact file" checkable.
+- Gallery previews may include several native PNGs for the same state and language. The display-only
+  Settings preview and full-size preview cycle those equivalent frames with a quiet hold and an overlapping
+  dissolve; the selected scene, metadata and controls stay fixed. Frames from another state or language
+  never enter that cycle, and a single-frame entry remains static. These are registry preview assets,
+  independent of the package/HUD DSL and its initial 1.0 formats.
 - Registry approval tier (human review plus CI): no red or alarm treatment, legible over the brightest and
   darkest frames CI renders, no Plex or LG marks or impersonation (`docs/distribution.md` section 5.5), a
   redistributable license, previews that match the hash.

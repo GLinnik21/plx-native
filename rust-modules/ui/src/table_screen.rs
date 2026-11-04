@@ -65,6 +65,8 @@ pub struct Header<'a> {
     pub hint: Option<KeyHint<'a>>,
     /// Display-only landscape artwork after the narrative. It contributes no focus or hit stop.
     pub preview: Option<super::widgets::Art<'a>>,
+    /// A cycle in the same display-only landscape slot; contributes no focus or hit stop.
+    pub preview_cycle: Option<&'a super::widgets::ArtCycle>,
     /// A loading read-out in the copy: accounted and sentinel-painted at the actual draw.
     pub pending_copy: Option<&'a str>,
 }
@@ -79,6 +81,7 @@ impl<'a> Header<'a> {
             copy_size: theme::size::LABEL,
             hint: None,
             preview: None,
+            preview_cycle: None,
             pending_copy: None,
         }
     }
@@ -90,6 +93,13 @@ impl<'a> Header<'a> {
 
     pub fn with_preview(mut self, art: super::widgets::Art<'a>) -> Self {
         self.preview = Some(art);
+        self.preview_cycle = None;
+        self
+    }
+
+    /// The same display-only landscape slot, with a shared image cycle instead of static art.
+    pub fn with_preview_cycle(mut self, cycle: &'a super::widgets::ArtCycle) -> Self {
+        self.preview_cycle = Some(cycle);
         self
     }
 
@@ -119,13 +129,17 @@ impl<'a> Header<'a> {
                 extra_end = top + KeyHint::height();
             }
         }
-        if let Some(art) = self.preview {
+        if self.preview.is_some() || self.preview_cycle.is_some() {
             let top = extra_end + theme::space::XL;
             let width = self.layout.narrative.w;
             let height = (width * 9.0 / 16.0).min((self.layout.action.y - top).max(0.0));
             if height > 0.0 {
-                super::widgets::card(p, Rect::new(self.layout.narrative.x, top, height * 16.0 / 9.0, height), art,
-                    theme::CARD_RING_RAD, false, 1.0, 0.0);
+                let rect = Rect::new(self.layout.narrative.x, top, height * 16.0 / 9.0, height);
+                if let Some(cycle) = self.preview_cycle {
+                    cycle.draw(p, rect, theme::CARD_RING_RAD);
+                } else if let Some(art) = self.preview {
+                    super::widgets::card(p, rect, art, theme::CARD_RING_RAD, false, 1.0, 0.0);
+                }
             }
         }
     }
