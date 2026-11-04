@@ -1956,7 +1956,7 @@ impl PlayerAdapter {
     }
     #[cfg(feature = "play-feed")]
     pub(super) fn apply_inplace_seek_pre(&mut self, target_ns: i64,
-        mode: super::SeekMode, coalesced: u32) {
+        mode: plx_play_feed::seek::SeekMode, coalesced: u32) {
         super::feed_pump::apply_inplace_seek_pre(&mut self.feed, &self.mt, target_ns, mode, coalesced);
     }
     #[cfg(feature = "play-feed")]

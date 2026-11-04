@@ -4,7 +4,8 @@ use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
 #[cfg(all(test, feature = "hostsim"))]
 use super::engine::Engine;
 use super::shared::Stage;
-use super::{seek_mode, SeekMode, SHARED};
+use super::SHARED;
+use plx_play_feed::seek::{seek_mode, SeekMode};
 #[cfg(all(test, feature = "hostsim"))]
 #[cfg(all(test, feature = "hostsim"))]
 use plx_base::task::MainThread;
@@ -4485,7 +4486,7 @@ mod flight_tests {
 mod native_seek_pump_tests {
     use super::*;
     use crate::player::ffi_host;
-    use crate::player::SeekMode;
+    use plx_play_feed::seek::SeekMode;
     use std::os::raw::c_int;
 
     const TARGET_NS: i64 = 905_000_000_000;
@@ -4509,7 +4510,7 @@ mod native_seek_pump_tests {
             ffi_host::reset_seek_probe_for_test(force_seek);
             super::super::engine::RELOAD_AT_LOG.lock().unwrap_or_else(|e| e.into_inner()).clear();
             super::super::engine::RELOAD_PREROLL_LOG.lock().unwrap_or_else(|e| e.into_inner()).clear();
-            crate::player::set_native_seek_refused(false);
+            plx_play_feed::seek::set_native_seek_refused(false);
             let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
             let epoch = FEED_SHARED.begin_native_session().expect("native session");
             let mut eng = super::super::engine::streaming_engine_for_test(epoch);
@@ -4518,7 +4519,7 @@ mod native_seek_pump_tests {
             FEED_SHARED.duration_ns.store(7_200_000_000_000, Relaxed);
             FEED_SHARED.file_size.store(50_000_000_000, Relaxed);
             FEED_SHARED.playpos_ns.store(60_000_000_000, Relaxed);
-            crate::player::set_seek_mode(SeekMode::NativeSeek);
+            plx_play_feed::seek::set_seek_mode(SeekMode::NativeSeek);
             Rig { ps: crate::route::PlaybackSession::IDLE, pa, now: 1_000 }
         }
 
@@ -4564,8 +4565,8 @@ mod native_seek_pump_tests {
 
     impl Drop for Rig {
         fn drop(&mut self) {
-            crate::player::set_native_seek_refused(false);
-            crate::player::set_seek_mode(SeekMode::Segment);
+            plx_play_feed::seek::set_native_seek_refused(false);
+            plx_play_feed::seek::set_seek_mode(SeekMode::Segment);
             ffi_host::reset_seek_probe_for_test(None);
             ffi_host::reset_native_lifecycle_for_test();
             ffi_host::force_clocksink_for_test(false);
@@ -4596,7 +4597,7 @@ mod native_seek_pump_tests {
         assert_eq!(ffi_host::segment_calls_for_test(), 0, "the private Segment verbs never run on VP_EXPORTED");
         assert!(reloads().is_empty(), "no fresh Load");
         assert!(!rig.eng().flushed && !rig.eng().rebase_pending, "the seek is applied");
-        assert_eq!(crate::player::seek_mode(), SeekMode::NativeSeek);
+        assert_eq!(plx_play_feed::seek::seek_mode(), SeekMode::NativeSeek);
     }
 
     #[test]
@@ -4624,8 +4625,8 @@ mod native_seek_pump_tests {
             -1,
             "the demux feed is not re-opened with a second av_seek in Reload mode"
         );
-        assert_eq!(crate::player::seek_mode(), SeekMode::Reload);
-        assert!(crate::player::native_seek_refused());
+        assert_eq!(plx_play_feed::seek::seek_mode(), SeekMode::Reload);
+        assert!(plx_play_feed::seek::native_seek_refused());
 
         // Another keyframe reaching the flushed engine must not anchor through the private offsets.
         rig.land_keyframe(TARGET_NS + 1_000_000_000);
@@ -4653,7 +4654,7 @@ mod native_seek_pump_tests {
         // The reload starts a NEW session in the same playback: it must not re-offer the Seek.
         let mode = super::super::engine::session_seek_mode(true, false, crate::player::VP_EXPORTED, None);
         assert_eq!(mode, SeekMode::Reload, "the downgrade survives reload_at");
-        crate::player::set_seek_mode(mode);
+        plx_play_feed::seek::set_seek_mode(mode);
         // Stand in for the reload's new Engine.
         let epoch = FEED_SHARED.begin_native_session().unwrap_or(0);
         let mut fresh = super::super::engine::streaming_engine_for_test(epoch);
@@ -4669,7 +4670,7 @@ mod native_seek_pump_tests {
 
         // A fresh play is a new playback and gets to try the native Seek again.
         let _ = crate::player::start_bufferfeed_tracked(&mut rig.ps, &mut super::super::adapter::PlayerAdapter::new(unsafe { MainThread::assume() }));
-        assert!(!crate::player::native_seek_refused(), "a fresh play clears the latch");
+        assert!(!plx_play_feed::seek::native_seek_refused(), "a fresh play clears the latch");
     }
 
     // ---- a seek armed under a viewer Pause is owned by the media layer (a bare request_seek) ----
@@ -4686,7 +4687,7 @@ mod native_seek_pump_tests {
     fn viewer_paused_seek_lands_in_place(mode: SeekMode) {
         let _serial = plx_base::testlock::serial();
         let mut rig = Rig::new(None);
-        crate::player::set_seek_mode(mode);
+        plx_play_feed::seek::set_seek_mode(mode);
         rig.viewer_pause();
         rig.arm(TARGET_NS); // a bare request_seek, as the dev autoseek trigger does
         assert!(FEED_TX.seek_preroll_active(), "the pump opened the paused-seek preroll itself");
@@ -4873,7 +4874,7 @@ mod native_seek_pump_tests {
     fn a_paused_scrub_in_reload_mode_holds_the_preroll_across_the_reload_and_ends_paused() {
         let _serial = plx_base::testlock::serial();
         let mut rig = Rig::new(None);
-        crate::player::set_seek_mode(SeekMode::Reload);
+        plx_play_feed::seek::set_seek_mode(SeekMode::Reload);
         rig.viewer_pause();
         crate::player::request_seek(TARGET_NS);
         rig.frame_until_reload();
@@ -4891,7 +4892,7 @@ mod native_seek_pump_tests {
     fn two_consecutive_paused_reload_mode_seeks_each_open_the_preroll_and_end_paused() {
         let _serial = plx_base::testlock::serial();
         let mut rig = Rig::new(None);
-        crate::player::set_seek_mode(SeekMode::Reload);
+        plx_play_feed::seek::set_seek_mode(SeekMode::Reload);
         rig.viewer_pause();
         for target in [TARGET_NS, NEXT_NS] {
             super::super::engine::RELOAD_AT_LOG.lock().unwrap_or_else(|e| e.into_inner()).clear();

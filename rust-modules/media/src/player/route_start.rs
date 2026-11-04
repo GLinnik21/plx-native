@@ -70,7 +70,7 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
     // playback: it gets to try the native Seek again.
     #[cfg(feature = "play-feed")]
     if !pa.is_live() {
-        super::set_native_seek_refused(false);
+        plx_play_feed::seek::set_native_seek_refused(false);
     }
     // A URI-mode probe session (dev trigger `plxnative-uriprobe`) holds the route-start attempt and
     // the exported window without an Engine in the slot. Active double-start stays a no-op;

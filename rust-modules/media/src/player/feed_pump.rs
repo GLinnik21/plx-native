@@ -6,7 +6,7 @@ use super::engine::{arm_live_clock_prime, feed_both_lanes, feed_sample, Engine};
 use super::feed_resources::FeedResources;
 use super::shared::Stage;
 use super::shared::{HlsPauseCompletion, HlsSeekPause};
-use super::SeekMode;
+use plx_play_feed::seek::SeekMode;
 use plx_base::task::MainThread;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::os::raw::c_char;

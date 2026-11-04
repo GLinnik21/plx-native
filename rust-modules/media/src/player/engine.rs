@@ -40,7 +40,7 @@ pub(crate) use plx_play_feed::LoadVideo;
 pub(crate) use plx_play_feed::load_video_refused;
 #[cfg(all(test, feature = "hostsim"))]
 use super::shared::Stage;
-use super::SeekMode;
+use plx_play_feed::seek::SeekMode;
 use super::{log, sink, threads};
 #[cfg(all(test, feature = "hostsim"))]
 use super::SHARED;
@@ -524,7 +524,7 @@ fn select_seek_mode_for_load() {
     let old_abi_seek = old_abi_seek_tested(major);
     let mode = session_seek_mode(layout_known, old_abi_seek, sink().window_mode(), dev_seek_mode());
     log(&format!("seek mode: {mode:?} (layout_known={layout_known} old_abi_seek={old_abi_seek})"));
-    super::set_seek_mode(mode);
+    plx_play_feed::seek::set_seek_mode(mode);
 }
 
 
@@ -659,24 +659,6 @@ use plx_play_feed::native_executor::{settle_pcm_lead, hls_candidate_snapshot_sta
 pub use plx_play_feed::native_executor::arm_live_clock_prime;
 
 
-fn seek_anchor_mode() -> plx_play_feed::native_executor::SeekAnchorMode {
-    use plx_play_feed::native_executor::SeekAnchorMode;
-    match super::seek_mode() {
-        SeekMode::Segment => SeekAnchorMode::Segment,
-        SeekMode::NativeSeek => SeekAnchorMode::NativeSeek,
-        SeekMode::Reload => SeekAnchorMode::Reload,
-    }
-}
-
-fn set_seek_anchor_mode(mode: plx_play_feed::native_executor::SeekAnchorMode) {
-    use plx_play_feed::native_executor::SeekAnchorMode;
-    super::set_seek_mode(match mode {
-        SeekAnchorMode::Segment => SeekMode::Segment,
-        SeekAnchorMode::NativeSeek => SeekMode::NativeSeek,
-        SeekAnchorMode::Reload => SeekMode::Reload,
-    });
-}
-
 fn replay_native_presentation(num: i64) {
     super::sf_on_event_inner(0, num, std::ptr::null(), super::shared::EventScope::Live);
 }
@@ -684,9 +666,6 @@ fn replay_native_presentation(num: i64) {
 const FEED_HOOKS: plx_play_feed::native_executor::FeedHooks =
     plx_play_feed::native_executor::FeedHooks {
         sink,
-        seek_mode: seek_anchor_mode,
-        set_seek_mode: set_seek_anchor_mode,
-        set_native_seek_refused: super::set_native_seek_refused,
         mirror_playstate: super::acb_mirror_playstate_at,
         mute_for_preroll: super::mute_for_preroll,
         presentation_event: replay_native_presentation,
@@ -743,7 +722,7 @@ pub(super) fn session_seek_mode(
     dev: Option<SeekMode>,
 ) -> SeekMode {
     match select_seek_mode(layout_known, old_abi_seek, window_mode, dev) {
-        SeekMode::NativeSeek if super::native_seek_refused() => SeekMode::Reload,
+        SeekMode::NativeSeek if plx_play_feed::seek::native_seek_refused() => SeekMode::Reload,
         mode => mode,
     }
 }
@@ -5039,7 +5018,7 @@ mod native_seek_tests {
         fn drop(&mut self) {
             ffi_host::force_clocksink_for_test(false);
             ffi_host::reset_seek_probe_for_test(None);
-            crate::player::set_seek_mode(SeekMode::Segment);
+            plx_play_feed::seek::set_seek_mode(SeekMode::Segment);
             FEED_SHARED.pts_shift.store(0, Ordering::Relaxed);
             FEED_SHARED.seek_target_ns.store(-1, Ordering::Relaxed);
             FEED_SHARED.pres_fed.store(0, Ordering::Relaxed);
@@ -5119,9 +5098,9 @@ mod native_seek_tests {
     fn a_refused_seek_on_webos3_keeps_the_playback_on_reload() {
         let _serial = plx_base::testlock::serial();
         let webos3 = || session_seek_mode(inplace_layout_known(3, true), old_abi_seek_tested(3), crate::player::VP_ACB, None);
-        crate::player::set_native_seek_refused(true);
+        plx_play_feed::seek::set_native_seek_refused(true);
         assert_eq!(webos3(), SeekMode::Reload, "the downgrade survives reload_at");
-        crate::player::set_native_seek_refused(false);
+        plx_play_feed::seek::set_native_seek_refused(false);
         assert_eq!(webos3(), SeekMode::NativeSeek, "a fresh play offers Seek again");
     }
 
@@ -5144,7 +5123,7 @@ mod native_seek_tests {
     fn the_landed_keyframe_is_the_native_seek_and_nothing_flushes() {
         let _serial = plx_base::testlock::serial();
         let _restore = arm(None);
-        crate::player::set_seek_mode(SeekMode::NativeSeek);
+        plx_play_feed::seek::set_seek_mode(SeekMode::NativeSeek);
         let mut eng = engine_seeking();
         tick(&mut eng);
 
@@ -5153,14 +5132,14 @@ mod native_seek_tests {
         assert!(!eng.flushed && !eng.rebase_pending, "the seek is applied");
         assert_eq!(FEED_SHARED.pts_shift.load(Ordering::Relaxed), 0, "content time, no rebase");
         assert!(eng.max_fed_video_pts >= TARGET_NS, "the keyframe and the AUs after it were fed on the Seek's timeline");
-        assert_eq!(crate::player::seek_mode(), SeekMode::NativeSeek);
+        assert_eq!(plx_play_feed::seek::seek_mode(), SeekMode::NativeSeek);
     }
 
     #[test]
     fn a_pre_zero_keyframe_seeks_to_zero_not_negative() {
         let _serial = plx_base::testlock::serial();
         let _restore = arm(None);
-        crate::player::set_seek_mode(SeekMode::NativeSeek);
+        plx_play_feed::seek::set_seek_mode(SeekMode::NativeSeek);
         let mut eng = super::prime_livelock_tests::engine_after_reload();
         eng.flushed = true;
         eng.rebase_pending = true;
@@ -5176,12 +5155,12 @@ mod native_seek_tests {
     fn a_refused_seek_reloads_this_one_and_every_later_one() {
         let _serial = plx_base::testlock::serial();
         let _restore = arm(Some(0));
-        crate::player::set_seek_mode(SeekMode::NativeSeek);
+        plx_play_feed::seek::set_seek_mode(SeekMode::NativeSeek);
         let mut eng = engine_seeking();
         tick(&mut eng);
 
-        assert_eq!(crate::player::seek_mode(), SeekMode::Reload, "native seek is off for the rest of the session");
-        assert!(crate::player::pump::seek_reloads(crate::player::seek_mode()));
+        assert_eq!(plx_play_feed::seek::seek_mode(), SeekMode::Reload, "native seek is off for the rest of the session");
+        assert!(crate::player::pump::seek_reloads(plx_play_feed::seek::seek_mode()));
         assert_eq!(
             FEED_TX.seek_to_ns.load(Ordering::Acquire),
             TARGET_NS,
@@ -5654,7 +5633,7 @@ mod pcm_sink_lead_tests {
         fn drop(&mut self) {
             ffi_host::force_clocksink_for_test(false);
             ffi_host::reset_seek_probe_for_test(None);
-            crate::player::set_seek_mode(SeekMode::Segment);
+            plx_play_feed::seek::set_seek_mode(SeekMode::Segment);
             FEED_SHARED.pts_shift.store(0, Ordering::Relaxed);
             FEED_SHARED.seek_target_ns.store(-1, Ordering::Relaxed);
             FEED_SHARED.pres_fed.store(0, Ordering::Relaxed);
@@ -5666,7 +5645,7 @@ mod pcm_sink_lead_tests {
     fn arm() -> Restore {
         ffi_host::force_clocksink_for_test(true);
         ffi_host::reset_seek_probe_for_test(None);
-        crate::player::set_seek_mode(SeekMode::Segment);
+        plx_play_feed::seek::set_seek_mode(SeekMode::Segment);
         FEED_SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
         FEED_SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
         FEED_SHARED.pts_shift.store(0, Ordering::Relaxed);
@@ -5756,7 +5735,7 @@ mod pcm_sink_lead_tests {
     fn a_pcm_load_keeps_the_lead_after_an_in_place_segment_seek() {
         let _serial = plx_base::testlock::serial();
         let _restore = arm();
-        crate::player::set_seek_mode(SeekMode::Segment);
+        plx_play_feed::seek::set_seek_mode(SeekMode::Segment);
         let mut eng = engine_at(T_NS, PCM_SINK_LEAD_NS);
         eng.flushed = true;
         eng.rebase_pending = true;
