@@ -205,7 +205,8 @@ fn terminated_ass_header_and_packets_render_through_main_subtitle_ingestion() {
 #[test]
 #[ignore = "requires the bundled host FFmpeg, native libass and packaged fonts"]
 fn terminated_ass_header_and_packets_render_through_http_side_reader() {
-    use super::subside::{Anchor, ReadCfg, RunEnd, SideStop};
+    use super::subside::Anchor;
+    use plx_play_feed::side_reader::{ReadCfg, RunEnd, SideStop};
     let _g = plx_base::testlock::serial();
     let _reset = AssReset;
     let _ffmpeg = bind_host_ffmpeg();

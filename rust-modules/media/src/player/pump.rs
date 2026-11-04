@@ -1053,7 +1053,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
     // Preserve the old per-frame ordering: diagnostic mirror, side-reader failure, then Load
     // settlement. Borrowing the Engine only for each step lets the adapter land its owned inbox.
     pa.publish_feed_diag(now, &LAST_FRAMES);
-    if super::subside::take_failure() { crate::route::side_subtitles_failed(ps); }
+    if plx_play_feed::side_reader::take_failure() { crate::route::side_subtitles_failed(ps); }
     // The native Load may return before its Engine is installed. Only this main-thread landing
     // maps its worker token to the current attempt and settles the route, after installation.
     pa.drain_load_outcomes(ps);

@@ -14,6 +14,7 @@
 //! memory's effects (the recall at a resolve, the parked write-back, the track menu's picks) are the
 //! child module `memory` (`decision_memory.rs`); the fields it works on stay on [`PlaybackSession`].
 
+use plx_playback_contract::subtitle::SIDE_READER_CLOCK_ONLY;
 use plx_plex::plex::ServerId;
 use plx_plex::plex::session::QualityPref;
 use plx_data::pms::PmsMovie;
@@ -11699,10 +11700,6 @@ pub fn side_subtitles_failed(ps: &mut PlaybackSession) {
     }
     crate::player::request_transcode_refresh(ps);
 }
-
-/// The [`SideReaderTarget::ordinal`] of a sidecar: the reader reads no subtitle and only measures the
-/// remux's clock against the Part's.
-pub const SIDE_READER_CLOCK_ONLY: i32 = -1;
 
 /// What the side subtitle reader needs to read the film's original Part beside a plain remux.
 pub struct SideReaderTarget {
