@@ -349,8 +349,18 @@ impl<A: Copy> UriSession<A> {
         if let (true, Some(session)) = (executed.touched, session) {
             self.lifecycle(LifeEvent::AcbTouched {session}, now_ms);
         }
-        // A deferred bind is a failed experiment here: the probe never retries a bind.
-        matches!(executed.verdict, Verdict::Invoked(true))
+        // A deferred or refused bind is a failed experiment here: the probe never retries a bind.
+        match executed.verdict {
+            Verdict::Invoked(accepted) => accepted,
+            Verdict::Deferred => {
+                (self.log)("uriprobe: acb bind not granted (Deferred); the experiment cannot bind");
+                false
+            }
+            Verdict::Refused(why) => {
+                (self.log)(&format!("uriprobe: acb bind not granted (Refused({why:?})); the experiment cannot bind"));
+                false
+            }
+        }
     }
 
     /// Destroy the exported window only after the ownership reducer has observed release.

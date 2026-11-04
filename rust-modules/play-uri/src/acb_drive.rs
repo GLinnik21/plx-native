@@ -66,10 +66,7 @@ pub fn execute(op: &Op, mt: &MainThread, sink: &dyn DisplaySink, plane: &PlaneOw
             match plane.bind(sink, mt, BindPolicy::Strict, media_id) {
                 BindVerdict::Granted => {}
                 BindVerdict::Deferred => return Executed { verdict: Verdict::Deferred, touched: false },
-                BindVerdict::Refused(why) => {
-                    log(Stamp::Plain, &format!("acb bind not granted (Refused({why:?}))"));
-                    return Executed { verdict: Verdict::Refused(why), touched: false };
-                }
+                BindVerdict::Refused(why) => return Executed { verdict: Verdict::Refused(why), touched: false },
             }
             let accepted = unsafe { sink.plane_media_id(mt, id.as_ptr()) } == 1;
             Executed { verdict: Verdict::Invoked(accepted), touched: true }

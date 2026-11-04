@@ -499,6 +499,7 @@ impl UriBackend {
                             Verdict::Invoked(invoked) => AcbEvent::Answered { request, invoked, completed_ms },
                             Verdict::Deferred => AcbEvent::Deferred { request },
                             Verdict::Refused(why) => {
+                                plx_base::eventlog::log(&format!("uri-acb: bind not granted (Refused({why:?}))"));
                                 self.acb_refusal = Some(why);
                                 AcbEvent::Answered { request, invoked: false, completed_ms }
                             }
@@ -611,6 +612,7 @@ impl UriBackend {
                         self.window_id = None;
                         self.active = None;
                         self.url = None;
+                        self.acb_source = None;
                         self.tracks.clear();
                         self.dispatching = None;
                         self.controls.clear();
@@ -623,6 +625,11 @@ impl UriBackend {
                         self.observe(Observation::Failed(Failure::ReleaseUncertain));
                     }
                     LifeFx::UnloadAcb { session } => {
+                        // However the close began (a Stop, the service ending, an unsolicited bus
+                        // release), no ACB verb may follow UNLOADED: a stray display step would
+                        // send PLAYING over a release in flight.
+                        self.acb.step(AcbEvent::Cancel, now_ms, &mut Vec::new());
+                        self.acb_source = None;
                         let plane = self.config.plane.unload(self.config.display, mt);
                         queue.push_back(LifeEvent::AcbUnloadDispatched { session, plane });
                     }
@@ -805,12 +812,12 @@ mod tests {
     impl MonotonicClock for Clock { fn now_ms(&self) -> u64 { self.0.load(Ordering::Relaxed) } }
     struct BusState { session: SessionId, serial: u64,
         calls: Vec<(&'static str, RequestId, String)>, replies: VecDeque<UriReply>,
-        close: CloseStatus, hold: bool, refuse_open: bool }
+        close: CloseStatus, hold: bool, refuse_open: bool, fail_poll: bool }
     struct Bus(Mutex<BusState>);
     impl Bus {
         fn new() -> Self { Self(Mutex::new(BusState { session: SessionId::new(0),
             serial: 0, calls: Vec::new(), replies: VecDeque::new(),
-            close: CloseStatus::Released, hold: false, refuse_open: false })) }
+            close: CloseStatus::Released, hold: false, refuse_open: false, fail_poll: false })) }
         fn say(&self, method: &'static str, payload: &str) {
             let mut state = self.0.lock().unwrap();
             let request = if method == "register" { RequestId::new(0) } else {
@@ -843,6 +850,7 @@ mod tests {
         fn poll(&self, session: SessionId) -> Result<UriPoll, String> {
             let mut state = self.0.lock().unwrap();
             assert_eq!(session, state.session);
+            if state.fail_poll { return Err("poll failed".into()); }
             let close = state.close;
             Ok(UriPoll { replies: state.replies.drain(..).collect(), close })
         }
@@ -1453,6 +1461,31 @@ mod tests {
         assert_eq!(plane.phase(), plx_platform::tv::plane::Phase::Released);
         assert_eq!(rig.driver.exit_disposition(), ExitDisposition::Clean);
         assert!(!rig.driver.plane_owned());
+    }
+
+    #[test]
+    fn acb_a_poll_failure_then_a_bus_release_runs_no_step_after_unloaded() {
+        let (mut rig, sink, _) = Rig::acb();
+        rig.acb_loading();
+        rig.bus.say("subscribe", ENVELOPE);
+        rig.driver.poll(&rig.mt);
+        assert_eq!(sink.calls(), ["plane_media_id m1"]);
+        // A failed poll quarantines the session without any Stop, so `begin_close` never ran and
+        // the paced sequence is still alive when the bus reports the release.
+        rig.bus.0.lock().unwrap().fail_poll = true;
+        rig.at(10);
+        rig.driver.poll(&rig.mt);
+        {
+            let mut bus = rig.bus.0.lock().unwrap();
+            bus.fail_poll = false;
+            bus.close = CloseStatus::Released;
+        }
+        rig.at(20);
+        rig.driver.poll(&rig.mt);
+        assert_eq!(sink.unload_count(), 1);
+        for t in [200, 400, 600, 900, 1_500] { rig.at(t); rig.driver.poll(&rig.mt); }
+        assert_eq!(sink.calls(), ["plane_media_id m1", "plane_unload"],
+            "no display step may follow UNLOADED, however the close began");
     }
 
     #[test]
