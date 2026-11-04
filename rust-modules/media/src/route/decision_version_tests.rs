@@ -624,6 +624,10 @@ fn viewer_off_re_resolves_a_burned_pms_uri_without_reusing_its_subtitle() {
     let ticket = first.route_start.expect("the accepted plan owns one start transaction");
     assert!(prepare_route_start(ticket));
     let attempt = claim_route_start_attempt(ticket).expect("one physical URI attempt");
+    // The player adapter's `offer_qualified_uri` records this evidence on the real path; this
+    // route-level fixture has no adapter, so it states the same fact on the session directly.
+    ps.qualify_backend_offer(BackendKind::Uri, burned.offer_id(),
+        crate::route::backend_policy::Qualification::Qualified);
     assert!(ps.backend_offer_admitted(BackendKind::Uri, burned.offer_id()),
         "this source has no Feed original, so the accepted URI PMS output is the catalog choice");
     ps.begin_attempt_view(attempt, crate::player::attempt_view::Backend::Uri);
