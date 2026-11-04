@@ -662,6 +662,28 @@ mod tests {
         assert!(!result.playback.iter().any(|notice| matches!(notice, Fx::StartupFailed { .. })));
         assert_eq!(runner.metrics_snapshot().unwrap().current_attempt.unwrap().outcome, None);
     }
+    /// The URI driver no longer closes itself when a mandatory startup control never confirms
+    /// (it reports `ControlRefused` with `Failure::TimedOut`); this verdict is what ends the attempt.
+    #[test]
+    fn mandatory_track_timeout_is_terminal_like_a_refusal() {
+        let mut runner = BackendRunner::new();
+        let mut drivers = FakeSet::new();
+        let requirements = Requirements { audio_track: TrackChoice::Selected(3), ..REQ };
+        runner.begin_request_at(LogicalRequestId::new(43), measure::Origin::Fresh, tick(0));
+        runner.send_at(&mut drivers, &(), Intent::Start { backend: URI, attempt: A,
+            source: SourceKey::new(43), requirements, initial: INITIAL },
+            measure::Origin::Fresh, tick(1));
+        drivers.events.push(BackendEvent { backend: URI, event: DriverEvent::Observation {
+            attempt: A, observation: Observation::Playback(Observed {
+                value: Playback::ReadyAwaitPlay, from: EvidenceSource::BackendReport }) } });
+        runner.poll_at(&mut drivers, &(), tick(2));
+        let (command, operation) = (drivers.sent.last().unwrap().2, drivers.sent.last().unwrap().3);
+        drivers.events.push(BackendEvent { backend: URI, event: DriverEvent::ControlRefused {
+            attempt: A, command, operation, failure: Failure::TimedOut } });
+        let result = runner.poll_at(&mut drivers, &(), tick(3));
+        assert!(result.playback.contains(&Fx::StartupFailed { backend: URI, attempt: A,
+            command, failure: Failure::TimedOut }));
+    }
     fn tick(ms: u64) -> measure::Tick { measure::Tick::from_millis(ms) }
 
     #[test]
