@@ -1959,6 +1959,96 @@ class PipelineTier(unittest.TestCase):
     def _pipeline_cases(self):
         return _manifest()["pipeline_cases"]
 
+    def test_uri_terminal_errors_fail_the_error_gate_and_settle_early(self):
+        for end in ("timeout:load", "timeout:currentTime", "refused:play", "error:601"):
+            with self.subTest(end=end):
+                lines = [f"uriprobe: t=40000 summary load=ok playing=yes end={end}"]
+                self.assertFalse(run.a_no_error(lines)[0])
+                self.assertIsNotNone(run.failed_for_good({"expect": {}, "operations": []}, lines))
+
+    def test_normal_uri_endings_do_not_fail_the_error_gate(self):
+        for end in ("eos", "back", "script"):
+            with self.subTest(end=end):
+                self.assertTrue(run.a_no_error([f"uriprobe: t=40000 summary load=ok end={end}"])[0])
+
+    def test_loopback_fixture_mode_requires_a_fixed_forwarded_port(self):
+        result = subprocess.run([sys.executable, run.__file__, "--fixtures-loopback", "--list"],
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--fixtures-loopback needs a fixed --fixtures-port", result.stderr)
+
+    def test_loopback_fixture_listing_is_offline(self):
+        result = subprocess.run([sys.executable, run.__file__, "--fixtures-loopback",
+                                 "--fixtures-port", "32498", "--list"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("pipe_h264_ac3_1080p", result.stdout)
+
+    def test_pipeline_case_arms_requested_extra_triggers_without_changing_assertions(self):
+        case = {"name": "uri-routing", "fixture": "clip.mkv", "operations": [{"op": "play"}],
+                "expect": {"require_video_bound": True}}
+        cfg = {"tv": "test-tv", "extra_triggers": [("plxnative-uriprobe", "load")]}
+        server = mock.Mock()
+        server.stats.return_value = (1, 0, 0)
+        server.segment_rungs.return_value = {}
+        with mock.patch.object(run, "require_tv"), mock.patch.object(run, "make"), \
+                mock.patch.object(run, "apply_triggers") as arm, \
+                mock.patch.object(run, "early_exit_allowed", return_value=(False, None)), \
+                mock.patch.object(run, "stream_case", return_value=([], 1, False, None)), \
+                mock.patch.object(run, "evaluate_pipeline", return_value=(False, [("video_bound", False, "missing")])) as grade, \
+                mock.patch.object(run, "crash_gate", side_effect=lambda cfg, c, n, ls, ok, rs: (ok, rs)), \
+                mock.patch.object(run, "report_and_record"), mock.patch("sys.stdout", io.StringIO()):
+            passed, results, _ = run.run_pipeline_case(case, cfg, server, "http://fixture.invalid", False)
+        self.assertIn(("plxnative-uriprobe", "load"), arm.call_args.args[1])
+        self.assertEqual(json.loads(dict(arm.call_args.args[1])["plxnative-playurl"])["url"],
+                         "http://fixture.invalid/clip.mkv")
+        self.assertIs(grade.call_args.args[0], case)
+        self.assertFalse(passed)
+        self.assertEqual(results, [("video_bound", False, "missing")])
+
+    def test_the_uri_ladder_cases_serve_the_ladder_master_and_arm_the_probe(self):
+        cases = {c["name"]: c for c in self._pipeline_cases()}
+        collapse, capped = cases["pipe_abr_uri_ladder_collapse"], cases["pipe_abr_uri_ladder_capped"]
+        for case in (collapse, capped):
+            self.assertTrue(serve_fixtures.RE_ABR_LADDER.match("/" + case["fixture"]), case["fixture"])
+            self.assertNotIn("auto_network", case, "the app's own ABR controller never runs in URI mode")
+            files = dict(run.triggers_for_case(case, url_base="http://fixture.invalid"))
+            self.assertEqual(json.loads(files["plxnative-playurl"])["url"],
+                             "http://fixture.invalid/__abr/ladder/master.m3u8")
+        self.assertEqual(dict(run.triggers_for_case(collapse, url_base="http://fixture.invalid"))["plxnative-uriprobe"],
+                         "load")
+        # the link is the sibling's, so the two cases differ in the controller under test only
+        self.assertEqual(collapse["network_profile"], cases["pipe_abr_down_collapse"]["network_profile"])
+        self.assertNotIn("network_profile", capped, "the capped case runs on an unshaped link")
+        # the cap is the second-lowest rung's BANDWIDTH, and the trigger parses as the probe's syntax
+        second_lowest = int(serve_fixtures.ABR_RUNGS.split("|")[1]) * 1000
+        text = dict(run.triggers_for_case(capped, url_base="http://fixture.invalid"))["plxnative-uriprobe"]
+        self.assertEqual(text, f"load bpsmax={second_lowest}")
+
+    def test_a_ladder_case_needs_every_rung_clip_and_no_file_of_its_own(self):
+        def fresh():
+            return [{"name": "ladder", "fixture": "__abr/ladder/master.m3u8"}]
+
+        with tempfile.TemporaryDirectory() as root:
+            cases = fresh()
+            run._resolve_fixtures(cases, root)
+            self.assertNotIn("path", cases[0])
+            for rung_file in serve_fixtures.ABR_FIXTURE.values():
+                self.assertIn(rung_file, cases[0]["skip"], "every missing clip is named")
+            for rung_file in serve_fixtures.ABR_FIXTURE.values():
+                with open(os.path.join(root, rung_file), "wb") as stream:
+                    stream.write(b"\0")
+            partial = os.path.join(root, serve_fixtures.ABR_FIXTURE["22000"])
+            os.rename(partial, partial + ".gone")
+            cases = fresh()
+            run._resolve_fixtures(cases, root)
+            self.assertIn(serve_fixtures.ABR_FIXTURE["22000"], cases[0]["skip"])
+            os.rename(partial + ".gone", partial)
+            cases = fresh()
+            run._resolve_fixtures(cases, root)
+            self.assertNotIn("skip", cases[0])
+            self.assertIn("path", cases[0])
+
     def test_every_case_ends_with_a_path_or_a_skip(self):
         """The invariant behind `case["fixture"]`/`case["path"]` downstream. Run against an EMPTY
         pack, which is every machine that has not built one."""
@@ -2786,11 +2876,19 @@ class AutoNetworkProfile(unittest.TestCase):
         same disturbance to the media-segment COUNT, which makes it exact instead of a phase
         coincidence. The rule this test enforces is unchanged — a case that DISTURBS the link must
         assert what the controller does about it — and "disturbs" is what widened, not the duty.
+
+        SCOPED AGAIN on 2026-11-04 for a FOURTH family, `pipe_abr_uri_*`: URI mode hands the
+        playlist to the television's own player, so the app's controller never runs and there is no
+        `abr:` line for an `abr_shape` bound to read. The family measures that native player (what
+        it fetches, per rung, and what its events report), one case collapses the link and one
+        leaves it alone; `test_the_uri_ladder_cases_serve_the_ladder_master_and_arm_the_probe`
+        is their rule.
         """
         shaped = [c for c in _manifest()["pipeline_cases"]
                   if c["name"].startswith("pipe_abr_")
                   and not c["name"].startswith("pipe_abr_pin_")
-                  and not c["name"].startswith("pipe_abr_band_")]
+                  and not c["name"].startswith("pipe_abr_band_")
+                  and not c["name"].startswith("pipe_abr_uri_")]
         self.assertGreaterEqual(len(shaped), 4, "the bad-network profiles are missing")
         for case in shaped:
             with self.subTest(case["name"]):
@@ -3972,17 +4070,19 @@ class AbrLogLineContract(unittest.TestCase):
     """MATHEMATICAL INVARIANT: the app's format string and this harness's regex are ONE statement.
 
     They are written in two languages in two files, and nothing but this test keeps them in step.
-    The failure mode is silent and total: rename or reorder a field in `ff.rs` and every metric in
+    The failure mode is silent and total: rename or reorder a field in `adaptive.rs` and every metric in
     `a_abr_shape` reads `n/a` forever, which looks exactly like a controller that never ran. That
     is the same shape as the stale-regex bug this project has already had once, when the heartbeat
     fields were renamed and an old log read as "no samples".
     """
 
-    FF = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "ff.rs")
+    # The controller's `abr: <kind>` lines are written by `adaptive.rs` (they were `ff.rs`'s
+    # until the playback split moved the controller out of the feed engine).
+    ADAPTIVE = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "adaptive.rs")
 
     def _emitted_fields(self, prefix):
         """The `name=` fields of the app's format literal for `abr: <prefix>`, in order."""
-        with open(self.FF) as f:
+        with open(self.ADAPTIVE) as f:
             src = f.read()
         start = src.index(f'"abr: {prefix} ')
         end = src.index('",', start)
@@ -3998,18 +4098,18 @@ class AbrLogLineContract(unittest.TestCase):
         emitted = self._emitted_fields("sample")
         parsed = self._regex_fields(run.RE_ABR_SAMPLE)
         self.assertEqual(emitted[: len(parsed)], parsed,
-                         f"ff.rs emits {emitted}, run.py parses {parsed}")
+                         f"adaptive.rs emits {emitted}, run.py parses {parsed}")
         self.assertIn("reason", emitted, "the decision reason must stay on the line")
 
     def test_the_mode_line_emits_exactly_the_fields_the_harness_parses(self):
         """The Original-vs-HLS comparison, both sides of the contract.
 
-        Field NAMES come out of `ff.rs`'s own format literal, so a rename there fails here rather
+        Field NAMES come out of `adaptive.rs`'s own format literal, so a rename there fails here rather
         than silently yielding zero comparison rows — and this line is the only record of a decision
         that tears down an encoder session, so a silent zero is the expensive failure."""
         emitted = self._emitted_fields("mode")
         parsed = self._regex_fields(run.RE_ABR_MODE)
-        self.assertEqual(emitted, parsed, f"ff.rs emits {emitted}, run.py parses {parsed}")
+        self.assertEqual(emitted, parsed, f"adaptive.rs emits {emitted}, run.py parses {parsed}")
 
     def test_a_rendered_mode_line_yields_both_decompositions(self):
         line = ("[  12.345] abr: mode chose=Original why=OriginalWorthIt vs_hls=8000kbps "
@@ -4036,7 +4136,7 @@ class AbrLogLineContract(unittest.TestCase):
         self.assertIsNotNone(run.RE_ABR_SAMPLE.search(_sample_line(abuf="none", buf=-1)))
 
     def test_the_steady_line_emits_the_four_gate_fields_the_harness_parses(self):
-        """Both sides of the guard read-out. Names come out of `ff.rs`'s own format literal, so a
+        """Both sides of the guard read-out. Names come out of `adaptive.rs`'s own format literal, so a
         rename on the app side fails here rather than silently yielding zero gate rows.
 
         `stable`/`cool` were the first two until 2026-08-28 and went with the counters they
@@ -4044,7 +4144,7 @@ class AbrLogLineContract(unittest.TestCase):
         emitted = self._emitted_fields("steady")
         for field in ("dwell", "block", "onrung", "draining"):
             with self.subTest(field=field):
-                self.assertIn(field, emitted, f"ff.rs no longer emits {field}=")
+                self.assertIn(field, emitted, f"adaptive.rs no longer emits {field}=")
                 self.assertIn(field, self._regex_fields(run.RE_ABR_GATES))
 
     def test_a_rendered_steady_line_yields_its_guard_state(self):
@@ -4245,7 +4345,7 @@ class TheQualitySwitchAssertion(unittest.TestCase):
 class EverySeekGiveUpPathDisarmsTheSpinner(unittest.TestCase):
     """**A source-level spot-check on an invariant the type system cannot state.**
 
-    `player::request_seek` sets `SHARED.seeking`; `pump::set_state` publishes
+    `player::request_seek` sets `FEED_SHARED.seeking`; `pump::set_state` publishes
     `PlaybackState::Seeking` from it AHEAD of every other arm; and until 2026-08-27 the only place
     that ever cleared it was the successful prime→Play. So any path that gave up on a seek left a
     permanent spinner, a playhead frozen at the target and `is_playing()` false, while the pipeline
@@ -4271,7 +4371,7 @@ class EverySeekGiveUpPathDisarmsTheSpinner(unittest.TestCase):
                       "the failed rebuild returns without disarming the spinner")
 
     def test_a_reload_with_no_url_abandons_the_seek(self):
-        src = self._src("player", "engine.rs")
+        src = self._src("player", "route_start.rs")
         i = src.index('"reload_transcode: no url (ignored)"')
         self.assertIn("abandon_seek()", src[max(0, i - 400):i],
                       "the ignored reload returns without disarming the spinner")
@@ -4280,7 +4380,7 @@ class EverySeekGiveUpPathDisarmsTheSpinner(unittest.TestCase):
         """If a second writer appears, the two known clear sites stop being a complete account and
         this whole class is measuring the wrong thing."""
         src = self._src("player", "mod.rs")
-        self.assertEqual(src.count("SHARED.seeking.store(true"), 1,
+        self.assertEqual(src.count("FEED_SHARED.seeking.store(true"), 1,
                          "more than one place arms the spinner; re-audit the give-up paths")
 
 
@@ -4540,13 +4640,17 @@ class AbrLadderFixtures(unittest.TestCase):
 # silently stops matching does not fail loudly, it reports "no samples" and every derived
 # statistic quietly becomes a statement about the empty set.
 #
-# The test is DIFFERENTIAL, not a golden literal: it reads the format strings out of ff.rs and
-# compares the field names and their ORDER against what the regex captures. A frozen example line
+# The test is DIFFERENTIAL, not a golden literal: it reads the format strings out of the Rust
+# source that writes each line (`adaptive.rs` for `abr: tx`, the feed engine's `ff.rs` for
+# `hls: segment`) and compares the field names and their ORDER against what the regex captures. A frozen example line
 # would keep passing after someone renamed a field in Rust, which is the exact failure this is
 # here to catch.
 # ---------------------------------------------------------------------------------------------
 
-FF_RS = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "ff.rs")
+# The feed engine's `ff.rs` writes `hls: segment=` (it lives in `play-feed`, not `media`);
+# the controller's `abr: tx` / `abr: committed` lines are `media/src/adaptive.rs`'s.
+FF_RS = os.path.join(REPO_ROOT, "rust-modules", "play-feed", "src", "ff.rs")
+ADAPTIVE_RS = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "adaptive.rs")
 WINDOW_RS = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "abr", "window.rs")
 
 # `name=` in a format string or a regex pattern. Deliberately anchored on the `=`, because that is
@@ -4588,6 +4692,8 @@ class LogLineContract(unittest.TestCase):
     def setUp(self):
         with open(FF_RS, encoding="utf-8") as fh:
             self.ff = fh.read()
+        with open(ADAPTIVE_RS, encoding="utf-8") as fh:
+            self.adaptive = fh.read()
 
     def _assert_contract(self, opening, pattern, fields, label, source=None):
         rendered = _rust_format_string(source if source is not None else self.ff, opening)
@@ -4596,7 +4702,7 @@ class LogLineContract(unittest.TestCase):
         self.assertEqual(
             rust_names,
             regex_names,
-            f"{label}: ff.rs emits {rust_names} but run.py's regex reads {regex_names}. "
+            f"{label}: the Rust source emits {rust_names} but run.py's regex reads {regex_names}. "
             "One side was changed without the other; the harness would report 'no samples' "
             "rather than failing, so this is the only place it can be caught.",
         )
@@ -4620,18 +4726,19 @@ class LogLineContract(unittest.TestCase):
         self.assertRegex(
             rendered_line,
             pattern,
-            f"{label}: the regex does not match ff.rs's own format string rendered with "
+            f"{label}: the regex does not match the Rust source's own format string rendered with "
             f"placeholder values -- a separator or a unit suffix differs.\n  {rendered_line}",
         )
 
     def test_abr_tx_regex_matches_the_rust_format_string(self):
-        self._assert_contract('"abr: tx {:?}', run.RE_ABR_TX, run.TX_FIELDS, "abr: tx")
+        self._assert_contract('"abr: tx {:?}', run.RE_ABR_TX, run.TX_FIELDS, "abr: tx",
+                              source=self.adaptive)
 
     def test_abr_window_regex_matches_the_rust_format_string(self):
         """Same contract, but the format string lives beside the arithmetic rather than in ff.rs.
 
         `AdmissionReadout::log_line` formats it in `abr/window.rs` so the wire shape is testable
-        next to the numbers it prints; `ff.rs` only decides when to emit it.
+        next to the numbers it prints; `adaptive.rs` only decides when to emit it.
         """
         with open(WINDOW_RS, encoding="utf-8") as fh:
             source = fh.read()
@@ -5137,6 +5244,106 @@ class AbrResponseProfile(unittest.TestCase):
         self.assertGreaterEqual(shape["decoded_width_floor"], 3800)
 
 
+class AbrLadderMaster(unittest.TestCase):
+    """`/__abr/ladder/master.m3u8`: every rung as its own variant, for a player that chooses itself."""
+
+    def _server(self):
+        srv = serve_fixtures.FixtureServer.__new__(serve_fixtures.FixtureServer)
+        srv.lock = threading.Lock()
+        srv.abr_response_profile = {}
+        srv.abr_response_counts = {}
+        srv.abr_response_generations = {}
+        srv.rung_segments = {}
+        return srv
+
+    def _playlist(self, srv, path):
+        handler = serve_fixtures.FixtureHandler.__new__(serve_fixtures.FixtureHandler)
+        handler.server = srv
+        handler.path = path
+        return handler._abr_playlist().decode()
+
+    @staticmethod
+    def _variants(text):
+        """[(bandwidth, resolution, uri)] in playlist order."""
+        rows = text.splitlines()
+        out = []
+        for i, row in enumerate(rows):
+            if row.startswith("#EXT-X-STREAM-INF:"):
+                attrs = dict(kv.split("=", 1) for kv in row.split(":", 1)[1].split(","))
+                out.append((int(attrs["BANDWIDTH"]), attrs["RESOLUTION"], rows[i + 1]))
+        return out
+
+    def test_it_lists_every_rung_lowest_first_pointing_at_that_rungs_own_media_playlist(self):
+        text = self._playlist(self._server(), "/__abr/ladder/master.m3u8")
+        self.assertTrue(text.startswith("#EXTM3U\n#EXT-X-VERSION:3\n"))
+        rungs = serve_fixtures.ABR_RUNGS.split("|")
+        self.assertEqual(
+            self._variants(text),
+            [(int(r) * 1000, serve_fixtures.ABR_RASTER[r], f"/__abr/{r}/media.m3u8") for r in rungs])
+        self.assertEqual(rungs[:2], ["320", "720"], "the manifest caps at the second-lowest rung")
+        bandwidths = [bw for bw, _, _ in self._variants(text)]
+        self.assertEqual(bandwidths, sorted(bandwidths))
+
+    def test_the_single_rung_master_is_unchanged(self):
+        self.assertEqual(
+            self._playlist(self._server(), "/__abr/720/master.m3u8"),
+            "#EXTM3U\n#EXT-X-VERSION:3\n"
+            "#EXT-X-STREAM-INF:BANDWIDTH=720000,RESOLUTION=854x480\nmedia.m3u8\n")
+
+    def test_a_response_profile_composes_per_rung(self):
+        srv = self._server()
+        srv.set_abr_response_profile({"22000": ["2000", "22000"]})
+        first = self._variants(self._playlist(srv, "/__abr/ladder/master.m3u8"))
+        top = first[-1]
+        self.assertEqual(top, (2_000_000, "1280x720", "/__abr/22000/media.m3u8?fixtureGeneration=1"),
+                         "the first fresh master maps 22000 to the 2000 rendition, as its own master would")
+        self.assertTrue(all("fixtureGeneration" not in uri for _, _, uri in first[:-1]),
+                        "unprofiled rungs are untouched")
+        media = self._playlist(srv, "/__abr/22000/media.m3u8?fixtureGeneration=1")
+        self.assertIn("segment.ts?sequence=0&fixtureGeneration=1", media)
+        second = self._variants(self._playlist(srv, "/__abr/ladder/master.m3u8"))
+        self.assertEqual(second[-1], (22_000_000, "3840x2160", "/__abr/22000/media.m3u8?fixtureGeneration=2"))
+        # the ordinary single-rung master still allocates from the same counter
+        self.assertIn("fixtureGeneration=3", self._playlist(srv, "/__abr/22000/master.m3u8"))
+
+    def test_segment_requests_are_counted_by_the_rung_in_the_request_path(self):
+        with tempfile.TemporaryDirectory() as root:
+            for rung in ("320", "720"):
+                with open(os.path.join(root, serve_fixtures.ABR_FIXTURE[rung]), "wb") as stream:
+                    stream.write(b"fixture")
+            srv = serve_fixtures.FixtureServer(root, 0, bind="127.0.0.1")
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            try:
+                self.assertEqual(srv.segment_rungs(), {})
+                conn = http.client.HTTPConnection(*srv.server_address, timeout=5)
+
+                def get(path):
+                    conn.request("GET", path)
+                    response = conn.getresponse()
+                    response.read()
+                    return response.status
+
+                self.assertEqual(get("/__abr/ladder/master.m3u8"), 200)
+                self.assertEqual(get("/__abr/320/media.m3u8"), 200)
+                self.assertEqual(srv.segment_rungs(), {}, "playlists carry no media")
+                for path in ("/__abr/720/segment.ts?sequence=0", "/__abr/320/segment.ts?sequence=0",
+                             "/__abr/720/segment.ts?sequence=1"):
+                    self.assertEqual(get(path), 200)
+                self.assertEqual(get("/__abr/2000/segment.ts?sequence=0"), 404,
+                                 "this pack has no 720p clip and the 1080p fallback is refused for it")
+                conn.close()
+            finally:
+                srv.shutdown()
+                srv.server_close()
+        self.assertEqual(list(srv.segment_rungs().items()), [("320", 1), ("720", 2)],
+                         "lowest rung first; a 404 is not a fetch")
+
+    def test_the_case_line_reports_only_what_this_case_fetched(self):
+        self.assertEqual(run.rung_segments_line({"320": 1}, {"320": 1, "720": 3, "2000": 2}), "720=3 2000=2")
+        self.assertEqual(run.rung_segments_line({"320": 1, "720": 2}, {"320": 4, "720": 2}), "320=3")
+        self.assertEqual(run.rung_segments_line({}, {}), "")
+
+
 class SharedLinkShaping(unittest.TestCase):
     """The fixture server's rate limiter must shape the LINK, not each response separately.
 
@@ -5405,7 +5612,7 @@ class ThePlaybackRateIsTheOnlyThingThatSeesASlowFilm(unittest.TestCase):
 
 
 class TheAbrCommitLineMatchesTheHarnessRegex(unittest.TestCase):
-    """**The commit line's format string, read out of `ff.rs` and matched against both regexes.**
+    """**The commit line's format string, read out of `adaptive.rs` and matched against both regexes.**
 
     Same contract as `TheAbrWindowLineMatchesTheHarnessRegex` and the same failure if it lapses:
     the app formats this on a television and the harness parses it on a Mac, and a drift shows up
@@ -5420,10 +5627,10 @@ class TheAbrCommitLineMatchesTheHarnessRegex(unittest.TestCase):
     append silently retired a grader (`RE_ABR_UP` parses this line too).
     """
 
-    FF_RS = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "ff.rs")
+    ADAPTIVE_RS = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "adaptive.rs")
 
     def commit_format(self):
-        with open(self.FF_RS, encoding="utf-8") as fh:
+        with open(self.ADAPTIVE_RS, encoding="utf-8") as fh:
             source = fh.read()
         found = re.findall(r'"(abr: committed [^"\\]*)"', source)
         self.assertEqual(len(found), 1,
@@ -6047,6 +6254,8 @@ class DepGates(unittest.TestCase):
         "rust-modules/data/src",
         "rust-modules/session/src",
         "rust-modules/media/src",
+        # `SRC_PLAY_FEED`: the fork ledger holds the simulator's sink (`ffi_host.rs`), which lives here.
+        "rust-modules/play-feed/src",
         "rust-modules/appkit/src",
         "rust-modules/screens/src",
         "rust-modules/Cargo.toml",
@@ -6788,7 +6997,7 @@ impl PersonOwnerGateFixture {
                          "`it.revision()` is not a registry read\n" + out)
 
     def test_globals_ledger_sees_the_player_transport_readers_in_a_machine(self):
-        """RED: `transport::paused`, `transport::viewer_paused` and `preview::paused` read `TX.paused` behind
+        """RED: `transport::paused`, `transport::viewer_paused` and `preview::paused` read `FEED_TX.paused` behind
         a function (Sans-IO lifecycle PR B), so a machine that calls one reads the registry as surely as
         `client_for` does. Qualified, bare-after-an-import (singly, in a group, through a glob) and the
         rename that would hide the calls are all caught; the writers (`set_paused`, `set_transport_paused`)
@@ -7065,12 +7274,16 @@ impl PersonOwnerGateFixture {
         """RED: lifecycle.rs, the machine, reads no `crate::player::TX` (the transport contract lives in
         player/transport.rs), and the spellings stay pinned there as a zero-guard: planting `super::TX`,
         a bare `TX` and a renamed import reaches the same atomic from that file. The first two are sites
-        of their own, the rename fails outright (the calls through it are invisible)."""
+        of their own, the rename fails outright (the calls through it are invisible). The pause itself
+        is the Feed backend's `plx_play_feed::shared::FEED_TX` (and `FEED_SHARED` its callback mailbox),
+        so those spellings are pinned there too, qualified and bare."""
         rel = "rust-modules/media/src/player/lifecycle.rs"
         with open(os.path.join(self.tree, rel), encoding="utf-8") as f:
             before = f.read().count("\n")
         appended = ("\nfn planted_super_tx() -> bool {\n    super::TX.paused.load(Relaxed)\n}\n"
                     "use super::TX;\nfn planted_bare_tx() {\n    TX.commit_paused(true);\n}\n"
+                    "fn planted_feed_tx() -> bool {\n    plx_play_feed::shared::FEED_TX.paused.load(Relaxed)\n}\n"
+                    "use plx_play_feed::shared::FEED_SHARED;\nfn planted_feed_shared() {\n    FEED_SHARED.pb_state.load(Relaxed);\n}\n"
                     "use super::TX as Transport2;\n")
         r = self._append_to(rel, appended)
         out = r.stdout + r.stderr
@@ -7078,6 +7291,8 @@ impl PersonOwnerGateFixture {
         self.assertIn("globals:", out)
         self.assertIn(f"{rel}::planted_super_tx::super::TX  (ledger: ci/allow/globals/media.txt)", out)
         self.assertIn(f"{rel}::planted_bare_tx::TX  (ledger: ci/allow/globals/media.txt)", out)
+        self.assertIn(f"{rel}::planted_feed_tx::shared::FEED_TX  (ledger: ci/allow/globals/media.txt)", out)
+        self.assertIn(f"{rel}::planted_feed_shared::FEED_SHARED  (ledger: ci/allow/globals/media.txt)", out)
         rename_line = before + appended.split("\n").index("use super::TX as Transport2;") + 1
         self.assertIn(f"{rel}:{rename_line}\n", out + "\n")
 
@@ -7707,10 +7922,10 @@ impl PersonOwnerGateFixture {
         # `server_roster_gen`, `server_facts_gen`, `server_probe_result`, `session::peek_settled`,
         # `session::current_gen`, `tape::active`), +57 (57 -> 114); the forks rule gained the machine crates
         # screens/, ui/, appkit/ and machine/ (it read only data/, plex/, media/, session/), +17 (58 -> 75).
-        "globals": 114,  # production process-global reads inside machines (`ci/allow/globals/`)
+        "globals": 111,  # production process-global reads inside machines (`ci/allow/globals/`)
         # Dolby Vision setting (#1156): -1 on forks (`build_stream` takes the DV probe from `ResolveEnv`, captured
         # at the request, so its test/production read of `devcaps::dv::capability` is gone).
-        "forks": 74,  # production test/production forks in every machine crate: data/, plex/, media/, session/, screens/, ui/, appkit/, machine/ (`ci/allow/forks/`)
+        "forks": 71,  # production test/production forks in every machine crate: data/, plex/, media/, session/, screens/, ui/, appkit/, machine/ (`ci/allow/forks/`)
         "fxlanes": 11,  # Bridge::app_effect arms that do not push Fx::Deliver (`ci/allow/fxlanes/`)
     }
 

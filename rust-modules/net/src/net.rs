@@ -16,7 +16,7 @@
 //! unpinned, bounded sink. **This list has stood here while becoming untrue before**, which is why
 //! it is worth checking rather than trusting; that is twice.
 //!
-//! Only the curl *easy* API is used here; [`crate::curlio`] binds the multi API separately for the
+//! Only the curl *easy* API is used here; [`crate::range_io`] binds the multi API separately for the
 //! media plane. This module owns their shared process init, including the mutex callbacks required
 //! when the TV's libcurl uses OpenSSL 1.0. The option/info integer constants are curl's stable
 //! public ABI values (kept here so we do not need the header). TLS peer+host verification is ON
@@ -2915,7 +2915,7 @@ pub fn https_get_public_bounded(url: &str, max_body: usize) -> Result<Resp, Requ
 }
 
 /// The `nowan` gate shared by the three resolver doors ([`request_tls_result`],
-/// [`crate::curlio`] and [`crate::stream`]): `true` when `/tmp/plxnative-nowan` is armed and
+/// [`crate::range_io`] and [`crate::stream`]): `true` when `/tmp/plxnative-nowan` is armed and
 /// `host` is a NAME rather than a literal, i.e. when a dead resolver would have refused it. The
 /// `slow` variant first spends `connect_s`, the budget a worker would have lost waiting on that
 /// resolver. `false` without the trigger, and at compile time without `devtriggers`.

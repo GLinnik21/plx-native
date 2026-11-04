@@ -95,6 +95,17 @@ so it was not required for that demonstrated sequence. The contribution of the s
 changes remains undetermined. Neither arm created an SDL exported window; `window=none` alone
 therefore does not determine whether an ACB arm can display its picture.
 
+That sequence is now one shared machine (`rust-modules/play-uri/src/acb_bind.rs`) that the probe and
+the production URI backend (`Binding::Acb`, present and not routed) both step. The production
+backend forwards only the descriptor envelope the service reported (`sourceInfo`); the fixture
+descriptor that the controlled arms fell back to stays a developer-probe exception. On the 4.5 set
+those arms did see `ev=sourceInfo` yet still used the fixture descriptor, so the service's envelope was
+observed and not usable there; the cause is not determined, and a production bind on that set would
+wait for an envelope it cannot use and time out. The ACB plane is released
+by `UNLOADED` and a fence on its completion callback
+([evidence](measurements/acb-release-fence-2026-11-04.md)), so a later bind in the same process waits
+for that fence instead of needing a relaunch; only a failed fence quarantines the plane until exit.
+
 ## Driving it: what is settled and what is not
 
 The `drive` variant of the probe binds like `load` and then, three seconds after `playing`, pauses,
@@ -126,10 +137,27 @@ reports `currentTime` but no duration, so a duration has to come from `sourceInf
 1. Deploy a debug build carrying the probe (devtriggers; no `RELEASE=1` package contains it).
 2. Arm a variant in the install's runtime root:
    `echo load > /tmp/com.beb.plxnative.debug/plxnative-uriprobe` (empty, `load`, `late`, `none`, or
-   `drive`). The separate controlled `acb-control` and `acb-dass` arms require a fresh process,
-   `ptype=0` and the fixture constraints in the measurement linked above. A `plex.direct` URL needs
+   `drive`). The separate controlled `acb-control` and `acb-dass` arms require `ptype=0` (the ACB handle
+   is initialized once per process, so the boot must have been given player type 0) and the fixture
+   constraints in the measurement linked above. The 2026-11-02 pair each ran in a fresh process; a second
+   arm in the same process binds only after the previous release's fence is proven. A `plex.direct` URL needs
    working name resolution on the set; a plain `http://` URL to
    a LAN server does not.
+
+   To test the TV's own adaptive controller (R-ABR-2), add native bit-rate rates after the
+   variant, space separated and in any order: `bpsstart=N` seeds it, `bpsmax=N` caps it and
+   `bpsmin=N` floors it, each in bit/s from 1 to 1000000000 and given at most once, for example
+   `echo 'load bpsmax=720000' > /tmp/com.beb.plxnative.debug/plxnative-uriprobe`. They become
+   `"adaptiveStreaming":{"bps":{"start":N,"maximum":N,"minimum":N}}` inside the `load` option
+   (only the rates given) and the `armed` line ends with the same tokens (` bpsmax=720000`). A bare
+   `bpsmax=720000` arms the default variant. Any other token, a repeated or non-numeric rate, or a
+   rate outside the range arms nothing and the play is normal; the event log says so. Read
+   `streamingInfo` (`instantBitrate`, `totalBitrate`), `customizedStreamingInfo` (`numOfRates`,
+   `currentIndexOfRate`), `bufferRange` (`remainingTime`, `percent`) and `videoInfo`
+   (`currentBitrate`, `contentBitrate`) from the same log: only numbers are printed, never a
+   host. Whether the firmware honours the rates, and what those fields mean on the 4.5 set, is
+   what the run is for. `tests/run.py --filter pipe_abr_uri_ladder` drives it against a ladder
+   master (`tests/README.md`).
 3. Play a title the route chooses to direct-play (`kind=direct` on the `armed` line), watch, press
    Back.
 4. Read `grep 'uriprobe:' /tmp/com.beb.plxnative.debug/plxnative-events.log`: `window=`,

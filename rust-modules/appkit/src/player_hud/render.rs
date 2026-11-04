@@ -1826,13 +1826,13 @@ mod tests {
             let slot = ControlSlot::Discs(Controls::NONE);
             let mut row = HudMotion::new();
             for _ in 0..20 {
-                row.step(slot, GROUP_SECTION, 1, 0.05, 1_000);
+                row.step(slot, GROUP_SECTION, 1, 0.05, 1_000, Some(true), false);
             }
             assert!(row.section_scale(1) > 1.0, "the focused section button pops: {}", row.section_scale(1));
             assert_eq!(row.section_scale(0), 1.0, "its sibling does not");
             assert_eq!(row.scale(1), 1.0, "and the control row's own springs are not the section's");
             for _ in 0..40 {
-                row.step(slot, GROUP_ROW, 1, 0.05, 1_000);
+                row.step(slot, GROUP_ROW, 1, 0.05, 1_000, Some(true), false);
             }
             assert_eq!(row.section_scale(1), 1.0, "focus moved off the section group: it settles");
         }
@@ -1845,7 +1845,7 @@ mod tests {
             let mut rest = HudMotion::new();
             let mut popped = HudMotion::new();
             for _ in 0..20 {
-                popped.step(slot, GROUP_SECTION, 0, 0.05, 1_000);
+                popped.step(slot, GROUP_SECTION, 0, 0.05, 1_000, Some(true), false);
             }
             let at_rest = info_frame_census(false, 0, GROUP_SECTION, 0, &mut rest);
             let lifted = info_frame_census(false, 0, GROUP_SECTION, 0, &mut popped);

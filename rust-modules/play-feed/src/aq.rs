@@ -1,0 +1,1052 @@
+//! One-producer / one-consumer access-unit FIFO with byte-cap backpressure (was
+//! src/aq.c). The player consumer allocates an `AuQueue` and passes `&q`; `aq_pop`
+//! hands back a malloc'd `AuNode` the caller reads and frees. AuNode uses a flexible
+//! array member (`data[]`); AuQueue embeds pthread objects — both repr(C) so the
+//! layouts match glibc.
+use std::os::raw::{c_int, c_long, c_uchar, c_void};
+use std::ptr;
+
+#[repr(C)]
+pub struct AuNode {
+    next: *mut AuNode,
+    pts: i64,
+    len: c_int,
+    key: c_int,
+    es: c_int,
+    // flexible array `data[]` follows immediately after `es` (see node_data)
+}
+
+#[repr(C)]
+pub struct AuQueue {
+    head: *mut AuNode,
+    tail: *mut AuNode,
+    queued_bytes: c_long,
+    max_bytes: c_long, // per-queue backpressure cap: `base_bytes` + any headroom granted
+    base_bytes: c_long, // the cap the caller chose at aq_new; headroom is granted on top of it
+    releasing: c_int, // headroom released but not yet drained: `aq_pop` walks `max_bytes` down
+    pops: u64, // AUs the consumer has popped, ever: a producer's evidence that the lane is draining
+    eof: c_int,
+    abort: c_int,
+    m: libc::pthread_mutex_t,
+    not_full: libc::pthread_cond_t,
+    not_empty: libc::pthread_cond_t,
+}
+
+/// pointer to the au_node's flexible `data[]` (offset = right after `es`)
+#[inline]
+unsafe fn node_data(n: *mut AuNode) -> *mut u8 {
+    (n as *mut u8).add(core::mem::offset_of!(AuNode, es) + core::mem::size_of::<c_int>())
+}
+
+/// Crate-internal: has the consumer asked the producer to stop? (the demuxer checks this.)
+///
+/// `abort` is written under `m` by [`aq_abort`], so it must be read under the same mutex. The old
+/// unlocked read was a Rust data race and, more practically, could miss teardown after its one
+/// transport wake had already fired, letting the demuxer open a fresh connection under `join`.
+#[inline]
+pub unsafe fn aq_is_aborted(q: *const AuQueue) -> bool {
+    if q.is_null() {
+        return false;
+    }
+    let q = q as *mut AuQueue;
+    libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
+    let aborted = (*q).abort != 0;
+    libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+    aborted
+}
+
+/// crate-internal: read a popped node's fields (es, key, pts, len, data ptr) —
+/// the player engine's feed loop needs them without re-exposing the raw offsets.
+#[inline]
+pub unsafe fn au_fields(n: *mut AuNode) -> (c_int, c_int, i64, c_int, *const u8) {
+    (
+        (*n).es,
+        (*n).key,
+        (*n).pts,
+        (*n).len,
+        node_data(n) as *const u8,
+    )
+}
+
+/// allocate + initialize a boxed queue with an explicit backpressure byte cap (mirrors
+/// `stream::http_stream_boxed`; the two-lane feed gives each ES its own cap).
+pub fn aq_new(cap: c_long) -> Box<AuQueue> {
+    let mut q: Box<AuQueue> = Box::new(unsafe { std::mem::zeroed() });
+    aq_init_cap(&mut *q, cap);
+    q
+}
+
+/// initialize an already-allocated queue with an explicit backpressure byte cap.
+fn aq_init_cap(q: *mut AuQueue, cap: c_long) {
+    if q.is_null() {
+        return;
+    }
+    unsafe {
+        ptr::write_bytes(q as *mut u8, 0, core::mem::size_of::<AuQueue>());
+        (*q).max_bytes = cap;
+        (*q).base_bytes = cap;
+        libc::pthread_mutex_init(ptr::addr_of_mut!((*q).m), ptr::null());
+        init_not_full_cond(ptr::addr_of_mut!((*q).not_full));
+        libc::pthread_cond_init(ptr::addr_of_mut!((*q).not_empty), ptr::null());
+    }
+}
+
+/// `not_full` is the one condvar [`aq_park_deadline`] times out against — every other wait in
+/// this file is untimed. On Linux, bind it to `CLOCK_MONOTONIC` so that timeout tracks elapsed
+/// time even if the wall clock steps (NTP correction; this TV's own pmlog clock is documented as
+/// running skewed) — a REALTIME-based timed wait can block far past its 10 ms deadline on a
+/// backward step, which is exactly the TCP-window-collapse this drain-while-parked mechanism
+/// exists to prevent. `pthread_condattr_setclock` does not exist on macOS, so the host build (and
+/// its tests, which check the drain LOGIC, not clock robustness) keeps the default REALTIME
+/// clock — matched by [`aq_park_deadline`]'s `#[cfg]` twin.
+#[cfg(target_os = "linux")]
+unsafe fn init_not_full_cond(cond: *mut libc::pthread_cond_t) {
+    unsafe {
+        let mut attr: libc::pthread_condattr_t = std::mem::zeroed();
+        libc::pthread_condattr_init(&mut attr);
+        libc::pthread_condattr_setclock(&mut attr, libc::CLOCK_MONOTONIC);
+        libc::pthread_cond_init(cond, &attr);
+        libc::pthread_condattr_destroy(&mut attr);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+unsafe fn init_not_full_cond(cond: *mut libc::pthread_cond_t) {
+    unsafe {
+        libc::pthread_cond_init(cond, ptr::null());
+    }
+}
+
+pub fn aq_destroy(q: *mut AuQueue) {
+    if q.is_null() {
+        return;
+    }
+    unsafe {
+        libc::pthread_mutex_destroy(ptr::addr_of_mut!((*q).m));
+        libc::pthread_cond_destroy(ptr::addr_of_mut!((*q).not_full));
+        libc::pthread_cond_destroy(ptr::addr_of_mut!((*q).not_empty));
+    }
+}
+
+/// Producer: append one AU (copies `len` bytes). Blocks over the queue's `max_bytes` cap
+/// unless aborting. Returns 0 on success, -1 if aborting or OOM.
+pub fn aq_push(
+    q: *mut AuQueue,
+    data: *const c_uchar,
+    len: c_int,
+    pts: i64,
+    key: c_int,
+    es: c_int,
+) -> c_int {
+    aq_push_park(q, data, len, pts, key, es, None, None)
+}
+
+/// [`aq_push`] that runs `drain` whenever the queue is full.
+///
+/// Original playback parks on this path on the same thread as AVIO. The drain keeps the media
+/// socket's TCP window from collapsing to zero while the consumer holds the cap.
+///
+/// `drain` returns whether another short poll is useful: `true` means bounce still has room so
+/// the peer may still fill; `false` means cap/abort/I/O failure, so this waits on `not_full`
+/// instead of waking every 10 ms.
+pub fn aq_push_with_drain(
+    q: *mut AuQueue,
+    data: *const c_uchar,
+    len: c_int,
+    pts: i64,
+    key: c_int,
+    es: c_int,
+    mut drain: impl FnMut() -> bool,
+) -> c_int {
+    aq_push_park(q, data, len, pts, key, es, Some(&mut drain), None)
+}
+
+/// **The cross-lane admission rule for a push that is over its lane's soft cap** (issue #600).
+///
+/// The demuxer fills both lanes from ONE sequential read, so a lane that parks its producer also
+/// stops the other lane being read. A lane's byte cap is a soft one for exactly that reason: it
+/// may be exceeded, up to a hard ceiling, **while the other lane is starved** (holds less than
+/// `starved_below_ns` of media, [`aq_span_ns`]), because the consumer cannot make progress without
+/// that other lane's next packets and parking here would withhold them. A container that stores
+/// its audio ahead of its video does this for its whole length, not only at the start.
+///
+/// * Over the soft cap and the other lane NOT starved: park, as a full lane always has. The wait is
+///   timed (10 ms), because the signal that ends it is the OTHER lane being popped, which this
+///   lane's condvar never hears; an untimed wait there would be a hang.
+/// * Over the soft cap and the other lane starved: admit, while the lane holds no more than
+///   `base cap + headroom` (the hard ceiling). The soft cap is back the moment the other lane is
+///   stocked again or the lane drains: nothing about it is granted or latched.
+/// * At the ceiling with the other lane starved: with `fail_at_ceiling` the push returns
+///   [`PUSH_CEILING`] and the caller fails the stream (the consumer provably cannot have started, so
+///   parking is a spinner nobody can leave); without it the push parks like any full lane.
+///
+/// The starvation test reads the other lane with this lane's mutex RELEASED (no two lane locks
+/// are ever held together), so it can be a moment stale. That errs harmlessly: an extra AU admitted
+/// to a lane under its ceiling, or one more 10 ms poll.
+#[derive(Clone, Copy)]
+pub struct PushGate {
+    /// The lane whose starvation lets this one run past its soft cap.
+    pub other: *mut AuQueue,
+    /// The other lane is starved while it holds less than this much media (pts span of its queue).
+    pub starved_below_ns: i64,
+    /// Bytes past the soft cap this lane may hold while the other is starved: the hard ceiling is
+    /// the lane's base cap plus this.
+    pub headroom: c_long,
+    /// Whether reaching the ceiling with the other lane still starved is a failure (`true`) or an
+    /// ordinary full-lane park (`false`).
+    pub fail_at_ceiling: bool,
+}
+
+/// [`aq_push_with_drain`] under a [`PushGate`]. Returns 0, -1 (abort / OOM), or [`PUSH_CEILING`].
+pub fn aq_push_gated(
+    q: *mut AuQueue,
+    data: *const c_uchar,
+    len: c_int,
+    pts: i64,
+    key: c_int,
+    es: c_int,
+    gate: PushGate,
+    mut drain: impl FnMut() -> bool,
+) -> c_int {
+    aq_push_park(q, data, len, pts, key, es, Some(&mut drain), Some(gate))
+}
+
+/// [`aq_push_gated`]: the lane is at its hard ceiling and the other lane is still starved.
+pub const PUSH_CEILING: c_int = -2;
+
+/// A `not_full` timed-wait deadline 10 ms out, on the SAME clock `init_not_full_cond` bound the
+/// condvar to — Linux gets `CLOCK_MONOTONIC` (immune to the wall-clock step this device is
+/// documented to experience), everywhere else keeps the wall clock the condvar itself defaults
+/// to. Mixing clock bases between the condvar and its deadline would make the timeout meaningless
+/// rather than merely imprecise.
+#[cfg(target_os = "linux")]
+fn aq_park_deadline() -> libc::timespec {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    unsafe {
+        libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
+    }
+    add_10ms(ts)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn aq_park_deadline() -> libc::timespec {
+    let mut tv = libc::timeval {
+        tv_sec: 0,
+        tv_usec: 0,
+    };
+    unsafe {
+        libc::gettimeofday(&mut tv, ptr::null_mut());
+    }
+    add_10ms(libc::timespec {
+        tv_sec: tv.tv_sec,
+        tv_nsec: i64::from(tv.tv_usec) * 1000,
+    })
+}
+
+fn add_10ms(ts: libc::timespec) -> libc::timespec {
+    let mut nsec = ts.tv_nsec + 10_000_000;
+    let mut sec = ts.tv_sec;
+    if nsec >= 1_000_000_000 {
+        sec += 1;
+        nsec -= 1_000_000_000;
+    }
+    libc::timespec {
+        tv_sec: sec,
+        tv_nsec: nsec as libc::c_long,
+    }
+}
+
+fn aq_push_park(
+    q: *mut AuQueue,
+    data: *const c_uchar,
+    len: c_int,
+    pts: i64,
+    key: c_int,
+    es: c_int,
+    mut drain: Option<&mut dyn FnMut() -> bool>,
+    gate: Option<PushGate>,
+) -> c_int {
+    if q.is_null() || len < 0 {
+        return -1;
+    }
+    unsafe {
+        let n = libc::malloc(core::mem::size_of::<AuNode>() + len as usize) as *mut AuNode;
+        if n.is_null() {
+            return -1;
+        }
+        (*n).next = ptr::null_mut();
+        (*n).pts = pts;
+        (*n).len = len;
+        (*n).key = key;
+        (*n).es = es;
+        if len > 0 && !data.is_null() {
+            ptr::copy_nonoverlapping(data, node_data(n), len as usize);
+        }
+        libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
+        let mut admitted = false;
+        while !admitted && (*q).queued_bytes > (*q).max_bytes && (*q).abort == 0 {
+            if let Some(g) = gate {
+                libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+                if let Some(drain) = drain.as_mut() {
+                    drain();
+                }
+                let starved = aq_span_ns(g.other) < g.starved_below_ns;
+                libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
+                if (*q).queued_bytes <= (*q).max_bytes || (*q).abort != 0 {
+                    continue;
+                }
+                if starved {
+                    if (*q).queued_bytes <= (*q).base_bytes + g.headroom.max(0) {
+                        admitted = true;
+                        continue;
+                    }
+                    if g.fail_at_ceiling {
+                        libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+                        libc::free(n as *mut c_void);
+                        return PUSH_CEILING;
+                    }
+                }
+                let ts = aq_park_deadline();
+                libc::pthread_cond_timedwait(
+                    ptr::addr_of_mut!((*q).not_full),
+                    ptr::addr_of_mut!((*q).m),
+                    &ts,
+                );
+                continue;
+            }
+            if let Some(drain) = drain.as_mut() {
+                libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+                let keep_polling = drain();
+                libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
+                if (*q).queued_bytes > (*q).max_bytes && (*q).abort == 0 {
+                    if keep_polling {
+                        let ts = aq_park_deadline();
+                        libc::pthread_cond_timedwait(
+                            ptr::addr_of_mut!((*q).not_full),
+                            ptr::addr_of_mut!((*q).m),
+                            &ts,
+                        );
+                    } else {
+                        libc::pthread_cond_wait(
+                            ptr::addr_of_mut!((*q).not_full),
+                            ptr::addr_of_mut!((*q).m),
+                        );
+                    }
+                }
+            } else {
+                libc::pthread_cond_wait(
+                    ptr::addr_of_mut!((*q).not_full),
+                    ptr::addr_of_mut!((*q).m),
+                );
+            }
+        }
+        if (*q).abort != 0 {
+            libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+            libc::free(n as *mut c_void);
+            return -1;
+        }
+        if !(*q).tail.is_null() {
+            (*(*q).tail).next = n;
+        } else {
+            (*q).head = n;
+        }
+        (*q).tail = n;
+        (*q).queued_bytes += len as c_long;
+        libc::pthread_cond_signal(ptr::addr_of_mut!((*q).not_empty));
+        libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+        0
+    }
+}
+
+/// Consumer: pop the next AU (caller frees it) or NULL. Never blocks.
+/// *eof_out = 1 when the producer finished and the queue is drained.
+pub fn aq_pop(q: *mut AuQueue, eof_out: *mut c_int) -> *mut AuNode {
+    if q.is_null() {
+        return ptr::null_mut();
+    }
+    unsafe {
+        libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
+        let n = (*q).head;
+        if !n.is_null() {
+            (*q).head = (*n).next;
+            if (*q).head.is_null() {
+                (*q).tail = ptr::null_mut();
+            }
+            (*q).queued_bytes -= (*n).len as c_long;
+            (*q).pops += 1;
+            if (*q).releasing != 0 {
+                settle_released_cap(q);
+            }
+            libc::pthread_cond_signal(ptr::addr_of_mut!((*q).not_full));
+        }
+        if !eof_out.is_null() {
+            *eof_out = if (*q).head.is_null() && (*q).eof != 0 {
+                1
+            } else {
+                0
+            };
+        }
+        libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+        n
+    }
+}
+
+pub fn aq_set_eof(q: *mut AuQueue) {
+    if q.is_null() {
+        return;
+    }
+    unsafe {
+        libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
+        (*q).eof = 1;
+        libc::pthread_cond_signal(ptr::addr_of_mut!((*q).not_empty));
+        libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+    }
+}
+
+pub fn aq_abort(q: *mut AuQueue) {
+    if q.is_null() {
+        return;
+    }
+    unsafe {
+        libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
+        (*q).abort = 1;
+        libc::pthread_cond_broadcast(ptr::addr_of_mut!((*q).not_full));
+        libc::pthread_cond_broadcast(ptr::addr_of_mut!((*q).not_empty));
+        libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+    }
+}
+
+/// Run one small publication step only if teardown has not linearized on this queue.
+///
+/// The closure executes while holding the same mutex [`aq_abort`] uses to publish `abort`.  This
+/// is intentionally stronger than an `aq_is_aborted` check followed by the publication: that pair
+/// has a gap in which teardown can win, join the producer, and still let the producer publish a
+/// replacement playback resource.  Keep the closure free of blocking I/O; cleanup belongs after
+/// this function releases the queue lock.
+pub fn aq_if_not_aborted<T>(q: *mut AuQueue, f: impl FnOnce() -> T) -> Option<T> {
+    if q.is_null() {
+        return None;
+    }
+
+    struct Unlock(*mut libc::pthread_mutex_t);
+    impl Drop for Unlock {
+        fn drop(&mut self) {
+            unsafe {
+                libc::pthread_mutex_unlock(self.0);
+            }
+        }
+    }
+
+    unsafe {
+        let mutex = ptr::addr_of_mut!((*q).m);
+        libc::pthread_mutex_lock(mutex);
+        let _unlock = Unlock(mutex);
+        if (*q).abort != 0 {
+            None
+        } else {
+            Some(f())
+        }
+    }
+}
+
+/// Producer: let this queue hold `extra` bytes beyond the cap it was created with, until the next
+/// call. Raising the cap wakes a producer parked on `not_full`, so the grant takes effect even for a
+/// push already waiting. Granting (re)starts a headroom: it cancels a pending
+/// [`aq_release_headroom`], which is how a seek or reopen begins again.
+///
+/// `extra == 0` snaps the cap straight back to the base, which can leave it BELOW what the queue
+/// holds: the next push then parks until the consumer has drained under it. That is right for a
+/// queue nobody was relying on the headroom for; a producer that needs the other lane to keep
+/// being read while this one is over its base cap wants [`aq_release_headroom`] instead.
+pub fn aq_set_headroom(q: *mut AuQueue, extra: c_long) {
+    if q.is_null() {
+        return;
+    }
+    unsafe {
+        libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
+        let prev = (*q).max_bytes;
+        (*q).max_bytes = (*q).base_bytes + extra.max(0);
+        (*q).releasing = 0;
+        if (*q).max_bytes > prev {
+            libc::pthread_cond_broadcast(ptr::addr_of_mut!((*q).not_full));
+        }
+        libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+    }
+}
+
+/// Producer: take the headroom away **as the consumer drains the queue, never below what it holds**.
+///
+/// The cap becomes the queue's current occupancy (at least the base) and then follows `aq_pop`
+/// downward until it is the base again, after which this is a plain queue. Contrast
+/// `aq_set_headroom(q, 0)`, which drops the cap to the base at once: with the queue already past
+/// the base that parks the producer on its very next push, and a demuxer that feeds two lanes
+/// from one sequential read then cannot read the OTHER lane's next packets until this lane has
+/// drained, which it cannot do before the packets it is blocking arrive. Here the producer may
+/// still finish the push it is on (occupancy is not over the cap), and parks from the one after
+/// until the consumer pops — the same lock-step a queue that sits AT its cap always shows.
+/// The cap only ever falls here, so nobody needs waking: a producer already parked stays parked until a pop
+/// takes the queue under the cap it parked on.
+///
+/// A queue at or under its base cap is simply restored to the base. A later
+/// `aq_set_headroom(q, extra)` (a seek or reopen) cancels the release and grants afresh.
+pub fn aq_release_headroom(q: *mut AuQueue) {
+    if q.is_null() {
+        return;
+    }
+    unsafe {
+        libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
+        (*q).releasing = 1;
+        settle_released_cap(q);
+        libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+    }
+}
+
+/// With `m` held and a release pending: pull the cap down to the occupancy (never under the base,
+/// never up), and end the release once it has reached the base.
+unsafe fn settle_released_cap(q: *mut AuQueue) {
+    unsafe {
+        let floor = (*q).base_bytes;
+        (*q).max_bytes = (*q).max_bytes.min((*q).queued_bytes).max(floor);
+        if (*q).max_bytes <= floor {
+            (*q).releasing = 0;
+        }
+    }
+}
+
+/// The cap in force right now: the base, plus any headroom granted and not yet drained away.
+pub fn aq_cap(q: *mut AuQueue) -> c_long {
+    if q.is_null() {
+        return 0;
+    }
+    unsafe {
+        libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
+        let cap = (*q).max_bytes;
+        libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+        cap
+    }
+}
+
+/// Would a push made now park? Producer-side, advisory: the consumer can only make the answer
+/// "no" (a pop) between this call and the push. Same predicate `aq_push` waits on.
+pub fn aq_would_park(q: *mut AuQueue) -> bool {
+    if q.is_null() {
+        return false;
+    }
+    unsafe {
+        libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
+        let parks = (*q).queued_bytes > (*q).max_bytes && (*q).abort == 0;
+        libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+        parks
+    }
+}
+
+/// How much media the queue holds, as the pts span from its head AU to its tail AU (0 when it
+/// holds fewer than two). A producer's measure of whether the consumer is starved of this lane:
+/// producers append in order, so the span is what is queued, not what has ever passed through.
+pub fn aq_span_ns(q: *mut AuQueue) -> i64 {
+    if q.is_null() {
+        return 0;
+    }
+    unsafe {
+        libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
+        let span = if (*q).head.is_null() || (*q).tail.is_null() {
+            0
+        } else {
+            ((*(*q).tail).pts - (*(*q).head).pts).max(0)
+        };
+        libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+        span
+    }
+}
+
+/// How many AUs the consumer has popped from this queue since it was created. Monotonic, so a
+/// producer that records it at one moment and reads it at a later one learns whether the consumer
+/// popped anything in between: the difference between a lane that is full because nobody drains it
+/// and one that is full because the producer is faster than the drain.
+pub fn aq_pops(q: *mut AuQueue) -> u64 {
+    if q.is_null() {
+        return 0;
+    }
+    unsafe {
+        libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
+        let n = (*q).pops;
+        libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+        n
+    }
+}
+
+pub fn aq_bytes(q: *mut AuQueue) -> c_long {
+    if q.is_null() {
+        return 0;
+    }
+    unsafe {
+        libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
+        let b = (*q).queued_bytes;
+        libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+        b
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier};
+
+    /// A full queue parks its producer; headroom granted on top of the base cap lets the same
+    /// push through, and taking the headroom away restores the base cap for the next push. This
+    /// is the video lane's shape when a file's audio starts late (an audio `Delay`): the base cap
+    /// alone parks the demuxer before it ever reaches the first audio packet.
+    #[test]
+    fn headroom_admits_a_push_the_base_cap_parks_and_zero_restores_it() {
+        let mut q = aq_new(100);
+        let qp = &mut *q as *mut AuQueue;
+        let au = [0u8; 120];
+        assert_eq!(aq_push(qp, au.as_ptr(), au.len() as c_int, 0, 1, 1), 0);
+        assert_eq!(aq_bytes(qp), 120, "over the base cap now");
+
+        // Without headroom the next push parks until something drains or aborts.
+        let addr = qp as usize;
+        let parked = std::thread::spawn(move || {
+            let au = [0u8; 10];
+            aq_push(addr as *mut AuQueue, au.as_ptr(), au.len() as c_int, 1, 0, 1)
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!parked.is_finished(), "the base cap parks the producer");
+
+        // Granting headroom releases the parked push without anything being popped.
+        aq_set_headroom(qp, 1_000);
+        assert_eq!(parked.join().unwrap(), 0);
+        assert_eq!(aq_bytes(qp), 130);
+
+        // Back to the base cap: the queue is over it again, so a further push would park.
+        aq_set_headroom(qp, 0);
+        let parked = std::thread::spawn(move || {
+            let au = [0u8; 10];
+            aq_push(addr as *mut AuQueue, au.as_ptr(), au.len() as c_int, 2, 0, 1)
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!parked.is_finished(), "zero headroom restores the base cap");
+        aq_abort(qp);
+        assert_eq!(parked.join().unwrap(), -1);
+        aq_destroy(qp);
+    }
+
+    fn push_n(q: *mut AuQueue, n: usize, len: usize) {
+        let au = vec![0u8; len];
+        for i in 0..n {
+            assert_eq!(aq_push(q, au.as_ptr(), len as c_int, i as i64, 0, 1), 0);
+        }
+    }
+
+    fn pop_one(q: *mut AuQueue) {
+        let n = aq_pop(q, ptr::null_mut());
+        assert!(!n.is_null(), "the queue had an AU to pop");
+        unsafe { libc::free(n as *mut c_void) };
+    }
+
+    /// **The demuxer's shape.** The video lane holds far more than its base cap (headroom was
+    /// granted while the audio had not arrived) and the first audio AU has just been pushed. Taking
+    /// the headroom away with `aq_set_headroom(0)` drops the cap under what the lane holds, so the
+    /// next video push parks - and the demuxer, which reads both lanes from one sequential read,
+    /// never reads the audio that follows. Releasing keeps the cap at the occupancy: the push the
+    /// demuxer is on is admitted, and the queue parks the producer only from the one after.
+    #[test]
+    fn release_never_drops_the_cap_below_what_the_queue_holds_but_zero_does() {
+        let addr = |q: &mut Box<AuQueue>| &mut **q as *mut AuQueue as usize;
+
+        // Snapping to zero: over the base cap, so the very next push parks.
+        let mut hard = aq_new(100);
+        let hp = addr(&mut hard);
+        aq_set_headroom(hp as *mut AuQueue, 10_000);
+        push_n(hp as *mut AuQueue, 6, 100);
+        aq_set_headroom(hp as *mut AuQueue, 0);
+        assert_eq!(aq_cap(hp as *mut AuQueue), 100);
+        let parked = std::thread::spawn(move || {
+            let au = [0u8; 10];
+            aq_push(hp as *mut AuQueue, au.as_ptr(), 10, 9, 0, 1)
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!parked.is_finished(), "a hard zero parks a queue that is over its base cap");
+        aq_abort(hp as *mut AuQueue);
+        assert_eq!(parked.join().unwrap(), -1);
+        aq_destroy(hp as *mut AuQueue);
+
+        // Releasing: the same queue admits the next push, then parks the one after.
+        let mut soft = aq_new(100);
+        let sp = addr(&mut soft);
+        aq_set_headroom(sp as *mut AuQueue, 10_000);
+        push_n(sp as *mut AuQueue, 6, 100);
+        aq_release_headroom(sp as *mut AuQueue);
+        assert_eq!(aq_cap(sp as *mut AuQueue), 600, "the cap stands at the occupancy");
+        let admitted = std::thread::spawn(move || {
+            let au = [0u8; 10];
+            aq_push(sp as *mut AuQueue, au.as_ptr(), 10, 9, 0, 1)
+        });
+        assert_eq!(admitted.join().unwrap(), 0, "the push in flight is not parked by the release");
+        assert_eq!(aq_bytes(sp as *mut AuQueue), 610);
+        let parked = std::thread::spawn(move || {
+            let au = [0u8; 10];
+            aq_push(sp as *mut AuQueue, au.as_ptr(), 10, 10, 0, 1)
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!parked.is_finished(), "from the next push on, the queue is at its cap");
+        // One pop takes it under the cap and the parked push goes through.
+        pop_one(sp as *mut AuQueue);
+        assert_eq!(parked.join().unwrap(), 0);
+        aq_abort(sp as *mut AuQueue);
+        aq_destroy(sp as *mut AuQueue);
+    }
+
+    /// After a release the cap follows the occupancy down on every pop and ends at the base, at
+    /// which point the queue is an ordinary one again.
+    #[test]
+    fn a_released_cap_tracks_the_drain_down_to_the_base() {
+        let mut q = aq_new(200);
+        let qp = &mut *q as *mut AuQueue;
+        aq_set_headroom(qp, 10_000);
+        push_n(qp, 8, 100); // 800 bytes held, base 200
+        aq_release_headroom(qp);
+        assert_eq!(aq_cap(qp), 800);
+        for expect in [700, 600, 500, 400, 300, 200] {
+            pop_one(qp);
+            assert_eq!(aq_cap(qp), expect, "cap = occupancy while above the base");
+        }
+        pop_one(qp); // 100 bytes held, under the base
+        assert_eq!(aq_cap(qp), 200, "never below the base");
+        // Settled: pushes are back to the plain base-cap behaviour (a push is admitted while the
+        // queue holds no more than 200 bytes, so 100 + 2 x 100 goes through and a third would park).
+        push_n(qp, 2, 100);
+        assert_eq!(aq_cap(qp), 200, "a push does not raise a settled cap");
+        assert_eq!(unsafe { (*qp).releasing }, 0, "the release ended at the base");
+        aq_destroy(qp);
+    }
+
+    /// A standing grant is not released by pops: only [`aq_release_headroom`] starts that.
+    #[test]
+    fn a_standing_grant_is_not_walked_down_by_pops() {
+        let mut q = aq_new(100);
+        let qp = &mut *q as *mut AuQueue;
+        aq_set_headroom(qp, 1_000);
+        push_n(qp, 5, 100);
+        pop_one(qp);
+        pop_one(qp);
+        assert_eq!(aq_cap(qp), 1_100, "pops leave a granted headroom alone");
+        aq_destroy(qp);
+    }
+
+    /// The pop counter is monotonic and counts only real pops: an empty pop is not one.
+    #[test]
+    fn the_pop_counter_counts_aus_the_consumer_took() {
+        let mut q = aq_new(1_000);
+        let qp = &mut *q as *mut AuQueue;
+        assert_eq!(aq_pops(qp), 0);
+        push_n(qp, 3, 10);
+        assert_eq!(aq_pops(qp), 0, "pushing is not draining");
+        pop_one(qp);
+        pop_one(qp);
+        assert_eq!(aq_pops(qp), 2);
+        pop_one(qp);
+        assert!(aq_pop(qp, std::ptr::null_mut()).is_null(), "empty");
+        assert_eq!(aq_pops(qp), 3, "an empty pop is not a pop");
+        assert_eq!(aq_pops(std::ptr::null_mut()), 0);
+        aq_destroy(qp);
+    }
+
+    /// A seek or reopen grants afresh while a release is still draining: the grant wins, the pops no
+    /// longer walk it down, and a release of THAT grant begins from the new occupancy.
+    #[test]
+    fn a_new_grant_cancels_a_release_that_has_not_finished_draining() {
+        let mut q = aq_new(100);
+        let qp = &mut *q as *mut AuQueue;
+        aq_set_headroom(qp, 1_000);
+        push_n(qp, 6, 100);
+        aq_release_headroom(qp);
+        pop_one(qp);
+        assert_eq!(aq_cap(qp), 500, "draining");
+        aq_set_headroom(qp, 1_000);
+        assert_eq!(aq_cap(qp), 1_100);
+        pop_one(qp);
+        assert_eq!(aq_cap(qp), 1_100, "the release was cancelled by the grant");
+        aq_release_headroom(qp);
+        assert_eq!(aq_cap(qp), 400, "a later release starts from the occupancy then");
+        aq_destroy(qp);
+    }
+
+    /// Releasing a queue that holds no more than its base cap is a plain restore to the base, and
+    /// leaves nothing pending.
+    #[test]
+    fn releasing_an_under_full_queue_restores_the_base_at_once() {
+        let mut q = aq_new(100);
+        let qp = &mut *q as *mut AuQueue;
+        aq_set_headroom(qp, 1_000);
+        push_n(qp, 1, 50);
+        aq_release_headroom(qp);
+        assert_eq!(aq_cap(qp), 100);
+        assert_eq!(unsafe { (*qp).releasing }, 0);
+        aq_destroy(qp);
+    }
+
+    /// Teardown still reaches a producer parked after a release.
+    #[test]
+    fn abort_wakes_a_producer_parked_behind_a_released_cap() {
+        let mut q = aq_new(100);
+        let qp = &mut *q as *mut AuQueue;
+        aq_set_headroom(qp, 1_000);
+        push_n(qp, 4, 100);
+        aq_release_headroom(qp);
+        push_n(qp, 1, 100); // the one push the release admits
+        let addr = qp as usize;
+        let parked = std::thread::spawn(move || {
+            let au = [0u8; 10];
+            aq_push(addr as *mut AuQueue, au.as_ptr(), 10, 0, 0, 1)
+        });
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        assert!(!parked.is_finished());
+        assert!(aq_would_park(qp));
+        aq_abort(qp);
+        assert_eq!(parked.join().unwrap(), -1);
+        aq_destroy(qp);
+    }
+
+    #[test]
+    fn a_preexisting_abort_prevents_the_publication_closure() {
+        let mut q = aq_new(1);
+        let called = AtomicBool::new(false);
+        aq_abort(&mut *q);
+
+        let result = aq_if_not_aborted(&mut *q, || called.store(true, Ordering::SeqCst));
+
+        assert_eq!(result, None);
+        assert!(!called.load(Ordering::SeqCst));
+        aq_destroy(&mut *q);
+    }
+
+    #[test]
+    fn publication_and_abort_share_one_linearization_mutex() {
+        let mut q = aq_new(1);
+        let q_addr = (&mut *q as *mut AuQueue) as usize;
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let entered_worker = Arc::clone(&entered);
+        let release_worker = Arc::clone(&release);
+        let worker = std::thread::spawn(move || {
+            aq_if_not_aborted(q_addr as *mut AuQueue, || {
+                entered_worker.wait();
+                release_worker.wait();
+                41
+            })
+        });
+
+        entered.wait();
+        let mutex = unsafe { ptr::addr_of_mut!((*(q_addr as *mut AuQueue)).m) };
+        assert_eq!(
+            unsafe { libc::pthread_mutex_trylock(mutex) },
+            libc::EBUSY,
+            "the publication closure must own the abort mutex",
+        );
+        release.wait();
+        assert_eq!(worker.join().unwrap(), Some(41));
+
+        aq_abort(&mut *q);
+        assert!(unsafe { aq_is_aborted(&*q) });
+        aq_destroy(&mut *q);
+    }
+
+    #[test]
+    fn timed_push_invokes_drain_while_the_consumer_holds_the_queue_full() {
+        use std::sync::atomic::AtomicUsize;
+        let mut q = aq_new(8);
+        let q_addr = (&mut *q as *mut AuQueue) as usize;
+        let data = [1u8; 16];
+        assert_eq!(aq_push(&mut *q, data.as_ptr(), 16, 0, 1, 1), 0);
+        let drained = Arc::new(AtomicUsize::new(0));
+        let drained_worker = Arc::clone(&drained);
+        let worker = std::thread::spawn(move || {
+            aq_push_with_drain(q_addr as *mut AuQueue, data.as_ptr(), 16, 0, 1, 1, || {
+                drained_worker.fetch_add(1, Ordering::AcqRel);
+                true
+            })
+        });
+        let started = std::time::Instant::now();
+        while drained.load(Ordering::Acquire) == 0
+            && started.elapsed() < std::time::Duration::from_secs(1)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            drained.load(Ordering::Acquire) > 0,
+            "a full queue must run drain between timed waits"
+        );
+        let n = aq_pop(&mut *q, ptr::null_mut());
+        assert!(!n.is_null());
+        unsafe { libc::free(n as *mut c_void) };
+        assert_eq!(worker.join().unwrap(), 0);
+        aq_destroy(&mut *q);
+    }
+
+    #[test]
+    fn abort_still_tears_down_a_draining_push() {
+        let mut q = aq_new(8);
+        let q_addr = (&mut *q as *mut AuQueue) as usize;
+        let data = [1u8; 16];
+        assert_eq!(aq_push(&mut *q, data.as_ptr(), 16, 0, 1, 1), 0);
+        let worker = std::thread::spawn(move || {
+            aq_push_with_drain(q_addr as *mut AuQueue, data.as_ptr(), 16, 0, 1, 1, || false)
+        });
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        aq_abort(&mut *q);
+        assert_eq!(worker.join().unwrap(), -1);
+        aq_destroy(&mut *q);
+    }
+
+    #[test]
+    fn a_full_bounce_does_not_spin_the_drain_at_ten_ms() {
+        use std::sync::atomic::AtomicUsize;
+        let mut q = aq_new(8);
+        let q_addr = (&mut *q as *mut AuQueue) as usize;
+        let data = [1u8; 16];
+        assert_eq!(aq_push(&mut *q, data.as_ptr(), 16, 0, 1, 1), 0);
+        let drained = Arc::new(AtomicUsize::new(0));
+        let drained_worker = Arc::clone(&drained);
+        let worker = std::thread::spawn(move || {
+            aq_push_with_drain(q_addr as *mut AuQueue, data.as_ptr(), 16, 0, 1, 1, || {
+                drained_worker.fetch_add(1, Ordering::AcqRel);
+                false
+            })
+        });
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        let calls = drained.load(Ordering::Acquire);
+        aq_abort(&mut *q);
+        assert_eq!(worker.join().unwrap(), -1);
+        assert!(
+            calls <= 2,
+            "drain returning false must cond_wait, not wake at 10 ms; got {calls} calls"
+        );
+        aq_destroy(&mut *q);
+    }
+
+    #[test]
+    fn a_drain_that_still_has_room_is_called_more_than_once_before_the_consumer_pops() {
+        use std::sync::atomic::AtomicUsize;
+        let mut q = aq_new(8);
+        let q_addr = (&mut *q as *mut AuQueue) as usize;
+        let data = [1u8; 16];
+        assert_eq!(aq_push(&mut *q, data.as_ptr(), 16, 0, 1, 1), 0);
+        let drained = Arc::new(AtomicUsize::new(0));
+        let drained_worker = Arc::clone(&drained);
+        let worker = std::thread::spawn(move || {
+            aq_push_with_drain(q_addr as *mut AuQueue, data.as_ptr(), 16, 0, 1, 1, || {
+                drained_worker.fetch_add(1, Ordering::AcqRel);
+                true
+            })
+        });
+        let started = std::time::Instant::now();
+        while drained.load(Ordering::Acquire) < 2
+            && started.elapsed() < std::time::Duration::from_secs(1)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            drained.load(Ordering::Acquire) >= 2,
+            "a drain that reports room must be polled again before the consumer pops"
+        );
+        let n = aq_pop(&mut *q, ptr::null_mut());
+        assert!(!n.is_null());
+        unsafe { libc::free(n as *mut c_void) };
+        assert_eq!(worker.join().unwrap(), 0);
+        aq_destroy(&mut *q);
+    }
+
+    /// The cross-lane admission rule ([`PushGate`]): an audio-like lane over its soft cap is let
+    /// through, up to the ceiling, while the video-like lane is starved; parked while it is stocked;
+    /// failed at the ceiling when asked to; and its soft cap is simply back once the other lane is
+    /// stocked again (nothing latched).
+    #[test]
+    fn a_gated_push_runs_past_the_soft_cap_only_while_the_other_lane_is_starved() {
+        let ms = 1_000_000i64;
+        let mut audio = aq_new(100);
+        let mut video = aq_new(1_000_000);
+        let (ap, vp) = (&mut *audio as *mut AuQueue, &mut *video as *mut AuQueue);
+        let gate = |fail| PushGate { other: vp, starved_below_ns: 1_600 * ms, headroom: 900, fail_at_ceiling: fail };
+        let au = [0u8; 50];
+        let push = |gate: PushGate, pts: i64| {
+            aq_push_gated(ap, au.as_ptr(), au.len() as c_int, pts, 1, 2, gate, || false)
+        };
+        // Under the soft cap: nothing to decide. Video lane empty = starved: admitted past it.
+        for i in 0..10 {
+            assert_eq!(push(gate(true), i), 0, "starved video lane: audio runs past its 100 byte soft cap");
+        }
+        assert_eq!(aq_bytes(ap), 500);
+        assert_eq!(aq_cap(ap), 100, "no cap was raised: the rule is not a grant");
+
+        // Stock the video lane (3 s of media): audio past the soft cap now parks, TIMED, and goes
+        // through as soon as the video lane is popped back under the target - no audio pop at all.
+        for (i, pts) in [0, 3_000 * ms].into_iter().enumerate() {
+            assert_eq!(aq_push(vp, au.as_ptr(), au.len() as c_int, pts, 1, 1), 0, "video {i}");
+        }
+        assert_eq!(aq_span_ns(vp), 3_000 * ms);
+        let (addr, vaddr) = (ap as usize, vp as usize);
+        let waiting = std::thread::spawn(move || {
+            let au = [0u8; 50];
+            let g = PushGate { other: vaddr as *mut AuQueue, starved_below_ns: 1_600 * ms, headroom: 900, fail_at_ceiling: true };
+            aq_push_gated(addr as *mut AuQueue, au.as_ptr(), 50, 99, 1, 2, g, || false)
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!waiting.is_finished(), "a stocked video lane parks the audio push");
+        let n = aq_pop(vp, ptr::null_mut());
+        unsafe { libc::free(n as *mut c_void) };
+        assert_eq!(aq_span_ns(vp), 0);
+        assert_eq!(waiting.join().unwrap(), 0, "the video lane starved again: admitted without any audio pop");
+
+        // At the ceiling (100 + 900 = 1000 bytes) with the video lane starved.
+        while aq_bytes(ap) <= 1_000 {
+            assert_eq!(push(gate(true), 0), 0);
+        }
+        assert_eq!(push(gate(true), 0), PUSH_CEILING, "ceiling + starved + fail_at_ceiling: the push reports it");
+        assert_eq!(aq_bytes(ap), 1_050, "and queued nothing");
+        // Without fail_at_ceiling it parks like any full lane, and a pop frees it.
+        let waiting = std::thread::spawn(move || {
+            let au = [0u8; 50];
+            let g = PushGate { other: vaddr as *mut AuQueue, starved_below_ns: 1_600 * ms, headroom: 900, fail_at_ceiling: false };
+            aq_push_gated(addr as *mut AuQueue, au.as_ptr(), 50, 99, 1, 2, g, || false)
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!waiting.is_finished(), "at the ceiling the push parks");
+        let n = aq_pop(ap, ptr::null_mut());
+        unsafe { libc::free(n as *mut c_void) };
+        assert_eq!(waiting.join().unwrap(), 0, "one pop takes the lane back under its ceiling");
+        assert_eq!(aq_bytes(ap), 1_050, "1050 - 50 popped + 50 pushed");
+        aq_abort(ap);
+        aq_abort(vp);
+        aq_destroy(ap);
+        aq_destroy(vp);
+    }
+
+    /// A gated push parked on a stocked other lane still ends at an abort.
+    #[test]
+    fn a_gated_push_parked_on_a_stocked_lane_ends_at_abort() {
+        let mut audio = aq_new(10);
+        let mut video = aq_new(1_000_000);
+        let (ap, vp) = (&mut *audio as *mut AuQueue, &mut *video as *mut AuQueue);
+        let au = [0u8; 50];
+        assert_eq!(aq_push(vp, au.as_ptr(), 50, 0, 1, 1), 0);
+        assert_eq!(aq_push(vp, au.as_ptr(), 50, 5_000_000_000, 1, 1), 0);
+        assert_eq!(aq_push(ap, au.as_ptr(), 50, 0, 1, 2), 0);
+        let (addr, vaddr) = (ap as usize, vp as usize);
+        let waiting = std::thread::spawn(move || {
+            let au = [0u8; 50];
+            let gate = PushGate { other: vaddr as *mut AuQueue, starved_below_ns: 1_600_000_000, headroom: 1_000, fail_at_ceiling: true };
+            aq_push_gated(addr as *mut AuQueue, au.as_ptr(), 50, 1, 1, 2, gate, || false)
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!waiting.is_finished());
+        aq_abort(ap);
+        assert_eq!(waiting.join().unwrap(), -1);
+        aq_destroy(ap);
+        aq_destroy(vp);
+    }
+}

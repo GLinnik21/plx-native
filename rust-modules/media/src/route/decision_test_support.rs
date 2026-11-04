@@ -36,7 +36,8 @@ pub(super) fn p5() -> plx_data::metadata::Dovi {
 /// synthetic boundary explicit in the fixture layer so production `apply_plan` and tests of
 /// the start reducer both retain the real `Prepared -> Starting -> result` semantics.
 pub(super) fn apply_plan(ps: &mut PlaybackSession, plan: Plan, rk: &str) {
-    let start = super::apply_plan(ps, &mut plx_data::stores::metadata::MetadataStore::default(), plan, rk);
+    let start = super::apply_plan(ps, &mut plx_data::stores::metadata::MetadataStore::default(),
+        plan, rk, super::CandidatePurpose::NewCandidate);
     settle_plan_start_in_unit_test(ps, start);
 }
 
@@ -93,7 +94,7 @@ pub(super) fn fresh_registry(ps: &mut PlaybackSession) -> plx_base::testlock::Se
     // mid-flight leaves both — belongs to nothing this test owns.
     drop(take_claim_landing());
     clear_injected_fault();
-    crate::player::claim_hold::clear();
+    crate::player::route_fx::clear_claim_hold();
     // Establish the idle projection before resetting the reducer: its applied snapshot must
     // describe this test's empty route, not the previous test's final encoder.  Quality is
     // part of the same baseline; cases which need Auto opt in after this boundary and then
@@ -112,7 +113,7 @@ pub(super) fn fresh_registry(ps: &mut PlaybackSession) -> plx_base::testlock::Se
 
 /// The demuxer ordinal the next native audio reload will feed (`-1`: none staged).
 pub(super) fn desired_audio_idx() -> i32 {
-    crate::player::SHARED.desired_audio_idx.load(std::sync::atomic::Ordering::Relaxed)
+    crate::player::desired_audio_idx_for_test()
 }
 
 /// A `ServerId` naming a slot nothing is registered in — so `client_for` answers `None` and
@@ -423,6 +424,7 @@ pub(super) fn fourk_item_with_subs(
         rk: "rk-4k".into(),
         show_rk: String::new(),
         kind: String::new(),
+        duration_ms: None,
         audio,
         subs,
         video_fps: 23.976,
@@ -836,9 +838,11 @@ pub(super) fn selection_pms(parts: Vec<PartModel>) -> SelectionPms {
     SelectionPms { port, state, _alive: stop }
 }
 
-/// The demuxer publishes the container's subtitle track names (by ordinal) when it opens a part.
-/// Process-global, so a world starts and ends with none.
-pub(super) fn publish_container_names(subs: &[&str]) {
-    *crate::player::SHARED.track_names.lock().unwrap_or_else(|e| e.into_inner()) =
-        crate::player::TrackNames { audio: Vec::new(), subs: subs.iter().map(|s| s.to_string()).collect() };
+/// The player adapter delivers the container's subtitle track names (by ordinal) the demuxer published
+/// when it opened a part: the session holds its own copy, so a world starts with none.
+pub(super) fn publish_container_names(ps: &mut PlaybackSession, subs: &[&str]) {
+    let stamp = ps.container_names_stamp().wrapping_add(1);
+    ps.ingest_container_names(stamp, crate::player::TrackNames {
+        audio: Vec::new(), subs: subs.iter().map(|s| s.to_string()).collect(),
+    });
 }

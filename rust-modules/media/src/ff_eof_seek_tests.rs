@@ -29,6 +29,7 @@
 //! `cd rust-modules && PLX_FFMPEG_DIR=<dir holding libav*-plx.*.dylib> CARGO_INCREMENTAL=0
 //! cargo test --lib -p plx_media ff::eof_seek_tests -- --ignored`.
 
+use plx_play_feed::shared::FEED_SHARED;
 use super::*;
 use std::io::{Read, Write};
 use std::os::raw::c_long;
@@ -205,7 +206,10 @@ fn pattern() -> Vec<u8> {
 
 fn avio_over(src: Src, size: i64, aq: *mut AuQueue) -> AvioState {
     AvioState {
+        observer: super::test_support::demux_observer(),
         src,
+        range: crate::curlio::range_factory(),
+        credential_gate: crate::curlio::CREDENTIAL_GATE,
         aq,
         off: 0,
         size,
@@ -213,12 +217,13 @@ fn avio_over(src: Src, size: i64, aq: *mut AuQueue) -> AvioState {
         body_active_us: 0,
         body_bytes: 0,
         first_byte_at: None,
-        reserve_deadline: ReserveDeadlineState::new(None, false),
+        reserve_deadline: ReserveDeadlineState::new(None, false, super::test_support::demux_observer()),
         transport_watchdog: None,
         acquisition: None,
         bounce: Vec::new(),
         bounce_pos: 0,
         parked_at_end: false,
+        body_silence: super::test_support::fixture_body_silence(),
         heal: HealBudget::default(),
     }
 }
@@ -297,7 +302,7 @@ fn a_socket_seek_to_the_end_answers_the_size_without_a_request() {
     let mut hs = plx_net::stream::http_stream_boxed();
     let origin = plx_plex::plex::Origin::http("127.0.0.1", i32::from(server.port));
     let (src, size) =
-        open_plain_progressive(&mut *hs, &origin, "/library/parts/1/file.mp4", &mut *aq)
+        open_plain_progressive(&mut *hs, &origin, "/library/parts/1/file.mp4", &mut *aq, &DemuxTransport::new(crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE), super::test_support::demux_observer().as_ref())
             .unwrap_or_else(|e| panic!("fixture: the plain open failed: {e:?}"));
     assert_eq!(
         size,
@@ -432,7 +437,7 @@ fn a_socket_seek_inside_the_file_still_reopens_with_a_range() {
     let mut hs = plx_net::stream::http_stream_boxed();
     let origin = plx_plex::plex::Origin::http("127.0.0.1", i32::from(server.port));
     let (src, size) =
-        open_plain_progressive(&mut *hs, &origin, "/library/parts/1/file.mp4", &mut *aq)
+        open_plain_progressive(&mut *hs, &origin, "/library/parts/1/file.mp4", &mut *aq, &DemuxTransport::new(crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE), super::test_support::demux_observer().as_ref())
             .unwrap_or_else(|e| panic!("fixture: the plain open failed: {e:?}"));
     assert_eq!(
         size,
@@ -481,7 +486,7 @@ fn an_unsized_source_still_asks_the_transport() {
     let mut aq = crate::aq::aq_new(1 << 20);
     let mut hs = plx_net::stream::http_stream_boxed();
     let origin = plx_plex::plex::Origin::http("127.0.0.1", i32::from(server.port));
-    let (src, _) = open_plain_progressive(&mut *hs, &origin, "/library/parts/1/file.mp4", &mut *aq)
+    let (src, _) = open_plain_progressive(&mut *hs, &origin, "/library/parts/1/file.mp4", &mut *aq, &DemuxTransport::new(crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE), super::test_support::demux_observer().as_ref())
         .unwrap_or_else(|e| panic!("fixture: the plain open failed: {e:?}"));
     let mut st = avio_over(src, -1, &mut *aq);
     let op = &mut st as *mut AvioState as *mut c_void;
@@ -661,11 +666,11 @@ fn assert_chapters_lead_the_video(path: &Path) {
 /// Demux `file` through the real `ff::demux` over a [`StrictServer`]; returns the video AUs it
 /// delivered within the deadline and everything the server answered.
 fn demux_video_aus(file: Virtual, want: usize) -> (usize, Vec<(Option<u64>, u16)>) {
-    SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
-    SHARED.desired_audio_idx.store(-1, Ordering::Relaxed);
-    SHARED.side_subs_owner.store(false, Ordering::Relaxed);
-    SHARED.demux_failed.store(false, Ordering::Relaxed);
-    SHARED.demux_io_failed.store(false, Ordering::Relaxed);
+    FEED_SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
+    FEED_SHARED.desired_audio_idx.store(-1, Ordering::Relaxed);
+    FEED_SHARED.side_subs_owner.store(false, Ordering::Relaxed);
+    FEED_SHARED.demux_failed.store(false, Ordering::Relaxed);
+    FEED_SHARED.demux_io_failed.store(false, Ordering::Relaxed);
     FEED_AUDIO.store(true, Ordering::Relaxed);
     let server = StrictServer::start(file);
     let (video_cap, audio_cap) = crate::player::engine::aq_caps();
@@ -680,17 +685,20 @@ fn demux_video_aus(file: Virtual, want: usize) -> (usize, Vec<(Option<u64>, u16)
     let origin = plx_plex::plex::Origin::http("127.0.0.1", i32::from(server.port));
     let thread = std::thread::spawn(move || {
         let off = plx_base::task::OffFrame::for_test();
-        demux(
+        super::test_support::with_demux_session(|session| demux(
             &off,
             origin,
             "/library/parts/1/file.mp4".into(),
             "aac".into(),
+            false,
+            DemuxTransport::new(crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE),
+            session,
             None,
             None,
             vp,
             ap,
             hp,
-        )
+        ))
     });
     let until = Instant::now() + Duration::from_secs(10);
     let mut aus = 0;

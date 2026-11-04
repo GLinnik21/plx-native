@@ -55,6 +55,7 @@
 //! cargo test --lib -p plx_media ff::late_audio_tests -- --ignored`
 //! (`make check-ffmpeg` stages the libraries into `pkg/`, which is the default directory).
 
+use plx_play_feed::shared::FEED_SHARED;
 use super::*;
 use super::image_subtitle_tests::bind_host_ffmpeg;
 use crate::aq::AuNode;
@@ -310,7 +311,9 @@ impl DemuxRun {
         let thread = std::thread::spawn(move || {
             let off = plx_base::task::OffFrame::for_test();
             // `acodec` is the Load payload's audio codec: the demuxer feeds the track that matches.
-            demux(&off, origin, "/library/parts/1/file.mkv".into(), acodec.into(), None, None, vp, ap, hp)
+            super::test_support::with_demux_session(|session| {
+                demux(&off, origin, "/library/parts/1/file.mkv".into(), acodec.into(), false, DemuxTransport::new(crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE), session, None, None, vp, ap, hp)
+            })
         });
         DemuxRun { video, audio, thread: Some(thread), hs }
     }
@@ -421,12 +424,12 @@ fn prepare_at(tag: &str, acodec: &'static str, seek_ns: i64, make: impl FnOnce(&
         return None;
     }
     let ffmpeg = bind_host_ffmpeg();
-    SHARED.seek_to_ns.store(seek_ns, Ordering::Relaxed);
-    SHARED.desired_audio_idx.store(-1, Ordering::Relaxed);
-    SHARED.dg_load_v.store(0, Ordering::Relaxed);
-    SHARED.side_subs_owner.store(false, Ordering::Relaxed);
-    SHARED.demux_failed.store(false, Ordering::Relaxed);
-    SHARED.demux_io_failed.store(false, Ordering::Relaxed);
+    FEED_SHARED.seek_to_ns.store(seek_ns, Ordering::Relaxed);
+    FEED_SHARED.desired_audio_idx.store(-1, Ordering::Relaxed);
+    FEED_SHARED.dg_load_v.store(0, Ordering::Relaxed);
+    FEED_SHARED.side_subs_owner.store(false, Ordering::Relaxed);
+    FEED_SHARED.demux_failed.store(false, Ordering::Relaxed);
+    FEED_SHARED.demux_io_failed.store(false, Ordering::Relaxed);
     FEED_AUDIO.store(true, Ordering::Relaxed);
 
     let scratch = Scratch::new(tag);
@@ -616,12 +619,12 @@ fn a_video_lane_filled_to_the_headroom_with_no_audio_fails_the_open() {
         p.video_before
     );
     let until = Instant::now() + FIRST_AUDIO_DEADLINE;
-    while !SHARED.demux_io_failed.load(Ordering::Acquire) && Instant::now() < until {
+    while !FEED_SHARED.demux_io_failed.load(Ordering::Acquire) && Instant::now() < until {
         std::thread::sleep(Duration::from_millis(10));
     }
     let seen = p.run.observe(Duration::from_millis(50), i64::MAX);
     assert!(
-        SHARED.demux_io_failed.load(Ordering::Acquire) && SHARED.demux_failed.load(Ordering::Acquire),
+        FEED_SHARED.demux_io_failed.load(Ordering::Acquire) && FEED_SHARED.demux_failed.load(Ordering::Acquire),
         "the demuxer must report the exhausted headroom within {FIRST_AUDIO_DEADLINE:?} (video lane holds {} bytes, \
          cap {cap}), not park on the full video lane for good",
         seen.video_lane_bytes
@@ -669,7 +672,7 @@ fn an_ordinary_file_never_raises_the_video_lane_cap() {
     let (max_cap, _) = probe.finish();
 
     assert!(p.run.finished(), "the demuxer must reach the end of a four second file");
-    assert!(!SHARED.demux_failed.load(Ordering::Acquire), "the open must not fail");
+    assert!(!FEED_SHARED.demux_failed.load(Ordering::Acquire), "the open must not fail");
     let held = i64::from(crate::aq::aq_bytes(&mut *p.run.video));
     assert!(held > 0 && held < base, "the whole file sits in the video lane: {held} bytes");
     assert_eq!(
@@ -837,7 +840,7 @@ fn an_early_audio_track_does_not_park_the_demuxer_before_the_first_video_au() {
     });
     assert_eq!(pts, 0, "the first video AU is the one at pts 0");
     assert_eq!(key, 1, "the first video AU is a keyframe");
-    assert!(!SHARED.demux_failed.load(Ordering::Acquire), "the open must not fail");
+    assert!(!FEED_SHARED.demux_failed.load(Ordering::Acquire), "the open must not fail");
 }
 
 /// **The bound.** Audio so far ahead that it outruns even the audio headroom: no video will ever be
@@ -874,12 +877,12 @@ fn an_audio_lane_filled_to_the_headroom_with_no_video_fails_the_open() {
         std::thread::sleep(Duration::from_micros(50));
     }
     let until = Instant::now() + FIRST_AUDIO_DEADLINE;
-    while !SHARED.demux_io_failed.load(Ordering::Acquire) && Instant::now() < until {
+    while !FEED_SHARED.demux_io_failed.load(Ordering::Acquire) && Instant::now() < until {
         std::thread::sleep(Duration::from_millis(10));
     }
     let held = i64::from(crate::aq::aq_bytes(&mut *p.run.audio));
     assert!(
-        SHARED.demux_io_failed.load(Ordering::Acquire) && SHARED.demux_failed.load(Ordering::Acquire),
+        FEED_SHARED.demux_io_failed.load(Ordering::Acquire) && FEED_SHARED.demux_failed.load(Ordering::Acquire),
         "the demuxer must report the exhausted headroom within {FIRST_AUDIO_DEADLINE:?} (audio lane holds {held} \
          bytes, cap {cap}), not park on the full audio lane for good"
     );
@@ -910,7 +913,7 @@ fn an_interleaved_file_never_queues_audio_past_the_soft_cap() {
     let (max_cap, queued) = probe.finish();
 
     assert!(p.run.finished(), "the demuxer must reach the end of a four second file");
-    assert!(!SHARED.demux_failed.load(Ordering::Acquire), "the open must not fail");
+    assert!(!FEED_SHARED.demux_failed.load(Ordering::Acquire), "the open must not fail");
     assert!(crate::aq::aq_bytes(&mut *p.run.video) > 0, "the video was read");
     assert_eq!(max_cap, base, "the audio lane's cap never moves");
     assert!(
@@ -1032,7 +1035,7 @@ fn drive_consumer(run: &mut DemuxRun, read_to_ns: i64, speed: i64, stall: Durati
             crate::aq::aq_bytes(&mut *run.audio),
             crate::aq::aq_bytes(&mut *run.video),
             run.finished(),
-            SHARED.demux_failed.load(Ordering::Acquire)
+            FEED_SHARED.demux_failed.load(Ordering::Acquire)
         )
     };
     let pop = |q: *mut AuQueue| -> Option<(*mut AuNode, i64)> {
@@ -1116,7 +1119,7 @@ fn drive_consumer(run: &mut DemuxRun, read_to_ns: i64, speed: i64, stall: Durati
                 lanes(run)
             );
         }
-        assert!(!SHARED.demux_failed.load(Ordering::Acquire), "the stream must not fail ({})", lanes(run));
+        assert!(!FEED_SHARED.demux_failed.load(Ordering::Acquire), "the stream must not fail ({})", lanes(run));
         std::thread::sleep(Duration::from_millis(2));
     };
     for n in [held_v, held_a].into_iter().flatten() {
@@ -1138,7 +1141,7 @@ fn a_constant_audio_skew_neither_hangs_the_start_nor_starves_video_mid_film() {
     };
     let reached = drive_consumer(&mut p.run, SKEW_READ_TO_S * 1_000_000_000, 20, Duration::from_secs(5));
     assert!(reached >= SKEW_READ_TO_S * 1_000_000_000, "video read to {reached} ns");
-    assert!(!SHARED.demux_failed.load(Ordering::Acquire), "the stream must not fail");
+    assert!(!FEED_SHARED.demux_failed.load(Ordering::Acquire), "the stream must not fail");
     let audio = i64::from(crate::aq::aq_bytes(&mut *p.run.audio));
     assert!(
         audio > crate::player::engine::aq_caps().1,
@@ -1260,7 +1263,7 @@ fn an_annexb_transport_stream_reaches_the_video_lane_whole() {
         assert!(types.contains(&nal), "NAL type {nal} is missing; the AU holds {types:?}");
     }
     assert_eq!(key, 1, "the first AU is a keyframe");
-    assert!(!SHARED.demux_failed.load(Ordering::Acquire), "the open must not fail");
+    assert!(!FEED_SHARED.demux_failed.load(Ordering::Acquire), "the open must not fail");
 }
 
 /// **A capture that began mid-GOP.** The demuxer must not hand the pipeline pictures that need
@@ -1279,7 +1282,7 @@ fn a_transport_stream_cut_mid_gop_starts_on_its_first_keyframe() {
     for nal in [7u8, 8, 5] {
         assert!(types.contains(&nal), "NAL type {nal} is missing; the AU holds {types:?}");
     }
-    assert!(!SHARED.demux_failed.load(Ordering::Acquire), "the open must not fail");
+    assert!(!FEED_SHARED.demux_failed.load(Ordering::Acquire), "the open must not fail");
 }
 
 /// An HEVC elementary stream in a transport stream has start codes too, and this demuxer has no
@@ -1298,7 +1301,7 @@ fn an_annexb_hevc_transport_stream_is_refused_not_misframed() {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(
-        SHARED.demux_failed.load(Ordering::Acquire),
+        FEED_SHARED.demux_failed.load(Ordering::Acquire),
         "the open must fail ({} bytes of video queued: {:02x?})",
         crate::aq::aq_bytes(&mut *p.run.video),
         first_video_au_bytes(&mut p.run, Duration::from_millis(50)).map(|(_, _, au)| au)

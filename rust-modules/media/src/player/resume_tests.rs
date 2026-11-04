@@ -1,10 +1,11 @@
 //! **The cold resume of a transcoded item, driven the way the run loop drives it.** A play that
 //! resolves with a saved position on a transcode used to rebuild the encoder at that offset inline
 //! on the frame that landed it (`main-thread block: PMS HTTP`). It is a flight now
-//! (`engine::begin_resume` plans, a worker registers the replacement, `engine::land_resume` installs
+//! (`route_start::begin_resume` plans, a worker registers the replacement, `route_start::land_resume` installs
 //! it). These tests run both frame-thread halves inside a `FrameScope`, against the loopback server
 //! of `route::flight_rig`, and grade what the frame thread did and what became of the replacement.
 
+use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
 use super::*;
 use crate::route::flight_rig::FlightRig;
 use std::time::Duration;
@@ -24,7 +25,7 @@ impl Rig {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let flight = FlightRig::start(&mut ps, Duration::from_millis(delay_ms));
         SHARED.reset_session();
-        TX.reset();
+        FEED_TX.reset();
         claim_hold::clear();
         let ticket = crate::route::begin_route_start().expect("a landing's start transaction");
         assert!(crate::route::prepare_route_start(ticket));
@@ -82,7 +83,7 @@ impl Drop for Rig {
     fn drop(&mut self) {
         claim_hold::clear();
         SHARED.reset_session();
-        TX.reset();
+        FEED_TX.reset();
         crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
     }
 }
@@ -114,8 +115,8 @@ fn a_cold_resume_frame_makes_no_pms_call_and_the_worker_lands_the_load_later() {
     assert!(!crate::route::resume_flight_outstanding());
     assert_ne!(crate::route::transcode_session(&rig.ps), "rig-1", "the replacement is the route's now");
     assert!(crate::route::url(&rig.ps).contains("offset=1800"), "{}", crate::route::url(&rig.ps));
-    assert_eq!(SHARED.disp_base.load(Relaxed), RESUME_NS, "the HUD reads content time from the offset");
-    assert_eq!(SHARED.playpos_ns.load(Relaxed), RESUME_NS);
+    assert_eq!(FEED_SHARED.disp_base.load(Relaxed), RESUME_NS, "the HUD reads content time from the offset");
+    assert_eq!(FEED_SHARED.playpos_ns.load(Relaxed), RESUME_NS);
     assert!(crate::route::control_phase_label().contains("Prepared"), "{}", crate::route::control_phase_label());
     let start = crate::route::pending_route_start().expect("the Load claims the landing's own transaction");
     assert!(crate::route::claim_route_start_attempt(start).is_some());
@@ -135,7 +136,7 @@ fn a_refused_cold_resume_ends_as_the_inline_rejection_did() {
     assert!(crate::route::control_phase_label().contains("Failed"), "{}", crate::route::control_phase_label());
     assert!(crate::route::pending_route_start().is_none());
     assert_eq!(crate::route::transcode_session(&rig.ps), "rig-1");
-    assert_eq!(SHARED.disp_base.load(Relaxed), 0, "a refused resume seeds no clock");
+    assert_eq!(FEED_SHARED.disp_base.load(Relaxed), 0, "a refused resume seeds no clock");
     assert_ne!(state(&rig.ps), PlaybackState::Resolving);
     rig.flight.wait_for("the refused replacement's stop", |_| rig.replacement_stops() == 1);
     assert!(!rig.flight.stopped().iter().any(|s| s == "rig-1"), "{:?}", rig.flight.stopped());
@@ -153,7 +154,7 @@ fn back_during_a_cold_resume_discards_the_landing_and_stops_its_replacement() {
     assert!(!crate::route::resume_flight_outstanding());
     assert!(land_resume(&mut rig.ps).is_none());
     rig.frames_until_replacement_stopped();
-    assert_eq!(SHARED.disp_base.load(Relaxed), 0, "nothing was installed over the next playback");
+    assert_eq!(FEED_SHARED.disp_base.load(Relaxed), 0, "nothing was installed over the next playback");
     assert!(land_resume(&mut rig.ps).is_none());
     assert_eq!(rig.replacement_stops(), 1, "stopped exactly once: {:?}", rig.flight.stopped());
 }
@@ -201,5 +202,5 @@ fn a_newer_play_request_supersedes_a_cold_resume_and_stops_only_its_replacement(
     assert!(!crate::route::resume_flight_outstanding());
     rig.frames_until_replacement_stopped();
     assert!(!rig.flight.stopped().iter().any(|s| s == "rig-1"), "{:?}", rig.flight.stopped());
-    assert_eq!(SHARED.disp_base.load(Relaxed), 0);
+    assert_eq!(FEED_SHARED.disp_base.load(Relaxed), 0);
 }

@@ -260,6 +260,12 @@ impl FlightRig {
     /// `firmware_on_this_thread_for_test` guard taken once the route is up) re-begins on that set.
     pub(crate) fn plan_on(ps: &mut PlaybackSession, caps: std::sync::Arc<plx_platform::devcaps::Caps>) {
         ps.begin_attempt(caps);
+        // The rig keeps its already installed physical Feed source while beginning a fresh
+        // capability attempt. Recreate the resolved recipe and its actual admission, as the
+        // production start did before this fixture replaced the attempt's capability value.
+        assert!(ps.qualify_installed_feed_offer(super::CandidatePurpose::NewCandidate));
+        let recipe = ps.planned_feed_offer().expect("installed Feed recipe");
+        assert!(ps.backend_offer_admitted(plx_playback_contract::BackendKind::Feed, recipe));
     }
 
     /// Declare the audio the playing route feeds the pipeline, as the plan of a direct play of
@@ -378,7 +384,7 @@ impl FlightRig {
     /// A newer play request arrives while a cold resume's flight is outstanding: the one reducer
     /// step every `request_play*` begins with. `true` when it was admitted (the flight is superseded).
     pub(crate) fn begin_newer_play_request() -> bool {
-        begin_playback_request()
+        begin_playback_request().is_some()
     }
 
     /// Refuse the next `n` live `/decision` calls (answered after the delay like any other).

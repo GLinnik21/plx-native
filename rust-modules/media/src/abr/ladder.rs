@@ -388,6 +388,10 @@ pub struct HlsActuatorCatalog {
     /// The source's own raster, for the smallest-sufficient-box rule in [`Self::admits`]. `(0, 0)`
     /// when the server did not say, which means "no bound".
     source: (u16, u16),
+    /// The feed adapter supplies this before any controller or Original policy is started.
+    /// A route planner may use the catalog without a physical queue; that is not evidence of
+    /// available reserve.
+    plant_geometry: Option<super::plant::PlantGeometry>,
 }
 
 impl HlsActuatorCatalog {
@@ -434,7 +438,13 @@ impl HlsActuatorCatalog {
             ],
             raster_limit: (u16::MAX, u16::MAX),
             source: (0, 0),
+            plant_geometry: None,
         }
+    }
+
+    pub fn with_plant_geometry(mut self, geometry: Option<super::plant::PlantGeometry>) -> Self {
+        self.plant_geometry = geometry;
+        self
     }
 
     /// **The source raster this catalog was bounded by**, `(0, 0)` for "nobody said" — the same
@@ -579,6 +589,9 @@ impl HlsActuatorCatalog {
         policy: &AbrPolicy,
         buffered_ms: i64,
     ) -> bool {
+        let Some(geometry) = self.plant_geometry else {
+            return false;
+        };
         candidate.expected_wire_kbps <= safe_budget_kbps
             // **N3's refill filter — a THIRD independent constraint, in its own units.** The
             // budget above is bits per second and this is a reserve: a
@@ -593,6 +606,7 @@ impl HlsActuatorCatalog {
                     .expected_wire_kbps
                     .saturating_sub(policy.assumed_audio_kbps);
                 super::plant::refill_admits(
+                    geometry,
                     candidate.expected_wire_kbps,
                     video_es,
                     policy.assumed_audio_kbps,

@@ -41,7 +41,8 @@ pub trait ForegroundActuator {
         &mut self,
         ps: &mut crate::route::PlaybackSession,
     ) -> FlightLanding<ForegroundLoadStart<Self::Attempt>>;
-    fn before_load(&mut self, resume_ns: i64, clock: ForegroundClock);
+    fn before_load(&mut self, ps: &mut crate::route::PlaybackSession, resume_ns: i64,
+        clock: ForegroundClock);
     fn start_load(
         &mut self,
         ps: &mut crate::route::PlaybackSession,
@@ -133,7 +134,7 @@ fn run_foreground<A: ForegroundActuator>(
                     resume_ns,
                     clock,
                 } => {
-                    actuator.before_load(resume_ns, clock);
+                    actuator.before_load(ps, resume_ns, clock);
                     next = Some(ForegroundEvent::LoadAnswered {
                         id,
                         start: actuator.start_load(ps),
@@ -242,7 +243,7 @@ pub fn park_pending_foreground_flight<Attempt: Copy + PartialEq>(
     }
     for effect in fx {
         match effect {
-            ForegroundEffect::DropFlight => crate::player::suspend_bufferfeed(ps, pa),
+            ForegroundEffect::DropFlight => crate::player::suspend_playback(ps, pa),
             _ => debug_assert!(false, "ParkFlight emits only DropFlight"),
         }
     }

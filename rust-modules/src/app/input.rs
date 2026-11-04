@@ -651,7 +651,7 @@ unsafe fn play_loaded_hero(
 ///
 /// Runs in the default feature set too: `menu_play_tick`'s landed arm reaches `start_playback` and
 /// the video sink, but `port.rs` installs `tv::sink::NoSink` under `cfg(test)`, so the sink a bare
-/// `cargo test --lib` meets answers every verb with nothing (`player::ffi` is compiled, and never reached).
+/// `cargo test --lib` meets answers every verb with nothing (the native sink is compiled, and never reached).
 #[cfg(test)]
 mod activate_card_tests {
     use super::*;
@@ -1206,6 +1206,7 @@ pub(crate) unsafe fn begin_fresh_press(
     sym: c_uint,
     wcode: c_uint,
     now: u32,
+    viewer_paused: bool,
     down_sym: &mut u32,
     hud: Option<&mut HudState>,
     ptr: &mut Pointer,
@@ -1213,7 +1214,7 @@ pub(crate) unsafe fn begin_fresh_press(
     press: &mut plx_ui::press::Press,
 ) {
     *down_sym = sym;
-    note_global_press(ps, sym, wcode, now, hud, ok_armed, press);
+    note_global_press(ps, sym, wcode, now, viewer_paused, hud, ok_armed, press);
     if matches!(
         key,
         Key::Up | Key::Down | Key::Left { alt: false } | Key::Right { alt: false }
@@ -1240,6 +1241,7 @@ pub(crate) fn note_global_press(
     sym: c_uint,
     wcode: c_uint,
     now: u32,
+    viewer_paused: bool,
     hud: Option<&mut HudState>,
     ok_armed: &mut bool,
     press: &mut plx_ui::press::Press,
@@ -1252,7 +1254,7 @@ pub(crate) fn note_global_press(
     // one cheap predicate, and the alternative is each player arm remembering to ask first, which
     // is exactly the ordering the pointer path had to be fixed for once already.
     if let Some(hud) = hud {
-        hud.note_fresh_press(ps, now, paused());
+        hud.note_fresh_press(ps, now, viewer_paused);
     }
     // a fresh non-OK key (navigation / BACK) while a click is armed aborts the press — spring the
     // card back to rest WITHOUT activating (you "slid off" the control). A key the app does not
@@ -1272,15 +1274,16 @@ mod unsupported_key_tests {
 
     /// Drive one fresh press through [`note_global_press`] and report what it left behind:
     /// `(a click is still armed, the HUD is still dismissed)`. `press::*`, `hud_until()` and
-    /// `hud_until()` and `paused()` are crate globals, so every caller holds `testlock::serial()`;
-    /// the press is the test's own `Press`.
+    /// The caller supplies the viewer's pause goal at the input boundary; the press is this
+    /// test's own `Press`.
     fn press(ps: &plx_media::route::PlaybackSession, sym: c_uint, wcode: c_uint) -> (bool, bool) {
         let mut hud = HudState::IDLE;
         let mut ok_armed = true; // a click is in flight, as if OK were still down on a card
         hud.dismissed = true; // …and the transport was hidden by hand (UP from the control row)
         let mut p = plx_ui::press::Press::new();
         p.begin(1_000);
-        note_global_press(ps, sym, wcode, 1_000, Some(&mut hud), &mut ok_armed, &mut p);
+        note_global_press(ps, sym, wcode, 1_000, false,
+            Some(&mut hud), &mut ok_armed, &mut p);
         let out = (p.is_active() && ok_armed, hud.dismissed);
         p.cancel();
         out

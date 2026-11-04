@@ -275,6 +275,8 @@ impl AbrPolicy {
 /// The closed-loop plant (I0-B/C). Host-only: it never ships.
 #[cfg(test)]
 mod sim;
+#[cfg(test)]
+pub(crate) use sim::pipeline_constants;
 
 #[cfg(test)]
 mod tests;

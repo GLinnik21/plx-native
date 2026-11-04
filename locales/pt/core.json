@@ -16,6 +16,8 @@
   "core.preview_domain_line": "{label}: {values}",
   "core.preview_domain_failure_kind": "tipo de falha (incluindo códigos históricos mantidos)",
   "core.preview_domain_delivery": "modo de entrega",
+  "core.preview_domain_backend": "motor de reprodução",
+  "core.preview_domain_terminal_stage": "fase da falha final",
   "core.preview_domain_refusal_codes": "códigos de decisão do servidor, gerais e de transcodificação (apenas relatórios de recusa)",
   "core.preview_domain_attempted_delivery": "entrega tentada",
   "core.preview_domain_source_video": "codec de vídeo de origem (apenas relatórios de recusa)",

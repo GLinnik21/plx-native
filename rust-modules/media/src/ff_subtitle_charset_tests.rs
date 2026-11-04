@@ -15,7 +15,29 @@ use super::image_subtitle_tests::bind_host_ffmpeg;
 use super::*;
 use crate::player::ass::Content;
 use crate::player::ass_source;
-use subs::SubCue;
+use crate::player::subtitle_cue::{SideTracks, SubCue};
+use plx_media_codecs::subtitle_extract::{collect_manifest, AssTrack};
+use plx_playback_contract::subtitle::{CaptionRetention, DecodeKind};
+
+fn fixture_retention() -> CaptionRetention {
+    CaptionRetention { playhead_ns: None, seek_target_ns: None }
+}
+
+unsafe fn fixture_subs(fmt: *mut AVFormatContext, key: &str) -> (SubTracks, SideTracks, u64) {
+    let streams = (*fmt).streams;
+    let infos = SubTracks::inspect(fmt, streams);
+    let presentation = SideTracks::new(&infos);
+    let plan = presentation.decode_plan();
+    let tracks: Vec<_> = infos.iter().zip(&plan).map(|(info, kind)| AssTrack {
+        stream_index: info.stream_index,
+        authored: matches!(kind, DecodeKind::Ass { .. }),
+    }).collect();
+    let mut budget = crate::player::ass::FontBudget::default();
+    let manifest = collect_manifest(fmt, streams, &tracks, ass_source::MAX_HEADER_BYTES,
+        |len| budget.admit(len));
+    let generation = crate::player::subtitle_cue::begin_sources(key, presentation.kinds(), manifest);
+    (SubTracks::open(streams, infos, plan), presentation, generation)
+}
 
 #[test]
 #[ignore = "requires the bundled host FFmpeg; run make check-ffmpeg"]
@@ -33,16 +55,15 @@ fn a_gbk_subrip_track_reads_as_chinese_not_replacement_characters() {
         let mut pkt = av_packet_alloc();
         assert!(!pkt.is_null());
         assert!(!fmt.is_null());
-        let mut subs = SubTracks::open(fmt, fmt.as_ref().expect("avformat_open_input succeeded").streams);
+        let (mut subs, presentation, generation) = fixture_subs(fmt, "fixture:gbk-subrip");
         assert_eq!(subs.entries().len(), 1, "the fixture has one subtitle track");
-        let generation = begin_ass_sources("fixture:gbk-subrip", fmt, fmt.as_ref().expect("avformat_open_input succeeded").streams, subs.entries());
         let mut pushed = 0;
         while av_read_frame(fmt, pkt) >= 0 {
             if let Some(pos) = subs.position(pkt.as_ref().expect("av_packet_alloc").stream_index) {
                 let streams = fmt.as_ref().expect("avformat_open_input succeeded").streams;
                 let st = *streams.add(pkt.as_ref().expect("av_packet_alloc").stream_index as usize);
-                if let Some(cue) = subs.decode(pos, pkt, st) {
-                    cue.push(generation);
+                if let Some(raw) = subs.decode(pos, pkt, st, true, crate::player::SUB_BITMAP_BUDGET) {
+                    presentation.decode(raw).push(generation, fixture_retention());
                     pushed += 1;
                 }
             }
@@ -89,18 +110,18 @@ fn a_packet_without_a_duration_is_clipped_by_the_cue_after_it() {
         assert!(!fmt.is_null());
         assert!(avformat_open_input(&mut fmt, path.as_ptr(), std::ptr::null_mut(), std::ptr::null_mut()) >= 0);
         let mut pkt = av_packet_alloc();
-        let mut subs = SubTracks::open(fmt, fmt.as_ref().expect("avformat_open_input succeeded").streams);
-        let generation = begin_ass_sources("fixture:no-duration", fmt, fmt.as_ref().expect("avformat_open_input succeeded").streams, subs.entries());
+        let (mut subs, presentation, generation) = fixture_subs(fmt, "fixture:no-duration");
         while av_read_frame(fmt, pkt) >= 0 {
             if let Some(pos) = subs.position(pkt.as_ref().expect("av_packet_alloc").stream_index) {
                 let streams = fmt.as_ref().expect("avformat_open_input succeeded").streams;
                 let st = *streams.add(pkt.as_ref().expect("av_packet_alloc").stream_index as usize);
                 pkt.as_mut().expect("av_packet_alloc").duration = 0;
-                if let Some(cue) = subs.decode(pos, pkt, st) {
+                if let Some(raw) = subs.decode(pos, pkt, st, true, crate::player::SUB_BITMAP_BUDGET) {
+                    let cue = presentation.decode(raw);
                     let SubCue::Text { start, end, .. } = &cue else { panic!("a text cue") };
                     assert_eq!(end - start, 4_000_000_000, "the default end is start + 4 s");
                     starts.push(start / 1_000_000);
-                    cue.push(generation);
+                    cue.push(generation, fixture_retention());
                 }
             }
             av_packet_unref(pkt);

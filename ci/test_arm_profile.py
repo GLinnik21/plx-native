@@ -37,7 +37,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRUBBED = ("MAKEFLAGS", "MFLAGS", "MAKELEVEL", "RELEASE", "SYMBOLS", "LAB", "FLAVOR", "CI",
-            "GITHUB_ACTIONS", "ARM_PROFILE", "TV")
+            "GITHUB_ACTIONS", "ARM_PROFILE", "TV", "PLAYBACK_BACKENDS")
 
 
 def resolved(*args: str, env: dict[str, str] | None = None) -> dict[str, str]:
@@ -121,6 +121,7 @@ HOST_ONLY_GOALS = (
     # print queries that were missing from QUERY_GOALS: `make -s print-rust-toolchain` is what a script
     # runs to learn the pin, and it deleted a release build as readily as a compile did
     "print-subs-font-files", "print-rust-toolchain", "print-rust-codegen", "print-cargo-env",
+    "print-playback-config",
 )
 # Goals that stay OUT of SIDE_EFFECT_FREE, each with the reason. A goal that builds, reads or ships the ARM
 # artifacts (or writes under pkg/) must reset the stamp: that is how a stale binary is never deployed.
@@ -214,6 +215,63 @@ class ScratchTree(unittest.TestCase):
         self.assertEqual(deleted, [], f"make {goal} deleted a release build's files")
         self.assertFalse(stamp_changed, f"make {goal} rewrote the release stamp"
                                         f"{' to the tvdev configuration' if stamp_is_tvdev else ''}")
+
+
+class PlaybackBackendSelection(ScratchTree):
+    def query(self, backend):
+        proc = subprocess.run(
+            ["make", "-s", "--no-print-directory", "-C", str(self.tree),
+             f"PLAYBACK_BACKENDS={backend}", "RELEASE=1", "print-playback-config"],
+            capture_output=True, text=True, env=self.env, timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return dict(line.split("=", 1) for line in proc.stdout.splitlines() if "=" in line)
+
+    def test_native_backend_objects_and_link_inputs_follow_feature_selection(self):
+        targets = set()
+        for backend in ("both", "uri", "feed", "none"):
+            with self.subTest(backend):
+                cfg = self.query(backend)
+                targets.add(cfg["target"])
+                self.assertIn("--no-default-features", cfg["features"])
+                features = cfg["features"].split("--features ")[-1].split(",") if "--features " in cfg["features"] else []
+                self.assertEqual(set(features), {
+                    "both": {"play-uri", "play-feed"}, "uri": {"play-uri"},
+                    "feed": {"play-feed"}, "none": set(),
+                }[backend])
+                self.assertIn("src/video_plane.c", cfg["native"].split())
+                has_feed = backend in ("both", "feed")
+                self.assertEqual("src/starfish.c" in cfg["native"].split(), has_feed)
+                self.assertEqual("-lplayerAPIs" in cfg["libraries"].split(), has_feed)
+                self.assertEqual("-lpf-1.0" in cfg["libraries"].split(), has_feed)
+                self.assertEqual(bool(cfg["interposer"]), has_feed)
+        self.assertEqual(len(targets), 4, "backend configurations must not share a staticlib cache")
+
+    def test_querying_a_different_backend_preserves_the_cached_build(self):
+        stamp = self.seed_release_build()
+        self.query("uri")
+        self.assertEqual((self.tree / STAMP).read_text(), stamp)
+        self.assertTrue(all((self.tree / rel).exists() for rel in RESET_PATHS))
+
+    def test_missing_query_registration_is_detected(self):
+        makefile = self.tree / "Makefile"
+        text = makefile.read_text()
+        text = text.replace(" print-playback-config", "", 1)
+        makefile.unlink()  # replace the fixture symlink, never mutate the real Makefile
+        makefile.write_text(text)
+        stamp = self.seed_release_build()
+        self.query("uri")
+        self.assertNotEqual((self.tree / STAMP).read_text(), stamp)
+        self.assertFalse((self.tree / "pkg/plxnative").exists())
+
+    def test_no_backend_cannot_produce_a_television_binary(self):
+        self.seed_release_build()
+        proc = subprocess.run(
+            ["make", "-s", "--no-print-directory", "-C", str(self.tree),
+             "PLAYBACK_BACKENDS=none", "pkg/plxnative"],
+            capture_output=True, text=True, env=self.env, timeout=30)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("requires a URI or feed playback backend", proc.stderr)
+        self.assertNotIn("cargo", proc.stdout)
 
 
 class DeviceControlGoalsKeepTheBuild(ScratchTree):

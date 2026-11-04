@@ -1914,7 +1914,7 @@ fn request_play_clears_displaced_pick() {
     let _g = fresh_registry(&mut ps);
     queue_user_route_intent(&ps, UserRouteIntent::Retranscode, true);
     assert!(PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).displaced_pick);
-    assert!(begin_playback_request());
+    assert!(begin_playback_request().is_some());
     assert!(!PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner()).displaced_pick);
     queue_user_route_intent(&ps, UserRouteIntent::Retranscode, true);
     begin_engine_teardown(false);
@@ -1928,9 +1928,9 @@ fn other_arm_with_displaced_pick_stores_index_before_reload() {
     let _g = fresh_registry(&mut ps);
     { let s = &mut ps; s.cur_audio = Some(a3()); s.stream_acodec = "eac3".into(); }
     crate::player::set_audio_track(1);
-    honour_displaced_pick(&mut ps, false, "NativeAudioReload");
+    honour_displaced_pick(&mut ps, false, desired_audio_idx(), "NativeAudioReload");
     assert_eq!(desired_audio_idx(), 1, "no marker, no change");
-    honour_displaced_pick(&mut ps, true, "NativeAudioReload");
+    honour_displaced_pick(&mut ps, true, desired_audio_idx(), "NativeAudioReload");
     assert_eq!(desired_audio_idx(), 3);
     assert_eq!(ps.stream_acodec, "ac3");
     cleanup(&mut ps);
@@ -2537,7 +2537,7 @@ fn an_engine_failure_during_the_flight_ends_in_error_with_no_spinner() {
 
     // What the pump does on a terminal failure.
     fail_current_engine();
-    crate::player::SHARED.pb_state.store(PlaybackState::Error as u8, std::sync::atomic::Ordering::Relaxed);
+    crate::player::swap_state_for_test(PlaybackState::Error);
 
     assert!(matches!(phase(), ControlPhase::Failed(_)), "the failure was hidden behind Applying: {:?}", phase());
     assert!(!crate::player::claim_hold::active(), "the hold's spinner outlived the failure");
@@ -2561,7 +2561,7 @@ fn an_engine_failure_during_the_flight_ends_in_error_with_no_spinner() {
         wait_until("the failed claim's encoder to be stopped", || any_stop_seen(&log));
     }
 
-    crate::player::SHARED.pb_state.store(PlaybackState::Idle as u8, std::sync::atomic::Ordering::Relaxed);
+    crate::player::restore_state_for_test(PlaybackState::Idle as u8);
     crate::player::claim_hold::clear();
     live.finish();
     cleanup(&mut ps);
@@ -2591,7 +2591,7 @@ fn a_landing_from_a_torn_down_item_never_reaches_the_next_playback() {
     {
         let _frame = plx_base::task::FrameScope::enter();
         begin_engine_teardown(false);
-        assert!(begin_playback_request());
+        assert!(begin_playback_request().is_some());
     }
     assert!(
         RETRANSCODE_CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner()).is_none(),
@@ -2632,6 +2632,7 @@ fn the_stale_arms_of_the_drain_stop_their_encoder_off_the_frame_thread() {
         pending_seek: -1,
         user_target: 0,
         result: RetranscodeClaimResult::Retranscode(AppliedRetranscode {
+            recovery_offer: None,
             qsess: qsess.to_owned(),
             url: String::new(),
             vcodec: "hevc".into(),
@@ -2755,6 +2756,7 @@ fn a_stale_landing_at_drain_time_stops_the_leaked_encoder_instead_of_installing_
         pending_seek: -1,
         user_target: 0,
         result: RetranscodeClaimResult::Retranscode(AppliedRetranscode {
+            recovery_offer: None,
             qsess: "leaked-worker-session".to_string(),
             url: format!(
                 "http://127.0.0.1:{}/video/:/transcode/universal/start.mkv?session=leaked-worker-session",
@@ -4270,6 +4272,8 @@ fn side_reader_target_names_the_selected_tracks_ordinal() {
 fn sidecar_over_admitted_remux(ps: &mut PlaybackSession) -> Live {
     let live = Live::start(EnhMode::Honor("ac3"));
     install_truehd_remux(ps, &live);
+    ps.begin_attempt_view(RouteStartAttempt::fixture(),
+        crate::player::attempt_view::Backend::Feed);
     admit_side_reader(ps);
     commit_subtitle_selection(ps, -1, 79, true);
     assert!(ps.cur_sub_sidecar);
@@ -4282,27 +4286,22 @@ fn sidecar_over_admitted_remux(ps: &mut PlaybackSession) -> Live {
 /// offset, and the playhead the position callback stores is `fed - pts_shift + disp_base`. Returns
 /// the playhead of that first frame.
 fn remux_started_at(requested_ns: i64, first_pts_ns: i64) -> i64 {
-    use crate::ff::subside::playhead_of;
-    let s = &crate::player::SHARED;
-    s.pts_shift.store(0, std::sync::atomic::Ordering::Relaxed);
-    s.disp_base.store(requested_ns, std::sync::atomic::Ordering::Relaxed);
+    use plx_playback_contract::subtitle::playhead_of;
     let playhead = playhead_of(first_pts_ns, 0, requested_ns);
-    s.playpos_ns.store(playhead, std::sync::atomic::Ordering::Relaxed);
+    crate::player::set_clock_for_test(Some(0), requested_ns, playhead);
     playhead
 }
 
 /// The reader's measurement for such a run, published the way `read_once` publishes it.
 fn measured(part_kf_ns: i64, first_pts_ns: i64, requested_ns: i64) -> i64 {
-    let delta = crate::ff::subside::delta_exact(part_kf_ns, first_pts_ns, 0, requested_ns);
+    let delta = plx_playback_contract::subtitle::delta_exact(part_kf_ns, first_pts_ns, 0, requested_ns);
     crate::player::subside::publish_exact(delta);
     delta
 }
 
 fn clear_remux_run() {
     crate::player::subside::stop("test");
-    let s = &crate::player::SHARED;
-    s.disp_base.store(0, std::sync::atomic::Ordering::Relaxed);
-    s.playpos_ns.store(0, std::sync::atomic::Ordering::Relaxed);
+    crate::player::set_clock_for_test(None, 0, 0);
 }
 
 /// **The measured case.** With Boost Dialog on, a direct play is a PMS remux that (re)starts on a
@@ -4330,7 +4329,7 @@ fn sidecar_clock_a_sidecar_over_a_remux_is_drawn_on_the_clock_of_the_content_it_
         let delta = measured(kf, FIRST_FRAME, requested);
         assert_eq!(delta, -lead_ms * 1_000_000);
         assert_eq!(
-            crate::player::sidecar_clock_ns(&ps, crate::player::playpos_ns()),
+            crate::player::sidecar_clock_ns(&ps, playhead),
             kf,
             "the first frame shows the content of the Part keyframe {kf} ns, requested {requested} ns"
         );
@@ -4386,6 +4385,12 @@ fn sidecar_clock_the_draw_asks_the_sidecar_at_the_corrected_position() {
     crate::player::sidecar::select_loaded_for_test(79, SCRIPT);
     let drawn = crate::player::sidecar::ass_source(false).expect("fixture: the sidecar is loaded");
     let playhead = remux_started_at(917_000_000_000, 83_000_000);
+    let attempt = RouteStartAttempt::fixture();
+    ps.begin_attempt_view(attempt, crate::player::attempt_view::Backend::Feed);
+    assert!(ps.ingest_attempt_facts(attempt, crate::player::attempt_view::Backend::Feed,
+        crate::player::attempt_view::AttemptFacts {
+            position_ns: Some(playhead), seen_frame: Some(true), ..Default::default()
+        }));
     let (source, position) = crate::player::subtitle_draw(&ps).expect("the app draws the sidecar");
     assert!(std::sync::Arc::ptr_eq(&source, &drawn), "the drawn source is the sidecar, not an embedded track");
     assert_eq!(position, playhead, "nothing measured yet: drawn exactly as before");
@@ -4601,7 +4606,7 @@ fn a_cancelled_resolve_restores_the_retained_remuxs_reader_target() {
     install_truehd_remux(&mut ps, &live);
     admit_side_reader(&mut ps);
     pick_embedded(&mut ps);
-    assert!(begin_playback_request());
+    assert!(begin_playback_request().is_some());
     // What `request_play_inner` resets for the incoming item.
     ps.cur_sub_sid = 0;
     ps.cur_sub_sidecar = false;

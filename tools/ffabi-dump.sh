@@ -1,7 +1,7 @@
 #!/bin/sh
 # Print the FFmpeg ABI table for the TARGET architecture, from a set of headers.
 #
-# Needed only when the bundled FFmpeg version changes: run it, paste the numbers into ff.rs's
+# Needed only when the bundled FFmpeg version changes: run it, paste the numbers into media-codecs/src/ffi.rs's
 # constants, then let ci/ffabi-assert.c hold them in place. See ci/ffabi-dump.c for how it
 # recovers compile-time constants without executing anything on ARM.
 #

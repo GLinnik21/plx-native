@@ -34,7 +34,7 @@
 //! `route::note_user_seek_intent`, no `report::note_seek_for(playback_trace_generation())` — a
 //! preview has no trace generation, and the watch-state promise this file opens with covers a
 //! seek exactly like every other write. Pausing has none of this to begin with: it is
-//! `player::pause`/`resume` on a live engine, and `TX.reset()` on a real stop clears the flag, so
+//! `player::pause`/`resume` on a live engine, and `FEED_TX.reset()` on a real stop clears the flag, so
 //! a collapsed or ended preview cannot strand it.
 //!
 //! Sound stays on. A preview has no mute control: the per-pipeline `setVolume` the sink exposes is
@@ -46,6 +46,8 @@
 //! the plan is about 958 KiB (`ui/frame/render_set.rs`). 958 / 64 is 14.96, so the ceiling is 14
 //! admitted Loads, under the ratio rather than on it. Do not quote 14 as a television result.
 
+#[cfg(feature = "play-feed")]
+use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
 use plx_plex::plex::ServerId;
 
 /// Admitted Loads per process, from the source arithmetic above. Not a device measurement.
@@ -630,10 +632,10 @@ pub fn hold_load_for_test(on: bool) {
 #[cfg(any(test, feature = "test-support"))]
 static LOAD_STILL_OUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
 fn load_still_out() -> bool { LOAD_STILL_OUT.load(std::sync::atomic::Ordering::SeqCst) }
 
-#[cfg(not(any(test, feature = "test-support")))]
+#[cfg(all(feature = "play-feed", not(any(test, feature = "test-support"))))]
 fn load_still_out() -> bool { false }
 
 /// Test-only: [`set_phase_for_test`] plus the `picture_ms` half `view()` also checks, skipping
@@ -649,6 +651,7 @@ pub fn force_playing_for_test() {
 /// `Machine`.
 #[cfg(any(test, feature = "test-support"))]
 pub fn reset_for_test() {
+    #[cfg(feature = "play-feed")]
     hold_load_for_test(false);
     with_mut(|m| *m = Machine::default());
 }
@@ -728,6 +731,7 @@ pub fn settle(f: PumpFacts) -> Settle {
 ///
 /// **It only ever stops a PREVIEW engine.** A machine that is out of step with the installed
 /// session ([`Settle::Stale`]) is reset without touching the engine: that engine is a film's.
+#[cfg(feature = "play-feed")]
 pub fn after_pump(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
@@ -749,21 +753,18 @@ pub fn after_pump(
         // resource an OS thread may still be executing against — a real memory-safety question
         // (does the leaked `SfSlot` pattern in `src/starfish.c` make that safe, or does it not)
         // that needs `player/CLAUDE.md`'s device verification + fw-compat review, not a desk fix.
-        let finished = pa
-            .engine()
-            .and_then(|e| e.load_th.as_ref())
-            .is_none_or(|t| t.is_finished());
+        let finished = pa.feed_load_thread_finished();
         if finished {
             retire(ps, pa, "abandoned Load returned");
         }
         return;
     }
     let live = pa.is_live();
-    let seen_frame = crate::player::seen_frame();
+    let seen_frame = crate::player::feed_seen_frame();
     if preview && live && occupies() {
         if seen_frame {
             note_picture(now_ms);
-        } else if pa.engine().is_some_and(|eng| eng.stage >= super::shared::Stage::Playing) {
+        } else if pa.feed_stage().is_some_and(|stage| stage >= super::shared::Stage::Playing) {
             transition("bound", Machine::bound);
         }
     }
@@ -772,8 +773,8 @@ pub fn after_pump(
         preview,
         live,
         resolving: crate::route::play_pending(),
-        ended: crate::player::ended(),
-        failed: super::SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
+        ended: crate::player::feed_ended(),
+        failed: FEED_SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
         seen_frame,
     };
     match settle(facts) {
@@ -805,10 +806,11 @@ pub fn after_pump(
 }
 
 /// Is the live preview's transport paused? The engine is shared, so this is the same
-/// `player::TX.paused` the player HUD reads, qualified by a preview actually being what occupies
+/// `FEED_TX.paused` the player HUD reads, qualified by a preview actually being what occupies
 /// it — with no session there is nothing paused, whatever the flag last said.
+#[cfg(feature = "play-feed")]
 pub fn paused() -> bool {
-    occupies() && crate::player::TX.paused.load(std::sync::atomic::Ordering::Relaxed)
+    occupies() && FEED_TX.paused.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Pause or resume the live preview session — full-trailer mode's OK/PLAY/PAUSE, performed by the
@@ -824,6 +826,7 @@ pub fn paused() -> bool {
 /// including Fetching/Loading/Abandoning/Stopping, and a press landing in any of those IS the
 /// race this doc says must be refused — there is no bound engine yet (or no longer) for a
 /// pause/resume to reach.
+#[cfg(feature = "play-feed")]
 pub fn transport(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
@@ -832,7 +835,7 @@ pub fn transport(
     if !crate::route::is_preview(ps) || !bound_or_playing() || !pa.is_live() {
         return false;
     }
-    let want = super::transport::transport_target(play, super::transport::paused());
+    let want = super::transport::transport_target(play, super::transport::viewer_paused_for(pa));
     super::transport::set_transport_paused(pa, want)
 }
 
@@ -864,6 +867,7 @@ pub enum SeekOutcome {
 /// ([`Machine::admit_seek`]); a synchronous start failure is [`refuse_admission`], not
 /// [`fail_admitted`] — the native call never ran, so it is not itself evidence the trailer can't
 /// play.
+#[cfg(feature = "play-feed")]
 pub fn seek(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
@@ -895,6 +899,7 @@ pub fn seek(
 /// machine still `Fetching` is released so its landing is discarded ([`expects_landing`]), and
 /// any other non-Idle phase is stale; neither is a reason to tear down whatever engine the
 /// session does hold — that one belongs to a film.
+#[cfg(feature = "play-feed")]
 pub fn halt(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
     if !crate::route::is_preview(ps) {
         if occupies() {
@@ -914,6 +919,7 @@ pub fn halt(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
 /// the machine `Abandoning` until [`after_pump`] finishes it: clearing the flag under a live
 /// engine is how a failed trailer open was once rescued onto an HLS transcode that reported a
 /// timeline to the viewer's account.
+#[cfg(feature = "play-feed")]
 pub fn retire(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
@@ -1080,20 +1086,20 @@ mod tests {
 
     /// **Requirement 3, the trivial half: `seek` refuses outright, and touches nothing, when there
     /// is no live bound/playing preview to seek within** — the same race [`transport`] refuses for
-    /// the same reason. `TX.seek_reqs` is the counter `player::request_seek` bumps on every call;
+    /// the same reason. `FEED_TX.seek_reqs` is the counter `player::request_seek` bumps on every call;
     /// this pins that `preview::seek` never becomes a second path to it, which is the whole of the
     /// watch-state promise as it applies to a seek (`route::note_user_seek_intent` and
     /// `report::note_seek_for` live behind that same one call). The `Started`/`StartFailed` arms of
     /// `seek` reach `engine::reload_at`, which needs a live native session this host test cannot
     /// build without the `hostsim` feature — those remain proven by `arm_seek`'s own body (it only
-    /// touches engine-level `SHARED` atomics) and by device verification, not by this test.
+    /// touches engine-level `FEED_SHARED` atomics) and by device verification, not by this test.
     ///
     /// Gated on `hostsim`, like `player::engine`'s own `PlayerAdapter`-constructing tests
     /// (`lifecycle_clock_tests`, `replay_after_stop_tests`): it needs the simulator's video sink
     /// (`ffi_host::HostSink`) to hold a native session, which the default build's `NoSink` does
     /// not — `make check` runs the full suite a second time with it on for exactly this class of test.
     #[test]
-    #[cfg(feature = "hostsim")]
+    #[cfg(all(feature = "hostsim", feature = "play-feed"))]
     fn seek_refuses_and_touches_no_user_seek_bookkeeping_with_no_live_preview() {
         let _serial = plx_base::testlock::serial();
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -1101,13 +1107,13 @@ mod tests {
             plx_base::task::MainThread::assume()
         });
         assert!(!pa.is_live(), "test requires an empty native-session slot");
-        let before = crate::player::TX.seek_reqs.load(std::sync::atomic::Ordering::Relaxed);
+        let before = FEED_TX.seek_reqs.load(std::sync::atomic::Ordering::Relaxed);
 
         let outcome = seek(&mut ps, &mut pa, 5_000_000_000);
 
         assert_eq!(outcome, SeekOutcome::Refused);
         assert_eq!(
-            crate::player::TX.seek_reqs.load(std::sync::atomic::Ordering::Relaxed),
+            FEED_TX.seek_reqs.load(std::sync::atomic::Ordering::Relaxed),
             before,
             "preview::seek must never go through player::request_seek's counter"
         );

@@ -570,7 +570,7 @@ pub(crate) fn quality_switch_script() -> Option<(u32, Vec<plx_plex::plex::sessio
 /// ordinary six-second dev gate and stay paused. A non-empty script may delay that edge and name a
 /// finite accepted hold. `at` also holds the edge until the PUBLISHED playhead has reached that
 /// media position (and, in the simulator, stops the clock sink exactly on it, so the pause freezes
-/// that position: `ffi_host.rs::stop_clock_at`): a wall-clock delay pauses wherever the host's
+/// that position: `HostSink::stop_clock_at`): a wall-clock delay pauses wherever the host's
 /// scheduling has got playback to, which moves from run to run, and the documentation's player
 /// figure wants the same frame and the same clock every time. Unknown/duplicate/invalid fields fail the whole trigger closed; silently
 /// substituting a duration would exercise a different interleaving from the manifest.

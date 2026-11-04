@@ -3,9 +3,9 @@
 //! [`HudMotion`] (formerly `TransportRow`) is everything the transport animates frame to frame: the
 //! knob spring, the per-button focus fade, the play / pause mark and the row pop.
 //!
-//! `HudMotion::step` and `note_transport` still sample the transport globals themselves: they run at
-//! input and Tick time, and moving them onto a [`super::model::HudModel`] sampled at prepare time
-//! would shift them by a frame. The prewarm ([`ClockWarm::queue`]) is a draw-side read and so takes
+//! `HudMotion::step` receives the current started/paused facts at Tick time. Moving them onto a
+//! [`super::model::HudModel`] sampled at prepare time would shift them by a frame. The scrub
+//! command target still belongs to the transport control path. The prewarm ([`ClockWarm::queue`]) is a draw-side read and so takes
 //! the model; the page's `prepare` refreshes the model's scrub target from its own scrub first,
 //! because the app's snapshot is a frame old by then.
 use super::caption_rise::CaptionRise;
@@ -137,7 +137,7 @@ pub struct HudMotion {
     /// The paused→playing EDGE, as an `SDL_GetTicks` stamp — the clock behind
     /// [`TransportMark::Play`]. `None` until this session has been resumed at least once.
     pub(super) play_at: Option<u32>,
-    /// Last frame's `TX.paused`, for the edge above. `None` while there is no session, which is
+    /// Last frame's `FEED_TX.paused`, for the edge above. `None` while there is no session, which is
     /// what makes the edge per-SESSION: `TX::reset` clears both `started` and `paused` on stop, so
     /// without this a session that ended paused would hand the next one a spurious resume edge on
     /// its first frame and flash `Play` over a start nobody pressed play for.
@@ -464,8 +464,9 @@ impl HudMotion {
     /// [`section_pop`](Self::section_pop); any other group closes both. The index is bounded by
     /// the CURRENT occupant's item count, so a stale `btn` left over from a wider slot cannot pop a
     /// control the narrower one does not have.
-    pub fn step(&mut self, slot: ControlSlot, focus: GroupId, btn: i32, dt: f32, now: u32) {
-        self.note_transport(now);
+    pub fn step(&mut self, slot: ControlSlot, focus: GroupId, btn: i32, dt: f32, now: u32,
+        started: Option<bool>, paused: bool) {
+        self.note_transport(now, started, paused);
         // Here and not in the draw: a scrub can end with the transport hidden (UP-hide), when
         // nothing draws, and the next one must not open on this one's last still.
         let scrub_ns = plx_media::player::TX.scrub_ns.load(Relaxed);
@@ -514,7 +515,7 @@ impl HudMotion {
         self.pop.scale(i.max(0) as usize)
     }
 
-    /// Stamp the resume edge directly. `note_transport` derives it from `player::TX`, which is
+    /// Stamp the resume edge directly. `note_transport` derives it from `player::FEED_TX`, which is
     /// process-wide and moved by every playback test in the crate; a test about THIS clock must
     /// not be able to fail because another one flipped `started` between two of its lines.
     #[cfg(any(test, feature = "test-support"))]
@@ -526,14 +527,13 @@ impl HudMotion {
         self.title_clock.release();
     }
 
-    pub fn note_transport(&mut self, now: u32) {
-        if !plx_media::player::is_started() {
+    pub fn note_transport(&mut self, now: u32, started: Option<bool>, paused: bool) {
+        if started != Some(true) {
             self.reset_title();
             self.play_at = None;
             self.pause_seen = None;
             return;
         }
-        let paused = plx_media::player::TX.paused.load(Relaxed);
         if !paused {
             self.reset_title();
         }

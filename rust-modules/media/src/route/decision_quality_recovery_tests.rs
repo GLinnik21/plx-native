@@ -2302,9 +2302,7 @@ fn manually_picking_original_restores_native_dolby_vision_instead_of_retranscodi
         "the native Load must regain its Dolby Vision declaration"
     );
     assert_eq!(
-        crate::player::SHARED
-            .abr_failure_kind
-            .load(std::sync::atomic::Ordering::Relaxed),
+        crate::player::abr_failure_kind_for_test(),
         0,
         "the new Original attempt supersedes the old probe's failure",
     );

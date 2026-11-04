@@ -1,9 +1,10 @@
 //! The video sink: the verbs the player speaks to the television's media pipeline. The webOS port
-//! implements them over Starfish and ACB (`player::ffi`); the simulator implements them over its
+//! implements them over Starfish and ACB (the native `StarfishSink`); the simulator implements them over its
 //! own clock (`player::ffi_host`).
 use plx_base::task::MainThread;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_long, c_uint};
+pub use super::plane::PlaneCompletion;
 
 /// Which video-plane binding this television has. See `src/starfish.h`'s `VP_*` and the long
 /// comment at the top of `src/starfish.c`.
@@ -37,20 +38,93 @@ impl UnloadTicket {
 /// 100 when the property is absent): what the paused preroll restores after muting.
 pub const PIPELINE_DEFAULT_VOLUME: c_int = 100;
 
-/// **Starfish-shaped.** One method per verb of the webOS seam (`src/starfish.h`): a Load payload,
-/// `feed`, and the ACB bind verbs `pump` walks. Another TV OS cannot implement this as is; the
-/// OS-neutral sink is step L15b (docs/module-layers.md).
+/// What `setState(UNLOADED)` answered (`src/starfish.h`, `acb_unload`). `rv` is the library's own
+/// return value: 1 accepted (a completion callback will carry `task`), -2 not registered (nothing
+/// was sent, no callback comes), 0 no ACB handle or refused. `task` is the id the call wrote and
+/// is meaningful ONLY when `rv == 1`; the seam writes it from a local, never from the slot the
+/// other verbs share.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlaneUnload {
+    pub rv: c_int,
+    pub task: c_long,
+}
+
+impl PlaneUnload {
+    /// A sink with no plane to unload: nothing was sent, nothing will complete.
+    pub const NOT_REGISTERED: Self = Self { rv: super::plane::UNLOAD_NOT_REGISTERED, task: 0 };
+}
+
+/// Shared display surface for URI playback and the buffer-feed player. Window and ACB verbs
+/// retain their original main-thread token and native call order. Only the two memoized window
+/// queries are token-free; neither mutates the pipeline.
+///
+/// # Safety
+/// Pointer arguments must satisfy the C seam's NUL-termination and lifetime requirements.
+/// Every mutating method requires `&MainThread` and is called in the player's bind order.
+pub trait DisplaySink: Sync {
+    fn window_mode(&self) -> c_int;
+    /// The exported windowId the sink holds, or `""` when none was created. Never null. The
+    /// storage is the sink's own long-lived buffer (the C seam's `g_window_id`), rewritten only by
+    /// `create_window`/`destroy_window` on the main thread, so a caller copies it at once.
+    fn window_id(&self) -> &'static CStr;
+    /// # Safety
+    /// Returns null when no window could be created (or the mode is not `VP_EXPORTED`); callers
+    /// must check before reading the id. A non-null pointer is the sink's own buffer, valid until
+    /// `destroy_window`.
+    unsafe fn create_window(&self, mt: &MainThread) -> *const c_char;
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn place_window(&self, mt: &MainThread, src_w: c_int, src_h: c_int, dst_x: c_int,
+        dst_y: c_int, dst_w: c_int, dst_h: c_int) -> c_int;
+    unsafe fn destroy_window(&self, mt: &MainThread);
+    unsafe fn plane_create(&self, mt: &MainThread, app_id: *const c_char, player_type: c_int) -> c_long;
+    /// The library confirmed `AcbAPI_initialize` (its answer was exactly 1). A created handle alone
+    /// is not that; the paced URI bind's gate reads this.
+    unsafe fn plane_initialized(&self, mt: &MainThread) -> bool;
+    #[cfg(feature = "devtriggers")]
+    unsafe fn plane_probe_dass_available(&self, mt: &MainThread) -> bool;
+    /// `setSinkType(MAIN)` + `setMediaId`, as `plane_bind`'s first half: 1 only when both were
+    /// accepted. The paced URI bind calls it once the service has loaded the media.
+    unsafe fn plane_media_id(&self, mt: &MainThread, media_id: *const c_char) -> c_int;
+    /// `setState(FOREGROUND, LOADED)`: `plane_bind`'s second half, `setState`'s own answer.
+    unsafe fn plane_loaded(&self, mt: &MainThread) -> c_int;
+    #[cfg(feature = "devtriggers")]
+    unsafe fn plane_probe_connect_dass(&self, mt: &MainThread) -> c_int;
+    /// The full-screen `setDisplayWindow` and `setState(PLAYING)` of the paced URI bind; 1 only when
+    /// both were accepted (`plane_start`, Feed's, does not check).
+    unsafe fn plane_finish(&self, mt: &MainThread) -> c_int;
+    unsafe fn plane_bind(&self, mt: &MainThread, media_id: *const c_char);
+    unsafe fn plane_send_video_data(&self, mt: &MainThread, source_info: *const c_char) -> c_int;
+    unsafe fn plane_send_atmos(&self, mt: &MainThread, media_id: *const c_char) -> c_int;
+    unsafe fn plane_start(&self, mt: &MainThread, x: c_long, y: c_long, w: c_long, h: c_long);
+    /// `setState(UNLOADED)`: dispatch only. The release is complete when the completion carrying
+    /// the returned task arrives through [`plane_completions`](Self::plane_completions); route it
+    /// through `tv::plane::PlaneOwner`, which is the only caller of both.
+    unsafe fn plane_unload(&self, mt: &MainThread) -> PlaneUnload;
+    /// Drain the completion callbacks the firmware delivered on its own thread since the last
+    /// call, oldest first, with a `Dropped` marker if the mailbox overflowed. One consumer only:
+    /// `PlaneOwner::pump`.
+    fn plane_completions(&self, mt: &MainThread) -> Vec<PlaneCompletion>;
+    unsafe fn plane_pause(&self, mt: &MainThread);
+    unsafe fn plane_resume(&self, mt: &MainThread);
+}
+
+/// Buffer-feed controls over the Starfish seam (`src/starfish.h`). Window and ACB
+/// verbs are shared with URI playback through [`DisplaySink`].
 ///
 /// Same arguments and C return values as the seam; `&MainThread` on every method but `load` (the
-/// media worker calls it), `unload` (an [`UnloadTicket`], so a worker may issue it), `window_mode`
-/// and `window_id` (memoized reads).
+/// media worker calls it) and `unload` (an [`UnloadTicket`], so a worker may issue it).
 ///
 /// # Safety
 /// Every `unsafe fn` here forwards to a C verb that wants the arguments `src/starfish.h` documents:
 /// a payload or id pointer must be a valid NUL-terminated string for the call, and `feed`'s
 /// `p`/`size` a readable buffer. Apart from `load` and `unload`, the verbs must be called on the
 /// main thread (which `&MainThread` witnesses), in the order the player's pump drives them.
-pub trait VideoSink: Sync {
+pub trait VideoSink: DisplaySink {
+    /// Positive proof that a joined Load never left a native object behind. A zero `ready()`
+    /// answer is insufficient: firmware also reports zero after quarantining a live object.
+    /// The default keeps real firmware conservative; a sink with its own object ledger may
+    /// provide this only after the caller has joined the Load worker for this attempt.
+    fn no_object_proof(&self, _mt: &MainThread) -> bool { false }
     /// # Safety
     /// Unlike every other verb, `load` runs off the main thread (the media worker calls it, after
     /// `create_window` has put the windowId into `payload`), so an implementation must not touch
@@ -88,40 +162,6 @@ pub trait VideoSink: Sync {
     unsafe fn callback_intercepts(&self, mt: &MainThread) -> u32;
     unsafe fn destroy(&self, mt: &MainThread) -> c_int;
     unsafe fn quarantine(&self, mt: &MainThread);
-    fn window_mode(&self) -> c_int;
-    /// The exported windowId the sink holds, or `""` when none was created. Never null. The
-    /// storage is the sink's own long-lived buffer (the C seam's `g_window_id`), rewritten only by
-    /// `create_window`/`destroy_window` on the main thread, so a caller copies it at once.
-    fn window_id(&self) -> &'static CStr;
-    /// # Safety
-    /// Returns null when no window could be created (or the mode is not `VP_EXPORTED`); callers
-    /// must check before reading the id. A non-null pointer is the sink's own buffer, valid until
-    /// `destroy_window`.
-    unsafe fn create_window(&self, mt: &MainThread) -> *const c_char;
-    #[allow(clippy::too_many_arguments)]
-    unsafe fn place_window(&self, mt: &MainThread, src_w: c_int, src_h: c_int, dst_x: c_int,
-        dst_y: c_int, dst_w: c_int, dst_h: c_int) -> c_int;
-    unsafe fn destroy_window(&self, mt: &MainThread);
-    unsafe fn plane_create(&self, mt: &MainThread, app_id: *const c_char, player_type: c_int) -> c_long;
-    #[cfg(feature = "devtriggers")]
-    unsafe fn plane_probe_initialized(&self, mt: &MainThread) -> bool;
-    #[cfg(feature = "devtriggers")]
-    unsafe fn plane_probe_dass_available(&self, mt: &MainThread) -> bool;
-    #[cfg(feature = "devtriggers")]
-    unsafe fn plane_probe_media_id(&self, mt: &MainThread, media_id: *const c_char) -> c_int;
-    #[cfg(feature = "devtriggers")]
-    unsafe fn plane_probe_loaded(&self, mt: &MainThread) -> c_int;
-    #[cfg(feature = "devtriggers")]
-    unsafe fn plane_probe_connect_dass(&self, mt: &MainThread) -> c_int;
-    #[cfg(feature = "devtriggers")]
-    unsafe fn plane_probe_finish(&self, mt: &MainThread) -> c_int;
-    unsafe fn plane_bind(&self, mt: &MainThread, media_id: *const c_char);
-    unsafe fn plane_send_video_data(&self, mt: &MainThread, source_info: *const c_char) -> c_int;
-    unsafe fn plane_send_atmos(&self, mt: &MainThread, media_id: *const c_char) -> c_int;
-    unsafe fn plane_start(&self, mt: &MainThread, x: c_long, y: c_long, w: c_long, h: c_long);
-    unsafe fn plane_unload(&self, mt: &MainThread);
-    unsafe fn plane_pause(&self, mt: &MainThread);
-    unsafe fn plane_resume(&self, mt: &MainThread);
 }
 
 /// The installed sink: the only way out of `tv` for the Starfish verbs, and only `player/` may
@@ -129,9 +169,12 @@ pub trait VideoSink: Sync {
 #[cfg_attr(all(any(test, feature = "test-support"), feature = "hostsim"), allow(dead_code))] // player::sink() answers HostSink there
 pub fn installed() -> &'static dyn VideoSink { super::port().sink }
 
-/// Every verb of [`VideoSink`], refused: the answers of "no sink". Written once, for the sinks
-/// that refuse (`NoSink`, `RefusingSink`); the three memoized queries are each sink's own.
-macro_rules! refuse_every_verb {
+/// Resolve the shared display interface in composition/IO code, then inject it into a driver.
+pub fn display_installed() -> &'static dyn DisplaySink { super::port().display_sink }
+
+/// Refused native verbs, shared by `NoSink` and `RefusingSink`. Memoized queries
+/// remain each sink's own.
+macro_rules! refuse_video_verbs {
     () => {
         unsafe fn load(&self, _payload: *const c_char, _epoch: u32) -> c_int { 0 }
         unsafe fn ready(&self, _mt: &MainThread) -> c_int { 0 }
@@ -153,42 +196,75 @@ macro_rules! refuse_every_verb {
         unsafe fn callback_intercepts(&self, _mt: &MainThread) -> u32 { 0 }
         unsafe fn destroy(&self, _mt: &MainThread) -> c_int { 0 }
         unsafe fn quarantine(&self, _mt: &MainThread) {}
+    };
+}
+
+macro_rules! refuse_window_verbs {
+    () => {
         unsafe fn create_window(&self, _mt: &MainThread) -> *const c_char { std::ptr::null() }
         #[allow(clippy::too_many_arguments)]
         unsafe fn place_window(&self, _mt: &MainThread, _src_w: c_int, _src_h: c_int, _dst_x: c_int,
             _dst_y: c_int, _dst_w: c_int, _dst_h: c_int) -> c_int { 0 }
         unsafe fn destroy_window(&self, _mt: &MainThread) {}
         unsafe fn plane_create(&self, _mt: &MainThread, _app_id: *const c_char, _player_type: c_int) -> c_long { 0 }
-        #[cfg(feature = "devtriggers")]
-        unsafe fn plane_probe_initialized(&self, _mt: &MainThread) -> bool { false }
+    };
+}
+
+/// The developer-only `connectDass` experiment verbs, refused.
+macro_rules! refuse_dev_plane_verbs {
+    () => {
         #[cfg(feature = "devtriggers")]
         unsafe fn plane_probe_dass_available(&self, _mt: &MainThread) -> bool { false }
         #[cfg(feature = "devtriggers")]
-        unsafe fn plane_probe_media_id(&self, _mt: &MainThread, _media_id: *const c_char) -> c_int { 0 }
-        #[cfg(feature = "devtriggers")]
-        unsafe fn plane_probe_loaded(&self, _mt: &MainThread) -> c_int { 0 }
-        #[cfg(feature = "devtriggers")]
         unsafe fn plane_probe_connect_dass(&self, _mt: &MainThread) -> c_int { 0 }
-        #[cfg(feature = "devtriggers")]
-        unsafe fn plane_probe_finish(&self, _mt: &MainThread) -> c_int { 0 }
+    };
+}
+
+macro_rules! refuse_plane_verbs {
+    () => {
+        unsafe fn plane_initialized(&self, _mt: &MainThread) -> bool { false }
+        unsafe fn plane_media_id(&self, _mt: &MainThread, _media_id: *const c_char) -> c_int { 0 }
+        unsafe fn plane_loaded(&self, _mt: &MainThread) -> c_int { 0 }
+        unsafe fn plane_finish(&self, _mt: &MainThread) -> c_int { 0 }
         unsafe fn plane_bind(&self, _mt: &MainThread, _media_id: *const c_char) {}
         unsafe fn plane_send_video_data(&self, _mt: &MainThread, _source_info: *const c_char) -> c_int { -1 }
         unsafe fn plane_send_atmos(&self, _mt: &MainThread, _media_id: *const c_char) -> c_int { 0 }
         unsafe fn plane_start(&self, _mt: &MainThread, _x: c_long, _y: c_long, _w: c_long, _h: c_long) {}
-        unsafe fn plane_unload(&self, _mt: &MainThread) {}
         unsafe fn plane_pause(&self, _mt: &MainThread) {}
         unsafe fn plane_resume(&self, _mt: &MainThread) {}
+    };
+}
+
+macro_rules! refuse_display_verbs {
+    () => {
+        refuse_window_verbs!();
+        refuse_dev_plane_verbs!();
+        refuse_plane_verbs!();
+    };
+}
+
+/// The two plane verbs a refusing sink answers with nothing to unload and nothing completed.
+/// Separate from [`refuse_display_verbs`] so a test double can script just these.
+macro_rules! refuse_plane_unload {
+    () => {
+        unsafe fn plane_unload(&self, _mt: &MainThread) -> PlaneUnload { PlaneUnload::NOT_REGISTERED }
+        fn plane_completions(&self, _mt: &MainThread) -> Vec<PlaneCompletion> { Vec::new() }
     };
 }
 
 /// No sink: exactly `ffi_host.rs`'s disabled answers.
 pub struct NoSink;
 
-impl VideoSink for NoSink {
-    refuse_every_verb!();
-    fn feed_abi_is_cow(&self) -> bool { false }
+impl DisplaySink for NoSink {
+    refuse_display_verbs!();
+    refuse_plane_unload!();
     fn window_mode(&self) -> c_int { VP_NONE }
     fn window_id(&self) -> &'static CStr { c"" }
+}
+
+impl VideoSink for NoSink {
+    refuse_video_verbs!();
+    fn feed_abi_is_cow(&self) -> bool { false }
 }
 
 /// A fence in front of a real sink (read through the getter it holds, so a static can name it): every verb is refused (NoSink's answers, nothing reaches the
@@ -197,9 +273,93 @@ impl VideoSink for NoSink {
 /// `Unload` owns the object, so the main thread cannot reach what the worker is inside.
 pub struct RefusingSink(pub fn() -> &'static dyn VideoSink);
 
-impl VideoSink for RefusingSink {
-    refuse_every_verb!();
-    fn feed_abi_is_cow(&self) -> bool { (self.0)().feed_abi_is_cow() }
+impl DisplaySink for RefusingSink {
+    refuse_display_verbs!();
+    refuse_plane_unload!();
     fn window_mode(&self) -> c_int { (self.0)().window_mode() }
     fn window_id(&self) -> &'static CStr { (self.0)().window_id() }
+}
+
+impl VideoSink for RefusingSink {
+    refuse_video_verbs!();
+    fn feed_abi_is_cow(&self) -> bool { (self.0)().feed_abi_is_cow() }
+}
+
+/// A display sink for tests of the plane owner and of the backends that use it. Every verb is
+/// refused as `NoSink` does except the plane unload (whose answer a test scripts), the completion
+/// mailbox (which a test, or the unload itself with `complete_at_once`, fills), and the ACB bind
+/// verbs, which answer success unless a test lists them in `failing` and record each call in
+/// `calls` (`plane_send_video_data` records the length of its payload, never its content).
+#[cfg(any(test, feature = "test-support"))]
+pub struct ScriptedPlaneSink {
+    pub unload_answer: std::sync::Mutex<PlaneUnload>,
+    /// When set, `plane_unload` queues `(task, 1)` as the firmware would, before it returns.
+    pub complete_at_once: std::sync::atomic::AtomicBool,
+    pub mailbox: super::plane::CompletionQueue,
+    pub unloads: std::sync::atomic::AtomicUsize,
+    /// What `plane_initialized` answers.
+    pub initialized: std::sync::atomic::AtomicBool,
+    /// Verb names (`"plane_media_id"`, ...) that answer failure.
+    pub failing: std::sync::Mutex<Vec<&'static str>>,
+    /// Every ACB verb called, in order.
+    pub calls: std::sync::Mutex<Vec<String>>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl ScriptedPlaneSink {
+    pub fn new(unload_answer: PlaneUnload) -> Self {
+        Self {
+            unload_answer: std::sync::Mutex::new(unload_answer),
+            complete_at_once: std::sync::atomic::AtomicBool::new(false),
+            mailbox: super::plane::CompletionQueue::new(8),
+            unloads: std::sync::atomic::AtomicUsize::new(0),
+            initialized: std::sync::atomic::AtomicBool::new(true),
+            failing: std::sync::Mutex::new(Vec::new()),
+            calls: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+    pub fn unload_count(&self) -> usize { self.unloads.load(std::sync::atomic::Ordering::Relaxed) }
+    /// The ACB verbs called so far, in order.
+    pub fn calls(&self) -> Vec<String> { self.calls.lock().unwrap().clone() }
+    /// Record `verb` and answer 1 (accepted) unless it is listed in `failing`.
+    fn answer(&self, verb: &'static str, detail: String) -> c_int {
+        self.calls.lock().unwrap().push(if detail.is_empty() { verb.to_owned() } else { format!("{verb} {detail}") });
+        c_int::from(!self.failing.lock().unwrap().contains(&verb))
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl DisplaySink for ScriptedPlaneSink {
+    refuse_window_verbs!();
+    refuse_dev_plane_verbs!();
+    fn window_mode(&self) -> c_int { VP_ACB }
+    fn window_id(&self) -> &'static CStr { c"" }
+    unsafe fn plane_initialized(&self, _mt: &MainThread) -> bool {
+        self.initialized.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    unsafe fn plane_media_id(&self, _mt: &MainThread, media_id: *const c_char) -> c_int {
+        self.answer("plane_media_id", unsafe { CStr::from_ptr(media_id) }.to_string_lossy().into_owned())
+    }
+    unsafe fn plane_loaded(&self, _mt: &MainThread) -> c_int { self.answer("plane_loaded", String::new()) }
+    unsafe fn plane_finish(&self, _mt: &MainThread) -> c_int { self.answer("plane_finish", String::new()) }
+    unsafe fn plane_bind(&self, _mt: &MainThread, _media_id: *const c_char) {
+        self.answer("plane_bind", String::new());
+    }
+    unsafe fn plane_send_video_data(&self, _mt: &MainThread, source_info: *const c_char) -> c_int {
+        self.answer("plane_send_video_data", format!("len={}", unsafe { CStr::from_ptr(source_info) }.to_bytes().len()))
+    }
+    unsafe fn plane_send_atmos(&self, _mt: &MainThread, _media_id: *const c_char) -> c_int { 0 }
+    unsafe fn plane_start(&self, _mt: &MainThread, _x: c_long, _y: c_long, _w: c_long, _h: c_long) {}
+    unsafe fn plane_pause(&self, _mt: &MainThread) { self.answer("plane_pause", String::new()); }
+    unsafe fn plane_resume(&self, _mt: &MainThread) { self.answer("plane_resume", String::new()); }
+    unsafe fn plane_unload(&self, _mt: &MainThread) -> PlaneUnload {
+        self.unloads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.calls.lock().unwrap().push("plane_unload".to_owned());
+        let answer = *self.unload_answer.lock().unwrap();
+        if answer.rv == 1 && self.complete_at_once.load(std::sync::atomic::Ordering::Relaxed) {
+            self.mailbox.push(i64::from(answer.task), 1);
+        }
+        answer
+    }
+    fn plane_completions(&self, _mt: &MainThread) -> Vec<PlaneCompletion> { self.mailbox.drain() }
 }

@@ -102,7 +102,6 @@ fn world(part: PartModel) -> World {
     let pms = selection_pms(vec![part]);
     let sid = plx_plex::plex::register_for_test(MACHINE, "127.0.0.1", pms.port, "token-a", "wb-client");
     let log_from = std::fs::metadata(event_log()).map(|m| m.len()).unwrap_or(0);
-    publish_container_names(&[]);
     World { ps, pms, sid, log_from, _serial: serial }
 }
 
@@ -112,7 +111,6 @@ impl Drop for World {
         wait_idle();
         plx_plex::plex::reset_servers_for_test();
         reset_session(&mut self.ps);
-        publish_container_names(&[]);
     }
 }
 
@@ -463,7 +461,7 @@ fn a_forced_track_found_by_the_containers_names_is_written_with_the_remembered_a
     assert!(w.ps.track_ctx.as_ref().is_some_and(|c| c.rematch.is_some()), "setup: a direct play owes the re-match");
     assert!(w.pms.puts().is_empty(), "nothing is written at landing: {:?}", w.pms.puts());
 
-    publish_container_names(&["Forced", "", ""]);
+    publish_container_names(&mut w.ps, &["Forced", "", ""]);
     w.first_frame();
     assert_eq!((cur_sub_sid(&w.ps), cur_sub_mode(&w.ps)), (55001, SubMode::ForcedOnly), "the name revealed the track");
     let puts = w.pms.puts();
@@ -490,7 +488,7 @@ fn a_rematch_to_off_over_a_part_with_nothing_selected_sends_no_explicit_off() {
     assert_eq!(plan.write_back, Some(WriteBack { audio: Some(36014), subtitle: Some(SubWrite::Id(55001)) }), "setup");
     w.land(plan);
 
-    publish_container_names(&["Director's Commentary", "", ""]);
+    publish_container_names(&mut w.ps, &["Director's Commentary", "", ""]);
     w.first_frame();
     assert_eq!((cur_sub_sid(&w.ps), cur_sub_mode(&w.ps)), (0, SubMode::ForcedOnly), "the name says commentary: nothing");
     let puts = w.pms.puts();
@@ -512,7 +510,7 @@ fn a_rematched_forced_track_is_not_written_while_the_part_carries_an_external() 
     assert_eq!(plan.write_back, Some(WriteBack { audio: Some(36014), subtitle: None }), "setup: W5 withheld the subtitle half");
     w.land(plan);
 
-    publish_container_names(&["Forced", "", ""]);
+    publish_container_names(&mut w.ps, &["Forced", "", ""]);
     w.first_frame();
     assert_eq!(cur_sub_sid(&w.ps), 55001, "the re-matched track is on screen");
     let puts = w.pms.puts();
@@ -532,7 +530,7 @@ fn with_nothing_parked_the_rematch_commits_with_its_own_put() {
     w.land(plan);
     assert!(!w.parked(), "setup: and parks nothing");
 
-    publish_container_names(&["Forced", "", ""]);
+    publish_container_names(&mut w.ps, &["Forced", "", ""]);
     w.first_frame();
     assert_eq!((cur_sub_sid(&w.ps), cur_sub_mode(&w.ps)), (55001, SubMode::ForcedOnly));
     let puts = w.pms.puts();
@@ -556,7 +554,7 @@ fn a_stale_parked_write_does_not_swallow_the_rematchs_put_when_the_route_changed
     assert!(w.parked(), "setup: the landing parks the write");
     w.ps.url = format!("{}&replaced=1", w.ps.url);
 
-    publish_container_names(&["Forced", "", ""]);
+    publish_container_names(&mut w.ps, &["Forced", "", ""]);
     w.first_frame();
     assert_eq!(cur_sub_sid(&w.ps), 55001, "the name revealed the track: {}", w.log());
     let puts = w.pms.puts();
@@ -596,7 +594,7 @@ fn a_stale_parked_write_does_not_swallow_the_rematchs_put_after_an_audio_pick() 
     );
     wait_idle();
 
-    publish_container_names(&["Forced", "", ""]);
+    publish_container_names(&mut w.ps, &["Forced", "", ""]);
     w.first_frame();
     assert_eq!(cur_sub_sid(&w.ps), 55001, "the name revealed the track: {}", w.log());
     let puts = w.pms.puts();
@@ -622,7 +620,7 @@ fn an_unparked_rematch_writes_nothing_while_the_part_carries_an_external() {
     assert!(!w.parked(), "setup: W5 withheld the only half, so nothing is parked");
     assert!(w.ps.track_ctx.as_ref().is_some_and(|c| c.rematch.is_some()), "setup: the direct play owes the re-match");
 
-    publish_container_names(&["Forced", "", ""]);
+    publish_container_names(&mut w.ps, &["Forced", "", ""]);
     w.first_frame();
     assert_eq!(cur_sub_sid(&w.ps), 55001, "the re-matched track is on screen: {}", w.log());
     assert!(w.log().contains("track-memory: re-matched with the container's names (track 55001)"), "{}", w.log());

@@ -152,7 +152,7 @@ fn candidate_audio_none_matches_legacy_payload() {
     assert_eq!(recover_auto_to_original(&mut ps, 120), Some(AutoOriginalReload::Direct));
     assert_eq!(stream_acodec(&ps), "eac3", "the file's own default codec, as the legacy payload");
     assert_eq!(
-        crate::player::SHARED.desired_audio_idx.load(std::sync::atomic::Ordering::Relaxed),
+        crate::player::desired_audio_idx_for_test(),
         -1,
         "no known ordinal: the demuxer feeds the file's default track",
     );

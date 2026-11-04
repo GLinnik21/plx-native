@@ -1,17 +1,26 @@
 //! The webOS port: the one table that fills the `tv` interfaces, and the C entry that installs it.
 //!
 //! Everything outside this module reaches the television through `plx_platform::tv`; this is the only
-//! place that names `webos`, `keymanager`, `system` and `player::ffi` together. Its functions keep
+//! place that names `webos`, `keymanager`, `system` and the native video sink together. Its functions keep
 //! their own `cfg(any(hostsim, test))` arms, so the simulator installs this same table and behaves
 //! as it always did.
 use std::os::raw::{c_char, c_int};
 
-#[cfg(all(not(feature = "hostsim"), not(test)))]
-const SINK: &dyn plx_platform::tv::sink::VideoSink = &plx_media::player::ffi::StarfishSink;
-#[cfg(feature = "hostsim")]
-const SINK: &dyn plx_platform::tv::sink::VideoSink = &plx_media::player::ffi_host::HostSink;
-#[cfg(all(not(feature = "hostsim"), test))]
+#[cfg(all(not(feature = "hostsim"), not(test), feature = "play-feed"))]
+const SINK: &dyn plx_platform::tv::sink::VideoSink = &plx_platform::webos::video_sink::StarfishSink;
+#[cfg(all(feature = "hostsim", feature = "play-feed"))]
+const SINK: &dyn plx_platform::tv::sink::VideoSink = &plx_media::player::HOST_SINK;
+#[cfg(any(
+    all(feature = "hostsim", not(feature = "play-feed")),
+    all(not(feature = "hostsim"), any(test, not(feature = "play-feed"))),
+))]
 const SINK: &dyn plx_platform::tv::sink::VideoSink = &plx_platform::tv::sink::NoSink;
+
+// URI-only native builds retain the display vtable without the packet-feed vtable.
+#[cfg(all(not(feature = "hostsim"), not(test)))]
+const DISPLAY: &dyn plx_platform::tv::sink::DisplaySink = &plx_platform::webos::video_sink::StarfishSink;
+#[cfg(any(feature = "hostsim", test))]
+const DISPLAY: &dyn plx_platform::tv::sink::DisplaySink = SINK;
 
 static PORT: plx_platform::tv::Port = plx_platform::tv::Port {
     probe_device: plx_platform::webos::probe,
@@ -39,7 +48,7 @@ static PORT: plx_platform::tv::Port = plx_platform::tv::Port {
     frame_probe_acquired: crate::system::frame_probe_acquired,
     frame_probe_fields: crate::system::frame_probe_fields,
     sink: SINK,
-    #[cfg(feature = "devtriggers")]
+    display_sink: DISPLAY,
     uri_media: plx_platform::webos::URI_MEDIA,
 };
 

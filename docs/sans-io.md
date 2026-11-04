@@ -88,13 +88,14 @@ widening recorded the 17 forks that were already there (three in `screens/`: `le
 - The command worker's `.submit(` is not covered: it is `#[cfg(any(test, feature = "test-support"))]`
   in `base/src/storage_worker.rs`, so no production line can call it. `.submit_ticket(` is covered
   although no machine calls it today: a machine that did would be starting a worker.
-- The transport-pause atomic (`player::TX`) is reached by a machine through three readers,
-  `transport::paused`, `transport::viewer_paused` and `preview::paused` (each is `TX.paused` behind
+- The transport-pause atomic (`FEED_TX.paused`, the Feed backend's, in `plx_play_feed::shared`) is reached by a machine through three readers,
+  `transport::paused`, `transport::viewer_paused` and `preview::paused` (each is `FEED_TX.paused` behind
   a function), so those spellings are sites, qualified or bare after an import; a `use ... as`
-  rename of any of them fails outright. The spellings of `TX` itself (`crate::player::TX`,
-  `player::TX`, `super::TX`, a bare `TX`) stay pinned to `lifecycle.rs`, the machine, which now reads
+  rename of any of them fails outright. The spellings of the owners themselves (`crate::player::TX`,
+  `player::TX`, `super::TX`, a bare `TX`, and the Feed owners `shared::FEED_TX`, `shared::FEED_SHARED`
+  and a bare `FEED_TX` / `FEED_SHARED`) stay pinned to `lifecycle.rs`, the machine, which now reads
   none: that pin is a zero-guard (the machine takes the pause as a value on its event). The HUD's
-  direct `TX.paused` reads are not a machine's, and a writer (`set_paused`, `set_transport_paused`) is
+  direct `FEED_TX.paused` reads are not a machine's, and a writer (`set_paused`, `set_transport_paused`) is
   an IO call, not a registry read. Moving the contract out of `lifecycle.rs` deleted its three `TX`
   lines from `ci/allow/globals/media.txt`; the same change widened the rule to the readers above and
   seeded the three `preview::paused` reads the screens already had (`screens/src/detail/mod.rs`) as a

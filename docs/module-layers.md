@@ -27,6 +27,11 @@ customer and a boundary drawn from guesses about the second; the fence in `ci/ch
 would, and L15b is where the port's OS-neutral shape is worked out.
 
 The gate is `ci/check-module-layers.py` and its config is `ci/module-layers.ini`.
+The gate also checks each extracted crate's local Cargo declarations, including build, dev,
+optional and target-specific dependencies, against those same `uses` edges. A declared edge is
+checked even before Rust code names the dependency, so an unused upward dependency cannot bypass
+the module graph. A crate's `[package.metadata.plx] mount` selects its layer; ordinary `plx_` crate
+names fall back to their package suffix. External crates are outside this graph.
 `ci/allow/layers.txt` holds the migration list. L1 to L14 emptied it, L15 declared 44 entries of
 its own and then removed them, so it is empty again and only shrinks. Run
 `ci/check-module-layers.py --report` for current numbers. The graph findings and the migration
@@ -277,7 +282,9 @@ shipping build that reaches it logs `tv: port not installed - using the no-port 
 Only `tv`'s own modules read the table. Two things leave it: the sink, through
 `tv::sink::installed()` (rule `sink` of `ci/check-deps.sh` fences it to `player/`, `tv/`, `tv.rs`
 and `port.rs`), and, in a `devtriggers` build only, the developer URI-mode probe's
-`tv::uri::installed()`, read by `player::uriprobe_drive`.
+`tv::uri::installed()`, read by the media wrapper `player::uriprobe_drive`. The independent
+`play-uri` driver receives that transport and a shared `DisplaySink` as injected ports; it
+does not read the webOS port registry or the feed-only `VideoSink` itself.
 Lazily computed facts (device identity, the sandbox verdict, the Dolby Vision capability) are
 published values rather than hooks: the webOS code writes them into `tv::device`, `tv::sandbox` and
 `devcaps::dv` at the same boot moment as before, so readers keep their `OnceLock` semantics.
@@ -287,7 +294,7 @@ published values rather than hooks: the webOS code writes them into `tv::device`
 | device identity | `tv::device::{info, device, Info, Hardware}`, published by `webos::probe` | `telemetry`, `diag::schema`, `plex::identity`, `plex::session`'s tests, `screens::login`, `lab::snapshot`, `app`, `player` |
 | playback capability | `devcaps::dv::{capability, probe, DvCapability}`, published by `webos::caps`; `tv::start_capability_probe` starts the probe | `metadata`, `route`, `player::engine`, `app` |
 | native-video availability and repair | `tv::sandbox::{blocks_native_video, context, repair, Verdict, State, Failure, FORCE_BLOCKED}`; the verdict is published by `webos::probe` and the repair is a port hook | `player`, `route`, `appkit::player_hud`, `screens::player`, `app::playback` |
-| video sink | `tv::sink::VideoSink`, implemented by `player::ffi::StarfishSink` and `player::ffi_host::HostSink`, installed in `Port.sink` and read through `tv::sink::installed` | `player::{engine, pump, threads}`, `player::claim_hold`'s tests |
+| video sink | `tv::sink::VideoSink`, implemented by `player::ffi::StarfishSink` and `HostSink` (`plx_play_feed::ffi_host`, which `player::ffi_host` re-exports), installed in `Port.sink` and read through `tv::sink::installed` | `player::{engine, pump, threads}`, `player::claim_hold`'s tests |
 | secure store | `tv::secure::{seal, open, remove, Sealed, Backend}` | `plex::session` |
 | storage backend | `storage::client::install_activator`, which the port calls with `webos::activate_storage_helper` | `port::plex_run` |
 | locale | `tv::system_locale` and `tv::LocaleReply`; `i18n` still owns the parse and the log lines | `i18n` |
@@ -309,11 +316,15 @@ a real stop's Unload can run on a worker; the trait's own doc is the current lis
 ACB bind verbs that `pump` walks. Another TV OS cannot implement it as it stands. `player::ffi`
 keeps its `extern "C"` block unchanged and implements the trait as `StarfishSink`; `engine`, `pump`
 and `threads` call it through `player::sink()`. `player/ffi_host.rs` is no longer swapped in under
-`player::ffi`. It is `player::ffi_host`, the simulator's own `VideoSink` (`HostSink`), outside the
-fence. Call order, arguments and log text did not change. The deeper cut is L15b.
+`player::ffi`. It is `ffi_host`, the simulator's own `VideoSink` (`HostSink`), outside the
+fence. It is the Feed backend's stand-in, so it lives in `plx_play_feed` behind that crate's
+`hostsim` feature and names only the layers below it; the three things it needs from above arrive
+as `ffi_host::Hooks` its sink is built with (`player::HOST_SINK`): the media player's `sf_on_event`,
+the inverse of that callback's position rebase, and a `ffi_host::FrameSink` that `player::sim_video`
+implements (the one place that draws, so `plx_gfx` stays on the media side). Call order, arguments and log text did not change. The deeper cut is L15b.
 
 The verb cut was taken first because the bind sequence cannot be moved safely from here. It lives in
-`pump`'s `Stage` machine, is gated on state the firmware callback writes (`SHARED`) and interleaves
+`pump`'s `Stage` machine, is gated on state the firmware callback writes (`FEED_SHARED`) and interleaves
 with seek re-anchoring, the auto-rebuffer pause and the claim hold. `ffi_host` deliberately never
 models ACB (it reports `VP_EXPORTED`, which skips the bind stages), so no host test covers the bind
 order or its interleaving, and its log lines are graded on the television. A verb-for-verb move
@@ -1538,10 +1549,16 @@ rebuilds the application only. The no-op build is 0.1 s in both.
 
 ### Split 11 (media)
 
+This section records the original media extraction. In the current layout,
+`plx_play_feed` owns the physical FFmpeg demuxer, HLS parser and access-unit
+queues; `plx_media_codecs` owns the FFmpeg binding and encoder. `plx_media::ff`
+is a compatibility facade for the feed's application entry points and media
+integration fixtures.
+
 `media` was extracted eleventh: `rust-modules/media/` is the workspace member `plx_media` (an `rlib`,
 `uses = base machine platform gfx net plex telemetry data`; the manifest names those eight, with
 `plx_gfx` optional behind `hostsim` because only the simulator's `player::sim_video` draws), holding
-`ff` (the bundled-FFmpeg demuxer), `aq`, `abr`, `hls`, `curlio`, `player` (the buffer-feed engine,
+`ff` (then the bundled-FFmpeg demuxer), `aq`, `abr`, `hls`, `curlio`, `player` (the buffer-feed engine,
 `player/CLAUDE.md` with it) and `route`: 70 files, 84,579 lines. It is the layer with the FFI, and
 the one that held the last import cycle of the application, `abr curlio ff hls player route`, which
 is now inside one crate where a cycle is legal. The 12 root-level files the modules include by
@@ -1552,7 +1569,7 @@ files (`pub(super)` only where it was written at the top level of a file whose p
 root), and one intra-doc link to `screens` unbracketed. The module-cycle baseline now reads "3
 modules on the cycle (`app dev textinput`), 10 outside". What it taught:
 
-- **FFI and the final link: proven in the artifact, not assumed.** The crate holds every
+- **FFI and the final link: proven in the artifact, not assumed.** At this extraction, the crate held every
   `dynlib!` table of FFmpeg (`ff.rs`, four), libass's subtitle surface (`player/ass.rs`; the UI text
   surface's table is `plx_gfx::rtl`) and the second libcurl table
   (`curlio.rs`), `player::ffi`'s `extern "C"` block (the Starfish/ACB verbs, 29 undefined

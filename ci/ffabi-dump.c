@@ -1,8 +1,8 @@
-/* Emit the FFmpeg struct offsets ff.rs needs, for the TARGET architecture, without running
+/* Emit the FFmpeg struct offsets media-codecs/src/ffi.rs needs, for the TARGET architecture, without running
  * anything on it.
  *
  * `ci/ffabi-assert.c` CHECKS a table; this one DERIVES it. You need both, and only ever need this
- * when the bundled FFmpeg version changes: run it, paste the numbers into ff.rs, and the assert
+ * when the bundled FFmpeg version changes: run it, paste the numbers into media-codecs/src/ffi.rs, and the assert
  * file then holds them in place forever.
  *
  * The trick is that we cannot execute an ARM binary here. So each value becomes the SIZE of a
@@ -75,7 +75,7 @@ DUMP(off_frame_height,   offsetof(AVFrame, height))
 DUMP(off_frame_format,   offsetof(AVFrame, format))
 DUMP(off_frame_pts,      offsetof(AVFrame, pts))
 
-/* Structs ff.rs models field-by-field with #[repr(C)]. A short model is a stack smash for the
+/* Structs media-codecs/src/ffi.rs models field-by-field with #[repr(C)]. A short model is a stack smash for the
  * two it allocates (AVCodecParameters, AVSubtitle), so these sizes are load-bearing. */
 DUMP(sizeof_packet,      sizeof(AVPacket))
 DUMP(sizeof_codecpar,    sizeof(AVCodecParameters))
@@ -133,7 +133,7 @@ DUMP(off_rect_type,     offsetof(AVSubtitleRect, type))
 DUMP(off_bsf_par_in,       offsetof(AVBSFContext, par_in))
 DUMP(off_bsf_time_base_in, offsetof(AVBSFContext, time_base_in))
 
-/* Enum constants ff.rs hardcodes. */
+/* Enum constants media-codecs/src/ffi.rs hardcodes. */
 DUMP(id_h264,   AV_CODEC_ID_H264)
 DUMP(id_hevc,   AV_CODEC_ID_HEVC)
 DUMP(id_vp9,    AV_CODEC_ID_VP9)

@@ -92,7 +92,7 @@ CONFIG_LOCAL_H = os.path.join(REPO_ROOT, "src", "config.local.h")
 TV_SSH = os.path.join(REPO_ROOT, "tools", "tv-ssh")  # key-first ssh/scp front door; see its header
 
 sys.path.insert(0, TESTS_DIR)
-from serve_fixtures import serve, default_root as serve_fixtures_default_root  # noqa: E402  (needs TESTS_DIR on the path first)
+from serve_fixtures import serve, default_root as serve_fixtures_default_root, ABR_FIXTURE, RE_ABR_LADDER  # noqa: E402  (needs TESTS_DIR on the path first)
 import mock_fps  # noqa: E402  (the --mock tier; same path juggling as above)
 sys.path.insert(0, TOOLS_DIR)
 import tv_config  # noqa: E402  (the TV address: tools/tv-config.sh is the one lookup)
@@ -1452,7 +1452,7 @@ def timeline_secs(lines):
 def playpos_secs(lines):
     """All `pos=<S>s` values from the once/sec render heartbeat, in order.
 
-    Same SHARED.playpos_ns the /:/timeline reporter posts, but sampled at 1 Hz instead of
+    Same FEED_SHARED.playpos_ns the /:/timeline reporter posts, but sampled at 1 Hz instead of
     every 10s (app.rs). Density is the whole point: seeing a 15s climb through 10s samples
     needs ~30s of playback, so the sparse signal charged every case roughly double its real
     floor. The app only emits the field while genuinely presenting frames, which is what
@@ -1532,7 +1532,9 @@ def a_no_error(lines):
     for ln in lines:
         if "smp_cb type=18" in ln or "Playing error" in ln:
             return False, f"error surfaced :: {ln.strip()}"
-    return True, "no `smp_cb type=18` / `Playing error`"
+        if "uriprobe:" in ln and re.search(r"\bsummary\b.*\bend=(?:error|timeout|refused):", ln):
+            return False, f"URI error surfaced :: {ln.strip()}"
+    return True, "no Starfish playing error or terminal URI error"
 
 
 def a_resolve_pin(lines, want="any"):
@@ -3574,7 +3576,7 @@ def op_seek_refused(lines, target_s):
     observable at all; on the server tier the seek succeeds and this branch never runs.
 
     What is graded is the survival, because that is what failed. `player::request_seek` arms
-    `SHARED.seeking` and, before 2026-08-27, only a successful prime→Play ever disarmed it — so a
+    `FEED_SHARED.seeking` and, before 2026-08-27, only a successful prime→Play ever disarmed it — so a
     refused seek left `PlaybackState::Seeking` latched forever: a spinner over the picture, the
     playhead frozen at the target, and `pos=` (gated on `is_playing()`) absent from every
     subsequent heartbeat. Measured before the fix: the position froze at 5 s while 37 further
@@ -3597,7 +3599,7 @@ def op_seek_refused(lines, target_s):
     ts = progress_secs(after)
     if len(ts) < 2:
         return False, (f"only {len(ts)} position sample(s) after the refusal — the read-out is "
-                       "latched (`SHARED.seeking` never disarmed); see player::abandon_seek")
+                       "latched (`FEED_SHARED.seeking` never disarmed); see player::abandon_seek")
     climb = ts[-1][0] - ts[0][0]
     if climb <= 0:
         return False, f"position did not advance after the refusal ({ts[0][0]}s..{ts[-1][0]}s)"
@@ -3617,7 +3619,7 @@ def op_seek_rapid(lines, final_s):
       * a tap that arrives mid-seek is applied by the next pump tick after the in-flight seek
         anchors — which logs `seek(in-place)`;
       * unless the anchor takes longer than SEEK_STUCK_MS (1200ms), in which case the
-        stuck-watchdog applies it instead — it swaps the coalesced target out of TX.seek_to_ns
+        stuck-watchdog applies it instead — it swaps the coalesced target out of FEED_TX.seek_to_ns
         (pump.rs) and logs `in-place stuck → retry reopen`, so the second `seek(in-place)`
         never comes.
 
@@ -3713,7 +3715,7 @@ def op_seek_transcode(lines, target_s, min_climb_after_s=0):
 def a_no_demux_failure(lines):
     """The demuxer giving up is a death `no_playing_error` cannot see.
 
-    `no_playing_error` greps the STARFISH error surface (`smp_cb type=18` / `Playing error`).
+    `no_playing_error` checks Starfish playing errors and terminal URI probe errors.
     A pipeline that dies on the acquisition side never gets there: `ff.rs` reports
     `hls: demux failed: …` (a stopped or hopelessly slow encoder arrives as
     `HLS segment was not produced in time`, because 404 is `NotReady` by design and the retry
@@ -4195,7 +4197,7 @@ def op_resume_transcode(lines, offset_s):
 # Why grading a prefix is sound: almost every assertion is monotone once satisfied — it looks
 # for a line that has appeared, or for a max/climb that only grows. The exceptions are the two
 # ABSENCE checks, which start out true and can only flip the other way:
-#   * a_no_error            — `smp_cb type=18` / `Playing error`
+#   * a_no_error            — Starfish playing errors / terminal URI probe errors
 #   * op_seek_rapid         — `reload_at: fresh Load` (stuck-watchdog gave up on in-place)
 # ...and, since 2026-08-23, one COUNT that is an equality rather than a floor:
 #   * a_replayed            — exactly N `replay:` lines (more than N is a loop)
@@ -5126,6 +5128,17 @@ def _resolve_fixtures(cases, root):
         if not name:
             c["skip"] = "case declares no `fixture`"
             continue
+        if RE_ABR_LADDER.match("/" + name):
+            # The server writes this playlist itself, so there is no file to find or probe. What
+            # it points at is every rung's clip, and a missing one would 404 (or fall back to
+            # 1080p) under the player and confound which rung it fetched, so the whole set must exist.
+            absent = sorted(f for f in ABR_FIXTURE.values() if not os.path.isfile(os.path.join(root, f)))
+            if absent:
+                c["skip"] = (f"the ladder master serves every rung but {root} lacks {', '.join(absent)} "
+                             "-- run `make fixtures-pipeline`")
+            else:
+                c["path"] = None   # no single file: the server writes the playlist
+            continue
         path = os.path.join(root, name)
         if not os.path.isfile(path):
             c["skip"] = f"no fixture {name!r} in {root} — run `make fixtures-pipeline`"
@@ -5381,6 +5394,13 @@ def save_profiler_files(cfg, stem, pulled):
                   "(phase unknown, trigger unread, or the counters refused): this leg has no counters")
 
 
+def rung_segments_line(before, after):
+    """Which rungs the player fetched in a case, from two `FixtureServer.segment_rungs()`
+    snapshots: `720=2 2000=14` (request-path rung = count), lowest first; `""` when it fetched none."""
+    return " ".join(f"{rung}={n - before.get(rung, 0)}" for rung, n in after.items()
+                    if n > before.get(rung, 0))
+
+
 def run_pipeline_case(case, cfg, srv, url_base, verbose):
     """One pipeline case. A sibling of `run_case` with every PMS step removed.
 
@@ -5414,10 +5434,12 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
     # candidate refresh remain distinct even though both paths say /__abr/22000.
     srv.set_abr_response_profile(case.get("abr_response_profile"))
     files = triggers_for_case(case, url_base=url_base)
+    files.extend(cfg.get("extra_triggers") or ())
     apply_triggers(tv, files)
     print("    triggers: " + ", ".join(n + ("=" + c if c is not None else "") for n, c in files))
 
     before = srv.stats()
+    before_rungs = srv.segment_rungs()
 
     def grade(c, ls):
         """The wire counters are read LIVE, so the early-exit poll grades the same
@@ -5437,6 +5459,12 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
                                                          evaluator=grade)
     after = srv.stats()
     delta = tuple(a - b for a, b in zip(after, before))
+    # Which rung of a ladder master the player asked for: the plant's own count, since the app logs
+    # nothing of a native player's choice. Printed, and kept beside the case's log.
+    rungs = rung_segments_line(before_rungs, srv.segment_rungs())
+    if rungs:
+        print(f"    segments fetched by rung (kbps): {rungs}")
+        save_logs_file(cfg, f"{name}.rungs", f"{rungs}\n")
 
     gst_lines = pull_runtime_log(tv, "plxnative-gst.log") if case.get("gst_trace") else None
     if gst_lines is not None:
@@ -6963,7 +6991,7 @@ def main():
                          "NB distinct from fps_scenes' ui|player 'tier'.")
     ap.add_argument("--list", action="store_true", help="list cases and exit")
     ap.add_argument("--extra-trigger", action="append", default=[], metavar="NAME[=CONTENT]",
-                    help="arm one more plxnative-* trigger for every fps scene of this run (e.g. "
+                    help="arm one more plxnative-* trigger for every synthetic case or FPS scene (e.g. "
                          "plxnative-cpuprof, plxnative-framedrop=20). A profiler trigger disqualifies "
                          "the run's fps= as a pacing number, exactly as --graphics-profile does; use "
                          "it to attribute a frame, never to grade one.")
@@ -7049,7 +7077,12 @@ def main():
     ap.add_argument("--fixtures-port", type=int, default=0, metavar="PORT",
                     help="port for the fixture HTTP server (default: pick a free one). Pin it when "
                          "a firewall rule names a port")
+    ap.add_argument("--fixtures-loopback", action="store_true",
+                    help="advertise synthetic fixtures as 127.0.0.1 on the TV; requires a fixed "
+                         "--fixtures-port and an operator-owned reverse SSH forward to that port")
     args = ap.parse_args()
+    if args.fixtures_loopback and not args.fixtures_port:
+        sys.exit("--fixtures-loopback needs a fixed --fixtures-port for reverse SSH forwarding")
     if args.print_test_token:
         # Standalone: this mode answers one question (what token is the managed test user's?)
         # and touches nothing else -- no case selection, no TV lock, no launch. Reject every flag
@@ -7059,6 +7092,7 @@ def main():
             ("--list", args.list), ("--server", args.server), ("--fps", args.fps),
             ("--fps-player", args.fps_player), ("--pipeline", args.pipeline),
             ("--owner", args.owner), ("--build", args.build), ("--mock", args.mock),
+            ("--fixtures-loopback", args.fixtures_loopback),
         ] if v]
         if conflicting:
             sys.exit(f"--print-test-token is standalone and cannot combine with {', '.join(conflicting)}")
@@ -7091,6 +7125,8 @@ def main():
     # The FPS scenes are on the server side of the line whatever else is asked: they navigate a
     # real signed-in Home, so without a token they grade a QR screen.
     server_tier = args.server or args.fps or args.fps_player
+    if args.fixtures_loopback and server_tier:
+        sys.exit("--fixtures-loopback applies only to the synthetic pipeline tier")
     if args.mock:
         # The synthetic library has no real items, no plex.tv account and one fabricated guest, so
         # every flag that names one of those is a contradiction, not a preference to resolve.
@@ -7258,7 +7294,7 @@ def main():
                         if pskipped else f" — --filter {args.filter!r} matched nothing"))
         srv, url_base = serve(root, port=args.fixtures_port,
                               sink=(lambda m: print(f"      [srv] {m}")) if args.verbose else None,
-                              peer=cfg["tv"])
+                              peer="127.0.0.1" if args.fixtures_loopback else cfg["tv"])
         # LIFO: registered after the server and BEFORE arm_teardown, so on the way out the TV is
         # cleaned FIRST and the bytes are pulled second. The other order stops serving an app that
         # is still playing, which turns every interrupted run into a demux failure in the log.

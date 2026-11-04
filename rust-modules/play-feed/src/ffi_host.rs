@@ -54,26 +54,84 @@
 //! callback ([`Clock::tick`]), so a film whose audio outlasts its video ends here as on the
 //! television instead of hanging at the video tail. Cleared wherever the fed timeline restarts.
 //!
-//! It reports [`VP_EXPORTED`](super::VP_EXPORTED), the webOS 5+ path, because that one binds video
-//! through an exported window id and never touches ACB — so the whole ACB stage sequence stays
-//! skipped rather than faked.
+//! It reports [`VP_EXPORTED`](plx_platform::tv::sink::VP_EXPORTED), the webOS 5+ path, because that
+//! one binds video through an exported window id and never touches ACB — so the whole ACB stage
+//! sequence stays skipped rather than faked.
 //!
 //! # How it is reached
 //!
 //! The verbs below are private; [`HostSink`] is the simulator's own `tv::sink::VideoSink`, one
 //! method per verb, installed by `port.rs` for the `hostsim` build and returned directly by
 //! `player::sink()` in the hostsim tests. The `*_for_test` hooks stay here, next to the statics
-//! they touch, and the tests reach them as `crate::player::ffi_host::<hook>`.
+//! they touch, and the tests reach them as `player::ffi_host::<hook>` (media re-exports this module
+//! under that name).
+//!
+//! # What it is handed, and why
+//!
+//! This is the Feed backend's stand-in, so it lives in `plx_play_feed`, which may name only the
+//! layers below it. Three things it needs are above it, and each arrives as a [`Hooks`] value the
+//! sink is built with (the way the firmware is handed its callback and context at `Load`), never as
+//! a name this file imports: the pipeline-event entry (`sf_on_event`, the media player's), the
+//! inverse of that entry's position rebase, and a [`FrameSink`] for the simulator's decoded
+//! picture (`plxnative-simvideo`; it draws, so `plx_gfx` is its home and not this crate's).
+//! `Load` adopts the hooks; every later report is gated on the epoch only a successful `Load`
+//! sets, so no event can precede them.
 
 use plx_base::task::MainThread;
-use plx_platform::tv::sink::VideoSink;
+use plx_platform::tv::plane::{CompletionQueue, PlaneCompletion};
+use plx_platform::tv::sink::{DisplaySink, PlaneUnload, VideoSink};
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_long, c_uint};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering::Relaxed};
+use std::sync::OnceLock;
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::atomic::{AtomicI32, AtomicU64};
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::{Condvar, Mutex};
+
+/// The simulator's decoded picture: the video access units the clock sink accepts are ALSO handed
+/// here (`plxnative-simvideo`), and whatever draws them under the UI frame implements it. Every
+/// method is a no-op unless that facility is armed, and none may block the feeder.
+pub trait FrameSink: Sync {
+    /// A new stream. `payload` is the Load JSON the television would have been given; `clock`
+    /// reads the sink's presentation clock (the fed-PTS timeline) the frames are shown against.
+    fn load(&self, payload: &str, clock: fn() -> i64);
+    /// A flush or seek restarts the fed timeline: keep the picture on screen until the next frame.
+    fn flush(&self);
+    /// One video access unit, Annex-B, at `pts` in the fed timeline.
+    fn feed(&self, au: &[u8], pts: i64);
+    /// Unload, destroy or quarantine: no stream, no picture.
+    fn stop(&self);
+}
+
+/// What the application hands the stand-in (see the module doc): the sink is built with it and `Load`
+/// adopts it, the way the firmware is handed its callback at `Load`.
+#[derive(Clone, Copy)]
+pub struct Hooks {
+    /// The pipeline-event entry LG's library thread calls, with its arguments:
+    /// `(epoch, type, num, text)`. The media player's `sf_on_event`.
+    pub deliver_event: extern "C" fn(c_uint, c_int, i64, *const c_char),
+    /// The inverse of the position rebase `deliver_event` applies to a reported position
+    /// (`playpos = fed - pts_shift + disp_base`): the fed PTS at which the app reads `media_ns`.
+    pub media_to_fed: fn(i64) -> i64,
+    /// The simulator's decoded picture.
+    pub frames: &'static dyn FrameSink,
+}
+
+/// The hooks of the one sink this process built, adopted by its first `Load` (or stop request). The
+/// clock thread and the verbs are free functions over process-wide state, so they read them here.
+static HOOKS: OnceLock<Hooks> = OnceLock::new();
+
+/// The hooks, for a path only a loaded session reaches: `Load` is the one verb that sets the
+/// callback epoch every report is gated on, and it adopts the hooks first.
+fn hooks() -> &'static Hooks {
+    HOOKS.get().expect("ffi_host: a session is running before any Load adopted the sink's hooks")
+}
+
+/// The picture sink, if a sink has adopted its hooks yet.
+fn frames() -> Option<&'static dyn FrameSink> {
+    HOOKS.get().map(|h| h.frames)
+}
 
 /// `sf_feed`'s rejection code. `starfish.h` documents the three replies as `'O'` (ok), `'B'`
 /// (BufferFull) and `'e'` (error); the pump treats `'B'` as backpressure and retries forever, so
@@ -98,25 +156,25 @@ const TICK_MS: u64 = 200;
 /// directory a real simulator reads. This overrides the answer directly instead, so the test is
 /// deterministic and leaves no file behind.
 #[cfg(any(test, feature = "test-support"))]
-pub(super) static FORCE_ENABLED: std::sync::atomic::AtomicBool =
+static FORCE_ENABLED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 /// Force the next host `Play` calls to report a seam result. `i32::MIN` means normal clocksink
 /// behaviour. This makes the state-machine invariant testable without teaching production code a
 /// failure-injection branch.
 #[cfg(any(test, feature = "test-support"))]
-pub(super) static FORCE_PLAY_RESULT: AtomicI32 = AtomicI32::new(i32::MIN);
+static FORCE_PLAY_RESULT: AtomicI32 = AtomicI32::new(i32::MIN);
 #[cfg(any(test, feature = "test-support"))]
-pub(super) static PLAY_CALLS: AtomicU64 = AtomicU64::new(0);
+static PLAY_CALLS: AtomicU64 = AtomicU64::new(0);
 #[cfg(any(test, feature = "test-support"))]
-pub(super) static FORCE_PAUSE_RESULT: AtomicI32 = AtomicI32::new(i32::MIN);
+static FORCE_PAUSE_RESULT: AtomicI32 = AtomicI32::new(i32::MIN);
 /// The host pipeline's volume (`setVolume`); a fresh pipeline starts at `PIPELINE_DEFAULT_VOLUME`.
 #[cfg(any(test, feature = "test-support"))]
-pub(super) static HOST_VOLUME: AtomicI32 = AtomicI32::new(plx_platform::tv::sink::PIPELINE_DEFAULT_VOLUME);
+static HOST_VOLUME: AtomicI32 = AtomicI32::new(plx_platform::tv::sink::PIPELINE_DEFAULT_VOLUME);
 /// Every Play / Pause / `set_volume(n)` the sink saw, in order, as `"play"`, `"pause"`,
 /// `"volume:n"`: what a test reads to prove the paused preroll mutes BEFORE its Play and restores
 /// AFTER its re-pause. Cleared by [`reset_volume_probe_for_test`].
 #[cfg(any(test, feature = "test-support"))]
-pub(super) static VERB_ORDER_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static VERB_ORDER_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
 #[cfg(any(test, feature = "test-support"))]
 fn note_verb(verb: String) {
     VERB_ORDER_LOG.lock().unwrap_or_else(|e| e.into_inner()).push(verb);
@@ -125,19 +183,19 @@ fn note_verb(verb: String) {
 /// ACB seam probes (host has no libAcbAPI): `setMediaVideoData` answers -1 (rejected) unless a
 /// test arms [`ACB_VIDEO_DATA_ACCEPT`], and every `acb_start`/`acb_pause`/`acb_resume` is counted,
 /// so a test can read the order and number of plane verbs the pump issued.
-#[cfg(test)]
-pub(super) static ACB_VIDEO_DATA_ACCEPT: AtomicBool = AtomicBool::new(false);
-#[cfg(test)]
-pub(super) static ACB_VIDEO_DATA_CALLS: AtomicU64 = AtomicU64::new(0);
-#[cfg(test)]
-pub(super) static ACB_START_CALLS: AtomicU64 = AtomicU64::new(0);
-#[cfg(test)]
-pub(super) static ACB_PAUSE_CALLS: AtomicU64 = AtomicU64::new(0);
-#[cfg(test)]
-pub(super) static ACB_RESUME_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(any(test, feature = "test-support"))]
+static ACB_VIDEO_DATA_ACCEPT: AtomicBool = AtomicBool::new(false);
+#[cfg(any(test, feature = "test-support"))]
+static ACB_VIDEO_DATA_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(any(test, feature = "test-support"))]
+static ACB_START_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(any(test, feature = "test-support"))]
+static ACB_PAUSE_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(any(test, feature = "test-support"))]
+static ACB_RESUME_CALLS: AtomicU64 = AtomicU64::new(0);
 /// `(setMediaVideoData, acb_start, acb_pause, acb_resume)` call counts. Test-only.
-#[cfg(test)]
-pub(super) fn acb_calls_for_test() -> (u64, u64, u64, u64) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn acb_calls_for_test() -> (u64, u64, u64, u64) {
     (
         ACB_VIDEO_DATA_CALLS.load(Relaxed),
         ACB_START_CALLS.load(Relaxed),
@@ -146,8 +204,8 @@ pub(super) fn acb_calls_for_test() -> (u64, u64, u64, u64) {
     )
 }
 /// Zero the ACB counters and choose whether `setMediaVideoData` is accepted. Test-only.
-#[cfg(test)]
-pub(super) fn reset_acb_for_test(accept_video_data: bool) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn reset_acb_for_test(accept_video_data: bool) {
     ACB_VIDEO_DATA_ACCEPT.store(accept_video_data, Relaxed);
     for c in [&ACB_VIDEO_DATA_CALLS, &ACB_START_CALLS, &ACB_PAUSE_CALLS, &ACB_RESUME_CALLS] {
         c.store(0, Relaxed);
@@ -157,26 +215,26 @@ pub(super) fn reset_acb_for_test(accept_video_data: bool) {
 /// Every millis `sf_seek_ms` was called with, in order (#568): what a test reads to prove a
 /// direct-play seek went through LG's public `Seek` and landed where the keyframe did.
 #[cfg(any(test, feature = "test-support"))]
-pub(super) static SEEK_LOG: Mutex<Vec<i64>> = Mutex::new(Vec::new());
+static SEEK_LOG: Mutex<Vec<i64>> = Mutex::new(Vec::new());
 /// The sink pts of every Feed the armed host sink took, as `(es_data, pts)` in call order: what a test reads to
 /// prove WHAT timeline an audio unit and a picture reached the sink on (#1086).
 #[cfg(any(test, feature = "test-support"))]
-pub(super) static FEED_LOG: Mutex<Vec<(c_int, i64)>> = Mutex::new(Vec::new());
+static FEED_LOG: Mutex<Vec<(c_int, i64)>> = Mutex::new(Vec::new());
 /// How many Feeds [`FEED_LOG`] keeps: a test reads the first few, and a long simulator run must
 /// not grow it without end.
 #[cfg(any(test, feature = "test-support"))]
 const FEED_LOG_ROOM: usize = 4096;
 /// Forced `sf_seek_ms` answer; `i32::MIN` means "behave". `0` is LG refusing the seek.
 #[cfg(any(test, feature = "test-support"))]
-pub(super) static FORCE_SEEK_RESULT: AtomicI32 = AtomicI32::new(i32::MIN);
+static FORCE_SEEK_RESULT: AtomicI32 = AtomicI32::new(i32::MIN);
 /// How many times the sink was flushed: a native seek must not flush (Seek flushes itself, and a
 /// flush after it re-anchors the segment at 0).
 #[cfg(any(test, feature = "test-support"))]
-pub(super) static FLUSH_CALLS: AtomicU64 = AtomicU64::new(0);
+static FLUSH_CALLS: AtomicU64 = AtomicU64::new(0);
 /// How many times the Segment path's private-offset verbs (`setTimeToDecode`, `setContentInfo`,
 /// `sendSegmentEvent`) were called: on `VP_EXPORTED` they must never be, whatever the seek's fate.
 #[cfg(any(test, feature = "test-support"))]
-pub(super) static SEGMENT_CALLS: AtomicU64 = AtomicU64::new(0);
+static SEGMENT_CALLS: AtomicU64 = AtomicU64::new(0);
 
 /// issue #74 D.1 test seam — real (v0.6.0) `sf_load` publishes `SMP_READY(1)` and then calls the
 /// blocking, synchronous Load, so there is a real window during which every OTHER seam verb is
@@ -187,16 +245,16 @@ pub(super) static SEGMENT_CALLS: AtomicU64 = AtomicU64::new(0);
 /// and `IN_FLIGHT_CALLS`/`IN_FLIGHT_VERB` are what let a test PROVE nothing reached the seam
 /// during that window (this project's silent-instrument rule — see `note_dispatch`).
 #[cfg(any(test, feature = "test-support"))]
-pub(super) static LOAD_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+static LOAD_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 /// How many seam verbs were dispatched while [`LOAD_IN_FLIGHT`] was true. Zero across a whole
 /// held Load is the primary assertion `nothing_reaches_the_seam_while_load_is_still_in_flight`
 /// makes.
 #[cfg(any(test, feature = "test-support"))]
-pub(super) static IN_FLIGHT_CALLS: AtomicU32 = AtomicU32::new(0);
+static IN_FLIGHT_CALLS: AtomicU32 = AtomicU32::new(0);
 /// The FIRST verb name recorded while [`LOAD_IN_FLIGHT`] was true — for the failure message, so a
 /// red run says exactly what reached the seam rather than only that something did.
 #[cfg(any(test, feature = "test-support"))]
-pub(super) static IN_FLIGHT_VERB: Mutex<Option<&'static str>> = Mutex::new(None);
+static IN_FLIGHT_VERB: Mutex<Option<&'static str>> = Mutex::new(None);
 /// Bumped at the top of every host verb the real seam routes through `sf_ready_object()`. Records
 /// only while `LOAD_IN_FLIGHT` is true — a call before the window opens or after it closes is
 /// exactly what the fix is supposed to allow.
@@ -214,31 +272,31 @@ fn note_dispatch(verb: &'static str) {
 /// true) until [`release_load_for_test`] is called — the only way to get a REAL two-thread window
 /// open on the host, rather than a single-threaded simulation of one.
 #[cfg(any(test, feature = "test-support"))]
-pub(super) static HOLD_LOAD: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+static HOLD_LOAD: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
 /// Arm the hold BEFORE spawning `threads::load_thread`, so its `sf_load` call blocks once it
 /// reaches the wait above. A test that never calls this gets the unmodified, non-blocking
 /// `sf_load` — this is opt-in per test, not a global change in behaviour.
-#[cfg(test)]
-pub(super) fn hold_load_for_test() {
+#[cfg(any(test, feature = "test-support"))]
+pub fn hold_load_for_test() {
     let mut held = HOLD_LOAD.0.lock().unwrap_or_else(|e| e.into_inner());
     *held = true;
 }
-#[cfg(test)]
-pub(super) fn release_load_for_test() {
+#[cfg(any(test, feature = "test-support"))]
+pub fn release_load_for_test() {
     let mut held = HOLD_LOAD.0.lock().unwrap_or_else(|e| e.into_inner());
     *held = false;
     HOLD_LOAD.1.notify_all();
 }
 /// Makes the host `sf_unload` block until [`release_unload_for_test`]: an `Unload` that does not
 /// return (the 1Q freeze), where [`delay_unload_for_test`] is a fixed sleep the caller waits out.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static HOLD_UNLOAD: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
-#[cfg(test)]
-pub(super) fn hold_unload_for_test() {
+#[cfg(any(test, feature = "test-support"))]
+pub fn hold_unload_for_test() {
     *HOLD_UNLOAD.0.lock().unwrap_or_else(|e| e.into_inner()) = true;
 }
-#[cfg(test)]
-pub(super) fn release_unload_for_test() {
+#[cfg(any(test, feature = "test-support"))]
+pub fn release_unload_for_test() {
     *HOLD_UNLOAD.0.lock().unwrap_or_else(|e| e.into_inner()) = false;
     HOLD_UNLOAD.1.notify_all();
 }
@@ -248,31 +306,31 @@ pub(super) fn release_unload_for_test() {
 /// then names the NEXT test's session, and delivers UNLOADCOMPLETED into it (`Active` to
 /// `Unloaded`). The next test's own epoch stops owning `Active` at a random moment: the flake of
 /// `exit_after_a_load_timeout_never_quits_the_display_under_a_hung_load`.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static UNLOAD_WORKERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 /// Counts one `sf-unload` worker from before it is spawned until it ends (drop).
-#[cfg(test)]
-pub(super) struct UnloadWorker(());
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
+pub struct UnloadWorker(());
+#[cfg(any(test, feature = "test-support"))]
 impl UnloadWorker {
-    pub(super) fn enter() -> Self {
+    pub fn enter() -> Self {
         UNLOAD_WORKERS.fetch_add(1, Relaxed);
         Self(())
     }
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Drop for UnloadWorker {
     fn drop(&mut self) {
         UNLOAD_WORKERS.fetch_sub(1, Relaxed);
     }
 }
-#[cfg(test)]
-pub(super) fn unload_workers_for_test() -> usize {
+#[cfg(any(test, feature = "test-support"))]
+pub fn unload_workers_for_test() -> usize {
     UNLOAD_WORKERS.load(Relaxed)
 }
 /// Let a held `Unload` go and wait until every `sf-unload` worker has ended, so none can deliver
 /// into a later test's session. Bounded: a worker still alive after 10 s fails loudly.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn drain_unload_workers_for_test() {
     release_unload_for_test();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -287,42 +345,42 @@ fn drain_unload_workers_for_test() {
 /// How long the host `sf_unload` takes, in ms — the device's `StarfishMediaAPIs::Unload` blocks
 /// for 110-150 ms (`engine::PendingRelease`), and a test of the frame that pays for it needs a
 /// sink that takes measurable time too. 0 (the default) is the unmodified, instant Unload.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static UNLOAD_DELAY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-#[cfg(test)]
-pub(super) fn delay_unload_for_test(ms: u64) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn delay_unload_for_test(ms: u64) {
     UNLOAD_DELAY_MS.store(ms, Relaxed);
 }
-#[cfg(test)]
-pub(super) fn in_flight_calls_for_test() -> u32 {
+#[cfg(any(test, feature = "test-support"))]
+pub fn in_flight_calls_for_test() -> u32 {
     IN_FLIGHT_CALLS.load(Relaxed)
 }
-#[cfg(test)]
-pub(super) fn in_flight_verb_for_test() -> Option<&'static str> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn in_flight_verb_for_test() -> Option<&'static str> {
     *IN_FLIGHT_VERB.lock().unwrap_or_else(|e| e.into_inner())
 }
 /// Force [`LOAD_IN_FLIGHT`] directly, for a test that simulates the window without a real
 /// second thread (`the_gate_is_epoch_scoped`) — see that test for why it still needs this even
 /// though it never calls `sf_load`.
-#[cfg(test)]
-pub(super) fn set_load_in_flight_for_test(on: bool) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_load_in_flight_for_test(on: bool) {
     LOAD_IN_FLIGHT.store(on, Relaxed);
 }
 /// Whether the host `sf_load` is currently inside its in-flight window (`loadCompleted` emitted,
 /// not yet returned).
-#[cfg(test)]
-pub(super) fn load_in_flight_for_test() -> bool {
+#[cfg(any(test, feature = "test-support"))]
+pub fn load_in_flight_for_test() -> bool {
     LOAD_IN_FLIGHT.load(Relaxed)
 }
 /// **Test-only: force the host clock sink on.** The override reaches tests through a hook here
 /// rather than by widening the visibility of [`FORCE_ENABLED`].
-#[cfg(test)]
-pub(super) fn force_clocksink_for_test(on: bool) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn force_clocksink_for_test(on: bool) {
     FORCE_ENABLED.store(on, Relaxed);
 }
 /// Forget the seek probes (#568) and optionally force LG's `Seek` answer (`Some(0)` = refuse).
-#[cfg(test)]
-pub(super) fn reset_seek_probe_for_test(force: Option<c_int>) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn reset_seek_probe_for_test(force: Option<c_int>) {
     SEEK_LOG.lock().unwrap_or_else(|e| e.into_inner()).clear();
     FEED_LOG.lock().unwrap_or_else(|e| e.into_inner()).clear();
     FORCE_SEEK_RESULT.store(force.unwrap_or(i32::MIN), Relaxed);
@@ -330,14 +388,14 @@ pub(super) fn reset_seek_probe_for_test(force: Option<c_int>) {
     SEGMENT_CALLS.store(0, Relaxed);
 }
 /// The millis every `Seek` was called with since [`reset_seek_probe_for_test`].
-#[cfg(test)]
-pub(super) fn seek_log_for_test() -> Vec<i64> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn seek_log_for_test() -> Vec<i64> {
     SEEK_LOG.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 /// The sink pts of the Feeds of one stream (`es_data` 1 video, 2 audio) since
 /// [`reset_seek_probe_for_test`], in call order.
-#[cfg(test)]
-pub(super) fn feed_log_for_test(es_data: c_int) -> Vec<i64> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn feed_log_for_test(es_data: c_int) -> Vec<i64> {
     FEED_LOG
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -347,41 +405,41 @@ pub(super) fn feed_log_for_test(es_data: c_int) -> Vec<i64> {
         .collect()
 }
 /// How many private-offset Segment verbs ran since [`reset_seek_probe_for_test`].
-#[cfg(test)]
-pub(super) fn segment_calls_for_test() -> u64 {
+#[cfg(any(test, feature = "test-support"))]
+pub fn segment_calls_for_test() -> u64 {
     SEGMENT_CALLS.load(Relaxed)
 }
 /// How many times the sink was flushed since [`reset_seek_probe_for_test`].
-#[cfg(test)]
-pub(super) fn flush_calls_for_test() -> u64 {
+#[cfg(any(test, feature = "test-support"))]
+pub fn flush_calls_for_test() -> u64 {
     FLUSH_CALLS.load(Relaxed)
 }
 #[cfg(any(test, feature = "test-support"))]
-pub(super) fn force_play_result_for_test(result: Option<c_int>) {
+pub fn force_play_result_for_test(result: Option<c_int>) {
     FORCE_PLAY_RESULT.store(result.unwrap_or(i32::MIN), Relaxed);
 }
 /// Forget the verb order and put the host pipeline back at its default volume of 100.
-#[cfg(test)]
-pub(super) fn reset_volume_probe_for_test() {
+#[cfg(any(test, feature = "test-support"))]
+pub fn reset_volume_probe_for_test() {
     VERB_ORDER_LOG.lock().unwrap_or_else(|e| e.into_inner()).clear();
     HOST_VOLUME.store(100, Relaxed);
 }
 /// The Play / Pause / `volume:n` verbs since [`reset_volume_probe_for_test`], in order.
-#[cfg(test)]
-pub(super) fn verb_order_for_test() -> Vec<String> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn verb_order_for_test() -> Vec<String> {
     VERB_ORDER_LOG.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 /// The host pipeline's current volume.
-#[cfg(test)]
-pub(super) fn host_volume_for_test() -> i32 {
+#[cfg(any(test, feature = "test-support"))]
+pub fn host_volume_for_test() -> i32 {
     HOST_VOLUME.load(Relaxed)
 }
-#[cfg(test)]
-pub(super) fn play_calls_for_test() -> u64 {
+#[cfg(any(test, feature = "test-support"))]
+pub fn play_calls_for_test() -> u64 {
     PLAY_CALLS.load(Relaxed)
 }
 #[cfg(any(test, feature = "test-support"))]
-pub(super) fn force_pause_result_for_test(result: Option<c_int>) {
+pub fn force_pause_result_for_test(result: Option<c_int>) {
     FORCE_PAUSE_RESULT.store(result.unwrap_or(i32::MIN), Relaxed);
 }
 
@@ -409,12 +467,19 @@ fn enabled() -> bool {
     })
 }
 
+/// Monotonic milliseconds from an origin fixed at the first call. Private to the stand-in: the
+/// clock only ever differences two of its own readings, so it shares no origin with the player's.
+fn real_ms() -> i64 {
+    static T0: OnceLock<std::time::Instant> = OnceLock::new();
+    T0.get_or_init(std::time::Instant::now).elapsed().as_millis() as i64
+}
+
 fn now_ms() -> i64 {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if let Some(pinned) = pinned_clock::read() {
         return pinned;
     }
-    i64::from(super::vclock_ms())
+    real_ms()
 }
 
 /// A per-thread virtual reading for [`now_ms`], so a test that grades the clock's POSITION is not
@@ -425,8 +490,8 @@ fn now_ms() -> i64 {
 /// (`claim_hold`'s "stopped AT the claim offset" read 1 ms high). Pinned, time moves only when
 /// [`pinned_clock::Pinned::advance`] says so; dropping the guard restores the real clock. The
 /// pin starts at the real reading, so it shares the ticker thread's time base.
-#[cfg(test)]
-pub(super) mod pinned_clock {
+#[cfg(any(test, feature = "test-support"))]
+pub mod pinned_clock {
     use std::cell::Cell;
 
     thread_local! {
@@ -437,16 +502,16 @@ pub(super) mod pinned_clock {
         PINNED.with(Cell::get)
     }
 
-    pub(crate) struct Pinned;
+    pub struct Pinned;
 
     impl Pinned {
         /// Pin this thread's sink clock at the real time now.
-        pub(crate) fn now() -> Self {
-            PINNED.with(|p| p.set(Some(i64::from(super::super::vclock_ms()))));
+        pub fn now() -> Self {
+            PINNED.with(|p| p.set(Some(super::real_ms())));
             Pinned
         }
 
-        pub(crate) fn advance_ms(&self, by: i64) {
+        pub fn advance_ms(&self, by: i64) {
             PINNED.with(|p| p.set(p.get().map(|at| at + by)));
         }
     }
@@ -460,25 +525,11 @@ pub(super) mod pinned_clock {
 /// The rebase `sf_on_event` applies to a reported position (`playpos = fed - pts_shift +
 /// disp_base`), inverted: the fed PTS at which the app will read `media_ns`.
 fn media_to_fed(media_ns: i64) -> i64 {
-    let shared = &super::SHARED;
-    media_ns
-        .saturating_add(shared.pts_shift.load(Relaxed))
-        .saturating_sub(shared.disp_base.load(Relaxed))
+    (hooks().media_to_fed)(media_ns)
 }
 
-/// Stop the running clock EXACTLY at a movie position, or lift the stop (`None`). Returns whether
-/// a stop was armed: one the playhead has already passed is refused, because honouring it would
-/// run the clock backwards.
-///
-/// **Why it exists: the documentation's player figure** (`autopause=at=<ms>`). A pause issued when
-/// the playhead has reached a position is accepted some tens of milliseconds later, and how many
-/// moves with host scheduling, across a 24 fps frame boundary as often as not: a different frame,
-/// a different knob position, every run. Stopped here, the clock waits on the one position the
-/// pause is aimed at, the pause then freezes it there (`hold` reads the clamped position), and
-/// the picture `sim_video` shows, the clock readout and the playhead are identical from run to
-/// run. A stall of the sink's own making, like the fed-ceiling clamp above: the app sees a
-/// pipeline that has not presented past that point yet, which is a shape it already handles.
-pub fn stop_clock_at(media_ns: Option<i64>) -> bool {
+/// Arm (or lift, `None`) the stop [`HostSink::stop_clock_at`] documents; it returns whether one was armed.
+fn stop_clock_at(media_ns: Option<i64>) -> bool {
     let Some(media_ns) = media_ns else {
         STOP_AT_MEDIA_NS.store(i64::MAX, Relaxed);
         return false;
@@ -496,8 +547,13 @@ fn report_event(ty: c_int, num: i64, text: *const c_char) {
     let epoch = ACTIVE_EPOCH.load(Relaxed);
     if epoch != 0 && !CALLBACK_GATE_RETIRED.load(Relaxed) {
         CALLBACK_INTERCEPTS.fetch_add(1, Relaxed);
-        super::sf_on_event(epoch, ty, num, text);
+        deliver(epoch, ty, num, text);
     }
+}
+
+/// One pipeline event into the application's callback, as LG's library thread would.
+fn deliver(epoch: c_uint, ty: c_int, num: i64, text: *const c_char) {
+    (hooks().deliver_event)(epoch, ty, num, text);
 }
 
 fn report_position(pts_ns: i64) {
@@ -547,8 +603,8 @@ static STOP_AT_MEDIA_NS: AtomicI64 = AtomicI64::new(i64::MAX);
 /// ([`Clock::rewind`], [`sf_seek_ms`]).
 static EOS_PENDING: AtomicBool = AtomicBool::new(false);
 
-#[cfg(test)]
-pub(super) fn force_callback_intercepts_for_test(value: u32) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn force_callback_intercepts_for_test(value: u32) {
     CALLBACK_INTERCEPTS.store(value, Relaxed);
 }
 /// Force `OBJECT_READY` directly, without a real `sf_load` call. `sf_load`'s host stub
@@ -560,26 +616,26 @@ pub(super) fn force_callback_intercepts_for_test(value: u32) {
 /// default `false`.
 /// Whether the host object is quarantined (`LIFECYCLE_BLOCKED`) — separates a D1 release from a
 /// quarantine, which both leave `sf_ready()` at 0.
-#[cfg(test)]
-pub(super) fn lifecycle_blocked_for_test() -> bool {
+#[cfg(any(test, feature = "test-support"))]
+pub fn lifecycle_blocked_for_test() -> bool {
     LIFECYCLE_BLOCKED.load(Relaxed)
 }
 /// Make the seam's own D1 evidence disagree with Rust's: `sf_destroy` answers 0 and latches the
 /// quarantine even though every proof Rust holds says Destroy. Cleared by
 /// [`reset_native_lifecycle_for_test`].
-#[cfg(test)]
-pub(super) fn force_destroy_refusal_for_test(on: bool) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn force_destroy_refusal_for_test(on: bool) {
     FORCE_DESTROY_REFUSAL.store(on, Relaxed);
 }
-#[cfg(test)]
-pub(super) fn force_object_ready_for_test(on: bool) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn force_object_ready_for_test(on: bool) {
     OBJECT_READY.store(on, Relaxed);
 }
 
 /// A fresh host test process without paying for a process per case. Production has deliberately no
 /// equivalent: once a real object is quarantined, clearing this latch would reintroduce reuse.
-#[cfg(test)]
-pub(super) fn reset_native_lifecycle_for_test() {
+#[cfg(any(test, feature = "test-support"))]
+pub fn reset_native_lifecycle_for_test() {
     // First, while the globals below still name the session the stale worker belongs to.
     drain_unload_workers_for_test();
     ACTIVE_EPOCH.store(0, Relaxed);
@@ -602,8 +658,8 @@ pub(super) fn reset_native_lifecycle_for_test() {
 
 /// Start the sink clock running at `base_ns` in the fed-PTS space with plenty of fed media ahead,
 /// so a test can watch whether it advances. Test-only: production starts it through `sf_play`.
-#[cfg(test)]
-pub(super) fn clock_run_for_test(base_ns: i64) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn clock_run_for_test(base_ns: i64) {
     Clock::rewind();
     BASE_NS.store(base_ns, Relaxed);
     FED_MAX_NS.store(i64::MAX / 2, Relaxed);
@@ -611,22 +667,22 @@ pub(super) fn clock_run_for_test(base_ns: i64) {
     PLAYING.store(true, Relaxed);
 }
 /// The sink clock's position and whether it is running. Test-only.
-#[cfg(test)]
-pub(super) fn clock_state_for_test() -> (i64, bool) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn clock_state_for_test() -> (i64, bool) {
     (Clock::position_ns(), PLAYING.load(Relaxed))
 }
 /// Take one sink tick (what the `clocksink` thread does every [`TICK_MS`]) on the calling thread.
 /// Test-only.
-#[cfg(test)]
-pub(super) fn tick_for_test() {
+#[cfg(any(test, feature = "test-support"))]
+pub fn tick_for_test() {
     Clock::tick();
 }
 /// Run the clock `ms` of wall time forward while it is playing, for EVERY thread that reads it:
 /// the `clocksink` thread is not the test's, so a per-thread pin ([`pinned_clock`]) would leave it
 /// reporting the real time. Backdates the resume stamp, which is all `position_ns` adds elapsed
 /// time to. Test-only.
-#[cfg(test)]
-pub(super) fn advance_clock_for_test(ms: i64) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn advance_clock_for_test(ms: i64) {
     RESUMED_AT_MS.fetch_sub(ms, Relaxed);
 }
 
@@ -706,7 +762,7 @@ impl Clock {
     /// film, so #865's `pipeline_eos` arm could not fire here.
     ///
     /// A paused clock reports nothing, as a paused pipeline does not finish. It is sent through
-    /// [`super::sf_on_event`], like the position, and sets nothing in `SHARED` itself.
+    /// [`Hooks::deliver_event`], like the position, and sets nothing in the player's state itself.
     ///
     /// A function of its own so a test can take a tick on its own thread ([`tick_for_test`])
     /// instead of waiting for the ticker's wall-clock sleep.
@@ -724,8 +780,8 @@ impl Clock {
 
     /// One thread for the process, reporting position at the device's own cadence.
     ///
-    /// It calls [`super::sf_on_event`] — the same `#[no_mangle]` entry point LG's library thread
-    /// calls, with the same arguments — rather than writing `SHARED` directly. That is deliberate:
+    /// It calls [`Hooks::deliver_event`] — the same entry point LG's library thread
+    /// calls, with the same arguments — rather than writing `FEED_SHARED` directly. That is deliberate:
     /// the mapping from a fed PTS to `playpos_ns` (the `pts_shift`/`disp_base` rebase) lives in
     /// that callback, and a sink that bypassed it would be testing a path the television does not
     /// take.
@@ -751,10 +807,10 @@ unsafe fn sf_load(payload: *const c_char, epoch: u32) -> c_int {
         return 0; // "pipeline could not be constructed" — the engine's existing failure path
     }
     Clock::rewind();
-    // `plxnative-simvideo`: the screenshot picture (`player::sim_video`) learns the codec here.
+    // `plxnative-simvideo`: the screenshot picture learns the codec here.
     if !payload.is_null() {
         let payload = std::ffi::CStr::from_ptr(payload).to_string_lossy();
-        crate::player::sim_video::load(&payload, Clock::position_ns);
+        hooks().frames.load(&payload, Clock::position_ns);
     }
     ACTIVE_EPOCH.store(epoch, Relaxed);
     CALLBACK_INTERCEPTS.store(0, Relaxed);
@@ -784,15 +840,15 @@ unsafe fn sf_load(payload: *const c_char, epoch: u32) -> c_int {
             (18, 601, c"Resource Allocation Error"),
         ] {
             CALLBACK_INTERCEPTS.fetch_add(1, Relaxed);
-            super::sf_on_event(epoch, ty, num, s.as_ptr());
+            deliver(epoch, ty, num, s.as_ptr());
         }
         return 1;
     }
-    // The engine waits on `SHARED.load_completed`, which is set by parsing a callback STRING. Go
+    // The engine waits on `FEED_SHARED.load_completed`, which is set by parsing a callback STRING. Go
     // through the real callback rather than setting the flag, so the parse is exercised. Type 2 is
     // benign: the harness greps `smp_cb type=18` for a playback error and this is not one.
     CALLBACK_INTERCEPTS.fetch_add(1, Relaxed);
-    super::sf_on_event(epoch, 2, 0, c"{\"loadCompleted\":true}".as_ptr());
+    deliver(epoch, 2, 0, c"{\"loadCompleted\":true}".as_ptr());
     // issue #74 D.1 test seam: on the real (v0.6.0) seam this is the exact window between
     // `SMP_SET_READY(1)` and the real, blocking Load call returning — `loadCompleted` has
     // already fired (LG's pipeline can signal it from inside `Load()`) but the call has not come
@@ -908,7 +964,9 @@ unsafe fn sf_flush() -> c_int {
         return 0;
     }
     Clock::rewind();
-    crate::player::sim_video::flush();
+    if let Some(frames) = frames() {
+        frames.flush();
+    }
     1
 }
 /// LG's public `Seek(millis)`: refuses a negative target, otherwise flushes the pipeline and
@@ -931,7 +989,9 @@ unsafe fn sf_seek_ms(ms: i64) -> c_int {
     BASE_NS.store(ms.saturating_mul(1_000_000), Relaxed);
     FED_MAX_NS.store(i64::MIN, Relaxed);
     EOS_PENDING.store(false, Relaxed);
-    crate::player::sim_video::flush();
+    if let Some(frames) = frames() {
+        frames.flush();
+    }
     1
 }
 /// `PushEOS`: the engine has fed the last access unit. The pipeline answers with its own
@@ -996,7 +1056,9 @@ unsafe fn sf_feed(p: *const u8, size: c_uint, pts: i64, es_data: c_int) -> c_cha
     if es_data == 1 {
         FED_MAX_NS.fetch_max(pts, Relaxed);
         if !p.is_null() && size > 0 {
-            crate::player::sim_video::feed(std::slice::from_raw_parts(p, size as usize), pts);
+            if let Some(frames) = frames() {
+                frames.feed(std::slice::from_raw_parts(p, size as usize), pts);
+            }
         }
     }
     FEED_OK
@@ -1004,7 +1066,7 @@ unsafe fn sf_feed(p: *const u8, size: c_uint, pts: i64, es_data: c_int) -> c_cha
 unsafe fn sf_unload() {
     #[cfg(any(test, feature = "test-support"))]
     note_dispatch("sf_unload");
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     {
         let ms = UNLOAD_DELAY_MS.load(Relaxed);
         if ms > 0 {
@@ -1020,11 +1082,16 @@ unsafe fn sf_unload() {
         // Firmware emits this synthetic lifecycle callback before Unload returns. It bypasses the
         // callbackFunctionHook interposer, so it does not contribute to CALLBACK_INTERCEPTS.
         NATIVE_UNLOAD_COMPLETED.store(true, Relaxed);
-        super::sf_on_event(epoch, 23, 0, std::ptr::null());
+        deliver(epoch, 23, 0, std::ptr::null());
     }
     LOADED.store(false, Relaxed);
     Clock::rewind();
-    crate::player::sim_video::stop();
+    stop_frames();
+}
+fn stop_frames() {
+    if let Some(frames) = frames() {
+        frames.stop();
+    }
 }
 unsafe fn sf_callback_gate_retire() -> c_int {
     #[cfg(any(test, feature = "test-support"))]
@@ -1060,7 +1127,7 @@ unsafe fn sf_destroy() -> c_int {
     OBJECT_READY.store(false, Relaxed);
     LOADED.store(false, Relaxed);
     Clock::rewind();
-    crate::player::sim_video::stop();
+    stop_frames();
     1
 }
 unsafe fn sf_quarantine() {
@@ -1071,7 +1138,7 @@ unsafe fn sf_quarantine() {
     OBJECT_READY.store(false, Relaxed);
     LOADED.store(false, Relaxed);
     Clock::rewind();
-    crate::player::sim_video::stop();
+    stop_frames();
 }
 
 /// `VP_NONE` — "video cannot be displayed, but the app still runs", which is precisely the
@@ -1127,7 +1194,7 @@ unsafe fn acb_bind(_media_id: *const c_char) {
 unsafe fn acb_send_video_data(_source_info: *const c_char) -> c_int {
     #[cfg(any(test, feature = "test-support"))]
     note_dispatch("acb_send_video_data");
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     {
         ACB_VIDEO_DATA_CALLS.fetch_add(1, Relaxed);
         if ACB_VIDEO_DATA_ACCEPT.load(Relaxed) {
@@ -1144,31 +1211,84 @@ unsafe fn acb_send_atmos(_media_id: *const c_char) -> c_int {
 unsafe fn acb_start(_x: c_long, _y: c_long, _w: c_long, _h: c_long) {
     #[cfg(any(test, feature = "test-support"))]
     note_dispatch("acb_start");
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     ACB_START_CALLS.fetch_add(1, Relaxed);
 }
-unsafe fn acb_unload() {
+/// The simulator's completion mailbox and task counter. The host has no firmware thread, so its
+/// `setState(UNLOADED)` is accepted (`rv` 1) with a fresh task id and completes at once (event 1),
+/// which is what lets the host tests drive the plane owner's fence end to end.
+static HOST_PLANE_MAILBOX: std::sync::LazyLock<CompletionQueue> =
+    std::sync::LazyLock::new(|| CompletionQueue::new(64));
+static HOST_PLANE_TASK: AtomicI64 = AtomicI64::new(0);
+
+unsafe fn acb_unload() -> PlaneUnload {
     #[cfg(any(test, feature = "test-support"))]
     note_dispatch("acb_unload");
+    let task = HOST_PLANE_TASK.fetch_add(1, Relaxed) + 1;
+    HOST_PLANE_MAILBOX.push(task, 1);
+    PlaneUnload { rv: 1, task: task as c_long }
 }
 unsafe fn acb_pause() {
     #[cfg(any(test, feature = "test-support"))]
     note_dispatch("acb_pause");
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     ACB_PAUSE_CALLS.fetch_add(1, Relaxed);
 }
 unsafe fn acb_resume() {
     #[cfg(any(test, feature = "test-support"))]
     note_dispatch("acb_resume");
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     ACB_RESUME_CALLS.fetch_add(1, Relaxed);
 }
 
-/// The simulator's [`VideoSink`]: every method is the verb of the same name above.
-pub struct HostSink;
+/// The simulator's [`VideoSink`]: every method is the verb of the same name above. It is built with
+/// the application's [`Hooks`] (`HostSink::new` is `const`, so the port table can hold one) and
+/// adopts them at its first `Load`. A process builds one.
+pub struct HostSink {
+    hooks: Hooks,
+}
+
+impl HostSink {
+    pub const fn new(hooks: Hooks) -> Self {
+        Self { hooks }
+    }
+
+    /// Make this sink's hooks the ones the clock thread and the verbs read. The first sink wins; a
+    /// second one built from other hooks would leave a running session reading the first's.
+    fn adopt(&self) {
+        let _ = HOOKS.set(self.hooks);
+    }
+
+    /// Stop the running clock EXACTLY at a movie position, or lift the stop (`None`). Returns whether
+    /// a stop was armed: one the playhead has already passed is refused, because honouring it would
+    /// run the clock backwards.
+    ///
+    /// **Why it exists: the documentation's player figure** (`autopause=at=<ms>`). A pause issued when
+    /// the playhead has reached a position is accepted some tens of milliseconds later, and how many
+    /// moves with host scheduling, across a 24 fps frame boundary as often as not: a different frame,
+    /// a different knob position, every run. Stopped here, the clock waits on the one position the
+    /// pause is aimed at, the pause then freezes it there (`hold` reads the clamped position), and
+    /// the picture the frame sink shows, the clock readout and the playhead are identical from run to
+    /// run. A stall of the sink's own making, like the fed-ceiling clamp above: the app sees a
+    /// pipeline that has not presented past that point yet, which is a shape it already handles.
+    pub fn stop_clock_at(&self, media_ns: Option<i64>) -> bool {
+        self.adopt();
+        stop_clock_at(media_ns)
+    }
+}
 
 impl VideoSink for HostSink {
+    fn no_object_proof(&self, _: &MainThread) -> bool {
+        // NativeStop joins the Load worker before asking. A refused host Load never wrote an
+        // object, callback epoch or loaded state. A prior quarantine clears OBJECT_READY too,
+        // so its blocked latch and retained epoch are essential to this positive proof.
+        !OBJECT_READY.load(std::sync::atomic::Ordering::Acquire)
+            && ACTIVE_EPOCH.load(std::sync::atomic::Ordering::Acquire) == 0
+            && !LOADED.load(std::sync::atomic::Ordering::Acquire)
+            && !LIFECYCLE_BLOCKED.load(std::sync::atomic::Ordering::Acquire)
+    }
     unsafe fn load(&self, payload: *const c_char, epoch: u32) -> c_int {
+        self.adopt();
         sf_load(payload, epoch)
     }
     unsafe fn ready(&self, _: &MainThread) -> c_int {
@@ -1232,6 +1352,9 @@ impl VideoSink for HostSink {
     unsafe fn quarantine(&self, _: &MainThread) {
         sf_quarantine()
     }
+}
+
+impl DisplaySink for HostSink {
     fn window_mode(&self) -> c_int {
         unsafe { vp_mode() }
     }
@@ -1266,18 +1389,14 @@ impl VideoSink for HostSink {
     ) -> c_long {
         acb_create(app_id, player_type)
     }
-    #[cfg(feature = "devtriggers")]
-    unsafe fn plane_probe_initialized(&self, _: &MainThread) -> bool { false }
+    unsafe fn plane_initialized(&self, _: &MainThread) -> bool { false }
     #[cfg(feature = "devtriggers")]
     unsafe fn plane_probe_dass_available(&self, _: &MainThread) -> bool { false }
-    #[cfg(feature = "devtriggers")]
-    unsafe fn plane_probe_media_id(&self, _: &MainThread, _media_id: *const c_char) -> c_int { 0 }
-    #[cfg(feature = "devtriggers")]
-    unsafe fn plane_probe_loaded(&self, _: &MainThread) -> c_int { 0 }
+    unsafe fn plane_media_id(&self, _: &MainThread, _media_id: *const c_char) -> c_int { 0 }
+    unsafe fn plane_loaded(&self, _: &MainThread) -> c_int { 0 }
     #[cfg(feature = "devtriggers")]
     unsafe fn plane_probe_connect_dass(&self, _: &MainThread) -> c_int { 0 }
-    #[cfg(feature = "devtriggers")]
-    unsafe fn plane_probe_finish(&self, _: &MainThread) -> c_int { 0 }
+    unsafe fn plane_finish(&self, _: &MainThread) -> c_int { 0 }
     unsafe fn plane_bind(&self, _: &MainThread, media_id: *const c_char) {
         acb_bind(media_id)
     }
@@ -1290,8 +1409,11 @@ impl VideoSink for HostSink {
     unsafe fn plane_start(&self, _: &MainThread, x: c_long, y: c_long, w: c_long, h: c_long) {
         acb_start(x, y, w, h)
     }
-    unsafe fn plane_unload(&self, _: &MainThread) {
+    unsafe fn plane_unload(&self, _: &MainThread) -> PlaneUnload {
         acb_unload()
+    }
+    fn plane_completions(&self, _: &MainThread) -> Vec<PlaneCompletion> {
+        HOST_PLANE_MAILBOX.drain()
     }
     unsafe fn plane_pause(&self, _: &MainThread) {
         acb_pause()
@@ -1317,32 +1439,57 @@ mod tests {
         FED_MAX_NS.store(i64::MIN, Relaxed);
     }
 
+    /// The application's rebase, as the player applies it to a reported position:
+    /// `playpos = fed - pts_shift + disp_base`. The stop test sets both.
+    static PTS_SHIFT: AtomicI64 = AtomicI64::new(0);
+    static DISP_BASE: AtomicI64 = AtomicI64::new(0);
+
+    fn media_to_fed_for_test(media_ns: i64) -> i64 {
+        media_ns.saturating_add(PTS_SHIFT.load(Relaxed)).saturating_sub(DISP_BASE.load(Relaxed))
+    }
+
+    extern "C" fn ignore_event(_: c_uint, _: c_int, _: i64, _: *const c_char) {}
+
+    struct NoFrames;
+    impl FrameSink for NoFrames {
+        fn load(&self, _: &str, _: fn() -> i64) {}
+        fn flush(&self) {}
+        fn feed(&self, _: &[u8], _: i64) {}
+        fn stop(&self) {}
+    }
+
+    /// A sink built from the test's own hooks. Only the stop test adopts them (the first sink to
+    /// adopt wins), and no test here runs a `Load`, so no event is ever delivered.
+    fn test_sink() -> HostSink {
+        HostSink::new(Hooks { deliver_event: ignore_event, media_to_fed: media_to_fed_for_test, frames: &NoFrames })
+    }
+
     #[test]
     fn a_media_stop_parks_the_running_clock_exactly_on_it_and_a_pause_keeps_it_there() {
         let _g = lock();
         fresh();
         // The fed timeline is rebased onto the movie's: playpos = fed - pts_shift + disp_base.
-        let shared = &super::super::SHARED;
-        shared.pts_shift.store(2_000_000_000, Relaxed);
-        shared.disp_base.store(435_000_000_000, Relaxed);
+        let sink = test_sink();
+        PTS_SHIFT.store(2_000_000_000, Relaxed);
+        DISP_BASE.store(435_000_000_000, Relaxed);
         FED_MAX_NS.store(600_000_000_000, Relaxed);
         BASE_NS.store(2_000_000_000, Relaxed);
         RESUMED_AT_MS.store(now_ms(), Relaxed);
         PLAYING.store(true, Relaxed);
-        assert!(stop_clock_at(Some(446_020_000_000)), "11 s ahead of the playhead: armed");
+        assert!(sink.stop_clock_at(Some(446_020_000_000)), "11 s ahead of the playhead: armed");
         // A minute of wall time later the clock has run into the stop and waits on it, on the
         // exact fed PTS the movie position maps to, not wherever the wall clock got to.
         RESUMED_AT_MS.store(now_ms() - 60_000, Relaxed);
         assert_eq!(Clock::position_ns(), 13_020_000_000);
         Clock::hold();
         assert_eq!(BASE_NS.load(Relaxed), 13_020_000_000, "the pause keeps the stop's position");
-        stop_clock_at(None);
+        sink.stop_clock_at(None);
         assert_eq!(Clock::position_ns(), 13_020_000_000, "lifting it does not move a held clock");
         // A stop the playhead has already passed is refused: the clock would otherwise jump back.
-        assert!(!stop_clock_at(Some(440_000_000_000)));
+        assert!(!sink.stop_clock_at(Some(440_000_000_000)));
         assert_eq!(Clock::position_ns(), 13_020_000_000);
-        shared.pts_shift.store(0, Relaxed);
-        shared.disp_base.store(0, Relaxed);
+        PTS_SHIFT.store(0, Relaxed);
+        DISP_BASE.store(0, Relaxed);
     }
 
     #[test]

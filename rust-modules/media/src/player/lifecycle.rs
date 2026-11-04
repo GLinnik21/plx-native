@@ -950,7 +950,8 @@ mod foreground_resume_tests {
             Self::answer(&mut self.land_recoveries)
         }
 
-        fn before_load(&mut self, resume_ns: i64, clock: ForegroundClock) {
+        fn before_load(&mut self, _ps: &mut crate::route::PlaybackSession, resume_ns: i64,
+            clock: ForegroundClock) {
             self.before_loads.push((resume_ns, clock));
         }
 
@@ -1496,7 +1497,8 @@ mod foreground_resume_tests {
                 unreachable!("this actuator never goes pending")
             }
 
-            fn before_load(&mut self, _resume_ns: i64, _clock: ForegroundClock) {}
+            fn before_load(&mut self, _ps: &mut crate::route::PlaybackSession, _resume_ns: i64,
+                _clock: ForegroundClock) {}
 
             fn start_load(
             &mut self,

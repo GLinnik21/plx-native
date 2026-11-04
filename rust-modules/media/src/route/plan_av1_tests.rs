@@ -1,5 +1,5 @@
-//! AV1 direct-play gates (issue #593): AV1 is fed to the decoder only when the device's own
-//! codec table lists an AV1 row, and then only inside that row's bound and the shared one.
+//! AV1 direct-play gates (issue #593): Auto honors the device's AV1 row and bounds. Force
+//! attempts the original feed format even when the row is absent; the native open decides.
 use super::*;
 
 /// The caps a set with an AV1 row in its table reports, at the A2's documented UHD bound.
@@ -44,9 +44,9 @@ fn av1_is_bounded_by_the_shared_bound_too() {
 }
 
 #[test]
-fn forced_feed_admits_av1_only_with_the_row() {
+fn forced_feed_attempts_av1_with_or_without_a_declared_row() {
     let dp = plx_data::metadata::DvPresentation::NotDv;
-    assert!(!video_feed_supported("av1", dp, &plx_platform::devcaps::Caps::assumed()));
+    assert!(video_feed_supported("av1", dp, &plx_platform::devcaps::Caps::assumed()));
     assert!(video_feed_supported("av1", dp, &caps_on()));
     assert!(video_feed_supported("h264", dp, &plx_platform::devcaps::Caps::assumed()));
 }
@@ -64,10 +64,10 @@ fn vp9_never_direct_plays_without_the_row() {
     let dp = plx_data::metadata::DvPresentation::NotDv;
     // the AV1 row says nothing about VP9
     assert!(!video_direct_plays("vp9", 1920, 1080, dp, &caps_on()));
-    assert!(!video_feed_supported("vp9", dp, &caps_on()));
+    assert!(video_feed_supported("vp9", dp, &caps_on()));
     let assumed = plx_platform::devcaps::Caps::assumed();
     assert!(!video_direct_plays("vp9", 1920, 1080, dp, &assumed));
-    assert!(!video_feed_supported("vp9", dp, &assumed));
+    assert!(video_feed_supported("vp9", dp, &assumed));
 }
 
 /// The VP9 twin of the AV1 rules: the table's row switches the codec on and bounds it.

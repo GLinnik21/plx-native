@@ -5,7 +5,7 @@
 //! hardware video plane and our transparent UI plane.
 //!
 //! **Why it exists.** The documentation's player figure has to show a real picture under the real
-//! HUD, and the simulator otherwise shows the HUD over black (`ffi_host.rs`: nothing decodes). It
+//! HUD, and the simulator otherwise shows the HUD over black (`play-feed/src/ffi_host.rs`: nothing decodes). It
 //! is a screenshot facility, nothing more: every number the clock sink's module doc disowns stays
 //! disowned, and nothing here says anything about LG's decoder.
 //!
@@ -28,6 +28,7 @@
 //! cannot break that: a frame cannot be output before every frame that precedes it in display
 //! order has been fed.
 
+use super::ffi_host;
 use std::collections::BinaryHeap;
 use std::cmp::Reverse;
 use std::io::{Read, Write};
@@ -87,9 +88,28 @@ impl Drop for Session {
     }
 }
 
+/// The simulator's decoded picture, as the Feed backend's host sink ([`ffi_host`](super::ffi_host))
+/// is handed it: the sink calls these four at its `Load`, flush/seek, feed and unload.
+pub struct SimVideo;
+
+impl ffi_host::FrameSink for SimVideo {
+    fn load(&self, payload: &str, clock: fn() -> i64) {
+        load(payload, clock);
+    }
+    fn flush(&self) {
+        flush();
+    }
+    fn feed(&self, au: &[u8], pts: i64) {
+        feed(au, pts);
+    }
+    fn stop(&self) {
+        stop();
+    }
+}
+
 /// A new stream: remember its codec and clock, and drop whatever the last one left. `payload` is
 /// the Load JSON the television would have been given.
-pub fn load(payload: &str, clock: fn() -> i64) {
+fn load(payload: &str, clock: fn() -> i64) {
     if !armed() {
         return;
     }
@@ -100,14 +120,14 @@ pub fn load(payload: &str, clock: fn() -> i64) {
 }
 
 /// A flush (a seek restarts the fed timeline): keep the picture on screen until the next frame.
-pub fn flush() {
+fn flush() {
     if armed() {
         reset(false);
     }
 }
 
 /// Unload/destroy: no stream, no picture.
-pub fn stop() {
+fn stop() {
     if armed() {
         reset(true);
     }
@@ -123,7 +143,7 @@ fn reset(clear_picture: bool) {
 }
 
 /// One video access unit, Annex-B, at `pts` in the fed timeline. Never blocks the feeder.
-pub fn feed(au: &[u8], pts: i64) {
+fn feed(au: &[u8], pts: i64) {
     if !armed() {
         return;
     }

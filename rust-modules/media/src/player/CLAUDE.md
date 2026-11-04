@@ -1,4 +1,4 @@
-# player/ — the buffer-feed video engine
+# player/ — buffer-feed engine and backend integration
 
 This is the in-process **buffer-feed** playback engine (was `src/playback.c`): it pulls the part
 stream, demuxes it to access units, and `Feed()`s them to LG's StarfishMediaAPIs while `libAcbAPI`
@@ -9,7 +9,7 @@ one-paragraph playback summary.
 
 ## Sans-IO
 
-`lifecycle.rs`, `recovery.rs`, `release.rs` and the route planners `route/plan.rs` and
+`lifecycle.rs`, `attempt_metrics.rs`, `attempt_view.rs`, `recovery.rs`, `release.rs` and the route planners `route/plan.rs` and
 `plan_memory.rs` are machines: a step starts no worker, reads no registry and has no `cfg(test)`
 fork. The engine, the pump and the drivers beside them execute their effects.
 
@@ -17,39 +17,59 @@ fork. The engine, the pump and the drivers beside them execute their effects.
 
 ## Pipeline
 
-Normal playback uses in-process buffer-feed. Earlier URI/out-of-process experiments
-(`com.webos.media/load`) failed to bind, prompting the pivot recorded in `docs/buffer-feed-plan.md`
+Ordinary production playback still uses in-process buffer-feed. Earlier experiments with URI
+playback (`com.webos.media/load`) failed to bind, prompting the pivot recorded in `docs/buffer-feed-plan.md`
 (history, not spec). The controlled 2026-11-02 experiment later displayed its SDR720p24 fixture
 through ACB on the webOS 4.5 dev set, both with and without `connectDass`; see
-`docs/measurements/uri-acb-dass-2026-11-02.md`. URI mode exists in the tree only as a
-developer probe: `uriprobe.rs` (the pure machine) and `uriprobe_drive.rs` (its driver, forked to
-from `engine::start_bufferfeed_inner` by the `plxnative-uriprobe` trigger) play one stream through
-`com.webos.media` with no Engine behind it, to learn what webOS 5+ does with the exported window id
-(issue #1064). Its `drive` variant goes one step further and drives the transport the way a real
-URI backend would have to — pause, resume, a seek, a text and an audio `selectTrack`, and
-`setSubtitleEnable` — logging the position around each call, because the binding question is
-settled and the remaining question is whether the pipeline can be controlled. It is
-`devtriggers`-only, so a release build carries none of it, and it reports nothing to Plex.
-`uri_protocol.rs` holds shared pure builders/strict decoding; `uri_lifecycle.rs` owns registration
+`docs/measurements/uri-acb-dass-2026-11-02.md`. That proves this fixture's display path on one
+set, not production source, control or release coverage. Boot now installs a product URI driver
+and source qualification port. Its production qualifier returns Unknown and its certified
+capabilities are empty, so ordinary routes still choose Feed. Host fixtures inject qualified source
+and firmware evidence to exercise source, control and release logic.
+
+The product driver also carries the ACB plane binding the probe proved (`Binding::Acb` in
+`play-uri/src/backend.rs`): present and not routed. The paced sequence (gate, `setMediaId`, LOADED,
+the `connectDass` slot left empty, video data, full-screen display and PLAYING) is ONE pure machine,
+`play-uri/src/acb_bind.rs`, stepped by both the probe and the backend and performed through the sink by
+`play-uri/src/acb_drive.rs`; neither keeps a private copy. The backend starts it at `loadCompleted`
+from the service's own source envelope (it never builds a descriptor from bare `videoInfo`),
+grants the bind through `PlaneOwner::bind(.., BindPolicy::Strict, ..)` (deferred: retried on a later
+poll; refused: a typed failure and a close that does not unload someone else's binding), and mirrors
+accepted pause/resume to the plane once the bind has completed. Release is `UNLOADED` and then the
+plane owner's fence on that call's completion callback, pumped from the backend's `poll`
+(`docs/measurements/acb-release-fence-2026-11-04.md`); a quarantine until process exit is only the
+outcome of a failed fence, not the normal one. `uri_preflight::product_binding` selects it at
+composition (ACB display mode, an initialized handle, player type 0); `ProductEvidence::permits`
+still requires `Binding::Exported`, which is what keeps it from being offered a source.
+
+The separate `player/uriprobe_drive.rs` developer probe is invoked by the
+`plxnative-uriprobe` trigger. It plays one stream through `com.webos.media` with no Engine and
+can log pause, resume, seek, track selection and `setSubtitleEnable` behavior (issue #1064).
+That probe is `devtriggers`-only and reports nothing to Plex; the product driver is separate and
+uses common attempt reporting. `plx_play_uri` holds their protocol and driver implementation.
+`play-uri/src/uri_protocol.rs` holds pure builders/strict decoding; `play-uri/src/uri_lifecycle.rs` owns registration
 and request correlation, close deadlines and quarantine. The probe's logical Done does not release
 its adapter slot or exported window: the driver waits for successful bus unregister, keeps polling
 outside the player screen, and blocks reuse through unresolved close. Generic track/seek events and
 method ACKs remain distinct observations; they do not invent confirmation or resume policy.
 The stream side: `PMS HTTP GET` → demux → per-lane access-unit
-queues with byte-cap backpressure (`aq.rs`) → the pump `Feed()`s each AU to the Starfish pipeline.
-The demuxer is **`ff.rs` — the libavformat the app BUNDLES (not the TV's), over a custom AVIO on
+queues with byte-cap backpressure (`play-feed/src/aq.rs`) → the pump `Feed()`s each AU to the Starfish pipeline.
+The demuxer is **`play-feed/src/ff.rs` — the libavformat the app BUNDLES (not the TV's), over a custom AVIO on
 one of TWO transports** (design record: `docs/ffmpeg-demuxer-plan.md`; the hand-rolled `mkv.rs`
-fallback is retired/deleted). **Which transport is decided in `ff::demux` from the part URL's
+fallback is retired/deleted). `media/src/ff.rs` reexports its application entry points. **Which transport is decided in `ff::demux` from the part URL's
 scheme, or by a plaintext open's redirect to https (`stream::redirect` hands that hop to curl)** —
-`AvioState` holds a source enum and `read_cb`/`seek_cb` dispatch: `http` → `stream.rs`'s raw socket, `https` → `crate::curlio`. That matters *here* because teardown is a
+`AvioState` holds a source enum and `read_cb`/`seek_cb` dispatch: `http` → `stream.rs`'s raw socket, `https` → media's `curlio` credential facade over `plx_net::range_io`. That matters *here* because teardown is a
 different mechanism per arm: `engine::teardown` fires `stream::http_shutdown` at the socket **and**
-`curlio::abort_active()` at the curl source's wake pipe, since a thread parked in `curl_multi_wait`
+`curlio::abort_active()` through `net::range_io` at the curl source's wake pipe, since a thread parked in `curl_multi_wait`
 is not one any `shutdown(2)` of ours can reach. Exactly one of the two ever has anything to do. Ours ships beside the binary as `libav*-plx.so.*`, is `dlopen`'d by absolute path
 and pinned to majors 63/63/61, and is built `--disable-network` with `file` as its only protocol —
 so the AVIO is not merely how bytes reach it today, it is the only way they *can*. See the root
 `docs/agent-reference.md` linking section for why. It
 emits Annex-B video AUs (param sets prepended at each keyframe; a stream with no avcC/hvcC record, which is what an MPEG-TS or raw elementary stream under a `.mp4` name looks like since the route trusts the part's file NAME, arrives with start codes already: `ff::NalInput` decides it once per stream from the extradata, H.264 is framed in place and held back until its first keyframe, and HEVC is refused like a codec with no framing; its clock is also moved to 0 at the demuxer (`ff::stream_origin_ns`: packets rebased after the read, the origin added back on a seek) because the engine takes a fresh play's first keyframe to be near 0 and a capture's clock starts wherever the transmitter's did; Matroska and MP4 keep theirs; #1084) and, for AV1, Section-5 temporal units (TD OBU first, the av1C sequence header and metadata OBUs in-band on keyframes; `/tmp/plxnative-av1obu` = notd,noseq,raw tokens varies it on a debug build), for VP9 the demuxed packet unchanged (a frame carries its own headers and libpf's `video/x-vp9` caps have no `codec_data`), and AC3/EAC3, ADTS-framed AAC, or DTS core audio frames,
-and seeks by time via `av_seek_frame` (libavformat's own Cues index).
+and seeks by time via `av_seek_frame` (libavformat's own Cues index). The DTS-core extraction
+described above belongs to Auto. Force Direct Play
+preserves source audio packets; it neither strips DTS-HD extensions nor runs app PCM decode,
+and the native feed refuses a source shape it cannot represent.
 
 ## Threading model (this is the whole ballgame)
 
@@ -82,21 +102,33 @@ and seeks by time via `av_seek_frame` (libavformat's own Cues index).
   X ms after the stop`.
 - `pump.rs` — the **main-thread pump** (was `bufferfeed_pump`): each frame it drives bind → Play →
   feed and services seeks.
-- `threads.rs` — the workers beside the demuxer: **`load_thread`** (construct Starfish + `Load()`,
-  which owns its own GMainContext) and **`timeline_thread`** (the ~10 s `/:/timeline` progress
-  reporter). The **demux thread body is `ff::demux`** (spawned by `engine::start_bufferfeed`): open
+- `threads.rs` — **`load_thread`** constructs Starfish + `Load()` on its own GMainContext and
+  returns an addressed result to the adapter. `timeline.rs` owns the adapter's periodic PMS
+  reporter: it consumes fresh normalized samples, never backend globals. Its stopped handle
+  joins off-frame before the final stopped report. The **demux thread body is `ff::demux`**
+  (spawned by `engine::start_bufferfeed`): open
   the part URL, read+convert packets, push AUs to the two lanes; **and service seeks** — it
   `av_seek_frame`s on `seek_to_ns` between two `av_read_frame` calls, which is the whole seek
   mechanism (nothing interrupts it; see the seek gotcha below).
-- `shared.rs` — the engine's cross-thread transport, callback and clock state (each field replaces a
-  C `volatile` global — `g_*`). Route ownership and route-changing intents are the separate
-  process-wide authority in `route::PLAYER_CONTROL`. Put new state under the owner whose invariant
-  it belongs to; never smuggle it through a raw static.
+- The Feed backend's cross-thread transport, callback and clock state (each field replaces a
+  C `volatile` global — `g_*`) is owned by `plx_play_feed::shared`: the statics `FEED_SHARED` (the
+  native mailbox and gate) and `FEED_TX` (pause and seek intent). They are statics because
+  `sf_on_event` is a firmware callback with no user-data pointer and the demux, Load and subtitle
+  workers reach them off-thread; the executor types (`FeedResources`, `native_executor`) are handed
+  `&'static` references instead of naming them. Media's `player::shared` re-exports the module,
+  and media code that still names the owners spells `FEED_SHARED` / `FEED_TX` (so `grep` finds every
+  user; `plx_media::player::{FEED_SHARED, FEED_TX}` re-exports them for `screens` and the
+  application loop). `SHARED` and `TX` in `shared_resources.rs` hold only what is common to a
+  backend (captions, container track names, the audio-pick reason, `hud_until`, `scrub_ns`), and
+  `SHARED.reset_session` composes the caption reset into the feed's reset barrier. Route ownership
+  and route-changing intents are the separate process-wide authority in `route::PLAYER_CONTROL`.
+  Put new state under the owner whose invariant it belongs to; never smuggle it through a raw
+  static.
 
 **The main-thread rule is compiler-enforced.** The seam is the `VideoSink` trait in `plx_platform::tv::sink` (`rust-modules/platform/src/tv/sink.rs`)
-(Starfish-shaped: one method per verb, reached through `player::sink()`). `ffi.rs`'s `extern "C"`
+(Starfish-shaped: one method per verb, reached through `player::sink()`). `platform/src/webos/video_sink.rs`'s `extern "C"`
 declarations are private to that module and only `StarfishSink` there implements the trait on the
-television; `ffi_host.rs`'s `HostSink` is the simulator's. Every verb but `load` and `unload`
+television; `HostSink` (`play-feed/src/ffi_host.rs`, re-exported as `player::ffi_host`) is the simulator's. Every verb but `load` and `unload`
 takes a `task::MainThread` (the constant queries `feed_abi_is_cow`, `window_mode` and `window_id`
 take nothing); `unload` takes an `UnloadTicket`, which only a `&MainThread` can issue and which is
 `Send`, so the main thread decides when an Unload happens and a worker may carry it out.
@@ -161,7 +193,7 @@ something.
   was Playing is spent as a wake (the machine has no claim that restores a Playing save Paused).
   A Playing restore of a Paused save also clears the pause the park left standing BEFORE the Load
   (`PlayerForegroundActuator::before_load` → `transport::commit_viewer_resume_for_load`):
-  `ClockStartGuard` arms the Load's initial hold from `TX.paused` (only with no live Engine: over one, `before_load` leaves the pause for `PlayClock`), and under the stale pause that
+  `ClockStartGuard` arms the Load's initial hold from `FEED_TX.paused` (only with no live Engine: over one, `before_load` leaves the pause for `PlayClock`), and under the stale pause that
   hold was the viewer's, which fenced the first Play behind a prime (`SMP Play fenced; priming
   before retry`) and left the actual Play to the late `PlayClock`. That cleared pause, not the
   order of `playback_tick`, is also what keeps the paused-seek preroll shut. The app-switch PLAY
@@ -256,7 +288,7 @@ something.
   restored to the pipeline default 100 (`preroll: volume set 100 (restored; no readback)`) by `restore_preroll_volume` from `resume`
   (before its Play), the accepted re-pause in `finish_paused_seek`, and the pump's per-tick sweep
   for a preroll closed with no adapter in hand (`abandon_seek`). A stop or reload needs none: the
-  volume is per pipeline and `TX.reset` forgets the mute. Never `setAudioMute` (absent on 4.4.2 /
+  volume is per pipeline and `FEED_TX.reset` forgets the mute. Never `setAudioMute` (absent on 4.4.2 /
   4.10.0), `AcbAPI_startMute` or the system mute). An `acb_start` that runs under a really-paused pipeline (no preroll
   open) is followed by the ACB pause, so ACB is never left PLAYING over a paused pipeline. The
   `seek: paused frame restored` line therefore means the plane was bound when the pause landed.
@@ -347,15 +379,17 @@ something.
   `setDisplayWindow` take a `long *taskId` out-param as their last arg — the 3-arg ABI is required
   (2-arg calls corrupt memory / segfault). The developer-only `acb-control`/`acb-dass` URI
   experiment separately permits a reconstructed descriptor for its known SDR720p24 fixture;
-  that exception does not apply to normal buffer-feed playback.
+  that exception applies neither to normal buffer-feed playback nor to the production URI backend,
+  which forwards only an envelope the service reported.
 - **Opus goes to LG's own decoder only as far as the set is known to take it** (`ff_native_audio.rs`,
   `devcaps.rs`). What a set announces is layered, in this order and logged at boot as `devcaps: ...
   audio layers:`: the codec table, minus the codecs `/etc/gst/gstcool.conf` shows nothing can decode
   (`apply_gst_decoders`), minus `devcaps::EXCLUSIONS` (rows per firmware codename, each carrying its
   evidence: the C1's `kisscurl-koli` limits Opus to stereo, and records that Vorbis is refused),
   minus the refusals this install learned. Auto's own stereo ceiling for Opus
-  (`OPUS_AUTO_MAX_CHANNELS`) stays as it is; the rows add a ceiling Force Direct Play also holds
-  (`Caps::forced_feeds_audio_track`). FLAC, ALAC and LPCM are not native: the app decodes them and feeds PCM
+  (`OPUS_AUTO_MAX_CHANNELS`) stays as it is; Force Direct Play attempts the selected source
+  despite a missing or narrowed device row. FLAC, ALAC and LPCM are not native to the feed:
+  under Auto the app decodes them and feeds PCM
   (`ff_pcm.rs`, `devcaps::APP_DECODED`), so a PCM Load never raises the NAMED refusal below
   (`native_audio::Kind` is Opus only). They are NOT outside the learner, though: `recovery::suspect_audio` excludes only
   aac/ac3/eac3, so a PCM Load refused before its first picture can take the facet rung (the server converts
@@ -366,37 +400,33 @@ something.
   `flac` from the set's value and with it the bit-exact 44.1 and 48 kHz FLAC. Accepted knowingly, not keyed by (codec, resampled). A stream the Load declared PCM for but the app has no decoder for
   (float or 8-bit LPCM under PMS's `pcm`) is refused in the demuxer (`ff::pcm_load_feeds_raw`) and ends as
   `demux_failed` -> `LoadRefusal::SourceFailed`, which names no facet, so the audio-only conversion rung is not
-  reached: Auto Original falls to its HLS contingency, Force Direct Play shows the error.
+  reached: Auto Original falls to its HLS contingency. Force Direct Play does not start a PCM
+  Load for these codecs; feed admission refuses an original wire format it cannot represent.
   DTS, MP3, Vorbis and TrueHD are the lossy entries of `devcaps::APP_DECODED`, enabled **per row**: `Caps::app_lossy` (`AppLossy`) is `Off` in the assumed
   fallback, `Measured` in a table that was read (the rows whose `AppDecoded::measured` carries TV evidence: DTS only, the
   U5 core decode at 13.1% of one of four cores with 60 fps held; MP3, Vorbis and TrueHD are unmeasured, so not offered) and
   `All` under the DEBUG trigger `/tmp/plxnative-appdecodelossy` (read once at boot by `devcaps::probe`), which is also how an
-  unmeasured row is measured. A row is DECODED IN THE APP only where it is in force
-  (`Caps::app_decodes_lossy_track`, the one answer): the trigger puts every lossy row in force (even where the set has the
-  decoder); otherwise Force Direct Play has no native path for the track on a set without a DTS row (webOS 10+, or a refusal
-  the install learned) AND the track has at most two channels, or the recovery rung below put the codec in force (`Caps::with_app_lossy_for`).
-  **The app never mixes a source of more than two channels down to stereo by default** (owner decision 2026-10-28;
-  D1(b) and D2 as amended). `devcaps::app_decode_mixes_down(channels)` (channels outside 1..=2, so an unknown
-  width counts too) is the ONE predicate, `Caps::app_may_mix_down` its gate, and both the planner and the recovery
-  ladder read it: under Force Direct Play (D1(b)) a surround track the set has no native path for is NOT decoded
-  in the app (`app_decodes_lossy_track` is false for it, in either arm, the codec being in force or not), so the
-  Forced pick refuses it like any unplayable track (`ForcedFailure::Audio`, naming the codec; before S4 the same)
-  and a pipeline refusal of it reads out (`RecoveryEffect::NameRefusedAudio`: LG's 601 names no codec and is also a video/resource refusal, so the read-out names the
-  track the Load was fed only when the refusal is attributable to it (`OpenRecovery::refusal_attributable_to_audio`: an Engine with no picture, a codec the attempt's `Caps::native_audio_track(.., forced)` says the set does not play, not the app's PCM decode, and no video above `VIDEO_REFUSAL_FLOOR` that the facet rungs would suspect; Opus, DTS on a set with a DTS row and FLAC/ALAC/LPCM keep the generic read-out), then the same `ForcedFailure::Audio` sentence as the planner's up-front refusal; scheme of discussion #695 row 10); a track of one or two channels is no downmix and keeps the app decode. Under
-  Auto (D2) the surround downmix is only the very last rung of the ladder (below), after every server option was
+  unmeasured row is measured. Under Auto, a row is decoded in the app only where it is in force
+  (`Caps::app_decodes_lossy_track`): the debug trigger puts every lossy row in force, and the
+  recovery rung can put one refused codec in force for the current request. Force Direct Play
+  neither invokes this policy nor app-decodes any source. It keeps the exact selected track
+  despite missing or learned device declarations; an unrepresentable feed wire format is
+  refused by the physical backend, and a refused native open reads out without a conversion rung.
+  **The app never mixes a source of more than two channels down to stereo by default** (owner
+  decision 2026-10-28). Under Auto the surround downmix is only the very last rung of the ladder
+  (below), after every server option was
   refused, and stays labelled; Auto's default for a 5.1 track the set cannot take is the server conversion that keeps its channels.
-  **One exception, inside a request:** once the app-decode rung has put a codec in force (`Caps::app_lossy_in_force`) for a track of at most two channels,
+  **One Auto exception, inside a request:** once the app-decode rung has put a codec in force (`Caps::app_lossy_in_force`) for a track of at most two channels,
   the in-force arm of `Caps::app_decodes_lossy_track` admits a track of ANY width, so a later pick of a surround track of that
   codec (`commit_audio_route`, `audio_track_direct_plays`) is a native switch that is mixed down and labelled "played in stereo"
   WITHOUT that track's own server conversion or manual encode asked first. Admitting the mix-down only for a rung entered
   for a surround source would send that pick to the server, and a refused switch rebuild is a `ClaimTail::Rejected` ("current
   stream retained", `pump::rejected_tail`), not a `LoadRefusal` the `OpenRecovery` machine steps, so it would not reach the
   labelled stereo play the ladder gives an open. Not built; the next request starts from `start` again.
-  The `appdecodelossy` debug trigger (`AppLossy::All`) is the one explicit override. Auto never decodes in
-  the app on its own, and Force Direct Play's pick is three passes (`route/plan.rs`): (1) a native track that honours the intent
-  (the selected track, or a same-language non-commentary sibling: `StandIn::SameKind`), (2) the app's decode of the
-  intended track (at most two channels), (3) only then the native stand-in of any track. A native sibling wins over the app decode, and a
-  native commentary or dub never does. An app-decoded track is never the set's own decoder's (the Load
+  The `appdecodelossy` debug trigger (`AppLossy::All`) can enable Auto's decoder but never overrides
+  Force. Auto never decodes in the app on its own. Force Direct Play's pick is the exact original
+  source track (`route/plan.rs`), including an explicit later audio selection; no sibling,
+  commentary, dub or app decoder substitutes for it. An Auto app-decoded track is never the set's own decoder's (the Load
   declares `PCM`: stereo 48 kHz S16 for a lossy codec; the track's own table rate and width for FLAC, ALAC and LPCM, or the rate
   they are resampled to as S32 below: `route::stream_pcm`), is announced without a table row, the track menu says a surround one plays in
   stereo (`route::audio_decoded_in_app`), and
@@ -408,10 +438,10 @@ something.
   (`zeros 12, beta 14`: 25 taps against 83; flat to 0.45 * out, 120 dB down over `[R/2 - 0.55 * out, R/2]`, the derivation is on the kernel),
   one per halving while the rate is even and at least 4x the output, so 192 kHz to 48 kHz is half the multiply-adds of the one ratio-4 stage it used to be;
   what is left goes through one FULL stage of ratio at most 8 down to `out * 2^k`, then `k` exact FULL 2:1 stages (halved from the output up, so an odd rate gets one table, not one per stage); the tables stay under 6.7 MB for any rate). MP3 and Vorbis stay
-  `audio_rate_bounded` (a 96 kHz Vorbis has not been through the TV), so a track above 48 kHz is the server's; DTS (a core is 48 kHz at most), TrueHD
+  `audio_rate_bounded` under Auto (a 96 kHz Vorbis has not been through the TV), so a track above 48 kHz is the server's; DTS (a core is 48 kHz at most), TrueHD
   (decimated by the app) and FLAC, ALAC and LPCM (below) are exempt. **Lossless hi-res**: a mono or stereo FLAC, ALAC or LPCM track above 48 kHz is
   resampled by the app (`ff_pcm::PcmConverter`, lossless shape) to 48 kHz, or to 44.1 kHz for a multiple of 44.1 kHz (`devcaps::pcm_load_rate`, the one rule
-  for the planner, Forced, the track menu and the profile), and declared S32 whatever its own depth, at unity gain, saturating at the i32 range,
+  for Auto's planner, the track menu and the profile), and declared S32 whatever its own depth, at unity gain, saturating at the i32 range,
   without dither or limiter; one log line per stream counts the clipped samples and the peak. A 5.1 hi-res track still converts on the server
   (the profile keeps `audio.channels <= 2` for these codecs). A table rate (8 to 48 kHz) builds no converter and stays bit-exact. TrueHD is
   decoded as FFmpeg's `truehd` decodes it, up to the 7.1 bed; an Atmos object substream is not rendered. Its access units are
@@ -436,9 +466,9 @@ something.
   below never waits for it: it rebuilds from the attempt's own narrowed `start`. A write that does not
   land (unwritable storage) leaves the record as it was, as it does for every preference: the next
   play loads the combination, is refused once more, and the ladder converts it, one refused Load
-  slower. Under Force Direct Play a row in force refuses before any Load: the Forced audio gate
-  (`route/plan.rs`, `ForcedFailure::Audio`) reads the attempt's start value, so the read-out names
-  the codec and offers Switch to Auto. **A row is applied only on facet-clean proof** (S2a, #1046):
+  slower. Under Force Direct Play a learned row does not veto the original before Load; the
+  physical backend may refuse an unsupported native wire format or the native open may refuse
+  the stream. No Force recovery rung converts it. **A row is applied only on facet-clean proof** (S2a, #1046):
   a NAMED refusal
   (`num=200`, the stall) applies at once (its row has no `proofs`), but the DTS 601 of #695 names no
   codec, so it is learned the other way. The machine's facet flight lands (`FlightLanded` carries the
@@ -463,8 +493,7 @@ something.
   **The ladder** (the order of `OpenRecovery::decide`): (1) a pending Original trial's
   rollback, which narrows the attempt first by the facet the refusal named, because its rebase, the next
   retry and a quality change must plan from the narrowed value; (2) under Forced Direct Play, the
-  app-decode rung (6) for a track of at most two channels, else the read-out (a forced play is never converted, and the app never
-  mixes a surround source down for it); (3) the **facet rung**, for a refusal that names the
+  read-out with no app decode or conversion; (3) the **facet rung**, for a refusal that names the
   pipeline (`type=18` of ANY number, or the stall; not a Load timeout or a source failure) of an
   Engine that has shown no picture (`OpenFacts::no_frames`: the machine lives per request but a
   picture is per Engine, so a reload after the request's first picture, a track pick, owes its own
@@ -502,8 +531,8 @@ something.
   (6) the **app-decode rung** (`RecoveryEffect::DecodeInApp`): a pipeline refusal of a direct play
   (`OpenFacts::direct`: no server session) that has shown no picture, whose audio
   the pipeline itself decoded (`StreamAudio::app_decoded_lossy` is false), of a lossy codec the START value's policy admits
-  (`Caps::app_may_decode_lossy`), once per request (`in_app`), after a refused HLS contingency or a refused facet flight, or at
-  once under Forced (a track of at most two channels only, `Caps::app_may_mix_down`). **The source's width sets where it
+  (`Caps::app_may_decode_lossy`), once per request (`in_app`), after a refused HLS contingency
+  or facet flight, or when Auto has no earlier rung to take. **The source's width sets where it
   sits (owner decision 2026-10-28):** for a source of at most two channels the app decode is no downmix, keeps the direct play
   and asks no server, so it runs BEFORE (5); for a surround source (more than two channels, or an unknown
   width: `devcaps::app_decode_mixes_down`, the planner's predicate) (5), which keeps the channels, runs first when it is earned
@@ -842,10 +871,10 @@ something.
   pump. `route::transcode_seek` is a test-only composition. The
   rebase machinery
   (`pts_shift`/`rebase_pending` in `shared.rs`) keeps Starfish from ever seeing a PTS jump.
-- **`frames` is SEEK-scoped, `seen_frame` is SESSION-scoped.** `pump` zeroes `SHARED.frames` as
+- **`frames` is SEEK-scoped, `seen_frame` is SESSION-scoped.** `pump` zeroes `FEED_SHARED.frames` as
   *part of applying* an in-place seek (it counts only post-seek frames, for the rebind + resume
   re-pause gate), so `frames == 0` does **not** mean "we have never shown a picture" — it is true
-  for the whole of every seek. `SHARED.seen_frame` is the bit that answers that question: set beside
+  for the whole of every seek. `FEED_SHARED.seen_frame` is the bit that answers that question: set beside
   `frames` in the presented callback, cleared **only** in `reset_session`. The HUD divides its two
   busy indicators on it (`appkit::player_hud::busy_surface`); anything else asking "has this session put
   a picture on the panel" wants `player::seen_frame()`, not `frames() > 0`.
@@ -884,11 +913,11 @@ something.
   `player/lifecycle.rs`, its drivers (`drive_foreground` and the `poll_`/`park_` fns) are
   `player/foreground.rs`, and the transport-pause contract is `player/transport.rs`; `app::lifecycle`
   re-exports all three; details in the `docs/agent-reference.md` gotchas): OS
-  background suspends the buffer-feed preserving the session. Foreground tracks one exact Load
+  background suspends the active backend preserving the session. Foreground tracks one exact start
   attempt at a time, follows reducer-approved superseding or rollback attempts, retries an exact
-  failure without repeating route preparation, and issues the clock's native Play only after
-  `Started` (a Playing restore over a standing pause publishes the viewer's resume BEFORE the
-  Load, `before_load`, so the Load is not armed under it).
+  failure without repeating route preparation, and sends the addressed Play goal after readiness.
+  Feed additionally arms its native hold before a paused restore Load and opens that hold after
+  its exact start settles (`before_load` and `play_clock`).
   The opposite edge is `ForegroundInput::Superseded(Successor)`: `exit_player` sends
   `Superseded(Exit)` FIRST, retiring whatever a restore parked (a refused Load's `Prepared`, a
   `Suspended`, a pending Load, via the `Retire` effect), and the accepted-resolve boundary in the
@@ -904,17 +933,17 @@ something.
 
 **Start with `make check`** — the host unit suite (`cargo test --lib`, ~28 s for 3,639 tests,
 measured 2026-09-17; do not re-quote that number, `time` it) covers a real
-slice of this pipeline's pure logic: `ff.rs`'s `nal_end` bounds guard and AVCC→Annex-B conversion,
+slice of this pipeline's pure logic: `play-feed/src/ff.rs`'s `nal_end` bounds guard and AVCC→Annex-B conversion,
 the AVIO abort guards (a seek after teardown must not open a second connection — graded on an accept
 count), `stream.rs`'s socket lifecycle, `route/plan.rs`'s direct-play-vs-transcode selection, and
 `task.rs`'s `MainThread` token being genuinely `!Send`. Cheap enough that there is no reason to skip
 it before a deploy.
 
-But there is **no host *runtime*** — nothing above decodes a frame or touches Starfish/ACB (`ff.rs`
-once gated `#[link]` directives out of `cfg(test)` to keep the pure logic host-testable; with
-everything on `dynlib!` those are gone, so a test that actually calls FFmpeg now fails by taking
-`dlopen`'s `None` branch on Darwin rather than by failing to link), and the host is Darwin while the TV is
-Linux, which is why `tools/sockprobe.c` exists. So anything about *playback behaviour* is only
-observable on device: deploy and read `/tmp/plxnative-events.log` (feed stats, bind steps,
-seek/rebase, `RECEIVE_GOOD_VIDEO`). The `tests/` harness drives real playback per case — see the root
-`docs/agent-reference.md` testing section (run as GUEST by default; never run two harness jobs at once).
+Host tests run the Feed sink simulator and fake URI transport/display ports, so they can grade
+attempt ownership, control correlation, source handoff and release ordering. They do not decode
+a frame through the television's Starfish/ACB pipeline or prove URI picture presentation and
+reusable release on firmware. The host is Darwin while the TV is Linux, which is why
+`tools/sockprobe.c` exists. For device playback behavior, deploy and read
+`/tmp/plxnative-events.log` (feed stats, bind steps, seek/rebase, `RECEIVE_GOOD_VIDEO`). The
+`tests/` harness drives real playback per case — see the root `docs/agent-reference.md` testing
+section (run as GUEST by default; never run two harness jobs at once).

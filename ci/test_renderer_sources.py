@@ -23,10 +23,16 @@ def recipe_sources():
 def app_excluded():
     """The files the Makefile's application `SRCS` filters out of `$(wildcard src/*.c)`."""
     text = (ROOT / "Makefile").read_text()
-    m = re.search(r"^SRCS = \$\(filter-out ([^,]+),\$\(wildcard src/\*\.c\)\)", text, re.M)
+    m = re.search(r"^SRCS = \$\(filter-out (.+),\$\(wildcard src/\*\.c\)\)", text, re.M)
     if not m:
         raise AssertionError("the Makefile's SRCS line is not `$(filter-out ...,$(wildcard src/*.c))`")
-    return set(m.group(1).split())
+    listed = m.group(1)
+    # A `$(if COND,,src/x.c)` word excludes `x.c` only under COND (the starfish seam when no feed
+    # backend is built), so it can never keep a renderer source out of the application: drop every
+    # nested make expression and read only the words that exclude unconditionally.
+    while (flat := re.sub(r"\$\([^()]*\)", "", listed)) != listed:
+        listed = flat
+    return set(listed.split())
 
 
 class RendererSourcesStayOutOfTheApp(unittest.TestCase):
