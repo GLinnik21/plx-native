@@ -4827,7 +4827,7 @@ mod native_seek_pump_tests {
             SHARED.reset_session_for_reload();
             FEED_SHARED.reset_hls_clock_for_test();
             assert!(FEED_SHARED.arm_initial_clock_hold(FEED_TX.paused.load(Acquire), FEED_TX.seek_preroll_active()));
-            super::super::engine::arm_seek(target);
+            FEED_SHARED.arm_seek(target);
             let epoch = FEED_SHARED.begin_native_session().unwrap_or(0);
             let mut fresh = super::super::engine::streaming_engine_for_test(epoch);
             fresh.stage = Stage::Playing;

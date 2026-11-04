@@ -7,8 +7,9 @@
 //! [`crate::player::adapter::PlayerAdapter`] that consumes a [`MainThread`] at construction, so a
 //! `&mut PlayerAdapter` borrow is what confines it now (see `player::adapter`). Which is also the
 //! rule for the rest of this file — a function here takes the token **iff** it reaches the slot
-//! or the ACB/Starfish seam, so the parameter carries information. `arm_seek` runs on the main
-//! thread too and deliberately does not take one: it only publishes to `FEED_SHARED`.
+//! or the ACB/Starfish seam, so the parameter carries information. `FEED_SHARED.arm_seek` runs on
+//! the main thread too and deliberately takes none: it only publishes to the Feed's own state.
+#[cfg(test)]
 use plx_play_feed::shared::FEED_SHARED;
 #[cfg(all(test, feature = "hostsim"))]
 use super::route_start::{exit_native, exit_native_with, finish_release_for_test, poll_release,
@@ -438,18 +439,7 @@ use plx_play_feed::native_executor::stream_open_log_line;
 
 #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
 pub(super) fn native_slot_available() -> Option<()> {
-    NativeSessionStartGuard::arm(&FEED_SHARED).map(|guard| { drop(guard); })
-}
-
-/// Arm the demuxer to open+seek to `target_ns` on the NEXT Load, displaying honest content
-/// time. disp_base=0 and (via start_bufferfeed) rebase_pending=true, so feed_stream rebases
-/// the landed keyframe K to fed-pts 0 and the presented position reads as num+K = content
-/// time. Call BEFORE start_bufferfeed (resume) or via reload_at (mid-play seek).
-pub fn arm_seek(target_ns: i64) {
-    let t = target_ns.max(0);
-    FEED_SHARED.seek_to_ns.store(t, Ordering::Release);
-    FEED_SHARED.disp_base.store(0, Ordering::Relaxed);
-    FEED_SHARED.playpos_ns.store(t, Ordering::Relaxed); // instant HUD feedback until frames land
+    NativeSessionStartGuard::arm(&plx_play_feed::shared::FEED_SHARED).map(|guard| { drop(guard); })
 }
 
 /// Set where the pump ends an Engine for good under the failure read-out; spent by

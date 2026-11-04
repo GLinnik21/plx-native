@@ -1016,6 +1016,18 @@ impl Shared {
         self.video_raster.store(packed, Ordering::Release);
     }
 
+    /// Arm the demuxer to open+seek to `target_ns` on the NEXT Load, displaying honest content
+    /// time. disp_base=0 and (via start_bufferfeed) rebase_pending=true, so feed_stream rebases
+    /// the landed keyframe K to fed-pts 0 and the presented position reads as num+K = content
+    /// time. Call BEFORE start_bufferfeed (resume) or via reload_at (mid-play seek). Main thread
+    /// only, and it takes no `MainThread` token: it publishes to this struct and reaches no slot.
+    pub fn arm_seek(&self, target_ns: i64) {
+        let t = target_ns.max(0);
+        self.seek_to_ns.store(t, Ordering::Release);
+        self.disp_base.store(0, Ordering::Relaxed);
+        self.playpos_ns.store(t, Ordering::Relaxed); // instant HUD feedback until frames land
+    }
+
     /// Publish the display aspect the sourceInfo declared, as a reduced `(num, den)`. Packed
     /// `(num << 32) | den` in one word so a reader never sees half of a pair.
     pub fn publish_video_aspect(&self, num: u32, den: u32) {

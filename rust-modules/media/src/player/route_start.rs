@@ -786,7 +786,7 @@ pub fn reload_at(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter
         target_ns / 1_000_000_000
     ));
     teardown(ps, pa, true, plx_playback_contract::StopReason::Replace); // reload mode: preserve the session (no url-clear / stop-scrobble)
-    engine::arm_seek(target_ns);
+    FEED_SHARED.arm_seek(target_ns);
     reload_start_outcome(ps, pa, ticket)
 }
 
@@ -912,7 +912,7 @@ fn resume_prelude(ps: &mut crate::route::PlaybackSession, resume_ns: i64) -> Res
     }
     if !crate::route::is_transcoding(ps) {
         #[cfg(feature = "play-feed")]
-        engine::arm_seek(resume_ns); // direct-play: av_seek the file at the first open
+        FEED_SHARED.arm_seek(resume_ns); // direct-play: av_seek the file at the first open
         return ResumePrelude::Settled(ResumeOutcome::Prepared);
     }
     ResumePrelude::Rebuild
