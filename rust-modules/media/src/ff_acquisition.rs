@@ -343,9 +343,9 @@ pub(super) mod observe {
         });
     }
 
-    /// Run `action` on the WATCHED thread itself, synchronously, the instant the runtime has
-    /// answered its `nth` `Continue` in `phase` (counted from this call) and before that thread
-    /// can ask again. The channel [`watch_this_thread`] feeds cannot give that ordering: another
+    /// Run `action` on the WATCHED thread itself, synchronously, once the runtime has answered
+    /// its `nth` `Continue` in `phase` (counted from this call): before that answer reaches the
+    /// channel and before that thread can ask again. The channel [`watch_this_thread`] feeds cannot give that ordering: another
     /// thread that receives the answer and then changes the world races the watched thread's
     /// next ask, so a stalled receiver let a recheck slip in ahead of the change.
     pub(in crate::ff) fn on_nth_continue(
@@ -353,6 +353,7 @@ pub(super) mod observe {
         nth: usize,
         action: impl FnOnce() + Send + 'static,
     ) {
+        assert!(nth > 0, "nth counts from 1");
         let mut watched = WATCHED.lock().unwrap_or_else(|e| e.into_inner());
         let watched = watched
             .as_mut()
@@ -369,7 +370,7 @@ pub(super) mod observe {
     }
 
     pub(super) fn report(phase: Phase, flow: Flow) {
-        let action = {
+        let (tx, action) = {
             let mut watched = WATCHED.lock().unwrap_or_else(|e| e.into_inner());
             let Some(watched) = watched.as_mut() else {
                 return;
@@ -377,11 +378,8 @@ pub(super) mod observe {
             if watched.thread != std::thread::current().id() {
                 return;
             }
-            let _ = watched.tx.try_send((phase, flow));
-            match watched.hook.as_mut() {
-                Some(hook)
-                    if hook.phase == phase && matches!(flow, Flow::Continue { .. }) =>
-                {
+            let action = match watched.hook.as_mut() {
+                Some(hook) if hook.phase == phase && matches!(flow, Flow::Continue { .. }) => {
                     hook.remaining -= 1;
                     if hook.remaining == 0 {
                         watched.hook.take().map(|hook| hook.action)
@@ -390,11 +388,14 @@ pub(super) mod observe {
                     }
                 }
                 _ => None,
-            }
+            };
+            (watched.tx.clone(), action)
         };
-        // Outside the lock: the action is the test's own code and may touch the observer.
+        // Outside the lock (the action is the test's own code), and BEFORE the answer is
+        // delivered: a receiver that wakes on this answer finds the change already made.
         if let Some(action) = action {
             action();
         }
+        let _ = tx.try_send((phase, flow));
     }
 }

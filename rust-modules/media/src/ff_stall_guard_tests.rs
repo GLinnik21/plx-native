@@ -757,21 +757,37 @@ fn demux_against_when(
     );
     let seen = pms.seen.take().expect("one run per server");
     let (done_tx, done_rx) = std::sync::mpsc::sync_channel::<()>(1);
+    // `AfterContinue` fires on the READING thread, between the runtime's answer and its next ask
+    // (see `observe::on_nth_continue`): a publisher thread that took the answer off the channel
+    // and then fired raced the next recheck, so a stall of one slice (the NotReady wait), or of
+    // the 60 ms short deadlines, let the world move on before the change landed. `OnGet` has no
+    // runtime answer to be ordered against and keeps firing from the publisher.
+    let fired = std::sync::Arc::new(std::sync::Mutex::new(None::<std::time::Instant>));
+    let mut on_publisher = Some(trigger);
+    if let Fire::AfterContinue(phase, n) = fire {
+        let trigger = on_publisher.take().expect("one trigger");
+        let fired = fired.clone();
+        acquisition::observe::on_nth_continue(phase, n, move || {
+            trigger();
+            *fired.lock().unwrap() = Some(std::time::Instant::now());
+        });
+    }
     let publisher = std::thread::spawn(move || {
         let saw_get = match fire {
             Fire::OnGet => seen.recv_timeout(std::time::Duration::from_secs(5)).is_ok(),
             Fire::AfterContinue(phase, n) => await_continue(&answers, phase, n),
         };
-        if saw_get {
+        if let Some(trigger) = on_publisher.take().filter(|_| saw_get) {
             trigger();
+            *fired.lock().unwrap() = Some(std::time::Instant::now());
         }
-        let fired_at = std::time::Instant::now();
+        let fired_at = *fired.lock().unwrap();
         let torn_down = done_rx.recv_timeout(TEARDOWN_AFTER).is_err();
         if torn_down {
             crate::aq::aq_abort(aq_addr as *mut AuQueue);
             plx_net::stream::http_shutdown(hs_addr as *mut HttpStream);
         }
-        (saw_get.then_some(fired_at), torn_down, seen)
+        (fired_at, torn_down, seen)
     });
     let mut clock = crate::hls::SegmentTimeline::default()
         .begin(segment.duration)
