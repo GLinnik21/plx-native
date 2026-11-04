@@ -1,4 +1,4 @@
-{"updated":"2026-11-04T21:23:16Z",
+{"updated":"2026-11-04T21:33:16Z",
 "ci":[
 {"id":31093855724,"at":"2026-08-06T10:35:26Z","sha":"bdbf8a099","title":"docs: the README promised a ceiling the binary no longer has","jobs":{"cross-build (armv7) + artifact assertions":124,"host checks (NOT a device gate)":73},"pr":null,"conclusion":"success","attempt":1},
 {"id":31099939125,"at":"2026-08-06T12:05:30Z","sha":"dd7266471","title":"docs: cite webosbrew's own guidance on the system FFmpeg","jobs":{"cross-build (armv7) + artifact assertions":122,"host checks (NOT a device gate)":81},"pr":null,"conclusion":"success","attempt":1},
@@ -4512,7 +4512,8 @@
 {"id":41888932866,"at":"2026-11-04T18:37:08Z","sha":"ba276e92f","title":"Bound every plx_net test server's accept, and give its deadlines room","pr":1232,"conclusion":"failure","attempt":1,"jobs":{"Windows launcher syntax":53,"Linux simulator build + launch":289,"macOS tests against bundled FFmpeg and ASS":229}},
 {"id":41894584025,"at":"2026-11-04T19:11:47Z","sha":"20b30a9f0","title":"Correct the player_shots.sh comment that said a sessionless boot never reaches the player","pr":1234,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":135,"macOS tests against bundled FFmpeg and ASS":189,"Windows launcher syntax":19,"Linux simulator build + launch":239}},
 {"id":41896462822,"at":"2026-11-04T19:23:24Z","sha":"9357da73b","title":"Let the playurl dev trigger start playback from the sign-in and picker pages","pr":1234,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":208,"macOS tests against bundled FFmpeg and ASS":222,"Windows launcher syntax":21,"Linux simulator build + launch":273}},
-{"id":41914290388,"at":"2026-11-04T21:14:56Z","sha":"e7c033802","title":"Test the autopause hold's pre-arm line and correct its placement and ceiling prose","pr":1235,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":198,"macOS tests against bundled FFmpeg and ASS":249,"Windows launcher syntax":23,"Linux simulator build + launch":350}}
+{"id":41914290388,"at":"2026-11-04T21:14:56Z","sha":"e7c033802","title":"Test the autopause hold's pre-arm line and correct its placement and ceiling prose","pr":1235,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":198,"macOS tests against bundled FFmpeg and ASS":249,"Windows launcher syntax":23,"Linux simulator build + launch":350}},
+{"id":41916223442,"at":"2026-11-04T21:27:13Z","sha":"7ad737eea","title":"Hold the simulator's settled capture until an armed autopause lands","pr":1235,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":349,"Windows launcher syntax":21,"macOS simulator build + launch":234,"macOS tests against bundled FFmpeg and ASS":199}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
