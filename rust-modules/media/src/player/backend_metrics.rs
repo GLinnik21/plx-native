@@ -15,15 +15,15 @@ impl LogicalRequestId {
     pub const fn get(self) -> u64 { self.0 }
 }
 
-/// Local typed results. A preflight refusal has no physical release, while a native Start
-/// refusal does. Only the caller may turn a terminal handled error into an existing report.
+/// Local typed results of one runner call. Every discrete occurrence (a failed or rejected
+/// start, a rebuffer, a handoff, a release failure) is exactly one `Fx::Incident` record with
+/// its backend and stage, whichever driver produced it; only the caller may turn a terminal
+/// handled error into an existing report. A rejected Start has no physical release owed, while
+/// a refused one does. A release failure is recorded here, by the physical-lifecycle owner,
+/// because the native release outlives the logical request that started the attempt.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MetricNotice {
     Measured(m::Fx<LogicalRequestId, AttemptId>),
-    PreflightRejected { request: LogicalRequestId, backend: BackendKind, attempt: AttemptId,
-        failure: m::Failure },
-    Release { request: LogicalRequestId, backend: BackendKind, attempt: AttemptId,
-        status: ReleaseStatus },
 }
 
 /// No IDs leave this projection. The caller must provide the current session's request and
@@ -84,14 +84,52 @@ struct Physical {
     stop: Option<StopReason>,
 }
 
+/// The physical attempt whose native release is still owed, with the logical request it was
+/// started for. Unlike `Physical`, it survives `begin` and `finish`: a release verdict that
+/// arrives after the request was replaced or finished still names its own request and attempt.
+#[derive(Clone, Copy)]
+struct ReleaseOwner {
+    request: LogicalRequestId,
+    backend: BackendKind,
+    attempt: AttemptId,
+    failure_recorded: bool,
+}
+
 pub(super) struct Metrics {
     model: m::AttemptMetrics<LogicalRequestId, AttemptId>,
     physical: Option<Physical>,
+    release_owner: Option<ReleaseOwner>,
     foreground: bool,
 }
 impl Metrics {
     pub(super) fn new() -> Self { Self { model: m::AttemptMetrics::new(), physical: None,
-        foreground: true } }
+        release_owner: None, foreground: true } }
+
+    /// Record a failed native release at most once per attempt, whichever evidence reaches it
+    /// first (a Quarantined verdict, a refused Stop, or a Stop no driver could accept).
+    fn release_failed(&mut self, backend: BackendKind, attempt: AttemptId, cause: m::Cause,
+        at: m::Tick, out: &mut Vec<MetricNotice>) {
+        let Some(owner) = self.release_owner.as_mut().filter(|o|
+            (o.backend, o.attempt) == (backend, attempt) && !o.failure_recorded) else { return };
+        owner.failure_recorded = true;
+        out.push(MetricNotice::Measured(m::Fx::Incident(m::Record {
+            request: owner.request, attempt, backend: map_backend(backend),
+            stage: m::Stage::Release, incident: m::Incident::Failed(cause), at })));
+    }
+
+    /// A Stop that no driver could accept leaves the common owner quarantined: the release is
+    /// uncertain, so it is a release failure even though no native verdict will follow.
+    pub(super) fn rejected_stop(&mut self, backend: BackendKind, attempt: AttemptId,
+        reason: Failure, at: m::Tick, out: &mut Vec<MetricNotice>) {
+        let cause = map_cause(reason);
+        self.release_failed(backend, attempt, cause, at, out);
+        let Some(request) = self.request() else { return };
+        if let Some(mut physical) = self.physical.filter(|p| (p.backend, p.attempt) == (backend, attempt)) {
+            self.finish_attempt(request, &mut physical, m::AttemptOutcome::Failed(m::Failure {
+                stage: m::Stage::Release, cause }), at, out);
+            self.physical = Some(physical);
+        }
+    }
 
     pub(super) fn snapshot(&self) -> Option<&m::RequestSummary<LogicalRequestId, AttemptId>> {
         self.model.snapshot()
@@ -205,6 +243,8 @@ impl Metrics {
                 self.step(m::Event::AttemptStarted { request, attempt,
                     backend: map_backend(backend), origin, at }, out);
                 if self.model.snapshot().and_then(|r| r.current_attempt).is_some_and(|a| a.id == attempt) {
+                    self.release_owner = Some(ReleaseOwner { request, backend, attempt,
+                        failure_recorded: false });
                     self.physical = Some(Physical { backend, attempt, ready: false, picture: false,
                         finished: false, paused, pre_pause: None, seeking: false,
                         held: paused || !self.foreground,
@@ -223,10 +263,11 @@ impl Metrics {
     }
 
     pub(super) fn rejected_start(&mut self, backend: BackendKind, attempt: AttemptId,
-        reason: Failure, out: &mut Vec<MetricNotice>) {
+        reason: Failure, at: m::Tick, out: &mut Vec<MetricNotice>) {
         if let Some(request) = self.request() {
-            out.push(MetricNotice::PreflightRejected { request, backend, attempt,
-                failure: m::Failure { stage: m::Stage::Open, cause: map_cause(reason) } });
+            out.push(MetricNotice::Measured(m::Fx::Incident(m::Record { request, attempt,
+                backend: map_backend(backend), stage: m::Stage::Open,
+                incident: m::Incident::Failed(map_cause(reason)), at })));
         }
     }
 
@@ -240,6 +281,13 @@ impl Metrics {
             | Fx::ReleaseOutcome { backend, attempt, .. } => (backend,attempt),
             _ => return,
         };
+        match *notice {
+            Fx::ReleaseOutcome { status: ReleaseStatus::Quarantined, .. } =>
+                self.release_failed(backend, attempt, m::Cause::Native, at, out),
+            Fx::CommandRefused { operation: Operation::Stop(_), failure, .. } =>
+                self.release_failed(backend, attempt, map_cause(failure), at, out),
+            _ => {}
+        }
         let request = if matches!(notice, Fx::ReleaseOutcome { .. }) {
             self.model.snapshot().map(|summary| summary.id)
         } else { self.request() };
@@ -332,7 +380,6 @@ impl Metrics {
                     if physical.paused || physical.held { m::Condition::Held } else { m::Condition::Unknown }, at, out);
             }
             Fx::ReleaseOutcome { status, .. } => {
-                out.push(MetricNotice::Release { request, backend, attempt, status });
                 if status == ReleaseStatus::Quarantined {
                     self.finish_attempt(request, &mut physical,
                         m::AttemptOutcome::Failed(m::Failure { stage: m::Stage::Release,
