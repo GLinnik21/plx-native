@@ -25,8 +25,9 @@ progress and picture evidence. Queuing work is never counted as a native acknowl
 
 The application composes the common runner with the URI and feed drivers. Addressed resource
 mapping, timeline/Plex writes and recovery stay common. `plx_play_feed` owns demux, queues and
-native state; `media/player` still contains the Feed Engine and some physical execution pending
-the final move. Source IO and demux observations travel through injected ports.
+native state and physical execution in `native_executor`. The `media/player/engine` module is
+the common route and telemetry bridge to that executor. Source IO and demux observations travel
+through injected ports.
 Caption stores receive explicit playhead and seek-target facts rather than reading feed clocks.
 Both playback drivers are optional Cargo dependencies, and the URI-only normal dependency graph
 excludes `plx_play_feed`. URI-only and Feed-only host source checks have passed checkpoints, but

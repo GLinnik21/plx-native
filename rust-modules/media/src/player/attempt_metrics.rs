@@ -1,8 +1,8 @@
 //! Pure, local playback-attempt measurements. A logical request may try several physical
 //! backends; their identities come from the route owner. This reducer neither mints an attempt
 //! nor reads a clock, player registry, recorder, consent setting, URL, or user content. A caller
-//! injects monotonic ticks and may later consume the bounded typed effects under its own policy.
-//! No production reporting path is wired to this module yet.
+//! injects monotonic ticks. The production adapter consumes the typed effects into a bounded
+//! local notice window; external error reporting retains its separate consent policy.
 
 /// Retained physical summaries per logical request. Older summaries are discarded, while the
 /// request's aggregate counts and durations continue saturating. This bounds recorder payloads.
