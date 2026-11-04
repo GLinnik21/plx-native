@@ -123,6 +123,8 @@ impl AcbBind {
     }
     pub fn waiting_for_video(&self) -> bool { matches!(self.state, State::WaitingVideo { .. }) }
     pub fn bound(&self) -> bool { self.state == State::Bound }
+    /// The gate answered yes and the sequence waits for (or has begun) the media.
+    pub fn passed_gate(&self) -> bool { !matches!(self.state, State::Idle | State::Binding { step: Step::Check, .. } | State::Ended) }
     /// A step is in flight, waiting out its pace, or deferred: ACB verbs may still be issued.
     pub fn running(&self) -> bool {
         matches!(self.state, State::Binding { .. } | State::Pacing { .. } | State::Retry { .. })

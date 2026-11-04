@@ -1,10 +1,13 @@
 //! Persistent URI executor. The caller owns route identity, source authorization and backend
 //! admission. The native session and every bus request stay behind `Lifecycle`.
+use crate::acb_bind::{AcbBind, Event as AcbEvent, Failure as AcbFailure, Fx as AcbFx};
+use crate::acb_drive::{self, Descriptor, Executed, Verdict};
 use crate::session_io;
 use crate::uri_lifecycle::{Event as LifeEvent, Fx as LifeFx, Lifecycle, Phase};
-use crate::uri_protocol::{AbrBps, Ev, Message, Method, UriCall};
+use crate::uri_protocol::{AbrBps, AcbSource, Ev, Message, Method, UriCall};
 use plx_base::task::MainThread;
-use plx_platform::tv::sink::{DisplaySink, VP_EXPORTED};
+use plx_platform::tv::plane::Refusal;
+use plx_platform::tv::sink::{DisplaySink, VP_ACB, VP_EXPORTED};
 use plx_platform::tv::uri::{Shape, UriMedia};
 use plx_playback_contract::{AttemptId, BackendEvent, BackendKind, Capabilities, CommandId,
     ContentTime, DispatchResult, DriverEvent, DriverSet, EvidenceSource, ExitDisposition,
@@ -16,16 +19,19 @@ use std::os::raw::c_int;
 /// A monotonic clock supplied by the runner. The ownership reducer only receives its value.
 pub trait MonotonicClock { fn now_ms(&self) -> u64; }
 
-/// An explicitly qualified display path. ACB cannot be selected here: its general native
-/// descriptor and asynchronous release have not been qualified outside the diagnostic probe.
+/// An explicitly qualified display path. `Acb` is the webOS 4.x plane: the paced bind sequence of
+/// `acb_bind` through the one plane owner, released by `UNLOADED` and its completion fence. It
+/// refuses to start unless the display is in ACB mode and the gate (`acb_bind::gate`) passes, and
+/// it forwards only a descriptor the service itself reported. Present, and not routed: no
+/// qualifier produces an offer for it yet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Binding { Exported { canvas: (c_int, c_int) }, Unbound }
+pub enum Binding { Exported { canvas: (c_int, c_int) }, Acb, Unbound }
 
 /// No firmware capability is inferred from the display mode or transport response.
 pub struct Config {
     pub transport: &'static dyn UriMedia,
     pub display: &'static dyn DisplaySink,
-    /// The process's plane owner, for the (not yet production) ACB release of a bound plane.
+    /// The process's plane owner: grants the one ACB binding and releases it.
     pub plane: &'static plx_platform::tv::plane::PlaneOwner,
     pub clock: Box<dyn MonotonicClock>,
     pub app_id: String,
@@ -100,6 +106,15 @@ pub struct UriBackend {
     pending: VecDeque<DriverEvent>,
     close_reported: bool,
     quarantine_reported: bool,
+    acb: AcbBind,
+    /// The envelope the service reported for the loaded media: the only descriptor an ACB bind sends.
+    acb_source: Option<AcbSource>,
+    foreground_sent: bool,
+    /// Why the plane owner refused the bind, when it did; the failure reported is typed from it.
+    acb_refusal: Option<Refusal>,
+    /// The transport state the service last accepted, and whether the plane was told it is paused.
+    transport_paused: bool,
+    plane_paused: bool,
 }
 
 impl UriBackend {
@@ -113,7 +128,9 @@ impl UriBackend {
             start_deadline_ms: None, loaded: false, play_sent: false, played_once: false,
             subscribed: false,
             dispatching: None, controls: BTreeMap::new(),
-            pending: VecDeque::new(), close_reported: false, quarantine_reported: false }
+            pending: VecDeque::new(), close_reported: false, quarantine_reported: false,
+            acb: AcbBind::new(false), acb_source: None, foreground_sent: false, acb_refusal: None,
+            transport_paused: false, plane_paused: false }
     }
 
     /// Give exactly one authorized, owned URL to the next matching Start. Superseding a staged
@@ -147,9 +164,13 @@ impl UriBackend {
         }
     }
 
-    /// The exported plane remains owned after service Playing until native release destroys
-    /// its window. This is an ownership fact, not proof that a picture reached the panel.
-    pub fn plane_owned(&self) -> bool { self.window && self.played_once }
+    /// The plane remains owned after service Playing until native release: the exported window
+    /// until it is destroyed, an ACB binding from the plane owner's grant until the `UNLOADED`
+    /// fence. This is an ownership fact, not proof that a picture reached the panel.
+    pub fn plane_owned(&self) -> bool {
+        (self.window && self.played_once)
+            || (self.config.binding == Binding::Acb && self.active.is_some() && self.lifecycle.plane_open())
+    }
 
     /// Whether the active source has an exact native index for this selected source track.
     /// This is source evidence, independent of a general SelectTrack capability flag; a PMS
@@ -204,6 +225,10 @@ impl UriBackend {
         if matches!(self.config.binding, Binding::Exported { .. }) && self.config.display.window_mode() != VP_EXPORTED {
             return self.refuse_before_open(attempt, Failure::Unsupported);
         }
+        if self.config.binding == Binding::Acb
+            && (self.config.display.window_mode() != VP_ACB || !self.acb_gate(mt)) {
+            return self.refuse_before_open(attempt, Failure::Unsupported);
+        }
         let window_id = match self.config.binding {
             Binding::Exported { canvas } => {
                 let Some(id) = session_io::create_exported_window(self.config.display, mt) else {
@@ -213,6 +238,8 @@ impl UriBackend {
                 session_io::place_exported_window(self.config.display, mt, canvas, canvas);
                 Some(id)
             }
+            // 4.x ignores the window option; the service wants the key present (measured sequence).
+            Binding::Acb => Some(crate::acb_bind::DUMMY_WINDOW_ID.to_owned()),
             Binding::Unbound => None,
         };
         self.last_started = Some(attempt);
@@ -229,12 +256,21 @@ impl UriBackend {
         self.controls.clear();
         self.close_reported = false;
         self.quarantine_reported = false;
+        self.acb_source = None;
+        self.foreground_sent = false;
+        self.acb_refusal = None;
+        self.transport_paused = false;
+        self.plane_paused = false;
         self.lifecycle = Lifecycle::new();
         self.feed(LifeEvent::Open(Shape::Named), mt, self.config.clock.now_ms());
         DispatchResult::Queued
     }
 
     fn begin_close(&mut self, mt: &MainThread, now_ms: u64) {
+        // No ACB verb may run after UNLOADED has been asked for: a stray display step would send
+        // PLAYING over a release in flight.
+        self.acb.step(AcbEvent::Cancel, now_ms, &mut Vec::new());
+        self.acb_source = None;
         self.url = None;
         self.start_deadline_ms = None;
         self.dispatching = None;
@@ -253,13 +289,20 @@ impl UriBackend {
         let Some(media_id) = self.lifecycle.media_id().cloned() else { return; };
         if !self.subscribed {
             self.subscribed = true;
+            // The measured ACB sequence announces the media as the foreground connection before
+            // it subscribes; a service that refuses it ends the start (see `delivered`).
+            if self.config.binding == Binding::Acb && !self.foreground_sent {
+                self.foreground_sent = true;
+                self.feed(LifeEvent::Call(UriCall::NotifyForeground { media_id: media_id.clone() }), mt, now_ms);
+            }
             self.feed(LifeEvent::Call(UriCall::Subscribe { media_id }), mt, now_ms);
         }
     }
 
     /// A delivered method reply is useful only when its native request still names this exact
     /// command. Callback play state and clock reports remain separate observations.
-    fn control_message(&mut self, method: Method, denied: bool, message: &Message) -> bool {
+    fn control_message(&mut self, method: Method, denied: bool, message: &Message,
+        mt: &MainThread) -> bool {
         if let Some(request) = message.reply_request {
             if let Some(pending) = self.controls.get(&request).copied() {
                 let matches_method = matches!((method, pending.kind),
@@ -288,6 +331,7 @@ impl UriBackend {
                             command: pending.command, operation: pending.operation,
                             native_acknowledged: true });
                     }
+                    self.mirror_transport(pending.operation, mt);
                 }
             }
             if method == Method::Seek && !denied {
@@ -350,14 +394,15 @@ impl UriBackend {
     fn delivered(&mut self, method: Method, ok: bool, message: Message,
         mt: &MainThread, now_ms: u64) {
         let denied = !ok || message.accepted() == Some(false);
-        let refused_control = self.control_message(method, denied, &message);
+        let refused_control = self.control_message(method, denied, &message, mt);
         if denied {
             if matches!(method, Method::Play | Method::Pause | Method::Seek | Method::SelectTrack) {
                 if refused_control && method == Method::Play { self.play_sent = false; }
                 return;
             }
             self.observe(Observation::Failed(Failure::Refused));
-            if matches!(method, Method::Register | Method::Load | Method::Subscribe) {
+            if matches!(method, Method::Register | Method::Load | Method::Subscribe)
+                || (method == Method::NotifyForeground && self.config.binding == Binding::Acb) {
                 self.begin_close(mt, now_ms);
             }
             return;
@@ -370,12 +415,25 @@ impl UriBackend {
             // The URL is needed only to build the one Load payload. Never retain it for controls.
             self.url = None;
         }
+        // The envelope can arrive in the same message as `loadCompleted`: take it first, so the
+        // sequence that `loadCompleted` starts already has the facts it waits for.
+        if self.config.binding == Binding::Acb {
+            if let Some(source) = message.acb_source.as_ref() {
+                self.acb_source = Some(source.clone());
+                self.acb_step(AcbEvent::Video(source.video), mt, now_ms);
+            }
+        }
         let mut ended = false;
         for event in &message.normalized {
             let playback = match event {
                 Ev::LoadCompleted => {
                     self.loaded = true;
                     self.start_deadline_ms = None;
+                    if self.config.binding == Binding::Acb {
+                        if let Some(media_id) = self.lifecycle.media_id().cloned() {
+                            self.acb_step(AcbEvent::Loaded { media_id }, mt, now_ms);
+                        }
+                    }
                     Some(Playback::ReadyAwaitPlay)
                 }
                 Ev::Playing => {
@@ -412,6 +470,114 @@ impl UriBackend {
         }
         if ended { self.begin_close(mt, now_ms); }
         else { self.maybe_subscribe(mt, now_ms); }
+    }
+
+    /// The ACB gate, run through the shared sequence's own first step before anything is opened.
+    fn acb_gate(&mut self, mt: &MainThread) -> bool {
+        self.acb = AcbBind::new(false);
+        self.acb_refusal = None;
+        let now_ms = self.config.clock.now_ms();
+        self.acb_step(AcbEvent::Start, mt, now_ms);
+        self.acb.passed_gate()
+    }
+
+    /// Step the shared ACB sequence and run what it asks, each answer fed straight back.
+    fn acb_step(&mut self, first: AcbEvent, mt: &MainThread, now_ms: u64) {
+        let mut queue = VecDeque::from([first]);
+        while let Some(event) = queue.pop_front() {
+            let mut out = Vec::new();
+            self.acb.step(event, now_ms, &mut out);
+            for effect in out {
+                match effect {
+                    AcbFx::Run { request, step, op, retry } => {
+                        if !retry {
+                            plx_base::eventlog::log(&format!("uri-acb: request={} step={step:?}", request.number()));
+                        }
+                        let executed = self.acb_run(&op, mt, now_ms);
+                        let completed_ms = self.config.clock.now_ms();
+                        queue.push_back(match executed.verdict {
+                            Verdict::Invoked(invoked) => AcbEvent::Answered { request, invoked, completed_ms },
+                            Verdict::Deferred => AcbEvent::Deferred { request },
+                            Verdict::Refused(why) => {
+                                self.acb_refusal = Some(why);
+                                AcbEvent::Answered { request, invoked: false, completed_ms }
+                            }
+                        });
+                    }
+                    AcbFx::WaitingVideo => plx_base::eventlog::log(
+                        "uri-acb: waiting for the service's source envelope (real video facts)"),
+                    AcbFx::Answered { step, invoked } => plx_base::eventlog::log(
+                        &format!("uri-acb: answer step={step:?} invoked={invoked} (not plane proof)")),
+                    AcbFx::GatePassed => {}
+                    AcbFx::Bound => {
+                        plx_base::eventlog::log("uri-acb: bound (a dispatch result, not a picture)");
+                        if self.transport_paused { self.mirror_pause(mt); }
+                    }
+                    AcbFx::Failed(failure) => {
+                        // Before a session exists (the gate) the caller refuses the start itself.
+                        if self.active.is_some() && self.lifecycle.session().is_some() {
+                            let failure = match failure {
+                                AcbFailure::Refused => match self.acb_refusal {
+                                    Some(Refusal::NoPlane) => Failure::Unavailable,
+                                    Some(Refusal::Bound) => Failure::Busy,
+                                    Some(Refusal::Quarantined(_)) => Failure::ReleaseUncertain,
+                                    None => Failure::Backend,
+                                },
+                                AcbFailure::Timeout | AcbFailure::VideoTimeout => Failure::TimedOut,
+                            };
+                            plx_base::eventlog::log(&format!("uri-acb: the bind failed ({failure:?}); closing"));
+                            self.observe(Observation::Failed(failure));
+                            self.begin_close(mt, now_ms);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Perform one step of the sequence. The descriptor is only ever the service's own envelope
+    /// for exactly these facts; nothing is built here.
+    fn acb_run(&mut self, op: &crate::acb_bind::Op, mt: &MainThread, now_ms: u64) -> Executed {
+        let source = self.acb_source.as_ref();
+        let mut descriptor = |media_id: &crate::uri_protocol::MediaId, video: crate::uri_protocol::VideoFacts| {
+            source.filter(|source| &source.media_id == media_id && source.video == video)
+                .map(|source| Descriptor { text: source.text().to_owned(), label: "observed-envelope" })
+                .ok_or("the service reported no source envelope for these video facts")
+        };
+        let executed = acb_drive::execute(op, mt, self.config.display, self.config.plane, &mut descriptor,
+            &mut |_, line| plx_base::eventlog::log(&format!("uri-acb: {line}")));
+        if let (true, Some(session)) = (executed.touched, self.lifecycle.session()) {
+            self.feed(LifeEvent::AcbTouched { session }, mt, now_ms);
+        }
+        executed
+    }
+
+    /// Mirror an accepted transport pause or resume to the plane, as Feed does (Kodi parity: the
+    /// pipeline's Pause/Play alone leave the ACB play state stale). Only once the bind is complete.
+    fn mirror_transport(&mut self, operation: Operation, mt: &MainThread) {
+        match operation {
+            Operation::Pause => {
+                self.transport_paused = true;
+                self.mirror_pause(mt);
+            }
+            Operation::Play => {
+                self.transport_paused = false;
+                if self.plane_paused && self.acb.bound() {
+                    self.plane_paused = false;
+                    // SAFETY: main thread, witnessed by `mt`; the bind completed.
+                    unsafe { self.config.display.plane_resume(mt) };
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn mirror_pause(&mut self, mt: &MainThread) {
+        if self.config.binding == Binding::Acb && self.acb.bound() && !self.plane_paused {
+            self.plane_paused = true;
+            // SAFETY: main thread, witnessed by `mt`; the bind completed.
+            unsafe { self.config.display.plane_pause(mt) };
+        }
     }
 
     fn feed(&mut self, first: LifeEvent, mt: &MainThread, now_ms: u64) {
@@ -553,6 +719,13 @@ impl UriBackend {
             }
         }
         self.feed(LifeEvent::Tick { now_ms }, mt, now_ms);
+        if let Some(session) = self.lifecycle.session().filter(|session| self.lifecycle.acb_fence_due(*session)) {
+            // UNLOADED is in flight: drain the firmware's completions into the plane owner, and
+            // let the lifecycle release (or quarantine) on what it says.
+            let plane = self.config.plane.pump(self.config.display, mt);
+            self.feed(LifeEvent::AcbPlane { session, plane }, mt, now_ms);
+        }
+        self.acb_step(AcbEvent::Tick, mt, now_ms);
         if self.start_deadline_ms.is_some_and(|deadline| now_ms >= deadline)
             && matches!(self.lifecycle.phase(), Phase::Opening | Phase::Open) {
             self.observe(Observation::Failed(Failure::TimedOut));
@@ -610,7 +783,7 @@ impl DriverSet for UriBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use plx_platform::tv::sink::NoSink;
+    use plx_platform::tv::sink::{NoSink, PlaneUnload, ScriptedPlaneSink};
     use plx_platform::tv::uri::{CloseStatus, RequestId, SessionId, UriPoll, UriReply};
     use plx_playback_contract::{BackendState, Event as ContractEvent, Fidelity,
         Fx as ContractFx, InitialPlayback, Intent, Requirements, SourceKind, StopReason};
@@ -684,13 +857,26 @@ mod tests {
         mt: MainThread, command: plx_playback_contract::CommandId }
     impl Rig {
         fn new() -> Self {
+            Self::with(Binding::Unbound, Box::leak(Box::new(NoSink)),
+                Box::leak(Box::new(plx_platform::tv::plane::PlaneOwner::new())))
+        }
+        /// An ACB-bound backend over a scripted sink and its own plane owner (booted as the
+        /// measured sequence needs: a handle, player type 0).
+        fn acb() -> (Self, &'static ScriptedPlaneSink, &'static plx_platform::tv::plane::PlaneOwner) {
+            let sink: &'static ScriptedPlaneSink =
+                Box::leak(Box::new(ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 })));
+            let plane: &'static plx_platform::tv::plane::PlaneOwner =
+                Box::leak(Box::new(plx_platform::tv::plane::PlaneOwner::new()));
+            plane.boot(plx_platform::tv::plane::PlaneFacts { handle: true, player_type: 0 });
+            (Self::with(Binding::Acb, sink, plane), sink, plane)
+        }
+        fn with(binding: Binding, display: &'static dyn DisplaySink,
+            plane: &'static plx_platform::tv::plane::PlaneOwner) -> Self {
             let clock = std::sync::Arc::new(AtomicU64::new(0));
             let bus = Box::leak(Box::new(Bus::new()));
-            let display = Box::leak(Box::new(NoSink));
-            let driver = UriBackend::new(Config { transport: bus, display,
-                plane: Box::leak(Box::new(plx_platform::tv::plane::PlaneOwner::new())),
+            let driver = UriBackend::new(Config { transport: bus, display, plane,
                 clock: Box::new(Clock(clock.clone())),
-                app_id: "app.test".into(), binding: Binding::Unbound, capabilities: CAPS,
+                app_id: "app.test".into(), binding, capabilities: CAPS,
                 startup_timeout_ms: 500, release_allowance_ms: 100, source_ttl_ms: 50 });
             let mut state = BackendState::new();
             let mut fx = Vec::new();
@@ -1087,5 +1273,236 @@ mod tests {
         assert_eq!(rig.driver.exit_disposition(), ExitDisposition::PreserveNativeOwnership);
         rig.driver.poll(&rig.mt);
         assert_eq!(rig.driver.exit_disposition(), ExitDisposition::Clean);
+    }
+
+    // ---- the ACB binding ----
+
+    const ENVELOPE: &str = r#"{"mediaId":"m1","sourceInfo":{"context":"m1","video":{"width":1280,"height":720,"frameRate":24}},"loadCompleted":true}"#;
+
+    impl Rig {
+        fn at(&self, ms: u64) { self.clock.store(ms, Ordering::Relaxed); }
+        /// Started, registered, loaded, subscribed: the service has not said `loadCompleted` yet.
+        fn acb_loading(&mut self) {
+            assert_eq!(self.start(A), DispatchResult::Queued);
+            self.bus.say("register", "");
+            self.driver.poll(&self.mt);
+            self.bus.say("load", r#"{"returnValue":true,"mediaId":"m1"}"#);
+            self.driver.poll(&self.mt);
+        }
+        fn bus_methods(&self) -> Vec<&'static str> {
+            self.bus.0.lock().unwrap().calls.iter().map(|(name, _, _)| *name).collect()
+        }
+        /// Run the paced sequence to its end; `loadCompleted` (with the envelope) is at t=0.
+        fn acb_bound(&mut self) {
+            self.acb_loading();
+            self.bus.say("subscribe", ENVELOPE);
+            self.driver.poll(&self.mt);
+            for t in [200, 400, 600, 900] { self.at(t); self.driver.poll(&self.mt); }
+        }
+    }
+
+    #[test]
+    fn acb_start_refuses_unless_every_gate_fact_holds() {
+        let boot = |handle, player_type| -> &'static plx_platform::tv::plane::PlaneOwner {
+            let plane = Box::leak(Box::new(plx_platform::tv::plane::PlaneOwner::new()));
+            plane.boot(plx_platform::tv::plane::PlaneFacts { handle, player_type });
+            plane
+        };
+        let scripted = || -> &'static ScriptedPlaneSink {
+            Box::leak(Box::new(ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 })))
+        };
+        let unconfirmed = scripted();
+        unconfirmed.initialized.store(false, Ordering::Relaxed);
+        let cases: [(&str, &'static ScriptedPlaneSink, &'static dyn DisplaySink, &'static plx_platform::tv::plane::PlaneOwner); 4] = {
+            let (a, b, c) = (scripted(), scripted(), scripted());
+            [("a created handle is not an initialized one", unconfirmed, unconfirmed, boot(true, 0)),
+             ("the measured sequence initialized player type 0", a, a, boot(true, 10)),
+             ("no handle", b, b, boot(false, 0)),
+             ("not the ACB display", c, Box::leak(Box::new(NoSink)), boot(true, 0))]
+        };
+        for (case, sink, display, plane) in cases {
+            let mut rig = Rig::with(Binding::Acb, display, plane);
+            assert_eq!(rig.start(A), DispatchResult::Refused(Failure::Unsupported), "{case}");
+            assert!(rig.bus_methods().is_empty(), "{case}: nothing was opened");
+            assert!(sink.calls().is_empty(), "{case}: no verb ran");
+            // The refusal leaves the backend startable.
+            assert!(rig.driver.exit_disposition() == ExitDisposition::Clean, "{case}");
+        }
+    }
+
+    #[test]
+    fn acb_load_carries_the_dummy_window_and_the_foreground_notice_precedes_subscribe() {
+        let (mut rig, _, _) = Rig::acb();
+        rig.acb_loading();
+        assert_eq!(rig.bus_methods(), ["load", "notifyForeground", "subscribe"]);
+        let state = rig.bus.0.lock().unwrap();
+        assert!(state.calls[0].2.contains(r#""windowId":"window_id_dummy""#));
+        assert!(state.calls[1].2.contains(r#""connectionId":"m1""#));
+    }
+
+    #[test]
+    fn acb_a_refused_foreground_notice_ends_the_start() {
+        let (mut rig, _, _) = Rig::acb();
+        rig.acb_loading();
+        {
+            let mut state = rig.bus.0.lock().unwrap();
+            let request = state.calls.iter().rev().find(|(name, _, _)| *name == "notifyForeground").unwrap().1;
+            let session = state.session;
+            state.replies.push_back(UriReply { session, request, method: "notifyForeground",
+                payload: r#"{"returnValue":false}"#.into(), ok: true });
+        }
+        let events = rig.driver.poll(&rig.mt);
+        assert!(events.contains(&DriverEvent::Observation { attempt: A,
+            observation: Observation::Failed(Failure::Refused) }));
+        assert!(rig.bus_methods().contains(&"unload"), "the session is closing");
+    }
+
+    #[test]
+    fn acb_binds_in_the_measured_order_and_pace_after_load_completed() {
+        let (mut rig, sink, plane) = Rig::acb();
+        rig.acb_loading();
+        assert!(sink.calls().is_empty(), "nothing binds before the service has loaded the media");
+        rig.bus.say("subscribe", ENVELOPE);
+        let events = rig.driver.poll(&rig.mt);
+        assert!(events.iter().any(|event| matches!(event, DriverEvent::Observation { observation:
+            Observation::Playback(Observed { value: Playback::ReadyAwaitPlay, .. }), .. })));
+        assert_eq!(sink.calls(), ["plane_media_id m1"]);
+        assert_eq!(plane.phase(), plx_platform::tv::plane::Phase::Bound);
+        assert!(rig.driver.plane_owned(), "from the owner's grant on, the plane is this attempt's");
+        for (t, expect) in [(199, 1), (200, 2), (399, 2), (400, 2), (599, 2), (600, 3), (899, 3), (900, 4)] {
+            rig.at(t);
+            rig.driver.poll(&rig.mt);
+            assert_eq!(sink.calls().len(), expect, "t={t}: {:?}", sink.calls());
+        }
+        let calls = sink.calls();
+        let envelope_len = serde_json::from_str::<serde_json::Value>(ENVELOPE).unwrap()["sourceInfo"].to_string().len();
+        assert_eq!(calls, ["plane_media_id m1", "plane_loaded", &format!("plane_send_video_data len={envelope_len}"), "plane_finish"]);
+        assert_eq!(rig.bus.calls("play"), 0, "the service's play is the caller's, never the sequence's");
+    }
+
+    #[test]
+    fn acb_without_the_service_envelope_binds_nothing_and_times_out() {
+        let (mut rig, sink, _) = Rig::acb();
+        rig.acb_loading();
+        rig.bus.say("subscribe", r#"{"mediaId":"m1","videoInfo":{"width":1280,"height":720,"frameRate":24},"loadCompleted":true}"#);
+        rig.driver.poll(&rig.mt);
+        rig.at(19_999);
+        assert!(rig.driver.poll(&rig.mt).is_empty());
+        rig.at(20_000);
+        assert!(rig.driver.poll(&rig.mt).contains(&DriverEvent::Observation { attempt: A,
+            observation: Observation::Failed(Failure::TimedOut) }));
+        assert!(sink.calls().is_empty(), "a descriptor is never made up from bare video facts");
+        assert!(!rig.driver.plane_owned());
+    }
+
+    #[test]
+    fn acb_a_refused_bind_is_a_typed_failure_that_unloads_nothing() {
+        let (mut rig, sink, plane) = Rig::acb();
+        // Another backend already holds the plane.
+        assert_eq!(plane.bind(sink, &rig.mt, plx_platform::tv::plane::BindPolicy::Strict, "other"),
+            plx_platform::tv::plane::BindVerdict::Granted);
+        rig.acb_loading();
+        rig.bus.say("subscribe", ENVELOPE);
+        let events = rig.driver.poll(&rig.mt);
+        assert!(events.contains(&DriverEvent::Observation { attempt: A,
+            observation: Observation::Failed(Failure::Busy) }));
+        assert!(!sink.calls().iter().any(|call| call.starts_with("plane_media_id")), "{:?}", sink.calls());
+        rig.driver.poll(&rig.mt);
+        assert_eq!(sink.unload_count(), 0, "the other binding is not ours to unload");
+    }
+
+    #[test]
+    fn acb_a_bind_during_a_release_is_retried_on_a_later_tick() {
+        let (mut rig, sink, plane) = Rig::acb();
+        plane.bind(sink, &rig.mt, plx_platform::tv::plane::BindPolicy::Strict, "previous");
+        plane.unload(sink, &rig.mt);
+        rig.acb_loading();
+        rig.bus.say("subscribe", ENVELOPE);
+        rig.driver.poll(&rig.mt);
+        assert!(!sink.calls().iter().any(|call| call.starts_with("plane_media_id")));
+        sink.mailbox.push(5, 1);
+        rig.at(100);
+        rig.driver.poll(&rig.mt);
+        assert!(sink.calls().contains(&"plane_media_id m1".to_owned()), "{:?}", sink.calls());
+    }
+
+    #[test]
+    fn acb_close_cancels_the_sequence_unloads_once_and_releases_on_the_completion() {
+        let (mut rig, sink, plane) = Rig::acb();
+        rig.acb_loading();
+        rig.bus.say("subscribe", ENVELOPE);
+        rig.driver.poll(&rig.mt);
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, Operation::Stop(StopReason::Stop)), DispatchResult::Queued);
+        // The bus releases; UNLOADED is asked for; the sequence's later steps never run.
+        rig.at(1_000);
+        let events = rig.driver.poll(&rig.mt);
+        assert!(!events.iter().any(|event| matches!(event, DriverEvent::Release { status: ReleaseStatus::Released, .. })));
+        assert_eq!(sink.unload_count(), 1);
+        assert_eq!(sink.calls(), ["plane_media_id m1", "plane_unload"], "no step runs after UNLOADED");
+        assert_eq!(rig.driver.exit_disposition(), ExitDisposition::PreserveNativeOwnership);
+        // No completion yet: the backend keeps pumping and does not release.
+        rig.at(1_100);
+        assert!(!rig.driver.poll(&rig.mt).iter().any(|event| matches!(event, DriverEvent::Release { .. })));
+        // The firmware's callback for the UNLOADED task (and another task's, which is no fence).
+        sink.mailbox.push(4, 1);
+        rig.driver.poll(&rig.mt);
+        assert_ne!(plane.phase(), plx_platform::tv::plane::Phase::Released);
+        sink.mailbox.push(5, 1);
+        let events = rig.driver.poll(&rig.mt);
+        assert!(events.contains(&DriverEvent::Release { attempt: A, status: ReleaseStatus::Released }), "{events:?}");
+        assert_eq!(plane.phase(), plx_platform::tv::plane::Phase::Released);
+        assert_eq!(rig.driver.exit_disposition(), ExitDisposition::Clean);
+        assert!(!rig.driver.plane_owned());
+    }
+
+    #[test]
+    fn acb_close_without_a_completion_quarantines_at_the_owners_deadline() {
+        let (mut rig, sink, plane) = Rig::acb();
+        rig.acb_loading();
+        rig.bus.say("subscribe", ENVELOPE);
+        rig.driver.poll(&rig.mt);
+        rig.driver.dispatch(&rig.mt, A, rig.command, Operation::Stop(StopReason::Stop));
+        rig.driver.poll(&rig.mt);
+        assert_eq!(plane.phase(), plx_platform::tv::plane::Phase::Releasing);
+        // The owner measures its deadline on its own monotonic clock.
+        std::thread::sleep(std::time::Duration::from_millis(plx_platform::tv::plane::RELEASE_FENCE_MS + 100));
+        let events = rig.driver.poll(&rig.mt);
+        assert!(events.contains(&DriverEvent::Release { attempt: A, status: ReleaseStatus::Quarantined }), "{events:?}");
+        assert_eq!(plane.phase(), plx_platform::tv::plane::Phase::Quarantined(plx_platform::tv::plane::Why::Deadline));
+        assert_eq!(rig.driver.exit_disposition(), ExitDisposition::PreserveNativeOwnership);
+        assert_eq!(sink.unload_count(), 1);
+    }
+
+    #[test]
+    fn acb_pause_and_resume_mirror_to_the_plane_once_bound() {
+        let (mut rig, sink, _) = Rig::acb();
+        rig.acb_bound();
+        assert_eq!(sink.calls().last().map(String::as_str), Some("plane_finish"));
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, Operation::Pause), DispatchResult::Queued);
+        rig.bus.say("pause", r#"{"returnValue":true,"mediaId":"m1","paused":true}"#);
+        rig.driver.poll(&rig.mt);
+        assert_eq!(sink.calls().last().map(String::as_str), Some("plane_pause"));
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, Operation::Play), DispatchResult::Queued);
+        rig.bus.say("play", r#"{"returnValue":true,"mediaId":"m1"}"#);
+        rig.driver.poll(&rig.mt);
+        assert_eq!(sink.calls().last().map(String::as_str), Some("plane_resume"));
+    }
+
+    #[test]
+    fn acb_the_first_play_is_not_mirrored_and_a_pause_before_the_bind_applies_when_it_completes() {
+        let (mut rig, sink, _) = Rig::acb();
+        rig.acb_loading();
+        rig.bus.say("subscribe", ENVELOPE);
+        rig.driver.poll(&rig.mt);
+        // The service's first Play and an early Pause both land while the sequence is running.
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, Operation::Play), DispatchResult::Queued);
+        rig.bus.say("play", r#"{"returnValue":true,"mediaId":"m1"}"#);
+        rig.driver.poll(&rig.mt);
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, Operation::Pause), DispatchResult::Queued);
+        rig.bus.say("pause", r#"{"returnValue":true,"mediaId":"m1","paused":true}"#);
+        rig.driver.poll(&rig.mt);
+        assert!(!sink.calls().iter().any(|call| call == "plane_pause" || call == "plane_resume"), "{:?}", sink.calls());
+        for t in [200, 400, 600, 900] { rig.at(t); rig.driver.poll(&rig.mt); }
+        assert_eq!(sink.calls().last().map(String::as_str), Some("plane_pause"), "{:?}", sink.calls());
     }
 }
