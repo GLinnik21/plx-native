@@ -212,6 +212,7 @@ mod qualified_uri_offer_tests {
         let config = UriConfig {
             transport: &plx_platform::tv::uri::NoUriMedia,
             display: &plx_platform::tv::sink::NoSink,
+            plane: plx_platform::tv::plane::installed(),
             clock: Box::new(Clock), app_id: "fixture".to_owned(),
             binding: Binding::Unbound,
             capabilities: Capabilities { progressive_uri: true, hls_uri: false,
@@ -1242,6 +1243,7 @@ impl PlayerAdapter {
         let config = UriConfig {
             transport,
             display,
+            plane: super::plane(),
             clock: settings.clock,
             app_id: settings.app_id,
             binding: settings.binding,

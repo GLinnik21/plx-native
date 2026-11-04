@@ -11,8 +11,9 @@
 //! of the stream) stops logically at once. The ownership reducer keeps its adapter slot and window
 //! until the worker acknowledges successful unregister; unresolved release blocks another start.
 //! A deadline quarantines ownership, and a late successful acknowledgement still permits cleanup.
-//! ACB experiments add a separate fence: after bus release they dispatch UNLOADED once and retain
-//! plane quarantine until process exit, because asynchronous ACB completion is not proven.
+//! ACB experiments add a separate fence: after bus release they dispatch UNLOADED once through the
+//! plane owner and are released only when the firmware's completion for that task arrives; a failed
+//! completion or the plane owner's deadline retains the quarantine until process exit.
 //!
 //! **What stays out of it.** No Engine thread runs, so nothing is reported to Plex. The URL is held by [`UriSession`] for
 //! the `load` payload and nowhere else: no `Debug`, no log line, and the payload is built by
@@ -24,6 +25,7 @@
 use super::uri_lifecycle::{Event as LifeEvent, Fx as LifeFx, Lifecycle};
 use super::uriprobe::{AbrBps, Config, Kind, Scheme, Settle, UriCall, UriEffect, UriEvent, UriProbe, Variant, AcbOp};
 use plx_base::task::MainThread;
+use plx_platform::tv::plane::{BindPolicy, BindVerdict, PlaneOwner};
 use plx_platform::tv::sink::{DisplaySink, VP_ACB, VP_EXPORTED};
 use plx_platform::tv::uri::{CloseStatus, UriMedia, UriPoll};
 use std::collections::VecDeque;
@@ -46,9 +48,6 @@ fn check_acb_gate(dass:bool, read:impl Fn(AcbGateFact)->i32)->AcbGateCheck {
     AcbGateCheck {mode,boot_handle,ptype,dass_available,initialized,ready}
 }
 
-/// Facts owned by the media adapter, read only when an ACB gate is exercised.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AcbFacts { pub boot_handle: bool, pub player_type: i32 }
 
 /// Inputs from the caller. The URL is kept private and erased on logical completion.
 pub struct DriverConfig<A: Copy> {
@@ -63,7 +62,8 @@ pub struct DriverConfig<A: Copy> {
     pub transport: &'static dyn UriMedia,
     pub sink: &'static dyn DisplaySink,
     pub log: fn(&str),
-    pub acb_facts: fn() -> AcbFacts,
+    /// The process's plane owner: the boot facts the ACB gate reads, and the one binding/release.
+    pub plane: &'static PlaneOwner,
     pub release_allowance_ms: u64,
 }
 
@@ -81,7 +81,7 @@ pub struct UriSession<A: Copy> {
     attempt: A,
     sink: &'static dyn DisplaySink,
     log: fn(&str),
-    acb_facts: fn() -> AcbFacts,
+    plane: &'static PlaneOwner,
     release_allowance_ms: u64,
     /// An exported window was created and is owed a `destroy_window`.
     window: bool,
@@ -98,7 +98,7 @@ impl<A: Copy> UriSession<A> {
     /// Create the exported window for the variants which use one, build the machine and take its
     /// first step (`Start`: the `armed` line and the first registration).
     pub fn open(input: DriverConfig<A>, mt: &MainThread) -> UriSession<A> {
-        let DriverConfig { attempt, variant, bps, kind, url, app_id, transport, sink, log, acb_facts, release_allowance_ms } = input;
+        let DriverConfig { attempt, variant, bps, kind, url, app_id, transport, sink, log, plane, release_allowance_ms } = input;
         let clock = Instant::now();
         let mut window_id = None;
         let mut created = false;
@@ -129,7 +129,7 @@ impl<A: Copy> UriSession<A> {
             attempt,
             sink,
             log,
-            acb_facts,
+            plane,
             release_allowance_ms,
             window: created,
             inbox: VecDeque::new(),
@@ -224,6 +224,11 @@ impl<A: Copy> UriSession<A> {
             }
         }
         self.lifecycle(LifeEvent::Tick { now_ms }, now_ms);
+        if let Some(session) = self.lifecycle.session().filter(|session| self.lifecycle.acb_fence_due(*session)) {
+            // UNLOADED is in flight: drain the firmware's completions into the plane owner.
+            let plane = self.plane.pump(self.sink, mt);
+            self.lifecycle(LifeEvent::AcbPlane { session, plane }, now_ms);
+        }
         self.inbox.push_back(UriEvent::Tick);
         self.drain(settle, mt, now_ms);
     }
@@ -259,7 +264,8 @@ impl<A: Copy> UriSession<A> {
                         // The actual actuator is main-thread only; enqueue its addressed tail.
                         self.inbox.push_back(UriEvent::AcbReleaseTail {session});
                     }
-                    LifeFx::AcbQuarantined => (self.log)("uriprobe: acb=quarantined bus=released plane-release=unproven need-relaunch"),
+                    LifeFx::AcbReleased => (self.log)("uriprobe: acb=released bus=released plane-release=proven"),
+                    LifeFx::AcbQuarantined(why) => (self.log)(&format!("uriprobe: acb=quarantined bus=released reason={why} need-relaunch")),
                     LifeFx::Released => { self.inbox.push_back(UriEvent::Closed); }
                     LifeFx::Fault => {
                         (self.log)(&format!("uriprobe: t={now_ms} transport ownership unresolved or reply stream lost"));
@@ -280,8 +286,8 @@ impl<A: Copy> UriSession<A> {
     fn feed(&mut self, event: UriEvent, settle: &mut dyn FnMut(A, Settle) -> bool, mt: &MainThread, now_ms: u64) {
         if let UriEvent::AcbReleaseTail {session} = event {
             if !self.lifecycle.acb_tail_due(session) { return; }
-            unsafe { self.sink.plane_unload(mt) };
-            self.lifecycle(LifeEvent::AcbUnloadDispatched {session}, now_ms);
+            let plane = self.plane.unload(self.sink, mt);
+            self.lifecycle(LifeEvent::AcbUnloadDispatched {session, plane}, now_ms);
             return;
         }
         let mut effects = Vec::new();
@@ -334,10 +340,10 @@ impl<A: Copy> UriSession<A> {
         let sink = self.sink;
         match op {
             AcbOp::Check {dass} => {
-                let facts = (self.acb_facts)();
+                let facts = self.plane.facts();
                 let check=check_acb_gate(*dass,|fact|match fact {
                     AcbGateFact::Mode=>sink.window_mode(),
-                    AcbGateFact::BootHandle=>i32::from(facts.boot_handle),
+                    AcbGateFact::BootHandle=>i32::from(facts.handle),
                     AcbGateFact::PlayerType=>facts.player_type,
                     AcbGateFact::DassAvailable=>i32::from(unsafe {sink.plane_probe_dass_available(mt)}),
                     AcbGateFact::Initialized=>i32::from(unsafe {sink.plane_probe_initialized(mt)}),
@@ -348,8 +354,17 @@ impl<A: Copy> UriSession<A> {
             }
             AcbOp::MediaId {media_id} => {
                 let Some(session) = self.lifecycle.session() else { return false };
-                self.lifecycle(LifeEvent::AcbTouched {session}, now_ms);
                 let Ok(id) = std::ffi::CString::new(&**media_id) else { return false };
+                // One binding at a time: the plane owner grants the bind only once the previous
+                // binding's release (either backend's) is proven.
+                match self.plane.bind(sink, mt, BindPolicy::Strict, media_id) {
+                    BindVerdict::Granted => {}
+                    verdict => {
+                        (self.log)(&format!("uriprobe: acb bind not granted ({verdict:?}); the experiment cannot bind"));
+                        return false;
+                    }
+                }
+                self.lifecycle(LifeEvent::AcbTouched {session}, now_ms);
                 unsafe { sink.plane_probe_media_id(mt, id.as_ptr()) == 1 }
             }
             AcbOp::Loaded => unsafe { sink.plane_probe_loaded(mt) == 1 },
@@ -466,7 +481,7 @@ mod tests {
     enum Status { Pending, Started, Failed }
 
     static NO_SINK: plx_platform::tv::sink::NoSink = plx_platform::tv::sink::NoSink;
-    fn no_acb() -> AcbFacts { AcbFacts { boot_handle: false, player_type: 0 } }
+    fn no_acb() -> &'static PlaneOwner { Box::leak(Box::new(PlaneOwner::new())) }
 
     /// A session over a scripted transport, with a local addressed start reducer.
     struct Rig {
@@ -496,7 +511,7 @@ mod tests {
             let session = UriSession::open(DriverConfig {
                 attempt, variant, bps, kind: Kind::Direct, url: URL.to_owned(),
                 app_id: "com.example.plxnative".to_owned(), transport, sink: &NO_SINK,
-                log: plx_base::eventlog::log, acb_facts: no_acb, release_allowance_ms: 10_000,
+                log: plx_base::eventlog::log, plane: no_acb(), release_allowance_ms: 10_000,
             }, &mt);
             Rig { mt, transport, attempt, status: Status::Pending, session: Some(session), now: 0 }
         }

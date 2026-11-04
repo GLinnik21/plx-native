@@ -1,5 +1,6 @@
 //! Registration ownership and request correlation. No transport, clock, worker or registry is read.
 use super::uri_protocol::{parse_event, Ev, MediaId, Message, Method, UriCall};
+use plx_platform::tv::plane::Phase as PlanePhase;
 use plx_platform::tv::uri::{CloseStatus, RequestId, SessionId, Shape, UriReply};
 use std::collections::BTreeMap;
 
@@ -38,7 +39,11 @@ pub enum Event {
         ok: bool,
     },
     AcbTouched { session: SessionId },
-    AcbUnloadDispatched { session: SessionId },
+    /// The runner dispatched UNLOADED through the plane owner; `plane` is the owner's phase right
+    /// after (Releasing while the firmware's completion is awaited).
+    AcbUnloadDispatched { session: SessionId, plane: PlanePhase },
+    /// The plane owner's phase after a later pump, fed while [`Lifecycle::acb_fence_due`].
+    AcbPlane { session: SessionId, plane: PlanePhase },
     PollFailed {
         session: SessionId,
     },
@@ -72,7 +77,10 @@ pub enum Fx {
     },
     Released,
     UnloadAcb { session: SessionId },
-    AcbQuarantined,
+    /// The plane's release was proven by the firmware's completion: ownership is released.
+    AcbReleased,
+    /// The plane's release failed or timed out: it stays quarantined until the process exits.
+    AcbQuarantined(plx_platform::tv::plane::Why),
     Fault,
 }
 
@@ -95,6 +103,7 @@ pub struct Lifecycle {
     release_reported: bool,
     acb_touched: bool,
     acb_unload_requested: bool,
+    acb_dispatched: bool,
     bus_released: bool,
     acb_tail_done: bool,
 }
@@ -118,6 +127,7 @@ impl Lifecycle {
             release_reported: false,
             acb_touched: false,
             acb_unload_requested: false,
+            acb_dispatched: false,
             bus_released: false,
             acb_tail_done: false,
         }
@@ -125,7 +135,11 @@ impl Lifecycle {
     pub fn poll_session(&self) -> Option<SessionId> { self.session.filter(|_| !self.bus_released) }
     pub fn acb_exit_quarantine(&self) -> bool { self.acb_touched && self.bus_released && self.acb_tail_done && self.phase == Phase::Quarantined }
     pub fn acb_tail_due(&self, session: SessionId) -> bool {
-        self.session == Some(session) && self.bus_released && self.acb_unload_requested && !self.acb_tail_done
+        self.session == Some(session) && self.bus_released && self.acb_unload_requested && !self.acb_dispatched
+    }
+    /// UNLOADED is in flight: the runner pumps the plane owner and feeds [`Event::AcbPlane`].
+    pub fn acb_fence_due(&self, session: SessionId) -> bool {
+        self.session == Some(session) && self.acb_dispatched && !self.acb_tail_done
     }
     pub fn plane_open(&self) -> bool {
         self.plane_observed || self.acb_touched
@@ -153,6 +167,30 @@ impl Lifecycle {
         if !self.faulted {
             self.faulted = true;
             fx.push(Fx::Fault);
+        }
+    }
+    /// The plane owner's verdict on the UNLOADED fence: Released ends ownership as a plain release
+    /// does, Quarantined keeps the plane quarantined, Releasing waits for the next pump.
+    fn settle_plane(&mut self, plane: PlanePhase, fx: &mut Vec<Fx>) {
+        match plane {
+            PlanePhase::Releasing | PlanePhase::Bound => {}
+            PlanePhase::Quarantined(why) => {
+                self.acb_tail_done = true;
+                self.phase = Phase::Quarantined;
+                fx.push(Fx::AcbQuarantined(why));
+            }
+            PlanePhase::Released | PlanePhase::Idle | PlanePhase::Unavailable => {
+                self.acb_tail_done = true;
+                self.phase = Phase::Released;
+                self.plane_observed = false;
+                self.session = None;
+                self.media_id = None;
+                self.requests.clear();
+                self.deadline = None;
+                self.release_reported = true;
+                fx.push(Fx::AcbReleased);
+                fx.push(Fx::Released);
+            }
         }
     }
     pub fn step(&mut self, event: Event, fx: &mut Vec<Fx>) {
@@ -360,11 +398,11 @@ impl Lifecycle {
             }
             Event::Retire { request } => { self.requests.remove(&request); }
             Event::AcbTouched {session} if self.session == Some(session) && self.phase == Phase::Open => { self.acb_touched = true; }
-            Event::AcbUnloadDispatched {session} if self.session == Some(session) && self.bus_released && self.acb_unload_requested && !self.acb_tail_done => {
-                self.acb_tail_done = true;
-                self.phase = Phase::Quarantined;
-                fx.push(Fx::AcbQuarantined);
+            Event::AcbUnloadDispatched { session, plane } if self.acb_tail_due(session) => {
+                self.acb_dispatched = true;
+                self.settle_plane(plane, fx);
             }
+            Event::AcbPlane { session, plane } if self.acb_fence_due(session) => self.settle_plane(plane, fx),
             Event::PollFailed { session } if self.session == Some(session) && !self.bus_released => {
                 self.phase = Phase::Quarantined;
                 self.fault(fx);
@@ -811,24 +849,50 @@ mod tests {
             matches!(&own[..], [Fx::Deliver { method: Method::Play, message, .. }] if message.accepted() == Some(false))
         );
     }
+    /// REWRITTEN for the fenced contract (it used to assert that the dispatch itself quarantined
+    /// the plane, "because asynchronous ACB completion is not proven"): the dispatch now waits for
+    /// the plane owner's verdict, Released on the firmware's completion and Quarantined on its
+    /// failure or deadline. UNLOADED still runs once, and a quarantine is still retained.
     #[test]
-    fn uri_acb_bus_release_runs_unloaded_once_then_retains_plane_quarantine() {
-        for overdue in [false,true] {
-            let mut m=open();
-            step(&mut m,Event::AcbTouched{session:SID});
-            step(&mut m,Event::Close{now_ms:0,allowance_ms:10_000});
-            if overdue { step(&mut m,Event::Tick{now_ms:10_001}); }
-            assert_eq!(step(&mut m,Event::Status{session:SID,status:CloseStatus::Released}),[Fx::UnloadAcb{session:SID}]);
+    fn uri_acb_bus_release_runs_unloaded_once_then_follows_the_plane_fence() {
+        use plx_platform::tv::plane::Why;
+        for overdue in [false, true] {
+            let mut m = open();
+            step(&mut m, Event::AcbTouched { session: SID });
+            step(&mut m, Event::Close { now_ms: 0, allowance_ms: 10_000 });
+            if overdue { step(&mut m, Event::Tick { now_ms: 10_001 }); }
+            assert_eq!(step(&mut m, Event::Status { session: SID, status: CloseStatus::Released }), [Fx::UnloadAcb { session: SID }]);
             assert!(m.acb_tail_due(SID)); assert!(!m.released()); assert!(m.plane_open());
-            assert!(step(&mut m,Event::Status{session:SID,status:CloseStatus::Released}).is_empty());
-            assert_eq!(step(&mut m,Event::AcbUnloadDispatched{session:SID}),[Fx::AcbQuarantined]);
-            assert!(step(&mut m,Event::AcbUnloadDispatched{session:SID}).is_empty());
-            assert_eq!(m.phase(),Phase::Quarantined); assert!(!m.released()); assert!(!m.acb_tail_due(SID));
-            assert!(m.acb_exit_quarantine()); assert!(m.poll_session().is_none());
-            assert!(step(&mut m,Event::Tick{now_ms:100_000}).is_empty());
-            assert!(step(&mut m,Event::Status{session:SID,status:CloseStatus::Released}).is_empty());
-            assert!(step(&mut m,Event::Open(Shape::Anon)).iter().all(|fx|!matches!(fx,Fx::Open{..})));
+            assert!(step(&mut m, Event::Status { session: SID, status: CloseStatus::Released }).is_empty());
+            // Dispatched: still unreleased and still waiting, and no second UNLOADED is due.
+            assert!(step(&mut m, Event::AcbUnloadDispatched { session: SID, plane: PlanePhase::Releasing }).is_empty());
+            assert!(!m.acb_tail_due(SID)); assert!(m.acb_fence_due(SID)); assert!(!m.released());
+            assert!(!m.acb_exit_quarantine()); assert!(m.poll_session().is_none());
+            assert!(step(&mut m, Event::AcbUnloadDispatched { session: SID, plane: PlanePhase::Releasing }).is_empty());
+            assert!(step(&mut m, Event::AcbPlane { session: SID, plane: PlanePhase::Releasing }).is_empty());
+            // The firmware's completion releases the plane and with it the registration.
+            assert_eq!(step(&mut m, Event::AcbPlane { session: SID, plane: PlanePhase::Released }), [Fx::AcbReleased, Fx::Released]);
+            assert!(m.released()); assert!(!m.acb_fence_due(SID)); assert!(!m.acb_exit_quarantine());
+            assert!(step(&mut m, Event::AcbPlane { session: SID, plane: PlanePhase::Released }).is_empty());
+            assert!(step(&mut m, Event::Open(Shape::Anon)).iter().any(|fx| matches!(fx, Fx::Open { .. })));
         }
+        // A failed fence quarantines, retained until the process exits.
+        let mut m = open();
+        step(&mut m, Event::AcbTouched { session: SID });
+        step(&mut m, Event::Close { now_ms: 0, allowance_ms: 10_000 });
+        step(&mut m, Event::Status { session: SID, status: CloseStatus::Released });
+        let why = Why::Completion(-1);
+        assert_eq!(step(&mut m, Event::AcbUnloadDispatched { session: SID, plane: PlanePhase::Quarantined(why) }), [Fx::AcbQuarantined(why)]);
+        assert_eq!(m.phase(), Phase::Quarantined); assert!(!m.released()); assert!(m.acb_exit_quarantine());
+        assert!(step(&mut m, Event::Tick { now_ms: 100_000 }).is_empty());
+        assert!(step(&mut m, Event::Open(Shape::Anon)).iter().all(|fx| !matches!(fx, Fx::Open { .. })));
+        // A dispatch answered at once (nothing registered) releases without waiting.
+        let mut m = open();
+        step(&mut m, Event::AcbTouched { session: SID });
+        step(&mut m, Event::Close { now_ms: 0, allowance_ms: 10_000 });
+        step(&mut m, Event::Status { session: SID, status: CloseStatus::Released });
+        assert_eq!(step(&mut m, Event::AcbUnloadDispatched { session: SID, plane: PlanePhase::Released }), [Fx::AcbReleased, Fx::Released]);
+        assert!(m.released());
     }
 
     #[test]

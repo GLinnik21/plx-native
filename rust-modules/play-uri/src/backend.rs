@@ -25,6 +25,8 @@ pub enum Binding { Exported { canvas: (c_int, c_int) }, Unbound }
 pub struct Config {
     pub transport: &'static dyn UriMedia,
     pub display: &'static dyn DisplaySink,
+    /// The process's plane owner, for the (not yet production) ACB release of a bound plane.
+    pub plane: &'static plx_platform::tv::plane::PlaneOwner,
     pub clock: Box<dyn MonotonicClock>,
     pub app_id: String,
     pub binding: Binding,
@@ -455,10 +457,10 @@ impl UriBackend {
                         self.observe(Observation::Failed(Failure::ReleaseUncertain));
                     }
                     LifeFx::UnloadAcb { session } => {
-                        unsafe { self.config.display.plane_unload(mt) };
-                        queue.push_back(LifeEvent::AcbUnloadDispatched { session });
+                        let plane = self.config.plane.unload(self.config.display, mt);
+                        queue.push_back(LifeEvent::AcbUnloadDispatched { session, plane });
                     }
-                    LifeFx::AcbQuarantined | LifeFx::Open { .. } | LifeFx::Call { .. } | LifeFx::Close { .. } => {}
+                    LifeFx::AcbReleased | LifeFx::AcbQuarantined(_) | LifeFx::Open { .. } | LifeFx::Call { .. } | LifeFx::Close { .. } => {}
                 }
             }
             if self.active.is_some() {
@@ -686,6 +688,7 @@ mod tests {
             let bus = Box::leak(Box::new(Bus::new()));
             let display = Box::leak(Box::new(NoSink));
             let driver = UriBackend::new(Config { transport: bus, display,
+                plane: Box::leak(Box::new(plx_platform::tv::plane::PlaneOwner::new())),
                 clock: Box::new(Clock(clock.clone())),
                 app_id: "app.test".into(), binding: Binding::Unbound, capabilities: CAPS,
                 startup_timeout_ms: 500, release_allowance_ms: 100, source_ttl_ms: 50 });

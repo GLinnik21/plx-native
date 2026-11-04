@@ -82,6 +82,7 @@ fn opened() -> (crate::route::PlaybackSession, PlayerAdapter, &'static Bus,
     let mut pa = PlayerAdapter::new(unsafe { MainThread::assume() });
     assert!(pa.install_uri_backend_config(UriConfig {
         transport: bus, display: Box::leak(Box::new(plx_platform::tv::sink::NoSink)),
+        plane: plx_platform::tv::plane::installed(),
         clock: Box::new(Clock), app_id: "fixture".into(), binding: UriBinding::Unbound,
         capabilities: Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
             pause: true, seek: true, audio_track: true, subtitle_track: true,

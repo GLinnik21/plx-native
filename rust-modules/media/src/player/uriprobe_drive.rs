@@ -10,14 +10,8 @@ use plx_play_uri::uriprobe::Settle;
 #[cfg(feature = "play-feed")]
 use plx_play_uri::uriprobe::{AbrBps, Kind, Variant};
 #[cfg(feature = "play-feed")]
-use plx_play_uri::uriprobe_drive::{AcbFacts, DriverConfig};
+use plx_play_uri::uriprobe_drive::DriverConfig;
 use plx_play_uri::uriprobe_drive::UriSession as CoreSession;
-
-#[cfg(feature = "play-feed")]
-fn acb_facts() -> AcbFacts {
-    let facts = super::plane().facts();
-    AcbFacts { boot_handle: facts.handle, player_type: facts.player_type }
-}
 
 /// One URI session held by PlayerAdapter. The URL stays inside the independent driver.
 pub struct UriSession(CoreSession<RouteStartAttempt>);
@@ -33,7 +27,7 @@ impl UriSession {
             attempt, variant, bps, kind, url: url.to_owned(),
             app_id: plx_base::paths::app_id().to_owned(), transport,
             sink: super::display(),
-            log: super::log, acb_facts,
+            log: super::log, plane: super::plane(),
             release_allowance_ms: u64::try_from(super::release::RELEASE_DEADLINE.as_millis()).unwrap_or(u64::MAX),
         };
         Self(CoreSession::open(input, mt))
