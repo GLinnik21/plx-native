@@ -489,7 +489,7 @@ mod tests {
     #[test]
     fn classic_and_the_reference_place_both_menus_cleanly_in_all_eleven_languages() {
         let langs = LintLang::shipped();
-        assert_eq!(langs.len(), 11);
+        assert_eq!(langs.len(), 12);
         for (name, text) in [("classic", CLASSIC_HUD), ("reference", REFERENCE)] {
             let found: Vec<_> = lint(text, &ShippedMeasure, &langs).into_iter().filter(|f| f.code.starts_with("HUD-E13")).collect();
             assert!(found.is_empty(), "{name}: {found:?}");
