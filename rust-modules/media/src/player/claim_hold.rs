@@ -19,7 +19,6 @@
 //! The hold's own pause and resume call [`super::pause`]/[`super::resume`] directly and so never
 //! count as a viewer press.
 
-use plx_play_feed::shared::FEED_TX;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::Mutex;
 
@@ -61,7 +60,7 @@ pub fn engage(pa: &mut super::adapter::PlayerAdapter, serial: u64) {
 /// `was_paused` read would mistake it for the viewer's and owe nothing back. `inherited_restore` is
 /// what [`take`] answered for the hold being replaced.
 pub fn engage_inheriting(pa: &mut super::adapter::PlayerAdapter, serial: u64, inherited_restore: bool) {
-    let was_paused = FEED_TX.paused.load(std::sync::atomic::Ordering::Acquire);
+    let was_paused = super::transport::paused();
     let held = !was_paused && super::pause(pa);
     if held {
         super::log("claim hold: paused at the claim offset while the server prepares the new stream");

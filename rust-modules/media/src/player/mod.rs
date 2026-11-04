@@ -27,7 +27,7 @@ pub mod attempt_view;
 pub mod demux_session;
 pub mod backend;
 #[cfg(feature = "play-feed")]
-pub mod claim_hold;
+pub mod claim_hold; // gated: it calls `pause`/`resume` and `transport::paused`, which exist only with the Feed
 pub mod ass; // pinned libass worker and immutable rendered frames
 pub mod ass_perf; // per-second libass cost line (`assperf:`)
 pub mod ass_timing; // libass clock reading and the validity window of a rendered frame
@@ -37,7 +37,7 @@ pub mod ass_source; // bounded embedded scripts and subtitle presentation clock
 pub mod engine;
 mod plane_boot; // the backend-neutral boot of the ACB plane owner (was Feed's `acb_init`)
 #[cfg(feature = "play-feed")]
-mod feed_open; // one resolved request for the prepared route's physical feed open
+mod feed_open; // gated: one resolved request for the prepared route's physical feed open, built over `plx_play_feed` types
 pub mod foreground;
 pub mod lifecycle;
 pub mod machine;
@@ -66,7 +66,7 @@ pub use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
 pub use plx_play_feed::ffi_host; // the simulator's Starfish/ACB stand-in: the Feed backend's, so it lives in `plx_play_feed`
 pub mod attempt_metrics; // pure logical-request and physical-attempt measurement reducer
 #[cfg(feature = "play-feed")]
-mod pump;
+mod pump; // gated: the per-frame tick reads and drives `FEED_SHARED`/`FEED_TX` and `plx_play_feed::feed_pump`
 pub mod report;
 #[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
 mod foreground_flight_tests;
@@ -82,7 +82,7 @@ pub mod sub_charset; // legacy-encoding text subtitles (GBK, Big5, Shift_JIS, ..
 #[cfg(feature = "play-feed")]
 pub mod subside; // the side subtitle reader's thread and state (dev trigger `plxnative-subside`)
 #[cfg(feature = "play-feed")]
-pub(crate) mod subtitle_cue; // embedded/side-reader cue bridge; caption stores remain common
+pub(crate) mod subtitle_cue; // embedded/side-reader cue bridge; caption stores remain common. Gated: it calls `push/close_subtitle_bitmap_for_generation` and `ass_source::begin_inventory`, which exist only with the Feed
 #[cfg(all(feature = "hostsim", feature = "play-feed"))]
 pub mod sim_video; // the simulator's decoded picture, for screenshots (see its doc)
 pub mod text_ass; // text subtitles to ASS: dialect converter, synthesized header, sidecar scripts (pure)
