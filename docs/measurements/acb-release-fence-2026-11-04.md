@@ -51,9 +51,10 @@ re-derived while writing this note.
 `acb unloaded rv=1 task=5` was followed by `acb callback task=5 ev=1 app=1 play=0` in 5 of 5
 unloads. An earlier probe run printed `need-relaunch` one line before that callback: that line was
 the old design's verdict, made at the dispatch of the unload, and the callback it had not waited for
-arrived immediately after. LOADED, PLAYING, window and video-data calls complete with event 1 too
-(see the `acb callback task=1/2/4 ev=1` lines in `uri-acb-dass-2026-11-02/control.txt`), which is
-why the fence compares the task id and never the event alone.
+arrived immediately after. The other state and display calls complete with event 1 too: in
+`uri-acb-dass-2026-11-02/control.txt` the LOADED, video-data, window and PLAYING calls are tasks 1 to
+4 and each has an `acb callback task=N ev=1` line, which is why the fence compares the task id and
+never the event alone.
 
 ## What the code does with it
 

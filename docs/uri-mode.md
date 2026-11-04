@@ -98,8 +98,10 @@ therefore does not determine whether an ACB arm can display its picture.
 That sequence is now one shared machine (`rust-modules/play-uri/src/acb_bind.rs`) that the probe and
 the production URI backend (`Binding::Acb`, present and not routed) both step. The production
 backend forwards only the descriptor envelope the service reported (`sourceInfo`); the fixture
-descriptor that the controlled arms fell back to stays a developer-probe exception, and what the
-service sends on the 4.5 set for an arbitrary stream has not been measured. The ACB plane is released
+descriptor that the controlled arms fell back to stays a developer-probe exception. On the 4.5 set
+those arms did see `ev=sourceInfo` yet still used the fixture descriptor, so the service's envelope was
+observed and not usable there; the cause is not determined, and a production bind on that set would
+wait for an envelope it cannot use and time out. The ACB plane is released
 by `UNLOADED` and a fence on its completion callback
 ([evidence](measurements/acb-release-fence-2026-11-04.md)), so a later bind in the same process waits
 for that fence instead of needing a relaunch; only a failed fence quarantines the plane until exit.
