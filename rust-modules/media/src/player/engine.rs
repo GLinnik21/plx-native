@@ -310,7 +310,7 @@ pub(crate) fn speed_fps_ceiling(
 
 #[cfg(test)]
 use plx_play_feed::native_executor::{
-    sink_envelope_now, audio_declaration, app_pcm_for_load, force_open_refusal,
+    audio_declaration, app_pcm_for_load, force_open_refusal,
     video_declaration_refused, load_audio,
 };
 #[cfg(test)]

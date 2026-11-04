@@ -1734,7 +1734,7 @@ pub fn audio_declaration(codec: &str, pcm: bool) -> Option<(&'static str, u8)> {
 }
 
 /// Force never declares app PCM even if an older route projection still contains a PCM shape.
-fn app_pcm_for_load<T>(
+pub fn app_pcm_for_load<T>(
     force_original: bool, session_rate: i32, pcm: Option<Result<T, String>>,
 ) -> Option<Result<T, String>> {
     if force_original { None } else { crate::app_pcm_for_rate(session_rate, pcm) }
