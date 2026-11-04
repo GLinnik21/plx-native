@@ -5,7 +5,7 @@ This is the `hostsim` build (`rust-modules/src/bin/sim.rs`): the same UI, the sa
 and the same event loop the television runs, wrapped in a bundle that carries its own SDL, its own
 fonts and its own copy of every non-system library it links, so it starts on a Mac that has none of
 this repo's build environment installed. What it is NOT is a television — there is no video
-pipeline off-device (`player/ffi_host.rs`), so Play lands on the app's real failure read-out.
+pipeline off-device (`play-feed/src/ffi_host.rs`), so Play lands on the app's real failure read-out.
 `docs/macos-app.md` is the full account of what is and is not in it.
 
 Three things here are load-bearing, and each is a way this ships broken while working perfectly on

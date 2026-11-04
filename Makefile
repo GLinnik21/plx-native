@@ -1719,7 +1719,7 @@ check-cargo-unit-default:
 # The `hostsim` unit suite (the host feed seam exists only there).
 check-cargo-unit-hostsim:
 	@# The SAME suite as `check-cargo-unit-default`'s `cargo test --lib`, again under `hostsim`, which is
-	@# not a duplicate run: the host feed seam (`player/ffi_host.rs`) only exists in that configuration,
+	@# not a duplicate run: the host feed seam (`play-feed/src/ffi_host.rs`) only exists in that configuration,
 	@# so every test that drives an AU through `sf_feed` is COMPILED OUT of the default pass and cannot fail it. The prime-livelock
 	@# regression is one of those, and it guards the 94-second freeze of 2026-08-29 — a defect that
 	@# was invisible to all 1398 default-feature tests because the seam it needs was not there.
@@ -2511,7 +2511,7 @@ sim-macos-token:
 
 # `make sim-play` — a REAL playback session on this Mac, with no television and no Plex.
 #
-# Arms the CLOCK SINK (`rust-modules/media/src/player/ffi_host.rs`): access units are accepted, discarded,
+# Arms the CLOCK SINK (`rust-modules/play-feed/src/ffi_host.rs`): access units are accepted, discarded,
 # and a presentation clock advances at real time, reporting position at the television's own
 # measured 5 Hz. Nothing decodes. What that exercises is everything between the demuxer and the
 # decoder — the AU queues and their byte-cap backpressure, the feed-ahead throttle, the engine's

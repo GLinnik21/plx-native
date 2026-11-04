@@ -354,7 +354,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # `--features hostsim` is the configuration `player/ffi_host.rs` exists in — the
+      # `--features hostsim` is the configuration `play-feed/src/ffi_host.rs` exists in — the
       # prime-livelock regression lives there and cannot fail the default pass. The test binary
       # LINKS, so it needs the real desktop libraries.
       - uses: ./.github/actions/host-rust

@@ -32,5 +32,10 @@ libc = "0.2"
 plx_base = { path = "../base" }
 plx_platform = { path = "../platform" }
 
+[dev-dependencies]
+# So `cargo test -p plx_play_feed` alone builds (the layer crates' rule): the tests share
+# `plx_base::testlock`, which the unit suite otherwise gets from its sibling packages' features.
+plx_base = { path = "../base", features = ["test-support"] }
+
 [lints]
 workspace = true
