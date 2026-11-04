@@ -250,13 +250,13 @@ jobs:
 
       - name: Type-check the simulator feature set
         # The host simulator is a real build configuration with real users (the `ui-sim` skill, and
-        # `make macapp`, which ships `--release --no-default-features --features hostsim` to
+        # `make macapp`, which ships `--release --no-default-features --features hostsim,play-feed` to
         # somebody who has none of this installed). Nothing else in CI compiles it, so a change that
         # only breaks the Mac side merges green and is found by a person trying to demo the app.
         run: |
           cd rust-modules
           cargo "+$RUST_TOOLCHAIN" check --lib --features hostsim
-          cargo "+$RUST_TOOLCHAIN" check --lib --no-default-features --features hostsim
+          cargo "+$RUST_TOOLCHAIN" check --lib --no-default-features --features hostsim,play-feed
 
   host-unit-default:
     name: host unit tests (default features)

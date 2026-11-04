@@ -124,11 +124,15 @@ def build_binary(tdir: Path) -> Path:
     `/tmp/plxnative-*` surface, the remote FIFO and the capture listener). A binary somebody was
     sent must not take instructions from a world-writable directory — and with the feature off
     there is nothing to take: `devtrig::flag` is `false` and `devtrig::read` is `None` at COMPILE time.
+
+    `play-feed` is named because `--no-default-features` drops it too, and the simulator's video
+    sink (`plx_play_feed::ffi_host`) is the Feed backend's: without it the build selects no backend at
+    all and installs `NoSink`. `ci/test_sim_backend.py` holds that for every simulator build.
     """
     print("==> building plxnative-sim (release, no dev features)")
     run("cargo", "+" + pinned(REPO), "build", "--manifest-path", REPO / "rust-modules/Cargo.toml",
         "--target-dir", tdir, "--release", "--no-default-features",
-        "--features", "hostsim", "--bin", "plxnative-sim",
+        "--features", "hostsim,play-feed", "--bin", "plxnative-sim",
         env=dict(os.environ, CARGO_INCREMENTAL="0"))
     return tdir / "release/plxnative-sim"
 
