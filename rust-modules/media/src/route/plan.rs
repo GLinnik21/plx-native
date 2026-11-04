@@ -991,6 +991,73 @@ pub(super) fn decision_codecs(mc: &plx_plex::plex::MediaContainer) -> Option<(St
     }
 }
 
+#[cfg(feature = "play-uri")]
+fn decision_pms_output(mc: &plx_plex::plex::MediaContainer, source_has_audio: bool)
+    -> Option<(String, super::uri_preflight::PmsAudioOutput, Option<plx_data::metadata::Dovi>)> {
+    use super::uri_preflight::PmsAudioOutput;
+    let streams = &mc.metadata.first()?.decided_media()?.part.first()?.stream;
+    let video = streams.iter().find(|stream| stream.stream_type == 1 && !stream.codec.is_empty())?;
+    let audio = match streams.iter().find(|stream| stream.stream_type == 2) {
+        Some(stream) if !stream.codec.is_empty() =>
+            PmsAudioOutput::Codec(stream.codec.to_lowercase()),
+        Some(_) => return None,
+        None if !source_has_audio => PmsAudioOutput::Silent,
+        None => return None,
+    };
+    // A zero value can also mean the decision omitted the DOVI keys. Do not assert an
+    // explicit no-DV output from that absence when the source carried DV.
+    let dovi = (video.dovi_present != 0).then(|| plx_data::metadata::Dovi {
+        present: true, profile: video.dovi_profile, bl_compat: video.dovi_bl_compat_id,
+        el_present: video.dovi_el_present != 0, level: video.dovi_level,
+        version: plx_data::metadata::Dovi::parse_version(&video.dovi_version),
+        bl_present: video.dovi_bl_present != 0, rpu_present: video.dovi_rpu_present != 0,
+    });
+    Some((video.codec.to_lowercase(), audio, dovi))
+}
+
+#[cfg(feature = "play-uri")]
+fn decision_burns_subtitle(mc: &plx_plex::plex::MediaContainer, selected_sid: i64) -> bool {
+    selected_sid > 0 && mc.metadata.first().and_then(|m| m.decided_media())
+        .and_then(|md| md.part.first()).is_some_and(|part| part.stream.iter().any(|stream|
+            stream.stream_type == 3 && stream.id == selected_sid && stream.decision == "burn"))
+}
+
+#[cfg(all(test, feature = "play-uri"))]
+mod pms_output_evidence_tests {
+    use super::*;
+    use super::super::uri_preflight::PmsAudioOutput;
+
+    #[test]
+    fn accepted_output_distinguishes_burn_silence_and_missing_audio() {
+        let output: plx_plex::plex::Envelope = serde_json::from_slice(br#"{
+            "MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"transcode",
+            "Stream":[{"streamType":1,"decision":"transcode","codec":"h264"},
+                      {"streamType":3,"id":77,"decision":"burn"}]}]}]}]}}
+        "#).unwrap();
+        let output = &output.media_container;
+        let (_, audio, _) = decision_pms_output(output, false).expect("source has no audio");
+        assert_eq!(audio, PmsAudioOutput::Silent);
+        assert!(decision_pms_output(output, true).is_none(),
+            "missing output audio does not prove silence when the source had audio");
+        assert!(decision_burns_subtitle(output, 77));
+        assert!(!decision_burns_subtitle(output, 78));
+
+        let dv: plx_plex::plex::Envelope = serde_json::from_slice(br#"{
+            "MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"transcode",
+            "Stream":[{"streamType":1,"decision":"copy","codec":"hevc",
+                       "DOVIPresent":1,"DOVIProfile":7,"DOVIBLCompatID":6,
+                       "DOVIELPresent":1,"DOVIRPUPresent":1},
+                      {"streamType":2,"decision":"transcode","codec":"ac3"}]}]}]}]}}
+        "#).unwrap();
+        let (_, audio, output_dovi) = decision_pms_output(&dv.media_container, true)
+            .expect("accepted copy has both output codecs");
+        assert_eq!(audio, PmsAudioOutput::Codec("ac3".to_owned()));
+        let output_dovi = output_dovi.expect("accepted copied P7 record");
+        assert_eq!(output_dovi.profile, 7);
+        assert!(output_dovi.el_present && output_dovi.rpu_present);
+    }
+}
+
 
 /// The lane verdicts a `/decision` answer states for the first video and the first audio stream of
 /// its decided Part, as the failed-open ladder's proof rule reads them
@@ -2890,6 +2957,8 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             }
             #[cfg(feature = "play-uri")]
             let mut accepted_pms_recipe = None;
+            #[cfg(feature = "play-uri")]
+            let mut accepted_pms_output = None;
             if let Some(mc) = &decision {
                 // The server has already answered, and it is allowed to answer NO. Stop here rather than
                 // stream a `start.mkv` it has just said it cannot produce: the plan leaves with no URL —
@@ -2907,29 +2976,39 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 if let Some((v, a)) = decision_codecs(&mc) {
                     plan.vcodec = v;
                     plan.acodec = a;
-                    #[cfg(feature = "play-uri")]
-                    {
-                        use crate::player::recovery::Lane;
-                        let lanes = decision_lanes(&mc);
-                        let registered_output = mc.metadata.first()
-                            .and_then(|m| m.decided_media())
-                            .and_then(|md| md.part.first())
-                            .is_some_and(|part| part.decision == "transcode");
-                        if registered_output && lanes.audio != Lane::Unstated {
-                            accepted_pms_recipe = if matches!(plan.contract.delivery,
-                                plx_plex::plex::TranscodeDelivery::FixedHls { .. }) {
-                                (lanes.video != Lane::Unstated)
-                                    .then_some(super::uri_preflight::PmsRecipe::Hls)
-                            } else {
-                                match lanes.video {
-                                    Lane::Copy | Lane::DirectPlay =>
-                                        Some(super::uri_preflight::PmsRecipe::Remux),
-                                    Lane::Transcode =>
-                                        Some(super::uri_preflight::PmsRecipe::Encode),
-                                    Lane::Unstated => None,
-                                }
-                            };
-                        }
+                }
+                #[cfg(feature = "play-uri")]
+                {
+                    use crate::player::recovery::Lane;
+                    use super::uri_preflight::PmsAudioOutput;
+                    accepted_pms_output = decision_pms_output(mc,
+                        plan.playing.as_ref().is_some_and(|item| !item.audio.is_empty()));
+                    let lanes = decision_lanes(mc);
+                    let registered_output = mc.metadata.first().and_then(|m| m.decided_media())
+                        .and_then(|md| md.part.first())
+                        .is_some_and(|part| part.decision == "transcode");
+                    let burn_confirmed = !burn_rides_wire
+                        || (lanes.video == Lane::Transcode
+                            && decision_burns_subtitle(mc, burn_sub_sid));
+                    let audio_registered = match accepted_pms_output.as_ref().map(|(_, audio, _)| audio) {
+                        Some(PmsAudioOutput::Silent) => true,
+                        Some(PmsAudioOutput::Codec(_)) => lanes.audio != Lane::Unstated,
+                        None => false,
+                    };
+                    if registered_output && audio_registered && burn_confirmed {
+                        accepted_pms_recipe = if matches!(plan.contract.delivery,
+                            plx_plex::plex::TranscodeDelivery::FixedHls { .. }) {
+                            (lanes.video != Lane::Unstated)
+                                .then_some(super::uri_preflight::PmsRecipe::Hls)
+                        } else {
+                            match lanes.video {
+                                Lane::Copy | Lane::DirectPlay =>
+                                    Some(super::uri_preflight::PmsRecipe::Remux),
+                                Lane::Transcode =>
+                                    Some(super::uri_preflight::PmsRecipe::Encode),
+                                Lane::Unstated => None,
+                            }
+                        };
                     }
                 }
             }
@@ -2940,8 +3019,12 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             plan.tsession = session;
             #[cfg(feature = "play-uri")]
             if !forced && !env.preview {
-                if let (Some(port), Some(selection), Some(recipe)) = (
-                    env.uri_preflight_port.as_ref(), plan.source_selection, accepted_pms_recipe) {
+                if let (Some(port), Some(selection), Some(recipe), Some((video_codec, audio_output, output_dovi))) = (
+                    env.uri_preflight_port.as_ref(), plan.source_selection,
+                    accepted_pms_recipe, accepted_pms_output) {
+                    let accepted_burn_sid = decision.as_ref().and_then(|mc|
+                        decision_burns_subtitle(mc, selection.subtitle_sid)
+                            .then_some(selection.subtitle_sid));
                     match port.qualify_pms(off, super::uri_preflight::PmsRequest {
                         selection,
                         source_url: plan.url.clone(),
@@ -2950,17 +3033,16 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                         resume_ns: env.resume_ns,
                         recipe,
                         adaptive,
-                        video_codec: plan.vcodec.clone(),
-                        audio_codec: plan.acodec.clone(),
+                        video_codec,
+                        audio_output,
                         source_dovi: plan.src_dovi,
-                        // The accepted output's DOVI record is resolved separately from
-                        // the route's Feed declaration before it can authorize URI playback.
-                        output_dovi: None,
+                        output_dovi,
                         dolby_vision_mode: env.dolby_vision_mode,
                         applied_audio: plan.contract.audio,
                         subtitle_choice,
                         requires_client_subtitle: requires_client_subtitle || client_draws,
                         burned_subtitle: burn_rides_wire,
+                        accepted_burn_sid,
                         requested_rate_permille: env.requested_rate_permille,
                         preview: env.preview,
                     }) {

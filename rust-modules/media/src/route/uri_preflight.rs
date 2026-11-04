@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use plx_base::task::OffFrame;
 use plx_play_uri::backend::{Binding, NativeTrackIndex, UriSource};
-use plx_playback_contract::{Capabilities, Fidelity, Requirements, SourceKind, TrackChoice};
+use plx_playback_contract::{Capabilities, Fidelity, Requirements, SourceKind, TrackChoice, TrackKind};
 
 use super::SourceSelection;
 
@@ -168,7 +168,7 @@ pub struct PmsRequest {
     /// worker only after the qualifier certifies platform control of the actual output.
     pub adaptive: bool,
     pub video_codec: String,
-    pub audio_codec: String,
+    pub audio_output: PmsAudioOutput,
     pub source_dovi: plx_data::metadata::Dovi,
     pub output_dovi: Option<plx_data::metadata::Dovi>,
     pub dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode,
@@ -176,6 +176,8 @@ pub struct PmsRequest {
     pub subtitle_choice: TrackChoice,
     pub requires_client_subtitle: bool,
     pub burned_subtitle: bool,
+    /// The accepted `/decision` named this exact source subtitle as a server burn.
+    pub accepted_burn_sid: Option<i64>,
     pub requested_rate_permille: i32,
     pub preview: bool,
 }
@@ -190,7 +192,13 @@ pub struct PmsCertificate {
     pub requirements: Requirements,
     pub native_tracks: Vec<NativeTrackIndex>,
     pub applied_audio: plx_plex::plex::AudioEnhancements,
+    pub video_codec: String,
+    pub audio_output: PmsAudioOutput,
     pub output_dovi: Option<plx_data::metadata::Dovi>,
+    /// Independent native/source proof for the exact output DV shape. `None` means no proof;
+    /// `NoDv` is an affirmative probe, not an inference from omitted `/decision` keys.
+    pub certified_dovi_output: Option<CertifiedDoviOutput>,
+    pub accepted_burn_sid: Option<i64>,
     pub time_domain: PmsTimeDomain,
     pub hls_controller: Option<HlsController>,
     pub hls_master: Option<HlsMasterEvidence>,
@@ -207,6 +215,14 @@ pub struct KnownPmsSource {
     pub resource_session: String,
     pub expires_at: Instant,
 }
+
+/// Audio actually registered by the accepted PMS output. `Silent` is constructed only when
+/// source metadata has no audio and the accepted output has no audio stream either.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PmsAudioOutput { Codec(String), Silent }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CertifiedDoviOutput { NoDv, Exact(plx_data::metadata::Dovi) }
 
 pub enum PmsVerdict { Known(PmsCertificate), Unknown, Refused }
 
@@ -268,12 +284,27 @@ impl ResolvePort {
     pub fn qualify_pms(&self, off: &OffFrame, request: PmsRequest)
         -> Result<KnownPmsSource, PmsDecline> {
         if request.preview || request.requested_rate_permille != plx_playback_contract::RATE_NORMAL
-            || request.requires_client_subtitle || request.burned_subtitle
+            || request.requires_client_subtitle
             || request.subtitle_choice == TrackChoice::Off {
             return Err(PmsDecline::UnsupportedIntent);
         }
+        if request.burned_subtitle && (request.selection.subtitle_sid <= 0
+            || request.accepted_burn_sid != Some(request.selection.subtitle_sid)
+            || request.recipe == PmsRecipe::Remux) {
+            return Err(PmsDecline::MissingOutputEvidence);
+        }
+        if request.source_dovi.present {
+            // Off is an output requirement: raw DV from an accepted copy cannot be handed to
+            // the URI driver under that viewer setting. A separately certified no-DV PMS
+            // output can still qualify below.
+            if request.dolby_vision_mode == plx_plex::plex::session::DolbyVisionMode::Off
+                && request.output_dovi.is_some_and(|d| d.present) {
+                return Err(PmsDecline::UnsupportedIntent);
+            }
+        }
         if request.resource_session.is_empty() || request.source_url.is_empty()
-            || request.video_codec.is_empty() || request.audio_codec.is_empty()
+            || request.video_codec.is_empty()
+            || matches!(&request.audio_output, PmsAudioOutput::Codec(codec) if codec.is_empty())
             || request.applied_audio != request.selection.audio_contract
             || request.resume_ns < 0 || request.duration_ms.is_none_or(|ms| ms == 0
                 || ms.checked_mul(1_000_000).is_none_or(|ns|
@@ -289,6 +320,12 @@ impl ResolvePort {
         let session = request.resource_session.clone();
         let url = request.source_url.clone();
         let audio = request.applied_audio;
+        let video_codec = request.video_codec.clone();
+        let audio_output = request.audio_output.clone();
+        let source_dovi = request.source_dovi;
+        let output_dovi = request.output_dovi;
+        let accepted_burn_sid = request.accepted_burn_sid;
+        let burned_subtitle = request.burned_subtitle;
         let source_kind = match recipe {
             PmsRecipe::Remux | PmsRecipe::Encode => SourceKind::ProgressiveUri,
             PmsRecipe::Hls => SourceKind::HlsUri,
@@ -299,6 +336,13 @@ impl ResolvePort {
             PmsVerdict::Refused => return Err(PmsDecline::ProviderRefused),
         };
         let requirements = cert.requirements;
+        let dv_output_proven = match (output_dovi, cert.certified_dovi_output) {
+            (Some(expected), Some(CertifiedDoviOutput::Exact(actual))) => expected == actual,
+            (None, Some(CertifiedDoviOutput::NoDv)) => true,
+            (None, None) => !source_dovi.present,
+            _ => false,
+        };
+        if !dv_output_proven { return Err(PmsDecline::MissingOutputEvidence); }
         if recipe == PmsRecipe::Hls && cert.hls_controller == Some(HlsController::AppFixed) {
             return Err(PmsDecline::AppFixedControllerUnavailable);
         }
@@ -310,7 +354,10 @@ impl ResolvePort {
         }
         if cert.selection != selection || cert.source_url != url
             || cert.resource_session != session || cert.recipe != recipe
-            || cert.applied_audio != audio || cert.expires_at <= Instant::now()
+            || cert.applied_audio != audio || cert.video_codec != video_codec
+            || cert.audio_output != audio_output || cert.output_dovi != output_dovi
+            || cert.accepted_burn_sid != accepted_burn_sid
+            || cert.expires_at <= Instant::now()
             || requirements.source != source_kind
             || requirements.video != Fidelity::Compatible
             || requirements.audio != Fidelity::Compatible
@@ -329,14 +376,21 @@ impl ResolvePort {
             || !self.evidence.permits(requirements, false) {
             return Err(PmsDecline::StaleOrMismatched);
         }
+        if audio_output == PmsAudioOutput::Silent && cert.native_tracks.iter().any(|track|
+            track.selection.kind == TrackKind::Audio) {
+            return Err(PmsDecline::UnexecutableSelection);
+        }
         // Construct the locator from this exact accepted PMS decision. A qualifier cannot
         // replace it with a different URL after certifying the resource and stream map.
         let source = UriSource::new(url, cert.native_tracks);
         if !source.can_supply(requirements)
             || (selection.audio_sid > 0 && requirements.audio_track
                 != TrackChoice::Selected(selection.audio_sid as u64))
+            || (audio_output == PmsAudioOutput::Silent
+                && (selection.audio_sid > 0 || requirements.audio_track != TrackChoice::Unspecified))
             || (selection.subtitle_sid > 0 && requirements.subtitle_track
-                != TrackChoice::Selected(selection.subtitle_sid as u64)) {
+                != if burned_subtitle { TrackChoice::Unspecified }
+                   else { TrackChoice::Selected(selection.subtitle_sid as u64) }) {
             return Err(PmsDecline::UnexecutableSelection);
         }
         Ok(KnownPmsSource { selection, recipe, source, requirements,
@@ -401,7 +455,8 @@ mod tests {
     const MASTER: &[u8] = b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nlow/index.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=3000000\nhigh/index.m3u8\n";
 
     #[derive(Clone, Copy)]
-    enum PmsCase { Valid, Unknown, Refused, WrongSource, WrongSession, UnknownClock,
+    enum PmsCase { Valid, VerifiedDovi, Unknown, Refused, WrongSource, WrongSession,
+        WrongOutputCodec, UnknownClock,
         NoRelease, Expired, FixedHls, FalseMaster }
 
     struct CertifiedPms(PmsCase);
@@ -435,11 +490,19 @@ mod tests {
                     } else { TrackChoice::Unspecified },
                     subtitle_track: TrackChoice::Unspecified,
                 },
-                native_tracks: vec![NativeTrackIndex {
+                native_tracks: (request.selection.audio_sid > 0).then_some(NativeTrackIndex {
                     selection: TrackSelection { kind: TrackKind::Audio, id: 42 }, index: 1,
-                }],
+                }).into_iter().collect(),
                 applied_audio: request.applied_audio,
+                video_codec: if matches!(self.0, PmsCase::WrongOutputCodec) {
+                    "hevc".to_owned()
+                } else { request.video_codec },
+                audio_output: request.audio_output,
                 output_dovi: request.output_dovi,
+                certified_dovi_output: matches!(self.0, PmsCase::VerifiedDovi).then(||
+                    request.output_dovi.map_or(CertifiedDoviOutput::NoDv,
+                        CertifiedDoviOutput::Exact)),
+                accepted_burn_sid: request.accepted_burn_sid,
                 time_domain: if matches!(self.0, PmsCase::UnknownClock) {
                     PmsTimeDomain::Unknown
                 } else { PmsTimeDomain::ContentAbsolute },
@@ -464,12 +527,14 @@ mod tests {
         } else { "https://example.invalid/session/start.mkv" }.to_owned(),
             resource_session: "current-transcode".to_owned(), duration_ms: Some(60_000),
             resume_ns: 20_000_000_000, recipe, adaptive: recipe == PmsRecipe::Hls,
-            video_codec: "h264".to_owned(), audio_codec: "aac".to_owned(),
+            video_codec: "h264".to_owned(),
+            audio_output: PmsAudioOutput::Codec("aac".to_owned()),
             source_dovi: plx_data::metadata::Dovi::NONE, output_dovi: None,
             dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode::Auto,
             applied_audio: plx_plex::plex::AudioEnhancements::NONE,
             subtitle_choice: TrackChoice::Unspecified, requires_client_subtitle: false,
-            burned_subtitle: false, requested_rate_permille: plx_playback_contract::RATE_NORMAL,
+            burned_subtitle: false, accepted_burn_sid: None,
+            requested_rate_permille: plx_playback_contract::RATE_NORMAL,
             preview: false }
     }
 
@@ -498,6 +563,7 @@ mod tests {
             (PmsCase::Refused, PmsDecline::ProviderRefused),
             (PmsCase::WrongSource, PmsDecline::StaleOrMismatched),
             (PmsCase::WrongSession, PmsDecline::StaleOrMismatched),
+            (PmsCase::WrongOutputCodec, PmsDecline::StaleOrMismatched),
             (PmsCase::UnknownClock, PmsDecline::UnmappedClock),
             (PmsCase::NoRelease, PmsDecline::NoReleaseProof),
             (PmsCase::Expired, PmsDecline::StaleOrMismatched),
@@ -540,9 +606,16 @@ mod tests {
         request.selection.subtitle_sid = 77;
         request.subtitle_choice = TrackChoice::Selected(77);
         request.burned_subtitle = true;
+        request.accepted_burn_sid = Some(77);
         let source = pms_port(PmsCase::Valid).qualify_pms(&off, request)
             .expect("accepted server burn is carried in the video");
         assert_eq!(source.requirements.subtitle_track, TrackChoice::Unspecified);
+        let mut missing = pms_request(PmsRecipe::Encode);
+        missing.selection.subtitle_sid = 77;
+        missing.subtitle_choice = TrackChoice::Selected(77);
+        missing.burned_subtitle = true;
+        assert_eq!(pms_port(PmsCase::Valid).qualify_pms(&off, missing).err(),
+            Some(PmsDecline::MissingOutputEvidence));
     }
 
     #[test]
@@ -554,9 +627,21 @@ mod tests {
             ..plx_data::metadata::Dovi::NONE };
         request.source_dovi = p7;
         request.output_dovi = Some(p7);
+        let mut verified = pms_request(PmsRecipe::Remux);
+        verified.source_dovi = p7;
+        verified.output_dovi = Some(p7);
         assert_eq!(pms_port(PmsCase::Valid).qualify_pms(&off, request).err(),
+            Some(PmsDecline::MissingOutputEvidence),
+            "generic compatibility does not certify this native P7 wire");
+        assert!(pms_port(PmsCase::VerifiedDovi).qualify_pms(&off, verified).is_ok(),
+            "a source-specific native P7 certificate can qualify an unmodified PMS copy");
+        let mut off = pms_request(PmsRecipe::Remux);
+        off.source_dovi = p7;
+        off.output_dovi = Some(p7);
+        off.dolby_vision_mode = plx_plex::plex::session::DolbyVisionMode::Off;
+        assert_eq!(pms_port(PmsCase::VerifiedDovi).qualify_pms(&OffFrame::for_test(), off).err(),
             Some(PmsDecline::UnsupportedIntent),
-            "copied P7 needs the Feed-only enhancement-layer/RPU transformation");
+            "DV Off cannot pass a raw copied Dolby Vision output");
     }
 
     #[test]
@@ -564,10 +649,14 @@ mod tests {
         let off = OffFrame::for_test();
         let mut request = pms_request(PmsRecipe::Encode);
         request.selection.audio_sid = 0;
-        request.audio_codec.clear();
+        request.audio_output = PmsAudioOutput::Silent;
         let source = pms_port(PmsCase::Valid).qualify_pms(&off, request)
             .expect("a source with no audio and an accepted video-only output is silent");
         assert_eq!(source.requirements.audio_track, TrackChoice::Unspecified);
+        let mut selected = pms_request(PmsRecipe::Encode);
+        selected.audio_output = PmsAudioOutput::Silent;
+        assert_eq!(pms_port(PmsCase::Valid).qualify_pms(&off, selected).err(),
+            Some(PmsDecline::UnexecutableSelection));
     }
 
     struct Certified { dovi: Option<plx_data::metadata::Dovi>,

@@ -239,8 +239,10 @@ impl crate::route::uri_preflight::OriginalQualifier for QualifiedNativeMaster {
             native_tracks: vec![plx_play_uri::backend::NativeTrackIndex {
                 selection: TrackSelection { kind: TrackKind::Audio, id: 31342 }, index: 1,
             }],
-            applied_audio: request.applied_audio, time_domain: PmsTimeDomain::ContentAbsolute,
-            output_dovi: request.output_dovi,
+            applied_audio: request.applied_audio, video_codec: request.video_codec,
+            audio_output: request.audio_output, output_dovi: request.output_dovi,
+            certified_dovi_output: None, accepted_burn_sid: request.accepted_burn_sid,
+            time_domain: PmsTimeDomain::ContentAbsolute,
             hls_controller: Some(HlsController::NativeMaster), hls_master: Some(master),
             release_certified: true,
             expires_at: std::time::Instant::now() + std::time::Duration::from_secs(10) })
@@ -259,11 +261,15 @@ impl crate::route::uri_preflight::OriginalQualifier for QualifiedPms {
 
     fn qualify_pms(&self, _: &plx_base::task::OffFrame,
         request: crate::route::uri_preflight::PmsRequest) -> crate::route::uri_preflight::PmsVerdict {
-        use crate::route::uri_preflight::{PmsCertificate, PmsRecipe, PmsTimeDomain, PmsVerdict};
+        use crate::route::uri_preflight::{PmsAudioOutput, PmsCertificate, PmsRecipe,
+            PmsTimeDomain, PmsVerdict};
         use plx_playback_contract::{Fidelity, Requirements, SourceKind, TrackChoice, TrackKind,
             TrackSelection};
         assert!(matches!(request.recipe, PmsRecipe::Remux | PmsRecipe::Encode));
-        self.0.lock().unwrap().push((request.video_codec.clone(), request.audio_codec.clone(),
+        let audio_codec = match &request.audio_output {
+            PmsAudioOutput::Codec(codec) => codec.clone(), PmsAudioOutput::Silent => String::new(),
+        };
+        self.0.lock().unwrap().push((request.video_codec.clone(), audio_codec,
             request.resource_session.clone()));
         PmsVerdict::Known(PmsCertificate { selection: request.selection,
             source_url: request.source_url, resource_session: request.resource_session,
@@ -275,8 +281,10 @@ impl crate::route::uri_preflight::OriginalQualifier for QualifiedPms {
             native_tracks: vec![plx_play_uri::backend::NativeTrackIndex {
                 selection: TrackSelection { kind: TrackKind::Audio, id: 31342 }, index: 1,
             }],
-            applied_audio: request.applied_audio, time_domain: PmsTimeDomain::ContentAbsolute,
-            output_dovi: request.output_dovi,
+            applied_audio: request.applied_audio, video_codec: request.video_codec,
+            audio_output: request.audio_output, output_dovi: request.output_dovi,
+            certified_dovi_output: None, accepted_burn_sid: request.accepted_burn_sid,
+            time_domain: PmsTimeDomain::ContentAbsolute,
             hls_controller: None, hls_master: None, release_certified: true,
             expires_at: std::time::Instant::now() + std::time::Duration::from_secs(10) })
     }
