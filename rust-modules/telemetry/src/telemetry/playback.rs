@@ -752,6 +752,19 @@ mod tests {
     }
 
     #[test]
+    fn handled_error_names_backend_and_terminal_stage_even_when_unobserved() {
+        let body = event_body(&"a".repeat(32), "", None,
+            FailureClass::MediaSource, context(), &[]);
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["tags"]["playback.backend"], "unknown");
+        assert_eq!(value["tags"]["playback.terminal_stage"], "unknown");
+        assert_eq!(value["contexts"]["playback"]["backend"], "unknown");
+        assert_eq!(value["contexts"]["playback"]["terminal_stage"], "unknown");
+        assert!(value.get("request_id").is_none());
+        assert!(value.get("attempt_id").is_none());
+    }
+
+    #[test]
     fn handled_error_is_one_grouped_event_with_the_typed_causal_sequence() {
         // Legacy-wire fixture: builds before 2026-08-31 emitted this destructive probe sequence.
         // It remains serializable so historical dashboards keep stable codes; preview_event above
