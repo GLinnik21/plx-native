@@ -237,9 +237,12 @@ impl BackendRunner {
                     | Fx::AcceptedSeekLanded { .. } | Fx::ReleaseOutcome { .. }) => {
                     let mandatory_refusal = self.startup.is_mandatory_refusal(&notice);
                     self.startup.on_notice(&notice);
-                    if let (Event::Intent(Intent::Start { .. }), Fx::Rejected { backend, attempt, failure })
-                        = (event, notice) {
-                        self.metrics.rejected_start(backend, attempt, failure, &mut result.metrics);
+                    match (event, notice) {
+                        (Event::Intent(Intent::Start { .. }), Fx::Rejected { backend, attempt, failure }) =>
+                            self.metrics.rejected_start(backend, attempt, failure, at, &mut result.metrics),
+                        (Event::Intent(Intent::Stop { .. }), Fx::Rejected { backend, attempt, failure }) =>
+                            self.metrics.rejected_stop(backend, attempt, failure, at, &mut result.metrics),
+                        _ => {}
                     }
                     self.metrics.notice(&notice, mandatory_refusal, at, &mut result.metrics);
                     result.playback.push(notice);
@@ -294,12 +297,14 @@ mod tests {
         events: Vec<BackendEvent>,
         discarded: Vec<(BackendKind, AttemptId, SourceKey)>,
         refuse_start: bool,
+        refuse_stop: bool,
         exit: ExitDisposition,
     }
     impl FakeSet {
         fn new() -> Self {
             Self { uri: true, feed: true, caps: CAPS, sent: Vec::new(), events: Vec::new(),
-                discarded: Vec::new(), refuse_start: false, exit: ExitDisposition::Clean }
+                discarded: Vec::new(), refuse_start: false, refuse_stop: false,
+                exit: ExitDisposition::Clean }
         }
     }
     impl DriverSet for FakeSet {
@@ -312,7 +317,8 @@ mod tests {
         fn dispatch(&mut self, backend: BackendKind, _ctx: &(), attempt: AttemptId,
             command: CommandId, operation: Operation) -> DispatchResult {
             self.sent.push((backend, attempt, command, operation));
-            if self.refuse_start && matches!(operation, Operation::Start { .. }) {
+            if (self.refuse_start && matches!(operation, Operation::Start { .. }))
+                || (self.refuse_stop && matches!(operation, Operation::Stop(_))) {
                 DispatchResult::Refused(Failure::Refused)
             } else { DispatchResult::Queued }
         }
@@ -762,8 +768,11 @@ mod tests {
                 status: ReleaseStatus::Released } },
         ]);
         let polled = runner.poll_at(&mut drivers, &(), tick(10));
-        assert!(matches!(polled.metrics.as_slice(), [MetricNotice::Release {
-            request: r, backend: URI, attempt: A, status: ReleaseStatus::Released }] if *r == request));
+        assert!(matches!(polled.metrics.as_slice(), [MetricNotice::Measured(measure::Fx::Incident(
+            measure::Record { request: r, backend: measure::Backend::Uri, attempt: A,
+                stage: measure::Stage::Decode,
+                incident: measure::Incident::Failed(measure::Cause::Native), .. }))] if *r == request),
+            "one failure record; a clean Released verdict records nothing");
         let summary = runner.metrics_snapshot().unwrap();
         assert_eq!(summary.startup_ms, Some(10));
         assert_eq!(summary.current_attempt.unwrap().outcome, Some(measure::AttemptOutcome::Failed(
@@ -785,8 +794,9 @@ mod tests {
         let preflight = runner.send_at(&mut drivers, &(), Intent::Start { backend: URI,
             attempt: A, source: SourceKey::new(9), requirements: REQ, initial: INITIAL },
             measure::Origin::Fresh, tick(1));
-        assert!(matches!(preflight.metrics.as_slice(), [MetricNotice::PreflightRejected {
-            failure: measure::Failure { stage: measure::Stage::Open, cause: measure::Cause::Unsupported }, .. }]));
+        assert!(matches!(preflight.metrics.as_slice(), [MetricNotice::Measured(measure::Fx::Incident(
+            measure::Record { stage: measure::Stage::Open,
+                incident: measure::Incident::Failed(measure::Cause::Unsupported), .. }))]));
         assert_eq!(runner.metrics_snapshot().unwrap().attempt_count, 0);
         assert!(drivers.sent.is_empty(), "no physical Start or release is owed");
         drivers.uri = true;
@@ -799,7 +809,10 @@ mod tests {
         runner.poll_at(&mut drivers, &(), tick(3));
         let successor = AttemptId::new(1, 2);
         let handoff = runner.handoff_at(request, A, successor, tick(4));
-        assert!(handoff.metrics.is_empty());
+        assert!(matches!(handoff.metrics.as_slice(), [MetricNotice::Measured(measure::Fx::Incident(
+            measure::Record { attempt: A, backend: measure::Backend::Uri,
+                stage: measure::Stage::Open, incident: measure::Incident::Handoff, .. }))]),
+            "the failed first attempt's stage labels the handoff");
         drivers.refuse_start = false;
         runner.send_at(&mut drivers, &(), Intent::Start { backend: FEED, attempt: successor,
             source: SourceKey::new(11), requirements: REQ, initial: INITIAL },
@@ -923,4 +936,187 @@ mod tests {
         assert_eq!(summary.rebuffer_ms, 30);
         assert_eq!(summary.involuntary_stall_ms, 30, "overlap is counted once");
     }
+
+    // --- W4: one typed record per failed start, rebuffer, handoff and release failure ---------
+    // These run the shared runner against a scripted DriverSet for EACH BackendKind. They prove
+    // the reducer, the wrapper and that both drivers' events take the same path; the real
+    // drivers' own event vocabulary is covered beside them (play-uri backend rig, FeedDriver,
+    // run_uri_boot_tests). Production has no `Observation::Presented` producer yet, so the
+    // rebuffer scenario injects it exactly as the existing picture tests do.
+    type Rec = measure::Record<LogicalRequestId, AttemptId>;
+    fn incidents(result: &RunResult) -> Vec<Rec> {
+        result.metrics.iter().filter_map(|n| match n {
+            MetricNotice::Measured(measure::Fx::Incident(rec)) => Some(*rec), _ => None }).collect()
+    }
+    fn mb(backend: BackendKind) -> measure::Backend { metrics::map_backend(backend) }
+    fn observe(backend: BackendKind, attempt: AttemptId, observation: Observation) -> BackendEvent {
+        BackendEvent { backend, event: DriverEvent::Observation { attempt, observation } }
+    }
+    fn playing(backend: BackendKind, attempt: AttemptId) -> Vec<BackendEvent> {
+        let seen = |value| Observation::Playback(Observed { value, from: EvidenceSource::BackendReport });
+        vec![observe(backend, attempt, seen(Playback::ReadyAwaitPlay)),
+            observe(backend, attempt, seen(Playback::Playing)),
+            observe(backend, attempt, Observation::Presented)]
+    }
+    fn begin(runner: &mut BackendRunner, id: u64) -> LogicalRequestId {
+        let request = LogicalRequestId::new(id);
+        runner.begin_request_at(request, measure::Origin::Fresh, tick(0));
+        request
+    }
+    fn go(runner: &mut BackendRunner, drivers: &mut FakeSet, backend: BackendKind,
+        attempt: AttemptId, origin: measure::Origin, at: u64) -> RunResult {
+        runner.send_at(drivers, &(), Intent::Start { backend, attempt, source: SourceKey::new(at),
+            requirements: REQ, initial: INITIAL }, origin, tick(at))
+    }
+    fn stop(runner: &mut BackendRunner, drivers: &mut FakeSet, backend: BackendKind,
+        attempt: AttemptId, at: u64) -> RunResult {
+        runner.send_at(drivers, &(), Intent::Stop { backend, attempt, reason: StopReason::Exit },
+            measure::Origin::Fresh, tick(at))
+    }
+
+    fn failed_start_is_one_record(backend: BackendKind) {
+        let (mut runner, mut drivers) = (BackendRunner::new(), FakeSet::new());
+        let request = begin(&mut runner, 1);
+        drivers.refuse_start = true;
+        let refused = incidents(&go(&mut runner, &mut drivers, backend, A, measure::Origin::Fresh, 1));
+        assert_eq!(refused, [Rec { request, attempt: A, backend: mb(backend), stage: measure::Stage::Open,
+            incident: measure::Incident::Failed(measure::Cause::Refused), at: tick(1) }]);
+        drivers.events.push(BackendEvent { backend, event: DriverEvent::Release {
+            attempt: A, status: ReleaseStatus::Released } });
+        assert!(incidents(&runner.poll_at(&mut drivers, &(), tick(2))).is_empty(),
+            "the clean release of a failed start adds nothing");
+        // A Start refused before it reaches the driver is the same record, with no release owed.
+        drivers.refuse_start = false;
+        match backend { URI => drivers.uri = false, FEED => drivers.feed = false }
+        let b = AttemptId::new(1, 2);
+        let rejected = incidents(&go(&mut runner, &mut drivers, backend, b, measure::Origin::Fresh, 3));
+        assert_eq!(rejected, [Rec { request, attempt: b, backend: mb(backend), stage: measure::Stage::Open,
+            incident: measure::Incident::Failed(measure::Cause::Unsupported), at: tick(3) }]);
+        // An asynchronous failure before Ready is a failed start too (stage Open).
+        match backend { URI => drivers.uri = true, FEED => drivers.feed = true }
+        let c = AttemptId::new(1, 3);
+        go(&mut runner, &mut drivers, backend, c, measure::Origin::Fresh, 4);
+        drivers.events.push(observe(backend, c, Observation::Failed(Failure::Backend)));
+        let late = incidents(&runner.poll_at(&mut drivers, &(), tick(5)));
+        assert_eq!(late, [Rec { request, attempt: c, backend: mb(backend), stage: measure::Stage::Open,
+            incident: measure::Incident::Failed(measure::Cause::Native), at: tick(5) }]);
+    }
+    #[test] fn uri_failed_start_is_exactly_one_typed_record() { failed_start_is_one_record(URI); }
+    #[test] fn feed_failed_start_is_exactly_one_typed_record() { failed_start_is_one_record(FEED); }
+
+    fn rebuffer_is_one_record_per_episode(backend: BackendKind) {
+        let (mut runner, mut drivers) = (BackendRunner::new(), FakeSet::new());
+        let request = begin(&mut runner, 2);
+        go(&mut runner, &mut drivers, backend, A, measure::Origin::Fresh, 1);
+        drivers.events.extend(playing(backend, A));
+        runner.poll_at(&mut drivers, &(), tick(5));
+        let stall = |runner: &mut BackendRunner, at| incidents(
+            &runner.condition_at(backend, A, measure::Condition::Rebuffering, tick(at)));
+        assert_eq!(stall(&mut runner, 10), [Rec { request, attempt: A, backend: mb(backend),
+            stage: measure::Stage::Decode, incident: measure::Incident::Rebuffer, at: tick(10) }]);
+        assert!(stall(&mut runner, 20).is_empty(), "the same episode is not a second record");
+        runner.condition_at(backend, A, measure::Condition::Playing, tick(30));
+        assert_eq!(stall(&mut runner, 40).len(), 1, "a new episode is a new record");
+        assert_eq!(runner.metrics_snapshot().unwrap().rebuffer_count, 2);
+        // Unknown time or an unknown condition is never charged or recorded as a rebuffer.
+        assert!(incidents(&runner.condition_at(backend, A, measure::Condition::Unknown,
+            measure::Tick::Unknown)).is_empty());
+    }
+    #[test] fn uri_rebuffer_is_exactly_one_typed_record_per_episode() { rebuffer_is_one_record_per_episode(URI); }
+    #[test] fn feed_rebuffer_is_exactly_one_typed_record_per_episode() { rebuffer_is_one_record_per_episode(FEED); }
+
+    /// Production only hands URI to Feed; the runner itself is direction-neutral, so each
+    /// driver is exercised as the failed source.
+    fn handoff_is_one_record(from: BackendKind, to: BackendKind, begun_first: bool) {
+        let (mut runner, mut drivers) = (BackendRunner::new(), FakeSet::new());
+        let request = begin(&mut runner, 3);
+        go(&mut runner, &mut drivers, from, A, measure::Origin::Fresh, 1);
+        drivers.events.extend(playing(from, A));
+        drivers.events.push(observe(from, A, Observation::Failed(Failure::Backend)));
+        runner.poll_at(&mut drivers, &(), tick(5));
+        let expected = Rec { request, attempt: A, backend: mb(from), stage: measure::Stage::Decode,
+            incident: measure::Incident::Handoff, at: tick(6) };
+        let b = AttemptId::new(1, 2);
+        if begun_first {
+            assert_eq!(incidents(&runner.handoff_begun_at(request, A, tick(6))), [expected]);
+        }
+        drivers.events.extend([BackendEvent { backend: from, event: DriverEvent::Release {
+            attempt: A, status: ReleaseStatus::Released } }]);
+        runner.poll_at(&mut drivers, &(), tick(7));
+        let started = incidents(&go(&mut runner, &mut drivers, to, b, measure::Origin::Recovery, 6));
+        // Starting the successor completes the same handoff; it must not count a second one.
+        assert_eq!(started, if begun_first { vec![] } else { vec![expected] });
+        assert_eq!(runner.metrics_snapshot().unwrap().handoff_count, 1);
+        assert_eq!(runner.metrics_snapshot().unwrap().current_attempt.unwrap().backend, mb(to));
+    }
+    #[test] fn uri_handoff_is_exactly_one_typed_record_begun_first() { handoff_is_one_record(URI, FEED, true); }
+    #[test] fn uri_handoff_is_exactly_one_typed_record_at_successor_start() { handoff_is_one_record(URI, FEED, false); }
+    #[test] fn feed_handoff_is_exactly_one_typed_record_begun_first() { handoff_is_one_record(FEED, URI, true); }
+    #[test] fn feed_handoff_is_exactly_one_typed_record_at_successor_start() { handoff_is_one_record(FEED, URI, false); }
+
+    fn release_failure_is_one_record(backend: BackendKind) {
+        let release = Rec { request: LogicalRequestId::new(4), attempt: A, backend: mb(backend),
+            stage: measure::Stage::Release,
+            incident: measure::Incident::Failed(measure::Cause::Native), at: tick(0) };
+        let quarantine = BackendEvent { backend, event: DriverEvent::Release {
+            attempt: A, status: ReleaseStatus::Quarantined } };
+        // 1. Quarantined verdict while the request is current.
+        let (mut runner, mut drivers) = (BackendRunner::new(), FakeSet::new());
+        begin(&mut runner, 4);
+        go(&mut runner, &mut drivers, backend, A, measure::Origin::Fresh, 1);
+        drivers.events.extend(playing(backend, A));
+        runner.poll_at(&mut drivers, &(), tick(2));
+        stop(&mut runner, &mut drivers, backend, A, 3);
+        drivers.events.push(quarantine);
+        assert_eq!(incidents(&runner.poll_at(&mut drivers, &(), tick(4))),
+            [Rec { at: tick(4), ..release }]);
+        // 2. The same verdict after the logical request finished still names that request.
+        let (mut runner, mut drivers) = (BackendRunner::new(), FakeSet::new());
+        let request = begin(&mut runner, 4);
+        go(&mut runner, &mut drivers, backend, A, measure::Origin::Fresh, 1);
+        drivers.events.extend(playing(backend, A));
+        runner.poll_at(&mut drivers, &(), tick(2));
+        stop(&mut runner, &mut drivers, backend, A, 3);
+        runner.finish_request_at(request, measure::RequestOutcome::Cancelled, tick(3));
+        drivers.events.push(quarantine);
+        assert_eq!(incidents(&runner.poll_at(&mut drivers, &(), tick(4))), [Rec { at: tick(4), ..release }]);
+        // 3. ...and after a NEWER request began, the old request still owns the record.
+        let (mut runner, mut drivers) = (BackendRunner::new(), FakeSet::new());
+        begin(&mut runner, 4);
+        go(&mut runner, &mut drivers, backend, A, measure::Origin::Fresh, 1);
+        runner.poll_at(&mut drivers, &(), tick(2));
+        stop(&mut runner, &mut drivers, backend, A, 3);
+        runner.begin_request_at(LogicalRequestId::new(5), measure::Origin::Fresh, tick(3));
+        drivers.events.push(quarantine);
+        assert_eq!(incidents(&runner.poll_at(&mut drivers, &(), tick(4))), [Rec { at: tick(4), ..release }]);
+        // 4. A Stop the driver refuses is the failure; the verdict that follows is not a second one.
+        let (mut runner, mut drivers) = (BackendRunner::new(), FakeSet::new());
+        begin(&mut runner, 4);
+        go(&mut runner, &mut drivers, backend, A, measure::Origin::Fresh, 1);
+        drivers.events.extend(playing(backend, A));
+        runner.poll_at(&mut drivers, &(), tick(2));
+        drivers.refuse_stop = true;
+        assert_eq!(incidents(&stop(&mut runner, &mut drivers, backend, A, 3)),
+            [Rec { at: tick(3), incident: measure::Incident::Failed(measure::Cause::Refused), ..release }]);
+        drivers.events.push(quarantine);
+        assert!(incidents(&runner.poll_at(&mut drivers, &(), tick(4))).is_empty());
+        // 5. A Stop no driver can accept leaves the owner quarantined: also one release failure.
+        let (mut runner, mut drivers) = (BackendRunner::new(), FakeSet::new());
+        begin(&mut runner, 4);
+        go(&mut runner, &mut drivers, backend, A, measure::Origin::Fresh, 1);
+        match backend { URI => drivers.uri = false, FEED => drivers.feed = false }
+        assert_eq!(incidents(&stop(&mut runner, &mut drivers, backend, A, 3)),
+            [Rec { at: tick(3), incident: measure::Incident::Failed(measure::Cause::Unsupported), ..release }]);
+        assert_eq!(runner.snapshot().phase, plx_playback_contract::Phase::Quarantined);
+        // 6. A clean release records nothing.
+        let (mut runner, mut drivers) = (BackendRunner::new(), FakeSet::new());
+        begin(&mut runner, 4);
+        go(&mut runner, &mut drivers, backend, A, measure::Origin::Fresh, 1);
+        stop(&mut runner, &mut drivers, backend, A, 3);
+        drivers.events.push(BackendEvent { backend, event: DriverEvent::Release {
+            attempt: A, status: ReleaseStatus::Released } });
+        assert!(incidents(&runner.poll_at(&mut drivers, &(), tick(4))).is_empty());
+    }
+    #[test] fn uri_release_failure_is_exactly_one_typed_record() { release_failure_is_one_record(URI); }
+    #[test] fn feed_release_failure_is_exactly_one_typed_record() { release_failure_is_one_record(FEED); }
 }

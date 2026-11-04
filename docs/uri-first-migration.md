@@ -102,7 +102,25 @@ does not promote URI.
 Each attempt starts with fresh observations. Unknown remains unknown; an acknowledgment or
 advancing clock is not picture evidence. Separate logical-request metrics from backend attempts,
 startup from rebuffering, and handoff gaps from ordinary stalls. Keep bounded typed errors and
-independent reporting consent. Preserve the existing local recorder limits and privacy policy;
+independent reporting consent.
+
+Both drivers reach one reducer (`attempt_metrics::AttemptMetrics`) through the one runner, and
+each failed or rejected start, rebuffer episode, handoff and release failure becomes exactly one
+local `Fx::Incident` record carrying the request, attempt, backend, stage and a closed incident
+kind (`Failed(cause)`, `Rebuffer`, `Handoff`); the stage is only what the evidence proves and
+stays `Unknown` otherwise. A handoff is recorded once, at the first of its begin and its
+successor Start, and carries the source attempt's backend and stage. A release failure is
+recorded by the physical-lifecycle owner (`backend_metrics`) once per attempt, even when its
+verdict arrives after the logical request finished or was replaced, because the native release
+outlives the request. These records stay in the adapter's bounded local window and add no transmitted field, so the
+consent preview and privacy text are unchanged. A URI attempt's mid-playback `bufferingStart`
+now moves the common state from Playing to Buffering, so the existing `playback.quality`
+event's `rebuffers` and `buffering` classes can be non-zero for URI playback, where URI had no
+source for them before; the handled error still carries the existing backend and terminal-stage
+classes. The reducer counts a rebuffer only after
+the request's first confirmed picture (`Observation::Presented`), and no production driver emits
+that observation yet, so rebuffer records, recovered refusals and request startup time have no
+production producer until one does. Preserve the existing local recorder limits and privacy policy;
 new transmitted fields require schema, consent-preview and privacy updates. The closed attempt-origin domain includes `viewer_reconfigure` for a viewer-requested speed, audio-processing or source-track route change; it is listed by the same domain table in the consent preview. It does not add a payload field or enable reporting.
 
 ## Completion gates

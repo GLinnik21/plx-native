@@ -1601,6 +1601,9 @@ impl PlayerAdapter {
                         plx_playback_contract::readout::PlaybackState::Buffering,
                     plx_playback_contract::Playback::Playing => {
                         facts.playing_observed = Some(true);
+                        // Playing again ends a rebuffer whose `bufferingEnd` never arrived;
+                        // a rebuffer never reported stays unknown.
+                        if facts.rebuffering == Some(true) { facts.rebuffering = Some(false); }
                         plx_playback_contract::readout::PlaybackState::Playing
                     },
                     plx_playback_contract::Playback::Paused =>
@@ -1627,6 +1630,24 @@ impl PlayerAdapter {
                     Failure::Busy | Failure::Stale | Failure::Unavailable =>
                         plx_playback_contract::readout::RuntimeFailure::Unknown,
                 });
+            }
+            plx_playback_contract::Observation::Rebuffering(observed) => {
+                // The same readout the Feed publishes: `rebuffering` plus the Buffering state.
+                // The service need not re-send Playing after `bufferingEnd`, so the state is
+                // restored here, and only from the Buffering this event itself entered.
+                let state = plx_playback_contract::readout::PlaybackState::Buffering;
+                if observed.value {
+                    facts.rebuffering = Some(true);
+                    if facts.status == Some(plx_playback_contract::readout::PlaybackState::Playing) {
+                        facts.status = Some(state);
+                    }
+                } else {
+                    if facts.rebuffering == Some(true) && facts.status == Some(state)
+                        && facts.playing_observed == Some(true) {
+                        facts.status = Some(plx_playback_contract::readout::PlaybackState::Playing);
+                    }
+                    facts.rebuffering = Some(false);
+                }
             }
             plx_playback_contract::Observation::Presented
             | plx_playback_contract::Observation::TrackSelected(_)
@@ -2246,6 +2267,38 @@ mod uri_stop_refusal_tests {
         fn discard_staged(&mut self, _: BackendKind, _: plx_playback_contract::AttemptId,
             _: SourceKey) {}
         fn exit_disposition(&self) -> ExitDisposition { ExitDisposition::Clean }
+    }
+
+    #[test]
+    fn uri_rebuffering_publishes_the_shared_readout_and_unreported_stays_unknown() {
+        use plx_playback_contract::readout::PlaybackState as S;
+        let _serial = plx_base::testlock::serial();
+        let mut adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
+        let route = crate::route::RouteStartAttempt::fixture();
+        adapter.uri_route_attempt = Some(route);
+        let mut ps = crate::route::PlaybackSession::default();
+        ps.begin_attempt_view(route, super::super::attempt_view::Backend::Uri);
+        let attempt = route.contract_id();
+        let say = |value| Observation::Playback(Observed { value,
+            from: EvidenceSource::BackendReport });
+        let rebuffer = |value| Observation::Rebuffering(Observed { value,
+            from: EvidenceSource::BackendReport });
+        let facts = |ps: &crate::route::PlaybackSession| {
+            let f = ps.attempt_view().facts(); (f.status, f.rebuffering)
+        };
+        adapter.publish_uri_observation(&mut ps, attempt, say(Playback::ReadyAwaitPlay));
+        assert_eq!(facts(&ps), (Some(S::Buffering), None), "startup buffering is not a rebuffer");
+        adapter.publish_uri_observation(&mut ps, attempt, say(Playback::Playing));
+        assert_eq!(facts(&ps), (Some(S::Playing), None), "unreported stays unknown, not false");
+        adapter.publish_uri_observation(&mut ps, attempt, rebuffer(true));
+        assert_eq!(facts(&ps), (Some(S::Buffering), Some(true)));
+        adapter.publish_uri_observation(&mut ps, attempt, rebuffer(false));
+        assert_eq!(facts(&ps), (Some(S::Playing), Some(false)),
+            "bufferingEnd restores Playing; the service need not re-send it");
+        adapter.publish_uri_observation(&mut ps, attempt, rebuffer(true));
+        adapter.publish_uri_observation(&mut ps, attempt, say(Playback::Playing));
+        assert_eq!(facts(&ps), (Some(S::Playing), Some(false)),
+            "a Playing report after a lost bufferingEnd ends the rebuffer");
     }
 
     #[test]

@@ -439,6 +439,20 @@ impl UriBackend {
                     }
                     None
                 }
+                // Only a running attempt can rebuffer: buffering before the first Playing is
+                // startup and stays unreported rather than being called a rebuffer. Buffering
+                // that starts while a Seek is pending is seek priming and is not reported
+                // either; an end is always reported so a reported start cannot stay open. The
+                // order of `bufferingStart` against `seekDone` is not measured on the device.
+                Ev::BufferingStart | Ev::BufferingEnd => {
+                    let seek_pending = self.controls.values().chain(self.dispatching.iter())
+                        .any(|pending| matches!(pending.kind, ControlKind::Seek { .. }));
+                    if self.played_once && !(*event == Ev::BufferingStart && seek_pending) {
+                        self.observe(Observation::Rebuffering(Observed {
+                            value: *event == Ev::BufferingStart, from: EvidenceSource::BackendReport }));
+                    }
+                    None
+                }
                 Ev::TrackSelected => None,
                 _ => None,
             };
@@ -924,6 +938,28 @@ mod tests {
         assert!(rig.driver.poll(&rig.mt).contains(&DriverEvent::Observation { attempt: A,
             observation: Observation::Playback(Observed { value: Playback::Paused,
                 from: EvidenceSource::BackendReport }) }));
+    }
+
+    #[test]
+    fn buffering_is_a_rebuffer_only_after_playback_has_run_and_is_never_guessed_before() {
+        let mut rig = Rig::new(); rig.opened();
+        let rebuffer = |attempt, value| DriverEvent::Observation { attempt, observation:
+            Observation::Rebuffering(Observed { value, from: EvidenceSource::BackendReport }) };
+        rig.bus.say("subscribe", r#"{"mediaId":"m1","bufferingStart":true}"#);
+        assert!(rig.driver.poll(&rig.mt).is_empty(), "startup buffering is not a rebuffer");
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, Operation::Play), DispatchResult::Queued);
+        rig.bus.say("play", r#"{"returnValue":true,"mediaId":"m1","playing":true,"currentTime":1}"#);
+        rig.driver.poll(&rig.mt);
+        rig.bus.say("subscribe", r#"{"mediaId":"m1","bufferingStart":true}"#);
+        assert_eq!(rig.driver.poll(&rig.mt), [rebuffer(A, true)]);
+        rig.bus.say("subscribe", r#"{"mediaId":"m1","bufferingEnd":true}"#);
+        assert_eq!(rig.driver.poll(&rig.mt), [rebuffer(A, false)]);
+        // Buffering while a Seek is pending is seek priming, not a rebuffer.
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
+            Operation::Seek(ContentTime::from_millis(5000))), DispatchResult::Queued);
+        rig.bus.say("subscribe", r#"{"mediaId":"m1","bufferingStart":true}"#);
+        assert!(!rig.driver.poll(&rig.mt).iter().any(|event| matches!(event,
+            DriverEvent::Observation { observation: Observation::Rebuffering(_), .. })));
     }
 
     #[test]

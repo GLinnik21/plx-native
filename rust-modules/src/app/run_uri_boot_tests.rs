@@ -293,6 +293,22 @@ mod uri_boot_tests {
             "an exact Released proof starts the same-episode Feed resolve");
         assert_eq!(rig.app.player.session.metric_request(), Some(request),
             "automatic handoff retains the logical request identity");
+        // The real URI driver's refused Load is ONE typed failed-start record at the Open stage,
+        // its handoff to Feed is ONE record naming the same source attempt, and the clean
+        // release that follows records nothing.
+        use plx_media::player::attempt_metrics::{Backend, Incident, Stage};
+        let records: Vec<_> = rig.app.adapters.player.backend_metric_notices().filter_map(|n| match n {
+            plx_media::player::backend::MetricNotice::Measured(
+                plx_media::player::attempt_metrics::Fx::Incident(record)) => Some(*record),
+            _ => None,
+        }).collect();
+        let failed: Vec<_> = records.iter().filter(|r| matches!(r.incident, Incident::Failed(_))).collect();
+        let handoffs: Vec<_> = records.iter().filter(|r| r.incident == Incident::Handoff).collect();
+        assert_eq!(failed.len(), 1, "{records:?}");
+        assert_eq!((failed[0].backend, failed[0].stage), (Backend::Uri, Stage::Open));
+        assert_eq!(handoffs.len(), 1, "{records:?}");
+        assert_eq!((handoffs[0].backend, handoffs[0].attempt), (Backend::Uri, failed[0].attempt));
+        assert_eq!(records.len(), 2, "no release or rebuffer record for a clean close: {records:?}");
     }
 
     #[cfg(feature = "play-feed")]
