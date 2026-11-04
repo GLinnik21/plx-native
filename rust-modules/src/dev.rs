@@ -178,7 +178,7 @@ const DIAG: [&str; 48] = [
     // variants must not move the boot screen out from under the playback being compared.
     "plxnative-av1obu",
     // Send VP9's sourceInfo envelope as the pipeline made it, without the container-derived HDR10
-    // declaration (`media::player::vp9_hdr`): the A/B for whether the television switches to HDR.
+    // declaration (`plx_play_feed::vp9_hdr`): the A/B for whether the television switches to HDR.
     "plxnative-novp9hdr",
     // The side subtitle reader (`media::player::subside`): content = the 0-based position of the
     // embedded subtitle stream to draw over a plain remux, read at each playback start.

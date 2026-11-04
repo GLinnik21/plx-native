@@ -20,6 +20,10 @@ use std::time::{Duration, Instant};
 /// Physical 1x transport rate and its unknown speed-audio readout.
 pub use plx_playback_contract::RATE_NORMAL;
 pub const SPEED_AUDIO_UNKNOWN: u8 = 0;
+/// The pipeline reported the declared 48 kHz stereo for a speed session.
+pub const SPEED_AUDIO_OK: u8 = 1;
+/// The pipeline reported something else than the declared 48 kHz stereo.
+pub const SPEED_AUDIO_BAD: u8 = 2;
 
 /// Exact conservation certificate accumulated while the native media clock is held.
 ///
@@ -1010,6 +1014,18 @@ impl Shared {
         self.video_w.store(width, Ordering::Relaxed);
         self.video_h.store(height, Ordering::Relaxed);
         self.video_raster.store(packed, Ordering::Release);
+    }
+
+    /// Publish the display aspect the sourceInfo declared, as a reduced `(num, den)`. Packed
+    /// `(num << 32) | den` in one word so a reader never sees half of a pair.
+    pub fn publish_video_aspect(&self, num: u32, den: u32) {
+        self.video_aspect.store((u64::from(num) << 32) | u64::from(den), Ordering::Release);
+    }
+
+    /// The published display aspect, `(0, 0)` until one is.
+    pub fn video_aspect_pair(&self) -> (u32, u32) {
+        let packed = self.video_aspect.load(Ordering::Acquire);
+        ((packed >> 32) as u32, packed as u32)
     }
 
     pub fn video_raster(&self) -> (i32, i32) {
@@ -2035,6 +2051,37 @@ impl UserPauseCursor {
 /// executor handle in reach.
 pub static FEED_TX: Transport = Transport::new();
 
+/// Monotonic milliseconds, from an origin fixed at the first call.
+///
+/// Not SDL ticks: this is read on the pipeline's own callback thread, and the value is only ever
+/// differenced, so a private origin is enough and owes SDL nothing. Every reader (the callback's
+/// presentation stamp, the pump's silence watchdog, the player's audio-pick window) reads this one
+/// clock, so a stamp one of them stores is comparable by any other.
+pub fn vclock_ms() -> u32 {
+    use std::sync::OnceLock;
+    static T0: OnceLock<Instant> = OnceLock::new();
+    T0.get_or_init(Instant::now).elapsed().as_millis() as u32
+}
+
+/// **Film time to the pipeline's timeline.** At speed `r` the pipeline still plays at its own 1x,
+/// so every timestamp the app hands it — a fed AU, a seek or decode position — is divided by `r`;
+/// the frames then arrive `r` times closer together and the picture runs `r` times faster.
+/// Identity at 1x, which is every playback that has not picked a speed.
+pub fn to_sink_ns(ns: i64) -> i64 {
+    scale_ns(ns, RATE_NORMAL, FEED_SHARED.applied_rate_permille.load(Ordering::Relaxed))
+}
+/// The inverse, for every timestamp the pipeline reports back (a presented frame).
+pub fn from_sink_ns(ns: i64) -> i64 {
+    scale_ns(ns, FEED_SHARED.applied_rate_permille.load(Ordering::Relaxed), RATE_NORMAL)
+}
+fn scale_ns(ns: i64, num: i32, den: i32) -> i64 {
+    if num == den || den <= 0 {
+        return ns;
+    }
+    (ns as i128 * num as i128 / den as i128) as i64
+}
+
+
 impl Transport {
     pub const fn new() -> Self {
         Transport {
@@ -3042,5 +3089,36 @@ mod tests {
         assert_eq!(s.dg_abr_action.load(Ordering::Relaxed), 0);
         assert_eq!(s.dg_abr_target_kbps.load(Ordering::Relaxed), 0);
         assert_eq!(s.dg_abr_unsafe_deficit_ms.load(Ordering::Relaxed), 0);
+    }
+}
+
+#[cfg(test)]
+mod sink_time_tests {
+    use super::*;
+    use std::sync::atomic::Ordering::Relaxed;
+
+    /// The timeline conversion: at 1.5x a fed timestamp is two thirds of the film time it stands
+    /// for, the presented one comes back as film time, and at 1x nothing changes.
+    #[test]
+    fn the_pipeline_timeline_is_film_time_divided_by_the_speed() {
+        let _serial = plx_base::testlock::serial();
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                FEED_SHARED.applied_rate_permille.store(RATE_NORMAL, Relaxed);
+            }
+        }
+        let _restore = Restore;
+        FEED_SHARED.applied_rate_permille.store(RATE_NORMAL, Relaxed);
+        assert_eq!(to_sink_ns(7_000_000_000), 7_000_000_000);
+        FEED_SHARED.applied_rate_permille.store(1500, Relaxed);
+        assert_eq!(to_sink_ns(3_000_000_000), 2_000_000_000);
+        assert_eq!(from_sink_ns(2_000_000_000), 3_000_000_000);
+        FEED_SHARED.applied_rate_permille.store(500, Relaxed);
+        assert_eq!(to_sink_ns(3_000_000_000), 6_000_000_000, "half speed spreads frames out");
+        // a long film at a fractional speed survives the round trip within a nanosecond
+        FEED_SHARED.applied_rate_permille.store(1750, Relaxed);
+        let t = 9_876_543_210_123;
+        assert!((from_sink_ns(to_sink_ns(t)) - t).abs() <= 2);
     }
 }

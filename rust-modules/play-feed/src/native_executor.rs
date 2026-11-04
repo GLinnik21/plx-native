@@ -8,6 +8,7 @@ use crate::feed_state::{FeedPace, SampleBuf, AQ_AUDIO_BYTES, AQ_VIDEO_BYTES};
 use crate::ff::DemuxTransport;
 use crate::open::PhysicalOpen;
 use crate::pcm_lead::{pcm_lead_plan, PcmLead};
+use crate::seek::SeekMode;
 use crate::side_reader::SideReaderPort;
 use crate::shared::PhysicalShared;
 use crate::shared::{HlsPlayCompletion, HlsPrimeKind, Stage, Transport};
@@ -140,24 +141,12 @@ pub struct ReleaseHooks {
     pub spawn_unload: fn(UnloadTicket) -> Option<std::thread::JoinHandle<()>>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SeekAnchorMode {
-    Segment,
-    NativeSeek,
-    Reload,
-}
-
 /// Main-thread physical Feed verbs with only the few common observations they publish.
 /// The sink provider runs at every native call, including reentrant callbacks and release fences.
 pub struct FeedHooks {
     pub sink: fn() -> &'static dyn VideoSink,
-    pub seek_mode: fn() -> SeekAnchorMode,
-    pub set_seek_mode: fn(SeekAnchorMode),
-    pub set_native_seek_refused: fn(bool),
     pub mirror_playstate: fn(&MainThread, Stage, bool),
     pub mute_for_preroll: fn(&MainThread),
-    pub presentation_event: fn(i64),
-    pub vclock_ms: fn() -> u32,
     pub feed_clock_us: fn() -> u64,
 }
 
@@ -504,7 +493,7 @@ pub fn launch_native_open(
         foreground_follows_load: false,
         era_watch: crate::era_callbacks::Watch::new(),
     };
-    // Select this session's direct-play seek mode (`SeekMode`, mod.rs, whose SCOPE note argues why
+    // Select this session's direct-play seek mode (`SeekMode`, seek.rs, whose SCOPE note argues why
     // it is per session). `feed_stream` can downgrade it to `Reload` mid-session (the pipeline was
     // unreachable, or LG refused a `Seek`), and that is a fact about the StarfishMediaAPIs object
     // — which `sf_load` constructs and teardown's `sf_destroy` destructs, once per session — not
@@ -1381,7 +1370,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks: 
                         continue;
                     }
                 }
-                if eng.flushed && (hooks.seek_mode)() == SeekAnchorMode::NativeSeek {
+                if eng.flushed && crate::seek::seek_mode() == SeekMode::NativeSeek {
                     // NATIVE in-place seek (#568): feed the REAL content PTS (pts_shift=0,
                     // disp_base=0 -> playpos = presented real pts = content time, as in the
                     // Segment branch below) and anchor the pipeline with LG's public
@@ -1404,11 +1393,11 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks: 
                         // `reload_at` REPLACES the engine). `eng.flushed`/`rebase_pending` stay
                         // set so the audio lane keeps holding and no AU reaches a pipeline that
                         // is rejecting Feed.
-                        (hooks.set_seek_mode)(SeekAnchorMode::Reload);
+                        crate::seek::set_seek_mode(SeekMode::Reload);
                         // Latched across the reload this very seek is about to do, so the fresh
                         // session's `select_seek_mode` does not offer the same firmware another
                         // refused Seek on every later seek of this playback.
-                        (hooks.set_native_seek_refused)(true);
+                        crate::seek::set_native_seek_refused(true);
                         plx_base::eventlog::log(
                             "in-place seek DOWNGRADE: native Seek refused -> reload-per-seek for \
                              the rest of this playback",
@@ -1421,7 +1410,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks: 
                     }
                     segment_installed = true;
                     eng.flushed = false;
-                } else if eng.flushed && (hooks.seek_mode)() != SeekAnchorMode::Segment {
+                } else if eng.flushed && crate::seek::seek_mode() != SeekMode::Segment {
                     // Flushed but not in a mode that anchors in place: a refused native `Seek`
                     // downgraded the session to `Reload` and the pump's reload (`reload_at`)
                     // is on its way. The private Segment path (`sf_pipeline`'s decompile-derived
@@ -1463,7 +1452,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks: 
                         // silently became multi-second reloads with nothing in the event log
                         // naming the cause — only the `sendSegment=0` above, whose consequence
                         // was not stated anywhere.
-                        (hooks.set_seek_mode)(SeekAnchorMode::Reload);
+                        crate::seek::set_seek_mode(SeekMode::Reload);
                         plx_base::eventlog::log(
                             "in-place seek DOWNGRADE: sendSegment=0 (CustomPipeline unreachable) \
                              -> reload-per-seek for the rest of this session",
@@ -1505,7 +1494,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks: 
         // pts-ordered, so if the head is over budget everything behind it is too; breaking is right.
         let pres = eng.feed_pace.reference_at(
             shared.pres_fed.load(Ordering::Relaxed),
-            (hooks.vclock_ms)(),
+            crate::shared::vclock_ms(),
             shared.applied_rate_permille.load(Ordering::Relaxed),
         );
         if !eng.prime_play {
@@ -1545,7 +1534,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks: 
         if presentation_probe {
             if (r as u8) == b'O' {
                 if !shared.commit_native_presentation_probe(eng.native_epoch, |num| {
-                    (hooks.presentation_event)(num)
+                    crate::sf_event::sf_on_event_inner(0, num, std::ptr::null(), crate::shared::EventScope::Live)
                 }) {
                     plx_base::eventlog::log("rebase: native presentation probe lost its epoch after accepted Feed");
                 }
@@ -1637,7 +1626,7 @@ fn feed_audio_lane(mt: &MainThread, eng: &mut Engine, hooks: &FeedHooks) {
     let shift = shared.pts_shift.load(Ordering::Relaxed);
     let pres = eng.feed_pace.reference_at(
         shared.pres_fed.load(Ordering::Relaxed),
-        (hooks.vclock_ms)(),
+        crate::shared::vclock_ms(),
         shared.applied_rate_permille.load(Ordering::Relaxed),
     );
     let slice = FeedSlice::begin(hooks.feed_clock_us);

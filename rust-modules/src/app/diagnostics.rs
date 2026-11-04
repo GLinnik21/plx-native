@@ -735,7 +735,7 @@ fn pipeline_rows(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::
     }
     // Playback speed: the sound is decoded and time-stretched in the app and reaches the pipeline as
     // PCM, whatever the chain above says the file carries; and the pipeline's own report of what it
-    // set up is the safety net's evidence (`player::note_speed_audio_report`), so it is shown.
+    // set up is the safety net's evidence (`plx_play_feed::sf_event`), so it is shown.
     #[cfg(feature = "play-feed")]
     let (speed, speed_bad) = if feed {
         let rate = plx_media::player::applied_rate(ps);

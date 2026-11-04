@@ -1779,7 +1779,7 @@ mod tests {
         super::super::SHARED.reset_session();
         assert_eq!(error_context(&ps).pipeline_error, 0, "no callback, nothing to report");
         let epoch = FEED_SHARED.begin_native_session().expect("session");
-        super::super::sf_on_event(epoch, 18, 601, c"Resource Allocation Error".as_ptr());
+        plx_play_feed::sf_event::sf_on_event(epoch, 18, 601, c"Resource Allocation Error".as_ptr());
         observe_facts(&mut ps, attempt, crate::player::attempt_view::AttemptFacts {
             pipeline_error: Some(FEED_SHARED.dg_cb_err_num.load(Relaxed)),
                 refusal_path: Some(FEED_SHARED.refusal_path()),
@@ -2135,7 +2135,7 @@ mod tests {
             requested(&ps, plx_plex::plex::ServerId::UNSET, AttemptOrigin::Fresh);
             super::super::SHARED.reset_session();
             let epoch = FEED_SHARED.begin_native_session().expect("session");
-            super::super::sf_on_event(epoch, 18, 601, c"Resource Allocation Error".as_ptr());
+            plx_play_feed::sf_event::sf_on_event(epoch, 18, 601, c"Resource Allocation Error".as_ptr());
             let attempt = begin_view(&mut ps);
             observe_facts(&mut ps, attempt, crate::player::attempt_view::AttemptFacts {
                 pipeline_error: Some(FEED_SHARED.dg_cb_err_num.load(Relaxed)),

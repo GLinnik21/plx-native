@@ -1,6 +1,6 @@
 //! player — the buffer-feed video engine (was src/playback.c). THREADING: everything
-//! here except sf_on_event runs on the SDL main thread. It is #[no_mangle] and runs on the
-//! StarfishMediaAPIs library thread; it touches ONLY `FEED_SHARED`. (`acb_on_event`, the other
+//! here runs on the SDL main thread except `plx_play_feed::sf_event::sf_on_event`, which is
+//! #[no_mangle], runs on the StarfishMediaAPIs library thread and touches ONLY `FEED_SHARED`. (`acb_on_event`, the other
 //! library-thread callback, lives in the platform port, `webos::video_sink`, and touches only the
 //! plane owner's completion mailbox.) The Feed backend's callback/transport state is
 //! `plx_play_feed::shared::{FEED_SHARED, FEED_TX}`, synchronized there; `SHARED` and `TX` here
@@ -47,8 +47,6 @@ mod feed_resources; // private ownership of the native feed slot and worker rece
 pub mod foreground;
 pub mod lifecycle;
 pub mod machine;
-#[cfg(feature = "play-feed")]
-pub mod playurl; // the `plxnative-playurl` dev trigger: a stream and its Load declaration, parsed beside the engine that acts on it
 pub mod preview;
 #[cfg(all(test, feature = "play-feed"))]
 mod abr_plant_tests; // pins the ABR plant's constants to the Feed pipeline's
@@ -105,8 +103,6 @@ pub mod threads;
 mod timeline;
 pub mod transport;
 pub mod video_geometry;
-#[cfg(feature = "play-feed")]
-pub mod vp9_hdr; // HDR10 for a VP9 stream: the container's PQ tag, written into the sourceInfo envelope ACB is sent
 
 #[cfg(feature = "play-feed")]
 use plx_base::task::MainThread;
@@ -185,17 +181,17 @@ fn raw_sink() -> &'static dyn plx_platform::tv::sink::VideoSink {
 }
 
 /// The simulator's video sink ([`ffi_host::HostSink`]), built with this crate's side of what the
-/// Feed backend's stand-in cannot name: the pipeline-event entry [`sf_on_event`], the inverse of the
+/// Feed backend's stand-in cannot name: the pipeline-event entry `plx_play_feed::sf_event::sf_on_event`, the inverse of the
 /// position rebase that entry applies, and the simulator's decoded picture ([`sim_video`]). The
 /// simulator's port table holds it as `Port.sink`; a hostsim test binary reads it directly.
 #[cfg(all(feature = "hostsim", feature = "play-feed"))]
 pub static HOST_SINK: ffi_host::HostSink = ffi_host::HostSink::new(ffi_host::Hooks {
-    deliver_event: sf_on_event,
+    deliver_event: plx_play_feed::sf_event::sf_on_event,
     media_to_fed: host_media_to_fed,
     frames: &sim_video::SimVideo,
 });
 
-/// The rebase `sf_on_event` applies to a reported position (`playpos = fed - pts_shift +
+/// The rebase `sf_on_event` (`plx_play_feed::sf_event`) applies to a reported position (`playpos = fed - pts_shift +
 /// disp_base`), inverted: the fed PTS at which the app will read `media_ns`.
 #[cfg(all(feature = "hostsim", feature = "play-feed"))]
 fn host_media_to_fed(media_ns: i64) -> i64 {
@@ -261,16 +257,8 @@ pub fn seed_dev_track_names() {
     ));
     *SHARED.track_names.lock().unwrap() = TrackNames { audio, subs };
 }
-#[cfg(feature = "play-feed")]
-use std::ffi::CStr;
-#[cfg(feature = "play-feed")]
-use std::os::raw::{c_char, c_uint};
 use std::os::raw::c_int;
-#[cfg(feature = "play-feed")]
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
-#[cfg(feature = "play-feed")]
-use std::sync::atomic::AtomicU8;
 
 pub static SHARED: Shared = Shared::new();
 pub static TX: Transport = Transport::new();
@@ -364,102 +352,6 @@ pub const ABR_WHY_RESPONSE_LIMITED: u8 = 13;
 /// less than the interruption. Decays on its own (`AbrPolicy::visible_switch_decay_ms`), so it is
 /// never a terminal state.
 pub const ABR_WHY_SWITCH_COST: u8 = 14;
-/// How a direct-play seek re-anchors the pipeline for THIS session (issue #568).
-///
-/// - [`Segment`](SeekMode::Segment) — Kodi's in-place seek: flush + reopen + `av_seek`, then on the
-///   first post-seek keyframe `setTimeToDecode` / `setContentInfo` + the private `sendSegmentEvent`.
-///   No reload, no decoder re-init, so no HDR-mode popup and no A/V-resync glitch. It reaches
-///   LG-private C++ objects through decompile-derived offsets (`src/starfish.c`'s `sf_pipeline`:
-///   object+0x4c, then player+0x04, plus `MEDIA_CUSTOM_CONTENT_INFO`'s `ptsToDecode`), proven on
-///   webOS 4.5 only, so it is used only where `inplace_layout_known` holds and the window is not
-///   `VP_EXPORTED`. On webOS<11 (this 4.5) `setTimeToDecode` returns 0, so `feed_stream` falls
-///   back to the content-info path (`loadSpi_getInfo` + `setContentInfo(ptsToDecode)`).
-/// - [`NativeSeek`](SeekMode::NativeSeek) — LG's PUBLIC `StarfishMediaAPIs::Seek(const char*)`
-///   (`_ZN17StarfishMediaAPIs4SeekEPKc`, present on every firmware 1.2 to 11.2): a flushing
-///   `gst_element_seek` whose segment starts at the millis passed. No private offset, no
-///   `flush()` (Seek flushes itself, and a `flush()` after it re-anchors the segment at 0 — the
-///   stale-segment stall), no decoder re-init. This is what `VP_EXPORTED` (webOS 5+) uses, and
-///   a known webOS 3 release on the ACB plane, whose old-ABI library `Segment` cannot assume
-///   (`engine::old_abi_seek_tested`).
-/// - [`Reload`](SeekMode::Reload) — a full fresh Starfish `Load` per seek (`engine::reload_at`),
-///   built out of Load/Play alone and assuming no layout at all: the fallback both of the others
-///   drop to, and every layout-unknown library `NativeSeek` is not tested on (webOS 2, an old-ABI
-///   4.x build, an unknown release) or a set with no video plane.
-///
-/// SCOPE: this is a **per-session mode, not a device-capability latch**, and
-/// `engine::start_bufferfeed` re-selects it for every new session. The one exception is a refused
-/// native `Seek`: that is remembered for the rest of the SAME playback (`native_seek_refused`,
-/// preserved across `reload_at`, cleared by a fresh play), so a firmware or file that refuses
-/// does not pay a refused `Seek` plus a full `Load` on every seek. A downgrade to `Reload` (a
-/// `sendSegment` that found no pipeline, a refused `Seek`) is a fact about the StarfishMediaAPIs
-/// object, which `sf_load` constructs and teardown's `sf_destroy` destructs once per session — not
-/// about the TV. `sendSegmentEvent` itself returns void, so its 0 NEVER means "the segment event
-/// was rejected", only "there was nothing to call it on": a liveness/timing condition by
-/// construction. Latching it for the process was a bug with a very long tail (one teardown-window
-/// race downgraded every later seek of every later item to a ~1 s reload until restart).
-/// Re-selecting per session is self-healing rather than oscillating, too: `reload_at` builds a
-/// fresh Starfish object, so the condition that produced the downgrade cannot survive into the
-/// session that re-selects. It remains a static rather than an `Engine` field only because
-/// `pump.rs` reads it without an Engine borrow at hand; its LIFETIME is the Engine's, since
-/// `start_bufferfeed` is the sole constructor and the mode is only read while a session is live.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[cfg(feature = "play-feed")]
-pub enum SeekMode {
-    Segment,
-    NativeSeek,
-    Reload,
-}
-
-#[cfg(feature = "play-feed")]
-impl SeekMode {
-    const fn to_u8(self) -> u8 {
-        match self {
-            SeekMode::Segment => 0,
-            SeekMode::NativeSeek => 1,
-            SeekMode::Reload => 2,
-        }
-    }
-    const fn from_u8(v: u8) -> SeekMode {
-        match v {
-            0 => SeekMode::Segment,
-            1 => SeekMode::NativeSeek,
-            _ => SeekMode::Reload,
-        }
-    }
-}
-
-#[cfg(feature = "play-feed")]
-static SEEK_MODE: AtomicU8 = AtomicU8::new(SeekMode::Segment.to_u8());
-
-/// Set once a native `Seek` was REFUSED during the current playback, and preserved by `reload_at`
-/// (whose fresh session would otherwise re-select `NativeSeek` and pay a refused `Seek` plus a full
-/// `Load` on every seek). A fresh play (`start_bufferfeed_tracked` with no live Engine) clears it.
-#[cfg(feature = "play-feed")]
-static NATIVE_SEEK_REFUSED: AtomicBool = AtomicBool::new(false);
-
-/// Whether this playback's native `Seek` was refused (see [`NATIVE_SEEK_REFUSED`]).
-#[cfg(feature = "play-feed")]
-pub(crate) fn native_seek_refused() -> bool {
-    NATIVE_SEEK_REFUSED.load(Relaxed)
-}
-
-#[cfg(feature = "play-feed")]
-pub(crate) fn set_native_seek_refused(refused: bool) {
-    NATIVE_SEEK_REFUSED.store(refused, Relaxed);
-}
-
-/// This session's direct-play seek mode.
-#[cfg(feature = "play-feed")]
-pub fn seek_mode() -> SeekMode {
-    SeekMode::from_u8(SEEK_MODE.load(Relaxed))
-}
-
-/// Set this session's direct-play seek mode (`start_bufferfeed` selects it, `feed_stream` downgrades it).
-#[cfg(feature = "play-feed")]
-pub(crate) fn set_seek_mode(mode: SeekMode) {
-    SEEK_MODE.store(mode.to_u8(), Relaxed);
-}
-
 // ---- API app.rs calls (were extern "C" fns in playback.h) ----
 //
 // `start_bufferfeed`/`start_bufferfeed_tracked` gate on this device's `/dev/rtkmem` jail
@@ -471,22 +363,6 @@ pub(crate) fn set_seek_mode(mode: SeekMode) {
 // `crate::route::cancel_play`'s `clear_play_verdict` (the same ritual that retires a `/decision`
 // refusal on leaving the player, called from `app.rs`'s `exit_player`) retires it precisely the
 // same way. See `engine.rs`'s `start_bufferfeed`/`start_bufferfeed_tracked` for the gate itself.
-/// `type=18`'s `num` when the pipeline releases the video decoder from an established session
-/// (`"VDEC resource is released by policy action"`). See `Shared::decoder_revoked`.
-#[cfg(feature = "play-feed")]
-const DECODER_REVOKED_BY_POLICY: i64 = 600;
-
-/// `type=18`'s `num` for `"Audio Codec Not Supported"`: libpf's `handleBusWarningMessage` raises it
-/// when a gst stream warning (`GST_STREAM_ERROR_CODEC_NOT_FOUND`) names audio. Every native Vorbis
-/// Load on a C1 ended in it (2026-10-21).
-#[cfg(feature = "play-feed")]
-const AUDIO_CODEC_NOT_SUPPORTED: i64 = 200;
-
-/// `PF_EVENT_TYPE_STR_STATE_UPDATE__ENDOFSTREAM` (0x1c): the last numbered type before the
-/// renumbering between webOS 4 and 5+, so the same on both. See `Shared::pipeline_eos`.
-#[cfg(feature = "play-feed")]
-const PIPELINE_END_OF_STREAM: c_int = 28;
-
 /// Did the pipeline take this session's video decoder back since the last ask? Consumes the
 /// answer: the app loop parks the session once per release.
 #[cfg(feature = "play-feed")]
@@ -2254,40 +2130,16 @@ pub fn speed_unsupported() -> bool {
     FEED_SHARED.speed_unsupported.load(Relaxed)
 }
 
-/// What the pipeline said it set up for a speed session's audio, from its audio-info callback
-/// (`audio/x-raw … <kHz> <channels> …`). 48 kHz stereo is what the payload declared; anything
-/// else means the declaration was not understood — measured: `"sampleRate":48000` came back as
-/// 44.099998 and the audio drifted and resynced every few seconds.
-#[cfg(feature = "play-feed")]
-pub(crate) fn note_speed_audio_report(b: &[u8]) {
-    if applied_rate_permille() == RATE_NORMAL || !b.starts_with(b"audio/") {
-        return;
-    }
-    let text = String::from_utf8_lossy(b);
-    let mut f = text.split_whitespace();
-    let kind = f.next().unwrap_or("");
-    let khz: f64 = f.nth(2).and_then(|v| v.parse().ok()).unwrap_or(0.0);
-    let channels: i32 = f.next().and_then(|v| v.parse().ok()).unwrap_or(0);
-    let ok = kind == "audio/x-raw" && (khz - 48.0).abs() < 0.01 && channels == 2;
-    FEED_SHARED.speed_audio_verdict.store(if ok { SPEED_AUDIO_OK } else { SPEED_AUDIO_BAD }, Relaxed);
-    log(&format!("speed: pipeline audio {kind} {khz} kHz x{channels} -> {}", if ok { "ok" } else { "NOT what was declared" }));
-}
 /// What the pipeline reported for this speed session's audio, for the Stats for nerds read-out:
 /// `None` before any report, `Some(true)` for the declared 48 kHz stereo, `Some(false)` otherwise.
 #[cfg(feature = "play-feed")]
 pub fn speed_audio_report() -> Option<bool> {
     match FEED_SHARED.speed_audio_verdict.load(Relaxed) {
-        SPEED_AUDIO_OK => Some(true),
-        SPEED_AUDIO_BAD => Some(false),
+        plx_play_feed::shared::SPEED_AUDIO_OK => Some(true),
+        plx_play_feed::shared::SPEED_AUDIO_BAD => Some(false),
         _ => None,
     }
 }
-#[cfg(feature = "play-feed")]
-pub(crate) const SPEED_AUDIO_UNKNOWN: u8 = plx_play_feed::shared::SPEED_AUDIO_UNKNOWN;
-#[cfg(feature = "play-feed")]
-pub(crate) const SPEED_AUDIO_OK: u8 = 1;
-#[cfg(feature = "play-feed")]
-pub(crate) const SPEED_AUDIO_BAD: u8 = 2;
 
 /// **The safety net**: this television did not take a speed session's PCM (`why`). Latch speed off
 /// ([`speed_unsupported`]), put the viewer's speed back to Normal, and reload at their position —
@@ -2299,27 +2151,6 @@ pub(crate) fn fall_back_from_speed(ps: &crate::route::PlaybackSession, why: &str
     FEED_SHARED.play_rate_permille.store(RATE_NORMAL, Relaxed);
     FEED_SHARED.rate_reload.store(true, Relaxed);
     request_seek(intended_pos_ns(ps).max(0));
-}
-
-/// **Film time to the pipeline's timeline.** At speed `r` the pipeline still plays at its own 1x,
-/// so every timestamp the app hands it — a fed AU, a seek or decode position — is divided by `r`;
-/// the frames then arrive `r` times closer together and the picture runs `r` times faster.
-/// Identity at 1x, which is every playback that has not picked a speed.
-#[cfg(feature = "play-feed")]
-pub fn to_sink_ns(ns: i64) -> i64 {
-    scale_ns(ns, RATE_NORMAL, applied_rate_permille())
-}
-/// The inverse, for every timestamp the pipeline reports back (a presented frame).
-#[cfg(feature = "play-feed")]
-pub fn from_sink_ns(ns: i64) -> i64 {
-    scale_ns(ns, applied_rate_permille(), RATE_NORMAL)
-}
-#[cfg(feature = "play-feed")]
-fn scale_ns(ns: i64, num: i32, den: i32) -> i64 {
-    if num == den || den <= 0 {
-        return ns;
-    }
-    (ns as i128 * num as i128 / den as i128) as i64
 }
 
 /// Back to 1x — called on a new item, like [`reset_audio_track`]: a speed is a choice about what
@@ -2824,51 +2655,35 @@ pub fn bitmap_by_key(key: i64) -> Option<(i32, i32, Vec<SubRect>)> {
 }
 pub use plx_base::eventlog::log; // event-log sink (crate-wide single copy in lib.rs)
 
+/// What `plx_play_feed::sf_event::sf_on_event` reads of this module's common state: the first
+/// picture after a viewer's audio pick ends the switch (`AudioSwitch::Reloading` -> `None`).
 #[cfg(feature = "play-feed")]
-fn find(h: &[u8], n: &[u8]) -> bool {
-    !n.is_empty() && h.windows(n.len()).any(|w| w == n)
-}
-/// bytes between `prefix` and the next `term`, or None if `prefix` absent.
+static SF_EVENT_HOOKS: plx_play_feed::sf_event::SfEventHooks = plx_play_feed::sf_event::SfEventHooks {
+    audio_rebuild_presented: || {
+        let _ = SHARED.audio_switch.compare_exchange(
+            AudioSwitch::Reloading as u8,
+            AudioSwitch::None as u8,
+            Relaxed,
+            Relaxed,
+        );
+    },
+};
+
+/// Hand the callback its hooks. `PlayerAdapter::new`, which every boot (the television's and the
+/// simulator's) runs before the first `Load`, calls it; a second call is refused and changes nothing.
 #[cfg(feature = "play-feed")]
-fn between(h: &[u8], prefix: &[u8], term: u8) -> Option<Vec<u8>> {
-    let start = h.windows(prefix.len()).position(|w| w == prefix)? + prefix.len();
-    let rest = &h[start..];
-    let end = rest.iter().position(|&b| b == term).unwrap_or(rest.len());
-    Some(rest[..end].to_vec())
+pub(crate) fn install_sf_event_hooks() {
+    let _ = plx_play_feed::sf_event::install(&SF_EVENT_HOOKS);
 }
 
-/// Parse one JSON number into thousandths without allocating a JSON tree on the pipeline callback
-/// thread. SourceInfo is firmware-owned and may contain integer (`24`) or fractional (`23.976`)
-/// frame rates; malformed, zero and non-finite values remain "not reported".
+/// Monotonic milliseconds: the Feed backend's one clock (`plx_play_feed::shared::vclock_ms`, which
+/// the pipeline callback stamps with), or the same private-origin clock when no Feed is built.
+/// Private to `player::`; only ever differenced.
 #[cfg(feature = "play-feed")]
-fn source_fps_milli(h: &[u8]) -> Option<i64> {
-    let prefix = b"\"frameRate\":";
-    let start = h.windows(prefix.len()).position(|w| w == prefix)? + prefix.len();
-    let rest = &h[start..];
-    let first = rest.iter().position(|b| !b.is_ascii_whitespace())?;
-    let number = &rest[first..];
-    let end = number
-        .iter()
-        .position(|b| !b.is_ascii_digit() && !matches!(*b, b'.' | b'-' | b'+'))
-        .unwrap_or(number.len());
-    let value = std::str::from_utf8(&number[..end])
-        .ok()?
-        .parse::<f64>()
-        .ok()?;
-    let milli = value * 1_000.0;
-    (value.is_finite() && value > 0.0 && milli <= i64::MAX as f64).then(|| milli.round() as i64)
+fn vclock_ms() -> u32 {
+    plx_play_feed::shared::vclock_ms()
 }
-
-/// Monotonic milliseconds, from an origin fixed at the first call.
-///
-/// Not SDL ticks: this is read on the pipeline's own callback thread, and the value is only ever
-/// differenced, so a private origin is enough and owes SDL nothing.
-///
-/// **Private to `player::` again.** It was widened to `pub` earlier in phase 9 so
-/// `route::decision`'s `auto_last_switch` aging could stamp from it; that stamp now comes from the
-/// Player machine's frame tick (`machine::Player::set_now`, spec §4.1), which is the loop's own
-/// `fr.now` and therefore cannot disagree with the frame it belongs to. The remaining readers are
-/// the pump's silence watchdog and the host clock sink, both inside this module.
+#[cfg(not(feature = "play-feed"))]
 fn vclock_ms() -> u32 {
     use std::sync::OnceLock;
     use std::time::Instant;
@@ -2880,7 +2695,7 @@ fn vclock_ms() -> u32 {
 /// between two consecutive ones in milliseconds. Draining, like
 /// [`plx_machine::idle::take_presents`] — the heartbeat is the one caller, once a second.
 ///
-/// **This is a liveness signal, not a frame rate.** See [`sf_on_event`]: the healthy reading on
+/// **This is a liveness signal, not a frame rate.** See `plx_play_feed::sf_event::sf_on_event`: the healthy reading on
 /// every codec, resolution and container measured so far is `5` and `201`, because the tick is
 /// ~5 Hz regardless of the stream's frame rate. What it is good for is the opposite question —
 /// whether the pipeline still thinks it is running. A steady `5 / 201` through a picture the
@@ -2892,276 +2707,6 @@ pub fn vplane_take() -> (u32, u32) {
         FEED_SHARED.dg_vpres_ct.swap(0, Relaxed),
         FEED_SHARED.dg_vpres_gap.swap(0, Relaxed),
     )
-}
-
-/// pipeline event on the LIBRARY thread. type 0 = `PF_EVENT_TYPE_FRAMEREADY` (num = fed pts).
-///
-/// **`FRAMEREADY` is NOT one callback per decoded frame on this firmware, and reading it that way
-/// is how a stutter investigation gets the wrong answer.** Kodi's Starfish path treats it as one
-/// picture per event, which is where the old "frame presented" gloss here came from. Measured on
-/// webOS 4.10.2 (2026-08-21), it is a **~5 Hz position tick**: a 1080p H264 direct play, a 4K HEVC
-/// direct play and a visibly stuttering Dolby Vision direct play all deliver it 5 times a second,
-/// 201 ms apart, to the millisecond. So [`frames`](crate::player::shared::Shared::frames) counts
-/// TICKS, not frames — which is what `pump`'s ACB bind gate (`frames >= 2`, one tick while a
-/// paused preroll is open) really means (≈400 ms of playback, not two pictures) and what `app::diagnostics` really shows.
-///
-/// The consequence for diagnosis: this callback can say the pipeline still believes it is
-/// presenting, and cannot say the picture is smooth. The video plane's real cadence is not
-/// observable from this process at all — the evidence for that lives in the TV's own kernel log
-/// (`kad-hdr`).
-/// Panic-guarded (unwinding into C is UB); touches only FEED_SHARED.
-#[no_mangle]
-#[cfg(feature = "play-feed")]
-pub extern "C" fn sf_on_event(epoch: c_uint, ty: c_int, num: i64, s: *const c_char) {
-    let _ = catch_unwind(AssertUnwindSafe(|| {
-        // The mutex is deliberately held through the complete callback. A bare equality check
-        // would let teardown retire A, reset the process-long FEED_SHARED storage for B, and then let
-        // a callback which had already validated A publish into B. Firmware supplies `epoch`
-        // through the device-proven callback-context overload of StarfishMediaAPIs::Load.
-        let class = match ty {
-            0 => shared::NativeEventClass::Presentation,
-            23 => shared::NativeEventClass::UnloadCompleted,
-            _ => shared::NativeEventClass::Other,
-        };
-        FEED_SHARED.with_native_session_scoped(epoch, class, num, |scope| sf_on_event_inner(ty, num, s, scope));
-    }));
-}
-/// The two libpf frame counters a callback type can name, once the webOS 4 vs 5+ numbering
-/// shift is taken out.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg(feature = "play-feed")]
-enum SinkCounter {
-    Dropped,
-    Displayed,
-}
-
-/// PURE: which sink counter a raw callback type is, on a firmware of this major. Decompiled from
-/// libpf on webOS 4.10 (`CustomPipeline::updateDroppedFrame` → 0x2e = 46,
-/// `updateDisplayedFrame` → 0x2f = 47); every type above 0x1c is two higher on webOS 5+
-/// (Kodi's `if (webOSVersion < 5 && type > ENDOFSTREAM) type += 2`), so 48/49 there. An unknown
-/// major (0, os_info unreadable) is read as the numbering this project has actually measured.
-#[cfg(feature = "play-feed")]
-fn sink_counter_kind(ty: c_int, major: u32) -> Option<SinkCounter> {
-    let normalised = if major == 0 || major < 5 { ty + 2 } else { ty };
-    match normalised {
-        48 => Some(SinkCounter::Dropped),
-        49 => Some(SinkCounter::Displayed),
-        _ => None,
-    }
-}
-
-/// The raw callback type [`sink_counter_kind`] reads as the displayed-frame counter on this major,
-/// found through it so the two cannot drift apart.
-#[cfg(feature = "play-feed")]
-fn displayed_counter_type(major: u32) -> c_int {
-    (46..=49)
-        .find(|&ty| sink_counter_kind(ty, major) == Some(SinkCounter::Displayed))
-        .unwrap_or(0)
-}
-
-#[cfg(feature = "play-feed")]
-fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::EventScope) {
-    if scope == shared::EventScope::Release {
-        // The lifecycle evidence of an object being released after the main thread reset the
-        // session state (`UNLOADCOMPLETED` arrives ~110 ms into the off-frame Unload): log it, but
-        // let nothing reach the census, error latch or load verdict the NEXT session owns.
-        log(&format!("smp_cb type={ty} num={num} (release evidence, not counted)"));
-        return;
-    }
-    if ty != 0 {
-        // The diagnostics census, beside the log line that already records every event. A COUNT is
-        // what the read-out needs: "Load completed and then nothing ever called us" is the sharpest
-        // symptom the stuck-buffering reports could carry, and it is invisible in a log the user
-        // cannot reach. Kept here rather than in the `ty` dispatch below so an event we do not
-        // handle still counts — an unhandled callback is still the pipeline talking.
-        let n = FEED_SHARED.dg_cb_count.fetch_add(1, Relaxed) + 1;
-        // Latch the FIRST error, with the callback index it arrived at. Sticky, because a later
-        // healthy callback must not erase the one event that explains the session — and the index
-        // separates "refused immediately" from "died after a long healthy run". Only `ty == 18`:
-        // it is the one ERROR type this project has ever acted on, and it sits below the 0x1c point
-        // where the numbering shifts between webOS 4 and 5+, so it means the same on both. Naming
-        // any higher type would be a confident lie on the firmware we cannot test.
-        //
-        // The firmware's own error NUMBER rides in the same latch (`601` = resource allocation),
-        // clamped to the `i32` range: it is the one integer a handled `tv_pipeline` report carries
-        // about the refusal. The callback's STRING (`s`, logged below) is never kept: it is free
-        // text and can hold a URI or a path.
-        if ty == 18 && FEED_SHARED.dg_cb_err.load(Relaxed) == 0 {
-            FEED_SHARED.dg_cb_err.store(ty, Relaxed);
-            FEED_SHARED.dg_cb_err_at.store(n, Relaxed);
-            FEED_SHARED
-                .dg_cb_err_num
-                .store(num.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32, Relaxed);
-        }
-        let preview = if s.is_null() {
-            String::new()
-        } else {
-            unsafe { CStr::from_ptr(s) }
-                .to_string_lossy()
-                .chars()
-                .take(1400)
-                .collect()
-        };
-        log(&format!("smp_cb type={ty} num={num} str={preview}"));
-        // The video sink's own frame counters, forwarded by libpf every 200 ms (see the payload
-        // note in engine.rs: `streamQualityInfo` / `streamQualityInfoNonFlushable`). Logged under
-        // a firmware-independent name because these two sit ABOVE the 0x1c point where the
-        // callback numbering shifts by two between webOS 4 and 5+ (`docs/webos5-port.md` §5):
-        // 46/47 on this set are 48/49 on a webOS 5+ set. The harness reads THIS line, never
-        // the raw type.
-        match sink_counter_kind(ty, plx_platform::tv::device::info().major) {
-            Some(SinkCounter::Displayed) => {
-                FEED_SHARED.dg_sink_displayed_cb.fetch_add(1, Relaxed);
-                log(&format!("sink: displayed={num} (type={ty})"));
-            }
-            Some(SinkCounter::Dropped) => log(&format!("sink: dropped={num} (type={ty})")),
-            None if (46..=49).contains(&ty) => {
-                FEED_SHARED.dg_sink_other_cb.fetch_add(1, Relaxed);
-            }
-            None => {}
-        }
-        // **A refusal before the first picture is a VERDICT, not a statistic.** Until 2026-09-03
-        // the latch above was all this arm did, and `docs/webos10-lab-report.md` §3.5 records the
-        // result on a set that refused the Load asynchronously (`Load()` returned ok=1, then
-        // `type=18 num=601 Resource Allocation Error`): `load_failed` stayed false, the pump waited
-        // in Connecting for a `loadCompleted` that could never come, the demuxer kept downloading,
-        // the adaptive controller stepped down against an estimator that would never see a frame,
-        // and the failure read-out — the one screen built to survive a phone photograph — never
-        // ran, for ~70 s, on the failure it most exists for. Publishing the same flag the
-        // synchronous refusal publishes (`threads::load_thread` on `sf_load == 0`) hands it to the
-        // pump's existing `load_failed` arm, whose failed-open ladder (`recovery::OpenRecovery`)
-        // picks: the HLS rollback if one is pending, else the conversion of a stream the attempt can
-        // do without (the DTS of #695), else the cold Auto Original's HLS contingency, else `Error`
-        // with `FailureKind::TvPipeline`.
-        //
-        // Scoped to `!seen_frame` — SESSION-scoped, never `frames == 0`, which a seek zeroes (see
-        // player/CLAUDE.md, "`frames` is SEEK-scoped"). A `loadCompleted` already received is NOT
-        // an exemption: a completed Load is the pipeline accepting a declaration, and a refusal
-        // that lands after it but before any picture is still a session that never started. A
-        // type=18 after a picture stays diagnostic-only here except for the one number that has
-        // been measured (the decoder release, below): what the others mean mid-play is unmeasured,
-        // and the lab could not say whether 18 is the only refusal type either — so their `num` is
-        // logged rather than filtered on.
-        if ty == 18 && !FEED_SHARED.seen_frame.load(Relaxed) {
-            log(&format!(
-                "smp: Load refused by the pipeline before any picture (type=18 num={num}) — failing the source"
-            ));
-            FEED_SHARED.note_refusal_path(shared::RefusalPath::Async);
-            FEED_SHARED.load_failed.store(true, std::sync::atomic::Ordering::Release);
-            if num == AUDIO_CODEC_NOT_SUPPORTED && crate::ff::native_audio::fed().is_some() {
-                FEED_SHARED.native_audio_refused.store(true, std::sync::atomic::Ordering::Release);
-            }
-        } else if ty == 18 && num == DECODER_REVOKED_BY_POLICY {
-            // **After a picture, ONE number is measured: the decoder taken back.** A paused direct
-            // play left until the screensaver came on (dev set, 2026-10-13) got exactly this, with
-            // no app-switch edge, and the pipeline refused every Play after it for good — so this
-            // is not a statistic either. The app loop parks the session the way an app switch does
-            // and rebuilds it on the viewer's next press (`take_decoder_revoked`). Every other
-            // number after a picture stays diagnostic-only, as above.
-            log("smp: the pipeline released the video decoder (type=18 num=600) — parking the session");
-            FEED_SHARED.decoder_revoked.store(true, std::sync::atomic::Ordering::Release);
-        }
-    }
-    // The pipeline's end-of-stream (`Shared::pipeline_eos`): only after a picture, where it can
-    // mean the film was played out.
-    if ty == PIPELINE_END_OF_STREAM
-        && FEED_SHARED.seen_frame.load(Relaxed)
-        && !FEED_SHARED.pipeline_eos.swap(true, Relaxed)
-    {
-        log("smp: the pipeline reached end-of-stream");
-    }
-    if ty == 0 {
-        // a POSITION UPDATE — map fed pts -> real content position.
-        //
-        // **It is not one per presented frame, and `vtick`/`vgap` cannot see a dropped frame.**
-        // Measured 2026-08-21 across every Profile 5 run: `vtick=5 vgap=201ms`, unvarying, on
-        // clean and visibly stuttering playback alike. The pipeline emits this at 5 Hz — it is a
-        // position report, not a vsync. This comment used to say "a frame was PRESENTED" and the
-        // `dg_vpres_*` block below still describes a cadence probe; both were written from the
-        // callback's NAME rather than from its rate, and an instrument that reads a flat 201 ms
-        // through the fault it exists to catch is worse than no instrument, because it is quoted.
-        //
-        // The real per-frame cadence is only observable from LG's own tracing — `GST_DEBUG=
-        // dualsequencer:6` via `/tmp/plxnative-gstlog`, whose `push_dual` and `lxvideosink`
-        // timestamps give one line per frame. That was long avoided as perturbing; it is not, at
-        // level 6: the same scene measured 123 LUT misses uninstrumented and 122 with the trace
-        // running. Level 9 IS perturbing and is what that reputation came from.
-        //
-        // `pres_fed` below is still sound — the feed-ahead throttle wants a position, and a 200 ms
-        // granularity against a 1.6 s budget is ample. Only the TIMING half was wrong.
-        let t = vclock_ms();
-        let prev = FEED_SHARED.dg_vpres_at.swap(t, Relaxed);
-        FEED_SHARED.dg_vpres_ct.fetch_add(1, Relaxed);
-        if prev != 0 {
-            let gap = t.saturating_sub(prev);
-            FEED_SHARED.dg_vpres_gap.fetch_max(gap, Relaxed);
-        }
-        FEED_SHARED.frames.fetch_add(1, Relaxed);
-        FEED_SHARED.seen_frame.store(true, Relaxed); // session-scoped: unlike `frames`, a seek won't clear it
-        // the rebuild an audio pick asked for has put its picture up: the switch is over
-        let _ = SHARED.audio_switch.compare_exchange(
-            AudioSwitch::Reloading as u8,
-            AudioSwitch::None as u8,
-            Relaxed,
-            Relaxed,
-        );
-        // back from the pipeline's timeline to film time (`from_sink_ns`; identity at 1x)
-        let num = from_sink_ns(num);
-        FEED_SHARED.pres_fed.store(num, Relaxed); // raw fed pts, for the feed-ahead throttle
-        let content_ns = num - FEED_SHARED.pts_shift.load(Relaxed) + FEED_SHARED.disp_base.load(Relaxed);
-        FEED_SHARED.playpos_ns.store(content_ns, Relaxed);
-        FEED_SHARED.reported_playpos_ns.store(content_ns, Relaxed);
-        FEED_SHARED.dg_pos_ticks.fetch_add(1, std::sync::atomic::Ordering::Release);
-    }
-    if s.is_null() {
-        return;
-    }
-    let b = unsafe { CStr::from_ptr(s) }.to_bytes();
-
-    if let Some(fps_milli) = source_fps_milli(b) {
-        FEED_SHARED.video_fps_milli.store(fps_milli, Relaxed);
-    }
-    note_speed_audio_report(b);
-    if find(b, b"\"video\"") {
-        if let Some(aspect) = video_geometry::source_aspect(b) {
-            FEED_SHARED.video_aspect.store(aspect.pack(), std::sync::atomic::Ordering::Release);
-        }
-    }
-
-    {
-        let mut mid = FEED_SHARED.media_id.lock().unwrap();
-        if mid.is_none() {
-            if let Some(id) =
-                between(b, b"\"context\":\"", b'"').or_else(|| between(b, b"\"mediaId\":\"", b'"'))
-            {
-                if let Ok(c) = std::ffi::CString::new(id.clone()) {
-                    log(&format!(
-                        "SMP context/mediaId={}",
-                        String::from_utf8_lossy(&id)
-                    ));
-                    *mid = Some(c);
-                }
-            }
-        }
-    }
-
-    if !FEED_SHARED.load_completed.load(Relaxed) && (find(b, b"loadCompleted") || find(b, b"\"loaded\""))
-    {
-        FEED_SHARED.load_completed.store(true, Relaxed);
-        log("SMP loadCompleted");
-    }
-
-    {
-        // capture the WHOLE sourceInfo envelope VERBATIM (byte-for-byte + NUL), never re-encoded
-        let mut si = FEED_SHARED.source_info.lock().unwrap();
-        if si.is_none() && find(b, b"\"video\":") && find(b, b"\"context\":") {
-            let mut v = Vec::with_capacity(b.len() + 1);
-            v.extend_from_slice(b);
-            v.push(0);
-            log(&format!("SMP sourceInfoRaw captured ({} bytes)", b.len()));
-            *si = Some(v);
-        }
-    }
 }
 
 /// The shape the `failtest=policy` arm builds, for tests outside this module.
@@ -3199,6 +2744,7 @@ pub fn every_failure_row() -> Vec<(FailureKind, FailureContext, Vec<FailureActio
 #[cfg(all(test, feature = "play-feed"))]
 mod tests {
     use super::*;
+    use plx_play_feed::sf_event::{sf_on_event, sf_on_event_inner};
 
     fn caption_retention() -> plx_playback_contract::subtitle::CaptionRetention {
         plx_playback_contract::subtitle::CaptionRetention {
@@ -3318,61 +2864,6 @@ mod tests {
         assert_eq!(intended_pos_known_ns(&ps), Some(45_000_000_000),
             "the viewer's pending exact seek still outranks the older reported clock");
         crate::route::cancel_play(&mut ps);
-    }
-
-    /// The safety net's evidence: the pipeline's audio-info report for a speed session. 48 kHz
-    /// stereo raw is what the payload declared; the 44.1 a mis-declared rate produced, or any
-    /// compressed type, is not. At 1x the report is not judged at all.
-    #[test]
-    fn the_pipeline_audio_report_judges_a_speed_session() {
-        let _serial = plx_base::testlock::serial();
-        struct Restore;
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                FEED_SHARED.applied_rate_permille.store(RATE_NORMAL, Relaxed);
-                FEED_SHARED.speed_audio_verdict.store(SPEED_AUDIO_UNKNOWN, Relaxed);
-            }
-        }
-        let _restore = Restore;
-        let verdict = |rate: i32, report: &[u8]| {
-            FEED_SHARED.applied_rate_permille.store(rate, Relaxed);
-            FEED_SHARED.speed_audio_verdict.store(SPEED_AUDIO_UNKNOWN, Relaxed);
-            note_speed_audio_report(report);
-            FEED_SHARED.speed_audio_verdict.load(Relaxed)
-        };
-        // both are the 3.9.3 set's own strings, from its event log
-        let good = b"audio/x-raw (null) (null) 48.000000 2 (null) 0 0 0 0 (null) 0 (null) 0 ";
-        let drift = b"audio/x-raw (null) (null) 44.099998 2 (null) 0 0 0 0 (null) 0 (null) 0 ";
-        assert_eq!(verdict(1500, good), SPEED_AUDIO_OK);
-        assert_eq!(verdict(1500, drift), SPEED_AUDIO_BAD);
-        assert_eq!(verdict(1500, b"audio/mpeg (null) (null) 0.000000 0 (null)"), SPEED_AUDIO_BAD);
-        assert_eq!(verdict(RATE_NORMAL, drift), SPEED_AUDIO_UNKNOWN, "1x is never judged");
-        assert_eq!(verdict(1500, b"{\"video\":1}"), SPEED_AUDIO_UNKNOWN, "not an audio report");
-    }
-
-    /// The timeline conversion: at 1.5x a fed timestamp is two thirds of the film time it stands
-    /// for, the presented one comes back as film time, and at 1x nothing changes.
-    #[test]
-    fn the_pipeline_timeline_is_film_time_divided_by_the_speed() {
-        let _serial = plx_base::testlock::serial();
-        struct Restore;
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                FEED_SHARED.applied_rate_permille.store(RATE_NORMAL, Relaxed);
-            }
-        }
-        let _restore = Restore;
-        FEED_SHARED.applied_rate_permille.store(RATE_NORMAL, Relaxed);
-        assert_eq!(to_sink_ns(7_000_000_000), 7_000_000_000);
-        FEED_SHARED.applied_rate_permille.store(1500, Relaxed);
-        assert_eq!(to_sink_ns(3_000_000_000), 2_000_000_000);
-        assert_eq!(from_sink_ns(2_000_000_000), 3_000_000_000);
-        FEED_SHARED.applied_rate_permille.store(500, Relaxed);
-        assert_eq!(to_sink_ns(3_000_000_000), 6_000_000_000, "half speed spreads frames out");
-        // a long film at a fractional speed survives the round trip within a nanosecond
-        FEED_SHARED.applied_rate_permille.store(1750, Relaxed);
-        let t = 9_876_543_210_123;
-        assert!((from_sink_ns(to_sink_ns(t)) - t).abs() <= 2);
     }
 
     /// **A speed change is a seek to where the viewer already is, marked to reload**, and only a
@@ -3628,20 +3119,6 @@ mod tests {
             Some(3_000),
             "a declared video-only stream uses its video tail",
         );
-    }
-
-    #[test]
-    fn source_info_reports_the_stream_fps_not_the_position_tick_rate() {
-        assert_eq!(
-            source_fps_milli(br#"{"video":{"frameRate":24,"width":3840}}"#),
-            Some(24_000),
-        );
-        assert_eq!(
-            source_fps_milli(br#"{"video":{"frameRate": 23.976,"width":1920}}"#),
-            Some(23_976),
-        );
-        assert_eq!(source_fps_milli(br#"{"video":{"frameRate":0}}"#), None);
-        assert_eq!(source_fps_milli(br#"{"video":{"width":1920}}"#), None);
     }
 
     #[test]
@@ -3914,19 +3391,6 @@ mod tests {
             plx_platform::i18n::msg::browse_diagnostics_unknown_os(),
             plx_platform::i18n::msg::settings_login_unknown_device(),
         )), "{bare}");
-    }
-
-    #[test]
-    fn the_sink_counters_are_read_through_the_numbering_shift() {
-        use SinkCounter::{Displayed, Dropped};
-        assert_eq!(sink_counter_kind(46, 4), Some(Dropped));
-        assert_eq!(sink_counter_kind(47, 4), Some(Displayed));
-        assert_eq!(sink_counter_kind(47, 0), Some(Displayed), "unknown major reads as measured");
-        assert_eq!(sink_counter_kind(48, 5), Some(Dropped));
-        assert_eq!(sink_counter_kind(49, 10), Some(Displayed));
-        assert_eq!(sink_counter_kind(47, 10), None, "47 is something else on webOS 5+");
-        assert_eq!(sink_counter_kind(49, 4), None);
-        assert_eq!(sink_counter_kind(18, 4), None);
     }
 
     #[test]
@@ -5089,9 +4553,11 @@ mod seek_hud_regressions {
 #[cfg(test)]
 mod audio_switch_tests {
     use super::*;
+    use plx_play_feed::sf_event::sf_on_event;
     use std::sync::atomic::Ordering::Relaxed;
 
     fn reset() {
+        install_sf_event_hooks();
         SHARED.reset_session();
         SHARED.audio_switch.store(AudioSwitch::None as u8, Relaxed);
     }
