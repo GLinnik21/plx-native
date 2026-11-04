@@ -21,7 +21,7 @@
       "headroom": "0 (exact measured graph, including the reviewed STORE ZIP reader/writer)"
     },
     "packages_no_default_features": {
-      "what": "The same count with --no-default-features, which is what every shipped binary is built with.",
+      "what": "The same count with the shipping feature set: the Makefile's `RELEASE=1` flags (--no-default-features plus the playback backends, asked of `make print-playback-config`), which is what every shipped binary is built with.",
       "unit": "packages",
       "mode": "fail",
       "limit": 92,
@@ -39,7 +39,7 @@
       "headroom": "+3"
     },
     "duplicate_versions_no_default_features": {
-      "what": "The same count with --no-default-features.",
+      "what": "The same count with the shipping feature set (see packages_no_default_features).",
       "unit": "crate names",
       "mode": "fail",
       "limit": 4,
