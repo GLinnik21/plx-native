@@ -3866,7 +3866,12 @@ mod load_in_flight_tests {
         }
         assert!(pa.has_abandoned_load());
         let start = crate::route::begin_route_start().expect("a completed stop grants a start owner");
-        // No URL is set, so an unguarded start would answer `NoRoute`; `StartFailed` is the refusal.
+        // A resolved, qualified source: the offer check passes and an unguarded start would go on to
+        // build a second native object. Without one the start answers `NoRoute` (or, were the offer
+        // not qualified, `StartFailed` for that reason), and this guard would never be reached.
+        crate::route::set_url(&mut ps, "http://127.0.0.1:1/hls/start.m3u8");
+        assert!(ps.qualify_resolved_feed_offer(crate::route::backend_policy::OfferId::FEED_ORIGINAL,
+            crate::route::CandidatePurpose::NewCandidate));
         assert_eq!(
             crate::player::route_start::start_bufferfeed_inner(&mut ps, &mut pa, start).err(),
             Some(crate::route::RouteStartResult::StartFailed),
@@ -5861,5 +5866,110 @@ mod pcm_sink_lead_tests {
             "max_fed_audio_pts {} is content time, the sink's last audio gives {last_content}",
             eng.max_fed_audio_pts
         );
+    }
+}
+
+/// A start whose source no route plan resolved: the dev triggers (`plxnative-playurl`, `-url`, the
+/// local samples) name the stream themselves inside `feed_open::resolve_source`, so no `apply_plan`
+/// ever qualified a Feed recipe for it, while `start_bufferfeed_inner` refuses a Start without one
+/// ("no qualified feed offer for this resolved route"). These tests drive the production start the
+/// way the dev arm does (`route::clear_url`, then the start) and read what it answered. Every other
+/// start test in this file qualifies its recipe BY HAND (`qualify_resolved_feed_offer`) before it
+/// starts, which is why none of them could see the hole.
+#[cfg(all(test, feature = "hostsim"))]
+mod explicit_source_start_tests {
+    use super::*;
+    use crate::route::backend_policy::OfferId;
+
+    /// The pipeline tier's own playurl content (`tests/run.py`), verbatim but for the host.
+    const PLAYURL: &str = r#"{"vcodec":"h264","acodec":"aac","fps":24.0,"url":"http://127.0.0.1:1/__abr/ladder/master.m3u8"}"#;
+
+    struct Cleanup;
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            crate::player::ffi_host::reset_native_lifecycle_for_test();
+            crate::player::ffi_host::force_clocksink_for_test(false);
+            FEED_SHARED.test_force_native_idle();
+            SHARED.reset_session();
+            crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
+        }
+    }
+
+    /// One dev start of the armed `playurl`, as `dev::scenarios::autoplay_arm` makes it.
+    fn start_playurl(ps: &mut crate::route::PlaybackSession,
+        pa: &mut crate::player::adapter::PlayerAdapter) -> BufferfeedStartOutcome {
+        crate::route::clear_url(ps);
+        start_bufferfeed_tracked(ps, pa)
+    }
+
+    fn stop(ps: &mut crate::route::PlaybackSession, pa: &mut crate::player::adapter::PlayerAdapter) {
+        stop_bufferfeed(ps, pa);
+        crate::player::route_start::finish_release_for_test(pa);
+    }
+
+    /// Run `body` over a fresh session and adapter with the `playurl` trigger armed in a private root.
+    fn with_playurl_armed(body: impl FnOnce(&mut crate::route::PlaybackSession,
+        &mut crate::player::adapter::PlayerAdapter)) {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(&ps);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
+        let _cleanup = Cleanup;
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        plx_base::devtrig::with_private_triggers(|| {
+            std::fs::write(plx_base::devtrig::path("playurl"), PLAYURL).unwrap();
+            body(&mut ps, &mut pa);
+        });
+    }
+
+    /// The observed failure: a boot with no session (or a Home with one) arms `playurl`, the arm
+    /// clears the route's URL and starts, and the start was refused before the trigger was read.
+    #[test]
+    fn a_playurl_start_no_route_plan_resolved_still_launches() {
+        with_playurl_armed(|ps, pa| {
+            let started = start_playurl(ps, pa);
+            assert!(matches!(started, BufferfeedStartOutcome::Launched(_)),
+                "the playurl fixture's start was refused ({started:?})");
+            assert!(pa.is_live(), "a launched start builds the Engine");
+            assert_eq!(ps.planned_feed_offer(), Some(OfferId::FEED_ORIGINAL),
+                "an explicit source hands its bytes over as they are: the original recipe");
+            stop(ps, pa);
+        });
+    }
+
+    /// LG App Self Checklist #46: the finished stream starts again (`maybe_replay_after_eos`: the
+    /// arm re-fires and clears the URL). The first play spent the catalog's original recipe; the
+    /// second is a new request and begins its own.
+    #[test]
+    fn a_playurl_replay_after_the_first_play_launches_again() {
+        with_playurl_armed(|ps, pa| {
+            let first = start_playurl(ps, pa);
+            assert!(matches!(first, BufferfeedStartOutcome::Launched(_)), "first start {first:?}");
+            stop(ps, pa);
+            let second = start_playurl(ps, pa);
+            assert!(matches!(second, BufferfeedStartOutcome::Launched(_)),
+                "the replay was refused ({second:?}): the first play's spent catalog outlived it");
+            stop(ps, pa);
+        });
+    }
+
+    /// A seek that escalates (or any reload) comes back through the same door with the route's URL
+    /// already installed: it reopens the recipe the start admitted, and must not qualify a new
+    /// candidate (that would clear the admission it reopens from).
+    #[test]
+    fn a_reload_of_a_playurl_source_reopens_the_admitted_recipe() {
+        with_playurl_armed(|ps, pa| {
+            let first = start_playurl(ps, pa);
+            assert!(matches!(first, BufferfeedStartOutcome::Launched(_)), "first start {first:?}");
+            assert!(ps.backend_planned_feed_allowed(), "the admitted recipe stays reopenable");
+            let epoch = pa.engine().map(|eng| eng.native_epoch);
+            assert_eq!(reload_at(ps, pa, 5_000_000_000), ReloadOutcome::Started);
+            assert_eq!(ps.planned_feed_offer(), Some(OfferId::FEED_ORIGINAL));
+            let reloaded = pa.engine().map(|eng| eng.native_epoch);
+            assert!(reloaded.is_some() && reloaded != epoch, "the reload built a new Engine ({epoch:?} -> {reloaded:?})");
+            stop(ps, pa);
+        });
     }
 }
