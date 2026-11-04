@@ -11,6 +11,14 @@ use super::attempt_metrics as measure;
 pub use metrics::{LogicalRequestId, MetricNotice};
 use startup::Startup;
 
+/// Route-owned lifecycle facts carried to the application runner. The route captures identity
+/// at acceptance; the IO runner supplies a tick in its one monotonic clock domain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestLifecycle {
+    Begin { request: LogicalRequestId, origin: measure::Origin },
+    Finish { request: LogicalRequestId, outcome: measure::RequestOutcome },
+}
+
 /// Immediate caller-owned results. Metric notices are local values; no report is sent here.
 /// A command sent to a physical driver. Start's source key is deliberately excluded; this
 /// receipt is for caller correlation of controls and never claims native acceptance.

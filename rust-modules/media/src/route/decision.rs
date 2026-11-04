@@ -141,6 +141,10 @@ pub struct PlaybackSession {
     requested_rate_permille: i32,
     /// Local measurement origin of the next physical open, chosen at the request boundary.
     attempt_origin: crate::player::attempt_metrics::Origin,
+    /// Canonical accepted request revision. Automatic retries retain this through a new resolve.
+    metric_request: Option<crate::player::backend::LogicalRequestId>,
+    /// Pure addressed facts awaiting the app runner's single monotonic clock and backend owner.
+    pending_metric_lifecycle: Vec<crate::player::backend::RequestLifecycle>,
     /// Viewer pause goal captured for an explicit same-item reconfiguration. The physical Feed
     /// hold is executor state and cannot describe a URI attempt's viewer intent.
     reconfigure_pause_goal: Option<bool>,
@@ -921,6 +925,15 @@ impl PlaybackSession {
 
     pub fn attempt_origin(&self) -> crate::player::attempt_metrics::Origin { self.attempt_origin }
 
+    pub fn metric_request(&self) -> Option<crate::player::backend::LogicalRequestId> {
+        self.metric_request
+    }
+
+    /// The runner consumes each accepted lifecycle fact once before dispatching a Start.
+    pub fn take_metric_lifecycle(&mut self) -> Vec<crate::player::backend::RequestLifecycle> {
+        std::mem::take(&mut self.pending_metric_lifecycle)
+    }
+
     pub fn reconfigure_pause_goal(&self) -> Option<bool> { self.reconfigure_pause_goal }
 
     pub fn set_reconfigure_pause_goal(&mut self, paused: bool) {
@@ -1108,6 +1121,8 @@ impl PlaybackSession {
         admitted_feed_offer: None,
         requested_rate_permille: plx_playback_contract::RATE_NORMAL,
         attempt_origin: crate::player::attempt_metrics::Origin::Fresh,
+        metric_request: None,
+        pending_metric_lifecycle: Vec::new(),
         reconfigure_pause_goal: None,
         #[cfg(feature = "play-uri")]
         uri_preflight_port: None,
@@ -1208,6 +1223,8 @@ impl PlaybackSession {
             admitted_feed_offer: _,
             requested_rate_permille,
             attempt_origin,
+            metric_request: _,
+            pending_metric_lifecycle: _,
             reconfigure_pause_goal,
             #[cfg(feature = "play-uri")]
             uri_preflight_port: _,
@@ -1290,6 +1307,8 @@ impl PlaybackSession {
             admitted_feed_offer: None,
             requested_rate_permille: *requested_rate_permille,
             attempt_origin: *attempt_origin,
+            metric_request: None,
+            pending_metric_lifecycle: Vec::new(),
             reconfigure_pause_goal: *reconfigure_pause_goal,
             #[cfg(feature = "play-uri")]
             uri_preflight_port: None,
@@ -2169,7 +2188,7 @@ fn merge_user_route_intent(
 /// resolve runs, but none of its asynchronous ABR evidence may mutate the route after this point.
 /// A matching landing is the successful exit from `Resolving`; cancellation or spawn failure
 /// restores the captured Idle/Stable/Failed fallback.
-fn begin_playback_request() -> bool {
+fn begin_playback_request() -> Option<u64> {
     // A fresh request always starts a new item/session. Any retranscode-claim landing still in
     // the mailbox belongs to whatever was playing before and must never reach this one — see
     // `discard_retranscode_claim_slot`'s doc for the corruption this prevents.
@@ -2212,7 +2231,7 @@ fn begin_playback_request() -> bool {
         | ControlPhase::StagingUser(_)
         | ControlPhase::Applying(_)
         | ControlPhase::Completing(_)
-        | ControlPhase::OriginalTrial(_) => return false,
+        | ControlPhase::OriginalTrial(_) => return None,
     };
     control.desired_revision = next_generation(control.desired_revision);
     control.desired_quality = quality();
@@ -2225,7 +2244,7 @@ fn begin_playback_request() -> bool {
         control.resolve_fallback = Some(fallback);
     }
     control.phase = ControlPhase::Resolving;
-    true
+    Some(control.desired_revision)
 }
 
 /// Publish the PMS half of a resolve. A refused plan has no Engine and therefore lands in `Idle`;
@@ -9322,12 +9341,29 @@ fn request_play_with_queue(
     if part.is_empty() && rk.is_empty() {
         return false;
     }
-    if !begin_playback_request() {
+    let Some(accepted_revision) = begin_playback_request() else {
         crate::player::log(
             "playback request: route transition still owns the player; refusing overlapping resolve",
         );
         return false;
+    };
+    let continuing = same_episode_feed_retry
+        || (retry.is_some() && matches!(origin,
+            crate::player::report::AttemptOrigin::AutoHandoff
+            | crate::player::report::AttemptOrigin::Recovery
+            | crate::player::report::AttemptOrigin::Resume));
+    let metric_request = if continuing {
+        ps.metric_request.unwrap_or_else(||
+            crate::player::backend::LogicalRequestId::new(accepted_revision))
+    } else {
+        crate::player::backend::LogicalRequestId::new(accepted_revision)
+    };
+    if ps.metric_request != Some(metric_request) {
+        ps.pending_metric_lifecycle.push(crate::player::backend::RequestLifecycle::Begin {
+            request: metric_request, origin: local_attempt_origin(origin),
+        });
     }
+    ps.metric_request = Some(metric_request);
     if let Some((change, paused)) = viewer_reconfigure {
         ps.set_reconfigure_pause_goal(paused);
         match change {
@@ -9413,7 +9449,7 @@ fn request_play_with_queue(
     // Capture the reducer revision BEFORE projecting the environment. Both happen on the main
     // thread, so a later quality/track edit necessarily advances this revision after the snapshot
     // and makes the landing stale instead of installing an old plan beneath a new checkmark.
-    let contract_revision = desired_contract_revision();
+    let contract_revision = accepted_revision;
     // captured HERE, on the main thread, and moved into the worker — see ResolveEnv
     let mut env = request_env(ps, meta.view(), &request, retry);
     #[cfg(feature = "play-uri")]
@@ -10028,6 +10064,8 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
         let now_ms = s.now_ms;
         let requested_rate_permille = s.requested_rate_permille;
         let attempt_origin = s.attempt_origin;
+        let metric_request = s.metric_request;
+        let pending_metric_lifecycle = std::mem::take(&mut s.pending_metric_lifecycle);
         let reconfigure_pause_goal = s.reconfigure_pause_goal;
         let preview = request.as_ref().is_some_and(|r| r.preview);
         *s = PlaybackSession {
@@ -10038,6 +10076,8 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             admitted_feed_offer,
             requested_rate_permille,
             attempt_origin,
+            metric_request,
+            pending_metric_lifecycle,
             reconfigure_pause_goal,
             #[cfg(feature = "play-uri")]
             uri_preflight_port: s.uri_preflight_port.clone(),
