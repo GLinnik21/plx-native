@@ -929,6 +929,10 @@ impl PlayerScreen {
                 && id.playback == self.model.playback_id
                 && self.slot.offer() == Some((id.marker.kind, id.marker.start_ms)) {
                 self.decline_pair();
+                self.hud.nav.focus = GROUP_ROW;
+                self.hud.nav.btn = up_next::BTN_CREDITS;
+                self.seat_elem(fx, player_hud::control_elem(up_next::BTN_CREDITS));
+                self.publish();
             }
             return true;
         }
@@ -5539,6 +5543,9 @@ mod automatic_marker_tests {
                 kind: InputKind::Click { x: 1_600.0, y: 830.0, hit: Some(player_hud::control_elem(button)) },
             }));
             assert_eq!(reqs, if button == up_next::BTN_NEXT { vec![PlayerReq::ArmControlRow] } else { vec![] });
+            assert_eq!(page.hud.nav.focus, GROUP_ROW);
+            assert_eq!(page.hud.nav.btn, button, "the pointer seats the button it chose");
+            assert_eq!(rig.current(), Some(player_hud::control_elem(button)));
             page.auto_skip.presented();
             assert!(step(&mut page, &meta, 5_000_000).is_empty());
             assert_eq!(page.slot.items(), 2);
