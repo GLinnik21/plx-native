@@ -3735,7 +3735,7 @@ mod flight_tests {
     #[test]
     fn the_next_play_starts_without_a_twice_proved_dts_surround() {
         let mut rig = dts_rig(Rig::new(60));
-        let _session = plx_plex::plex::session::TempSession::new("s2a-proof-two");
+        let session = plx_plex::plex::session::TempSession::new("s2a-proof-two");
         let _set = firmware_announcing_dts();
         dts_601_converts_in_one_flight(&mut rig);
         first_picture(&mut rig);
@@ -3743,9 +3743,16 @@ mod flight_tests {
 
         // A second Play owns a fresh route request and finite offer catalog. Reusing the
         // converted Engine and merely resetting its picture counter would spend recovery in
-        // the first request's budget, which is not a second Play.
+        // the first request's budget, which is not a second Play. Preserve the first Play's
+        // stored proof while closing its scratch session under the first rig's serial guard;
+        // the second rig takes a new guard before opening its own scratch session.
+        let remembered = plx_plex::plex::session::peek();
+        drop(session);
         drop(rig);
         let mut rig = dts_rig(Rig::new(60));
+        let _session = plx_plex::plex::session::TempSession::new("s2a-proof-two-next");
+        plx_plex::plex::session::save(&remembered);
+        assert_eq!(recorded_refusals(), [dts_row(1)], "the second Play begins with the persisted first proof");
         let epoch = engine_epoch(&mut rig).expect("the rig's Engine");
         super::super::sf_on_event(epoch, 18, 601, std::ptr::null());
         rig.frame();
