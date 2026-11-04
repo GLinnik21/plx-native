@@ -38,7 +38,7 @@ use plx_play_feed::{
 pub(crate) use plx_play_feed::LoadVideo;
 #[cfg(test)]
 pub(crate) use plx_play_feed::load_video_refused;
-#[cfg(test)]
+#[cfg(all(test, feature = "hostsim"))]
 use super::shared::Stage;
 use super::SeekMode;
 use super::{log, sink, threads, ACB_OK, PTYPE, SHARED, TX};
@@ -49,7 +49,7 @@ use plx_platform::tv::sink::UnloadTicket;
 use plx_telemetry::telemetry::classes::DemuxExitClass;
 use plx_telemetry::telemetry::window::Stage as WindowStage;
 use std::os::raw::c_int;
-#[cfg(test)]
+#[cfg(all(test, feature = "hostsim"))]
 use std::os::raw::c_char;
 use std::sync::atomic::Ordering;
 
@@ -112,11 +112,11 @@ pub const fn feed_leads_ms() -> (i64, i64) {
 // levers are one decision and neither is worth landing alone.
 // `docs/measurements/p0-plant-sizing.md` is the record; `requiredMemory` is 160 MB, so +2 MiB RSS
 // on a 32-bit set is inside the budget already declared.
-#[cfg(test)]
+#[cfg(all(test, feature = "hostsim"))]
 use plx_play_feed::feed_state::{AQ_VIDEO_BYTES, AQ_AUDIO_BYTES};
 
 pub use plx_play_feed::feed_state::{AuBox, Engine, FeedPace, SampleBuf, Source};
-#[cfg(test)]
+#[cfg(all(test, feature = "hostsim"))]
 use plx_play_feed::feed_state::engines_dropped_for_test;
 
 // The `ENGINE` slot is `App.adapters.player` since phase 9 — a field, reached as
@@ -203,7 +203,7 @@ pub(super) fn run_release_tail(mt: &MainThread, p: PendingRelease)
     plx_play_feed::native_executor::run_release_tail(mt, p, &SHARED.feed, &RELEASE_HOOKS)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "hostsim"))]
 fn release_native_object(mt: &MainThread, epoch: u32) {
     let _ = release_native_object_timed(mt, epoch, &mut TeardownSpans::new());
 }
@@ -465,7 +465,7 @@ fn with_dolby_hdr_info(p: &str, video: &str, dv: plx_data::metadata::DvPresentat
 #[cfg(test)]
 use plx_play_feed::native_executor::{app_id_key, with_app_id};
 
-#[cfg(test)]
+#[cfg(all(test, feature = "hostsim"))]
 fn with_window_id(mt: &MainThread, p: &str) -> String {
     plx_play_feed::native_executor::with_window_id(mt, p, &PREPARE_HOOKS)
 }
@@ -483,7 +483,7 @@ const PREPARE_HOOKS: plx_play_feed::native_executor::PrepareHooks =
 
 pub use super::route_start::{reload_at, reload_transcode, reload_transcode_tracked,
     stop_bufferfeed, suspend_bufferfeed, switch_audio_native, ReloadOutcome};
-#[cfg(test)]
+#[cfg(all(test, feature = "hostsim"))]
 pub(super) use super::route_start::{RELOAD_AT_LOG, RELOAD_PREROLL_LOG};
 
 pub use super::route_start::{start_bufferfeed, start_bufferfeed_tracked, BufferfeedStartOutcome};
@@ -668,7 +668,7 @@ pub use plx_play_feed::feed_state::PRES_NONE;
 #[cfg(test)]
 use plx_play_feed::feed_state::FEED_PACE_CAP_MS;
 pub(crate) use plx_play_feed::native_executor::AUDIO_SLACK_NS;
-#[cfg(test)]
+#[cfg(all(test, feature = "hostsim"))]
 use plx_play_feed::native_executor::{
     AUDIO_STALE_AHEAD_NS, FEED_LANE_SLICE_US, FEED_LOW_WATER_NS, PRIME_AUDIO_NS, PRIME_NS,
 };
@@ -709,7 +709,7 @@ fn audio_sink_pts(fp: i64, pcm_lead_ns: i64) -> i64 {
     plx_play_feed::native_executor::audio_sink_pts(fp, pcm_lead_ns, super::applied_rate_permille())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "hostsim"))]
 use plx_play_feed::native_executor::{settle_pcm_lead, hls_candidate_snapshot_stable};
 
 pub use plx_play_feed::native_executor::arm_live_clock_prime;

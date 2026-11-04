@@ -34,7 +34,7 @@ use super::timeline;
 use super::backend;
 #[cfg(feature = "play-feed")]
 use super::feed_driver::{FeedDriver, FeedTransportAction};
-#[cfg(all(test, feature = "play-feed"))]
+#[cfg(all(test, feature = "play-feed", feature = "hostsim"))]
 use super::threads;
 use plx_base::task::MainThread;
 use std::collections::VecDeque;
@@ -2093,14 +2093,14 @@ impl PlayerAdapter {
     }
 
     /// Address one Load verdict without handing route state to the native worker.
-    #[cfg(all(test, feature = "play-feed"))]
+    #[cfg(all(test, feature = "play-feed", feature = "hostsim"))]
     pub(super) fn load_receipt(&mut self, attempt: crate::route::RouteStartAttempt, native_epoch: u32,
         _trace_generation: u32) -> threads::LoadReceipt {
         self.feed.load_receipt(attempt.contract_id(), native_epoch)
     }
 
     /// A refused thread spawn cannot return a receipt; retire its mapping immediately.
-    #[cfg(all(test, feature = "play-feed"))]
+    #[cfg(all(test, feature = "play-feed", feature = "hostsim"))]
     pub(super) fn cancel_load_receipt(&mut self, token: u64) { self.feed.cancel_load_receipt(token); }
 
     /// The main-thread coordinator's only Load-result landing. Late outcomes from an abandoned
