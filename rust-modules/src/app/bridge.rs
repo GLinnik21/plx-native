@@ -97,6 +97,7 @@ fn refresh_chrome(
 
 #[derive(Clone, Copy)]
 pub(crate) struct AppViews<'a> {
+    pub(crate) marker_prefs: plx_appkit::skip_policy::MarkerPrefsView,
     pub(crate) auth: plx_session::auth::SessionRead<'a>,
     pub(crate) hubs: plx_data::pms::HubsView<'a>,
     pub(crate) listing: plx_data::stores::browse::ListingView<'a>,
@@ -141,7 +142,7 @@ impl Bridge {
     /// [`Self::views`] reading `session` as the playback publication — what a test rig with no
     /// player of its own passes.
     pub(crate) fn views_with<'a>(&'a self, session: &'a plx_media::route::PlaybackSession) -> AppViews<'a> {
-        AppViews { auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
+        AppViews { marker_prefs: self.marker_prefs, auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
             directory: self.directory.view(), section_hubs: self.section_hubs.view(),
             search: self.search.view(), metadata: self.stores.metadata_view(),
             person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session,
@@ -254,6 +255,7 @@ impl plx_screens::registry::SearchLike for AppHost {
 }
 
 impl plx_screens::registry::LibraryLike for AppHost {
+    fn marker_prefs(cx: &Cx<'_, Self>) -> plx_appkit::skip_policy::MarkerPrefsView { cx.views.marker_prefs }
     fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> { cx.views.listing }
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> { cx.views.directory }
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> { cx.views.section_hubs }
@@ -381,6 +383,9 @@ impl SeatWatch {
 
 /// What the bridge lends the dispatcher, and what it collects for the loop.
 pub(crate) struct Bridge {
+    marker_access: super::preferences::MarkerAccessRunner,
+    marker_prefs: plx_appkit::skip_policy::MarkerPrefsView,
+    marker_now: u32,
     /// Endpoint refreshes a store step had no room to emit (`EndpointRefreshSet::emit`).
     endpoint_carry: plx_data::stores::EndpointRefreshSet,
     session_cache_generation: u64,
@@ -404,7 +409,7 @@ pub(crate) struct Bridge {
     huds_page: Option<(std::sync::mpsc::Sender<plx_screens::hud_settings::HudList>, u64)>,
     /// What the last install or removal said, for the page, until it is opened again.
     huds_notice: Option<plx_data::hudpacks::Notice>,
-    trace_save: Option<(MachineId, plx_base::storage_worker::TypedTicket<plx_platform::playback_trace::Status>)>,
+    trace_save: Option<(MachineId, u64, plx_base::storage_worker::TypedTicket<plx_platform::playback_trace::Status>)>,
     consent_adapter: super::adapters::consent::ConsentAdapter,
     /// Starts the jobs the stores emit (`adapters::stores`). Chosen when the Bridge is built: `Live`
     /// in production, the `Held` runner in a host test.
@@ -670,6 +675,7 @@ impl Bridge {
         Self {
             session_cache_generation: plx_plex::plex::session::visible_generation(),
             cache_refresh_begun: None,
+            marker_access: Default::default(), marker_prefs: Default::default(), marker_now: 0,
             endpoint_carry: Default::default(),
             home_io: None,
             recorded_clients: std::collections::BTreeMap::new(),
@@ -908,14 +914,15 @@ impl Bridge {
     /// the dip brings up an empty page and the grid appears in one frame when the image is
     /// replaced. The target is the page's own (`DirectoryView::kind_address`, which its first tick
     /// sends too, so the second select is the same command on a store already there). A store
-    /// already on a library of this kind stays on it (the reader's last pick), as
-    /// `LibraryScreen::sync` keeps it. Not for a Library already on top: its `LibraryCmd::Enter` saves the outgoing
+    /// already on the preferred library stays there; a departed non-favorite visit is restored to
+    /// the last-used favorite. Not for a Library already on top: its `LibraryCmd::Enter` saves the outgoing
     /// section's cursor from the listing it is still showing, before it switches.
     pub(crate) fn aim_library(&mut self, kind: plx_data::browse::SecKind) {
         let target = {
             let directory = self.directory.view();
-            let current = directory.current().map(|i| directory.sections()[i].kind);
-            directory.kind_address(kind).filter(|_| current != Some(kind))
+            let current = directory.current().and_then(|index| directory.sections().get(index))
+                .and_then(|section| section.sid.map(|sid| (sid, section.key)));
+            directory.kind_address(kind).filter(|target| Some((target.sid, target.section)) != current)
         };
         if let Some(target) = target {
             self.browse_run(plx_data::stores::browse::BrowseCmd::Addressed { target,
@@ -1306,6 +1313,15 @@ impl Bridge {
             let sid = match &e.arg { AppArg::Content(ContentArg::Detail { sid, .. }) => *sid, _ => return None };
             let rect = page.focused_rect::<AppHost>(ret.focus, &cx, At::Drawn);
             let meta = <AppHost as plx_screens::registry::MetadataLike>::metadata(&cx);
+            if let Some((ep, mark)) = page.hero_menu_episode(ret.focus, meta) {
+                let mut arg = strip_menu_arg(sid, &ep.rk,
+                    ItemMenuKind::Episode { mark, versions: ep.versions.clone() }, entry, ret.focus, rect);
+                // The on-deck episode need not be in the loaded season window. The ordinary
+                // addressed item path fetches it, rather than the filmstrip's loaded-only path.
+                arg.loaded_episode = false;
+                arg.watchlist = self.watchlist_face(page.watchlist_hex(), plx_data::watchlist::model::Kind::Show, true);
+                return Some(arg);
+            }
             if let Some((rk, show_rk, index, mark)) = page.focused_season(ret.focus, meta) {
                 // the season's address rides on the menu: the strip's item is no catalog row, so
                 // the write's scope cannot be read off one (`apply_item_action`)
@@ -2168,6 +2184,19 @@ impl Bridge {
         }
     }
 
+    pub(crate) fn marker_preferences(&self) -> plx_appkit::skip_policy::MarkerPrefsView { self.marker_prefs }
+    /// Runner boundary: capture the seated profile and live choices once, then publish values.
+    pub(crate) fn publish_marker_preferences(&mut self, now: u32) {
+        self.marker_now = now;
+        if self.home_io.is_some() {
+            self.marker_prefs = Default::default(); return;
+        }
+        let view = self.marker_access.poll(&Self::seated_profile(), now,
+            plx_media::route::intro_skip(), plx_media::route::credits_skip());
+        if view != self.marker_prefs { plx_machine::idle::invalidate(); }
+        self.marker_prefs = view;
+    }
+
     /// **Publish this frame's calendar date** — see `AppViews::today`. Called once per iteration by
     /// the loop, beside [`Self::publish_playback`] and before the dispatcher frame and the draw, with
     /// `clock::today()` (the loop is that door's one caller). Time arrives as an input: a screen
@@ -2229,7 +2258,7 @@ impl Bridge {
             // The owner reads its retained publication, not a borrow through its own mutable
             // field. Every other view still comes from this same Bridge frame boundary.
             let publication = self.session.publication();
-            let cx = parts.cx::<AppHost>(AppViews { auth: publication.read(),
+            let cx = parts.cx::<AppHost>(AppViews { marker_prefs: self.marker_prefs, auth: publication.read(),
                 hubs: self.hubs.view(), listing: self.listing.view(), directory: self.directory.view(),
                 section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback,
                 transport_paused: self.transport_paused,
@@ -2427,7 +2456,7 @@ impl Rig<AppHost> for Bridge {
     fn split(&mut self) -> Split<'_, AppHost> {
         Split {
             mounter: &mut self.mounter,
-            views: AppViews { auth: self.session.read(),
+            views: AppViews { marker_prefs: self.marker_prefs, auth: self.session.read(),
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
                 directory: self.directory.view(),
@@ -2516,20 +2545,29 @@ impl Bridge {
         if command != Command::Export { return trace::execute(command); }
         let generation = trace::prepare_export();
         match plx_base::storage_worker::submit(move || trace::save_export(generation)) {
-            Ok(ticket) => { self.trace_save = Some((from, ticket)); Status::Saving }
-            Err(_) => { trace::execute(Command::Stop); Status::Failed }
+            Ok(ticket) => { self.trace_save = Some((from, generation, ticket)); Status::Saving }
+            Err(error) => {
+                use plx_base::storage_worker::SubmitError;
+                use trace::SaveWorkerFailure as Failure;
+                trace::fail_export(generation, match error {
+                    SubmitError::Full => Failure::QueueFull,
+                    SubmitError::Stopped => Failure::QueueStopped,
+                    SubmitError::StartFailed => Failure::StartFailed,
+                })
+            }
         }
     }
 
     pub(crate) fn playback_trace_poll(&mut self) -> Option<(MachineId, plx_platform::playback_trace::Status)> {
         use std::sync::mpsc::TryRecvError;
-        let (_, ticket) = self.trace_save.as_ref()?;
+        let (_, generation, ticket) = self.trace_save.as_ref()?;
         let status = match ticket.try_recv() {
             Ok(status) => status,
             Err(TryRecvError::Empty) => return None,
-            Err(TryRecvError::Disconnected) => plx_platform::playback_trace::Status::Failed,
+            Err(TryRecvError::Disconnected) => plx_platform::playback_trace::fail_export(
+                *generation, plx_platform::playback_trace::SaveWorkerFailure::Disconnected),
         };
-        let (to, _) = self.trace_save.take()?;
+        let (to, _, _) = self.trace_save.take()?;
         Some((to, status))
     }
 
@@ -2552,7 +2590,15 @@ impl Bridge {
             AppFx::Session(command) => out.push(Fx::Deliver(MachineId::Session,
                 Delivery::Machine(AppMsg::Session(plx_session::auth::owner::SessionEvent::Command(command))))),
             AppFx::SessionEffect(effect) => self.session_effect(effect, out),
-            AppFx::Preferences(command) => super::preferences::execute(command),
+            AppFx::Preferences(command) => {
+                let profile = Self::seated_profile();
+                self.publish_marker_preferences(self.marker_now);
+                match command {
+                    plx_screens::registry::PreferenceCmd::EnsureMarkerAccess => self.marker_access.ensure(&profile, self.marker_now),
+                    command @ plx_screens::registry::PreferenceCmd::ChooseMarker { .. } => super::preferences::execute_marker(command, self.marker_prefs),
+                    other => super::preferences::execute(other),
+                }
+            },
             AppFx::PlaybackTrace(command) => {
                 let status = self.playback_trace_command(from, command);
                 out.push(Fx::Deliver(from, Delivery::Screen(ScreenEvent::App(AppMsg::PlaybackTrace(status)))));

@@ -2111,11 +2111,11 @@ mod folded_tests {
     use plx_media::route::PlaybackSession;
     use std::sync::Arc;
 
-    const MINIMAL: &str = include_str!("hud_format/fixtures/minimal.plxhud.json");
-    const REFERENCE: &str = include_str!("hud_format/fixtures/reference.plxhud.json");
+    const MINIMAL: &str = include_str!("hud_format/fixtures/minimal/hud.json");
+    const REFERENCE: &str = include_str!("hud_format/fixtures/reference/hud.json");
 
     fn compiled(text: &str) -> Arc<crate::hud_format::compile::Compiled> {
-        load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &plx_ui::fixture::FixtureMeasure).expect("the fixture loads").compiled
+        load(&crate::hud_format::fixtures::with_hud_resources("reference", &text), "0.0.0-test", plx_platform::i18n::english(), &plx_ui::fixture::FixtureMeasure).expect("the fixture loads").compiled
     }
 
     /// A frame's model for an episode with both neighbours (or a movie with none), chapters and a detail page.

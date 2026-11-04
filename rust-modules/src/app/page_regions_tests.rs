@@ -73,7 +73,7 @@ struct Row {
 
 const ROWS: [Row; 4] = [
     Row {
-        name: "Library", mount: movies_library, arrival: Place::Content, up_lands: Some("collections"), own_pill: TAB_KEY_MOVIES,
+        name: "Library", mount: movies_library, arrival: Place::Content, up_lands: Some("library"), own_pill: TAB_KEY_MOVIES,
         back_from_content: &[Out::Stay(Place::Content), Out::Stay(Place::Header), Out::Stay(Place::Nav), Out::Leave("library:BackToHome")],
         back_from_header: &[Out::Stay(Place::Nav), Out::Leave("library:BackToHome")],
         back_from_nav: &[Out::Leave("library:BackToHome")],

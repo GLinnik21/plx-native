@@ -6,6 +6,7 @@
 //! The only application subsystem left in C is the starfish.c C++/ACB seam (the engine itself is
 //! Rust: plx_media::player).
 #![allow(non_upper_case_globals)]
+pub(crate) mod hud_source;
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::sync::atomic::Ordering::Relaxed;
 

@@ -1421,7 +1421,7 @@ pub(crate) fn hud_trigger() -> plx_appkit::player_hud::loaded::DevHud {
     use plx_appkit::player_hud::loaded::{dev_package_path, DevHud, DevPackage};
     let Some(value) = plx_base::devtrig::read("hud") else { return DevHud::Off };
     let Some(path) = dev_package_path(&value) else { return DevHud::Off };
-    let bytes = std::fs::read(path).map_err(|e| e.to_string());
+    let bytes = crate::app::hud_source::read_artifact(std::path::Path::new(path)).map_err(|e| e.to_string());
     #[cfg(feature = "devtriggers")]
     plx_base::eventlog::log(&format!("plxnative-hud: path={path} read={}", bytes.as_ref().map_or_else(|e| e.clone(), |b| format!("{} bytes", b.len()))));
     DevHud::Package(DevPackage::new(path.to_owned(), bytes))

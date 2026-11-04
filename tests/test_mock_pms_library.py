@@ -1357,6 +1357,22 @@ class PlaintextOnlyLan(unittest.TestCase):
             server.server_close()
 
 
+class MarkerAccess826(unittest.TestCase):
+    def test_viewer_grants_are_separate_from_the_server_subscription(self):
+        pms = MockPms(Library())
+        def features():
+            status, _, body = pms.handle("GET", "/api/v2/features")
+            self.assertEqual(status, 200)
+            return {row["id"] for row in json.loads(body)}
+        self.assertEqual(features(), {"intro-markers", "credits-markers"})
+        pms.handle("POST", "/_mock/config", json.dumps({"plex_pass": False}).encode())
+        self.assertEqual(features(), {"intro-markers", "credits-markers"})
+        pms.handle("POST", "/_mock/config", json.dumps({"plex_pass": True, "viewer_intro_skip": False}).encode())
+        self.assertEqual(features(), {"credits-markers"})
+        pms.handle("POST", "/_mock/config", json.dumps({"viewer_credits_skip": False}).encode())
+        self.assertEqual(features(), set())
+
+
 class Enhancement266(unittest.TestCase):
     """#266 (Boost Dialog / Normalize Loudness) mock support: the plex-pass/loudness-capability
     flags, the /decision enhancement shapes, the runtime /_mock/config toggle, the request log,
@@ -1499,7 +1515,7 @@ class Enhancement266(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body), {
             "refuse_enhancements": True, "ignore_enhancements": False, "refuse_conversions": False,
-            "plex_pass": True})
+            "plex_pass": True, "viewer_intro_skip": True, "viewer_credits_skip": True})
         self.assertIs(pms.refuse_enhancements, True)
         self.assertIs(pms.ignore_enhancements, False)
 

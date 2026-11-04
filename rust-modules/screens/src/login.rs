@@ -2418,6 +2418,7 @@ mod tests {
             png: Arc::from(Vec::<u8>::new()),
             code_replaced: false,
             users: Arc::from(Vec::<auth::UserTile>::new()),
+            seated: Arc::from(""),
             error: Arc::from(""),
             account: None,
             pin_denied: false,

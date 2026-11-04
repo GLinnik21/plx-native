@@ -24,10 +24,10 @@ fn row_rect_steps_by_width_plus_gap_from_the_margin() {
     let r0 = row_rect(&widths, 0, 7.0);
     assert_eq!((r0.x, r0.y, r0.w, r0.h), (plx_ui::consts::MARGIN_X, 7.0, 200.0, CD));
     let r1 = row_rect(&widths, 1, 7.0);
-    assert_eq!(r1.x, r0.x + 200.0 + CGAP);
+    assert_eq!(r1.x, r0.x + 200.0 + 200.0 * (plx_ui::widgets::CTRL_FOCUS_SCALE - 1.0) * 0.5 + CGAP);
     assert_eq!(r1.w, CD);
     let r2 = row_rect(&widths, 2, 7.0);
-    assert_eq!(r2.x, r1.x + CD + CGAP);
+    assert_eq!(r2.x, r1.x + CD + CGAP + 90.0 * (plx_ui::widgets::CTRL_FOCUS_SCALE - 1.0) * 0.5);
     assert_eq!(r2.w, 90.0);
 }
 
@@ -35,7 +35,7 @@ fn row_rect_steps_by_width_plus_gap_from_the_margin() {
 fn row_rect_past_the_end_lands_one_gap_after_the_last_control() {
     let widths = [200.0, 90.0];
     let past = row_rect(&widths, 5, 0.0);
-    assert_eq!(past.x, plx_ui::consts::MARGIN_X + 200.0 + CGAP + 90.0 + CGAP);
+    assert_eq!(past.x, row_rect(&widths, 1, 0.0).x + 90.0 + capsule_focus_air(90.0) + CGAP);
     assert_eq!(past.w, 90.0);
 }
 
@@ -85,12 +85,12 @@ fn disc_caps_open_when_room_and_close_when_the_trial_row_overruns() {
     assert_eq!(shut, [CD; 3]);
 }
 
-/// **The drawn gap between neighbouring controls is `CGAP`, for any widths** (the stack's one gap),
+/// Plain discs retain the ordinary `CGAP`; capsules also reserve room for their focus pop.
 /// and a control that is `0` wide is still on the row: it keeps a gap on each side. A disc springs
 /// between `CD` and its open width, never through 0, so this is the rule's edge, not a live case.
 #[test]
-fn every_control_stands_one_cgap_from_the_next_even_at_zero_width() {
-    for widths in [[200.0, CD, 90.5], [200.0, 0.0, 90.5]] {
+fn plain_controls_keep_their_gap_even_at_zero_width() {
+    for widths in [[CD, CD, CD], [CD, 0.0, CD]] {
         let rects: Vec<Rect> = (0..3).map(|i| row_rect(&widths, i, 0.0)).collect();
         for pair in rects.windows(2) {
             assert_eq!(pair[1].x - (pair[0].x + pair[0].w), CGAP, "{widths:?}");
@@ -111,4 +111,66 @@ fn pill_w_gaps_only_the_icons_it_carries() {
     assert_eq!(pill_w(&Mono, &label, 20, true, None), box_w + text + HERO_ICON_GAP + air);
     assert_eq!(pill_w(&Mono, &label, 20, false, CHEV), text + chevron_ink() + HERO_ICON_GAP + air);
     assert_eq!(pill_w(&Mono, &label, 20, true, CHEV), box_w + text + chevron_ink() + 2.0 * HERO_ICON_GAP + air);
+}
+
+#[test]
+fn proposal_play_capsule_keeps_its_minimum_and_grows_for_translations() {
+    for resumes in [false, true] {
+        assert_eq!(play_width(&Mono, play_label(resumes)), 224.0);
+    }
+    struct Wide;
+    impl Measure for Wide {
+        fn width(&self, _: &CStr, _: i32, _: bool) -> f32 { 300.0 }
+        fn cap_h(&self, sz: i32) -> f32 { sz as f32 }
+        fn line_h(&self, sz: i32) -> f32 { sz as f32 }
+    }
+    assert!(play_width(&Wide, play_label(false)) > PW);
+}
+
+#[test]
+fn pdf_proposal_movie_facts_use_year_and_remaining_time() {
+    let d = Detail { year: 2024, aired: "2024-03-09".into(), dur_ms: 112 * 60_000, resume_ms: 74 * 60_000, ..Default::default() };
+    assert_eq!(meta_facts(&d, None), ("2024".into(), Some(plx_platform::i18n::msg::browse_detail_minutes_left(38))));
+    let fresh = Detail { resume_ms: 0, ..d };
+    assert_eq!(meta_facts(&fresh, None), ("2024".into(), Some(plx_ui::fmt::duration(112 * 60_000))));
+}
+
+#[test]
+fn pdf_proposal_episode_facts_use_a_named_month_and_validate_resume() {
+    let _locale = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    assert_eq!(time_facts(2024, "2024-03-02", true, 48 * 60_000, 10 * 60_000),
+        ("Mar 2, 2024".into(), Some("38 min left".into())));
+    assert_eq!(time_facts(2024, "2024-02-30", true, 48 * 60_000, 49 * 60_000),
+        ("2024".into(), Some(plx_ui::fmt::duration(48 * 60_000))));
+}
+
+#[test]
+fn focused_hero_capsules_keep_twenty_pixels_clear_on_both_sides() {
+    let widths = [224.0, CD, CD, 456.0, CD];
+    for focused in [0, 3] {
+        let frame = row_rect(&widths, focused, 0.0);
+        let painted = frame.scaled(plx_ui::widgets::CTRL_FOCUS_SCALE);
+        if focused > 0 {
+            let previous = row_rect(&widths, focused - 1, 0.0);
+            assert!((painted.x - (previous.x + previous.w) - 20.0).abs() < 0.001);
+        }
+        let next = row_rect(&widths, focused + 1, 0.0);
+        assert!((next.x - (painted.x + painted.w) - 20.0).abs() < 0.001);
+    }
+    assert_eq!(row_rect(&widths, 0, 0.0).x, plx_ui::consts::MARGIN_X);
+    let circle = row_rect(&[224.0, CD, CD], 2, 0.0).x;
+    let barely_open = row_rect(&[224.0, CD + 0.001, CD], 2, 0.0).x;
+    assert!((barely_open - circle).abs() < 0.01, "unfurl must not jump its neighbours");
+}
+
+#[test]
+fn a_dense_translated_row_gives_up_focus_air_before_crossing_people() {
+    let widths = [224.0, CD, CD, FACTS_R - plx_ui::consts::MARGIN_X - 224.0 - 2.0 * CD - 3.0 * CGAP - 1.0];
+    let last = row_rect(&widths, 3, 0.0);
+    assert!(last.x + last.w <= FACTS_R + 0.001);
+    for i in 1..widths.len() {
+        let previous = row_rect(&widths, i - 1, 0.0);
+        let next = row_rect(&widths, i, 0.0);
+        assert!(next.x - (previous.x + previous.w) >= CGAP - 0.001);
+    }
 }

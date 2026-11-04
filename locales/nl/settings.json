@@ -346,5 +346,11 @@
   "settings.trace.exported": "Opgeslagen",
   "settings.trace.unavailable": "Niet beschikbaar",
   "settings.trace.failed": "Mislukt",
-  "settings.trace.saving": "Opslaan"
+  "settings.trace.saving": "Opslaan",
+  "settings.playback.intro_skip": "Intro’s overslaan",
+  "settings.playback.credits_skip": "Aftiteling overslaan",
+  "settings.playback.marker.manual": "Handmatig",
+  "settings.playback.marker.automatic": "Automatisch",
+  "settings.playback.intro_skip.copy": "Uitgeschakeld verbergt de knop. Handmatig biedt aan de intro over te slaan. Automatisch slaat na vijf seconden over, tenzij je Intro bekijken kiest. Wordt voor dit profiel opgeslagen.",
+  "settings.playback.credits_skip.copy": "Uitgeschakeld verbergt Aftiteling overslaan. Handmatig behoudt de huidige knoppen. Automatisch slaat na vijf seconden over, tenzij je Aftiteling bekijken kiest. De volgende aflevering en de aftelling worden apart ingesteld."
 }

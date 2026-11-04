@@ -11,7 +11,7 @@ use plx_ui::fixture::FixtureMeasure;
 fn context(focus: u32) -> Cx<'static, InnerHost> {
     static MEASURE: FixtureMeasure = FixtureMeasure;
     Cx {
-        views: plx_data::stores::browse::DirectoryView::empty_for_test(),
+        views: plx_data::stores::browse::DirectoryView::empty_for_test().into(),
         tick: Tick::default(),
         measure: &MEASURE,
         press: PressRead::default(),
@@ -36,7 +36,7 @@ fn huds(emitted: &[Stamped<InnerHost>]) -> Vec<&HudCmd> {
 }
 
 fn meta(id: &str, name: &str) -> Meta {
-    Meta { id: id.into(), name: name.into(), version: "1.0.0".into(), format: "1.0".into() }
+    Meta { id: id.into(), name: name.into(), version: "1.0.0".into(), package_format: "1.0".into(), hud_format: "1.0".into() }
 }
 
 fn builtin(selected: bool) -> Entry {
@@ -84,7 +84,7 @@ fn shown(page: &HudPage) -> Vec<(HudId, String, String, bool)> {
 fn list() -> HudList {
     HudList {
         entries: vec![builtin(false), pack("com.example.a", "Alpha", 1, true)],
-        drops: vec![drop_file("dropped.plxhud.json", 9, Ok(()))],
+        drops: vec![drop_file("dropped.plxhud", 9, Ok(()))],
         unfit: vec![],
         language: "English".into(),
         notice: None,
@@ -201,7 +201,7 @@ fn a_drop_file_installs_only_after_the_prompt_is_confirmed() {
 #[test]
 fn a_file_that_cannot_be_installed_is_listed_and_inert() {
     let mut l = list();
-    l.drops = vec![drop_file("imposter.plxhud.json", 3, Err(Refusal::BuiltinId))];
+    l.drops = vec![drop_file("imposter.plxhud", 3, Err(Refusal::BuiltinId))];
     let (mut page, _tx) = page_with(l);
     let key = key_of(&page, &HudId::Drop(Sha::of(&[3])));
     let emitted = drive(&mut page, ScreenEvent::Activate(key), key);
@@ -241,10 +241,10 @@ fn exactly_the_selected_package_is_checked() {
 #[test]
 fn a_too_large_drop_is_listed_with_its_reason_and_cannot_be_installed() {
     let mut l = list();
-    l.drops = vec![too_large_drop("huge.plxhud.json")];
+    l.drops = vec![too_large_drop("huge.plxhud")];
     let (mut page, _tx) = page_with(l);
     let rows = shown(&page);
-    let huge = rows.iter().find(|r| r.1 == "huge.plxhud.json").expect("the file is on the page");
+    let huge = rows.iter().find(|r| r.1 == "huge.plxhud").expect("the file is on the page");
     assert_eq!(huge.2, plx_platform::i18n::msg::settings_hud_too_large());
     let key = page.form.key_at(page.form.index_of(&huge.0).unwrap()).unwrap().0;
     let emitted = drive(&mut page, ScreenEvent::Activate(key), key);
@@ -322,8 +322,8 @@ fn every_row_fits_its_column_in_every_language() {
         every.entries.extend([volatile, unfit, newer]);
         every.unfit = vec![Sha::of(&[3])];
         every.language = SHIPPED.iter().map(|l| plx_platform::i18n::Preference::SHIPPED.into_iter().find(|p| p.tag() == l.tag()).map_or("", |p| p.native_name())).max_by_key(|n| n.chars().count()).unwrap_or("").to_owned();
-        every.drops = every_refusal().iter().enumerate().map(|(i, r)| drop_file(&format!("f{i}.plxhud.json"), 20 + i as u8, Err(*r))).collect();
-        every.drops.push(drop_file("ok.plxhud.json", 40, Ok(())));
+        every.drops = every_refusal().iter().enumerate().map(|(i, r)| drop_file(&format!("f{i}.plxhud"), 20 + i as u8, Err(*r))).collect();
+        every.drops.push(drop_file("ok.plxhud", 40, Ok(())));
         let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
         form.table.compact = false;
         form.set(hud_form(&every, None), None);
@@ -332,7 +332,7 @@ fn every_row_fits_its_column_in_every_language() {
         }
         // The address row in each state it has: waiting, with a long address typed (the author's text, and the
         // detail is cut to fit the column), and downloading.
-        for (fetching, draft) in [(false, None), (false, Some("https://example.com/a/very/long/path/hud.plxhud.json")), (true, None)] {
+        for (fetching, draft) in [(false, None), (false, Some("https://example.com/a/very/long/path/hud.plxhud")), (true, None)] {
             let mut busy = list();
             busy.fetching = fetching;
             let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
@@ -438,7 +438,7 @@ fn the_address_row_types_into_its_detail_line_and_ok_sends_the_parsed_address() 
     let emitted = drive(&mut page, press(Key::Ok), key);
     assert_eq!(keyboards(&emitted), [false], "OK on the keyboard lowers it");
     match huds(&emitted).as_slice() {
-        [HudCmd::Fetch(address)] => assert_eq!(address.url(), "https://github.com/owner/repo/releases/download/v1.2/hud.plxhud.json"),
+        [HudCmd::Fetch(address)] => assert_eq!(address.url(), "https://github.com/owner/repo/releases/download/v1.2/hud.plxhud"),
         other => panic!("one fetch, got {}", other.len()),
     }
     assert!(!page.state.editing);
@@ -492,7 +492,7 @@ fn offered() -> OfferView {
         sha: Sha::of(&[7]),
         meta: meta("com.example.fetched", "Fetched"),
         source: Source::Address,
-        from: Some(address::parse("http://192.168.1.20:8080/hud.plxhud.json").unwrap()),
+        from: Some(address::parse("http://192.168.1.20:8080/hud.plxhud").unwrap()),
     }
 }
 
@@ -555,5 +555,5 @@ fn the_address_caret_follows_an_interior_correction() {
     drive(&mut page, typed("p"), key);
     assert_eq!(address_row(&page).1, "gh:owner/rep|o");
     let emitted = drive(&mut page, press(Key::Ok), key);
-    assert!(matches!(huds(&emitted).as_slice(), [HudCmd::Fetch(address)] if address.url() == "https://github.com/owner/repo/releases/latest/download/hud.plxhud.json"));
+    assert!(matches!(huds(&emitted).as_slice(), [HudCmd::Fetch(address)] if address.url() == "https://github.com/owner/repo/releases/latest/download/hud.plxhud"));
 }

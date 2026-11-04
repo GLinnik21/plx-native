@@ -1594,6 +1594,9 @@ pub struct Detail {
     pub season: i64,  // parentIndex — season number, when an episode
     pub index: i64,   // index — episode number, when an episode
     pub title: String,
+    /// Edition identity, presented in the hero's metadata rather than appended to its title.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub edition: String,
     pub year: i64,
     pub rating: String, // contentRating
     pub summary: String,
@@ -1916,6 +1919,14 @@ fn set_watched_local(state: &mut MetadataState, at: &crate::viewstate::ViewAt, o
     if d.sid != at.sid {
         return hit;
     }
+    // OnDeck is another mounted copy of an episode, independent of the season window below.
+    // Keep its toggle and resume point in step even when that episode is not loaded in the strip.
+    if let Some(ep) = d.on_deck.as_mut().filter(|ep|
+        at.covers_parts(d.sid, &ep.rk, 3, &d.rk, ep.season)) {
+        ep.watched = on;
+        ep.resume_ms = 0;
+        hit = true;
+    }
     // A show- or season-scoped change that names THIS show reaches its episodes and the season
     // tabs' counts as a whole: the server scrobbles every leaf, so the strip must not keep ticks
     // the user just cleared (or lack ones they just set).
@@ -2097,7 +2108,7 @@ pub fn edit_current_for_test(state: &mut MetadataState, f: impl FnOnce(&mut Deta
 /// TEST-ONLY installer for the playing item's markers: lets a rig put a segment under the playhead
 /// so the REAL `player_hud::slot` (not a hand-built slot) decides the control row. Crate-global,
 /// so callers hold [`plx_base::testlock::serial`].
-#[cfg(all(any(test, feature = "test-support"), feature = "hostsim"))]
+#[cfg(any(test, feature = "test-support"))]
 pub fn set_playing_markers_for_test(state: &mut MetadataState, markers: Vec<Marker>) {
     plx_base::testlock::assert_held("the playing store (set_playing_markers_for_test)");
     state.playing = Some(PlayingItem { markers, ..PlayingItem::with_subs(Vec::new()) });
@@ -2271,6 +2282,7 @@ fn fetch_detail(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::Se
         season: it.parent_index.unwrap_or(0),
         index: it.index,
         title: it.title.clone(),
+        edition: it.edition_title.clone(),
         year: it.year,
         rating: it.content_rating.clone(),
         summary: it.summary.clone(),

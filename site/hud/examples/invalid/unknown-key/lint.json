@@ -1,0 +1,22 @@
+{
+  "costs": [],
+  "file": "examples/invalid/unknown-key",
+  "findings": [
+    {
+      "code": "HUD-E0102",
+      "file": "hud.json",
+      "hint": "did you mean `gap_before`? The keys are: id, when, gap_before, gap, z, chrome, cells",
+      "message": "`gap_befor` is not a key of `band`",
+      "nearest": [
+        "gap_before",
+        "gap",
+        "cells"
+      ],
+      "path": "/layout/block/1/gap_befor",
+      "rule": "key-known",
+      "severity": "error"
+    }
+  ],
+  "package_sha256": "334bcfd1bd9c28f0265eac27d00b76fed730bc7b01c2f8152f6eec9d4f342b81",
+  "protocol": 1
+}

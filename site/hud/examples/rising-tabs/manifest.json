@@ -1,0 +1,16 @@
+{
+  "package_format": "1.0",
+  "id": "com.plxnative.examples.rising-tabs",
+  "version": "1.0.0",
+  "name": "Rising Tabs",
+  "author": "PlxNative",
+  "license": "CC0-1.0",
+  "hud": {
+    "format": "1.0",
+    "entry": "hud.json"
+  },
+  "resources": {
+    "subs-bubble": "assets/subs-bubble.svg",
+    "eq": "assets/eq.svg"
+  }
+}

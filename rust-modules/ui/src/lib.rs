@@ -2250,9 +2250,8 @@ pub fn hero_syn_h(lines: usize) -> f32 {
 /// design canvas for it specifies `--size-label` 26px, `--leading-synopsis` 36px and `--text-reading`
 /// explicitly — while the home canvas has no hero at all and so cannot contradict it. Its own note
 /// (*"lifted to LABEL 26/36, it read too small on-device at MICRO 22"*) is a device reading, which is
-/// the kind of evidence that settles this. The recorded owner directive against MICRO — *"bigger,
-/// but smaller than the meta line"* — still holds at LABEL 26, because the meta line above is
-/// `size::BODY` 28.
+/// the kind of evidence that settles this. The latest PDF retains LABEL 26 for reading copy while
+/// the identity line uses regular CAPTION 24; those are separate roles in the shared ladder.
 ///
 /// `lead` is an optional bold run before the first word (detail's `"S2, E3 · Laura:"` episode
 /// prefix); empty means none, which is home's case and a movie's.

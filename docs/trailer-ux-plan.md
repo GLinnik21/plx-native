@@ -292,7 +292,7 @@ already a confirmed problem worth a UI surface.
 This needs new geometry — `detail_layout::COMPACT_TITLE_BOT` and `LogoRung::Compact` already exist,
 but for a **different** treatment (the scroll-driven, horizontally **centered** pinned title at
 `mod.rs:1987-2016`, which answers "how far down have I scrolled", not "is a trailer playing"). Reusing
-its rung *sizing* (`COMPACT_AREA`/`COMPACT_H_MIN`/`COMPACT_H_MAX`, `theme.rs:249-263`) is right; reusing
+its rung *sizing* (`COMPACT_AREA`/`COMPACT_BAND_H`/`COMPACT_W_MAX`/`COMPACT_H_MAX` in `theme::logo`) is right; reusing
 its *position* is not — this is a new anchor, top-left, independent of scroll.
 
 **New geometry** (`detail_layout.rs`):

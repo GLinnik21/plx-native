@@ -118,30 +118,246 @@ fn a_hub_row_page_in_flight_across_a_watched_edit_lands_watched() {
     assert_eq!(marks, [("20", false), ("21", true)]);
 }
 
-/// A server's created or removed items never re-list the open grid under the reader: the rows stay
-/// exactly as they are, no page is read, and the listing is only marked stale (the Library page
-/// re-queries it when a page covers it). The wanted window straddles a page boundary, which is
-/// where a re-list that refilled one page would turn the other page's tiles into skeletons.
+/// A server's created or removed items re-list the open grid: its rows stay on screen while the
+/// re-list is out, and its first page then replaces them whole, at the new total, in place.
 #[test]
-fn a_library_change_leaves_the_open_grid_alone_and_marks_it_stale() {
+fn a_re_list_keeps_the_rows_until_its_first_page_replaces_them() {
     let _g = plx_base::testlock::serial();
-    let (_cleanup, mut browse, sid, _) = loopback_page_source();
+    let (_cleanup, mut browse, sid, client) = loopback_page_source();
     {
         let state = browse.state.state_mut(0).unwrap();
         state.fetch = SecFetch::Ready;
-        state.total = 2 * PAGE as i64;
-        state.items = SecItems::from_vec((0..2 * PAGE).map(|i| Some(row(sid, &i.to_string()))).collect());
+        state.total = 3;
+        state.items = SecItems::from_vec(vec![Some(row(sid, "6")), Some(row(sid, "7")), Some(row(sid, "8"))]);
     }
-    browse.state.want(PAGE - 10, PAGE + 20, Some(PAGE + 5));
-    let gen = browse.state.query_gen();
+    browse.state.want(0, PAGE, None);
     assert!(browse.state.run_owned(&browse.adapter, crate::stores::browse::BrowseCmd::ListingsChanged { sid, library_on_stack: true },
         &ClientKeys::default(), &plx_plex::plex::session::peek(), &mut Vec::new()));
     browse.maybe_spawn();
-    assert!(!browse.adapter.page.busy(), "the visible grid is not listed again");
-    assert!(browse.jobs.is_empty(), "…and no job asks for it: {:?}", browse.jobs);
+    assert!(browse.adapter.page.busy(), "the re-list asks though no page is missing");
+    assert_eq!(browse.state.states()[0].items.get(1).map(|m| m.rk.as_str()), Some("7"), "the old rows stay meanwhile");
+    let r = PageResult {
+        client,
+        token_gen: client.token_gen(),
+        gen: browse.state.query_gen(),
+        sec: 0,
+        start: 0,
+        items: vec![row(sid, "6"), row(sid, "8")],
+        total: 2,
+        sorts: None, restored: None, genres: None, genre: None,
+        resolved: Default::default(),
+    };
+    browse.adapter.page.post(r, |_| true);
+    let _ = browse.state.pump_owned(&browse.adapter);
     let state = &browse.state.states()[0];
-    assert_eq!((state.fetch, state.total), (SecFetch::Ready, 2 * PAGE as i64));
-    assert!((0..2 * PAGE).all(|i| state.items.get(i).is_some()), "no tile turns into a skeleton");
-    assert_eq!(browse.state.query_gen(), gen, "no fetch generation moved: nothing is dropped or asked");
-    assert!(browse.state.listing_snapshot().view().membership_stale(), "the listing knows it is out of date");
+    let rks: Vec<_> = (0..3).map(|i| state.items.get(i).map(|m| m.rk.clone())).collect();
+    assert_eq!(rks, [Some("6".into()), Some("8".into()), None], "the removed row is gone and nothing is left past the end");
+    assert_eq!(state.total, 2);
+    assert!(!state.relist && !browse.state.requery_owed(), "spent");
+}
+
+/// A long scan reports change after change: a re-list already out is kept (never dropped for the
+/// next ask, which could starve the grid), and exactly one more follows it.
+#[test]
+fn a_change_while_a_re_list_is_out_keeps_it_and_owes_one_more() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, client) = loopback_page_source();
+    {
+        let state = browse.state.state_mut(0).unwrap();
+        state.fetch = SecFetch::Ready;
+        state.total = 3;
+        state.items = SecItems::from_vec(vec![Some(row(sid, "6")), Some(row(sid, "7")), Some(row(sid, "8"))]);
+    }
+    browse.state.want(0, PAGE, None);
+    let relist = |browse: &mut TestBrowse| browse.state.run_owned(&browse.adapter, crate::stores::browse::BrowseCmd::ListingsChanged { sid, library_on_stack: true },
+        &ClientKeys::default(), &plx_plex::plex::session::peek(), &mut Vec::new());
+    relist(&mut browse);
+    browse.maybe_spawn();
+    let gen = browse.state.query_gen();
+    relist(&mut browse);
+    relist(&mut browse);
+    assert_eq!(browse.state.query_gen(), gen, "the re-list out is not dropped");
+    let land = |browse: &mut TestBrowse, rks: &[&str]| {
+        let r = PageResult {
+            client, token_gen: client.token_gen(), gen: browse.state.query_gen(), sec: 0, start: 0,
+            items: rks.iter().map(|rk| row(sid, rk)).collect(), total: rks.len() as i64,
+            sorts: None, restored: None, genres: None, genre: None, resolved: Default::default(),
+        };
+        browse.adapter.page.post(r, |_| true);
+        let _ = browse.state.pump_owned(&browse.adapter);
+    };
+    land(&mut browse, &["6", "8"]);
+    assert_eq!(browse.state.states()[0].total, 2, "its answer lands");
+    assert!(browse.state.states()[0].relist && browse.state.requery_owed(), "one more re-list is owed");
+    browse.maybe_spawn();
+    land(&mut browse, &["8"]);
+    assert_eq!(browse.state.states()[0].total, 1);
+    assert!(!browse.state.states()[0].relist, "and no more after it");
+}
+
+
+#[test]
+fn relist_regression_relist_invalidates_the_rail_counts() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, client) = loopback_page_source();
+    {
+        let state = browse.state.state_mut(0).unwrap();
+        state.fetch = SecFetch::Ready;
+        state.total = 3;
+        state.items = SecItems::from_vec(vec![Some(row(sid, "6")), Some(row(sid, "7")), Some(row(sid, "8"))]);
+        state.land_letters(state.letters_key(), vec![("A".into(), 1), ("B".into(), 2)]);
+        assert!(state.letters_current());
+    }
+    browse.state.want(0, PAGE, None);
+    browse.state.listings_changed(sid, true);
+    browse.maybe_spawn();
+    browse.adapter.page.post(PageResult {
+        client, token_gen: client.token_gen(), gen: browse.state.query_gen(), sec: 0, start: 0,
+        items: vec![row(sid, "7"), row(sid, "8")], total: 2,
+        sorts: None, restored: None, genres: None, genre: None, resolved: Default::default(),
+    }, |_| true);
+    let _ = browse.state.pump_owned(&browse.adapter);
+    assert!(browse.state.states()[0].letters_owed(), "A's removed item changed every B offset: the old rail must be fetched again");
+}
+
+#[test]
+fn relist_regression_a_change_during_initial_load_is_not_lost() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, client) = loopback_page_source();
+    browse.state.want(0, PAGE, None);
+    browse.maybe_spawn();
+    assert!(browse.adapter.page.busy());
+    let gen = browse.state.query_gen();
+    browse.state.listings_changed(sid, true);
+    browse.adapter.page.post(PageResult {
+        client, token_gen: client.token_gen(), gen, sec: 0, start: 0,
+        items: vec![row(sid, "old")], total: 1,
+        sorts: None, restored: None, genres: None, genre: None, resolved: Default::default(),
+    }, |_| true);
+    let _ = browse.state.pump_owned(&browse.adapter);
+    let state = &browse.state.states()[0];
+    assert!(state.relist || state.membership_stale || browse.state.query_gen() != gen,
+        "the answer predates the server change, so a newer listing must remain owed");
+}
+
+#[test]
+fn relist_regression_a_visible_window_across_pages_does_not_turn_to_skeletons() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, client) = loopback_page_source();
+    {
+        let state = browse.state.state_mut(0).unwrap();
+        state.fetch = SecFetch::Ready;
+        state.total = (2 * PAGE) as i64;
+        state.items = SecItems::from_vec((0..2 * PAGE).map(|i| Some(row(sid, &i.to_string()))).collect());
+    }
+    browse.state.want(PAGE - 10, PAGE + 20, Some(PAGE + 5));
+    browse.state.listings_changed(sid, true);
+    browse.maybe_spawn();
+    browse.adapter.page.post(PageResult {
+        client, token_gen: client.token_gen(), gen: browse.state.query_gen(), sec: 0, start: 0,
+        items: (0..PAGE).map(|i| row(sid, &format!("new-{i}"))).collect(), total: (2 * PAGE) as i64,
+        sorts: None, restored: None, genres: None, genre: None, resolved: Default::default(),
+    }, |_| true);
+    let _ = browse.state.pump_owned(&browse.adapter);
+    assert!(browse.state.states()[0].items.get(PAGE + 5).is_some(),
+        "the still-visible focused tile in the second page became a skeleton");
+    assert_eq!(browse.state.states()[0].items.get(PAGE - 1).unwrap().rk, (PAGE - 1).to_string(),
+        "none of the replacement is published before the second visible page arrives");
+    browse.maybe_spawn();
+    browse.adapter.page.post(PageResult {
+        client, token_gen: client.token_gen(), gen: browse.state.query_gen(), sec: 0, start: PAGE,
+        items: (PAGE..2 * PAGE).map(|i| row(sid, &format!("new-{i}"))).collect(), total: (2 * PAGE) as i64,
+        sorts: None, restored: None, genres: None, genre: None, resolved: Default::default(),
+    }, |_| true);
+    let _ = browse.state.pump_owned(&browse.adapter);
+    assert_eq!(browse.state.states()[0].items.get(PAGE - 1).unwrap().rk, format!("new-{}", PAGE - 1));
+    assert_eq!(browse.state.states()[0].items.get(PAGE + 5).unwrap().rk, format!("new-{}", PAGE + 5));
+    assert!(!browse.state.states()[0].relist);
+}
+
+#[test]
+fn relist_regression_a_shrinking_listing_loads_its_new_tail() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, client) = loopback_page_source();
+    {
+        let state = browse.state.state_mut(0).unwrap();
+        state.fetch = SecFetch::Ready;
+        state.total = (2 * PAGE) as i64;
+        state.items = SecItems::from_vec((0..2 * PAGE).map(|i| Some(row(sid, &i.to_string()))).collect());
+    }
+    browse.state.want(PAGE, 2 * PAGE, Some(PAGE + 5));
+    browse.state.listings_changed(sid, true);
+    browse.maybe_spawn();
+    browse.adapter.page.post(PageResult {
+        client, token_gen: client.token_gen(), gen: browse.state.query_gen(), sec: 0, start: PAGE,
+        items: Vec::new(), total: 2,
+        sorts: None, restored: None, genres: None, genre: None, resolved: Default::default(),
+    }, |_| true);
+    let _ = browse.state.pump_owned(&browse.adapter);
+    let state = &browse.state.states()[0];
+    assert_eq!(state.total, (2 * PAGE) as i64, "keep the old window while the new tail is missing");
+    assert_eq!(state.relist_next((PAGE, 2 * PAGE), Some(PAGE + 5)), Some(0));
+    browse.maybe_spawn();
+    browse.adapter.page.post(PageResult {
+        client, token_gen: client.token_gen(), gen: browse.state.query_gen(), sec: 0, start: 0,
+        items: vec![row(sid, "last-a"), row(sid, "last-b")], total: 2,
+        sorts: None, restored: None, genres: None, genre: None, resolved: Default::default(),
+    }, |_| true);
+    let _ = browse.state.pump_owned(&browse.adapter);
+    assert_eq!(browse.state.states()[0].total, 2);
+    assert_eq!(browse.state.states()[0].items.get(1).unwrap().rk, "last-b");
+    assert!(!browse.state.states()[0].relist);
+}
+
+#[test]
+fn relist_regression_initial_load_can_continue_past_the_first_page() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, client) = loopback_page_source();
+    browse.state.want(PAGE, 2 * PAGE, Some(PAGE + 5));
+    browse.maybe_spawn();
+    browse.jobs.clear();
+    browse.state.listings_changed(sid, true);
+    browse.adapter.page.post(PageResult {
+        client, token_gen: client.token_gen(), gen: browse.state.query_gen(), sec: 0, start: 0,
+        items: (0..PAGE).map(|i| row(sid, &i.to_string())).collect(), total: (2 * PAGE) as i64,
+        sorts: None, restored: None, genres: None, genre: None, resolved: Default::default(),
+    }, |_| true);
+    let _ = browse.state.pump_owned(&browse.adapter);
+    browse.maybe_spawn();
+    assert_eq!(browse.jobs.len(), 1);
+    assert!(format!("{:?}", browse.jobs[0]).contains(&format!("start: {PAGE},")),
+        "the pending window must read page two, not loop on the initial page: {:?}", browse.jobs);
+}
+
+#[test]
+fn relist_regression_a_failed_later_page_still_retains_notifications() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, client) = loopback_page_source();
+    {
+        let state = browse.state.state_mut(0).unwrap();
+        state.fetch = SecFetch::Ready;
+        state.total = (2 * PAGE) as i64;
+        state.items = SecItems::from_vec((0..2 * PAGE)
+            .map(|i| (i < PAGE).then(|| row(sid, &i.to_string()))).collect());
+    }
+    browse.state.want(PAGE, 2 * PAGE, Some(PAGE));
+    browse.maybe_spawn();
+    browse.adapter.page.post(PageResult {
+        client, token_gen: client.token_gen(), gen: browse.state.query_gen(), sec: 0, start: PAGE,
+        items: Vec::new(), total: -1,
+        sorts: None, restored: None, genres: None, genre: None, resolved: Default::default(),
+    }, |_| true);
+    let _ = browse.state.pump_owned(&browse.adapter);
+    assert_eq!(browse.state.states()[0].fetch, SecFetch::Failed);
+    let backoff = browse.state.retry_cd;
+    assert!(backoff > 0);
+    browse.jobs.clear();
+    browse.state.want(0, PAGE, Some(5));
+    assert!(browse.state.listings_changed(sid, true),
+        "a failed page must not discard membership changes to the retained grid");
+    assert!(browse.state.requery_owed());
+    assert_eq!(browse.state.states()[0].items.get(5).unwrap().rk, "5");
+    assert_eq!(browse.state.retry_cd, backoff, "the server's existing backoff is respected");
+    browse.maybe_spawn();
+    assert!(browse.jobs.is_empty(), "the re-list waits for that backoff before reading");
 }

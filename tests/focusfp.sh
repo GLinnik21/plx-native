@@ -44,6 +44,7 @@ REC=""
 REPLAY=""
 MODE=""
 MIN_LINES=2
+MOCK_WAIT="${FOCUS_MOCK_WAIT:-90}" # cold mock startup may include font/image work
 BOOT_WAIT=25     # seconds to wait for the boot marker before giving up on a flow
 STEP="${FOCUS_STEP:-0.9}" # seconds between tokens; shorter recordings on high-refresh hosts
 SETTLE="${FOCUS_SETTLE:-3}" # seconds after the last token before the run is read
@@ -74,7 +75,7 @@ if [ -n "$REPLAY" ]; then
 elif [ -z "$PMS" ]; then
   python3 "$ROOT/tests/mock_pms.py" --port "$PORT" --seed "$SEED" > "$OUT/mock_pms.log" 2>&1 &
   MOCK_PID=$!
-  for _ in $(seq 1 30); do
+  for _ in $(seq 1 $((MOCK_WAIT * 5))); do
     grep -q 'serving' "$OUT/mock_pms.log" 2>/dev/null && break
     sleep 0.2
   done

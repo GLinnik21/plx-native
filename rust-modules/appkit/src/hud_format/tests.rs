@@ -21,8 +21,25 @@ use super::schema::{self, Cmd, Node, NodeKind, Pattern, Rule, Ty};
 use super::svg_subset;
 use super::{codes, has_error, Code, Finding, MAX_NEAREST, REASON_NEWER, REASON_OLDER};
 
-const REFERENCE: &str = include_str!("fixtures/reference.plxhud.json");
-const MINIMAL: &str = include_str!("fixtures/minimal.plxhud.json");
+const REFERENCE: &str = include_str!("fixtures/reference/hud.json");
+const MINIMAL: &str = include_str!("fixtures/minimal/hud.json");
+const MANIFEST: &str = include_str!("fixtures/reference/manifest.json");
+const EQ_SVG: &str = include_str!("fixtures/reference/assets/eq.svg");
+
+pub(in crate::hud_format) fn document_findings(bytes: &[u8]) -> Vec<Finding> {
+    parse_document(bytes).findings
+}
+
+fn parse_document(bytes: &[u8]) -> Parsed {
+    let text = std::str::from_utf8(bytes).unwrap_or("");
+    if text.starts_with("<svg") {
+        return Parsed { package: None, findings: svg_subset::check_asset("", text).err().unwrap_or_default() };
+    }
+    if text.contains("\"hud\":") {
+        return super::fixtures::parse_manifest("reference", bytes);
+    }
+    super::fixtures::parse(bytes)
+}
 
 /// Where things stand in `REFERENCE`: the playbar, the two segments' controls, the two stacks of text,
 /// the chapters strip.
@@ -106,7 +123,7 @@ fn pairs(findings: &[Finding]) -> Vec<(String, String)> {
 /// Parse, and keep the two invariants every parse must: a package exists exactly when no finding is an
 /// error, and every finding has the lint shape.
 fn parse_checked(bytes: &[u8]) -> Parsed {
-    let parsed = parse::parse(bytes);
+    let parsed = parse_document(bytes);
     assert_eq!(
         parsed.package.is_some(),
         !has_error(&parsed.findings),
@@ -132,6 +149,12 @@ fn edit(src: &str, from: &str, to: &str) -> String {
 
 fn reference(from: &str, to: &str) -> String {
     edit(REFERENCE, from, to)
+}
+fn metadata(from: &str, to: &str) -> String {
+    edit(MANIFEST, from, to)
+}
+fn svg(from: &str, to: &str) -> String {
+    edit(EQ_SVG, from, to)
 }
 
 /// One invalid-corpus row: a package (as bytes, since some rows are not UTF-8), and the finding it must
@@ -239,7 +262,7 @@ pub(in crate::hud_format) mod valid {
 
     #[test]
     fn the_minimal_package_parses_with_no_finding() {
-        let parsed = parse_checked(MINIMAL.as_bytes());
+        let parsed = super::super::fixtures::parse_for("minimal", MINIMAL.as_bytes());
         assert!(parsed.findings.is_empty(), "{}", dump(&parsed.findings));
         let package = parsed.package.expect("a package");
         assert_eq!(package.id, "com.plxnative.examples.minimal");
@@ -249,7 +272,7 @@ pub(in crate::hud_format) mod valid {
     #[test]
     fn parsing_is_pure() {
         for text in [REFERENCE, MINIMAL] {
-            assert_eq!(parse::parse(text.as_bytes()), parse::parse(text.as_bytes()));
+            assert_eq!(crate::hud_format::fixtures::parse(text.as_bytes()), crate::hud_format::fixtures::parse(text.as_bytes()));
         }
     }
 
@@ -354,10 +377,10 @@ pub(in crate::hud_format) mod valid {
                 ),
             ),
             ("no_scrim", reference(r##""scrim": { "cover": "block", "extra": 120 },"##, "")),
-            ("no_schema_url", reference(r##""$schema": "https://plxnative.com/hud/schema/1.0.json","##, "")),
+            ("no_schema_url", reference(r##""$schema": "https://plxnative.com/hud/schema/hud/1.0.json","##, "")),
             (
                 "an_app_range",
-                reference(
+                metadata(
                     r##""license": "CC0-1.0","##,
                     r##""license": "CC0-1.0", "app": { "min": "0.9.0", "max": "2.0.0" },"##,
                 ),
@@ -380,11 +403,8 @@ pub(in crate::hud_format) mod valid {
                     .replace(r##""fill": "gold""##, r##""fill": "ACCENT""##),
             ),
             (
-                "an_empty_palette_and_assets_are_fine_for_a_package_that_uses_neither",
-                MINIMAL.replace(
-                    r##""license": "CC0-1.0","##,
-                    r##""license": "CC0-1.0", "palette": {}, "assets": {},"##,
-                ),
+                "an_empty_palette_is_fine_for_a_document_that_uses_none",
+                MINIMAL.replace(r##""layout": {"##, r##""palette": {}, "layout": {"##),
             ),
             (
                 "every_facts_name_once",
@@ -443,7 +463,7 @@ pub(in crate::hud_format) mod valid {
     #[test]
     fn a_package_at_exactly_the_size_bound_parses_and_one_byte_more_does_not() {
         let mut at = REFERENCE.as_bytes().to_vec();
-        at.resize(parse::MAX_PACKAGE_BYTES, b' ');
+        at.resize(parse::MAX_HUD_JSON_BYTES, b' ');
         let parsed = parse_checked(&at);
         assert!(parsed.findings.is_empty(), "{}", dump(&parsed.findings));
         at.push(b' ');
@@ -475,9 +495,9 @@ pub(in crate::hud_format) mod valid {
 fn format_row(label: &'static str, value: &str, code: &'static Code) -> Row {
     row(
         label,
-        reference(r##""format": "1.0""##, &format!(r##""format": {value}"##)),
+        metadata(r##""format": "1.0""##, &format!(r##""format": {value}"##)),
         code,
-        "/format",
+        "/hud/format",
     )
     .only()
 }
@@ -491,7 +511,7 @@ pub(in crate::hud_format) fn corpus() -> Vec<Row> {
     // ----- HUD-E0102: an unknown key (at the key's own pointer, with the near-miss's neighbour) -----
     add(row(
         "unknown_key_top_level",
-        r(r##""license": "CC0-1.0","##, r##""license": "CC0-1.0", "licence": "CC0-1.0","##),
+        metadata(r##""license": "CC0-1.0","##, r##""license": "CC0-1.0", "licence": "CC0-1.0","##),
         &codes::E0102,
         "/licence",
     )
@@ -557,7 +577,7 @@ pub(in crate::hud_format) fn corpus() -> Vec<Row> {
     // ----- HUD-E0101: a duplicate key (at the second one) -----
     add(row(
         "duplicate_top_level_name",
-        r(r##""name": "Reference","##, r##""name": "Reference", "name": "Again","##),
+        metadata(r##""name": "Reference","##, r##""name": "Reference", "name": "Again","##),
         &codes::E0101,
         "/name",
     )
@@ -578,9 +598,9 @@ pub(in crate::hud_format) fn corpus() -> Vec<Row> {
     .only());
     add(row(
         "duplicate_asset_id",
-        r(r##""eq": "<svg"##, r##""gear": "<svg viewBox='0 0 24 24'><path d='M0 0h4v4z'/></svg>", "eq": "<svg"##),
+        metadata(r##""eq": "assets/eq.svg""##, r##""gear": "assets/gear.svg", "eq": "assets/eq.svg""##),
         &codes::E0101,
-        "/assets/gear",
+        "/resources/gear",
     )
     .only());
     add(row(
@@ -599,13 +619,13 @@ pub(in crate::hud_format) fn corpus() -> Vec<Row> {
     .only());
     add(row(
         "duplicate_key_of_an_unknown_name_is_both",
-        r(r##""license": "CC0-1.0","##, r##""license": "CC0-1.0", "zz": 1, "zz": 2,"##),
+        metadata(r##""license": "CC0-1.0","##, r##""license": "CC0-1.0", "zz": 1, "zz": 2,"##),
         &codes::E0101,
         "/zz",
     ));
 
     // ----- HUD-E0103: a required key is missing (at the object that lacks it) -----
-    add(row("missing_id", r(r##""id": "com.plxnative.examples.reference","##, ""), &codes::E0103, "").only());
+    add(row("missing_id", metadata(r##""id": "com.plxnative.examples.reference","##, ""), &codes::E0103, "").only());
     add(row(
         "missing_countdown",
         r(r##""countdown": "ring""##, r##""cdown": "ring""##),
@@ -684,7 +704,7 @@ pub(in crate::hud_format) fn corpus() -> Vec<Row> {
     .only());
     add(row(
         "null_for_a_string",
-        r(r##""license": "CC0-1.0","##, r##""license": null,"##),
+        metadata(r##""license": "CC0-1.0","##, r##""license": null,"##),
         &codes::E0104,
         "/license",
     )
@@ -720,9 +740,9 @@ pub(in crate::hud_format) fn corpus() -> Vec<Row> {
     ));
     add(row(
         "an_asset_as_a_number",
-        r(r##""<svg viewBox='0 0 24 24'><path d='M6 14h2v6H6zM11 8h2v12h-2zM16 11h2v9h-2z'/></svg>""##, "5"),
+        metadata(r##""eq": "assets/eq.svg""##, r##""eq": 5"##),
         &codes::E0104,
-        "/assets/eq",
+        "/resources/eq",
     ));
     add(row(
         "a_facts_name_as_a_number",
@@ -737,26 +757,26 @@ pub(in crate::hud_format) fn corpus() -> Vec<Row> {
     add(row("thickness_above_the_bound", r(r##""thickness": 6,"##, r##""thickness": 65,"##), &codes::E0105, &format!("{BAR}/thickness")).only());
     add(row(
         "id_not_reverse_dns_capitals",
-        r(r##""id": "com.plxnative.examples.reference""##, r##""id": "Com.Bad""##),
+        metadata(r##""id": "com.plxnative.examples.reference""##, r##""id": "Com.Bad""##),
         &codes::E0105,
         "/id",
     )
     .only());
     add(row(
         "id_not_reverse_dns_one_label",
-        r(r##""id": "com.plxnative.examples.reference""##, r##""id": "nodots""##),
+        metadata(r##""id": "com.plxnative.examples.reference""##, r##""id": "nodots""##),
         &codes::E0105,
         "/id",
     )
     .only());
-    add(row("version_not_semver_two_parts", r(r##""version": "1.0.0""##, r##""version": "1.0""##), &codes::E0105, "/version").only());
-    add(row("version_not_semver_prerelease", r(r##""version": "1.0.0""##, r##""version": "1.0.0-beta""##), &codes::E0105, "/version").only());
-    add(row("version_with_a_leading_zero", r(r##""version": "1.0.0""##, r##""version": "1.00.0""##), &codes::E0105, "/version").only());
+    add(row("version_not_semver_two_parts", metadata(r##""version": "1.0.0""##, r##""version": "1.0""##), &codes::E0105, "/version").only());
+    add(row("version_not_semver_prerelease", metadata(r##""version": "1.0.0""##, r##""version": "1.0.0-beta""##), &codes::E0105, "/version").only());
+    add(row("version_with_a_leading_zero", metadata(r##""version": "1.0.0""##, r##""version": "1.00.0""##), &codes::E0105, "/version").only());
     add(row("scrim_extra_above_the_classic_scrim", r(r##""extra": 120"##, r##""extra": 471"##), &codes::E0105, "/layout/scrim/extra").only());
     add(row("scrim_extra_negative", r(r##""extra": 120"##, r##""extra": -1"##), &codes::E0105, "/layout/scrim/extra").only());
-    add(row("name_too_long", r(r##""name": "Reference""##, &format!(r##""name": "{}""##, "n".repeat(65))), &codes::E0105, "/name").only());
-    add(row("name_with_a_control_character", r(r##""name": "Reference""##, r##""name": "A\u0007B""##), &codes::E0105, "/name").only());
-    add(row("schema_url_not_https", r(r##""$schema": "https://plxnative.com/hud/schema/1.0.json""##, r##""$schema": "http://plxnative.com/x""##), &codes::E0105, "/$schema").only());
+    add(row("name_too_long", metadata(r##""name": "Reference""##, &format!(r##""name": "{}""##, "n".repeat(65))), &codes::E0105, "/name").only());
+    add(row("name_with_a_control_character", metadata(r##""name": "Reference""##, r##""name": "A\u0007B""##), &codes::E0105, "/name").only());
+    add(row("schema_url_not_https", r(r##""$schema": "https://plxnative.com/hud/schema/hud/1.0.json""##, r##""$schema": "http://plxnative.com/x""##), &codes::E0105, "/$schema").only());
     add(row("gap_in_px_above_the_canvas", r(r##""gap_before": "XS", "z": 1,"##, r##""gap_before": 1081, "z": 1,"##), &codes::E0105, "/layout/block/2/gap_before").only());
     add(row("gap_in_px_negative", r(r##""gap_before": "XS", "z": 1,"##, r##""gap_before": -1, "z": 1,"##), &codes::E0105, "/layout/block/2/gap_before").only());
     add(row("z_above_the_bound", r(r##""z": 1,"##, r##""z": 17,"##), &codes::E0105, "/layout/block/2/z").only());
@@ -776,7 +796,7 @@ pub(in crate::hud_format) fn corpus() -> Vec<Row> {
         &format!("{BAR}/track"),
     )
     .only());
-    add(row("an_asset_id_with_capitals", r(r##""eq": "<svg"##, r##""EQ": "<svg"##), &codes::E0105, "/assets/EQ"));
+    add(row("an_asset_id_with_capitals", metadata(r##""eq": "assets/eq.svg""##, r##""EQ": "assets/eq.svg""##), &codes::E0105, "/resources/EQ"));
 
     // ----- HUD-E0106: keys that may not combine, or one of a set required -----
     add(row(
@@ -890,7 +910,7 @@ pub(in crate::hud_format) fn corpus() -> Vec<Row> {
     add(row("face_builtin_rewind_is_never_a_control", r(r##""face": "builtin:next""##, r##""face": "builtin:rewind""##), &codes::E0203, &format!("{CENTER}/4/face")).only());
     add(row("icon_unknown_asset", r(r##""asset": "eq""##, r##""asset": "eqq""##), &codes::E0203, &format!("{STRIP}/card/overlay/0/icon/asset")).near("eq").only());
     add(row("face_map_leaf_unknown_builtin", r(r##""restart": "builtin:restart""##, r##""restart": "builtin:restrat""##), &codes::E0203, &format!("{CENTER}/2/face/restart")).only());
-    add(row("face_whose_asset_was_renamed", r(r##""gear": "<svg"##, r##""gearx": "<svg"##), &codes::E0203, &format!("{RIGHT}/2/face")).near("gearx").only());
+    add(row("face_whose_asset_was_renamed", metadata(r##""gear": "assets/gear.svg""##, r##""gearx": "assets/gear.svg""##), &codes::E0203, &format!("{RIGHT}/2/face")).near("gearx").only());
 
     // ----- HUD-E0204: a lower-case ink no palette entry declares -----
     add(row("ink_names_a_missing_palette_entry", r(r##""fill": "gold""##, r##""fill": "silver""##), &codes::E0204, &format!("{BAR}/fill")).near("gold").only());
@@ -921,20 +941,20 @@ pub(in crate::hud_format) fn corpus() -> Vec<Row> {
     add(format_row("format_as_a_number", "1.0", &codes::E0401));
     add(format_row("format_as_null", "null", &codes::E0401));
     add(format_row("format_as_a_bool", "true", &codes::E0401));
-    add(row("format_missing", r(r##""format": "1.0","##, ""), &codes::E0401, "/format").only());
+    add(row("format_missing", metadata(r##""format": "1.0","##, ""), &codes::E0401, "/hud/format").only());
     add(row(
         "a_newer_package_is_judged_by_its_version_alone",
-        edit(&r(r##""format": "1.0""##, r##""format": "1.1""##), r##""thickness": 6,"##, r##""thickness": "six","##),
+        edit(&metadata(r##""format": "1.0""##, r##""format": "1.1""##), r##""name": "Reference","##, r##""name": 6,"##),
         &codes::E0402,
-        "/format",
+        "/hud/format",
     )
     .message(REASON_NEWER)
     .only());
     add(row(
         "an_older_package_is_judged_by_its_version_alone",
-        edit(&r(r##""format": "1.0""##, r##""format": "0.9""##), r##""sections": "inline","##, r##""sections": "inline", "zz": 1,"##),
+        edit(&metadata(r##""format": "1.0""##, r##""format": "0.9""##), r##""name": "Reference","##, r##""name": "Reference", "zz": 1,"##),
         &codes::E0403,
-        "/format",
+        "/hud/format",
     )
     .message(REASON_OLDER)
     .only());
@@ -979,18 +999,18 @@ pub(in crate::hud_format) fn corpus() -> Vec<Row> {
     add(row("palette_name_with_a_dash", r(r##""gold": "#f2b535""##, r##""gold-2": "#f2b535""##), &codes::E0505, "/palette/gold-2"));
     add(row("palette_name_starting_with_a_digit", r(r##""gold": "#f2b535""##, r##""2gold": "#f2b535""##), &codes::E0505, "/palette/2gold"));
 
-    // ----- HUD-E0701 to E0706: the inline assets -----
+    // ----- HUD-E0701 to E0706: external SVG members -----
     const EQ_PATH: &str = "<path d='M6 14h2v6H6zM11 8h2v12h-2zM16 11h2v9h-2z'/>";
-    add(row("asset_gradient", r(EQ_PATH, "<linearGradient id='g'><stop offset='0'/></linearGradient><path d='M6 14h2v6H6z'/>"), &codes::E0701, "/assets/eq"));
-    add(row("asset_text_element", r(EQ_PATH, "<text>x</text><path d='M6 14h2v6H6z'/>"), &codes::E0701, "/assets/eq").only());
-    add(row("asset_style_element", r(EQ_PATH, "<style>p{}</style><path d='M6 14h2v6H6z'/>"), &codes::E0701, "/assets/eq").only());
-    add(row("asset_multi_colour", r(EQ_PATH, "<path d='M6 14h2v6H6z' fill='#ff0000'/>"), &codes::E0702, "/assets/eq").only());
-    add(row("asset_stroke", r(EQ_PATH, "<path d='M6 14h2v6H6z' stroke='white'/>"), &codes::E0702, "/assets/eq").only());
-    add(row("asset_entity", r(EQ_PATH, "<path d='M6 14h2v6H6z'/>&amp;"), &codes::E0703, "/assets/eq").only());
-    add(row("asset_external_reference", r(EQ_PATH, "<path d='M6 14h2v6H6z' href='http://x.example/a.svg'/>"), &codes::E0703, "/assets/eq").only());
-    add(row("asset_without_a_view_box", r(r##""eq": "<svg viewBox='0 0 24 24'>"##, r##""eq": "<svg>"##), &codes::E0704, "/assets/eq").only());
-    add(row("asset_over_the_byte_bound", r(EQ_PATH, &format!("<path d='M0 0{}'/>", "h1z".repeat(svg_subset::MAX_ASSET_BYTES / 3 + 1))), &codes::E0705, "/assets/eq").only());
-    add(row("asset_with_too_many_paths", r(EQ_PATH, &"<path d='M0 0h1v1z'/>".repeat(svg_subset::MAX_PATHS_PER_ASSET + 1)), &codes::E0706, "/assets/eq").only());
+    add(row("asset_gradient", svg(EQ_PATH, "<linearGradient id='g'><stop offset='0'/></linearGradient><path d='M6 14h2v6H6z'/>"), &codes::E0701, ""));
+    add(row("asset_text_element", svg(EQ_PATH, "<text>x</text><path d='M6 14h2v6H6z'/>"), &codes::E0701, "").only());
+    add(row("asset_style_element", svg(EQ_PATH, "<style>p{}</style><path d='M6 14h2v6H6z'/>"), &codes::E0701, "").only());
+    add(row("asset_multi_colour", svg(EQ_PATH, "<path d='M6 14h2v6H6z' fill='#ff0000'/>"), &codes::E0702, "").only());
+    add(row("asset_stroke", svg(EQ_PATH, "<path d='M6 14h2v6H6z' stroke='white'/>"), &codes::E0702, "").only());
+    add(row("asset_entity", svg(EQ_PATH, "<path d='M6 14h2v6H6z'/>&amp;"), &codes::E0703, "").only());
+    add(row("asset_external_reference", svg(EQ_PATH, "<path d='M6 14h2v6H6z' href='http://x.example/a.svg'/>"), &codes::E0703, "").only());
+    add(row("asset_without_a_view_box", svg("<svg viewBox='0 0 24 24'>", "<svg>"), &codes::E0704, "").only());
+    add(row("asset_over_the_byte_bound", svg(EQ_PATH, &format!("<path d='M0 0{}'/>", "h1z".repeat(svg_subset::MAX_ASSET_BYTES / 3 + 1))), &codes::E0705, "").only());
+    add(row("asset_with_too_many_paths", svg(EQ_PATH, &"<path d='M0 0h1v1z'/>".repeat(svg_subset::MAX_PATHS_PER_ASSET + 1)), &codes::E0706, "").only());
 
     // ----- HUD-E0100: not one JSON document (at "", and the only finding) -----
     let cut = REFERENCE.len() / 2;
@@ -999,7 +1019,7 @@ pub(in crate::hud_format) fn corpus() -> Vec<Row> {
     add(row("json_trailing_comma", r(r##""gold": "#f2b535" }"##, r##""gold": "#f2b535", }"##), &codes::E0100, "").only());
     add(row("json_trailing_junk", format!("{REFERENCE} x"), &codes::E0100, "").only());
     add(row("json_two_documents", format!("{REFERENCE}{REFERENCE}"), &codes::E0100, "").only());
-    add(row("json_a_comment", r(r##""format": "1.0","##, r##""format": "1.0", // note"##), &codes::E0100, "").only());
+    add(row("json_a_comment", r(r##""layout": {"##, r##""layout": { // note"##), &codes::E0100, "").only());
     add(row("json_single_quotes", "{ 'format': '1.0' }".to_owned(), &codes::E0100, "").only());
     add(row("json_empty_input", String::new(), &codes::E0100, "").only());
     add(row("json_only_whitespace", " \n\t ".to_owned(), &codes::E0100, "").only());
@@ -1019,7 +1039,7 @@ pub(in crate::hud_format) fn corpus() -> Vec<Row> {
     stray.bytes = lone_continuation;
     add(stray);
     let mut over = row("json_over_the_size_bound", String::new(), &codes::E0100, "").only();
-    over.bytes = vec![b' '; parse::MAX_PACKAGE_BYTES + 1];
+    over.bytes = vec![b' '; parse::MAX_HUD_JSON_BYTES + 1];
     add(over);
     add(row("json_nested_deeper_than_the_reader_allows", "[".repeat(5000), &codes::E0100, "").only());
 
@@ -1064,7 +1084,7 @@ mod invalid {
         assert_eq!(newer_minor[0].message, "Made for a newer PlxNative");
         assert_eq!(newer_minor[0].message, REASON_NEWER);
         assert_eq!(newer_minor[0].code, "HUD-E0402");
-        assert_eq!(newer_minor[0].pointer, "/format");
+        assert_eq!(newer_minor[0].pointer, "/hud/format");
         let newer_major = by_label("format_2_0_is_a_newer_major");
         assert_eq!(newer_major[0].message, "Made for a newer PlxNative");
         assert_eq!(newer_major[0].code, "HUD-E0403");
@@ -1079,7 +1099,7 @@ mod invalid {
     fn a_duplicate_key_reaches_the_duplicate_preserving_reader() {
         // `plx_ui::rec::strict_json` is the one reader that keeps duplicate keys; serde_json's own map
         // would silently keep the last. A finding at the second key's pointer proves it was reached.
-        let found = findings_of(&reference(r##""name": "Reference","##, r##""name": "Reference", "name": "Again","##));
+        let found = findings_of(&metadata(r##""name": "Reference","##, r##""name": "Reference", "name": "Again","##));
         let f = assert_finding(&found, &codes::E0101, "/name");
         assert_eq!(f.rule, "key-unique");
         assert_eq!(found.len(), 1);
@@ -1132,7 +1152,7 @@ mod invalid {
     fn a_package_with_several_mistakes_reports_each_in_document_order() {
         let text = edit(
             &edit(
-                &reference(r##""license": "CC0-1.0","##, r##""license": "CC0-1.0", "licence": 1,"##),
+                &reference(r##""layout": {"##, r##""licence": 1, "layout": {"##),
                 r##""thickness": 6,"##,
                 r##""thickness": "6","##,
             ),
@@ -1647,7 +1667,7 @@ mod fragments {
     #[test]
     fn pointer_tokens_are_escaped() {
         // A key with a slash and a tilde: the pointer carries `~1` and `~0`.
-        let found = findings_of(&reference(r##""license": "CC0-1.0","##, r##""license": "CC0-1.0", "a/b~c": 1,"##));
+        let found = findings_of(&metadata(r##""license": "CC0-1.0","##, r##""license": "CC0-1.0", "a/b~c": 1,"##));
         assert_finding(&found, &codes::E0102, "/a~1b~0c");
     }
 }
@@ -1674,7 +1694,8 @@ mod coverage {
             let lint_code = ["HUD-E06", "HUD-W06", "HUD-E10", "HUD-E11", "HUD-E12", "HUD-E13", "HUD-E14", "HUD-E15"]
                 .iter()
                 .any(|p| code.id.starts_with(p));
-            if code.id == "HUD-E0107" || check_code || lint_code || command_codes.contains(&code.id) {
+            // Archive, inventory and digest codes have executable rows in bundle tests.
+            if code.id == "HUD-E0107" || code.id.starts_with("HUD-E16") || check_code || lint_code || command_codes.contains(&code.id) {
                 continue;
             }
             assert!(covered.contains(code.id), "{} has no corpus row", code.id);
@@ -2006,7 +2027,7 @@ mod mutation {
 
     /// Everything that must hold for ANY input.
     fn check(label: &str, input: &[u8], tally: &mut Tally) {
-        let parsed = catch_unwind(AssertUnwindSafe(|| parse::parse(input)))
+        let parsed = catch_unwind(AssertUnwindSafe(|| crate::hud_format::fixtures::parse(input)))
             .unwrap_or_else(|_| panic!("{label}: parse panicked on {}", show(input)));
         assert_eq!(
             parsed.package.is_some(),
@@ -2027,14 +2048,14 @@ mod mutation {
             }
         }
         tally.codes.extend(parsed.findings.iter().map(|f| f.code));
-        assert_eq!(parsed, parse::parse(input), "{label}: parsing is pure");
+        assert_eq!(parsed, crate::hud_format::fixtures::parse(input), "{label}: parsing is pure");
 
         // The second door: the same walker over the root node, text in, no version gate.
         let Ok(text) = std::str::from_utf8(input) else {
             return;
         };
         let (object, findings) =
-            catch_unwind(AssertUnwindSafe(|| parse::validate_json(&schema::ROOT, text, "", &Ctx::v1())))
+            catch_unwind(AssertUnwindSafe(|| parse::validate_json(&schema::ROOT, text, "", &Ctx { assets: super::super::fixtures::parse(REFERENCE.as_bytes()).package.unwrap().assets.into_iter().map(|(id, _)| id).collect(), ..Ctx::v1() })))
                 .unwrap_or_else(|_| panic!("{label}: validate_json panicked on {}", show(input)));
         assert_eq!(
             object.is_some(),
@@ -2179,7 +2200,6 @@ mod drift {
     use std::collections::BTreeSet;
 
     const AT: &str = "/n";
-    const SVG: &str = "<svg viewBox='0 0 24 24'><path d='M6 14h2v6H6z'/></svg>";
     const NOT_LISTED: &str = "zz_unlisted";
 
     // ----- a tiny JSON builder (the table is walked, so the values are built, not typed) -----
@@ -2298,8 +2318,9 @@ mod drift {
             Pattern::ReverseDns => vec!["com.example.hud".into(), "a.b".into(), schema::BUILTIN_CLASSIC_ID.into()],
             Pattern::Semver => vec!["1.2.3".into(), "0.0.0".into()],
             Pattern::FormatVersion => vec!["1.0".into(), "12.34".into()],
-            Pattern::SchemaUrl => vec!["https://plxnative.com/hud/schema/1.0.json".into()],
+            Pattern::SchemaUrl => vec!["https://plxnative.com/hud/schema/hud/1.0.json".into()],
             Pattern::Id => vec!["a".into(), "a_b-c9".into(), "a".repeat(40)],
+            Pattern::PackagePath => vec!["hud.json".into(), "assets/play.svg".into()],
         }
     }
 
@@ -2321,6 +2342,7 @@ mod drift {
             Pattern::FormatVersion => vec![common, "1".into(), "v1.0".into(), "1.0.0".into()],
             Pattern::SchemaUrl => vec![common, "http://plxnative.com/x".into(), "plxnative.com".into()],
             Pattern::Id => vec![common, "A".into(), "1a".into(), "a".repeat(41)],
+            Pattern::PackagePath => vec!["../escape".into(), "a//b".into(), "A.svg".into(), "con.txt".into()],
         }
     }
 
@@ -2388,7 +2410,7 @@ mod drift {
                 vec![J::Arr(Vec::new()), J::Arr(vec![one.clone()]), J::Arr(vec![one; max_len])]
             }
             Ty::Palette => vec![J::Obj(Vec::new()), J::Obj(vec![("gold".into(), s("#f2b535"))])],
-            Ty::Assets => vec![J::Obj(Vec::new()), J::Obj(vec![("glyph".into(), s(SVG))])],
+            Ty::Resources => vec![J::Obj(Vec::new()), J::Obj(vec![("glyph".into(), s("assets/glyph.svg"))])],
             Ty::Command => schema::COMMANDS.iter().map(|c| s(c.name)).collect(),
             Ty::Either(a, b) => {
                 let mut out = variants(a);
@@ -2405,7 +2427,7 @@ mod drift {
     /// Whether a JSON object can be the value of `ty` itself (so it is not read as a state-keyed value).
     fn takes_object(ty: &Ty) -> bool {
         match *ty {
-            Ty::Object(_) | Ty::Face | Ty::Palette | Ty::Assets | Ty::Cond => true,
+            Ty::Object(_) | Ty::Face | Ty::Palette | Ty::Resources | Ty::Cond => true,
             Ty::Either(a, b) => takes_object(a) || takes_object(b),
             Ty::Bool
             | Ty::Int { .. }
@@ -2523,11 +2545,11 @@ mod drift {
                 at(J::Obj(vec![("gold".into(), s("red"))]), &codes::E0506, "/gold"),
                 at(J::Obj(vec![("gold".into(), J::Int(5))]), &codes::E0104, "/gold"),
             ],
-            Ty::Assets => vec![
+            Ty::Resources => vec![
                 wrong(J::Null),
                 wrong(J::Int(5)),
-                at(J::Obj(vec![("ZZ".into(), s(SVG))]), &codes::E0105, "/ZZ"),
-                at(J::Obj(vec![("glyph".into(), s("<svg>"))]), &codes::E0704, "/glyph"),
+                at(J::Obj(vec![("ZZ".into(), s("assets/glyph.svg"))]), &codes::E0105, "/ZZ"),
+                at(J::Obj(vec![("glyph".into(), s("../glyph.svg"))]), &codes::E0105, "/glyph"),
                 at(J::Obj(vec![("glyph".into(), J::Int(5))]), &codes::E0104, "/glyph"),
             ],
             Ty::Command => vec![wrong(J::Null), wrong(J::Int(5)), at(s(NOT_LISTED), &codes::E0301, "")],
@@ -2873,10 +2895,10 @@ mod drift {
 
     #[test]
     fn the_table_has_the_shape_the_spec_freezes() {
-        assert_eq!(schema::all_nodes().len(), 24, "nodes");
+        assert_eq!(schema::all_nodes().len(), 26, "nodes");
         assert_eq!(schema::COMMANDS.len(), 10, "commands");
         assert_eq!(schema::CONDITIONS.len(), 11, "conditions");
-        assert_eq!(schema::all_nodes()[0].name, "package");
+        assert_eq!(schema::all_nodes()[0].name, "hud");
         let mut names: Vec<&str> = schema::all_nodes().iter().map(|n| n.name).collect();
         names.sort_unstable();
         let before = names.len();
@@ -3454,7 +3476,7 @@ mod reference_keys {
         let missing: Vec<&str> = schema::all_nodes()
             .iter()
             .map(|n| n.name)
-            .filter(|n| !seen.contains(*n) && !matches!(*n, "package" | "app"))
+            .filter(|n| !seen.contains(*n) && !matches!(*n, "hud" | "manifest" | "hud_entry" | "app"))
             .collect();
         assert!(
             missing.iter().all(|n| matches!(*n, "rect" | "grab" | "actions")),

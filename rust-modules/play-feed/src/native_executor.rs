@@ -1223,7 +1223,14 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks
             };
             recovery.ready(playable)
         }
-        HlsPrimeKind::Fresh | HlsPrimeKind::Resume => balanced_runway_ready,
+        HlsPrimeKind::Fresh => balanced_runway_ready,
+        // A viewer Resume continues an existing timeline, not a replay of every acquisition
+        // since the rung was selected. That historical worst-permutation reserve can exceed
+        // native + AU queue capacity (#1216); no further media can arrive until Play. Keep the
+        // accepted A/V decoder prime below, but do not make user intent repay historical stress.
+        // An automatic rebuffer remains Rebuffer even across user Pause/Resume and must still
+        // close its own pause-local recovery epoch above.
+        HlsPrimeKind::Resume => true,
     };
     if decoder_ready && boundary_ready && transport.feed_allowed() {
         let Some((play_token, recovery)) =

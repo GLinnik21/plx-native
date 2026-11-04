@@ -440,12 +440,12 @@ No new private quality transaction starts while the user is paused. If Pause rac
 read, the socket retains both its ordinary liveness deadline and a scheduled re-check of the owning
 reserve clock. The re-check spends nothing while user Pause holds, but it is already armed if
 Resume makes that clock advance during the blocked read. A user Pause changes the feed gate only
-after Starfish accepts `Pause`, and an ordinary Resume does the same after `Play`. Resume during an
-internal HLS runway hold is the deliberate exception: the feed gate opens without `Play` or an ACB
-state change so recovery media can refill the queues while the native clock stays held; the
-measured re-prime later owns `Play` and its ACB mirror. The native playback clock is not restarted
-until that recovery transaction ends, so a candidate and the playhead cannot both spend the same
-discretionary balance.
+after Starfish accepts `Pause`, and a non-HLS Resume does the same after `Play`. HLS Resume opens
+the feed gate without `Play` or an ACB state change so media can refill while the native clock
+stays held; the pump's re-prime later owns `Play` and its ACB mirror. A viewer Resume requires a
+balanced decoder prime; an active internal hold additionally requires its recovery certificate.
+The native playback clock is not restarted until any recovery transaction ends, so a candidate
+and the playhead cannot both spend the same discretionary balance.
 There is one terminal exception derived from the actuator set rather than from time. A downshift
 candidate at the ladder floor has no robust rollback guarantee left to protect and no cheaper
 response to buy when either the completed current bag has `B < R_o`, or the main thread has already
@@ -481,8 +481,8 @@ projection. At the ladder floor the only useful response continues; above it the
 larger object may be abandoned so recovery can fetch a smaller one. An already held recovery clock
 arms no second abort loop. In every case network, demux and feeding remain active.
 
-Runtime resume does not use the historical `R_s` at all. A hold starts a fresh ordered recovery
-epoch. For complete active-rung acquisitions after that pause,
+Runtime resume does not use the historical `R_s` at all. An automatic rebuffer hold starts a fresh
+ordered recovery epoch. For complete active-rung acquisitions after that pause,
 
 ```text
 P_0 = 0
@@ -496,7 +496,7 @@ new completed segment beside an old debt. Candidate media is not credited as rec
 after a rung commit the epoch restarts and the next ordinary acquisition describes the encoder
 that will sustain playback.
 
-Resume requires all of:
+Automatic rebuffer resume requires all of:
 
 - Starfish accepted its ordinary decoder prime;
 - at least one complete segment landed in the current recovery epoch;
@@ -508,7 +508,11 @@ Resume requires all of:
 
 The epoch is discarded after successful `Play`; old slow acquisitions cannot raise a later
 runtime floor. `R_s` remains only a retrospective fresh-Load/seek certificate and ABR diagnostic. A
-user Pause/Play cannot bypass an active internal hold. Failed `Pause`/`Play` calls do not mutate
+viewer Resume on a healthy held HLS timeline requires the ordinary balanced decoder prime,
+without waiting for historical `R_s`: that retrospective boundary can exceed everything the
+paused native pipeline and AU queues can hold (#1216). Feeding reopens first; the pump owns the
+single accepted `Play` and ACB mirror. A user Pause/Play cannot bypass an active internal hold or
+an unsettled candidate transaction. Failed `Pause`/`Play` calls do not mutate
 state as though the clock moved.
 
 HTTP bodies with a declared `Content-Length` count as completed only after all declared bytes

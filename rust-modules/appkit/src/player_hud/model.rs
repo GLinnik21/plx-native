@@ -3,18 +3,17 @@
 //! Before the split the draw path read process globals in the middle of drawing: `TX.paused`, the
 //! scrub target, `playpos_ns()`, `seek_display_ns()`, `duration_ns()`, `loading(ps)` and the
 //! subtitle picks and bitmap cue. The player screen is a machine and reads no global
-//! (`docs/sans-io.md`), so those reads become fields of this value, which `src/app/run.rs` fills ONCE
-//! a frame and pushes into the screen the way it already pushes `busy` and `transport`. The renderer
+//! (`docs/sans-io.md`), so those reads become fields of this value. `src/app/run.rs` publishes it
+//! before input/Tick and refreshes it before drawing, alongside `busy` and `transport`. The renderer
 //! reads it through its `Frame`, and the scrub preview takes it directly; a draw reads no player global.
 //!
 //! Pure data: every field is `Copy`, there is no borrowed string and no allocation, so building one is
 //! a dozen atomic loads and the snapshot costs nothing to hand down the draw. It carries no
 //! `PartialEq` because of [`HudModel::bitmap_by_key`], a function pointer.
 //!
-//! The model holds exactly what presentation reads. What the HUD's STATE logic samples for itself
-//! ([`super::slot`], [`super::busy`], [`super::transport_hidden`], `HudMotion::step`) stays in
-//! `state.rs` and `motion.rs`: those run at input and Tick time, and moving them onto a model sampled
-//! at prepare time would shift them by a frame.
+//! The model also carries the marker entitlement and transport facts the automatic-skip timer
+//! consumes at Tick time. The app publishes those before dispatch so the timer sees the current
+//! profile and playback. Other live HUD state resolution stays in `state.rs` and `motion.rs`.
 
 use plx_plex::plex::session::{SubtitlePosition, SubtitleSize, SubtitleTone};
 
@@ -22,13 +21,20 @@ use plx_plex::plex::session::{SubtitlePosition, SubtitleSize, SubtitleTone};
 /// rects of the selected track's display set with this `start_ns` key.
 pub type BitmapLookup = fn(i64) -> Option<(i32, i32, Vec<plx_media::player::SubRect>)>;
 
-/// The HUD's presentation values, sampled once for the frame from the owned attempt readout and
-/// viewer controls. The doc comment of each field names its source in `src/app/run.rs`.
+/// The HUD's presentation and automatic-skip inputs, sampled once for the frame from the owned
+/// attempt readout and viewer controls. The doc comment of each field names its source in
+/// `src/app/run.rs`.
 #[derive(Clone, Copy, Debug)]
 pub struct HudModel {
     /// `plx_media::player::TX.paused.load(Relaxed)`: the viewer is logically paused. Drives the
     /// title's reveal and the playbar's state mark.
     pub paused: bool,
+    pub marker_prefs: crate::skip_policy::MarkerPrefsView,
+    pub playback_id: u32,
+    pub advancing: bool,
+    pub seeking: bool,
+    pub covered: bool,
+    pub skip_progress: Option<f32>,
     /// The playing metadata is a genuine episode, independent of queue neighbours.
     pub is_episode: bool,
     /// `plx_media::player::TX.scrub_ns.load(Relaxed)`: the live scrub preview's target, -1 when no
@@ -85,6 +91,7 @@ impl Default for HudModel {
     fn default() -> Self {
         Self {
             paused: false,
+            marker_prefs: Default::default(), playback_id: 0, advancing: false, seeking: false, covered: false, skip_progress: None,
             is_episode: false,
             scrub_ns: -1,
             playpos_ns: 0,

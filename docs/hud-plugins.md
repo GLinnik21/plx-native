@@ -264,8 +264,8 @@ Other subsystems the plan touches
   `draw_title`, `Playbar`/`draw_playbar`, `TransportButton`, `TabPill`, `skip_pill::draw_at`). The trailer
   keeps drawing through those primitives at classic geometry (F35); a user HUD does not restyle trailers.
 - D3. **The contract has two halves, versioned together**: `HudModel`, a per-frame read-only snapshot of
-  exactly the values presentation reads (every F3 global becomes a field `src/app/run.rs` fills once a frame and
-  pushes into the player screen as a value, as it already pushes `busy` and `transport`, `run.rs:2805-2816`: the screen
+  the values presentation and automatic-skip timing read (every F3 global becomes a field `src/app/run.rs`
+  publishes before input/Tick and refreshes before drawing, alongside `busy` and `transport`: the screen
   is a machine and reads no global, `docs/sans-io.md`), and `HudGeometry`, what the compiled layout reports back (group, item and section rects, the
   caption band, the menu anchors, the safe-area rects). The FocusEngine groups, the pointer stops, the
   caption lift, both menus and the overscan audit read `HudGeometry` only. `HudMotion` (the springs,
@@ -414,7 +414,7 @@ app (src/)               runners: HudStore effects -> net fetch / storage worker
 screens/player           Focusable and pointer stops read HudGeometry; the page draws through player_hud::render::draw(&Compiled, &Frame, ..)
 appkit/player_hud/       state.rs (F4 logic, unchanged), model.rs (HudModel), motion.rs (HudMotion),
                          render.rs (compiled draw list -> shared widgets), geometry.rs (HudGeometry),
-                         command.rs (HudCommand, enabled predicates); builtin:classic is hud_format/fixtures/classic.plxhud.json,
+                         command.rs (HudCommand, enabled predicates); builtin:classic is hud_format/fixtures/classic.plxhud,
                          embedded as hud_format::BUILTIN_CLASSIC
 appkit/hud_format        schema descriptor table, strict parser, validator, SVG-subset checker, layout compiler
 data/hudpacks            HudStore machine (new [data] member): installed set, selection (the index cache joins in PR13); pure; never parses
@@ -443,14 +443,57 @@ ui/popover               the shared anchored placer (D9), used by the player men
 
 ## Package format 1.0
 
-One UTF-8 JSON file, `*.plxhud.json`, assets inline, no archive (so no zip or tar parser on untrusted
-input). Parsed strictly: unknown keys and duplicate keys are errors, through the duplicate-key-preserving
-reader of F41, made a shared `pub` module of `plx_ui`. Coordinates are on the logical 1920x1080 canvas
-(`base/src/surface.rs:47-48`); the existing scaling to the drawable size applies unchanged.
+A `.plxhud` file is a bounded canonical ZIP32 archive. Authors edit a directory containing
+`manifest.json`, the HUD document and separate SVG masks. The native `--hud-pack` command takes one
+bounded snapshot and produces the exact artifact that lint, previews, installation and publication use.
+Every member's original bytes are preserved, including JSON key order.
 
-Top level: `format`, `id` (reverse-DNS, `[a-z0-9.-]`; the built-in's own file is the one other id that parses, `builtin:classic`, which proves nothing about where a file came from: a store that takes files from outside refuses it), `version` (semver), `name`, `author`, `license`,
-optional `app` (`min`/`max`), optional `$schema` (the schema URL, for editors; accepted, its value ignored), optional
-`palette`, `assets`, `layout`.
+The manifest owns `package_format`, `id`, `version`, `name`, `author`, `license` and
+`hud: {format, entry}`. Optional fields are `resources`, `notices`, `app` and `$schema`.
+`package_format` and `hud.format` independently start at `"1.0"`. `id` is reverse-DNS, with
+`builtin:classic` reserved for the embedded package. External installation refuses that reserved id.
+`version` is the plugin's semver. `resources` maps logical ids to package-root-relative file paths.
+`notices` lists UTF-8 legal text members. Each member has exactly one inventory owner, every inventory
+path exists, every resource is used by the HUD, and additional archive members are rejected.
+
+The HUD document owns required `layout` and optional `palette` and `$schema`. Its SVG references use
+logical resource ids. Icon and face roles validate their resources as the existing SVG alpha-mask subset.
+Identity and resource inventory have one owner in the manifest. Strict parsing rejects unknown and
+duplicate keys in both documents, using the shared duplicate-preserving JSON reader. The schema URLs
+are `https://plxnative.com/hud/schema/manifest/1.0.json` and
+`https://plxnative.com/hud/schema/hud/1.0.json`. Each optional `$schema` must agree with its document.
+
+The initial archive profile is STORE-only. Entries and central records are in ascending ASCII path order.
+ZIP flags, compression, disk numbers, comments, extras and internal attributes are zero. Version-needed
+and the made-by version are 10, the made-by system is Unix 3, timestamps are 1980-01-01 00:00:00 and
+external attributes encode regular mode 0100644. CRC32 and equal compressed/uncompressed lengths are
+checked. Local headers, payloads, central records and EOCD cover the complete artifact contiguously.
+Directories, symlinks, encryption, descriptors, ZIP64, prefixes, gaps, overlaps and trailing data are refused.
+A preflight checks every actual central record and all checked-u64 ranges before constructing the pinned
+`zip = 9.2.2` reader with default features disabled. The same library writes canonical archives.
+
+Paths contain slash-separated segments matching `[a-z0-9][a-z0-9._-]*`, up to 128 ASCII bytes and
+eight segments. Trailing dots and DOS-reserved basenames are rejected. Absolute paths and traversal
+cannot be represented. Directory snapshots open each member through directory descriptors with
+no-follow semantics on every component beneath the selected root.
+
+Package 1.0 bounds are 2 MiB for the complete artifact, 1 MiB of aggregate member payloads, 64 KiB for the manifest,
+64 KiB for the central directory and 128 members. HUD 1.0 retains a 1 MiB JSON source cap, a shared
+16 MiB pre-allocation JSON decoding budget across both documents, 16 KiB per SVG and eight paths
+per SVG. These source/container budgets are separate from the renderer's existing decoded geometry,
+cost and texture limits. Later package minors may increase transport/inventory capacities while older
+declared profiles retain their bounds. New resource semantics and decoding budgets belong to HUD
+minors. Bitmap images, plugin fonts and localized plugin text require those future contracts.
+
+The full archive's SHA256 binds installation, confirmation, compile-cache identity and catalog publication.
+The archive is the authoritative stored object. The worker reads and resolves it once per selection
+attempt, then the fit, price and compile stages share its immutable typed value. SVG CPU bytes are
+Arc-owned by the compiled result. Existing first-draw rasterization and process-lifetime SVG texture
+caching keep their current behavior. Frames perform no archive parsing, filesystem reads or decompression.
+Classic has an authored source directory and a checked-in canonical archive produced by the same packer,
+with byte-for-byte reproducibility tests and the same loader as installed packages.
+
+Coordinates use the logical 1920x1080 canvas and the shared drawable-size scaling.
 
 `layout`: `anchor` (`"bottom"`), `inset` (a space token or px above `SAFE`'s bottom), `x_inset` (from
 `SAFE`'s sides), `band` (`"controls"` or `"block"`, D8), `sections` (`"modal"` or `"inline"`, D6),
@@ -692,7 +735,10 @@ Skip. Edges are app-owned: OK or a click on a `toggle_section` control; BACK (cl
 then hides the HUD; over a Skip or Up Next offer it first retires that segment in the metadata store's
 `skipped` set and returns the slot to Discs); for modal sections, a direction that leaves the section's groups
 (closes it); the slot changes involuntarily with the marker (`slot_for`, F19), and every stand-in slot returns
-to Discs when its marker ends, when Watch Credits dismisses the offer, or when BACK dismisses it.
+to Discs when its marker ends or BACK dismisses it. A standalone automatic Watch button dismisses
+its single-button offer; Watch Credits in the Up Next pair cancels the countdown and leaves
+Next Episode available. Automatic credits retains that pair and its geometry, using five presented
+seconds on the primary button instead of the legacy ten-second clock.
 
 - R1. `open_more` is placed, at or above `MIN_CONTROL_SIZE`, in the root state (compact, Discs) under EVERY valuation
   of the content conditions the package names (`chapters.present`, actual `title.is_episode`) and independent
@@ -729,12 +775,21 @@ to Discs when its marker ends, when Watch Credits dismisses the offer, or when B
 
 ## Versioning and mismatch behaviour
 
-1. `format` = MAJOR.MINOR of the schema, bindings and command vocabulary. A MINOR only adds (a binding, an
-   optional key, a command, a condition). A MAJOR may remove or change. The app compiles in the range it
-   supports, for example `{1: 0..=3}`.
-2. `version` = the plugin's semver; it only orders updates of one `id`.
-3. `app.min`/`app.max` (optional) = an app-release range, an escape hatch for "this release renders me
-   wrong"; the registry index can carry it per entry.
+1. `package_format` is the container contract version. HUD-independent inventory and capacity changes
+   belong to this axis.
+2. `hud.format` is the HUD schema, bindings and command vocabulary version. Additive rendering
+   features use a minor. Incompatible semantic changes require a major.
+3. `version` is the plugin's semver and orders updates of one id.
+4. Optional `app.min` and `app.max` constrain the app release.
+
+Both format axes start at 1.0. The initial SDK/report/catalog protocols are integer 1 and examples
+start at 1.0.0. This pre-release baseline replaces the draft inline package contract. Development
+installations may reset their HUD state and reinstall the new artifacts. The runtime supports the
+bundle contract alone.
+
+`--hud-info` and the SDK manifest advertise exact `supported_formats` pairs, distinct manifest/HUD
+schema ids and per-profile `limits`. Registry selection verifies these against the actual pinned binary
+and SDK manifest. Package and HUD versions remain independent without duplicate capability flags.
 
 Decided at install and at selection, never per frame: an unsupported major, or a minor above the app's, is
 rejected ("Made for a newer PlxNative" / "Uses an older HUD format"). Strict parsing makes that mandatory: an
@@ -984,30 +1039,43 @@ package is built at couch-legible rungs and its expanded states are taller than 
   own band in both, with that band's gap keyed on `panel.info`.
 - Absent: an audio disc, tab pills, a state glyph beside the clock, info-card buttons, badges.
 
-## Worked example: `reference.plxhud.json`
+## Worked example: `reference.plxhud`
 
 Strict JSON, so no comments; the tables after it explain every element. Asset path data is shortened to small
 valid marks (the numerals stand in as bars); a published package carries full outlines. Sizes follow the
 image's proportions rounded to tokens and are approximate.
 
+`manifest.json`
+
 ```json
 {
-  "$schema": "https://plxnative.com/hud/schema/1.0.json",
-  "format": "1.0",
+  "package_format": "1.0",
   "id": "com.plxnative.examples.reference",
   "version": "1.0.0",
   "name": "Reference",
   "author": "PlxNative",
   "license": "CC0-1.0",
-  "palette": { "gold": "#f2b535" },
-  "assets": {
-    "subs-bubble": "<svg viewBox='0 0 24 24'><path d='M3 4h18v12H10l-5 4v-4H3z'/></svg>",
-    "list": "<svg viewBox='0 0 24 24'><path d='M4 6h16v2H4zM4 11h16v2H4zM4 16h16v2H4z'/></svg>",
-    "gear": "<svg viewBox='0 0 24 24'><path d='M19.12 10L22.29 10.6L22.29 13.4L19.12 14A7.4 7.4 0 0 1 18.45 15.62L20.27 18.29L18.29 20.27L15.62 18.45A7.4 7.4 0 0 1 14 19.12L13.4 22.29L10.6 22.29L10 19.12A7.4 7.4 0 0 1 8.38 18.45L5.71 20.27L3.73 18.29L5.55 15.62A7.4 7.4 0 0 1 4.88 14L1.71 13.4L1.71 10.6L4.88 10A7.4 7.4 0 0 1 5.55 8.38L3.73 5.71L5.71 3.73L8.38 5.55A7.4 7.4 0 0 1 10 4.88L10.6 1.71L13.4 1.71L14 4.88A7.4 7.4 0 0 1 15.62 5.55L18.29 3.73L20.27 5.71L18.45 8.38A7.4 7.4 0 0 1 19.12 10ZM17.2 12A5.2 5.2 0 1 0 6.8 12A5.2 5.2 0 1 0 17.2 12Z'/></svg>",
-    "eq": "<svg viewBox='0 0 24 24'><path d='M6 14h2v6H6zM11 8h2v12h-2zM16 11h2v9h-2z'/></svg>",
-    "back10": "<svg viewBox='0 0 24 24'><path d='M12 1v2a9 9 0 1 1-9 9h2a7 7 0 1 0 7-7v3l-4-4zM9 8h1.5v8h-1.5v-6.5l-1.5 1.5v-1.5zM13.5 8h2l1.5 1.5v5l-1.5 1.5h-2l-1.5-1.5v-5zM13.5 10v4l0.5 0.5h1l0.5-0.5v-4l-0.5-0.5h-1z'/></svg>",
-    "fwd30": "<svg viewBox='0 0 24 24'><path d='M12 1v2a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7v3l4-4zM8 8h2l1 1v6l-1 1h-2l-1-1v-0.5h2.5v-2h-2v-1.5h2v-1.5h-2.5v-0.5zM13.5 8h2l1.5 1.5v5l-1.5 1.5h-2l-1.5-1.5v-5zM13.5 10v4l0.5 0.5h1l0.5-0.5v-4l-0.5-0.5h-1z'/></svg>"
+  "hud": {
+    "format": "1.0",
+    "entry": "hud.json"
   },
+  "resources": {
+    "subs-bubble": "assets/subs-bubble.svg",
+    "list": "assets/list.svg",
+    "gear": "assets/gear.svg",
+    "eq": "assets/eq.svg",
+    "back10": "assets/back10.svg",
+    "fwd30": "assets/fwd30.svg"
+  }
+}
+```
+
+`hud.json`
+
+```json
+{
+  "$schema": "https://plxnative.com/hud/schema/hud/1.0.json",
+  "palette": { "gold": "#f2b535" },
   "layout": {
     "anchor": "bottom",
     "inset": "MD",
@@ -1160,10 +1228,10 @@ matrix) is the proof. `ui/src/CLAUDE.md:448`, idiom 3 ("The default player HUD g
 binds `builtin:classic`, which keeps it; a package's transport row is the owner's explicit ask (the reference image), and
 a package is never the default.
 
-Classic's compact state, tabs, scrim and Up Next, as the `layout` of `classic.plxhud.json` (every number is a constant
+Classic's compact state, tabs, scrim and Up Next, as the `layout` of `classic.plxhud` (every number is a constant
 cited in the table below; faces are omitted, so each control draws its command's classic glyph; the file in the repo
-(`appkit/src/hud_format/fixtures/classic.plxhud.json`) already has the two section bands of the table and the tabs
-band's keyed `gap_before` (its chapters value takes `item.start`'s one-pixel leading, below), and PR6's `--hud-export builtin:classic` prints the
+(`appkit/src/hud_format/fixtures/classic.plxhud`) already has the two section bands of the table and the tabs
+band's keyed `gap_before` (its chapters value takes `item.start`'s one-pixel leading, below), and the command `--hud-export builtin:classic --out classic.plxhud` writes the
 whole file):
 
 ```json
@@ -1313,7 +1381,7 @@ the app's side in the traces below), not rounded and with no headroom. Each clas
 by one section's numbers. The constants are `MAX_<CLASS>_<TERM>` in `appkit/src/hud_format/lint_cost.rs`, each naming
 the state and language it came from, and
 `lint_cost::the_ceilings_are_the_maximum_over_every_state_of_classic_and_the_reference_in_every_language` recomputes
-all twelve from `classic.plxhud.json` and `reference.plxhud.json` over all eleven languages, every state and slot (330
+all twelve from `classic.plxhud` and `reference.plxhud` over all eleven languages, every state and slot (330
 rows) and asserts each is attained by the pair it names, so a layout change that moves one fails until someone
 re-measures.
 
@@ -1423,9 +1491,16 @@ New `paths::hud_candidates()` on F39's pattern, keyed by `app_id()`:
    when only it took the write. `in_app_dir` is not a candidate (not writable by the jailed uid, F39).
 
 The first candidate that accepts a write is used; all are read when listing; the flavours never share (D14).
-Layout: `packs/<sha256>.plxhud.json` (content-addressed, so an update is a new file and a switch is atomic),
+Layout: `packs/<sha256>.plxhud` (content-addressed, so an update is a new file and a switch is atomic),
 `installed.json` (id -> sha, source, installed-at), `index-cache.json` (plus ETag), `drop/` (the sideload
 drop folder, scanned when HUD settings open).
+
+The current installed index requires integer v1 and closed records containing the complete archive SHA,
+source, install timestamp, package_format and hud_format. Both format fields are 1.0 in this baseline.
+Duplicate fields or ids, unknown fields, malformed identities and unsupported headers make the entire
+index read-only. Installation uses another writable candidate. Removal reports an incomplete result
+when any unreadable candidate might retain a copy. Index failures never trigger deletion of that
+candidate's files.
 
 Measured on the television (PR10, 2026-11-01), for the DEBUG install on a ROOTED set only (webOS 4.10.2, the app
 jailed as uid 6085, gid 5000): the order behaved as written, except that candidate 2 is never taken there.
@@ -1447,7 +1522,7 @@ and owned by the app's uid, so whether a Dev Mode `prisoner` can then write its 
 - (a) CHOSEN, every install mode, SHIPPED in PR11: Settings > Player HUD > "Install from address", through the
   television keyboard the Search page uses (F40: `Delivery::Keyboard`, then the OS's text edits into a `TextBuffer`;
   the settings surface re-addresses an inner page's keyboard delivery to its own instance). It accepts
-  `gh:owner/repo[@tag]` (that repo's release asset `hud.plxhud.json`, 15-25 typed characters) or any `https://` URL
+  `gh:owner/repo[@tag]` (that repo's release asset `hud.plxhud`, 15-25 typed characters) or any `https://` URL
   with no userinfo, and `http://` only for a literal RFC1918 IPv4 host, shown as a development source in the
   prompt. One pure parser (`hudpacks::address::parse`) gives a typed error per refusal; owner, repo and tag are held
   to GitHub's own character sets and nothing is percent-decoded, so nothing walks out of the path.
@@ -1486,7 +1561,7 @@ it takes an explicit confirmation on the TV.
 "A GitHub repo like Homebrew" is right for SUBMISSION and wrong for DELIVERY; Homebrew itself moved its
 clients from cloning `homebrew-core` to a JSON API generated from the repo (Homebrew 4.0, 2023; UNVERIFIED in
 this session, no network).
-- Source of truth: a separate public repo, `plxnative-huds`, one directory per HUD (`huds/<id>/hud.plxhud.json`
+- Source of truth: a separate public repo, `plxnative-huds`, one directory per HUD (`huds/<id>/manifest.json` plus its HUD and resource files
   plus a README); a PR is the submission and the author's GitHub identity is the identity. Separate from the
   app repo so contributor PRs never touch app `main` (squash-only, AGENTS.md).
 - CI on each PR: (1) `plxnative-sim --hud-lint`, the app's own validator in the simulator artifact pinned to
@@ -1497,8 +1572,8 @@ this session, no network).
   each shipped language, captions at the largest size and highest position with the HUD up, bright and dark
   mock frames; posted on the PR; (3) a diff against the previous version's previews.
 - Re-lint on every app release, with `unfit`, `app.max` and an issue for the author (Text fit, (a)).
-- Publish on merge: a static `index.json` (`id`, `version`, `format`, `app` range, `sha256`, `bytes`, preview
-  URLs, author, license, `unfit` per Text fit), packages at `p/<sha256>.plxhud.json`, a `revoked` list of hashes with reasons, and
+- Publish on merge: a static `index.json` (`id`, `version`, `package_format`, `hud_format`, `app` range, `sha256`, `bytes`, preview
+  URLs, author, license, `unfit` per Text fit), packages at `p/<sha256>.plxhud`, a `revoked` list of hashes with reasons, and
   `index.json.sig` (PR14). Hosted on that repo's Pages under a plxnative.com subdomain (UNVERIFIED: DNS), or
   under this repo's `site/` if the owner prefers one Pages site.
 - TV side: one conditional GET of the index (ETag) that does NOT follow redirects, because a
@@ -1542,14 +1617,13 @@ spelling per concept and no expressions. Goal: a model given the guide, the sche
 authoring exercise; the other external comparisons below remain design notes.
 
 1. Schema.
-- Where: `https://plxnative.com/hud/schema/1.N.json`, served from this repo's `site/` (static Pages, F40), so the
+- Where: `https://plxnative.com/hud/schema/{manifest,hud}/1.N.json`, served from this repo's `site/` (static Pages, F40), so the
   URL is app-owned and stable; the registry mirrors it under `schema/`. A package's schema-URL key names it; the
-  strict parser accepts the key, the TV never fetches it, and lint checks its MAJOR.MINOR equals `format`'s.
-- One file per MAJOR.MINOR, immutable once published; a minor only adds, so `1.0.json` validates every 1.0
-  package forever.
+  strict parser checks its document kind and version. The manifest URL follows `package_format` and the HUD URL follows `hud.format`.
+- One schema per document kind and MAJOR.MINOR. Each declared version keeps its published contract when later minors extend it.
 - One source: `hud_format::schema` holds a descriptor table (per key: type, closed values, numeric range,
   required, state-keyable; per command: its typed parameters). The strict parser walks it and
-  `plxnative-sim --hud-schema` serializes it; nothing is hand-written. The emitted file is a committed golden
+  `plxnative-sim --hud-schema manifest|hud --version 1.0` serializes it; nothing is hand-written. The emitted file is a committed golden
   that a test regenerates and diffs. The commands are a `oneOf` keyed by `const` on `command`, each branch
   listing its parameters with `additionalProperties: false`, so a validator reports a wrong parameter at the
   item.
@@ -1568,12 +1642,12 @@ at the ITEM, through the `oneOf`, where the parser names the key). The schema is
 2. Lint.
 - `plxnative-sim --hud-lint <file> [--format text|json] [--lang all|<tag>]`; exit 0 clean, 1 findings, 2 usage.
   It runs to the end and reports EVERY finding (parse, then compile per state, slot and language), sorted by
-  pointer, so one round fixes many.
+  member and pointer, so one round fixes many.
 - A finding: `code` (stable, never reused, listed in the guide), `severity` (`error` or `warning`; a missing
-  rung of a `by: "setting"` face map is the warning), `path` (an RFC 6901 pointer), `rule` (the invariant's name
+  rung of a `by: "setting"` face map is the warning), `file` (archive member or null), `path` (a document-local RFC 6901 pointer), `rule` (the invariant's name
   as in this plan), `message`, `hint` (a concrete fix), `nearest` (closest valid names by edit distance over
   the closed vocabulary), and context `state`, `slot`, `lang`, `rects` where they apply. JSON output:
-  `{"lint": 1, "file": ..., "findings": [...], "costs": [...]}` (`costs`, one object per state, is the information
+  `{"protocol": 1, "file": ..., "package_sha256": ..., "findings": [...], "costs": [...]}` (`costs`, one object per state, is the information
   lines of the last bullet below; the published `*.lint.json` examples carry the findings alone). SARIF 2.1.0 was weighed and left for later: a larger surface
   for no gain over JSON, which the registry CI turns into PR annotations.
 - Example: `{"code": "HUD-E0301", "path": "/layout/block/2/cells/0/segment/items/1/command", "rule":
@@ -1603,8 +1677,8 @@ at the ITEM, through the `oneOf`, where the parser names the key). The schema is
 
 3. Examples and a guide.
 - Published beside the schema (`site/hud/examples/`, mirrored in the registry's `examples/`):
-  `reference.plxhud.json` (above); `classic.plxhud.json`, emitted by `--hud-export builtin:classic` from the
-  embedded JSON, never copied; small variants `minimal` (the smallest valid package: a playbar and a `more`
+  `reference.plxhud` (above); `classic.plxhud`, exported with `--hud-export builtin:classic --out classic.plxhud` from the
+  embedded canonical archive and checked against the authored source directory; small variants `minimal` (the smallest valid package: a playbar and a `more`
   disc), `hero-center` (a `toggle_play` hero), `tabs` (openers as pills), `palette`. Each invalid fixture of the
   corpus is published with its lint output, so a model sees error and fix side by side. Every example is a
   golden linted in CI, so none can rot.
@@ -1716,8 +1790,8 @@ PR5. `appkit::hud_format`.
   T=hud_format` with a nonzero count, seeded mutation tests, `make check`. Risk: schema churn before PR7 proves
   classic; mitigated by reviewing PR5 with PR7 and by `builtin_classic_passes_every_invariant` here.
 
-PR6. Schema, examples, site: `plxnative-sim --hud-schema`, `--hud-export builtin:classic`,
-`site/hud/schema/1.0.json` committed as a golden with a drift test, `site/hud/examples/` linted in CI. No crate.
+PR6. Schema, examples, site: `plxnative-sim --hud-schema manifest|hud --version 1.0`, `--hud-export builtin:classic`,
+`site/hud/schema/{manifest,hud}/1.0.json` committed as goldens with drift tests, `site/hud/examples/` linted in CI. The bundle reader and canonical writer use the pinned minimal-feature ZIP crate.
 
 PR7. One renderer for the compact HUD.
 - Goal: `player_hud::render` draws a `CompiledHud` from `HudModel`; `classic.json` embedded; the hand-written
@@ -1783,13 +1857,20 @@ in `hudpacks/address.rs`, the store's Fetch / Fetched / InstallOffer / DeclineOf
 row and the offer prompt. Verified on the host (parser, store, runner and page tests; the bounded door against a local
 server). STILL OWED on the set: a real GitHub release fetch and the CA question.
 
-PR12. Registry repository: `plxnative-huds` with CI (lint, xvfb previews, diff), the publisher (index, packs, revoked
-list), Pages, and the authoring kit (`AGENTS.md`, `llms.txt`, `AUTHORING.md`, examples, the schema mirror, the
-schema/parser agreement test); in this repo, the `plxnative-sim` release artifact. Verify with a seeded PR of two
-sample HUDs. Risk: the pinned simulator drifting from shipped apps; pin per app release and render each entry with
-the oldest app in its range. Also: the release re-lint job (`repository_dispatch` from this repo's release workflow,
-plus a weekly schedule), the `unfit` and `app.max` writes and the author issue, and the simulator-to-TV skew measurement
-that sets `CI_TEXT_SKEW` (Text fit; its TV part under the TV lock).
+PR12. Registry repository (shipped): [plxnative-huds](https://github.com/GLinnik21/plxnative-huds) with CI
+(lint, xvfb previews, diff), the publisher (index, original-byte packs, revoked list),
+[Pages](https://glinnik21.github.io/plxnative-huds/), and the authoring kit (`AGENTS.md`, `llms.txt`, `AUTHORING.md`,
+examples, schema mirror and schema/parser agreement test); this repo publishes the `plxnative-sim` artifact.
+[Seeded PR #1](https://github.com/GLinnik21/plxnative-huds/pull/1) passed 70 Reference and 32 Minimal native Linux
+states, all eleven languages, and the two-iteration authoring exercise. Public readback matched all 87 catalog files.
+Immutable per-release pins select the oldest compatible app. App-release dispatch and the weekly re-lint backstop
+record `unfit` and `app.max` and deduplicate author issues; incompatible executable protocol fixtures exercise failure
+and recovery. A live app probe triggered the registry receiver and its green, landed compatibility PR. The first
+actual stable app release carrying the SDK remains a future observation; the current bootstrap is a source-bound
+development utility. The real TV/Linux corpus measures 12,276 widths and sets per-rung registry-only skew margins
+of 4–9 px, leaving TV admission unchanged. The registry's
+[acceptance record](https://github.com/GLinnik21/plxnative-huds/blob/main/IMPLEMENTATION.md) links the exact runs,
+source pins and verification evidence.
 
 PR13. Gallery: a Settings FormTable page with preview art through the image cache, the refresh policy, updates by
 `version`, revocation, `unfit` entries hidden or offered as their update (Text fit). Verify with mock index tests
@@ -1810,7 +1891,7 @@ a rise per Position on `HudBand`, aimed from the open block's height the HUD rep
 `HudMotion`, with the safe-area clamp and captions drawn above the sections. It changes the frames of classic's info
 and chapters states that carry a caption, which is why it waited for the owner.
 
-No PR adds a dependency before PR14 (the schema is written from the descriptor table, F41). PR11 and PR14 may touch
+The bundle implementation adds the pinned minimal-feature ZIP dependency, with before/after build-bench and ARM compatibility evidence. The schema remains generated from the descriptor table. PR11 and PR14 may touch
 the curl or crypto path and get `fw-compat-reviewer`. Each PR runs `doc-claim-auditor` after behaviour changes and
 `pr-reviewer` on its combined diff before it opens.
 

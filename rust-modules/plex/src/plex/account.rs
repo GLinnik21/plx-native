@@ -30,7 +30,7 @@ use super::models::{de_bool, de_i64, de_str, de_vec};
 
 mod preferences;
 #[allow(unused_imports)]
-pub use preferences::{PreferenceError, PreferenceRequest, PreferenceSnapshot, PreferenceUpdate};
+pub use preferences::{MarkerAccess, PreferenceError, PreferenceRequest, PreferenceSnapshot, PreferenceUpdate};
 
 const PLEX_TV: &str = "https://plex.tv";
 
@@ -239,8 +239,8 @@ pub fn announce_discover() {
     let _ = resolved;
 }
 
-const AUDIO_PREFERENCES_SUCCESS_TTL: Duration = Duration::from_secs(5 * 60);
-const AUDIO_PREFERENCES_FAILURE_TTL: Duration = Duration::from_secs(45);
+pub const AUDIO_PREFERENCES_SUCCESS_TTL: Duration = Duration::from_secs(5 * 60);
+pub const AUDIO_PREFERENCES_FAILURE_TTL: Duration = Duration::from_secs(45);
 const AUDIO_PREFERENCES_FAILURE_TTL_MAX: Duration = Duration::from_secs(10 * 60);
 
 /// The account-language input consumed by the playback route. `None` is a successful, explicit
@@ -1442,9 +1442,7 @@ impl AccountAudioProfile {
     }
 }
 impl AccountUser {
-    fn audio_preferences_for(self, expected: &super::session::UserRef)
-        -> Option<AudioPreferences>
-    {
+    fn matches_identity(&self, expected: &super::session::UserRef) -> bool {
         let expected_knows_id = expected.id != 0;
         let expected_knows_uuid = !expected.uuid.is_empty();
         let id_matches = expected_knows_id && self.id == Some(expected.id);
@@ -1453,12 +1451,11 @@ impl AccountUser {
         let id_disagrees = expected_knows_id && self.id.is_some_and(|id| id != expected.id);
         let uuid_disagrees = expected_knows_uuid
             && self.uuid.as_deref().is_some_and(|uuid| !uuid.is_empty() && uuid != expected.uuid);
-        if id_disagrees || uuid_disagrees
-            || ((expected_knows_id || expected_knows_uuid) && !id_matches && !uuid_matches)
-        {
-            return None;
-        }
-        Some(self.profile.unwrap_or_default().preferences())
+        !id_disagrees && !uuid_disagrees
+            && (!(expected_knows_id || expected_knows_uuid) || id_matches || uuid_matches)
+    }
+    fn audio_preferences_for(self, expected: &super::session::UserRef) -> Option<AudioPreferences> {
+        self.matches_identity(expected).then(|| self.profile.unwrap_or_default().preferences())
     }
 }
 

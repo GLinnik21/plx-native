@@ -27,6 +27,8 @@
 //! again after a relaunch, because a viewer who has read it once has been taught; a read showing
 //! on one surface leaves the other unspent. A held OK still shows the capsule with its fill after
 //! that (the fill is hold progress, not a lesson), except within the run an item menu was opened.
+//! A hidden capsule waits for [`HOLD_REVEAL`] of the hold before appearing, so a short OK click
+//! never flashes it. An already standing capsule fills from key-down.
 //! A page with a season pill builds its input with [`HintInput::surface`]. A
 //! `cards::Stack` page adopts it with ONE builder call ([`Stack::hold_hint`](crate::cards::Stack::hold_hint):
 //! the stack steps it, answers `focus` and `settled` from its own placement, and draws it last);
@@ -62,7 +64,8 @@
 //! **When it shows is a schedule, and the schedule lives here**, advanced by the owner's `Tick`
 //! `Tick` (`ms` readings, and a silence over [`GAP_MS`] between two steps is not rest, so the time a covered page is not stepped never counts) — no wall clock, so replay and host tests are deterministic: focus must have RESTED on one
 //! card for [`DWELL_MS`] ([`DWELL_PILL_MS`] on a season pill; any move of `focus`, or any frame that is not `settled`, re-arms the dwell
-//! from zero and hides it), and the hint then stands for [`LIFE_MS`] and leaves on its own. A held OK shows it regardless of the dwell — that is the fill's moment.
+//! from zero and hides it), and the hint then stands for [`LIFE_MS`] and leaves on its own. An OK
+//! held past [`HOLD_REVEAL`] shows it regardless of the dwell — that is the fill's moment.
 //! A surface can also say it is not [`ready`](HintInput::ready) (the season pill while its season
 //! loads or the page glides into place): that does NOT re-arm the dwell. Resting keeps counting,
 //! so the hint stands the frame the surface becomes ready, and until then it shows nothing, spends
@@ -144,6 +147,9 @@ const K_FADE: f32 = 300.0;
 const K_RISE: f32 = 150.0;
 /// An early release drains the cap's fill back to empty in this long (the design's ~.2 s).
 pub const RELEASE_S: f32 = 0.2;
+/// Fraction of the long-press time before a hold reveals a hidden capsule (200 ms of the current
+/// 500 ms hold). A tap stays silent; a deliberate hold still gets feedback before its menu opens.
+const HOLD_REVEAL: f32 = 0.4;
 /// Below this opacity nothing is drawn and the capsule counts as hidden.
 const VISIBLE: f32 = 0.004;
 /// The longest silence between two [`HoldHint::step`]s that still counts as continuous rest. A
@@ -458,13 +464,17 @@ impl HoldHint {
                 self.spent = true;
             }
         }
-        // a hold on no card (or under a retired hint) is no hold
-        let hold = input.hold.filter(|_| focus.is_some() && input.ready);
         let may = self.claimed || !shown(input.surface);
         let standing = may && input.ready && focus.is_some() && !self.spent && self.rest_at.is_some() && rested_ms >= dwell;
         if standing {
             self.claimed = true;
         }
+        // A press is still a tap until it has lasted long enough to teach a hold. Keep immediate
+        // fill feedback when the capsule is already standing, but start neither a fade nor a fill
+        // to drain for a short click on a hidden hint. The press machine still owns the full clock.
+        let hold = input.hold.filter(|&frac| {
+            focus.is_some() && input.ready && (standing || self.visible() || frac >= HOLD_REVEAL)
+        });
         let show = hold.is_some() || standing;
 
         // The capsule stands over the page and moves nothing under it: its springs wake the
@@ -1143,6 +1153,48 @@ mod tests {
     }
 
     #[test]
+    fn a_short_ok_click_never_flashes_the_hint() {
+        let (_g, _) = fresh();
+        for taught in [false, true] {
+            reset_shown_for_test();
+            seed_taught(taught, taught);
+            for surface in [Surface::Card, Surface::SeasonPill] {
+                let mut h = HoldHint::new();
+                let mut press = crate::press::Press::new();
+                press.begin(1000);
+                for ms in (0..200).step_by(16) {
+                    let input = HintInput::new(Some(7), false, press.held_ms(1000 + ms)).surface(surface);
+                    assert!(!frame_asks(&mut h, input), "a tap must not animate the hint: {surface:?}, {ms} ms");
+                    assert!(!h.visible(), "a short OK click must stay hidden: {surface:?}, {ms} ms");
+                    assert_eq!(h.fill(), 0.0, "a hidden tap has no fill to drain");
+                }
+                press.release(1199);
+                for _ in 0..30 {
+                    let input = HintInput::new(Some(7), false, press.held_ms(1200)).surface(surface);
+                    assert!(!frame_asks(&mut h, input), "releasing a tap must leave no hint animation");
+                    assert!(!h.visible());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_deliberate_hold_reveals_before_the_menu_and_drains_on_release() {
+        let (_g, mut h) = fresh();
+        seed_taught(true, true);
+        assert!(!frame_asks(&mut h, HintInput::new(Some(7), false, Some(199))));
+        assert!(frame_asks(&mut h, HintInput::new(Some(7), false, Some(200))));
+        assert!(h.visible(), "feedback starts before the 500 ms menu threshold");
+        assert!((h.fill() - 0.4).abs() < 1e-6, "progress keeps the original press clock");
+        run(&mut h, HintInput::new(Some(7), false, Some(400)), 10);
+        assert!(h.opacity() > 0.5 && (h.fill() - 0.8).abs() < 1e-6);
+        assert!(frame_asks(&mut h, HintInput::new(Some(7), false, None)), "release animates the drain");
+        run(&mut h, HintInput::new(Some(7), false, None), secs(2.0));
+        assert!(!h.visible() && h.fill() == 0.0);
+        assert!(!frame_asks(&mut h, HintInput::new(Some(7), false, None)), "quiet after release");
+    }
+
+    #[test]
     fn a_physical_hold_still_shows_a_spent_hint_with_its_fill() {
         let (_g, _) = fresh();
         let mut first = HoldHint::new();
@@ -1173,7 +1225,7 @@ mod tests {
         // ...and so does a hold filling the cap, though no spring is moving then
         let mut h = HoldHint::new();
         for f in 0..4 {
-            assert!(frame_asks(&mut h, HintInput { hold: Some(f as f32 / 30.0), ..rested(7) }));
+            assert!(frame_asks(&mut h, HintInput { hold: Some(0.5 + f as f32 / 30.0), ..rested(7) }));
         }
     }
 

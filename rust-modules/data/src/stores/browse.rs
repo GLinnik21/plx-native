@@ -68,6 +68,8 @@ pub enum BrowseCmd {
     #[cfg(any(test, feature = "test-support"))]
     SetCur(usize),
     RecheckShares,
+    /// Forget the transient selection for the Library section being left. Favorite memory stays.
+    EndVisit { epoch: u32, kind: SecKind },
     /// The Home editor's draft commit: one record for the whole session, carrying **the rows the
     /// viewer ANSWERED** — `(section index, the value they left it at)` — and not the rows the
     /// editor happened to be showing.
@@ -87,11 +89,10 @@ pub enum BrowseCmd {
     /// sections are re-read, behind its failure ladder and spaced like the quiet Home refetch.
     HubsInvalidateServer { sid: ServerId },
     /// Items were created or removed on one server (a notification, never a press). The open
-    /// library grid is never listed again while it is visible: it is marked stale, and the Library
-    /// page re-queries it, keeping the reader's place, when a page covers it
-    /// (`library_on_stack`: a Library page is on the navigation stack, visible or covered; when
-    /// none is, nobody is looking and the re-query starts at once). Every other section of the
-    /// server forgets its pages and fetches afresh on its next visit.
+    /// grid keeps its rows until a replacement covers the wanted window, then swaps in place.
+    /// Further changes during that read owe one more re-list. Every other section forgets its
+    /// pages and fetches afresh on its next visit. `library_on_stack` is retained for callers;
+    /// the re-list is pumped whether the Library page is visible, covered or absent.
     ListingsChanged { sid: ServerId, library_on_stack: bool },
     /// The optimistic half of a view-state change (`viewstate::publish_view`), on the grid and the
     /// shelves: a watched edit reaches the listing and the section shelves, a deck removal the

@@ -28,10 +28,10 @@
 //! `msg::*_in`), so nothing here reads `i18n::current()` or any other process-wide registry.
 //!
 //! **The stages of the fit pass**, in this order. The run reports EVERY finding ("LLM authoring" item 2: one
-//! round fixes many), so the only stop is a package that does not exist: [`parse::parse`] returns
+//! round fixes many), so the only stop is a package that does not exist: [`super::bundle::read`] returns
 //! `Some(package)` exactly when it found no error, and [`compile`] is total over a package that parsed, so a
 //! reachability or package-level error (stage 2) does not skip stage 3.
-//! 1. the parse and validate findings ([`parse::parse`]); an error here leaves no package to go on with and
+//! 1. the parse and validate findings ([`super::bundle::read`]); an error here leaves no package to go on with and
 //!    ends the run (the price pass parses again, finds no package and is empty: its parse findings are the
 //!    fit pass's);
 //! 2. reachability and the package-level invariants ([`check`]); its findings are kept and the run goes on;
@@ -159,18 +159,15 @@ impl Linted {
 /// **The FIT pass**: every finding of the package in `text` but the cost verdict, linted in each of `langs`
 /// with the live text measure `measure`, sorted (see the module doc). `langs` may be empty: then only the
 /// language-free stages run.
-pub fn lint_fit(text: &str, measure: &dyn Measure, langs: &[LintLang], opts: &LintOptions) -> Vec<Finding> {
-    let parse::Parsed { package, mut findings } = parse::parse(text.as_bytes());
-    let Some(package) = package else {
-        return sorted_owned(&findings);
-    };
+pub(super) fn fit_hud(package: &parse::Package, measure: &dyn Measure, langs: &[LintLang], opts: &LintOptions) -> Vec<Finding> {
+    let mut findings = Vec::new();
     // No `has_error` stop here: the package parsed, so it compiles, and the geometric findings of this
     // round are reported with the reach and validate ones (see the module doc).
-    findings.extend(check(&package).findings);
+    findings.extend(check(package).findings);
     let mut per_lang = Vec::with_capacity(langs.len());
     for lang in langs {
-        let compiled = compile(&package, measure, CompileCtx { labels: lang.labels.clone() });
-        let cx = LangCtx { package: &package, compiled: &compiled, measure, lang, opts };
+        let compiled = compile(package, measure, CompileCtx { labels: lang.labels.clone() });
+        let cx = LangCtx { package, compiled: &compiled, measure, lang, opts };
         let mut out = Vec::new();
         lint_zorder::check(&cx, &mut out);
         lint_safe::check(&cx, &mut out);
@@ -194,16 +191,13 @@ pub fn lint_fit(text: &str, measure: &dyn Measure, langs: &[LintLang], opts: &Li
 /// differently (another firmware's) would price the same bytes a few pixels away and could refuse a package
 /// that another set accepts. Nothing here reads `price` for a fit question.
 ///
-/// The package is parsed again and an unparseable one gives an empty [`Priced`]: its parse findings are the
+/// A HUD without a typed result gives an empty [`Priced`]: its parse findings are the
 /// fit pass's.
-pub fn lint_price(text: &str, price: &dyn Measure, langs: &[LintLang]) -> Priced {
-    let Some(package) = parse::parse(text.as_bytes()).package else {
-        return Priced::default();
-    };
+fn price_hud(package: &parse::Package, price: &dyn Measure, langs: &[LintLang]) -> Priced {
     let mut per_lang = Vec::with_capacity(langs.len());
     let mut per_lang_costs = Vec::with_capacity(langs.len());
     for lang in langs {
-        let compiled = compile(&package, price, CompileCtx { labels: lang.labels.clone() });
+        let compiled = compile(package, price, CompileCtx { labels: lang.labels.clone() });
         let mut out = Vec::new();
         lint_cost::check(lang, &compiled, &mut out);
         tag_language(&mut out, lang.tag);
@@ -215,6 +209,64 @@ pub fn lint_price(text: &str, price: &dyn Measure, langs: &[LintLang]) -> Priced
 
 /// **Both passes**: [`lint_fit`] with `measure` and [`lint_price`] with `price`, joined ([`Linted::join`]).
 /// What `--hud-lint` prints.
+/// Run both layout passes over one verified, resolved artifact.
+pub fn lint_decoded(
+    decoded: &super::bundle::Decoded,
+    measure: &dyn Measure,
+    price: &dyn Measure,
+    langs: &[LintLang],
+    opts: &LintOptions,
+) -> Linted {
+    if let Some(package) = &decoded.package {
+        return lint_package(package, measure, price, langs, opts);
+    }
+    let Some(hud) = &decoded.diagnostic else {
+        return Linted { findings: sorted_owned(&decoded.findings), costs: Vec::new() };
+    };
+    let mut linted = Linted::join(fit_hud(hud, measure, langs, opts), price_hud(hud, price, langs));
+    for finding in &mut linted.findings {
+        finding.file = decoded.manifest.as_ref().map(|manifest| manifest.entry.clone());
+    }
+    linted
+}
+
+pub fn lint_package(
+    package: &super::bundle::VerifiedPackage,
+    measure: &dyn Measure,
+    price: &dyn Measure,
+    langs: &[LintLang],
+    opts: &LintOptions,
+) -> Linted {
+    Linted::join(fit_package(package, measure, langs, opts), price_package(package, price, langs))
+}
+
+pub fn fit_package(package: &super::bundle::VerifiedPackage, measure: &dyn Measure, langs: &[LintLang], opts: &LintOptions) -> Vec<Finding> {
+    let mut findings = fit_hud(package.hud(), measure, langs, opts);
+    for finding in &mut findings { finding.file = Some(package.manifest().entry.clone()); }
+    findings
+}
+
+pub fn price_package(package: &super::bundle::VerifiedPackage, price: &dyn Measure, langs: &[LintLang]) -> Priced {
+    let mut priced = price_hud(package.hud(), price, langs);
+    for finding in &mut priced.findings { finding.file = Some(package.manifest().entry.clone()); }
+    priced
+}
+
+#[cfg(test)]
+pub fn lint_fit(text: &str, measure: &dyn Measure, langs: &[LintLang], opts: &LintOptions) -> Vec<Finding> {
+    let parsed = super::fixtures::parse(text.as_bytes());
+    match parsed.package {
+        Some(package) => fit_hud(&package, measure, langs, opts),
+        None => sorted_owned(&parsed.findings),
+    }
+}
+
+#[cfg(test)]
+pub fn lint_price(text: &str, price: &dyn Measure, langs: &[LintLang]) -> Priced {
+    super::fixtures::parse(text.as_bytes()).package.map(|package| price_hud(&package, price, langs)).unwrap_or_default()
+}
+
+#[cfg(test)]
 pub fn lint_report_priced(
     text: &str,
     measure: &dyn Measure,
@@ -249,7 +301,7 @@ pub fn lint(text: &str, measure: &dyn Measure, langs: &[LintLang]) -> Vec<Findin
 /// [`lint_report`] against, so that splitting the lint changed no byte of what it says.
 #[cfg(test)]
 pub(super) fn single_pipeline(text: &str, measure: &dyn Measure, langs: &[LintLang], opts: &LintOptions) -> Linted {
-    let parse::Parsed { package, mut findings } = parse::parse(text.as_bytes());
+    let parse::Parsed { package, mut findings } = super::fixtures::parse(text.as_bytes());
     let Some(package) = package else {
         return Linted { findings: sorted_owned(&findings), costs: Vec::new() };
     };
@@ -295,7 +347,7 @@ pub struct StateCtx<'a> {
 
 impl<'a> LangCtx<'a> {
     /// Every compiled state, in `Compiled::states()` order (state x slot, valuation by valuation). A Skip
-    /// state's credits layout is `state.skip_variant(SkipKind::Credits)`.
+    /// state's other marker faces come from `state.skip_variants()`.
     pub fn states(&self) -> impl Iterator<Item = StateCtx<'a>> {
         states_of(self.compiled)
     }
@@ -422,29 +474,29 @@ pub(super) mod testing {
     use plx_base::fontcov::advances::ShippedMeasure;
 
     use super::{lint_with, LintLang, LintOptions};
-    use crate::hud_format::{codes, Finding, BUILTIN_CLASSIC};
+    use crate::hud_format::{codes, Finding, CLASSIC_HUD};
 
     /// The package an edit starts from.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum Base {
-        /// the embedded `builtin:classic` ([`BUILTIN_CLASSIC`])
+        /// the embedded `builtin:classic` ([`CLASSIC_HUD`])
         Classic,
-        /// `fixtures/reference.plxhud.json`, the design's reference package
+        /// `fixtures/reference.plxhud`, the design's reference package
         Reference,
-        /// `fixtures/minimal.plxhud.json`: it places only `open_more`, so it folds the most rows of any fixture
+        /// `fixtures/minimal.plxhud`: it places only `open_more`, so it folds the most rows of any fixture
         /// that lays out no section
         Minimal,
-        /// `fixtures/rising-tabs.plxhud.json`: a modal package whose tabs are compiled above its page
+        /// `fixtures/rising-tabs.plxhud`: a modal package whose tabs are compiled above its page
         RisingTabs,
     }
 
     impl Base {
         pub fn text(self) -> &'static str {
             match self {
-                Base::Classic => BUILTIN_CLASSIC,
-                Base::Reference => include_str!("fixtures/reference.plxhud.json"),
-                Base::Minimal => include_str!("fixtures/minimal.plxhud.json"),
-                Base::RisingTabs => include_str!("fixtures/rising-tabs.plxhud.json"),
+                Base::Classic => CLASSIC_HUD,
+                Base::Reference => include_str!("fixtures/reference/hud.json"),
+                Base::Minimal => include_str!("fixtures/minimal/hud.json"),
+                Base::RisingTabs => include_str!("fixtures/rising-tabs/hud.json"),
             }
         }
     }

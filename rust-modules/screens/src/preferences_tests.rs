@@ -8,7 +8,7 @@ use plx_ui::fixture::FixtureMeasure;
 
 pub fn context(focus: u32) -> Cx<'static, InnerHost> {
     static MEASURE: FixtureMeasure = FixtureMeasure;
-    Cx { views: plx_data::stores::browse::DirectoryView::empty_for_test(), tick: Tick::default(),
+    Cx { views: plx_data::stores::browse::DirectoryView::empty_for_test().into(), tick: Tick::default(),
         measure: &MEASURE, press: PressRead::default(),
         focus: FocusRead { current: Some(FocusKey { entry: EntryId(0), elem: focus }), ..Default::default() },
         owner: InputOwner::Entry(EntryId(0)) }
@@ -192,13 +192,13 @@ fn every_field_reports_the_page_whose_list_shows_it() {
     let prefs = AudioPreferences::default();
     for kind in [Kind::Playback, Kind::AudioSubtitles] {
         let inputs = FieldListInputs { kind, quality: Quality::Original, direct_play: DirectPlayMode::Auto,
-            prefs: Some(&prefs), busy: false, show_retry: false, read_only: false };
-        for &field in fields_of(&inputs) {
+            prefs: Some(&prefs), busy: false, show_retry: false, marker_prefs: Default::default(), read_only: false };
+        for field in fields_of(&inputs) {
             assert_eq!(field.kind(), Some(kind), "{field:?} is listed by {kind:?}");
         }
     }
     let audio = FieldListInputs { kind: Kind::AudioSubtitles, quality: Quality::Original, direct_play: DirectPlayMode::Auto,
-        prefs: Some(&prefs), busy: false, show_retry: false, read_only: false };
+        prefs: Some(&prefs), busy: false, show_retry: false, marker_prefs: Default::default(), read_only: false };
     assert_eq!(fields_of(&audio), &[PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles]);
 }
 
@@ -328,4 +328,23 @@ fn the_playback_page_names_the_seated_profile_and_follows_the_seat() {
     drive(&mut page, tick(), 0);
     assert_eq!(page.copy, plx_platform::i18n::msg::settings_playback_unseated(), "unseated again: read-only again");
     assert!(pushed(&drive(&mut page, ScreenEvent::Activate(key), key)).is_empty());
+}
+
+#[test]
+fn automatic_marker_settings_use_separate_grants_and_captured_scope() {
+    let _guard = plx_base::testlock::serial();
+    let mut inputs = FieldListInputs { kind: Kind::Playback, quality: Quality::Original,
+        direct_play: DirectPlayMode::Auto, prefs: None, busy: false, show_retry: false,
+        read_only: false, marker_prefs: Default::default() };
+    assert!(!fields_of(&inputs).contains(&PickerKind::IntroSkip));
+    assert!(!fields_of(&inputs).contains(&PickerKind::CreditsSkip));
+    inputs.marker_prefs = MarkerPrefsView { scope: 9, intro_granted: true, ..Default::default() };
+    assert!(fields_of(&inputs).contains(&PickerKind::IntroSkip));
+    assert!(!fields_of(&inputs).contains(&PickerKind::CreditsSkip));
+    assert_eq!(options_with_marker(PickerKind::IntroSkip, inputs.quality, inputs.direct_play, None, inputs.marker_prefs),
+        MarkerSkipMode::LADDER.into_iter().map(|m| (marker_label(m).into(), Value::IntroSkip(m, 9))).collect::<Vec<_>>());
+    inputs.marker_prefs.credits_granted = true;
+    assert!(fields_of(&inputs).contains(&PickerKind::CreditsSkip));
+    inputs.marker_prefs = Default::default();
+    assert!(options_with_marker(PickerKind::IntroSkip, inputs.quality, inputs.direct_play, None, inputs.marker_prefs).is_empty());
 }

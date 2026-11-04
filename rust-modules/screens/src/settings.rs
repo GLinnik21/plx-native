@@ -463,7 +463,7 @@ fn mount_page(
     fx: &mut Effects<'_, InnerHost>,
 ) -> Box<dyn Screen<InnerHost>> {
     match arg {
-        SettingsPage::Root => Box::new(RootPage::new(entry, cx.views)),
+        SettingsPage::Root => Box::new(RootPage::new(entry, cx.views.directory)),
         SettingsPage::Language => Box::new(LanguagePage::new(entry)),
         SettingsPage::UnderPosters => Box::new(under_posters::UnderPostersPage::new(entry)),
         SettingsPage::UnderPostersDetails => Box::new(under_posters::DetailsPage::new(entry)),
@@ -478,7 +478,8 @@ fn mount_page(
         SettingsPage::ConsentStage(i) => {
             Box::new(super::consent::ConsentPage::first_run(entry, i, cx, fx))
         }
-        SettingsPage::Favourites => Box::new(super::onboard::OnboardScreen::settings(entry, cx.views)),
+        SettingsPage::Favourites => Box::new(super::onboard::OnboardScreen::settings(entry, cx.views.directory)),
+        SettingsPage::LibraryFavourites => Box::new(super::onboard::OnboardScreen::library(entry, cx.views.directory)),
         SettingsPage::Picker(kind) => Box::new(super::preferences::PickerPage::new(entry, kind)),
         SettingsPage::PlayerHud => Box::new(super::hud_settings::HudPage::new(entry)),
     }
@@ -1528,7 +1529,7 @@ impl Machine<InnerHost> for RootPage {
             AlertStep::Pass => {}
             AlertStep::Done(handled) => return handled,
             AlertStep::Answer(cmd) => {
-                self.alert_answer(cmd, cx.views, fx);
+                self.alert_answer(cmd, cx.views.directory, fx);
                 return Handled::Yes;
             }
         }
@@ -1537,13 +1538,13 @@ impl Machine<InnerHost> for RootPage {
                 // Read diagnostic status through the runner, never through a global in the screen.
                 fx.push(Fx::App(AppFx::PlaybackTrace(plx_platform::playback_trace::Command::Status)));
                 // a return from a child: the favourite count may have changed
-                self.rebuild(cx.views);
+                self.rebuild(cx.views.directory);
                 Handled::Yes
             }
             ScreenEvent::App(super::registry::AppMsg::PlaybackTrace(status)) => {
                 if self.state.trace != *status {
                     self.state.trace = *status;
-                    self.rebuild(cx.views);
+                    self.rebuild(cx.views.directory);
                     fx.invalidate(Provenance::Landing(MachineId::Session));
                 }
                 Handled::Yes
@@ -1587,7 +1588,7 @@ impl Machine<InnerHost> for RootPage {
                     self.alert.withdraw();
                 }
                 self.alert.update(t.dt());
-                if landed { self.rebuild(cx.views); fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session)); }
+                if landed { self.rebuild(cx.views.directory); fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session)); }
 
                 self.form.table
                     .update(t.dt(), RouteLayout::screen().sectioned_table().h);
@@ -1601,7 +1602,7 @@ impl Machine<InnerHost> for RootPage {
                 Handled::Yes
             }
             ScreenEvent::Activate(e) => {
-                self.activate(*e, cx.views, fx);
+                self.activate(*e, cx.views.directory, fx);
                 Handled::Yes
             }
             ScreenEvent::Input(plx_machine::machine::InputEvent {
@@ -1615,7 +1616,7 @@ impl Machine<InnerHost> for RootPage {
             }) => {
                 // rule 8: RIGHT on a row that opens nested content enters it, exactly as OK does
                 if let Some(key) = cx.focus.current.and_then(|k| form_right_target(&self.form, k.elem)) {
-                    self.activate(key, cx.views, fx);
+                    self.activate(key, cx.views.directory, fx);
                 }
                 Handled::Yes
             }

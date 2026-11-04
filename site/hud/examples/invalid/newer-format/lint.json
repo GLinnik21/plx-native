@@ -1,0 +1,18 @@
+{
+  "costs": [],
+  "file": "examples/invalid/newer-format",
+  "findings": [
+    {
+      "code": "HUD-E0402",
+      "file": "manifest.json",
+      "hint": "this app supports 1.0 for this document",
+      "message": "Made for a newer PlxNative",
+      "nearest": [],
+      "path": "/hud/format",
+      "rule": "format-newer-minor",
+      "severity": "error"
+    }
+  ],
+  "package_sha256": null,
+  "protocol": 1
+}
