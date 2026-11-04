@@ -2076,6 +2076,33 @@ mod repair_receipt_tests {
 #[cfg(all(test, feature = "play-uri"))]
 mod uri_stop_refusal_tests {
     use super::*;
+    use plx_playback_contract::{BackendEvent, DriverEvent, DriverSet, EvidenceSource,
+        ExitDisposition, Fidelity, InitialPlayback, Observation, Observed, Playback,
+        Requirements, SourceKey, SourceKind, TrackChoice};
+
+    // Only establishes the common active owner. The Stop under test still goes through the
+    // adapter's actual PhysicalDrivers set, where the URI port is unavailable.
+    struct StartedOnce(Option<BackendEvent>);
+    impl DriverSet for StartedOnce {
+        type Context = MainThread;
+        fn capabilities(&self, backend: BackendKind) -> Option<plx_playback_contract::Capabilities> {
+            (backend == BackendKind::Uri).then_some(plx_playback_contract::Capabilities {
+                progressive_uri: true, hls_uri: false, packet_feed: false,
+                pause: true, seek: false, audio_track: false, subtitle_track: false,
+                audio_off: false, subtitle_off: false,
+            })
+        }
+        fn dispatch(&mut self, _: BackendKind, _: &MainThread, _: plx_playback_contract::AttemptId,
+            _: plx_playback_contract::CommandId, _: Operation) -> plx_playback_contract::DispatchResult {
+            plx_playback_contract::DispatchResult::Queued
+        }
+        fn poll(&mut self, _: &MainThread) -> Vec<BackendEvent> {
+            self.0.take().into_iter().collect()
+        }
+        fn discard_staged(&mut self, _: BackendKind, _: plx_playback_contract::AttemptId,
+            _: SourceKey) {}
+        fn exit_disposition(&self) -> ExitDisposition { ExitDisposition::Clean }
+    }
 
     #[test]
     fn unavailable_uri_driver_cannot_begin_release_or_queue_a_successor() {
@@ -2085,6 +2112,23 @@ mod uri_stop_refusal_tests {
         // This is the same unavailable-driver result the normal PhysicalDrivers set returns.
         let route = crate::route::RouteStartAttempt::fixture();
         adapter.uri_route_attempt = Some(route);
+        let attempt = route.contract_id();
+        let mut initial = StartedOnce(Some(BackendEvent { backend: BackendKind::Uri,
+            event: DriverEvent::Observation { attempt, observation: Observation::Playback(
+                Observed { value: Playback::ReadyAwaitPlay,
+                    from: EvidenceSource::BackendReport }) } }));
+        let _ = adapter.backend.send_at(&mut initial, &adapter.mt, Intent::Start {
+            backend: BackendKind::Uri, attempt, source: SourceKey::new(1),
+            requirements: Requirements { source: SourceKind::ProgressiveUri,
+                video: Fidelity::Exact, audio: Fidelity::Exact,
+                audio_track: TrackChoice::Unspecified,
+                subtitle_track: TrackChoice::Unspecified },
+            initial: InitialPlayback { position: None, paused: true },
+        }, crate::player::attempt_metrics::Origin::Fresh,
+            crate::player::attempt_metrics::Tick::Unknown);
+        let _ = adapter.backend.poll_at(&mut initial, &adapter.mt,
+            crate::player::attempt_metrics::Tick::Unknown);
+        assert_eq!(adapter.backend.snapshot().phase, plx_playback_contract::Phase::Active);
         let at = adapter.backend_tick();
         let result = adapter.backend_send_at(Intent::Stop {
             backend: BackendKind::Uri,
