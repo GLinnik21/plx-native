@@ -120,7 +120,7 @@ pub struct PrepareHooks {
 /// keeps the lifetime and ordering of its Engine, workers, sockets, queues and payload.
 pub struct StopHooks {
     pub release_off_frame: fn(
-        &MainThread, u32, &mut TeardownSpans,
+        &MainThread, &crate::feed_resources::FeedResources, u32, &mut TeardownSpans,
         &mut plx_playback_contract::ReleaseStatus,
     ) -> Option<std::thread::JoinHandle<()>>,
     pub release_native_object_timed: fn(
@@ -776,7 +776,7 @@ impl NativeStop {
                 abandoned_at: std::time::Instant::now(),
             });
         } else if !for_reload {
-            self.unload_th = (hooks.release_off_frame)(mt, self.eng.native_epoch, &mut self.spans,
+            self.unload_th = (hooks.release_off_frame)(mt, feed, self.eng.native_epoch, &mut self.spans,
                 &mut self.release_status);
         } else {
             self.release_status = (hooks.release_native_object_timed)(mt, self.eng.native_epoch, &mut self.spans);

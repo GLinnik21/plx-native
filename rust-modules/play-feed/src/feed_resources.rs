@@ -36,6 +36,9 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::mpsc;
 
+pub type UnloadSpawner = fn(plx_platform::tv::sink::UnloadTicket)
+    -> Option<std::thread::JoinHandle<()>>;
+
 pub struct FeedResources {
     shared: &'static crate::shared::PhysicalShared,
     engine: Option<feed_state::Engine>,
@@ -47,6 +50,7 @@ pub struct FeedResources {
     reaped_release: Option<(AttemptId, plx_playback_contract::ReleaseStatus)>,
     // The main-thread release tail may inspect/take this through `&self`; the adapter is !Send.
     pending_release: RefCell<Option<feed_state::PendingRelease>>,
+    unload_spawner: Option<UnloadSpawner>,
 }
 
 struct LoadTicket {
@@ -73,10 +77,18 @@ impl FeedResources {
             abandoned_load: None,
             reaped_release: None,
             pending_release: RefCell::new(None),
+            unload_spawner: None,
         }
     }
 
     pub fn shared(&self) -> &'static crate::shared::PhysicalShared { self.shared }
+
+    /// Override the task-start port for this owner; None uses the composition's default.
+    pub fn set_unload_spawner(&mut self, spawner: Option<UnloadSpawner>) {
+        self.unload_spawner = spawner;
+    }
+
+    pub fn unload_spawner(&self) -> Option<UnloadSpawner> { self.unload_spawner }
 
     pub fn engine(&mut self) -> Option<&mut feed_state::Engine> { self.engine.as_mut() }
     pub fn uses_stream_queues(&self) -> bool {

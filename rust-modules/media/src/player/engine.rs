@@ -154,15 +154,7 @@ pub(super) fn reap_abandoned_load_resource(feed: &mut super::feed_resources::Fee
 /// A real stop hands its native object to off-frame Unload and retains its Engine until the tail.
 pub use plx_play_feed::feed_state::PendingRelease;
 
-#[cfg(test)]
-static FAIL_UNLOAD_SPAWN_FOR_TEST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
 fn spawn_unload(ticket: UnloadTicket) -> Option<std::thread::JoinHandle<()>> {
-    #[cfg(test)]
-    let refused = FAIL_UNLOAD_SPAWN_FOR_TEST.load(Ordering::Relaxed);
-    #[cfg(not(test))]
-    let refused = false;
-    if refused { return None; }
     #[cfg(all(test, feature = "hostsim"))]
     let worker = super::ffi_host::UnloadWorker::enter();
     plx_base::task::spawn("sf-unload", move || {
@@ -195,10 +187,15 @@ const RELEASE_HOOKS: plx_play_feed::native_executor::ReleaseHooks =
         spawn_unload,
     };
 
-fn release_off_frame(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans,
+fn release_off_frame(mt: &MainThread, feed: &super::feed_resources::FeedResources,
+    epoch: u32, sp: &mut TeardownSpans,
     status: &mut plx_playback_contract::ReleaseStatus) -> Option<std::thread::JoinHandle<()>> {
+    let hooks = plx_play_feed::native_executor::ReleaseHooks {
+        spawn_unload: feed.unload_spawner().unwrap_or(spawn_unload),
+        ..RELEASE_HOOKS
+    };
     plx_play_feed::native_executor::release_off_frame(
-        mt, epoch, sp, status, &SHARED.feed, &RELEASE_HOOKS)
+        mt, epoch, sp, status, feed.shared(), &hooks)
 }
 
 pub(super) fn run_release_tail(mt: &MainThread, p: PendingRelease)
@@ -2945,20 +2942,13 @@ mod off_frame_release_tests {
 
     #[test]
     fn a_refused_unload_thread_unloads_on_the_main_thread_and_still_d1s() {
-        struct Reset;
-        impl Drop for Reset {
-            fn drop(&mut self) {
-                FAIL_UNLOAD_SPAWN_FOR_TEST.store(false, Ordering::Relaxed);
-            }
-        }
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
         let mut pa = arm(&ps);
         let _cleanup = Cleanup;
-        let _reset = Reset;
         playing_engine(&mut pa);
         crate::player::ffi_host::delay_unload_for_test(150);
-        FAIL_UNLOAD_SPAWN_FOR_TEST.store(true, Ordering::Relaxed);
+        pa.feed.set_unload_spawner(Some(|_| None));
         let started = std::time::Instant::now();
         stop_bufferfeed(&mut ps, &mut pa);
         assert!(
