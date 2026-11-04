@@ -27,6 +27,21 @@ and source qualification port. Its production qualifier returns Unknown and its 
 capabilities are empty, so ordinary routes still choose Feed. Host fixtures inject qualified source
 and firmware evidence to exercise source, control and release logic.
 
+The product driver also carries the ACB plane binding the probe proved (`Binding::Acb` in
+`play-uri/src/backend.rs`): present and not routed. The paced sequence (gate, `setMediaId`, LOADED,
+the `connectDass` slot left empty, video data, full-screen display and PLAYING) is ONE pure machine,
+`play-uri/src/acb_bind.rs`, stepped by both the probe and the backend and performed through the sink by
+`play-uri/src/acb_drive.rs`; neither keeps a private copy. The backend starts it at `loadCompleted`
+from the service's own source envelope (it never builds a descriptor from bare `videoInfo`),
+grants the bind through `PlaneOwner::bind(.., BindPolicy::Strict, ..)` (deferred: retried on a later
+poll; refused: a typed failure and a close that does not unload someone else's binding), and mirrors
+accepted pause/resume to the plane once the bind has completed. Release is `UNLOADED` and then the
+plane owner's fence on that call's completion callback, pumped from the backend's `poll`
+(`docs/measurements/acb-release-fence-2026-11-04.md`); a quarantine until process exit is only the
+outcome of a failed fence, not the normal one. `uri_preflight::product_binding` selects it at
+composition (ACB display mode, an initialized handle, player type 0); `ProductEvidence::permits`
+still requires `Binding::Exported`, which is what keeps it from being offered a source.
+
 The separate `player/uriprobe_drive.rs` developer probe is invoked by the
 `plxnative-uriprobe` trigger. It plays one stream through `com.webos.media` with no Engine and
 can log pause, resume, seek, track selection and `setSubtitleEnable` behavior (issue #1064).
@@ -354,7 +369,8 @@ something.
   `setDisplayWindow` take a `long *taskId` out-param as their last arg — the 3-arg ABI is required
   (2-arg calls corrupt memory / segfault). The developer-only `acb-control`/`acb-dass` URI
   experiment separately permits a reconstructed descriptor for its known SDR720p24 fixture;
-  that exception does not apply to normal buffer-feed playback.
+  that exception applies neither to normal buffer-feed playback nor to the production URI backend,
+  which forwards only an envelope the service reported.
 - **Opus goes to LG's own decoder only as far as the set is known to take it** (`ff_native_audio.rs`,
   `devcaps.rs`). What a set announces is layered, in this order and logged at boot as `devcaps: ...
   audio layers:`: the codec table, minus the codecs `/etc/gst/gstcool.conf` shows nothing can decode

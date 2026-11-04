@@ -10,8 +10,9 @@
 //! `route`) and the `ff` facade share a crate. The bundled FFmpeg binding, encoder and pure
 //! audio DSP live in `plx_media_codecs` below this layer.
 //!
-//! Starfish/ACB calls back into `player` through `sf_on_event` and `acb_on_event`. The native
-//! extern declarations live in the platform port; the Makefile's final link resolves them.
+//! Starfish calls back into `player` through `sf_on_event`; the ACB completion callback,
+//! `acb_on_event`, is the platform port's (`webos::video_sink`) and feeds the plane owner's mailbox.
+//! The native extern declarations live in the platform port; the Makefile's final link resolves them.
 //!
 //! `test-support` exposes the `cfg(test)` seams the layers above test through (`player::preview`,
 //! `player::restore_state_for_test`, ...). The application crate enables it in `[dev-dependencies]`

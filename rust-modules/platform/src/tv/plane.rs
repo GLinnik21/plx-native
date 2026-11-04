@@ -9,7 +9,9 @@
 //! `0` cancel, `1` complete). LOADED, PLAYING, window and video-data tasks also complete with
 //! event 1, so the fence is matched on the TASK ID, never on the event alone, and the callback's
 //! playState argument (a cached value) is never read. If `setState` answers `-2` (not registered)
-//! nothing was sent and no callback will come.
+//! nothing was sent and no callback will come. The evidence for both rules (client and service
+//! addresses, the device log, and what is not determined) is
+//! `docs/measurements/acb-release-fence-2026-11-04.md`.
 //!
 //! **Shape.** [`Plane`] is the pure machine (no clock, no global, no IO: time arrives as `now_ms`
 //! in events, work leaves as [`Fx`]). [`PlaneOwner`] is its runner: the single holder of the

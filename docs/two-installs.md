@@ -145,7 +145,7 @@ is only safe while something checks.
 fallback: Rust read `getenv("APPID")` and passed NULL when SAM had not exported it, and C then
 quietly claimed to be the app users install. With two installs on one set that binds the video
 plane for the wrong application, which is a black plane with working audio and no error line.
-The near half is gone (`engine::acb_init_acb` passes `paths::app_id()`, which cannot be absent) and
+The near half is gone (`plane_boot::acb_init_acb` passes `paths::app_id()`, which cannot be absent) and
 the far half now refuses and logs instead of guessing. Worth recording rather than just fixing: it
 was a bare literal in C, so no selftest could have seen it — the guarantee above is only as wide as
 the languages it names.
@@ -454,7 +454,7 @@ session with the set; several are answerable from one run's event log.
 2. **Does SAM export `APPID` to a native app on this firmware, and to what?** Nothing readable off
    a desk answers this. Kodi's webOS backend passes `getenv("APPID")` straight into
    `AcbAPI_initialize`, which is evidence that *some* webOS sets it, not that ours does.
-   `engine::acb_init_acb` no longer depends on it — the install directory is the authority — so this
+   `plane_boot::acb_init_acb` no longer depends on it — the install directory is the authority — so this
    is now free information rather than a dependency.
    *Settled by:* the `APPID_env=` field of the boot `install:` line, in any run's log, on either
    install. `unset` is as interesting an answer as a value, and a value that is *not* the id we
@@ -523,7 +523,7 @@ What is already known, and its provenance:
   §3.5), and `mariotaku/ss4s` binds the same symbols in the same sequence — though only Kodi's
   argument list is quoted anywhere in this repo. What the argument is *for* — whether ACB resolves
   a window with it, forwards it, or merely stores it — does not follow from that and is not
-  established anywhere in this tree. `engine::acb_init_acb`'s comment says the same in the same
+  established anywhere in this tree. `plane_boot::acb_init_acb`'s comment says the same in the same
   words, deliberately: two places stating one honest limit is safer than one stating it and
   another inventing a mechanism.
 - **ACB posts the app id onward.** `docs/dolby-vision.md` §3 records

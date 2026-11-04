@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Own Rust mirror of src/starfish.h, written from the public ABI contract.
 //! webos::video_sink — the starfish.c seam (sf_* / acb_* verbs). These stay C (the mangled-C++ + ACB
-//! ABI). The library thread calls back into the media player's sf_on_event / acb_on_event.
+//! ABI). The library thread calls back into the media player's `sf_on_event` (`plx_media`'s
+//! `player/mod.rs`) and into this module's own `acb_on_event`, which only records the completion in
+//! the plane mailbox that `tv::plane::PlaneOwner` drains.
 //! Signatures mirror `src/starfish.h` exactly; `long` is 32-bit on the arm target -> c_long.
 //!
 //! **Everything here but `load` and `unload` takes a [`MainThread`]** (`unload` takes an

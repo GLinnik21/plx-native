@@ -1,9 +1,10 @@
 //! player — the buffer-feed video engine (was src/playback.c). THREADING: everything
-//! here except sf_on_event/acb_on_event runs on the SDL main thread. Those two are
-//! #[no_mangle] and run on the StarfishMediaAPIs library thread; they touch ONLY
-//! `SHARED`. Player-engine callback/transport state is synchronized in `shared.rs`; route
-//! ownership and route-changing intents have their separate synchronized authority in
-//! `route::PLAYER_CONTROL`. The Engine (engine.rs) is main-thread-confined. Design:
+//! here except sf_on_event runs on the SDL main thread. It is #[no_mangle] and runs on the
+//! StarfishMediaAPIs library thread; it touches ONLY `SHARED`. (`acb_on_event`, the other
+//! library-thread callback, lives in the platform port, `webos::video_sink`, and touches only the
+//! plane owner's completion mailbox.) Player-engine callback/transport state is synchronized in
+//! `shared.rs`; route ownership and route-changing intents have their separate synchronized
+//! authority in `route::PLAYER_CONTROL`. The Engine (engine.rs) is main-thread-confined. Design:
 //! docs/engine-port-design.md.
 //!
 //! "Runs on the SDL main thread" is a **compile error to violate** for the two things where it
