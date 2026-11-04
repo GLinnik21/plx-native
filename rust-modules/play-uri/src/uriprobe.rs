@@ -2296,6 +2296,68 @@ mod tests {
         }
     }
 
+    /// The whole observable effect stream of the ACB arms, every log line and request number
+    /// included: the contract the shared ACB bind sequence (`acb_bind`) was lifted out of this
+    /// machine under. A change that moves a line, a number or a delay fails here.
+    fn acb_transcript() -> String {
+        let mut out = String::new();
+        let mut note = |rig: &Rig, what: &str, fx: &[UriEffect]| {
+            for effect in fx { out.push_str(&format!("{:>6} {what}: {effect:?}\n", rig.now)); }
+        };
+        let answer = |rig: &mut Rig, fx: &[UriEffect], invoked: bool| {
+            rig.feed(UriEvent::AcbAnswered {request: acb_request(fx), invoked, completed_ms: rig.now})
+        };
+        for (variant, early_video) in [(Variant::AcbControl, true), (Variant::AcbDass, false)] {
+            let mut rig = Rig::new(variant, None);
+            let fx = rig.start(); note(&rig, "start", &fx);
+            let fx2 = answer(&mut rig, &fx, true); note(&rig, "check", &fx2);
+            let fx = rig.msg("register", ""); note(&rig, "register", &fx);
+            let fx = rig.msg("load", r#"{"returnValue":true,"mediaId":"_m1"}"#); note(&rig, "load", &fx);
+            if early_video {
+                let fx = rig.msg("subscribe", r#"{"mediaId":"_m1","videoInfo":{"width":1280,"height":720,"frameRate":24,"bitRate":4139352}}"#);
+                note(&rig, "video", &fx);
+            }
+            let mut fx = rig.msg("subscribe", r#"{"mediaId":"_m1","loadCompleted":true}"#); note(&rig, "loaded", &fx);
+            if !early_video {
+                let waiting = rig.tick(500); note(&rig, "waiting", &waiting);
+                let playing = rig.msg("subscribe", r#"{"mediaId":"_m1","playing":true}"#); note(&rig, "playing", &playing);
+                fx = rig.msg("subscribe", r#"{"mediaId":"_m1","videoInfo":{"width":1280,"height":720,"frameRate":24}}"#); note(&rig, "video", &fx);
+            }
+            for step in 0..5 {
+                let fx2 = answer(&mut rig, &fx, true); note(&rig, "answer", &fx2);
+                if step < 4 {
+                    let wait = if step == 3 { 300 } else { 200 };
+                    let early = rig.tick(wait - 1); note(&rig, "early", &early);
+                    fx = rig.tick(1); note(&rig, "tick", &fx);
+                }
+            }
+            let fx = rig.msg("subscribe", r#"{"mediaId":"_m1","currentTime":100}"#); note(&rig, "time", &fx);
+            let fx = rig.feed(UriEvent::Back); note(&rig, "back", &fx);
+        }
+        // Refused, late and timed-out steps, the video wait, and the stops that cancel it.
+        for ending in ["refused", "late", "step-timeout", "video-timeout", "eos"] {
+            let mut rig = Rig::new(Variant::AcbDass, None);
+            let fx = rig.start(); answer(&mut rig, &fx, true);
+            rig.msg("register", ""); rig.msg("load", r#"{"returnValue":true,"mediaId":"_m1"}"#);
+            let has_video = matches!(ending, "refused" | "late" | "step-timeout");
+            if has_video { rig.msg("subscribe", r#"{"mediaId":"_m1","videoInfo":{"width":1280,"height":720,"frameRate":24}}"#); }
+            let fx = rig.msg("subscribe", r#"{"mediaId":"_m1","loadCompleted":true}"#);
+            let fx = match ending {
+                "refused" => answer(&mut rig, &fx, false),
+                "late" => rig.feed(UriEvent::AcbAnswered {request: acb_request(&fx), invoked: true, completed_ms: rig.now + LATE_ID_TIMEOUT_MS}),
+                "step-timeout" => rig.tick(LATE_ID_TIMEOUT_MS),
+                "video-timeout" => rig.tick(LOAD_TIMEOUT_MS),
+                _ => rig.msg("subscribe", r#"{"mediaId":"_m1","endOfStream":true}"#),
+            };
+            note(&rig, ending, &fx);
+        }
+        out
+    }
+    #[test]
+    fn uri_acb_effect_stream_is_the_recorded_contract() {
+        assert_eq!(acb_transcript(), include_str!("uriprobe_acb_transcript.txt"));
+    }
+
     fn drive_pause_rig() -> Rig {
         let mut rig=Rig::new(Variant::Drive,Some(WINDOW));
         rig.playing();
