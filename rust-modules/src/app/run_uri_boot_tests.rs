@@ -706,5 +706,70 @@ mod uri_boot_tests {
         assert_eq!(rig.app.player.session.source_selection().expect("source intent").subtitle_sid, 3,
             "the Feed successor must keep the sidecar SID, not treat it as subtitle Off");
     }
+
+    #[cfg(feature = "play-feed")]
+    #[test]
+    fn force_audio_pick_missing_from_uri_map_qualifies_only_the_exact_original_source() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving_with(|request| {
+            queue_body(request, false).replace(
+                r#"{"id":2,"streamType":2,"codec":"aac","selected":true}"#,
+                r#"{"id":2,"streamType":2,"codec":"aac","selected":true},{"id":3,"streamType":2,"codec":"ac3","channels":6}"#)
+        }) else { return };
+        plx_plex::plex::client_for(rig.sid).unwrap()
+            .set_link(plx_plex::plex::probe::Location::Local);
+        let bus: &'static Bus = Box::leak(Box::new(Bus::new()));
+        let display: &'static Display = Box::leak(Box::new(Display));
+        let caps = Capabilities { progressive_uri: true, hls_uri: false,
+            packet_feed: false, pause: true, seek: true, audio_track: true,
+            subtitle_track: true, audio_off: false, subtitle_off: false };
+        let port = ResolvePort::new(ProductEvidence { display_exported: true,
+            binding: Binding::Exported { canvas: (1920, 1080) },
+            callable: caps, certified: caps, preview_rectangle: false },
+            Arc::new(QualifiedOriginal));
+        assert!(rig.app.adapters.player.install_uri_product_with_ports(
+            &mut rig.app.player.session, port, bus, display));
+        rig.request();
+        rig.release.send(()).unwrap();
+        let mut resolved = None;
+        poll_until("qualified URI source did not resolve", || {
+            resolved = plx_media::route::pump_play(&mut rig.app.player.session,
+                rig.app.bridge.metadata_mut());
+            resolved.is_some()
+        });
+        assert!(rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session,
+            resolved.unwrap().uri_offer.expect("qualified original source")).is_ok());
+        assert!(matches!(plx_media::player::start_playback_tracked(
+            &mut rig.app.player.session, &mut rig.app.adapters.player),
+            plx_media::player::BufferfeedStartOutcome::Launched(_)));
+        let poll = |rig: &mut Rig| {
+            let at = rig.app.adapters.player.backend_tick();
+            let _ = rig.app.adapters.player.backend_poll_session_at(&mut rig.app.player.session, at);
+        };
+        poll(&mut rig);
+        bus.say("load", r#"{"returnValue":true,"mediaId":"m1","loadCompleted":true}"#);
+        poll(&mut rig);
+        bus.say("selectTrack", r#"{"returnValue":true,"mediaId":"m1"}"#);
+        bus.say("subscribe", r#"{"mediaId":"m1","trackSelected":{"type":"audio","index":0}}"#);
+        poll(&mut rig);
+        bus.say("play", r#"{"returnValue":true,"mediaId":"m1","playing":true,"currentTime":12000}"#);
+        poll(&mut rig);
+        plx_media::route::set_direct_play_mode_for_test(&mut rig.app.player.session,
+            plx_media::route::DirectPlayMode::Forced);
+        rig.pick_audio(3);
+        assert!(plx_media::route::play_pending());
+        let mut replacement = None;
+        poll_until("Force selected source did not resolve", || {
+            replacement = plx_media::route::pump_play(&mut rig.app.player.session,
+                rig.app.bridge.metadata_mut());
+            replacement.is_some()
+        });
+        let replacement = replacement.unwrap();
+        assert_eq!(replacement.resume_ns, 12_000_000_000);
+        assert_eq!(rig.app.player.session.source_selection().expect("source intent").audio_sid, 3);
+        assert_eq!(replacement.uri_offer.expect("exact original source remains qualified").offer_id(),
+            plx_media::route::backend_policy::OfferId::URI_ORIGINAL,
+            "Force may choose the selected original URI; it cannot convert or pick sibling audio");
+    }
 }
 
