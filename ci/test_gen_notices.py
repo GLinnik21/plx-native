@@ -5,9 +5,12 @@ merged in), a lock package that is neither a row nor `not_shipped` is refused, s
 `not_shipped` entry or a row in no lock, a moved toolchain pin is refused, the `compiler_builtins` version in
 the prose follows the std snapshot, rendering is idempotent, and the REAL repository's data file and
 notices pass the gate (so a hand edit of a generated table, or a bump without `make notices`, fails here
-as well as in the gate). Nothing here runs cargo or touches the network."""
+as well as in the gate), and `--verify-graph` resolves the ARM graph with the Makefile's shipping feature set
+(`make RELEASE=1`: the playback backends included) rather than a bare `--no-default-features`. Nothing here
+runs cargo or touches the network (the Makefile query `print-playback-config` is the one process it starts)."""
 import importlib.util
 import json
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -166,6 +169,43 @@ class Graph(unittest.TestCase):
         self.assertEqual(self.check(self.TREE, *self.BASE), [])
 
 
+class GraphCommand(unittest.TestCase):
+    """The `cargo tree` that --verify-graph runs, without running it."""
+
+    def run_verify(self, featflags):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout='serde v1.0.0\n', stderr='')
+
+        originals = gen.shipping_featflags, gen.subprocess.run
+        gen.shipping_featflags, gen.subprocess.run = (lambda root: featflags), fake_run
+        try:
+            gen.verify_graph(data(), gen.parse_lock(lock(('serde', '1.0.0', True))))
+        finally:
+            gen.shipping_featflags, gen.subprocess.run = originals
+        self.assertEqual(len(calls), 1)
+        return calls[0]
+
+    def test_the_graph_is_resolved_with_the_makefiles_shipping_features(self):
+        cmd = self.run_verify(['--no-default-features', '--features', 'backend-a,backend-b'])
+        self.assertIn('--features', cmd)
+        self.assertEqual(cmd[cmd.index('--features') + 1], 'backend-a,backend-b')
+        self.assertEqual(cmd.count('--no-default-features'), 1)
+        self.assertIn('armv7-unknown-linux-gnueabi', cmd)
+
+    def test_a_makefile_that_cannot_answer_is_a_problem_not_a_guess(self):
+        def refuse(root):
+            raise ValueError('make failed')
+        original = gen.shipping_featflags
+        gen.shipping_featflags = refuse
+        try:
+            self.assertEqual(gen.verify_graph(data(), {}), ['make failed'])
+        finally:
+            gen.shipping_featflags = original
+
+
 class Modes(unittest.TestCase):
     """The exit codes `.github/workflows/dependabot-notices.yml` branches on, on a throwaway checkout."""
 
@@ -288,6 +328,14 @@ class Toolchain(unittest.TestCase):
 
 
 class Repository(unittest.TestCase):
+    def test_the_shipping_features_name_the_playback_backends(self):
+        # A bare `--no-default-features` is a build with no playback backend: no plx_play_feed, so no
+        # dolby_vision and the rest of its tree, which the release links and the notices carry rows for.
+        flags = gen.shipping_featflags(gen.ROOT)
+        self.assertIn('--no-default-features', flags)
+        named = flags[flags.index('--features') + 1].split(',') if '--features' in flags else []
+        self.assertTrue({'play-uri', 'play-feed'} & set(named), flags)
+
     def test_the_real_notices_match_the_real_lock(self):
         d, project = gen.load()
         self.assertEqual(gen.problems_in(d, project, gen.workflow_pins()), [])
