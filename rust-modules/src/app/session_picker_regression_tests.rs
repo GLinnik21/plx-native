@@ -482,3 +482,44 @@ fn a_cold_start_picker_seats_focus_on_the_first_profile() {
         );
     }
 }
+
+/// **A player pushed over the QR sign-in page lands, whatever the follower asks while it dips in.**
+///
+/// The `playurl` dev trigger starts playback from a boot with no session, so the player is pushed
+/// OVER the sign-in page. Until the dip-out commits, `top_arg()` still names Login, so the loop's
+/// per-frame `follow_auth_landing` keeps running, and its `Phase::Waiting` arm
+/// (`nav_root_if_unsettled(Login)`) read a pending push as "Login is not settled" and parked a
+/// `Root(Login)` that replaced it: the player never mounted. Same order as the loop: the
+/// dispatcher frame commits, then the follower runs while the top still reads Login.
+///
+/// Expected: the player is the top once the dip settles, and the QR page was not re-minted.
+#[test]
+fn a_player_pushed_over_the_qr_screen_is_not_re_rooted_by_the_follower() {
+    use super::test_support::tick;
+    let _g = plx_base::testlock::serial();
+
+    let mut init = SessionInit::captured(Session::default());
+    init.phase = Phase::Waiting;
+    let mut rig = Bridge::for_session_test(init);
+    let mut d = Dispatcher::<AppHost>::with_transition(Box::new(
+        plx_ui::containers::transition::PageDip::new(),
+    ));
+    super::nav_root(&mut d, AppArg::Login);
+
+    let mut login_mounts = 0usize;
+    for i in 0..140u32 {
+        if i == 30 {
+            // The sign-in page has been the settled root since the boot; this is `enter_player`.
+            assert!(top_settled_on(&d, &AppArg::Login), "Login is the settled root before the push");
+            super::nav_push(&mut d, AppArg::Player);
+        }
+        let (_, report) = super::frame(&mut d, &mut rig, tick(i), vec![]);
+        login_mounts += report.mounted.iter().filter(|(_, n)| *n == "login").count();
+        if matches!(d.top_arg(), Some(AppArg::Login | AppArg::Profiles)) {
+            super::follow_auth_landing(&mut d, &mut rig);
+        }
+    }
+
+    assert!(matches!(d.top_arg(), Some(AppArg::Player)), "the follower withdrew the player push");
+    assert_eq!(login_mounts, 1, "the QR page was re-minted over the player");
+}

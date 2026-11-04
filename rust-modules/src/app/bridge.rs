@@ -3705,6 +3705,16 @@ pub(crate) fn top_settled_on(d: &Dispatcher<AppHost>, arg: &AppArg) -> bool {
     d.nav.tabs.stack.root_settled(arg)
 }
 
+/// **Is the player the page the stack is about to land on?** A play start parks its push and the
+/// dip-out then runs for a few frames during which `top_arg()` still names the page it was pressed
+/// on. Two callers must not treat that page as unchanged: [`enter_player`](super::playback::enter_player)
+/// (a second start in the dip must not mint a second player and lose the first one's origin seed)
+/// and [`follow_auth_landing`] (a push over the sign-in or picker page is not "not settled" to
+/// undo). One answer for both, so they cannot drift apart.
+pub(crate) fn player_arriving(d: &Dispatcher<AppHost>) -> bool {
+    matches!(d.nav.tabs.stack.pending_dest(), Some(AppArg::Player))
+}
+
 /// **`nav_root`, made edge-triggered** — a no-op while `arg` is already the settled top.
 ///
 /// `NavStack::request`'s dedup already drops the redundant request before it touches `pending` or
@@ -3736,7 +3746,17 @@ pub(crate) fn nav_root_if_unsettled(d: &mut Dispatcher<AppHost>, arg: AppArg) {
 /// guard is one `matches!` either way, and keeping it at the call site is what let the two tests
 /// below read `d.top_arg()` themselves before deciding whether to call this at all — asserting
 /// "outside the phase this asks nothing" needs no help from the function it is testing.
+///
+/// **It stands aside while the player is arriving** ([`player_arriving`]). The `playurl` dev trigger
+/// starts a playback from a boot with no session, so the player is pushed over this very page, and
+/// until the dip-out commits `top_arg()` still reads Login: the per-frame follower would see a
+/// pending op, call the page "not settled" and park a `Root` that replaced the push, so the player
+/// never mounted. Standing aside withholds nothing: the handoff stays in the bridge until the
+/// follower runs again, and once the player is the top it is not asked at all.
 pub(crate) fn follow_auth_landing(pages: &mut Dispatcher<AppHost>, bridge: &mut Bridge) {
+    if player_arriving(pages) {
+        return;
+    }
     if let Some(c) = bridge.take_session_ready() {
         // A sign-out followed by a fresh sign-in can replace the session without restarting the
         // process. Re-read only at this one credentials handoff so the old account's in-memory
