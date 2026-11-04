@@ -286,7 +286,7 @@ fn acb_init_acb(mt: &MainThread) {
 
 /// **The frame rate a playback speed may feed this stream at**: [`super::SPEED_MAX_FPS`], or the
 /// measured decoder row's rate when that is lower. A speed feeds every frame `rate` times closer
-/// together and the Load declares that fed rate, which [`sink_envelope`] then clamps to the row; a
+/// together and the Load declares that fed rate, which [`plx_play_feed::sink_envelope`] then clamps to the row; a
 /// speed whose fed rate passes the row is one the Load cannot declare, so the menu does not offer
 /// it. Only a table that was actually READ bounds anything (`measured`,
 /// the same condition [`sink_envelope_now`] clamps under), a stream whose codec the Load cannot

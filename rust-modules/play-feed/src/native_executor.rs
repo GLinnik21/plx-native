@@ -1042,7 +1042,7 @@ fn pts_nudge_ns() -> i64 {
 }
 
 /// The audio lane's sink pts: content time `fp` moved onto the pipeline's timeline
-/// ([`super::to_sink_ns`]) plus the Load's `pcm_lead_ns`. The lead is real time the set takes, so it
+/// ([`to_sink_ns`]) plus the Load's `pcm_lead_ns`. The lead is real time the set takes, so it
 /// is added AFTER the speed division: at 1.5x a 400 ms lead is still 400 ms, not 267. PURE.
 pub fn audio_sink_pts(fp: i64, pcm_lead_ns: i64, rate: i32) -> i64 {
     to_sink_ns_at_rate(fp, rate).saturating_add(pcm_lead_ns).max(0)
