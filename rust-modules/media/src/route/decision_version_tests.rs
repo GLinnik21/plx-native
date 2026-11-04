@@ -713,6 +713,8 @@ fn unknown_uri_without_feed_has_a_named_refusal_before_pms_encoder_work() {
     done.send(()).unwrap();
     let requests = server.join().unwrap();
     assert_eq!(plan.verdict, Some(PlayVerdict::NoQualifiedBackend));
+    assert_eq!(plan.pms_decline,
+        Some(crate::route::uri_preflight::PmsDecline::UnavailableCapability));
     assert!(plan.url.is_empty() && plan.sess.is_empty(), "no Feed resource was acquired");
     assert!(!requests.iter().any(|line| line.contains("/decision?") || line.contains("/transcode/")
         || line.starts_with("PUT /library/parts/")), "Unknown URI must stop before Feed work: {requests:?}");
@@ -745,6 +747,8 @@ fn unknown_pms_output_in_uri_only_retires_the_accepted_encoder_once() {
     assert!(wait_resolve_workers_for_test(std::time::Duration::from_secs(15)));
     assert!(pump_play(&mut ps, &mut meta).is_none());
     assert_eq!(ps.play_verdict, Some(PlayVerdict::NoQualifiedBackend));
+    assert_eq!(ps.pms_decline(),
+        Some(crate::route::uri_preflight::PmsDecline::UnknownCertificate));
     let mut stop = None;
     for _ in 0..32 {
         let line = seen_rx.recv_timeout(std::time::Duration::from_secs(10))

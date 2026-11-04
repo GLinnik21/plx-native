@@ -203,6 +203,8 @@ pub struct PlaybackSession {
     /// [`apply_plan`] installs it and [`request_play`] retires it, so it always describes the item
     /// the player is showing.
     play_verdict: Option<PlayVerdict>,
+    #[cfg(feature = "play-uri")]
+    pms_decline: Option<super::uri_preflight::PmsDecline>,
     /// The resolve itself could not produce a plan (no client, worker panic, or worker spawn
     /// refusal).  Unlike `play_verdict`, this is OUR failure rather than a PMS sentence; it makes
     /// an empty plan terminal and retryable instead of falling back to an idle black frame.
@@ -886,6 +888,11 @@ pub(super) enum EnhancementOutcome {
 }
 
 impl PlaybackSession {
+    #[cfg(feature = "play-uri")]
+    pub fn pms_decline(&self) -> Option<super::uri_preflight::PmsDecline> {
+        self.pms_decline
+    }
+
     /// Start one physical open's readout at Unknown. URI and buffer-feed starts use the same
     /// address gate; a retry cannot inherit its predecessor's position or failure evidence.
     pub fn begin_attempt_view(&mut self, attempt: RouteStartAttempt, backend: crate::player::attempt_view::Backend) {
@@ -1148,6 +1155,8 @@ impl PlaybackSession {
         url: String::new(),
         tsession: String::new(),
         play_verdict: None,
+        #[cfg(feature = "play-uri")]
+        pms_decline: None,
         resolve_failed: false,
         cur_contract: plx_plex::plex::EncodeContract::original(false, plx_plex::plex::AudioEnhancements::NONE),
         recovery: None,
@@ -1250,6 +1259,8 @@ impl PlaybackSession {
             url,
             tsession,
             play_verdict,
+            #[cfg(feature = "play-uri")]
+            pms_decline,
             resolve_failed,
             cur_contract,
             recovery,
@@ -1334,6 +1345,8 @@ impl PlaybackSession {
             url: url.clone(),
             tsession: tsession.clone(),
             play_verdict: play_verdict.clone(),
+            #[cfg(feature = "play-uri")]
+            pms_decline: *pms_decline,
             resolve_failed: *resolve_failed,
             cur_contract: *cur_contract,
             recovery: recovery.clone(),
@@ -6182,6 +6195,8 @@ pub fn name_refused_forced_audio(ps: &mut PlaybackSession, codec: &str) {
 fn clear_play_verdict(ps: &mut PlaybackSession) {
     { let s = &mut *ps; {
         s.play_verdict = None;
+        #[cfg(feature = "play-uri")]
+        { s.pms_decline = None; }
         s.jail_load_blocked = false;
         s.native_start_refused = None;
         s.engine_failure = None;
@@ -9434,6 +9449,8 @@ fn request_play_with_queue(
         // the item now being resolved. `play_pending()` outranks it for this frame either way, but
         // a resolve that never lands (a refused spawn) would leave nothing else to clear it.
         s.play_verdict = None;
+        #[cfg(feature = "play-uri")]
+        { s.pms_decline = None; }
         s.jail_load_blocked = false;
         s.native_start_refused = None;
         s.engine_failure = None;
@@ -9966,6 +9983,9 @@ pub fn pump_play(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata
         }
         if !cfg!(feature = "play-feed") {
             ps.play_verdict = Some(PlayVerdict::NoQualifiedBackend);
+            if pms_offer_prepared {
+                ps.pms_decline = Some(super::uri_preflight::PmsDecline::StaleOrMismatched);
+            }
         }
         return None;
     }
@@ -10151,6 +10171,8 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             // the statement that the last refusal is over, and assigning unconditionally is what
             // makes that true without a second clear anyone can forget.
             play_verdict: plan.verdict,
+            #[cfg(feature = "play-uri")]
+            pms_decline: plan.pms_decline,
             resolve_failed,
             // The APPLIED enhancement (I9): `contract.audio` is what the server's decision accepted
             // (a refused ask was rebuilt with `NONE`), and `enhancement` grades it.

@@ -1492,6 +1492,10 @@ pub struct Plan {
     /// remains owned by this Plan until the main-thread landing installs it or retires it.
     #[cfg(feature = "play-uri")]
     pub uri_pms: Option<super::uri_preflight::KnownPmsSource>,
+    /// Why a PMS output was not URI-qualified, without interpreting an integration gap as a
+    /// firmware refusal. Local diagnostics only; no report schema or consent field changes.
+    #[cfg(feature = "play-uri")]
+    pub pms_decline: Option<super::uri_preflight::PmsDecline>,
     /// A source was qualified without constructing a Feed URL or PMS encoder.
     pub uri_source_ready: bool,
     pub tsession: String,
@@ -1965,6 +1969,8 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             #[cfg(not(feature = "play-uri"))]
             let pms_uri_possible = false;
             if !cfg!(feature = "play-feed") && !pms_uri_possible {
+                #[cfg(feature = "play-uri")]
+                { plan.pms_decline = Some(super::uri_preflight::PmsDecline::UnavailableCapability); }
                 // No PMS encoder was acquired. The fresh session id was used only to ask for
                 // the PlayQueue; leave no fictional Streaming Resource for refusal cleanup.
                 plan.sess.clear();
@@ -2882,7 +2888,6 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     audio,
                 );
             }
-            let mut accepted_output_codecs = false;
             #[cfg(feature = "play-uri")]
             let mut accepted_pms_recipe = None;
             if let Some(mc) = &decision {
@@ -2902,7 +2907,6 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 if let Some((v, a)) = decision_codecs(&mc) {
                     plan.vcodec = v;
                     plan.acodec = a;
-                    accepted_output_codecs = true;
                     #[cfg(feature = "play-uri")]
                     {
                         use crate::player::recovery::Lane;
@@ -2935,10 +2939,10 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             plan.url = client.transcode_start_url(&sp).to_url();
             plan.tsession = session;
             #[cfg(feature = "play-uri")]
-            if !forced && !env.preview && accepted_output_codecs {
+            if !forced && !env.preview {
                 if let (Some(port), Some(selection), Some(recipe)) = (
                     env.uri_preflight_port.as_ref(), plan.source_selection, accepted_pms_recipe) {
-                    plan.uri_pms = port.qualify_pms(off, super::uri_preflight::PmsRequest {
+                    match port.qualify_pms(off, super::uri_preflight::PmsRequest {
                         selection,
                         source_url: plan.url.clone(),
                         resource_session: plan.tsession.clone(),
@@ -2954,11 +2958,14 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                         burned_subtitle: burn_rides_wire,
                         requested_rate_permille: env.requested_rate_permille,
                         preview: env.preview,
-                    });
+                    }) {
+                        Ok(known) => plan.uri_pms = Some(known),
+                        Err(reason) => plan.pms_decline = Some(reason),
+                    }
+                } else if env.uri_preflight_port.is_some() {
+                    plan.pms_decline = Some(super::uri_preflight::PmsDecline::MissingOutputEvidence);
                 }
             }
-            #[cfg(not(feature = "play-uri"))]
-            let _ = accepted_output_codecs;
             #[cfg(feature = "play-uri")]
             if !cfg!(feature = "play-feed") && plan.uri_pms.is_none() {
                 // The accepted PMS decision may already have registered both a logical

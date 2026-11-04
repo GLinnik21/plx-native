@@ -206,6 +206,23 @@ pub struct KnownPmsSource {
 
 pub enum PmsVerdict { Known(PmsCertificate), Unknown, Refused }
 
+/// Local diagnostic reason for declining a PMS URI output. These are bounded route facts, not
+/// firmware claims or transmitted telemetry; the generic localized open sentence is unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PmsDecline {
+    UnsupportedIntent,
+    MissingSourceFacts,
+    UnavailableCapability,
+    MissingOutputEvidence,
+    UnknownCertificate,
+    ProviderRefused,
+    AppFixedControllerUnavailable,
+    UnmappedClock,
+    NoReleaseProof,
+    StaleOrMismatched,
+    UnexecutableSelection,
+}
+
 /// The caller supplies the actual Part URL and selected source tracks. An implementation may
 /// perform bounded IO only with the worker's OffFrame proof; it must not infer a URI certificate
 /// from Feed's codec table, MDE answer or native ACK.
@@ -244,18 +261,23 @@ impl ResolvePort {
                 || (self.evidence.callable.hls_uri && caps.hls_uri))
     }
 
-    pub fn qualify_pms(&self, off: &OffFrame, request: PmsRequest) -> Option<KnownPmsSource> {
+    pub fn qualify_pms(&self, off: &OffFrame, request: PmsRequest)
+        -> Result<KnownPmsSource, PmsDecline> {
         if request.preview || request.requested_rate_permille != plx_playback_contract::RATE_NORMAL
             || request.requires_client_subtitle || request.burned_subtitle
-            || request.subtitle_choice == TrackChoice::Off
-            || request.resource_session.is_empty() || request.source_url.is_empty()
+            || request.subtitle_choice == TrackChoice::Off {
+            return Err(PmsDecline::UnsupportedIntent);
+        }
+        if request.resource_session.is_empty() || request.source_url.is_empty()
             || request.video_codec.is_empty() || request.audio_codec.is_empty()
             || request.applied_audio != request.selection.audio_contract
             || request.resume_ns < 0 || request.duration_ms.is_none_or(|ms| ms == 0
                 || ms.checked_mul(1_000_000).is_none_or(|ns|
-                    ns > i64::MAX as u64 || request.resume_ns as u64 > ns))
-            || !self.could_qualify_pms() {
-            return None;
+                    ns > i64::MAX as u64 || request.resume_ns as u64 > ns)) {
+            return Err(PmsDecline::MissingSourceFacts);
+        }
+        if !self.could_qualify_pms() {
+            return Err(PmsDecline::UnavailableCapability);
         }
         let selection = request.selection;
         let recipe = request.recipe;
@@ -267,14 +289,24 @@ impl ResolvePort {
             PmsRecipe::Remux | PmsRecipe::Encode => SourceKind::ProgressiveUri,
             PmsRecipe::Hls => SourceKind::HlsUri,
         };
-        let PmsVerdict::Known(cert) = self.qualifier.qualify_pms(off, request) else {
-            return None;
+        let cert = match self.qualifier.qualify_pms(off, request) {
+            PmsVerdict::Known(cert) => cert,
+            PmsVerdict::Unknown => return Err(PmsDecline::UnknownCertificate),
+            PmsVerdict::Refused => return Err(PmsDecline::ProviderRefused),
         };
         let requirements = cert.requirements;
+        if recipe == PmsRecipe::Hls && cert.hls_controller == Some(HlsController::AppFixed) {
+            return Err(PmsDecline::AppFixedControllerUnavailable);
+        }
+        if cert.time_domain != PmsTimeDomain::ContentAbsolute {
+            return Err(PmsDecline::UnmappedClock);
+        }
+        if !cert.release_certified {
+            return Err(PmsDecline::NoReleaseProof);
+        }
         if cert.selection != selection || cert.source_url != url
             || cert.resource_session != session || cert.recipe != recipe
-            || cert.applied_audio != audio || cert.time_domain != PmsTimeDomain::ContentAbsolute
-            || !cert.release_certified || cert.expires_at <= Instant::now()
+            || cert.applied_audio != audio || cert.expires_at <= Instant::now()
             || requirements.source != source_kind
             || requirements.video != Fidelity::Compatible
             || requirements.audio != Fidelity::Compatible
@@ -291,7 +323,7 @@ impl ResolvePort {
                     cert.hls_controller.is_some() || cert.hls_master.is_some(),
             }
             || !self.evidence.permits(requirements, false) {
-            return None;
+            return Err(PmsDecline::StaleOrMismatched);
         }
         // Construct the locator from this exact accepted PMS decision. A qualifier cannot
         // replace it with a different URL after certifying the resource and stream map.
@@ -301,9 +333,9 @@ impl ResolvePort {
                 != TrackChoice::Selected(selection.audio_sid as u64))
             || (selection.subtitle_sid > 0 && requirements.subtitle_track
                 != TrackChoice::Selected(selection.subtitle_sid as u64)) {
-            return None;
+            return Err(PmsDecline::UnexecutableSelection);
         }
-        Some(KnownPmsSource { selection, recipe, source, requirements,
+        Ok(KnownPmsSource { selection, recipe, source, requirements,
             applied_audio: audio, resource_session: session, expires_at: cert.expires_at })
     }
 
@@ -365,7 +397,7 @@ mod tests {
     const MASTER: &[u8] = b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nlow/index.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=3000000\nhigh/index.m3u8\n";
 
     #[derive(Clone, Copy)]
-    enum PmsCase { Valid, Unknown, WrongSource, WrongSession, UnknownClock,
+    enum PmsCase { Valid, Unknown, Refused, WrongSource, WrongSession, UnknownClock,
         NoRelease, Expired, FixedHls, FalseMaster }
 
     struct CertifiedPms(PmsCase);
@@ -374,11 +406,12 @@ mod tests {
 
         fn qualify_pms(&self, _: &OffFrame, request: PmsRequest) -> PmsVerdict {
             if matches!(self.0, PmsCase::Unknown) { return PmsVerdict::Unknown; }
+            if matches!(self.0, PmsCase::Refused) { return PmsVerdict::Refused; }
             let is_hls = request.recipe == PmsRecipe::Hls;
             let master = is_hls.then(|| HlsMasterEvidence::from_response(
                 request.source_url.clone(), request.resource_session.clone(),
                 if matches!(self.0, PmsCase::FalseMaster) {
-                    b"#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\nsegment.ts\n".as_slice()
+                    &b"#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\nsegment.ts\n"[..]
                 } else { MASTER },
             )).flatten();
             PmsVerdict::Known(PmsCertificate {
@@ -451,17 +484,30 @@ mod tests {
             assert_eq!(source.resource_session, "current-transcode");
             assert!(source.source.can_supply(source.requirements));
         }
-        for case in [PmsCase::Unknown, PmsCase::WrongSource, PmsCase::WrongSession,
-            PmsCase::UnknownClock, PmsCase::NoRelease, PmsCase::Expired] {
-            assert!(pms_port(case).qualify_pms(&off, pms_request(PmsRecipe::Encode)).is_none(),
-                "unproven PMS source cannot start");
+        for (case, expected) in [
+            (PmsCase::Unknown, PmsDecline::UnknownCertificate),
+            (PmsCase::Refused, PmsDecline::ProviderRefused),
+            (PmsCase::WrongSource, PmsDecline::StaleOrMismatched),
+            (PmsCase::WrongSession, PmsDecline::StaleOrMismatched),
+            (PmsCase::UnknownClock, PmsDecline::UnmappedClock),
+            (PmsCase::NoRelease, PmsDecline::NoReleaseProof),
+            (PmsCase::Expired, PmsDecline::StaleOrMismatched),
+        ] {
+            assert_eq!(pms_port(case).qualify_pms(&off, pms_request(PmsRecipe::Encode))
+                .err(), Some(expected), "unproven PMS source cannot start");
         }
         let mut invalid = pms_request(PmsRecipe::Remux);
         invalid.duration_ms = None;
-        assert!(pms_port(PmsCase::Valid).qualify_pms(&off, invalid).is_none());
+        assert_eq!(pms_port(PmsCase::Valid).qualify_pms(&off, invalid).err(),
+            Some(PmsDecline::MissingSourceFacts));
         let mut invalid = pms_request(PmsRecipe::Remux);
         invalid.resume_ns = 61_000_000_000;
-        assert!(pms_port(PmsCase::Valid).qualify_pms(&off, invalid).is_none());
+        assert_eq!(pms_port(PmsCase::Valid).qualify_pms(&off, invalid).err(),
+            Some(PmsDecline::MissingSourceFacts));
+        let mut unsupported = pms_request(PmsRecipe::Remux);
+        unsupported.subtitle_choice = TrackChoice::Off;
+        assert_eq!(pms_port(PmsCase::Valid).qualify_pms(&off, unsupported).err(),
+            Some(PmsDecline::UnsupportedIntent));
     }
 
     #[test]
@@ -472,8 +518,9 @@ mod tests {
         assert!(HlsMasterEvidence::from_response("master".into(), "resource".into(),
             b"#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4,\nsegment.ts\n").is_none());
         let off = OffFrame::for_test();
-        assert!(pms_port(PmsCase::FalseMaster).qualify_pms(&off, pms_request(PmsRecipe::Hls)).is_none());
-        assert!(pms_port(PmsCase::FixedHls).qualify_pms(&off, pms_request(PmsRecipe::Hls)).is_none(),
+        assert!(pms_port(PmsCase::FalseMaster).qualify_pms(&off, pms_request(PmsRecipe::Hls)).is_err());
+        assert_eq!(pms_port(PmsCase::FixedHls).qualify_pms(&off,
+            pms_request(PmsRecipe::Hls)).err(), Some(PmsDecline::AppFixedControllerUnavailable),
             "AppFixed has no common URI controller/observation actuator yet");
     }
 
