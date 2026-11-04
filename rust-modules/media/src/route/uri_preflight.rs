@@ -293,14 +293,11 @@ impl ResolvePort {
             || request.recipe == PmsRecipe::Remux) {
             return Err(PmsDecline::MissingOutputEvidence);
         }
-        if request.source_dovi.present {
-            // Off is an output requirement: raw DV from an accepted copy cannot be handed to
-            // the URI driver under that viewer setting. A separately certified no-DV PMS
-            // output can still qualify below.
-            if request.dolby_vision_mode == plx_plex::plex::session::DolbyVisionMode::Off
-                && request.output_dovi.is_some_and(|d| d.present) {
-                return Err(PmsDecline::UnsupportedIntent);
-            }
+        // Off constrains the accepted output even when the original source's metadata omitted
+        // DOVI. A separately certified no-DV PMS output can still qualify below.
+        if request.dolby_vision_mode == plx_plex::plex::session::DolbyVisionMode::Off
+            && request.output_dovi.is_some_and(|d| d.present) {
+            return Err(PmsDecline::UnsupportedIntent);
         }
         if request.resource_session.is_empty() || request.source_url.is_empty()
             || request.video_codec.is_empty()
