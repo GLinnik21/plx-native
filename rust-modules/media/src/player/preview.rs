@@ -1092,7 +1092,7 @@ mod tests {
     /// `report::note_seek_for` live behind that same one call). The `Started`/`StartFailed` arms of
     /// `seek` reach `engine::reload_at`, which needs a live native session this host test cannot
     /// build without the `hostsim` feature — those remain proven by `arm_seek`'s own body (it only
-    /// touches engine-level `SHARED` atomics) and by device verification, not by this test.
+    /// touches engine-level `FEED_SHARED` atomics) and by device verification, not by this test.
     ///
     /// Gated on `hostsim`, like `player::engine`'s own `PlayerAdapter`-constructing tests
     /// (`lifecycle_clock_tests`, `replay_after_stop_tests`): it needs the simulator's video sink

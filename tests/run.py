@@ -1452,7 +1452,7 @@ def timeline_secs(lines):
 def playpos_secs(lines):
     """All `pos=<S>s` values from the once/sec render heartbeat, in order.
 
-    Same SHARED.playpos_ns the /:/timeline reporter posts, but sampled at 1 Hz instead of
+    Same FEED_SHARED.playpos_ns the /:/timeline reporter posts, but sampled at 1 Hz instead of
     every 10s (app.rs). Density is the whole point: seeing a 15s climb through 10s samples
     needs ~30s of playback, so the sparse signal charged every case roughly double its real
     floor. The app only emits the field while genuinely presenting frames, which is what
@@ -3576,7 +3576,7 @@ def op_seek_refused(lines, target_s):
     observable at all; on the server tier the seek succeeds and this branch never runs.
 
     What is graded is the survival, because that is what failed. `player::request_seek` arms
-    `SHARED.seeking` and, before 2026-08-27, only a successful prime→Play ever disarmed it — so a
+    `FEED_SHARED.seeking` and, before 2026-08-27, only a successful prime→Play ever disarmed it — so a
     refused seek left `PlaybackState::Seeking` latched forever: a spinner over the picture, the
     playhead frozen at the target, and `pos=` (gated on `is_playing()`) absent from every
     subsequent heartbeat. Measured before the fix: the position froze at 5 s while 37 further
@@ -3599,7 +3599,7 @@ def op_seek_refused(lines, target_s):
     ts = progress_secs(after)
     if len(ts) < 2:
         return False, (f"only {len(ts)} position sample(s) after the refusal — the read-out is "
-                       "latched (`SHARED.seeking` never disarmed); see player::abandon_seek")
+                       "latched (`FEED_SHARED.seeking` never disarmed); see player::abandon_seek")
     climb = ts[-1][0] - ts[0][0]
     if climb <= 0:
         return False, f"position did not advance after the refusal ({ts[0][0]}s..{ts[-1][0]}s)"
@@ -3619,7 +3619,7 @@ def op_seek_rapid(lines, final_s):
       * a tap that arrives mid-seek is applied by the next pump tick after the in-flight seek
         anchors — which logs `seek(in-place)`;
       * unless the anchor takes longer than SEEK_STUCK_MS (1200ms), in which case the
-        stuck-watchdog applies it instead — it swaps the coalesced target out of TX.seek_to_ns
+        stuck-watchdog applies it instead — it swaps the coalesced target out of FEED_TX.seek_to_ns
         (pump.rs) and logs `in-place stuck → retry reopen`, so the second `seek(in-place)`
         never comes.
 

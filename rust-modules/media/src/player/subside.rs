@@ -9,7 +9,7 @@
 //! Started by the engine for a route whose presenter is `ClientOverRemux` for an embedded track
 //! (`route::side_reader_target`), or, for diagnostics, by the dev trigger `plxnative-subside`
 //! ([`dev_armed_ordinal`]) with no subtitle selected; the reader itself is not dev-gated. Everything is main-thread driven except the one reader thread, whose
-//! only inputs are the [`Spec`], `SHARED`'s playhead and clock atomics, and the main demuxer's
+//! only inputs are the [`Spec`], `FEED_SHARED`'s playhead and clock atomics, and the main demuxer's
 //! published keyframe anchor.
 //!
 //! **A SIDECAR gets the same reader CLOCK-ONLY** ([`CLOCK_ONLY`]): the app fetches that subtitle

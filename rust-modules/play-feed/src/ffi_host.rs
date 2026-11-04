@@ -781,7 +781,7 @@ impl Clock {
     /// One thread for the process, reporting position at the device's own cadence.
     ///
     /// It calls [`Hooks::deliver_event`] — the same entry point LG's library thread
-    /// calls, with the same arguments — rather than writing `SHARED` directly. That is deliberate:
+    /// calls, with the same arguments — rather than writing `FEED_SHARED` directly. That is deliberate:
     /// the mapping from a fed PTS to `playpos_ns` (the `pts_shift`/`disp_base` rebase) lives in
     /// that callback, and a sink that bypassed it would be testing a path the television does not
     /// take.

@@ -64,6 +64,7 @@ fn load_thread_with(
 #[cfg(test)]
 mod load_timing_tests {
     use super::*;
+    use crate::player::SHARED;
     use std::time::Duration;
 
     #[test]

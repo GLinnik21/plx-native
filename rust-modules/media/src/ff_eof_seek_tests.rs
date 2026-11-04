@@ -31,7 +31,6 @@
 
 use plx_play_feed::shared::FEED_SHARED;
 use super::*;
-use crate::player::SHARED;
 use std::io::{Read, Write};
 use std::os::raw::c_long;
 use std::path::{Path, PathBuf};

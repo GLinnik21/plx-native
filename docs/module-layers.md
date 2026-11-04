@@ -324,7 +324,7 @@ the inverse of that callback's position rebase, and a `ffi_host::FrameSink` that
 implements (the one place that draws, so `plx_gfx` stays on the media side). Call order, arguments and log text did not change. The deeper cut is L15b.
 
 The verb cut was taken first because the bind sequence cannot be moved safely from here. It lives in
-`pump`'s `Stage` machine, is gated on state the firmware callback writes (`SHARED`) and interleaves
+`pump`'s `Stage` machine, is gated on state the firmware callback writes (`FEED_SHARED`) and interleaves
 with seek re-anchoring, the auto-rebuffer pause and the claim hold. `ffi_host` deliberately never
 models ACB (it reports `VP_EXPORTED`, which skips the bind stages), so no host test covers the bind
 order or its interleaving, and its log lines are graded on the television. A verb-for-verb move

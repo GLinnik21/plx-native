@@ -6,7 +6,7 @@
 //! Three pieces, from the bottom up:
 //!
 //! - [`SideIo`]: the AVIO source. The main demuxer's `read_cb` cannot be reused — it writes
-//!   `SHARED`'s transfer diagnostics and `curlio` keeps ONE `ACTIVE` abort handle for the movie —
+//!   `FEED_SHARED`'s transfer diagnostics and `curlio` keeps ONE `ACTIVE` abort handle for the movie —
 //!   so this one owns its transport (a plain socket or a private curl transfer), writes no
 //!   diagnostic of the main stream, and has its own [`SideStop`], which every callback consults and
 //!   which wakes a read blocked in the socket or in `curl_multi_wait`.

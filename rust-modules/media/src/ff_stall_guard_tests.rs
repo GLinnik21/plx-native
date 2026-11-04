@@ -2,7 +2,6 @@
 
 use plx_play_feed::shared::FEED_SHARED;
 use super::*;
-use crate::player::SHARED;
 #[allow(unused_imports)]
 use super::test_support::*;
 
@@ -624,7 +623,7 @@ impl Drop for ScriptedPms {
     }
 }
 
-/// Restores every `SHARED` fact these tests publish, however the test leaves.
+/// Restores every `FEED_SHARED` fact these tests publish, however the test leaves.
 struct SharedHoldReset;
 
 impl SharedHoldReset {

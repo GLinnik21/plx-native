@@ -1927,7 +1927,7 @@ you get without waking a television. What it covers today, by module:
   `plx_base::testlock::serial()` (one lock per test binary: `plx_data`'s tests and the application's each have their own) — not because its own state is global any more (`MetadataState` and
   `MetadataAdapter`, detail and season mailboxes included, are per-owner fields now, like the other
   five stores), but because `set_current_for_test`'s `assert_held` enforces the SAME
-  lock the genuinely-still-global seams (route's play mailbox, the player's SHARED block) also
+  lock the genuinely-still-global seams (route's play mailbox, the Feed backend's `FEED_SHARED` block) also
   take, and the convention is one lock, not one per module. Browse, Hubs, Metadata, Person, Search
   and ViewState are all owned now: a production `Bridge` owns each store's state, adapters and
   notices, so separate owners share neither state nor landings; their fixtures use explicit
@@ -2245,7 +2245,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   a loop rate as a frame rate. Analysis docs under `docs/` still quote the old names against the
   line numbers of their day and carry a mapping banner instead of being rewritten.
 - **The once/sec `loop=` heartbeat carries `pos=<s>` while frames are presenting** — the same
-  `SHARED.playpos_ns` the 10s `/:/timeline` reporter posts, sampled at 1 Hz. The harness grades
+  `FEED_SHARED.playpos_ns` the 10s `/:/timeline` reporter posts, sampled at 1 Hz. The harness grades
   playback progress from it (`progress_secs`), because observing a 15s climb through 10s samples
   costs ~30s of playback. It is gated on `player::is_playing()`, not `is_started()`: a direct-play
   resume does not seed `playpos_ns` (only the transcode branch does), so the pre-roll would log a

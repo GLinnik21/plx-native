@@ -57,7 +57,6 @@
 
 use plx_play_feed::shared::FEED_SHARED;
 use super::*;
-use crate::player::SHARED;
 use super::image_subtitle_tests::bind_host_ffmpeg;
 use crate::aq::AuNode;
 use std::io::{Read, Write};

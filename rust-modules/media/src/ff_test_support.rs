@@ -2,7 +2,6 @@
 
 use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
 use super::*;
-use crate::player::SHARED;
 
 struct FixtureDemuxObserver;
 

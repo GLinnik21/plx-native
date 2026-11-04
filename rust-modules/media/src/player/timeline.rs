@@ -1,5 +1,5 @@
 //! One playback attempt's periodic PMS reporter. The adapter owns this resource; the backend
-//! publishes normalized content-time samples to it. The worker never reads SHARED, TX or an
+//! publishes normalized content-time samples to it. The worker never reads SHARED, TX, FEED_SHARED, FEED_TX or an
 //! Engine, and the existing route lease still rejects a retired or hybrid projection.
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;

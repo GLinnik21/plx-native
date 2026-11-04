@@ -2,7 +2,7 @@
 //! `commit_viewer_resume_for_load`, `resume_if_paused` and the pure `transport_target` are the one
 //! door every surface reaches the player's pause through. The HUD and key surfaces, the detail
 //! page's trailer transport ([`super::preview::transport`]), the claim hold ([`super::claim_hold`])
-//! and the app-switch actuator all name them. They read and write `player::TX` and call
+//! and the app-switch actuator all name them. They read and write `FEED_TX` and call
 //! `player::pause` / `player::resume`, so this is the transport's IO door and lives in the IO layer
 //! on purpose (docs/sans-io.md, Scope): the foreground machine ([`super::lifecycle`]) reads none of
 //! it and takes the pause as a value on its events (`ForegroundEvent::Park { viewer_paused, .. }`).
@@ -34,7 +34,7 @@ pub fn set_paused(v: bool) {
 /// real Play to the late `PlayClock`. There is nothing native to resume yet, so this is the commit
 /// half of [`set_transport_paused`] alone; the new Load's own first Play is the native half. The
 /// caller guarantees there is no Engine (`PlayerForegroundActuator::before_load` checks
-/// `is_live`): over a live one this would leave its pause standing while `TX` reads Playing.
+/// `is_live`): over a live one this would leave its pause standing while `FEED_TX` reads Playing.
 #[cfg(feature = "play-feed")]
 pub fn commit_viewer_resume_for_load() {
     crate::player::claim_hold::note_user_transport();

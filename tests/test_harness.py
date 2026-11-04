@@ -4345,7 +4345,7 @@ class TheQualitySwitchAssertion(unittest.TestCase):
 class EverySeekGiveUpPathDisarmsTheSpinner(unittest.TestCase):
     """**A source-level spot-check on an invariant the type system cannot state.**
 
-    `player::request_seek` sets `SHARED.seeking`; `pump::set_state` publishes
+    `player::request_seek` sets `FEED_SHARED.seeking`; `pump::set_state` publishes
     `PlaybackState::Seeking` from it AHEAD of every other arm; and until 2026-08-27 the only place
     that ever cleared it was the successful prime→Play. So any path that gave up on a seek left a
     permanent spinner, a playhead frozen at the target and `is_playing()` false, while the pipeline
@@ -4380,7 +4380,7 @@ class EverySeekGiveUpPathDisarmsTheSpinner(unittest.TestCase):
         """If a second writer appears, the two known clear sites stop being a complete account and
         this whole class is measuring the wrong thing."""
         src = self._src("player", "mod.rs")
-        self.assertEqual(src.count("SHARED.seeking.store(true"), 1,
+        self.assertEqual(src.count("FEED_SHARED.seeking.store(true"), 1,
                          "more than one place arms the spinner; re-audit the give-up paths")
 
 
@@ -6997,7 +6997,7 @@ impl PersonOwnerGateFixture {
                          "`it.revision()` is not a registry read\n" + out)
 
     def test_globals_ledger_sees_the_player_transport_readers_in_a_machine(self):
-        """RED: `transport::paused`, `transport::viewer_paused` and `preview::paused` read `TX.paused` behind
+        """RED: `transport::paused`, `transport::viewer_paused` and `preview::paused` read `FEED_TX.paused` behind
         a function (Sans-IO lifecycle PR B), so a machine that calls one reads the registry as surely as
         `client_for` does. Qualified, bare-after-an-import (singly, in a group, through a glob) and the
         rename that would hide the calls are all caught; the writers (`set_paused`, `set_transport_paused`)
@@ -7274,12 +7274,16 @@ impl PersonOwnerGateFixture {
         """RED: lifecycle.rs, the machine, reads no `crate::player::TX` (the transport contract lives in
         player/transport.rs), and the spellings stay pinned there as a zero-guard: planting `super::TX`,
         a bare `TX` and a renamed import reaches the same atomic from that file. The first two are sites
-        of their own, the rename fails outright (the calls through it are invisible)."""
+        of their own, the rename fails outright (the calls through it are invisible). The pause itself
+        is the Feed backend's `plx_play_feed::shared::FEED_TX` (and `FEED_SHARED` its callback mailbox),
+        so those spellings are pinned there too, qualified and bare."""
         rel = "rust-modules/media/src/player/lifecycle.rs"
         with open(os.path.join(self.tree, rel), encoding="utf-8") as f:
             before = f.read().count("\n")
         appended = ("\nfn planted_super_tx() -> bool {\n    super::TX.paused.load(Relaxed)\n}\n"
                     "use super::TX;\nfn planted_bare_tx() {\n    TX.commit_paused(true);\n}\n"
+                    "fn planted_feed_tx() -> bool {\n    plx_play_feed::shared::FEED_TX.paused.load(Relaxed)\n}\n"
+                    "use plx_play_feed::shared::FEED_SHARED;\nfn planted_feed_shared() {\n    FEED_SHARED.pb_state.load(Relaxed);\n}\n"
                     "use super::TX as Transport2;\n")
         r = self._append_to(rel, appended)
         out = r.stdout + r.stderr
@@ -7287,6 +7291,8 @@ impl PersonOwnerGateFixture {
         self.assertIn("globals:", out)
         self.assertIn(f"{rel}::planted_super_tx::super::TX  (ledger: ci/allow/globals/media.txt)", out)
         self.assertIn(f"{rel}::planted_bare_tx::TX  (ledger: ci/allow/globals/media.txt)", out)
+        self.assertIn(f"{rel}::planted_feed_tx::shared::FEED_TX  (ledger: ci/allow/globals/media.txt)", out)
+        self.assertIn(f"{rel}::planted_feed_shared::FEED_SHARED  (ledger: ci/allow/globals/media.txt)", out)
         rename_line = before + appended.split("\n").index("use super::TX as Transport2;") + 1
         self.assertIn(f"{rel}:{rename_line}\n", out + "\n")
 

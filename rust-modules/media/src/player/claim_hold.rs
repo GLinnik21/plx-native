@@ -135,7 +135,6 @@ mod tests {
     use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
     use super::*;
     use crate::player::shared::{HlsPlayCompletion, HlsPrimeKind};
-    use crate::player::{SHARED, TX};
     use std::sync::atomic::Ordering::Acquire;
 
     const CLAIM_OFFSET_NS: i64 = 100_000_000_000;
@@ -205,7 +204,7 @@ mod tests {
     /// The accepted landing exactly as production runs it: the reload tears the clock down and
     /// `start_bufferfeed` re-arms it through `arm_initial_clock_hold(user_held = FEED_TX.paused)`, which
     /// leaves `Held{Initial}` with the viewer-hold flag set. The give-back is then the DEFERRED
-    /// resume — `TX` reopens, the physical Play stays fenced — and the new stream's Initial prime
+    /// resume — `FEED_TX` reopens, the physical Play stays fenced — and the new stream's Initial prime
     /// is what finally issues Play. (`FEED_TX.reset_for_reload()` alone leaves the clock in `Held{User}`,
     /// which is the immediate-Play path and NOT what a landing produces.)
     #[test]

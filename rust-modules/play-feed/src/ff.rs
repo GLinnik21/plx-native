@@ -6012,7 +6012,7 @@ pub fn demux(
     //
     // `AssertUnwindSafe` is honest here rather than a rubber stamp: the state the closure mutates
     // across the boundary is the two AU queues (their own pthread mutexes, and this is their only
-    // producer, which is now dead) and `SHARED`'s atomics. What a panic DOES leak is the FFmpeg
+    // producer, which is now dead) and `FEED_SHARED`'s atomics. What a panic DOES leak is the FFmpeg
     // side — `AVFormatContext`/`AVIOContext`/`AVPacket` are freed at the end of the block, not by a
     // `Drop`, so an unwind past them leaks them plus the socket buffer. That is deliberate: the
     // alternative is calling `avformat_close_input` on a context whose invariants a panicking
@@ -6198,7 +6198,7 @@ pub fn demux(
                 }
                 let vi =
                     av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, std::ptr::null_mut(), 0);
-                // native audio-track selection: feed the chosen Nth audio stream (SHARED.desired_
+                // native audio-track selection: feed the chosen Nth audio stream (FEED_SHARED.desired_
                 // audio_idx, set by the track menu), else the pipeline's best/default audio.
                 let want_aidx = session.clock().desired_audio_idx();
                 let ai = if want_aidx >= 0 {

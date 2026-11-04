@@ -2776,7 +2776,7 @@ mod clock_animator_tests {
         let ps = PlaybackSession::IDLE;
         let mut pl = Player::new();
         let mut screen = PlayerScreen::new(plx_machine::machine::EntryId(1), plx_appkit::player_hud::loaded::classic_for_test());
-        // A resume edge at t=5s. Stamped directly rather than derived from `player::TX`, which
+        // A resume edge at t=5s. Stamped directly rather than derived from `player::FEED_TX`, which
         // every playback test in the crate moves: what is under test is the CLOCK, not the
         // observer that reads the transport.
         screen.row.force_play_at_for_test(5_000);

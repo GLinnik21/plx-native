@@ -110,10 +110,20 @@ and the native feed refuses a source shape it cannot represent.
   the part URL, read+convert packets, push AUs to the two lanes; **and service seeks** — it
   `av_seek_frame`s on `seek_to_ns` between two `av_read_frame` calls, which is the whole seek
   mechanism (nothing interrupts it; see the seek gotcha below).
-- `shared.rs` — the engine's cross-thread transport, callback and clock state (each field replaces a
-  C `volatile` global — `g_*`). Route ownership and route-changing intents are the separate
-  process-wide authority in `route::PLAYER_CONTROL`. Put new state under the owner whose invariant
-  it belongs to; never smuggle it through a raw static.
+- The Feed backend's cross-thread transport, callback and clock state (each field replaces a
+  C `volatile` global — `g_*`) is owned by `plx_play_feed::shared`: the statics `FEED_SHARED` (the
+  native mailbox and gate) and `FEED_TX` (pause and seek intent). They are statics because
+  `sf_on_event` is a firmware callback with no user-data pointer and the demux, Load and subtitle
+  workers reach them off-thread; the executor types (`FeedResources`, `native_executor`) are handed
+  `&'static` references instead of naming them. Media's `player::shared` re-exports the module,
+  and media code that still names the owners spells `FEED_SHARED` / `FEED_TX` (so `grep` finds every
+  user; `plx_media::player::{FEED_SHARED, FEED_TX}` re-exports them for `screens` and the
+  application loop). `SHARED` and `TX` in `shared_resources.rs` hold only what is common to a
+  backend (captions, container track names, the audio-pick reason, `hud_until`, `scrub_ns`), and
+  `SHARED.reset_session` composes the caption reset into the feed's reset barrier. Route ownership
+  and route-changing intents are the separate process-wide authority in `route::PLAYER_CONTROL`.
+  Put new state under the owner whose invariant it belongs to; never smuggle it through a raw
+  static.
 
 **The main-thread rule is compiler-enforced.** The seam is the `VideoSink` trait in `plx_platform::tv::sink` (`rust-modules/platform/src/tv/sink.rs`)
 (Starfish-shaped: one method per verb, reached through `player::sink()`). `platform/src/webos/video_sink.rs`'s `extern "C"`
@@ -183,7 +193,7 @@ something.
   was Playing is spent as a wake (the machine has no claim that restores a Playing save Paused).
   A Playing restore of a Paused save also clears the pause the park left standing BEFORE the Load
   (`PlayerForegroundActuator::before_load` → `transport::commit_viewer_resume_for_load`):
-  `ClockStartGuard` arms the Load's initial hold from `TX.paused` (only with no live Engine: over one, `before_load` leaves the pause for `PlayClock`), and under the stale pause that
+  `ClockStartGuard` arms the Load's initial hold from `FEED_TX.paused` (only with no live Engine: over one, `before_load` leaves the pause for `PlayClock`), and under the stale pause that
   hold was the viewer's, which fenced the first Play behind a prime (`SMP Play fenced; priming
   before retry`) and left the actual Play to the late `PlayClock`. That cleared pause, not the
   order of `playback_tick`, is also what keeps the paused-seek preroll shut. The app-switch PLAY
@@ -278,7 +288,7 @@ something.
   restored to the pipeline default 100 (`preroll: volume set 100 (restored; no readback)`) by `restore_preroll_volume` from `resume`
   (before its Play), the accepted re-pause in `finish_paused_seek`, and the pump's per-tick sweep
   for a preroll closed with no adapter in hand (`abandon_seek`). A stop or reload needs none: the
-  volume is per pipeline and `TX.reset` forgets the mute. Never `setAudioMute` (absent on 4.4.2 /
+  volume is per pipeline and `FEED_TX.reset` forgets the mute. Never `setAudioMute` (absent on 4.4.2 /
   4.10.0), `AcbAPI_startMute` or the system mute). An `acb_start` that runs under a really-paused pipeline (no preroll
   open) is followed by the ACB pause, so ACB is never left PLAYING over a paused pipeline. The
   `seek: paused frame restored` line therefore means the plane was bound when the pause landed.
@@ -861,10 +871,10 @@ something.
   pump. `route::transcode_seek` is a test-only composition. The
   rebase machinery
   (`pts_shift`/`rebase_pending` in `shared.rs`) keeps Starfish from ever seeing a PTS jump.
-- **`frames` is SEEK-scoped, `seen_frame` is SESSION-scoped.** `pump` zeroes `SHARED.frames` as
+- **`frames` is SEEK-scoped, `seen_frame` is SESSION-scoped.** `pump` zeroes `FEED_SHARED.frames` as
   *part of applying* an in-place seek (it counts only post-seek frames, for the rebind + resume
   re-pause gate), so `frames == 0` does **not** mean "we have never shown a picture" — it is true
-  for the whole of every seek. `SHARED.seen_frame` is the bit that answers that question: set beside
+  for the whole of every seek. `FEED_SHARED.seen_frame` is the bit that answers that question: set beside
   `frames` in the presented callback, cleared **only** in `reset_session`. The HUD divides its two
   busy indicators on it (`appkit::player_hud::busy_surface`); anything else asking "has this session put
   a picture on the panel" wants `player::seen_frame()`, not `frames() > 0`.

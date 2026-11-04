@@ -2886,13 +2886,13 @@ pub fn vplane_take() -> (u32, u32) {
 /// presenting, and cannot say the picture is smooth. The video plane's real cadence is not
 /// observable from this process at all — the evidence for that lives in the TV's own kernel log
 /// (`kad-hdr`).
-/// Panic-guarded (unwinding into C is UB); touches only SHARED.
+/// Panic-guarded (unwinding into C is UB); touches only FEED_SHARED.
 #[no_mangle]
 #[cfg(feature = "play-feed")]
 pub extern "C" fn sf_on_event(epoch: c_uint, ty: c_int, num: i64, s: *const c_char) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         // The mutex is deliberately held through the complete callback. A bare equality check
-        // would let teardown retire A, reset the process-long SHARED storage for B, and then let
+        // would let teardown retire A, reset the process-long FEED_SHARED storage for B, and then let
         // a callback which had already validated A publish into B. Firmware supplies `epoch`
         // through the device-proven callback-context overload of StarfishMediaAPIs::Load.
         let class = match ty {
@@ -4139,7 +4139,7 @@ mod tests {
     /// Differential: against the code before `abandon_seek` existed there was nothing to call, and
     /// both assertions below fail on the state `request_seek` leaves.
     ///
-    /// Takes the crate lock because `SHARED` is a process-wide global and other modules' tests
+    /// Takes the crate lock because `FEED_SHARED` is a process-wide global and other modules' tests
     /// read the playback state.
     #[test]
     fn an_abandoned_seek_disarms_the_spinner_and_the_frozen_playhead() {
@@ -4883,7 +4883,7 @@ mod tests {
     /// not silently halved); a later set still closes the one still showing; and the RAM ceiling
     /// counts a set's rects together, so a multi-rect cue cannot smuggle bytes past the budget.
     ///
-    /// Takes the crate-wide `testlock` — `SHARED` is a process-global the whole player shares.
+    /// Takes the crate-wide `testlock` — `FEED_SHARED` is a process-global the whole player shares.
     #[test]
     fn an_image_display_set_round_trips_whole_and_is_superseded_as_a_unit() {
         let _g = plx_base::testlock::serial();

@@ -42,6 +42,8 @@ pub(crate) use plx_play_feed::load_video_refused;
 use super::shared::Stage;
 use super::SeekMode;
 use super::{log, sink, threads};
+#[cfg(test)]
+use super::SHARED;
 use plx_base::task::MainThread;
 #[cfg(test)]
 use plx_platform::devcaps::AudioStack;
@@ -3264,7 +3266,7 @@ mod load_in_flight_tests {
     use super::*;
 
     /// The Engine itself needs no cleanup since phase 9 — it lives in the test's own
-    /// `PlayerAdapter`, which drops with the test. What is still process-wide is `SHARED`, the
+    /// `PlayerAdapter`, which drops with the test. What is still process-wide is `FEED_SHARED`, the
     /// native lifecycle test seams, and the route reducer's projection.
     struct Cleanup;
     impl Drop for Cleanup {
@@ -4841,7 +4843,7 @@ mod load_refusal_tests {
     const REFUSAL: &std::ffi::CStr = c"Resource Allocation Error";
 
     /// The Engine itself needs no cleanup since phase 9 — it lives in the test's own
-    /// `PlayerAdapter`, which drops with the test. What is still process-wide is `SHARED` and the
+    /// `PlayerAdapter`, which drops with the test. What is still process-wide is `FEED_SHARED` and the
     /// route reducer's projection.
     struct Cleanup;
     impl Drop for Cleanup {

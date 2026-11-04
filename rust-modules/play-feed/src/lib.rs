@@ -13,8 +13,8 @@ mod ff;
 pub use ff::{boot, demux, pushed_any, set_feed_audio, set_pcm_out, DemuxTransport};
 pub use ff::native_audio;
 
-/// Physical mechanisms exercised by media's integration fixtures. No raw
-/// callback state is exported by the shipping feed crate.
+/// Physical mechanisms exercised by media's integration fixtures. This module exports no raw
+/// callback state; the feed's process-lifetime owners are `shared::{FEED_SHARED, FEED_TX}`.
 #[cfg(feature = "test-support")]
 pub mod ff_test_support {
     pub mod acquisition {

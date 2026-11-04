@@ -1,5 +1,6 @@
 //! Compatibility exports for the physical feed mailbox. Common subtitle resources live in
-//! `shared_resources`; native callback and clock state live in `plx_play_feed::shared`.
+//! `shared_resources`; native callback and clock state live in `plx_play_feed::shared`, whose
+//! process-lifetime owners (`FEED_SHARED`, `FEED_TX`) media code imports from there by name.
 
 pub use plx_play_feed::shared::*;
 

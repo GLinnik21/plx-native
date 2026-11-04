@@ -689,7 +689,7 @@ fn run_claim_tail(
 /// landed during this claim's flight sits untouched in `FEED_TX.seek_to_ns` rather than being folded in —
 /// committing THIS claim's stale target with `commit_user_seek` would silently discard it. Returns
 /// the fresher value to re-arm into `FEED_TX.seek_to_ns` after the reload resets it
-/// (`TX::reset_for_reload`), or `None` if there is nothing to carry.
+/// (`FEED_TX.reset_for_reload`), or `None` if there is nothing to carry.
 fn commit_or_carry_seek(pending_seek: i64) -> Option<i64> {
     let current = FEED_TX.seek_to_ns.load(Relaxed);
     // Anything on the mailbox that is not exactly the target this claim was built for is a press
@@ -1704,10 +1704,10 @@ mod tests {
         super::SHARED.reset_session();
     }
     use super::{
-        commit_or_carry_seek, rearm_carried_seek, TX,
+        commit_or_carry_seek, rearm_carried_seek,
         hls_buffered_ms, native_clock_silence_ms, native_clock_stopped,
         prime_before_play, rebuffer_request_is_current, should_begin_hls_rebuffer,
-        CLOCK_WATCH_SINCE_MS, NATIVE_CLOCK_STOPPED_MS, SHARED,
+        CLOCK_WATCH_SINCE_MS, NATIVE_CLOCK_STOPPED_MS,
         stream_ended,
     };
 
