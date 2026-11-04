@@ -724,6 +724,21 @@ impl PlayerAdapter {
         self.backend.metrics_snapshot()
     }
 
+    /// A handled error may classify only the physical failure of this session's current
+    /// logical request and exact attempt. A predecessor's URI failure is never borrowed by a
+    /// later Feed plan that failed before claiming its own attempt.
+    pub fn terminal_failure_source(&self, ps: &crate::route::PlaybackSession)
+        -> Option<backend::TerminalFailureSource> {
+        let view = ps.attempt_view();
+        let backend = view.backend().map(|backend| match backend {
+            super::attempt_view::Backend::Feed => super::attempt_metrics::Backend::Feed,
+            super::attempt_view::Backend::Uri => super::attempt_metrics::Backend::Uri,
+        });
+        backend::terminal_failure_source(ps.metric_request(),
+            view.attempt().map(|attempt| attempt.contract_id()), backend,
+            self.backend.metrics_snapshot())
+    }
+
     /// The same fresh offer decision the start door will use. IO retires an expired URI
     /// authorization before the app arms any backend-specific foreground transport hold.
     pub fn planned_start_backend(&mut self, ps: &mut crate::route::PlaybackSession)

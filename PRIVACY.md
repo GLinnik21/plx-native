@@ -203,6 +203,14 @@ delivery (the only route a preview ever opens), and its `started` and `attempt_s
 say whether the trailer actually showed a picture before it failed. Sentry files it in an issue of
 its own, apart from playback failures.
 
+The report also names `backend` — `unknown` / `feed` / `uri` — and `terminal_stage` —
+`unknown` / `planning` / `open` / `decode` / `presentation` / `release`. These describe only the
+current logical request and its addressed terminal attempt. A new plan failure cannot inherit the
+previous URI or buffer-feed attempt's backend or failure stage. When no current physical attempt
+was proven, the backend is `unknown`; a known plan refusal can still name `planning`. They appear
+as closed tags and in the playback context. No attempt or request identifier, release disposition,
+URL or source text is sent with them.
+
 When the failure is the media server **refusing to play or convert the item** (`decision_refused`),
 that report also carries four closed fields about the refusal — and never the server's own
 explanation, which is free text that can name files, paths and servers and stays on the television:

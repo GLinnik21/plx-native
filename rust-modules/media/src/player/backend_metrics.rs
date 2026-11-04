@@ -26,6 +26,26 @@ pub enum MetricNotice {
         status: ReleaseStatus },
 }
 
+/// No IDs leave this projection. The caller must provide the current session's request and
+/// attempt address; a predecessor's URI failure cannot label a newer plan's handled error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TerminalFailureSource { pub backend: m::Backend, pub stage: m::Stage }
+
+pub fn terminal_failure_source(
+    request: Option<LogicalRequestId>,
+    attempt: Option<AttemptId>,
+    backend: Option<m::Backend>,
+    summary: Option<&m::RequestSummary<LogicalRequestId, AttemptId>>,
+) -> Option<TerminalFailureSource> {
+    let (Some(request), Some(attempt), Some(backend), Some(summary)) =
+        (request, attempt, backend, summary) else { return None };
+    if summary.id != request || summary.outcome.is_some() { return None; }
+    let current = summary.current_attempt?;
+    if current.id != attempt || current.backend != backend { return None; }
+    let Some(m::AttemptOutcome::Failed(failure)) = current.outcome else { return None };
+    Some(TerminalFailureSource { backend, stage: failure.stage })
+}
+
 /// Preserve the common error resolver's established cause while keeping local measurement
 /// vocabulary coarse. A source-open failure names no specific network or parser fault.
 pub fn handled_failure(kind: crate::player::FailureKind) -> m::Failure {
@@ -348,5 +368,43 @@ fn map_cause(reason: Failure) -> m::Cause {
         Failure::Unavailable | Failure::Unsupported => m::Cause::Unsupported,
         Failure::TimedOut => m::Cause::Timeout,
         Failure::Backend | Failure::ReleaseUncertain => m::Cause::Native,
+    }
+}
+
+#[cfg(test)]
+mod terminal_source_tests {
+    use super::*;
+
+    #[test]
+    fn old_uri_failure_cannot_label_a_new_plan_or_another_attempt() {
+        let (old, new) = (LogicalRequestId::new(1), LogicalRequestId::new(2));
+        let (uri, feed) = (AttemptId::new(1, 1), AttemptId::new(2, 1));
+        let mut model = m::AttemptMetrics::new();
+        let mut effects = Vec::new();
+        model.step(m::Event::RequestStarted { request: old,
+            origin: m::Origin::Fresh, at: m::Tick::from_millis(0) }, &mut effects);
+        model.step(m::Event::AttemptStarted { request: old, attempt: uri,
+            backend: m::Backend::Uri, origin: m::Origin::Fresh,
+            at: m::Tick::from_millis(1) }, &mut effects);
+        model.step(m::Event::AttemptFinished { request: old, attempt: uri,
+            outcome: m::AttemptOutcome::Failed(m::Failure {
+                stage: m::Stage::Decode, cause: m::Cause::Native }),
+            at: m::Tick::from_millis(2) }, &mut effects);
+        let known = Some(TerminalFailureSource {
+            backend: m::Backend::Uri, stage: m::Stage::Decode });
+        assert_eq!(terminal_failure_source(Some(old), Some(uri),
+            Some(m::Backend::Uri), model.snapshot()), known);
+        assert_eq!(terminal_failure_source(Some(old), Some(feed),
+            Some(m::Backend::Uri), model.snapshot()), None);
+        assert_eq!(terminal_failure_source(Some(old), Some(uri),
+            Some(m::Backend::Feed), model.snapshot()), None);
+
+        model.step(m::Event::RequestStarted { request: new,
+            origin: m::Origin::Fresh, at: m::Tick::from_millis(3) }, &mut effects);
+        assert_eq!(terminal_failure_source(Some(new), Some(uri),
+            Some(m::Backend::Uri), model.snapshot()), None,
+            "a new plan without a physical Start must not inherit the old URI failure");
+        assert_eq!(terminal_failure_source(Some(old), Some(uri),
+            Some(m::Backend::Uri), model.snapshot()), None);
     }
 }

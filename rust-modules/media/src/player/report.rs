@@ -63,7 +63,8 @@ use plx_telemetry::diag::schema::DiagEvent;
 // naming the closed domains where they report from.
 pub use plx_telemetry::telemetry::classes::{
     AttemptOrdinal, AttemptOrigin, AudioCodecClass, BufferClass, DecisionCodeClass, DeliveryClass, DemuxExitClass, DeliveryReason, HttpClass,
-    ChannelBucket, LoadElapsedClass, OriginalProbePhase, PipelineClass, PlaybackErrorContext, QualityClass,
+    ChannelBucket, ErrorBackendClass, TerminalStageClass, LoadElapsedClass, OriginalProbePhase,
+    PipelineClass, PlaybackErrorContext, QualityClass,
     RasterClass, RateClass, RecoveryRung, RefusalContext, RefusalError, RefusalRecoveredContext, RefusedStream, TraceAge, TraceDirection, TraceEvent, TraceOutcome,
     TraceStep, TransferAgeClass, TransportClass, VideoCodecClass,
 };
@@ -609,6 +610,27 @@ fn transport_classes(
 }
 
 fn error_context(ps: &crate::route::PlaybackSession) -> PlaybackErrorContext {
+    error_context_with_source(ps, None)
+}
+
+fn error_context_with_source(ps: &crate::route::PlaybackSession,
+    source: Option<super::backend::TerminalFailureSource>) -> PlaybackErrorContext {
+    use super::attempt_metrics::{Backend, Stage};
+    let backend = match source.map(|source| source.backend) {
+        Some(Backend::Uri) => ErrorBackendClass::Uri,
+        Some(Backend::Feed) => ErrorBackendClass::Feed,
+        _ => ErrorBackendClass::Unknown,
+    };
+    let terminal_stage = match source.map(|source| source.stage) {
+        Some(Stage::Planning) => TerminalStageClass::Planning,
+        Some(Stage::Open) => TerminalStageClass::Open,
+        Some(Stage::Decode) => TerminalStageClass::Decode,
+        Some(Stage::Presentation) => TerminalStageClass::Presentation,
+        Some(Stage::Release) => TerminalStageClass::Release,
+        _ if super::backend::handled_failure(super::error_now(ps).kind).stage
+            == Stage::Planning => TerminalStageClass::Planning,
+        _ => TerminalStageClass::Unknown,
+    };
     let facts = ps.attempt_view().facts();
     let delivery = delivery_class(ps);
     let selected = selected_quality_class(crate::route::quality());
@@ -628,6 +650,8 @@ fn error_context(ps: &crate::route::PlaybackSession) -> PlaybackErrorContext {
     let http_status = facts.http_status.unwrap_or(0);
     let (attempt_origin, attempt_ordinal) = attempt_snapshot();
     let context = PlaybackErrorContext {
+        backend,
+        terminal_stage,
         delivery,
         selected,
         requested,
@@ -962,7 +986,14 @@ fn transition(
 
 /// **Observe the state the HUD is rendering.** Called once a frame from the main loop.
 pub fn tick(ps: &crate::route::PlaybackSession) {
-    tick_with(ps, REPORT_PREVIEW_FAILURES);
+    tick_with(ps, REPORT_PREVIEW_FAILURES, None);
+}
+
+/// Production app observation supplies only a failure of this logical request's addressed
+/// physical attempt. No source means Unknown backend; known planning refusals retain that stage.
+pub fn tick_with_source(ps: &crate::route::PlaybackSession,
+    source: Option<super::backend::TerminalFailureSource>) {
+    tick_with(ps, REPORT_PREVIEW_FAILURES, source);
 }
 
 /// A detail-page preview is about to be requested: its failure may be reported again. The preview
@@ -971,9 +1002,11 @@ pub fn preview_requested() {
     PREVIEW_SAW_FAIL.store(false, Relaxed);
 }
 
-/// [`tick`] with the preview-reporting switch passed in, so a test can flip it without a second
-/// production switch: [`tick`] is its only caller and always passes [`REPORT_PREVIEW_FAILURES`].
-fn tick_with(ps: &crate::route::PlaybackSession, report_preview_failures: bool) {
+/// The common observer with the preview-reporting switch passed in, so a test can flip it
+/// without a second production switch. Both production entry points pass
+/// [`REPORT_PREVIEW_FAILURES`].
+fn tick_with(ps: &crate::route::PlaybackSession, report_preview_failures: bool,
+    source: Option<super::backend::TerminalFailureSource>) {
     #[cfg(not(feature = "play-feed"))]
     let _ = report_preview_failures;
     let now = super::state(ps);
@@ -1032,7 +1065,10 @@ fn tick_with(ps: &crate::route::PlaybackSession, report_preview_failures: bool) 
             let shape = super::error_now(ps);
             let kind = shape.kind.class();
             let trace = finish_trace(TraceEvent::Failed { kind });
-            let context = error_context(ps);
+            let context = match source {
+                Some(source) => error_context_with_source(ps, Some(source)),
+                None => error_context(ps),
+            };
             plx_telemetry::telemetry::playback::report_error(kind, context, &trace);
             emit(DiagEvent::PlaybackFailed {
                 playback_id: ATTEMPT.load(Relaxed),
@@ -1539,10 +1575,27 @@ mod tests {
             crate::route::refuse_for_test(&mut ps, verdict.clone());
             let ctx = error_context(&ps);
             assert_eq!(ctx.delivery.code(), "unknown", "{verdict:?}: delivery was inferred");
+            assert_eq!(ctx.backend, ErrorBackendClass::Unknown,
+                "a refused plan did not prove a current physical backend");
+            assert_eq!(ctx.terminal_stage, TerminalStageClass::Planning,
+                "the refusal itself proves the planning stage");
             assert_eq!(ctx.requested, QualityClass::Unknown, "{verdict:?}: requested was inferred");
             // The selected quality is the viewer's own setting, which is recorded and still true.
             assert_eq!(ctx.selected, selected_quality_class(crate::route::quality()));
         }
+    }
+
+    #[test]
+    fn addressed_uri_decode_failure_maps_to_closed_report_classes() {
+        let _g = plx_base::testlock::serial();
+        let ps = crate::route::PlaybackSession::default();
+        let context = error_context_with_source(&ps,
+            Some(super::super::backend::TerminalFailureSource {
+                backend: super::super::attempt_metrics::Backend::Uri,
+                stage: super::super::attempt_metrics::Stage::Decode,
+            }));
+        assert_eq!(context.backend, ErrorBackendClass::Uri);
+        assert_eq!(context.terminal_stage, TerminalStageClass::Decode);
     }
 
     /// Sentry PLX-NATIVE-14, the half `delivery: unknown` could not give: WHICH refusal. A server
@@ -2180,7 +2233,7 @@ mod tests {
             let (_, events) = plx_telemetry::diag::test_events::capture(|| {
                 preview_requested();
                 crate::player::SHARED.pb_state.store(S::Error as u8, Relaxed);
-                tick_with(&ps, false);
+                tick_with(&ps, false, None);
             });
             assert!(events.is_empty(), "no usage event: {events:?}");
             assert_eq!(

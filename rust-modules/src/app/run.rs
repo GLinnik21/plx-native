@@ -2089,7 +2089,8 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // so gating this on a started engine would silently miss the earliest and most certain
         // failure there is. It observes the value the HUD renders and reports only transitions,
         // so the steady-state cost is one atomic load.
-        plx_media::player::report::tick(&mut app.player.session);
+        let terminal_source = app.adapters.player.terminal_failure_source(&app.player.session);
+        plx_media::player::report::tick_with_source(&app.player.session, terminal_source);
         if plx_media::player::state(&app.player.session)
             == plx_media::player::PlaybackState::Error {
             app.player.session.finish_metric_request(
@@ -2876,7 +2877,10 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
             // `pump_play` can install a refused `/decision` after the earlier report
             // observation but before this frame draws the Error screen. Observe again at that
             // exact publication boundary; latches make a healthy/no-change frame idempotent.
-            |app| plx_media::player::report::tick(&app.player.session),
+            |app| {
+                let terminal_source = app.adapters.player.terminal_failure_source(&app.player.session);
+                plx_media::player::report::tick_with_source(&app.player.session, terminal_source);
+            },
         );
         // Async detail load: install the worker's item into CURRENT. Route-unconditional for
         // the same reason as pump_play — play_item_now requests a detail from Home and flips

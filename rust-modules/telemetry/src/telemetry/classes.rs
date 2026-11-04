@@ -930,8 +930,37 @@ impl TransferAgeClass {
     }
 }
 
+/// Physical executor that owned the terminal attempt. A PMS delivery such as Original can run
+/// through either executor, so delivery alone cannot answer this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorBackendClass { Unknown, Feed, Uri }
+impl ErrorBackendClass {
+    pub const ALL: [Self; 3] = [Self::Unknown, Self::Feed, Self::Uri];
+    pub const fn code(self) -> &'static str {
+        match self { Self::Unknown => "unknown", Self::Feed => "feed", Self::Uri => "uri" }
+    }
+}
+
+/// Stage of the terminal failure, only from the addressed current attempt or a known plan
+/// refusal. A source switch's prior failure never labels the new attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalStageClass { Unknown, Planning, Open, Decode, Presentation, Release }
+impl TerminalStageClass {
+    pub const ALL: [Self; 6] = [Self::Unknown, Self::Planning, Self::Open,
+        Self::Decode, Self::Presentation, Self::Release];
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown", Self::Planning => "planning", Self::Open => "open",
+            Self::Decode => "decode", Self::Presentation => "presentation",
+            Self::Release => "release",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlaybackErrorContext {
+    pub backend: ErrorBackendClass,
+    pub terminal_stage: TerminalStageClass,
     pub delivery: DeliveryClass,
     pub selected: QualityClass,
     pub requested: QualityClass,
