@@ -6,10 +6,10 @@
       "what": "Size in bytes of the STRIPPED ARM plxnative binary that `make ipk FLAVOR=debug` stages into the package (ipkroot/data/usr/palm/applications/<appid>/plxnative), as the CI cross-build job builds it (default features, dev flavour). The shipped release binary is built with --no-default-features and is smaller; this is the number CI can measure on every PR.",
       "unit": "bytes",
       "mode": "fail",
-      "limit": 17000000,
-      "measured": 15451784,
-      "measured_on": "2026-10-30",
-      "headroom": "10%"
+      "limit": 20000000,
+      "measured": 17074920,
+      "measured_on": "2026-11-04",
+      "headroom": "17% (raised from 17,000,000 by the owner on 2026-11-04 for the URI-first backend split: both playback backends are linked, the dormant plx_play_uri backend costs about 250 KB of the 402 KB growth over main)"
     },
     "packages_default": {
       "what": "Third-party (registry/git) packages the app crate compiles for armv7-unknown-linux-gnueabi with its DEFAULT features: normal + build dependencies, dev-dependencies excluded, workspace members excluded.",
