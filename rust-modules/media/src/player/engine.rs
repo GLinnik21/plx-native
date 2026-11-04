@@ -42,7 +42,7 @@ pub(crate) use plx_play_feed::load_video_refused;
 use super::shared::Stage;
 use super::SeekMode;
 use super::{log, sink, threads};
-#[cfg(test)]
+#[cfg(all(test, feature = "hostsim"))]
 use super::SHARED;
 use plx_base::task::MainThread;
 #[cfg(test)]

@@ -118,8 +118,6 @@ pub(super) fn stop(ps: &mut PlaybackSession, pa: &mut super::adapter::PlayerAdap
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "play-feed")]
-    use plx_play_feed::shared::FEED_SHARED;
     use super::*;
     use plx_platform::tv::uri::{CloseStatus, RequestId, SessionId, Shape, UriPoll, UriReply};
     use std::collections::VecDeque;
@@ -582,6 +580,8 @@ mod tests {
     #[cfg(feature = "hostsim")]
     mod hostsim {
         use super::*;
+        #[cfg(feature = "play-feed")]
+        use plx_play_feed::shared::FEED_SHARED;
         use std::time::Instant;
         use std::io::{BufRead, BufReader, Write};
         use std::net::TcpListener;

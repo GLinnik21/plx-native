@@ -64,6 +64,7 @@ fn load_thread_with(
 #[cfg(test)]
 mod load_timing_tests {
     use super::*;
+    #[cfg(feature = "hostsim")]
     use crate::player::SHARED;
     use std::time::Duration;
 

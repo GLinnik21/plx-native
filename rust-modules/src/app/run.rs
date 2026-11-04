@@ -5010,10 +5010,10 @@ mod lifecycle_regression_tests {
                 facts.position_ns = Some(playpos_ns);
                 facts.duration_ns = Some(duration_ns);
             });
-            let (shared, tx) = (&plx_media::player::SHARED, &plx_media::player::TX);
+            let (shared, feed, tx) = (&plx_media::player::FEED_SHARED, &plx_media::player::FEED_TX, &plx_media::player::TX);
             let saved = [
                 shared.seek_display_ns.swap(-1, Relaxed),
-                tx.seek_to_ns.swap(-1, Relaxed),
+                feed.seek_to_ns.swap(-1, Relaxed),
                 tx.scrub_ns.swap(-1, Relaxed),
             ];
             Self { saved }
@@ -5025,9 +5025,9 @@ mod lifecycle_regression_tests {
     impl Drop for SeekGlobals {
         fn drop(&mut self) {
             use std::sync::atomic::Ordering::Relaxed;
-            let (shared, tx) = (&plx_media::player::SHARED, &plx_media::player::TX);
+            let (shared, feed, tx) = (&plx_media::player::FEED_SHARED, &plx_media::player::FEED_TX, &plx_media::player::TX);
             shared.seek_display_ns.store(self.saved[0], Relaxed);
-            tx.seek_to_ns.store(self.saved[1], Relaxed);
+            feed.seek_to_ns.store(self.saved[1], Relaxed);
             tx.scrub_ns.store(self.saved[2], Relaxed);
         }
     }
