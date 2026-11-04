@@ -1505,6 +1505,9 @@ pub(super) fn finish_feed_teardown(
     for_reload: bool,
     report_th: Option<std::thread::JoinHandle<()>>,
 ) {
+    // The worker has stopped, so a reload hands route the last estimate it published, which the
+    // replacement controller starts from (I8); a stop carries none.
+    ps.observe_link_seed(if for_reload { SHARED.abr_seed() } else { None });
     if !for_reload {
         // **The carried link estimate dies with the PLAYBACK, not with the engine** (I8). A reload
         // is the same item on the same link at a new position — a seek, a quality pick, an

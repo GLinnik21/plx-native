@@ -557,6 +557,21 @@ pub struct PlaybackSession {
     /// machine still owns the engine, this says what the session may write. See
     /// [`preview_request`].
     resolved_as_preview: bool,
+    /// **The HLS worker's last delivery estimate, carried to the next controller** (I8), as the
+    /// player adapter last observed it ([`observe_link_seed`](Self::observe_link_seed), its ONLY
+    /// writer). [`auto_prior`] reads it here; route reads no backend registry for it. A reload keeps
+    /// it (the same item on the same link) and a landing carries it over like [`now_ms`](Self::now_ms);
+    /// the adapter clears it with the playback it measured.
+    carried_link: Option<CarriedLink>,
+}
+
+/// A delivery estimate and the frame-tick stamp ([`PlaybackSession::now_ms`] units) it was last
+/// observed at. The age is the difference to the session's own tick, so a pause, a backgrounded app
+/// or a reload gap ages it without any clock read in route.
+#[derive(Clone, Copy, Debug)]
+struct CarriedLink {
+    readout: plx_playback_contract::adaptive::SeedReadout,
+    observed_at_ms: u32,
 }
 
 /// Compatibility name at the URI qualifier boundary; the session keeps one common intent.
@@ -1310,6 +1325,7 @@ impl PlaybackSession {
         now_ms: 0,
         preview: false,
         resolved_as_preview: false,
+        carried_link: None,
     };
 }
 
@@ -1417,6 +1433,7 @@ impl PlaybackSession {
             queue: _,
             preview: _,
             resolved_as_preview,
+            carried_link,
         } = self;
         PlaybackSession {
             attempt_view: *attempt_view,
@@ -1505,6 +1522,7 @@ impl PlaybackSession {
             // A screen copy is not the live preview. The loop reads the real session.
             preview: false,
             resolved_as_preview: *resolved_as_preview,
+            carried_link: *carried_link,
         }
     }
 }
@@ -1546,6 +1564,19 @@ impl PlaybackSession {
     /// and by nothing else** (spec §4.1). See the [`now_ms`](Self::now_ms) field.
     pub fn set_now(&mut self, now_ms: u32) {
         self.now_ms = now_ms;
+    }
+
+    /// **The player adapter's delivery of the HLS worker's carried estimate** (I8): `Some((readout,
+    /// unobserved_ms))` is the last estimate and the wall time since it was observed, `None` that
+    /// there is none (a new playback, or a stop). It is stamped on this session's frame tick so
+    /// [`auto_prior`] can age it later; the adapter calls it every pump tick and when an engine
+    /// tears down, which keeps the value as fresh as the registry it was read from.
+    pub fn observe_link_seed(&mut self, seed: Option<plx_playback_contract::adaptive::CarriedSeed>) {
+        let now_ms = self.now_ms;
+        self.carried_link = seed.map(|(readout, unobserved_ms)| CarriedLink {
+            readout,
+            observed_at_ms: now_ms.wrapping_sub(u32::try_from(unobserved_ms).unwrap_or(u32::MAX)),
+        });
     }
 }
 
@@ -4420,19 +4451,15 @@ fn note_visible_switch(ps: &mut PlaybackSession, now_ms: u32) {
 /// Only the DELIVERY estimate crosses. The buffer, the risk history and any pending transaction
 /// describe a position that no longer exists and are reset by the new `Controller`'s construction.
 fn auto_prior(ps: &PlaybackSession) -> Option<crate::abr::CapacityEstimate> {
-    #[cfg(feature = "play-feed")]
-    let carried = crate::player::SHARED.abr_seed().map(|(readout, elapsed_ms)| {
-        age_carried_estimate(readout, elapsed_ms)
+    let carried = ps.carried_link.map(|link| {
+        age_carried_estimate(link.readout, u64::from(ps.now_ms.wrapping_sub(link.observed_at_ms)))
     });
-    #[cfg(not(feature = "play-feed"))]
-    let carried = None;
     carried.or_else(|| {
         let kbps = ps.auto_prior_kbps;
         (kbps > 0).then(|| crate::abr::CapacityEstimate::from_prior(kbps))
     })
 }
 
-#[cfg(feature = "play-feed")]
 fn age_carried_estimate(
     readout: plx_playback_contract::adaptive::SeedReadout, elapsed_ms: u64,
 ) -> crate::abr::CapacityEstimate {
@@ -4442,6 +4469,28 @@ fn age_carried_estimate(
     };
     estimate.age_ms(elapsed_ms, &crate::abr::AbrPolicy::measured());
     estimate
+}
+
+#[test]
+fn the_carried_estimate_is_the_sessions_own_and_ages_on_its_frame_tick() {
+    let readout = plx_playback_contract::adaptive::SeedReadout {
+        slow_kbps: 40_000, fast_kbps: 42_000, uncertainty_pm: 100, samples: 19,
+    };
+    let mut ps = PlaybackSession::IDLE;
+    ps.auto_prior_kbps = 3_000;
+    ps.set_now(10_000);
+    assert_eq!(auto_prior(&ps).map(|e| e.samples), Some(1), "nothing carried: the bootstrap seed");
+    ps.observe_link_seed(Some((readout, 0)));
+    let fresh = auto_prior(&ps).expect("the carried estimate wins over the bootstrap seed");
+    assert_eq!((fresh.slow_kbps, fresh.samples), (40_000, 19));
+    let gap = crate::abr::AbrPolicy::measured().stale_half_life_ms * 2;
+    ps.set_now(10_000 + gap);
+    let aged = auto_prior(&ps).expect("still carried");
+    assert!(aged.uncertainty_pm > fresh.uncertainty_pm, "the frame tick between two reads ages it");
+    ps.observe_link_seed(Some((readout, u64::from(gap))));
+    assert!(auto_prior(&ps).expect("reported late").uncertainty_pm >= aged.uncertainty_pm);
+    ps.observe_link_seed(None);
+    assert_eq!(auto_prior(&ps).map(|e| e.samples), Some(1), "cleared: the bootstrap seed again");
 }
 
 #[test]
@@ -10362,6 +10411,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
         // …and the subtitle mode with it: a refused landing keeps the retry's.
         let sub_mode = if selection_known { plan.sub_mode } else { s.sub_mode };
         let now_ms = s.now_ms;
+        let carried_link = s.carried_link;
         let requested_rate_permille = s.requested_rate_permille;
         let attempt_origin = s.attempt_origin;
         let metric_request = s.metric_request;
@@ -10478,6 +10528,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             now_ms,
             preview,
             resolved_as_preview: preview,
+            carried_link,
         };
     } };
     if let Some(id) = planned_feed_offer {
@@ -12250,10 +12301,14 @@ pub fn execute_recover_original_claim(
 
 /// C38: a `NativeAudioReload`/`AdaptiveReload` claim that took a displaced pick's marker (the
 /// merge table let it replace the Retranscode that carried it). On a direct route the reload
-/// feeds `desired_audio_idx`, which a displaced pick never wrote — store the picked track before
-/// reloading. Every other case already rebuilds from `cur_audio`/`cur_sub_sid`.
+/// feeds the demuxer's desired audio index, which a displaced pick never wrote — store the picked
+/// track before reloading. Every other case already rebuilds from `cur_audio`/`cur_sub_sid`.
+///
+/// `desired_audio_idx` is the index the demuxer is currently told to feed (`-1`: the default). It is
+/// the Feed executor's input, so the pump that owns the executor reads it and hands it in; route
+/// reads no backend state.
 #[cfg(feature = "play-feed")]
-pub fn honour_displaced_pick(ps: &mut PlaybackSession, displaced_pick: bool, arm: &str) {
+pub fn honour_displaced_pick(ps: &mut PlaybackSession, displaced_pick: bool, desired_audio_idx: i32, arm: &str) {
     if !displaced_pick {
         return;
     }
@@ -12261,19 +12316,11 @@ pub fn honour_displaced_pick(ps: &mut PlaybackSession, displaced_pick: bool, arm
     if is_transcoding(ps) {
         return;
     }
-    let desired = crate::player::SHARED
-        .desired_audio_idx
-        .load(std::sync::atomic::Ordering::Relaxed);
     if let Some(a) = ps.cur_audio.clone() {
-        if a.ordinal != desired {
+        if a.ordinal != desired_audio_idx {
             crate::player::stage_native_audio(ps, a.ordinal, &a.codec);
         }
     }
-    debug_assert!(
-        ps.cur_audio.as_ref().is_none_or(|a| a.ordinal
-            == crate::player::SHARED.desired_audio_idx.load(std::sync::atomic::Ordering::Relaxed)),
-        "the displaced pick is honoured before a direct reload",
-    );
 }
 
 /// **Menu display truth.** While a user action is queued or in flight the rows show what the

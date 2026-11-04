@@ -1928,9 +1928,9 @@ fn other_arm_with_displaced_pick_stores_index_before_reload() {
     let _g = fresh_registry(&mut ps);
     { let s = &mut ps; s.cur_audio = Some(a3()); s.stream_acodec = "eac3".into(); }
     crate::player::set_audio_track(1);
-    honour_displaced_pick(&mut ps, false, "NativeAudioReload");
+    honour_displaced_pick(&mut ps, false, desired_audio_idx(), "NativeAudioReload");
     assert_eq!(desired_audio_idx(), 1, "no marker, no change");
-    honour_displaced_pick(&mut ps, true, "NativeAudioReload");
+    honour_displaced_pick(&mut ps, true, desired_audio_idx(), "NativeAudioReload");
     assert_eq!(desired_audio_idx(), 3);
     assert_eq!(ps.stream_acodec, "ac3");
     cleanup(&mut ps);

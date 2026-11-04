@@ -1010,6 +1010,9 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     // surviving/replacement Engine after the frame, including its early-return paths. A callback
     // or timeout raised during this tick must reach reports before the app observes Error.
     pa.publish_feed_attempt_view(ps);
+    // The HLS worker's carried link estimate is route's input, delivered here rather than read by it.
+    #[cfg(feature = "play-feed")]
+    ps.observe_link_seed(SHARED.abr_seed());
     pump_frame(ps, pa, now);
     pa.publish_feed_attempt_view(ps);
 }
@@ -1262,7 +1265,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
                         }
                     }
                     crate::route::UserRouteIntent::NativeAudioReload => {
-                        crate::route::honour_displaced_pick(ps, action.displaced_pick, "NativeAudioReload");
+                        crate::route::honour_displaced_pick(ps, action.displaced_pick, SHARED.desired_audio_idx.load(Relaxed), "NativeAudioReload");
                         native_audio_tail(ps, pa, &action, pending_seek, user_target);
                         return;
                     }
@@ -1272,7 +1275,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
                             // the claim stays `Applying`, and the drain at the top of this block
                             // lands it (`adaptive_tail`). The claim offset is where the reload
                             // goes, so presentation holds there for the flight.
-                            crate::route::honour_displaced_pick(ps, action.displaced_pick, "AdaptiveReload");
+                            crate::route::honour_displaced_pick(ps, action.displaced_pick, SHARED.desired_audio_idx.load(Relaxed), "AdaptiveReload");
                             let secs = user_target / 1_000_000_000;
                             match crate::route::execute_adaptive_reload_claim(ps, &action, secs, pending_seek, user_target) {
                                 crate::route::RetranscodeClaimDispatch::Sync(tail) => {
@@ -1286,7 +1289,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
                                                         }
                             }
                         } else {
-                            crate::route::honour_displaced_pick(ps, action.displaced_pick, "AdaptiveReload");
+                            crate::route::honour_displaced_pick(ps, action.displaced_pick, SHARED.desired_audio_idx.load(Relaxed), "AdaptiveReload");
                             crate::route::finish_route_action(
                                 ps,
                                 &action,

@@ -122,6 +122,11 @@ pub struct SeedReadout {
     pub samples: u32,
 }
 
+/// A [`SeedReadout`] with the wall-clock milliseconds since it was last observed. The sink keeps the
+/// estimate; the common adaptive policy ages it, so the physical transport neither chooses nor
+/// copies that policy.
+pub type CarriedSeed = (SeedReadout, u64);
+
 /// Published only after queued media and the AQ-guarded route/controller
 /// commit. All fields belong to the accepted generation, never a grant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
