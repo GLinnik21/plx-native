@@ -185,6 +185,9 @@ const URI_AV1: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-v","t
 const MDE_PMS_OUTPUT: &[u8] = br#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"transcode","Stream":[{"streamType":1,"decision":"copy","codec":"h264"},{"streamType":2,"decision":"transcode","codec":"ac3"}]}]}]}]}}"#;
 
 #[cfg(feature = "play-uri")]
+const MDE_PMS_BURNED_EXTERNAL: &[u8] = br#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"transcode","Stream":[{"streamType":1,"decision":"transcode","codec":"h264"},{"streamType":2,"decision":"transcode","codec":"ac3"},{"streamType":3,"id":31343,"decision":"burn"}]}]}]}]}}"#;
+
+#[cfg(feature = "play-uri")]
 const MDE_PMS_HLS_OUTPUT: &[u8] = br#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"transcode","Stream":[{"streamType":1,"decision":"transcode","codec":"h264"},{"streamType":2,"decision":"transcode","codec":"aac"}]}]}]}]}}"#;
 
 #[cfg(all(feature = "play-uri", feature = "devtriggers"))]
@@ -545,6 +548,39 @@ fn an_accepted_pms_decision_produces_an_owned_uri_offer_from_its_output() {
     assert!(requests.iter().any(|line| line.contains("/decision?")));
     assert!(requests.iter().any(|line| line.contains("/video/:/transcode/universal/stop?")),
         "the accepted PMS encoder is retired at the ordinary timeline-before-stop boundary");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
+#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+fn an_explicit_external_source_pick_can_use_a_server_accepted_burned_wire() {
+    use plx_play_uri::backend::Binding;
+    use plx_playback_contract::Capabilities;
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    assert!(plx_net::net::global_init());
+    let capabilities = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
+        pause: true, seek: true, audio_track: true, subtitle_track: true,
+        audio_off: false, subtitle_off: false };
+    ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
+        crate::route::uri_preflight::ProductEvidence { display_exported: true,
+            binding: Binding::Exported { canvas: (1920, 1080) },
+            callable: capabilities, certified: capabilities, preview_rectangle: false },
+        std::sync::Arc::new(QualifiedPms(std::sync::Arc::new(std::sync::Mutex::new(Vec::new()))))));
+    let (port, done, server) = versions_pms_with(URI_DTS_EXTERNAL_SUBTITLE, MDE_PMS_BURNED_EXTERNAL);
+    let sid = plx_plex::plex::register_for_test("burned-external", "127.0.0.1", port,
+        "token", "burned-external-client");
+    let mut env = ResolveEnv::snapshot(&ps,
+        plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-v");
+    env.subtitle_override = Some(31343);
+    env.sub_sid = 31343;
+    let plan = build_stream(&plx_base::task::OffFrame::for_test(), "rk-v",
+        "/library/parts/3134/1/file.mkv", "h264", "dca", &env);
+    done.send(()).unwrap();
+    let _ = server.join().unwrap();
+    assert_eq!(plan.source_selection.expect("external source intent").subtitle_sid, 31343);
+    assert!(plan.uri_pms.is_some(),
+        "the exact accepted burn is video output, so the external SID needs no native subtitle selection");
     plx_plex::plex::reset_servers_for_test();
 }
 
