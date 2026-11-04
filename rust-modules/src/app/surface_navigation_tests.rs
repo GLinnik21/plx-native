@@ -523,7 +523,6 @@ fn hud_preview_world(name: &str) -> World {
             index: Some(std::sync::Arc::new(index)),
             ..Default::default()
         },
-        gallery_enabled: true,
         app_version: "0.10.0".into(),
         language_tag: "en".into(),
         ..Default::default()

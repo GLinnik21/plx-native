@@ -912,7 +912,7 @@ fn hud_return_to_player_hud(remove: bool) {
     let _g=plx_base::testlock::serial();let _session=scratch_session("hud-ancestor-return");
     let index=plx_data::hudpacks::catalog::parse(include_bytes!("../../../tests/fixtures/hud-gallery/index.json")).unwrap();
     let p=index.entries[0].clone();let sha=p.sha();
-    let list=HudList {gallery_enabled:true,app_version:"0.10.0".into(),language_tag:"en".into(),
+    let list=HudList {app_version:"0.10.0".into(),language_tag:"en".into(),
         catalog:plx_data::hudpacks::catalog::Snapshot {index:Some(std::sync::Arc::new(index)),..Default::default()},
         entries:vec![Entry {id:BUILTIN_CLASSIC.into(),meta:None,sha:None,source:None,trust:Trust::BuiltIn,loadable:Ok(()),until_restart:false,selected:true},
             Entry {id:p.id.clone(),meta:Some(Meta {id:p.id.clone(),name:p.name.clone(),version:p.version,package_format:p.package_format,hud_format:p.hud_format}),

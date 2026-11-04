@@ -455,11 +455,12 @@ fn the_hud_pages_address_field_raises_and_lowers_the_television_keyboard() {
     assert!(before.starts_with("settings/"), "{before}");
     let rows = d.focus().map(|k| k.elem);
     assert!(rows.is_some(), "the page seats a row");
-    // With no store behind the rig the page lists only its address row.
-    frame(&mut d, &mut rig, 32, vec![key(Key::Ok, tick(32))]);
+    // With no store behind the rig the page lists the gallery row and its address row, and seats the first.
+    frame(&mut d, &mut rig, 32, vec![key(Key::Down, tick(32))]);
+    frame(&mut d, &mut rig, 48, vec![key(Key::Ok, tick(48))]);
     assert_eq!(rig.keyboard, [true], "OK on the address row raises the keyboard");
     assert!(path(&d, id).contains("editing=true"), "{}", path(&d, id));
-    frame(&mut d, &mut rig, 48, vec![key(Key::Back, tick(48))]);
+    frame(&mut d, &mut rig, 64, vec![key(Key::Back, tick(64))]);
     assert_eq!(rig.keyboard, [true, false], "BACK lowers it");
     assert!(path(&d, id).contains("editing=false"), "the page is still there: {}", path(&d, id));
     assert_eq!(d.nav.input_owner(), Some(InputOwner::Entry(id)), "BACK closed the field, not the surface");

@@ -1083,7 +1083,6 @@ impl Bridge {
             catalog_date: self.huds.store().catalog().checked_at.and_then(|s| i64::try_from(s).ok())
                 .and_then(plx_platform::i18n::local_calendar_date)
                 .and_then(|[y,m,d]| plx_platform::i18n::current().date_medium(y, m as u8, d as u8)).unwrap_or_default(),
-            gallery_enabled: plx_base::paths::ENV_STEERABLE || plx_base::paths::flavour().is_some(),
             app_version: plx_plex::plex::identity::version().into(),
             language_tag: tag.into(),
             entries: self.huds.store().entries(),

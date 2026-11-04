@@ -21,7 +21,7 @@
 //!
 //! **Layout** per candidate directory: `packs/<sha256>.plxhud` (content-addressed, so an update is
 //! a new file), `installed.json` (id -> sha, source, installed-at), `drop/` (the sideload drop folder).
-//! `index-cache.json` is the registry gallery's dated conditional-GET cache ([`catalog`]); boot reads cached revocations, while only a settings visit authorizes an index GET.
+//! `index-cache.json` is the registry gallery's dated conditional-GET cache of the signed index ([`catalog`], verified again on every load); boot reads cached revocations, while only a settings visit authorizes an index GET.
 //! A listing reads every candidate; one sha found in two of them is one package; for one id the higher
 //! `version` wins, and on a tie the earlier candidate.
 //!
