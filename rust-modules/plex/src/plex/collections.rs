@@ -451,6 +451,7 @@ mod tests {
     // `malformed_2xx_remains_a_response_after_its_deadline_passes` for the same gating.
     #[cfg(feature = "devtriggers")]
     fn outcome_for(status: &str) -> Option<CollectionOutcome> {
+        use plx_base::testnet::{self, CLIENT_WAIT};
         // The agent sandbox denies loopback binds; the coordinator and ordinary host suite run
         // this branch. This is the same skip convention used by the transport's own tests.
         let Ok(listener) = std::net::TcpListener::bind("127.0.0.1:0") else {
@@ -458,8 +459,7 @@ mod tests {
         };
         let port = listener.local_addr().unwrap().port();
         let status = status.to_string();
-        let server = std::thread::spawn(move || {
-            let (mut socket, _) = listener.accept().expect("accept collection request");
+        let server = testnet::serve_once(listener, CLIENT_WAIT, move |mut socket| {
             let mut request = [0u8; 4096];
             let n = socket.read(&mut request).expect("read collection request");
             let request = String::from_utf8_lossy(&request[..n]);
