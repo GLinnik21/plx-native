@@ -120,6 +120,44 @@ impl Variant {
     }
 }
 
+/// Everything the trigger file asks for: the [`Variant`] (empty or one word) and, as `key=N` words
+/// in any order, the native adaptive-streaming rates in bit/s which the `load` payload carries
+/// (`bpsstart`, `bpsmax`, `bpsmin`; each at most once, from 1 to [`MAX_ABR_BPS`]). `load
+/// bpsmax=1500000` and `bpsmax=1500000` (the default variant) both arm it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Trigger {
+    pub variant: Variant,
+    pub bps: AbrBps,
+}
+
+impl Trigger {
+    /// The arming a trigger file's text names; `None` for text that names none (an unknown word,
+    /// a second word, an unknown or repeated key, a rate that is not a number from 1 to the
+    /// bound), so the driver can say so instead of quietly arming something else.
+    pub fn from_trigger(content: &str) -> Option<Trigger> {
+        let mut bps = AbrBps::default();
+        let mut word = None;
+        for token in content.split_whitespace() {
+            let Some((key, rate)) = token.split_once('=') else {
+                if word.replace(token).is_some() {
+                    return None;
+                }
+                continue;
+            };
+            let slot = match key.to_ascii_lowercase().as_str() {
+                "bpsstart" => &mut bps.start,
+                "bpsmax" => &mut bps.maximum,
+                "bpsmin" => &mut bps.minimum,
+                _ => return None,
+            };
+            if slot.replace(AbrBps::parse_rate(rate)?).is_some() {
+                return None;
+            }
+        }
+        Some(Trigger { variant: Variant::from_trigger(word.unwrap_or(""))?, bps })
+    }
+}
+
 /// The URL's scheme. A refused HTTPS load may be a certificate problem in the service's pipeline
 /// and not the window; the `armed` line carries this so the log can tell them apart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -166,12 +204,14 @@ pub struct Config {
     pub app_id: String,
     /// Run the transport script after `playing` ([`Variant::Drive`]).
     pub transport: bool,
+    /// The native adaptive-streaming rates the `load` payload carries (usually none).
+    pub bps: AbrBps,
 }
 
 // ---------------------------------------------------------------------------------------------
 // Payloads. The only place a URL is spelled into text.
 
-pub use super::uri_protocol::{build_load, parse_event, scrub_text, MediaId, Message, Method, UriCall};
+pub use super::uri_protocol::{build_load, parse_event, scrub_text, AbrBps, MediaId, Message, Method, UriCall, MAX_ABR_BPS};
 use super::uri_protocol::VideoFacts;
 use super::uri_protocol::{Ev, Seen};
 #[cfg(test)]
@@ -557,7 +597,7 @@ impl UriProbe {
             Kind::Direct => "direct",
             Kind::Hls => "hls",
         };
-        let armed = format!("armed variant={} scheme={} kind={kind} window={window} app={}", c.variant.label(), c.scheme.label(), c.app_id);
+        let armed = format!("armed variant={} scheme={} kind={kind} window={window} app={}{}", c.variant.label(), c.scheme.label(), c.app_id, c.bps.label());
         fx.push(self.line(now_ms, &armed));
         if self.config.variant.acb() { self.acb_dispatch(AcbStep::Check, now_ms, fx); }
         else {
@@ -672,7 +712,7 @@ impl UriProbe {
                     self.phase = Phase::Loading { deadline: now_ms + LOAD_TIMEOUT_MS };
                     let window_id = if self.config.variant.acb() { Some("window_id_dummy".to_owned()) }
                         else if self.config.variant.binds_at_load() { self.config.window_id.clone() } else { None };
-                    fx.push(UriEffect::Call(UriCall::Load { window_id }));
+                    fx.push(UriEffect::Call(UriCall::Load { window_id, bps: self.config.bps }));
                 } else {
                     fx.push(self.line(now_ms, &format!("register shape={shape} refused({})", message.why())));
                     self.next_shape_or_stop(now_ms, End::Refused("register"), fx);
@@ -1137,6 +1177,7 @@ mod tests {
             window_id: window.map(str::to_owned),
             app_id: "com.test.app".to_owned(),
             transport: variant.drives(),
+            bps: AbrBps::default(),
         }
     }
 
@@ -1212,7 +1253,7 @@ mod tests {
         logs(fx).into_iter().find(|l| l.contains(" summary ")).expect("a summary line")
     }
     fn load(window: Option<&str>) -> UriEffect {
-        call(UriCall::Load { window_id: window.map(str::to_owned) })
+        call(UriCall::Load { window_id: window.map(str::to_owned), bps: AbrBps::default() })
     }
     fn media(id: &str) -> MediaId {
         id.into()
@@ -1648,6 +1689,76 @@ mod tests {
         assert_eq!(logs(&fx), ["uriprobe: t=0 ev=unknown (unparsed)"]);
     }
 
+    // ------------------------------------------------------------------ adaptive-streaming facts
+
+    #[test]
+    fn buffer_range_logs_the_buffer_health_fields() {
+        let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
+        rig.loading();
+        let fx = rig.msg("subscribe", r#"{"mediaId":"_m1","bufferRange":{"beginTime":0,"endTime":58,"remainingTime":12,"percent":40}}"#);
+        assert_eq!(logs(&fx), ["uriprobe: t=0 ev=bufferRange beginTime=0 endTime=58 remainingTime=12 percent=40"]);
+        // a firmware which sends only the old pair still logs it
+        let fx = rig.msg("subscribe", r#"{"mediaId":"_m1","bufferRange":{"beginTime":3,"endTime":9}}"#);
+        assert_eq!(logs(&fx), ["uriprobe: t=0 ev=bufferRange beginTime=3 endTime=9"]);
+    }
+
+    #[test]
+    fn streaming_info_logs_the_two_bitrates_as_numbers_and_no_other_field() {
+        let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
+        rig.loading();
+        let payload = format!(r#"{{"mediaId":"_m1","streamingInfo":{{"instantBitrate":8000000,"totalBitrate":2000000.5,"host":"192.168.1.5","uri":"{URL}"}}}}"#);
+        let fx = rig.msg("subscribe", &payload);
+        assert_eq!(logs(&fx), ["uriprobe: t=0 ev=streamingInfo instantBitrate=8000000 totalBitrate=2000000.5"]);
+        assert_clean("streamingInfo", &logs(&fx).join("\n"));
+    }
+
+    #[test]
+    fn streaming_info_never_logs_a_string_even_under_a_listed_key() {
+        let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
+        rig.loading();
+        // A host under a key the probe reads, a word `scalar` would print for a codec, a boolean and
+        // a `{num, den}` pair: none is a bit rate, so none is shown.
+        let payload = format!(
+            r#"{{"mediaId":"_m1","streamingInfo":{{"instantBitrate":"{URL}","totalBitrate":"hevc"}}}}"#
+        );
+        let fx = rig.msg("subscribe", &payload);
+        assert_eq!(logs(&fx), ["uriprobe: t=0 ev=streamingInfo"]);
+        let fx = rig.msg("subscribe", r#"{"mediaId":"_m1","streamingInfo":{"instantBitrate":"192.168.1.5","totalBitrate":{"num":1,"den":2}}}"#);
+        assert_eq!(logs(&fx), ["uriprobe: t=0 ev=streamingInfo"]);
+        let fx = rig.msg("subscribe", r#"{"mediaId":"_m1","streamingInfo":{"instantBitrate":true,"totalBitrate":4000000}}"#);
+        assert_eq!(logs(&fx), ["uriprobe: t=0 ev=streamingInfo totalBitrate=4000000"]);
+        // the same through the decoder, whose diagnostic projection is what the machine prints
+        let message = parse_event(&payload);
+        let seen = message.seen.iter().find(|s| s.ev == Ev::StreamingInfo).unwrap();
+        assert_eq!(seen.detail, "");
+        assert_clean("Message", &format!("{message:?}"));
+    }
+
+    #[test]
+    fn customized_streaming_info_logs_the_ladder_size_and_position() {
+        let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
+        rig.loading();
+        let payload = format!(r#"{{"mediaId":"_m1","customizedStreamingInfo":{{"numOfRates":4,"currentIndexOfRate":1,"uri":"{URL}"}}}}"#);
+        let fx = rig.msg("subscribe", &payload);
+        assert_eq!(logs(&fx), ["uriprobe: t=0 ev=customizedStreamingInfo numOfRates=4 currentIndexOfRate=1"]);
+        assert_clean("customizedStreamingInfo", &logs(&fx).join("\n"));
+        let message = parse_event(&payload);
+        assert!(message.normalized.contains(&Ev::CustomizedStreamingInfo), "an object is a supported event");
+        // strings are not counts
+        let fx = rig.msg("subscribe", r#"{"mediaId":"_m1","customizedStreamingInfo":{"numOfRates":"4","currentIndexOfRate":"hevc"}}"#);
+        assert_eq!(logs(&fx), ["uriprobe: t=0 ev=customizedStreamingInfo"]);
+    }
+
+    #[test]
+    fn video_info_adds_the_bitrates_only_when_present() {
+        let mut rig = Rig::new(Variant::AtLoad, None);
+        rig.loading();
+        let fx = rig.msg("subscribe", r#"{"mediaId":"_m1","videoInfo":{"width":1280,"height":720,"codec":"H264","currentBitrate":2000000,"contentBitrate":8000000}}"#);
+        assert_eq!(logs(&fx), ["uriprobe: t=0 ev=videoInfo width=1280 height=720 codec=H264 currentBitrate=2000000 contentBitrate=8000000"]);
+        let fx = rig.msg("subscribe", r#"{"mediaId":"_m1","videoInfo":{"width":1280,"height":720,"codec":"H264"}}"#);
+        assert_eq!(logs(&fx), ["uriprobe: t=0 ev=videoInfo width=1280 height=720 codec=H264"]);
+    }
+
     // ------------------------------------------------------------------ privacy
 
     fn assert_clean(what: &str, text: &str) {
@@ -1785,14 +1896,38 @@ mod tests {
     #[test]
     fn build_load_escapes_the_url_and_carries_the_window_only_when_given() {
         let tricky = r#"http://h:1/a b?q="x"&r=\y"#;
-        let with = build_load(tricky, "com.test.app", Some(WINDOW));
+        let with = build_load(tricky, "com.test.app", Some(WINDOW), AbrBps::default());
         let value: Value = serde_json::from_str(&with).expect("valid JSON");
         assert_eq!(value["uri"], tricky);
         assert_eq!(value["type"], "media");
         assert_eq!(value["payload"]["option"]["appId"], "com.test.app");
         assert_eq!(value["payload"]["option"]["windowId"], WINDOW);
-        let without: Value = serde_json::from_str(&build_load(tricky, "com.test.app", None)).unwrap();
+        let without: Value = serde_json::from_str(&build_load(tricky, "com.test.app", None, AbrBps::default())).unwrap();
         assert!(without["payload"]["option"].get("windowId").is_none());
+        // no rates asked for: the option is exactly what it was before they existed
+        assert!(!with.contains("adaptiveStreaming"));
+        assert_eq!(without["payload"]["option"], serde_json::json!({ "appId": "com.test.app" }));
+    }
+
+    #[test]
+    fn build_load_nests_the_asked_rates_under_adaptive_streaming_bps() {
+        let all = AbrBps { start: Some(720_000), maximum: Some(2_000_000), minimum: Some(320_000) };
+        let value: Value = serde_json::from_str(&build_load("http://h/x", "com.test.app", Some(WINDOW), all)).unwrap();
+        assert_eq!(
+            value["payload"]["option"],
+            serde_json::json!({
+                "appId": "com.test.app",
+                "windowId": WINDOW,
+                "adaptiveStreaming": { "bps": { "start": 720_000, "maximum": 2_000_000, "minimum": 320_000 } },
+            })
+        );
+        // only the rates given appear
+        let cap = AbrBps { maximum: Some(720_000), ..AbrBps::default() };
+        let value: Value = serde_json::from_str(&build_load("http://h/x", "com.test.app", None, cap)).unwrap();
+        assert_eq!(value["payload"]["option"]["adaptiveStreaming"], serde_json::json!({ "bps": { "maximum": 720_000 } }));
+        assert!(value["payload"]["option"]["adaptiveStreaming"]["bps"].get("start").is_none());
+        // rates are JSON integers, not strings
+        assert!(value["payload"]["option"]["adaptiveStreaming"]["bps"]["maximum"].is_u64());
     }
 
     #[test]
@@ -1808,7 +1943,7 @@ mod tests {
             let got: Value = serde_json::from_str(&call.payload().unwrap()).unwrap();
             assert_eq!((call.method(), got), (method, want));
         }
-        let load = UriCall::Load { window_id: None };
+        let load = UriCall::Load { window_id: None, bps: AbrBps::default() };
         assert_eq!((load.method(), load.payload()), ("load", None));
     }
 
@@ -1827,6 +1962,60 @@ mod tests {
         ] {
             assert_eq!(Variant::from_trigger(text), want, "{text:?}");
         }
+    }
+
+    #[test]
+    fn the_trigger_text_adds_the_rates_to_any_variant() {
+        let bps = |start, maximum, minimum| AbrBps { start, maximum, minimum };
+        for (text, want) in [
+            ("load", Some((Variant::AtLoad, AbrBps::default()))),
+            ("", Some((Variant::AtLoad, AbrBps::default()))),
+            ("load bpsmax=720000\n", Some((Variant::AtLoad, bps(None, Some(720_000), None)))),
+            ("bpsmax=720000", Some((Variant::AtLoad, bps(None, Some(720_000), None)))),
+            ("bpsmax=720000 late", Some((Variant::Late, bps(None, Some(720_000), None)))),
+            ("drive bpsstart=320000 bpsmax=2000000  bpsmin=320000", Some((Variant::Drive, bps(Some(320_000), Some(2_000_000), Some(320_000))))),
+            (" LOAD BpsMax=1000000000 ", Some((Variant::AtLoad, bps(None, Some(MAX_ABR_BPS), None)))),
+            ("load bpsmin=1", Some((Variant::AtLoad, bps(None, None, Some(1))))),
+        ] {
+            let want = want.map(|(variant, bps)| Trigger { variant, bps });
+            assert_eq!(Trigger::from_trigger(text), want, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_trigger_with_junk_arms_nothing() {
+        for text in [
+            "load bpsmax=",
+            "load bpsmax=abc",
+            "load bpsmax=0",
+            "load bpsmax=-5",
+            "load bpsmax=+5",
+            "load bpsmax=1.5",
+            "load bpsmax=720k",
+            "load bpsmax=1000000001",
+            "load bpsmax=4294967296",
+            "load bpsmax=99999999999999999999",
+            "load bpsmax=720000 bpsmax=720000",
+            "load bpsmaximum=720000",
+            "load bps=720000",
+            "load nope=1",
+            "load late",
+            "late drive",
+            "bpsmax=720000 lates",
+            "http://x?a=1",
+        ] {
+            assert_eq!(Trigger::from_trigger(text), None, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn the_armed_line_names_the_rates_only_when_given_and_the_load_carries_them() {
+        let bps = AbrBps { start: Some(320_000), maximum: Some(720_000), minimum: None };
+        let mut rig = Rig { probe: UriProbe::new(Config { bps, ..config(Variant::AtLoad, Some(WINDOW)) }), now: 1_000 };
+        let fx = rig.start();
+        assert_eq!(logs(&fx), ["uriprobe: t=0 armed variant=at-load scheme=https kind=direct window=exported app=com.test.app bpsstart=320000 bpsmax=720000"]);
+        let fx = rig.msg("register", "");
+        assert!(fx.contains(&call(UriCall::Load { window_id: Some(WINDOW.to_owned()), bps })), "{fx:?}");
     }
 
     #[test]

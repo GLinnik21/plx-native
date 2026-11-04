@@ -1990,6 +1990,7 @@ class PipelineTier(unittest.TestCase):
         cfg = {"tv": "test-tv", "extra_triggers": [("plxnative-uriprobe", "load")]}
         server = mock.Mock()
         server.stats.return_value = (1, 0, 0)
+        server.segment_rungs.return_value = {}
         with mock.patch.object(run, "require_tv"), mock.patch.object(run, "make"), \
                 mock.patch.object(run, "apply_triggers") as arm, \
                 mock.patch.object(run, "early_exit_allowed", return_value=(False, None)), \
@@ -2004,6 +2005,49 @@ class PipelineTier(unittest.TestCase):
         self.assertIs(grade.call_args.args[0], case)
         self.assertFalse(passed)
         self.assertEqual(results, [("video_bound", False, "missing")])
+
+    def test_the_uri_ladder_cases_serve_the_ladder_master_and_arm_the_probe(self):
+        cases = {c["name"]: c for c in self._pipeline_cases()}
+        collapse, capped = cases["pipe_abr_uri_ladder_collapse"], cases["pipe_abr_uri_ladder_capped"]
+        for case in (collapse, capped):
+            self.assertTrue(serve_fixtures.RE_ABR_LADDER.match("/" + case["fixture"]), case["fixture"])
+            self.assertNotIn("auto_network", case, "the app's own ABR controller never runs in URI mode")
+            files = dict(run.triggers_for_case(case, url_base="http://fixture.invalid"))
+            self.assertEqual(json.loads(files["plxnative-playurl"])["url"],
+                             "http://fixture.invalid/__abr/ladder/master.m3u8")
+        self.assertEqual(dict(run.triggers_for_case(collapse, url_base="http://fixture.invalid"))["plxnative-uriprobe"],
+                         "load")
+        # the link is the sibling's, so the two cases differ in the controller under test only
+        self.assertEqual(collapse["network_profile"], cases["pipe_abr_down_collapse"]["network_profile"])
+        self.assertNotIn("network_profile", capped, "the capped case runs on an unshaped link")
+        # the cap is the second-lowest rung's BANDWIDTH, and the trigger parses as the probe's syntax
+        second_lowest = int(serve_fixtures.ABR_RUNGS.split("|")[1]) * 1000
+        text = dict(run.triggers_for_case(capped, url_base="http://fixture.invalid"))["plxnative-uriprobe"]
+        self.assertEqual(text, f"load bpsmax={second_lowest}")
+
+    def test_a_ladder_case_needs_every_rung_clip_and_no_file_of_its_own(self):
+        def fresh():
+            return [{"name": "ladder", "fixture": "__abr/ladder/master.m3u8"}]
+
+        with tempfile.TemporaryDirectory() as root:
+            cases = fresh()
+            run._resolve_fixtures(cases, root)
+            self.assertNotIn("path", cases[0])
+            for rung_file in serve_fixtures.ABR_FIXTURE.values():
+                self.assertIn(rung_file, cases[0]["skip"], "every missing clip is named")
+            for rung_file in serve_fixtures.ABR_FIXTURE.values():
+                with open(os.path.join(root, rung_file), "wb") as stream:
+                    stream.write(b"\0")
+            partial = os.path.join(root, serve_fixtures.ABR_FIXTURE["22000"])
+            os.rename(partial, partial + ".gone")
+            cases = fresh()
+            run._resolve_fixtures(cases, root)
+            self.assertIn(serve_fixtures.ABR_FIXTURE["22000"], cases[0]["skip"])
+            os.rename(partial + ".gone", partial)
+            cases = fresh()
+            run._resolve_fixtures(cases, root)
+            self.assertNotIn("skip", cases[0])
+            self.assertIn("path", cases[0])
 
     def test_every_case_ends_with_a_path_or_a_skip(self):
         """The invariant behind `case["fixture"]`/`case["path"]` downstream. Run against an EMPTY
@@ -2832,11 +2876,19 @@ class AutoNetworkProfile(unittest.TestCase):
         same disturbance to the media-segment COUNT, which makes it exact instead of a phase
         coincidence. The rule this test enforces is unchanged — a case that DISTURBS the link must
         assert what the controller does about it — and "disturbs" is what widened, not the duty.
+
+        SCOPED AGAIN on 2026-11-04 for a FOURTH family, `pipe_abr_uri_*`: URI mode hands the
+        playlist to the television's own player, so the app's controller never runs and there is no
+        `abr:` line for an `abr_shape` bound to read. The family measures that native player (what
+        it fetches, per rung, and what its events report), one case collapses the link and one
+        leaves it alone; `test_the_uri_ladder_cases_serve_the_ladder_master_and_arm_the_probe`
+        is their rule.
         """
         shaped = [c for c in _manifest()["pipeline_cases"]
                   if c["name"].startswith("pipe_abr_")
                   and not c["name"].startswith("pipe_abr_pin_")
-                  and not c["name"].startswith("pipe_abr_band_")]
+                  and not c["name"].startswith("pipe_abr_band_")
+                  and not c["name"].startswith("pipe_abr_uri_")]
         self.assertGreaterEqual(len(shaped), 4, "the bad-network profiles are missing")
         for case in shaped:
             with self.subTest(case["name"]):
@@ -5181,6 +5233,106 @@ class AbrResponseProfile(unittest.TestCase):
         shape = case["expect"]["abr_shape"]
         self.assertEqual(shape["floor_kbps"], 22000)
         self.assertGreaterEqual(shape["decoded_width_floor"], 3800)
+
+
+class AbrLadderMaster(unittest.TestCase):
+    """`/__abr/ladder/master.m3u8`: every rung as its own variant, for a player that chooses itself."""
+
+    def _server(self):
+        srv = serve_fixtures.FixtureServer.__new__(serve_fixtures.FixtureServer)
+        srv.lock = threading.Lock()
+        srv.abr_response_profile = {}
+        srv.abr_response_counts = {}
+        srv.abr_response_generations = {}
+        srv.rung_segments = {}
+        return srv
+
+    def _playlist(self, srv, path):
+        handler = serve_fixtures.FixtureHandler.__new__(serve_fixtures.FixtureHandler)
+        handler.server = srv
+        handler.path = path
+        return handler._abr_playlist().decode()
+
+    @staticmethod
+    def _variants(text):
+        """[(bandwidth, resolution, uri)] in playlist order."""
+        rows = text.splitlines()
+        out = []
+        for i, row in enumerate(rows):
+            if row.startswith("#EXT-X-STREAM-INF:"):
+                attrs = dict(kv.split("=", 1) for kv in row.split(":", 1)[1].split(","))
+                out.append((int(attrs["BANDWIDTH"]), attrs["RESOLUTION"], rows[i + 1]))
+        return out
+
+    def test_it_lists_every_rung_lowest_first_pointing_at_that_rungs_own_media_playlist(self):
+        text = self._playlist(self._server(), "/__abr/ladder/master.m3u8")
+        self.assertTrue(text.startswith("#EXTM3U\n#EXT-X-VERSION:3\n"))
+        rungs = serve_fixtures.ABR_RUNGS.split("|")
+        self.assertEqual(
+            self._variants(text),
+            [(int(r) * 1000, serve_fixtures.ABR_RASTER[r], f"/__abr/{r}/media.m3u8") for r in rungs])
+        self.assertEqual(rungs[:2], ["320", "720"], "the manifest caps at the second-lowest rung")
+        bandwidths = [bw for bw, _, _ in self._variants(text)]
+        self.assertEqual(bandwidths, sorted(bandwidths))
+
+    def test_the_single_rung_master_is_unchanged(self):
+        self.assertEqual(
+            self._playlist(self._server(), "/__abr/720/master.m3u8"),
+            "#EXTM3U\n#EXT-X-VERSION:3\n"
+            "#EXT-X-STREAM-INF:BANDWIDTH=720000,RESOLUTION=854x480\nmedia.m3u8\n")
+
+    def test_a_response_profile_composes_per_rung(self):
+        srv = self._server()
+        srv.set_abr_response_profile({"22000": ["2000", "22000"]})
+        first = self._variants(self._playlist(srv, "/__abr/ladder/master.m3u8"))
+        top = first[-1]
+        self.assertEqual(top, (2_000_000, "1280x720", "/__abr/22000/media.m3u8?fixtureGeneration=1"),
+                         "the first fresh master maps 22000 to the 2000 rendition, as its own master would")
+        self.assertTrue(all("fixtureGeneration" not in uri for _, _, uri in first[:-1]),
+                        "unprofiled rungs are untouched")
+        media = self._playlist(srv, "/__abr/22000/media.m3u8?fixtureGeneration=1")
+        self.assertIn("segment.ts?sequence=0&fixtureGeneration=1", media)
+        second = self._variants(self._playlist(srv, "/__abr/ladder/master.m3u8"))
+        self.assertEqual(second[-1], (22_000_000, "3840x2160", "/__abr/22000/media.m3u8?fixtureGeneration=2"))
+        # the ordinary single-rung master still allocates from the same counter
+        self.assertIn("fixtureGeneration=3", self._playlist(srv, "/__abr/22000/master.m3u8"))
+
+    def test_segment_requests_are_counted_by_the_rung_in_the_request_path(self):
+        with tempfile.TemporaryDirectory() as root:
+            for rung in ("320", "720"):
+                with open(os.path.join(root, serve_fixtures.ABR_FIXTURE[rung]), "wb") as stream:
+                    stream.write(b"fixture")
+            srv = serve_fixtures.FixtureServer(root, 0, bind="127.0.0.1")
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            try:
+                self.assertEqual(srv.segment_rungs(), {})
+                conn = http.client.HTTPConnection(*srv.server_address, timeout=5)
+
+                def get(path):
+                    conn.request("GET", path)
+                    response = conn.getresponse()
+                    response.read()
+                    return response.status
+
+                self.assertEqual(get("/__abr/ladder/master.m3u8"), 200)
+                self.assertEqual(get("/__abr/320/media.m3u8"), 200)
+                self.assertEqual(srv.segment_rungs(), {}, "playlists carry no media")
+                for path in ("/__abr/720/segment.ts?sequence=0", "/__abr/320/segment.ts?sequence=0",
+                             "/__abr/720/segment.ts?sequence=1"):
+                    self.assertEqual(get(path), 200)
+                self.assertEqual(get("/__abr/2000/segment.ts?sequence=0"), 404,
+                                 "this pack has no 720p clip and the 1080p fallback is refused for it")
+                conn.close()
+            finally:
+                srv.shutdown()
+                srv.server_close()
+        self.assertEqual(list(srv.segment_rungs().items()), [("320", 1), ("720", 2)],
+                         "lowest rung first; a 404 is not a fetch")
+
+    def test_the_case_line_reports_only_what_this_case_fetched(self):
+        self.assertEqual(run.rung_segments_line({"320": 1}, {"320": 1, "720": 3, "2000": 2}), "720=3 2000=2")
+        self.assertEqual(run.rung_segments_line({"320": 1, "720": 2}, {"320": 4, "720": 2}), "320=3")
+        self.assertEqual(run.rung_segments_line({}, {}), "")
 
 
 class SharedLinkShaping(unittest.TestCase):

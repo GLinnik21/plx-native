@@ -2,7 +2,7 @@
 //! admission. The native session and every bus request stay behind `Lifecycle`.
 use crate::session_io;
 use crate::uri_lifecycle::{Event as LifeEvent, Fx as LifeFx, Lifecycle, Phase};
-use crate::uri_protocol::{Ev, Message, Method, UriCall};
+use crate::uri_protocol::{AbrBps, Ev, Message, Method, UriCall};
 use plx_base::task::MainThread;
 use plx_platform::tv::sink::{DisplaySink, VP_EXPORTED};
 use plx_platform::tv::uri::{Shape, UriMedia};
@@ -361,7 +361,7 @@ impl UriBackend {
             return;
         }
         if method == Method::Register {
-            self.feed(LifeEvent::Call(UriCall::Load { window_id: self.window_id.clone() }), mt, now_ms);
+            self.feed(LifeEvent::Call(UriCall::Load { window_id: self.window_id.clone(), bps: AbrBps::default() }), mt, now_ms);
             return;
         }
         if method == Method::Load {
