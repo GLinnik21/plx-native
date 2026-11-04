@@ -3,6 +3,7 @@
 use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
+use plx_base::testnet::{self, accept_client, CLIENT_WAIT, LOOPBACK_DEADLINE};
 
 #[test]
 fn a_deadline_sentinel_is_never_retried_as_stale_eintr() {
@@ -38,13 +39,18 @@ fn an_absolute_read_deadline_beats_the_socket_inactivity_timeout() {
     );
 }
 
+/// The caller's deadline is [`LOOPBACK_DEADLINE`], not a few milliseconds: `http_open_until_result`
+/// returns `Deadline` WITHOUT dialing once the instant has passed, and a loaded host can carry 80 ms
+/// past before the opener's first `connect`, which left the silent peer's `accept` waiting for a
+/// client that never came. Two seconds is far above any delay a loaded host adds to a loopback
+/// connect and the request head, so the open always reaches the header wait this test grades, and
+/// stays under the 15 s inactivity budget, so the CALLER's deadline is what stops it.
 #[test]
 fn a_typed_open_reports_the_header_deadline_that_stopped_it() {
     let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = srv.local_addr().unwrap().port();
     let (release_tx, release_rx) = std::sync::mpsc::channel();
-    let server = std::thread::spawn(move || {
-        let (_silent_peer, _) = srv.accept().expect("accept");
+    let server = testnet::serve_once(srv, CLIENT_WAIT, move |_silent_peer| {
         let _ = release_rx.recv();
     });
 
@@ -59,7 +65,7 @@ fn a_typed_open_reports_the_header_deadline_that_stopped_it() {
         path.as_ptr(),
         std::ptr::null(),
         "GET",
-        started + std::time::Duration::from_millis(80),
+        started + LOOPBACK_DEADLINE,
         &mut NoCheckpoint,
     );
     let took = started.elapsed();
@@ -73,8 +79,8 @@ fn a_typed_open_reports_the_header_deadline_that_stopped_it() {
         "a deadline failure must retire the published fd"
     );
     assert!(
-        took >= std::time::Duration::from_millis(50)
-            && took < std::time::Duration::from_secs(2),
+        took >= LOOPBACK_DEADLINE / 2
+            && took < std::time::Duration::from_millis(MEDIA_RECV_TIMEOUT_MS as u64),
         "typed open deadline took {took:?}"
     );
 }
@@ -248,7 +254,7 @@ fn an_open_stalled_in_the_header_read_is_interruptible() {
             );
             (rv, t0.elapsed())
         });
-        let _peer = srv.accept().expect("accept"); // held open, never written to
+        let _peer = accept_client(&srv, CLIENT_WAIT); // held open, never written to
         std::thread::sleep(std::time::Duration::from_millis(200)); // let it reach the recv
         http_shutdown(addr as *mut HttpStream);
         opener.join().unwrap()

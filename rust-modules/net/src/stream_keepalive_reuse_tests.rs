@@ -3,6 +3,7 @@
 use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
+use plx_base::testnet::{accept_client, CLIENT_WAIT};
 
 #[test]
 fn two_drained_gets_reuse_one_accept() {
@@ -254,7 +255,8 @@ fn a_media_get_omits_connection_close() {
     let port = srv.local_addr().unwrap().port();
     std::thread::scope(|sc| {
         sc.spawn(|| {
-            let Ok((mut s, _)) = srv.accept() else { return };
+            let (mut s, _) = accept_client(&srv, CLIENT_WAIT);
+            let _ = s.set_read_timeout(Some(CLIENT_WAIT));
             let mut buf = [0u8; 2048];
             let n = s.read(&mut buf).unwrap_or(0);
             assert!(
@@ -291,7 +293,8 @@ fn shutdown_after_an_idle_peer_close_does_not_redial() {
     let accepts = std::sync::atomic::AtomicUsize::new(0);
     std::thread::scope(|sc| {
         sc.spawn(|| {
-            let Ok((mut s, _)) = srv.accept() else { return };
+            let (mut s, _) = accept_client(&srv, CLIENT_WAIT);
+            let _ = s.set_read_timeout(Some(CLIENT_WAIT));
             accepts.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             let mut buf = [0u8; 1024];
             let _ = s.read(&mut buf);
@@ -350,7 +353,8 @@ fn teardown_during_keepalive_transport_redial_does_not_dial() {
     let accepts = std::sync::atomic::AtomicUsize::new(0);
     std::thread::scope(|sc| {
         sc.spawn(|| {
-            let Ok((mut s, _)) = srv.accept() else { return };
+            let (mut s, _) = accept_client(&srv, CLIENT_WAIT);
+            let _ = s.set_read_timeout(Some(CLIENT_WAIT));
             accepts.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             let mut buf = [0u8; 1024];
             let _ = s.read(&mut buf);
@@ -410,7 +414,8 @@ fn an_idle_peer_close_redials_instead_of_failing_the_next_get() {
     std::thread::scope(|sc| {
         sc.spawn(|| {
             for _ in 0..2 {
-                let Ok((mut s, _)) = srv.accept() else { return };
+                let (mut s, _) = accept_client(&srv, CLIENT_WAIT);
+                let _ = s.set_read_timeout(Some(CLIENT_WAIT));
                 accepts.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                 let mut buf = [0u8; 1024];
                 let _ = s.read(&mut buf);
