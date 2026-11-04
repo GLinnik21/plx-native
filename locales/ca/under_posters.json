@@ -1,6 +1,6 @@
 {
   "under_posters.title": "Sota els pòsters",
-  "under_posters.detail": "Sota els pòsters, per a pel·lícules i sèries.",
+  "under_posters.detail": "Detalls sota els pòsters.",
   "under_posters.copy": "La majoria dels pòsters ja mostren el títol. Tria què hi apareix a sota, tant per a pel·lícules com per a sèries. La previsualització utilitza la biblioteca que has obert per última vegada.",
   "under_posters.title_row": "Títol",
   "under_posters.title_detail": "El nom, en negreta.",
@@ -10,7 +10,7 @@
   "under_posters.year_length": "Any · Durada",
   "under_posters.genre": "Gènere",
   "under_posters.video": "Vídeo",
-  "under_posters.video_detail": "Si no hi ha una qualitat de vídeo única, una sèrie mostra l'any.",
+  "under_posters.video_detail": "Si la qualitat varia, es mostra l'any de la sèrie.",
   "under_posters.age_rating_score": "Classificació · Valoració",
   "under_posters.none": "Res",
   "under_posters.reset": "Restableix",

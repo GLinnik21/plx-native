@@ -203,7 +203,7 @@
   "browse.detail.full_screen_hint": "{key} Pantalla completa",
   "browse.auth.discovery_trouble": "Plex no respon. Ho continuem intentant…",
   "browse.auth.signin_refused": "Plex no ha acceptat aquest inici de sessió. Torna-ho a provar.",
-  "browse.auth.servers_unreachable": "plex.tv ha retornat els teus servidors, però cap no ha respost. Comprova que Plex Media Server estigui encès i connectat, i torna-ho a provar.",
+  "browse.auth.servers_unreachable": "Cap servidor Plex no respon. Comprova que Plex Media Server estigui encès i connectat.",
   "browse.auth.plex_tls": "Aquest televisor no s'ha pogut connectar de manera segura amb plex.tv. Comprova la data i l'hora del televisor i torna-ho a provar.",
   "browse.auth.plex_unavailable": "plex.tv té problemes en aquests moments; no s'han comprovat els teus servidors. Torna-ho a provar d'aquí a uns minuts.",
   "browse.auth.profile_signin_refused": "plex.tv ha rebutjat l'inici de sessió de {profile}. Torna-ho a provar.",
@@ -215,9 +215,9 @@
     "other": "No s'ha trobat plex.tv i no s'han comprovat els teus servidors. S'han fet {count} intents. Comprova la connexió a Internet del televisor."
   },
   "browse.auth.plex_connect_retry": {
-    "one": "No s'ha pogut connectar amb plex.tv i no s'han comprovat els teus servidors. S'ha fet un intent. Comprova la connexió a Internet del televisor.",
-    "many": "No s'ha pogut connectar amb plex.tv i no s'han comprovat els teus servidors. S'han fet {count} intents. Comprova la connexió a Internet del televisor.",
-    "other": "No s'ha pogut connectar amb plex.tv i no s'han comprovat els teus servidors. S'han fet {count} intents. Comprova la connexió a Internet del televisor."
+    "one": "No s'ha pogut connectar amb plex.tv ni consultar els servidors. Un intent. Comprova Internet al televisor.",
+    "many": "No s'ha pogut connectar amb plex.tv ni consultar els servidors. {count} intents. Comprova Internet al televisor.",
+    "other": "No s'ha pogut connectar amb plex.tv ni consultar els servidors. {count} intents. Comprova Internet al televisor."
   },
   "browse.auth.plaintext_offer": "El teu servidor Plex és en aquesta xarxa, però no utilitza HTTPS. Selecciona Connecta per utilitzar-lo sense xifratge.",
   "browse.auth.plaintext_allowed": "El teu servidor Plex és en aquesta xarxa, però no utilitza HTTPS. Selecciona Torna-ho a provar per utilitzar-lo sense xifratge.",

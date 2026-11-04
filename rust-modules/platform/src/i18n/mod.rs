@@ -427,7 +427,7 @@ const ES_LONG: [&str; 12] = [
     "octubre", "noviembre", "diciembre",
 ];
 const CA_MEDIUM: [&str; 12] = [
-    "de gen.", "de febr.", "març", "d’abr.", "maig", "juny", "de jul.", "d’ag.", "de set.",
+    "de gen.", "de febr.", "de març", "d’abr.", "de maig", "de juny", "de jul.", "d’ag.", "de set.",
     "d’oct.", "de nov.", "de des.",
 ];
 
