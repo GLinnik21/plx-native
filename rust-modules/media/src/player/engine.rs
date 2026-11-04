@@ -40,7 +40,7 @@ pub(crate) use plx_play_feed::LoadVideo;
 pub(crate) use plx_play_feed::load_video_refused;
 #[cfg(all(test, feature = "hostsim"))]
 use super::shared::Stage;
-use super::SeekMode;
+use plx_play_feed::seek::SeekMode;
 use super::{log, sink, threads};
 #[cfg(all(test, feature = "hostsim"))]
 use super::SHARED;
@@ -524,7 +524,7 @@ fn select_seek_mode_for_load() {
     let old_abi_seek = old_abi_seek_tested(major);
     let mode = session_seek_mode(layout_known, old_abi_seek, sink().window_mode(), dev_seek_mode());
     log(&format!("seek mode: {mode:?} (layout_known={layout_known} old_abi_seek={old_abi_seek})"));
-    super::set_seek_mode(mode);
+    plx_play_feed::seek::set_seek_mode(mode);
 }
 
 
@@ -659,38 +659,11 @@ use plx_play_feed::native_executor::{settle_pcm_lead, hls_candidate_snapshot_sta
 pub use plx_play_feed::native_executor::arm_live_clock_prime;
 
 
-fn seek_anchor_mode() -> plx_play_feed::native_executor::SeekAnchorMode {
-    use plx_play_feed::native_executor::SeekAnchorMode;
-    match super::seek_mode() {
-        SeekMode::Segment => SeekAnchorMode::Segment,
-        SeekMode::NativeSeek => SeekAnchorMode::NativeSeek,
-        SeekMode::Reload => SeekAnchorMode::Reload,
-    }
-}
-
-fn set_seek_anchor_mode(mode: plx_play_feed::native_executor::SeekAnchorMode) {
-    use plx_play_feed::native_executor::SeekAnchorMode;
-    super::set_seek_mode(match mode {
-        SeekAnchorMode::Segment => SeekMode::Segment,
-        SeekAnchorMode::NativeSeek => SeekMode::NativeSeek,
-        SeekAnchorMode::Reload => SeekMode::Reload,
-    });
-}
-
-fn replay_native_presentation(num: i64) {
-    super::sf_on_event_inner(0, num, std::ptr::null(), super::shared::EventScope::Live);
-}
-
 const FEED_HOOKS: plx_play_feed::native_executor::FeedHooks =
     plx_play_feed::native_executor::FeedHooks {
         sink,
-        seek_mode: seek_anchor_mode,
-        set_seek_mode: set_seek_anchor_mode,
-        set_native_seek_refused: super::set_native_seek_refused,
         mirror_playstate: super::acb_mirror_playstate_at,
         mute_for_preroll: super::mute_for_preroll,
-        presentation_event: replay_native_presentation,
-        vclock_ms: super::vclock_ms,
         feed_clock_us,
     };
 
@@ -743,7 +716,7 @@ pub(super) fn session_seek_mode(
     dev: Option<SeekMode>,
 ) -> SeekMode {
     match select_seek_mode(layout_known, old_abi_seek, window_mode, dev) {
-        SeekMode::NativeSeek if super::native_seek_refused() => SeekMode::Reload,
+        SeekMode::NativeSeek if plx_play_feed::seek::native_seek_refused() => SeekMode::Reload,
         mode => mode,
     }
 }
@@ -1419,12 +1392,12 @@ mod payload_tests {
     #[test]
     fn refused_synthetic_p5_start_cannot_be_retried_past_validation() {
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let play = crate::player::playurl::PlayUrl {
+        let play = plx_play_feed::playurl::PlayUrl {
             url: "http://192.0.2.1/refused-p5.mkv".into(),
             vcodec: "hevc".into(),
             acodec: "eac3".into(),
             fps: 23.976,
-            dovi: crate::player::playurl::PlayDovi {
+            dovi: plx_play_feed::playurl::PlayDovi {
                 profile: 5,
                 bl_compat: 0,
                 el_present: false,
@@ -2755,7 +2728,7 @@ mod off_frame_release_tests {
         // A callback the stopped object delivers now (a late error, say) is dropped: the session
         // state was already reset for whatever plays next.
         let before = FEED_SHARED.dg_cb_count.load(Ordering::Relaxed);
-        super::super::sf_on_event(epoch, 5, 0, std::ptr::null());
+        plx_play_feed::sf_event::sf_on_event(epoch, 5, 0, std::ptr::null());
         assert_eq!(
             FEED_SHARED.dg_cb_count.load(Ordering::Relaxed),
             before,
@@ -3232,8 +3205,8 @@ mod off_frame_release_tests {
         stop_bufferfeed(&mut ps, &mut pa);
         assert!(pa.has_pending_release());
         let before = FEED_SHARED.dg_cb_count.load(Ordering::Relaxed);
-        super::super::sf_on_event(epoch + 1, 23, 0, std::ptr::null());
-        super::super::sf_on_event(0, 23, 0, std::ptr::null());
+        plx_play_feed::sf_event::sf_on_event(epoch + 1, 23, 0, std::ptr::null());
+        plx_play_feed::sf_event::sf_on_event(0, 23, 0, std::ptr::null());
         assert_eq!(FEED_SHARED.dg_cb_count.load(Ordering::Relaxed), before, "a wrong-epoch event was processed");
         assert!(
             !FEED_SHARED.native_unload_completed(epoch),
@@ -3668,7 +3641,7 @@ mod load_in_flight_tests {
         // Hand-set the in-flight window and publish loadCompleted via the existing sf_on_event
         // path — simulating "Load has not returned" without a real second thread.
         crate::player::ffi_host::set_load_in_flight_for_test(true);
-        super::super::sf_on_event(epoch, 2, 0, c"{\"loadCompleted\":true}".as_ptr());
+        plx_play_feed::sf_event::sf_on_event(epoch, 2, 0, c"{\"loadCompleted\":true}".as_ptr());
 
         crate::player::pump::pump(&mut ps, &mut pa, 1_000);
         assert_eq!(
@@ -3866,7 +3839,12 @@ mod load_in_flight_tests {
         }
         assert!(pa.has_abandoned_load());
         let start = crate::route::begin_route_start().expect("a completed stop grants a start owner");
-        // No URL is set, so an unguarded start would answer `NoRoute`; `StartFailed` is the refusal.
+        // A resolved, qualified source: the offer check passes and an unguarded start would go on to
+        // build a second native object. Without one the start answers `NoRoute` (or, were the offer
+        // not qualified, `StartFailed` for that reason), and this guard would never be reached.
+        crate::route::set_url(&mut ps, "http://127.0.0.1:1/hls/start.m3u8");
+        assert!(ps.qualify_resolved_feed_offer(crate::route::backend_policy::OfferId::FEED_ORIGINAL,
+            crate::route::CandidatePurpose::NewCandidate));
         assert_eq!(
             crate::player::route_start::start_bufferfeed_inner(&mut ps, &mut pa, start).err(),
             Some(crate::route::RouteStartResult::StartFailed),
@@ -4861,12 +4839,12 @@ mod load_refusal_tests {
         pa.install(eng);
 
         // `Load()` returned ok=1 — nothing here says otherwise — and then the pipeline talked.
-        super::super::sf_on_event(epoch, 13, 1, c"".as_ptr());
-        super::super::sf_on_event(epoch, 14, 0, c"1".as_ptr());
-        super::super::sf_on_event(epoch, 5, 0, ECHO_SINK.as_ptr());
-        super::super::sf_on_event(epoch, 15, 0, c"1".as_ptr());
-        super::super::sf_on_event(epoch, 8, 0, c"audio/mpeg".as_ptr());
-        super::super::sf_on_event(epoch, 18, 601, REFUSAL.as_ptr());
+        plx_play_feed::sf_event::sf_on_event(epoch, 13, 1, c"".as_ptr());
+        plx_play_feed::sf_event::sf_on_event(epoch, 14, 0, c"1".as_ptr());
+        plx_play_feed::sf_event::sf_on_event(epoch, 5, 0, ECHO_SINK.as_ptr());
+        plx_play_feed::sf_event::sf_on_event(epoch, 15, 0, c"1".as_ptr());
+        plx_play_feed::sf_event::sf_on_event(epoch, 8, 0, c"audio/mpeg".as_ptr());
+        plx_play_feed::sf_event::sf_on_event(epoch, 18, 601, REFUSAL.as_ptr());
 
         crate::player::pump::pump(&mut ps, &mut pa, 1_000);
 
@@ -5039,7 +5017,7 @@ mod native_seek_tests {
         fn drop(&mut self) {
             ffi_host::force_clocksink_for_test(false);
             ffi_host::reset_seek_probe_for_test(None);
-            crate::player::set_seek_mode(SeekMode::Segment);
+            plx_play_feed::seek::set_seek_mode(SeekMode::Segment);
             FEED_SHARED.pts_shift.store(0, Ordering::Relaxed);
             FEED_SHARED.seek_target_ns.store(-1, Ordering::Relaxed);
             FEED_SHARED.pres_fed.store(0, Ordering::Relaxed);
@@ -5119,9 +5097,9 @@ mod native_seek_tests {
     fn a_refused_seek_on_webos3_keeps_the_playback_on_reload() {
         let _serial = plx_base::testlock::serial();
         let webos3 = || session_seek_mode(inplace_layout_known(3, true), old_abi_seek_tested(3), crate::player::VP_ACB, None);
-        crate::player::set_native_seek_refused(true);
+        plx_play_feed::seek::set_native_seek_refused(true);
         assert_eq!(webos3(), SeekMode::Reload, "the downgrade survives reload_at");
-        crate::player::set_native_seek_refused(false);
+        plx_play_feed::seek::set_native_seek_refused(false);
         assert_eq!(webos3(), SeekMode::NativeSeek, "a fresh play offers Seek again");
     }
 
@@ -5144,7 +5122,7 @@ mod native_seek_tests {
     fn the_landed_keyframe_is_the_native_seek_and_nothing_flushes() {
         let _serial = plx_base::testlock::serial();
         let _restore = arm(None);
-        crate::player::set_seek_mode(SeekMode::NativeSeek);
+        plx_play_feed::seek::set_seek_mode(SeekMode::NativeSeek);
         let mut eng = engine_seeking();
         tick(&mut eng);
 
@@ -5153,14 +5131,14 @@ mod native_seek_tests {
         assert!(!eng.flushed && !eng.rebase_pending, "the seek is applied");
         assert_eq!(FEED_SHARED.pts_shift.load(Ordering::Relaxed), 0, "content time, no rebase");
         assert!(eng.max_fed_video_pts >= TARGET_NS, "the keyframe and the AUs after it were fed on the Seek's timeline");
-        assert_eq!(crate::player::seek_mode(), SeekMode::NativeSeek);
+        assert_eq!(plx_play_feed::seek::seek_mode(), SeekMode::NativeSeek);
     }
 
     #[test]
     fn a_pre_zero_keyframe_seeks_to_zero_not_negative() {
         let _serial = plx_base::testlock::serial();
         let _restore = arm(None);
-        crate::player::set_seek_mode(SeekMode::NativeSeek);
+        plx_play_feed::seek::set_seek_mode(SeekMode::NativeSeek);
         let mut eng = super::prime_livelock_tests::engine_after_reload();
         eng.flushed = true;
         eng.rebase_pending = true;
@@ -5176,12 +5154,12 @@ mod native_seek_tests {
     fn a_refused_seek_reloads_this_one_and_every_later_one() {
         let _serial = plx_base::testlock::serial();
         let _restore = arm(Some(0));
-        crate::player::set_seek_mode(SeekMode::NativeSeek);
+        plx_play_feed::seek::set_seek_mode(SeekMode::NativeSeek);
         let mut eng = engine_seeking();
         tick(&mut eng);
 
-        assert_eq!(crate::player::seek_mode(), SeekMode::Reload, "native seek is off for the rest of the session");
-        assert!(crate::player::pump::seek_reloads(crate::player::seek_mode()));
+        assert_eq!(plx_play_feed::seek::seek_mode(), SeekMode::Reload, "native seek is off for the rest of the session");
+        assert!(crate::player::pump::seek_reloads(plx_play_feed::seek::seek_mode()));
         assert_eq!(
             FEED_TX.seek_to_ns.load(Ordering::Acquire),
             TARGET_NS,
@@ -5213,11 +5191,11 @@ mod pcm_sink_lead_pure_tests {
         let _serial = plx_base::testlock::serial();
         let _restore = Restore;
         FEED_SHARED.applied_rate_permille.store(crate::player::RATE_NORMAL, Ordering::Relaxed);
-        assert_eq!(audio_sink_pts(7_000_000_000, 0), crate::player::to_sink_ns(7_000_000_000));
+        assert_eq!(audio_sink_pts(7_000_000_000, 0), plx_play_feed::shared::to_sink_ns(7_000_000_000));
         assert_eq!(audio_sink_pts(7_000_000_000, PCM_SINK_LEAD_NS), 7_000_000_000 + PCM_SINK_LEAD_NS);
 
         FEED_SHARED.applied_rate_permille.store(1500, Ordering::Relaxed);
-        assert_eq!(audio_sink_pts(3_000_000_000, 0), crate::player::to_sink_ns(3_000_000_000));
+        assert_eq!(audio_sink_pts(3_000_000_000, 0), plx_play_feed::shared::to_sink_ns(3_000_000_000));
         assert_eq!(
             audio_sink_pts(3_000_000_000, 400_000_000),
             2_000_000_000 + 400_000_000,
@@ -5654,7 +5632,7 @@ mod pcm_sink_lead_tests {
         fn drop(&mut self) {
             ffi_host::force_clocksink_for_test(false);
             ffi_host::reset_seek_probe_for_test(None);
-            crate::player::set_seek_mode(SeekMode::Segment);
+            plx_play_feed::seek::set_seek_mode(SeekMode::Segment);
             FEED_SHARED.pts_shift.store(0, Ordering::Relaxed);
             FEED_SHARED.seek_target_ns.store(-1, Ordering::Relaxed);
             FEED_SHARED.pres_fed.store(0, Ordering::Relaxed);
@@ -5666,7 +5644,7 @@ mod pcm_sink_lead_tests {
     fn arm() -> Restore {
         ffi_host::force_clocksink_for_test(true);
         ffi_host::reset_seek_probe_for_test(None);
-        crate::player::set_seek_mode(SeekMode::Segment);
+        plx_play_feed::seek::set_seek_mode(SeekMode::Segment);
         FEED_SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
         FEED_SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
         FEED_SHARED.pts_shift.store(0, Ordering::Relaxed);
@@ -5756,7 +5734,7 @@ mod pcm_sink_lead_tests {
     fn a_pcm_load_keeps_the_lead_after_an_in_place_segment_seek() {
         let _serial = plx_base::testlock::serial();
         let _restore = arm();
-        crate::player::set_seek_mode(SeekMode::Segment);
+        plx_play_feed::seek::set_seek_mode(SeekMode::Segment);
         let mut eng = engine_at(T_NS, PCM_SINK_LEAD_NS);
         eng.flushed = true;
         eng.rebase_pending = true;
@@ -5853,13 +5831,118 @@ mod pcm_sink_lead_tests {
         FEED_SHARED.seek_target_ns.store(T_NS, Ordering::Relaxed);
         tick(&mut eng);
         let (v0, a0, audio) = first_feeds();
-        assert_eq!(a0, crate::player::to_sink_ns(T_NS) + PCM_SINK_LEAD_NS);
+        assert_eq!(a0, plx_play_feed::shared::to_sink_ns(T_NS) + PCM_SINK_LEAD_NS);
         assert!((a0 - v0 - PCM_SINK_LEAD_NS).abs() <= 1, "audio is {} ns after the picture", a0 - v0);
-        let last_content = crate::player::from_sink_ns(audio.last().unwrap() - PCM_SINK_LEAD_NS);
+        let last_content = plx_play_feed::shared::from_sink_ns(audio.last().unwrap() - PCM_SINK_LEAD_NS);
         assert!(
             (eng.max_fed_audio_pts - last_content).abs() <= 2,
             "max_fed_audio_pts {} is content time, the sink's last audio gives {last_content}",
             eng.max_fed_audio_pts
         );
+    }
+}
+
+/// A start whose source no route plan resolved: the dev triggers (`plxnative-playurl`, `-url`, the
+/// local samples) name the stream themselves inside `feed_open::resolve_source`, so no `apply_plan`
+/// ever qualified a Feed recipe for it, while `start_bufferfeed_inner` refuses a Start without one
+/// ("no qualified feed offer for this resolved route"). These tests drive the production start the
+/// way the dev arm does (`route::clear_url`, then the start) and read what it answered. Every other
+/// start test in this file qualifies its recipe BY HAND (`qualify_resolved_feed_offer`) before it
+/// starts, which is why none of them could see the hole.
+#[cfg(all(test, feature = "hostsim"))]
+mod explicit_source_start_tests {
+    use super::*;
+    use crate::route::backend_policy::OfferId;
+
+    /// The pipeline tier's own playurl content (`tests/run.py`), verbatim but for the host.
+    const PLAYURL: &str = r#"{"vcodec":"h264","acodec":"aac","fps":24.0,"url":"http://127.0.0.1:1/__abr/ladder/master.m3u8"}"#;
+
+    struct Cleanup;
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            crate::player::ffi_host::reset_native_lifecycle_for_test();
+            crate::player::ffi_host::force_clocksink_for_test(false);
+            FEED_SHARED.test_force_native_idle();
+            SHARED.reset_session();
+            crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
+        }
+    }
+
+    /// One dev start of the armed `playurl`, as `dev::scenarios::autoplay_arm` makes it.
+    fn start_playurl(ps: &mut crate::route::PlaybackSession,
+        pa: &mut crate::player::adapter::PlayerAdapter) -> BufferfeedStartOutcome {
+        crate::route::clear_url(ps);
+        start_bufferfeed_tracked(ps, pa)
+    }
+
+    fn stop(ps: &mut crate::route::PlaybackSession, pa: &mut crate::player::adapter::PlayerAdapter) {
+        stop_bufferfeed(ps, pa);
+        crate::player::route_start::finish_release_for_test(pa);
+    }
+
+    /// Run `body` over a fresh session and adapter with the `playurl` trigger armed in a private root.
+    fn with_playurl_armed(body: impl FnOnce(&mut crate::route::PlaybackSession,
+        &mut crate::player::adapter::PlayerAdapter)) {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(&ps);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
+        let _cleanup = Cleanup;
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        plx_base::devtrig::with_private_triggers(|| {
+            std::fs::write(plx_base::devtrig::path("playurl"), PLAYURL).unwrap();
+            body(&mut ps, &mut pa);
+        });
+    }
+
+    /// The observed failure: a boot with no session (or a Home with one) arms `playurl`, the arm
+    /// clears the route's URL and starts, and the start was refused before the trigger was read.
+    #[test]
+    fn a_playurl_start_no_route_plan_resolved_still_launches() {
+        with_playurl_armed(|ps, pa| {
+            let started = start_playurl(ps, pa);
+            assert!(matches!(started, BufferfeedStartOutcome::Launched(_)),
+                "the playurl fixture's start was refused ({started:?})");
+            assert!(pa.is_live(), "a launched start builds the Engine");
+            assert_eq!(ps.planned_feed_offer(), Some(OfferId::FEED_ORIGINAL),
+                "an explicit source hands its bytes over as they are: the original recipe");
+            stop(ps, pa);
+        });
+    }
+
+    /// LG App Self Checklist #46: the finished stream starts again (`maybe_replay_after_eos`: the
+    /// arm re-fires and clears the URL). The first play spent the catalog's original recipe; the
+    /// second is a new request and begins its own.
+    #[test]
+    fn a_playurl_replay_after_the_first_play_launches_again() {
+        with_playurl_armed(|ps, pa| {
+            let first = start_playurl(ps, pa);
+            assert!(matches!(first, BufferfeedStartOutcome::Launched(_)), "first start {first:?}");
+            stop(ps, pa);
+            let second = start_playurl(ps, pa);
+            assert!(matches!(second, BufferfeedStartOutcome::Launched(_)),
+                "the replay was refused ({second:?}): the first play's spent catalog outlived it");
+            stop(ps, pa);
+        });
+    }
+
+    /// A seek that escalates (or any reload) comes back through the same door with the route's URL
+    /// already installed: it reopens the recipe the start admitted, and must not qualify a new
+    /// candidate (that would clear the admission it reopens from).
+    #[test]
+    fn a_reload_of_a_playurl_source_reopens_the_admitted_recipe() {
+        with_playurl_armed(|ps, pa| {
+            let first = start_playurl(ps, pa);
+            assert!(matches!(first, BufferfeedStartOutcome::Launched(_)), "first start {first:?}");
+            assert!(ps.backend_planned_feed_allowed(), "the admitted recipe stays reopenable");
+            let epoch = pa.engine().map(|eng| eng.native_epoch);
+            assert_eq!(reload_at(ps, pa, 5_000_000_000), ReloadOutcome::Started);
+            assert_eq!(ps.planned_feed_offer(), Some(OfferId::FEED_ORIGINAL));
+            let reloaded = pa.engine().map(|eng| eng.native_epoch);
+            assert!(reloaded.is_some() && reloaded != epoch, "the reload built a new Engine ({epoch:?} -> {reloaded:?})");
+            stop(ps, pa);
+        });
     }
 }

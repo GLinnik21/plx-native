@@ -208,10 +208,30 @@ mod tests {
         assert_eq!(open.physical.video_codec, "h264");
         assert_eq!(open.physical.audio_codec, "aac");
     }
+
+    /// `present` is DERIVED, so it cannot disagree with the profile in either direction.
+    #[test]
+    fn dovi_presence_follows_the_profile() {
+        use plx_play_feed::playurl::PlayDovi;
+        let none = play_dovi(PlayDovi { profile: 0, bl_compat: 1, el_present: true });
+        assert!(!none.present, "profile 0 is not Dolby Vision whatever else is set");
+        let p7 = play_dovi(PlayDovi { profile: 7, bl_compat: 6, el_present: true });
+        assert!(p7.present);
+        assert_eq!((p7.profile, p7.bl_compat, p7.el_present), (7, 6, true));
+        let p8 = play_dovi(PlayDovi { profile: 8, bl_compat: 1, el_present: false });
+        assert!(p8.present, "profile 8 must derive present=true");
+        assert_eq!((p8.profile, p8.bl_compat, p8.el_present), (8, 1, false));
+        assert_eq!(
+            play_dovi(PlayDovi::default()),
+            plx_data::metadata::Dovi::NONE,
+            "an absent dovi node must be silence itself"
+        );
+    }
 }
 
-/// One source selected under the route transaction, before any native resource is built.
-pub(super) struct PreparedSource {
+/// The source a start will play, before the route transaction is prepared and before any native
+/// resource is built.
+pub(super) struct ResolvedSource {
     pub url: String,
     pub sample: Option<SampleSource>,
     pub is_h265: bool,
@@ -222,14 +242,26 @@ pub(super) struct SampleSource {
     pub au: Vec<usize>,
 }
 
-pub(super) fn prepare_source(
+/// Choose the source of a start, and qualify the Feed recipe of one that no plan resolved.
+///
+/// **This runs before the start door's offer check, not after it.** A source a route plan resolved
+/// had its recipe qualified by `apply_plan`. A dev trigger's has no plan, so the only place it
+/// becomes a source is below, and the check that refuses a Start without a qualified recipe
+/// must see the result: asked first, it refused every such start (`playurl`, `url`, the samples)
+/// with "no qualified feed offer for this resolved route", with nothing qualified yet to find.
+///
+/// Nothing here touches a native resource or the route transaction; the caller prepares the
+/// transaction once the offer check has passed.
+pub(super) fn resolve_source(
     ps: &mut route::PlaybackSession,
-    route_start: route::RouteStartTransaction,
-) -> Result<PreparedSource, route::RouteStartResult> {
+) -> Result<ResolvedSource, route::RouteStartResult> {
     // resolve the URL, in precedence order: route (a selected movie) wins, then
     // /tmp/plxnative-playurl (a URL + its declaration), then /tmp/plxnative-url (a URL
     // alone), then a local sample.
     let mut url = crate::route::url(ps);
+    // A route that holds a source (a plan's, or the one a reload re-reads) has qualified it
+    // already. Only a source named below, over an empty route, is a new explicit one.
+    let explicit = url.is_empty();
     if url.is_empty() {
         // dev: /tmp/plxnative-playurl — a URL *and the Load declaration to play it with*, with no
         // library item behind it. This is the player-PIPELINE test tier's entry (tests/README.md):
@@ -241,7 +273,7 @@ pub(super) fn prepare_source(
         // through this same function and must re-apply it.
         //
         // `route::url()` still wins: a real selection is never overridden by a stale trigger.
-        match crate::player::playurl::playurl() {
+        match plx_play_feed::playurl::playurl() {
             Some(Ok(p)) => {
                 url = install_synthetic_playurl(ps, &p)?;
                 if let Some([w, h]) = p.source_raster {
@@ -313,24 +345,37 @@ pub(super) fn prepare_source(
             return Err(crate::route::RouteStartResult::NoRoute);
         }
     }
-    if !crate::route::prepare_route_start(route_start) {
-        log("start_bufferfeed: prepared route no longer owns the transaction");
-        return Err(crate::route::RouteStartResult::StartFailed);
+    if explicit {
+        // False only where no Feed driver is composed, and then the start door refuses all the same.
+        let _ = ps.qualify_explicit_feed_source();
     }
-    Ok(PreparedSource { url, sample, is_h265 })
+    Ok(ResolvedSource { url, sample, is_h265 })
+}
 
+/// The `plxnative-playurl` trigger's DV declaration as the data layer's record. `present` is
+/// DERIVED from a non-zero profile rather than carried separately: two fields that can disagree is a
+/// way to declare "Dolby Vision, profile 0", which is not a thing, and the harness would have to
+/// keep them in step by hand in every case.
+fn play_dovi(d: plx_play_feed::playurl::PlayDovi) -> plx_data::metadata::Dovi {
+    plx_data::metadata::Dovi {
+        present: d.profile > 0,
+        profile: d.profile,
+        bl_compat: d.bl_compat,
+        el_present: d.el_present,
+        ..plx_data::metadata::Dovi::NONE
+    }
 }
 
 pub(super) fn install_synthetic_playurl(
     ps: &mut crate::route::PlaybackSession,
-    play: &crate::player::playurl::PlayUrl,
+    play: &plx_play_feed::playurl::PlayUrl,
 ) -> Result<String, crate::route::RouteStartResult> {
     if !crate::route::set_stream_declaration(
         ps,
         &play.vcodec,
         &play.acodec,
         play.fps,
-        play.dovi.to_dovi(),
+        play_dovi(play.dovi),
         play.atmos,
     ) {
         return Err(crate::route::RouteStartResult::StartFailed);

@@ -1,12 +1,14 @@
 //! The `plxnative-playurl` trigger: a stream to play and the Load payload declaration to play it
-//! with, parsed beside the one module that acts on it ([`super::engine`]'s `start_bufferfeed`).
+//! with, parsed beside the Feed executor that acts on it (media's `engine::start_bufferfeed`).
 //!
-//! It is a TYPED dev trigger. Its value is a JSON object whose decision half is a
-//! [`plx_data::metadata::Dovi`], so it can live neither with the trigger primitives (`plx_base::devtrig`
-//! is a base-layer module and names no application type) nor in the application's `dev` (the application
-//! layer, which the player may not name). It is parsed here from `plx_base::devtrig::read`, and a
-//! release build still folds it away at COMPILE time exactly as before: `read` is `None` without
-//! the `devtriggers` feature, so [`playurl`] answers `None` and no declaration can be injected.
+//! It is a TYPED dev trigger. Its value is a JSON object, so it can live neither with the trigger
+//! primitives (`plx_base::devtrig` is a base-layer module and names no application type) nor in the
+//! application's `dev` (the application layer, which the player may not name). It is parsed here
+//! from `plx_base::devtrig::read`, and a release build still folds it away at COMPILE time exactly
+//! as before: `read` is `None` without the `devtriggers` feature, so [`playurl`] answers `None` and
+//! no declaration can be injected. The decision half of the DV object is a plain record here
+//! ([`PlayDovi`]); the conversion to the data layer's `Dovi` stays with media's `feed_open`, the
+//! one caller, because this layer may not name `plx_data`.
 
 /// A stream to play and **the Load payload declaration to play it with**, with no library item
 /// behind it — `/tmp/plxnative-playurl`, the player-PIPELINE test tier's one entry point.
@@ -19,7 +21,7 @@
 /// which are normally installed together by `route::apply_plan` from a PMS decision and replaced
 /// together by later route transitions. So a URL-fed 4K HEVC file was declared to the television
 /// as whatever the route happened to hold — in a fresh boot, the empty string, which falls through
-/// [`crate::player::engine`]'s `_ =>` arm to `"AC3"` (and `LoadVideo::of_stream` deliberately maps it to H264). The declaration is
+/// media's `engine` `_ =>` arm to `"AC3"` (and `LoadVideo::of_stream` deliberately maps it to H264). The declaration is
 /// precisely what governs HEVC-vs-H264 payload selection, the `"AC3 PLUS"` naming trap, and both
 /// Dolby nodes, so a tier that cannot set it cannot test them.
 ///
@@ -89,7 +91,7 @@ pub struct PlayUrl {
     ///
     /// `route::arm_auto_fixture` hardcoded `1920x1080`, and its comment gave the honest reason:
     /// an unknown source raster is treated as UNBOUNDED by
-    /// [`HlsActuatorCatalog::limited_to`](crate::abr::HlsActuatorCatalog::limited_to), which makes
+    /// `abr::HlsActuatorCatalog::limited_to`, which makes
     /// the Uhd rung feasible — and `tests/serve_fixtures.py` served no 22000 rung, so a candidate
     /// there would 404 and read on the television as a rejected encoder. That is a fixture gap
     /// standing in for a policy, and it is what kept the plan's I9 blocked: with every
@@ -103,13 +105,13 @@ pub struct PlayUrl {
     pub source_raster: Option<[u16; 2]>,
 }
 
-/// The four DV fields the Load payload actually decides on — [`plx_data::metadata::Dovi`]'s
-/// decision half. The three descriptive fields (level, version, bl/rpu present) are read by the
+/// The four DV fields the Load payload actually decides on — the data layer's `Dovi` decision half.
+/// The three descriptive fields (level, version, bl/rpu present) are read by the
 /// tracks panel and by nothing on the playback path, so this trigger does not carry them.
 #[derive(serde::Deserialize, Clone, Copy, Default)]
 pub struct PlayDovi {
-    /// 5 / 7 / 8. **Zero means no Dolby Vision at all** — it is what drives `present` below,
-    /// rather than a separate flag that could disagree with it.
+    /// 5 / 7 / 8. **Zero means no Dolby Vision at all** — it is what drives the data
+    /// layer's `present` (media's `feed_open`), rather than a separate flag that could disagree with it.
     #[serde(default)]
     pub profile: i64,
     /// `DOVIBLCompatID` — 0 none (P5) / 1 HDR10 / 2 SDR / 4 HLG.
@@ -120,21 +122,6 @@ pub struct PlayDovi {
     pub el_present: bool,
 }
 
-impl PlayDovi {
-    /// The engine-facing record. `present` is DERIVED from a non-zero profile rather than carried
-    /// separately: two fields that can disagree is a way to declare "Dolby Vision, profile 0",
-    /// which is not a thing, and the harness would have to keep them in step by hand in every case.
-    pub fn to_dovi(self) -> plx_data::metadata::Dovi {
-        plx_data::metadata::Dovi {
-            present: self.profile > 0,
-            profile: self.profile,
-            bl_compat: self.bl_compat,
-            el_present: self.el_present,
-            ..plx_data::metadata::Dovi::NONE
-        }
-    }
-}
-
 /// Parse the `playurl` trigger's content. Pure, so the host suite can pin it.
 ///
 /// An `Err` rather than a defaulted object on malformed input, for the application's `dev`'s `parse_servers`' reason: a
@@ -142,7 +129,7 @@ impl PlayDovi {
 /// a typo in the harness. An empty `url` is an `Err` too — an all-defaults object would send the
 /// engine looking for `plxnative-url` instead and the case would play something else entirely.
 #[cfg(any(feature = "devtriggers", test))]
-fn parse_playurl(s: &str) -> Result<PlayUrl, String> {
+pub fn parse_playurl(s: &str) -> Result<PlayUrl, String> {
     let p: PlayUrl = serde_json::from_str(s).map_err(|e| e.to_string())?;
     if p.url.is_empty() {
         return Err("no `url`".to_string());
@@ -187,8 +174,7 @@ mod tests {
         assert_eq!((p.vcodec.as_str(), p.acodec.as_str()), ("hevc", "eac3"));
         assert!((p.fps - 23.976).abs() < 1e-9);
         assert!(!p.atmos);
-        let dv = p.dovi.to_dovi();
-        assert!(dv.present, "profile 8 must derive present=true");
+        let dv = p.dovi;
         assert_eq!((dv.profile, dv.bl_compat, dv.el_present), (8, 1, false));
     }
 
@@ -202,11 +188,10 @@ mod tests {
         .unwrap();
         assert_eq!(p.fps, 0.0);
         assert!(!p.atmos);
-        let dv = p.dovi.to_dovi();
-        assert!(!dv.present);
+        let dv = p.dovi;
         assert_eq!(
-            dv,
-            plx_data::metadata::Dovi::NONE,
+            (dv.profile, dv.bl_compat, dv.el_present),
+            (0, 0, false),
             "an absent dovi node must be silence itself"
         );
     }
@@ -224,29 +209,6 @@ mod tests {
         .unwrap();
         assert_eq!(p.auto_source_kbps, 8_000);
         assert_eq!(p.auto_hls_base, "http://192.0.2.10:8020/__abr");
-    }
-
-    /// `present` is DERIVED, so it cannot disagree with the profile in either direction.
-    #[test]
-    fn dovi_presence_follows_the_profile() {
-        let none = super::PlayDovi {
-            profile: 0,
-            bl_compat: 1,
-            el_present: true,
-        }
-        .to_dovi();
-        assert!(
-            !none.present,
-            "profile 0 is not Dolby Vision whatever else is set"
-        );
-        let p7 = super::PlayDovi {
-            profile: 7,
-            bl_compat: 6,
-            el_present: true,
-        }
-        .to_dovi();
-        assert!(p7.present);
-        assert_eq!((p7.profile, p7.bl_compat, p7.el_present), (7, 6, true));
     }
 
     /// An empty `url` must be an Err, not an all-defaults object: on `Ok` the engine would take

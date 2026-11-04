@@ -375,6 +375,12 @@ pub enum Art<'a> {
 }
 
 impl Art<'_> {
+    /// A credential-free PNG whose filename is its SHA-256. Resolved by the shared image cache,
+    /// never through a media server; the source verifies both network responses and disk hits.
+    pub fn content_png(url: &str) -> Art<'_> {
+        Art::Thumb { sid: crate::tex::CONTENT_SOURCE, key: url, res: (1920, 1080) }
+    }
+
     fn motion_identity(&self) -> Option<crate::card_motion::Identity> {
         use std::hash::{Hash, Hasher};
         let (owner, sid, key, kind) = match self {

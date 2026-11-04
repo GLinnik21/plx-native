@@ -776,6 +776,57 @@ mod backend_offer_session_tests {
         assert!(!session.backend_planned_feed_allowed());
     }
 
+    /// A source a dev trigger names has no plan, no URL on the route yet (a local sample never has
+    /// one) and no selection: it still qualifies, which `ensure_backend_offers` alone would refuse.
+    #[test]
+    fn an_explicit_source_qualifies_the_original_recipe_over_an_empty_route() {
+        let mut session = PlaybackSession::IDLE;
+        session.install_backends(plx_playback_contract::BackendSet::FEED);
+        assert!(!session.backend_planned_feed_allowed(), "nothing qualified yet");
+        assert!(!session.qualify_resolved_feed_offer(OfferId::FEED_ORIGINAL, CandidatePurpose::NewCandidate),
+            "a plan's door still wants a resolved source");
+        assert!(session.qualify_explicit_feed_source());
+        assert_eq!(session.planned_feed_offer(), Some(OfferId::FEED_ORIGINAL));
+        assert!(session.backend_planned_feed_allowed());
+        assert_eq!(session.planned_feed_fidelity(),
+            Some((plx_playback_contract::Fidelity::Compatible, plx_playback_contract::Fidelity::Compatible)),
+            "Auto's original Feed is the wire-compatible handoff, as the start sent before offers existed");
+    }
+
+    /// Forced direct play is what `force_original` means: the same recipe, exact.
+    #[test]
+    fn an_explicit_source_under_forced_direct_play_is_exact() {
+        let mut session = PlaybackSession::IDLE;
+        session.install_backends(plx_playback_contract::BackendSet::FEED);
+        session.direct_play_mode = DirectPlayMode::Forced;
+        assert!(session.qualify_explicit_feed_source());
+        assert_eq!(session.planned_feed_fidelity(),
+            Some((plx_playback_contract::Fidelity::Exact, plx_playback_contract::Fidelity::Exact)));
+    }
+
+    /// Each explicit source is a new request: the first play's admission spent the recipe, and a
+    /// replay (or a dev start after a real item) must not inherit that.
+    #[test]
+    fn an_explicit_source_begins_a_fresh_catalog_each_time() {
+        let mut session = PlaybackSession::IDLE;
+        session.install_backends(plx_playback_contract::BackendSet::FEED);
+        assert!(session.qualify_explicit_feed_source());
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+        assert!(session.backend_planned_feed_allowed(), "a reload of the admitted recipe may reopen");
+        // The same session, a replay: the recipe is spent for that request but not for the next.
+        assert!(session.qualify_explicit_feed_source());
+        assert!(session.backend_planned_feed_allowed());
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+    }
+
+    #[test]
+    fn an_explicit_source_needs_a_composed_feed_driver() {
+        let mut session = PlaybackSession::IDLE;
+        session.install_backends(plx_playback_contract::BackendSet::URI);
+        assert!(!session.qualify_explicit_feed_source());
+        assert!(!session.backend_planned_feed_allowed());
+    }
+
     #[test]
     fn native_uri_original_can_precede_feed_app_pcm_and_audio_contract_changes_its_binding() {
         let mut session = PlaybackSession::IDLE;
@@ -1133,10 +1184,36 @@ impl PlaybackSession {
     /// recovery landings keep its spent history.
     pub fn ensure_backend_offers(&mut self) -> bool {
         if self.url.is_empty() && !self.selection_known { return false; }
+        self.catalog();
+        true
+    }
+
+    /// The request's finite catalog, begun on first use. Whether a source exists to offer is the
+    /// caller's to have established ([`ensure_backend_offers`](Self::ensure_backend_offers) asks
+    /// the route, an explicit source is its own proof).
+    fn catalog(&mut self) -> &mut super::backend_policy::BackendPolicy {
         let force_original = self.direct_play_mode == DirectPlayMode::Forced;
         self.backend_policy.get_or_insert_with(||
-            super::backend_policy::BackendPolicy::for_request(force_original));
-        true
+            super::backend_policy::BackendPolicy::for_request(force_original))
+    }
+
+    /// Forget the previous request's offers: its catalog and spent history, the recipe planned
+    /// from it and the one admitted. Every request boundary does this (a play request's
+    /// [`begin_attempt`](Self::begin_attempt), an explicit source's
+    /// [`qualify_explicit_feed_source`](Self::qualify_explicit_feed_source)); a reload, a
+    /// recovery landing and a capability refresh never do.
+    fn reset_backend_offers(&mut self) {
+        self.backend_policy = None;
+        self.planned_feed_offer = None;
+        self.planned_feed_purpose = CandidatePurpose::NewCandidate;
+        self.admitted_feed_offer = None;
+    }
+
+    fn publish_feed_offer(&mut self, id: super::backend_policy::OfferId, purpose: CandidatePurpose) {
+        self.catalog().qualify_planned_feed(id);
+        self.planned_feed_offer = Some(id);
+        self.planned_feed_purpose = purpose;
+        if purpose == CandidatePurpose::NewCandidate { self.admitted_feed_offer = None; }
     }
 
     /// Publish a Feed recipe only after a route has resolved an exact source for these selected
@@ -1144,10 +1221,28 @@ impl PlaybackSession {
     pub fn qualify_resolved_feed_offer(&mut self, id: super::backend_policy::OfferId,
         purpose: CandidatePurpose) -> bool {
         if !self.backends.feed || !self.ensure_backend_offers() { return false; }
-        self.backend_policy.as_mut().expect("catalog exists").qualify_planned_feed(id);
-        self.planned_feed_offer = Some(id);
-        self.planned_feed_purpose = purpose;
-        if purpose == CandidatePurpose::NewCandidate { self.admitted_feed_offer = None; }
+        self.publish_feed_offer(id, purpose);
+        true
+    }
+
+    /// A source the app was handed directly, with no Plex item and no plan behind it: the
+    /// `plxnative-playurl` and `-url` dev triggers and the local samples, which the player resolves
+    /// itself when the route holds no source. No `apply_plan` ever qualified a recipe for it, and
+    /// the start door refuses a Start without one.
+    ///
+    /// Such a source is its own request, so its catalog begins fresh (a replay after the
+    /// stream's end would otherwise find the first play's recipe spent, and a play after a real
+    /// item would inherit that item's history) and its one recipe is the original handoff: the
+    /// bytes reach the decoder as named, with nothing converted by a server. That is not the
+    /// recipe [`installed_feed_recipe`](Self::installed_feed_recipe) would classify, which reads
+    /// the file's codecs a plan recorded and a synthetic declaration never sets. Call this once,
+    /// when the source is resolved from an empty route, never when a reload reads a source the
+    /// route already holds. False when this composition has no Feed driver.
+    pub fn qualify_explicit_feed_source(&mut self) -> bool {
+        if !self.backends.feed { return false; }
+        self.reset_backend_offers();
+        self.publish_feed_offer(super::backend_policy::OfferId::FEED_ORIGINAL,
+            CandidatePurpose::NewCandidate);
         true
     }
 
@@ -1566,10 +1661,7 @@ impl PlaybackSession {
     /// starts from it; the previous request's, and whatever it had narrowed, is dropped.
     pub(super) fn begin_attempt(&mut self, caps: std::sync::Arc<plx_platform::devcaps::Caps>) {
         self.recovery = Some(crate::player::recovery::OpenRecovery::new(caps));
-        self.backend_policy = None;
-        self.planned_feed_offer = None;
-        self.planned_feed_purpose = CandidatePurpose::NewCandidate;
-        self.admitted_feed_offer = None;
+        self.reset_backend_offers();
     }
 
     /// The request's failed-open ladder, for the pump to step. A session that has not begun an
@@ -4697,7 +4789,7 @@ pub fn auto_original_watch(ps: &PlaybackSession) -> Option<AutoOriginalWatch> {
 /// off only where the transition itself is what is being graded, and give that case a
 /// `network_profile` that starves for real. Removing the candidate is load-bearing: otherwise a
 /// loopback source probe can escape to Original before a request-indexed HLS cliff occurs.
-/// [`crate::player::playurl::PlayUrl::auto_start_hls`] has the history — the alternative was declaring a
+/// `plx_play_feed::playurl::PlayUrl::auto_start_hls` has the history — the alternative was declaring a
 /// source rate no link could carry and relying on a starvation horizon that did not check whether
 /// the reserve was draining.
 pub fn arm_auto_fixture(
@@ -4720,7 +4812,7 @@ pub fn arm_auto_fixture(
         // `tests/serve_fixtures.py` served no 22000 rung, so such a candidate would 404 and read
         // on the television as a rejected encoder — a fixture gap standing in for a policy, and
         // the thing that kept the plan's I9 blocked. The server answers 22000 now, so the caller
-        // declares it (`player::playurl::PlayUrl::source_raster`) and the default is still 1080p.
+        // declares it (`plx_play_feed::playurl::PlayUrl::source_raster`) and the default is still 1080p.
         s.cur_src = (
             i64::from(source_kbps),
             i64::from(source_raster.0),
@@ -4761,7 +4853,7 @@ pub fn arm_auto_fixture(
         return None;
     }
     // Install exactly the state `fallback_auto_to_hls` leaves behind, at the bootstrap rung, and
-    // hand the caller the playlist to open. See `player::playurl::PlayUrl::auto_start_hls` for why this exists
+    // hand the caller the playlist to open. See `plx_play_feed::playurl::PlayUrl::auto_start_hls` for why this exists
     // at all: the alternative was declaring a source rate no link could carry and relying on the
     // starvation horizon to fire on a reserve that was visibly FILLING.
     let rung = crate::abr::Rung::P480;
@@ -7046,7 +7138,7 @@ pub fn set_stream_source_raster(ps: &mut PlaybackSession, w: u16, h: u16) {
 }
 
 /// The whole Load-payload DECLARATION for a stream the app did not SELECT — the pipeline test
-/// tier's `/tmp/plxnative-playurl` ([`crate::player::playurl::PlayUrl`]), whose entire point is that no PMS
+/// tier's `/tmp/plxnative-playurl` (`plx_play_feed::playurl::PlayUrl`), whose entire point is that no PMS
 /// chose anything and so `apply_plan` never runs.
 ///
 /// ONE write for the same reason [`set_server_output_declaration`] is one write and [`apply_plan`]

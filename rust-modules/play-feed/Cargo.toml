@@ -33,6 +33,10 @@ plx_net = { path = "../net" }
 libc = "0.2"
 plx_base = { path = "../base" }
 plx_platform = { path = "../platform" }
+# The sourceInfo envelope rewrite (`vp9_hdr`) and the dev-trigger Load payload (`playurl`) are JSON
+# text. The same specs as plx_platform and plx_net, so the lockfile gains no crate.
+serde_json = { version = "1", default-features = false, features = ["alloc", "std"] }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 
 [dev-dependencies]
 # So `cargo test -p plx_play_feed` alone builds (the layer crates' rule): the tests share

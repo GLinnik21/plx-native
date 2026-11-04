@@ -178,7 +178,7 @@ const DIAG: [&str; 48] = [
     // variants must not move the boot screen out from under the playback being compared.
     "plxnative-av1obu",
     // Send VP9's sourceInfo envelope as the pipeline made it, without the container-derived HDR10
-    // declaration (`media::player::vp9_hdr`): the A/B for whether the television switches to HDR.
+    // declaration (`plx_play_feed::vp9_hdr`): the A/B for whether the television switches to HDR.
     "plxnative-novp9hdr",
     // The side subtitle reader (`media::player::subside`): content = the 0-based position of the
     // embedded subtitle stream to draw over a plain remux, read at each playback start.
@@ -572,7 +572,10 @@ pub(crate) fn quality_switch_script() -> Option<(u32, Vec<plx_plex::plex::sessio
 /// media position (and, in the simulator, stops the clock sink exactly on it, so the pause freezes
 /// that position: `HostSink::stop_clock_at`): a wall-clock delay pauses wherever the host's
 /// scheduling has got playback to, which moves from run to run, and the documentation's player
-/// figure wants the same frame and the same clock every time. Unknown/duplicate/invalid fields fail the whole trigger closed; silently
+/// figure wants the same frame and the same clock every time. The simulator's settled capture
+/// (`PLXNATIVE_SHOT_SETTLE`) waits for the Pause to land (`scenarios::screenshot::PauseDebt`): the
+/// edge arms six seconds in, and a slow host can leave the player still for longer than the
+/// capture's quiet meanwhile. Unknown/duplicate/invalid fields fail the whole trigger closed; silently
 /// substituting a duration would exercise a different interleaving from the manifest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PauseScript {

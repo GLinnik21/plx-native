@@ -13,7 +13,7 @@ name = "plx_media"
 # application crate's (ci/test_no_host_staticlib.py holds that line for this crate too). It owns no
 # build script and links nothing -- the FFmpeg, libass and libcurl symbols are `dynlib!` tables
 # (dlopen at run time), the platform webOS port's Starfish/ACB externs are resolved by the final link (the
-# Makefile's), and the two `#[no_mangle]` callbacks `src/starfish.c` calls (`sf_on_event`,
+# Makefile's), and the two `#[no_mangle]` callbacks `src/starfish.c` calls (`plx_play_feed::sf_event::sf_on_event`,
 # `acb_on_event`) ride the application's staticlib like `plx_telemetry`'s entry points. It reads no
 # `PLX_*` build variable.
 crate-type = ["rlib"]

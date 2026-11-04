@@ -52,6 +52,10 @@ use super::frame::{Budget, Class};
 use plx_machine::machine::{PosterKey, PresentHandle};
 use plx_machine::present::{PresentEvent, Provenance, ResourceKind};
 
+/// Render-source namespace for immutable public content. The application's source adapter must
+/// handle this separately from authenticated media servers and verify the content digest.
+pub const CONTENT_SOURCE: u16 = u16::MAX;
+
 /// What a prefetch did — which is what lets a caller spend exactly ONE key per frame: a prefetch
 /// loop walks its candidates and stops at the first `Claimed`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

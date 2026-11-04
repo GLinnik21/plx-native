@@ -883,6 +883,8 @@ dependencies = [
  "plx_net",
  "plx_platform",
  "plx_playback_contract",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

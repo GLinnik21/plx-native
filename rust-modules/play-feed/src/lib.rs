@@ -21,7 +21,7 @@ pub mod ff_test_support {
         pub use crate::ff::acquisition::{AcquisitionRuntime, Phase, SegmentAcquisition,
             CHECK_SLICE};
         pub mod observe {
-            pub use crate::ff::acquisition::observe::{unwatch, watch_this_thread};
+            pub use crate::ff::acquisition::observe::{on_nth_continue, unwatch, watch_this_thread};
         }
     }
     pub use acquisition::{AcquisitionRuntime, Phase, SegmentAcquisition};
@@ -51,6 +51,9 @@ pub mod native_stall;
 pub mod native_executor;
 pub mod native_release;
 pub mod open;
+pub mod seek;
+pub mod sf_event;
+pub mod playurl;
 pub mod pcm_lead;
 pub mod side_reader;
 pub mod shared;

@@ -269,7 +269,7 @@ pub(crate) fn enter_player(
         .top_page()
         .map(|e| matches!(e.arg, AppArg::Player))
         .unwrap_or(false)
-        || matches!(pages.nav.tabs.stack.pending_dest(), Some(AppArg::Player));
+        || super::bridge::player_arriving(pages);
     if already_up {
         return;
     }

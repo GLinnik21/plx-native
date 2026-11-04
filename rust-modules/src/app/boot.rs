@@ -2420,7 +2420,7 @@ pub(crate) unsafe fn construct(
     // Why the app needs this at all: the synthetic tier boots with NO Plex session, so after a
     // stream ends there is no detail page, no Play control and no key path back into the
     // player. Everything else was already in place — `teardown` clears the URL and `ended` on a
-    // real stop, and `engine::start_bufferfeed` re-reads `player::playurl::playurl()` whenever
+    // real stop, and `engine::start_bufferfeed` re-reads `plx_play_feed::playurl::playurl()` whenever
     // `route::url()` is empty — so a replay is a second trip through the entry below.
     let replay_left: u32 = if controlled { 0 } else { replay_budget(crate::dev::scenarios::replay_trigger_value().as_deref()) };
     let grid_tried = false;
@@ -2563,6 +2563,7 @@ pub(crate) unsafe fn construct(
             acct_rest: None,
             shots: Default::default(),
             auto_tried,
+            playurl_armed: None,
             replay_left,
             grid_tried,
             settings_tried,
