@@ -568,6 +568,7 @@ fn reconfigure_uri_audio(ps: &mut plx_media::route::PlaybackSession,
     let accepted = plx_media::route::request_viewer_reconfigure(ps, meta,
         plx_media::route::ViewerReconfigure::SourceAudio(sid), position, paused);
     if accepted {
+        pa.cancel_uri_interactive_picks();
         if let Some(memo) = memo { plx_media::route::remember_accepted_source_audio(ps, memo); }
     }
     accepted
@@ -585,6 +586,7 @@ fn reconfigure_uri_subtitle(ps: &mut plx_media::route::PlaybackSession,
         plx_media::route::ViewerReconfigure::SourceSubtitle { sid, mode, forced_lang },
         position, paused);
     if accepted {
+        pa.cancel_uri_interactive_picks();
         if let Some(memo) = memo { plx_media::route::remember_accepted_source_subtitle(ps, memo); }
     }
     accepted
@@ -598,15 +600,37 @@ pub(crate) fn drain_uri_track_fallbacks(ps: &mut plx_media::route::PlaybackSessi
     pa: &mut plx_media::player::adapter::PlayerAdapter,
     meta: &mut plx_data::stores::metadata::MetadataStore) {
     use plx_media::player::adapter::UriTrackFallback;
+    let (mut audio, mut subtitle) = (None, None);
     while let Some(fallback) = pa.take_uri_track_fallback() {
-        let accepted = match fallback {
-            UriTrackFallback::Audio { audio, memo } =>
-                reconfigure_uri_audio(ps, pa, meta, audio.sid, memo),
-            UriTrackFallback::Subtitle { ordinal: _, stream_id, memo } =>
-                reconfigure_uri_subtitle(ps, pa, meta, stream_id,
-                    plx_media::route::SubMode::Track, None, memo),
-        };
-        if accepted { break; }
+        match fallback {
+            UriTrackFallback::Audio { audio: selected, memo } =>
+                audio = Some((selected.sid, memo)),
+            UriTrackFallback::Subtitle { stream_id, memo } =>
+                subtitle = Some((stream_id, memo)),
+        }
+    }
+    match (audio, subtitle) {
+        (Some((audio_sid, audio_memo)), Some((subtitle_sid, subtitle_memo))) => {
+            let position = plx_media::player::intended_pos_known_ns(ps);
+            let paused = pa.backend_viewer_paused();
+            if plx_media::route::request_viewer_reconfigure(ps, meta,
+                plx_media::route::ViewerReconfigure::SourceTracks {
+                    audio_sid, subtitle_sid }, position, paused) {
+                pa.cancel_uri_interactive_picks();
+                if let Some(memo) = audio_memo {
+                    plx_media::route::remember_accepted_source_audio(ps, memo);
+                }
+                if let Some(memo) = subtitle_memo {
+                    plx_media::route::remember_accepted_source_subtitle(ps, memo);
+                }
+            }
+        }
+        (Some((sid, memo)), None) => { let _ = reconfigure_uri_audio(ps, pa, meta, sid, memo); }
+        (None, Some((sid, memo))) => {
+            let _ = reconfigure_uri_subtitle(ps, pa, meta, sid,
+                plx_media::route::SubMode::Track, None, memo);
+        }
+        (None, None) => {}
     }
 }
 
@@ -620,9 +644,12 @@ pub(crate) fn commit_track(
     match commit {
         TrackCommit::Audio { carried, memo } => {
             #[cfg(feature = "play-uri")]
-            if pa.uri_maps_track(ps, plx_playback_contract::TrackKind::Audio,
-                carried.sid) == Some(false) {
-                let _ = reconfigure_uri_audio(ps, pa, meta, carried.sid, memo);
+            if ps.attempt_view().backend() == Some(plx_media::player::attempt_view::Backend::Uri) {
+                if pa.uri_maps_track(ps, plx_playback_contract::TrackKind::Audio,
+                    carried.sid) == Some(false)
+                    || !pa.commit_audio_track(ps, carried.clone(), memo.clone()) {
+                    let _ = reconfigure_uri_audio(ps, pa, meta, carried.sid, memo);
+                }
                 return;
             }
             pa.commit_audio_track(ps, carried, memo);
@@ -643,13 +670,16 @@ pub(crate) fn commit_track(
         // (`route::commit_subtitle_and_sidecar`): the sidecar policy lives beside the track memory's.
         TrackCommit::Subtitle { render_ordinal, stream_id, sidecar_key, sidecar_codec, memo } => {
             #[cfg(feature = "play-uri")]
-            if ps.attempt_view().backend() == Some(plx_media::player::attempt_view::Backend::Uri)
-                && (render_ordinal < 0 || sidecar_key.is_some()
+            if ps.attempt_view().backend() == Some(plx_media::player::attempt_view::Backend::Uri) {
+                if render_ordinal < 0 || sidecar_key.is_some()
                     || pa.uri_maps_track(ps, plx_playback_contract::TrackKind::Subtitle,
-                        stream_id) == Some(false)) {
-                let mode = if stream_id == 0 { plx_media::route::SubMode::Off }
-                    else { plx_media::route::SubMode::Track };
-                let _ = reconfigure_uri_subtitle(ps, pa, meta, stream_id, mode, None, memo);
+                        stream_id) == Some(false)
+                    || !pa.commit_subtitle_track(ps, render_ordinal, stream_id,
+                        sidecar_key.clone(), sidecar_codec.clone(), memo.clone()) {
+                    let mode = if stream_id == 0 { plx_media::route::SubMode::Off }
+                        else { plx_media::route::SubMode::Track };
+                    let _ = reconfigure_uri_subtitle(ps, pa, meta, stream_id, mode, None, memo);
+                }
                 return;
             }
             pa.commit_subtitle_track(ps, render_ordinal, stream_id, sidecar_key, sidecar_codec, memo);

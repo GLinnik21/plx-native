@@ -73,7 +73,10 @@ fn opened() -> (crate::route::PlaybackSession, PlayerAdapter, &'static Bus,
     crate::route::RouteStartAttempt) {
     let mut ps = crate::route::PlaybackSession::IDLE;
     crate::route::reset_player_control_for_test(&ps);
-    let route_attempt = crate::route::RouteStartAttempt::fixture();
+    let ticket = crate::route::begin_route_start().expect("first real route transaction");
+    assert!(crate::route::prepare_route_start(ticket));
+    let route_attempt = crate::route::claim_route_start_attempt(ticket)
+        .expect("first physical route attempt");
     ps.begin_attempt_view(route_attempt, super::super::attempt_view::Backend::Uri);
     let bus = Box::leak(Box::new(Bus::new()));
     let mut pa = PlayerAdapter::new(unsafe { MainThread::assume() });
@@ -109,6 +112,7 @@ fn opened() -> (crate::route::PlaybackSession, PlayerAdapter, &'static Bus,
     let at = pa.backend_tick();
     let _ = pa.backend_poll_session_at(&mut ps, at);
     assert_eq!(pa.backend_snapshot().phase, plx_playback_contract::Phase::Active);
+    // ReadyAwaitPlay settled the real transaction through the adapter's addressed path.
     (ps, pa, bus, route_attempt)
 }
 

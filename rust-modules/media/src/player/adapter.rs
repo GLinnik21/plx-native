@@ -80,7 +80,7 @@ struct PendingUriSubtitle {
 pub enum UriTrackFallback {
     Audio { audio: crate::route::CarriedAudio,
         memo: Option<plx_plex::plex::session::prefs::AudioMemo> },
-    Subtitle { ordinal: i32, stream_id: i64,
+    Subtitle { stream_id: i64,
         memo: Option<plx_plex::plex::session::prefs::SubtitleMemo> },
 }
 
@@ -868,11 +868,22 @@ impl PlayerAdapter {
         }
         if let Some(pending) = self.refused_uri_subtitle.take() {
             if Some(pending.attempt) == active {
-                return Some(UriTrackFallback::Subtitle { ordinal: pending.ordinal,
-                    stream_id: pending.stream_id, memo: pending.memo });
+                return Some(UriTrackFallback::Subtitle { stream_id: pending.stream_id,
+                    memo: pending.memo });
             }
         }
         None
+    }
+
+    /// An accepted explicit source reconfiguration supersedes interactive native selections
+    /// still awaiting proof on the old URI attempt. Late replies may reach the runner, but they
+    /// cannot commit old route or track-memory state into the replacement request.
+    #[cfg(feature = "play-uri")]
+    pub fn cancel_uri_interactive_picks(&mut self) {
+        self.pending_uri_audio = None;
+        self.pending_uri_subtitle = None;
+        self.refused_uri_audio = None;
+        self.refused_uri_subtitle = None;
     }
 
     /// `None` means the active route is Feed. `Some(false)` is an explicit URI refusal, so a

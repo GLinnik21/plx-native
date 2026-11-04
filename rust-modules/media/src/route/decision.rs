@@ -9406,6 +9406,9 @@ pub enum ViewerReconfigure {
     SourceAudio(i64),
     /// Off and Forced only are source intent, not a fabricated URI native index.
     SourceSubtitle { sid: i64, mode: SubMode, forced_lang: Option<String> },
+    /// Two independently queued native choices were refused in one poll. Resolve the pair once
+    /// rather than letting the first replacement erase the viewer's other selected source track.
+    SourceTracks { audio_sid: i64, subtitle_sid: i64 },
 }
 
 /// Re-resolve the same source and selected tracks at a proven viewer position. This is one new
@@ -9450,6 +9453,19 @@ pub fn request_viewer_reconfigure(ps: &mut PlaybackSession,
                 || (*mode == SubMode::ForcedOnly) != forced_lang.is_some() { return false; }
             retry.selection = Some((source.audio_sid, *sid));
             retry.sub_mode = *mode;
+        }
+        ViewerReconfigure::SourceTracks { audio_sid, subtitle_sid } => {
+            let Some(source) = ps.source_selection else { return false };
+            if ps.attempt_view().backend() != Some(crate::player::attempt_view::Backend::Uri)
+                || *audio_sid <= 0 || *subtitle_sid <= 0
+                || (*audio_sid == source.audio_sid && *subtitle_sid == source.subtitle_sid)
+                || !meta.view().playing().is_some_and(|item|
+                    item.audio.iter().any(|track| track.id == *audio_sid)
+                    && item.subs.iter().any(|track| track.id == *subtitle_sid)) {
+                return false;
+            }
+            retry.selection = Some((*audio_sid, *subtitle_sid));
+            retry.sub_mode = SubMode::Track;
         }
     }
     retry.candidate_purpose = CandidatePurpose::NewCandidate;
@@ -9527,6 +9543,7 @@ fn request_play_with_queue(
             ViewerReconfigure::Speed(rate) => ps.requested_rate_permille = rate,
             ViewerReconfigure::Audio(audio) => crate::player::set_audio_enhancements(audio),
             ViewerReconfigure::SourceAudio(_) => {}
+            ViewerReconfigure::SourceTracks { .. } => {}
             ViewerReconfigure::SourceSubtitle { mode: SubMode::ForcedOnly,
                 forced_lang: Some(lang), .. } => {
                 ps.track_ctx.get_or_insert_with(TrackContext::default).forced_lang = lang;
