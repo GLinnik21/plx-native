@@ -415,7 +415,7 @@ pub(super) fn start_bufferfeed_inner(
     let start_paused = feed_start_paused(ps);
     physical_start.publish(session_rate, start_paused);
     let trace_generation = crate::route::playback_trace_generation();
-    let mut prepared_native = engine::prepare_native_open(pa.mt(), pa.feed.shared(),
+    let mut prepared_native = engine::prepare_native_open(pa.mt(), pa.feed.shared(), &pa.feed.hooks().prepare,
         start_paused, FEED_TX.seek_preroll_active(),
         open.map(super::feed_open::FeedOpenRequest::into_physical), sample, is_h265, session_rate, side_reader)
         .map_err(|_| crate::route::RouteStartResult::StartFailed)?;
@@ -428,7 +428,8 @@ pub(super) fn start_bufferfeed_inner(
     let attempt = route_attempt.contract_id();
     let (video_fidelity, audio_fidelity) = ps.planned_feed_fidelity()
         .expect("qualified feed has fidelity requirements");
-    prepared_native.bind_demux_session(attempt);
+    let epoch = prepared_native.native_epoch();
+    prepared_native.bind_demux_session(super::demux_session::PlayerDemuxSession::capture(attempt, epoch));
     ps.begin_attempt_view(route_attempt, super::attempt_view::Backend::Feed);
     let source = pa.next_source_key();
     pa.stage_native_feed(attempt, source, prepared_native)
@@ -611,7 +612,9 @@ pub(super) fn run_release_effects(
                 if let Some(p) = joined.take() {
                     debug_assert_eq!(p.epoch(), epoch);
                     let attempt = p.attempt();
-                    let status = engine::run_release_tail(pa.mt(), p);
+                    let hooks = pa.feed.hooks();
+                    let status = plx_play_feed::native_executor::run_release_tail(
+                        pa.mt(), p, pa.feed.shared(), &hooks.release);
                     pa.note_backend_feed_release(attempt, status);
                     let at = pa.backend_tick();
                     let _ = pa.backend_poll_at(at);

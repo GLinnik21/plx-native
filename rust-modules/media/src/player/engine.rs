@@ -10,7 +10,7 @@
 //! or the ACB/Starfish seam, so the parameter carries information. `arm_seek` runs on the main
 //! thread too and deliberately does not take one: it only publishes to `FEED_SHARED`.
 use plx_play_feed::open::PhysicalOpen;
-use plx_play_feed::shared::{PhysicalShared, FEED_SHARED, FEED_TX};
+use plx_play_feed::shared::{PhysicalShared, FEED_SHARED};
 #[cfg(all(test, feature = "hostsim"))]
 use super::route_start::{exit_native, exit_native_with, finish_release_for_test, poll_release,
     reap_abandoned_load, NativeExit};
@@ -40,6 +40,7 @@ pub(crate) use plx_play_feed::LoadVideo;
 pub(crate) use plx_play_feed::load_video_refused;
 #[cfg(all(test, feature = "hostsim"))]
 use super::shared::Stage;
+use plx_play_feed::native_executor::{FeedHooks, LaunchHooks, NativeHooks, PrepareHooks, ReleaseHooks};
 use plx_play_feed::seek::SeekMode;
 use super::{log, sink, threads};
 #[cfg(all(test, feature = "hostsim"))]
@@ -139,19 +140,11 @@ use plx_play_feed::native_release::{native_object_disposition, NativeObjectDispo
 /// while the load thread is still inside is the issue #74 race — and joining the media thread on
 /// the SDL main thread froze the whole app on exactly the set where the Load was hung. So teardown
 /// parks the thread, the payload it reads and the epoch here instead, and
-/// [`reap_abandoned_load_resource`] runs the ordinary native release (`Unload` → callback gate → epoch
+/// [`plx_play_feed::native_executor::reap_abandoned_load_resource`] runs the ordinary native release (`Unload` → callback gate → epoch
 /// retirement → D1 or quarantine) on the main thread once the thread has finished. Until then every
 /// start is refused rather than handed the same object; if the `Load` never returns the object is
 /// leaked for the life of the process, which is what the C seam would have to do anyway.
 pub use plx_play_feed::feed_state::AbandonedLoad;
-
-/// Release a parked [`AbandonedLoad`] if its `Load` has returned. Cheap when there is nothing to
-/// do; called once per app frame and at the top of every native start. `true` when the parked
-/// object was released by this call.
-pub(super) fn reap_abandoned_load_resource(feed: &mut super::feed_resources::FeedResources,
-    mt: &MainThread) -> bool {
-    plx_play_feed::native_executor::reap_abandoned_load_resource(feed, mt, &RELEASE_HOOKS)
-}
 
 /// A real stop hands its native object to off-frame Unload and retains its Engine until the tail.
 pub use plx_play_feed::feed_state::PendingRelease;
@@ -180,42 +173,19 @@ fn exported_window_destroyed() {
     window_step(WindowStage::ExportedWindowDestroy);
 }
 
-const RELEASE_HOOKS: plx_play_feed::native_executor::ReleaseHooks =
-    plx_play_feed::native_executor::ReleaseHooks {
-        raw_sink: super::raw_sink,
-        plane: plx_platform::tv::plane::installed(),
-        on_release_step: release_step,
-        on_exported_window_destroy: exported_window_destroyed,
-        spawn_unload,
-    };
-
-fn release_off_frame(mt: &MainThread, feed: &super::feed_resources::FeedResources,
-    epoch: u32, sp: &mut TeardownSpans,
-    status: &mut plx_playback_contract::ReleaseStatus) -> Option<std::thread::JoinHandle<()>> {
-    let hooks = plx_play_feed::native_executor::ReleaseHooks {
-        spawn_unload: feed.unload_spawner().unwrap_or(spawn_unload),
-        ..RELEASE_HOOKS
-    };
-    plx_play_feed::native_executor::release_off_frame(
-        mt, epoch, sp, status, feed.shared(), &hooks)
-}
-
-pub(super) fn run_release_tail(mt: &MainThread, p: PendingRelease)
-    -> plx_playback_contract::ReleaseStatus {
-    plx_play_feed::native_executor::run_release_tail(mt, p, &FEED_SHARED, &RELEASE_HOOKS)
-}
-
 #[cfg(all(test, feature = "hostsim"))]
 fn release_native_object(mt: &MainThread, epoch: u32) {
     let _ = release_native_object_timed(mt, epoch, &mut TeardownSpans::new());
 }
 
+#[cfg(all(test, feature = "hostsim"))]
 use plx_play_feed::native_executor::TeardownSpans;
 
+#[cfg(all(test, feature = "hostsim"))]
 fn release_native_object_timed(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans)
     -> plx_playback_contract::ReleaseStatus {
     plx_play_feed::native_executor::release_native_object_timed(
-        mt, epoch, sp, &FEED_SHARED, &RELEASE_HOOKS)
+        mt, epoch, sp, &FEED_SHARED, &NATIVE_HOOKS.release)
 }
 
 /// Release breadcrumbs belong to the common telemetry owner, not the physical executor.
@@ -411,19 +381,49 @@ use plx_play_feed::native_executor::{app_id_key, with_app_id};
 
 #[cfg(all(test, feature = "hostsim"))]
 fn with_window_id(mt: &MainThread, p: &str) -> String {
-    plx_play_feed::native_executor::with_window_id(mt, p, &PREPARE_HOOKS)
+    plx_play_feed::native_executor::with_window_id(mt, p, &NATIVE_HOOKS.prepare)
 }
 
 fn exported_window_created() {
     window_step(WindowStage::ExportedWindowCreate);
 }
 
-const PREPARE_HOOKS: plx_play_feed::native_executor::PrepareHooks =
-    plx_play_feed::native_executor::PrepareHooks {
+/// The `demux_transport` hook: the HTTPS credential facade is media-owned (`curlio`), so the
+/// composition names it and the executor only calls the function.
+fn demux_transport() -> crate::ff::DemuxTransport {
+    crate::ff::DemuxTransport::new(crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE)
+}
+
+/// **Everything the common composition lends the physical executor, as one value.** A `const`,
+/// not a registry: `PlayerAdapter` hands `&NATIVE_HOOKS` to the `FeedResources` it owns, and every
+/// caller reaches the executor through that owner (`feed.hooks()`), so there is no installer and no
+/// process-global. `sink` is the FENCED one (`player::sink`) for every verb but the release, which
+/// takes `raw_sink`.
+pub(super) const NATIVE_HOOKS: NativeHooks = NativeHooks {
+    prepare: PrepareHooks {
         sink,
         on_exported_window_create: exported_window_created,
         load_refusal_latch: DemuxExitClass::LoadRefused.latch(),
-    };
+    },
+    launch: LaunchHooks {
+        demux_transport,
+        load_thread: threads::load_thread,
+        select_seek_mode: select_seek_mode_for_load,
+    },
+    feed: FeedHooks {
+        sink,
+        mirror_playstate: super::acb_mirror_playstate_at,
+        mute_for_preroll: super::mute_for_preroll,
+        feed_clock_us,
+    },
+    release: ReleaseHooks {
+        raw_sink: super::raw_sink,
+        plane: plx_platform::tv::plane::installed(),
+        on_release_step: release_step,
+        on_exported_window_destroy: exported_window_destroyed,
+        spawn_unload,
+    },
+};
 
 pub use super::route_start::{reload_at, reload_transcode, reload_transcode_tracked,
     stop_bufferfeed, suspend_bufferfeed, switch_audio_native, ReloadOutcome};
@@ -437,7 +437,7 @@ use plx_play_feed::native_executor::stream_open_log_line;
 
 pub(super) fn begin_native_open(feed: &mut super::feed_resources::FeedResources,
     mt: &MainThread) -> bool {
-    reap_abandoned_load_resource(feed, mt);
+    plx_play_feed::native_executor::reap_abandoned_load_resource(feed, mt, &feed.hooks().release);
     if feed.has_abandoned_load() {
         log("start_bufferfeed: an abandoned Load has not returned yet (refusing native start)");
         return false;
@@ -461,6 +461,7 @@ pub(super) enum NativeOpenError { Refused }
 pub(super) fn prepare_native_open(
     mt: &MainThread,
     shared: &'static PhysicalShared,
+    hooks: &PrepareHooks,
     user_held: bool,
     seek_preroll: bool,
     open: Option<PhysicalOpen>,
@@ -474,8 +475,8 @@ pub(super) fn prepare_native_open(
     }));
     plx_play_feed::native_executor::prepare_native_open(
         mt, shared, user_held, seek_preroll, open, sample, is_h265, session_rate,
-        side_reader, super::no_audio_armed(), super::play_rate_permille(), &PREPARE_HOOKS,
-    ).map(NativePrepared).map_err(|refusal| {
+        side_reader, super::no_audio_armed(), super::play_rate_permille(), hooks,
+    ).map_err(|refusal| {
         match refusal {
             plx_play_feed::native_executor::PrepareRefusal::ClockBusy => {
                 log("start_bufferfeed: clock state is not idle (refusing overlapping start)");
@@ -491,32 +492,7 @@ pub(super) fn prepare_native_open(
 
 /// One physical Load declaration and its native callback guards, prepared before the route owner
 /// mints an attempt. Dropping it on a superseded route retracts both guards automatically.
-pub(super) struct NativePrepared(plx_play_feed::native_executor::NativePrepared);
-
-impl NativePrepared {
-    /// The route claim supplies the canonical attempt only after native preflight succeeds.
-    pub(super) fn bind_demux_session(&mut self, attempt: plx_playback_contract::AttemptId) {
-        let epoch = self.0.native_epoch();
-        self.0.bind_demux_session(super::demux_session::PlayerDemuxSession::capture(attempt, epoch));
-    }
-}
-
-/// Launch workers against the route's exact attempt; this owns no route/session policy.
-pub(super) fn launch_native_open(
-    feed: &mut super::feed_resources::FeedResources,
-    attempt: plx_playback_contract::AttemptId,
-    prepared: NativePrepared,
-) -> Result<(), NativeOpenError> {
-    let hooks = plx_play_feed::native_executor::LaunchHooks {
-        demux_transport: || crate::ff::DemuxTransport::new(
-            crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE),
-        load_thread: threads::load_thread,
-        select_seek_mode: select_seek_mode_for_load,
-    };
-    plx_play_feed::native_executor::launch_native_open(
-        feed, &FEED_TX, attempt, prepared.0, &hooks,
-    ).map_err(|_| NativeOpenError::Refused)
-}
+pub(super) use plx_play_feed::native_executor::NativePrepared;
 
 fn select_seek_mode_for_load() {
     let major = plx_platform::tv::device::info().major;
@@ -590,11 +566,7 @@ impl NativeStop {
 
     pub(super) fn release_and_drain(&mut self, mt: &MainThread,
         feed: &mut super::feed_resources::FeedResources, for_reload: bool) {
-        let hooks = plx_play_feed::native_executor::StopHooks {
-            release_off_frame,
-            release_native_object_timed,
-        };
-        self.0.release_and_drain(mt, feed, for_reload, &hooks);
+        self.0.release_and_drain(mt, feed, for_reload, &feed.hooks().release);
     }
 
     pub(super) fn finish(self, for_reload: bool) -> Option<PendingRelease> {
@@ -659,24 +631,14 @@ use plx_play_feed::native_executor::{settle_pcm_lead, hls_candidate_snapshot_sta
 pub use plx_play_feed::native_executor::arm_live_clock_prime;
 
 
-const FEED_HOOKS: plx_play_feed::native_executor::FeedHooks =
-    plx_play_feed::native_executor::FeedHooks {
-        sink,
-        mirror_playstate: super::acb_mirror_playstate_at,
-        mute_for_preroll: super::mute_for_preroll,
-        feed_clock_us,
-    };
-
-pub(super) fn play_initial_now(mt: &MainThread, eng: &mut Engine) -> Option<bool> {
-    plx_play_feed::native_executor::play_initial_now(mt, eng, &FEED_HOOKS)
+#[cfg(all(test, feature = "hostsim"))]
+pub(super) fn try_prime(mt: &MainThread, eng: &mut Engine) {
+    plx_play_feed::native_executor::try_prime(mt, eng, &plx_play_feed::shared::FEED_TX, &NATIVE_HOOKS.feed);
 }
 
-pub fn try_prime(mt: &MainThread, eng: &mut Engine) {
-    plx_play_feed::native_executor::try_prime(mt, eng, &FEED_TX, &FEED_HOOKS);
-}
-
-pub fn feed_both_lanes(mt: &MainThread, eng: &mut Engine) {
-    plx_play_feed::native_executor::feed_both_lanes(mt, eng, &FEED_TX, &FEED_HOOKS);
+#[cfg(all(test, feature = "hostsim"))]
+pub(super) fn feed_both_lanes(mt: &MainThread, eng: &mut Engine) {
+    plx_play_feed::native_executor::feed_both_lanes(mt, eng, &plx_play_feed::shared::FEED_TX, &NATIVE_HOOKS.feed);
 }
 
 #[cfg(test)]

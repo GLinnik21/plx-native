@@ -71,7 +71,7 @@
 //! This is the Feed backend's stand-in, so it lives in `plx_play_feed`, which may name only the
 //! layers below it. Three things it needs are above it, and each arrives as a [`Hooks`] value the
 //! sink is built with (the way the firmware is handed its callback and context at `Load`), never as
-//! a name this file imports: the pipeline-event entry (`sf_on_event`, the media player's), the
+//! a name this file imports: the pipeline-event entry (`sf_on_event`, this crate's `sf_event`), the
 //! inverse of that entry's position rebase, and a [`FrameSink`] for the simulator's decoded
 //! picture (`plxnative-simvideo`; it draws, so `plx_gfx` is its home and not this crate's).
 //! `Load` adopts the hooks; every later report is gated on the epoch only a successful `Load`
@@ -109,7 +109,7 @@ pub trait FrameSink: Sync {
 #[derive(Clone, Copy)]
 pub struct Hooks {
     /// The pipeline-event entry LG's library thread calls, with its arguments:
-    /// `(epoch, type, num, text)`. The media player's `sf_on_event`.
+    /// `(epoch, type, num, text)`. This crate's `sf_event::sf_on_event`.
     pub deliver_event: extern "C" fn(c_uint, c_int, i64, *const c_char),
     /// The inverse of the position rebase `deliver_event` applies to a reported position
     /// (`playpos = fed - pts_shift + disp_base`): the fed PTS at which the app reads `media_ns`.

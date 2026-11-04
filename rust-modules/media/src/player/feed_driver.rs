@@ -2,6 +2,7 @@
 //! one prepared native source under its canonical attempt and a private source key.
 
 use super::{engine, feed_resources::FeedResources};
+use plx_play_feed::shared::FEED_TX;
 use plx_base::task::MainThread;
 use plx_playback_contract::{
     AttemptId, BackendEvent, BackendKind, CommandId, DispatchResult,
@@ -73,7 +74,9 @@ impl FeedDriver {
                     self.release_refused_start(attempt);
                     return DispatchResult::Refused(Failure::Busy);
                 }
-                match engine::launch_native_open(feed, attempt, prepared) {
+                let hooks = feed.hooks();
+                match plx_play_feed::native_executor::launch_native_open(
+                    feed, &FEED_TX, attempt, prepared, &hooks.launch) {
                     Ok(()) => {
                         self.active = Some(attempt);
                         self.ready_emitted = false;
@@ -92,6 +95,7 @@ impl FeedDriver {
             }
             Operation::Play if self.active == Some(attempt) => {
                 self.deferred_transport_play = None;
+                let hooks = feed.hooks();
                 let Some(eng) = feed.engine() else { return DispatchResult::Refused(Failure::Stale); };
                 if !eng.startup_controlled { return DispatchResult::Refused(Failure::Stale); }
                 if !eng.startup_play_commanded {
@@ -101,7 +105,7 @@ impl FeedDriver {
                         self.transport_actions.push_back(FeedTransportAction::ResumeInitial {
                             attempt, command });
                     } else if eng.startup_immediate_play {
-                        if engine::play_initial_now(mt, eng) == Some(false) {
+                        if plx_play_feed::native_executor::play_initial_now(mt, eng, &hooks.feed) == Some(false) {
                             eng.startup_play_commanded = false;
                             self.startup_play_command = None;
                             return DispatchResult::Refused(Failure::Refused);
@@ -217,6 +221,7 @@ impl FeedDriver {
         native_acknowledged: bool) {
         if let FeedTransportAction::ResumeInitial { attempt, command } = action {
             if self.active != Some(attempt) { return; }
+            let hooks = feed.hooks();
             let Some(eng) = feed.engine().filter(|eng| eng.attempt == attempt) else { return };
             if !accepted {
                 eng.startup_play_commanded = false;
@@ -227,7 +232,7 @@ impl FeedDriver {
                 return;
             }
             eng.startup_user_held = false;
-            if eng.startup_immediate_play && engine::play_initial_now(mt, eng) == Some(false) {
+            if eng.startup_immediate_play && plx_play_feed::native_executor::play_initial_now(mt, eng, &hooks.feed) == Some(false) {
                 eng.startup_play_commanded = false;
                 self.startup_play_command = None;
                 self.events.push_back(BackendEvent { backend: BackendKind::Feed,

@@ -2,7 +2,8 @@
 //! maps these native results to its attempt trace.
 
 use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
-use super::engine::{arm_live_clock_prime, feed_both_lanes, feed_sample, Engine};
+use super::engine::{arm_live_clock_prime, Engine};
+use plx_play_feed::native_executor::{feed_both_lanes, feed_sample, play_initial_now};
 use super::feed_resources::FeedResources;
 use super::shared::Stage;
 use super::shared::{HlsPauseCompletion, HlsSeekPause};
@@ -304,7 +305,7 @@ pub(super) fn publish_diag(
 /// **`plxnative-refuse601` (dev builds): the pipeline's `type=18 num=601` after the Load returned,
 /// once per request.** The refusal webOS 10.3.1 gives a stream it cannot allocate a decoder for
 /// (#695, DTS), reproduced on a set that would take the stream: once the Load has returned and
-/// before any picture, it publishes through [`super::sf_on_event`], the entry the firmware calls, so
+/// before any picture, it publishes through [`plx_play_feed::sf_event::sf_on_event`], the entry the firmware calls, so
 /// the callback's own latches (`dg_cb_err_num`, `load_failed`) and the failed-open ladder see exactly
 /// what a real refusal gives them.
 ///
@@ -485,6 +486,7 @@ pub(super) struct LoadTick {
 /// for the common pump to apply before ACB bind and feeding.
 pub(super) fn tick_load(feed: &mut FeedResources, mt: &MainThread, now: u32,
     segmented_hls: bool, budget: Duration, speed_deadline_ms: u32) -> LoadTick {
+    let hooks = feed.hooks();
     let eng = feed.engine().expect("Load tick belongs to live feed");
     let mut notice = LoadTick::default();
     let gate_ready = if eng.stage == Stage::Loading && !eng.preview_abandon {
@@ -565,7 +567,7 @@ pub(super) fn tick_load(feed: &mut FeedResources, mt: &MainThread, now: u32,
             eng.prime_play = true;
             super::log("SMP loadCompleted (priming before Play)");
         } else {
-            let _ = super::engine::play_initial_now(mt, eng);
+            let _ = play_initial_now(mt, eng, &hooks.feed);
         }
     } else if eng.stage == Stage::Loading
         && !eng.preview_abandon
@@ -660,7 +662,7 @@ pub(super) fn hls_buffered_ms() -> Option<i64> {
 ///
 /// **Measured, not chosen.** The pipeline emits `PF_EVENT_TYPE_FRAMEREADY` at 5 Hz and the
 /// device heartbeat reads `vtick=5 vgap=201ms` — unvarying across codec, raster and container,
-/// on clean and on visibly stuttering playback alike (`player::sf_on_event`, measured
+/// on clean and on visibly stuttering playback alike (`plx_play_feed::sf_event::sf_on_event`, measured
 /// 2026-08-21). 201 is that measurement rather than the nominal 200.
 const NATIVE_POSITION_PERIOD_MS: u32 = 201;
 
@@ -887,6 +889,7 @@ fn acb_bind_frames_needed(preroll_open: bool) -> i32 {
 /// its HUD and terminal decision after physical work completes.
 pub(super) fn tick_presentation(feed: &mut FeedResources, mt: &MainThread,
     segmented_hls: bool, immersive: bool) -> PresentationTick {
+    let hooks = feed.hooks();
     let eng = feed.engine().expect("presentation tick belongs to live feed");
     let stream = matches!(eng.source, super::engine::Source::Stream);
     // ---------- ACB bind, Kodi/ss4s order: setSinkType(MAIN)+setMediaId+setState(LOADED) ----------
@@ -1004,9 +1007,9 @@ pub(super) fn tick_presentation(feed: &mut FeedResources, mt: &MainThread,
         if stream {
             // Two-lane feed, then the prime attempt — the ordering and the reason both live in
             // `feed_both_lanes`, so this call site cannot drift from them.
-            plx_base::diag::spans::span("feed", || feed_both_lanes(mt, eng));
+            plx_base::diag::spans::span("feed", || feed_both_lanes(mt, eng, &FEED_TX, &hooks.feed));
         } else {
-            plx_base::diag::spans::span("feed", || feed_sample(mt, eng));
+            plx_base::diag::spans::span("feed", || feed_sample(mt, eng, hooks.feed.sink));
         }
     }
 

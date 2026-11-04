@@ -226,7 +226,7 @@ mod tests {
         assert_eq!(crate::player::ffi_host::play_calls_for_test(), plays, "the Deferred resume must leave the physical Play to the prime");
         assert!(!rig.position().1, "the sink clock must wait for the Initial prime");
 
-        // The Initial prime's Play (`engine::try_prime`): reserve, issue, complete.
+        // The Initial prime's Play (`native_executor::try_prime`): reserve, issue, complete.
         let generation = FEED_SHARED.hls_candidate_generation.load(Acquire);
         let (token, _) = FEED_SHARED
             .reserve_hls_prime_play(HlsPrimeKind::Fresh, generation, FEED_SHARED.hls_recovery())

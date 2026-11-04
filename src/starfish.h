@@ -6,8 +6,8 @@
  * LG StarfishMediaAPIs (C++) + ACB
  * video-plane binding, behind flat C verbs. Hides the 11 mangled __asm__ symbols,
  * the sret std::string in Feed, the never-reused 64KB in-place objects, and the 3-arg ACB
- * taskId ABI. Library-thread callbacks are forwarded to sf_on_event (the Rust player engine,
- * player/mod.rs) and acb_on_event (the webOS port, webos/video_sink.rs, which queues it for the
+ * taskId ABI. Library-thread callbacks are forwarded to sf_on_event (the Feed backend's Rust
+ * entry, play-feed/src/sf_event.rs) and acb_on_event (the webOS port, webos/video_sink.rs, which queues it for the
  * plane owner in tv/plane.rs). This is the one piece that
  * stays C in the Rust-first app — porting the mangled-C++ FFI to Rust is
  * worse-than-C. */

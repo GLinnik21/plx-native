@@ -512,7 +512,7 @@ pub(crate) fn pause_result(pa: &mut adapter::PlayerAdapter) -> TransportResult {
     acb_mirror_playstate(pa, false);
     TransportResult::native(true)
 } // playback_pause
-/// Mute the sink for a paused preroll's Play window (`engine::try_prime`, immediately before that
+/// Mute the sink for a paused preroll's Play window (`native_executor::try_prime`, immediately before that
 /// Play): the preroll plays ONE picture for a viewer who is paused, and the ~0.2-0.3 s until the
 /// plane binds is audible. The mute is the pipeline's own `setVolume` (per pipeline: the next Load
 /// starts at the default); [`restore_preroll_volume`] sets that default back. The volume is never
@@ -657,7 +657,7 @@ pub fn acb_mirror_playstate(pa: &mut adapter::PlayerAdapter, playing: bool) {
 }
 
 /// [`acb_mirror_playstate`] for a caller that already holds the session's `&mut Engine` and so
-/// cannot ask the adapter for it a second time — `engine::try_prime`, inside the feed. Splitting
+/// cannot ask the adapter for it a second time — `native_executor::try_prime`, inside the feed. Splitting
 /// the two is what the owned slot forces: with `ENGINE` a `static mut` handing out `&'static mut`,
 /// the prime path re-entered the slot it was already holding, which is the aliasing the token
 /// could only assert was safe.
@@ -799,7 +799,7 @@ pub fn request_seek(ns: i64) {
 /// **The seek was ABANDONED — put the playhead back on reality.**
 ///
 /// [`request_seek`] sets `FEED_SHARED.seeking`, and until 2026-08-27 exactly ONE place ever cleared it:
-/// the successful prime→Play in `engine::try_prime`. Every path that gives UP on a seek
+/// the successful prime→Play in `native_executor::try_prime`. Every path that gives UP on a seek
 /// therefore leaked the flag — and that flag is what `pump::set_state` reads to publish
 /// `PlaybackState::Seeking`, which means a spinner over the picture, the playhead frozen at
 /// `seek_display_ns`, and `is_playing()` false, **for the rest of the playback**, while the

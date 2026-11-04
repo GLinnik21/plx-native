@@ -10,7 +10,7 @@
 //! `route`) and the `ff` facade share a crate. The bundled FFmpeg binding, encoder and pure
 //! audio DSP live in `plx_media_codecs` below this layer.
 //!
-//! Starfish calls back into `player` through `sf_on_event`; the ACB completion callback,
+//! Starfish calls back into the Feed backend through `sf_on_event` (`plx_play_feed::sf_event`); the ACB completion callback,
 //! `acb_on_event`, is the platform port's (`webos::video_sink`) and feeds the plane owner's mailbox.
 //! The native extern declarations live in the platform port; the Makefile's final link resolves them.
 //!

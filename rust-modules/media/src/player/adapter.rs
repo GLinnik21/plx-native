@@ -493,7 +493,7 @@ impl PlayerAdapter {
         Self {
             mt,
             #[cfg(feature = "play-feed")]
-            feed: FeedResources::new(&FEED_SHARED),
+            feed: FeedResources::new(&FEED_SHARED, &super::engine::NATIVE_HOOKS),
             backend: backend::BackendRunner::new(),
             metric_notices: VecDeque::new(),
             #[cfg(feature = "play-feed")]
@@ -2142,7 +2142,9 @@ impl PlayerAdapter {
 
     #[cfg(feature = "play-feed")]
     pub fn reap_abandoned_load(&mut self) -> bool {
-        super::engine::reap_abandoned_load_resource(&mut self.feed, &self.mt)
+        let hooks = self.feed.hooks();
+        plx_play_feed::native_executor::reap_abandoned_load_resource(
+            &mut self.feed, &self.mt, &hooks.release)
     }
 
     /// The parked Load, borrowed mutably (its once-only log latch), or taken once it returned.

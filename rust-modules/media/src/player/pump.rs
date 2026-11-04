@@ -1727,7 +1727,7 @@ mod tests {
     use std::sync::atomic::Ordering::{Relaxed, Release};
 
     /// The device's measured position-callback period, so the replay below advances in the same
-    /// steps the television reports in (`vtick=5 vgap=201ms`; `player::sf_on_event`).
+    /// steps the television reports in (`vtick=5 vgap=201ms`; `plx_play_feed::sf_event::sf_on_event`).
     const POSITION_PERIOD_MS: u32 = 201;
 
     /// Put the three atomics `hls_buffered_ms` samples back where a fresh session leaves them, so
