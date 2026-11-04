@@ -642,6 +642,12 @@ mod tests {
         assert_eq!(pms_port(PmsCase::VerifiedDovi).qualify_pms(&OffFrame::for_test(), off).err(),
             Some(PmsDecline::UnsupportedIntent),
             "DV Off cannot pass a raw copied Dolby Vision output");
+        let mut missing_source_record = pms_request(PmsRecipe::Remux);
+        missing_source_record.output_dovi = Some(p7);
+        missing_source_record.dolby_vision_mode = plx_plex::plex::session::DolbyVisionMode::Off;
+        assert_eq!(pms_port(PmsCase::VerifiedDovi).qualify_pms(&OffFrame::for_test(),
+            missing_source_record).err(), Some(PmsDecline::UnsupportedIntent),
+            "DV Off constrains the accepted output even if source metadata omitted DV");
     }
 
     #[test]
