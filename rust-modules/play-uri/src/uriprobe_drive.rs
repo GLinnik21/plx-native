@@ -22,7 +22,7 @@
 //! The caller decides whether to enable the probe.
 
 use super::uri_lifecycle::{Event as LifeEvent, Fx as LifeFx, Lifecycle};
-use super::uriprobe::{Config, Kind, Scheme, Settle, UriCall, UriEffect, UriEvent, UriProbe, Variant, AcbOp};
+use super::uriprobe::{AbrBps, Config, Kind, Scheme, Settle, UriCall, UriEffect, UriEvent, UriProbe, Variant, AcbOp};
 use plx_base::task::MainThread;
 use plx_platform::tv::sink::{DisplaySink, VP_ACB, VP_EXPORTED};
 use plx_platform::tv::uri::{CloseStatus, UriMedia, UriPoll};
@@ -54,6 +54,9 @@ pub struct AcbFacts { pub boot_handle: bool, pub player_type: i32 }
 pub struct DriverConfig<A: Copy> {
     pub attempt: A,
     pub variant: Variant,
+    /// The native adaptive-streaming rates the `load` payload carries (none unless the trigger
+    /// named them).
+    pub bps: AbrBps,
     pub kind: Kind,
     pub url: String,
     pub app_id: String,
@@ -95,7 +98,7 @@ impl<A: Copy> UriSession<A> {
     /// Create the exported window for the variants which use one, build the machine and take its
     /// first step (`Start`: the `armed` line and the first registration).
     pub fn open(input: DriverConfig<A>, mt: &MainThread) -> UriSession<A> {
-        let DriverConfig { attempt, variant, kind, url, app_id, transport, sink, log, acb_facts, release_allowance_ms } = input;
+        let DriverConfig { attempt, variant, bps, kind, url, app_id, transport, sink, log, acb_facts, release_allowance_ms } = input;
         let clock = Instant::now();
         let mut window_id = None;
         let mut created = false;
@@ -114,6 +117,7 @@ impl<A: Copy> UriSession<A> {
             window_id: window_id.clone(),
             app_id: app_id.clone(),
             transport: variant.drives(),
+            bps,
         };
         let mut session = UriSession {
             probe: UriProbe::new(config),
@@ -481,12 +485,16 @@ mod tests {
 
         /// `refuse_open`: the text the transport answers `open` with, from the very first call.
         fn build(variant: Variant, refuse_open: Option<&str>) -> Rig {
+            Rig::build_with(variant, AbrBps::default(), refuse_open)
+        }
+
+        fn build_with(variant: Variant, bps: AbrBps, refuse_open: Option<&str>) -> Rig {
             let mt = unsafe { MainThread::assume() };
             let attempt = 17;
             let transport = Scripted::leak();
             *transport.refuse_open.lock().unwrap() = refuse_open.map(str::to_owned);
             let session = UriSession::open(DriverConfig {
-                attempt, variant, kind: Kind::Direct, url: URL.to_owned(),
+                attempt, variant, bps, kind: Kind::Direct, url: URL.to_owned(),
                 app_id: "com.example.plxnative".to_owned(), transport, sink: &NO_SINK,
                 log: plx_base::eventlog::log, acb_facts: no_acb, release_allowance_ms: 10_000,
             }, &mt);
@@ -582,6 +590,22 @@ mod tests {
         assert!(log.contains("uriprobe: t=") && line_with(&log, " armed ").contains("window=none"), "{log}");
         assert!(!log.contains("no longer waits"), "the attempt was settled exactly once:\n{log}");
         assert!(log.contains("tester: report picture yes/no and sound yes/no"));
+    }
+
+    #[test]
+    fn uriprobe_driver_sends_the_armed_rates_in_the_load_payload_and_logs_them() {
+        let _serial = plx_base::testlock::serial();
+        let bps = AbrBps { start: None, maximum: Some(720_000), minimum: None };
+        let log = logged(|| {
+            let mut rig = Rig::build_with(Variant::AtLoad, bps, None);
+            rig.frame(10);
+            rig.transport.say("register", "");
+            rig.frame(10);
+            let payload: serde_json::Value = serde_json::from_str(&rig.transport.payload_of("load")).expect("JSON");
+            assert_eq!(payload["payload"]["option"]["adaptiveStreaming"], serde_json::json!({ "bps": { "maximum": 720_000 } }));
+            rig.back();
+        });
+        assert!(line_with(&log, " armed ").ends_with(" bpsmax=720000"), "{log}");
     }
 
     #[test]

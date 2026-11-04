@@ -32,13 +32,61 @@ impl serde::Serialize for MediaId {
     }
 }
 
-/// The `load` payload: `{"uri":U,"type":"media","payload":{"option":{"appId":A[,"windowId":W]}}}`.
-/// Built with the JSON writer, never by formatting the URL into a string.
-pub fn build_load(url: &str, app_id: &str, window_id: Option<&str>) -> String {
+/// The most a bit-rate cap, or the start rate, may ask for, in bit/s: 1 Gbit/s, past any link or
+/// ladder rung this television meets. A trigger naming more is junk, not a request.
+pub const MAX_ABR_BPS: u32 = 1_000_000_000;
+
+/// The native adaptive-streaming controller's seed and limits for one `load`, in bit/s
+/// (`option.adaptiveStreaming.bps.{start,maximum,minimum}`). A rate is absent unless the tester
+/// asked for it, and an absent set leaves the payload exactly as it was before these existed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AbrBps {
+    pub start: Option<u32>,
+    pub maximum: Option<u32>,
+    pub minimum: Option<u32>,
+}
+
+impl AbrBps {
+    /// A rate a trigger names: digits only, from 1 to [`MAX_ABR_BPS`].
+    pub fn parse_rate(text: &str) -> Option<u32> {
+        if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        text.parse().ok().filter(|rate| (1..=MAX_ABR_BPS).contains(rate))
+    }
+
+    /// The `bps` object of the load option, `None` when no rate was asked for.
+    fn object(self) -> Option<Value> {
+        let mut bps = Map::new();
+        for (key, rate) in [("start", self.start), ("maximum", self.maximum), ("minimum", self.minimum)] {
+            if let Some(rate) = rate {
+                bps.insert(key.to_owned(), json!(rate));
+            }
+        }
+        (!bps.is_empty()).then_some(Value::Object(bps))
+    }
+
+    /// The set as the `armed` line spells it, in the trigger's own tokens (` bpsstart=N bpsmax=N
+    /// bpsmin=N`, only the rates given); empty when none was.
+    pub fn label(self) -> String {
+        [("bpsstart", self.start), ("bpsmax", self.maximum), ("bpsmin", self.minimum)]
+            .into_iter()
+            .filter_map(|(name, rate)| rate.map(|rate| format!(" {name}={rate}")))
+            .collect()
+    }
+}
+
+/// The `load` payload: `{"uri":U,"type":"media","payload":{"option":{"appId":A[,"windowId":W]
+/// [,"adaptiveStreaming":{"bps":{"start":N,"maximum":N,"minimum":N}}]}}}`. Built with the JSON
+/// writer, never by formatting the URL into a string.
+pub fn build_load(url: &str, app_id: &str, window_id: Option<&str>, bps: AbrBps) -> String {
     let mut option = Map::new();
     option.insert("appId".to_owned(), json!(app_id));
     if let Some(window) = window_id {
         option.insert("windowId".to_owned(), json!(window));
+    }
+    if let Some(bps) = bps.object() {
+        option.insert("adaptiveStreaming".to_owned(), json!({ "bps": bps }));
     }
     json!({ "uri": url, "type": "media", "payload": { "option": Value::Object(option) } })
         .to_string()
@@ -81,9 +129,10 @@ pub fn build_acb_fixture_video(media_id: &MediaId, video: VideoFacts) -> Option<
 #[derive(Clone, PartialEq, Eq)]
 pub enum UriCall {
     /// `window_id` is the id to put in the payload (`Variant::AtLoad`/`Drive` with a window), else
-    /// `None`.
+    /// `None`; `bps` the adaptive-streaming rates the probe was armed with (none in production).
     Load {
         window_id: Option<String>,
+        bps: AbrBps,
     },
     Subscribe {
         media_id: MediaId,

@@ -416,6 +416,7 @@ impl Lifecycle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::uri_protocol::AbrBps;
     const SID: SessionId = SessionId::new(1);
     fn step(machine: &mut Lifecycle, event: Event) -> Vec<Fx> {
         let mut fx = Vec::new();
@@ -672,7 +673,7 @@ mod tests {
     #[test]
     fn uri_lifecycle_wrong_media_identity_cannot_drive_plane_or_acknowledge_requests() {
         let mut m = open();
-        let load = call_request(&mut m, UriCall::Load { window_id: None });
+        let load = call_request(&mut m, UriCall::Load { window_id: None, bps: AbrBps::default() });
         reply(
             &mut m,
             load,
@@ -777,7 +778,7 @@ mod tests {
     #[test]
     fn uri_review_regression_wrong_media_refusal_cannot_affect_owner() {
         let mut m = open();
-        let load = call_request(&mut m, UriCall::Load { window_id: None });
+        let load = call_request(&mut m, UriCall::Load { window_id: None, bps: AbrBps::default() });
         reply(
             &mut m,
             load,
@@ -833,7 +834,7 @@ mod tests {
     #[test]
     fn uri_acb_review_other_video_info_never_reaches_waiting_owner() {
         let mut m=open();
-        let load=call_request(&mut m,UriCall::Load{window_id:None});
+        let load=call_request(&mut m,UriCall::Load{window_id:None,bps:AbrBps::default()});
         reply(&mut m,load,"load",r#"{"returnValue":true,"mediaId":"owner"}"#);
         let sub=call_request(&mut m,UriCall::Subscribe{media_id:"owner".into()});
         for payload in [
