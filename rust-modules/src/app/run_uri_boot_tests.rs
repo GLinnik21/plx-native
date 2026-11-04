@@ -39,12 +39,19 @@ mod uri_boot_tests {
         }
     }
 
-    struct Bus(Mutex<(bool, CloseStatus, Vec<(&'static str, String)>)>);
+    struct Bus(Mutex<(bool, CloseStatus, Vec<(&'static str, RequestId, String)>, Vec<UriReply>)>);
     impl Bus {
-        fn new() -> Self { Self(Mutex::new((false, CloseStatus::Open, Vec::new()))) }
+        fn new() -> Self { Self(Mutex::new((false, CloseStatus::Open, Vec::new(), Vec::new()))) }
         fn load_payload(&self) -> Option<String> {
-            self.0.lock().unwrap().2.iter().find(|(method, _)| *method == "load")
-                .map(|(_, payload)| payload.clone())
+            self.0.lock().unwrap().2.iter().find(|(method, _, _)| *method == "load")
+                .map(|(_, _, payload)| payload.clone())
+        }
+        fn say(&self, method: &'static str, payload: &str) {
+            let mut state = self.0.lock().unwrap();
+            let request = state.2.iter().rev().find(|(name, _, _)| *name == method)
+                .map(|(_, request, _)| *request).expect("the native method was queued");
+            state.3.push(UriReply { session: SessionId::new(1), request,
+                method, payload: payload.to_owned(), ok: true });
         }
     }
     impl UriMedia for Bus {
@@ -52,17 +59,18 @@ mod uri_boot_tests {
             self.0.lock().unwrap().0 = true;
             Ok(SessionId::new(1))
         }
-        fn call(&self, _: SessionId, _: RequestId, method: &'static str,
+        fn call(&self, _: SessionId, request: RequestId, method: &'static str,
             payload: &str) -> Result<(), String> {
-            self.0.lock().unwrap().2.push((method, payload.to_owned()));
+            self.0.lock().unwrap().2.push((method, request, payload.to_owned()));
             Ok(())
         }
         fn poll(&self, session: SessionId) -> Result<UriPoll, String> {
             let mut state = self.0.lock().unwrap();
-            let replies = if std::mem::take(&mut state.0) {
+            let mut replies = if std::mem::take(&mut state.0) {
                 vec![UriReply { session, request: RequestId::new(0), method: "register",
                     payload: String::new(), ok: true }]
             } else { Vec::new() };
+            replies.append(&mut state.3);
             Ok(UriPoll { replies, close: state.1 })
         }
         fn close(&self, _: SessionId) -> Result<(), String> {
@@ -201,6 +209,87 @@ mod uri_boot_tests {
             plx_media::route::backend_policy::Selection::Open(choice)
                 if choice.backend == BackendKind::Feed));
         assert!(bus.load_payload().is_none(), "unknown evidence never dispatches a URI URL");
+    }
+
+    #[cfg(feature = "play-feed")]
+    #[test]
+    fn viewer_speed_edit_re_resolves_qualified_uri_source_for_feed_at_its_known_pause_and_clock() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else { return };
+        plx_plex::plex::client_for(rig.sid).unwrap()
+            .set_link(plx_plex::plex::probe::Location::Local);
+        let bus: &'static Bus = Box::leak(Box::new(Bus::new()));
+        let display: &'static Display = Box::leak(Box::new(Display));
+        let caps = Capabilities { progressive_uri: true, hls_uri: false,
+            packet_feed: false, pause: true, seek: true, audio_track: true,
+            subtitle_track: true, audio_off: false, subtitle_off: false };
+        let port = ResolvePort::new(ProductEvidence { display_exported: true,
+            binding: Binding::Exported { canvas: (1920, 1080) },
+            callable: caps, certified: caps, preview_rectangle: false },
+            Arc::new(QualifiedOriginal));
+        assert!(rig.app.adapters.player.install_uri_product_with_ports(
+            &mut rig.app.player.session, port, bus, display));
+        rig.request();
+        rig.release.send(()).unwrap();
+        let mut resolved = None;
+        poll_until("qualified URI source did not resolve", || {
+            resolved = plx_media::route::pump_play(&mut rig.app.player.session,
+                rig.app.bridge.metadata_mut());
+            resolved.is_some()
+        });
+        let offer = resolved.unwrap().uri_offer.expect("the original source was certified");
+        assert!(rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session,
+            offer).is_ok());
+        assert!(matches!(plx_media::player::start_playback_tracked(
+            &mut rig.app.player.session, &mut rig.app.adapters.player),
+            plx_media::player::BufferfeedStartOutcome::Launched(_)));
+        let poll = |rig: &mut Rig| {
+            let at = rig.app.adapters.player.backend_tick();
+            let _ = rig.app.adapters.player.backend_poll_session_at(&mut rig.app.player.session, at);
+        };
+        poll(&mut rig); // addressed registration opens Load
+        bus.say("load", r#"{"returnValue":true,"mediaId":"m1","loadCompleted":true}"#);
+        poll(&mut rig); // Ready awaits the selected source audio track
+        bus.say("selectTrack", r#"{"returnValue":true,"mediaId":"m1"}"#);
+        bus.say("subscribe", r#"{"mediaId":"m1","trackSelected":{"type":"audio","index":0}}"#);
+        poll(&mut rig);
+        bus.say("play", r#"{"returnValue":true,"mediaId":"m1","playing":true,"currentTime":12000}"#);
+        poll(&mut rig);
+        assert_eq!(plx_media::player::intended_pos_known_ns(&rig.app.player.session),
+            Some(12_000_000_000));
+        assert_eq!(rig.app.adapters.player.backend_transport_control(true), Some(true));
+        bus.say("pause", r#"{"returnValue":true,"mediaId":"m1","paused":true}"#);
+        poll(&mut rig);
+        assert_eq!(rig.app.adapters.player.backend_viewer_paused(), Some(true));
+        let source = rig.app.player.session.source_selection();
+        assert!(plx_media::player::speed_offer(&rig.app.player.session).contains(&1500));
+        crate::app::playback::apply_more_action(&mut rig.app.player.session,
+            &mut rig.app.adapters.player, &mut rig.app.bridge,
+            plx_appkit::more_menu::Action::SetSpeed(1500));
+        assert_eq!(rig.app.player.session.requested_rate_permille(), 1500);
+        assert_eq!(rig.app.player.session.reconfigure_pause_goal(), Some(true));
+        assert_eq!(rig.app.player.session.attempt_origin(),
+            plx_media::player::attempt_metrics::Origin::ViewerReconfigure);
+        assert!(!plx_media::route::request_viewer_reconfigure(&mut rig.app.player.session,
+            rig.app.bridge.metadata_mut(), plx_media::route::ViewerReconfigure::Speed(1500),
+            Some(12_000_000_000), Some(true)), "the same viewer choice is a no-op");
+
+        let mut revised = None;
+        poll_until("viewer speed edit did not re-resolve", || {
+            revised = plx_media::route::pump_play(&mut rig.app.player.session,
+                rig.app.bridge.metadata_mut());
+            revised.is_some()
+        });
+        let revised = revised.unwrap();
+        assert!(revised.uri_offer.is_none(), "URI cannot silently play the new speed at 1x");
+        assert_eq!(revised.resume_ns, 12_000_000_000);
+        assert_eq!(rig.app.player.session.source_selection(), source,
+            "executor substitution preserves the viewer's Part and selected source tracks");
+        assert!(matches!(rig.app.player.session.backend_offer(),
+            plx_media::route::backend_policy::Selection::Open(choice)
+                if choice.backend == BackendKind::Feed));
+        assert_eq!(rig.app.player.session.reconfigure_pause_goal(), Some(true),
+            "the next physical Start still owes the paused viewer goal");
     }
 }
 
