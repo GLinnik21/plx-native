@@ -3,14 +3,14 @@
 
 use crate::aq::{self, AuQueue};
 use crate::feed_resources::{FeedResources, LoadReceipt};
-use crate::feed_state::{AbandonedLoad, Engine, PendingRelease, Source, PRES_NONE};
+use crate::feed_state::{AbandonedLoad, AuBox, Engine, PendingRelease, Source};
 use crate::feed_state::{FeedPace, SampleBuf, AQ_AUDIO_BYTES, AQ_VIDEO_BYTES};
 use crate::ff::DemuxTransport;
 use crate::open::PhysicalOpen;
 use crate::pcm_lead::PcmLead;
 use crate::side_reader::SideReaderPort;
 use crate::shared::PhysicalShared;
-use crate::shared::{Stage, Transport};
+use crate::shared::{HlsPlayCompletion, HlsPrimeKind, Stage, Transport};
 use crate::SendPtr;
 use plx_base::task::MainThread;
 use plx_platform::tv::sink::VideoSink;
@@ -18,7 +18,23 @@ use plx_platform::tv::sink::UnloadTicket;
 use plx_net::stream::HttpStream;
 use std::os::raw::{c_char, c_int, c_void};
 use std::ffi::CString;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicI64, Ordering};
+
+static VTOT: AtomicI64 = AtomicI64::new(0);
+static ATOT: AtomicI64 = AtomicI64::new(0);
+static VATT: AtomicI64 = AtomicI64::new(0);
+static AATT: AtomicI64 = AtomicI64::new(0);
+
+pub fn fed_totals() -> (i64, i64) {
+    (VTOT.load(Ordering::Relaxed), ATOT.load(Ordering::Relaxed))
+}
+
+pub fn reset_fed_counters() {
+    VTOT.store(0, Ordering::Relaxed);
+    ATOT.store(0, Ordering::Relaxed);
+    VATT.store(0, Ordering::Relaxed);
+    AATT.store(0, Ordering::Relaxed);
+}
 
 /// Retracts an initial clock hold when a prepared Load is superseded before installation.
 pub struct ClockStartGuard {
@@ -111,6 +127,41 @@ pub struct ReleaseHooks {
     pub on_release_step: fn(crate::native_release::ReleaseStep),
     pub on_exported_window_destroy: fn(),
     pub spawn_unload: fn(UnloadTicket) -> Option<std::thread::JoinHandle<()>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SeekAnchorMode {
+    Segment,
+    NativeSeek,
+    Reload,
+}
+
+/// Main-thread physical Feed verbs with only the few common observations they publish.
+/// The sink provider runs at every native call, including reentrant callbacks and release fences.
+pub struct FeedHooks {
+    pub sink: fn() -> &'static dyn VideoSink,
+    pub seek_mode: fn() -> SeekAnchorMode,
+    pub set_seek_mode: fn(SeekAnchorMode),
+    pub set_native_seek_refused: fn(bool),
+    pub mirror_playstate: fn(&MainThread, Stage, bool),
+    pub mute_for_preroll: fn(&MainThread),
+    pub presentation_event: fn(i64),
+    pub vclock_ms: fn() -> u32,
+    pub feed_clock_us: fn() -> u64,
+    pub record_audio_packet_size: fn(u32) -> Option<String>,
+}
+
+fn to_sink_ns(ns: i64, shared: &PhysicalShared) -> i64 {
+    let rate = shared.applied_rate_permille.load(Ordering::Relaxed);
+    to_sink_ns_at_rate(ns, rate)
+}
+
+fn to_sink_ns_at_rate(ns: i64, rate: i32) -> i64 {
+    if rate <= 0 || rate == crate::shared::RATE_NORMAL {
+        ns
+    } else {
+        (ns as i128 * i128::from(crate::shared::RATE_NORMAL) / i128::from(rate)) as i64
+    }
 }
 
 struct SinkReleasePort<'a>(&'a ReleaseHooks);
@@ -750,5 +801,892 @@ impl NativeStop {
             plx_base::eventlog::log("stop_bufferfeed: torn down");
             None
         }
+    }
+}
+
+/// feed streamed AUs from the demux queue; hold the current AU across ticks on
+/// BufferFull (backpressure); zero-base the fed timeline on the first post-seek
+/// keyframe; drop stale AUs past the B-frame reorder distance.
+/// prime-then-play buffer depth: how much of the post-seek stream to buffer (paused) before
+/// starting the clock. Enough to cover the pipeline's decode latency so the first frame is ready.
+pub const PRIME_NS: i64 = 700_000_000;
+// Prime the AUDIO lane too before starting the (audioSync master) clock — else a rapid-seek drain
+// can start Play on an empty audio queue and leave audio silent until the next seek. Fallback:
+// start anyway once video buffers PRIME_VIDEO_MAX_NS without audio (audioless / briefly starved),
+// so a genuinely audioless region can't hang.
+pub const PRIME_AUDIO_NS: i64 = 300_000_000;
+pub use crate::feed_state::PRIME_VIDEO_MAX_NS;
+// Feed-ahead throttle (Kodi-parity): keep the VIDEO lane at most this far ahead of the presented
+// position (SHARED.pres_fed) instead of feeding greedily to BufferFull. Bounding the buffer to
+// ~1.6s (was ~10-20s: aq 6MB + the pipeline's own ~8MB) makes seeks flush far less, keeps the
+// clock from running ahead, and cuts latency. AUDIO gets a looser bound so it can ride slightly
+// ahead (audio buffer is cheap and it's the master clock) without unbounded race on odd muxes.
+pub use crate::feed_state::MAX_FEED_AHEAD_NS;
+pub const AUDIO_SLACK_NS: i64 = 2_000_000_000;
+// A fed pts this far below a lane's high-water is a stale pre-seek AU (past the B-frame reorder
+// distance) → drop it rather than feed a backward jump.
+pub const STALE_BACKJUMP_NS: i64 = 2_000_000_000;
+// In-place-seek rebase guard: a first-keyframe this far from the seek target is a stale pre-reopen
+// frame from the drifted read position, not the real post-seek keyframe. av_seek(BACKWARD) lands
+// AT/BEFORE the target, so a valid anchor is never ahead and is at most ~one GOP behind — hence a
+// tight AHEAD bound and a looser BEHIND bound (to tolerate sparse keyframes). Capped by MAX_REBASE_DROPS.
+pub const SEEK_STALE_AHEAD_NS: i64 = 6_000_000_000;
+pub const SEEK_STALE_BEHIND_NS: i64 = 30_000_000_000;
+pub const MAX_REBASE_DROPS: i32 = 240;
+// Audio counterpart of the rebase guard: an audio AU this far AHEAD of the video high-water is a
+// stale drifted frame (the demuxer's pre-reopen audio after a seek). Feeding it poisons
+// max_fed_audio_pts (and then the backjump guard drops all LEGIT audio until the demux catches
+// up to the poisoned mark → seconds of silence). Legit audio lead is bounded by the throttle to
+// ~MAX_FEED_AHEAD+AUDIO_SLACK (3.6s), so 5s has margin. It was 15s, and a stuck-retry seek fed
+// stale audio 14.9s ahead — 13s of user-audible silence after a rapid 10s-back tap burst.
+pub const AUDIO_STALE_AHEAD_NS: i64 = 5_000_000_000;
+/// How far past the start of its timeline the audio lane may feed whatever the clock says.
+///
+/// **A track whose audio starts late must still reach Starfish before the clock can move.** An
+/// MKV audio `Delay` (an 11.008 s E-AC-3 track on a WEB-DL, 2026-10) puts the first audio AU
+/// seconds past the first video one. Starfish's clock waits for audio, so `pres_fed` sits at 0
+/// and the video lane stops [`MAX_FEED_AHEAD_NS`] in — and the audio AU, far past both, was
+/// dropped as stale by [`AUDIO_STALE_AHEAD_NS`] and would have been held by the throttle anyway.
+/// Nothing moved again: the picture buffered forever, while a resume past the gap played. The
+/// AU the demuxer marked as its first since the open or seek is the real start, never stale
+/// pre-seek audio (that was pushed before the mark), so it and the next 2 s are fed regardless.
+/// 2 s is under the throttle's own audio lead ([`MAX_FEED_AHEAD_NS`] + [`AUDIO_SLACK_NS`]), so a
+/// track that starts on time is fed exactly as before.
+///
+/// **The demuxer has to be able to READ that much audio**, which for a late track means with the
+/// video lane already past its base cap and nobody draining it (no clock yet): `ff::demux` keeps
+/// the video lane's pre-audio headroom until the audio lane has been pushed this much plus a
+/// margin (`ff::LEAD_IN_MARGIN_NS`), and only then releases it as the consumer drains.
+pub use crate::feed_state::AUDIO_LEAD_IN_NS;
+// The lead-in is only sound between these two: under the throttle's own audio lead (a track that
+// starts on time is fed exactly as before), and over the audio the clock is primed with (else
+// "ahead of the clock" would not be enough audio to start it).
+const _: () = assert!(AUDIO_LEAD_IN_NS < MAX_FEED_AHEAD_NS + AUDIO_SLACK_NS);
+const _: () = assert!(AUDIO_LEAD_IN_NS > PRIME_AUDIO_NS);
+// Sentinel for SHARED.pres_fed meaning "no post-seek frame has presented yet" — the feed-ahead
+// throttle treats it as feed-freely (don't compare the new fed pts against a stale pre-seek
+// presented position). Set on a seek; the first presented frame overwrites it with a real pts.
+pub use crate::feed_state::PRES_NONE;
+
+
+/// The most wall-clock time ONE lane may spend feeding in one tick, in µs, once it has fed an AU
+/// **and its lead is healthy** (see [`lane_starved`]).
+///
+/// `Feed()` blocks on the frame thread, 0.3–0.7 ms per AU on the TV. In steady state a lane feeds
+/// one or two AUs a frame and never comes near this. The throttle does not apply while priming,
+/// though, and a post-prime lane is a full lead behind, so on 2026-10-01 the first frames of
+/// every playback fed the whole demuxed backlog at once: `FRAMEDROP total=89.1 … sfvx62:19.4,
+/// sfax120:50.8` (62 video and 120 audio AUs in one frame), then `sfax53:38.3` the frame after,
+/// with the player's HUD and track menu on screen. A seek re-primes the same way. Two lanes at
+/// this slice cost at most ~6 ms of a 16.7 ms frame plus one AU's overrun each.
+/// The slice is per LANE, so the video lane cannot spend the audio lane's share. The old greedy
+/// video lane did exactly that: it fed 2.5 s of video before audio got its turn, and the prime
+/// then fell through to the video-only escape (`primed: v=2541ms a=0ms`).
+///
+/// **The slice spreads a BACKLOG; it must never throttle a lane that is short of media.** A
+/// lane below its low-water mark ([`lane_starved`]) is exempt: while priming, that is until the
+/// lane holds its prime depth ([`PRIME_NS`] / [`PRIME_AUDIO_NS`], 17–42 AUs) — otherwise a slow
+/// `Feed()` (3 ms or more, so one AU a lane a tick) stretches time-to-first-frame by that many
+/// ticks — and once playing, until it is [`FEED_LOW_WATER_NS`] ahead of the playhead — otherwise
+/// at the 50 Hz present rate 60 fps content drains its lead. The exemption is bounded by the
+/// low-water mark itself, so the bulk of a backlog is still fed a slice a tick, and the prime
+/// finishes on the tick its depth is reached, one tick later at most than a greedy feed would.
+pub const FEED_LANE_SLICE_US: u64 = 3_000;
+
+/// A playing lane whose lead over the presented position is below this is exempt from
+/// [`FEED_LANE_SLICE_US`]. 250 ms is [`FEED_PACE_CAP_MS`]: the position reports arrive every
+/// ~200 ms, so a lead under it can be gone before the next report says so, and it is ~6 AUs of
+/// 24 fps video — a handful of `Feed()` calls, bounded cost, never a backlog.
+pub const FEED_LOW_WATER_NS: i64 = 250_000_000;
+
+/// Whether a lane is short of media, and so must be fed past its slice.
+///
+/// While priming (`priming`) the lane is short until it holds `prime_ns` past the seek base;
+/// otherwise it is short when its lead over the presented position `pres` ([`PRES_NONE`]: nothing
+/// presented, no lead to judge, not short) is under [`FEED_LOW_WATER_NS`].
+fn lane_starved(priming: bool, max_fed: i64, seek_base: i64, prime_ns: i64, pres: i64) -> bool {
+    if priming {
+        max_fed - seek_base < prime_ns
+    } else {
+        pres != PRES_NONE && max_fed - pres < FEED_LOW_WATER_NS
+    }
+}
+
+
+/// One lane's share of a tick's feeding: [`FEED_LANE_SLICE_US`] from the lane's start.
+struct FeedSlice {
+    start: u64,
+}
+
+impl FeedSlice {
+    fn begin(clock_us: fn() -> u64) -> Self {
+        Self { start: clock_us() }
+    }
+
+    /// Whether the lane should stop before its next AU. A lane that has fed nothing yet always
+    /// gets one AU, so the backlog drains on every tick, however slow the sink is; a `starved`
+    /// lane ([`lane_starved`]) is never spent.
+    fn spent(&self, fed: usize, starved: bool, clock_us: fn() -> u64) -> bool {
+        fed > 0 && !starved && clock_us().saturating_sub(self.start) >= FEED_LANE_SLICE_US
+    }
+}
+
+
+
+/// Nanoseconds added to every fed VIDEO PTS — **a one-tick rounding repair for LG's Dolby Vision
+/// display-management lookup**, and inert everywhere else.
+///
+/// The fault is arithmetic and it is entirely on the television's side; this is the only lever we
+/// have on it. `gstdualsequencer.c:606` (DWARF-confirmed, `libgstdualsequencer.so` 0x25b0–0x25e0)
+/// keys the LUT entry it hands the display firmware with a DOUBLE truncation of the buffer's
+/// nanosecond PTS:
+///
+/// ```text
+/// ulTimeStamp = trunc(trunc(pts_ns) * 9 / 100000)      // ns -> 90 kHz ticks
+/// ```
+///
+/// and `DOVI_SWSync_SetDoviLUTnMap` (`libkadaptor` 0xe30e8) then scans all 95 slots for **exact
+/// 32-bit equality** — no tolerance, no nearest match. At 24000/1001 fps neither unit is exact:
+/// a frame time is a whole number of nanoseconds only every **3rd** frame and a whole number of
+/// 90 kHz ticks only every **4th**, so on `n ≡ 4, 8 (mod 12)` — and on no other frame — the two
+/// truncations disagree by exactly one tick, the lookup misses, and the panel reuses the previous
+/// frame's tone mapping. `lcm(3,4) = 12` frames is **0.5005 s**, which is the period of the
+/// stutter as seen.
+///
+/// Measured on this set, uninstrumented, 85 s of Profile 5: 340 misses, and **340 of 340** equal
+/// the double-truncated key while **0 of 340** equal the exact tick value — residues `{4: 170,
+/// 8: 170}` and nothing else. It is a derivation that reproduces the data with no free parameter,
+/// not a fit.
+///
+/// The repair is to hand the pipeline a PTS whose truncation lands in the right bin. The loss is
+/// the fractional nanosecond FFmpeg's rescale already dropped, so it is strictly less than 1 ns,
+/// and **one** nanosecond recovers it. The upper bound is `100000/9 ≈ 11111 ns` — beyond that an
+/// already-correct frame would be pushed a tick the other way — so 1 sits at the safe end of a
+/// wide range. As an A/V offset it is nothing: 1 ns against a 41.7 ms frame.
+///
+/// **Video only.** The key is computed from the video buffer's own PTS; the audio lane never
+/// reaches this code and shifting it would be a skew for no reason.
+///
+/// **THE SIGN WAS BACKWARDS, AND −1 IS THE FIX.** Read the history below for what was tried; the
+/// short version is that the model was right about the mechanism, wrong about which side rounds,
+/// and the device settled it. Measured with LG's own level-2 KADP logging armed mid-playback
+/// (`tools/logmprobe`): for **38 of 40** misses the key written into the LUT ring is exactly the
+/// key the display firmware requested **plus one**. The ring is a tick HIGH, so the fed PTS goes
+/// DOWN. Alternating unseeked legs, same title, same binary:
+///
+/// ```text
+///   nudge = -1   misses 1        nudge = 0   misses 81
+///   nudge = -1   misses 1        nudge = 0   misses 81
+/// ```
+///
+/// Reproducible, 81:1, and the arithmetic that predicts −1 also predicted +1 would help; +1 was
+/// measured at 163/165 against 164 for zero — i.e. inert. **Trust the measurement here, not the
+/// derivation**: our fed PTS is not passed through, the pipeline re-timestamps by NEAREST-rounding
+/// on the 1001/24000 lattice (measured: alternating −0.333/+0.333 ns against the exact rational),
+/// so exactly how one nanosecond on our side moves a tick on theirs is not something this comment
+/// can honestly claim to model. What it can claim is 81:1, twice, with the scene controlled by
+/// alternation.
+///
+/// # The history, kept because three of its steps were wrong and each cost a run
+///
+/// **AND THE DEVICE REFUTED THE FIRST ATTEMPT, which is why the default was 0 for a while.** The one step
+/// the disassembly could not settle was whether the OTHER side of that exact-equality comparison
+/// moves with us. It does. Controlled A/B, same title, same seek to 900 s, same 45 s window, only
+/// this value differing: **nudge 0 → 118 misses, nudge 1 → 230**. Worse, not fixed. A constant
+/// offset cannot repair a *relative* truncation difference when both sides derive from the same
+/// fed timestamp — which is now measured rather than assumed, and which also retires the tidiest
+/// explanation this investigation has produced.
+///
+/// What survives the refutation is the arithmetic, and it is not small: 340 of 340 misses in the
+/// unseeked run equal the double-truncated key and 0 of 340 equal the exact tick value, residues
+/// `{4, 8}` mod 12 and nothing else. So the key IS computed that way and the comparison IS exact.
+/// What is now open is why the slot the firmware asks for — using, we measured, dualsequencer's
+/// own key — is not in the ring. That points at pairing or at slot lifetime, not at rounding.
+///
+/// `/tmp/plxnative-ptsnudge=<ns>` is kept because it is the instrument that produced that result
+/// and the next candidate value is one run away. Anything from 1 to ~11110 is in range; beyond
+/// that an already-correct frame is pushed a tick the other way.
+///
+/// It is also how the PCM lead (#1086) was first measured: `ptsnudge=-390000000` (the VIDEO 390 ms
+/// earlier) read -0.017 to -0.041 s on a PCM Load, against -0.377 s with no correction. The correction
+/// ships on the audio side instead (`PCM_SINK_LEAD_NS`), so the two are not to be combined in a
+/// run: the video's would be taken twice.
+fn pts_nudge_ns() -> i64 {
+    const DEFAULT: i64 = -1;
+    static NUDGE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(i64::MIN);
+    let v = NUDGE.load(Ordering::Relaxed);
+    if v != i64::MIN {
+        return v;
+    }
+    // Latched at the first feed rather than read per AU: this is the hottest path in the app and
+    // the trigger surface is a filesystem open. Same shape as every other `devtrig::` read here.
+    let v = plx_base::devtrig::read("ptsnudge")
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .unwrap_or(DEFAULT);
+    NUDGE.store(v, Ordering::Relaxed);
+    if v != DEFAULT {
+        plx_base::eventlog::log(&format!(
+            "ptsnudge: video PTS nudge overridden to {v} ns (default {DEFAULT})"
+        ));
+    }
+    v
+}
+
+/// The audio lane's sink pts: content time `fp` moved onto the pipeline's timeline
+/// ([`super::to_sink_ns`]) plus the Load's `pcm_lead_ns`. The lead is real time the set takes, so it
+/// is added AFTER the speed division: at 1.5x a 400 ms lead is still 400 ms, not 267. PURE.
+pub fn audio_sink_pts(fp: i64, pcm_lead_ns: i64, rate: i32) -> i64 {
+    to_sink_ns_at_rate(fp, rate).saturating_add(pcm_lead_ns).max(0)
+}
+
+
+
+/// Take the output's lead from the Load's return, once, before the first audio unit of this Load is
+/// fed. `false` while the Load has not returned (the audio waits; nothing can be fed before it
+/// anyway). A lead that was settled on the frame thread has nothing to take.
+pub fn settle_pcm_lead(eng: &mut Engine) -> bool {
+    let shared = eng.shared;
+    if !eng.pcm_lead_pending {
+        return true;
+    }
+    let Some(ns) = shared.native_load_pcm_lead(eng.native_epoch) else {
+        return false;
+    };
+    eng.pcm_sink_lead_ns = ns;
+    eng.pcm_lead_pending = false;
+    true
+}
+
+pub fn hls_candidate_snapshot_stable(start: u64, end: u64) -> bool {
+    start & 1 == 0 && start == end
+}
+
+
+
+/// Execute the first immediate Play only after the common startup runner has commanded it.
+/// The same clock reservation and completion rule is used by the progressive legacy fixture.
+/// `Some(false)` is a native refusal; `None` means the clock gate deferred the verb.
+pub fn play_initial_now(mt: &MainThread, eng: &mut Engine, hooks: &FeedHooks) -> Option<bool> {
+    let shared = eng.shared;
+    let generation = shared.hls_candidate_generation.load(Ordering::Acquire);
+    let recovery = shared.hls_recovery();
+    if let Some((token, _)) =
+        shared.reserve_hls_prime_play(HlsPrimeKind::Fresh, generation, recovery)
+    {
+        let accepted = unsafe { (hooks.sink)().play(mt) } != 0;
+        match shared.complete_hls_prime_play(token, accepted) {
+            HlsPlayCompletion::Accepted { resume_acb } => {
+                if resume_acb {
+                    (hooks.mirror_playstate)(mt, eng.stage, true);
+                }
+                eng.prime_play = false;
+                plx_base::eventlog::log("SMP Play");
+                return Some(true);
+            }
+            HlsPlayCompletion::Refused => {
+                eng.prime_play = true;
+                plx_base::eventlog::log("SMP Play refused; priming for retry");
+                return Some(false);
+            }
+            HlsPlayCompletion::Stale => {
+                eng.prime_play = true;
+                plx_base::eventlog::log("SMP Play result stale; priming for retry");
+            }
+        }
+    } else {
+        eng.prime_play = true;
+        plx_base::eventlog::log("SMP Play fenced; priming before retry");
+    }
+    None
+}
+
+/// **Start the clock once both lanes are buffered past the seek base** — video to [`PRIME_NS`]
+/// AND audio to [`PRIME_AUDIO_NS`], with a video-only escape at [`PRIME_VIDEO_MAX_NS`] so an
+/// audioless or briefly-starved stream still starts.
+///
+/// **This is called from TWO places, and the second one is the whole point.** It used to live
+/// inline in [`feed_stream`]'s per-AU loop and nowhere else, which made it unreachable in exactly
+/// the case that matters. A pump tick runs the video lane and then the audio lane, so when a whole
+/// HLS segment lands at once the video lane drains all of it while `abuf` is still zero — the
+/// `abuf` arm cannot be true yet, and a 2-second segment never reaches the 2500 ms video-only
+/// escape. The audio lane then fills, but evaluating nothing. On every later tick `aq_pop` returns
+/// null and the loop breaks before reaching the check, so Play ends up waiting on a video AU that
+/// only the next segment can supply. On 2026-08-29 that held a viewer's picture for 94 seconds
+/// with both lanes holding a playable buffer the entire time.
+///
+/// Calling it again at the end of [`feed_audio_lane`] closes that hole at the only moment both
+/// lanes' extents are known. It is idempotent — `prime_play` latches false on the first success —
+/// so the in-loop call is kept for the case it already served: a direct-play stream that reaches
+/// the threshold mid-lane should start on that AU, not a tick later.
+pub fn try_prime(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks: &FeedHooks) {
+    let shared = eng.shared;
+    if !eng.prime_play {
+        return;
+    }
+    if eng.startup_controlled && !eng.startup_play_commanded {
+        return;
+    }
+    let Some(prime_kind) = shared.hls_prime_kind() else {
+        return;
+    };
+    // If the clock is already held, do not restart it in the middle of an exploratory transaction.
+    // The transaction's own deadline is consuming its discretionary B-max(R,D) budget; starting
+    // the playhead too would spend that balance a second time. This marker never pauses a running
+    // clock — it only delays release of an existing prime hold until commit/reject. Dropping the
+    // trial marker releases this gate, and the next ordinary pump tick retries the prime.
+    if shared.hls_trial_reserve_ms.load(Ordering::Acquire) >= 0 {
+        return;
+    }
+    let candidate_generation = shared.hls_candidate_generation.load(Ordering::Acquire);
+    if !hls_candidate_snapshot_stable(candidate_generation, candidate_generation) {
+        return;
+    }
+    let accepted_vbuf = eng.max_fed_video_pts - eng.seek_base_pts;
+    let accepted_abuf = eng.max_fed_audio_pts - eng.seek_base_pts;
+    let observed_runway_ns = shared
+        .hls_prime_runway_ms
+        .load(Ordering::Relaxed)
+        .max(0)
+        .saturating_mul(1_000_000);
+    // During an internal hold or a user ResumePrime, Starfish may stop accepting AUs while its own
+    // source buffers are full. The already-demuxed application queues behind it are still
+    // guaranteed playable media: they have passed transport, completeness, demux and timestamp
+    // validation, and feeding is open while the clock remains held. Requiring the entire observed
+    // runway to be Starfish-accepted can therefore deadlock at the native buffer cap with fuller
+    // application queues behind it.
+    //
+    // Decoder prime remains an accepted-data condition. Only a continuation boundary (automatic
+    // rebuffer or ResumePrime) reads the full pipeline high-water. Initial Load/seek remains
+    // accepted-only because it is a fresh clock boundary whose old queued tail is not proof about
+    // the newly loaded/landed timeline.
+    let queued_runway = matches!(prime_kind, HlsPrimeKind::Rebuffer | HlsPrimeKind::Resume);
+    let shift = shared.pts_shift.load(Ordering::Relaxed);
+    let queued_video = shared.hls_video_tail_ns.load(Ordering::Acquire);
+    let queued_audio = shared.hls_audio_tail_ns.load(Ordering::Acquire);
+    let playable_video_high = if queued_runway && queued_video >= 0 {
+        eng.max_fed_video_pts
+            .max(queued_video.saturating_add(shift))
+    } else {
+        eng.max_fed_video_pts
+    };
+    let playable_audio_high = if queued_runway && queued_audio >= 0 {
+        eng.max_fed_audio_pts
+            .max(queued_audio.saturating_add(shift))
+    } else {
+        eng.max_fed_audio_pts
+    };
+    let playable_vbuf = playable_video_high - eng.seek_base_pts;
+    let playable_abuf = playable_audio_high - eng.seek_base_pts;
+    // An A/V stream requires both lanes even while audio is temporarily empty. Only a segment the
+    // demuxer proved audioless may use the video-only escape; `abuf <= 0` alone is starvation, not
+    // evidence that no audio exists.
+    let audio_expected = shared.hls_audio_expected.load(Ordering::Acquire) || playable_abuf > 0;
+    let decoder_ready = if audio_expected {
+        accepted_vbuf >= PRIME_NS && accepted_abuf >= PRIME_AUDIO_NS
+    } else {
+        accepted_vbuf >= PRIME_VIDEO_MAX_NS
+    };
+    let recovery = shared.hls_recovery();
+    // A downshift has no discretionary trial reserve, yet it can queue candidate AUs while an
+    // internal hold is active. Validate one seqlock generation around the ENTIRE tail/decoder/
+    // recovery snapshot: an odd or changed value means candidate publication overlapped it. A
+    // bool cannot prove this because a complete false->true->false transition is an ABA. Re-read
+    // the up-trial gate at the same final boundary so neither transaction type has a check/use gap.
+    if shared.hls_trial_reserve_ms.load(Ordering::Acquire) >= 0
+        || !hls_candidate_snapshot_stable(
+            candidate_generation,
+            shared.hls_candidate_generation.load(Ordering::Acquire),
+        )
+    {
+        return;
+    }
+    let balanced_runway_ready = if audio_expected {
+        playable_vbuf >= observed_runway_ns && playable_abuf >= observed_runway_ns
+    } else {
+        playable_vbuf >= observed_runway_ns
+    };
+    let boundary_ready = match prime_kind {
+        HlsPrimeKind::Rebuffer => {
+            let playable = if audio_expected {
+                playable_vbuf.min(playable_abuf)
+            } else {
+                playable_vbuf
+            };
+            recovery.ready(playable)
+        }
+        HlsPrimeKind::Fresh | HlsPrimeKind::Resume => balanced_runway_ready,
+    };
+    if decoder_ready && boundary_ready && transport.feed_allowed() {
+        let Some((play_token, recovery)) =
+            shared.reserve_hls_prime_play(prime_kind, candidate_generation, recovery)
+        else {
+            return;
+        };
+        // A paused preroll plays one picture for a viewer who is paused: keep that window silent.
+        if transport.seek_preroll_active() {
+            (hooks.mute_for_preroll)(mt);
+        }
+        let played = unsafe { (hooks.sink)().play(mt) };
+        match shared.complete_hls_prime_play(play_token, played != 0) {
+            HlsPlayCompletion::Accepted { resume_acb } => {
+                if resume_acb {
+                    (hooks.mirror_playstate)(mt, eng.stage, true);
+                }
+                eng.prime_play = false;
+                shared.seeking.store(false, Ordering::Relaxed); // playback resumed at the new position → HUD spinner off
+                if prime_kind == HlsPrimeKind::Rebuffer {
+                    plx_base::eventlog::log(&format!(
+                        "primed: v={}ms a={}ms recovery_n={} debt={}ms runway={}ms -> Play",
+                        playable_vbuf / 1_000_000,
+                        playable_abuf / 1_000_000,
+                        recovery.completed,
+                        recovery.debt_us / 1_000,
+                        recovery.runway_us / 1_000,
+                    ));
+                } else {
+                    plx_base::eventlog::log(&format!(
+                        "primed: v={}ms a={}ms runway={}ms -> Play",
+                        playable_vbuf / 1_000_000,
+                        playable_abuf / 1_000_000,
+                        observed_runway_ns / 1_000_000,
+                    ));
+                }
+            }
+            HlsPlayCompletion::Refused => {
+                if eng.startup_controlled && !eng.startup_first_play_done {
+                    eng.startup_play_refused = true;
+                    eng.startup_play_commanded = false;
+                    plx_base::eventlog::log("primed: Starfish refused initial Play; common startup must settle it");
+                } else {
+                    plx_base::eventlog::log("primed: Starfish refused Play; keeping the clock held and retrying");
+                }
+            }
+            HlsPlayCompletion::Stale => {
+                plx_base::eventlog::log("primed: Play result lost its clock token; teardown/transition won");
+            }
+        }
+    }
+}
+
+/// **One tick's feeding, as a unit: video lane, audio lane, then the prime attempt.**
+///
+/// The order is load-bearing and predates this function — the VIDEO lane owns the seek rebase, so
+/// it must clear `rebase_pending` and publish `pts_shift` before the audio lane reads them in the
+/// same tick. What is new is the third step.
+///
+/// [`try_prime`] is called HERE rather than at the end of [`feed_audio_lane`] because that
+/// function returns early on `rebase_pending`, and a tail call would then be skipped on exactly
+/// the ticks a reload passes through.
+///
+/// **The first version of this doc justified the placement with the audioless case, and that
+/// argument is FALSE.** Every `Source::Stream` allocates BOTH queues whether or not audio is
+/// produced, so `aq_audio == None` is not a state a real stream reaches; and with no audio a
+/// 2-second segment cannot satisfy the `PRIME_VIDEO_MAX_NS` escape from this call either, so the
+/// placement neither helps nor harms it. The reason for the wrapper is that one function should
+/// own what a tick does to the lanes — not that it rescues a case it never sees.
+/// **The two lane feeders are PRIVATE so that this is the only way in.** A review found the hole:
+/// with them `pub`, reverting `pump` to two separate lane calls restored the livelock while
+/// the regression test — which calls this wrapper — stayed green. Private, that revert does not
+/// compile.
+pub fn feed_both_lanes(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks: &FeedHooks) {
+    feed_stream(mt, eng, transport, hooks);
+    feed_audio_lane(mt, eng, hooks);
+    try_prime(mt, eng, transport, hooks);
+}
+
+fn feed_stream(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks: &FeedHooks) {
+    let shared = eng.shared;
+    let qp = match eng.aq_video.as_mut() {
+        Some(q) => &mut **q as *mut AuQueue,
+        None => return,
+    };
+    let slice = FeedSlice::begin(hooks.feed_clock_us);
+    let mut fed = 0;
+    while fed < 120 {
+        // Feed each AU, throttled to ~MAX_FEED_AHEAD_NS ahead of the presented position per lane
+        // (see the throttle below) rather than greedily to BufferFull.
+        if eng.pending_video.is_none() {
+            let mut eof: c_int = 0;
+            let n = aq::aq_pop(qp, &mut eof);
+            if n.is_null() {
+                // true EOF (producer done + video lane drained): signal end-of-stream ONCE so the
+                // pipeline drains its last frames instead of hanging on them (Kodi keys EOS to the
+                // video drain). Keyed on the video lane only.
+                if eof != 0 && !eng.eos_pushed && eng.stage >= Stage::Streaming {
+                    unsafe { (hooks.sink)().push_eos(mt) };
+                    eng.eos_pushed = true;
+                    plx_base::eventlog::log("EOS pushed at true EOF");
+                }
+                // Nothing to send. THE case the read-out's Feed row exists to name: a dead
+                // PRODUCER, which every other field on the panel cannot tell from a dead sink.
+                shared.dg_feed_state.store(5, Ordering::Relaxed);
+                break;
+            }
+            eng.pending_video = Some(AuBox(n));
+        }
+        let n = eng.pending_video.as_ref().unwrap().0;
+        let (es, key, pts, len, data) = unsafe { aq::au_fields(n) };
+        if eng.rebase_pending {
+            if es == 1 && key != 0 {
+                let completing_in_place_seek = eng.flushed;
+                let mut segment_installed = false;
+                // In-place seek: drop a keyframe that landed well AHEAD of the target — it's a stale
+                // frame from the pre-flush read position (the reopen+av_seek hasn't taken effect yet),
+                // not the real post-seek keyframe. Capped so a failed av_seek can't hang the rebase.
+                if eng.flushed {
+                    let target = shared.seek_target_ns.load(Ordering::Relaxed);
+                    let stale = target >= 0
+                        && (pts - target > SEEK_STALE_AHEAD_NS
+                            || target - pts > SEEK_STALE_BEHIND_NS);
+                    if stale && eng.rebase_drops < MAX_REBASE_DROPS {
+                        eng.rebase_drops += 1;
+                        if eng.rebase_drops == 1 {
+                            plx_base::eventlog::log(&format!(
+                                "rebase: dropping stale kf pts={}s (target {}s)",
+                                pts / 1_000_000_000,
+                                target / 1_000_000_000
+                            ));
+                        }
+                        eng.pending_video = None;
+                        continue;
+                    }
+                }
+                if eng.flushed && (hooks.seek_mode)() == SeekAnchorMode::NativeSeek {
+                    // NATIVE in-place seek (#568): feed the REAL content PTS (pts_shift=0,
+                    // disp_base=0 -> playpos = presented real pts = content time, as in the
+                    // Segment branch below) and anchor the pipeline with LG's public
+                    // `StarfishMediaAPIs::Seek(millis)`. Seek is a flushing `gst_element_seek`
+                    // whose new segment starts at EXACTLY the millis passed, so the PTS fed from
+                    // here on is on that timeline by construction; the pump skipped its own
+                    // `flush()` for this mode and nothing may flush after this (a `flush()` is
+                    // itself a seek to 0 and re-creates the stale-segment stall). `feed_stream`
+                    // runs on the main thread and is the only Feed caller, and this keyframe is
+                    // not fed yet, so Seek cannot race a Feed. Never a negative millis: Seek
+                    // refuses it, and a negative PTS is unparseable by Feed.
+                    shared.pts_shift.store(0, Ordering::Relaxed);
+                    let ms = to_sink_ns(pts.max(0), shared) / 1_000_000;
+                    let rv = unsafe { (hooks.sink)().seek(mt, ms) };
+                    plx_base::eventlog::log(&format!("in-place seek(native): Seek({ms}) rv={rv}"));
+                    if rv == 0 {
+                        // A refused Seek can leave the pipeline refusing every Feed. Drop the rest
+                        // of THIS SESSION's seeks to the reload path and redo THIS one as a
+                        // reload at the user's target (the pump reads the mailbox next tick;
+                        // `reload_at` REPLACES the engine). `eng.flushed`/`rebase_pending` stay
+                        // set so the audio lane keeps holding and no AU reaches a pipeline that
+                        // is rejecting Feed.
+                        (hooks.set_seek_mode)(SeekAnchorMode::Reload);
+                        // Latched across the reload this very seek is about to do, so the fresh
+                        // session's `select_seek_mode` does not offer the same firmware another
+                        // refused Seek on every later seek of this playback.
+                        (hooks.set_native_seek_refused)(true);
+                        plx_base::eventlog::log(
+                            "in-place seek DOWNGRADE: native Seek refused -> reload-per-seek for \
+                             the rest of this playback",
+                        );
+                        let tgt = shared.seek_target_ns.load(Ordering::Relaxed).max(0);
+                        transport.seek_reqs.store(1, Ordering::Release);
+                        transport.seek_to_ns.store(tgt, Ordering::Release);
+                        eng.pending_video = None;
+                        break;
+                    }
+                    segment_installed = true;
+                    eng.flushed = false;
+                } else if eng.flushed && (hooks.seek_mode)() != SeekAnchorMode::Segment {
+                    // Flushed but not in a mode that anchors in place: a refused native `Seek`
+                    // downgraded the session to `Reload` and the pump's reload (`reload_at`)
+                    // is on its way. The private Segment path (`sf_pipeline`'s decompile-derived
+                    // offsets, proven on webOS 4.5 only) must NEVER run here, so this keyframe
+                    // anchors nothing: drop it and leave `flushed`/`rebase_pending` set, which
+                    // keeps the audio lane holding until the reload replaces the engine.
+                    eng.pending_video = None;
+                    break;
+                } else if eng.flushed {
+                    // Kodi IN-PLACE seek (exact): feed the REAL content PTS (no rebase), tell the
+                    // pipeline the real decode position, then inject a fresh GStreamer SEGMENT —
+                    // this re-anchors the sink WITHOUT a reload/decoder re-init. disp_base=0 +
+                    // pts_shift=0 → playpos = presented real pts = content time.
+                    shared.pts_shift.store(0, Ordering::Relaxed);
+                    let ok = unsafe { (hooks.sink)().set_time_to_decode(mt, to_sink_ns(pts, shared)) };
+                    // setTimeToDecode returns 0 on webOS<11 (it needs PausedState); fall back to
+                    // the content-info path (loadSpi_getInfo + setContentInfo(ptsToDecode)), which
+                    // re-anchors the decode position while Playing. Then always inject the fresh
+                    // GStreamer SEGMENT so the sink re-bases instead of stalling.
+                    let ci = if ok == 0 {
+                        unsafe { (hooks.sink)().set_content_info(mt, to_sink_ns(pts, shared)) }
+                    } else {
+                        1
+                    };
+                    let seg = unsafe { (hooks.sink)().send_segment(mt) };
+                    segment_installed = seg != 0;
+                    plx_base::eventlog::log(&format!("in-place seek: setTimeToDecode({pts}) rv={ok} setContentInfo={ci} sendSegment={seg}"));
+                    if seg == 0 {
+                        // The pipeline ptr wasn't reachable, so NO fresh GStreamer segment was
+                        // injected and THIS seek's buffers are scheduled against the pre-seek
+                        // segment — the stale-segment state that stops the sink draining and
+                        // fills ~14.7 MB of upstream buffers in ~48 s (permanent BufferFull +
+                        // "Playing error"; see reload_at's decompiled ground truth). So drop the
+                        // rest of THIS SESSION's seeks to the reload path, which rebuilds the
+                        // segment by construction; start_bufferfeed re-arms the flag for the next
+                        // session (the SCOPE note in mod.rs argues why that is the right scope).
+                        // Logged loudly because this is the single most consequential state
+                        // change in the seek path and it used to be invisible: instant seeks
+                        // silently became multi-second reloads with nothing in the event log
+                        // naming the cause — only the `sendSegment=0` above, whose consequence
+                        // was not stated anywhere.
+                        (hooks.set_seek_mode)(SeekAnchorMode::Reload);
+                        plx_base::eventlog::log(
+                            "in-place seek DOWNGRADE: sendSegment=0 (CustomPipeline unreachable) \
+                             -> reload-per-seek for the rest of this session",
+                        );
+                    }
+                    eng.flushed = false;
+                } else {
+                    // reload / initial-resume seek: rebase the landed keyframe to fed-pts 0 (the
+                    // fresh Load's pipeline expects a 0-based feed; disp_base carries the offset).
+                    shared.pts_shift.store(-pts, Ordering::Relaxed);
+                }
+                eng.rebase_pending = false; // releases the AUDIO lane (which holds until this clears)
+                eng.seek_base_pts = pts + shared.pts_shift.load(Ordering::Relaxed); // fed-pts base
+                                                                                    // Installing a SEGMENT is not acceptance of the AU which establishes it. Keep
+                                                                                    // callbacks fenced across BufferFull/error and arm only below, after this exact
+                                                                                    // retained keyframe has returned `O` from sf_feed.
+                eng.presentation_rearm_pending = completing_in_place_seek && segment_installed;
+                plx_base::eventlog::log(&format!(
+                    "rebase: first post-seek keyframe pts={pts} -> pts_shift={}",
+                    shared.pts_shift.load(Ordering::Relaxed)
+                ));
+            } else {
+                eng.pending_video = None; // drop pre-keyframe AUs
+                continue;
+            }
+        }
+        let mut fp = pts + shared.pts_shift.load(Ordering::Relaxed) + pts_nudge_ns();
+        if fp < eng.max_fed_video_pts - STALE_BACKJUMP_NS {
+            eng.pending_video = None; // stale (a big backward jump)
+            continue;
+        }
+        if fp < 0 {
+            fp = 0;
+        }
+        // Feed-ahead throttle: don't feed an AU that's already more than its lane's budget ahead
+        // of the presented position — keep it pending and retry once the pipeline presents more.
+        // Skipped while priming (to reach PRIME_NS before Play; the per-tick slice below is waived
+        // until the lane holds its prime depth, then spreads the rest). Each lane's queue is
+        // pts-ordered, so if the head is over budget everything behind it is too; breaking is right.
+        let pres = eng.feed_pace.reference_at(
+            shared.pres_fed.load(Ordering::Relaxed),
+            (hooks.vclock_ms)(),
+            shared.applied_rate_permille.load(Ordering::Relaxed),
+        );
+        if !eng.prime_play {
+            let budget = if es == 1 {
+                MAX_FEED_AHEAD_NS
+            } else {
+                MAX_FEED_AHEAD_NS + AUDIO_SLACK_NS
+            };
+            if pres != PRES_NONE && fp - pres > budget {
+                shared.dg_feed_state.store(4, Ordering::Relaxed); // waiting for a frame
+                break;
+            }
+        }
+        // Out of this tick's slice: the AU stays pending, as on a throttle stop, for the next tick.
+        // A lane short of media is exempt: it is priming or its lead is nearly gone.
+        let starved = lane_starved(
+            eng.prime_play,
+            eng.max_fed_video_pts,
+            eng.seek_base_pts,
+            PRIME_NS,
+            pres,
+        );
+        if slice.spent(fed, starved, hooks.feed_clock_us) {
+            break;
+        }
+        let presentation_probe = if eng.presentation_rearm_pending {
+            let armed = shared.begin_native_presentation_probe(eng.native_epoch);
+            if !armed {
+                plx_base::eventlog::log("rebase: native presentation epoch retired before post-seek Feed");
+            }
+            armed
+        } else {
+            false
+        };
+        let sink_pts = to_sink_ns(fp, shared);
+        let r = plx_base::diag::spans::span("sfv", || unsafe { (hooks.sink)().feed(mt, data, len as u32, sink_pts, es) });
+        if presentation_probe {
+            if (r as u8) == b'O' {
+                if !shared.commit_native_presentation_probe(eng.native_epoch, |num| {
+                    (hooks.presentation_event)(num)
+                }) {
+                    plx_base::eventlog::log("rebase: native presentation probe lost its epoch after accepted Feed");
+                }
+            } else if !shared.reject_native_presentation_probe(eng.native_epoch) {
+                plx_base::eventlog::log("rebase: native presentation probe lost its epoch after rejected Feed");
+            }
+        }
+        // **Only an ACCEPTED feed advances the mark.** `max_fed_*_pts` is the high-water of what
+        // the PIPELINE holds and `try_prime` starts the clock off it, so counting a rejected AU
+        // primes against media the decoder never received. This advanced before the reply was read
+        // for as long as the check lived inside this loop — where it was video-only, and one
+        // frame early. `feed_both_lanes` made the same slip reachable from the AUDIO lane, which
+        // the old check could not prime from at all, so the latent sloppiness became a defect.
+        if (r as u8) == b'O' && fp > eng.max_fed_video_pts {
+            eng.max_fed_video_pts = fp;
+        }
+        // prime-then-play: once PRIME_NS of the fresh (post-seek/resume) stream is buffered,
+        // start the clock. The pipeline was paused through the reopen gap, so it now presents
+        // from the seek point in A/V sync instead of fast-forwarding to a clock that ran ahead.
+        // Start the clock once BOTH lanes are buffered past the seek base: video to PRIME_NS AND
+        // audio to PRIME_AUDIO_NS. Priming on video ALONE started the audioSync MASTER clock with
+        // an empty audio queue, so a rapid-seek drain could leave audio silent until the next seek.
+        // The video-buffer fallback still starts an audioless/briefly-starved stream (no hang).
+        try_prime(mt, eng, transport, hooks);
+        // The log cadence counts ATTEMPTS (its `reply=` field is the only record of a rejected
+        // feed, and tests/run.py greps `feed v#`), so it keeps its own counter. VTOT counts what
+        // was ACCEPTED — see below.
+        if es == 1 {
+            let v = VATT.fetch_add(1, Ordering::Relaxed) + 1;
+            if v <= 4 || v % 100 == 0 {
+                let qb = aq::aq_bytes(qp);
+                plx_base::eventlog::log(&format!(
+                    "feed v#{v} sz={len} fed={fp} reply={} qbytes={qb}",
+                    r as u8 as char
+                ));
+            }
+        }
+        if (r as u8) != b'O' {
+            // 'B' BufferFull -> keep pending, retry next tick (VIDEO lane only)
+            shared
+                .dg_feed_state
+                .store(if (r as u8) == b'B' { 2 } else { 3 }, Ordering::Relaxed);
+            break;
+        }
+        if eng.presentation_rearm_pending {
+            eng.presentation_rearm_pending = false;
+        }
+        shared.dg_feed_state.store(1, Ordering::Relaxed); // accepting
+                                                          // COUNTED HERE, below the reply test, so `Fed` means AUs the pipeline TOOK. Counted above
+                                                          // it, a permanently-full sink re-offered and re-counted the same retained AU every tick,
+                                                          // and the read-out showed a brisk feed rate through a stall.
+        if es == 1 {
+            VTOT.fetch_add(1, Ordering::Relaxed);
+        }
+        eng.pending_video = None;
+        fed += 1;
+    }
+}
+
+/// Whether an audio AU at fed pts `fp` is in its timeline's lead-in: it is the AU the demuxer
+/// marked as the first since its open or seek (`opens`), or lies within [`AUDIO_LEAD_IN_NS`] past
+/// the one that was accepted (`start`). Lead-in audio is fed ahead of the clock: neither the
+/// stale-ahead drop nor the feed-ahead throttle applies to it.
+pub fn audio_lead_in(fp: i64, opens: bool, start: Option<i64>) -> bool {
+    opens || start.is_some_and(|s| fp >= s && fp - s < AUDIO_LEAD_IN_NS)
+}
+
+/// AUDIO lane feeder (two-lane ff path only). Independent of the video lane: its own queue, its
+/// own fed-pts high-water, its own BufferFull retry — so a video BufferFull never starves audio.
+/// HOLDS while a seek rebase is pending (the VIDEO lane sets pts_shift on its first post-seek
+/// keyframe; feeding audio before that would use a stale shift → A/V desync). No prime/Play here —
+/// only the video lane starts the clock. Called AFTER feed_stream each tick, so a same-tick rebase
+/// is already visible.
+fn feed_audio_lane(mt: &MainThread, eng: &mut Engine, hooks: &FeedHooks) {
+    let shared = eng.shared;
+    if eng.rebase_pending {
+        return; // wait for the video lane to publish pts_shift
+    }
+    if !settle_pcm_lead(eng) {
+        return; // the output's lead is not here yet: stamping with a guess would move later
+    }
+    let qp = match eng.aq_audio.as_mut() {
+        Some(q) => &mut **q as *mut AuQueue,
+        None => return,
+    };
+    // hoisted out of the loop: pts_shift is stable once rebase clears (only the video lane's rebase
+    // arm writes it, on this same thread), and one pres_fed sample per tick is plenty against the
+    // multi-second audio budget.
+    let shift = shared.pts_shift.load(Ordering::Relaxed);
+    let pres = eng.feed_pace.reference_at(
+        shared.pres_fed.load(Ordering::Relaxed),
+        (hooks.vclock_ms)(),
+        shared.applied_rate_permille.load(Ordering::Relaxed),
+    );
+    let slice = FeedSlice::begin(hooks.feed_clock_us);
+    let mut fed = 0;
+    while fed < 120 {
+        if eng.pending_audio.is_none() {
+            let mut eof: c_int = 0;
+            let n = aq::aq_pop(qp, &mut eof);
+            if n.is_null() {
+                break;
+            }
+            eng.pending_audio = Some(AuBox(n));
+        }
+        let n = eng.pending_audio.as_ref().unwrap().0;
+        let (es, _key, pts, len, data) = unsafe { aq::au_fields(n) };
+        let mut fp = pts + shift;
+        let first_pts = shared.first_audio_pts.load(Ordering::Acquire);
+        let opens = first_pts != i64::MIN && pts == first_pts;
+        let lead_in = audio_lead_in(fp, opens, eng.audio_start_fp);
+        // Stale drifted audio from before a seek's reopen: far AHEAD of the freshly-anchored video.
+        // Drop it (else it poisons max_fed_audio_pts and stalls the audio clock → playback sticks).
+        // A late-starting track is far ahead too, legitimately, so it is measured from its own
+        // start as well as from the video (see AUDIO_LEAD_IN_NS).
+        let stale_ref = eng.max_fed_video_pts.max(eng.audio_start_fp.unwrap_or(i64::MIN));
+        if !lead_in && eng.max_fed_video_pts > 0 && fp > stale_ref + AUDIO_STALE_AHEAD_NS {
+            eng.pending_audio = None;
+            continue;
+        }
+        if fp < eng.max_fed_audio_pts - STALE_BACKJUMP_NS {
+            eng.pending_audio = None; // stale (a big backward jump)
+            continue;
+        }
+        if fp < 0 {
+            fp = 0;
+        }
+        if !eng.prime_play
+            && !lead_in
+            && pres != PRES_NONE
+            && fp - pres > MAX_FEED_AHEAD_NS + AUDIO_SLACK_NS
+        {
+            break;
+        }
+        let starved = lane_starved(eng.prime_play, eng.max_fed_audio_pts, eng.seek_base_pts, PRIME_AUDIO_NS, pres);
+        if slice.spent(fed, starved, hooks.feed_clock_us) {
+            break;
+        }
+        let sink_pts = audio_sink_pts(fp, eng.pcm_sink_lead_ns, shared.applied_rate_permille.load(Ordering::Relaxed));
+        let r = plx_base::diag::spans::span("sfa", || unsafe { (hooks.sink)().feed(mt, data, len as u32, sink_pts, es) });
+        // Accepted only — see the video lane's note.
+        if (r as u8) == b'O' && fp > eng.max_fed_audio_pts {
+            eng.max_fed_audio_pts = fp;
+        }
+        if (r as u8) == b'O' && opens {
+            if eng.audio_start_fp.is_none() && fp - eng.max_fed_video_pts > MAX_FEED_AHEAD_NS {
+                plx_base::eventlog::log(&format!(
+                    "feed: audio starts {}ms after the video fed so far; fed ahead of the clock",
+                    (fp - eng.max_fed_video_pts) / 1_000_000
+                ));
+            }
+            eng.audio_start_fp = Some(fp);
+        }
+        let a = AATT.fetch_add(1, Ordering::Relaxed) + 1;
+        if a <= 4 || a % 200 == 0 {
+            let qb = aq::aq_bytes(qp);
+            plx_base::eventlog::log(&format!(
+                "feed a#{a} sz={len} fed={fp} reply={} qbytes={qb}",
+                r as u8 as char
+            ));
+        }
+        if (r as u8) == b'O' {
+            ATOT.fetch_add(1, Ordering::Relaxed); // accepted, not attempted — see feed_stream
+            if let Some(line) = (hooks.record_audio_packet_size)(len as u32) {
+                plx_base::eventlog::log(&format!("native audio: packet sizes of the first AUs fed: {line}"));
+            }
+        }
+        if (r as u8) != b'O' {
+            break; // 'B' BufferFull -> keep pending, retry next tick (AUDIO lane only)
+        }
+        eng.pending_audio = None;
+        fed += 1;
     }
 }
