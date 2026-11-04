@@ -229,8 +229,9 @@ mod tests {
     }
 }
 
-/// One source selected under the route transaction, before any native resource is built.
-pub(super) struct PreparedSource {
+/// The source a start will play, before the route transaction is prepared and before any native
+/// resource is built.
+pub(super) struct ResolvedSource {
     pub url: String,
     pub sample: Option<SampleSource>,
     pub is_h265: bool,
@@ -241,14 +242,26 @@ pub(super) struct SampleSource {
     pub au: Vec<usize>,
 }
 
-pub(super) fn prepare_source(
+/// Choose the source of a start, and qualify the Feed recipe of one that no plan resolved.
+///
+/// **This runs before the start door's offer check, not after it.** A source a route plan resolved
+/// had its recipe qualified by `apply_plan`. A dev trigger's has no plan, so the only place it
+/// becomes a source is below, and the check that refuses a Start without a qualified recipe
+/// must see the result: asked first, it refused every such start (`playurl`, `url`, the samples)
+/// with "no qualified feed offer for this resolved route", with nothing qualified yet to find.
+///
+/// Nothing here touches a native resource or the route transaction; the caller prepares the
+/// transaction once the offer check has passed.
+pub(super) fn resolve_source(
     ps: &mut route::PlaybackSession,
-    route_start: route::RouteStartTransaction,
-) -> Result<PreparedSource, route::RouteStartResult> {
+) -> Result<ResolvedSource, route::RouteStartResult> {
     // resolve the URL, in precedence order: route (a selected movie) wins, then
     // /tmp/plxnative-playurl (a URL + its declaration), then /tmp/plxnative-url (a URL
     // alone), then a local sample.
     let mut url = crate::route::url(ps);
+    // A route that holds a source (a plan's, or the one a reload re-reads) has qualified it
+    // already. Only a source named below, over an empty route, is a new explicit one.
+    let explicit = url.is_empty();
     if url.is_empty() {
         // dev: /tmp/plxnative-playurl — a URL *and the Load declaration to play it with*, with no
         // library item behind it. This is the player-PIPELINE test tier's entry (tests/README.md):
@@ -332,12 +345,11 @@ pub(super) fn prepare_source(
             return Err(crate::route::RouteStartResult::NoRoute);
         }
     }
-    if !crate::route::prepare_route_start(route_start) {
-        log("start_bufferfeed: prepared route no longer owns the transaction");
-        return Err(crate::route::RouteStartResult::StartFailed);
+    if explicit {
+        // False only where no Feed driver is composed, and then the start door refuses all the same.
+        let _ = ps.qualify_explicit_feed_source();
     }
-    Ok(PreparedSource { url, sample, is_h265 })
-
+    Ok(ResolvedSource { url, sample, is_h265 })
 }
 
 /// The `plxnative-playurl` trigger's DV declaration as the data layer's record. `present` is

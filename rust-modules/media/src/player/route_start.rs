@@ -345,6 +345,10 @@ pub(super) fn start_bufferfeed_inner(
     pa: &mut super::adapter::PlayerAdapter,
     route_start: crate::route::RouteStartTransaction,
 ) -> Result<crate::route::RouteStartAttempt, crate::route::RouteStartResult> {
+    // The source first: a route plan qualified its recipe already, and a source no plan resolved (a
+    // dev trigger's) is qualified by being resolved. Nothing native is touched until the
+    // offer check below has passed.
+    let resolved = super::feed_open::resolve_source(ps)?;
     if !cfg!(feature = "play-feed") || !ps.backend_planned_feed_allowed() {
         log("start_bufferfeed: no qualified feed offer for this resolved route");
         return Err(crate::route::RouteStartResult::StartFailed);
@@ -369,10 +373,13 @@ pub(super) fn start_bufferfeed_inner(
     // Per-SESSION, not per-boot: both the log's every-100th cadence and the diagnostics read-out
     // mean "this playback", and a count carried in from the last item answers neither question.
 
-    let prepared = super::feed_open::prepare_source(ps, route_start)?;
-    let url = prepared.url;
-    let sample = prepared.sample;
-    let is_h265 = prepared.is_h265;
+    if !crate::route::prepare_route_start(route_start) {
+        log("start_bufferfeed: prepared route no longer owns the transaction");
+        return Err(crate::route::RouteStartResult::StartFailed);
+    }
+    let url = resolved.url;
+    let sample = resolved.sample;
+    let is_h265 = resolved.is_h265;
     let stream = sample.is_none();
     // dev: /tmp/plxnative-uriprobe — play this URL through `com.webos.media` (URI mode) instead of
     // building an Engine, to learn what webOS 5+ does with it (issue #1064). Taken AFTER the route
