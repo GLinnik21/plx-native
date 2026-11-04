@@ -1047,7 +1047,7 @@ pub(super) fn native_attempt_facts() -> plx_playback_contract::readout::AttemptF
     let abr_buffer_ms = FEED_SHARED.dg_abr_buffer_ms.load(Relaxed);
     let transport_rc = FEED_SHARED.dg_transport_rc.load(Relaxed);
     let transfer_age_ms = FEED_SHARED.dg_transport_age_ms.load(Relaxed);
-    let failure = super::runtime_failure(
+    let failure = plx_play_feed::readout::runtime_failure(
         FEED_SHARED.demux_failed.load(std::sync::atomic::Ordering::Acquire),
         FEED_SHARED.demux_io_failed.load(std::sync::atomic::Ordering::Acquire),
         FEED_SHARED.load_failed.load(Relaxed),
@@ -1070,7 +1070,7 @@ pub(super) fn native_attempt_facts() -> plx_playback_contract::readout::AttemptF
         no_video: FEED_SHARED.demux_no_video.load(Relaxed).then_some(true),
         position_ns: reported_frame.then_some(position.max(0)),
         duration_ns: (duration > 0).then_some(duration),
-        playable_buffer_ms: super::playable_buffer_ms(
+        playable_buffer_ms: plx_play_feed::readout::playable_buffer_ms(
             FEED_SHARED.hls_video_tail_ns.load(Relaxed),
             FEED_SHARED.hls_audio_tail_ns.load(Relaxed),
             FEED_SHARED.dg_load_a.load(Relaxed) != 0,

@@ -54,6 +54,7 @@ pub mod open;
 pub mod seek;
 pub mod sf_event;
 pub mod playurl;
+pub mod readout;
 pub mod pcm_lead;
 pub mod side_reader;
 pub mod shared;
