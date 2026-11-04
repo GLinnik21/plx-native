@@ -311,7 +311,7 @@ impl Metrics {
     }
 }
 
-fn map_backend(backend: BackendKind) -> m::Backend {
+pub(super) fn map_backend(backend: BackendKind) -> m::Backend {
     match backend { BackendKind::Uri => m::Backend::Uri, BackendKind::Feed => m::Backend::Feed }
 }
 fn map_cause(reason: Failure) -> m::Cause {

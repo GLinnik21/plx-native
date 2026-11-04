@@ -119,7 +119,8 @@ impl BackendRunner {
                 Some(measure::Origin::AutomaticHandoff | measure::Origin::Recovery)) {
                 let handoff = self.metrics.snapshot().and_then(|request|
                     request.current_attempt
-                        .filter(|current| current.backend != backend && current.id != attempt)
+                        .filter(|current| current.backend != metrics::map_backend(backend)
+                            && current.id != attempt)
                         .map(|current| (request.id, current.id)));
                 if let Some((request, from)) = handoff {
                     self.metrics.handoff(request, from, attempt, at, &mut result.metrics);
