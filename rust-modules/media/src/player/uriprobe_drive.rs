@@ -22,12 +22,22 @@ impl UriSession {
     #[cfg(feature = "play-feed")]
     fn open(ps: &PlaybackSession, mt: &MainThread, transport: &'static dyn UriMedia,
         attempt: RouteStartAttempt, variant: Variant, bps: AbrBps, url: &str) -> Self {
+        Self::open_with_ports(ps, mt, transport, super::display(), super::plane(), attempt, variant, bps, url)
+    }
+
+    /// [`open`](Self::open) over the display sink and plane owner the caller names: production
+    /// passes the process's own, a test passes a scripted sink and its own owner.
+    #[cfg(feature = "play-feed")]
+    #[allow(clippy::too_many_arguments)]
+    fn open_with_ports(ps: &PlaybackSession, mt: &MainThread, transport: &'static dyn UriMedia,
+        sink: &'static dyn plx_platform::tv::sink::DisplaySink, plane: &'static plx_platform::tv::plane::PlaneOwner,
+        attempt: RouteStartAttempt, variant: Variant, bps: AbrBps, url: &str) -> Self {
         let kind = if crate::route::is_segmented_hls(ps) { Kind::Hls } else { Kind::Direct };
         let input = DriverConfig {
             attempt, variant, bps, kind, url: url.to_owned(),
             app_id: plx_base::paths::app_id().to_owned(), transport,
-            sink: super::display(),
-            log: super::log, plane: super::plane(),
+            sink,
+            log: super::log, plane,
             release_allowance_ms: u64::try_from(super::release::RELEASE_DEADLINE.as_millis()).unwrap_or(u64::MAX),
         };
         Self(CoreSession::open(input, mt))
@@ -205,6 +215,20 @@ mod tests {
 
         /// `refuse_open`: the text the transport answers `open` with, from the very first call.
         fn build(variant: Variant, refuse_open: Option<&str>) -> Rig {
+            Rig::build_on(variant, refuse_open, super::super::display(), super::super::plane())
+        }
+
+        /// A session whose ACB plane is the one a test hands in (a scripted sink and its own plane
+        /// owner), not the process-global pair other tests boot, reset and share.
+        #[cfg(feature = "hostsim")]
+        fn on_plane(variant: Variant, sink: &'static dyn plx_platform::tv::sink::DisplaySink,
+            plane: &'static plx_platform::tv::plane::PlaneOwner) -> Rig {
+            Rig::build_on(variant, None, sink, plane)
+        }
+
+        fn build_on(variant: Variant, refuse_open: Option<&str>,
+            sink: &'static dyn plx_platform::tv::sink::DisplaySink,
+            plane: &'static plx_platform::tv::plane::PlaneOwner) -> Rig {
             let mut ps = PlaybackSession::IDLE;
             crate::route::reset_player_control_for_test(&ps);
             let pa = super::super::adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
@@ -214,7 +238,7 @@ mod tests {
             ps.begin_attempt_view(attempt, super::super::attempt_view::Backend::Uri);
             let transport = Scripted::leak();
             *transport.refuse_open.lock().unwrap() = refuse_open.map(str::to_owned);
-            let session = UriSession::open(&ps, pa.mt(), transport, attempt, variant, AbrBps::default(), URL);
+            let session = UriSession::open_with_ports(&ps, pa.mt(), transport, sink, plane, attempt, variant, AbrBps::default(), URL);
             Rig { ps, pa, transport, attempt, session: Some(session), now: 0 }
         }
 
@@ -710,19 +734,95 @@ mod tests {
             });
         }
 
+        /// The ACB plane of a probe that touched it, over a scripted sink that accepts UNLOADED as
+        /// task 5 and a plane owner of its own (booted with a handle): the firmware's completion is
+        /// whatever the test queues, or `complete_at_once` queues the event-1 one with the dispatch.
+        /// Closed through `stop` and one `drive`, as the engine's teardown does; the transport
+        /// releases the bus at once.
+        fn acb_plane_closed(complete_at_once: bool) -> (Rig, &'static plx_platform::tv::sink::ScriptedPlaneSink, &'static plx_platform::tv::plane::PlaneOwner) {
+            use plx_platform::tv::{plane::{PlaneFacts, PlaneOwner}, sink::{PlaneUnload, ScriptedPlaneSink}};
+            let sink: &'static ScriptedPlaneSink = Box::leak(Box::new(ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 })));
+            sink.complete_at_once.store(complete_at_once, Ordering::SeqCst);
+            let plane: &'static PlaneOwner = Box::leak(Box::new(PlaneOwner::new()));
+            plane.boot(PlaneFacts { handle: true, player_type: 0 });
+            let mut rig = Rig::on_plane(Variant::AtLoad, sink, plane);
+            rig.load_answered();
+            let mut session = rig.session.take().unwrap();
+            session.touch_acb_for_test(0);
+            rig.pa.install_uri(session);
+            stop(&mut rig.ps, &mut rig.pa);
+            drive(&mut rig.ps, &mut rig.pa);
+            (rig, sink, plane)
+        }
+
+        /// REWRITTEN for the fenced contract (it used to assert that the dispatch itself quarantined
+        /// the plane): the plane now waits for the firmware's completion of UNLOADED and is
+        /// quarantined by a completion which is not event 1 (or by the deadline, which the plane's own
+        /// machine tests cover on a clock they own). What stays: once the plane is quarantined, the
+        /// bus is already released, so the exit leaves at once without waiting for it again.
         #[test]
         fn uri_acb_quarantined_plane_exits_without_waiting_again_for_released_bus() {
+            use plx_platform::tv::plane::{Phase, Why};
             let _serial=plx_base::testlock::serial();
-            let _=logged(|| {
-                let mut rig=Rig::new(Variant::AtLoad); rig.load_answered();
-                let mut session=rig.session.take().unwrap();
-                session.touch_acb_for_test(0);
-                rig.pa.install_uri(session); stop(&mut rig.ps,&mut rig.pa); drive(&mut rig.ps,&mut rig.pa);
+            let log=logged(|| {
+                let (mut rig,sink,plane)=acb_plane_closed(false);
+                // UNLOADED ran once and the plane waits on the firmware: still closing, plane held.
+                assert_eq!(sink.unload_count(),1); assert_eq!(plane.phase(),Phase::Releasing);
                 assert!(rig.pa.uri_closing()); assert!(rig.pa.uri_plane_open());
+                assert!(!rig.pa.uri_acb_exit_quarantine(),"a plane still being released is not yet quarantined");
+                // The firmware answers the dispatch (task 5) with something other than "complete".
+                sink.mailbox.push(5,-1);
+                drive(&mut rig.ps,&mut rig.pa);
+                assert_eq!(plane.phase(),Phase::Quarantined(Why::Completion(-1)));
+                assert!(rig.pa.uri_closing()); assert!(rig.pa.uri_plane_open());
+                assert!(rig.pa.uri_acb_exit_quarantine());
                 let exit=crate::player::route_start::exit_native_with(&mut rig.pa,Instant::now,||panic!("released-bus plane quarantine needs no extra wait"));
                 assert_eq!(exit,crate::player::NativeExit::WorkerInFirmware);
                 assert!(!rig.pa.uri_live()); assert_eq!(rig.transport.closed(),1);
+                assert_eq!(sink.unload_count(),1,"UNLOADED is never dispatched a second time");
             });
+            assert!(log.contains("acb=quarantined bus=released reason=completion ev=-1"),"{log}");
+            assert!(!log.contains("plane-release=proven"),"{log}");
+        }
+
+        /// The happy path of the same contract: the firmware completes UNLOADED with event 1 as the
+        /// dispatch returns, so the plane is Released within the closing frame, the registration is
+        /// released with it, and the exit has nothing to wait for and nothing quarantined to leave.
+        #[test]
+        fn uri_acb_released_plane_ends_ownership_and_the_exit_is_clean() {
+            use plx_platform::tv::plane::Phase;
+            let _serial=plx_base::testlock::serial();
+            let log=logged(|| {
+                let (mut rig,sink,plane)=acb_plane_closed(true);
+                assert_eq!(sink.unload_count(),1); assert_eq!(plane.phase(),Phase::Released);
+                assert!(!rig.pa.uri_live(),"the completion released the registration, and the slot with it");
+                assert_eq!(rig.transport.closed(),1);
+                let exit=crate::player::route_start::exit_native_with(&mut rig.pa,Instant::now,||panic!("a released plane needs no wait"));
+                assert_eq!(exit,crate::player::NativeExit::Clean);
+                assert!(!rig.pa.uri_live()); assert_eq!(rig.transport.closed(),1);
+                assert_eq!(sink.unload_count(),1,"UNLOADED is never dispatched a second time");
+            });
+            assert!(log.contains("acb=released bus=released plane-release=proven"),"{log}");
+            assert!(!log.contains("quarantined"),"{log}");
+        }
+
+        /// The exit itself waits for a plane still being released, and only for as long as the
+        /// firmware takes: its own drive pumps the completion, ownership ends, and it leaves clean.
+        #[test]
+        fn uri_acb_exit_follows_a_releasing_plane_to_the_firmware_completion() {
+            use plx_platform::tv::plane::Phase;
+            let _serial=plx_base::testlock::serial();
+            let log=logged(|| {
+                let (mut rig,sink,plane)=acb_plane_closed(false);
+                assert_eq!(plane.phase(),Phase::Releasing); assert!(rig.pa.uri_live() && rig.pa.uri_closing());
+                sink.mailbox.push(5,1);
+                let exit=crate::player::route_start::exit_native_with(&mut rig.pa,Instant::now,||panic!("the completion was already queued"));
+                assert_eq!(exit,crate::player::NativeExit::Clean);
+                assert_eq!(plane.phase(),Phase::Released); assert!(!rig.pa.uri_live());
+                assert_eq!(rig.transport.closed(),1); assert_eq!(sink.unload_count(),1);
+            });
+            assert!(log.contains("acb=released bus=released plane-release=proven"),"{log}");
+            assert!(!log.contains("quarantined"),"{log}");
         }
 
         /// A stand-in for the media server that answers every request `200 {}` and remembers the
