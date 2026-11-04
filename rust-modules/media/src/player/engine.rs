@@ -124,7 +124,7 @@ use plx_play_feed::feed_state::engines_dropped_for_test;
 // four `static mut` accessors used to carry here, and says what the owned slot proves that the
 // `&MainThread` argument could only assert.
 
-#[cfg(feature = "devtriggers")]
+#[cfg(all(feature = "devtriggers", feature = "play-uri"))]
 use plx_play_feed::native_executor::NativeSessionStartGuard;
 
 #[cfg(test)]
@@ -503,7 +503,7 @@ pub(super) fn begin_native_open(feed: &mut super::feed_resources::FeedResources,
     true
 }
 
-#[cfg(feature = "devtriggers")]
+#[cfg(all(feature = "devtriggers", feature = "play-uri"))]
 pub(super) fn native_slot_available() -> Option<()> {
     NativeSessionStartGuard::arm(&SHARED.feed).map(|guard| { drop(guard); })
 }
