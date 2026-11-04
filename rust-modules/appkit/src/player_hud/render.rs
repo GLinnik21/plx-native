@@ -976,7 +976,11 @@ mod tests {
     use crate::player_hud::state::Controls;
     use crate::skip_pill::prompt_for;
     use plx_data::metadata::{Marker, MarkerKind};
-    use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+    use plx_platform::i18n::{language_on_this_thread_for_test, Preference, SHIPPED};
+    const FROZEN_CENSUS_LANGUAGES: [Preference; 11] = [
+        Preference::En, Preference::Es, Preference::Be, Preference::Fr, Preference::It, Preference::Pt,
+        Preference::De, Preference::Hu, Preference::Ru, Preference::Pl, Preference::Nl,
+    ];
     use plx_ui::draw_census::{capture, capture_icons, capture_inks, capture_runs, Run};
     use plx_ui::fixture::FixtureMeasure;
     use plx_ui::icons::Icon;
@@ -1146,7 +1150,7 @@ mod tests {
     #[test]
     fn classic_through_the_renderer_draws_what_the_hand_written_hud_draws() {
         let mut compared = 0;
-        for language in SHIPPED {
+        for language in FROZEN_CENSUS_LANGUAGES {
             let _language = language_on_this_thread_for_test(language);
             let cx = plx_platform::i18n::current();
             let hud = crate::player_hud::loaded::load_classic("0.0.0-test", cx, &FM);
@@ -1158,8 +1162,22 @@ mod tests {
                 compared += 1;
             }
         }
-        assert_eq!(compared, SHIPPED.len() * cases().len(), "a count, so a loop that compares less cannot pass");
+        assert_eq!(compared, FROZEN_CENSUS_LANGUAGES.len() * cases().len(), "a count, so a loop that compares less cannot pass");
         assert_eq!(FROZEN_CENSUS.lines().count(), compared, "the frozen file holds one line per case");
+    }
+
+    /// Catalan is newer than the frozen hand-written census. Check its live renderer output
+    /// for every reachable frame without fabricating historical hashes.
+    #[test]
+    fn catalan_classic_renders_every_case() {
+        let _language = language_on_this_thread_for_test(Preference::Ca);
+        let cx = plx_platform::i18n::current();
+        let hud = crate::player_hud::loaded::load_classic("0.0.0-test", cx, &FM);
+        for c in cases() {
+            let (drawn_census, drew) = drawn(&hud.compiled, c);
+            assert!(drew, "{c:?}: Catalan classic has a state for every frame");
+            assert!(!drawn_census.0.is_empty(), "{c:?}: Catalan classic draws something");
+        }
     }
 
     /// A failure owns the frame: nothing of the transport draws, and the title's marquee resets.

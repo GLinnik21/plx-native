@@ -15,6 +15,11 @@ use plx_data::metadata::{Marker, MarkerKind};
 use plx_machine::machine::Measure;
 use plx_media::player::text_style::HudBand;
 use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference, SHIPPED};
+
+const FROZEN_GOLDEN_LANGUAGES: [Preference; 11] = [
+    Preference::En, Preference::Es, Preference::Be, Preference::Fr, Preference::It, Preference::Pt,
+    Preference::De, Preference::Hu, Preference::Ru, Preference::Pl, Preference::Nl,
+];
 use plx_ui::consts::{MARGIN_X, SCR_H, SCR_W};
 use plx_ui::fixture::FixtureMeasure;
 use plx_ui::{theme, Rect};
@@ -146,7 +151,7 @@ fn compiled_classic_matches_the_hand_written_layout() {
     let measures: [(&str, &dyn Measure); 2] = [("FixtureMeasure", &FM), ("ShippedMeasure", &ShippedMeasure)];
     let mut mismatches = Vec::new();
     let mut compared = 0;
-    for language in SHIPPED {
+    for language in FROZEN_GOLDEN_LANGUAGES {
         let _language = language_on_this_thread_for_test(language);
         for (measure_name, measure) in measures {
             let compiled = build(CLASSIC, measure);
@@ -175,7 +180,7 @@ fn compiled_classic_matches_the_hand_written_layout() {
     }
     // 11 languages x 2 measurers x (movie, episode) x (without, with chapters) x (Discs, Up Next, Skip at
     // each label): a count, so a loop that quietly compares less cannot pass.
-    assert_eq!(compared, SHIPPED.len() * 2 * 2 * 2 * 4, "the golden's comparisons");
+    assert_eq!(compared, FROZEN_GOLDEN_LANGUAGES.len() * 2 * 2 * 2 * 4, "the golden's comparisons");
     assert_eq!(FROZEN_CLASSIC_GEOMETRY.lines().count(), compared, "the frozen file holds one line per case");
     assert!(mismatches.is_empty(), "{} mismatches:\n{}", mismatches.len(), mismatches.join("\n"));
 }
@@ -227,7 +232,7 @@ fn compiled_classic_title_yields_to_the_skip_pill_actually_shown() {
     let measures: [(&str, &dyn Measure); 2] = [("FixtureMeasure", &FM), ("ShippedMeasure", &ShippedMeasure)];
     let mut differing = 0;
     let mut compared = 0;
-    for language in SHIPPED {
+    for language in FROZEN_GOLDEN_LANGUAGES {
         let _language = language_on_this_thread_for_test(language);
         for (measure_name, measure) in measures {
             let compiled = build(CLASSIC, measure);
@@ -245,7 +250,7 @@ fn compiled_classic_title_yields_to_the_skip_pill_actually_shown() {
             }
         }
     }
-    assert_eq!(compared, SHIPPED.len() * 2 * 2 * 2, "the comparisons");
+    assert_eq!(compared, FROZEN_GOLDEN_LANGUAGES.len() * 2 * 2 * 2, "the comparisons");
     assert_eq!(FROZEN_CLASSIC_TITLE_RIGHT.lines().count(), compared + 4, "the frozen file holds one line per case");
     assert!(differing > 0, "the two pills must differ somewhere, or this test pins nothing");
 }
