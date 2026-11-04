@@ -96,6 +96,7 @@ impl Drop for NativeSessionStartGuard {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrepareRefusal {
+    Refused,
     ClockBusy,
     NativeBusy,
 }
@@ -106,6 +107,13 @@ pub struct LaunchHooks {
     pub demux_transport: fn() -> DemuxTransport,
     pub load_thread: fn(SendPtr<c_char>, u32, Option<LoadReceipt>, PcmLead),
     pub select_seek_mode: fn(),
+}
+
+/// Captured native Load inputs and the installed display sink's window event.
+pub struct PrepareHooks {
+    pub sink: fn() -> &'static dyn VideoSink,
+    pub on_exported_window_create: fn(),
+    pub load_refusal_latch: u8,
 }
 
 /// Physical release verbs supplied by the installed native sink adapter. The lower stop owner
@@ -1715,7 +1723,7 @@ pub fn sink_envelope_now(facts: &crate::PayloadFacts, video: crate::LoadVideo, r
 }
 
 /// The audio name and diagnostic code a Load declares for `codec`: PCM whenever the app decodes the
-/// stream itself (`pcm` is the shape [`crate::route::stream_pcm`] declared), whatever the codec
+/// stream itself (`pcm` is the shape supplied by the route), whatever the codec
 /// is — DTS is `DTS` only when the set's own decoder takes it — else [`audio_payload_codec`]'s.
 /// PURE.
 pub fn audio_declaration(codec: &str, pcm: bool) -> Option<(&'static str, u8)> {
@@ -1812,7 +1820,7 @@ pub struct LoadAudio {
 /// [`LoadAudio`] for a track of `codec` at `session_rate` (permille); `None` only at 1x, when the pipeline has
 /// no name for the codec and the app does not decode it. A speed session decodes and stretches the sound in the app
 /// (`ff::SpeedDecoder`), so at any speed but 1x every codec declares `"PCM"`; so does a track the app
-/// decodes itself at 1x (`app_pcm`, the shape [`crate::route::stream_pcm`] declared: DTS under the
+/// decodes itself at 1x (`app_pcm`, the route's declared shape: DTS under the
 /// lossy gate, FLAC and the like), whatever its codec, and that name is what the lead plan is made
 /// from, so every Load that declares `"audio":"PCM"` is planned a lead. `lead_override_ms` is
 /// the dev trigger's text and `stack` the set's audio stack ([`plx_platform::devcaps::audio_stack`]).
@@ -1864,4 +1872,267 @@ pub fn app_id_key() -> String {
 /// suite rather than left to be noticed on a television.
 pub fn with_app_id(p: &str) -> String {
     p.replace("@APPID@", plx_base::paths::app_id())
+}
+
+/// Create the exported window and splice its id into the Load payload — the webOS 5+ binding, in
+/// one place.
+///
+/// **Session-scoped, and that is the point.** The window is created HERE rather than at boot
+/// because `teardown` destroys it, and the two ends have to sit at the same level: created once at
+/// boot and destroyed per session, the second play would splice nothing and show no picture, in
+/// silence. Creating it beside its only consumer also makes the "must exist before Load" ordering
+/// locally visible instead of a promise made across two files.
+///
+/// On webOS 5 this one string IS the video-plane binding: the compositor assigned it to the window
+/// we just created, and the pipeline imports that window by name and punches through to it.
+/// Everything else about the BUFFERSTREAM payload is unchanged between the eras — which is what
+/// both reference implementations show (ss4s compiles the same payload builder for webOS 3, 4 and
+/// 5 and swaps only the resource file; Kodi adds this key and nothing else).
+///
+/// Inserted after `"appId":"…"` because that is a stable sibling inside `option` in every payload
+/// variant here — via [`app_id_key`], so the anchor cannot drift from what `with_app_id` composed.
+/// A no-op on every webOS 4.x set, where `vp_create_window` returns NULL.
+pub fn with_window_id(mt: &MainThread, p: &str, hooks: &PrepareHooks) -> String {
+    if (hooks.sink)().window_mode() != plx_platform::tv::sink::VP_EXPORTED {
+        return p.to_string();
+    }
+    let id = unsafe { (hooks.sink)().create_window(mt) };
+    (hooks.on_exported_window_create)();
+    if id.is_null() {
+        plx_base::eventlog::log("windowId: no exported window — video will not bind");
+        return p.to_string();
+    }
+    let id = unsafe { std::ffi::CStr::from_ptr(id) }.to_string_lossy();
+    let anchor = app_id_key();
+    if !p.contains(&anchor) {
+        plx_base::eventlog::log("windowId: payload has no appId anchor — NOT spliced; video will not bind");
+        return p.to_string();
+    }
+    plx_base::eventlog::log(&format!(
+        "vplane: exported windowId={id} spliced into the Load payload"
+    ));
+    p.replace(&anchor, &format!(r#"{anchor},"windowId":"{id}""#))
+}
+
+
+
+/// Resolve the physical Load payload and arm its retractable clock/native epochs. The
+/// already-selected route supplies only frozen source facts; no route or Plex state is read here.
+pub fn prepare_native_open(
+    mt: &MainThread,
+    shared: &'static PhysicalShared,
+    user_held: bool,
+    seek_preroll: bool,
+    open: Option<PhysicalOpen>,
+    sample: Option<Box<SampleBuf>>,
+    is_h265: bool,
+    session_rate: i32,
+    side_reader: Box<dyn SideReaderPort>,
+    no_audio: bool,
+    requested_rate: i32,
+    hooks: &PrepareHooks,
+) -> Result<NativePrepared, PrepareRefusal> {
+    let stream = sample.is_none();
+    // For a streamed direct-play/transcode, pick the Load codecs from the item: video H264 vs
+    // H265 (native HEVC direct-play), audio AC3/EAC3/AAC/DTS. (The local sample paths keep their
+    // fixed payloads.)
+    // dev A/B: /tmp/plxnative-noaudio feeds video only (needAudio:false + skip es=2) to isolate
+    // whether the audio ES (E-AC3/Atmos) is what stalls the sink on 4K HEVC.
+    // Refuse incompatible Force configurations before publishing audio/rate facts to the demuxer.
+    if let Some(open) = open.as_ref().filter(|request| request.feed_payload.force_direct_play) {
+        if let Some(refusal) = force_open_refusal(
+            requested_rate, &open.audio_codec, no_audio, open.original_dv,
+        ) {
+            match refusal {
+                ForceOpenRefusal::Speed => {
+                    plx_base::eventlog::log("start_bufferfeed: Force Direct Play cannot apply playback speed without changing audio");
+                }
+                ForceOpenRefusal::Audio(why) => {
+                    plx_base::eventlog::log(&format!("start_bufferfeed: Force Direct Play refused original audio {}: {}", open.audio_codec, why.message()));
+                }
+                ForceOpenRefusal::OriginalEnhancementLayer => {
+                    plx_base::eventlog::log("start_bufferfeed: Force Direct Play refused original Dolby Vision Profile 7/enhancement-layer wire: no qualified buffer-feed declaration for unchanged bytes");
+                }
+            }
+            shared.fail_demux_latch(hooks.load_refusal_latch);
+            return Err(PrepareRefusal::Refused);
+        }
+    }
+    crate::set_feed_audio(!no_audio);
+    let stream_payload;
+    // Every arm below assigns this — the static payloads through `static_envelope`, the streamed
+    // one through `sink_envelope_now` — so a new arm that forgets it fails to compile.
+    let sink_env: crate::SinkEnvelope;
+    // The LG-side audio name the payload ended up carrying, hoisted so the `load:` line below can
+    // report it. "-" is the video-only case, where there is no audio ES to name.
+    let mut audio_declared: &str = "-";
+    // ...and the plan for the sink lead that declaration carries (`load_audio`), none for a
+    // compressed or absent track.
+    let mut audio_lead = PcmLead::Off;
+    // ...and the video name beside it, for the same reason and to keep the codec->name mapping
+    // written ONCE (`LoadVideo`): the `load:` line below would otherwise re-read the route and
+    // re-derive it.
+    let mut video_declared: &str = "-";
+    // Playback speed for THIS Load (`player::session_rate_for`), published before the demuxer is
+    // spawned: it reads it to decide whether to decode the audio, and every timestamp crossing to
+    // the pipeline is scaled by it (`player::to_sink_ns`). After any `reset_session`, which puts
+    // it back to 1x.
+    shared.applied_rate_permille.store(session_rate, Ordering::Relaxed);
+    if session_rate != crate::shared::RATE_NORMAL {
+        plx_base::eventlog::log(&format!("speed: this Load plays at {session_rate} (audio decoded in the app, fed as PCM)"));
+    }
+    let payload_str: &str = if stream {
+        let open = open.as_ref().expect("stream request was captured");
+        let stream_vcodec = &open.video_codec;
+        let Some(lv) = crate::LoadVideo::of_stream(stream_vcodec) else {
+            plx_base::eventlog::log(&format!(
+                "start_bufferfeed: the pipeline cannot feed video codec {stream_vcodec:?}; refusing the Load instead of declaring it H.264"
+            ));
+            shared.fail_demux_latch(hooks.load_refusal_latch);
+            return Err(PrepareRefusal::Refused);
+        };
+        if video_declaration_refused(lv, &plx_platform::devcaps::caps(), open.feed_payload.force_direct_play) {
+            plx_base::eventlog::log(&format!(
+                "start_bufferfeed: {} stream but the device table lists no such decoder; refusing the Load",
+                lv.payload_name()
+            ));
+            shared.fail_demux_latch(hooks.load_refusal_latch);
+            return Err(PrepareRefusal::Refused);
+        }
+        video_declared = lv.payload_name();
+        // Record what the payload ACTUALLY says, for the diagnostics read-out — including the
+        // video-only case, where `dg_load_a == 0` is the whole explanation for silence.
+        shared.dg_load_v.store(lv.diag_code(), Ordering::Relaxed);
+        if no_audio {
+            shared.dg_load_a.store(0, Ordering::Relaxed);
+            // A static payload declares its own envelope; say so on the `load:` line.
+            sink_env = crate::static_envelope(lv);
+            match lv {
+                crate::LoadVideo::H264 => crate::PAYLOAD_V,
+                crate::LoadVideo::H265 => crate::PAYLOAD_H265,
+                crate::LoadVideo::Av1 | crate::LoadVideo::Vp9 => {
+                    stream_payload = crate::renamed_static_payload(lv);
+                    stream_payload.as_str()
+                }
+            }
+        } else {
+            // LG's pipeline names E-AC3 "AC3 PLUS" (Dolby Digital Plus), NOT "EAC3" — the
+            // wrong string leaves the audio ES unconfigured, and with audioSync the video
+            // sink slaves to the dead audio clock and stalls (verified: video-only plays).
+            let codec = &open.audio_codec;
+            // App-decoded audio: the Load must state the PCM shape, and the demuxer must produce
+            // exactly that. Missing facts refuse the Load — a guessed rate plays at the wrong pitch.
+            let pcm = match app_pcm_for_load(open.feed_payload.force_direct_play, session_rate, open.feed_payload.pcm.clone()) {
+                Some(Ok(f)) => Some(f),
+                Some(Err(why)) => {
+                    plx_base::eventlog::log(&format!("start_bufferfeed: PCM audio refused — {why}"));
+                    shared.demux_failed.store(true, Ordering::Release);
+                    return Err(PrepareRefusal::Refused);
+                }
+                None => None,
+            };
+            // Dev trigger `pcmavoffset=<ms>` (debug builds, read per Load): how the lead is measured
+            // on an output the default was not filmed on.
+            let lead_override = plx_base::devtrig::read("pcmavoffset");
+            let Some(audio) = load_audio(
+                &codec, session_rate, pcm.is_some(), lead_override.as_deref(), plx_platform::devcaps::audio_stack(),
+            ) else {
+                plx_base::eventlog::log(&format!("start_bufferfeed: unsupported audio codec {codec:?}; refusing incorrect Load declaration"));
+                shared.fail_demux_latch(hooks.load_refusal_latch);
+                return Err(PrepareRefusal::Refused);
+            };
+            crate::set_pcm_out(
+                pcm.map(|f| crate::ff_pcm::PcmOut {
+                    rate: f.sample_rate, bits: f.bits, channels: f.channels, source_rate: f.source_rate,
+                }),
+                pcm.is_some() && open.pcm_is_lossy,
+            );
+            if let Some(f) = pcm {
+                plx_base::eventlog::log(&crate::pcm_decode_line(&codec, &f));
+            }
+            shared.dg_load_a.store(audio.diagnostic, Ordering::Relaxed);
+            // App-decoded audio (`pcm`) and a speed session (`ff::SpeedDecoder`) both declare PCM;
+            // `load_audio` has already put that into the declared name and the lead plan with it.
+            let ac = audio.name;
+            audio_declared = ac;
+            audio_lead = audio.lead;
+            // A lead that follows the sound output is read and logged by the Load thread, which may
+            // block on the bus (`resolve` asks nothing for the other plans); the dev override, a
+            // stack whose lead is the same on every output (`Fixed`) and a stack with no lead
+            // (`NoLead`) are settled here and say so now.
+            if let Some(line) = audio_lead.start_log_line() {
+                plx_base::eventlog::log(&line);
+            }
+            // The sink envelope — `adaptiveStreaming`'s maxWidth/maxHeight/maxFrameRate — used
+            // to be the panel max (4K60) for every codec and every source, on the reasoning that
+            // the pipeline reads the true dims from the SPS and the block is "just a ceiling".
+            // True on the dev set (webOS 4.10); MEASURED FALSE on 10.3.1, which allocates against
+            // the declaration and refuses every H.264 Load at 4K60 (`smp_cb type=18 num=601`) —
+            // i.e. every server transcode. `sink_envelope` is the rule now, and it is deliberately
+            // no wider than what was measured: `docs/webos10-resource-allocation.md`.
+            // `lv` is the STREAM's declared codec; `is_h265` above belongs to the local-sample
+            // path and is false here for every streamed HEVC playback (device-measured 2026-09-03:
+            // three HEVC cells declared FHD before this read the right flag).
+            sink_env = sink_envelope_now(&open.feed_payload, lv, session_rate);
+            let av = build_av_payload_from_facts(&open.feed_payload, lv.payload_name(), ac, sink_env, session_rate, open.payload_options);
+            stream_payload = if ac == "OPUS" {
+                let channels = open.audio_channels;
+                let Some(p) = crate::with_opus_info(&av, channels) else {
+                    plx_base::eventlog::log(&format!("start_bufferfeed: no Opus layout for {channels} channel(s); refusing the Load"));
+                    shared.demux_failed.store(true, Ordering::Release);
+                    return Err(PrepareRefusal::Refused);
+                };
+                plx_base::eventlog::log(&format!("start_bufferfeed: opusInfo channels={channels}"));
+                p
+            } else {
+                av
+            };
+            &stream_payload
+        }
+    } else if is_h265 {
+        sink_env = crate::static_envelope(crate::LoadVideo::H265);
+        crate::PAYLOAD_H265
+    } else {
+        sink_env = crate::static_envelope(crate::LoadVideo::H264);
+        crate::PAYLOAD_V
+    };
+    // The windowId splice happens HERE, at the single point every payload variant passes through,
+    // rather than inside build_av_payload — three of the four variants are static strings that
+    // never see the builder, and a binding that works only for streamed A/V would be the kind of
+    // bug that reproduces on some content and not others.
+    // ...and the appId substitution happens here for the same reason, and BEFORE the splice —
+    // `with_window_id`'s anchor is the composed `"appId":"<id>"`, so the placeholder has to be
+    // gone by then.
+    let payload_c = std::ffi::CString::new(with_window_id(mt, &with_app_id(payload_str), hooks)).unwrap();
+    if stream {
+        let open = open.as_ref().expect("stream request was captured");
+        // What the payload ACTUALLY declared, once, in the event log. Not test scaffolding: until
+        // this line, the only answer to "what did we tell the television this stream was" lived in
+        // the on-screen diagnostics read-out (`dg_load_v`/`dg_load_a` above), i.e. nowhere a log
+        // could settle it — and the `"AC3 PLUS"` renaming a few lines up is exactly the kind of
+        // thing a log should be able to settle, since getting it wrong leaves the audio ES
+        // unconfigured and stalls the video sink through audioSync. Streamed only: the two static
+        // sample payloads declare nothing chosen and would be claiming a declaration they never
+        // consulted. Carries no URL and no token, and costs one line per playback.
+        let dv = open.original_dv;
+        plx_base::eventlog::log(&format!(
+            "load: v={} a={:?} fps={:.3} dv=present:{} P{}/{} el:{} atmos:{} max={}x{}@{}",
+            video_declared,
+            audio_declared,
+            open.feed_payload.fps,
+            dv.present as i32,
+            dv.profile,
+            dv.bl_compat,
+            dv.el_present as i32,
+            open.feed_payload.immersive as i32,
+            sink_env.w,
+            sink_env.h,
+            sink_env.fps
+        ));
+    }
+
+    NativePrepared::arm(
+        shared, open, sample, stream, payload_c, audio_lead,
+        user_held, seek_preroll, side_reader,
+    )
 }
