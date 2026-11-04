@@ -267,13 +267,10 @@ fn recording_painters_do_not_declare_live_glass_or_underlay_damage() {
 }
 
 #[test]
-fn content_at_or_above_the_surfaces_band_is_never_recorded() {
-    // The `nav.modals.surfaces` draw loop (Settings/AccountMenu/ItemMenu/About's own content,
-    // `dispatch.rs::draw_with`) is not gated by `host_render`/`PagePlan`, so it walks fully on
-    // every discovered frame — but nothing reads a `Paint` recorded at or above `Z::surface(0)`
-    // (the one glass there, a menu's own, reads the prefix BELOW it), so recording what it
-    // declares was pure cost for data nothing reads. This is the modal-100 /
-    // push-100 stress-bench regression's second cause (see docs/backdrop-blur-profiling.md).
+fn the_cheap_discovery_walk_does_not_record_unrequested_surface_content() {
+    // The initial traversal skips modal primitive arguments. `discover_with` repeats only
+    // when current-frame live glass actually needs a surface prefix; ordinary Settings and
+    // frozen menus keep this fast path (the modal stress-bench regression's constraint).
     let _guard = plx_base::testlock::serial();
     let sources = Rc::new(RefCell::new(Sources::default()));
     sources.borrow_mut().begin(vec![]);

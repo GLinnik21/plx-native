@@ -1836,3 +1836,15 @@ whose FRAMEDROP line carries `inl` in its `spans=` took the inline path (it coun
 that line is logged for, not on every frame). Two caveats: the
 per-pass split of the inline increment (copy, render-pass split, chain) is not measured, and the
 ~6050 class is not unique to inline captures (frames with no glass job at all land there too).
+
+
+## 2026-11-05: live glass within a modal surface
+
+The full-image HUD preview uses the shared standing tab-track glass inside Settings. The old
+blanket exclusion of surface primitives could not describe the preview's changing texture or
+dissolve mix, so a retained glass image could stay stale. `discover_with` now first discovers the
+current consumers with the ordinary cheap traversal, then repeats argument recording only when
+a visible live-glass consumer requires a surface prefix. The repeat stops at the highest required
+consumer, uses a fresh walk ID and snapshot ledger, and does not advance the frame or reapply
+damage. Frozen menus and Settings pages without live glass keep one traversal and skip their
+primitive argument construction. Source resolution and capture policy remain shared.

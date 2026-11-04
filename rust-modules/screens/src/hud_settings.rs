@@ -824,7 +824,7 @@ impl Machine<InnerHost> for HudPage {
                     if self.controls.is_none() {
                         self.controls = Some(plx_ui::preview_controls::PreviewControls::new(self.scenes().iter().map(|(label,_)| (*label).into()), cx.measure));
                     }
-                    if let Some(controls) = &self.controls {
+                    if let Some(controls) = &mut self.controls {
                         controls.update(&mut self.strip, self.state.scene as usize, cx.focus.current.map(|k| k.elem), t.dt());
                         if cx.focus.current.is_none() {
                             self.state.selected = controls.seat(self.entry, self.state.scene as usize).elem;
@@ -957,7 +957,7 @@ impl Screen<InnerHost> for HudPage {
             } else {
                 self.preview_cycle.draw(p, Rect::FULL, 0.0);
             }
-            if let Some(controls) = &self.controls {
+            if let Some(controls) = &mut self.controls {
                 controls.draw(p, &self.strip, f.cx.focus.current.map(|k| k.elem));
                 for elem in 0..controls.len() as u32 {
                     if let Some(at) = controls.place(elem) {

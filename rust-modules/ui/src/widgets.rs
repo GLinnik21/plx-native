@@ -2988,7 +2988,8 @@ pub(crate) fn chip_face(face: plx_gfx::gfx::GlassFace, e: f32) -> plx_gfx::gfx::
     }
 }
 
-/// **The focused chip's capsule, in the BAR's material** — the band's second glass surface.
+/// Standing glass shared by tab tracks, the profile chip and glass-backed circular controls.
+/// The profile chip uses its bar's material as the band's second glass surface.
 ///
 /// Returns whether it drew. `false` is the flat capsule's cue, and it is the answer in every case
 /// the track is also flat: `bar_material` (this frame's
@@ -3021,7 +3022,7 @@ pub(crate) fn chip_face(face: plx_gfx::gfx::GlassFace, e: f32) -> plx_gfx::gfx::
 /// is not representable here: [`lift_profile_chip`] draws no lift at all until the field has latched,
 /// because a flat capsule over the bar's own would darken the chip twice. The chip on the tab strip
 /// passes `None` and keeps the live glass.
-fn chip_capsule(
+fn glass_capsule(
     p: Painter,
     cap: Rect,
     e: f32,
@@ -3077,7 +3078,7 @@ fn chip_capsule(
 /// was far too quiet to read as focus against bright hero art — and the name is what the stop is
 /// actually *for*.
 ///
-/// **That capsule is the bar's MATERIAL, not a copy of its weights** ([`chip_capsule`]). The track
+/// **That capsule is the bar's MATERIAL, not a copy of its weights** ([`glass_capsule`]). The track
 /// became solved glass on 2026-08-19 and the chip went on wearing the flat stops it used to share
 /// with it, which is one band drawn in two materials — so it takes the face [`StripRender::draw`]
 /// published this frame ([`BarMaterial`]) and is glass exactly when the track is. Neither surface
@@ -3190,7 +3191,7 @@ fn profile_chip_on(
         let cap = chip_cap(e, name_w);
         // the tab track's own material — literally the same material: glass when the track
         // resolved glass this frame, the flat capsule when it did not.
-        if !chip_capsule(p, cap, 1.0, bar_material, frozen) {
+        if !glass_capsule(p, cap, 1.0, bar_material, frozen) {
             p.rect_sheened(
                 cap,
                 cap.h * 0.5,
@@ -3341,6 +3342,8 @@ pub struct CircleButton {
     pub ground: ControlGround,
     /// Local page palette. It is copied in by a Hero row and ignored on an unkeyed ground.
     pub palette: ControlPalette,
+    /// Optional standing glass, shared with the container this control belongs to.
+    pub glass: Option<plx_gfx::gfx::GlassFace>,
     /// The FOCUS POP, as a factor on the frame — see [`CircleButton::scale`].
     pub scale: f32,
     /// The unfurled label and how far open it is (0..1) — see [`DISC_LABEL_LEAD`]. `None` is a
@@ -3362,6 +3365,7 @@ impl CircleButton {
             style: ControlStyle::Accent,
             ground: ControlGround::Keyed,
             palette: ControlPalette::default(),
+            glass: None,
             scale: 1.0,
             label: None,
         }
@@ -3439,6 +3443,11 @@ impl CircleButton {
     /// Answer to a page-drawn ground with the palette it published for this control row.
     pub fn palette(mut self, palette: ControlPalette) -> Self {
         self.palette = palette;
+        self
+    }
+    /// Use the enclosing track's standing material. Focus keeps the shared bright control face.
+    pub fn glass(mut self, face: Option<plx_gfx::gfx::GlassFace>) -> Self {
+        self.glass = face;
         self
     }
     /// Give this disc the [UNFURL](DISC_LABEL_LEAD): `text` is the verb the press performs and `e`
@@ -3547,15 +3556,15 @@ impl View for CircleButton {
         if self.focused {
             control_cast_at(p, plate, plate.h * 0.5, self.focus.unwrap_or(1.0));
         }
-        control_rim(
-            p,
-            plate,
-            plate.h * 0.5,
-            face.top,
-            face.body,
-            self.focused,
-            self.ground,
-        );
+        let glass = self.ground == ControlGround::Keyed
+            && glass_capsule(p, plate, 1.0, self.glass, None);
+        if !glass {
+            control_rim(p, plate, plate.h * 0.5, face.top, face.body, self.focused, self.ground);
+        } else if self.focused {
+            let focus = self.focus.unwrap_or(1.0);
+            let bright = self.style.face_at(1.0, self.ground, self.palette);
+            control_rim(p.alpha(focus), plate, plate.h * 0.5, bright.top, bright.body, true, self.ground);
+        }
         // Resolve the unfurl from the FRAME, before anything is placed by it: `cap_label_w` answers
         // `None` for a frame that is not a capsule, and that verdict governs the GLYPH as well as
         // the word. Sliding the icon off the caller's raw `e` was a real defect — a control whose
@@ -6156,6 +6165,14 @@ pub fn strip_span(lays: &[StripLay], i: usize, h: f32) -> Option<(f32, f32)> {
     })
 }
 
+/// The standing track around measured pills, with the top bar's own uniform inset.
+pub fn strip_track_rect(lays: &[StripLay], top: f32, h: f32) -> Option<Rect> {
+    let first = strip_pill_rect(lays.first()?, top, h);
+    let last = strip_pill_rect(lays.last()?, top, h);
+    Some(Rect::new(first.x - TAB_TRACK_PAD, top - TAB_TRACK_PAD,
+        last.x + last.w - first.x + 2.0 * TAB_TRACK_PAD, h + 2.0 * TAB_TRACK_PAD))
+}
+
 /// **Draw a whole strip — both capsules, then every on-screen pill — through ONE scroll offset.**
 ///
 /// This is the one draw path of the strips built from [`StripLay`] pills (the detail page's season
@@ -6187,10 +6204,12 @@ pub fn draw_strip(
         if !crate::on_axis(pill.x + p.dx(), pill.w, crate::consts::SCR_W, 0.0) {
             continue;
         }
-        // The idle ground is the pill's, laid down ONCE at the whole pill's focus coverage (it retires
-        // as the opaque capsule arrives); the label is inked region by region (`pill_ink`).
-        if let Some(fill) = TabPill::idle_fill_at(strip.mixes((pill.x, pill.w)).0) {
-            p.rrect(pill, pill.h * 0.5, pill.h * 0.5, fill);
+        // Standalone pills own an idle face; a tracked row already has its container ground.
+        // The label is inked region by region (`pill_ink`).
+        if !matches!(ground, TabGround::Tracked { .. }) {
+            if let Some(fill) = TabPill::idle_fill_at(strip.mixes((pill.x, pill.w)).0) {
+                p.rrect(pill, pill.h * 0.5, pill.h * 0.5, fill);
+            }
         }
         let ink = strip.pill_ink(pill, ground);
         paint_inked(p, &ink, |fm, sm| {
@@ -6295,7 +6314,7 @@ pub enum SelMark {
 /// press and transform handler it writes on `plated`.
 #[derive(Clone, Copy)]
 pub enum TabGround {
-    /// **The shared top tab bar**, inside its own track. The pills have no ground of their own and
+    /// **A shared tracked tab row** (the top bar or full-image preview), inside its own track. The pills have no ground of their own and
     /// nothing here scales: the capsule TRAVELLING under a row that encloses it is the whole focus
     /// mark, and a pill that also grew would be two answers to one question. `glass` is whether that
     /// track is drawn as the standing glass container this frame (it goes flat behind a panel and
@@ -7135,8 +7154,8 @@ impl TrackDensity {
     }
 }
 
-/// The tab track's persistent glass state. `GlassPlan` owns one; the strip borrows it only for
-/// update/prepare/draw, keeping the renderer and the frame scheduler on one state instance.
+/// A standing track's persistent glass state. The chrome's `GlassPlan` and the image preview
+/// each own their instance, sharing the same density solve, spring and material.
 pub struct TabBand {
     material: BarMaterial,
     density: TrackDensity,
@@ -7152,6 +7171,32 @@ impl TabBand {
 
     pub fn step(&mut self, dt: f32) {
         track_density_step(dt, &mut self.density);
+    }
+
+    /// Solve once for a container and publish its face for sibling controls. A caller that
+    /// chooses a flat track never requests a readback; unsettled pages retain their last sample.
+    pub fn prepare(&mut self, p: Painter, track: Rect, settled: bool, glass: bool) -> [f32; 3] {
+        let (r, g, b) = theme::CLEAR_RGB;
+        let flat = [r, g, b];
+        let ground = if glass {
+            let at = p.place(track);
+            plx_gfx::gfx::sample_ground([at.x, at.y, at.w, at.h], settled).unwrap_or(flat)
+        } else { flat };
+        self.material = if glass {
+            let (top, body) = tab_glass_stops(ground, &mut self.density);
+            let (rim, rim_lit) = track_rim(top[3]);
+            BarMaterial::Glass(plx_gfx::gfx::GlassFace {
+                scrim_top: top, scrim_bot: body, rim, rim_lit, rim_w: 1.0,
+            })
+        } else { BarMaterial::Flat };
+        ground
+    }
+
+    /// The shared standing capsule, including the same fallback when no blur source is available.
+    pub fn draw(&self, p: Painter, track: Rect) {
+        if !glass_capsule(p, track, 1.0, self.face(), None) {
+            p.rect_sheened(track, track.h * 0.5, theme::TAB_TRACK_TOP, theme::TAB_TRACK_BOT);
+        }
     }
 
     pub fn face(&self) -> Option<plx_gfx::gfx::GlassFace> {
@@ -7995,21 +8040,7 @@ impl StripRender {
         // screen wearing the bar, for as long as the app was open.
         let glass_on = tab_glass_on();
         let groundlog = ground_log_armed();
-        // …and FASTER while a polarity is being decided: the decision is gated on two independent
-        // readings, so the sampler's rate is the decision's rate, and every frame of it is spent
-        // showing the material the bar is about to stop being.
-        let (cr, cg, cb) = theme::CLEAR_RGB; // the app ground, as the token that names it
-        let flat_ground = [cr, cg, cb];
-        let ground = if glass_on {
-            // The rect the glass below is DRAWN at: the painter's placement (a lifted or zoomed
-            // chrome band) is part of it, and the band the ground is read from is found by that
-            // rect (`gfx::sample_ground`), so the unplaced `track` would match no band.
-            let at = p.place(track);
-            plx_gfx::gfx::sample_ground([at.x, at.y, at.w, at.h], settled)
-                .unwrap_or(flat_ground)
-        } else {
-            flat_ground
-        };
+        let ground = band.prepare(p, track, settled, glass_on);
         // `/tmp/plxnative-groundlog` — the density is now a FUNCTION of something invisible, so the
         // instrument that says what it read and what it chose is not optional. It is how the first
         // version of this was caught reading Plex's `UltraBlurColors`, which gave (0.30,0.23,0.18)
@@ -8047,89 +8078,7 @@ impl StripRender {
             }
             LAST.store(n.wrapping_add(1), Relaxed);
         }
-        if glass_on {
-            // The track never moves, so its drawn rect IS its rest rect — no slide to correct for.
-            // Hoisted out of the call, because it is now the BAND's face and not just this
-            // surface's: [`profile_chip_with`] draws the other half of it from this same `bar_material`
-            // field, at the same stops and the same rim weight, off this one solve. See [`BarMaterial`].
-            let face = {
-                let (gt, gb) = tab_glass_stops(ground, &mut band.density);
-                let (rim, rim_lit) = track_rim(gt[3]);
-                plx_gfx::gfx::GlassFace {
-                    scrim_top: gt,
-                    scrim_bot: gb,
-                    rim,
-                    rim_lit,
-                    rim_w: 1.0,
-                }
-            };
-            // Material choice is independent of capture success. Both members must visit the
-            // same live-source slots even when the renderer falls back for this band.
-            band.material = BarMaterial::Glass(face);
-            if Glass::DYNAMIC_BACKDROP.backdrop(
-                p,
-                track,
-                0.0,
-                track.h * 0.5,
-                [1.0, 1.0, 1.0, 1.0],
-                // The line and the hairline, no ramp — the design system's rule for this container,
-                // and the one the panel treatment gets wrong here: 76px tall has 20px of interior
-                // left once a 28px chamfer has run in from both edges, so the "rim" stops being an
-                // edge and becomes most of the object.
-                plx_gfx::gfx::GlassRim::Standing,
-                face,
-                // The bar is UltraThin by construction: it takes no extra sample, so the page comes
-                // through as sharp as the chain left it. Its FROST is not read from the scale at all
-                // — `tab_glass_stops` above solves it against the ground every frame.
-                theme::Material::UltraThin,
-            ) {
-                // NOTHING IS DRAWN HERE ANY MORE, and that is the fix. The darkening and the edge —
-                // `inset 0 0 0 1px var(--glass-rim), inset 0 1px 0 var(--glass-rim-light)`, the whole
-                // of what the design system puts on this container — used to be a SECOND rounded rect
-                // over the backdrop, and two surfaces of one shape means two antialiased edges, each
-                // blending its own colour against the page. They ride inside the surface now, as its
-                // `GlassFace`; `fs_glass.frag` composites scrim then rim then coverage, in that order.
-                //
-                // The two weights are still one ring: `theme::GLASS_RIM` .14 the whole way round plus
-                // the difference up to `theme::GLASS_RIM_LIGHT` .28 on the edge facing the light,
-                // boosted by the surface NORMAL so it dies out along each cap's arc. It was a second
-                // ring scissored to the top half for one build, and the scissor lands exactly on the
-                // widest point of a cap — a hard step from .28 to .14 in the middle of a curve, which
-                // reads as the outline snapping off. Reported from a screenshot before it was measured.
-                //
-                // And the weight TRAVELS with the ground (`track_rim`), because a lit edge is a
-                // relationship and not a colour — `theme::GLASS_RIM_MAX` carries that measurement.
-                // The ring is white in both weights: it was a PAIR while the track had two
-                // polarities, an ink line for the light one and a light line for the dark, and the
-                // ink half went with the polarity.
-            } else {
-                // …and the same here: the chain refused, so the flat dark material is what draws —
-                // said to the spring, not to the value the spring publishes. See the note below.
-                p.rect_sheened(
-                    track,
-                    track.h * 0.5,
-                    theme::TAB_TRACK_TOP,
-                    theme::TAB_TRACK_BOT,
-                );
-            }
-        } else {
-            // Only the `flattabs` experiment lands here: `tab_glass_on` is `!flat_tabs_armed()` and
-            // nothing else. It does NOT go false during a blur source pass (nor with a popover up):
-            // the glass arm above runs and the glass call answers the pass itself
-            // (`gfx::draw_blur_backdrop`, `backdrop::surface_with`), and a chain that refuses is
-            // that arm's own flat `else`.
-            // The flat capsule, which is the same material at its ceiling — there is nothing for
-            // this path to say about ink any more. It once wrote the row's POLARITY here, and that
-            // was a reported bug twice over: the write clobbered a value the spring owned, so the
-            // next frame cut it back, and the hysteresis read the same clobbered value and walked
-            // the committed polarity across with it. Both are gone with the polarity itself.
-            p.rect_sheened(
-                track,
-                track.h * 0.5,
-                theme::TAB_TRACK_TOP,
-                theme::TAB_TRACK_BOT,
-            );
-        }
+        band.draw(p, track);
         // A strip wider than its track is a bounded panel, not a scrolling document, so this is the
         // scissor case (see the ui/CLAUDE.md clipping rule): a pill leaving the row is cut at the
         // pill area's edge — which is also the "there is more over there" affordance. Paired below.
