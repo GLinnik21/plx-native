@@ -104,8 +104,26 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
             crate::route::LiveEngineStartRelation::NoPendingRoute =>
                 return BufferfeedStartOutcome::AlreadyRunning,
             crate::route::LiveEngineStartRelation::Conflict(ticket) => {
-                let _ = crate::route::abort_route_start(ticket, crate::route::RouteStartResult::StartFailed);
-                return BufferfeedStartOutcome::Failed;
+                // A newly resolved route replaces this URI attempt. Retire its exact native
+                // owner first, then reserve the existing route transaction in the shared
+                // release queue; the successor must not open while close is only pending.
+                let at = pa.backend_tick();
+                let stopped = pa.backend_send_at(plx_playback_contract::Intent::Stop {
+                    backend: plx_playback_contract::BackendKind::Uri,
+                    attempt: existing.contract_id(),
+                    reason: plx_playback_contract::StopReason::Replace,
+                }, super::attempt_metrics::Origin::Fresh, at);
+                let addressed = stopped.controls.iter().any(|sent|
+                    sent.backend == plx_playback_contract::BackendKind::Uri
+                        && sent.attempt == existing.contract_id()
+                        && sent.operation == plx_playback_contract::Operation::Stop(
+                            plx_playback_contract::StopReason::Replace));
+                if !addressed || !pa.release_busy() {
+                    let _ = crate::route::abort_route_start(
+                        ticket, crate::route::RouteStartResult::StartFailed);
+                    return BufferfeedStartOutcome::Failed;
+                }
+                return start_bufferfeed_for(ps, pa, ticket);
             }
         }
         }
