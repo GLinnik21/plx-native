@@ -33,7 +33,7 @@ and confirm a clean worktree before running the gates. Restore from Git or use
 a fresh checkout for the other row; do not push either deletion commit. Do not
 change any remaining production Rust source to make a deletion pass.
 The lockfile refresh command is
-`(cd rust-modules && CARGO_INCREMENTAL=0 cargo +1.99.1 metadata --format-version 1 > /dev/null)`;
+`(cd rust-modules && CARGO_INCREMENTAL=0 cargo +"$(make -s -C .. print-rust-toolchain)" metadata --format-version 1 > /dev/null)`;
 run it before that disposable commit.
 
 | Registration | Delete `rust-modules/play-feed/` | Delete `rust-modules/play-uri/` |
@@ -82,14 +82,16 @@ its package can be dropped.
 
 Run once with `SURVIVOR=uri` after deleting Feed, and once with
 `SURVIVOR=feed` after deleting URI. The commands assume the checkout has the
-registration edits above and the pinned Rust toolchain (`1.99.1`) installed.
+registration edits above and the pinned Rust toolchain (`make -s print-rust-toolchain`, read
+from `rust-modules/rust-toolchain.toml`) installed.
 They are a proposed verification sequence, **not results from this audit**.
 
 ```sh
 SURVIVOR=uri  # use feed in the other disposable checkout
+TC=$(make -s print-rust-toolchain)
 cd rust-modules
-CARGO_INCREMENTAL=0 cargo +1.99.1 tree -p plxnative-modules -e normal --no-default-features --features "play-$SURVIVOR" --locked
-CARGO_INCREMENTAL=0 cargo +1.99.1 check -p plxnative-modules --lib --no-default-features --features "play-$SURVIVOR" --locked
+CARGO_INCREMENTAL=0 cargo +"$TC" tree -p plxnative-modules -e normal --no-default-features --features "play-$SURVIVOR" --locked
+CARGO_INCREMENTAL=0 cargo +"$TC" check -p plxnative-modules --lib --no-default-features --features "play-$SURVIVOR" --locked
 cd ..
 make -s "PLAYBACK_BACKENDS=$SURVIVOR" print-playback-config
 make "PLAYBACK_BACKENDS=$SURVIVOR" check
