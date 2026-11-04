@@ -910,7 +910,7 @@ impl Shared {
         self.native_session.native_load_abandoned()
     }
 
-    #[cfg(all(feature = "test-support", feature = "hostsim"))]
+    #[cfg(all(any(test, feature = "test-support"), feature = "hostsim"))]
     pub fn test_force_native_idle(&self) {
         self.native_session.test_force_native_idle();
     }
