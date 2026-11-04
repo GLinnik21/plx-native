@@ -127,6 +127,10 @@ pub enum StartRefusal {
 pub struct PlaybackSession {
     /// Main-thread observation for the exact physical attempt currently shown by this session.
     attempt_view: crate::player::attempt_view::AttemptView<RouteStartAttempt>,
+    /// A recoverable URI failure held through exact native release. It is a readout projection,
+    /// not a second release queue; only the matching current attempt may show Resolving.
+    #[cfg(feature = "play-uri")]
+    uri_recovery_pending: Option<RouteStartAttempt>,
     /// Finite source recipes for this logical request. A plan can refresh qualification but
     /// cannot reset spent opens or the cross-backend handoff budget.
     backend_policy: Option<super::backend_policy::BackendPolicy>,
@@ -578,6 +582,45 @@ mod source_selection_tests {
     }
 }
 
+#[cfg(all(test, feature = "play-uri", feature = "play-feed"))]
+mod uri_failure_recovery_tests {
+    use super::*;
+    use super::super::backend_policy::{BackendPolicy, OfferId, Qualification};
+    use plx_playback_contract::BackendKind;
+
+    #[test]
+    fn prospect_requires_the_current_uri_attempt_exact_offer_and_runtime_clock() {
+        let mut session = PlaybackSession::IDLE;
+        session.request = Some(PlaybackRequest { sid: ServerId::UNSET, rk: "42".into(),
+            part: "/library/parts/7".into(), vcodec: "h264".into(), acodec: "aac".into(),
+            title: "Film".into(), ctx: String::new(), preview: false, version: None });
+        let mut policy = BackendPolicy::for_request(false);
+        policy.qualify(BackendKind::Uri, OfferId::URI_ORIGINAL, Qualification::Qualified);
+        assert!(policy.admitted(BackendKind::Uri, OfferId::URI_ORIGINAL));
+        session.backend_policy = Some(policy);
+        let attempt = RouteStartAttempt::fixture();
+        session.begin_attempt_view(attempt, crate::player::attempt_view::Backend::Uri);
+        assert!(session.can_retry_uri_as_feed(attempt, OfferId::URI_ORIGINAL,
+            UriFailurePhase::Startup, None));
+        assert!(!session.can_retry_uri_as_feed(attempt, OfferId::URI_ORIGINAL,
+            UriFailurePhase::Runtime, None), "an unknown runtime playhead cannot become zero");
+        assert!(session.can_retry_uri_as_feed(attempt, OfferId::URI_ORIGINAL,
+            UriFailurePhase::Runtime, Some(42_000_000_000)));
+        assert!(!session.can_retry_uri_as_feed(attempt, OfferId::URI_PMS_REMUX,
+            UriFailurePhase::Runtime, Some(42_000_000_000)));
+        let successor = RouteStartAttempt { serial: attempt.serial, attempt: attempt.attempt + 1 };
+        assert!(!session.can_retry_uri_as_feed(successor, OfferId::URI_ORIGINAL,
+            UriFailurePhase::Runtime, Some(42_000_000_000)));
+        assert!(session.mark_uri_recovery_pending(attempt));
+        assert_eq!(session.uri_recovery_pending(), Some(attempt));
+        session.clear_uri_recovery_pending(successor);
+        assert_eq!(session.uri_recovery_pending(), Some(attempt), "old notices cannot clear it");
+        session.begin_attempt_view(successor, crate::player::attempt_view::Backend::Feed);
+        assert_eq!(session.uri_recovery_pending(), None);
+        assert!(!session.mark_uri_recovery_pending(attempt));
+    }
+}
+
 /// The route decision explicitly distinguishes another recovery candidate from a physical
 /// reopen of its current recipe, even if PMS refreshes the URL during a seek or restore.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -887,6 +930,12 @@ pub(super) enum EnhancementOutcome {
     Refused,
 }
 
+/// Whether the failed URI source had reached a running clock. Runtime recovery requires an
+/// observed content position; startup may retain the request's still unpresented resume target.
+#[cfg(feature = "play-uri")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UriFailurePhase { Startup, Runtime }
+
 impl PlaybackSession {
     #[cfg(feature = "play-uri")]
     pub fn pms_decline(&self) -> Option<super::uri_preflight::PmsDecline> {
@@ -897,6 +946,49 @@ impl PlaybackSession {
     /// address gate; a retry cannot inherit its predecessor's position or failure evidence.
     pub fn begin_attempt_view(&mut self, attempt: RouteStartAttempt, backend: crate::player::attempt_view::Backend) {
         self.attempt_view.begin(attempt, backend);
+        #[cfg(feature = "play-uri")]
+        { self.uri_recovery_pending = None; }
+    }
+
+    #[cfg(feature = "play-uri")]
+    pub fn mark_uri_recovery_pending(&mut self, attempt: RouteStartAttempt) -> bool {
+        if self.attempt_view.backend() != Some(crate::player::attempt_view::Backend::Uri)
+            || self.attempt_view.attempt() != Some(attempt) { return false; }
+        self.uri_recovery_pending = Some(attempt);
+        true
+    }
+
+    #[cfg(feature = "play-uri")]
+    pub fn clear_uri_recovery_pending(&mut self, attempt: RouteStartAttempt) {
+        if self.uri_recovery_pending == Some(attempt) {
+            self.uri_recovery_pending = None;
+        }
+    }
+
+    #[cfg(feature = "play-uri")]
+    pub fn uri_recovery_pending(&self) -> Option<RouteStartAttempt> {
+        (self.attempt_view.backend() == Some(crate::player::attempt_view::Backend::Uri)
+            && self.attempt_view.attempt() == self.uri_recovery_pending)
+            .then_some(self.uri_recovery_pending).flatten()
+    }
+
+    /// Prospect only. The adapter still owns exact URI Release; this does not start a resolve,
+    /// spend an offer or retire a PMS resource while the native object might be live.
+    #[cfg(feature = "play-uri")]
+    pub fn can_retry_uri_as_feed(&self, attempt: RouteStartAttempt,
+        offer_id: super::backend_policy::OfferId, phase: UriFailurePhase,
+        known_position_ns: Option<i64>) -> bool {
+        let Some(policy) = self.backend_policy.as_ref() else { return false; };
+        cfg!(feature = "play-feed")
+            && self.attempt_view.backend() == Some(crate::player::attempt_view::Backend::Uri)
+            && self.attempt_view.attempt() == Some(attempt)
+            && self.request.as_ref().is_some_and(|request| !request.preview)
+            && policy.can_reopen(plx_playback_contract::BackendKind::Uri, offer_id)
+            && policy.has_remaining_backend(plx_playback_contract::BackendKind::Feed)
+            && match phase {
+                UriFailurePhase::Startup => self.requested_resume_ns >= 0,
+                UriFailurePhase::Runtime => known_position_ns.is_some_and(|ns| ns >= 0),
+            }
     }
 
     pub fn attempt_view(&self) -> &crate::player::attempt_view::AttemptView<RouteStartAttempt> {
@@ -1133,6 +1225,8 @@ impl PlaybackSession {
     /// born as. Every String empty, every id 0 or `UNSET`, both HUD buffers NUL.
     pub const IDLE: PlaybackSession = PlaybackSession {
         attempt_view: crate::player::attempt_view::AttemptView::EMPTY,
+        #[cfg(feature = "play-uri")]
+        uri_recovery_pending: None,
         backend_policy: None,
         planned_feed_offer: None,
         planned_feed_purpose: CandidatePurpose::NewCandidate,
@@ -1237,6 +1331,8 @@ impl PlaybackSession {
     pub fn publication(&self) -> PlaybackSession {
         let PlaybackSession {
             attempt_view,
+            #[cfg(feature = "play-uri")]
+            uri_recovery_pending,
             backend_policy: _,
             planned_feed_offer,
             planned_feed_purpose: _,
@@ -1323,6 +1419,8 @@ impl PlaybackSession {
         } = self;
         PlaybackSession {
             attempt_view: *attempt_view,
+            #[cfg(feature = "play-uri")]
+            uri_recovery_pending: *uri_recovery_pending,
             backend_policy: None,
             planned_feed_offer: *planned_feed_offer,
             planned_feed_purpose: CandidatePurpose::NewCandidate,
@@ -6196,6 +6294,8 @@ fn clear_play_verdict(ps: &mut PlaybackSession) {
     { let s = &mut *ps; {
         s.play_verdict = None;
         #[cfg(feature = "play-uri")]
+        { s.uri_recovery_pending = None; }
+        #[cfg(feature = "play-uri")]
         { s.pms_decline = None; }
         s.jail_load_blocked = false;
         s.native_start_refused = None;
@@ -9451,6 +9551,8 @@ fn request_play_with_queue(
         s.play_verdict = None;
         #[cfg(feature = "play-uri")]
         { s.pms_decline = None; }
+        #[cfg(feature = "play-uri")]
+        { s.uri_recovery_pending = None; }
         s.jail_load_blocked = false;
         s.native_start_refused = None;
         s.engine_failure = None;
@@ -9667,6 +9769,43 @@ pub fn retry_uri_source_as_feed(ps: &mut PlaybackSession,
     let caps = ps.attempt_caps();
     request_play_with_queue(ps, meta, caps, request, Some(retry),
         Some(playback_trace_generation()), false,
+        crate::player::report::AttemptOrigin::Recovery, None, true, None)
+}
+
+/// Re-resolve one failed URI attempt through an unspent Feed recipe after its native registration
+/// was released and its report worker retired. The adapter supplies the exact admitted recipe,
+/// viewer goal and clock evidence it captured before Closing; this route validates the address
+/// again before taking the old PMS resource. No runtime failure may restart at an invented zero.
+#[cfg(feature = "play-uri")]
+pub fn retry_failed_uri_as_feed(ps: &mut PlaybackSession,
+    meta: &mut plx_data::stores::metadata::MetadataStore,
+    attempt: RouteStartAttempt, offer_id: super::backend_policy::OfferId,
+    phase: UriFailurePhase, known_position_ns: Option<i64>, viewer_paused: bool) -> bool {
+    if !ps.can_retry_uri_as_feed(attempt, offer_id, phase, known_position_ns) {
+        return false;
+    }
+    let resume_ns = match phase {
+        UriFailurePhase::Startup => ps.requested_resume_ns.max(0),
+        UriFailurePhase::Runtime => known_position_ns.expect("prospect checked runtime position"),
+    };
+    let Some(request) = ps.request.clone() else { return false; };
+    // The callback's route and this current resource must still be the same owner. A later
+    // attempt may reuse the source URL or logical session but cannot borrow its worker ticket.
+    let active = worker_ticket();
+    let owned = if ps.tsession.is_empty() { ps.sess.as_str() } else { ps.tsession.as_str() };
+    if owned.is_empty() || active.encoder() != owned { return false; }
+    // The reporter was retired before the adapter published this notice. Reuse the existing
+    // ordered stop worker: it owns the single active encoder and the next resolve worker waits
+    // for its stop completion before asking PMS for another resource.
+    scrobble_stop(ps, None, None);
+    ps.qualify_backend_offer(plx_playback_contract::BackendKind::Uri, offer_id,
+        super::backend_policy::Qualification::Refused);
+    ps.set_reconfigure_pause_goal(viewer_paused);
+    let mut retry = current_retry_context(ps, resume_ns);
+    retry.candidate_purpose = CandidatePurpose::NewCandidate;
+    let caps = ps.attempt_caps();
+    request_play_with_queue(ps, meta, caps, request, Some(retry),
+        Some(playback_trace_generation()), true,
         crate::player::report::AttemptOrigin::Recovery, None, true, None)
 }
 
@@ -10171,6 +10310,8 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             // the statement that the last refusal is over, and assigning unconditionally is what
             // makes that true without a second clear anyone can forget.
             play_verdict: plan.verdict,
+            #[cfg(feature = "play-uri")]
+            uri_recovery_pending: None,
             #[cfg(feature = "play-uri")]
             pms_decline: plan.pms_decline,
             resolve_failed,
