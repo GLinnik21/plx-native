@@ -4018,17 +4018,19 @@ class AbrLogLineContract(unittest.TestCase):
     """MATHEMATICAL INVARIANT: the app's format string and this harness's regex are ONE statement.
 
     They are written in two languages in two files, and nothing but this test keeps them in step.
-    The failure mode is silent and total: rename or reorder a field in `ff.rs` and every metric in
+    The failure mode is silent and total: rename or reorder a field in `adaptive.rs` and every metric in
     `a_abr_shape` reads `n/a` forever, which looks exactly like a controller that never ran. That
     is the same shape as the stale-regex bug this project has already had once, when the heartbeat
     fields were renamed and an old log read as "no samples".
     """
 
-    FF = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "ff.rs")
+    # The controller's `abr: <kind>` lines are written by `adaptive.rs` (they were `ff.rs`'s
+    # until the playback split moved the controller out of the feed engine).
+    ADAPTIVE = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "adaptive.rs")
 
     def _emitted_fields(self, prefix):
         """The `name=` fields of the app's format literal for `abr: <prefix>`, in order."""
-        with open(self.FF) as f:
+        with open(self.ADAPTIVE) as f:
             src = f.read()
         start = src.index(f'"abr: {prefix} ')
         end = src.index('",', start)
@@ -4044,18 +4046,18 @@ class AbrLogLineContract(unittest.TestCase):
         emitted = self._emitted_fields("sample")
         parsed = self._regex_fields(run.RE_ABR_SAMPLE)
         self.assertEqual(emitted[: len(parsed)], parsed,
-                         f"ff.rs emits {emitted}, run.py parses {parsed}")
+                         f"adaptive.rs emits {emitted}, run.py parses {parsed}")
         self.assertIn("reason", emitted, "the decision reason must stay on the line")
 
     def test_the_mode_line_emits_exactly_the_fields_the_harness_parses(self):
         """The Original-vs-HLS comparison, both sides of the contract.
 
-        Field NAMES come out of `ff.rs`'s own format literal, so a rename there fails here rather
+        Field NAMES come out of `adaptive.rs`'s own format literal, so a rename there fails here rather
         than silently yielding zero comparison rows — and this line is the only record of a decision
         that tears down an encoder session, so a silent zero is the expensive failure."""
         emitted = self._emitted_fields("mode")
         parsed = self._regex_fields(run.RE_ABR_MODE)
-        self.assertEqual(emitted, parsed, f"ff.rs emits {emitted}, run.py parses {parsed}")
+        self.assertEqual(emitted, parsed, f"adaptive.rs emits {emitted}, run.py parses {parsed}")
 
     def test_a_rendered_mode_line_yields_both_decompositions(self):
         line = ("[  12.345] abr: mode chose=Original why=OriginalWorthIt vs_hls=8000kbps "
@@ -4082,7 +4084,7 @@ class AbrLogLineContract(unittest.TestCase):
         self.assertIsNotNone(run.RE_ABR_SAMPLE.search(_sample_line(abuf="none", buf=-1)))
 
     def test_the_steady_line_emits_the_four_gate_fields_the_harness_parses(self):
-        """Both sides of the guard read-out. Names come out of `ff.rs`'s own format literal, so a
+        """Both sides of the guard read-out. Names come out of `adaptive.rs`'s own format literal, so a
         rename on the app side fails here rather than silently yielding zero gate rows.
 
         `stable`/`cool` were the first two until 2026-08-28 and went with the counters they
@@ -4090,7 +4092,7 @@ class AbrLogLineContract(unittest.TestCase):
         emitted = self._emitted_fields("steady")
         for field in ("dwell", "block", "onrung", "draining"):
             with self.subTest(field=field):
-                self.assertIn(field, emitted, f"ff.rs no longer emits {field}=")
+                self.assertIn(field, emitted, f"adaptive.rs no longer emits {field}=")
                 self.assertIn(field, self._regex_fields(run.RE_ABR_GATES))
 
     def test_a_rendered_steady_line_yields_its_guard_state(self):
@@ -4317,7 +4319,7 @@ class EverySeekGiveUpPathDisarmsTheSpinner(unittest.TestCase):
                       "the failed rebuild returns without disarming the spinner")
 
     def test_a_reload_with_no_url_abandons_the_seek(self):
-        src = self._src("player", "engine.rs")
+        src = self._src("player", "route_start.rs")
         i = src.index('"reload_transcode: no url (ignored)"')
         self.assertIn("abandon_seek()", src[max(0, i - 400):i],
                       "the ignored reload returns without disarming the spinner")
@@ -4586,13 +4588,17 @@ class AbrLadderFixtures(unittest.TestCase):
 # silently stops matching does not fail loudly, it reports "no samples" and every derived
 # statistic quietly becomes a statement about the empty set.
 #
-# The test is DIFFERENTIAL, not a golden literal: it reads the format strings out of ff.rs and
-# compares the field names and their ORDER against what the regex captures. A frozen example line
+# The test is DIFFERENTIAL, not a golden literal: it reads the format strings out of the Rust
+# source that writes each line (`adaptive.rs` for `abr: tx`, the feed engine's `ff.rs` for
+# `hls: segment`) and compares the field names and their ORDER against what the regex captures. A frozen example line
 # would keep passing after someone renamed a field in Rust, which is the exact failure this is
 # here to catch.
 # ---------------------------------------------------------------------------------------------
 
-FF_RS = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "ff.rs")
+# The feed engine's `ff.rs` writes `hls: segment=` (it lives in `play-feed`, not `media`);
+# the controller's `abr: tx` / `abr: committed` lines are `media/src/adaptive.rs`'s.
+FF_RS = os.path.join(REPO_ROOT, "rust-modules", "play-feed", "src", "ff.rs")
+ADAPTIVE_RS = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "adaptive.rs")
 WINDOW_RS = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "abr", "window.rs")
 
 # `name=` in a format string or a regex pattern. Deliberately anchored on the `=`, because that is
@@ -4634,6 +4640,8 @@ class LogLineContract(unittest.TestCase):
     def setUp(self):
         with open(FF_RS, encoding="utf-8") as fh:
             self.ff = fh.read()
+        with open(ADAPTIVE_RS, encoding="utf-8") as fh:
+            self.adaptive = fh.read()
 
     def _assert_contract(self, opening, pattern, fields, label, source=None):
         rendered = _rust_format_string(source if source is not None else self.ff, opening)
@@ -4642,7 +4650,7 @@ class LogLineContract(unittest.TestCase):
         self.assertEqual(
             rust_names,
             regex_names,
-            f"{label}: ff.rs emits {rust_names} but run.py's regex reads {regex_names}. "
+            f"{label}: the Rust source emits {rust_names} but run.py's regex reads {regex_names}. "
             "One side was changed without the other; the harness would report 'no samples' "
             "rather than failing, so this is the only place it can be caught.",
         )
@@ -4666,18 +4674,19 @@ class LogLineContract(unittest.TestCase):
         self.assertRegex(
             rendered_line,
             pattern,
-            f"{label}: the regex does not match ff.rs's own format string rendered with "
+            f"{label}: the regex does not match the Rust source's own format string rendered with "
             f"placeholder values -- a separator or a unit suffix differs.\n  {rendered_line}",
         )
 
     def test_abr_tx_regex_matches_the_rust_format_string(self):
-        self._assert_contract('"abr: tx {:?}', run.RE_ABR_TX, run.TX_FIELDS, "abr: tx")
+        self._assert_contract('"abr: tx {:?}', run.RE_ABR_TX, run.TX_FIELDS, "abr: tx",
+                              source=self.adaptive)
 
     def test_abr_window_regex_matches_the_rust_format_string(self):
         """Same contract, but the format string lives beside the arithmetic rather than in ff.rs.
 
         `AdmissionReadout::log_line` formats it in `abr/window.rs` so the wire shape is testable
-        next to the numbers it prints; `ff.rs` only decides when to emit it.
+        next to the numbers it prints; `adaptive.rs` only decides when to emit it.
         """
         with open(WINDOW_RS, encoding="utf-8") as fh:
             source = fh.read()
@@ -5451,7 +5460,7 @@ class ThePlaybackRateIsTheOnlyThingThatSeesASlowFilm(unittest.TestCase):
 
 
 class TheAbrCommitLineMatchesTheHarnessRegex(unittest.TestCase):
-    """**The commit line's format string, read out of `ff.rs` and matched against both regexes.**
+    """**The commit line's format string, read out of `adaptive.rs` and matched against both regexes.**
 
     Same contract as `TheAbrWindowLineMatchesTheHarnessRegex` and the same failure if it lapses:
     the app formats this on a television and the harness parses it on a Mac, and a drift shows up
@@ -5466,10 +5475,10 @@ class TheAbrCommitLineMatchesTheHarnessRegex(unittest.TestCase):
     append silently retired a grader (`RE_ABR_UP` parses this line too).
     """
 
-    FF_RS = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "ff.rs")
+    ADAPTIVE_RS = os.path.join(REPO_ROOT, "rust-modules", "media", "src", "adaptive.rs")
 
     def commit_format(self):
-        with open(self.FF_RS, encoding="utf-8") as fh:
+        with open(self.ADAPTIVE_RS, encoding="utf-8") as fh:
             source = fh.read()
         found = re.findall(r'"(abr: committed [^"\\]*)"', source)
         self.assertEqual(len(found), 1,
