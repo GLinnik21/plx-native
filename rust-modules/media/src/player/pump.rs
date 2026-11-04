@@ -2035,12 +2035,15 @@ mod flight_tests {
         fn recovery_diag(&self) -> String {
             format!(
                 "state={:?} pb={} route={} offer={:?} planned={:?} allowed={} live={} \
-                 active={:?} start_refused={:?} engine_failure={:?} play_refused={} \
+                 active={:?} backend={:?} feed_stage={:?} native_releasing={} \
+                 native_abandoned={} start_refused={:?} engine_failure={:?} play_refused={} \
                  resolution_failed={} load_failed={}",
                 crate::player::state(&self.ps), SHARED.pb_state.load(Relaxed),
                 crate::route::control_phase_label(), self.ps.backend_offer(),
                 self.ps.planned_feed_offer(), self.ps.backend_planned_feed_allowed(),
-                self.pa.is_live(), self.pa.active_feed_attempt(), self.ps.native_start_refused,
+                self.pa.is_live(), self.pa.active_feed_attempt(), self.pa.backend_snapshot(),
+                self.pa.feed_stage().map(|stage| stage as u8), SHARED.native_releasing(),
+                SHARED.native_load_abandoned(), self.ps.native_start_refused,
                 crate::route::engine_failure(&self.ps), crate::route::play_refused(&self.ps),
                 crate::route::play_resolution_failed(&self.ps), SHARED.load_failed.load(Relaxed),
             )
@@ -3431,7 +3434,8 @@ mod flight_tests {
         assert_ne!(
             crate::player::state(&rig.ps),
             crate::player::PlaybackState::Error,
-            "a refused stream must not end on the failure read-out (flight {n})"
+            "a refused stream must not end on the failure read-out (flight {n}): {}",
+            rig.recovery_diag()
         );
         assert!(crate::route::flight_outstanding(), "the conversion's PMS half must be a recovery flight");
         assert_eq!(rig.flight.answered(), answered, "the failure frame waited for a PMS answer: {:?}", rig.flight.requests());
