@@ -2031,6 +2031,20 @@ mod flight_tests {
                 self.frame();
             }
         }
+
+        fn recovery_diag(&self) -> String {
+            format!(
+                "state={:?} pb={} route={} offer={:?} planned={:?} allowed={} live={} \
+                 active={:?} start_refused={:?} engine_failure={:?} play_refused={} \
+                 resolution_failed={} load_failed={}",
+                crate::player::state(&self.ps), SHARED.pb_state.load(Relaxed),
+                crate::route::control_phase_label(), self.ps.backend_offer(),
+                self.ps.planned_feed_offer(), self.ps.backend_planned_feed_allowed(),
+                self.pa.is_live(), self.pa.active_feed_attempt(), self.ps.native_start_refused,
+                crate::route::engine_failure(&self.ps), crate::route::play_refused(&self.ps),
+                crate::route::play_resolution_failed(&self.ps), SHARED.load_failed.load(Relaxed),
+            )
+        }
     }
 
     impl Drop for Rig {
@@ -2781,7 +2795,8 @@ mod flight_tests {
         assert_eq!(rig.flight.decisions(), decisions + 1, "exactly one rebuild /decision for the rollback");
         assert!(!crate::route::original_recovery_pending(), "the way back was taken");
         assert_ne!(engine_epoch(&mut rig), epoch, "the landing reloaded onto the restored HLS");
-        assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
+        assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error,
+            "{}", rig.recovery_diag());
         rig.flight.wait_for("the restored HLS's retirement", |f| f.stopped().iter().any(|s| s == "rig-1"));
     }
 
@@ -2895,7 +2910,8 @@ mod flight_tests {
         assert_eq!(rig.flight.decisions(), decisions + 1, "exactly one rebuild /decision for the rollback");
         assert!(!crate::route::original_recovery_pending(), "the way back was taken");
         assert_ne!(engine_epoch(&mut rig), epoch, "the landing reloaded onto the restored HLS");
-        assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
+        assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error,
+            "{}", rig.recovery_diag());
     }
 
     /// A refused rebase of that rollback ends in the failure read-out, nothing reloaded, the refused replacement stopped and the route's encoder alone.
@@ -3327,7 +3343,8 @@ mod flight_tests {
             "the replacement converts the DTS track the viewer was on: {replacement}"
         );
         assert_ne!(engine_epoch(rig), epoch, "the landing reloaded onto the converted route");
-        assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
+        assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error,
+            "{}", rig.recovery_diag());
         let context = super::super::report::error_context_for_test(&rig.ps);
         assert_eq!(context.attempt_origin, super::super::report::AttemptOrigin::Recovery);
         assert_eq!(context.attempt_ordinal, super::super::report::AttemptOrdinal::FIRST.next(), "counted once");
