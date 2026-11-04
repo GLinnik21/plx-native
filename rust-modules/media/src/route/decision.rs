@@ -9629,16 +9629,17 @@ pub fn retry_uri_source_as_feed(ps: &mut PlaybackSession,
     if !abort_route_start(ticket, RouteStartResult::StartFailed) {
         return false;
     }
-    // The qualified Part URL names the logical Streaming Resource even before a native
-    // Load succeeds. Retire it exactly once on an expired/refused URI start, before Feed may
-    // replace the active route. The existing worker-ticket fence prevents a stale ticket from
-    // clearing a successor's resource.
+    // A qualified Part owns the logical Streaming Resource; a qualified PMS output owns its
+    // encoder. Retire the exact current resource before Feed resolves a replacement. The
+    // worker-ticket fence prevents a stale URI offer from clearing a successor's resource.
     let active = worker_ticket();
-    if ps.sess.is_empty() || active.encoder() != ps.sess.as_str()
+    let owned = if ps.tsession.is_empty() { ps.sess.as_str() } else { ps.tsession.as_str() };
+    if owned.is_empty() || active.encoder() != owned
         || replace_active_encoder_for(&active, "").is_none() { return false; }
-    retire_plan_resources(AbandonedPlanResources {
-        sid: cur_sid(ps), identities: vec![ps.sess.clone()],
-    });
+    let mut identities = vec![owned.to_owned()];
+    if !ps.sess.is_empty() && ps.sess != owned { identities.push(ps.sess.clone()); }
+    retire_plan_resources(AbandonedPlanResources { sid: cur_sid(ps), identities });
+    ps.tsession.clear();
     if !cfg!(feature = "play-feed") { return false; }
     let Some(request) = ps.request.clone() else { return false };
     ps.qualify_backend_offer(plx_playback_contract::BackendKind::Uri,
@@ -9878,6 +9879,10 @@ pub fn pump_play(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata
     #[cfg(feature = "play-uri")]
     let uri_known = plan.uri_original.take();
     #[cfg(feature = "play-uri")]
+    let uri_pms_known = plan.uri_pms.take();
+    #[cfg(feature = "play-uri")]
+    let pms_offer_prepared = uri_pms_known.is_some();
+    #[cfg(feature = "play-uri")]
     let uri_selection = plan.source_selection;
     #[cfg(feature = "play-uri")]
     let uri_duration_ms = plan.playing.as_ref().and_then(|item| item.duration_ms);
@@ -9888,6 +9893,13 @@ pub fn pump_play(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata
     // read-out; `apply_plan` leaves the selection UNKNOWN for it), but it has no Engine and therefore no ACTIVE_ENCODER/scrobble owner. The cold
     // source probe or the decision itself may already have registered the logical resource.
     let refused_resources = (!ok).then(|| abandoned_plan_resources(&plan)).flatten();
+    #[cfg(feature = "play-uri")]
+    if !cfg!(feature = "play-feed") && !ok
+        && matches!(plan.verdict, Some(PlayVerdict::NoQualifiedBackend)) {
+        // The resource identities above have moved to the abandonment worker. A refusing
+        // session must not also install the encoder as an active stop owner.
+        plan.tsession.clear();
+    }
     let resume_ns = {
         let mut resume = PLAY_RESUME.lock().unwrap_or_else(|e| e.into_inner());
         take_resume_for(&mut resume, gen)
@@ -9901,8 +9913,8 @@ pub fn pump_play(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata
     }
     let route_start = apply_plan(ps, meta, plan, &rk, candidate_purpose);
     #[cfg(feature = "play-uri")]
-    let uri_offer = match (uri_known, uri_selection, uri_duration_ms, route_start) {
-        (Some(known), Some(selection), Some(duration_ms), Some(ticket))
+    let uri_offer = match (uri_known, uri_pms_known, uri_selection, uri_duration_ms, route_start) {
+        (Some(known), _, Some(selection), Some(duration_ms), Some(ticket))
             if known.expires_at > std::time::Instant::now() => {
             let position = u64::try_from(resume_ns / 1_000_000).ok()
                 .filter(|ms| *ms > 0).map(plx_playback_contract::ContentTime::from_millis);
@@ -9915,12 +9927,45 @@ pub fn pump_play(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata
                 duration_ms, known.expires_at,
             ).ok()
         }
+        (None, Some(known), Some(selection), Some(duration_ms), Some(ticket))
+            if known.expires_at > std::time::Instant::now()
+                && known.selection == selection
+                && known.resource_session == ps.tsession => {
+            let position = u64::try_from(resume_ns / 1_000_000).ok()
+                .filter(|ms| *ms > 0).map(plx_playback_contract::ContentTime::from_millis);
+            let recipe = match known.recipe {
+                super::uri_preflight::PmsRecipe::Remux =>
+                    crate::player::adapter::UriSourceRecipe::PmsRemux {
+                        applied_audio: known.applied_audio },
+                super::uri_preflight::PmsRecipe::Encode =>
+                    crate::player::adapter::UriSourceRecipe::PmsEncode {
+                        applied_audio: known.applied_audio },
+                super::uri_preflight::PmsRecipe::Hls =>
+                    crate::player::adapter::UriSourceRecipe::PmsHls {
+                        applied_audio: known.applied_audio },
+            };
+            let id = match known.recipe {
+                super::uri_preflight::PmsRecipe::Remux => super::backend_policy::OfferId::URI_PMS_REMUX,
+                super::uri_preflight::PmsRecipe::Encode => super::backend_policy::OfferId::URI_PMS_ENCODE,
+                super::uri_preflight::PmsRecipe::Hls => super::backend_policy::OfferId::URI_PMS_HLS,
+            };
+            crate::player::adapter::QualifiedUriOffer::new(
+                id, recipe, ticket, selection, known.source, known.requirements,
+                plx_playback_contract::InitialPlayback {
+                    position, paused: ps.reconfigure_pause_goal().unwrap_or(false) },
+                duration_ms, known.expires_at,
+            ).ok()
+        }
         _ => None,
     };
     #[cfg(feature = "play-uri")]
-    if uri_source_ready && uri_offer.is_none() {
+    if (uri_source_ready || (pms_offer_prepared && !cfg!(feature = "play-feed")))
+        && uri_offer.is_none() {
         if let Some(ticket) = route_start {
             let _ = retry_uri_source_as_feed(ps, meta, ticket);
+        }
+        if !cfg!(feature = "play-feed") {
+            ps.play_verdict = Some(PlayVerdict::NoQualifiedBackend);
         }
         return None;
     }

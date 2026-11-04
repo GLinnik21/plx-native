@@ -1488,6 +1488,10 @@ pub struct Plan {
     /// Owned URI authorization. The URL remains in IO escrow and never becomes `url`.
     #[cfg(feature = "play-uri")]
     pub uri_original: Option<super::uri_preflight::KnownSource>,
+    /// A separately certified URI locator for the actual accepted PMS output. Its resource
+    /// remains owned by this Plan until the main-thread landing installs it or retires it.
+    #[cfg(feature = "play-uri")]
+    pub uri_pms: Option<super::uri_preflight::KnownPmsSource>,
     /// A source was qualified without constructing a Feed URL or PMS encoder.
     pub uri_source_ready: bool,
     pub tsession: String,
@@ -1955,7 +1959,12 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     return plan;
                 }
             }
-            if !cfg!(feature = "play-feed") {
+            #[cfg(feature = "play-uri")]
+            let pms_uri_possible = !forced && !env.preview
+                && env.uri_preflight_port.as_ref().is_some_and(|port| port.could_qualify_pms());
+            #[cfg(not(feature = "play-uri"))]
+            let pms_uri_possible = false;
+            if !cfg!(feature = "play-feed") && !pms_uri_possible {
                 // No PMS encoder was acquired. The fresh session id was used only to ask for
                 // the PlayQueue; leave no fictional Streaming Resource for refusal cleanup.
                 plan.sess.clear();
@@ -2873,6 +2882,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     audio,
                 );
             }
+            let mut accepted_output_codecs = false;
             if let Some(mc) = &decision {
                 // The server has already answered, and it is allowed to answer NO. Stop here rather than
                 // stream a `start.mkv` it has just said it cannot produce: the plan leaves with no URL —
@@ -2890,6 +2900,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 if let Some((v, a)) = decision_codecs(&mc) {
                     plan.vcodec = v;
                     plan.acodec = a;
+                    accepted_output_codecs = true;
                 }
             }
             // A video copy is still the file's elementary stream, DOVI record included, so the
@@ -2897,6 +2908,46 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             (plan.dovi, plan.dv_decision) = copied_video_dv(decision.as_ref(), &plan.contract, dovi, dv_decision);
             plan.url = client.transcode_start_url(&sp).to_url();
             plan.tsession = session;
+            #[cfg(feature = "play-uri")]
+            if !forced && !env.preview && accepted_output_codecs {
+                if let (Some(port), Some(selection)) = (env.uri_preflight_port.as_ref(), plan.source_selection) {
+                    let recipe = if matches!(plan.contract.delivery,
+                        plx_plex::plex::TranscodeDelivery::FixedHls { .. }) {
+                        super::uri_preflight::PmsRecipe::Hls
+                    } else if plan.contract.remux {
+                        super::uri_preflight::PmsRecipe::Remux
+                    } else {
+                        super::uri_preflight::PmsRecipe::Encode
+                    };
+                    plan.uri_pms = port.qualify_pms(off, super::uri_preflight::PmsRequest {
+                        selection,
+                        source_url: plan.url.clone(),
+                        resource_session: plan.tsession.clone(),
+                        duration_ms: plan.playing.as_ref().and_then(|item| item.duration_ms),
+                        resume_ns: env.resume_ns,
+                        recipe,
+                        adaptive,
+                        video_codec: plan.vcodec.clone(),
+                        audio_codec: plan.acodec.clone(),
+                        applied_audio: plan.contract.audio,
+                        subtitle_choice,
+                        requires_client_subtitle: requires_client_subtitle || client_draws,
+                        burned_subtitle: burn_rides_wire,
+                        requested_rate_permille: env.requested_rate_permille,
+                        preview: env.preview,
+                    });
+                }
+            }
+            #[cfg(not(feature = "play-uri"))]
+            let _ = accepted_output_codecs;
+            #[cfg(feature = "play-uri")]
+            if !cfg!(feature = "play-feed") && plan.uri_pms.is_none() {
+                // The accepted PMS decision may already have registered both a logical
+                // Streaming Resource and an encoder. Keep their identities on the refused
+                // Plan for the existing abandoned-plan cleanup at the main-thread landing.
+                plan.url.clear();
+                plan.verdict = Some(PlayVerdict::NoQualifiedBackend);
+            }
             plan
         })();
         if let Some(queue) = queue {
