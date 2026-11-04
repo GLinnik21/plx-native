@@ -908,6 +908,24 @@ fn blocked_body_read(
     // Runs on the publisher after the hold; receives the server's release switch.
     after_hold: impl FnOnce(&std::sync::Arc<AtomicBool>) + Send + 'static,
 ) -> BlockedRead {
+    blocked_body_read_stalled(
+        reply,
+        acquisition,
+        watchdog,
+        std::time::Duration::ZERO,
+        after_hold,
+    )
+}
+
+fn blocked_body_read_stalled(
+    reply: Reply,
+    acquisition: SegmentAcquisition,
+    watchdog: Option<std::time::Duration>,
+    // How long the publisher thread is descheduled after it sees the runtime's second answer.
+    publisher_stall: std::time::Duration,
+    // Runs on the publisher after the hold; receives the server's release switch.
+    after_hold: impl FnOnce(&std::sync::Arc<AtomicBool>) + Send + 'static,
+) -> BlockedRead {
     static REPLY: std::sync::Mutex<Option<Reply>> = std::sync::Mutex::new(None);
     *REPLY.lock().unwrap() = Some(reply);
     let pms = ScriptedPms::start(|_| REPLY.lock().unwrap().expect("scripted reply"));
@@ -948,12 +966,19 @@ fn blocked_body_read(
 
     let (answers_tx, answers) = std::sync::mpsc::sync_channel(256);
     acquisition::observe::watch_this_thread(answers_tx);
+    // The hold is accepted by the READING thread, the instant the runtime has answered its second
+    // body `Continue` (the transport's first ask before it blocks) and before that thread can ask
+    // again, so every answer the publisher collects afterwards is strictly after the hold. A
+    // publisher thread that took the answer off the channel and then published raced the read's
+    // own next recheck: stalled past one `CHECK_SLICE` (or past a short deadline), it published
+    // after a recheck that had still answered `Continue`.
+    acquisition::observe::on_nth_continue(Phase::Body, 2, publish_accepted_hold);
     let released = pms.released.clone();
     let (done_tx, done_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let publisher = std::thread::spawn(move || {
         let continued = await_continue(&answers, Phase::Body, 2);
         if continued {
-            publish_accepted_hold();
+            std::thread::sleep(publisher_stall);
             after_hold(&released);
         }
         let torn_down = done_rx.recv_timeout(TEARDOWN_AFTER).is_err();
@@ -1012,6 +1037,29 @@ fn a_hold_accepted_during_a_blocked_body_read_ends_that_read() {
         run.latched,
         "the abort must be latched for the enclosing FFmpeg operation"
     );
+    assert_eq!(
+        run.after_hold.first(),
+        Some(&(Phase::Body, plx_base::checkpoint::Flow::Stop)),
+        "a check after the published hold is what stopped it"
+    );
+}
+
+/// (d) again, with the observing thread descheduled for several slices after it sees the
+/// runtime's second answer: the runtime's own rechecks must not slip in ahead of the hold.
+#[test]
+fn a_stalled_observer_cannot_reorder_the_hold_against_the_runtimes_rechecks() {
+    let _serial = plx_base::testlock::serial();
+    let _reset = SharedHoldReset::at(PLAYHEAD_NS);
+    let run = blocked_body_read_stalled(
+        Reply::SendThenWithhold(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCD"),
+        SegmentAcquisition::for_test(Some(6_000), false, false),
+        None,
+        acquisition::CHECK_SLICE * 3,
+        |_| {},
+    );
+    assert!(!run.torn_down);
+    assert_eq!(run.second, AVERROR_EOF);
+    assert!(run.latched);
     assert_eq!(
         run.after_hold.first(),
         Some(&(Phase::Body, plx_base::checkpoint::Flow::Stop)),
