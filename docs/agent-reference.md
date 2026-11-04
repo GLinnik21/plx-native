@@ -897,9 +897,10 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   Each feature set also gets its own `--target-dir`, because cargo does not hash its output and
   would otherwise report the dev build fresh while the release `.a` sat at that path.
   **`make check` cannot see a break in this configuration** — it builds the default feature set —
-  **but the PR gate now can**: `.github/workflows/ci.yml` type-checks `--no-default-features` and
-  both `hostsim` configurations on every push. Until that landed, `--no-default-features` was first
-  compiled during a release cut, i.e. after the change had merged. The
+  **but the PR gate now can**: `.github/workflows/ci.yml` runs `make check-nodef` (the shipping set:
+  `--no-default-features` plus the playback backends) and type-checks both `hostsim` configurations
+  on every push. Until that landed, the shipping set was first compiled during a release cut, i.e.
+  after the change had merged. The
   **`PostToolUse` hook** (`.claude/hooks/release-config-check.py`) stays and is now the fast path
   rather than the only one — it catches the break before the push, and CI does not run in somebody
   else's checkout. It type-checks after

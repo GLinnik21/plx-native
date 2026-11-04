@@ -3,7 +3,7 @@
   "how_to_raise": "Edit this file in the SAME pull request that grows the number, set limit to the new ceiling, update measured and measured_on, and justify the growth in the PR body (what was added, why it cannot be smaller, what it cost). A budget is raised by a reviewed decision, never to make a red run green.",
   "budgets": {
     "binary_bytes": {
-      "what": "Size in bytes of the STRIPPED ARM plxnative binary that `make ipk FLAVOR=debug` stages into the package (ipkroot/data/usr/palm/applications/<appid>/plxnative), as the CI cross-build job builds it (default features, dev flavour). The shipped release binary is built with --no-default-features and is smaller; this is the number CI can measure on every PR.",
+      "what": "Size in bytes of the STRIPPED ARM plxnative binary that `make ipk FLAVOR=debug` stages into the package (ipkroot/data/usr/palm/applications/<appid>/plxnative), as the CI cross-build job builds it: `make ipk FLAVOR=debug` with RELEASE unset, so the Makefile's dev feature set (both playback backends plus devtools, devtriggers and threadcheck), the fat-LTO `release` cargo profile (CI selects it by itself) and a stripped binary. The shipped RELEASE=1 binary is built with the shipping feature set (no devtools, devtriggers or threadcheck) and is smaller; this is the number CI can measure on every PR.",
       "unit": "bytes",
       "mode": "fail",
       "limit": 20000000,

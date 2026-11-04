@@ -210,9 +210,10 @@ jobs:
 
       - name: Type-check the RELEASE feature set
         # **`make check` cannot see a break in this configuration, and neither could this gate
-        # until now.** Both build the DEFAULT feature set, and `--no-default-features` — what every
-        # shipped binary is — was first compiled during a release cut, i.e. after the change had
-        # been merged. The hazard is specific: hand-written `#[cfg(feature = "devtriggers")]` PAIRS,
+        # until now.** Both build the DEFAULT feature set, and the shipping one (`RELEASE=1`:
+        # `--no-default-features` plus the playback backends) was first compiled during a release
+        # cut, i.e. after the change had been merged. The hazard is specific: hand-written
+        # `#[cfg(feature = "devtriggers")]` PAIRS,
         # where a spliced-in function swallows its neighbour's attribute and takes a call site out
         # of the release build with it.
         #
@@ -221,7 +222,13 @@ jobs:
         # pull request. Cheap here for the same reason it is cheap there — cargo keys fingerprints
         # by feature set, so the two configurations coexist in one `target/` and this is a warm
         # incremental check rather than a second build.
-        run: cd rust-modules && cargo "+$RUST_TOOLCHAIN" check --lib --no-default-features
+        #
+        # `make check-nodef`, never the bare cargo line: `--no-default-features` ALSO drops `play-uri`
+        # and `play-feed` (both are in the application crate's `default`), so a bare flag type-checks
+        # a build with no playback backend at all, which is not what any package ships. The Makefile
+        # is the one source of the shipping set (`RUST_BACKEND_FEATURES`, which `RELEASE=1` passes
+        # explicitly) and the target checks exactly that.
+        run: make check-nodef
 
       - name: Soft-float guard (our Rust code must compile to VFP)
         # `-C target-feature=-soft-float` is an UNSTABLE target feature on stable rustc ("its behavior
