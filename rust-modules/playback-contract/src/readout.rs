@@ -111,6 +111,9 @@ pub struct AttemptFacts {
     pub status: Option<PlaybackState>,
     /// The exact physical transport start flag, independent of a route or busy status.
     pub started: Option<bool>,
+    /// A backend reported Playing at least once for this attempt. This is service playback
+    /// evidence, not a frame callback or independent panel presentation proof.
+    pub playing_observed: Option<bool>,
     /// True only after the physical pipeline drained to end of stream.
     pub ended: Option<bool>,
     /// An in-flight physical seek target. Absence replaces the feed's private -1 sentinel.
@@ -149,7 +152,7 @@ pub struct AttemptFacts {
 impl AttemptFacts {
     pub const EMPTY: Self = Self {
         status: None, runtime_failure: None, no_video: None, requested_kbps: None, refusal_path: None,
-        started: None, ended: None, seek_pending_ns: None, rebuffering: None,
+        started: None, playing_observed: None, ended: None, seek_pending_ns: None, rebuffering: None,
         seek_display_ns: None, display_aspect: None, seen_frame: None,
         position_ns: None, duration_ns: None, playable_buffer_ms: None,
         reported_frame: None, frames: None, raster: None, pipeline_stage: None,

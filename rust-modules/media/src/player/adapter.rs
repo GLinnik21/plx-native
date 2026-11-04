@@ -518,8 +518,6 @@ pub struct PlayerAdapter {
     #[cfg(feature = "play-uri")]
     uri_route_settled: bool,
     #[cfg(feature = "play-uri")]
-    uri_played_once: bool,
-    #[cfg(feature = "play-uri")]
     uri_stop_requested: bool,
     #[cfg(feature = "play-uri")]
     uri_finalized: bool,
@@ -609,8 +607,6 @@ impl PlayerAdapter {
             uri_recovery: None,
             #[cfg(feature = "play-uri")]
             uri_route_settled: false,
-            #[cfg(feature = "play-uri")]
-            uri_played_once: false,
             #[cfg(feature = "play-uri")]
             uri_stop_requested: false,
             #[cfg(feature = "play-uri")]
@@ -1311,7 +1307,6 @@ impl PlayerAdapter {
         self.uri_offer_id = Some(offer_id);
         self.uri_recovery = None;
         self.uri_route_settled = false;
-        self.uri_played_once = false;
         self.uri_stop_requested = false;
         self.uri_finalized = false;
         self.pending_uri_audio = None;
@@ -1340,13 +1335,14 @@ impl PlayerAdapter {
         if self.uri_recovery.as_ref().is_some_and(|pending|
             pending.notice.attempt == route_attempt) { return; }
         let Some(offer_id) = self.uri_offer_id else { return; };
-        let phase = if self.uri_played_once { crate::route::UriFailurePhase::Runtime }
+        let played_once = ps.attempt_view().facts().playing_observed == Some(true);
+        let phase = if played_once { crate::route::UriFailurePhase::Runtime }
             else { crate::route::UriFailurePhase::Startup };
         // A URI service clock is content-time evidence even though it cannot prove panel
         // presentation. Once Playing was observed, the unpresented startup resume slot may be
         // older than this clock; an absent runtime clock must stay unknown, not become that old
         // resume point or an invented zero. A pending viewer seek is the intended target.
-        let known_position_ns = if self.uri_played_once {
+        let known_position_ns = if played_once {
             let facts = ps.attempt_view().facts();
             facts.seek_display_ns.or(facts.position_ns)
         } else {
@@ -1407,11 +1403,6 @@ impl PlayerAdapter {
             if let plx_playback_contract::Fx::AcceptedObservation {
                 backend: BackendKind::Uri, attempt, observation,
             } = *notice {
-                if matches!(observation, plx_playback_contract::Observation::Playback(observed)
-                    if observed.value == Playback::Playing)
-                    && self.uri_route_attempt.is_some_and(|route| route.contract_id() == attempt) {
-                    self.uri_played_once = true;
-                }
                 if matches!(observation, plx_playback_contract::Observation::Failed(_)) {
                     self.note_uri_failure(ps, attempt, uri_viewer_goal);
                 }
@@ -1636,8 +1627,10 @@ impl PlayerAdapter {
                 facts.status = Some(match observed.value {
                     plx_playback_contract::Playback::ReadyAwaitPlay =>
                         plx_playback_contract::readout::PlaybackState::Buffering,
-                    plx_playback_contract::Playback::Playing =>
-                        plx_playback_contract::readout::PlaybackState::Playing,
+                    plx_playback_contract::Playback::Playing => {
+                        facts.playing_observed = Some(true);
+                        plx_playback_contract::readout::PlaybackState::Playing
+                    },
                     plx_playback_contract::Playback::Paused =>
                         plx_playback_contract::readout::PlaybackState::Paused,
                     plx_playback_contract::Playback::Ended => {

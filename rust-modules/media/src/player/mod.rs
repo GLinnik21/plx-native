@@ -1954,6 +1954,21 @@ pub fn intended_pos_ns(ps: &crate::route::PlaybackSession) -> i64 {
 /// backend has not yet reported a position. UI widgets may use their existing zero placeholder;
 /// a viewer reconfiguration requires this proof before replacing the current executor.
 pub fn intended_pos_known_ns(ps: &crate::route::PlaybackSession) -> Option<i64> {
+    #[cfg(feature = "play-uri")]
+    if ps.attempt_view().backend() == Some(attempt_view::Backend::Uri) {
+        let facts = ps.attempt_view().facts();
+        if facts.seek_pending_ns.is_some() {
+            return facts.seek_display_ns.or(facts.seek_pending_ns);
+        }
+        // URI has no panel-presentation proof to clear the old unpresented resume slot.
+        // A service Playing report followed by an addressed clock still establishes where
+        // playback has reached, including after the viewer paused it. Neither fact is a
+        // Presented observation. Before that report, retain the initial resume target.
+        if facts.playing_observed == Some(true)
+            || facts.status == Some(PlaybackState::Playing) {
+            if let Some(position) = facts.position_ns { return Some(position); }
+        }
+    }
     let t = seek_display_ns(ps);
     if loading(ps) && t.is_some() {
         t
@@ -3226,7 +3241,15 @@ mod tests {
             "a confirmed service clock outranks the old unpresented resume target");
         assert!(ps.ingest_attempt_facts(attempt, attempt_view::Backend::Uri,
             attempt_view::AttemptFacts {
+                status: Some(PlaybackState::Paused), position_ns: Some(31_000_000_000),
+                playing_observed: Some(true), ..Default::default()
+            }));
+        assert_eq!(intended_pos_known_ns(&ps), Some(31_000_000_000),
+            "pausing does not resurrect the stale startup resume position");
+        assert!(ps.ingest_attempt_facts(attempt, attempt_view::Backend::Uri,
+            attempt_view::AttemptFacts {
                 status: Some(PlaybackState::Seeking), position_ns: Some(30_000_000_000),
+                playing_observed: Some(true),
                 seek_pending_ns: Some(45_000_000_000),
                 seek_display_ns: Some(45_000_000_000), ..Default::default()
             }));

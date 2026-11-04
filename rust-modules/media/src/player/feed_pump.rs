@@ -1047,6 +1047,7 @@ pub(super) fn native_attempt_facts() -> plx_playback_contract::readout::AttemptF
     let seek_display_ns = SHARED.seek_display_ns.load(Relaxed);
     let facts = AttemptFacts {
         started: Some(TX.started.load(Relaxed)),
+        playing_observed: None,
         ended: Some(SHARED.ended.load(Relaxed)),
         seek_pending_ns: (seek_pending_ns >= 0).then_some(seek_pending_ns),
         rebuffering: Some(SHARED.hls_rebuffering.load(Relaxed)),
