@@ -535,7 +535,8 @@ fn hud_preview_world(name: &str) -> World {
     world.press(Key::Ok);
     assert_eq!(world.bridge.huds_pages.len(), 2);
     for (page, _) in &world.bridge.huds_pages { page.send(list.clone()).unwrap(); }
-    world.frames(2);
+    // Let the shared route spring settle: during a push both pages register drawn stops.
+    world.settle(60);
     assert_eq!(overlay_word(&world.d), Some("hud-preview"));
     world
 }
@@ -590,8 +591,12 @@ fn hud_preview_pointer_release_commits_scenes_and_the_back_control() {
     for (elem, scene) in [(2, 1), (3, 2), (0, 2)] {
         let stops = hud_preview_stops(&mut world);
         let owner = world.d.nav.modals.top().unwrap().entry.id;
-        let rect = stops.iter().find(|stop| stop.key.entry == owner && stop.key.elem == elem)
-            .map(|stop| stop.rect).expect("the preview drew the control");
+        let matching = stops.iter().filter(|stop| stop.key.entry == owner && stop.key.elem == elem)
+            .collect::<Vec<_>>();
+        assert_eq!(matching.len(), 1, "only the settled preview contributes this control");
+        assert_eq!(matching[0].activate, plx_ui::screen::Activate::Press,
+            "the click targets the preview control, not its opening table row");
+        let rect = matching[0].rect;
         world.d.input.hit.fill(stops);
         world.d.input.hit.swap();
         let before = hud_preview_scene(&world);
