@@ -3577,7 +3577,7 @@ pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
                 super::words::section_suffix(&app.pages)
             );
             // `pos=<s>` rides the heartbeat while frames are actually being presented: the
-            // same SHARED.playpos_ns the /:/timeline reporter posts, but at 1 Hz instead of
+            // same FEED_SHARED.playpos_ns the /:/timeline reporter posts, but at 1 Hz instead of
             // that reporter's 10s cadence. tests/run.py grades playback progress from this.
             // The cadence is the point: to OBSERVE a 15s climb through 10s samples you must
             // play ~30s, so the sparse signal was charging every case double its real floor.
@@ -3883,9 +3883,9 @@ mod lifecycle_regression_tests {
         panic!("{reason}");
     }
 
-    /// `TX.paused` is a process-global and these lifecycle tests are serialized, so restore the
+    /// `FEED_TX.paused` is a process-global and these lifecycle tests are serialized, so restore the
     /// previous value even when an assertion panics. The decoder-release park reads the clock
-    /// through `viewer_paused()`, which is `TX.paused` minus a claim hold's loan.
+    /// through `viewer_paused()`, which is `FEED_TX.paused` minus a claim hold's loan.
     struct TransportPaused(bool);
     impl TransportPaused {
         /// Capture the current value without changing it: declare it BEFORE the rig, so it drops
@@ -5019,7 +5019,7 @@ mod lifecycle_regression_tests {
             Self { saved }
         }
         fn seek_to(&self) -> i64 {
-            plx_media::player::TX.seek_to_ns.load(std::sync::atomic::Ordering::Relaxed)
+            plx_media::player::FEED_TX.seek_to_ns.load(std::sync::atomic::Ordering::Relaxed)
         }
     }
     impl Drop for SeekGlobals {
@@ -6523,7 +6523,7 @@ mod lifecycle_regression_tests {
     /// woken by `press`. Returns the rig with the foreground Load the press claimed still pending,
     /// or `None` when the fixture worker could not be spawned. The guard is the FIRST field and the
     /// caller binds the tuple, so the rig drops first (its stop resets the transport), then the
-    /// guard puts the previous `TX.paused` back.
+    /// guard puts the previous `FEED_TX.paused` back.
     fn wake_a_decoder_park(paused: bool, press: WakeWith) -> Option<(TransportPaused, Rig, Frame)> {
         let guard = TransportPaused::keep();
         let mut rig = Rig::new()?;
@@ -6597,7 +6597,7 @@ mod lifecycle_regression_tests {
     /// (`PlayerScreen`'s click on no control), which on a paused picture means play. Each claims
     /// the restore with `ForegroundInput::PlayKey`: the exact saved offset, the clock Playing.
     ///
-    /// The Load must also START unpaused. The park keeps `TX.paused` (a reload reset), and the
+    /// The Load must also START unpaused. The park keeps `FEED_TX.paused` (a reload reset), and the
     /// Load arms its initial clock hold from it: under the stale pause the hold was the
     /// viewer's, which fenced the Load's first Play behind a prime and left the actual Play to a
     /// later `PlayClock`. `clock_user_held_for_test` is that fence.
@@ -6793,7 +6793,7 @@ mod lifecycle_regression_tests {
     /// commits the resume so a Load that BUILDS the Engine does not arm its clock hold under the
     /// stale pause. `start_load` over an Engine the pump already launched (a replacement after a
     /// refused restore) builds nothing: the Engine keeps the viewer's pause and `PlayClock` has to
-    /// resume it for real, which it only does while `TX.paused` still reads Paused.
+    /// resume it for real, which it only does while `FEED_TX.paused` still reads Paused.
     #[test]
     fn a_playing_load_over_a_live_engine_does_not_publish_the_viewers_resume() {
         let _serial = plx_base::testlock::serial();
@@ -6854,7 +6854,7 @@ mod lifecycle_regression_tests {
         );
     }
 
-    /// **The transport guard restores AFTER the rig stops.** The rig's stop resets `TX.paused`,
+    /// **The transport guard restores AFTER the rig stops.** The rig's stop resets `FEED_TX.paused`,
     /// so a guard that drops first has its restore overwritten.
     #[test]
     fn the_transport_guard_restores_after_the_rig_stops() {
@@ -7081,7 +7081,7 @@ mod lifecycle_regression_tests {
     /// **Resume-Load ownership, case 1 of 2 (main 0c9eec250, the S1 lane's step 0): an ASYNCHRONOUS
     /// pre-picture refusal of a foreground-resume Load is the PUMP's.** The Load call returned
     /// `Started` (the foreground machine read that through `route_start_status` and let go: `Idle`),
-    /// and `type=18` arrived afterwards. `SHARED.load_failed` does not say whose Load it was, so the
+    /// and `type=18` arrived afterwards. `FEED_SHARED.load_failed` does not say whose Load it was, so the
     /// pump reads it on the live Engine and runs the failed-open ladder. This is the split
     /// `OpenRecovery` keeps: it owns a refusal the pump observes after a Load call returned.
     ///
@@ -7107,7 +7107,7 @@ mod lifecycle_regression_tests {
             plx_media::route::RouteStartResult::Started,
         ));
         // `type=18` after the Load call returned, before any picture.
-        plx_media::player::SHARED.load_failed.store(true, std::sync::atomic::Ordering::Release);
+        plx_media::player::FEED_SHARED.load_failed.store(true, std::sync::atomic::Ordering::Release);
 
         let (state_after_pump, life_after_pump) = pump_then_poll(&mut rig, 48);
         assert_eq!(
@@ -7177,7 +7177,7 @@ mod lifecycle_regression_tests {
             attempt,
             plx_media::route::RouteStartResult::StartFailed,
         ));
-        plx_media::player::SHARED.load_failed.store(true, std::sync::atomic::Ordering::Release);
+        plx_media::player::FEED_SHARED.load_failed.store(true, std::sync::atomic::Ordering::Release);
 
         let (state_after_pump, life_after_pump) = pump_then_poll(&mut rig, 48);
         assert_ne!(
@@ -7424,7 +7424,7 @@ mod lifecycle_regression_tests {
     /// Deliver the end of the stream to a rig's session, once its engine has stopped changing under
     /// the test. The rig's media URL answers with JSON, so every rig engine's source open fails and
     /// the pump flies a recovery (`land_recovery_flight`: a worker round trip to the fixture, then
-    /// `reload_transcode`, which resets the session and with it `SHARED.ended`) before the engine
+    /// `reload_transcode`, which resets the session and with it `FEED_SHARED.ended`) before the engine
     /// settles on `Error`. That landing is a worker's, so the frame it lands in is timing: an end
     /// stored while the flight is still out is cleared by the reload in the very frame that would
     /// have acted on it, and the page never leaves the player. Wait for the flight to land and the
@@ -7435,7 +7435,7 @@ mod lifecycle_regression_tests {
             !plx_media::route::recovery_flight_outstanding()
                 && plx_media::player::state(&app.player.session) == plx_media::player::PlaybackState::Error
         });
-        plx_media::player::SHARED.ended.store(true, std::sync::atomic::Ordering::Relaxed);
+        plx_media::player::FEED_SHARED.ended.store(true, std::sync::atomic::Ordering::Relaxed);
         publish_feed_fixture_facts(&mut app.player.session, |facts| {
             facts.ended = Some(true);
         });
@@ -9215,7 +9215,7 @@ mod lifecycle_regression_tests {
         assert_eq!(plx_media::route::up_next(&rig.app.player.session).unwrap().rk, "2");
 
         // No engine in this rig (the state is forced), so nothing recovers under the end.
-        plx_media::player::SHARED.ended.store(true, std::sync::atomic::Ordering::Relaxed);
+        plx_media::player::FEED_SHARED.ended.store(true, std::sync::atomic::Ordering::Relaxed);
         publish_feed_fixture_facts(&mut rig.app.player.session, |facts| {
             facts.ended = Some(true);
         });
@@ -9293,8 +9293,8 @@ mod lifecycle_regression_tests {
     fn playing_live_at(rig: &mut Rig, pos_ms: i64) {
         start_film(rig);
         assert!(rig.app.adapters.player.is_live(), "fixture must create the actual Engine");
-        plx_media::player::SHARED.duration_ns.store(60_000_000_000, Ordering::Relaxed);
-        plx_media::player::SHARED.playpos_ns.store(pos_ms * 1_000_000, Ordering::Relaxed);
+        plx_media::player::FEED_SHARED.duration_ns.store(60_000_000_000, Ordering::Relaxed);
+        plx_media::player::FEED_SHARED.playpos_ns.store(pos_ms * 1_000_000, Ordering::Relaxed);
         publish_feed_fixture_facts(&mut rig.app.player.session, |facts| {
             facts.duration_ns = Some(60_000_000_000);
             facts.position_ns = Some(pos_ms * 1_000_000);

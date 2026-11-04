@@ -38,12 +38,12 @@ pub(crate) use plx_screens::registry::RepeatGate;
 #[inline]
 #[cfg(feature = "play-feed")]
 pub(crate) fn resume_pend() -> bool {
-    plx_media::player::TX.resume_pend.load(Relaxed)
+    plx_media::player::FEED_TX.resume_pend.load(Relaxed)
 }
 #[inline]
 #[cfg(feature = "play-feed")]
 pub(crate) fn set_resume_pend(v: bool) {
-    plx_media::player::TX.resume_pend.store(v, Relaxed)
+    plx_media::player::FEED_TX.resume_pend.store(v, Relaxed)
 }
 #[inline]
 pub(crate) fn dur(ps: &plx_media::route::PlaybackSession) -> Option<i64> {
@@ -1630,17 +1630,17 @@ mod paused_seek_tests {
     #[test]
     fn a_scrub_commit_is_a_bare_seek_whether_or_not_the_film_is_paused() {
         let _g = plx_base::testlock::serial();
-        let was_paused = plx_media::player::TX.paused.load(Relaxed);
-        let (was_seek, was_resume, was_seeking) = (plx_media::player::TX.seek_to_ns.load(Relaxed), resume_pend(), plx_media::player::SHARED.seeking.load(Relaxed));
+        let was_paused = plx_media::player::FEED_TX.paused.load(Relaxed);
+        let (was_seek, was_resume, was_seeking) = (plx_media::player::FEED_TX.seek_to_ns.load(Relaxed), resume_pend(), plx_media::player::FEED_SHARED.seeking.load(Relaxed));
         set_resume_pend(false);
         for paused in [true, false] {
-            plx_media::player::TX.paused.store(paused, Relaxed);
+            plx_media::player::FEED_TX.paused.store(paused, Relaxed);
             let mut ps = plx_media::route::PlaybackSession::IDLE;
             let mut pa = plx_media::player::adapter::PlayerAdapter::new(unsafe {
                 plx_base::task::MainThread::assume()
             });
             commit_seek(&mut ps, &mut pa, 42_000_000_000);
-            assert_eq!(plx_media::player::TX.seek_to_ns.load(Relaxed), 42_000_000_000,
+            assert_eq!(plx_media::player::FEED_TX.seek_to_ns.load(Relaxed), 42_000_000_000,
                 "the command itself must carry the target");
             assert!(!resume_pend());
             assert!(
@@ -1648,11 +1648,11 @@ mod paused_seek_tests {
                 "the pump opens the preroll when it arms the seek; the commit does not",
             );
         }
-        plx_media::player::TX.paused.store(was_paused, Relaxed);
+        plx_media::player::FEED_TX.paused.store(was_paused, Relaxed);
         // Restore what the commit wrote: a seek left in flight reads as `Seeking` to every
         // later test of this binary.
-        plx_media::player::TX.seek_to_ns.store(was_seek, Relaxed);
-        plx_media::player::SHARED.seeking.store(was_seeking, Relaxed);
+        plx_media::player::FEED_TX.seek_to_ns.store(was_seek, Relaxed);
+        plx_media::player::FEED_SHARED.seeking.store(was_seeking, Relaxed);
         set_resume_pend(was_resume);
     }
 }

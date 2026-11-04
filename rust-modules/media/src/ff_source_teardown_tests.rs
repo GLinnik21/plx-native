@@ -1,6 +1,7 @@
 //! HTTP and libcurl source teardown/abort behavior: seek-after-teardown, aborted
 //! read/seek races, and stalled or IO-failed transports across both transports.
 
+use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
 use super::*;
 use crate::player::SHARED;
 #[allow(unused_imports)]
@@ -228,8 +229,8 @@ fn a_stalled_candidate_body_ends_at_transport_liveness_not_recursive_reserve_ret
         0,
     );
     let start_ns = 80_000_000_000;
-    let old_playpos = SHARED.playpos_ns.swap(start_ns, Ordering::AcqRel);
-    let old_paused = crate::player::TX.paused.swap(false, Ordering::AcqRel);
+    let old_playpos = FEED_SHARED.playpos_ns.swap(start_ns, Ordering::AcqRel);
+    let old_paused = FEED_TX.paused.swap(false, Ordering::AcqRel);
     let mut aq = crate::aq::aq_new(1 << 20);
     let mut state = AvioState {
         observer: super::test_support::demux_observer(),
@@ -282,8 +283,8 @@ fn a_stalled_candidate_body_ends_at_transport_liveness_not_recursive_reserve_ret
         "one no-progress epoch should bound every stale reserve wake: {elapsed:?}",
     );
 
-    SHARED.playpos_ns.store(old_playpos, Ordering::Release);
-    crate::player::TX
+    FEED_SHARED.playpos_ns.store(old_playpos, Ordering::Release);
+    FEED_TX
         .paused
         .store(old_paused, Ordering::Release);
     plx_net::stream::http_close(&mut *hs);
@@ -363,10 +364,10 @@ fn abort_while_a_playlist_body_is_blocked_wins_over_the_transport_result() {
 
 #[test]
 fn a_prefetched_segment_does_not_move_the_published_buffer() {
-    let prev_video = SHARED.hls_video_tail_ns.swap(-1, Ordering::AcqRel);
-    let prev_audio = SHARED.hls_audio_tail_ns.swap(-1, Ordering::AcqRel);
-    let prev_pos = SHARED.playpos_ns.swap(0, Ordering::AcqRel);
-    let prev_base = SHARED.disp_base.swap(0, Ordering::AcqRel);
+    let prev_video = FEED_SHARED.hls_video_tail_ns.swap(-1, Ordering::AcqRel);
+    let prev_audio = FEED_SHARED.hls_audio_tail_ns.swap(-1, Ordering::AcqRel);
+    let prev_pos = FEED_SHARED.playpos_ns.swap(0, Ordering::AcqRel);
+    let prev_base = FEED_SHARED.disp_base.swap(0, Ordering::AcqRel);
     let held = HlsSegmentOutput {
         aus: Vec::new(),
         transfer: SegmentTransfer {
@@ -383,14 +384,14 @@ fn a_prefetched_segment_does_not_move_the_published_buffer() {
     let observer = super::test_support::demux_observer();
     let published = hls_buffer_fact(observer.as_ref(), None).unwrap().buffered_ms();
     let if_counted = hls_buffer_fact(observer.as_ref(), Some(&held)).unwrap().buffered_ms();
-    SHARED
+    FEED_SHARED
         .hls_video_tail_ns
         .store(prev_video, Ordering::Release);
-    SHARED
+    FEED_SHARED
         .hls_audio_tail_ns
         .store(prev_audio, Ordering::Release);
-    SHARED.playpos_ns.store(prev_pos, Ordering::Release);
-    SHARED.disp_base.store(prev_base, Ordering::Release);
+    FEED_SHARED.playpos_ns.store(prev_pos, Ordering::Release);
+    FEED_SHARED.disp_base.store(prev_base, Ordering::Release);
     assert_ne!(
         published, if_counted,
         "feeding N+1 into the snapshot is what would inflate E; holding it off-queue must not"
@@ -679,11 +680,11 @@ fn a_curl_transport_failure_crosses_avio_as_io_error_not_eof() {
         struct ClearIoFailure;
         impl Drop for ClearIoFailure {
             fn drop(&mut self) {
-                SHARED.demux_io_failed.store(false, Ordering::Relaxed);
+                FEED_SHARED.demux_io_failed.store(false, Ordering::Relaxed);
             }
         }
         let _clear = ClearIoFailure;
-        SHARED.demux_io_failed.store(false, Ordering::Relaxed);
+        FEED_SHARED.demux_io_failed.store(false, Ordering::Relaxed);
 
         let mut cs =
             crate::curlio::CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0)
@@ -733,7 +734,7 @@ fn a_curl_transport_failure_crosses_avio_as_io_error_not_eof() {
             "the callback leaves the error pending on its enclosing operation"
         );
         assert!(
-            !SHARED.demux_io_failed.load(Ordering::Acquire),
+            !FEED_SHARED.demux_io_failed.load(Ordering::Acquire),
             "a callback alone is not fatal because libavformat may still recover via seek"
         );
         assert!(
@@ -744,7 +745,7 @@ fn a_curl_transport_failure_crosses_avio_as_io_error_not_eof() {
             st.io_failed,
             "packet success must not hide a transport failure that only drained bounce"
         );
-        assert!(!SHARED.demux_io_failed.load(Ordering::Acquire));
+        assert!(!FEED_SHARED.demux_io_failed.load(Ordering::Acquire));
 
         let terminal = read_cb(op, dst.as_mut_ptr(), dst.len() as c_int);
         assert_eq!(terminal, AVERROR_IO);
@@ -753,7 +754,7 @@ fn a_curl_transport_failure_crosses_avio_as_io_error_not_eof() {
             "an unrecovered frame read ends the demux loop"
         );
         assert!(
-            SHARED.demux_io_failed.load(Ordering::Acquire),
+            FEED_SHARED.demux_io_failed.load(Ordering::Acquire),
             "the main-thread pump must see the failure even after frames were presented"
         );
         crate::aq::aq_destroy(&mut *aq);
@@ -772,7 +773,7 @@ fn a_frame_read_failure_names_the_curl_rc_and_publishes_it_for_the_report() {
         struct Clear;
         impl Drop for Clear {
             fn drop(&mut self) {
-                SHARED.demux_io_failed.store(false, Ordering::Relaxed);
+                FEED_SHARED.demux_io_failed.store(false, Ordering::Relaxed);
                 SHARED.reset_session();
             }
         }
@@ -812,8 +813,8 @@ fn a_frame_read_failure_names_the_curl_rc_and_publishes_it_for_the_report() {
         });
         assert!(plain.contains("media transport failed during av_read_frame r=-5"), "{plain}");
         assert!(!plain.contains("curl_rc="), "no curl code was known: {plain}");
-        assert_eq!(SHARED.dg_transport_rc.load(Ordering::Acquire), 0);
-        SHARED.demux_io_failed.store(false, Ordering::Relaxed);
+        assert_eq!(FEED_SHARED.dg_transport_rc.load(Ordering::Acquire), 0);
+        FEED_SHARED.demux_io_failed.store(false, Ordering::Relaxed);
 
         // A curl transfer that died mid-body.
         let mut cs = crate::curlio::CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0)
@@ -828,10 +829,10 @@ fn a_frame_read_failure_names_the_curl_rc_and_publishes_it_for_the_report() {
             line.contains("media transport failed during av_read_frame r=-5 curl_rc=56"),
             "{line}"
         );
-        assert!(SHARED.demux_io_failed.load(Ordering::Acquire));
-        assert_eq!(SHARED.dg_transport_rc.load(Ordering::Acquire), 56);
-        assert!(SHARED.dg_transport_age_ms.load(Ordering::Acquire) >= 0);
-        assert!(!SHARED.dg_transport_reopen_failed.load(Ordering::Acquire));
+        assert!(FEED_SHARED.demux_io_failed.load(Ordering::Acquire));
+        assert_eq!(FEED_SHARED.dg_transport_rc.load(Ordering::Acquire), 56);
+        assert!(FEED_SHARED.dg_transport_age_ms.load(Ordering::Acquire) >= 0);
+        assert!(!FEED_SHARED.dg_transport_reopen_failed.load(Ordering::Acquire));
         crate::aq::aq_destroy(&mut *aq);
     });
 }

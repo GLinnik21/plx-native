@@ -29,6 +29,7 @@
 //! `cd rust-modules && PLX_FFMPEG_DIR=<dir holding libav*-plx.*.dylib> CARGO_INCREMENTAL=0
 //! cargo test --lib -p plx_media ff::eof_seek_tests -- --ignored`.
 
+use plx_play_feed::shared::FEED_SHARED;
 use super::*;
 use crate::player::SHARED;
 use std::io::{Read, Write};
@@ -666,11 +667,11 @@ fn assert_chapters_lead_the_video(path: &Path) {
 /// Demux `file` through the real `ff::demux` over a [`StrictServer`]; returns the video AUs it
 /// delivered within the deadline and everything the server answered.
 fn demux_video_aus(file: Virtual, want: usize) -> (usize, Vec<(Option<u64>, u16)>) {
-    SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
-    SHARED.desired_audio_idx.store(-1, Ordering::Relaxed);
-    SHARED.side_subs_owner.store(false, Ordering::Relaxed);
-    SHARED.demux_failed.store(false, Ordering::Relaxed);
-    SHARED.demux_io_failed.store(false, Ordering::Relaxed);
+    FEED_SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
+    FEED_SHARED.desired_audio_idx.store(-1, Ordering::Relaxed);
+    FEED_SHARED.side_subs_owner.store(false, Ordering::Relaxed);
+    FEED_SHARED.demux_failed.store(false, Ordering::Relaxed);
+    FEED_SHARED.demux_io_failed.store(false, Ordering::Relaxed);
     FEED_AUDIO.store(true, Ordering::Relaxed);
     let server = StrictServer::start(file);
     let (video_cap, audio_cap) = crate::player::engine::aq_caps();

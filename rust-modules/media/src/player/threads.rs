@@ -2,7 +2,7 @@
 //! worker lives in `plx_play_feed::native_load`. The demux thread body is `ff::demux` (libavformat over a custom
 //! AVIO on stream.rs); its HttpStream box lives in the Engine (main owns it, closes it
 //! to interrupt, and outlives the threads).
-use super::SHARED;
+use plx_play_feed::shared::FEED_SHARED;
 use std::os::raw::{c_char, c_int};
 use plx_play_feed::native_load::{self, NativeLoadPort};
 use plx_play_feed::pcm_lead::PcmLead;
@@ -23,15 +23,15 @@ impl NativeLoadPort for PlayerLoadPort {
     }
 
     fn mark_load_returned(&self, epoch: u32, pcm_lead_ns: Option<i64>) -> Option<std::time::Duration> {
-        SHARED.mark_native_load_returned(epoch, pcm_lead_ns)
+        FEED_SHARED.mark_native_load_returned(epoch, pcm_lead_ns)
     }
 
     fn mirror_elapsed_ms(&self, elapsed_ms: u64) {
-        SHARED.native_load_elapsed_ms.store(elapsed_ms, Ordering::Relaxed);
+        FEED_SHARED.native_load_elapsed_ms.store(elapsed_ms, Ordering::Relaxed);
     }
 
     fn publish_load_failure(&self, epoch: u32) {
-        SHARED.publish_native_load_failure(epoch);
+        FEED_SHARED.publish_native_load_failure(epoch);
     }
 }
 
@@ -84,7 +84,7 @@ mod load_timing_tests {
         let _serial = plx_base::testlock::serial();
         SHARED.reset_session();
         crate::player::ffi_host::force_clocksink_for_test(true);
-        let epoch = SHARED.begin_native_session().expect("native session");
+        let epoch = FEED_SHARED.begin_native_session().expect("native session");
         let payload = c"{}";
         load_thread_with(
             SendPtr(payload.as_ptr() as *mut c_char),
@@ -96,10 +96,10 @@ mod load_timing_tests {
                 Some(400_000_000)
             },
         );
-        let reported = SHARED.native_load_elapsed_ms.load(Ordering::Relaxed);
-        let budget_clock = SHARED.native_load_elapsed(epoch).expect("the epoch is still Active");
+        let reported = FEED_SHARED.native_load_elapsed_ms.load(Ordering::Relaxed);
+        let budget_clock = FEED_SHARED.native_load_elapsed(epoch).expect("the epoch is still Active");
         crate::player::ffi_host::force_clocksink_for_test(false);
-        SHARED.test_force_native_idle();
+        FEED_SHARED.test_force_native_idle();
         SHARED.reset_session();
         assert!(
             reported < READ.as_millis() as u64 / 2,

@@ -34,7 +34,7 @@
 //! `route::note_user_seek_intent`, no `report::note_seek_for(playback_trace_generation())` — a
 //! preview has no trace generation, and the watch-state promise this file opens with covers a
 //! seek exactly like every other write. Pausing has none of this to begin with: it is
-//! `player::pause`/`resume` on a live engine, and `TX.reset()` on a real stop clears the flag, so
+//! `player::pause`/`resume` on a live engine, and `FEED_TX.reset()` on a real stop clears the flag, so
 //! a collapsed or ended preview cannot strand it.
 //!
 //! Sound stays on. A preview has no mute control: the per-pipeline `setVolume` the sink exposes is
@@ -46,6 +46,8 @@
 //! the plan is about 958 KiB (`ui/frame/render_set.rs`). 958 / 64 is 14.96, so the ceiling is 14
 //! admitted Loads, under the ratio rather than on it. Do not quote 14 as a television result.
 
+#[cfg(feature = "play-feed")]
+use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
 use plx_plex::plex::ServerId;
 
 /// Admitted Loads per process, from the source arithmetic above. Not a device measurement.
@@ -772,7 +774,7 @@ pub fn after_pump(
         live,
         resolving: crate::route::play_pending(),
         ended: crate::player::feed_ended(),
-        failed: super::SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
+        failed: FEED_SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
         seen_frame,
     };
     match settle(facts) {
@@ -804,11 +806,11 @@ pub fn after_pump(
 }
 
 /// Is the live preview's transport paused? The engine is shared, so this is the same
-/// `player::TX.paused` the player HUD reads, qualified by a preview actually being what occupies
+/// `FEED_TX.paused` the player HUD reads, qualified by a preview actually being what occupies
 /// it — with no session there is nothing paused, whatever the flag last said.
 #[cfg(feature = "play-feed")]
 pub fn paused() -> bool {
-    occupies() && crate::player::TX.paused.load(std::sync::atomic::Ordering::Relaxed)
+    occupies() && FEED_TX.paused.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Pause or resume the live preview session — full-trailer mode's OK/PLAY/PAUSE, performed by the
@@ -1084,7 +1086,7 @@ mod tests {
 
     /// **Requirement 3, the trivial half: `seek` refuses outright, and touches nothing, when there
     /// is no live bound/playing preview to seek within** — the same race [`transport`] refuses for
-    /// the same reason. `TX.seek_reqs` is the counter `player::request_seek` bumps on every call;
+    /// the same reason. `FEED_TX.seek_reqs` is the counter `player::request_seek` bumps on every call;
     /// this pins that `preview::seek` never becomes a second path to it, which is the whole of the
     /// watch-state promise as it applies to a seek (`route::note_user_seek_intent` and
     /// `report::note_seek_for` live behind that same one call). The `Started`/`StartFailed` arms of
@@ -1105,13 +1107,13 @@ mod tests {
             plx_base::task::MainThread::assume()
         });
         assert!(!pa.is_live(), "test requires an empty native-session slot");
-        let before = crate::player::TX.seek_reqs.load(std::sync::atomic::Ordering::Relaxed);
+        let before = FEED_TX.seek_reqs.load(std::sync::atomic::Ordering::Relaxed);
 
         let outcome = seek(&mut ps, &mut pa, 5_000_000_000);
 
         assert_eq!(outcome, SeekOutcome::Refused);
         assert_eq!(
-            crate::player::TX.seek_reqs.load(std::sync::atomic::Ordering::Relaxed),
+            FEED_TX.seek_reqs.load(std::sync::atomic::Ordering::Relaxed),
             before,
             "preview::seek must never go through player::request_seek's counter"
         );

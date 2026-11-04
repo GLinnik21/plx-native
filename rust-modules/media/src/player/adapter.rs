@@ -25,6 +25,8 @@
 //! DIFFERENT thing — the ACB/Starfish seam (`tv::sink::VideoSink`'s methods, whose bind order is a
 //! sequence of calls with no locking behind it) — and that surface is not this module's.
 
+#[cfg(feature = "play-feed")]
+use plx_play_feed::shared::FEED_SHARED;
 #[cfg(all(test, feature = "play-feed"))]
 use super::engine::Engine;
 #[cfg(feature = "play-feed")]
@@ -605,7 +607,7 @@ impl PlayerAdapter {
         Self {
             mt,
             #[cfg(feature = "play-feed")]
-            feed: FeedResources::new(&super::SHARED.feed),
+            feed: FeedResources::new(&FEED_SHARED),
             backend: backend::BackendRunner::new(),
             metric_notices: VecDeque::new(),
             #[cfg(feature = "play-feed")]
@@ -1858,7 +1860,7 @@ impl PlayerAdapter {
         self.release.step(event, fx);
         // Publish the one fact `player::state` needs (no session copy of it can drift).
         #[cfg(feature = "play-feed")]
-        super::SHARED
+        FEED_SHARED
             .start_queued
             .store(self.release.has_queued(), std::sync::atomic::Ordering::Release);
     }
@@ -2400,6 +2402,8 @@ mod uri_stop_refusal_tests {
 
 #[cfg(all(test, feature = "hostsim"))]
 mod load_outcome_tests {
+    #[cfg(feature = "play-feed")]
+    use plx_play_feed::shared::FEED_TX;
     use super::*;
 
     #[test]
@@ -2438,7 +2442,7 @@ mod load_outcome_tests {
             "one Load result settles at most once");
         drop(pa.take());
         crate::player::SHARED.reset_session();
-        crate::player::TX.reset();
+        FEED_TX.reset();
         crate::route::reset_player_control_for_test(&ps);
     }
 
@@ -2482,6 +2486,6 @@ mod load_outcome_tests {
         assert!(pa.feed.take_load_outcomes().is_empty(), "each receipt is consumed once");
         drop(pa.take());
         crate::player::SHARED.reset_session();
-        crate::player::TX.reset();
+        FEED_TX.reset();
     }
 }

@@ -1,9 +1,11 @@
 //! Common native route-start orchestration. The route owns the transaction and exact attempt;
 //! the feed constructor only runs after admission and source preparation.
 
+#[cfg(feature = "play-feed")]
+use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
 use super::adapter::PlayerAdapter;
 #[cfg(feature = "play-feed")]
-use super::{engine, SHARED, TX};
+use super::{engine, SHARED};
 #[cfg(feature = "play-feed")]
 use std::sync::atomic::Ordering;
 use plx_base::eventlog::log;
@@ -414,7 +416,7 @@ pub(super) fn start_bufferfeed_inner(
     physical_start.publish(session_rate, start_paused);
     let trace_generation = crate::route::playback_trace_generation();
     let mut prepared_native = engine::prepare_native_open(pa.mt(), pa.feed.shared(),
-        start_paused, TX.seek_preroll_active(),
+        start_paused, FEED_TX.seek_preroll_active(),
         open.map(super::feed_open::FeedOpenRequest::into_physical), sample, is_h265, session_rate, side_reader)
         .map_err(|_| crate::route::RouteStartResult::StartFailed)?;
     // The route reducer alone mints the physical attempt. The native constructor consumes this
@@ -490,7 +492,7 @@ fn feed_start_rate(ps: &crate::route::PlaybackSession)
     }
     // Physical payload/Force preflight still consumes this mailbox. Publish the session's
     // accepted value before that preflight, and restore it if native start is refused.
-    SHARED.play_rate_permille.store(want, Ordering::Relaxed);
+    FEED_SHARED.play_rate_permille.store(want, Ordering::Relaxed);
     let rate = super::session_rate_for(ps);
     debug_assert_eq!(rate, want, "the prechecked Feed rate must be applied exactly");
     Ok(rate)
@@ -499,7 +501,7 @@ fn feed_start_rate(ps: &crate::route::PlaybackSession)
 /// Capture one pause goal for both the physical hold and common Start intent.
 #[cfg(feature = "play-feed")]
 fn feed_start_paused(ps: &crate::route::PlaybackSession) -> bool {
-    ps.reconfigure_pause_goal().unwrap_or_else(|| TX.paused.load(Ordering::Acquire))
+    ps.reconfigure_pause_goal().unwrap_or_else(|| FEED_TX.paused.load(Ordering::Acquire))
 }
 
 /// Roll back physical transport setup when native preparation, staging or Start admission fails.
@@ -517,16 +519,16 @@ struct FeedStartTransport {
 impl FeedStartTransport {
     fn capture() -> Self {
         Self {
-            old_rate: SHARED.play_rate_permille.load(Ordering::Relaxed),
-            old_paused: TX.paused.load(Ordering::Acquire),
+            old_rate: FEED_SHARED.play_rate_permille.load(Ordering::Relaxed),
+            old_paused: FEED_TX.paused.load(Ordering::Acquire),
             published: false,
             committed: false,
         }
     }
 
     fn publish(&mut self, rate: i32, paused: bool) {
-        SHARED.play_rate_permille.store(rate, Ordering::Relaxed);
-        if self.old_paused != paused { TX.commit_paused(paused); }
+        FEED_SHARED.play_rate_permille.store(rate, Ordering::Relaxed);
+        if self.old_paused != paused { FEED_TX.commit_paused(paused); }
         self.published = true;
     }
 
@@ -537,9 +539,9 @@ impl FeedStartTransport {
 impl Drop for FeedStartTransport {
     fn drop(&mut self) {
         if self.committed { return; }
-        SHARED.play_rate_permille.store(self.old_rate, Ordering::Relaxed);
-        if self.published && TX.paused.load(Ordering::Acquire) != self.old_paused {
-            TX.commit_paused(self.old_paused);
+        FEED_SHARED.play_rate_permille.store(self.old_rate, Ordering::Relaxed);
+        if self.published && FEED_TX.paused.load(Ordering::Acquire) != self.old_paused {
+            FEED_TX.commit_paused(self.old_paused);
         }
     }
 }
@@ -721,8 +723,8 @@ fn reload_transcode_start(ps: &mut crate::route::PlaybackSession, pa: &mut super
         offset_ns / 1_000_000_000
     ));
     teardown(ps, pa, true, plx_playback_contract::StopReason::Replace); // keep the session; reload mode
-    SHARED.disp_base.store(offset_ns, Ordering::Relaxed); // transcode is 0-based at content=offset
-    SHARED.playpos_ns.store(offset_ns, Ordering::Relaxed);
+    FEED_SHARED.disp_base.store(offset_ns, Ordering::Relaxed); // transcode is 0-based at content=offset
+    FEED_SHARED.playpos_ns.store(offset_ns, Ordering::Relaxed);
     Some(start_bufferfeed_for(ps, pa, ticket))
 }
 
@@ -748,7 +750,7 @@ pub(super) static RELOAD_PREROLL_LOG: std::sync::Mutex<Vec<bool>> = std::sync::M
 
 #[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
 fn note_reload_preroll() {
-    RELOAD_PREROLL_LOG.lock().unwrap_or_else(|e| e.into_inner()).push(TX.seek_preroll_active());
+    RELOAD_PREROLL_LOG.lock().unwrap_or_else(|e| e.into_inner()).push(FEED_TX.seek_preroll_active());
 }
 
 #[cfg(feature = "play-feed")]
@@ -782,7 +784,7 @@ pub fn reload_at(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter
 /// chosen stream and the choice survives later seeks.
 #[cfg(feature = "play-feed")]
 pub fn switch_audio_native(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, audio_idx: i32, pos_ns: i64) -> ReloadOutcome {
-    SHARED.desired_audio_idx.store(audio_idx, Ordering::Relaxed);
+    FEED_SHARED.desired_audio_idx.store(audio_idx, Ordering::Relaxed);
     log(&format!(
         "switch_audio_native: audio_idx={audio_idx} at {}s",
         pos_ns / 1_000_000_000
@@ -907,8 +909,8 @@ fn resume_prelude(ps: &mut crate::route::PlaybackSession, resume_ns: i64) -> Res
 /// carries the offset so the HUD reads content time.
 #[cfg(feature = "play-feed")]
 fn note_transcode_resumed(resume_ns: i64) {
-    SHARED.disp_base.store(resume_ns, Ordering::Relaxed);
-    SHARED.playpos_ns.store(resume_ns, Ordering::Relaxed);
+    FEED_SHARED.disp_base.store(resume_ns, Ordering::Relaxed);
+    FEED_SHARED.playpos_ns.store(resume_ns, Ordering::Relaxed);
     log(&format!(
         "resume(transcode): restart at offset {}s",
         resume_ns / 1_000_000_000
@@ -1179,8 +1181,8 @@ pub fn release_failed_engine(ps: &mut crate::route::PlaybackSession, pa: &mut su
     // a picture up (a Load that failed, an open that never produced a frame) and so holds nothing
     // the television mistakes for playback.
     if crate::route::is_preview(ps)
-        || SHARED.pb_state.load(Ordering::Relaxed) != super::shared::PlaybackState::Error as u8
-        || SHARED.frames.load(Ordering::Relaxed) == 0
+        || FEED_SHARED.pb_state.load(Ordering::Relaxed) != super::shared::PlaybackState::Error as u8
+        || FEED_SHARED.frames.load(Ordering::Relaxed) == 0
         || crate::route::recovery_flight_outstanding()
         || crate::route::engineless_flight_outstanding()
     {
@@ -1283,7 +1285,7 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
         }
     }
     begin_feed_teardown(for_reload);
-    SHARED.stop_hls_clock();
+    FEED_SHARED.stop_hls_clock();
     let route_attempt = pa.active_feed_attempt().expect("live feed has a route owner");
     let mut native = pa.take_native_stop();
     let final_report = final_report(ps, for_reload);
@@ -1301,10 +1303,10 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
     // A real stop retires both along with the current claim hold.
     if for_reload {
         SHARED.reset_session_for_reload();
-        TX.reset_for_reload();
+        FEED_TX.reset_for_reload();
     } else {
         SHARED.reset_session();
-        TX.reset();
+        FEED_TX.reset();
         super::claim_hold::clear();
     }
     finish_feed_teardown(ps, for_reload, report_th);
@@ -1382,7 +1384,7 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
             } else if cfg!(feature = "play-feed") && crate::route::engine_failure(ps).is_some() {
                 #[cfg(feature = "play-feed")]
                 {
-                let dur = SHARED.duration_ns.load(Ordering::Relaxed);
+                let dur = FEED_SHARED.duration_ns.load(Ordering::Relaxed);
                 let pos = crate::route::unpresented_resume_ns(ps);
                 crate::player::report::ended(ps, pos, dur);
                 let rk = crate::route::cur_rk(ps);
@@ -1391,7 +1393,7 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
             }
             #[cfg(all(not(feature = "play-uri"), feature = "play-feed"))]
             if crate::route::engine_failure(ps).is_some() {
-                let dur = SHARED.duration_ns.load(Ordering::Relaxed);
+                let dur = FEED_SHARED.duration_ns.load(Ordering::Relaxed);
                 let pos = crate::route::unpresented_resume_ns(ps);
                 crate::player::report::ended(ps, pos, dur);
                 let rk = crate::route::cur_rk(ps);
@@ -1407,7 +1409,7 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
             #[cfg(feature = "play-feed")]
             SHARED.reset_session();
             #[cfg(feature = "play-feed")]
-            TX.reset();
+            FEED_TX.reset();
             mark_attempt_stopped(ps);
             #[cfg(feature = "play-feed")]
             super::claim_hold::clear();
@@ -1447,19 +1449,19 @@ pub(super) fn final_report(ps: &mut crate::route::PlaybackSession, for_reload: b
     if !for_reload {
         crate::player::report::ended(
             ps,
-            SHARED.playpos_ns.load(Ordering::Relaxed),
-            SHARED.duration_ns.load(Ordering::Relaxed),
+            FEED_SHARED.playpos_ns.load(Ordering::Relaxed),
+            FEED_SHARED.duration_ns.load(Ordering::Relaxed),
         );
     }
     if for_reload {
         None
     } else {
         let rk = crate::route::cur_rk(ps);
-        let dur = SHARED.duration_ns.load(Ordering::Relaxed);
+        let dur = FEED_SHARED.duration_ns.load(Ordering::Relaxed);
         if !rk.is_empty() && dur > 0 {
             Some((
                 rk,
-                SHARED.playpos_ns.load(Ordering::Relaxed) / 1_000_000,
+                FEED_SHARED.playpos_ns.load(Ordering::Relaxed) / 1_000_000,
                 dur / 1_000_000,
             ))
         } else {
@@ -1507,16 +1509,16 @@ pub(super) fn finish_feed_teardown(
 ) {
     // The worker has stopped, so a reload hands route the last estimate it published, which the
     // replacement controller starts from (I8); a stop carries none.
-    ps.observe_link_seed(if for_reload { SHARED.abr_seed() } else { None });
+    ps.observe_link_seed(if for_reload { FEED_SHARED.abr_seed() } else { None });
     if !for_reload {
         // **The carried link estimate dies with the PLAYBACK, not with the engine** (I8). A reload
         // is the same item on the same link at a new position — a seek, a quality pick, an
         // app-switch resume — and re-measuring the link from nothing across one is what made every
         // skip re-ramp the ladder for ten to twenty seconds.
-        SHARED.clear_abr_seed();
+        FEED_SHARED.clear_abr_seed();
         // The failure is retained across the rollback reload only; a new playback must not carry
         // another item's PMS response into its diagnostics.
-        SHARED.clear_abr_failure();
+        FEED_SHARED.clear_abr_failure();
         // A deferred Original recovery outlives nothing: the playback it belonged to is over, so
         // there is no frame left that could confirm it and no route left to roll back to. The
         // encoder it was holding is still running on the server, which is why this RETIRES rather
@@ -1575,7 +1577,7 @@ mod feed_start_controls_tests {
         struct Restore;
         impl Drop for Restore {
             fn drop(&mut self) {
-                SHARED.play_rate_permille.store(super::super::RATE_NORMAL, Ordering::Relaxed);
+                FEED_SHARED.play_rate_permille.store(super::super::RATE_NORMAL, Ordering::Relaxed);
                 crate::ff::force_speed_decoder_for_test(false);
             }
         }
@@ -1586,7 +1588,7 @@ mod feed_start_controls_tests {
         ps.begin_attempt_view(crate::route::RouteStartAttempt::fixture(),
             super::super::attempt_view::Backend::Uri);
         // The previous Feed attempt or URI-to-Feed handoff left the physical mailbox at 1x.
-        SHARED.play_rate_permille.store(super::super::RATE_NORMAL, Ordering::Relaxed);
+        FEED_SHARED.play_rate_permille.store(super::super::RATE_NORMAL, Ordering::Relaxed);
         assert!(super::super::speed_offer(&ps).is_empty(),
             "the current URI UI must not offer Feed speed controls");
         assert!(super::super::feed_speed_offer(&ps).contains(&1500),
@@ -1594,7 +1596,7 @@ mod feed_start_controls_tests {
 
         assert_eq!(feed_start_rate(&ps).expect("Feed rate is available"), 1500,
             "the accepted session rate must configure the next physical Feed Load");
-        assert_eq!(SHARED.play_rate_permille.load(Ordering::Relaxed), 1500,
+        assert_eq!(FEED_SHARED.play_rate_permille.load(Ordering::Relaxed), 1500,
             "the physical payload preflight must see the same requested rate");
     }
 
@@ -1603,19 +1605,19 @@ mod feed_start_controls_tests {
         let _serial = plx_base::testlock::serial();
         struct Restore(bool);
         impl Drop for Restore {
-            fn drop(&mut self) { TX.commit_paused(self.0); }
+            fn drop(&mut self) { FEED_TX.commit_paused(self.0); }
         }
-        let _restore = Restore(TX.paused.load(Ordering::Acquire));
+        let _restore = Restore(FEED_TX.paused.load(Ordering::Acquire));
         let mut ps = crate::route::PlaybackSession::IDLE;
 
         // The outgoing URI owned the viewer's Pause while the Feed mailbox was idle.
-        TX.commit_paused(false);
+        FEED_TX.commit_paused(false);
         ps.set_reconfigure_pause_goal(true);
         assert!(feed_start_paused(&ps),
             "the native Load hold and InitialPlayback must both be Paused");
 
         // An old Feed hold must not pause the newly requested Playing attempt.
-        TX.commit_paused(true);
+        FEED_TX.commit_paused(true);
         ps.set_reconfigure_pause_goal(false);
         assert!(!feed_start_paused(&ps),
             "the new Feed attempt must not inherit an old physical Pause");
@@ -1627,20 +1629,20 @@ mod feed_start_controls_tests {
         struct Restore(i32);
         impl Drop for Restore {
             fn drop(&mut self) {
-                SHARED.play_rate_permille.store(self.0, Ordering::Relaxed);
+                FEED_SHARED.play_rate_permille.store(self.0, Ordering::Relaxed);
                 crate::ff::force_speed_decoder_for_test(false);
             }
         }
-        let _restore = Restore(SHARED.play_rate_permille.load(Ordering::Relaxed));
+        let _restore = Restore(FEED_SHARED.play_rate_permille.load(Ordering::Relaxed));
         let mut ps = crate::route::PlaybackSession::IDLE;
         crate::ff::force_speed_decoder_for_test(true);
         ps.accept_requested_rate(1500);
         crate::route::set_direct_play_mode_for_test(&mut ps, crate::route::DirectPlayMode::Forced);
-        SHARED.play_rate_permille.store(super::super::RATE_NORMAL, Ordering::Relaxed);
+        FEED_SHARED.play_rate_permille.store(super::super::RATE_NORMAL, Ordering::Relaxed);
 
         assert!(feed_start_rate(&ps).is_err(),
             "Force cannot silently reinterpret a requested PCM speed as 1x");
-        assert_eq!(SHARED.play_rate_permille.load(Ordering::Relaxed), super::super::RATE_NORMAL);
+        assert_eq!(FEED_SHARED.play_rate_permille.load(Ordering::Relaxed), super::super::RATE_NORMAL);
         assert_eq!(ps.requested_rate_permille(), 1500,
             "a refused candidate does not alter the viewer's logical rate goal");
     }

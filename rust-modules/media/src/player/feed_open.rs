@@ -2,6 +2,7 @@
 //! authority; this value freezes its applied projection before native construction begins.
 //! URLs and reader credentials are deliberately absent from `Debug` output.
 
+use plx_play_feed::shared::FEED_SHARED;
 use crate::route;
 use plx_base::eventlog::log;
 use plx_play_feed::bf_split;
@@ -53,7 +54,7 @@ impl plx_play_feed::side_reader::SideReaderPort for SideReaderOpen {
         if !started {
             super::subside::failed_reading(self.clock_only, "subside: could not start the reader thread");
             if !self.clock_only {
-                super::SHARED.side_subs_owner.store(false, std::sync::atomic::Ordering::Release);
+                FEED_SHARED.side_subs_owner.store(false, std::sync::atomic::Ordering::Release);
             }
         }
     }

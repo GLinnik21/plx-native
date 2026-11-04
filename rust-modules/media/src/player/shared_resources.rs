@@ -1,7 +1,8 @@
-//! Common subtitle resources composed beside the physical feed transport.
-//! The existing process-lifetime owner stays singular; a feed executor receives only `feed`.
-#[cfg(feature = "play-feed")]
-use std::ops::Deref;
+//! The common player's process-lifetime owners: subtitle and caption resources, the container's
+//! track names, the audio-pick reason, and what the player screen publishes. Nothing here belongs
+//! to a backend. The Feed backend's native mailbox and transport are `plx_play_feed::shared::
+//! {FEED_SHARED, FEED_TX}`, which `Shared::reset` composes with the caption reset and which a feed
+//! executor is handed as `&'static`.
 use std::sync::{atomic::{AtomicI32, AtomicI64, AtomicU8, AtomicU32, AtomicU64, Ordering}, Mutex};
 
 /// A viewer audio pick names the next rebuild for at most this long.
@@ -17,8 +18,6 @@ impl AudioSwitch {
 }
 
 pub struct Shared {
-    #[cfg(feature = "play-feed")]
-    pub feed: plx_play_feed::shared::PhysicalShared,
     /// Selected client-rendered subtitle track; -1 disables the common overlay.
     pub desired_sub_idx: AtomicI32,
     /// **The container's own per-track names, which PMS does not always send** (D -> M).
@@ -53,8 +52,6 @@ pub struct Shared {
 impl Shared {
     pub const fn new() -> Self {
         Self {
-            #[cfg(feature = "play-feed")]
-            feed: plx_play_feed::shared::PhysicalShared::new(),
             desired_sub_idx: AtomicI32::new(-1),
             track_names: Mutex::new(plx_playback_contract::tracks::TrackNames::new()),
             track_names_stamp: AtomicU32::new(0),
@@ -72,17 +69,6 @@ impl Shared {
         self.track_names.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Map common report classification to the physical first-wins diagnostic latch.
-    #[cfg(feature = "play-feed")]
-    pub fn note_demux_exit(&self, exit: plx_telemetry::telemetry::classes::DemuxExitClass) {
-        self.feed.note_demux_exit_latch(exit.latch());
-    }
-
-    #[cfg(feature = "play-feed")]
-    pub fn fail_demux(&self, exit: plx_telemetry::telemetry::classes::DemuxExitClass) {
-        self.feed.fail_demux_latch(exit.latch());
-    }
-
     pub fn reset_session(&self) {
         self.reset(false);
     }
@@ -91,12 +77,18 @@ impl Shared {
         self.reset(true);
     }
 
+    /// Reset the common resources. Under the Feed backend the caption reset runs inside the
+    /// feed's own callback/reset barrier (`FEED_SHARED.reset_session_with`), so a late native
+    /// callback cannot interleave with it. A reload keeps the duration the demuxer published: it
+    /// re-publishes a few hundred ms after it reopens, and a zero until then is a playbar drawn at
+    /// position / 0.
     fn reset(&self, for_reload: bool) {
         #[cfg(feature = "play-feed")]
         {
-            let duration = self.feed.duration_ns.load(Ordering::Relaxed);
-            self.feed.reset_session_with(|| self.reset_captions(for_reload));
-            if for_reload { self.feed.duration_ns.store(duration, Ordering::Relaxed); }
+            use plx_play_feed::shared::FEED_SHARED;
+            let duration = FEED_SHARED.duration_ns.load(Ordering::Relaxed);
+            FEED_SHARED.reset_session_with(|| self.reset_captions(for_reload));
+            if for_reload { FEED_SHARED.duration_ns.store(duration, Ordering::Relaxed); }
         }
         #[cfg(not(feature = "play-feed"))]
         self.reset_captions(for_reload);
@@ -120,18 +112,10 @@ impl Shared {
     }
 }
 
-#[cfg(feature = "play-feed")]
-
-impl Deref for Shared {
-    type Target = plx_play_feed::shared::PhysicalShared;
-    fn deref(&self) -> &Self::Target { &self.feed }
-}
-
-/// Common UI publications live beside, rather than inside, optional native feed state.
-/// The screen owns scrub intent; these are its existing published scalar copies.
+/// What the player screen publishes for the HUD and the app loop. The Feed's pause and seek
+/// transport is `plx_play_feed::shared::FEED_TX`, not here. The screen owns scrub intent; these
+/// are its existing published scalar copies.
 pub struct Transport {
-    #[cfg(feature = "play-feed")]
-    pub feed: plx_play_feed::shared::Transport,
     pub hud_until: AtomicU32,
     pub scrub_ns: AtomicI64,
 }
@@ -139,16 +123,9 @@ pub struct Transport {
 impl Transport {
     pub const fn new() -> Self {
         Self {
-            #[cfg(feature = "play-feed")]
-            feed: plx_play_feed::shared::Transport::new(),
             hud_until: AtomicU32::new(0),
             scrub_ns: AtomicI64::new(-1),
         }
     }
 }
 
-#[cfg(feature = "play-feed")]
-impl Deref for Transport {
-    type Target = plx_play_feed::shared::Transport;
-    fn deref(&self) -> &Self::Target { &self.feed }
-}

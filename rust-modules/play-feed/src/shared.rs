@@ -1,9 +1,10 @@
 //! Physical feed's cross-thread transport, callback and clock state. Every field
 //! replaces a `volatile` global from playback.c and is an atomic or a Mutex (never a bare value).
-//! Common route ownership is separate. The composed process-lifetime owner outlives every
-//! start/stop cycle and is *reset*, never freed. Native callbacks carry the exact `Load` epoch:
-//! retirement drains an event already inside that epoch and rejects every later event, so stable
-//! storage is not mistaken for permission to mutate the next playback.
+//! Common route ownership is separate. The feed's process-lifetime owners, [`FEED_SHARED`] and
+//! [`FEED_TX`], outlive every start/stop cycle and are *reset*, never freed. Native callbacks
+//! carry the exact `Load` epoch: retirement drains an event already inside that epoch and rejects
+//! every later event, so stable storage is not mistaken for permission to mutate the next
+//! playback.
 use plx_net::stream::HttpStream;
 use crate::native_gate::NativeGate;
 pub use crate::native_gate::{EventScope, NativeEventClass};
@@ -679,9 +680,23 @@ pub struct Shared {
     pub dg_placed_h: AtomicI32,
 }
 
-/// Native mailbox and gate used by a feed executor. The common player composes this with
-/// subtitle resources and keeps the process-lifetime owner.
+/// Native mailbox and gate used by a feed executor.
 pub type PhysicalShared = Shared;
+
+/// **The Feed backend's process-lifetime native mailbox and gate.** The common player's own
+/// `SHARED` (subtitles, container track names, the audio-pick reason) holds none of it.
+///
+/// It is a static because its readers cannot be handed a reference: `sf_on_event(epoch, ty, num,
+/// s)` is a `#[no_mangle]` firmware callback with no user-data pointer, and the demux, Load and
+/// subtitle workers reach it off the main thread. What can be handed is: [`FeedResources`],
+/// [`native_executor`] and [`native_release`] take a `&'static PhysicalShared`, and the adapter
+/// passes this one in. Media code that still names it directly (`pump`, `feed_pump`,
+/// `demux_session`, the callbacks) spells the path out, so `grep FEED_SHARED` finds every user.
+///
+/// [`FeedResources`]: crate::feed_resources::FeedResources
+/// [`native_executor`]: crate::native_executor
+/// [`native_release`]: crate::native_release
+pub static FEED_SHARED: PhysicalShared = Shared::new();
 
 impl Shared {
     /// Record WHICH demuxer exit failed the session, without raising `demux_failed` (an exit that
@@ -2013,6 +2028,12 @@ impl UserPauseCursor {
         (!elapsed.is_zero()).then_some(elapsed)
     }
 }
+
+/// **The Feed backend's process-lifetime transport** (pause, seek intent, preroll). The common
+/// player's own `TX` holds only what the player screen publishes (`hud_until`, `scrub_ns`).
+/// A static for [`FEED_SHARED`]'s reason: the app loop, the pump and the HUD read it with no
+/// executor handle in reach.
+pub static FEED_TX: Transport = Transport::new();
 
 impl Transport {
     pub const fn new() -> Self {

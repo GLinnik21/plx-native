@@ -8,9 +8,9 @@
 //! `&mut PlayerAdapter` borrow is what confines it now (see `player::adapter`). Which is also the
 //! rule for the rest of this file — a function here takes the token **iff** it reaches the slot
 //! or the ACB/Starfish seam, so the parameter carries information. `arm_seek` runs on the main
-//! thread too and deliberately does not take one: it only publishes to `SHARED`.
+//! thread too and deliberately does not take one: it only publishes to `FEED_SHARED`.
 use plx_play_feed::open::PhysicalOpen;
-use plx_play_feed::shared::PhysicalShared;
+use plx_play_feed::shared::{PhysicalShared, FEED_SHARED, FEED_TX};
 #[cfg(all(test, feature = "hostsim"))]
 use super::route_start::{exit_native, exit_native_with, finish_release_for_test, poll_release,
     reap_abandoned_load, NativeExit};
@@ -41,7 +41,7 @@ pub(crate) use plx_play_feed::load_video_refused;
 #[cfg(all(test, feature = "hostsim"))]
 use super::shared::Stage;
 use super::SeekMode;
-use super::{log, sink, threads, SHARED, TX};
+use super::{log, sink, threads};
 use plx_base::task::MainThread;
 #[cfg(test)]
 use plx_platform::devcaps::AudioStack;
@@ -200,7 +200,7 @@ fn release_off_frame(mt: &MainThread, feed: &super::feed_resources::FeedResource
 
 pub(super) fn run_release_tail(mt: &MainThread, p: PendingRelease)
     -> plx_playback_contract::ReleaseStatus {
-    plx_play_feed::native_executor::run_release_tail(mt, p, &SHARED.feed, &RELEASE_HOOKS)
+    plx_play_feed::native_executor::run_release_tail(mt, p, &FEED_SHARED, &RELEASE_HOOKS)
 }
 
 #[cfg(all(test, feature = "hostsim"))]
@@ -213,7 +213,7 @@ use plx_play_feed::native_executor::TeardownSpans;
 fn release_native_object_timed(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans)
     -> plx_playback_contract::ReleaseStatus {
     plx_play_feed::native_executor::release_native_object_timed(
-        mt, epoch, sp, &SHARED.feed, &RELEASE_HOOKS)
+        mt, epoch, sp, &FEED_SHARED, &RELEASE_HOOKS)
 }
 
 /// Release breadcrumbs belong to the common telemetry owner, not the physical executor.
@@ -447,7 +447,7 @@ pub(super) fn begin_native_open(feed: &mut super::feed_resources::FeedResources,
 
 #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
 pub(super) fn native_slot_available() -> Option<()> {
-    NativeSessionStartGuard::arm(&SHARED.feed).map(|guard| { drop(guard); })
+    NativeSessionStartGuard::arm(&FEED_SHARED).map(|guard| { drop(guard); })
 }
 
 /// Native construction failed before a usable Load could be installed. Route settlement is
@@ -512,7 +512,7 @@ pub(super) fn launch_native_open(
         select_seek_mode: select_seek_mode_for_load,
     };
     plx_play_feed::native_executor::launch_native_open(
-        feed, &TX, attempt, prepared.0, &hooks,
+        feed, &FEED_TX, attempt, prepared.0, &hooks,
     ).map_err(|_| NativeOpenError::Refused)
 }
 
@@ -535,9 +535,9 @@ fn select_seek_mode_for_load() {
 /// time. Call BEFORE start_bufferfeed (resume) or via reload_at (mid-play seek).
 pub fn arm_seek(target_ns: i64) {
     let t = target_ns.max(0);
-    SHARED.seek_to_ns.store(t, Ordering::Release);
-    SHARED.disp_base.store(0, Ordering::Relaxed);
-    SHARED.playpos_ns.store(t, Ordering::Relaxed); // instant HUD feedback until frames land
+    FEED_SHARED.seek_to_ns.store(t, Ordering::Release);
+    FEED_SHARED.disp_base.store(0, Ordering::Relaxed);
+    FEED_SHARED.playpos_ns.store(t, Ordering::Relaxed); // instant HUD feedback until frames land
 }
 
 /// Set where the pump ends an Engine for good under the failure read-out; spent by
@@ -707,11 +707,11 @@ pub(super) fn play_initial_now(mt: &MainThread, eng: &mut Engine) -> Option<bool
 }
 
 pub fn try_prime(mt: &MainThread, eng: &mut Engine) {
-    plx_play_feed::native_executor::try_prime(mt, eng, &TX, &FEED_HOOKS);
+    plx_play_feed::native_executor::try_prime(mt, eng, &FEED_TX, &FEED_HOOKS);
 }
 
 pub fn feed_both_lanes(mt: &MainThread, eng: &mut Engine) {
-    plx_play_feed::native_executor::feed_both_lanes(mt, eng, &TX, &FEED_HOOKS);
+    plx_play_feed::native_executor::feed_both_lanes(mt, eng, &FEED_TX, &FEED_HOOKS);
 }
 
 #[cfg(test)]
@@ -950,35 +950,35 @@ mod native_lifecycle_host_seam_tests {
         let _fresh_process = FreshProcess;
         let mt = unsafe { MainThread::assume() };
 
-        let first = SHARED.begin_native_session().expect("first native epoch");
+        let first = FEED_SHARED.begin_native_session().expect("first native epoch");
         assert_eq!(unsafe { crate::player::sink().load(c"{}".as_ptr(), first) }, 1);
         assert!(unsafe { crate::player::sink().callback_intercepts(&mt) } > 0);
         unsafe { crate::player::sink().unload(&plx_platform::tv::sink::UnloadTicket::issue(&mt)) };
-        assert!(SHARED.native_unload_completed(first));
+        assert!(FEED_SHARED.native_unload_completed(first));
         assert_eq!(unsafe { crate::player::sink().callback_gate_retire(&mt) }, 1);
-        assert!(SHARED.retire_native_session(first));
+        assert!(FEED_SHARED.retire_native_session(first));
         assert_eq!(unsafe { crate::player::sink().destroy(&mt) }, 1);
         assert_eq!(unsafe { crate::player::sink().ready(&mt) }, 0);
 
         SHARED.reset_session();
-        let unproven = SHARED
+        let unproven = FEED_SHARED
             .begin_native_session()
             .expect("unproven native epoch");
         assert_eq!(unsafe { crate::player::sink().load(c"{}".as_ptr(), unproven) }, 1);
         crate::player::ffi_host::force_callback_intercepts_for_test(0);
         unsafe { crate::player::sink().unload(&plx_platform::tv::sink::UnloadTicket::issue(&mt)) };
         assert_eq!(unsafe { crate::player::sink().callback_gate_retire(&mt) }, 0);
-        assert!(SHARED.retire_native_session(unproven));
+        assert!(FEED_SHARED.retire_native_session(unproven));
         unsafe { crate::player::sink().quarantine(&mt) };
 
         SHARED.reset_session();
-        let refused = SHARED.begin_native_session().expect("refused native epoch");
+        let refused = FEED_SHARED.begin_native_session().expect("refused native epoch");
         assert_eq!(
             unsafe { crate::player::sink().load(c"{}".as_ptr(), refused) },
             0,
             "quarantine must remain a process-long refusal",
         );
-        assert!(SHARED.retire_native_session(refused));
+        assert!(FEED_SHARED.retire_native_session(refused));
     }
 
     /// S12a: the window breadcrumbs `release_native_object` leaves, as a host can see them. The
@@ -1020,7 +1020,7 @@ mod native_lifecycle_host_seam_tests {
     }
 
     fn loaded_epoch(mt: &MainThread) -> u32 {
-        let epoch = SHARED.begin_native_session().expect("native epoch");
+        let epoch = FEED_SHARED.begin_native_session().expect("native epoch");
         assert_eq!(unsafe { crate::player::sink().load(c"{}".as_ptr(), epoch) }, 1);
         assert_eq!(unsafe { crate::player::sink().ready(mt) }, 1);
         epoch
@@ -1034,15 +1034,15 @@ mod native_lifecycle_host_seam_tests {
         SHARED.reset_session();
         let _fresh_process = FreshProcess;
         let mt = unsafe { MainThread::assume() };
-        let epoch = SHARED.begin_native_session().expect("native epoch");
+        let epoch = FEED_SHARED.begin_native_session().expect("native epoch");
         assert_eq!(unsafe { crate::player::sink().load(c"{}".as_ptr(), epoch) }, 0);
         assert_eq!(unsafe { crate::player::sink().ready(&mt) }, 0);
         assert_eq!(release_native_object_timed(&mt, epoch, &mut TeardownSpans::new()),
             plx_playback_contract::ReleaseStatus::Released,
             "the joined host Load refused before constructing any native object");
-        let next = SHARED.begin_native_session()
+        let next = FEED_SHARED.begin_native_session()
             .expect("an explicitly empty native seam must not quarantine subsequent attempts");
-        assert!(SHARED.retire_native_session(next));
+        assert!(FEED_SHARED.retire_native_session(next));
     }
 
     #[test]
@@ -1171,7 +1171,7 @@ mod native_lifecycle_host_seam_tests {
         let _fresh_process = FreshProcess;
         let consent = Consented::grant_in_cycle();
         let mt = unsafe { MainThread::assume() };
-        let epoch = SHARED.begin_native_session().expect("native epoch");
+        let epoch = FEED_SHARED.begin_native_session().expect("native epoch");
         release_native_object(&mt, epoch);
         assert!(
             plx_telemetry::telemetry::window::take_recorded_for_test().is_empty(),
@@ -1777,6 +1777,7 @@ mod stream_open_log_line_tests {
 /// broken build. What it grades is WHERE the predicate is evaluated.
 #[cfg(all(test, feature = "hostsim"))]
 mod prime_livelock_tests {
+    use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
     use super::*;
 
     /// One 2-second HLS segment, as the device delivered it: 48 video AUs at 24 fps and 93 AAC
@@ -1789,9 +1790,9 @@ mod prime_livelock_tests {
     /// An engine in the state a fresh `Load` leaves behind: streaming, nothing fed yet, and
     /// `prime_play` armed so the next sufficient buffer starts the clock.
     pub(super) fn engine_after_reload() -> Engine {
-        SHARED.ensure_initial_clock_hold_for_test();
+        FEED_SHARED.ensure_initial_clock_hold_for_test();
         Engine {
-            shared: &SHARED.feed,
+            shared: &FEED_SHARED,
             attempt: crate::route::RouteStartAttempt::fixture().contract_id(),
             native_epoch: 0,
             stage: Stage::Streaming,
@@ -1895,8 +1896,8 @@ mod prime_livelock_tests {
         let _disarm = DisarmSink;
 
         let mt = unsafe { plx_base::task::MainThread::assume() };
-        SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
-        SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
+        FEED_SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
+        FEED_SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
 
         let mut eng = engine_after_reload();
         push_one_segment(&mut eng);
@@ -1962,8 +1963,8 @@ mod prime_livelock_tests {
     fn ticks_to_prime(step_us: u64) -> (u32, Engine) {
         let _slow = SlowFeed::arm(step_us);
         let mt = unsafe { plx_base::task::MainThread::assume() };
-        SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
-        SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
+        FEED_SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
+        FEED_SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
         let mut eng = engine_after_reload();
         push_one_segment(&mut eng);
         let mut ticks = 0;
@@ -2006,8 +2007,8 @@ mod prime_livelock_tests {
         let _serial = plx_base::testlock::serial();
         let _slow = SlowFeed::arm(1_000);
         let mt = unsafe { plx_base::task::MainThread::assume() };
-        SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
-        SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
+        FEED_SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
+        FEED_SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
 
         let mut eng = engine_after_reload();
         push_one_segment(&mut eng);
@@ -2030,7 +2031,7 @@ mod prime_livelock_tests {
         );
 
         // The presented position sits at the base, so the lead (>= the prime depth) is healthy.
-        SHARED.pres_fed.store(0, Ordering::Relaxed);
+        FEED_SHARED.pres_fed.store(0, Ordering::Relaxed);
         let (v0, a0) = (eng.max_fed_video_pts, eng.max_fed_audio_pts);
         tick(&mt, &mut eng);
         let v_fed = (eng.max_fed_video_pts - v0) / V_STEP_NS;
@@ -2043,7 +2044,7 @@ mod prime_livelock_tests {
             v_fed <= per_lane_max && a_fed <= per_lane_max,
             "one tick fed {v_fed} video and {a_fed} audio AUs; the slice allows {per_lane_max} per lane",
         );
-        SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
+        FEED_SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
     }
 
     /// **A playing lane below low-water is fed past its slice**: at 4 ms a `Feed()` the slice
@@ -2055,8 +2056,8 @@ mod prime_livelock_tests {
         let _slow = SlowFeed::arm(4_000);
         let mt = unsafe { plx_base::task::MainThread::assume() };
         const PRES: i64 = 10_000_000_000;
-        SHARED.pres_fed.store(PRES, Ordering::Relaxed);
-        SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
+        FEED_SHARED.pres_fed.store(PRES, Ordering::Relaxed);
+        FEED_SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
 
         let mut eng = engine_after_reload();
         eng.prime_play = false;
@@ -2080,7 +2081,7 @@ mod prime_livelock_tests {
         let v0 = eng.max_fed_video_pts;
         tick(&mt, &mut eng);
         assert_eq!((eng.max_fed_video_pts - v0) / V_STEP_NS, 1, "a healthy lane is sliced");
-        SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
+        FEED_SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
     }
 
     /// Starting with less playable media than the next observed acquisition costs recreates the
@@ -2094,17 +2095,17 @@ mod prime_livelock_tests {
         }
         impl Drop for Restore {
             fn drop(&mut self) {
-                SHARED
+                FEED_SHARED
                     .hls_prime_runway_ms
                     .store(self.runway, Ordering::Relaxed);
                 crate::player::ffi_host::force_clocksink_for_test(false);
             }
         }
         crate::player::ffi_host::force_clocksink_for_test(true);
-        let old = SHARED.hls_prime_runway_ms.swap(3_000, Ordering::Relaxed);
+        let old = FEED_SHARED.hls_prime_runway_ms.swap(3_000, Ordering::Relaxed);
         let _restore = Restore { runway: old };
-        SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
-        SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
+        FEED_SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
+        FEED_SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
 
         let mt = unsafe { plx_base::task::MainThread::assume() };
         let mut eng = engine_after_reload();
@@ -2136,24 +2137,24 @@ mod prime_livelock_tests {
         }
         impl Drop for Restore {
             fn drop(&mut self) {
-                SHARED
+                FEED_SHARED
                     .hls_prime_runway_ms
                     .store(self.runway, Ordering::Relaxed);
-                SHARED
+                FEED_SHARED
                     .hls_rebuffering
                     .store(self.rebuffering, Ordering::Relaxed);
-                SHARED.finish_hls_recovery();
+                FEED_SHARED.finish_hls_recovery();
                 crate::player::ffi_host::force_clocksink_for_test(false);
             }
         }
         crate::player::ffi_host::force_clocksink_for_test(true);
         let restore = Restore {
-            runway: SHARED.hls_prime_runway_ms.swap(500, Ordering::Relaxed),
-            rebuffering: SHARED.hls_rebuffering.swap(false, Ordering::Relaxed),
+            runway: FEED_SHARED.hls_prime_runway_ms.swap(500, Ordering::Relaxed),
+            rebuffering: FEED_SHARED.hls_rebuffering.swap(false, Ordering::Relaxed),
         };
         let _restore = restore;
-        SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
-        SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
+        FEED_SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
+        FEED_SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
 
         let mt = unsafe { plx_base::task::MainThread::assume() };
         let mut eng = engine_after_reload();
@@ -2165,22 +2166,22 @@ mod prime_livelock_tests {
         );
 
         eng.prime_play = true;
-        SHARED.begin_hls_recovery();
-        SHARED.hls_rebuffering.store(true, Ordering::Relaxed);
+        FEED_SHARED.begin_hls_recovery();
+        FEED_SHARED.hls_rebuffering.store(true, Ordering::Relaxed);
         tick(&mt, &mut eng);
         assert!(
             eng.prime_play,
             "the old high-water is not newly buffered media"
         );
 
-        SHARED.observe_hls_recovery(500_000, std::time::Duration::from_secs(2));
+        FEED_SHARED.observe_hls_recovery(500_000, std::time::Duration::from_secs(2));
         push_segment_at(&mut eng, 2_000_000_000);
         tick(&mt, &mut eng);
         assert!(
             !eng.prime_play,
             "a fresh segment covering the measured runway may resume"
         );
-        assert!(!SHARED.hls_rebuffering.load(Ordering::Relaxed));
+        assert!(!FEED_SHARED.hls_rebuffering.load(Ordering::Relaxed));
     }
 
     /// A candidate transaction owns the discretionary reserve its deadline is currently spending.
@@ -2196,10 +2197,10 @@ mod prime_livelock_tests {
         }
         impl Drop for Restore {
             fn drop(&mut self) {
-                SHARED
+                FEED_SHARED
                     .hls_prime_runway_ms
                     .store(self.runway, Ordering::Relaxed);
-                SHARED
+                FEED_SHARED
                     .hls_trial_reserve_ms
                     .store(self.trial_reserve, Ordering::Relaxed);
                 crate::player::ffi_host::force_clocksink_for_test(false);
@@ -2208,11 +2209,11 @@ mod prime_livelock_tests {
 
         crate::player::ffi_host::force_clocksink_for_test(true);
         let _restore = Restore {
-            runway: SHARED.hls_prime_runway_ms.swap(500, Ordering::Relaxed),
-            trial_reserve: SHARED.hls_trial_reserve_ms.swap(500, Ordering::Relaxed),
+            runway: FEED_SHARED.hls_prime_runway_ms.swap(500, Ordering::Relaxed),
+            trial_reserve: FEED_SHARED.hls_trial_reserve_ms.swap(500, Ordering::Relaxed),
         };
-        SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
-        SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
+        FEED_SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
+        FEED_SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
 
         let mt = unsafe { plx_base::task::MainThread::assume() };
         let mut eng = engine_after_reload();
@@ -2223,7 +2224,7 @@ mod prime_livelock_tests {
             "Play started while the candidate still owned its measured reserve",
         );
 
-        SHARED.hls_trial_reserve_ms.store(-1, Ordering::Relaxed);
+        FEED_SHARED.hls_trial_reserve_ms.store(-1, Ordering::Relaxed);
         tick(&mt, &mut eng);
         assert!(
             !eng.prime_play,
@@ -2262,42 +2263,42 @@ mod prime_livelock_tests {
         }
         impl Drop for Restore {
             fn drop(&mut self) {
-                SHARED
+                FEED_SHARED
                     .hls_prime_runway_ms
                     .store(self.runway, Ordering::Relaxed);
-                SHARED
+                FEED_SHARED
                     .hls_trial_reserve_ms
                     .store(self.trial_reserve, Ordering::Relaxed);
-                SHARED
+                FEED_SHARED
                     .hls_candidate_generation
                     .store(self.settled_generation, Ordering::Release);
-                SHARED
+                FEED_SHARED
                     .hls_rebuffering
                     .store(self.rebuffering, Ordering::Relaxed);
-                SHARED
+                FEED_SHARED
                     .hls_video_tail_ns
                     .store(self.video_tail, Ordering::Relaxed);
-                SHARED
+                FEED_SHARED
                     .hls_audio_tail_ns
                     .store(self.audio_tail, Ordering::Relaxed);
-                SHARED
+                FEED_SHARED
                     .hls_audio_expected
                     .store(self.audio_expected, Ordering::Relaxed);
-                SHARED.pts_shift.store(self.pts_shift, Ordering::Relaxed);
-                TX.commit_paused(self.paused);
-                SHARED.finish_hls_recovery();
+                FEED_SHARED.pts_shift.store(self.pts_shift, Ordering::Relaxed);
+                FEED_TX.commit_paused(self.paused);
+                FEED_SHARED.finish_hls_recovery();
                 crate::player::ffi_host::force_clocksink_for_test(false);
             }
         }
 
         crate::player::ffi_host::force_clocksink_for_test(true);
-        let old_paused = TX.paused.load(Ordering::Acquire);
-        TX.commit_paused(false);
-        let stable_generation = SHARED.hls_candidate_generation.load(Ordering::Acquire);
+        let old_paused = FEED_TX.paused.load(Ordering::Acquire);
+        FEED_TX.commit_paused(false);
+        let stable_generation = FEED_SHARED.hls_candidate_generation.load(Ordering::Acquire);
         assert_eq!(stable_generation & 1, 0, "test starts outside a transition");
         let active_generation = stable_generation.wrapping_add(1);
         let settled_generation = active_generation.wrapping_add(1);
-        SHARED
+        FEED_SHARED
             .hls_candidate_generation
             .compare_exchange(
                 stable_generation,
@@ -2307,24 +2308,24 @@ mod prime_livelock_tests {
             )
             .expect("test arms one candidate generation");
         let _restore = Restore {
-            runway: SHARED.hls_prime_runway_ms.swap(500, Ordering::Relaxed),
-            trial_reserve: SHARED.hls_trial_reserve_ms.swap(-1, Ordering::Relaxed),
+            runway: FEED_SHARED.hls_prime_runway_ms.swap(500, Ordering::Relaxed),
+            trial_reserve: FEED_SHARED.hls_trial_reserve_ms.swap(-1, Ordering::Relaxed),
             settled_generation,
-            rebuffering: SHARED.hls_rebuffering.swap(true, Ordering::Relaxed),
-            video_tail: SHARED
+            rebuffering: FEED_SHARED.hls_rebuffering.swap(true, Ordering::Relaxed),
+            video_tail: FEED_SHARED
                 .hls_video_tail_ns
                 .swap(2_000_000_000, Ordering::Relaxed),
-            audio_tail: SHARED
+            audio_tail: FEED_SHARED
                 .hls_audio_tail_ns
                 .swap(2_000_000_000, Ordering::Relaxed),
-            audio_expected: SHARED.hls_audio_expected.swap(true, Ordering::Relaxed),
-            pts_shift: SHARED.pts_shift.swap(0, Ordering::Relaxed),
+            audio_expected: FEED_SHARED.hls_audio_expected.swap(true, Ordering::Relaxed),
+            pts_shift: FEED_SHARED.pts_shift.swap(0, Ordering::Relaxed),
             paused: old_paused,
         };
-        SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
-        SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
-        SHARED.begin_hls_recovery();
-        SHARED.observe_hls_recovery(500_000, std::time::Duration::from_secs(2));
+        FEED_SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
+        FEED_SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
+        FEED_SHARED.begin_hls_recovery();
+        FEED_SHARED.observe_hls_recovery(500_000, std::time::Duration::from_secs(2));
 
         let mt = unsafe { plx_base::task::MainThread::assume() };
         let mut eng = engine_after_reload();
@@ -2336,8 +2337,8 @@ mod prime_livelock_tests {
         );
 
         // The successful commit publishes a fresh new-rung epoch before the release store.
-        SHARED.begin_hls_recovery();
-        SHARED
+        FEED_SHARED.begin_hls_recovery();
+        FEED_SHARED
             .hls_candidate_generation
             .store(settled_generation, Ordering::Release);
         tick(&mt, &mut eng);
@@ -2346,11 +2347,11 @@ mod prime_livelock_tests {
             "clearing the fence reused the old actuator's completed recovery sample",
         );
 
-        SHARED.observe_hls_recovery(500_000, std::time::Duration::from_secs(2));
-        SHARED
+        FEED_SHARED.observe_hls_recovery(500_000, std::time::Duration::from_secs(2));
+        FEED_SHARED
             .hls_video_tail_ns
             .store(4_000_000_000, Ordering::Release);
-        SHARED
+        FEED_SHARED
             .hls_audio_tail_ns
             .store(4_000_000_000, Ordering::Release);
         push_segment_at(&mut eng, 2_000_000_000);
@@ -2380,57 +2381,57 @@ mod prime_livelock_tests {
         }
         impl Drop for Restore {
             fn drop(&mut self) {
-                SHARED
+                FEED_SHARED
                     .hls_prime_runway_ms
                     .store(self.runway, Ordering::Relaxed);
-                SHARED
+                FEED_SHARED
                     .hls_rebuffering
                     .store(self.rebuffering, Ordering::Relaxed);
-                SHARED
+                FEED_SHARED
                     .hls_video_tail_ns
                     .store(self.video_tail, Ordering::Relaxed);
-                SHARED
+                FEED_SHARED
                     .hls_audio_tail_ns
                     .store(self.audio_tail, Ordering::Relaxed);
-                SHARED
+                FEED_SHARED
                     .hls_audio_expected
                     .store(self.audio_expected, Ordering::Relaxed);
-                SHARED.pts_shift.store(self.pts_shift, Ordering::Relaxed);
-                SHARED.seeking.store(self.seeking, Ordering::Relaxed);
-                TX.paused.store(self.paused, Ordering::Relaxed);
-                SHARED.finish_hls_recovery();
+                FEED_SHARED.pts_shift.store(self.pts_shift, Ordering::Relaxed);
+                FEED_SHARED.seeking.store(self.seeking, Ordering::Relaxed);
+                FEED_TX.paused.store(self.paused, Ordering::Relaxed);
+                FEED_SHARED.finish_hls_recovery();
                 crate::player::ffi_host::force_clocksink_for_test(false);
             }
         }
         crate::player::ffi_host::force_clocksink_for_test(true);
         let _restore = Restore {
-            runway: SHARED.hls_prime_runway_ms.swap(3_000, Ordering::Relaxed),
-            rebuffering: SHARED.hls_rebuffering.swap(true, Ordering::Relaxed),
-            video_tail: SHARED
+            runway: FEED_SHARED.hls_prime_runway_ms.swap(3_000, Ordering::Relaxed),
+            rebuffering: FEED_SHARED.hls_rebuffering.swap(true, Ordering::Relaxed),
+            video_tail: FEED_SHARED
                 .hls_video_tail_ns
                 .swap(3_500_000_000, Ordering::Relaxed),
-            audio_tail: SHARED
+            audio_tail: FEED_SHARED
                 .hls_audio_tail_ns
                 .swap(3_500_000_000, Ordering::Relaxed),
-            audio_expected: SHARED.hls_audio_expected.swap(true, Ordering::Relaxed),
-            pts_shift: SHARED.pts_shift.swap(0, Ordering::Relaxed),
-            seeking: SHARED.seeking.swap(false, Ordering::Relaxed),
-            paused: TX.paused.swap(false, Ordering::Relaxed),
+            audio_expected: FEED_SHARED.hls_audio_expected.swap(true, Ordering::Relaxed),
+            pts_shift: FEED_SHARED.pts_shift.swap(0, Ordering::Relaxed),
+            seeking: FEED_SHARED.seeking.swap(false, Ordering::Relaxed),
+            paused: FEED_TX.paused.swap(false, Ordering::Relaxed),
         };
 
         let mt = unsafe { plx_base::task::MainThread::assume() };
         let mut eng = engine_after_reload();
         eng.max_fed_video_pts = PRIME_NS;
         eng.max_fed_audio_pts = PRIME_AUDIO_NS;
-        SHARED.begin_hls_recovery();
-        SHARED.observe_hls_recovery(3_000_000, std::time::Duration::from_secs(3));
+        FEED_SHARED.begin_hls_recovery();
+        FEED_SHARED.observe_hls_recovery(3_000_000, std::time::Duration::from_secs(3));
         try_prime(&mt, &mut eng);
 
         assert!(
             !eng.prime_play,
             "three seconds already demuxed behind a decoder-prime must release a 3s runway hold",
         );
-        assert!(!SHARED.hls_rebuffering.load(Ordering::Relaxed));
+        assert!(!FEED_SHARED.hls_rebuffering.load(Ordering::Relaxed));
     }
 
     /// Reproduces the device sequence: Pause, let the demux queues fill, then Resume. The user
@@ -2461,53 +2462,53 @@ mod prime_livelock_tests {
         }
         impl Drop for Restore {
             fn drop(&mut self) {
-                SHARED
+                FEED_SHARED
                     .hls_prime_runway_ms
                     .store(self.runway, Ordering::Relaxed);
-                SHARED
+                FEED_SHARED
                     .hls_video_tail_ns
                     .store(self.video_tail, Ordering::Relaxed);
-                SHARED
+                FEED_SHARED
                     .hls_audio_tail_ns
                     .store(self.audio_tail, Ordering::Relaxed);
-                SHARED
+                FEED_SHARED
                     .hls_audio_expected
                     .store(self.audio_expected, Ordering::Relaxed);
-                SHARED.pts_shift.store(self.pts_shift, Ordering::Relaxed);
-                SHARED.pres_fed.store(self.presented, Ordering::Relaxed);
-                TX.commit_paused(self.paused);
-                SHARED.reset_hls_clock_for_test();
+                FEED_SHARED.pts_shift.store(self.pts_shift, Ordering::Relaxed);
+                FEED_SHARED.pres_fed.store(self.presented, Ordering::Relaxed);
+                FEED_TX.commit_paused(self.paused);
+                FEED_SHARED.reset_hls_clock_for_test();
                 crate::player::ffi_host::force_clocksink_for_test(false);
             }
         }
 
         crate::player::ffi_host::force_clocksink_for_test(true);
-        SHARED.reset_hls_clock_for_test();
+        FEED_SHARED.reset_hls_clock_for_test();
         let base = 10_000_000_000;
         let _restore = Restore {
-            runway: SHARED.hls_prime_runway_ms.swap(runway_ms, Ordering::Relaxed),
-            video_tail: SHARED
+            runway: FEED_SHARED.hls_prime_runway_ms.swap(runway_ms, Ordering::Relaxed),
+            video_tail: FEED_SHARED
                 .hls_video_tail_ns
                 .swap(base + playable_ns, Ordering::Relaxed),
-            audio_tail: SHARED
+            audio_tail: FEED_SHARED
                 .hls_audio_tail_ns
                 .swap(base + playable_ns, Ordering::Relaxed),
-            audio_expected: SHARED.hls_audio_expected.swap(true, Ordering::Relaxed),
-            pts_shift: SHARED.pts_shift.swap(0, Ordering::Relaxed),
-            presented: SHARED.pres_fed.swap(base, Ordering::Relaxed),
-            paused: TX.paused.swap(true, Ordering::Relaxed),
+            audio_expected: FEED_SHARED.hls_audio_expected.swap(true, Ordering::Relaxed),
+            pts_shift: FEED_SHARED.pts_shift.swap(0, Ordering::Relaxed),
+            presented: FEED_SHARED.pres_fed.swap(base, Ordering::Relaxed),
+            paused: FEED_TX.paused.swap(true, Ordering::Relaxed),
         };
-        let pause = SHARED.prepare_hls_user_pause().expect("reserve user Pause");
+        let pause = FEED_SHARED.prepare_hls_user_pause().expect("reserve user Pause");
         let pause = match pause {
             super::super::shared::HlsUserPause::Issue(token) => token,
             other => panic!("unexpected Pause reservation: {other:?}"),
         };
         assert_eq!(
-            SHARED.complete_hls_user_pause(pause, true),
+            FEED_SHARED.complete_hls_user_pause(pause, true),
             super::super::shared::HlsPauseCompletion::Accepted
         );
         assert_eq!(
-            SHARED.prepare_hls_user_resume(true),
+            FEED_SHARED.prepare_hls_user_resume(true),
             Some(super::super::shared::HlsUserResume::Prime)
         );
 
@@ -2525,7 +2526,7 @@ mod prime_livelock_tests {
             "Resume intent itself issued Play before feeding reopened",
         );
 
-        TX.commit_paused(false);
+        FEED_TX.commit_paused(false);
         // Balanced decoder prime is still mandatory even when historical runway is ignored.
         eng.max_fed_video_pts = base + PRIME_NS;
         eng.max_fed_audio_pts = base;
@@ -2561,13 +2562,13 @@ mod prime_livelock_tests {
         }
         impl Drop for Restore {
             fn drop(&mut self) {
-                SHARED
+                FEED_SHARED
                     .hls_prime_runway_ms
                     .store(self.runway, Ordering::Relaxed);
-                SHARED
+                FEED_SHARED
                     .hls_rebuffering
                     .store(self.rebuffering, Ordering::Relaxed);
-                SHARED.finish_hls_recovery();
+                FEED_SHARED.finish_hls_recovery();
                 crate::player::ffi_host::force_play_result_for_test(None);
                 crate::player::ffi_host::force_clocksink_for_test(false);
             }
@@ -2576,16 +2577,16 @@ mod prime_livelock_tests {
         crate::player::ffi_host::force_clocksink_for_test(true);
         crate::player::ffi_host::force_play_result_for_test(Some(0));
         let _restore = Restore {
-            runway: SHARED.hls_prime_runway_ms.swap(500, Ordering::Relaxed),
-            rebuffering: SHARED.hls_rebuffering.swap(true, Ordering::Relaxed),
+            runway: FEED_SHARED.hls_prime_runway_ms.swap(500, Ordering::Relaxed),
+            rebuffering: FEED_SHARED.hls_rebuffering.swap(true, Ordering::Relaxed),
         };
-        SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
-        SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
+        FEED_SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
+        FEED_SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
 
         let mt = unsafe { plx_base::task::MainThread::assume() };
         let mut eng = engine_after_reload();
-        SHARED.begin_hls_recovery();
-        SHARED.observe_hls_recovery(500_000, std::time::Duration::from_secs(2));
+        FEED_SHARED.begin_hls_recovery();
+        FEED_SHARED.observe_hls_recovery(500_000, std::time::Duration::from_secs(2));
         push_one_segment(&mut eng);
         tick(&mt, &mut eng);
 
@@ -2594,7 +2595,7 @@ mod prime_livelock_tests {
             "a refused Play must remain pending for the next pump tick"
         );
         assert!(
-            SHARED.hls_rebuffering.load(Ordering::Relaxed),
+            FEED_SHARED.hls_rebuffering.load(Ordering::Relaxed),
             "the UI/runtime hold was cleared without a successful clock transition",
         );
     }
@@ -2615,15 +2616,15 @@ mod lifecycle_clock_tests {
             !pa.is_live(),
             "test requires an empty native-session slot"
         );
-        SHARED.reset_hls_clock_for_test();
+        FEED_SHARED.reset_hls_clock_for_test();
 
         stop_bufferfeed(&mut ps, &mut pa);
 
         assert!(
-            SHARED.arm_initial_clock_hold(false, false),
+            FEED_SHARED.arm_initial_clock_hold(false, false),
             "a no-op stop left ClockState in Stopping"
         );
-        SHARED.cancel_clock_session_start();
+        FEED_SHARED.cancel_clock_session_start();
     }
 }
 
@@ -2706,7 +2707,7 @@ mod off_frame_release_tests {
         fn drop(&mut self) {
             crate::player::ffi_host::reset_native_lifecycle_for_test();
             crate::player::ffi_host::force_clocksink_for_test(false);
-            SHARED.test_force_native_idle();
+            FEED_SHARED.test_force_native_idle();
             SHARED.reset_session();
             crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
         }
@@ -2718,9 +2719,9 @@ mod off_frame_release_tests {
 
     /// A live Engine over a ready host object whose Load has returned: what BACK tears down.
     fn playing_engine(pa: &mut crate::player::adapter::PlayerAdapter) -> u32 {
-        let epoch = SHARED.begin_native_session().expect("native session");
+        let epoch = FEED_SHARED.begin_native_session().expect("native session");
         assert_eq!(unsafe { crate::player::sink().load(c"{}".as_ptr(), epoch) }, 1);
-        assert!(SHARED.mark_native_load_returned(epoch, None).is_some());
+        assert!(FEED_SHARED.mark_native_load_returned(epoch, None).is_some());
         let mut eng = streaming_engine_for_test(epoch);
         eng.load_th = None;
         pa.install(eng);
@@ -2761,15 +2762,15 @@ mod off_frame_release_tests {
 
         // A callback the stopped object delivers now (a late error, say) is dropped: the session
         // state was already reset for whatever plays next.
-        let before = SHARED.dg_cb_count.load(Ordering::Relaxed);
+        let before = FEED_SHARED.dg_cb_count.load(Ordering::Relaxed);
         super::super::sf_on_event(epoch, 5, 0, std::ptr::null());
         assert_eq!(
-            SHARED.dg_cb_count.load(Ordering::Relaxed),
+            FEED_SHARED.dg_cb_count.load(Ordering::Relaxed),
             before,
             "a callback from the object being released reached the next session's state"
         );
         assert!(
-            SHARED.begin_native_session().is_none(),
+            FEED_SHARED.begin_native_session().is_none(),
             "a native session began while the previous object was still inside Unload"
         );
         assert!(
@@ -2802,8 +2803,8 @@ mod off_frame_release_tests {
             !crate::player::ffi_host::lifecycle_blocked_for_test(),
             "the off-frame release must end in a D1 with complete evidence, not a quarantine"
         );
-        let next = SHARED.begin_native_session().expect("native sessions resume after the release");
-        assert!(SHARED.retire_native_session(next));
+        let next = FEED_SHARED.begin_native_session().expect("native sessions resume after the release");
+        assert!(FEED_SHARED.retire_native_session(next));
     }
 
     #[test]
@@ -2853,11 +2854,11 @@ mod off_frame_release_tests {
         finish_release_for_test(&mut pa);
         assert!(!crate::player::ffi_host::lifecycle_blocked_for_test(), "the release must still D1");
         assert_eq!(
-            SHARED.dg_cb_count.load(Ordering::Relaxed),
+            FEED_SHARED.dg_cb_count.load(Ordering::Relaxed),
             0,
             "the stopped object's UNLOADCOMPLETED (after reset_session) counted into the next session's callback census"
         );
-        assert_eq!(SHARED.dg_cb_err_at.load(Ordering::Relaxed), 0);
+        assert_eq!(FEED_SHARED.dg_cb_err_at.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -2961,7 +2962,7 @@ mod off_frame_release_tests {
         );
         assert_eq!(outcome, BufferfeedStartOutcome::Deferred);
         assert!(!pa.is_live());
-        assert!(SHARED.begin_native_session().is_none());
+        assert!(FEED_SHARED.begin_native_session().is_none());
         assert!(pa.has_pending_release());
         assert_eq!(
             crate::player::state(&ps),
@@ -3238,12 +3239,12 @@ mod off_frame_release_tests {
         crate::player::ffi_host::delay_unload_for_test(UNLOAD_MS);
         stop_bufferfeed(&mut ps, &mut pa);
         assert!(pa.has_pending_release());
-        let before = SHARED.dg_cb_count.load(Ordering::Relaxed);
+        let before = FEED_SHARED.dg_cb_count.load(Ordering::Relaxed);
         super::super::sf_on_event(epoch + 1, 23, 0, std::ptr::null());
         super::super::sf_on_event(0, 23, 0, std::ptr::null());
-        assert_eq!(SHARED.dg_cb_count.load(Ordering::Relaxed), before, "a wrong-epoch event was processed");
+        assert_eq!(FEED_SHARED.dg_cb_count.load(Ordering::Relaxed), before, "a wrong-epoch event was processed");
         assert!(
-            !SHARED.native_unload_completed(epoch),
+            !FEED_SHARED.native_unload_completed(epoch),
             "a wrong-epoch UNLOADCOMPLETED counted as the release's D1 evidence"
         );
         finish_release_for_test(&mut pa);
@@ -3271,7 +3272,7 @@ mod load_in_flight_tests {
             crate::player::ffi_host::reset_native_lifecycle_for_test();
             crate::player::ffi_host::force_clocksink_for_test(false);
             crate::player::ffi_host::set_load_in_flight_for_test(false);
-            SHARED.test_force_native_idle();
+            FEED_SHARED.test_force_native_idle();
             SHARED.reset_session();
             crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
         }
@@ -3331,7 +3332,7 @@ mod load_in_flight_tests {
         let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
             plx_base::task::MainThread::assume()
         });
-        let epoch = SHARED.begin_native_session().expect("native session");
+        let epoch = FEED_SHARED.begin_native_session().expect("native session");
         pa.install(engine_loading(epoch));
 
         // Push a whole segment's worth onto both lanes now, the way a demuxer already running
@@ -3387,7 +3388,7 @@ mod load_in_flight_tests {
             crate::player::ffi_host::in_flight_verb_for_test()
         );
         assert!(
-            !SHARED.native_load_returned(epoch),
+            !FEED_SHARED.native_load_returned(epoch),
             "sanity: the Rust-side gate must still read closed while sf_load has not returned"
         );
         assert!(
@@ -3410,7 +3411,7 @@ mod load_in_flight_tests {
             }
         }
         assert!(
-            SHARED.native_load_returned(epoch),
+            FEED_SHARED.native_load_returned(epoch),
             "the Rust-side gate must open once threads::load_thread has actually returned"
         );
         assert!(
@@ -3445,7 +3446,7 @@ mod load_in_flight_tests {
         let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
             plx_base::task::MainThread::assume()
         });
-        let epoch = SHARED.begin_native_session().expect("native session");
+        let epoch = FEED_SHARED.begin_native_session().expect("native session");
         pa.install(engine_loading(epoch));
 
         // `sf_ready(mt)` must already read nonzero (SMP_READY true) BEFORE the loadCompleted arm
@@ -3462,7 +3463,7 @@ mod load_in_flight_tests {
         wait_for_load_in_flight();
 
         assert!(
-            !SHARED.native_load_returned(epoch),
+            !FEED_SHARED.native_load_returned(epoch),
             "sanity: the gate starts closed"
         );
 
@@ -3470,22 +3471,22 @@ mod load_in_flight_tests {
         // pump is still deferring loadCompleted (Load is genuinely still executing on the load
         // thread) — the phase leaves Active for Unloaded without `load_call` ever reaching
         // `Returned`.
-        SHARED.with_native_session(
+        FEED_SHARED.with_native_session(
             epoch,
             crate::player::shared::NativeEventClass::UnloadCompleted,
             23,
             || {},
         );
         assert!(
-            SHARED.native_load_elapsed(epoch).is_none(),
+            FEED_SHARED.native_load_elapsed(epoch).is_none(),
             "PRECONDITION FAILED: the epoch must have actually left Active, or this test proves \
              nothing about the hazard (AGENTS.md's silent-instrument rule)"
         );
 
-        assert!(!SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!FEED_SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire));
         crate::player::pump::pump(&mut ps, &mut pa, 1_000);
         assert!(
-            SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
+            FEED_SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
             "losing Active while loadCompleted was still deferred must fire the D.1.4 budget \
              immediately rather than silently disabling it — the permanent Connecting spinner \
              this exists to rule out"
@@ -3518,7 +3519,7 @@ mod load_in_flight_tests {
         let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
             plx_base::task::MainThread::assume()
         });
-        let epoch = SHARED.begin_native_session().expect("native session");
+        let epoch = FEED_SHARED.begin_native_session().expect("native session");
         pa.install(engine_loading(epoch));
 
         crate::player::ffi_host::hold_load_for_test();
@@ -3531,26 +3532,26 @@ mod load_in_flight_tests {
         wait_for_load_in_flight();
 
         assert!(
-            SHARED.test_backdate_native_load_issued(epoch, crate::player::pump::NATIVE_LOAD_BUDGET),
+            FEED_SHARED.test_backdate_native_load_issued(epoch, crate::player::pump::NATIVE_LOAD_BUDGET),
             "PRECONDITION FAILED: the epoch must still own the Active phase to backdate its \
              load_issued_at, or this test proves nothing about the arm under test"
         );
         assert!(
-            SHARED
+            FEED_SHARED
                 .native_load_elapsed(epoch)
                 .is_some_and(|e| e >= crate::player::pump::NATIVE_LOAD_BUDGET),
             "PRECONDITION FAILED: the backdate must actually push elapsed past the budget — a \
              silent-instrument trap (AGENTS.md) if it doesn't"
         );
         assert!(
-            !SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
+            !FEED_SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
             "sanity: load_failed starts clear"
         );
 
         crate::player::pump::pump(&mut ps, &mut pa, 1_000);
 
         assert!(
-            SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
+            FEED_SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
             "elapsed >= NATIVE_LOAD_BUDGET must publish load_failed — an inverted or otherwise \
              broken comparison here would leave a Load that never returns spinning forever \
              instead of reaching the failure read-out"
@@ -3587,20 +3588,20 @@ mod load_in_flight_tests {
         let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
             plx_base::task::MainThread::assume()
         });
-        let epoch = SHARED.begin_native_session().expect("native session");
+        let epoch = FEED_SHARED.begin_native_session().expect("native session");
         pa.install(engine_loading(epoch));
 
         assert!(
-            SHARED.mark_native_load_returned(epoch, None).is_some(),
+            FEED_SHARED.mark_native_load_returned(epoch, None).is_some(),
             "PRECONDITION FAILED: Load must actually be marked Returned, or this test proves \
              nothing about the second-half budget"
         );
         assert!(
-            SHARED.native_load_returned(epoch),
+            FEED_SHARED.native_load_returned(epoch),
             "PRECONDITION FAILED: the gate must read Returned"
         );
         assert!(
-            !SHARED.load_completed.load(std::sync::atomic::Ordering::Relaxed),
+            !FEED_SHARED.load_completed.load(std::sync::atomic::Ordering::Relaxed),
             "PRECONDITION FAILED: loadCompleted must genuinely never have arrived"
         );
         assert_ne!(
@@ -3618,7 +3619,7 @@ mod load_in_flight_tests {
         );
 
         assert!(
-            SHARED.test_backdate_native_load_returned(
+            FEED_SHARED.test_backdate_native_load_returned(
                 epoch,
                 crate::player::pump::NATIVE_LOAD_BUDGET
             ),
@@ -3626,21 +3627,21 @@ mod load_in_flight_tests {
              returned, or this test proves nothing about the arm under test"
         );
         assert!(
-            SHARED
+            FEED_SHARED
                 .native_load_returned_elapsed(epoch)
                 .is_some_and(|e| e >= crate::player::pump::NATIVE_LOAD_BUDGET),
             "PRECONDITION FAILED: the backdate must actually push the returned-elapsed past the \
              budget — a silent-instrument trap (AGENTS.md) if it doesn't"
         );
         assert!(
-            !SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
+            !FEED_SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
             "sanity: load_failed starts clear"
         );
 
         crate::player::pump::pump(&mut ps, &mut pa, 1_000);
 
         assert!(
-            SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
+            FEED_SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
             "loadCompleted never arriving within NATIVE_LOAD_BUDGET of Load RETURNING must \
              publish load_failed — an unbounded wait here is exactly the permanent-Connecting- \
              spinner shape D.1.4 exists to rule out, on the half that was still open"
@@ -3665,7 +3666,7 @@ mod load_in_flight_tests {
         let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
             plx_base::task::MainThread::assume()
         });
-        let epoch = SHARED.begin_native_session().expect("native session");
+        let epoch = FEED_SHARED.begin_native_session().expect("native session");
         pa.install(engine_loading(epoch));
 
         // Get the host seam's OBJECT_READY (so `sf_ready(mt)` reads true and the pump reaches
@@ -3694,11 +3695,11 @@ mod load_in_flight_tests {
         let other_epoch = epoch.wrapping_add(1).max(1);
         assert_ne!(other_epoch, epoch, "the test must pick a genuinely different epoch");
         assert!(
-            SHARED.mark_native_load_returned(other_epoch, None).is_none(),
+            FEED_SHARED.mark_native_load_returned(other_epoch, None).is_none(),
             "marking an epoch that does not own the Active phase must be a no-op"
         );
         assert!(
-            !SHARED.native_load_returned(epoch),
+            !FEED_SHARED.native_load_returned(epoch),
             "a mark for a DIFFERENT epoch must never open THIS epoch's gate — this is the \
              epoch-scoping property that stops a late thread from a superseded session opening \
              the gate for a newer one"
@@ -3728,14 +3729,14 @@ mod load_in_flight_tests {
         let _cleanup = Cleanup;
         let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let epoch = SHARED.begin_native_session().unwrap();
+        let epoch = FEED_SHARED.begin_native_session().unwrap();
         pa.install(engine_loading(epoch));
         assert_eq!(unsafe { crate::player::sink().ready(pa.mt()) }, 0);
         crate::player::pump::pump(&mut ps, &mut pa, 1000);
-        assert!(!SHARED.load_failed.load(Ordering::Acquire));
-        assert!(SHARED.test_backdate_native_load_issued(epoch, crate::player::pump::NATIVE_LOAD_BUDGET));
+        assert!(!FEED_SHARED.load_failed.load(Ordering::Acquire));
+        assert!(FEED_SHARED.test_backdate_native_load_issued(epoch, crate::player::pump::NATIVE_LOAD_BUDGET));
         crate::player::pump::pump(&mut ps, &mut pa, 1001);
-        assert!(SHARED.load_failed.load(Ordering::Acquire), "constructor readiness must not bypass the issued budget");
+        assert!(FEED_SHARED.load_failed.load(Ordering::Acquire), "constructor readiness must not bypass the issued budget");
     }
     #[test]
     fn native_source_correction_stale_load_refusal_cannot_fail_new_epoch() {
@@ -3746,14 +3747,14 @@ mod load_in_flight_tests {
         let _cleanup = Cleanup;
         let mt = unsafe { plx_base::task::MainThread::assume() };
         unsafe { crate::player::sink().quarantine(&mt); }
-        let old = SHARED.begin_native_session().unwrap();
-        assert!(SHARED.retire_native_session(old));
-        let current = SHARED.begin_native_session().unwrap();
+        let old = FEED_SHARED.begin_native_session().unwrap();
+        assert!(FEED_SHARED.retire_native_session(old));
+        let current = FEED_SHARED.begin_native_session().unwrap();
         threads::load_thread(threads::SendPtr(c"{}".as_ptr() as *mut c_char), old, None, PcmLead::Off);
-        assert!(!SHARED.load_failed.load(Ordering::Acquire), "a stale worker must not poison the newer epoch");
-        assert!(!SHARED.native_load_returned(current));
+        assert!(!FEED_SHARED.load_failed.load(Ordering::Acquire), "a stale worker must not poison the newer epoch");
+        assert!(!FEED_SHARED.native_load_returned(current));
         threads::load_thread(threads::SendPtr(c"{}".as_ptr() as *mut c_char), current, None, PcmLead::Off);
-        assert!(SHARED.load_failed.load(Ordering::Acquire), "a current synchronous refusal must still fail");
+        assert!(FEED_SHARED.load_failed.load(Ordering::Acquire), "a current synchronous refusal must still fail");
     }
 
     #[test]
@@ -3767,11 +3768,11 @@ mod load_in_flight_tests {
         let _cleanup = Cleanup;
         let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
         let mut ps = crate::route::PlaybackSession::IDLE;
-        let epoch = SHARED.begin_native_session().unwrap();
+        let epoch = FEED_SHARED.begin_native_session().unwrap();
         pa.install(engine_loading(epoch));
         crate::player::pump::pump(&mut ps, &mut pa, 1000);
         assert_eq!(crate::player::state(&ps), crate::player::PlaybackState::Connecting);
-        SHARED.demux_failed.store(true, Ordering::Release);
+        FEED_SHARED.demux_failed.store(true, Ordering::Release);
         crate::player::pump::pump(&mut ps, &mut pa, 1001);
         assert_eq!(crate::player::state(&ps), crate::player::PlaybackState::Error);
     }
@@ -3797,7 +3798,7 @@ mod load_in_flight_tests {
         let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
             plx_base::task::MainThread::assume()
         });
-        let epoch = SHARED.begin_native_session().expect("native session");
+        let epoch = FEED_SHARED.begin_native_session().expect("native session");
         let mut eng = engine_loading(epoch);
         crate::player::ffi_host::hold_load_for_test();
         let payload_ptr = threads::SendPtr(eng.payload.as_ptr() as *mut c_char);
@@ -3811,12 +3812,12 @@ mod load_in_flight_tests {
         wait_for_load_in_flight();
 
         assert!(
-            SHARED.test_backdate_native_load_issued(epoch, crate::player::pump::NATIVE_LOAD_BUDGET),
+            FEED_SHARED.test_backdate_native_load_issued(epoch, crate::player::pump::NATIVE_LOAD_BUDGET),
             "PRECONDITION FAILED: the epoch must still own Active to backdate it"
         );
         crate::player::pump::pump(&mut ps, &mut pa, 1_000);
         assert!(
-            SHARED.load_timed_out.load(Ordering::Acquire),
+            FEED_SHARED.load_timed_out.load(Ordering::Acquire),
             "PRECONDITION FAILED: the budget must have fired, or this test is not about a timed-out Load"
         );
 
@@ -3863,7 +3864,7 @@ mod load_in_flight_tests {
             "the object must be neither unloaded, destroyed nor quarantined while Load is in flight"
         );
         assert!(
-            SHARED.begin_native_session().is_none(),
+            FEED_SHARED.begin_native_session().is_none(),
             "no new native session may begin while the seam still owns the abandoned object"
         );
 
@@ -3896,8 +3897,8 @@ mod load_in_flight_tests {
             !crate::player::ffi_host::lifecycle_blocked_for_test(),
             "the release must be a D1 with complete evidence, not a process-long quarantine"
         );
-        let next = SHARED.begin_native_session().expect("native sessions resume after the release");
-        assert!(SHARED.retire_native_session(next));
+        let next = FEED_SHARED.begin_native_session().expect("native sessions resume after the release");
+        assert!(FEED_SHARED.retire_native_session(next));
     }
 
     /// Releases the held host `sf_load` when a test unwinds, so a failed assertion cannot leave
@@ -3916,7 +3917,7 @@ mod load_in_flight_tests {
         ps: &mut crate::route::PlaybackSession,
         pa: &mut crate::player::adapter::PlayerAdapter,
     ) {
-        let epoch = SHARED.begin_native_session().expect("native session");
+        let epoch = FEED_SHARED.begin_native_session().expect("native session");
         let mut eng = engine_loading(epoch);
         crate::player::ffi_host::hold_load_for_test();
         let payload_ptr = threads::SendPtr(eng.payload.as_ptr() as *mut c_char);
@@ -3929,12 +3930,12 @@ mod load_in_flight_tests {
         pa.install(eng);
         wait_for_load_in_flight();
         assert!(
-            SHARED.test_backdate_native_load_issued(epoch, crate::player::pump::NATIVE_LOAD_BUDGET),
+            FEED_SHARED.test_backdate_native_load_issued(epoch, crate::player::pump::NATIVE_LOAD_BUDGET),
             "PRECONDITION FAILED: the epoch must still own Active to backdate it"
         );
         crate::player::pump::pump(ps, pa, 1_000);
         assert!(
-            SHARED.load_timed_out.load(Ordering::Acquire),
+            FEED_SHARED.load_timed_out.load(Ordering::Acquire),
             "PRECONDITION FAILED: the budget must have fired, or this test is not about a timed-out Load"
         );
     }
@@ -4862,7 +4863,7 @@ mod load_refusal_tests {
         let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
             plx_base::task::MainThread::assume()
         });
-        let epoch = SHARED.begin_native_session().expect("native session");
+        let epoch = FEED_SHARED.begin_native_session().expect("native session");
         let mut eng = super::prime_livelock_tests::engine_after_reload();
         eng.native_epoch = epoch;
         pa.install(eng);
@@ -4878,7 +4879,7 @@ mod load_refusal_tests {
         crate::player::pump::pump(&mut ps, &mut pa, 1_000);
 
         assert!(
-            SHARED.load_failed.load(Ordering::Acquire),
+            FEED_SHARED.load_failed.load(Ordering::Acquire),
             "type=18 num=601 before any picture must publish load_failed; the lab set sat on a \
              black screen for 70 s because it did not"
         );
@@ -4947,8 +4948,8 @@ mod late_audio_start_tests {
     impl Drop for Restore {
         fn drop(&mut self) {
             crate::player::ffi_host::force_clocksink_for_test(false);
-            SHARED.first_audio_pts.store(i64::MIN, Ordering::Relaxed);
-            SHARED.pres_fed.store(0, Ordering::Relaxed);
+            FEED_SHARED.first_audio_pts.store(i64::MIN, Ordering::Relaxed);
+            FEED_SHARED.pres_fed.store(0, Ordering::Relaxed);
         }
     }
 
@@ -4966,7 +4967,7 @@ mod late_audio_start_tests {
         for i in 0..200 {
             crate::aq::aq_push(qa, au.as_ptr(), au.len() as c_int, AUDIO_DELAY_NS + i * A_STEP_NS, 1, 2);
         }
-        SHARED.first_audio_pts.store(first_audio, Ordering::Relaxed);
+        FEED_SHARED.first_audio_pts.store(first_audio, Ordering::Relaxed);
         eng
     }
 
@@ -4979,8 +4980,8 @@ mod late_audio_start_tests {
 
     fn arm() -> Restore {
         crate::player::ffi_host::force_clocksink_for_test(true);
-        SHARED.pres_fed.store(0, Ordering::Relaxed);
-        SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
+        FEED_SHARED.pres_fed.store(0, Ordering::Relaxed);
+        FEED_SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
         Restore
     }
 
@@ -5033,6 +5034,7 @@ mod late_audio_start_tests {
 /// `VP_EXPORTED` exactly as a webOS 5+ set does.
 #[cfg(all(test, feature = "hostsim"))]
 mod native_seek_tests {
+    use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
     use super::*;
     use crate::player::ffi_host;
 
@@ -5046,20 +5048,20 @@ mod native_seek_tests {
             ffi_host::force_clocksink_for_test(false);
             ffi_host::reset_seek_probe_for_test(None);
             crate::player::set_seek_mode(SeekMode::Segment);
-            SHARED.pts_shift.store(0, Ordering::Relaxed);
-            SHARED.seek_target_ns.store(-1, Ordering::Relaxed);
-            SHARED.pres_fed.store(0, Ordering::Relaxed);
-            TX.seek_to_ns.store(-1, Ordering::Relaxed);
-            TX.seek_reqs.store(0, Ordering::Relaxed);
+            FEED_SHARED.pts_shift.store(0, Ordering::Relaxed);
+            FEED_SHARED.seek_target_ns.store(-1, Ordering::Relaxed);
+            FEED_SHARED.pres_fed.store(0, Ordering::Relaxed);
+            FEED_TX.seek_to_ns.store(-1, Ordering::Relaxed);
+            FEED_TX.seek_reqs.store(0, Ordering::Relaxed);
         }
     }
 
     fn arm(force_seek: Option<c_int>) -> Restore {
         ffi_host::force_clocksink_for_test(true);
         ffi_host::reset_seek_probe_for_test(force_seek);
-        SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
-        TX.seek_to_ns.store(-1, Ordering::Relaxed);
-        TX.seek_reqs.store(0, Ordering::Relaxed);
+        FEED_SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
+        FEED_TX.seek_to_ns.store(-1, Ordering::Relaxed);
+        FEED_TX.seek_reqs.store(0, Ordering::Relaxed);
         Restore
     }
 
@@ -5069,7 +5071,7 @@ mod native_seek_tests {
         let mut eng = super::prime_livelock_tests::engine_after_reload();
         eng.flushed = true;
         eng.rebase_pending = true;
-        SHARED.seek_target_ns.store(TARGET_NS, Ordering::Relaxed);
+        FEED_SHARED.seek_target_ns.store(TARGET_NS, Ordering::Relaxed);
         let au = [0u8; 64];
         let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut crate::aq::AuQueue;
         for i in 0..60 {
@@ -5157,7 +5159,7 @@ mod native_seek_tests {
         assert_eq!(ffi_host::seek_log_for_test(), vec![TARGET_NS / 1_000_000], "Seek(<keyframe ms>), once");
         assert_eq!(ffi_host::flush_calls_for_test(), 0, "Seek flushes itself; a flush after it re-anchors at 0");
         assert!(!eng.flushed && !eng.rebase_pending, "the seek is applied");
-        assert_eq!(SHARED.pts_shift.load(Ordering::Relaxed), 0, "content time, no rebase");
+        assert_eq!(FEED_SHARED.pts_shift.load(Ordering::Relaxed), 0, "content time, no rebase");
         assert!(eng.max_fed_video_pts >= TARGET_NS, "the keyframe and the AUs after it were fed on the Seek's timeline");
         assert_eq!(crate::player::seek_mode(), SeekMode::NativeSeek);
     }
@@ -5170,7 +5172,7 @@ mod native_seek_tests {
         let mut eng = super::prime_livelock_tests::engine_after_reload();
         eng.flushed = true;
         eng.rebase_pending = true;
-        SHARED.seek_target_ns.store(0, Ordering::Relaxed);
+        FEED_SHARED.seek_target_ns.store(0, Ordering::Relaxed);
         let au = [0u8; 64];
         let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut crate::aq::AuQueue;
         crate::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, -80_000_000, 1, 1);
@@ -5189,7 +5191,7 @@ mod native_seek_tests {
         assert_eq!(crate::player::seek_mode(), SeekMode::Reload, "native seek is off for the rest of the session");
         assert!(crate::player::pump::seek_reloads(crate::player::seek_mode()));
         assert_eq!(
-            TX.seek_to_ns.load(Ordering::Acquire),
+            FEED_TX.seek_to_ns.load(Ordering::Acquire),
             TARGET_NS,
             "this seek is re-posted at the user's target for the pump's reload"
         );
@@ -5210,7 +5212,7 @@ mod pcm_sink_lead_pure_tests {
     struct Restore;
     impl Drop for Restore {
         fn drop(&mut self) {
-            SHARED.applied_rate_permille.store(crate::player::RATE_NORMAL, Ordering::Relaxed);
+            FEED_SHARED.applied_rate_permille.store(crate::player::RATE_NORMAL, Ordering::Relaxed);
         }
     }
 
@@ -5218,18 +5220,18 @@ mod pcm_sink_lead_pure_tests {
     fn no_lead_is_the_pipeline_timeline_and_a_lead_is_real_time_after_the_speed_division() {
         let _serial = plx_base::testlock::serial();
         let _restore = Restore;
-        SHARED.applied_rate_permille.store(crate::player::RATE_NORMAL, Ordering::Relaxed);
+        FEED_SHARED.applied_rate_permille.store(crate::player::RATE_NORMAL, Ordering::Relaxed);
         assert_eq!(audio_sink_pts(7_000_000_000, 0), crate::player::to_sink_ns(7_000_000_000));
         assert_eq!(audio_sink_pts(7_000_000_000, PCM_SINK_LEAD_NS), 7_000_000_000 + PCM_SINK_LEAD_NS);
 
-        SHARED.applied_rate_permille.store(1500, Ordering::Relaxed);
+        FEED_SHARED.applied_rate_permille.store(1500, Ordering::Relaxed);
         assert_eq!(audio_sink_pts(3_000_000_000, 0), crate::player::to_sink_ns(3_000_000_000));
         assert_eq!(
             audio_sink_pts(3_000_000_000, 400_000_000),
             2_000_000_000 + 400_000_000,
             "film time is divided by the speed, the set's 400 ms is not"
         );
-        SHARED.applied_rate_permille.store(500, Ordering::Relaxed);
+        FEED_SHARED.applied_rate_permille.store(500, Ordering::Relaxed);
         assert_eq!(audio_sink_pts(3_000_000_000, 400_000_000), 6_000_000_000 + 400_000_000);
     }
 
@@ -5237,7 +5239,7 @@ mod pcm_sink_lead_pure_tests {
     fn a_sink_pts_never_goes_below_zero_or_overflows() {
         let _serial = plx_base::testlock::serial();
         let _restore = Restore;
-        SHARED.applied_rate_permille.store(crate::player::RATE_NORMAL, Ordering::Relaxed);
+        FEED_SHARED.applied_rate_permille.store(crate::player::RATE_NORMAL, Ordering::Relaxed);
         assert_eq!(audio_sink_pts(0, 0), 0);
         assert_eq!(audio_sink_pts(-500_000_000, 400_000_000), 0, "a unit before the origin is not sent negative");
         assert_eq!(audio_sink_pts(100_000_000, -400_000_000), 0, "a negative dev override clamps too");
@@ -5552,7 +5554,7 @@ mod pcm_stack_wiring_tests {
         fn drop(&mut self) {
             crate::player::ffi_host::reset_native_lifecycle_for_test();
             crate::player::ffi_host::force_clocksink_for_test(false);
-            SHARED.test_force_native_idle();
+            FEED_SHARED.test_force_native_idle();
             SHARED.reset_session();
             crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
         }
@@ -5598,7 +5600,7 @@ mod pcm_stack_wiring_tests {
         );
         let pending = eng.pcm_lead_pending;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !SHARED.native_load_returned(eng.native_epoch) {
+        while !FEED_SHARED.native_load_returned(eng.native_epoch) {
             assert!(std::time::Instant::now() < deadline, "the Load never returned");
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
@@ -5606,7 +5608,7 @@ mod pcm_stack_wiring_tests {
         let lead = eng.pcm_sink_lead_ns;
         std::thread::sleep(std::time::Duration::from_millis(linger_ms));
         assert!(
-            SHARED.native_load_returned(eng.native_epoch),
+            FEED_SHARED.native_load_returned(eng.native_epoch),
             "a Load that returned stays returned until its stop: another session's Unload reached this one"
         );
         crate::player::ffi_host::delay_unload_for_test(unload_ms);
@@ -5661,11 +5663,11 @@ mod pcm_sink_lead_tests {
             ffi_host::force_clocksink_for_test(false);
             ffi_host::reset_seek_probe_for_test(None);
             crate::player::set_seek_mode(SeekMode::Segment);
-            SHARED.pts_shift.store(0, Ordering::Relaxed);
-            SHARED.seek_target_ns.store(-1, Ordering::Relaxed);
-            SHARED.pres_fed.store(0, Ordering::Relaxed);
-            SHARED.first_audio_pts.store(i64::MIN, Ordering::Relaxed);
-            SHARED.applied_rate_permille.store(crate::player::RATE_NORMAL, Ordering::Relaxed);
+            FEED_SHARED.pts_shift.store(0, Ordering::Relaxed);
+            FEED_SHARED.seek_target_ns.store(-1, Ordering::Relaxed);
+            FEED_SHARED.pres_fed.store(0, Ordering::Relaxed);
+            FEED_SHARED.first_audio_pts.store(i64::MIN, Ordering::Relaxed);
+            FEED_SHARED.applied_rate_permille.store(crate::player::RATE_NORMAL, Ordering::Relaxed);
         }
     }
 
@@ -5673,10 +5675,10 @@ mod pcm_sink_lead_tests {
         ffi_host::force_clocksink_for_test(true);
         ffi_host::reset_seek_probe_for_test(None);
         crate::player::set_seek_mode(SeekMode::Segment);
-        SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
-        SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
-        SHARED.pts_shift.store(0, Ordering::Relaxed);
-        SHARED.first_audio_pts.store(i64::MIN, Ordering::Relaxed);
+        FEED_SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
+        FEED_SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
+        FEED_SHARED.pts_shift.store(0, Ordering::Relaxed);
+        FEED_SHARED.first_audio_pts.store(i64::MIN, Ordering::Relaxed);
         Restore
     }
 
@@ -5754,7 +5756,7 @@ mod pcm_sink_lead_tests {
         let mut eng = engine_at(T_NS, PCM_SINK_LEAD_NS);
         eng.rebase_pending = true;
         tick(&mut eng);
-        assert_eq!(SHARED.pts_shift.load(Ordering::Relaxed), -T_NS, "PRECONDITION: the reload rebased the keyframe to 0");
+        assert_eq!(FEED_SHARED.pts_shift.load(Ordering::Relaxed), -T_NS, "PRECONDITION: the reload rebased the keyframe to 0");
         assert_lead(&eng, PCM_SINK_LEAD_NS, "reload rebase");
     }
 
@@ -5766,10 +5768,10 @@ mod pcm_sink_lead_tests {
         let mut eng = engine_at(T_NS, PCM_SINK_LEAD_NS);
         eng.flushed = true;
         eng.rebase_pending = true;
-        SHARED.seek_target_ns.store(T_NS, Ordering::Relaxed);
+        FEED_SHARED.seek_target_ns.store(T_NS, Ordering::Relaxed);
         tick(&mut eng);
         assert!(!eng.rebase_pending, "PRECONDITION: the seek's keyframe was accepted");
-        assert_eq!(SHARED.pts_shift.load(Ordering::Relaxed), 0, "PRECONDITION: content time, no rebase");
+        assert_eq!(FEED_SHARED.pts_shift.load(Ordering::Relaxed), 0, "PRECONDITION: content time, no rebase");
         assert_lead(&eng, PCM_SINK_LEAD_NS, "in-place Segment seek");
     }
 
@@ -5789,7 +5791,7 @@ mod pcm_sink_lead_tests {
         let mut eng = engine_at(T_NS, 0);
         eng.flushed = true;
         eng.rebase_pending = true;
-        SHARED.seek_target_ns.store(T_NS, Ordering::Relaxed);
+        FEED_SHARED.seek_target_ns.store(T_NS, Ordering::Relaxed);
         tick(&mut eng);
         assert_lead(&eng, 0, "in-place Segment seek");
     }
@@ -5803,7 +5805,7 @@ mod pcm_sink_lead_tests {
         let _serial = plx_base::testlock::serial();
         let _restore = arm();
         SHARED.reset_session();
-        let epoch = SHARED.begin_native_session().expect("native session");
+        let epoch = FEED_SHARED.begin_native_session().expect("native session");
         let mut eng = engine_at(0, 0);
         eng.native_epoch = epoch;
         eng.pcm_lead_pending = true;
@@ -5812,7 +5814,7 @@ mod pcm_sink_lead_tests {
         assert!(ffi_host::feed_log_for_test(2).is_empty(), "no audio before the Load thread's lead is published");
         assert!(eng.pcm_lead_pending);
 
-        assert!(SHARED.mark_native_load_returned(epoch, Some(250_000_000)).is_some());
+        assert!(FEED_SHARED.mark_native_load_returned(epoch, Some(250_000_000)).is_some());
         tick(&mut eng);
         assert!(!eng.pcm_lead_pending, "taken once, at the first feed after the Load returned");
         assert_eq!(eng.pcm_sink_lead_ns, 250_000_000);
@@ -5827,11 +5829,11 @@ mod pcm_sink_lead_tests {
         SHARED.reset_session();
         ffi_host::reset_native_lifecycle_for_test();
         let load = |lead: PcmLead| {
-            let epoch = SHARED.begin_native_session().expect("native session");
-            assert_eq!(SHARED.native_load_pcm_lead(epoch), None, "nothing before the Load returns");
+            let epoch = FEED_SHARED.begin_native_session().expect("native session");
+            assert_eq!(FEED_SHARED.native_load_pcm_lead(epoch), None, "nothing before the Load returns");
             threads::load_thread(threads::SendPtr(c"{}".as_ptr() as *mut c_char), epoch, None, lead);
-            assert!(SHARED.native_load_returned(epoch), "PRECONDITION: the Load returned");
-            let published = SHARED.native_load_pcm_lead(epoch);
+            assert!(FEED_SHARED.native_load_returned(epoch), "PRECONDITION: the Load returned");
+            let published = FEED_SHARED.native_load_pcm_lead(epoch);
             SHARED.reset_session();
             ffi_host::reset_native_lifecycle_for_test();
             published
@@ -5852,11 +5854,11 @@ mod pcm_sink_lead_tests {
     fn the_lead_is_not_scaled_at_a_speed() {
         let _serial = plx_base::testlock::serial();
         let _restore = arm();
-        SHARED.applied_rate_permille.store(1500, Ordering::Relaxed);
+        FEED_SHARED.applied_rate_permille.store(1500, Ordering::Relaxed);
         let mut eng = engine_at(T_NS, PCM_SINK_LEAD_NS);
         eng.flushed = true;
         eng.rebase_pending = true;
-        SHARED.seek_target_ns.store(T_NS, Ordering::Relaxed);
+        FEED_SHARED.seek_target_ns.store(T_NS, Ordering::Relaxed);
         tick(&mut eng);
         let (v0, a0, audio) = first_feeds();
         assert_eq!(a0, crate::player::to_sink_ns(T_NS) + PCM_SINK_LEAD_NS);

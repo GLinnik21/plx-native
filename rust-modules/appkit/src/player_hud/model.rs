@@ -1,6 +1,6 @@
 //! **`HudModel`: the per-frame, read-only snapshot of every value the HUD's presentation reads.**
 //!
-//! Before the split the draw path read process globals in the middle of drawing: `TX.paused`, the
+//! Before the split the draw path read process globals in the middle of drawing: `FEED_TX.paused`, the
 //! scrub target, `playpos_ns()`, `seek_display_ns()`, `duration_ns()`, `loading(ps)` and the
 //! subtitle picks and bitmap cue. The player screen is a machine and reads no global
 //! (`docs/sans-io.md`), so those reads become fields of this value. `src/app/run.rs` publishes it
@@ -26,7 +26,7 @@ pub type BitmapLookup = fn(i64) -> Option<(i32, i32, Vec<plx_media::player::SubR
 /// `src/app/run.rs`.
 #[derive(Clone, Copy, Debug)]
 pub struct HudModel {
-    /// `plx_media::player::TX.paused.load(Relaxed)`: the viewer is logically paused. Drives the
+    /// `plx_media::player::FEED_TX.paused.load(Relaxed)`: the viewer is logically paused. Drives the
     /// title's reveal and the playbar's state mark.
     pub paused: bool,
     pub marker_prefs: crate::skip_policy::MarkerPrefsView,

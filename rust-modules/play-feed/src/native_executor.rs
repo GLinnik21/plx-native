@@ -830,7 +830,7 @@ pub const PRIME_NS: i64 = 700_000_000;
 pub const PRIME_AUDIO_NS: i64 = 300_000_000;
 pub use crate::feed_state::PRIME_VIDEO_MAX_NS;
 // Feed-ahead throttle (Kodi-parity): keep the VIDEO lane at most this far ahead of the presented
-// position (SHARED.pres_fed) instead of feeding greedily to BufferFull. Bounding the buffer to
+// position (FEED_SHARED.pres_fed) instead of feeding greedily to BufferFull. Bounding the buffer to
 // ~1.6s (was ~10-20s: aq 6MB + the pipeline's own ~8MB) makes seeks flush far less, keeps the
 // clock from running ahead, and cuts latency. AUDIO gets a looser bound so it can ride slightly
 // ahead (audio buffer is cheap and it's the master clock) without unbounded race on odd muxes.
@@ -876,7 +876,7 @@ pub use crate::feed_state::AUDIO_LEAD_IN_NS;
 // "ahead of the clock" would not be enough audio to start it).
 const _: () = assert!(AUDIO_LEAD_IN_NS < MAX_FEED_AHEAD_NS + AUDIO_SLACK_NS);
 const _: () = assert!(AUDIO_LEAD_IN_NS > PRIME_AUDIO_NS);
-// Sentinel for SHARED.pres_fed meaning "no post-seek frame has presented yet" — the feed-ahead
+// Sentinel for FEED_SHARED.pres_fed meaning "no post-seek frame has presented yet" — the feed-ahead
 // throttle treats it as feed-freely (don't compare the new fed pts against a stale pre-seek
 // presented position). Set on a seek; the first presented frame overwrites it with a real pts.
 pub use crate::feed_state::PRES_NONE;

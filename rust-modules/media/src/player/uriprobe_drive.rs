@@ -118,6 +118,8 @@ pub(super) fn stop(ps: &mut PlaybackSession, pa: &mut super::adapter::PlayerAdap
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "play-feed")]
+    use plx_play_feed::shared::FEED_SHARED;
     use super::*;
     use plx_platform::tv::uri::{CloseStatus, RequestId, SessionId, Shape, UriPoll, UriReply};
     use std::collections::VecDeque;
@@ -1009,8 +1011,8 @@ mod tests {
             let mut fork = Fork::new();
             // A timed-out Load an earlier Engine parked: every native start is refused, and the
             // probe's window verbs would reach the same seam under it.
-            let epoch = crate::player::SHARED.begin_native_session().expect("the native session is idle");
-            assert!(crate::player::SHARED.abandon_native_session(epoch));
+            let epoch = FEED_SHARED.begin_native_session().expect("the native session is idle");
+            assert!(FEED_SHARED.abandon_native_session(epoch));
             let log = logged(|| {
                 plx_base::devtrig::with_private_triggers(|| {
                     std::fs::write(plx_base::devtrig::path("uriprobe"), "").expect("arm the trigger");
@@ -1022,7 +1024,7 @@ mod tests {
                     crate::player::stop_bufferfeed(&mut fork.ps, &mut fork.pa);
                 });
             });
-            assert!(crate::player::SHARED.retire_native_session(epoch), "the parked phase was left as found");
+            assert!(FEED_SHARED.retire_native_session(epoch), "the parked phase was left as found");
             assert!(line_with(&log, "probe NOT started").contains("earlier session"), "{log}");
             assert!(!log.contains("uriprobe: t="), "the machine never ran: nothing was opened\n{log}");
             assert!(viewing_writes(&fork.requests_after_stop()).is_empty());

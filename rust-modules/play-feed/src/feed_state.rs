@@ -32,7 +32,7 @@ pub const FEED_PACE_CAP_MS: u32 = 250;
 
 /// **The feed-ahead throttle's reference: the presented position, run on at 1x between reports.**
 ///
-/// `SHARED.pres_fed` moves in ~200 ms steps (the pipeline's 5 Hz position callback). Measured
+/// `FEED_SHARED.pres_fed` moves in ~200 ms steps (the pipeline's 5 Hz position callback). Measured
 /// against that step function, the throttle stayed shut for eleven frames and then opened by
 /// 200 ms of media at once, so every fifth of a second one frame fed ~5 video and ~7 audio AUs to
 /// Starfish, and `Feed()` blocks: on the TV with the track menu open, `FRAMEDROP … results=14.6`
@@ -108,7 +108,7 @@ pub struct Engine {
     pub native_epoch: u32,
     pub stage: Stage,
     pub video_info_sent: bool, // videoInfoSent
-    /// ACB route: `SHARED.frames` when the plane bind completed (`Stage::Streaming`), until a tick
+    /// ACB route: `FEED_SHARED.frames` when the plane bind completed (`Stage::Streaming`), until a tick
     /// beyond it is seen. A paused preroll re-pauses only after that tick: a picture presented
     /// before the bind is not on the panel.
     pub bound_at_frames: Option<i32>,
@@ -134,7 +134,7 @@ pub struct Engine {
     pub max_fed_video_pts: i64, // high-water fed pts, VIDEO lane (g_max_fed_pts)
     pub max_fed_audio_pts: i64, // high-water fed pts, AUDIO lane (two-lane feed)
     /// Fed pts of the AU that opened this timeline's audio — the one the demuxer marked as its
-    /// first since the open or seek (`SHARED.first_audio_pts`) — once Starfish accepted it.
+    /// first since the open or seek (`FEED_SHARED.first_audio_pts`) — once Starfish accepted it.
     /// `None` until then; reset with `max_fed_audio_pts`. See `audio_lead_in`.
     pub audio_start_fp: Option<i64>,
     /// Added to the sink pts of every audio AU of THIS Load (`audio_sink_pts`): the active sound

@@ -725,6 +725,8 @@ impl Clock {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "play-feed")]
+    use plx_play_feed::shared::FEED_SHARED;
     use super::*;
 
     fn fixture_retention() -> plx_playback_contract::subtitle::CaptionRetention {
@@ -783,7 +785,7 @@ mod tests {
     #[test]
     fn terminators_are_trimmed_from_headers_and_packets_but_a_zero_inside_is_not() {
         let _guard = plx_base::testlock::serial();
-        super::super::SHARED.playpos_ns.store(0, std::sync::atomic::Ordering::Relaxed);
+        FEED_SHARED.playpos_ns.store(0, std::sync::atomic::Ordering::Relaxed);
         let generation = begin(
             "fixture",
             vec![

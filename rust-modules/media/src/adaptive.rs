@@ -2,6 +2,7 @@
 //! queue application; this module owns the controller and route transition.
 #![deny(clippy::debug_assert_with_mut_call)]
 
+use plx_play_feed::shared::FEED_SHARED;
 use crate::{abr, route};
 use plx_playback_contract::adaptive::PublicationGate;
 use plx_playback_contract::adaptive::{
@@ -18,7 +19,7 @@ pub struct PlayerAdaptiveEffects;
 
 impl AdaptiveEffects for PlayerAdaptiveEffects {
     fn seed(&mut self, readout: SeedReadout) {
-        crate::player::SHARED.publish_abr_seed_readout(readout);
+        FEED_SHARED.publish_abr_seed_readout(readout);
     }
 
     fn committed(&mut self, readout: CommitReadout) {
@@ -56,12 +57,12 @@ fn publish_action(action: ActionReadout) {
             (Up, Some(false)) => crate::player::ABR_ACTION_REJECT_UP,
         }
     };
-    crate::player::SHARED.dg_abr_action.store(code, Ordering::Relaxed);
-    crate::player::SHARED.dg_abr_target_kbps.store(i64::from(target_kbps), Ordering::Relaxed);
+    FEED_SHARED.dg_abr_action.store(code, Ordering::Relaxed);
+    FEED_SHARED.dg_abr_target_kbps.store(i64::from(target_kbps), Ordering::Relaxed);
 }
 
 fn publish_sample(sample: SampleReadout) {
-    let shared = &crate::player::SHARED;
+    let shared = &FEED_SHARED;
     shared.dg_abr_net_kbps.store(sample.network_kbps, Ordering::Relaxed);
     shared.dg_abr_media_kbps.store(sample.media_kbps, Ordering::Relaxed);
     shared.dg_abr_buffer_ms.store(sample.buffer_ms, Ordering::Relaxed);
@@ -89,7 +90,7 @@ fn why_code(reason: Option<WhyReadout>) -> u8 {
 }
 
 fn publish_model(model: ModelReadout) {
-    let shared = &crate::player::SHARED;
+    let shared = &FEED_SHARED;
     let rel = Ordering::Relaxed;
     shared.dg_abr_safe_kbps.store(model.safe_kbps, rel);
     shared.dg_abr_optimal_kbps.store(model.optimal_kbps, rel);
@@ -141,7 +142,7 @@ impl ActiveDiagnostics for PlayerActiveDiagnostics<'_> {
 
     fn observed(&mut self, readout: ActiveReadout) {
         if let Some(runway_ms) = readout.prime_runway_ms {
-            crate::player::SHARED.hls_prime_runway_ms.store(runway_ms, Ordering::Release);
+            FEED_SHARED.hls_prime_runway_ms.store(runway_ms, Ordering::Release);
         }
         publish_model(readout.model);
         crate::player::log(&readout.sample_line);
@@ -153,7 +154,7 @@ struct PlayerOriginalProbeDiagnostics;
 
 impl OriginalProbeDiagnostics for PlayerOriginalProbeDiagnostics {
     fn action(&mut self, action: ProbeTraceAction, target_kbps: u32) {
-        let shared = &crate::player::SHARED;
+        let shared = &FEED_SHARED;
         match action {
             ProbeTraceAction::Start => {
                 shared.dg_abr_action.store(crate::player::ABR_ACTION_PROBE_ORIGINAL, Ordering::Relaxed);
@@ -354,7 +355,7 @@ impl OriginalSession for ProgressiveOriginalSession {
         let refreshed = self.coordinator.as_mut()
             .expect("Original worker owns its controller").seek(bytes, active_us);
         if refreshed {
-            let shared = &crate::player::SHARED;
+            let shared = &FEED_SHARED;
             shared.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
             shared.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
             shared.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
@@ -382,7 +383,7 @@ impl OriginalSession for ProgressiveOriginalSession {
             quantum.bytes, quantum.active_us, quantum.buffered_ms,
             remaining_ms, now_ms,
         ) else { return OriginalProgress::Continue; };
-        let shared = &crate::player::SHARED;
+        let shared = &FEED_SHARED;
         shared.dg_abr_net_kbps.store(i64::from(observation.measured_kbps), Ordering::Relaxed);
         shared.dg_abr_buffer_ms.store(observation.buffered_ms, Ordering::Relaxed);
         shared.dg_abr_unsafe_deficit_ms.store(observation.unsafe_deficit_ms, Ordering::Relaxed);
@@ -3361,17 +3362,17 @@ impl AdaptiveSession for Session {
         };
         let (proposal, reserve_policy, sample, start) = match coordinator.advance_round(
             cycle, physical, || now_ms(),
-            || crate::player::SHARED.dg_abr_action.store(
+            || FEED_SHARED.dg_abr_action.store(
                 crate::player::ABR_ACTION_RECOVER_ORIGINAL, Ordering::Relaxed,
             ),
             publish_action,
             |diagnostic| match diagnostic {
                 RoundDiagnostic::Line(line) => crate::player::log(&line),
                 RoundDiagnostic::Steady(line) => {
-                    crate::player::SHARED.dg_abr_action.store(
+                    FEED_SHARED.dg_abr_action.store(
                         crate::player::ABR_ACTION_STEADY, Ordering::Relaxed,
                     );
-                    crate::player::SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
+                    FEED_SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
                     crate::player::log(&line);
                 }
             },
@@ -3490,7 +3491,7 @@ impl AdaptiveSession for Session {
         };
         drop(runner);
         if let Some(runway_ms) = coordinator.prime_runway_ms() {
-            crate::player::SHARED.hls_prime_runway_ms.store(runway_ms, Ordering::Release);
+            FEED_SHARED.hls_prime_runway_ms.store(runway_ms, Ordering::Release);
         }
         tx.finish("committed");
         let candidate_declared_bps = physical.candidate_declared_bps()
@@ -3498,8 +3499,8 @@ impl AdaptiveSession for Session {
         let committed = coordinator.commit_readout(
             proposal, refreshing, candidate_declared_bps, final_acquisition,
         );
-        crate::player::SHARED.dg_abr_kbps.store(i64::from(committed.target_kbps), Ordering::Relaxed);
-        crate::player::SHARED.dg_abr_declared_kbps.store(
+        FEED_SHARED.dg_abr_kbps.store(i64::from(committed.target_kbps), Ordering::Relaxed);
+        FEED_SHARED.dg_abr_declared_kbps.store(
             i64::try_from(committed.declared_bps / 1_000).unwrap_or(i64::MAX), Ordering::Relaxed,
         );
         publish_action(ActionReadout {

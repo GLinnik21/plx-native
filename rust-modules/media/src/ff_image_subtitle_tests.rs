@@ -10,6 +10,7 @@
 //! `make check`, never a pass that executed nothing. `plx_media_codecs::host_test_support`
 //! owns the host binding guard shared with real-demux fixtures (`ff_subside`, `ff_late_audio_tests`).
 
+use plx_play_feed::shared::FEED_SHARED;
 use super::*;
 use crate::player::subtitle_cue::{SideTracks, SubCue};
 use crate::player::SHARED;
@@ -146,7 +147,7 @@ fn terminated_ass_header_and_packets_render_through_main_subtitle_ingestion() {
     let _ffmpeg = bind_host_ffmpeg();
     ass_source::reset();
     crate::player::request_subtitle(0);
-    SHARED.playpos_ns.store(0, Ordering::Relaxed);
+    FEED_SHARED.playpos_ns.store(0, Ordering::Relaxed);
     unsafe {
         let d = AssFixture::open();
         let cp = stream_codecpar(*(*d.fmt).streams.add(d.subs.entries()[0].stream_index as usize));
@@ -220,7 +221,7 @@ fn terminated_ass_header_and_packets_render_through_http_side_reader() {
     ass_source::reset();
     crate::player::request_subtitle(0);
     crate::player::set_subtitle_offset(0);
-    SHARED.playpos_ns.store(0, Ordering::Relaxed);
+    FEED_SHARED.playpos_ns.store(0, Ordering::Relaxed);
     let reader = {
         let stop = stop.clone();
         std::thread::spawn(move || {
@@ -271,7 +272,7 @@ fn ass_packet_terminators_do_not_weaken_validation() {
     crate::player::request_subtitle(0);
     unsafe {
         let d = AssFixture::open();
-        SHARED.playpos_ns.store(0, Ordering::Relaxed);
+        FEED_SHARED.playpos_ns.store(0, Ordering::Relaxed);
         for payload in [
             b"0,0,Default,,0,0,0,,bad\0caption\0".as_slice(),
             b"\0caption",
@@ -457,7 +458,7 @@ fn mkvmerge_zlib_subtitle_tracks_decode_like_uncompressed_ones() {
     let url = CString::new(path.to_str().unwrap()).unwrap();
 
     SHARED.sub_bitmaps.lock().unwrap().clear();
-    SHARED.playpos_ns.store(0, Ordering::Relaxed);
+    FEED_SHARED.playpos_ns.store(0, Ordering::Relaxed);
     let mut text_payloads: Vec<Vec<u8>> = Vec::new();
     unsafe {
         let mut fmt: *mut AVFormatContext = std::ptr::null_mut();

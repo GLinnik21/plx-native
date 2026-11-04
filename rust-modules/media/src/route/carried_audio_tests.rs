@@ -6,6 +6,8 @@
 //! facts unknown" — survives every projection/pending/candidate round trip unchanged rather than
 //! being turned into a confident `Some` by a struct-literal default somewhere along the way.
 
+#[cfg(feature = "play-feed")]
+use plx_play_feed::shared::FEED_SHARED;
 use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
@@ -152,7 +154,7 @@ fn candidate_audio_none_matches_legacy_payload() {
     assert_eq!(recover_auto_to_original(&mut ps, 120), Some(AutoOriginalReload::Direct));
     assert_eq!(stream_acodec(&ps), "eac3", "the file's own default codec, as the legacy payload");
     assert_eq!(
-        crate::player::SHARED.desired_audio_idx.load(std::sync::atomic::Ordering::Relaxed),
+        FEED_SHARED.desired_audio_idx.load(std::sync::atomic::Ordering::Relaxed),
         -1,
         "no known ordinal: the demuxer feeds the file's default track",
     );

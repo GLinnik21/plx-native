@@ -516,6 +516,7 @@ pub(crate) fn read_once(
 
 #[cfg(test)]
 mod tests {
+    use plx_play_feed::shared::FEED_SHARED;
     use super::*;
     use crate::http_test_support::{serve_file, with_counting_listener};
     use crate::player::SHARED;
@@ -782,18 +783,18 @@ mod tests {
     fn side_io_writes_no_shared_diagnostics() {
         with_counting_listener(|port, _, _| {
             let _g = plx_base::testlock::serial();
-            SHARED.dg_net_rx.store(777, Ordering::Relaxed);
-            SHARED.file_size.store(888, Ordering::Release);
-            SHARED.dg_http_status.store(999, Ordering::Relaxed);
+            FEED_SHARED.dg_net_rx.store(777, Ordering::Relaxed);
+            FEED_SHARED.file_size.store(888, Ordering::Release);
+            FEED_SHARED.dg_http_status.store(999, Ordering::Relaxed);
             let stop = SideStop::new();
             let mut io = open_side(port, &stop);
             let mut buf = [0u8; 8];
             assert_eq!(io.read(&mut buf), ReadOutcome::Bytes(8));
             assert!(io.seek(0), "a seek reopens with a Range");
             assert_eq!(io.read(&mut buf), ReadOutcome::Bytes(8));
-            assert_eq!(SHARED.dg_net_rx.load(Ordering::Relaxed), 777, "side reads must not count as the movie's bytes");
-            assert_eq!(SHARED.file_size.load(Ordering::Acquire), 888);
-            assert_eq!(SHARED.dg_http_status.load(Ordering::Relaxed), 999);
+            assert_eq!(FEED_SHARED.dg_net_rx.load(Ordering::Relaxed), 777, "side reads must not count as the movie's bytes");
+            assert_eq!(FEED_SHARED.file_size.load(Ordering::Acquire), 888);
+            assert_eq!(FEED_SHARED.dg_http_status.load(Ordering::Relaxed), 999);
             stop.trigger();
         });
     }

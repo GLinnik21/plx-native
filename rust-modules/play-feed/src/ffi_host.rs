@@ -844,7 +844,7 @@ unsafe fn sf_load(payload: *const c_char, epoch: u32) -> c_int {
         }
         return 1;
     }
-    // The engine waits on `SHARED.load_completed`, which is set by parsing a callback STRING. Go
+    // The engine waits on `FEED_SHARED.load_completed`, which is set by parsing a callback STRING. Go
     // through the real callback rather than setting the flag, so the parse is exercised. Type 2 is
     // benign: the harness greps `smp_cb type=18` for a playback error and this is not one.
     CALLBACK_INTERCEPTS.fetch_add(1, Relaxed);

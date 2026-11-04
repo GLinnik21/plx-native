@@ -137,7 +137,7 @@ pub struct HudMotion {
     /// The paused→playing EDGE, as an `SDL_GetTicks` stamp — the clock behind
     /// [`TransportMark::Play`]. `None` until this session has been resumed at least once.
     pub(super) play_at: Option<u32>,
-    /// Last frame's `TX.paused`, for the edge above. `None` while there is no session, which is
+    /// Last frame's `FEED_TX.paused`, for the edge above. `None` while there is no session, which is
     /// what makes the edge per-SESSION: `TX::reset` clears both `started` and `paused` on stop, so
     /// without this a session that ended paused would hand the next one a spurious resume edge on
     /// its first frame and flash `Play` over a start nobody pressed play for.

@@ -754,7 +754,7 @@ pub fn last_delivery_requested_for_test() -> Option<(DeliveryReason, DeliveryCla
 #[cfg(any(test, feature = "test-support"))]
 pub fn reset_latches_for_test() {
     #[cfg(feature = "play-feed")]
-    super::SHARED.pb_state.store(super::attempt_view::PlaybackState::Idle as u8, Relaxed);
+    plx_play_feed::shared::FEED_SHARED.pb_state.store(super::attempt_view::PlaybackState::Idle as u8, Relaxed);
     LAST.store(super::attempt_view::PlaybackState::Idle as u8, Relaxed);
     SAW_START.store(false, Relaxed);
     SAW_FAIL.store(false, Relaxed);
@@ -1330,6 +1330,7 @@ pub fn watched_class(position_ns: i64, duration_ns: i64) -> &'static str {
 #[cfg(all(test, feature = "play-feed"))]
 mod tests {
     use super::*;
+    use plx_play_feed::shared::FEED_SHARED;
 
     #[test]
     fn physical_feed_reset_preserves_common_request_trace() {
@@ -1501,16 +1502,16 @@ mod tests {
         SAW_START.store(false, Relaxed);
         REBUFFER_COUNT.store(0, Relaxed);
         LAST.store(S::Connecting as u8, Relaxed);
-        crate::player::SHARED.seeking.store(false, Relaxed);
-        crate::player::SHARED.pb_state.store(S::Paused as u8, Relaxed);
+        FEED_SHARED.seeking.store(false, Relaxed);
+        FEED_SHARED.pb_state.store(S::Paused as u8, Relaxed);
         let steps_before = trace_steps().len();
         tick(&ps);
         let steps_after = trace_steps().len();
         let started = SAW_START.load(Relaxed);
-        crate::player::SHARED.pb_state.store(S::Buffering as u8, Relaxed);
+        FEED_SHARED.pb_state.store(S::Buffering as u8, Relaxed);
         tick(&ps);
         let rebuffers = REBUFFER_COUNT.load(Relaxed);
-        crate::player::SHARED.pb_state.store(S::Idle as u8, Relaxed);
+        FEED_SHARED.pb_state.store(S::Idle as u8, Relaxed);
         LAST.store(S::Idle as u8, Relaxed);
         SAW_START.store(false, Relaxed);
         REBUFFER_COUNT.store(0, Relaxed);
@@ -1532,7 +1533,7 @@ mod tests {
         LAST.store(S::Playing as u8, Relaxed);
         // `state()` ranks a seek in flight above everything here; another test's leftover flag
         // would answer Seeking for both edges below.
-        crate::player::SHARED.seeking.store(false, Relaxed);
+        FEED_SHARED.seeking.store(false, Relaxed);
         crate::player::claim_hold::hold_for_test(7, true);
         crate::route::force_applying_for_test(7);
         assert_eq!(crate::player::state(&ps), S::Buffering, "the hold draws the spinner");
@@ -1544,11 +1545,11 @@ mod tests {
         crate::player::claim_hold::clear();
         crate::route::reset_player_control_for_test(&ps);
         LAST.store(S::Playing as u8, Relaxed);
-        crate::player::SHARED.pb_state.store(S::Buffering as u8, Relaxed);
+        FEED_SHARED.pb_state.store(S::Buffering as u8, Relaxed);
         tick(&ps);
         let genuine = REBUFFER_COUNT.load(Relaxed);
 
-        crate::player::SHARED.pb_state.store(S::Idle as u8, Relaxed);
+        FEED_SHARED.pb_state.store(S::Idle as u8, Relaxed);
         LAST.store(S::Idle as u8, Relaxed);
         SAW_START.store(false, Relaxed);
         REBUFFER_COUNT.store(0, Relaxed);
@@ -1777,15 +1778,15 @@ mod tests {
         let attempt = begin_view(&mut ps);
         super::super::SHARED.reset_session();
         assert_eq!(error_context(&ps).pipeline_error, 0, "no callback, nothing to report");
-        let epoch = super::super::SHARED.begin_native_session().expect("session");
+        let epoch = FEED_SHARED.begin_native_session().expect("session");
         super::super::sf_on_event(epoch, 18, 601, c"Resource Allocation Error".as_ptr());
         observe_facts(&mut ps, attempt, crate::player::attempt_view::AttemptFacts {
-            pipeline_error: Some(super::super::SHARED.dg_cb_err_num.load(Relaxed)),
-                refusal_path: Some(super::super::SHARED.refusal_path()),
+            pipeline_error: Some(FEED_SHARED.dg_cb_err_num.load(Relaxed)),
+                refusal_path: Some(FEED_SHARED.refusal_path()),
             ..Default::default()
         });
         assert_eq!(error_context(&ps).pipeline_error, 601);
-        super::super::SHARED.retire_native_session(epoch);
+        FEED_SHARED.retire_native_session(epoch);
         super::super::SHARED.reset_session();
         ps.begin_attempt_view(attempt, crate::player::attempt_view::Backend::Feed);
         assert_eq!(error_context(&ps).pipeline_error, 0, "the latch does not outlive its session");
@@ -1800,34 +1801,34 @@ mod tests {
         let _g = plx_base::testlock::serial();
         let mut ps = crate::route::PlaybackSession::default();
         let attempt = begin_view(&mut ps);
-        let shared = &super::super::SHARED;
-        shared.reset_session();
+        let feed = &FEED_SHARED;
+        super::super::SHARED.reset_session();
         assert_eq!(error_context(&ps).demux_exit, DemuxExitClass::None, "nothing recorded");
 
-        shared.fail_demux(DemuxExitClass::HttpsOpenFailed);
-        assert!(shared.demux_failed.load(Relaxed), "the helper still raises the flag");
+        feed.fail_demux_latch(DemuxExitClass::HttpsOpenFailed.latch());
+        assert!(feed.demux_failed.load(Relaxed), "the helper still raises the flag");
         observe_facts(&mut ps, attempt, crate::player::attempt_view::AttemptFacts {
-            demux_exit: Some(shared.dg_demux_exit.load(Relaxed)), ..Default::default()
+            demux_exit: Some(feed.dg_demux_exit.load(Relaxed)), ..Default::default()
         });
         assert_eq!(error_context(&ps).demux_exit, DemuxExitClass::HttpsOpenFailed);
-        shared.fail_demux(DemuxExitClass::NoAccessUnits);
-        shared.note_demux_exit(DemuxExitClass::OpenInputFailed);
+        feed.fail_demux_latch(DemuxExitClass::NoAccessUnits.latch());
+        feed.note_demux_exit_latch(DemuxExitClass::OpenInputFailed.latch());
         assert_eq!(
             error_context(&ps).demux_exit,
             DemuxExitClass::HttpsOpenFailed,
             "the first cause is the real one"
         );
 
-        shared.reset_session();
+        super::super::SHARED.reset_session();
         ps.begin_attempt_view(attempt, crate::player::attempt_view::Backend::Feed);
         assert_eq!(error_context(&ps).demux_exit, DemuxExitClass::None, "cleared per session");
-        shared.note_demux_exit(DemuxExitClass::NoVideoStream);
-        assert!(!shared.demux_failed.load(Relaxed), "a note alone does not fail the session");
+        feed.note_demux_exit_latch(DemuxExitClass::NoVideoStream.latch());
+        assert!(!feed.demux_failed.load(Relaxed), "a note alone does not fail the session");
         observe_facts(&mut ps, attempt, crate::player::attempt_view::AttemptFacts {
-            demux_exit: Some(shared.dg_demux_exit.load(Relaxed)), ..Default::default()
+            demux_exit: Some(feed.dg_demux_exit.load(Relaxed)), ..Default::default()
         });
         assert_eq!(error_context(&ps).demux_exit, DemuxExitClass::NoVideoStream);
-        shared.reset_session();
+        super::super::SHARED.reset_session();
     }
 
     /// **Sentry PLX-NATIVE-V.** A playback that was running, then switched quality to Original, and
@@ -1851,7 +1852,7 @@ mod tests {
         crate::route::install_transcode_for_test(&mut ps, false, true);
         let generation = requested(&ps, plx_plex::plex::ServerId::UNSET, AttemptOrigin::Fresh);
         let set = |state: S| {
-            crate::player::SHARED.pb_state.store(state as u8, Relaxed);
+            FEED_SHARED.pb_state.store(state as u8, Relaxed);
             tick(&ps);
         };
         set(S::Connecting);
@@ -1884,7 +1885,7 @@ mod tests {
         assert_eq!(ctx.attempt_origin.code(), "quality_change", "the viewer asked for Original");
         assert_eq!(ctx.attempt_ordinal.code(), "2", "the second open of this playback");
 
-        crate::player::SHARED.pb_state.store(S::Idle as u8, Relaxed);
+        FEED_SHARED.pb_state.store(S::Idle as u8, Relaxed);
         LAST.store(S::Idle as u8, Relaxed);
         SAW_START.store(false, Relaxed);
         SAW_FAIL.store(false, Relaxed);
@@ -2133,17 +2134,17 @@ mod tests {
             ));
             requested(&ps, plx_plex::plex::ServerId::UNSET, AttemptOrigin::Fresh);
             super::super::SHARED.reset_session();
-            let epoch = super::super::SHARED.begin_native_session().expect("session");
+            let epoch = FEED_SHARED.begin_native_session().expect("session");
             super::super::sf_on_event(epoch, 18, 601, c"Resource Allocation Error".as_ptr());
             let attempt = begin_view(&mut ps);
             observe_facts(&mut ps, attempt, crate::player::attempt_view::AttemptFacts {
-                pipeline_error: Some(super::super::SHARED.dg_cb_err_num.load(Relaxed)),
-                refusal_path: Some(super::super::SHARED.refusal_path()),
+                pipeline_error: Some(FEED_SHARED.dg_cb_err_num.load(Relaxed)),
+                refusal_path: Some(FEED_SHARED.refusal_path()),
                 ..Default::default()
             });
             observe(&ps, S::Resolving);
             let (_, events) = plx_telemetry::diag::test_events::capture(|| observe(&ps, S::Error));
-            super::super::SHARED.retire_native_session(epoch);
+            FEED_SHARED.retire_native_session(epoch);
             super::super::SHARED.reset_session();
             match events.as_slice() {
                 [DiagEvent::PlaybackFailed { video, audio, pipeline_error, refusal, .. }] => {
@@ -2174,18 +2175,18 @@ mod tests {
             ));
             requested(&ps, plx_plex::plex::ServerId::UNSET, AttemptOrigin::Fresh);
             super::super::SHARED.reset_session();
-            let epoch = super::super::SHARED.begin_native_session().expect("session");
-            assert!(super::super::SHARED.publish_native_load_failure(epoch));
+            let epoch = FEED_SHARED.begin_native_session().expect("session");
+            assert!(FEED_SHARED.publish_native_load_failure(epoch));
             let attempt = begin_view(&mut ps);
             observe_facts(&mut ps, attempt, crate::player::attempt_view::AttemptFacts {
-                refusal_path: Some(super::super::SHARED.refusal_path()),
+                refusal_path: Some(FEED_SHARED.refusal_path()),
                 ..Default::default()
             });
             observe(&ps, S::Resolving);
             let (_, events) = plx_telemetry::diag::test_events::capture(|| observe(&ps, S::Error));
-            super::super::SHARED.retire_native_session(epoch);
+            FEED_SHARED.retire_native_session(epoch);
             super::super::SHARED.reset_session();
-            assert_eq!(super::super::SHARED.refusal_path(), super::super::shared::RefusalPath::None, "reset_session clears it");
+            assert_eq!(FEED_SHARED.refusal_path(), super::super::shared::RefusalPath::None, "reset_session clears it");
             match events.as_slice() {
                 [DiagEvent::PlaybackFailed { video, audio, pipeline_error, refusal, .. }] => {
                     assert_eq!((*video, *audio), ("hevc", "ac3"));
@@ -2232,7 +2233,7 @@ mod tests {
 
             let (_, events) = plx_telemetry::diag::test_events::capture(|| {
                 preview_requested();
-                crate::player::SHARED.pb_state.store(S::Error as u8, Relaxed);
+                FEED_SHARED.pb_state.store(S::Error as u8, Relaxed);
                 tick_with(&ps, false, None);
             });
             assert!(events.is_empty(), "no usage event: {events:?}");
@@ -2258,7 +2259,7 @@ mod tests {
         enabled.asked_version = consent::POLICY_VERSION;
         consent::install(enabled);
         let out = body();
-        crate::player::SHARED.pb_state.store(S::Idle as u8, Relaxed);
+        FEED_SHARED.pb_state.store(S::Idle as u8, Relaxed);
         LAST.store(S::Idle as u8, Relaxed);
         SAW_START.store(false, Relaxed);
         SAW_FAIL.store(false, Relaxed);
@@ -2442,7 +2443,7 @@ mod tests {
 
     /// Present `state` to the per-frame observer, as the main loop does once a frame.
     fn observe(ps: &crate::route::PlaybackSession, state: S) {
-        crate::player::SHARED.pb_state.store(state as u8, Relaxed);
+        FEED_SHARED.pb_state.store(state as u8, Relaxed);
         tick(ps);
     }
 
@@ -2622,7 +2623,7 @@ mod tests {
         let _g = plx_base::testlock::serial();
         let mut ps = crate::route::PlaybackSession::default();
         let attempt = begin_view(&mut ps);
-        let status = &crate::player::SHARED.dg_http_status;
+        let status = &FEED_SHARED.dg_http_status;
         for (raw, want) in [
             (404, 404u16),
             (403, 403),

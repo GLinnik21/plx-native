@@ -444,7 +444,7 @@ pub const AVSEEK_SIZE: c_int = 0x10000;
 pub enum Src {
     Socket {
         /// The Engine's stream — NOT owned here. `player::engine` allocates it, publishes it in
-        /// `SHARED.hs_ptr`, `http_shutdown`s it at teardown and closes it after the join.
+        /// `FEED_SHARED.hs_ptr`, `http_shutdown`s it at teardown and closes it after the join.
         hs: *mut HttpStream,
         host: CString,
         port: c_int,
@@ -518,7 +518,7 @@ pub struct StallGuard {
     /// Playhead at the fetch boundary.  Wall time is deliberately absent: queued media is spent
     /// by presentation, not by a blocked request, pause, seek or server wait.
     pub playhead_at_start_ns: i64,
-    /// `SHARED.hls_internal_hold_epoch` when armed. A hold the main thread accepted AND already
+    /// `FEED_SHARED.hls_internal_hold_epoch` when armed. A hold the main thread accepted AND already
     /// released between two checks still moved it, so a short hold cannot slip between samples.
     pub hold_epoch_at_arm: u64,
     pub action: StallAction,
@@ -4358,7 +4358,7 @@ pub struct HlsCursor {
     /// A candidate cursor opened during a quality transaction reads a freshly created encoder
     /// session, whose playlist lists only the segments PMS has produced so far — so its
     /// `total_duration()` is a fraction of the film's. Publishing that clobbers
-    /// `SHARED.duration_ns`, and on a reject nothing ever restores it: the remaining-playback
+    /// `FEED_SHARED.duration_ns`, and on a reject nothing ever restores it: the remaining-playback
     /// estimate, the HUD's total and the scrobble all inherit the truncated number for the rest
     /// of the playback. The candidate is promoted to publishing at the moment it is committed.
     pub publishes_duration: bool,
@@ -5892,7 +5892,7 @@ mod pre_audio_headroom_tests {
 /// the injected range reader. An origin is parsed from a URL and never rebuilt from an address, which is
 /// what keeps the `plex.direct` hostname TLS validates against intact all the way down here
 /// (`net/origin.rs`). `hs` is still passed on both paths — it is the Engine's, and it stays
-/// unused (fd = -1, published as `SHARED.hs_ptr`) when the origin turns out to be https.
+/// unused (fd = -1, published as `FEED_SHARED.hs_ptr`) when the origin turns out to be https.
 pub fn demux(
     off: &plx_base::task::OffFrame,
     origin: Origin,
@@ -6626,7 +6626,7 @@ pub fn demux(
                 // INNER read loop
                 loop {
                     // Direct-play seek (and the armed resume, which is just a seek published before
-                    // the first read): the pump leaves a target ns in SHARED.seek_to_ns and THIS
+                    // the first read): the pump leaves a target ns in FEED_SHARED.seek_to_ns and THIS
                     // thread — the only one that ever touches `fmt` — av_seek_frame's between two
                     // av_read_frame calls. A transcode leaves seek_to_ns=-1 (start.mkv is already
                     // 0-based at &offset) and so skips this.

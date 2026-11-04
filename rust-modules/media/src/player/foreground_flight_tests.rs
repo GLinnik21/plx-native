@@ -6,6 +6,7 @@
 //! (`ForegroundState::PreparePending`, drained by `poll_foreground_flight`). These tests run every
 //! frame-thread half inside a `FrameScope`, against the loopback server of `route::flight_rig`.
 
+use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
 use super::foreground::*;
 use super::lifecycle::*;
 use super::*;
@@ -44,7 +45,7 @@ impl ForegroundActuator for RigActuator {
         _clock: ForegroundClock) {}
 
     fn start_load(&mut self, ps: &mut crate::route::PlaybackSession) -> ForegroundLoadStart<u64> {
-        self.loads.push((SHARED.disp_base.load(Relaxed), crate::route::url(ps)));
+        self.loads.push((FEED_SHARED.disp_base.load(Relaxed), crate::route::url(ps)));
         ForegroundLoadStart::Launched(7)
     }
 
@@ -75,7 +76,7 @@ impl Rig {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let flight = FlightRig::start(&mut ps, Duration::from_millis(delay_ms));
         SHARED.reset_session();
-        TX.reset();
+        FEED_TX.reset();
         claim_hold::clear();
         let pa = adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
         let mut lifecycle = ForegroundLifecycle::<u64>::IDLE;
@@ -122,7 +123,7 @@ impl Drop for Rig {
     fn drop(&mut self) {
         claim_hold::clear();
         SHARED.reset_session();
-        TX.reset();
+        FEED_TX.reset();
         crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
     }
 }

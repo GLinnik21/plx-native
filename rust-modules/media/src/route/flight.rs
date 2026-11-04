@@ -551,7 +551,7 @@ pub enum SeekVerdict {
 /// Drained once a frame by the pump, before it tries to claim a fresh action (a claim stays
 /// `Applying` — see `claim_route_action` — and a seek stays `Preparing`, for as long as this
 /// mailbox is empty, so nothing else can race either). `newer_seek_waiting` is the pump's one read
-/// of `TX.seek_to_ns`: a tap that arrived during a seek's flight sits there untouched, and the
+/// of `FEED_TX.seek_to_ns`: a tap that arrived during a seek's flight sits there untouched, and the
 /// landing it outdates is discarded rather than installed (the viewer asked for somewhere else
 /// since).
 ///

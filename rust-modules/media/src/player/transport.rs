@@ -11,22 +11,24 @@
 //! Moved out of `lifecycle.rs` verbatim in the Sans-IO lifecycle PR B (a pure move).
 
 #[cfg(feature = "play-feed")]
+use plx_play_feed::shared::FEED_TX;
+#[cfg(feature = "play-feed")]
 use std::sync::atomic::Ordering::Relaxed;
 
 // transport state — was the C playback globals; now crate::player (atomics)
 #[inline]
 #[cfg(feature = "play-feed")]
 pub fn paused() -> bool {
-    crate::player::TX.paused.load(Relaxed)
+    FEED_TX.paused.load(Relaxed)
 }
 #[inline]
 #[cfg(feature = "play-feed")]
 pub fn set_paused(v: bool) {
-    crate::player::TX.commit_paused(v)
+    FEED_TX.commit_paused(v)
 }
 
 /// Publish the viewer's Play for a restore that is about to Load with no Engine. A park keeps
-/// `TX.paused` across the reload (`TX::reset_for_reload`), and the Load arms its initial clock
+/// `FEED_TX.paused` across the reload (`TX::reset_for_reload`), and the Load arms its initial clock
 /// hold from it (`engine::ClockStartGuard`): a paused save restored PLAYING would otherwise start
 /// under the viewer's pause, whose hold fences the Load's first Play behind a prime and leaves the
 /// real Play to the late `PlayClock`. There is nothing native to resume yet, so this is the commit
@@ -36,7 +38,7 @@ pub fn set_paused(v: bool) {
 #[cfg(feature = "play-feed")]
 pub fn commit_viewer_resume_for_load() {
     crate::player::claim_hold::note_user_transport();
-    crate::player::TX.commit_paused(false);
+    FEED_TX.commit_paused(false);
 }
 /// PURE: the paused value a transport request settles on. `Some(true)` is the remote's PLAY key,
 /// `Some(false)` its PAUSE, and `None` the single PLAYPAUSE toggle — which is the only one of the
@@ -142,10 +144,12 @@ mod transport_target_tests {
 
 #[cfg(test)]
 mod viewer_resume_for_load_tests {
+    #[cfg(feature = "play-feed")]
+    use plx_play_feed::shared::FEED_TX;
     use std::sync::atomic::Ordering;
 
     /// **A restore that Loads Playing starts with the viewer's pause gone.** The park leaves
-    /// `TX.paused` standing and the Load arms its clock hold from it, so the helper must clear it
+    /// `FEED_TX.paused` standing and the Load arms its clock hold from it, so the helper must clear it
     /// with no Engine in hand, and must not open the paused-seek preroll on the way.
     #[test]
     fn commit_viewer_resume_for_load_clears_the_standing_pause() {
@@ -153,21 +157,23 @@ mod viewer_resume_for_load_tests {
         struct Restore(bool);
         impl Drop for Restore {
             fn drop(&mut self) {
-                crate::player::TX.commit_paused(self.0);
+                FEED_TX.commit_paused(self.0);
             }
         }
-        let _restore = Restore(crate::player::TX.paused.load(Ordering::Acquire));
-        crate::player::TX.commit_paused(true);
+        let _restore = Restore(FEED_TX.paused.load(Ordering::Acquire));
+        FEED_TX.commit_paused(true);
 
         super::commit_viewer_resume_for_load();
         assert!(!super::paused(), "the viewer's Play is published");
         assert!(!super::viewer_paused());
-        assert!(!crate::player::TX.seek_preroll_active(), "no preroll opens for a Playing Load");
+        assert!(!FEED_TX.seek_preroll_active(), "no preroll opens for a Playing Load");
     }
 }
 
 #[cfg(all(test, feature = "hostsim"))]
 mod transport_pause_contract_tests {
+    #[cfg(feature = "play-feed")]
+    use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
     use super::{paused, set_transport_paused};
     use crate::player::foreground::{
         drive_foreground, poll_foreground_load, FlightLanding, ForegroundActivation,
@@ -182,9 +188,9 @@ mod transport_pause_contract_tests {
     #[test]
     fn a_refused_native_pause_or_play_cannot_diverge_the_feed_gate() {
         let _guard = plx_base::testlock::serial();
-        let old_paused = crate::player::TX.paused.load(Ordering::Acquire);
-        crate::player::TX.commit_paused(false);
-        let old_rebuffering = crate::player::SHARED
+        let old_paused = FEED_TX.paused.load(Ordering::Acquire);
+        FEED_TX.commit_paused(false);
+        let old_rebuffering = FEED_SHARED
             .hls_rebuffering
             .swap(false, Ordering::AcqRel);
         struct Restore {
@@ -195,8 +201,8 @@ mod transport_pause_contract_tests {
             fn drop(&mut self) {
                 crate::player::force_pause_result_for_test(None);
                 crate::player::force_play_result_for_test(None);
-                crate::player::TX.commit_paused(self.paused);
-                crate::player::SHARED
+                FEED_TX.commit_paused(self.paused);
+                FEED_SHARED
                     .hls_rebuffering
                     .store(self.rebuffering, Ordering::Release);
             }
@@ -236,19 +242,19 @@ mod transport_pause_contract_tests {
     fn refused_foreground_play_retries_the_native_clock_without_a_second_load() {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _guard = plx_base::testlock::serial();
-        let old_paused = crate::player::TX.paused.load(Ordering::Acquire);
+        let old_paused = FEED_TX.paused.load(Ordering::Acquire);
         struct Restore(bool);
         impl Drop for Restore {
             fn drop(&mut self) {
                 crate::player::force_pause_result_for_test(None);
                 crate::player::force_play_result_for_test(None);
-                crate::player::SHARED.reset_hls_clock_for_test();
-                crate::player::TX.commit_paused(self.0);
+                FEED_SHARED.reset_hls_clock_for_test();
+                FEED_TX.commit_paused(self.0);
             }
         }
         let _restore = Restore(old_paused);
-        crate::player::SHARED.reset_hls_clock_for_test();
-        crate::player::TX.commit_paused(false);
+        FEED_SHARED.reset_hls_clock_for_test();
+        FEED_TX.commit_paused(false);
         let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
             plx_base::task::MainThread::assume()
         });

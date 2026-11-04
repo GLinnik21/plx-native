@@ -1,5 +1,6 @@
 //! `StallGuard` arming and abort decisions for a server-paced HLS transfer.
 
+use plx_play_feed::shared::FEED_SHARED;
 use super::*;
 use crate::player::SHARED;
 #[allow(unused_imports)]
@@ -20,7 +21,7 @@ use super::test_support::*;
 fn a_server_paced_prefix_cannot_forecast_its_unseen_remainder() {
     let _serial = plx_base::testlock::serial();
     let pos = 5_000_000_000i64;
-    crate::player::SHARED
+    FEED_SHARED
         .playpos_ns
         .store(pos, std::sync::atomic::Ordering::Relaxed);
     let guard = StallGuard::arm(6_376, super::test_support::demux_observer()).expect("a live reserve arms");
@@ -81,14 +82,14 @@ fn an_existing_terminal_hold_arms_no_second_abort() {
 fn a_fetch_the_playhead_is_not_consuming_never_aborts() {
     let _serial = plx_base::testlock::serial();
     let pos = 5_000_000_000i64;
-    crate::player::SHARED
+    FEED_SHARED
         .playpos_ns
         .store(pos, std::sync::atomic::Ordering::Relaxed);
     let guard = StallGuard {
         observer: super::test_support::demux_observer(),
         reserve_ms_at_start: 2_000,
         playhead_at_start_ns: pos,
-        hold_epoch_at_arm: SHARED
+        hold_epoch_at_arm: FEED_SHARED
             .hls_internal_hold_epoch
             .load(std::sync::atomic::Ordering::Acquire),
         action: super::StallAction::AbortFetch,
@@ -109,12 +110,12 @@ fn a_fetch_the_playhead_is_consuming_still_aborts() {
         observer: super::test_support::demux_observer(),
         reserve_ms_at_start: 2_000,
         playhead_at_start_ns: pos,
-        hold_epoch_at_arm: SHARED
+        hold_epoch_at_arm: FEED_SHARED
             .hls_internal_hold_epoch
             .load(std::sync::atomic::Ordering::Acquire),
         action: super::StallAction::AbortFetch,
     };
-    crate::player::SHARED
+    FEED_SHARED
         .playpos_ns
         .store(pos + 1_999_000_000, std::sync::atomic::Ordering::Relaxed);
     assert!(
@@ -122,7 +123,7 @@ fn a_fetch_the_playhead_is_consuming_still_aborts() {
         "one millisecond of reserve remains"
     );
     // Exactly the two seconds of media present at the boundary have now been consumed.
-    crate::player::SHARED
+    FEED_SHARED
         .playpos_ns
         .store(pos + 2_000_000_000, std::sync::atomic::Ordering::Relaxed);
     assert!(
@@ -144,7 +145,7 @@ fn the_lookahead_policy_must_abort_under_a_terminal_hold_like_the_ordinary_polic
     use std::io::{Read, Write};
 
     let _serial = plx_base::testlock::serial();
-    crate::player::SHARED
+    FEED_SHARED
         .playpos_ns
         .store(5_000_000_000, std::sync::atomic::Ordering::Relaxed);
 
@@ -179,7 +180,7 @@ fn the_lookahead_policy_must_abort_under_a_terminal_hold_like_the_ordinary_polic
             let _ = socket.write_all(b"EFGH");
         });
 
-        SHARED
+        FEED_SHARED
             .hls_rebuffering
             .store(false, std::sync::atomic::Ordering::Release);
         let host = CString::new("127.0.0.1").unwrap();
@@ -216,7 +217,7 @@ fn the_lookahead_policy_must_abort_under_a_terminal_hold_like_the_ordinary_polic
         assert_eq!(first, 4, "fixture: the first 4 bytes must arrive cleanly");
 
         // The link collapses; the main thread publishes the terminal hold. 4 of 8 bytes remain.
-        SHARED
+        FEED_SHARED
             .hls_rebuffering
             .store(true, std::sync::atomic::Ordering::Release);
         let second = read_cb(op, dst.as_mut_ptr(), dst.len() as c_int);
@@ -224,7 +225,7 @@ fn the_lookahead_policy_must_abort_under_a_terminal_hold_like_the_ordinary_polic
         drop(state);
         let _ = finish.send(());
 
-        SHARED
+        FEED_SHARED
             .hls_rebuffering
             .store(false, std::sync::atomic::Ordering::Release);
         plx_net::stream::http_close(&mut *hs);
@@ -320,19 +321,19 @@ fn the_lookahead_wiring_aborts_through_the_shared_reducer_when_the_guard_is_arme
     // Live inputs `SegmentAcquisition::for_cursor` samples for ITSELF — a real reserve, no
     // existing hold — so it is the constructor's own evaluation, not a test-supplied bool, that
     // decides whether the guard arms.
-    crate::player::SHARED
+    FEED_SHARED
         .playpos_ns
         .store(0, std::sync::atomic::Ordering::Relaxed);
-    SHARED
+    FEED_SHARED
         .hls_video_tail_ns
         .store(6_000_000_000, std::sync::atomic::Ordering::Release);
-    SHARED
+    FEED_SHARED
         .hls_audio_tail_ns
         .store(-1, std::sync::atomic::Ordering::Release);
-    SHARED
+    FEED_SHARED
         .disp_base
         .store(0, std::sync::atomic::Ordering::Relaxed);
-    SHARED
+    FEED_SHARED
         .hls_rebuffering
         .store(false, std::sync::atomic::Ordering::Release);
 
@@ -435,7 +436,7 @@ fn the_lookahead_wiring_aborts_through_the_shared_reducer_when_the_guard_is_arme
 #[test]
 fn a_terminal_hold_aborts_only_an_incomplete_response() {
     let _serial = plx_base::testlock::serial();
-    crate::player::SHARED
+    FEED_SHARED
         .playpos_ns
         .store(5_000_000_000, std::sync::atomic::Ordering::Relaxed);
     let guard = StallGuard::arm(6_000, super::test_support::demux_observer()).expect("a live reserve arms");
@@ -628,11 +629,11 @@ struct SharedHoldReset;
 
 impl SharedHoldReset {
     fn at(playpos_ns: i64) -> SharedHoldReset {
-        crate::player::SHARED
+        FEED_SHARED
             .playpos_ns
             .store(playpos_ns, Ordering::Relaxed);
-        SHARED.hls_rebuffering.store(false, Ordering::Release);
-        SHARED
+        FEED_SHARED.hls_rebuffering.store(false, Ordering::Release);
+        FEED_SHARED
             .hls_rebuffer_requested
             .store(false, Ordering::Release);
         SharedHoldReset
@@ -642,8 +643,8 @@ impl SharedHoldReset {
 impl Drop for SharedHoldReset {
     fn drop(&mut self) {
         acquisition::observe::unwatch();
-        SHARED.hls_rebuffering.store(false, Ordering::Release);
-        SHARED
+        FEED_SHARED.hls_rebuffering.store(false, Ordering::Release);
+        FEED_SHARED
             .hls_rebuffer_requested
             .store(false, Ordering::Release);
     }
@@ -651,8 +652,8 @@ impl Drop for SharedHoldReset {
 
 /// The main thread accepting its internal rebuffer hold: `hls_rebuffering` plus a new epoch.
 fn publish_accepted_hold() {
-    SHARED.hls_rebuffering.store(true, Ordering::Release);
-    SHARED
+    FEED_SHARED.hls_rebuffering.store(true, Ordering::Release);
+    FEED_SHARED
         .hls_internal_hold_epoch
         .fetch_add(1, Ordering::AcqRel);
 }
@@ -861,14 +862,14 @@ fn a_playhead_that_spends_the_reserve_during_the_open_abandons_the_fetch() {
     let mut pms = ScriptedPms::start(|_| Reply::Withhold);
     let acquisition = SegmentAcquisition::for_test(Some(2_000), false, false, super::test_support::demux_observer());
     fn spend_the_reserve() {
-        crate::player::SHARED
+        FEED_SHARED
             .playpos_ns
             .store(PLAYHEAD_NS + 2_000_000_000, Ordering::Relaxed);
     }
     let run = demux_against(&mut pms, acquisition, spend_the_reserve);
     assert_prompt_zero_byte_stall_abort(&run, "open, playhead spend");
     assert!(
-        SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
+        FEED_SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
         "the boundary still asks the main thread to hold the clock"
     );
 }
@@ -1066,7 +1067,7 @@ fn at_the_floor_a_body_reads_short_deadline_keeps_its_transport_classification()
     );
     assert!(!run.latched);
     assert!(
-        SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
+        FEED_SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
         "the hold was requested"
     );
 }
@@ -1083,13 +1084,13 @@ fn at_the_floor_a_blocked_body_read_asks_once_and_keeps_reading() {
         None,
         |released| {
             let asked_by = std::time::Instant::now() + std::time::Duration::from_secs(2);
-            while !SHARED.hls_rebuffer_requested.load(Ordering::Acquire)
+            while !FEED_SHARED.hls_rebuffer_requested.load(Ordering::Acquire)
                 && std::time::Instant::now() < asked_by
             {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
             // Clear it: a second request would set it again.
-            if SHARED.hls_rebuffer_requested.swap(false, Ordering::AcqRel) {
+            if FEED_SHARED.hls_rebuffer_requested.swap(false, Ordering::AcqRel) {
                 released.store(true, Ordering::Release);
             }
         },
@@ -1106,7 +1107,7 @@ fn at_the_floor_a_blocked_body_read_asks_once_and_keeps_reading() {
         "then the sized body is complete"
     );
     assert!(
-        !SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
+        !FEED_SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
         "asked exactly once"
     );
     assert_eq!(run.accepts, 1, "one connection");
@@ -1137,7 +1138,7 @@ fn at_the_floor_the_not_ready_wait_asks_once_and_retries() {
         describe(&run.result)
     );
     assert!(
-        SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
+        FEED_SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
         "the hold was requested"
     );
     assert_eq!(pms.requests(), 2, "the wait carried on into its retry");
@@ -1189,7 +1190,7 @@ fn at_the_floor_an_opens_short_deadline_keeps_its_classification() {
         describe(&run.result)
     );
     assert!(
-        SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
+        FEED_SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
         "the hold was requested"
     );
     assert_eq!(pms.requests(), 1);
@@ -1203,11 +1204,11 @@ fn at_the_floor_an_opens_short_deadline_keeps_its_classification() {
 fn a_zero_byte_abort_reaches_the_controller_as_an_abandoned_sample() {
     let _serial = plx_base::testlock::serial();
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
-    SHARED
+    FEED_SHARED
         .hls_video_tail_ns
         .store(PLAYHEAD_NS + 6_000_000_000, Ordering::Release);
-    SHARED.hls_audio_tail_ns.store(-1, Ordering::Release);
-    SHARED.disp_base.store(0, Ordering::Relaxed);
+    FEED_SHARED.hls_audio_tail_ns.store(-1, Ordering::Release);
+    FEED_SHARED.disp_base.store(0, Ordering::Relaxed);
     let pre_body = SegmentTransfer {
         bytes: 0,
         active_us: 0,
@@ -1315,7 +1316,7 @@ fn at_the_floor_the_open_asks_for_the_hold_once_and_keeps_its_connection() {
             publish_accepted_hold();
             // The worker's own request is the seam: release the headers once it has asked.
             let asked_by = std::time::Instant::now() + std::time::Duration::from_secs(2);
-            while !SHARED.hls_rebuffer_requested.load(Ordering::Acquire)
+            while !FEED_SHARED.hls_rebuffer_requested.load(Ordering::Acquire)
                 && std::time::Instant::now() < asked_by
             {
                 std::thread::sleep(std::time::Duration::from_millis(1));
@@ -1365,7 +1366,7 @@ fn at_the_floor_the_open_asks_for_the_hold_once_and_keeps_its_connection() {
     );
     assert_eq!(outcome, Ok(4), "the floor never abandons its only response");
     assert!(
-        SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
+        FEED_SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
         "the hold was requested"
     );
     assert!(!runtime.armed(), "asked once, then disarmed");
@@ -1385,7 +1386,7 @@ fn a_floor_runtime_requests_the_hold_once_then_disarms() {
     publish_accepted_hold();
     assert!(!stops(&mut runtime));
     assert!(
-        SHARED.hls_rebuffer_requested.swap(false, Ordering::AcqRel),
+        FEED_SHARED.hls_rebuffer_requested.swap(false, Ordering::AcqRel),
         "asked once"
     );
     assert_eq!(
@@ -1394,7 +1395,7 @@ fn a_floor_runtime_requests_the_hold_once_then_disarms() {
         "disarmed: nothing left to check"
     );
     assert!(
-        !SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
+        !FEED_SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
         "and never asks twice"
     );
     crate::aq::aq_destroy(&mut *aq);
@@ -1432,7 +1433,7 @@ fn unarmed_runtimes_never_stop_and_armed_ones_recheck_within_a_slice() {
     );
     assert!(!candidate.armed() && !held.armed());
     publish_accepted_hold();
-    crate::player::SHARED
+    FEED_SHARED
         .playpos_ns
         .store(PLAYHEAD_NS + 60_000_000_000, Ordering::Relaxed);
     for (role, runtime) in [("candidate", &mut candidate), ("already held", &mut held)] {
@@ -1457,7 +1458,7 @@ fn a_hold_that_came_and_went_between_checks_is_still_seen() {
     );
     assert!(!stops(&mut runtime));
     publish_accepted_hold();
-    SHARED.hls_rebuffering.store(false, Ordering::Release);
+    FEED_SHARED.hls_rebuffering.store(false, Ordering::Release);
     assert!(stops(&mut runtime), "the epoch moved since arming");
     assert!(runtime.stall_aborted());
     assert!(stops(&mut runtime), "and the stop is latched");

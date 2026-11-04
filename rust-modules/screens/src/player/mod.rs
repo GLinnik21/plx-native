@@ -174,7 +174,7 @@ pub struct PlayerScreen {
     /// The transport clocks' prewarm memo — a render resource, not logical state (`prepare`).
     clock_warm: plx_appkit::player_hud::motion::ClockWarm,
     /// **This frame's snapshot of everything the HUD's presentation reads from the player's
-    /// globals** (`TX.paused`, the scrub target, the playhead, the duration, the subtitle picks).
+    /// globals** (`FEED_TX.paused`, the scrub target, the playhead, the duration, the subtitle picks).
     /// The app assigns it before input/Tick and refreshes it before `prepare` and `draw`. So do the
     /// stops a key press resolves against (`row_enabled`, `row_command`, `geometry_for`: the row's enabled
     /// predicates and the paused state pick the compiled state). Automatic-skip Tick consumes the
@@ -2808,7 +2808,7 @@ mod clock_animator_tests {
         settled(&mut pl, &screen, &ps, 9_000);
         // The fingerprint reads `player_hud::busy(ps)` for itself rather than this field, so the
         // state has to move where the read-out reads it — the pipeline state the pump publishes.
-        plx_media::player::SHARED.pb_state.store(
+        plx_media::player::FEED_SHARED.pb_state.store(
             plx_media::player::PlaybackState::Error as u8,
             std::sync::atomic::Ordering::Relaxed,
         );
@@ -2817,7 +2817,7 @@ mod clock_animator_tests {
             "the failure read-out took the screen on this frame: it must report",
         );
         assert!(presents(9_005), "…and a report is a frame");
-        plx_media::player::SHARED.pb_state.store(
+        plx_media::player::FEED_SHARED.pb_state.store(
             plx_media::player::PlaybackState::Idle as u8,
             std::sync::atomic::Ordering::Relaxed,
         );
@@ -3309,7 +3309,7 @@ mod step_ladder_tests {
         let cx = cx();
         let ps = TestHost::session(&cx);
         let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
-        page.model.paused = true; // the HUD reads the screen's model, not `TX.paused`
+        page.model.paused = true; // the HUD reads the screen's model, not `FEED_TX.paused`
         assert!(page.hud_drawn(ps, 1_000), "paused: the transport is up before the capsule");
         page.set_hud_policy(HudPolicy::Hidden);
         assert!(!page.hud_drawn(ps, 1_000), "hidden under the capsule");
@@ -3329,7 +3329,7 @@ mod step_ladder_tests {
         let cx = cx();
         let ps = TestHost::session(&cx);
         let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
-        page.model.paused = true; // the HUD reads the screen's model, not `TX.paused`
+        page.model.paused = true; // the HUD reads the screen's model, not `FEED_TX.paused`
         page.set_hud_policy(HudPolicy::Hidden);
         page.hud.dismissed = true;
         page.hud.note_fresh_press(ps, 1_000, true); // the LEFT that steps the capsule
@@ -4094,7 +4094,7 @@ mod scrub_ownership_tests {
             use std::sync::atomic::Ordering::Relaxed;
             Self {
                 session: super::overlay_tests::playback_session(0, DUR),
-                saved_pause: plx_media::player::TX.paused.swap(paused, Relaxed),
+                saved_pause: plx_media::player::FEED_TX.paused.swap(paused, Relaxed),
             }
         }
 
@@ -4107,7 +4107,7 @@ mod scrub_ownership_tests {
     impl Drop for Fixture {
         fn drop(&mut self) {
             use std::sync::atomic::Ordering::Relaxed;
-            plx_media::player::TX.paused.store(self.saved_pause, Relaxed);
+            plx_media::player::FEED_TX.paused.store(self.saved_pause, Relaxed);
         }
     }
 
@@ -4473,8 +4473,8 @@ mod scrub_ownership_tests {
 
         // …and not while a failure owns the frame: there is nothing to toggle, and the read-out's
         // one drawn target is its own escape.
-        let was = plx_media::player::SHARED.pb_state.load(Relaxed);
-        plx_media::player::SHARED
+        let was = plx_media::player::FEED_SHARED.pb_state.load(Relaxed);
+        plx_media::player::FEED_SHARED
             .pb_state
             .store(plx_media::player::PlaybackState::Error as u8, Relaxed);
         let mut page = page_on_the_bar();
@@ -4485,7 +4485,7 @@ mod scrub_ownership_tests {
         );
         assert_eq!(handled, Handled::Yes, "swallowed, as the old block's early return did");
         assert!(reqs.is_empty());
-        plx_media::player::SHARED.pb_state.store(was, Relaxed);
+        plx_media::player::FEED_SHARED.pb_state.store(was, Relaxed);
     }
 
     /// **The failure read-out's own two escapes, as the page's first test rather than a ladder
@@ -4502,8 +4502,8 @@ mod scrub_ownership_tests {
         use std::sync::atomic::Ordering::Relaxed;
         let _g = plx_base::testlock::serial();
         let f = Fixture::new(false);
-        let was = plx_media::player::SHARED.pb_state.load(Relaxed);
-        plx_media::player::SHARED
+        let was = plx_media::player::FEED_SHARED.pb_state.load(Relaxed);
+        plx_media::player::FEED_SHARED
             .pb_state
             .store(plx_media::player::PlaybackState::Error as u8, Relaxed);
 
@@ -4535,7 +4535,7 @@ mod scrub_ownership_tests {
         assert_eq!(handled, Handled::No, "EXIT falls through to the loop's own arm");
         assert!(reqs.is_empty());
 
-        plx_media::player::SHARED.pb_state.store(was, Relaxed);
+        plx_media::player::FEED_SHARED.pb_state.store(was, Relaxed);
     }
 
     /// **The failure table never offers more controls than the read-out's row has slots.** The
@@ -5177,10 +5177,10 @@ mod scrub_ownership_tests {
         key(&f.session, &mut page, SDLK_RIGHT, Edge::Up, 1_020);
         tick(&f.session, &mut page, 2_000);
         assert_eq!(page.scrub.ns, 60 * S);
-        plx_media::player::TX.paused.store(false, Relaxed);
+        plx_media::player::FEED_TX.paused.store(false, Relaxed);
         tick(&f.session, &mut page, 2_100);
         assert_eq!(page.scrub.ns, 60 * S, "resumed: the target stays");
-        plx_media::player::TX.paused.store(true, Relaxed);
+        plx_media::player::FEED_TX.paused.store(true, Relaxed);
         tick(&f.session, &mut page, 2_200);
         assert_eq!(page.scrub.ns, 60 * S, "paused again: the target stays");
         let (_, reqs) = key(&f.session, &mut page, SDLK_RETURN, Edge::Down, 2_300);

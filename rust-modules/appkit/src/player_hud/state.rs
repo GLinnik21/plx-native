@@ -417,7 +417,7 @@ pub enum TransportMark {
 
 /// PURE: which mark the state read-out wears, given the transport's live state.
 ///
-/// * `paused` — `player::TX.paused`.
+/// * `paused` — `player::FEED_TX.paused`.
 /// * `busy` — the frame's single resolve ([`busy_surface`]); only [`Busy::Transport`] reaches here,
 ///   the other two being the centred read-out's business.
 /// * `scrubbing` — `player::TX.scrub_ns >= 0`, i.e. a LIVE preview the user is dragging. It is its

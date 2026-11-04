@@ -3283,7 +3283,7 @@ pub fn control_phase_label() -> String {
 /// claim's flight holds `Applying`; a seek's holds `Preparing` AND names itself in `flight` (a
 /// `Preparing` an inline caller opened is a preparation one frame completes, not a flight). The
 /// pump's own seek branches (the stuck in-place retry/reload and the plain pending-seek reducer)
-/// must skip while this holds and leave `TX.seek_to_ns` exactly where it is: neither branch checks
+/// must skip while this holds and leave `FEED_TX.seek_to_ns` exactly where it is: neither branch checks
 /// `ControlPhase`, and either one planning a rebuild or calling `commit_user_seek` against an
 /// action it does not own corrupts or silently rejects that very flight (see the pump's own doc on
 /// the call sites that consult this).
@@ -10605,7 +10605,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
     }
     settle_landing_selection(ps);
     let start = prepare_playback_landing(ps, source_ready);
-    // SHARED.desired_audio_idx is read by the DEMUX THREAD on every reopen — main thread only.
+    // FEED_SHARED.desired_audio_idx is read by the DEMUX THREAD on every reopen — main thread only.
     if let Some(ord) = plan.feed_audio_ordinal {
         #[cfg(feature = "play-feed")]
         crate::player::set_audio_track(ord);

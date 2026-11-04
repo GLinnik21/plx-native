@@ -136,17 +136,17 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
                     // a never-started native Load may have accepted no physical Pause. Prepare
                     // the new Feed's hold before arming its one-frame seek preroll.
                     if !self.pa.is_live() {
-                        plx_media::player::TX.commit_paused(true);
+                        plx_media::player::FEED_TX.commit_paused(true);
                     }
-                    plx_media::player::TX.begin_paused_seek();
+                    plx_media::player::FEED_TX.begin_paused_seek();
                 }
             }
             // A paused save the claim restores Playing (a PLAY press, or a toggle on a paused
             // decoder-release park): the park left the viewer's pause standing, and the Load is
             // about to arm its clock hold from it. Only a Load that will BUILD the Engine arms
-            // from `TX.paused`: a live Engine (a replacement the pump launched after a refused
+            // from `FEED_TX.paused`: a live Engine (a replacement the pump launched after a refused
             // restore) owns its clock, and `PlayClock` resumes it after `Started`, which it does
-            // only while `TX.paused` still reads Paused.
+            // only while `FEED_TX.paused` still reads Paused.
             ForegroundClock::Playing => {
                 #[cfg(feature = "play-feed")]
                 if feed_load && viewer_paused_for(self.pa) && !self.pa.is_live() {
@@ -211,7 +211,7 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
             if started {
                 set_resume_pend(true);
             } else {
-                plx_media::player::TX.finish_seek_preroll();
+                plx_media::player::FEED_TX.finish_seek_preroll();
             }
         }
         if !started && attempt.is_some() {
@@ -223,7 +223,7 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
     }
 
     fn play_clock(&mut self) -> bool {
-        // start_bufferfeed has installed the Initial native-clock hold from TX.paused. Publish
+        // start_bufferfeed has installed the Initial native-clock hold from FEED_TX.paused. Publish
         // Play through the synchronized reducer so that hold and the feed gate reopen together.
         !viewer_paused_for(self.pa) || set_transport_paused(self.pa, false)
     }

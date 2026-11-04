@@ -3180,7 +3180,7 @@ fn fill_direct_plan(
         crate::player::log("audio: dolby atmos — declaring contents.immersive=ATMOS");
     }
     if aidx >= 0 {
-        // NB this used to call player::set_audio_track, which stores SHARED.desired_audio_idx —
+        // NB this used to call player::set_audio_track, which stores FEED_SHARED.desired_audio_idx —
         // read by the DEMUX THREAD on every reopen. A worker writing it would change the audio
         // track of whatever is currently on screen. apply_plan does it, on the main thread.
         plan.feed_audio_ordinal = Some(

@@ -29,6 +29,7 @@
 //! Logs: `subside: open|anchor|reopen|failed|clock-only failed|stop …` — labels and numbers, never
 //! the URL, host, token or session identifier.
 
+use plx_play_feed::shared::FEED_SHARED;
 use crate::subtitle_job::{read_once, ReadCfg, RunEnd, SideStop};
 use plx_playback_contract::subtitle::Anchor;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
@@ -150,7 +151,7 @@ pub fn spec_for(target: &crate::route::SideReaderTarget) -> Option<Spec> {
     let su = client.direct_play_url(&target.part, &format!("{}-subs", target.session));
     Some(Spec {
         url: format!("{}{}", su.origin.base(), su.path),
-        offset_ns: crate::player::SHARED.disp_base.load(Ordering::Relaxed),
+        offset_ns: FEED_SHARED.disp_base.load(Ordering::Relaxed),
         part_kbps: target.part_kbps,
         ordinal: target.ordinal,
         from_playhead: false,
@@ -178,7 +179,7 @@ fn start_locked(spec: Spec) -> bool {
     let prev_selection = super::desired_sub_idx();
     let clock_only = spec.ordinal == CLOCK_ONLY;
     if !clock_only {
-        crate::player::SHARED.side_subs_owner.store(true, Ordering::Release);
+        FEED_SHARED.side_subs_owner.store(true, Ordering::Release);
         super::request_subtitle(spec.ordinal);
     }
     let ordinal = spec.ordinal;
@@ -186,7 +187,7 @@ fn start_locked(spec: Spec) -> bool {
     // `plx_base::task::spawn` hands back std's handle, whose `thread()` is what `stop` unparks.
     let Some(handle) = plx_base::task::spawn("subside", move || run(spec, thread_stop)) else {
         if !clock_only {
-            crate::player::SHARED.side_subs_owner.store(false, Ordering::Release);
+            FEED_SHARED.side_subs_owner.store(false, Ordering::Release);
             super::request_subtitle(prev_selection);
         }
         return false;
@@ -209,7 +210,7 @@ pub fn stop(reason: &str) {
     FAILED.store(false, Ordering::Release);
     // The engine run is over: its anchor names a stream that no reader will match again, whether
     // or not a reader was running (the sync worker may have stopped it already, keeping the anchor).
-    *crate::player::SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    *FEED_SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) = None;
     // The same reason: whether or not a reader ran, a run that gets none (off the gate) must not
     // inherit the clock of the run before it, which would shift its sidecar by a stranger's snap.
     *LAST_DELTA.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -230,12 +231,12 @@ fn stop_locked(reason: &str, keep_anchor: bool) -> Option<i64> {
     // reader (or the sidecar) that replaces it.
     FAILED.store(false, Ordering::Release);
     if !keep_anchor {
-        *crate::player::SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        *FEED_SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
     // A clock-only run took no subtitle selection, owned no ownership flag and filled no store:
     // there is nothing of it to give back.
     if r.ordinal != CLOCK_ONLY {
-        crate::player::SHARED.side_subs_owner.store(false, Ordering::Release);
+        FEED_SHARED.side_subs_owner.store(false, Ordering::Release);
         if super::desired_sub_idx() == r.ordinal {
             super::request_subtitle(r.prev_selection);
         }
@@ -346,7 +347,7 @@ fn wait_for_anchor(stop: &SideStop) -> Option<Anchor> {
         if stop.is_set() {
             return None;
         }
-        if let Some(a) = *crate::player::SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) {
+        if let Some(a) = *FEED_SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) {
             return Some(a);
         }
         nap(stop, POLL);
@@ -354,7 +355,7 @@ fn wait_for_anchor(stop: &SideStop) -> Option<Anchor> {
 }
 
 fn playpos() -> i64 {
-    crate::player::SHARED.playpos_ns.load(Ordering::Relaxed)
+    FEED_SHARED.playpos_ns.load(Ordering::Relaxed)
 }
 
 /// The reader cannot go on, or could not start: one log line, and the failure the route answers
@@ -405,12 +406,12 @@ fn run(spec: Spec, stop: Arc<SideStop>) {
             }
         };
         let clock = || {
-            let s = &crate::player::SHARED;
+            let s = &FEED_SHARED;
             (s.pts_shift.load(Ordering::Relaxed), s.disp_base.load(Ordering::Relaxed))
         };
         let retention = || {
-            let seeking = crate::player::SHARED.seeking.load(Ordering::Acquire);
-            let target = crate::player::SHARED.seek_display_ns.load(Ordering::Relaxed);
+            let seeking = FEED_SHARED.seeking.load(Ordering::Acquire);
+            let target = FEED_SHARED.seek_display_ns.load(Ordering::Relaxed);
             plx_playback_contract::subtitle::CaptionRetention {
                 playhead_ns: Some(playpos()),
                 seek_target_ns: (seeking && target >= 0).then_some(target),
@@ -474,11 +475,11 @@ mod tests {
         let _g = plx_base::testlock::serial();
         plx_base::eventlog::with_private_log(|| {
             let (_srv, port) = stalled_server();
-            *crate::player::SHARED.side_anchor.lock().unwrap() = None;
+            *FEED_SHARED.side_anchor.lock().unwrap() = None;
             let selected = super::super::desired_sub_idx();
             assert!(start(clock_only_spec(port, None)));
             assert!(active(), "`sync`'s early return reads this: a clock-only run must stop through it");
-            assert!(!crate::player::SHARED.side_subs_owner.load(Ordering::Acquire), "the demuxer keeps its subtitles");
+            assert!(!FEED_SHARED.side_subs_owner.load(Ordering::Acquire), "the demuxer keeps its subtitles");
             assert_eq!(super::super::desired_sub_idx(), selected, "the viewer's selection is not the reader's to change");
             publish_exact(-2_169_000_000);
             assert_eq!(exact_delta_ns(), Some(-2_169_000_000));
@@ -542,7 +543,7 @@ mod tests {
         let _g = plx_base::testlock::serial();
         plx_base::eventlog::with_private_log(|| {
             let (_srv, port) = stalled_server();
-            *crate::player::SHARED.side_anchor.lock().unwrap() = None; // no anchor: a scan could not even start
+            *FEED_SHARED.side_anchor.lock().unwrap() = None; // no anchor: a scan could not even start
             assert!(start(clock_only_spec(port, Some(-1_500_000_000))));
             wait_until_the_reader_ends();
             assert!(!take_failure());
@@ -559,7 +560,7 @@ mod tests {
         let _g = plx_base::testlock::serial();
         plx_base::eventlog::with_private_log(|| {
             let (_srv, port) = stalled_server();
-            *crate::player::SHARED.side_anchor.lock().unwrap() = Some(Anchor::of(0, &[1, 2, 3]));
+            *FEED_SHARED.side_anchor.lock().unwrap() = Some(Anchor::of(0, &[1, 2, 3]));
             assert!(start(spec(port)));
             // what `read_once` publishes on a byte-exact match, and what the run hands on
             publish_exact(-2_169_000_000);
@@ -583,15 +584,15 @@ mod tests {
             let (srv, port) = stalled_server();
             srv.set_nonblocking(true).unwrap();
             // 1. no anchor yet: the reader parks in its anchor wait
-            *crate::player::SHARED.side_anchor.lock().unwrap() = None;
+            *FEED_SHARED.side_anchor.lock().unwrap() = None;
             assert!(start(spec(port)));
             assert!(active());
-            assert!(crate::player::SHARED.side_subs_owner.load(Ordering::Acquire));
+            assert!(FEED_SHARED.side_subs_owner.load(Ordering::Acquire));
             stop("test-no-anchor");
             assert!(!active());
-            assert!(!crate::player::SHARED.side_subs_owner.load(Ordering::Acquire));
+            assert!(!FEED_SHARED.side_subs_owner.load(Ordering::Acquire));
             // 2. an anchor exists: the reader opens the Part and blocks in the stalled server
-            *crate::player::SHARED.side_anchor.lock().unwrap() = Some(Anchor::of(0, &[1, 2, 3]));
+            *FEED_SHARED.side_anchor.lock().unwrap() = Some(Anchor::of(0, &[1, 2, 3]));
             assert!(start(spec(port)));
             // wait until the reader has actually connected, so the stop lands on a blocked read
             let mut conn = None;
@@ -610,7 +611,7 @@ mod tests {
             for banned in ["http://", "127.0.0.1", "token", "Token", "/library"] {
                 assert!(!log.contains(banned), "the log names {banned:?}: {log}");
             }
-            *crate::player::SHARED.side_anchor.lock().unwrap() = None;
+            *FEED_SHARED.side_anchor.lock().unwrap() = None;
         });
     }
 
@@ -622,8 +623,8 @@ mod tests {
         let _g = plx_base::testlock::serial();
         plx_base::eventlog::with_private_log(|| {
             let (_srv, port) = stalled_server();
-            let anchor = || *crate::player::SHARED.side_anchor.lock().unwrap();
-            *crate::player::SHARED.side_anchor.lock().unwrap() = Some(Anchor::of(0, &[1, 2, 3]));
+            let anchor = || *FEED_SHARED.side_anchor.lock().unwrap();
+            *FEED_SHARED.side_anchor.lock().unwrap() = Some(Anchor::of(0, &[1, 2, 3]));
             assert!(start(spec(port)));
             let epoch = EPOCH.load(Ordering::Acquire);
             // another track: replaced, still active, anchor kept
@@ -654,7 +655,7 @@ mod tests {
         let _g = plx_base::testlock::serial();
         plx_base::eventlog::with_private_log(|| {
             let (_srv, port) = stalled_server();
-            *crate::player::SHARED.side_anchor.lock().unwrap() = None;
+            *FEED_SHARED.side_anchor.lock().unwrap() = None;
             // engine stop, with and without a reader still registered
             assert!(start(spec(port)));
             raise_failure();
