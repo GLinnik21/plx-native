@@ -118,7 +118,14 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
                         && sent.attempt == existing.contract_id()
                         && sent.operation == plx_playback_contract::Operation::Stop(
                             plx_playback_contract::StopReason::Replace));
-                if !addressed || !pa.release_busy() {
+                let refused = stopped.playback.iter().any(|notice| matches!(notice,
+                    plx_playback_contract::Fx::Rejected {
+                        backend: plx_playback_contract::BackendKind::Uri, attempt, ..
+                    } | plx_playback_contract::Fx::CommandRefused {
+                        backend: plx_playback_contract::BackendKind::Uri, attempt,
+                        operation: plx_playback_contract::Operation::Stop(_), ..
+                    } if *attempt == existing.contract_id()));
+                if !addressed || refused || !pa.release_busy() {
                     let _ = crate::route::abort_route_start(
                         ticket, crate::route::RouteStartResult::StartFailed);
                     return BufferfeedStartOutcome::Failed;

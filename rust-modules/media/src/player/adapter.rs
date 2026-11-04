@@ -898,12 +898,6 @@ impl PlayerAdapter {
     /// supplies the physical attempt's origin and a monotonic tick for local measurements.
     pub fn backend_send_at(&mut self, intent: Intent, origin: super::attempt_metrics::Origin,
         at: super::attempt_metrics::Tick) -> backend::RunResult {
-        #[cfg(feature = "play-uri")]
-        if let Intent::Stop { backend: BackendKind::Uri, attempt, .. } = intent {
-            if self.uri_route_attempt.is_some_and(|route| route.contract_id() == attempt) {
-                self.uri_stop_requested = true;
-            }
-        }
         let mut drivers = PhysicalDrivers {
             marker: std::marker::PhantomData,
             #[cfg(feature = "play-feed")]
@@ -918,8 +912,18 @@ impl PlayerAdapter {
         #[cfg(feature = "play-uri")]
         {
             if let Intent::Stop { backend: BackendKind::Uri, attempt, .. } = intent {
-                if result.controls.iter().any(|sent| sent.backend == BackendKind::Uri
+                let refused = result.playback.iter().any(|notice| matches!(notice,
+                    plx_playback_contract::Fx::Rejected {
+                        backend: BackendKind::Uri, attempt: rejected, ..
+                    } | plx_playback_contract::Fx::CommandRefused {
+                        backend: BackendKind::Uri, attempt: rejected,
+                        operation: Operation::Stop(_), ..
+                    } if *rejected == attempt));
+                if !refused && result.controls.iter().any(|sent| sent.backend == BackendKind::Uri
                     && sent.attempt == attempt && matches!(sent.operation, Operation::Stop(_))) {
+                    if self.uri_route_attempt.is_some_and(|route| route.contract_id() == attempt) {
+                        self.uri_stop_requested = true;
+                    }
                     self.release_step(&super::release::ReleaseEvent::UriReleaseStarted {
                         attempt, at: std::time::Instant::now(),
                     }, &mut Vec::new());
