@@ -3984,6 +3984,7 @@ mod lifecycle_regression_tests {
                 acct_rest: Default::default(),
                 shots: Default::default(),
                 auto_tried: Default::default(),
+                playurl_armed: Default::default(),
                 replay_left: Default::default(),
                 grid_tried: Default::default(),
                 settings_tried: Default::default(),

@@ -55,6 +55,10 @@ pub enum SettingsPage {
     Picker(PickerKind),
     /// The Player HUD page: the installed packages, the drop folder and the chosen HUD (`hud_settings`).
     PlayerHud,
+    HudGallery,
+    HudDetail(plx_data::hudpacks::Sha),
+    HudAbout(plx_data::hudpacks::Sha),
+    HudPreview(plx_data::hudpacks::Sha),
 }
 
 /// Which preference a [`SettingsPage::Picker`] edits. The parent page (`Playback` for the local ones,
@@ -135,6 +139,10 @@ impl ScreenArg for SettingsPage {
             SettingsPage::ConsentStage(_) => 107,
             SettingsPage::Picker(_) => 112,
             SettingsPage::PlayerHud => 115,
+            SettingsPage::HudGallery => 117,
+            SettingsPage::HudDetail(..) => 118,
+            SettingsPage::HudAbout(..) => 119,
+            SettingsPage::HudPreview(..) => 120,
         })
     }
     fn title(&self) -> Option<&str> {
@@ -154,13 +162,18 @@ impl ScreenArg for SettingsPage {
 /// would silently hash two different documents as one, which is exactly the class of miss the
 /// recorder exists to catch.
 ///
-/// The kind is [`ScreenArg::id`]'s number rather than a second numbering of the same question —
-/// that is already the id the container keys page KIND on. The index is written for EVERY variant,
-/// `0` where there is none, so a payload-less variant that later grows one cannot keep hashing
-/// identically to its old self.
+/// The kind is [`ScreenArg::id`]'s number, the container's own page kind. Document and picker pages
+/// append their index; HUD detail pages append their archive digest; payload-less pages append zero.
+/// A page's destination payload always participates in its identity.
 impl LogicalState for SettingsPage {
     fn write(&self, w: &mut Canon) {
         w.discriminant(ScreenArg::id(self).0);
+        match self {
+            SettingsPage::HudDetail(sha) | SettingsPage::HudAbout(sha) | SettingsPage::HudPreview(sha) => {
+                w.str(&sha.hex()); return;
+            }
+            _ => (),
+        }
         w.u8(match self {
             SettingsPage::Root
             | SettingsPage::Language
@@ -174,9 +187,11 @@ impl LogicalState for SettingsPage {
             | SettingsPage::Privacy
             | SettingsPage::Legal
             | SettingsPage::PlayerHud
+            | SettingsPage::HudGallery
             | SettingsPage::About => 0,
             SettingsPage::Document(i) | SettingsPage::Preview(i) | SettingsPage::ConsentStage(i) => *i,
             SettingsPage::Picker(kind) => *kind as u8,
+            SettingsPage::HudDetail(..) | SettingsPage::HudAbout(..) | SettingsPage::HudPreview(..) => unreachable!("written above"),
         });
     }
     fn probe(&self, out: &mut String) {
@@ -198,6 +213,10 @@ impl LogicalState for SettingsPage {
             SettingsPage::ConsentStage(_) => "stage",
             SettingsPage::Picker(_) => "picker",
             SettingsPage::PlayerHud => "player-hud",
+            SettingsPage::HudGallery => "hud-gallery",
+            SettingsPage::HudDetail(..) => "hud-detail",
+            SettingsPage::HudAbout(..) => "hud-about",
+            SettingsPage::HudPreview(..) => "hud-preview",
         });
         if let SettingsPage::Document(i) | SettingsPage::Preview(i) | SettingsPage::ConsentStage(i) = self {
             out.push_str(&format!("[{i}]"));
@@ -371,6 +390,10 @@ mod tests {
             SettingsPage::ConsentStage(0),
             SettingsPage::Picker(PickerKind::Quality),
             SettingsPage::PlayerHud,
+            SettingsPage::HudGallery,
+            SettingsPage::HudDetail(plx_data::hudpacks::Sha::of(b"test")),
+            SettingsPage::HudAbout(plx_data::hudpacks::Sha::of(b"test")),
+            SettingsPage::HudPreview(plx_data::hudpacks::Sha::of(b"test")),
         ];
         let mut ids: Vec<u32> = pages.iter().map(|p| plx_ui::screen::ScreenArg::id(p).0).collect();
         ids.sort_unstable();

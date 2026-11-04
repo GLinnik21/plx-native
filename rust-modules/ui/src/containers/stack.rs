@@ -161,8 +161,22 @@ impl<H: Host> NavStack<H> {
     /// closes: the transition never reached `Idle`, so its own floor kept re-covering and
     /// re-orphaning whatever was presented over it — TV 2026-09-17). See [`Self::is_inert`].
     pub fn request(&mut self, op: NavOp<H::Arg>, ret: ReturnState<H::Elem, H::Memory>) {
+        self.request_taken(op, ret);
+    }
+
+    /// Queue a request and report whether it changed the pending navigation. Argument-based
+    /// ancestor requests capture the actual stack identity here, before any transition begins.
+    /// A missing ancestor and an inert request leave both navigation and its return state alone.
+    pub fn request_taken(&mut self, op: NavOp<H::Arg>, ret: ReturnState<H::Elem, H::Memory>) -> bool {
+        let op = match op {
+            NavOp::PopToArg(arg) => match self.entries.iter().rev().find(|entry| entry.arg.same_instance(&arg)) {
+                Some(entry) => NavOp::PopTo(entry.id),
+                None => return false,
+            },
+            other => other,
+        };
         if self.is_inert(&op) {
-            return;
+            return false;
         }
         let from = self.top().map(|e| e.id);
         let continuous = self.continuous_for(&op);
@@ -174,6 +188,7 @@ impl<H: Host> NavStack<H> {
         if self.transition.commit_point() == CommitPoint::Immediate {
             self.due = true;
         }
+        true
     }
 
     /// **Is `op` a no-op right now?** Two independent reasons, either enough on its own:
@@ -229,7 +244,7 @@ impl<H: Host> NavStack<H> {
         use plx_machine::machine::Chrome;
         let top = self.top().map(|e| e.arg.chrome());
         let dest = match op {
-            NavOp::Push(a) | NavOp::Root(a) | NavOp::SelectTab(a) | NavOp::Replace(a) | NavOp::Present(a) => {
+            NavOp::Push(a) | NavOp::Root(a) | NavOp::SelectTab(a) | NavOp::Replace(a) | NavOp::Present(a) | NavOp::PopToArg(a) => {
                 Some(a.chrome())
             }
             NavOp::Pop => self
@@ -279,6 +294,7 @@ impl<H: Host> NavStack<H> {
             NavOp::Pop => self.under_top().map(|e| e.id),
             NavOp::PopTo(id) | NavOp::Dismiss(id) => Some(*id),
             NavOp::SelectTab(arg) => self.root().filter(|e| e.arg.same_instance(arg)).map(|e| e.id),
+            NavOp::PopToArg(arg) => self.entries.iter().rev().find(|e| e.arg.same_instance(arg)).map(|e| e.id),
             NavOp::Push(_) | NavOp::Root(_) | NavOp::Replace(_) => None,
             NavOp::Present(_) | NavOp::Cancel => return None,
         };
@@ -570,6 +586,7 @@ impl<H: Host> NavStack<H> {
                 // with no chrome argument — never reached, `Navigation` routes it
             }
             NavOp::Cancel => {}
+            NavOp::PopToArg(_) => unreachable!("request_taken resolves arguments before parking an op"),
         }
         out
     }
@@ -601,7 +618,7 @@ impl<H: Host> NavStack<H> {
     /// that argument is remains the application's answer.
     pub fn pending_dest(&self) -> Option<&H::Arg> {
         match self.pending.as_ref().map(|p| &p.op)? {
-            NavOp::Push(a) | NavOp::Root(a) | NavOp::SelectTab(a) | NavOp::Replace(a) => Some(a),
+            NavOp::Push(a) | NavOp::Root(a) | NavOp::SelectTab(a) | NavOp::Replace(a) | NavOp::PopToArg(a) => Some(a),
             NavOp::PopTo(id) | NavOp::Dismiss(id) => self.entry(*id).map(|e| &e.arg),
             NavOp::Pop => self.under_top().map(|e| &e.arg),
             NavOp::Present(_) | NavOp::Cancel => None,
