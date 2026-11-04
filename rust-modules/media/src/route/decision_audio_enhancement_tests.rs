@@ -4268,7 +4268,7 @@ fn side_reader_target_names_the_selected_tracks_ordinal() {
 // ---- a sidecar over a remux is drawn on the CONTENT's clock ---------------------------------------
 
 /// A live admitted remux with a sidecar picked: the app draws it, over a remux whose clock the side
-/// reader maps onto the Part's (`player::subside`, `ff::subside`).
+/// reader maps onto the Part's (`plx_play_feed::side_reader`, `ff::subside`).
 fn sidecar_over_admitted_remux(ps: &mut PlaybackSession) -> Live {
     let live = Live::start(EnhMode::Honor("ac3"));
     install_truehd_remux(ps, &live);

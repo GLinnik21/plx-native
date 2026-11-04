@@ -2458,7 +2458,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   at each playback start, no relaunch: while a plain remux plays with no subtitle selected, a side
   reader demuxes the Part's subtitle packets over a fresh-session range read and the client
   renderer draws that track; logs `subside: open|anchor|reopen|failed|stop …`, never a URL, token
-  or session; `media::player::subside`, `ff_subside.rs`),
+  or session; `plx_play_feed::side_reader`, `media::player::subside`, `ff_subside.rs`),
   `/tmp/plxnative-uriprobe[=load|late|none|drive]` (the webOS 5+ URI-mode probe, issue #1064: the
   next Play hands its stream URL to `com.webos.media` over the platform bus instead of building an
   Engine, to learn whether the exported window id is honoured and where it may go. The content
