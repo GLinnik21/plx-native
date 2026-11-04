@@ -1693,7 +1693,7 @@ fn feed_audio_lane(mt: &MainThread, eng: &mut Engine, hooks: &FeedHooks) {
 }
 
 /// The sink envelope for THIS Load, from the route (main thread), with the dev override applied.
-pub fn sink_envelope_now(facts: &plx_play_feed::PayloadFacts, video: crate::LoadVideo, rate: i32) -> crate::SinkEnvelope {
+pub fn sink_envelope_now(facts: &crate::PayloadFacts, video: crate::LoadVideo, rate: i32) -> crate::SinkEnvelope {
     if let Some(spec) = plx_base::devtrig::read("sinkmax") {
         if let Some(env) = crate::parse_sinkmax(&spec) {
             #[cfg(feature = "devtriggers")]
@@ -1834,7 +1834,7 @@ pub fn load_audio(
 
 
 pub fn build_av_payload_from_facts(
-    facts: &crate::PayloadFacts, video: &str, audio: &str, env: SinkEnvelope, rate: i32,
+    facts: &crate::PayloadFacts, video: &str, audio: &str, env: crate::SinkEnvelope, rate: i32,
     options: crate::PayloadOptions,
 ) -> String {
     let built = crate::build_av_payload(
