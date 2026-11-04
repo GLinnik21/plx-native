@@ -681,15 +681,6 @@ fn replay_native_presentation(num: i64) {
     super::sf_on_event_inner(0, num, std::ptr::null(), super::shared::EventScope::Live);
 }
 
-fn record_native_audio_packet_size(len: u32) -> Option<String> {
-    let mut sizes = super::native_stall::SIZES.lock().unwrap_or_else(|e| e.into_inner());
-    if sizes.open() && crate::ff::native_audio::fed().is_some() {
-        sizes.record(len)
-    } else {
-        None
-    }
-}
-
 const FEED_HOOKS: plx_play_feed::native_executor::FeedHooks =
     plx_play_feed::native_executor::FeedHooks {
         sink,
@@ -701,7 +692,6 @@ const FEED_HOOKS: plx_play_feed::native_executor::FeedHooks =
         presentation_event: replay_native_presentation,
         vclock_ms: super::vclock_ms,
         feed_clock_us,
-        record_audio_packet_size: record_native_audio_packet_size,
     };
 
 pub(super) fn play_initial_now(mt: &MainThread, eng: &mut Engine) -> Option<bool> {

@@ -159,7 +159,17 @@ pub struct FeedHooks {
     pub presentation_event: fn(i64),
     pub vclock_ms: fn() -> u32,
     pub feed_clock_us: fn() -> u64,
-    pub record_audio_packet_size: fn(u32) -> Option<String>,
+}
+
+/// One accepted native audio packet's size, while the stall watchdog's evidence window is open and
+/// the feed is a native audio feed; the line it returns is logged once, with the first AUs' sizes.
+fn record_native_audio_packet_size(len: u32) -> Option<String> {
+    let mut sizes = crate::native_stall::SIZES.lock().unwrap_or_else(|e| e.into_inner());
+    if sizes.open() && crate::ff::native_audio::fed().is_some() {
+        sizes.record(len)
+    } else {
+        None
+    }
 }
 
 fn to_sink_ns(ns: i64, shared: &PhysicalShared) -> i64 {
@@ -1699,7 +1709,7 @@ fn feed_audio_lane(mt: &MainThread, eng: &mut Engine, hooks: &FeedHooks) {
         }
         if (r as u8) == b'O' {
             ATOT.fetch_add(1, Ordering::Relaxed); // accepted, not attempted — see feed_stream
-            if let Some(line) = (hooks.record_audio_packet_size)(len as u32) {
+            if let Some(line) = record_native_audio_packet_size(len as u32) {
                 plx_base::eventlog::log(&format!("native audio: packet sizes of the first AUs fed: {line}"));
             }
         }
