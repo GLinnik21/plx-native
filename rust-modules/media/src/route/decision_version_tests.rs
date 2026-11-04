@@ -173,6 +173,43 @@ const URI_AV1: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-v","t
      {"id":31341,"streamType":1,"codec":"av1","index":0},
      {"id":31342,"streamType":2,"codec":"aac","channels":2,"index":1,"languageCode":"eng","default":true,"selected":true}]}]}]}]}}"#;
 
+#[cfg(feature = "play-uri")]
+const MDE_PMS_OUTPUT: &[u8] = br#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"transcode","Stream":[{"streamType":1,"decision":"copy","codec":"h264"},{"streamType":2,"decision":"transcode","codec":"ac3"}]}]}]}]}}"#;
+
+#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+struct QualifiedPms(std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)>>>);
+
+#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+impl crate::route::uri_preflight::OriginalQualifier for QualifiedPms {
+    fn qualify(&self, _: &plx_base::task::OffFrame,
+        _: crate::route::uri_preflight::OriginalRequest) -> crate::route::uri_preflight::Verdict {
+        crate::route::uri_preflight::Verdict::Unknown
+    }
+
+    fn qualify_pms(&self, _: &plx_base::task::OffFrame,
+        request: crate::route::uri_preflight::PmsRequest) -> crate::route::uri_preflight::PmsVerdict {
+        use crate::route::uri_preflight::{PmsCertificate, PmsRecipe, PmsTimeDomain, PmsVerdict};
+        use plx_playback_contract::{Fidelity, Requirements, SourceKind, TrackChoice, TrackKind,
+            TrackSelection};
+        assert!(matches!(request.recipe, PmsRecipe::Remux | PmsRecipe::Encode));
+        self.0.lock().unwrap().push((request.video_codec.clone(), request.audio_codec.clone(),
+            request.resource_session.clone()));
+        PmsVerdict::Known(PmsCertificate { selection: request.selection,
+            source_url: request.source_url, resource_session: request.resource_session,
+            recipe: request.recipe,
+            requirements: Requirements { source: SourceKind::ProgressiveUri,
+                video: Fidelity::Compatible, audio: Fidelity::Compatible,
+                audio_track: TrackChoice::Selected(31342),
+                subtitle_track: TrackChoice::Unspecified },
+            native_tracks: vec![plx_play_uri::backend::NativeTrackIndex {
+                selection: TrackSelection { kind: TrackKind::Audio, id: 31342 }, index: 1,
+            }],
+            applied_audio: request.applied_audio, time_domain: PmsTimeDomain::ContentAbsolute,
+            hls_controller: None, hls_master: None, release_certified: true,
+            expires_at: std::time::Instant::now() + std::time::Duration::from_secs(10) })
+    }
+}
+
 #[cfg(all(feature = "play-uri", feature = "devtriggers"))]
 struct QualifiedOriginal { video: &'static str, audio: &'static str }
 
@@ -369,6 +406,48 @@ fn a_certified_av1_uri_original_does_not_inherit_feeds_video_refusal() {
         "a source-qualified URI AV1 must not inherit Feed's video gate");
     assert!(!requests.iter().any(|line| line.contains("/decision?") || line.contains("/transcode/")),
         "URI AV1 must not acquire Feed video conversion: {requests:?}");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
+#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+fn an_accepted_pms_decision_produces_an_owned_uri_offer_from_its_output() {
+    use plx_play_uri::backend::Binding;
+    use plx_playback_contract::Capabilities;
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    assert!(plx_net::net::global_init());
+    let capabilities = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
+        pause: true, seek: true, audio_track: true, subtitle_track: true,
+        audio_off: false, subtitle_off: false };
+    let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
+        crate::route::uri_preflight::ProductEvidence { display_exported: true,
+            binding: Binding::Exported { canvas: (1920, 1080) },
+            callable: capabilities, certified: capabilities, preview_rectangle: false },
+        std::sync::Arc::new(QualifiedPms(observed.clone()))));
+    let (port, done, server) = versions_pms_with(URI_DTS, MDE_PMS_OUTPUT);
+    let sid = plx_plex::plex::register_for_test("qualified-pms", "127.0.0.1", port,
+        "token", "qualified-pms-client");
+    let mut meta = plx_data::stores::metadata::MetadataStore::default();
+    assert!(request_play(&mut ps, &mut meta, plx_platform::devcaps::caps(), sid,
+        "rk-v", "/library/parts/3134/1/file.mkv", "h264", "dca", "Film", "", None));
+    assert!(wait_resolve_workers_for_test(std::time::Duration::from_secs(15)));
+    let start = pump_play(&mut ps, &mut meta).expect("accepted PMS output start");
+    assert!(start.uri_offer.is_some(), "the actual resolve must carry its owned URI offer");
+    let seen = observed.lock().unwrap();
+    assert_eq!(seen.len(), 1, "the accepted PMS output is qualified once");
+    assert_eq!((seen[0].0.as_str(), seen[0].1.as_str()), ("h264", "ac3"),
+        "the certificate sees output codecs, not the DTS source codec");
+    assert_eq!(seen[0].2, ps.tsession, "the offer owns the accepted encoder session");
+    drop(seen);
+    scrobble_stop(&mut ps, None, None);
+    drain_scrobble();
+    done.send(()).unwrap();
+    let requests = server.join().unwrap();
+    assert!(requests.iter().any(|line| line.contains("/decision?")));
+    assert!(requests.iter().any(|line| line.contains("/video/:/transcode/universal/stop?")),
+        "the accepted PMS encoder is retired at the ordinary timeline-before-stop boundary");
     plx_plex::plex::reset_servers_for_test();
 }
 
