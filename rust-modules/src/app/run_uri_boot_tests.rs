@@ -158,6 +158,7 @@ mod uri_boot_tests {
         assert!(rig.app.adapters.player.install_uri_product_with_ports(
             &mut rig.app.player.session, port, bus, display));
         rig.request();
+        let metric_request = rig.app.player.session.metric_request().expect("accepted URI request");
         rig.release.send(()).unwrap();
         let mut resolved = None;
         poll_until("qualified URI resolve did not land", || {
@@ -176,6 +177,14 @@ mod uri_boot_tests {
         assert!(matches!(started, plx_media::player::BufferfeedStartOutcome::Launched(_)));
         let at = rig.app.adapters.player.backend_tick();
         let _ = rig.app.adapters.player.backend_poll_session_at(&mut rig.app.player.session, at);
+        let summary = rig.app.adapters.player.backend_metrics_snapshot()
+            .expect("the product URI Start reached the common metrics owner");
+        assert_eq!(summary.id, metric_request);
+        assert_eq!(summary.attempt_count, 1);
+        let physical = summary.current_attempt.expect("one addressed URI attempt");
+        assert_eq!(physical.backend, plx_media::player::attempt_metrics::Backend::Uri);
+        assert!(!physical.evidence.picture_presented,
+            "dispatch and native Load request are not picture evidence");
         let load = bus.load_payload().expect("resolved URI reached the native transport");
         let load: serde_json::Value = serde_json::from_str(&load).unwrap();
         assert!(load["uri"].as_str().unwrap().contains("/library/parts/1/file.mkv"));
