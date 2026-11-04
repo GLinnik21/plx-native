@@ -17,9 +17,16 @@
 precision mediump float;
 varying highp vec2 v_cuv;
 uniform sampler2D u_tex;
+#ifdef PLX_DISSOLVE
+uniform sampler2D u_next;
+uniform float u_mix;
+#endif
 uniform vec4 u_tint;
 void main(){
   vec4 c = texture2D(u_tex, v_cuv);
+#ifdef PLX_DISSOLVE
+  c = mix(c, texture2D(u_next, v_cuv), u_mix);
+#endif
   vec3 tex = c.rgb*u_tint.rgb;
   float ta = c.a*u_tint.a;
   gl_FragColor = vec4(tex, ta);

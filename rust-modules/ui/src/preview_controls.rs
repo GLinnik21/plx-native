@@ -1,13 +1,14 @@
 //! Full-image preview chrome: one shared CircleButton and TabStrip, one engine-owned row.
 //! Focus never chooses a scene. Activation is handled by the owner.
 use crate::screen::{AxisMask, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Placed, Seat, Step};
-use crate::widgets::{self, CircleButton, ControlGround, SelMark, StripLay, TabGround, TabStrip};
+use crate::widgets::{self, CircleButton, SelMark, StripLay, TabBand, TabGround, TabStrip};
 use crate::{consts::SAFE, icons::Icon, theme, Env, Painter, Rect, View};
 use plx_machine::machine::{EntryId, FocusKey, GroupId, Measure};
 
 pub struct PreviewControls {
     lays: Vec<StripLay>,
     back: Rect,
+    band: TabBand,
 }
 
 impl PreviewControls {
@@ -32,7 +33,7 @@ impl PreviewControls {
                 lay.x += shift;
             }
         }
-        Self { lays, back }
+        Self { lays, back, band: TabBand::new() }
     }
 
     pub fn len(&self) -> usize {
@@ -92,7 +93,8 @@ impl PreviewControls {
         }
     }
 
-    pub fn update(&self, strip: &mut TabStrip, selected: usize, focused: Option<u32>, dt: f32) {
+    pub fn update(&mut self, strip: &mut TabStrip, selected: usize, focused: Option<u32>, dt: f32) {
+        self.band.step(dt);
         strip.update(
             selected as i32,
             focused
@@ -104,11 +106,16 @@ impl PreviewControls {
         );
     }
 
-    pub fn draw(&self, p: Painter, strip: &TabStrip, focused: Option<u32>) {
+    pub fn draw(&mut self, p: Painter, strip: &TabStrip, focused: Option<u32>) {
+        let track = widgets::strip_track_rect(&self.lays, self.back.y, self.back.h);
+        self.band.prepare(p, track.unwrap_or(self.back), p.opacity() >= 0.999, true);
+        if let Some(track) = track {
+            self.band.draw(p, track);
+        }
         CircleButton::new(std::ptr::null())
             .icon(Icon::ChevronLeft)
             .frame(self.back)
-            .ground(ControlGround::Unkeyed)
+            .glass(self.band.face())
             .focused(focused == Some(0))
             .draw(&Env::inert(), p);
         widgets::draw_strip(
@@ -118,10 +125,7 @@ impl PreviewControls {
             self.back.y,
             self.back.h,
             0.0,
-            TabGround::Bare {
-                pop: 1.0,
-                focus: true,
-            },
+            TabGround::Tracked { glass: true },
         );
     }
 }

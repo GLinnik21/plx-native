@@ -500,8 +500,8 @@ class HeartbeatWords(unittest.TestCase):
     printed a red `wanted route=account, got route=home` over a boot that had in fact
     landed exactly where it was asked to.
 
-    `tvq` is the one thing here that would touch a television, and a sourced Bash function
-    definition is global, so stubbing it makes the whole comparison host-testable.
+    `tvq` runs the real heartbeat expression locally. The initial Makefile query is stubbed,
+    as in EnsureBinary: it configures the sourced script and is outside this assertion's scope.
     """
 
     def _assert_route(self, heartbeat, args):
@@ -520,7 +520,10 @@ class HeartbeatWords(unittest.TestCase):
                 echo "RC:$?"
                 """
             )
-            harness = 'source "$1" selftest\n' + body
+            harness = (
+                'make() { printf "%s\\n" debug fake-app /app /run /events 8911 fake-host; }\n'
+                'source "$1" selftest\n'
+            ) + body
             result = subprocess.run(
                 ["bash", "-c", harness, "heartbeat-words", str(SCRIPT)],
                 text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

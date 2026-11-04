@@ -134,6 +134,7 @@ struct State {
     kind: u8,
     scene: u32,
     visible: bool,
+    suspended: bool,
     pending_select_focus: bool,
     registry_request: bool,
     provisional: bool,
@@ -141,7 +142,7 @@ struct State {
 impl LogicalState for State {
     fn write(&self, c: &mut Canon) {
         c.u32(self.selected).u32(self.rows).u8(self.notice).bool(self.confirming).bool(self.affirmative).u32(self.alert_scroll)
-            .bool(self.editing).bool(self.fetching).u8(self.kind).u32(self.scene).bool(self.visible).bool(self.pending_select_focus).bool(self.registry_request).bool(self.provisional);
+            .bool(self.editing).bool(self.fetching).u8(self.kind).u32(self.scene).bool(self.visible).bool(self.suspended).bool(self.pending_select_focus).bool(self.registry_request).bool(self.provisional);
     }
     fn probe(&self, out: &mut String) {
         out.push_str(&format!(
@@ -174,6 +175,7 @@ pub struct HudPage {
     prompt: DecisionPrompt,
     strip: plx_ui::widgets::TabStrip,
     controls: Option<plx_ui::preview_controls::PreviewControls>,
+    preview_cycle: plx_ui::widgets::ArtCycle,
 }
 
 /// The crumb over the title: the page this one is pushed from, Video & playback (the Playback page's Player HUD row
@@ -332,7 +334,7 @@ impl HudPage {
             title: String::new(),
             parent: String::new(),
             form: { let mut form = FormTable::new(BAND); form.table.set_empty_text(Some("")); form },
-            state: State { selected: 0, rows: 0, notice: 0, confirming: false, affirmative: false, alert_scroll: 0, editing: false, fetching: false, kind: 0, scene: 0, visible: false, pending_select_focus: false, registry_request: false, provisional: true },
+            state: State { selected: 0, rows: 0, notice: 0, confirming: false, affirmative: false, alert_scroll: 0, editing: false, fetching: false, kind: 0, scene: 0, visible: false, suspended: false, pending_select_focus: false, registry_request: false, provisional: true },
             list: HudList::default(),
             copy: String::new(),
             rx,
@@ -343,6 +345,7 @@ impl HudPage {
             address_error: None,
             strip: plx_ui::widgets::TabStrip::new(),
             controls: None,
+            preview_cycle: plx_ui::widgets::ArtCycle::default(),
             prompt: DecisionPrompt::new(
                 ALERT_GROUP,
                 ALERT,
@@ -496,12 +499,33 @@ impl HudPage {
         scenes
     }
 
+    fn preview_active(&self) -> bool {
+        self.state.visible && !self.state.suspended && !self.state.confirming
+            && !matches!(self.page, SettingsPage::HudAbout(..))
+    }
+
+    /// Frames belong to one scene AND one resolved language. Cycling never changes a tab,
+    /// metadata, package, or translation, and identical content hashes collapse in ArtCycle.
+    fn preview_frames(&self) -> Vec<&str> {
+        let primary = if self.is_preview() {
+            self.scenes().get(self.state.scene as usize).map(|(_, art)| *art)
+        } else {
+            self.preview_package().and_then(|p| p.preview(&self.list.language_tag))
+        };
+        let Some(primary) = primary else { return Vec::new() };
+        let Some(package) = self.preview_package() else { return Vec::new() };
+        package.previews.iter().filter(|p| p.state == primary.state && p.lang == primary.lang)
+            .map(|p| p.url.as_str()).collect()
+    }
+
     fn view(&self) -> TableScreen<'_> {
         let mut header = Header::new(RouteLayout::screen(), Some(&self.parent), &self.title, &self.copy);
         if matches!(self.page, SettingsPage::HudGallery) && self.list.catalog.fetching && self.form.table.n_rows() == 0 {
             header = header.with_pending_copy("hud-gallery");
         }
-        if !matches!(self.page, SettingsPage::HudAbout(..)) {
+        if !self.preview_cycle.is_empty() && !matches!(self.page, SettingsPage::HudAbout(..)) {
+            header = header.with_preview_cycle(&self.preview_cycle);
+        } else if !matches!(self.page, SettingsPage::HudAbout(..)) {
             if let Some(art) = self.preview_package().and_then(|p| p.preview(&self.list.language_tag)) {
                 header = header.with_preview(plx_ui::widgets::Art::content_png(&art.url));
             }
@@ -800,7 +824,7 @@ impl Machine<InnerHost> for HudPage {
                     if self.controls.is_none() {
                         self.controls = Some(plx_ui::preview_controls::PreviewControls::new(self.scenes().iter().map(|(label,_)| (*label).into()), cx.measure));
                     }
-                    if let Some(controls) = &self.controls {
+                    if let Some(controls) = &mut self.controls {
                         controls.update(&mut self.strip, self.state.scene as usize, cx.focus.current.map(|k| k.elem), t.dt());
                         if cx.focus.current.is_none() {
                             self.state.selected = controls.seat(self.entry, self.state.scene as usize).elem;
@@ -808,11 +832,26 @@ impl Machine<InnerHost> for HudPage {
                         }
                     }
                 }
+                let mut cycle = std::mem::take(&mut self.preview_cycle);
+                cycle.set_frames(&self.preview_frames());
+                cycle.tick(*t, self.preview_active(), &mut fx.present());
+                self.preview_cycle = cycle;
                 self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
                 Handled::Yes
             }
             ScreenEvent::Input(InputEvent { kind, .. }) if self.state.editing || matches!(kind, InputKind::SystemKeyboard(_)) => self.typing(kind, cx, fx),
-            ScreenEvent::WillLeave(_) | ScreenEvent::Unmount | ScreenEvent::Cover | ScreenEvent::Suspend => {
+            ScreenEvent::Suspend => {
+                self.preview_cycle.pause(cx.tick);
+                self.state.suspended = true;
+                self.leave_field(fx);
+                Handled::No
+            }
+            ScreenEvent::Resume => {
+                self.state.suspended = false;
+                Handled::No
+            }
+            ScreenEvent::WillLeave(_) | ScreenEvent::Unmount | ScreenEvent::Cover => {
+                self.preview_cycle.pause(cx.tick);
                 self.state.visible = false;
                 if matches!(ev, ScreenEvent::Unmount) {
                     if let SettingsPage::HudDetail(sha) = self.page { fx.push(Fx::App(AppFx::Huds(HudCmd::CancelRegistry(sha)))); }
@@ -911,10 +950,14 @@ impl Screen<InnerHost> for HudPage {
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
         if self.is_preview() {
             let p = f.painter.alpha(f.page_alpha);
-            if let Some((_,art)) = self.scenes().get(self.state.scene as usize) {
-                plx_ui::widgets::card(p, Rect::FULL, plx_ui::widgets::Art::content_png(&art.url), 0.0, false, 1.0, 0.0);
+            if self.preview_cycle.is_empty() {
+                if let Some((_, art)) = self.scenes().get(self.state.scene as usize) {
+                    plx_ui::widgets::card(p, Rect::FULL, plx_ui::widgets::Art::content_png(&art.url), 0.0, false, 1.0, 0.0);
+                }
+            } else {
+                self.preview_cycle.draw(p, Rect::FULL, 0.0);
             }
-            if let Some(controls) = &self.controls {
+            if let Some(controls) = &mut self.controls {
                 controls.draw(p, &self.strip, f.cx.focus.current.map(|k| k.elem));
                 for elem in 0..controls.len() as u32 {
                     if let Some(at) = controls.place(elem) {

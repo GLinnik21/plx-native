@@ -733,3 +733,50 @@ fn about_cannot_remove_an_installed_hud_while_its_update_is_pending() {
         assert!(!emitted.iter().any(|e| matches!(e.fx, Fx::Nav(_))));
     }
 }
+
+
+#[test]
+fn preview_backgrounds_stay_in_the_selected_scene_and_resolved_language() {
+    let mut list = gallery_list();
+    let mut index = list.catalog.index.as_deref().unwrap().clone();
+    let package = index.entries.iter_mut().find(|p| p.name == "Reference").unwrap();
+    let sha = package.sha();
+    let primary = package.previews.iter().find(|p| p.state == "sections-3-movie-paused" && p.lang == "en").unwrap().clone();
+    let mut alternate = primary.clone();
+    alternate.url = "https://example.invalid/second.png".into();
+    package.previews.push(alternate);
+    let mut foreign = primary.clone();
+    foreign.lang = "de".into();
+    foreign.url = "https://example.invalid/german.png".into();
+    package.previews.push(foreign);
+    list.catalog.index = Some(std::sync::Arc::new(index));
+    list.language_tag = "fr".into(); // Missing translation resolves once to English.
+    let (mut page, _tx) = page_with(list);
+    page.page = SettingsPage::HudPreview(sha);
+    page.rebuild(None);
+    page.state.scene = 1;
+    assert_eq!(page.preview_frames(), vec![primary.url.as_str(), "https://example.invalid/second.png"]);
+    for _ in 0..600 { drive(&mut page, tick(), 2); }
+    assert_eq!(page.state.scene, 1, "the timer must never change the selected tab");
+    assert_eq!(page.preview_frames().len(), 2);
+    page.state.scene = 0;
+    assert!(!page.preview_frames().contains(&"https://example.invalid/second.png"));
+}
+
+
+#[test]
+fn preview_backgrounds_resume_only_for_the_visible_settings_page() {
+    let (mut page, _tx) = page_with(gallery_list());
+    assert!(page.preview_active());
+    drive(&mut page, ScreenEvent::Suspend, 0);
+    assert!(!page.preview_active());
+    drive(&mut page, ScreenEvent::Resume, 0);
+    assert!(page.preview_active(), "returning to the app resumes the same visible preview");
+    drive(&mut page, ScreenEvent::Cover, 0);
+    assert!(!page.preview_active());
+    drive(&mut page, ScreenEvent::Suspend, 0);
+    drive(&mut page, ScreenEvent::Resume, 0);
+    assert!(!page.preview_active(), "resuming every inner body must not wake a covered page");
+    drive(&mut page, ScreenEvent::Enter(Enter::Restored), 0);
+    assert!(page.preview_active());
+}

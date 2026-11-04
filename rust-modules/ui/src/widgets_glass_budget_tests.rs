@@ -400,7 +400,7 @@ fn live_glass_carries_no_private_source_policy() {
 /// `Ground::Menu` ONLY — glass on the frozen ground, which reads no framebuffer — and stands a
 /// `Ground::Sheet` on the latched underlay field (directly, or through `Popover::panel`), as a menu
 /// does too with no latched field. The blur chain's users are the top bar's standing track, the profile chip's capsule, the dev tile
-/// band — all in `widgets.rs` — the standing hold hint's capsule (`hold_hint.rs`: a non-interactive
+/// band and the full-image preview's track/Back chrome — through `widgets.rs` — the standing hold hint's capsule (`hold_hint.rs`: a non-interactive
 /// standing note, the track's own material, budgeted by
 /// `hold_hint::tests::the_capsules_own_blur_region_fits_the_budget_and_never_meets_the_top_band`),
 /// the library's scroll capsule (`scroll_capsule.rs`: the same standing container over the page
