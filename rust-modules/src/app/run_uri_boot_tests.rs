@@ -215,6 +215,13 @@ mod uri_boot_tests {
     #[test]
     fn viewer_speed_edit_re_resolves_qualified_uri_source_for_feed_at_its_known_pause_and_clock() {
         let _serial = plx_base::testlock::serial();
+        struct RestoreDecoder;
+        impl Drop for RestoreDecoder {
+            fn drop(&mut self) { plx_media::ff::force_speed_decoder_for_test(false); }
+        }
+        let _decoder = RestoreDecoder;
+        // The host has no bundled TV FFmpeg; exercise the existing test-only decoder seam.
+        plx_media::ff::force_speed_decoder_for_test(true);
         let Some(mut rig) = Rig::serving(false) else { return };
         plx_plex::plex::client_for(rig.sid).unwrap()
             .set_link(plx_plex::plex::probe::Location::Local);
@@ -262,6 +269,7 @@ mod uri_boot_tests {
         poll(&mut rig);
         assert_eq!(rig.app.adapters.player.backend_viewer_paused(), Some(true));
         let source = rig.app.player.session.source_selection();
+        assert!(plx_media::route::source_decodable(&rig.app.player.session));
         assert!(plx_media::player::speed_offer(&rig.app.player.session).contains(&1500));
         crate::app::playback::apply_more_action(&mut rig.app.player.session,
             &mut rig.app.adapters.player, &mut rig.app.bridge,
