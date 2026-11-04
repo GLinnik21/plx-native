@@ -14,6 +14,7 @@ use crate::shared::{Stage, Transport};
 use crate::SendPtr;
 use plx_base::task::MainThread;
 use plx_platform::tv::sink::VideoSink;
+use plx_platform::tv::sink::UnloadTicket;
 use plx_net::stream::HttpStream;
 use std::os::raw::{c_char, c_int, c_void};
 use std::ffi::CString;
@@ -100,6 +101,40 @@ pub struct StopHooks {
     pub release_native_object_timed: fn(
         &MainThread, u32, &mut TeardownSpans,
     ) -> plx_playback_contract::ReleaseStatus,
+}
+
+/// Native release uses the installed raw sink while the public sink is fenced for other verbs.
+/// Each call asks the provider afresh; no native object pointer survives across transitions.
+pub struct ReleaseHooks {
+    pub raw_sink: fn() -> &'static dyn VideoSink,
+    pub acb_bound: fn() -> bool,
+    pub on_release_step: fn(crate::native_release::ReleaseStep),
+    pub on_exported_window_destroy: fn(),
+    pub spawn_unload: fn(UnloadTicket) -> Option<std::thread::JoinHandle<()>>,
+}
+
+struct SinkReleasePort<'a>(&'a ReleaseHooks);
+
+impl crate::native_release::NativeReleasePort for SinkReleasePort<'_> {
+    fn callback_gate_retire(&self, mt: &MainThread) -> bool {
+        unsafe { (self.0.raw_sink)().callback_gate_retire(mt) != 0 }
+    }
+
+    fn callback_intercepts(&self, mt: &MainThread) -> u32 {
+        unsafe { (self.0.raw_sink)().callback_intercepts(mt) }
+    }
+
+    fn plane_unload(&self, mt: &MainThread) {
+        unsafe { (self.0.raw_sink)().plane_unload(mt) };
+    }
+
+    fn destroy(&self, mt: &MainThread) -> bool {
+        unsafe { (self.0.raw_sink)().destroy(mt) != 0 }
+    }
+
+    fn quarantine(&self, mt: &MainThread) {
+        unsafe { (self.0.raw_sink)().quarantine(mt) };
+    }
 }
 
 /// Owns one physical Load declaration and the two retractable native epochs. The common
@@ -448,6 +483,144 @@ impl TeardownSpans {
             self.t0.elapsed().as_secs_f64() * 1000.0,
             self.out,
         ));
+    }
+}
+
+/// Release an abandoned Load only after its worker has returned, so the payload and native
+/// object remain alive for every byte the worker can still read.
+pub fn reap_abandoned_load_resource(
+    feed: &mut FeedResources,
+    mt: &MainThread,
+    hooks: &ReleaseHooks,
+) -> bool {
+    let finished = match feed.abandoned_load_mut() {
+        Some(parked) => parked.load_th.is_finished(),
+        None => return false,
+    };
+    if !finished {
+        return false;
+    }
+    let parked = feed.take_abandoned_load().expect("checked above");
+    plx_base::task::join("media", parked.load_th);
+    plx_base::eventlog::log(&format!(
+        "native lifecycle: abandoned Load epoch={} returned {}ms after teardown; releasing it",
+        parked.epoch,
+        parked.abandoned_at.elapsed().as_millis(),
+    ));
+    let status = release_native_object_timed(mt, parked.epoch, &mut TeardownSpans::new(), feed.shared(), hooks);
+    feed.note_reaped_release(parked.attempt, status);
+    true
+}
+
+/// Start an off-frame Unload or complete it synchronously when the object cannot be handed off.
+pub fn release_off_frame(
+    mt: &MainThread,
+    epoch: u32,
+    sp: &mut TeardownSpans,
+    status: &mut plx_playback_contract::ReleaseStatus,
+    shared: &'static PhysicalShared,
+    hooks: &ReleaseHooks,
+) -> Option<std::thread::JoinHandle<()>> {
+    if unsafe { (hooks.raw_sink)().ready(mt) } == 0 || !shared.begin_native_release(epoch) {
+        *status = release_native_object_timed(mt, epoch, sp, shared, hooks);
+        return None;
+    }
+    let th = (hooks.spawn_unload)(UnloadTicket::issue(mt));
+    sp.mark("unload_handoff");
+    if th.is_none() {
+        plx_base::eventlog::log(
+            "native lifecycle: no thread for the off-frame Unload; unloading on the main thread",
+        );
+        unsafe { (hooks.raw_sink)().unload(&UnloadTicket::issue(mt)) };
+        sp.mark("sf_unload");
+        *status = finish_unloaded_object(mt, epoch, sp, shared, hooks);
+        destroy_native_window(mt, sp, hooks);
+    }
+    th
+}
+
+/// Main-thread tail of a finished off-frame Unload.
+pub fn run_release_tail(
+    mt: &MainThread,
+    p: PendingRelease,
+    shared: &'static PhysicalShared,
+    hooks: &ReleaseHooks,
+) -> plx_playback_contract::ReleaseStatus {
+    let mut sp = TeardownSpans::new();
+    sp.mark("join");
+    let status = finish_unloaded_object(mt, p.epoch, &mut sp, shared, hooks);
+    destroy_native_window(mt, &mut sp, hooks);
+    sp.emit("release");
+    plx_base::eventlog::log(&format!(
+        "native lifecycle: off-frame Unload epoch={} released {} ms after the stop",
+        p.epoch,
+        p.handed_off_at.elapsed().as_millis(),
+    ));
+    status
+}
+
+/// Unload, close the C callback gate, retire the Rust epoch, then destroy or quarantine.
+pub fn release_native_object_timed(
+    mt: &MainThread,
+    epoch: u32,
+    sp: &mut TeardownSpans,
+    shared: &'static PhysicalShared,
+    hooks: &ReleaseHooks,
+) -> plx_playback_contract::ReleaseStatus {
+    let status = if unsafe { (hooks.raw_sink)().ready(mt) } != 0 {
+        sp.mark("pre_unload");
+        unsafe { (hooks.raw_sink)().unload(&UnloadTicket::issue(mt)) };
+        sp.mark("sf_unload");
+        finish_unloaded_object(mt, epoch, sp, shared, hooks)
+    } else {
+        let no_object = (hooks.raw_sink)().no_object_proof(mt);
+        let retired = shared.retire_native_session(epoch);
+        if !retired {
+            plx_base::eventlog::log(&format!(
+                "native lifecycle: no dispatchable object and epoch={epoch} was already retired",
+            ));
+        }
+        if retired && no_object {
+            plx_playback_contract::ReleaseStatus::Released
+        } else {
+            plx_playback_contract::ReleaseStatus::Quarantined
+        }
+    };
+    destroy_native_window(mt, sp, hooks);
+    status
+}
+
+fn finish_unloaded_object(
+    mt: &MainThread,
+    epoch: u32,
+    sp: &mut TeardownSpans,
+    shared: &'static PhysicalShared,
+    hooks: &ReleaseHooks,
+) -> plx_playback_contract::ReleaseStatus {
+    use crate::native_release::ReleaseStep;
+    let mut status = plx_playback_contract::ReleaseStatus::Quarantined;
+    crate::native_release::finish_unloaded_object(
+        &SinkReleasePort(hooks),
+        shared,
+        mt,
+        epoch,
+        || (hooks.acb_bound)(),
+        |label| sp.mark(label),
+        |step| {
+            if step == ReleaseStep::NativeDestroyed {
+                status = plx_playback_contract::ReleaseStatus::Released;
+            }
+            (hooks.on_release_step)(step);
+        },
+    );
+    status
+}
+
+fn destroy_native_window(mt: &MainThread, sp: &mut TeardownSpans, hooks: &ReleaseHooks) {
+    unsafe { (hooks.raw_sink)().destroy_window(mt) };
+    sp.mark("destroy_window");
+    if (hooks.raw_sink)().window_mode() == plx_platform::tv::sink::VP_EXPORTED {
+        (hooks.on_exported_window_destroy)();
     }
 }
 

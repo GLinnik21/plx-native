@@ -158,103 +158,64 @@ pub use plx_play_feed::feed_state::AbandonedLoad;
 /// object was released by this call.
 pub(super) fn reap_abandoned_load_resource(feed: &mut super::feed_resources::FeedResources,
     mt: &MainThread) -> bool {
-    let finished = match feed.abandoned_load_mut() {
-        Some(parked) => parked.load_th.is_finished(),
-        None => return false,
-    };
-    if !finished {
-        return false;
-    }
-    let parked = feed.take_abandoned_load().expect("checked above");
-    // The thread has already returned, so this join cannot block.
-    plx_base::task::join("media", parked.load_th);
-    log(&format!(
-        "native lifecycle: abandoned Load epoch={} returned {}ms after teardown; releasing it",
-        parked.epoch,
-        parked.abandoned_at.elapsed().as_millis(),
-    ));
-    let status = release_native_object_timed(mt, parked.epoch, &mut TeardownSpans::new());
-    feed.note_reaped_release(parked.attempt, status);
-    // `parked._payload` drops here, after the thread that read it has been joined.
-    true
+    plx_play_feed::native_executor::reap_abandoned_load_resource(feed, mt, &RELEASE_HOOKS)
 }
 
-/// **A real stop's native object, handed to an off-frame `Unload`.** `StarfishMediaAPIs::Unload`
-/// blocks for 110-150 ms on the dev set (webOS 4.5, release build, measured 2026-10-15 with
-/// `teardown spans:`; the kernel sched trace of the same returns shows the main thread ~31-36 ms in
-/// D state inside a driver `ioctl` and then ~72-74 ms in a futex until the pipeline thread woke it),
-/// and on the main thread that was the whole of the frame that handled BACK: 140-170 ms on 8 of 8
-/// returns. So a real stop issues it on a worker and keeps everything else where it was: the
-/// callback gate, the epoch retirement, the ACB `setState(UNLOADED)`, D1 and the exported window
-/// still run on the main thread, in the same order, once `Unload` has returned
-/// ([`poll_release`], polled once a frame by `app::run`; the adapter hands out the token at once and
-/// `player::sink()` fences the object meanwhile). A reload, an app-switch suspend and the decoder-revoked park keep the
-/// synchronous release: each starts the next Load at once, so there is no frame to save.
-///
-/// While the worker owns the object its epoch is [`Shared::begin_native_release`]'s `Releasing`
-/// phase, which admits only UNLOADCOMPLETED (the main thread has already reset the state any other
-/// callback would write into), and no new native session may begin.
+/// A real stop hands its native object to off-frame Unload and retains its Engine until the tail.
 pub use plx_play_feed::feed_state::PendingRelease;
 
-/// Test seam: make [`release_off_frame`] see the OS refuse the `sf-unload` thread.
 #[cfg(test)]
 static FAIL_UNLOAD_SPAWN_FOR_TEST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Start the off-frame release of `epoch`'s object, or release it here when it cannot be handed
-/// off (no dispatchable object, an epoch that no longer owns `Active`, or the OS refusing the
-/// thread). `Some` = the worker is running and the caller must park it with the Engine.
-fn release_off_frame(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans,
-    status: &mut plx_playback_contract::ReleaseStatus) -> Option<std::thread::JoinHandle<()>> {
-    if unsafe { super::raw_sink().ready(mt) } == 0 || !SHARED.begin_native_release(epoch) {
-        *status = release_native_object_timed(mt, epoch, sp);
-        return None;
-    }
-    let ticket = UnloadTicket::issue(mt);
+fn spawn_unload(ticket: UnloadTicket) -> Option<std::thread::JoinHandle<()>> {
     #[cfg(test)]
     let refused = FAIL_UNLOAD_SPAWN_FOR_TEST.load(Ordering::Relaxed);
     #[cfg(not(test))]
     let refused = false;
-    let th = if refused {
-        None
-    } else {
+    if refused { return None; }
+    #[cfg(all(test, feature = "hostsim"))]
+    let worker = super::ffi_host::UnloadWorker::enter();
+    plx_base::task::spawn("sf-unload", move || {
         #[cfg(all(test, feature = "hostsim"))]
-        let worker = super::ffi_host::UnloadWorker::enter();
-        plx_base::task::spawn("sf-unload", move || {
-            #[cfg(all(test, feature = "hostsim"))]
-            let _worker = worker;
-            unsafe { super::raw_sink().unload(&ticket) }
-        })
-    };
-    sp.mark("unload_handoff");
-    if th.is_none() {
-        log("native lifecycle: no thread for the off-frame Unload; unloading on the main thread");
-        unsafe { super::raw_sink().unload(&UnloadTicket::issue(mt)) };
-        sp.mark("sf_unload");
-        *status = finish_unloaded_object(mt, epoch, sp);
-        destroy_native_window(mt, sp);
-    }
-    th
+        let _worker = worker;
+        unsafe { super::raw_sink().unload(&ticket) }
+    })
 }
 
-/// The main-thread tail of a finished off-frame release: gate, epoch, ACB, D1, window.
+fn release_step(step: plx_play_feed::native_release::ReleaseStep) {
+    use plx_play_feed::native_release::ReleaseStep;
+    window_step(match step {
+        ReleaseStep::NativeUnload => WindowStage::NativeUnload,
+        ReleaseStep::AcbPlaneUnload => WindowStage::AcbPlaneUnload,
+        ReleaseStep::NativeQuarantined => WindowStage::NativeQuarantined,
+        ReleaseStep::NativeDestroyed => WindowStage::NativeDestroyed,
+    });
+}
+
+fn exported_window_destroyed() {
+    window_step(WindowStage::ExportedWindowDestroy);
+}
+
+const RELEASE_HOOKS: plx_play_feed::native_executor::ReleaseHooks =
+    plx_play_feed::native_executor::ReleaseHooks {
+        raw_sink: super::raw_sink,
+        acb_bound: || ACB_OK.load(Ordering::Relaxed),
+        on_release_step: release_step,
+        on_exported_window_destroy: exported_window_destroyed,
+        spawn_unload,
+    };
+
+fn release_off_frame(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans,
+    status: &mut plx_playback_contract::ReleaseStatus) -> Option<std::thread::JoinHandle<()>> {
+    plx_play_feed::native_executor::release_off_frame(
+        mt, epoch, sp, status, &SHARED.feed, &RELEASE_HOOKS)
+}
+
 pub(super) fn run_release_tail(mt: &MainThread, p: PendingRelease)
     -> plx_playback_contract::ReleaseStatus {
-    let mut sp = TeardownSpans::new();
-    sp.mark("join");
-    let status = finish_unloaded_object(mt, p.epoch, &mut sp);
-    destroy_native_window(mt, &mut sp);
-    sp.emit("release");
-    log(&format!(
-        "native lifecycle: off-frame Unload epoch={} released {} ms after the stop",
-        p.epoch,
-        p.handed_off_at.elapsed().as_millis(),
-    ));
-    // `p._engine` drops here, after the object it belonged to is gone.
-    status
+    plx_play_feed::native_executor::run_release_tail(mt, p, &SHARED.feed, &RELEASE_HOOKS)
 }
 
-/// Existing hostsim release fixtures run the same physical release without inspecting its
-/// returned status; the production owner passes the status to BackendRunner.
 #[cfg(test)]
 fn release_native_object(mt: &MainThread, epoch: u32) {
     let _ = release_native_object_timed(mt, epoch, &mut TeardownSpans::new());
@@ -264,115 +225,11 @@ use plx_play_feed::native_executor::TeardownSpans;
 
 fn release_native_object_timed(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans)
     -> plx_playback_contract::ReleaseStatus {
-    // Stop the pipeline, close native callback admission, then drain the Rust epoch.
-    //
-    // `Unload` waits for the GStreamer state transition, but neither libpf's raw callback fields nor
-    // type=23 is an exported producer/in-flight barrier. The executable therefore interposes the
-    // exact callbackFunctionHook JUMP_SLOT. Each Load owns a never-reused object address; after
-    // Unload the C gate rejects new calls and waits for calls already inside the real hook. Only
-    // then can the Rust callback mutex be retired and D1 considered:
-    //
-    //     Unload -> gate inactive/drained -> retire/drain epoch -> D1.
-    //
-    // Both the synchronous type=23 observation and a non-zero per-object interposer counter are
-    // runtime evidence that this firmware followed the audited path. If any proof is missing, C
-    // retains the constructed object forever and permanently refuses another Load. Leaking one
-    // object is preferable to letting D1 turn a late producer callback into a use-after-free.
-    let status = if unsafe { super::raw_sink().ready(mt) } != 0 {
-        sp.mark("pre_unload");
-        unsafe { super::raw_sink().unload(&UnloadTicket::issue(mt)) };
-        sp.mark("sf_unload");
-        finish_unloaded_object(mt, epoch, sp)
-    } else {
-        let no_object = super::raw_sink().no_object_proof(mt);
-        let retired = SHARED.retire_native_session(epoch);
-        if !retired {
-            log(&format!(
-                "native lifecycle: no dispatchable object and epoch={epoch} was already retired",
-            ));
-        }
-        // The host sink can positively prove a joined Load never constructed an object. Real
-        // firmware supplies no such proof: `ready=0` also describes a quarantined C object.
-        if retired && no_object {
-            plx_playback_contract::ReleaseStatus::Released
-        } else {
-            plx_playback_contract::ReleaseStatus::Quarantined
-        }
-    };
-    destroy_native_window(mt, sp);
-    status
+    plx_play_feed::native_executor::release_native_object_timed(
+        mt, epoch, sp, &SHARED.feed, &RELEASE_HOOKS)
 }
 
-/// Everything after `Unload` returns, in the audited order: close and drain the C callback gate,
-/// retire the Rust epoch, unload the ACB plane, then D1 with complete evidence or quarantine. The
-/// synchronous release and the off-frame release's main-thread tail ([`run_release_tail`]) share
-/// it, so the order is one definition.
-struct PlayerReleasePort;
-
-impl plx_play_feed::native_release::NativeReleasePort for PlayerReleasePort {
-    fn callback_gate_retire(&self, mt: &MainThread) -> bool {
-        unsafe { super::raw_sink().callback_gate_retire(mt) != 0 }
-    }
-
-    fn callback_intercepts(&self, mt: &MainThread) -> u32 {
-        unsafe { super::raw_sink().callback_intercepts(mt) }
-    }
-
-    fn plane_unload(&self, mt: &MainThread) {
-        unsafe { super::raw_sink().plane_unload(mt) };
-    }
-
-    fn destroy(&self, mt: &MainThread) -> bool {
-        unsafe { super::raw_sink().destroy(mt) != 0 }
-    }
-
-    fn quarantine(&self, mt: &MainThread) {
-        unsafe { super::raw_sink().quarantine(mt) };
-    }
-}
-
-fn finish_unloaded_object(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans)
-    -> plx_playback_contract::ReleaseStatus {
-    use plx_play_feed::native_release::ReleaseStep;
-    let mut status = plx_playback_contract::ReleaseStatus::Quarantined;
-    plx_play_feed::native_release::finish_unloaded_object(
-        &PlayerReleasePort, &SHARED.feed, mt, epoch,
-        || ACB_OK.load(Ordering::Relaxed),
-        |label| sp.mark(label),
-        |step| {
-            if step == ReleaseStep::NativeDestroyed {
-                status = plx_playback_contract::ReleaseStatus::Released;
-            }
-            window_step(match step {
-                ReleaseStep::NativeUnload => WindowStage::NativeUnload,
-                ReleaseStep::AcbPlaneUnload => WindowStage::AcbPlaneUnload,
-                ReleaseStep::NativeQuarantined => WindowStage::NativeQuarantined,
-                ReleaseStep::NativeDestroyed => WindowStage::NativeDestroyed,
-            });
-        },
-    );
-    status
-}
-
-fn destroy_native_window(mt: &MainThread, sp: &mut TeardownSpans) {
-    // The webOS 5+ counterpart of acb_unload, and the other half of `with_window_id`'s create.
-    // Outside the sf_ready guard because readiness means dispatchable, not "object exists", and
-    // because the window is created BEFORE Load — a session that failed between the two would
-    // otherwise leak it, and the next Load would ask for another. Unguarded because the seam
-    // already no-ops in the other modes (see starfish.h).
-    unsafe { super::raw_sink().destroy_window(mt) };
-    sp.mark("destroy_window");
-    if super::raw_sink().window_mode() == super::VP_EXPORTED {
-        window_step(WindowStage::ExportedWindowDestroy);
-    }
-}
-
-/// One closed teardown/exported-window breadcrumb on a native crash event, **only inside an app
-/// switch's background or foreground cycle** (`window::record_in_cycle`): this runs for every
-/// engine that comes and goes (a trailer, a seek or quality reload, an abandoned Load), and those
-/// would fill the shared 16-slot ring with steps of no cycle. Consent-gated inside
-/// `window::record` and a no-op while the crash backend is not running; carries no data beyond the
-/// label, so a crash in the next step shows which step had already returned.
+/// Release breadcrumbs belong to the common telemetry owner, not the physical executor.
 fn window_step(stage: WindowStage) {
     plx_telemetry::telemetry::window::record_in_cycle(
         plx_telemetry::telemetry::window::Observation::step(stage, None),
