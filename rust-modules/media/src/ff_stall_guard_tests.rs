@@ -1072,7 +1072,7 @@ fn a_stalled_observer_cannot_reorder_the_hold_against_the_runtimes_rechecks() {
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
     let run = blocked_body_read_stalled(
         Reply::SendThenWithhold(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCD"),
-        SegmentAcquisition::for_test(Some(6_000), false, false),
+        SegmentAcquisition::for_test(Some(6_000), false, false, super::test_support::demux_observer()),
         None,
         acquisition::CHECK_SLICE * 3,
         |_| {},
