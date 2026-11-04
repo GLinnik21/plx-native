@@ -563,6 +563,23 @@ pub struct PlaybackSession {
     /// it (the same item on the same link) and a landing carries it over like [`now_ms`](Self::now_ms);
     /// the adapter clears it with the playback it measured.
     carried_link: Option<CarriedLink>,
+    /// **The container's own track names, as the player adapter last delivered them**
+    /// ([`ingest_container_names`](Self::ingest_container_names), its ONLY writer). The demuxer
+    /// publishes them when it opens a part; the track-memory re-match and the Forced-only audio
+    /// follow read them here, never from the demuxer's registry.
+    container_names: ContainerNames,
+}
+
+/// The delivered names and the publication stamp they carry, so the adapter can tell when a newer
+/// publication exists. `Arc`: the session is copied for screens.
+#[derive(Clone)]
+struct ContainerNames {
+    stamp: u32,
+    names: Option<std::sync::Arc<plx_playback_contract::tracks::TrackNames>>,
+}
+
+impl ContainerNames {
+    const NONE: Self = Self { stamp: 0, names: None };
 }
 
 /// A delivery estimate and the frame-tick stamp ([`PlaybackSession::now_ms`] units) it was last
@@ -1326,6 +1343,7 @@ impl PlaybackSession {
         preview: false,
         resolved_as_preview: false,
         carried_link: None,
+        container_names: ContainerNames::NONE,
     };
 }
 
@@ -1434,6 +1452,7 @@ impl PlaybackSession {
             preview: _,
             resolved_as_preview,
             carried_link,
+            container_names,
         } = self;
         PlaybackSession {
             attempt_view: *attempt_view,
@@ -1523,6 +1542,7 @@ impl PlaybackSession {
             preview: false,
             resolved_as_preview: *resolved_as_preview,
             carried_link: *carried_link,
+            container_names: container_names.clone(),
         }
     }
 }
@@ -1571,6 +1591,23 @@ impl PlaybackSession {
     /// there is none (a new playback, or a stop). It is stamped on this session's frame tick so
     /// [`auto_prior`] can age it later; the adapter calls it every pump tick and when an engine
     /// tears down, which keeps the value as fresh as the registry it was read from.
+    /// The stamp of the container names this session holds ([`ingest_container_names`](Self::ingest_container_names)).
+    pub fn container_names_stamp(&self) -> u32 {
+        self.container_names.stamp
+    }
+
+    /// **The player adapter's delivery of the demuxer's container track names**, with the publication
+    /// stamp they were read at. Replaces what was held, so a cleared publication clears them too.
+    pub fn ingest_container_names(&mut self, stamp: u32, names: plx_playback_contract::tracks::TrackNames) {
+        self.container_names = ContainerNames { stamp, names: Some(std::sync::Arc::new(names)) };
+    }
+
+    /// The container's track names as last delivered; empty before the demuxer has opened a part.
+    pub(super) fn container_names(&self) -> &plx_playback_contract::tracks::TrackNames {
+        static NO_NAMES: plx_playback_contract::tracks::TrackNames = plx_playback_contract::tracks::TrackNames::new();
+        self.container_names.names.as_deref().unwrap_or(&NO_NAMES)
+    }
+
     pub fn observe_link_seed(&mut self, seed: Option<plx_playback_contract::adaptive::CarriedSeed>) {
         let now_ms = self.now_ms;
         self.carried_link = seed.map(|(readout, unobserved_ms)| CarriedLink {
@@ -10529,6 +10566,9 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             preview,
             resolved_as_preview: preview,
             carried_link,
+            // The container's names belong to the part the demuxer has open; the adapter delivers
+            // them again once a landing's reload publishes them.
+            container_names: ContainerNames::NONE,
         };
     } };
     if let Some(id) = planned_feed_offer {

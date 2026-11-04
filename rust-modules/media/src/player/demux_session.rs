@@ -426,6 +426,7 @@ impl DemuxMedia for PlayerDemuxSession {
                 previous_names = Some(std::mem::replace(
                     &mut *slot, super::TrackNames { audio, subs },
                 ));
+                SHARED.track_names_stamp.fetch_add(1, Ordering::Release);
             }
             DemuxEffect::SideAnchor(anchor) => {
                 *SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) = anchor;

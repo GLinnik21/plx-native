@@ -2022,7 +2022,7 @@ fn mp4_forced_found_after_names_arrive() {
     assert!(ps.track_ctx.as_ref().is_some_and(|c| c.rematch.is_none()), "(and it is spent: it asks once per landing)");
 
     land_mp4_forced_only(&mut ps);
-    publish_container_names(&["", "Forced"]);
+    publish_container_names(&mut ps, &["", "Forced"]);
     rematch_subtitle_with_names(&mut ps);
     assert_eq!(cur_sub_sid(&ps), 55003, "the track the name reveals is now the one shown");
     assert_eq!(cur_sub_mode(&ps), SubMode::ForcedOnly);
@@ -2033,7 +2033,6 @@ fn mp4_forced_found_after_names_arrive() {
     set_subtitle(&mut ps, 0);
     rematch_subtitle_with_names(&mut ps);
     assert_eq!(cur_sub_sid(&ps), 0, "the re-match does not run a second time");
-    publish_container_names(&[]);
     tidy_write(&mut ps);
 }
 
@@ -2052,7 +2051,7 @@ fn the_names_rematch_returns_what_it_committed() {
     assert_eq!(rematch_subtitle_with_names(&mut ps), None, "no names yet: nothing found, nothing committed");
 
     land_mp4_forced_only(&mut ps);
-    publish_container_names(&["", "Forced"]);
+    publish_container_names(&mut ps, &["", "Forced"]);
     assert_eq!(rematch_subtitle_with_names(&mut ps), Some(55003), "the track the name reveals");
     assert_eq!(rematch_subtitle_with_names(&mut ps), None, "once per landing: the next frame commits nothing");
 
@@ -2071,10 +2070,9 @@ fn the_names_rematch_returns_what_it_committed() {
     .0;
     plx_plex::plex::register_for_test(MACHINE, "127.0.0.1", 32401, "tok", "cid-tm");
     assert_eq!(shown, 55003, "setup: the flag drew the forced track");
-    publish_container_names(&["", "Director's Commentary"]);
+    publish_container_names(&mut ps, &["", "Director's Commentary"]);
     assert_eq!(rematch_subtitle_with_names(&mut ps), Some(0), "the names say it is a commentary: nothing is shown");
     assert_eq!((cur_sub_sid(&ps), cur_sub_mode(&ps)), (0, SubMode::ForcedOnly));
-    publish_container_names(&[]);
     tidy_write(&mut ps);
 }
 
@@ -2091,7 +2089,7 @@ fn a_pick_before_the_first_frame_ends_the_names_rematch() {
 
     land_mp4_forced_only(&mut ps);
     commit_subtitle_pick(&mut ps, -1, 0, false, Some(SubtitleMemo::Off));
-    publish_container_names(&["", "Forced"]);
+    publish_container_names(&mut ps, &["", "Forced"]);
     rematch_subtitle_with_names(&mut ps);
     assert_eq!((cur_sub_sid(&ps), cur_sub_mode(&ps)), (0, SubMode::Off), "the viewer's Off stands");
 
@@ -2099,7 +2097,6 @@ fn a_pick_before_the_first_frame_ends_the_names_rematch() {
     commit_subtitle_pick(&mut ps, 0, 55001, true, Some(english_track()));
     rematch_subtitle_with_names(&mut ps);
     assert_eq!((cur_sub_sid(&ps), cur_sub_mode(&ps)), (55001, SubMode::Track), "and so does a picked track");
-    publish_container_names(&[]);
     tidy_write(&mut ps);
 }
 
@@ -2181,12 +2178,11 @@ fn the_names_rematch_never_replaces_a_remembered_sidecar() {
     let session = session::TempSession::new("track-memory-names-sidecar");
     sign_in_and_seat(&session, "");
     land_with_remembered_sidecar(&mut ps);
-    publish_container_names(&["", ""]);
+    publish_container_names(&mut ps, &["", ""]);
     assert_eq!(rematch_subtitle_with_names(&mut ps), None, "nothing to re-match: the sidecar is the best match");
     assert_eq!(cur_sub_sid(&ps), 55009, "the remembered sidecar stays");
     assert!(ps.cur_sub_sidecar && ps.cur_sub_client_drawable, "and it is still the one the app draws itself");
     assert!(ps.track_ctx.as_ref().is_some_and(|c| c.rematch.is_none()), "(and the re-match is spent)");
-    publish_container_names(&[]);
     crate::player::sidecar::reset();
     tidy_write(&mut ps);
 }

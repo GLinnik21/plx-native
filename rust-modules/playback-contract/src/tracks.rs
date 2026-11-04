@@ -8,7 +8,7 @@
 /// that type, which is the ordinal `metadata::sub_render_ordinal` resolves a menu row to. Skipping
 /// unnamed tracks would silently shift every name after the first untagged one onto its neighbour,
 /// which is worse than showing none: a wrong name is indistinguishable from a right one.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct TrackNames {
     pub audio: Vec<String>,
     pub subs: Vec<String>,

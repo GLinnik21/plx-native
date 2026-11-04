@@ -33,6 +33,10 @@ pub struct Shared {
     /// picker's rows are the only place this reaches, and only on DIRECT PLAY: a transcode is a
     /// remux the server built, and its tags are whatever the server put there.
     pub track_names: Mutex<plx_playback_contract::tracks::TrackNames>,
+    /// Bumped each time `track_names` is replaced or cleared. The main thread delivers the names to
+    /// the route session when this moves (`pump::deliver_container_names`), so the route reads a
+    /// copy it owns and never this registry.
+    pub track_names_stamp: AtomicU32,
     pub ass_sources: Mutex<super::ass_source::Store>,
     pub ass_renderer: super::ass::Runtime,
     pub sub_bitmaps: Mutex<Vec<super::subtitle_bitmap::SubBitmap>>,
@@ -53,6 +57,7 @@ impl Shared {
             feed: plx_play_feed::shared::PhysicalShared::new(),
             desired_sub_idx: AtomicI32::new(-1),
             track_names: Mutex::new(plx_playback_contract::tracks::TrackNames::new()),
+            track_names_stamp: AtomicU32::new(0),
             ass_sources: Mutex::new(super::ass_source::Store::new()),
             ass_renderer: super::ass::Runtime::new(),
             sub_bitmaps: Mutex::new(Vec::new()),
@@ -105,6 +110,7 @@ impl Shared {
         };
         self.audio_switch.store(next as u8, Ordering::Relaxed);
         *self.track_names.lock().unwrap_or_else(|e| e.into_inner()) = plx_playback_contract::tracks::TrackNames::new();
+        self.track_names_stamp.fetch_add(1, Ordering::Release);
         let mut sources = self.ass_sources.lock().unwrap_or_else(|e| e.into_inner());
         if for_reload { sources.retain_for_reload(); } else { sources.reset(); }
         drop(sources);

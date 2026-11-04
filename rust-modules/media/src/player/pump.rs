@@ -1013,8 +1013,20 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     // The HLS worker's carried link estimate is route's input, delivered here rather than read by it.
     #[cfg(feature = "play-feed")]
     ps.observe_link_seed(SHARED.abr_seed());
+    deliver_container_names(ps);
     pump_frame(ps, pa, now);
     pa.publish_feed_attempt_view(ps);
+}
+
+/// Hand the route session the container's track names when the demuxer has published newer ones. The
+/// route reads the copy it owns; this is the one place the names registry is read for it. One atomic
+/// load per tick when nothing changed, so the common frame takes no lock.
+pub(super) fn deliver_container_names(ps: &mut crate::route::PlaybackSession) {
+    let stamp = SHARED.track_names_stamp.load(Acquire);
+    if ps.container_names_stamp() != stamp {
+        let names = SHARED.track_names_lenient().clone();
+        ps.ingest_container_names(stamp, names);
+    }
 }
 
 fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, now: u32) {

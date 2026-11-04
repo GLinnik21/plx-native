@@ -518,10 +518,7 @@ pub(super) fn follow_audio_with_forced_only(ps: &mut PlaybackSession, audio_sid:
         return;
     }
     let Some(ctx) = ps.track_ctx.as_ref() else { return };
-    let shown = {
-        let names = crate::player::SHARED.track_names_lenient();
-        forced_only_shown(&ctx.subs, &names, ctx.audio_lang_of(audio_sid), &ctx.forced_lang)
-    };
+    let shown = forced_only_shown(&ctx.subs, ps.container_names(), ctx.audio_lang_of(audio_sid), &ctx.forced_lang);
     if shown.id != ps.cur_sub_sid {
         commit_derived_subtitle(ps, (shown.id, shown.ordinal), true, true);
     }
@@ -565,10 +562,8 @@ pub fn rematch_subtitle_with_names(ps: &mut PlaybackSession) -> Option<i64> {
         return None;
     }
     let ctx = ps.track_ctx.as_ref()?;
-    let rematched = {
-        let names = crate::player::SHARED.track_names_lenient();
-        rematch_with_names(&ctx.subs, &names, &owed.memo, ctx.audio_lang_of(cur_audio_sid(ps)), owed.landed_sub)
-    };
+    let rematched =
+        rematch_with_names(&ctx.subs, ps.container_names(), &owed.memo, ctx.audio_lang_of(cur_audio_sid(ps)), owed.landed_sub);
     if let Some(found) = rematched {
         crate::player::log(&format!(
             "track-memory: re-matched with the container's names (track {})",

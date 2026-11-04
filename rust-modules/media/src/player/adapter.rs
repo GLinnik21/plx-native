@@ -952,7 +952,10 @@ impl PlayerAdapter {
             return accepted;
         }
         #[cfg(feature = "play-feed")]
-        { crate::route::commit_audio_pick(ps, audio, memo) }
+        {
+            super::pump::deliver_container_names(ps);
+            crate::route::commit_audio_pick(ps, audio, memo)
+        }
         #[cfg(not(feature = "play-feed"))]
         { let _ = (ps, audio, memo); false }
     }
