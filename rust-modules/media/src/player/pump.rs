@@ -3717,10 +3717,11 @@ mod flight_tests {
         first_picture(&mut rig);
         assert_eq!(recorded_refusals(), [dts_row(1)]);
 
-        // The viewer plays it again: a new request, a fresh Engine with no picture, refused again.
-        rig.flight.begin_attempt(&rig.ps);
-        declare_dts(&mut rig);
-        SHARED.frames.store(0, Relaxed);
+        // A second Play owns a fresh route request and finite offer catalog. Reusing the
+        // converted Engine and merely resetting its picture counter would spend recovery in
+        // the first request's budget, which is not a second Play.
+        drop(rig);
+        let mut rig = dts_rig(Rig::new(60));
         let epoch = engine_epoch(&mut rig).expect("the rig's Engine");
         super::super::sf_on_event(epoch, 18, 601, std::ptr::null());
         rig.frame();
