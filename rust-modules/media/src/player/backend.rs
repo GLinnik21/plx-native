@@ -8,7 +8,7 @@ mod metrics;
 use plx_playback_contract::{BackendState, DriverSet, Event, ExitDisposition, Failure, Fx,
     Intent, Operation, Phase, Snapshot, AttemptId, BackendKind};
 use super::attempt_metrics as measure;
-pub use metrics::{LogicalRequestId, MetricNotice};
+pub use metrics::{handled_failure, LogicalRequestId, MetricNotice};
 use startup::Startup;
 
 /// Route-owned lifecycle facts carried to the application runner. The route captures identity

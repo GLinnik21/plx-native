@@ -664,6 +664,12 @@ impl PlayerAdapter {
         self.backend.snapshot()
     }
 
+    /// One bounded local summary, with no URL, title, token or server identity.
+    pub fn backend_metrics_snapshot(&self) -> Option<&super::attempt_metrics::RequestSummary<
+        backend::LogicalRequestId, AttemptId>> {
+        self.backend.metrics_snapshot()
+    }
+
     /// The same fresh offer decision the start door will use. IO retires an expired URI
     /// authorization before the app arms any backend-specific foreground transport hold.
     pub fn planned_start_backend(&mut self, ps: &mut crate::route::PlaybackSession)

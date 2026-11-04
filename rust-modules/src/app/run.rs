@@ -2083,10 +2083,8 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
             == plx_media::player::PlaybackState::Error {
             app.player.session.finish_metric_request(
                 plx_media::player::attempt_metrics::RequestOutcome::Failed(
-                    plx_media::player::attempt_metrics::Failure {
-                        stage: plx_media::player::attempt_metrics::Stage::Unknown,
-                        cause: plx_media::player::attempt_metrics::Cause::Unknown,
-                    }));
+                    plx_media::player::backend::handled_failure(
+                        plx_media::player::error_now(&app.player.session).kind)));
             app.adapters.player.sync_request_metrics(&mut app.player.session);
         }
         // end-of-stream: the pipeline drained at the credits → hand off to Up Next when the
@@ -2839,6 +2837,11 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                         if let Some(transaction) = plx_media::route::pending_route_start() {
                             let _ = plx_media::route::reject_route_start_preparation(transaction);
                         }
+                        app.player.session.finish_metric_request(
+                            plx_media::player::attempt_metrics::RequestOutcome::Failed(
+                                plx_media::player::backend::handled_failure(
+                                    plx_media::player::FailureKind::PreviewNotDirect)));
+                        app.adapters.player.sync_request_metrics(&mut app.player.session);
                         plx_media::player::stop_playback(&mut app.player.session, &mut app.adapters.player);
                         plx_media::route::clear_preview(&mut app.player.session);
                         return;
@@ -3664,6 +3667,8 @@ pub(crate) unsafe fn shutdown(
     ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
 ) {
+    ps.finish_metric_request(plx_media::player::attempt_metrics::RequestOutcome::Cancelled);
+    pa.sync_request_metrics(ps);
     plx_media::player::report::abandon_pending(ps);
     if pa.playback_needs_teardown(ps) {
         plx_media::player::stop_playback(ps, pa);
@@ -8612,6 +8617,36 @@ mod lifecycle_regression_tests {
         });
         settle(&mut rig.app, t);
         assert!(super::super::bridge::player(&rig.app.pages).is_some(), "premise: the player is on top");
+    }
+
+    /// The real app request and landing must reach the backend reducer, including the source
+    /// failure's automatic retry. The fixture serves JSON at the media URL, so both physical
+    /// opens fail and the common owner eventually makes a terminal error decision.
+    #[test]
+    fn accepted_feed_request_records_recovery_and_terminal_failure() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::new() else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        rig.request();
+        let request = rig.app.player.session.metric_request().expect("accepted request ID");
+        rig.resolve();
+        rig.accept_start();
+        poll_until("backend request never settled after failed-open recovery", || {
+            step(&mut rig.app, &mut t, vec![]);
+            rig.app.adapters.player.backend_metrics_snapshot()
+                .is_some_and(|summary| summary.outcome.is_some())
+        });
+        let summary = rig.app.adapters.player.backend_metrics_snapshot().unwrap();
+        assert_eq!(summary.id, request, "route acceptance owns the metric identity");
+        assert_eq!(summary.started_at, plx_media::player::attempt_metrics::Tick::Unknown,
+            "the pure request door did not read the adapter's clock");
+        assert_eq!(summary.startup_ms, None, "a delayed drain cannot invent request-to-picture time");
+        assert!(summary.attempt_count >= 2,
+            "the common failed-open recovery must count its later physical Start");
+        assert!(matches!(summary.outcome,
+            Some(plx_media::player::attempt_metrics::RequestOutcome::Failed(_))),
+            "the terminal error decision, rather than a raw Load refusal, finishes the request");
     }
 
     /// **The plan's headline test.** Library -> play -> the stream reaches its end -> back on the

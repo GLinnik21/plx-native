@@ -26,6 +26,29 @@ pub enum MetricNotice {
         status: ReleaseStatus },
 }
 
+/// Preserve the common error resolver's established cause while keeping local measurement
+/// vocabulary coarse. A source-open failure names no specific network or parser fault.
+pub fn handled_failure(kind: crate::player::FailureKind) -> m::Failure {
+    use crate::player::FailureKind as K;
+    use m::{Cause, Stage};
+    match kind {
+        K::DecisionRefused => m::Failure { stage: Stage::Planning, cause: Cause::Refused },
+        K::PlaybackPolicy | K::NoVideoTranscodeTarget | K::PreviewNotDirect =>
+            m::Failure { stage: Stage::Planning, cause: Cause::Unsupported },
+        K::NoVideoTrack => m::Failure { stage: Stage::Open, cause: Cause::Unsupported },
+        K::MediaSource => m::Failure { stage: Stage::Open, cause: Cause::Unknown },
+        K::PlaybackInterrupted =>
+            m::Failure { stage: Stage::Presentation, cause: Cause::Unknown },
+        K::TvPipeline => m::Failure { stage: Stage::Decode, cause: Cause::Native },
+        K::JailMissingRtkmem =>
+            m::Failure { stage: Stage::Open, cause: Cause::Unsupported },
+        K::LoadTimeout => m::Failure { stage: Stage::Open, cause: Cause::Timeout },
+        K::ReleaseTimeout => m::Failure { stage: Stage::Release, cause: Cause::Timeout },
+        K::ResolveFailed => m::Failure { stage: Stage::Planning, cause: Cause::Unknown },
+        K::Unspecified => m::Failure { stage: Stage::Unknown, cause: Cause::Unknown },
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Physical {
     backend: BackendKind,
