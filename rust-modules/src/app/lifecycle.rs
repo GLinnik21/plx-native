@@ -237,7 +237,7 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
 // both properties of the app's OWN outer lifecycle, in the sense this module's other half already
 // covers (its machine and their tests now live in `player::lifecycle`), even though today's
 // `ForegroundLifecycle` type itself does not cover them.
-#[cfg(test)]
+#[cfg(all(test, feature = "play-feed"))] // its imports come in through the Feed-gated glob
 mod root_back_tests {
     //! **BACK at a ROOT hands the screen back to the television, and the app keeps running.**
     //!

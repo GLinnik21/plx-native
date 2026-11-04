@@ -190,7 +190,8 @@ static long g_acb = 0, g_taskId = 0;
 static void acb_cb(long a, long t, long ev, long app, long play, const char *reply) {
     (void)a;
     if (elogf) { fprintf(elogf, "acb callback task=%ld ev=%ld app=%ld play=%ld\n", t, ev, app, play); fflush(elogf); }
-    acb_on_event(ev, reply);
+    /* `t` is the task id the originating call wrote; the Rust mailbox matches the UNLOADED fence on it. */
+    acb_on_event(t, ev, reply);
 }
 
 /* ---- ACB verbs (the 3-arg taskId ABI is hidden) ----
@@ -219,7 +220,7 @@ long acb_create(const char *appId, int playerType) {
      * NULL when SAM had not exported it, and this line then quietly claimed to be the app users
      * install. With a developer build able to sit beside that app on one television, a wrong id
      * here binds the video plane for the WRONG application — audio with a black plane, no error
-     * line anywhere. The near half is fixed (`engine::acb_init_acb` now passes
+     * line anywhere. The near half is fixed (`plane_boot::acb_init_acb` now passes
      * `paths::app_id()`, read from the install directory, which cannot be absent); refusing here
      * rather than guessing is what keeps the pair readable together. */
     if (g_acb) {
@@ -245,21 +246,22 @@ long acb_create(const char *appId, int playerType) {
     }
     return g_acb;
 }
-/* Developer URI experiments use the same process-lifetime boot handle and callback as BF.
- * These split the existing bind solely to preserve observed inter-call delays. */
+/* The URI bind (the production backend and the developer probe, both through play-uri's
+ * `acb_bind`) uses the same process-lifetime boot handle and callback as BF. These split the
+ * existing bind solely to preserve observed inter-call delays. */
 /* Same device SHA pinned above: initialize wrapper@0x15c4c forwards core@0xcd5c.
  * Core returns exactly 1 only after valid parameters and callback installation; 0 refuses.
- * Keep this gate probe-only; normal acb_create still returns its historical handle result. */
-int acb_probe_initialized(void) { return g_acb && acb.probe_initialize_result == 1; }
+ * The URI gate reads it; normal acb_create still returns its historical handle result. */
+int acb_initialized(void) { return g_acb && acb.probe_initialize_result == 1; }
 int acb_probe_dass_available(void) { return g_acb && acb.connectDass; }
-int acb_probe_media_id(const char *mediaId) {
+int acb_media_id(const char *mediaId) {
     if (!g_acb || !mediaId) return 0;
     int sink = acb.setSinkType(g_acb, SINK_TYPE_MAIN);
     int rv = acb.setMediaId(g_acb, mediaId);
     if (elogf) { fprintf(elogf, "acb probe mediaId sink_rv=%d rv=%d\n", sink, rv); fflush(elogf); }
     return sink == 1 && rv == 1;
 }
-int acb_probe_loaded(void) {
+int acb_loaded(void) {
     if (!g_acb) return 0;
     int rv = acb.setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_LOADED, &g_taskId);
     if (elogf) { fprintf(elogf, "acb probe loaded rv=%d task=%ld\n", rv, g_taskId); fflush(elogf); }
@@ -272,8 +274,8 @@ int acb_probe_connect_dass(void) {
     return rv;
 }
 void acb_bind(const char *mediaId) {
-    (void)acb_probe_media_id(mediaId);
-    (void)acb_probe_loaded();
+    (void)acb_media_id(mediaId);
+    (void)acb_loaded();
 }
 /* Tell ACB the stream is Dolby Atmos — the AUDIO counterpart of acb_send_video_data(), and a
  * METADATA descriptor rather than anything resembling an audio sink.
@@ -335,12 +337,17 @@ static int acb_start_impl(long x, long y, long w, long h, int strict) {
     return display == 1 && playing == 1;
 }
 void acb_start(long x, long y, long w, long h) { (void)acb_start_impl(x, y, w, h, 0); }
-int acb_probe_finish(void) { return acb_start_impl(0, 0, 1280, 720, 1); }
-void acb_unload(void) {
-    if (g_acb) {
-        int rv = acb.setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_UNLOADED, &g_taskId);
-        if (elogf) { fprintf(elogf, "acb unloaded rv=%d task=%ld\n", rv, g_taskId); fflush(elogf); }
-    }
+int acb_finish(void) { return acb_start_impl(0, 0, 1280, 720, 1); }
+int acb_unload(long *taskOut) {
+    if (taskOut) *taskOut = 0;
+    if (!g_acb) return 0;
+    /* A local, not g_taskId: setState writes nothing on -2 (not registered), and g_taskId would
+     * then still hold the pause / resume / video-data task of an earlier call. */
+    long task = 0;
+    int rv = acb.setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_UNLOADED, &task);
+    if (elogf) { fprintf(elogf, "acb unloaded rv=%d task=%ld\n", rv, task); fflush(elogf); }
+    if (rv == 1 && taskOut) *taskOut = task;
+    return rv;
 }
 /* Kodi-parity: mirror the ACB PLAYSTATE on transport pause/resume (the app owns the sink; the
  * pipeline Pause/Play alone leaves the ACB state stale). Only meaningful once the plane is bound. */

@@ -212,6 +212,7 @@ mod qualified_uri_offer_tests {
         let config = UriConfig {
             transport: &plx_platform::tv::uri::NoUriMedia,
             display: &plx_platform::tv::sink::NoSink,
+            plane: plx_platform::tv::plane::installed(),
             clock: Box::new(Clock), app_id: "fixture".to_owned(),
             binding: Binding::Unbound,
             capabilities: Capabilities { progressive_uri: true, hls_uri: false,
@@ -1183,8 +1184,11 @@ impl PlayerAdapter {
     #[cfg(feature = "play-uri")]
     pub fn install_uri_product(&mut self, session: &mut crate::route::PlaybackSession) -> bool {
         let display = plx_platform::tv::sink::display_installed();
-        let evidence = crate::route::uri_preflight::ProductEvidence::unqualified(
-            display.window_mode());
+        // SAFETY: the adapter holds the main-thread witness, and boot ran `acb_init` before this.
+        let initialized = unsafe { display.plane_initialized(&self.mt) };
+        let evidence = crate::route::uri_preflight::ProductEvidence::unqualified_on(
+            display.window_mode(),
+            crate::route::uri_preflight::product_binding(display.window_mode(), super::plane().facts(), initialized));
         let port = crate::route::uri_preflight::ResolvePort::new(evidence,
             std::sync::Arc::new(crate::route::uri_preflight::ProductQualifier));
         self.install_uri_product_with_ports(session, port,
@@ -1242,6 +1246,7 @@ impl PlayerAdapter {
         let config = UriConfig {
             transport,
             display,
+            plane: super::plane(),
             clock: settings.clock,
             app_id: settings.app_id,
             binding: settings.binding,
@@ -2205,6 +2210,7 @@ impl PlayerAdapter {
     /// Install the probe's session. `uriprobe_drive::start` guards on [`uri_live`](Self::uri_live)
     /// first: overwriting a live slot would drop a session without ending it.
     #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
+    #[cfg(feature = "play-feed")]
     pub(super) fn install_uri(&mut self, session: super::uriprobe_drive::UriSession) {
         debug_assert!(self.uri.is_none(), "a second URI-mode session cannot start under a live one");
         self.uri = Some(session);

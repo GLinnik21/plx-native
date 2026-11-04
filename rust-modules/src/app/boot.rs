@@ -2038,8 +2038,7 @@ pub(crate) unsafe fn construct(
         activate_session(&mut bridge, &mut pages, &mut super::recorder::Recplay::Off)
     };
     if !controlled {
-        #[cfg(feature = "play-feed")]
-        plx_media::player::acb_init(&mt);
+        plx_media::player::acb_init(&mt); // every backend set: the plane owner's boot facts
         plx_media_codecs::ffi::boot(); // Codec resource boot; controlled Home cannot invoke ABI probes.
     }
                        // dev: /tmp/plxnative-logintest validates the plex.tv account path end-to-end on the device — a

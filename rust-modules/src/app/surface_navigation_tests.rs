@@ -1038,6 +1038,7 @@ fn a_seeded_menu_anchor_is_mounted_into_the_next_menu_and_only_that_one() {
 /// opener's rect they ride the mounter (`Bridge::seed_player_more_folds`): a press that seeds nothing mounts the root
 /// More always had, and a Tracks menu opened with a seed pending ignores it (and leaves none for a later More).
 #[test]
+#[cfg(feature = "play-feed")] // forces the speed decoder through `plx_media::ff`
 fn seeded_folded_rows_are_mounted_into_the_next_more_menu_and_only_that_one() {
     use plx_appkit::more_menu::{Action, FoldedRow, MoreRow};
     use plx_appkit::player_hud::command::HudCommand;

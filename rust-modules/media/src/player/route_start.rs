@@ -376,14 +376,14 @@ pub(super) fn start_bufferfeed_inner(
     // building an Engine, to learn what webOS 5+ does with it (issue #1064). Taken AFTER the route
     // is prepared and BEFORE anything native is touched (the clock and session guards, the exported
     // window, the payload), and never for a preview or a local sample: the probe needs a real stream
-    // URL and the foreground play which owns the screen. The content names the variant; text which
-    // names none leaves the probe unarmed and the play normal rather than running a variant nobody
-    // asked for.
+    // URL and the foreground play which owns the screen. The content names the variant, then
+    // optionally the native ABR rates (`bpsstart=N bpsmax=N bpsmin=N`); text which names none
+    // leaves the probe unarmed and the play normal rather than running a variant nobody asked for.
     #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
     if stream && !crate::route::is_preview(ps) {
         if let Some(text) = plx_base::devtrig::read("uriprobe") {
-            match super::uriprobe::Variant::from_trigger(&text) {
-                Some(variant) => {
+            match super::uriprobe::Trigger::from_trigger(&text) {
+                Some(trigger) => {
                     // The probe takes no native session of its own, but its window verbs reach the
                     // same seam, so it refuses like an Engine does while an earlier session still
                     // owns the object (a parked timed-out Load): the tester plays again.
@@ -391,9 +391,9 @@ pub(super) fn start_bufferfeed_inner(
                         log("uriprobe: the native object is still owned by an earlier session: probe NOT started");
                         return Err(crate::route::RouteStartResult::StartFailed);
                     }
-                    return super::uriprobe_drive::start(ps, pa, route_start, &url, variant);
+                    return super::uriprobe_drive::start(ps, pa, route_start, &url, trigger.variant, trigger.bps);
                 }
-                None => log("uriprobe: the trigger file names no variant (empty, load, late, none or drive): NOT armed, playing normally"),
+                None => log("uriprobe: the trigger file names no variant (empty, load, late, none or drive, then optional bpsstart=N bpsmax=N bpsmin=N from 1 to 1000000000): NOT armed, playing normally"),
             }
         }
     }

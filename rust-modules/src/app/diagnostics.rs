@@ -1589,7 +1589,7 @@ fn skew(d: &plx_media::player::Diag) -> String {
 
 /// A lane trailing by more than this is starving rather than merely interleaved. Real containers
 /// interleave a fraction of a second either way; whole seconds mean one lane has stopped.
-#[cfg(feature = "play-feed")]
+#[cfg(any(feature = "play-feed", test))]
 const SKEW_FAULT_MS: i64 = 3_000;
 
 #[cfg(any(feature = "play-feed", test))]
@@ -2737,6 +2737,7 @@ mod tests {
     /// state a user photographs when nothing happens at all, and every row that can say "this did
     /// not happen" must say it.
     #[test]
+    #[cfg(feature = "play-feed")] // grades Feed engine rows
     fn a_dead_session_marks_its_faults() {
         let ps = plx_media::route::PlaybackSession::IDLE;
         // `load_at` a full stall-window in the past: a Load that completed SECONDS ago with no
@@ -3107,6 +3108,7 @@ mod tests {
     /// audio lane stopped 30 s ago, so its TOTAL is still large — every instantaneous field reads
     /// healthy — and only the rate and the skew can see it.
     #[test]
+    #[cfg(feature = "play-feed")] // grades Feed engine rows
     fn a_stalled_audio_lane_is_visible_even_though_its_total_is_large() {
         let ps = plx_media::route::PlaybackSession::IDLE;
         let d = plx_media::player::Diag {
@@ -3144,6 +3146,7 @@ mod tests {
     /// frameless pipeline is a pipeline that has not started yet; eight seconds later it is a
     /// stall. Without this distinction the panel cries wolf on every single playback.
     #[test]
+    #[cfg(feature = "play-feed")] // grades Feed engine rows
     fn a_freshly_completed_load_with_no_frames_yet_is_not_a_fault() {
         let ps = plx_media::route::PlaybackSession::IDLE;
         // The route/device fixture is shared with other diagnostics tests.
@@ -3176,6 +3179,7 @@ mod tests {
     /// paused; this pins that the Frames row agrees, because a panel that contradicts itself sends
     /// its reader after a fault that is just the pause button. Reported from the wild on 0.2.1.
     #[test]
+    #[cfg(feature = "play-feed")] // grades Feed engine rows
     fn a_paused_stream_does_not_report_its_frames_as_frozen() {
         let ps = plx_media::route::PlaybackSession::IDLE;
         let _g = plx_base::testlock::serial();
@@ -3210,6 +3214,7 @@ mod tests {
     /// The transport row splits a class the panel could not previously see at all: no connection,
     /// a connection that was refused, and a connection that answered and delivered nothing.
     #[test]
+    #[cfg(feature = "play-feed")] // grades Feed engine rows
     fn the_http_row_splits_the_open_failures() {
         let ps = plx_media::route::PlaybackSession::IDLE;
         let row = |d: &plx_media::player::Diag| {
@@ -3269,6 +3274,7 @@ mod tests {
     /// explains the session — and must carry WHERE it happened, so "refused immediately" and
     /// "died after a long healthy run" are different readings.
     #[test]
+    #[cfg(feature = "play-feed")] // grades Feed engine rows
     fn a_latched_pipeline_error_outranks_a_healthy_callback_count() {
         let ps = plx_media::route::PlaybackSession::IDLE;
         let d = plx_media::player::Diag {
@@ -3477,6 +3483,7 @@ mod tests {
     /// language, including the shared helpers (units, decimals, quality labels) that read the UI
     /// language elsewhere. Nothing but ASCII and the panel's own symbols may appear.
     #[test]
+    #[cfg(feature = "play-feed")] // swaps the pump's playback state, a Feed-gated test hook
     fn panel_rows_are_english_in_every_language() {
         let _g = plx_base::testlock::serial();
         let ps = EnhTestSession::new(EnhTestFixture::default());

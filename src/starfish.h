@@ -6,8 +6,9 @@
  * LG StarfishMediaAPIs (C++) + ACB
  * video-plane binding, behind flat C verbs. Hides the 11 mangled __asm__ symbols,
  * the sret std::string in Feed, the never-reused 64KB in-place objects, and the 3-arg ACB
- * taskId ABI. Library-thread callbacks are forwarded to sf_on_event/acb_on_event,
- * which the Rust player engine defines (player/mod.rs). This is the one piece that
+ * taskId ABI. Library-thread callbacks are forwarded to sf_on_event (the Rust player engine,
+ * player/mod.rs) and acb_on_event (the webOS port, webos/video_sink.rs, which queues it for the
+ * plane owner in tv/plane.rs). This is the one piece that
  * stays C in the Rust-first app — porting the mangled-C++ FFI to Rust is
  * worse-than-C. */
 #ifndef PLXNATIVE_STARFISH_H
@@ -65,19 +66,28 @@ void vp_destroy_window(void);
 /* ACB (App Common Binding) — VP_ACB only; every verb is a no-op in the other modes, so callers
  * need not branch. On webOS 5 this whole sequence has no replacement: it is deleted outright. */
 long acb_create(const char *appId, int playerType);        /* create+initialize; 0 = failed */
-int acb_probe_initialized(void);
-int acb_probe_dass_available(void);
-int acb_probe_media_id(const char *mediaId);
-int acb_probe_loaded(void);
-int acb_probe_connect_dass(void);
-int acb_probe_finish(void);
+/* The paced URI bind (play-uri `acb_bind`): the same calls acb_bind() makes, split so the caller can
+ * pace them. 1 = the library confirmed AcbAPI_initialize (a created handle alone is not that), 0 not. */
+int acb_initialized(void);
+int acb_probe_dass_available(void);                         /* developer arm only */
+int acb_media_id(const char *mediaId);                      /* setSinkType(MAIN)+setMediaId; 1 = both accepted */
+int acb_loaded(void);                                       /* setState(FOREGROUND, LOADED); setState's answer */
+int acb_probe_connect_dass(void);                           /* developer arm only */
+int acb_finish(void);                                       /* setDisplayWindow(0,0,1280,720,fullscreen)+setState(PLAYING); 1 = both accepted */
 void acb_bind(const char *mediaId);                        /* setSinkType(MAIN)+setMediaId+setState(LOADED) */
 int  acb_send_video_data(const char *sourceInfo);  /* setMediaVideoData; normal playback forwards the native envelope; explicit developer fixture descriptor is experimental. -1 = rejected */
 void acb_start(long x, long y, long w, long h);            /* setDisplayWindow + setState(PLAYING) */
-void acb_unload(void);                                     /* setState(UNLOADED) */
+/* setState(UNLOADED). Returns setState's own answer: 1 accepted (the firmware will deliver a
+ * completion callback carrying *taskOut), -2 not registered (nothing was sent, no callback comes),
+ * 0 no ACB handle (nothing was sent). *taskOut (may be NULL) is set to the task id the call wrote
+ * ONLY when the return is 1, else 0. The evidence for matching the release on that task id, and for
+ * the -2 rule, is docs/measurements/acb-release-fence-2026-11-04.md. */
+int acb_unload(long *taskOut);
 
 /* ---- library-thread callbacks the seam forwards to (consumer-defined) ---- */
 void sf_on_event(unsigned int epoch, int type, long long num, const char *str);
-void acb_on_event(long ev, const char *reply);
+/* Completion callback of any ACB call, on the library's thread. `task` is the task id the
+ * originating call returned; `ev` is -2 timeout, -1 error, 0 cancel, 1 complete. */
+void acb_on_event(long task, long ev, const char *reply);
 
 #endif /* PLXNATIVE_STARFISH_H */

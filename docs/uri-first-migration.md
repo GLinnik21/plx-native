@@ -72,8 +72,11 @@ Never hold queue/route locks while waiting for IO or a main-thread answer.
 One common owner admits an attempt and holds the display lease until physical release is proven.
 Backend workers and pending native resources stay private. Timeouts do not prove release. Keep
 quarantine and the shutdown rule that avoids SDL teardown while firmware workers remain alive.
-The current URI ACB probe retains its plane until process exit; extraction does not remove that
-limitation or establish production reuse.
+The ACB plane is released through the plane owner (`platform/src/tv/plane.rs`): `UNLOADED`, then a
+fence on that call's completion callback (`docs/measurements/acb-release-fence-2026-11-04.md`), so a
+released plane is reusable in the same process. Only a failed fence (a refused unload, a completion
+that is not "complete", no completion within `RELEASE_FENCE_MS`) quarantines it until process exit.
+The production URI backend has the binding (`Binding::Acb`) and no qualifier routes to it yet.
 
 ## Routing and evidence requirements
 

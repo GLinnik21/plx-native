@@ -5,7 +5,6 @@ use super::engine::Engine;
 use super::shared::Stage;
 use super::{seek_mode, SeekMode, SHARED, TX};
 #[cfg(all(test, feature = "hostsim"))]
-use super::ACB_OK;
 #[cfg(all(test, feature = "hostsim"))]
 use plx_base::task::MainThread;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -5309,18 +5308,19 @@ mod native_seek_pump_tests {
     // preroll's picture is only on the panel once that bind has completed ----
 
     /// ACB in use, `setMediaVideoData` accepted, the sourceInfo envelope captured; restores the
-    /// process-wide `ACB_OK` flag (default off on the host) when the test ends.
+    /// process-wide plane owner (no handle by default on the host) when the test ends.
     struct AcbGuard;
     impl AcbGuard {
         fn arm() -> AcbGuard {
-            ACB_OK.store(true, Relaxed);
+            crate::player::plane().reset_for_test();
+            crate::player::plane().boot(plx_platform::tv::plane::PlaneFacts { handle: true, player_type: 10 });
             ffi_host::reset_acb_for_test(true);
             AcbGuard
         }
     }
     impl Drop for AcbGuard {
         fn drop(&mut self) {
-            ACB_OK.store(false, Relaxed);
+            crate::player::plane().reset_for_test();
             ffi_host::reset_acb_for_test(false);
         }
     }

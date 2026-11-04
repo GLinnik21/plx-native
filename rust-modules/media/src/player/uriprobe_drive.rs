@@ -1,30 +1,33 @@
 //! Media adapter for the independent URI probe driver. Route ownership stays here.
 
-use crate::route::{PlaybackSession, RouteStartAttempt, RouteStartResult, RouteStartTransaction};
+use crate::route::{PlaybackSession, RouteStartAttempt, RouteStartResult};
+#[cfg(feature = "play-feed")]
+use crate::route::RouteStartTransaction;
 use plx_base::task::MainThread;
+#[cfg(feature = "play-feed")]
 use plx_platform::tv::uri::UriMedia;
-use plx_play_uri::uriprobe::{Kind, Settle, Variant};
-use plx_play_uri::uriprobe_drive::{AcbFacts, DriverConfig, UriSession as CoreSession};
-
-fn acb_facts() -> AcbFacts {
-    AcbFacts {
-        boot_handle: super::ACB_OK.load(std::sync::atomic::Ordering::Relaxed),
-        player_type: super::PTYPE.load(std::sync::atomic::Ordering::Relaxed),
-    }
-}
+use plx_play_uri::uriprobe::Settle;
+#[cfg(feature = "play-feed")]
+use plx_play_uri::uriprobe::{AbrBps, Kind, Variant};
+#[cfg(feature = "play-feed")]
+use plx_play_uri::uriprobe_drive::DriverConfig;
+use plx_play_uri::uriprobe_drive::UriSession as CoreSession;
 
 /// One URI session held by PlayerAdapter. The URL stays inside the independent driver.
 pub struct UriSession(CoreSession<RouteStartAttempt>);
 
 impl UriSession {
+    /// Only the Feed start path arms the probe (`route_start::start_bufferfeed_inner`), so a
+    /// URI-only build has no way to open one.
+    #[cfg(feature = "play-feed")]
     fn open(ps: &PlaybackSession, mt: &MainThread, transport: &'static dyn UriMedia,
-        attempt: RouteStartAttempt, variant: Variant, url: &str) -> Self {
+        attempt: RouteStartAttempt, variant: Variant, bps: AbrBps, url: &str) -> Self {
         let kind = if crate::route::is_segmented_hls(ps) { Kind::Hls } else { Kind::Direct };
         let input = DriverConfig {
-            attempt, variant, kind, url: url.to_owned(),
+            attempt, variant, bps, kind, url: url.to_owned(),
             app_id: plx_base::paths::app_id().to_owned(), transport,
-            sink: super::sink() as &dyn plx_platform::tv::sink::DisplaySink,
-            log: super::log, acb_facts,
+            sink: super::display(),
+            log: super::log, plane: super::plane(),
             release_allowance_ms: u64::try_from(super::release::RELEASE_DEADLINE.as_millis()).unwrap_or(u64::MAX),
         };
         Self(CoreSession::open(input, mt))
@@ -68,8 +71,9 @@ fn settle(ps: &mut PlaybackSession, attempt: RouteStartAttempt, how: Settle) -> 
 }
 
 /// Claim and install the route start before any probe reply can settle it.
+#[cfg(feature = "play-feed")]
 pub(super) fn start(ps: &mut PlaybackSession, pa: &mut super::adapter::PlayerAdapter,
-    route_start: RouteStartTransaction, url: &str, variant: Variant)
+    route_start: RouteStartTransaction, url: &str, variant: Variant, bps: AbrBps)
     -> Result<RouteStartAttempt, RouteStartResult> {
     if pa.uri_live() { return Err(RouteStartResult::StartFailed); }
     let Some(attempt) = crate::route::claim_route_start_attempt(route_start) else {
@@ -77,7 +81,7 @@ pub(super) fn start(ps: &mut PlaybackSession, pa: &mut super::adapter::PlayerAda
         return Err(RouteStartResult::StartFailed);
     };
     ps.begin_attempt_view(attempt, super::attempt_view::Backend::Uri);
-    pa.install_uri(UriSession::open(ps, pa.mt(), plx_platform::tv::uri::installed(), attempt, variant, url));
+    pa.install_uri(UriSession::open(ps, pa.mt(), plx_platform::tv::uri::installed(), attempt, variant, bps, url));
     Ok(attempt)
 }
 
@@ -210,7 +214,7 @@ mod tests {
             ps.begin_attempt_view(attempt, super::super::attempt_view::Backend::Uri);
             let transport = Scripted::leak();
             *transport.refuse_open.lock().unwrap() = refuse_open.map(str::to_owned);
-            let session = UriSession::open(&ps, pa.mt(), transport, attempt, variant, URL);
+            let session = UriSession::open(&ps, pa.mt(), transport, attempt, variant, AbrBps::default(), URL);
             Rig { ps, pa, transport, attempt, session: Some(session), now: 0 }
         }
 

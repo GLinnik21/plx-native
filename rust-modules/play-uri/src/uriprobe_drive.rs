@@ -11,8 +11,9 @@
 //! of the stream) stops logically at once. The ownership reducer keeps its adapter slot and window
 //! until the worker acknowledges successful unregister; unresolved release blocks another start.
 //! A deadline quarantines ownership, and a late successful acknowledgement still permits cleanup.
-//! ACB experiments add a separate fence: after bus release they dispatch UNLOADED once and retain
-//! plane quarantine until process exit, because asynchronous ACB completion is not proven.
+//! ACB experiments add a separate fence: after bus release they dispatch UNLOADED once through the
+//! plane owner and are released only when the firmware's completion for that task arrives; a failed
+//! completion or the plane owner's deadline retains the quarantine until process exit.
 //!
 //! **What stays out of it.** No Engine thread runs, so nothing is reported to Plex. The URL is held by [`UriSession`] for
 //! the `load` payload and nowhere else: no `Debug`, no log line, and the payload is built by
@@ -22,9 +23,10 @@
 //! The caller decides whether to enable the probe.
 
 use super::uri_lifecycle::{Event as LifeEvent, Fx as LifeFx, Lifecycle};
-use super::uriprobe::{Config, Kind, Scheme, Settle, UriCall, UriEffect, UriEvent, UriProbe, Variant, AcbOp};
+use super::uriprobe::{AbrBps, Config, Kind, Scheme, Settle, UriCall, UriEffect, UriEvent, UriProbe, Variant, AcbOp};
 use plx_base::task::MainThread;
-use plx_platform::tv::sink::{DisplaySink, VP_ACB, VP_EXPORTED};
+use plx_platform::tv::plane::PlaneOwner;
+use plx_platform::tv::sink::{DisplaySink, VP_EXPORTED};
 use plx_platform::tv::uri::{CloseStatus, UriMedia, UriPoll};
 use std::collections::VecDeque;
 use std::os::raw::c_int;
@@ -34,33 +36,21 @@ use std::time::Instant;
 /// picture (`videoInfo`) only changes the SOURCE rectangle (`engine::place_exported` does the same).
 const CANVAS: (c_int, c_int) = (1_920, 1_080);
 
-// The actuator reads platform facts through this seam; the probe machine receives only its answer.
-#[derive(Clone,Copy)]
-enum AcbGateFact { Mode, BootHandle, PlayerType, DassAvailable, Initialized }
-struct AcbGateCheck { mode:i32, boot_handle:bool, ptype:i32, dass_available:bool, initialized:bool, ready:bool }
-fn check_acb_gate(dass:bool, read:impl Fn(AcbGateFact)->i32)->AcbGateCheck {
-    let mode=read(AcbGateFact::Mode); let boot_handle=read(AcbGateFact::BootHandle)!=0;
-    let ptype=read(AcbGateFact::PlayerType); let dass_available=read(AcbGateFact::DassAvailable)!=0;
-    let initialized=read(AcbGateFact::Initialized)==1;
-    let ready=mode==VP_ACB && boot_handle && initialized && ptype==0 && (!dass || dass_available);
-    AcbGateCheck {mode,boot_handle,ptype,dass_available,initialized,ready}
-}
-
-/// Facts owned by the media adapter, read only when an ACB gate is exercised.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AcbFacts { pub boot_handle: bool, pub player_type: i32 }
-
 /// Inputs from the caller. The URL is kept private and erased on logical completion.
 pub struct DriverConfig<A: Copy> {
     pub attempt: A,
     pub variant: Variant,
+    /// The native adaptive-streaming rates the `load` payload carries (none unless the trigger
+    /// named them).
+    pub bps: AbrBps,
     pub kind: Kind,
     pub url: String,
     pub app_id: String,
     pub transport: &'static dyn UriMedia,
     pub sink: &'static dyn DisplaySink,
     pub log: fn(&str),
-    pub acb_facts: fn() -> AcbFacts,
+    /// The process's plane owner: the boot facts the ACB gate reads, and the one binding/release.
+    pub plane: &'static PlaneOwner,
     pub release_allowance_ms: u64,
 }
 
@@ -78,7 +68,7 @@ pub struct UriSession<A: Copy> {
     attempt: A,
     sink: &'static dyn DisplaySink,
     log: fn(&str),
-    acb_facts: fn() -> AcbFacts,
+    plane: &'static PlaneOwner,
     release_allowance_ms: u64,
     /// An exported window was created and is owed a `destroy_window`.
     window: bool,
@@ -95,7 +85,7 @@ impl<A: Copy> UriSession<A> {
     /// Create the exported window for the variants which use one, build the machine and take its
     /// first step (`Start`: the `armed` line and the first registration).
     pub fn open(input: DriverConfig<A>, mt: &MainThread) -> UriSession<A> {
-        let DriverConfig { attempt, variant, kind, url, app_id, transport, sink, log, acb_facts, release_allowance_ms } = input;
+        let DriverConfig { attempt, variant, bps, kind, url, app_id, transport, sink, log, plane, release_allowance_ms } = input;
         let clock = Instant::now();
         let mut window_id = None;
         let mut created = false;
@@ -114,6 +104,7 @@ impl<A: Copy> UriSession<A> {
             window_id: window_id.clone(),
             app_id: app_id.clone(),
             transport: variant.drives(),
+            bps,
         };
         let mut session = UriSession {
             probe: UriProbe::new(config),
@@ -125,7 +116,7 @@ impl<A: Copy> UriSession<A> {
             attempt,
             sink,
             log,
-            acb_facts,
+            plane,
             release_allowance_ms,
             window: created,
             inbox: VecDeque::new(),
@@ -220,6 +211,11 @@ impl<A: Copy> UriSession<A> {
             }
         }
         self.lifecycle(LifeEvent::Tick { now_ms }, now_ms);
+        if let Some(session) = self.lifecycle.session().filter(|session| self.lifecycle.acb_fence_due(*session)) {
+            // UNLOADED is in flight: drain the firmware's completions into the plane owner.
+            let plane = self.plane.pump(self.sink, mt);
+            self.lifecycle(LifeEvent::AcbPlane { session, plane }, now_ms);
+        }
         self.inbox.push_back(UriEvent::Tick);
         self.drain(settle, mt, now_ms);
     }
@@ -255,7 +251,8 @@ impl<A: Copy> UriSession<A> {
                         // The actual actuator is main-thread only; enqueue its addressed tail.
                         self.inbox.push_back(UriEvent::AcbReleaseTail {session});
                     }
-                    LifeFx::AcbQuarantined => (self.log)("uriprobe: acb=quarantined bus=released plane-release=unproven need-relaunch"),
+                    LifeFx::AcbReleased => (self.log)("uriprobe: acb=released bus=released plane-release=proven"),
+                    LifeFx::AcbQuarantined(why) => (self.log)(&format!("uriprobe: acb=quarantined bus=released reason={why} need-relaunch")),
                     LifeFx::Released => { self.inbox.push_back(UriEvent::Closed); }
                     LifeFx::Fault => {
                         (self.log)(&format!("uriprobe: t={now_ms} transport ownership unresolved or reply stream lost"));
@@ -276,8 +273,8 @@ impl<A: Copy> UriSession<A> {
     fn feed(&mut self, event: UriEvent, settle: &mut dyn FnMut(A, Settle) -> bool, mt: &MainThread, now_ms: u64) {
         if let UriEvent::AcbReleaseTail {session} = event {
             if !self.lifecycle.acb_tail_due(session) { return; }
-            unsafe { self.sink.plane_unload(mt) };
-            self.lifecycle(LifeEvent::AcbUnloadDispatched {session}, now_ms);
+            let plane = self.plane.unload(self.sink, mt);
+            self.lifecycle(LifeEvent::AcbUnloadDispatched {session, plane}, now_ms);
             return;
         }
         let mut effects = Vec::new();
@@ -327,40 +324,42 @@ impl<A: Copy> UriSession<A> {
     }
 
     fn acb_execute(&mut self, op: &AcbOp, mt: &MainThread, now_ms: u64) -> bool {
-        let sink = self.sink;
+        use super::acb_drive::{execute, Descriptor, Stamp, Verdict};
+        let session = self.lifecycle.session();
         match op {
-            AcbOp::Check {dass} => {
-                let facts = (self.acb_facts)();
-                let check=check_acb_gate(*dass,|fact|match fact {
-                    AcbGateFact::Mode=>sink.window_mode(),
-                    AcbGateFact::BootHandle=>i32::from(facts.boot_handle),
-                    AcbGateFact::PlayerType=>facts.player_type,
-                    AcbGateFact::DassAvailable=>i32::from(unsafe {sink.plane_probe_dass_available(mt)}),
-                    AcbGateFact::Initialized=>i32::from(unsafe {sink.plane_probe_initialized(mt)}),
-                });
-                (self.log)("uriprobe: ACB experiment requires known SDR H264720p24 fixture; fallback is explicit fixture data, not content detection");
-                (self.log)(&format!("uriprobe: t={now_ms} acb gate mode={} boot_handle={} actual_ptype={} dass_available={} initialized={}",check.mode,check.boot_handle,check.ptype,check.dass_available,check.initialized));
-                check.ready
+            AcbOp::Check {..} => (self.log)("uriprobe: ACB experiment requires known SDR H264720p24 fixture; fallback is explicit fixture data, not content detection"),
+            // One binding at a time: the plane owner grants the bind only once the previous
+            // binding's release (either backend's) is proven.
+            AcbOp::MediaId {..} if session.is_none() => return false,
+            _ => {}
+        }
+        let acb_source = self.acb_source.as_ref();
+        let mut descriptor = |media_id: &super::uri_protocol::MediaId, video: super::uri_protocol::VideoFacts| {
+            let observed = acb_source.filter(|source| &source.media_id == media_id && source.video == video);
+            let label = if observed.is_some() { "observed-envelope" } else { "explicit-SDR720p24-fixture" };
+            observed.map(|source| source.text().to_owned()).or_else(|| super::uri_protocol::build_acb_fixture_video(media_id, video))
+                .map(|text| Descriptor { text, label })
+                .ok_or("no observed envelope or exact SDR720p24 fixture")
+        };
+        let log = self.log;
+        let executed = execute(op, mt, self.sink, self.plane, &mut descriptor, &mut |stamp, line| match stamp {
+            Stamp::Plain => log(&format!("uriprobe: {line}")),
+            Stamp::Timed => log(&format!("uriprobe: t={now_ms} {line}")),
+        });
+        if let (true, Some(session)) = (executed.touched, session) {
+            self.lifecycle(LifeEvent::AcbTouched {session}, now_ms);
+        }
+        // A deferred or refused bind is a failed experiment here: the probe never retries a bind.
+        match executed.verdict {
+            Verdict::Invoked(accepted) => accepted,
+            Verdict::Deferred => {
+                (self.log)("uriprobe: acb bind not granted (Deferred); the experiment cannot bind");
+                false
             }
-            AcbOp::MediaId {media_id} => {
-                let Some(session) = self.lifecycle.session() else { return false };
-                self.lifecycle(LifeEvent::AcbTouched {session}, now_ms);
-                let Ok(id) = std::ffi::CString::new(&**media_id) else { return false };
-                unsafe { sink.plane_probe_media_id(mt, id.as_ptr()) == 1 }
+            Verdict::Refused(why) => {
+                (self.log)(&format!("uriprobe: acb bind not granted (Refused({why:?})); the experiment cannot bind"));
+                false
             }
-            AcbOp::Loaded => unsafe { sink.plane_probe_loaded(mt) == 1 },
-            AcbOp::Connect {enabled: false} => { (self.log)("uriprobe: acb control connectDass skipped (same timed slot)"); true }
-            AcbOp::Connect {enabled: true} => unsafe { sink.plane_probe_connect_dass(mt) == 1 },
-            AcbOp::VideoData {media_id, video} => {
-                (self.log)(&format!("uriprobe: acb video facts width={} height={} frameRate={} bitRate={:?}", video.width, video.height, video.frame_rate, video.bit_rate));
-                let observed = self.acb_source.as_ref().filter(|source| &source.media_id == media_id && source.video == *video);
-                let payload = observed.map(|source| source.text().to_owned()).or_else(|| super::uri_protocol::build_acb_fixture_video(media_id, *video));
-                let Some(payload) = payload else { (self.log)("uriprobe: acb invalid descriptor: no observed envelope or exact SDR720p24 fixture"); return false };
-                (self.log)(if observed.is_some() {"uriprobe: acb descriptor=observed-envelope"} else {"uriprobe: acb descriptor=explicit-SDR720p24-fixture"});
-                let Ok(payload) = std::ffi::CString::new(payload) else { return false };
-                unsafe { sink.plane_send_video_data(mt, payload.as_ptr()) == 1 }
-            }
-            AcbOp::Display => unsafe { sink.plane_probe_finish(mt) == 1 }
         }
     }
 
@@ -462,7 +461,7 @@ mod tests {
     enum Status { Pending, Started, Failed }
 
     static NO_SINK: plx_platform::tv::sink::NoSink = plx_platform::tv::sink::NoSink;
-    fn no_acb() -> AcbFacts { AcbFacts { boot_handle: false, player_type: 0 } }
+    fn no_acb() -> &'static PlaneOwner { Box::leak(Box::new(PlaneOwner::new())) }
 
     /// A session over a scripted transport, with a local addressed start reducer.
     struct Rig {
@@ -481,14 +480,18 @@ mod tests {
 
         /// `refuse_open`: the text the transport answers `open` with, from the very first call.
         fn build(variant: Variant, refuse_open: Option<&str>) -> Rig {
+            Rig::build_with(variant, AbrBps::default(), refuse_open)
+        }
+
+        fn build_with(variant: Variant, bps: AbrBps, refuse_open: Option<&str>) -> Rig {
             let mt = unsafe { MainThread::assume() };
             let attempt = 17;
             let transport = Scripted::leak();
             *transport.refuse_open.lock().unwrap() = refuse_open.map(str::to_owned);
             let session = UriSession::open(DriverConfig {
-                attempt, variant, kind: Kind::Direct, url: URL.to_owned(),
+                attempt, variant, bps, kind: Kind::Direct, url: URL.to_owned(),
                 app_id: "com.example.plxnative".to_owned(), transport, sink: &NO_SINK,
-                log: plx_base::eventlog::log, acb_facts: no_acb, release_allowance_ms: 10_000,
+                log: plx_base::eventlog::log, plane: no_acb(), release_allowance_ms: 10_000,
             }, &mt);
             Rig { mt, transport, attempt, status: Status::Pending, session: Some(session), now: 0 }
         }
@@ -582,6 +585,22 @@ mod tests {
         assert!(log.contains("uriprobe: t=") && line_with(&log, " armed ").contains("window=none"), "{log}");
         assert!(!log.contains("no longer waits"), "the attempt was settled exactly once:\n{log}");
         assert!(log.contains("tester: report picture yes/no and sound yes/no"));
+    }
+
+    #[test]
+    fn uriprobe_driver_sends_the_armed_rates_in_the_load_payload_and_logs_them() {
+        let _serial = plx_base::testlock::serial();
+        let bps = AbrBps { start: None, maximum: Some(720_000), minimum: None };
+        let log = logged(|| {
+            let mut rig = Rig::build_with(Variant::AtLoad, bps, None);
+            rig.frame(10);
+            rig.transport.say("register", "");
+            rig.frame(10);
+            let payload: serde_json::Value = serde_json::from_str(&rig.transport.payload_of("load")).expect("JSON");
+            assert_eq!(payload["payload"]["option"]["adaptiveStreaming"], serde_json::json!({ "bps": { "maximum": 720_000 } }));
+            rig.back();
+        });
+        assert!(line_with(&log, " armed ").ends_with(" bpsmax=720000"), "{log}");
     }
 
     #[test]
@@ -763,27 +782,6 @@ mod tests {
             rig.back();
         });
         assert!(line_with(&output," summary ").contains("resume=sent"),"delayed initial ACK changed resume: {output}");
-    }
-
-    #[test]
-    fn uri_acb_review_refused_initializer_invalidates_both_arms() {
-        for dass in [false,true] {
-            let check=check_acb_gate(dass,|fact|match fact {
-                AcbGateFact::Mode=>plx_platform::tv::sink::VP_ACB,
-                AcbGateFact::BootHandle|AcbGateFact::DassAvailable=>1,
-                AcbGateFact::PlayerType|AcbGateFact::Initialized=>0,
-            });
-            assert!(!check.ready,"created handle and playerType0 cannot prove initialization succeeded");
-        }
-        for dass in [false,true] {
-            let ready=check_acb_gate(dass,|fact|match fact {
-                AcbGateFact::Mode=>plx_platform::tv::sink::VP_ACB,
-                AcbGateFact::PlayerType=>0,
-                _=>1,
-            });
-            assert!(ready.ready,"valid initialized boot handle must remain usable");
-        }
-
     }
 
 }

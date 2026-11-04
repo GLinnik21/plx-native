@@ -32,13 +32,61 @@ impl serde::Serialize for MediaId {
     }
 }
 
-/// The `load` payload: `{"uri":U,"type":"media","payload":{"option":{"appId":A[,"windowId":W]}}}`.
-/// Built with the JSON writer, never by formatting the URL into a string.
-pub fn build_load(url: &str, app_id: &str, window_id: Option<&str>) -> String {
+/// The most a bit-rate cap, or the start rate, may ask for, in bit/s: 1 Gbit/s, past any link or
+/// ladder rung this television meets. A trigger naming more is junk, not a request.
+pub const MAX_ABR_BPS: u32 = 1_000_000_000;
+
+/// The native adaptive-streaming controller's seed and limits for one `load`, in bit/s
+/// (`option.adaptiveStreaming.bps.{start,maximum,minimum}`). A rate is absent unless the tester
+/// asked for it, and an absent set leaves the payload exactly as it was before these existed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AbrBps {
+    pub start: Option<u32>,
+    pub maximum: Option<u32>,
+    pub minimum: Option<u32>,
+}
+
+impl AbrBps {
+    /// A rate a trigger names: digits only, from 1 to [`MAX_ABR_BPS`].
+    pub fn parse_rate(text: &str) -> Option<u32> {
+        if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        text.parse().ok().filter(|rate| (1..=MAX_ABR_BPS).contains(rate))
+    }
+
+    /// The `bps` object of the load option, `None` when no rate was asked for.
+    fn object(self) -> Option<Value> {
+        let mut bps = Map::new();
+        for (key, rate) in [("start", self.start), ("maximum", self.maximum), ("minimum", self.minimum)] {
+            if let Some(rate) = rate {
+                bps.insert(key.to_owned(), json!(rate));
+            }
+        }
+        (!bps.is_empty()).then_some(Value::Object(bps))
+    }
+
+    /// The set as the `armed` line spells it, in the trigger's own tokens (` bpsstart=N bpsmax=N
+    /// bpsmin=N`, only the rates given); empty when none was.
+    pub fn label(self) -> String {
+        [("bpsstart", self.start), ("bpsmax", self.maximum), ("bpsmin", self.minimum)]
+            .into_iter()
+            .filter_map(|(name, rate)| rate.map(|rate| format!(" {name}={rate}")))
+            .collect()
+    }
+}
+
+/// The `load` payload: `{"uri":U,"type":"media","payload":{"option":{"appId":A[,"windowId":W]
+/// [,"adaptiveStreaming":{"bps":{"start":N,"maximum":N,"minimum":N}}]}}}`. Built with the JSON
+/// writer, never by formatting the URL into a string.
+pub fn build_load(url: &str, app_id: &str, window_id: Option<&str>, bps: AbrBps) -> String {
     let mut option = Map::new();
     option.insert("appId".to_owned(), json!(app_id));
     if let Some(window) = window_id {
         option.insert("windowId".to_owned(), json!(window));
+    }
+    if let Some(bps) = bps.object() {
+        option.insert("adaptiveStreaming".to_owned(), json!({ "bps": bps }));
     }
     json!({ "uri": url, "type": "media", "payload": { "option": Value::Object(option) } })
         .to_string()
@@ -81,9 +129,10 @@ pub fn build_acb_fixture_video(media_id: &MediaId, video: VideoFacts) -> Option<
 #[derive(Clone, PartialEq, Eq)]
 pub enum UriCall {
     /// `window_id` is the id to put in the payload (`Variant::AtLoad`/`Drive` with a window), else
-    /// `None`.
+    /// `None`; `bps` the adaptive-streaming rates the probe was armed with (none in production).
     Load {
         window_id: Option<String>,
+        bps: AbrBps,
     },
     Subscribe {
         media_id: MediaId,
@@ -190,6 +239,7 @@ pub enum Ev {
     TrackSelected,
     SourceInfo,
     StreamingInfo,
+    CustomizedStreamingInfo,
     VideoInfo,
     AudioInfo,
     UnloadCompleted,
@@ -197,7 +247,7 @@ pub enum Ev {
 }
 
 /// The key each event arrives under, and the text it logs as.
-const EVENT_KEYS: [(&str, Ev); 16] = [
+const EVENT_KEYS: [(&str, Ev); 17] = [
     ("loadCompleted", Ev::LoadCompleted),
     ("playing", Ev::Playing),
     ("paused", Ev::Paused),
@@ -210,6 +260,7 @@ const EVENT_KEYS: [(&str, Ev); 16] = [
     ("trackSelected", Ev::TrackSelected),
     ("sourceInfo", Ev::SourceInfo),
     ("streamingInfo", Ev::StreamingInfo),
+    ("customizedStreamingInfo", Ev::CustomizedStreamingInfo),
     ("videoInfo", Ev::VideoInfo),
     ("audioInfo", Ev::AudioInfo),
     ("unloadCompleted", Ev::UnloadCompleted),
@@ -291,8 +342,17 @@ fn scalar(value: &Value) -> Option<String> {
     }
 }
 
-/// `key=value` pairs for the listed keys of `value` (an object), in the listed order.
-fn details(value: &Value, keys: &[&str]) -> String {
+/// A JSON number and nothing else: no codec word, boolean or `{num, den}` pair.
+fn number(value: &Value) -> Option<String> {
+    match value {
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// `key=value` pairs for the listed keys of `value` (an object), in the listed order, each value
+/// shown by `show` (a value it returns `None` for is left out).
+fn details_by(value: &Value, keys: &[&str], show: fn(&Value) -> Option<String>) -> String {
     let Some(object) = value.as_object() else {
         return String::new();
     };
@@ -301,11 +361,23 @@ fn details(value: &Value, keys: &[&str]) -> String {
         .filter_map(|key| {
             object
                 .get(*key)
-                .and_then(scalar)
+                .and_then(show)
                 .map(|shown| format!("{key}={shown}"))
         })
         .collect();
     parts.join(" ")
+}
+
+/// [`details_by`] with [`scalar`]: numbers, booleans and the finite codec vocabulary.
+fn details(value: &Value, keys: &[&str]) -> String {
+    details_by(value, keys, scalar)
+}
+
+/// [`details_by`] with [`number`], for the events whose objects a firmware may also fill with
+/// other text (a streaming event can name the host it reads from): a string in a listed key is
+/// never shown, not even one of the codec words [`scalar`] lets through.
+fn numeric_details(value: &Value, keys: &[&str]) -> String {
+    details_by(value, keys, number)
 }
 
 /// The position of a `currentTime` event, in either shape a firmware may send: a bare number
@@ -429,9 +501,17 @@ pub fn parse_event(payload: &str) -> Message {
             continue;
         }
         let detail = match ev {
-            Ev::VideoInfo => details(value, &["width", "height", "codec", "frameRate", "hdr"]),
+            Ev::VideoInfo => details(
+                value,
+                &["width", "height", "codec", "frameRate", "hdr", "currentBitrate", "contentBitrate"],
+            ),
             Ev::AudioInfo => details(value, &["codec", "channels", "sampleRate"]),
-            Ev::BufferRange => details(value, &["beginTime", "endTime"]),
+            Ev::BufferRange => details(value, &["beginTime", "endTime", "remainingTime", "percent"]),
+            // Firmware decompile: `instantBitrate` is the measured download rate and `totalBitrate`
+            // the selected variant, both bit/s (the R-ABR-2 run tests that). Numbers only: this
+            // event can also carry a host.
+            Ev::StreamingInfo => numeric_details(value, &["instantBitrate", "totalBitrate"]),
+            Ev::CustomizedStreamingInfo => numeric_details(value, &["numOfRates", "currentIndexOfRate"]),
             Ev::CurrentTime => scalar(value)
                 .map(|v| format!("value={v}"))
                 .unwrap_or_default(),
@@ -453,6 +533,7 @@ pub fn parse_event(payload: &str) -> Message {
             | Ev::AudioInfo
             | Ev::SourceInfo
             | Ev::StreamingInfo
+            | Ev::CustomizedStreamingInfo
             | Ev::BufferRange => value.is_object(),
             _ => value == &Value::Bool(true) || value.is_object(),
         };

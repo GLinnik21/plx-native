@@ -20,8 +20,8 @@ pub(crate) fn transport_answer(
         }
         Fx::Call { session, request, call } => {
             let payload = match call {
-                crate::uri_protocol::UriCall::Load { window_id } =>
-                    build_load(url, app_id, window_id.as_deref()),
+                crate::uri_protocol::UriCall::Load { window_id, bps } =>
+                    build_load(url, app_id, window_id.as_deref(), *bps),
                 other => other.payload().unwrap_or_default(),
             };
             let result = transport.call(*session, *request, call.method(), &payload);

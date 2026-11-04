@@ -92,7 +92,7 @@ CONFIG_LOCAL_H = os.path.join(REPO_ROOT, "src", "config.local.h")
 TV_SSH = os.path.join(REPO_ROOT, "tools", "tv-ssh")  # key-first ssh/scp front door; see its header
 
 sys.path.insert(0, TESTS_DIR)
-from serve_fixtures import serve, default_root as serve_fixtures_default_root  # noqa: E402  (needs TESTS_DIR on the path first)
+from serve_fixtures import serve, default_root as serve_fixtures_default_root, ABR_FIXTURE, RE_ABR_LADDER  # noqa: E402  (needs TESTS_DIR on the path first)
 import mock_fps  # noqa: E402  (the --mock tier; same path juggling as above)
 sys.path.insert(0, TOOLS_DIR)
 import tv_config  # noqa: E402  (the TV address: tools/tv-config.sh is the one lookup)
@@ -5128,6 +5128,17 @@ def _resolve_fixtures(cases, root):
         if not name:
             c["skip"] = "case declares no `fixture`"
             continue
+        if RE_ABR_LADDER.match("/" + name):
+            # The server writes this playlist itself, so there is no file to find or probe. What
+            # it points at is every rung's clip, and a missing one would 404 (or fall back to
+            # 1080p) under the player and confound which rung it fetched, so the whole set must exist.
+            absent = sorted(f for f in ABR_FIXTURE.values() if not os.path.isfile(os.path.join(root, f)))
+            if absent:
+                c["skip"] = (f"the ladder master serves every rung but {root} lacks {', '.join(absent)} "
+                             "-- run `make fixtures-pipeline`")
+            else:
+                c["path"] = None   # no single file: the server writes the playlist
+            continue
         path = os.path.join(root, name)
         if not os.path.isfile(path):
             c["skip"] = f"no fixture {name!r} in {root} — run `make fixtures-pipeline`"
@@ -5383,6 +5394,13 @@ def save_profiler_files(cfg, stem, pulled):
                   "(phase unknown, trigger unread, or the counters refused): this leg has no counters")
 
 
+def rung_segments_line(before, after):
+    """Which rungs the player fetched in a case, from two `FixtureServer.segment_rungs()`
+    snapshots: `720=2 2000=14` (request-path rung = count), lowest first; `""` when it fetched none."""
+    return " ".join(f"{rung}={n - before.get(rung, 0)}" for rung, n in after.items()
+                    if n > before.get(rung, 0))
+
+
 def run_pipeline_case(case, cfg, srv, url_base, verbose):
     """One pipeline case. A sibling of `run_case` with every PMS step removed.
 
@@ -5421,6 +5439,7 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
     print("    triggers: " + ", ".join(n + ("=" + c if c is not None else "") for n, c in files))
 
     before = srv.stats()
+    before_rungs = srv.segment_rungs()
 
     def grade(c, ls):
         """The wire counters are read LIVE, so the early-exit poll grades the same
@@ -5440,6 +5459,12 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
                                                          evaluator=grade)
     after = srv.stats()
     delta = tuple(a - b for a, b in zip(after, before))
+    # Which rung of a ladder master the player asked for: the plant's own count, since the app logs
+    # nothing of a native player's choice. Printed, and kept beside the case's log.
+    rungs = rung_segments_line(before_rungs, srv.segment_rungs())
+    if rungs:
+        print(f"    segments fetched by rung (kbps): {rungs}")
+        save_logs_file(cfg, f"{name}.rungs", f"{rungs}\n")
 
     gst_lines = pull_runtime_log(tv, "plxnative-gst.log") if case.get("gst_trace") else None
     if gst_lines is not None:

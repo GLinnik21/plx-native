@@ -73,6 +73,9 @@ RE_RANGE = re.compile(r"^bytes=(\d+)-(\d*)$")
 ABR_RUNGS = "320|720|2000|4000|6000|8000|10000|12000|14000|16000|18000|20000|22000"
 RE_ABR_PLAYLIST = re.compile(rf"^/__abr/({ABR_RUNGS})/(master|media)\.m3u8$")
 RE_ABR_SEGMENT = re.compile(rf"^/__abr/({ABR_RUNGS})/segment\.ts$")
+# One master listing every rung as its own variant, for a player that picks between them itself
+# (the TV's native HLS controller in URI mode) rather than one the app steers rung by rung.
+RE_ABR_LADDER = re.compile(r"^/__abr/ladder/master\.m3u8$")
 RE_SEQUENCE = re.compile(r"(?:^|&)sequence=(\d+)")
 RE_ABR_GENERATION = re.compile(r"(?:^|&)fixtureGeneration=(\d+)")
 # What a rung asks PMS for is a BITRATE CEILING and the raster is the consequence; the controller's
@@ -121,6 +124,8 @@ assert set(ABR_FIXTURE) == set(ABR_RUNGS.split("|")) == set(ABR_RASTER), (
     "a rung the route can request but this server cannot answer reads on the TV as a rejected "
     "candidate, which is indistinguishable from a real refusal"
 )
+# Every rung, lowest first: the order the ladder master lists its variants in.
+ABR_LADDER = tuple(sorted(ABR_FIXTURE, key=int))
 
 
 class FixtureHandler(BaseHTTPRequestHandler):
@@ -256,21 +261,37 @@ class FixtureHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self._serve(body=True)
 
+    def _abr_variant(self, requested, base=""):
+        """The `#EXT-X-STREAM-INF` entry a fresh master for `requested` declares, two lines.
+
+        One allocation of a response generation per call (`begin_abr_response`), so the entry's
+        BANDWIDTH/RESOLUTION and the `fixtureGeneration` its child URI carries are the rendition
+        the case's response profile maps this request to, and nothing else. `base` prefixes the
+        child URI: empty for the single-rung master, whose playlist sits beside it, and the rung's
+        own directory for the ladder master, whose playlists do not.
+        """
+        generation, effective = self.server.begin_abr_response(requested)
+        child = f"{base}media.m3u8"
+        if generation is not None:
+            child += f"?fixtureGeneration={generation}"
+        return (f"#EXT-X-STREAM-INF:BANDWIDTH={int(effective) * 1000},"
+                f"RESOLUTION={ABR_RASTER[effective]}\n"
+                f"{child}\n")
+
     def _abr_playlist(self):
         target = self.path.split("?", 1)[0].split("#", 1)[0]
+        if RE_ABR_LADDER.match(target):
+            # Absolute child paths: a relative `media.m3u8` would resolve under `/__abr/ladder/`,
+            # which holds nothing. Each entry is exactly what that rung's own master declares, so
+            # a response profile composes per rung.
+            variants = "".join(self._abr_variant(rung, f"/__abr/{rung}/") for rung in ABR_LADDER)
+            return ("#EXTM3U\n#EXT-X-VERSION:3\n" + variants).encode("utf-8")
         match = RE_ABR_PLAYLIST.match(target)
         if not match:
             return None
         requested, kind = match.groups()
         if kind == "master":
-            generation, effective = self.server.begin_abr_response(requested)
-            child = "media.m3u8"
-            if generation is not None:
-                child += f"?fixtureGeneration={generation}"
-            text = ("#EXTM3U\n#EXT-X-VERSION:3\n"
-                    f"#EXT-X-STREAM-INF:BANDWIDTH={int(effective) * 1000},"
-                    f"RESOLUTION={ABR_RASTER[effective]}\n"
-                    f"{child}\n")
+            text = "#EXTM3U\n#EXT-X-VERSION:3\n" + self._abr_variant(requested)
         else:
             generation = self._abr_generation()
             effective = self.server.abr_response_rung(requested, generation)
@@ -334,7 +355,9 @@ class FixtureHandler(BaseHTTPRequestHandler):
         # so the whole body runs at one rate even if the schedule would move under it. Only media
         # segments are counted and only they can be overridden; a playlist carries no media.
         rate_override = None
-        if RE_ABR_SEGMENT.match(self.path.split("?", 1)[0]):
+        segment = RE_ABR_SEGMENT.match(self.path.split("?", 1)[0])
+        if segment:
+            self.server.count_rung_segment(segment.group(1))
             rate_override = self.server.segment_rate_kbps(self.server.count_segment())
         try:
             with open(path, "rb") as f:
@@ -371,6 +394,10 @@ class FixtureServer(socketserver.ThreadingTCPServer):
         # The REQUEST-indexed schedule, and the count it is indexed by. See `set_segment_profile`.
         self.segment_profile = []
         self.n_segments = 0
+        # Media-segment responses begun, by the rung the REQUEST named: which rung of a ladder the
+        # player fetched. A running total, never reset; a reader takes the difference of two
+        # `segment_rungs()` snapshots, as it does for `stats()`.
+        self.rung_segments = {}
         # Per-case PMS response mapping. The request path remains the actuator the app sent;
         # each fresh master gets a generation whose media/segments remain pinned to the rendition
         # that master declared. This is what lets an old underfilled session keep playing while a
@@ -521,6 +548,21 @@ class FixtureServer(socketserver.ThreadingTCPServer):
             index = self.n_segments
             self.n_segments += 1
             return index
+
+    def count_rung_segment(self, rung):
+        """One media-segment response has begun for the rung (`"720"`) its request path named."""
+        with self.lock:
+            self.rung_segments[rung] = self.rung_segments.get(rung, 0) + 1
+
+    def segment_rungs(self):
+        """Media-segment responses begun so far, `{rung: count}`, lowest rung first.
+
+        Keyed by the rung in the request path, which is the player's choice; the rendition a
+        response profile served for it is the profile's business. A separate reader from
+        `stats()`, whose three values `evaluate_pipeline` zips.
+        """
+        with self.lock:
+            return {rung: self.rung_segments[rung] for rung in sorted(self.rung_segments, key=int)}
 
     def segment_rate_kbps(self, index):
         """The request-indexed rate for the segment at `index`, or `None` if none applies."""

@@ -2466,7 +2466,10 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   and then exercises the transport — pause, resume, a seek 20 s ahead, a text and an audio
   `selectTrack`, `setSubtitleEnable` — logging the position before and after each, so the summary
   says whether the pipeline accepts them; text naming no variant leaves the probe unarmed and the
-  play normal. Read at each playback start, no relaunch; skipped for a hero preview. No Engine
+  play normal. After the variant, `bpsstart=N`, `bpsmax=N` and `bpsmin=N` (bit/s, each 1 to
+  1000000000, at most once, space separated, e.g. `load bpsmax=720000`) put the native
+  adaptive-streaming seed and limits into the `load` option as `adaptiveStreaming.bps.{start,maximum,minimum}`
+  and onto the `armed` line; any other token leaves the probe unarmed. Read at each playback start, no relaunch; skipped for a hero preview. No Engine
   runs, so nothing is reported to Plex (no timeline, scrobble or unscrobble). The event log gets `uriprobe: …` lines ending in one `summary` line, never the URL,
   token, host or a service payload; a tester sends those lines and removes the file.
   `dev::DIAG`, so it does not move the boot screen; `media::player::uriprobe`, `uriprobe_drive`),

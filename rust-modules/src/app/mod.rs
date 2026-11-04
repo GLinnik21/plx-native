@@ -447,7 +447,7 @@ fn pre_boot_diagnostics() -> plx_telemetry::telemetry::native::Guard {
     //
     // `APPID_env` is here for a second reason, and it is evidence rather than configuration.
     // Nothing this project can read off a desk says whether SAM exports `APPID` to a native app on
-    // this firmware, or what it sets it to — and `engine::acb_init_acb` used to depend on it. It
+    // this firmware, or what it sets it to — and `plane_boot::acb_init_acb` used to depend on it. It
     // does not any more (the install directory is the authority), so this line turns an unanswered
     // device question into something every single run answers for free.
     log(&format!(

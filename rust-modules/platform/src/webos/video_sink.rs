@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Own Rust mirror of src/starfish.h, written from the public ABI contract.
 //! webos::video_sink — the starfish.c seam (sf_* / acb_* verbs). These stay C (the mangled-C++ + ACB
-//! ABI). The library thread calls back into the media player's sf_on_event / acb_on_event.
+//! ABI). The library thread calls back into the media player's `sf_on_event` (`plx_media`'s
+//! `player/mod.rs`) and into this module's own `acb_on_event`, which only records the completion in
+//! the plane mailbox that `tv::plane::PlaneOwner` drains.
 //! Signatures mirror `src/starfish.h` exactly; `long` is 32-bit on the arm target -> c_long.
 //!
 //! **Everything here but `load` and `unload` takes a [`MainThread`]** (`unload` takes an
@@ -78,26 +80,46 @@ mod sys {
         pub(super) fn vp_destroy_window();
 
         pub(super) fn acb_create(app_id: *const c_char, player_type: c_int) -> c_long;
-        #[cfg(feature = "devtriggers")]
-        pub(super) fn acb_probe_initialized() -> c_int;
+        pub(super) fn acb_initialized() -> c_int;
         #[cfg(feature = "devtriggers")]
         pub(super) fn acb_probe_dass_available() -> c_int;
-        #[cfg(feature = "devtriggers")]
-        pub(super) fn acb_probe_media_id(media_id: *const c_char) -> c_int;
-        #[cfg(feature = "devtriggers")]
-        pub(super) fn acb_probe_loaded() -> c_int;
+        pub(super) fn acb_media_id(media_id: *const c_char) -> c_int;
+        pub(super) fn acb_loaded() -> c_int;
         #[cfg(feature = "devtriggers")]
         pub(super) fn acb_probe_connect_dass() -> c_int;
-        #[cfg(feature = "devtriggers")]
-        pub(super) fn acb_probe_finish() -> c_int;
+        pub(super) fn acb_finish() -> c_int;
         pub(super) fn acb_bind(media_id: *const c_char);
         pub(super) fn acb_send_video_data(source_info: *const c_char) -> c_int;
         pub(super) fn acb_send_atmos(media_id: *const c_char) -> c_int;
         pub(super) fn acb_start(x: c_long, y: c_long, w: c_long, h: c_long);
-        pub(super) fn acb_unload();
+        pub(super) fn acb_unload(task_out: *mut c_long) -> c_int;
         pub(super) fn acb_pause();
         pub(super) fn acb_resume();
     }
+}
+
+/// The completion mailbox the firmware's thread fills (`acb_on_event` below) and
+/// `PlaneOwner::pump` drains on the main thread. Sized well above the handful of tasks one frame
+/// can have in flight; an overflow is counted and surfaces as a `Dropped` marker, never silently.
+static COMPLETIONS: std::sync::LazyLock<crate::tv::plane::CompletionQueue> =
+    std::sync::LazyLock::new(|| crate::tv::plane::CompletionQueue::new(64));
+
+/// The completion callback of `libAcbAPI`, forwarded by `acb_cb` in `src/video_plane.c` on the
+/// LIBRARY'S thread: `task` is the task id the originating call returned, `ev` the event type
+/// (`-2` timeout, `-1` error, `0` cancel, `1` complete). Takes no `MainThread`, touches no
+/// pipeline state: it only records `(task, ev)` for the main thread and keeps today's log line.
+#[no_mangle]
+pub extern "C" fn acb_on_event(task: c_long, ev: c_long, reply: *const c_char) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let (code, binding_error) = if reply.is_null() { (None, false) } else {
+            // SAFETY: the C seam passes the library's NUL-terminated reply for the call.
+            let text = unsafe { CStr::from_ptr(reply) }.to_string_lossy();
+            let code = serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|value| value.get("errorCode").and_then(serde_json::Value::as_i64));
+            (code, text.contains("ERROR_06"))
+        };
+        plx_base::eventlog::log(&format!("acb_cb task={task} ev={ev} errorCode={code:?} ERROR_06={binding_error}"));
+        COMPLETIONS.push(i64::from(task), i32::try_from(ev).unwrap_or(i32::MIN));
+    }));
 }
 
 /// The television's video sink: each method is the one seam verb of the same name, through the
@@ -255,18 +277,14 @@ impl crate::tv::sink::DisplaySink for StarfishSink {
         sys::acb_create(app_id, player_type)
     }
     #[inline]
-    #[cfg(feature = "devtriggers")]
-    unsafe fn plane_probe_initialized(&self, _: &MainThread) -> bool { sys::acb_probe_initialized() != 0 }
+    unsafe fn plane_initialized(&self, _: &MainThread) -> bool { sys::acb_initialized() != 0 }
     #[cfg(feature = "devtriggers")]
     unsafe fn plane_probe_dass_available(&self, _: &MainThread) -> bool { sys::acb_probe_dass_available() != 0 }
-    #[cfg(feature = "devtriggers")]
-    unsafe fn plane_probe_media_id(&self, _: &MainThread, media_id: *const c_char) -> c_int { sys::acb_probe_media_id(media_id) }
-    #[cfg(feature = "devtriggers")]
-    unsafe fn plane_probe_loaded(&self, _: &MainThread) -> c_int { sys::acb_probe_loaded() }
+    unsafe fn plane_media_id(&self, _: &MainThread, media_id: *const c_char) -> c_int { sys::acb_media_id(media_id) }
+    unsafe fn plane_loaded(&self, _: &MainThread) -> c_int { sys::acb_loaded() }
     #[cfg(feature = "devtriggers")]
     unsafe fn plane_probe_connect_dass(&self, _: &MainThread) -> c_int { sys::acb_probe_connect_dass() }
-    #[cfg(feature = "devtriggers")]
-    unsafe fn plane_probe_finish(&self, _: &MainThread) -> c_int { sys::acb_probe_finish() }
+    unsafe fn plane_finish(&self, _: &MainThread) -> c_int { sys::acb_finish() }
     unsafe fn plane_bind(&self, _: &MainThread, media_id: *const c_char) {
         sys::acb_bind(media_id)
     }
@@ -283,8 +301,14 @@ impl crate::tv::sink::DisplaySink for StarfishSink {
         sys::acb_start(x, y, w, h)
     }
     #[inline]
-    unsafe fn plane_unload(&self, _: &MainThread) {
-        sys::acb_unload()
+    unsafe fn plane_unload(&self, _: &MainThread) -> crate::tv::sink::PlaneUnload {
+        let mut task: c_long = 0;
+        let rv = sys::acb_unload(&mut task);
+        crate::tv::sink::PlaneUnload { rv, task }
+    }
+    #[inline]
+    fn plane_completions(&self, _: &MainThread) -> Vec<crate::tv::plane::PlaneCompletion> {
+        COMPLETIONS.drain()
     }
     #[inline]
     unsafe fn plane_pause(&self, _: &MainThread) {
