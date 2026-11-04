@@ -1,4 +1,4 @@
-{"updated":"2026-11-04T22:09:50Z",
+{"updated":"2026-11-04T22:17:36Z",
 "ci":[
 {"id":31093855724,"at":"2026-08-06T10:35:26Z","sha":"bdbf8a099","title":"docs: the README promised a ceiling the binary no longer has","jobs":{"cross-build (armv7) + artifact assertions":124,"host checks (NOT a device gate)":73},"pr":null,"conclusion":"success","attempt":1},
 {"id":31099939125,"at":"2026-08-06T12:05:30Z","sha":"dd7266471","title":"docs: cite webosbrew's own guidance on the system FFmpeg","jobs":{"cross-build (armv7) + artifact assertions":122,"host checks (NOT a device gate)":81},"pr":null,"conclusion":"success","attempt":1},
@@ -4519,7 +4519,8 @@
 {"id":41914290388,"at":"2026-11-04T21:14:56Z","sha":"e7c033802","title":"Test the autopause hold's pre-arm line and correct its placement and ceiling prose","pr":1235,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":198,"macOS tests against bundled FFmpeg and ASS":249,"Windows launcher syntax":23,"Linux simulator build + launch":350}},
 {"id":41916223442,"at":"2026-11-04T21:27:13Z","sha":"7ad737eea","title":"Hold the simulator's settled capture until an armed autopause lands","pr":1235,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":349,"Windows launcher syntax":21,"macOS simulator build + launch":234,"macOS tests against bundled FFmpeg and ASS":199}},
 {"id":41919380294,"at":"2026-11-04T21:47:41Z","sha":"f84f6698a","title":"Fire the stall-guard fetch triggers on the reading thread as well","pr":1237,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":22,"Linux simulator build + launch":310,"macOS tests against bundled FFmpeg and ASS":156,"macOS simulator build + launch":220}},
-{"id":41921143794,"at":"2026-11-04T21:59:19Z","sha":"95c526366","title":"Make three timing-dependent unit tests deterministic","pr":1237,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":122,"Windows launcher syntax":25,"macOS tests against bundled FFmpeg and ASS":223,"Linux simulator build + launch":338}}
+{"id":41921143794,"at":"2026-11-04T21:59:19Z","sha":"95c526366","title":"Make three timing-dependent unit tests deterministic","pr":1237,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":122,"Windows launcher syntax":25,"macOS tests against bundled FFmpeg and ASS":223,"Linux simulator build + launch":338}},
+{"id":41921359294,"at":"2026-11-04T22:00:43Z","sha":"48e86869e","title":"Use shared live glass for full-preview controls and track surface prefixes","pr":1238,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":21,"macOS tests against bundled FFmpeg and ASS":213,"Linux simulator build + launch":312,"macOS simulator build + launch":239}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
