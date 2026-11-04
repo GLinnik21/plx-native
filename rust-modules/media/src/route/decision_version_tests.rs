@@ -604,6 +604,52 @@ fn unknown_uri_without_feed_has_a_named_refusal_before_pms_encoder_work() {
     plx_plex::plex::reset_servers_for_test();
 }
 
+#[test]
+#[cfg(all(feature = "play-uri", not(feature = "play-feed"), feature = "devtriggers"))]
+fn unknown_pms_output_in_uri_only_retires_the_accepted_encoder_once() {
+    use plx_play_uri::backend::Binding;
+    use plx_playback_contract::Capabilities;
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    assert!(plx_net::net::global_init());
+    let capabilities = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
+        pause: true, seek: true, audio_track: true, subtitle_track: true,
+        audio_off: false, subtitle_off: false };
+    ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
+        crate::route::uri_preflight::ProductEvidence { display_exported: true,
+            binding: Binding::Exported { canvas: (1920, 1080) },
+            callable: capabilities, certified: capabilities, preview_rectangle: false },
+        std::sync::Arc::new(crate::route::uri_preflight::ProductQualifier)));
+    let (seen_tx, seen_rx) = std::sync::mpsc::channel();
+    let (port, done, server) = versions_pms_observed(URI_DTS, MDE_PMS_OUTPUT, Some(seen_tx));
+    let sid = plx_plex::plex::register_for_test("unknown-pms", "127.0.0.1", port,
+        "token", "unknown-pms-client");
+    let mut meta = plx_data::stores::metadata::MetadataStore::default();
+    assert!(request_play(&mut ps, &mut meta, plx_platform::devcaps::caps(), sid,
+        "rk-v", "/library/parts/3134/1/file.mkv", "h264", "dca", "Film", "", None));
+    assert!(wait_resolve_workers_for_test(std::time::Duration::from_secs(15)));
+    assert!(pump_play(&mut ps, &mut meta).is_none());
+    assert_eq!(ps.play_verdict, Some(PlayVerdict::NoQualifiedBackend));
+    let mut stop = None;
+    for _ in 0..32 {
+        let line = seen_rx.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("PMS cleanup request after unknown qualification");
+        if line.contains("/video/:/transcode/universal/stop?") {
+            stop = Some(line);
+            break;
+        }
+    }
+    assert!(stop.is_some(), "the accepted encoder must be retired");
+    done.send(()).unwrap();
+    let requests = server.join().unwrap();
+    assert!(requests.iter().any(|line| line.contains("/decision?")),
+        "the certified-capability preflight reaches PMS before returning Unknown");
+    assert_eq!(requests.iter().filter(|line|
+        line.contains("/video/:/transcode/universal/stop?")).count(), 1,
+        "the losing PMS resource has one stop owner");
+    plx_plex::plex::reset_servers_for_test();
+}
+
 /// A retry or quality change resolves the same item again from the stored request, so the pick
 /// rides it; the session installs the landed version for every later encoder of the playback.
 #[test]
