@@ -444,7 +444,7 @@ impl NativeGate {
 
     /// Test-only: drop an abandoned phase that a failing test left behind, which
     /// [`reset_session`](Self::reset_session) deliberately preserves.
-    #[cfg(feature = "test-support")]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn test_force_native_idle(&self) {
         self.state
             .lock()

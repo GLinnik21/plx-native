@@ -371,7 +371,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
     enforces them: the stripped ARM `plxnative` that `make ipk` stages (the cross-build job, dev
     flavour, `release` profile: CI selects it by itself, a local `make ipk` needs `ARM_PROFILE=release`), the number of third-party packages in the app crate's resolved graph for
     `armv7-unknown-linux-gnueabi` (normal + build edges, dev-dependencies excluded; asked for both with
-    default features and with `--no-default-features`, which is what ships), and the number of crate
+    default features and with the shipping set, `make RELEASE=1`'s `--no-default-features` plus the playback backends, read from the Makefile and not restated: that is what ships), and the number of crate
     names present in two versions on the normal-edge graph (what `cargo tree -d --edges normal`
     prints). The graph budgets run in `host-lint` from `cargo tree`, which compiles nothing and resolves
     features the way a build does: `cargo metadata` unifies them across dependency kinds, so it
@@ -897,9 +897,10 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   Each feature set also gets its own `--target-dir`, because cargo does not hash its output and
   would otherwise report the dev build fresh while the release `.a` sat at that path.
   **`make check` cannot see a break in this configuration** — it builds the default feature set —
-  **but the PR gate now can**: `.github/workflows/ci.yml` type-checks `--no-default-features` and
-  both `hostsim` configurations on every push. Until that landed, `--no-default-features` was first
-  compiled during a release cut, i.e. after the change had merged. The
+  **but the PR gate now can**: `.github/workflows/ci.yml` runs `make check-nodef` (the shipping set:
+  `--no-default-features` plus the playback backends) and type-checks both `hostsim` configurations
+  on every push. Until that landed, the shipping set was first compiled during a release cut, i.e.
+  after the change had merged. The
   **`PostToolUse` hook** (`.claude/hooks/release-config-check.py`) stays and is now the fast path
   rather than the only one — it catches the break before the push, and CI does not run in somebody
   else's checkout. It type-checks after

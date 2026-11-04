@@ -581,7 +581,7 @@ something.
   `pump` returns before the ladder (`settled_by_foreground`) and `ForegroundLifecycle` settles it as
   #1018's retry (`Prepared`, the Engine retired). A fresh play's synchronous refusal has no
   lifecycle behind it and stays the ladder's. A
-  silent stall is learned too, for surround only (`native_stall.rs`, checked in the pump): a native
+  silent stall is learned too, for surround only (`play-feed/src/native_stall.rs`, checked in the pump): a native
   Opus track with more than two channels, Load returned, no picture, both AU queues holding data and no
   AU accepted for `NATIVE_AUDIO_STALL_MS` (4 s; a slow server has empty queues) is learned and
   recovered the same way, and never after the first picture. The stall is a refusal of the same class
