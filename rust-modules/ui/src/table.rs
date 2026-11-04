@@ -573,6 +573,8 @@ fn next_rev() -> u32 {
 
 pub struct TableView {
     pub sections: Vec<Section>,
+    /// Optional empty-state copy; an empty string leaves it to the surrounding narrative.
+    empty_text: Option<CString>,
     pub sel: i32, // global index across all sections' rows (headers are not selectable)
     /// Does the LIST hold focus? `false` draws no selection pill at all — the "nothing selected"
     /// mode this widget did not have.
@@ -630,7 +632,7 @@ impl TableView {
     /// The owner records its row data separately. These fields determine layout, the selected
     /// face and subsequent motion; no text/texture cache or renderer pointer is traversed.
     pub fn write_motion(&self, c: &mut plx_machine::machine::Canon) {
-        let Self { sections: _, sel, list_focused, compact, tall, header_ink, hl_top, hl_bot, scroll, title: _, min_panel_w: _, rev: _ } = self;
+        let Self { sections: _, sel, list_focused, compact, tall, header_ink, hl_top, hl_bot, scroll, title: _, min_panel_w: _, rev: _, empty_text: _ } = self;
         c.u32(*sel as u32).bool(*list_focused).bool(*compact).bool(*tall);
         for component in header_ink { c.f32(*component); }
         for spring in [hl_top, hl_bot, scroll] { c.f32(spring.pos).f32(spring.vel); }
@@ -655,6 +657,7 @@ impl TableView {
     pub const fn new() -> Self {
         Self {
             sections: Vec::new(),
+            empty_text: None,
             sel: 0,
             list_focused: true,
             compact: false,
@@ -676,6 +679,9 @@ impl TableView {
         self
     }
 
+    /// Override the default track-menu empty state for a table in another context.
+    pub fn set_empty_text(&mut self, text: Option<&str>) { self.empty_text = text.and_then(|s| CString::new(s).ok()); }
+
     /// **An empty table dressed like this one**: the same size class, header ink, row height and
     /// panel-width floor, with no rows, no title and every spring at rest. A panel that moves its
     /// outgoing page aside for a transition (`ui::panel_motion`) swaps this in for the page it
@@ -688,6 +694,7 @@ impl TableView {
         t.tall = self.tall;
         t.header_ink = self.header_ink;
         t.min_panel_w = self.min_panel_w;
+        t.empty_text = self.empty_text.clone();
         t
     }
 
@@ -1450,7 +1457,7 @@ impl TableView {
     fn draw_in(&self, p: Painter, frame: Rect, page: bool, measure: &dyn plx_machine::machine::Measure) {
         if self.n_rows() == 0 {
             Label::new(
-                plx_platform::i18n::msg::widgets_tracks_empty_c().as_ptr(),
+                self.empty_text.as_ref().map_or_else(|| plx_platform::i18n::msg::widgets_tracks_empty_c().as_ptr(), |s| s.as_ptr()),
                 theme::size::BODY,
                 theme::TEXT_TERTIARY,
             )

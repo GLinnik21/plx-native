@@ -1,0 +1,73 @@
+{
+  "entries": [
+    {
+      "app": {},
+      "author": "PlxNative",
+      "bytes": 1376,
+      "hud_format": "1.0",
+      "id": "com.plxnative.examples.minimal",
+      "license": "CC0-1.0",
+      "name": "Minimal",
+      "package_format": "1.0",
+      "previews": [
+        {
+          "file": "8ec8a79446a2772a8ab3364850164241c73dcc2b1a10376d6fe281a4ab4efae2.png",
+          "lang": "en",
+          "sha256": "8ec8a79446a2772a8ab3364850164241c73dcc2b1a10376d6fe281a4ab4efae2",
+          "state": "sections-0-movie-paused-no-chapters",
+          "url": "https://glinnik21.github.io/plxnative-huds/previews/8779b3dbe3debf75c7b8b080cec0a373fcf1fbc110339190ca377c2cb43f9a2e/8ec8a79446a2772a8ab3364850164241c73dcc2b1a10376d6fe281a4ab4efae2.png"
+        },
+        {
+          "file": "2d575cac48ba8f4dec6cf475a25c724844e8f809bd2cc4d451d9811d709b9b4e.png",
+          "lang": "en",
+          "sha256": "2d575cac48ba8f4dec6cf475a25c724844e8f809bd2cc4d451d9811d709b9b4e",
+          "state": "up-next",
+          "url": "https://glinnik21.github.io/plxnative-huds/previews/8779b3dbe3debf75c7b8b080cec0a373fcf1fbc110339190ca377c2cb43f9a2e/2d575cac48ba8f4dec6cf475a25c724844e8f809bd2cc4d451d9811d709b9b4e.png"
+        }
+      ],
+      "sha256": "8779b3dbe3debf75c7b8b080cec0a373fcf1fbc110339190ca377c2cb43f9a2e",
+      "unfit": [],
+      "url": "https://glinnik21.github.io/plxnative-huds/p/8779b3dbe3debf75c7b8b080cec0a373fcf1fbc110339190ca377c2cb43f9a2e.plxhud",
+      "version": "1.0.0"
+    },
+    {
+      "app": {},
+      "author": "PlxNative",
+      "bytes": 8256,
+      "hud_format": "1.0",
+      "id": "com.plxnative.examples.reference",
+      "license": "CC0-1.0",
+      "name": "Reference",
+      "package_format": "1.0",
+      "previews": [
+        {
+          "file": "c9e3273c4d9a8c5cd45de2350982fbb5f5ed6767cf0da7651a70fd5a92f57965.png",
+          "lang": "en",
+          "sha256": "c9e3273c4d9a8c5cd45de2350982fbb5f5ed6767cf0da7651a70fd5a92f57965",
+          "state": "sections-0-movie-paused-no-chapters",
+          "url": "https://glinnik21.github.io/plxnative-huds/previews/ed8733175f7db1ab2fa5bad45659627e555f88172787ad6019901d82c488d61e/c9e3273c4d9a8c5cd45de2350982fbb5f5ed6767cf0da7651a70fd5a92f57965.png"
+        },
+        {
+          "file": "556329a3a856698666af018b3402d5facc7f1a65c2a48896ddaff079661dd7a1.png",
+          "lang": "en",
+          "sha256": "556329a3a856698666af018b3402d5facc7f1a65c2a48896ddaff079661dd7a1",
+          "state": "sections-3-movie-paused",
+          "url": "https://glinnik21.github.io/plxnative-huds/previews/ed8733175f7db1ab2fa5bad45659627e555f88172787ad6019901d82c488d61e/556329a3a856698666af018b3402d5facc7f1a65c2a48896ddaff079661dd7a1.png"
+        },
+        {
+          "file": "e6f3576d8aa78380f0d4a6c640b30457d324a5b7db96fe4602dc9b2ea1204d78.png",
+          "lang": "en",
+          "sha256": "e6f3576d8aa78380f0d4a6c640b30457d324a5b7db96fe4602dc9b2ea1204d78",
+          "state": "up-next",
+          "url": "https://glinnik21.github.io/plxnative-huds/previews/ed8733175f7db1ab2fa5bad45659627e555f88172787ad6019901d82c488d61e/e6f3576d8aa78380f0d4a6c640b30457d324a5b7db96fe4602dc9b2ea1204d78.png"
+        }
+      ],
+      "sha256": "ed8733175f7db1ab2fa5bad45659627e555f88172787ad6019901d82c488d61e",
+      "unfit": [],
+      "url": "https://glinnik21.github.io/plxnative-huds/p/ed8733175f7db1ab2fa5bad45659627e555f88172787ad6019901d82c488d61e.plxhud",
+      "version": "1.0.0"
+    }
+  ],
+  "format": 1,
+  "revoked": []
+}
