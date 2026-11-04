@@ -260,42 +260,7 @@ fn release_native_object(mt: &MainThread, epoch: u32) {
     let _ = release_native_object_timed(mt, epoch, &mut TeardownSpans::new());
 }
 
-/// Unload and retire the native object of `epoch`, then destroy it only with complete evidence.
-/// The engine's own teardown and the abandoned-Load release share this so the order below is one
-/// definition.
-/// **Where a teardown's frame goes, one step at a time.** Each step's wall time is appended as
-/// `label:ms` and the whole run is logged as ONE `teardown spans:` line at the end, so a slow BACK
-/// frame names the call that held the main thread instead of being inferred from a sched trace.
-/// Measuring costs two `Instant::now()` per step; the line is written once per teardown.
-pub(crate) struct TeardownSpans {
-    t0: std::time::Instant,
-    last: std::time::Instant,
-    out: String,
-}
-
-impl TeardownSpans {
-    pub(crate) fn new() -> Self {
-        let now = std::time::Instant::now();
-        Self { t0: now, last: now, out: String::new() }
-    }
-
-    /// Close the step that ran since the previous mark under `label`.
-    pub(crate) fn mark(&mut self, label: &str) {
-        use std::fmt::Write as _;
-        let now = std::time::Instant::now();
-        let ms = now.duration_since(self.last).as_secs_f64() * 1000.0;
-        self.last = now;
-        let _ = write!(self.out, "{}{label}:{ms:.1}", if self.out.is_empty() { "" } else { "," });
-    }
-
-    pub(crate) fn emit(&self, what: &str) {
-        log(&format!(
-            "teardown spans: {what} total={:.1} {}",
-            self.t0.elapsed().as_secs_f64() * 1000.0,
-            self.out,
-        ));
-    }
-}
+use plx_play_feed::native_executor::TeardownSpans;
 
 fn release_native_object_timed(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans)
     -> plx_playback_contract::ReleaseStatus {
@@ -1157,136 +1122,45 @@ pub(super) fn clear_failed_engine_release_arm() {
     FAILED_ENGINE_RELEASE_ARMED.store(false, Ordering::Release);
 }
 
-/// Owns a removed Engine through worker joins, native release and queue destruction. Common
-/// route/report work may run between its phases without receiving the Engine or native handles.
-pub(super) struct NativeStop {
-    eng: Engine,
-    stream: bool,
-    spans: TeardownSpans,
-    abandoned_load: Option<std::thread::JoinHandle<()>>,
-    unload_th: Option<std::thread::JoinHandle<()>>,
-    release_status: plx_playback_contract::ReleaseStatus,
-}
+/// Owns a removed Engine through worker joins, native release and queue destruction.
+pub(super) struct NativeStop(plx_play_feed::native_executor::NativeStop);
 
 impl NativeStop {
     pub(super) fn take(feed: &mut super::feed_resources::FeedResources) -> Self {
-        let eng = feed.take().expect("main-thread live check and take are one transaction");
-        feed.retire_load_attempt(eng.attempt);
-        let stream = matches!(eng.source, Source::Stream { .. });
-        Self { eng, stream, spans: TeardownSpans::new(), abandoned_load: None, unload_th: None,
-            release_status: plx_playback_contract::ReleaseStatus::Closing }
+        Self(plx_play_feed::native_executor::NativeStop::take(feed))
     }
 
-    /// The side reader must stop before the paired demux reader is joined.
     pub(super) fn stop_side_reader(&mut self, for_reload: bool) {
-        self.spans.mark("begin");
-        self.eng.side_reader.stop_before_demux_join(if for_reload { "reload" } else { "stop" });
-        self.spans.mark("subside");
+        self.0.stop_side_reader(for_reload);
     }
 
-    /// Wake both transports and queues before either worker join; close the socket only after
-    /// the demux reader no longer owns its fd. A timed-out Load remains parked and unjoined.
     pub(super) fn unblock_join_close(&mut self) {
-        let shared = self.eng.shared;
-        if self.stream {
-            for q in [self.eng.aq_video.as_mut(), self.eng.aq_audio.as_mut()].into_iter().flatten() {
-                crate::aq::aq_abort(&mut **q);
-            }
-            let p = shared.hs_ptr.load(Ordering::Acquire);
-            if !p.is_null() { plx_net::stream::http_shutdown(p); }
-            crate::curlio::abort_active();
-        }
-        self.spans.mark("unblock");
-        if let Some(thread) = self.eng.stream_th.take() {
-            plx_base::task::join("demux", thread);
-        }
-        self.spans.mark("join_demux");
-        self.abandoned_load = match self.eng.load_th.take() {
-            Some(thread) if !thread.is_finished() && shared.load_timed_out.load(Ordering::Acquire) => Some(thread),
-            Some(thread) => {
-                plx_base::task::join("media", thread);
-                None
-            }
-            None => None,
-        };
-        self.spans.mark("join_media");
-        if self.stream {
-            let p = shared.hs_ptr.load(Ordering::Acquire);
-            if !p.is_null() { plx_net::stream::http_close(p); }
-        }
-        self.spans.mark("http_close");
+        self.0.unblock_join_close();
     }
 
-    /// The stopped Engine still owns this attempt after its workers join. Capture physical
-    /// mailboxes before the common owner resets them and addresses the final readout.
     pub(super) fn terminal_facts(&self) -> plx_playback_contract::readout::AttemptFacts {
         super::feed_pump::native_attempt_facts()
     }
 
-    pub(super) fn report_dispatched(&mut self) { self.spans.mark("scrobble"); }
+    pub(super) fn report_dispatched(&mut self) {
+        self.0.report_dispatched();
+    }
 
     pub(super) fn release_status(&self) -> plx_playback_contract::ReleaseStatus {
-        self.release_status
+        self.0.release_status()
     }
 
-    /// Release only after common reporting has handed its final write to the off-frame worker.
     pub(super) fn release_and_drain(&mut self, mt: &MainThread,
         feed: &mut super::feed_resources::FeedResources, for_reload: bool) {
-        let shared = self.eng.shared;
-        if let Some(load_th) = self.abandoned_load.take() {
-            if !shared.abandon_native_session(self.eng.native_epoch) {
-                log(&format!(
-                    "native lifecycle: abandoned Load epoch={} no longer owned the Active phase",
-                    self.eng.native_epoch,
-                ));
-            }
-            log(&format!(
-                "native lifecycle: Load epoch={} still in flight at teardown — not joining; the \
-                 object stays parked (and native playback refused) until Load returns",
-                self.eng.native_epoch,
-            ));
-            feed.park_abandoned_load(AbandonedLoad {
-                attempt: self.eng.attempt,
-                epoch: self.eng.native_epoch,
-                load_th,
-                _payload: std::mem::take(&mut self.eng.payload),
-                abandoned_at: std::time::Instant::now(),
-            });
-        } else if !for_reload {
-            self.unload_th = release_off_frame(mt, self.eng.native_epoch, &mut self.spans,
-                &mut self.release_status);
-        } else {
-            self.release_status = release_native_object_timed(mt, self.eng.native_epoch, &mut self.spans);
-        }
-        if self.stream {
-            drain_aq(&mut self.eng);
-            for q in [self.eng.aq_video.as_mut(), self.eng.aq_audio.as_mut()].into_iter().flatten() {
-                crate::aq::aq_destroy(&mut **q);
-            }
-        }
-        self.spans.mark("drain_aq");
+        let hooks = plx_play_feed::native_executor::StopHooks {
+            release_off_frame,
+            release_native_object_timed,
+        };
+        self.0.release_and_drain(mt, feed, for_reload, &hooks);
     }
 
-    /// Keep the Engine and payload alive under an off-frame Unload; otherwise drop only after
-    /// every worker has joined and the queues are destroyed.
-    pub(super) fn finish(mut self, for_reload: bool) -> Option<PendingRelease> {
-        self.spans.mark("reset");
-        self.spans.emit(if for_reload { "reload" } else { "stop" });
-        if let Some(unload_th) = self.unload_th.take() {
-            log(&format!(
-                "stop_bufferfeed: torn down (native Unload epoch={} continues off-frame)",
-                self.eng.native_epoch,
-            ));
-            Some(PendingRelease {
-                epoch: self.eng.native_epoch,
-                unload_th: Some(unload_th),
-                handed_off_at: std::time::Instant::now(),
-                _engine: self.eng,
-            })
-        } else {
-            log("stop_bufferfeed: torn down");
-            None
-        }
+    pub(super) fn finish(self, for_reload: bool) -> Option<PendingRelease> {
+        self.0.finish(for_reload)
     }
 }
 
