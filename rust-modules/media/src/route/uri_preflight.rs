@@ -96,6 +96,29 @@ pub enum Verdict { Known(KnownSource), Unknown, Refused }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PmsRecipe { Remux, Encode, Hls }
 
+/// Finite eligibility captured by the common route owner before an off-frame resolve. An
+/// expired or refused Original never authorizes itself again, while an unspent PMS recipe can
+/// still be certified independently. The worker reads only this value, never the live catalog.
+#[derive(Clone, Copy)]
+pub struct UriOfferEligibility {
+    pub original: bool,
+    pub remux: bool,
+    pub encode: bool,
+    pub hls: bool,
+}
+
+impl UriOfferEligibility {
+    pub const ALL: Self = Self { original: true, remux: true, encode: true, hls: true };
+    pub fn any_pms(self) -> bool { self.remux || self.encode || self.hls }
+    pub fn permits(self, recipe: PmsRecipe) -> bool {
+        match recipe {
+            PmsRecipe::Remux => self.remux,
+            PmsRecipe::Encode => self.encode,
+            PmsRecipe::Hls => self.hls,
+        }
+    }
+}
+
 /// A URI driver's clock and seek values currently use content-absolute milliseconds. A PMS
 /// source with a relative or unknown time base cannot use that driver without a mapping port.
 #[derive(Clone, Copy, PartialEq, Eq)]

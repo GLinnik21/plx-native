@@ -600,16 +600,16 @@ mod uri_failure_recovery_tests {
         session.backend_policy = Some(policy);
         let attempt = RouteStartAttempt::fixture();
         session.begin_attempt_view(attempt, crate::player::attempt_view::Backend::Uri);
-        assert!(session.can_retry_uri_as_feed(attempt, OfferId::URI_ORIGINAL,
+        assert!(session.can_retry_uri_after_release(attempt, OfferId::URI_ORIGINAL,
             UriFailurePhase::Startup, None));
-        assert!(!session.can_retry_uri_as_feed(attempt, OfferId::URI_ORIGINAL,
+        assert!(!session.can_retry_uri_after_release(attempt, OfferId::URI_ORIGINAL,
             UriFailurePhase::Runtime, None), "an unknown runtime playhead cannot become zero");
-        assert!(session.can_retry_uri_as_feed(attempt, OfferId::URI_ORIGINAL,
+        assert!(session.can_retry_uri_after_release(attempt, OfferId::URI_ORIGINAL,
             UriFailurePhase::Runtime, Some(42_000_000_000)));
-        assert!(!session.can_retry_uri_as_feed(attempt, OfferId::URI_PMS_REMUX,
+        assert!(!session.can_retry_uri_after_release(attempt, OfferId::URI_PMS_REMUX,
             UriFailurePhase::Runtime, Some(42_000_000_000)));
         let successor = RouteStartAttempt { serial: attempt.serial, attempt: attempt.attempt + 1 };
-        assert!(!session.can_retry_uri_as_feed(successor, OfferId::URI_ORIGINAL,
+        assert!(!session.can_retry_uri_after_release(successor, OfferId::URI_ORIGINAL,
             UriFailurePhase::Runtime, Some(42_000_000_000)));
         assert!(session.mark_uri_recovery_pending(attempt));
         assert_eq!(session.uri_recovery_pending(), Some(attempt));
@@ -975,16 +975,16 @@ impl PlaybackSession {
     /// Prospect only. The adapter still owns exact URI Release; this does not start a resolve,
     /// spend an offer or retire a PMS resource while the native object might be live.
     #[cfg(feature = "play-uri")]
-    pub fn can_retry_uri_as_feed(&self, attempt: RouteStartAttempt,
+    pub fn can_retry_uri_after_release(&self, attempt: RouteStartAttempt,
         offer_id: super::backend_policy::OfferId, phase: UriFailurePhase,
         known_position_ns: Option<i64>) -> bool {
         let Some(policy) = self.backend_policy.as_ref() else { return false; };
-        cfg!(feature = "play-feed")
-            && self.attempt_view.backend() == Some(crate::player::attempt_view::Backend::Uri)
+        self.attempt_view.backend() == Some(crate::player::attempt_view::Backend::Uri)
             && self.attempt_view.attempt() == Some(attempt)
             && self.request.as_ref().is_some_and(|request| !request.preview)
             && policy.can_reopen(plx_playback_contract::BackendKind::Uri, offer_id)
-            && policy.has_remaining_backend(plx_playback_contract::BackendKind::Feed)
+            && (policy.has_remaining_backend(plx_playback_contract::BackendKind::Feed)
+                || policy.has_remaining_backend(plx_playback_contract::BackendKind::Uri))
             && match phase {
                 UriFailurePhase::Startup => self.requested_resume_ns >= 0,
                 UriFailurePhase::Runtime => known_position_ns.is_some_and(|ns| ns >= 0),
@@ -8989,6 +8989,10 @@ impl ResolveEnv {
             caps: ps.attempt_caps(),
             #[cfg(feature = "play-uri")]
             uri_preflight_port: ps.uri_preflight_port.clone(),
+            #[cfg(feature = "play-uri")]
+            uri_offers: super::uri_preflight::UriOfferEligibility::ALL,
+            #[cfg(feature = "play-uri")]
+            feed_original_eligible: cfg!(feature = "play-feed"),
             requested_rate_permille: ps.requested_rate_permille,
             resume_ns: ps.requested_resume_ns,
             src_kbps: resolve_src_kbps(meta.current(), sid, rk),
@@ -9582,11 +9586,29 @@ fn request_play_with_queue(
     let contract_revision = accepted_revision;
     // captured HERE, on the main thread, and moved into the worker — see ResolveEnv
     let mut env = request_env(ps, meta.view(), &request, retry);
-    #[cfg(feature = "play-uri")]
-    if same_episode_feed_retry { env.uri_preflight_port = None; }
-    env.queue_continuation = queue;
     let candidate_purpose = retry.map_or(CandidatePurpose::NewCandidate,
         |context| context.candidate_purpose);
+    #[cfg(feature = "play-uri")]
+    if let Some(policy) = ps.backend_policy.as_ref() {
+        use super::backend_policy::OfferId;
+        use plx_playback_contract::BackendKind::Uri;
+        env.uri_offers = super::uri_preflight::UriOfferEligibility {
+            original: policy.may_qualify(Uri, OfferId::URI_ORIGINAL),
+            remux: policy.may_qualify(Uri, OfferId::URI_PMS_REMUX),
+            encode: policy.may_qualify(Uri, OfferId::URI_PMS_ENCODE),
+            hls: policy.may_qualify(Uri, OfferId::URI_PMS_HLS),
+        };
+        env.feed_original_eligible = cfg!(feature = "play-feed")
+            && (policy.may_qualify(plx_playback_contract::BackendKind::Feed,
+                    OfferId::FEED_ORIGINAL)
+                || (candidate_purpose == CandidatePurpose::ReopenCurrent
+                    && policy.can_reopen(plx_playback_contract::BackendKind::Feed,
+                        OfferId::FEED_ORIGINAL))
+                || (candidate_purpose == CandidatePurpose::RollbackExisting
+                    && policy.can_rollback_existing(plx_playback_contract::BackendKind::Feed,
+                        OfferId::FEED_ORIGINAL)));
+    }
+    env.queue_continuation = queue;
     let gen = PLAY_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     if let Some(resume_ns) = retry.map(|r| r.resume_ns).filter(|ns| *ns > 0) {
         *PLAY_RESUME.lock().unwrap_or_else(|e| e.into_inner()) = Some((gen, resume_ns));
@@ -9738,18 +9760,18 @@ fn current_retry_context(ps: &PlaybackSession, resume_ns: i64) -> RetryContext {
     }
 }
 
-/// A qualified URI source expired or was refused before native Start. Re-resolve Feed on the
-/// same source episode without replenishing the finite backend catalog or open recovery budget.
-/// Only this captured ResolveEnv omits the URI port; the session keeps boot's provider.
+/// A qualified URI source expired or was refused before native Start. Re-resolve the next
+/// eligible recipe in the same source episode without replenishing the finite catalog or
+/// recovery budget. The captured eligibility excludes only spent or refused URI recipes.
 #[cfg(feature = "play-uri")]
-pub fn retry_uri_source_as_feed(ps: &mut PlaybackSession,
+pub fn retry_declined_uri_source(ps: &mut PlaybackSession,
     meta: &mut plx_data::stores::metadata::MetadataStore,
-    ticket: RouteStartTransaction) -> bool {
+    ticket: RouteStartTransaction, offer_id: super::backend_policy::OfferId) -> bool {
     if !abort_route_start(ticket, RouteStartResult::StartFailed) {
         return false;
     }
     // A qualified Part owns the logical Streaming Resource; a qualified PMS output owns its
-    // encoder. Retire the exact current resource before Feed resolves a replacement. The
+    // encoder. Retire the exact current resource before resolving a replacement. The
     // worker-ticket fence prevents a stale URI offer from clearing a successor's resource.
     let active = worker_ticket();
     let owned = if ps.tsession.is_empty() { ps.sess.as_str() } else { ps.tsession.as_str() };
@@ -9759,11 +9781,15 @@ pub fn retry_uri_source_as_feed(ps: &mut PlaybackSession,
     if !ps.sess.is_empty() && ps.sess != owned { identities.push(ps.sess.clone()); }
     retire_plan_resources(AbandonedPlanResources { sid: cur_sid(ps), identities });
     ps.tsession.clear();
-    if !cfg!(feature = "play-feed") { return false; }
-    let Some(request) = ps.request.clone() else { return false };
     ps.qualify_backend_offer(plx_playback_contract::BackendKind::Uri,
-        super::backend_policy::OfferId::URI_ORIGINAL,
+        offer_id,
         super::backend_policy::Qualification::Refused);
+    if !ps.backend_policy.as_ref().is_some_and(|policy|
+        policy.has_remaining_backend(plx_playback_contract::BackendKind::Feed)
+            || policy.has_remaining_backend(plx_playback_contract::BackendKind::Uri)) {
+        return false;
+    }
+    let Some(request) = ps.request.clone() else { return false };
     let mut retry = current_retry_context(ps, ps.requested_resume_ns);
     retry.candidate_purpose = CandidatePurpose::NewCandidate;
     let caps = ps.attempt_caps();
@@ -9772,16 +9798,16 @@ pub fn retry_uri_source_as_feed(ps: &mut PlaybackSession,
         crate::player::report::AttemptOrigin::Recovery, None, true, None)
 }
 
-/// Re-resolve one failed URI attempt through an unspent Feed recipe after its native registration
+/// Re-resolve one failed URI attempt through an unspent recipe after its native registration
 /// was released and its report worker retired. The adapter supplies the exact admitted recipe,
 /// viewer goal and clock evidence it captured before Closing; this route validates the address
 /// again before taking the old PMS resource. No runtime failure may restart at an invented zero.
 #[cfg(feature = "play-uri")]
-pub fn retry_failed_uri_as_feed(ps: &mut PlaybackSession,
+pub fn retry_failed_uri_after_release(ps: &mut PlaybackSession,
     meta: &mut plx_data::stores::metadata::MetadataStore,
     attempt: RouteStartAttempt, offer_id: super::backend_policy::OfferId,
     phase: UriFailurePhase, known_position_ns: Option<i64>, viewer_paused: bool) -> bool {
-    if !ps.can_retry_uri_as_feed(attempt, offer_id, phase, known_position_ns) {
+    if !ps.can_retry_uri_after_release(attempt, offer_id, phase, known_position_ns) {
         return false;
     }
     let resume_ns = match phase {
@@ -10037,6 +10063,16 @@ pub fn pump_play(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata
     #[cfg(feature = "play-uri")]
     let uri_pms_known = plan.uri_pms.take();
     #[cfg(feature = "play-uri")]
+    let prepared_uri_offer_id = if uri_known.is_some() {
+        Some(super::backend_policy::OfferId::URI_ORIGINAL)
+    } else {
+        uri_pms_known.as_ref().map(|known| match known.recipe {
+            super::uri_preflight::PmsRecipe::Remux => super::backend_policy::OfferId::URI_PMS_REMUX,
+            super::uri_preflight::PmsRecipe::Encode => super::backend_policy::OfferId::URI_PMS_ENCODE,
+            super::uri_preflight::PmsRecipe::Hls => super::backend_policy::OfferId::URI_PMS_HLS,
+        })
+    };
+    #[cfg(feature = "play-uri")]
     let pms_offer_prepared = uri_pms_known.is_some();
     #[cfg(feature = "play-uri")]
     let uri_selection = plan.source_selection;
@@ -10117,10 +10153,9 @@ pub fn pump_play(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata
     #[cfg(feature = "play-uri")]
     if (uri_source_ready || (pms_offer_prepared && !cfg!(feature = "play-feed")))
         && uri_offer.is_none() {
-        if let Some(ticket) = route_start {
-            let _ = retry_uri_source_as_feed(ps, meta, ticket);
-        }
-        if !cfg!(feature = "play-feed") {
+        let retried = route_start.zip(prepared_uri_offer_id)
+            .is_some_and(|(ticket, id)| retry_declined_uri_source(ps, meta, ticket, id));
+        if !retried && !cfg!(feature = "play-feed") {
             ps.play_verdict = Some(PlayVerdict::NoQualifiedBackend);
             if pms_offer_prepared {
                 ps.pms_decline = Some(super::uri_preflight::PmsDecline::StaleOrMismatched);

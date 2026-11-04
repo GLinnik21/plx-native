@@ -170,6 +170,15 @@ impl BackendPolicy {
                 && offer.qualification != Qualification::Refused)
     }
 
+    /// Whether one fixed recipe may be source-qualified by the next resolve. This is a
+    /// prospect, not admission; it excludes a spent/refused recipe even when another recipe on
+    /// the same backend remains available. A native seek/reload uses `can_reopen` separately.
+    pub fn may_qualify(&self, backend: BackendKind, id: OfferId) -> bool {
+        self.offers.iter().zip(&self.tried).any(|(offer, tried)|
+            (offer.backend, offer.id) == (backend, id) && !*tried
+                && offer.qualification != Qualification::Refused && self.permitted(*offer))
+    }
+
     /// Inspect the next choice without consuming it. Busy admission and staged-source expiry
     /// must not spend a candidate or silently grant a different native owner.
     pub fn choose(&self) -> Selection {
@@ -286,6 +295,28 @@ mod tests {
         assert!(policy.admitted(remux.backend, remux.id));
         policy.qualify_planned_feed(OfferId::FEED_ORIGINAL);
         assert_eq!(policy.choose(), Selection::Unqualified);
+    }
+
+    #[test]
+    fn source_eligibility_and_rank_keep_exact_feed_before_compatible_uri_before_feed_conversion() {
+        let mut policy = BackendPolicy::for_request(false);
+        policy.qualify_planned_feed(OfferId::FEED_PMS_REMUX);
+        policy.qualify(BackendKind::Uri, OfferId::URI_PMS_REMUX, Qualification::Qualified);
+        assert!(matches!(policy.choose(), Selection::Open(offer)
+            if (offer.backend, offer.id) == (BackendKind::Uri, OfferId::URI_PMS_REMUX)));
+        policy.qualify_planned_feed(OfferId::FEED_ORIGINAL);
+        assert!(matches!(policy.choose(), Selection::Open(offer)
+            if (offer.backend, offer.id) == (BackendKind::Feed, OfferId::FEED_ORIGINAL)));
+        policy.qualify_planned_feed(OfferId::FEED_PMS_REMUX);
+        assert!(policy.admitted(BackendKind::Uri, OfferId::URI_PMS_REMUX));
+        assert!(!policy.may_qualify(BackendKind::Uri, OfferId::URI_PMS_REMUX),
+            "a refreshed URL cannot refill this spent source recipe");
+        assert!(policy.may_qualify(BackendKind::Uri, OfferId::URI_PMS_ENCODE),
+            "another finite compatible recipe remains independently eligible");
+
+        let forced = BackendPolicy::for_request(true);
+        assert!(!forced.may_qualify(BackendKind::Uri, OfferId::URI_PMS_REMUX));
+        assert!(forced.may_qualify(BackendKind::Uri, OfferId::URI_ORIGINAL));
     }
 
     #[test]

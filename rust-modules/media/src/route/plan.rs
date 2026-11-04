@@ -1417,6 +1417,12 @@ pub struct ResolveEnv {
     /// The same boot-captured URI IO port used to configure its physical executor.
     #[cfg(feature = "play-uri")]
     pub uri_preflight_port: Option<super::uri_preflight::ResolvePort>,
+    #[cfg(feature = "play-uri")]
+    pub uri_offers: super::uri_preflight::UriOfferEligibility,
+    /// An exact Feed Original may win before a compatible PMS URI. Captured from the
+    /// current finite catalog, including its explicit reopen/rollback exception.
+    #[cfg(feature = "play-uri")]
+    pub feed_original_eligible: bool,
     pub requested_rate_permille: i32,
     pub resume_ns: i64,
     /// The SOURCE's whole-stream bitrate in **kbps**, or `0` when nobody has measured it — the
@@ -1973,7 +1979,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 audio_contract: env.audio_enhancements };
             plan.source_selection = Some(source_selection);
             #[cfg(feature = "play-uri")]
-            if let Some(port) = env.uri_preflight_port.as_ref().filter(|_| {
+            if let Some(port) = env.uri_preflight_port.as_ref().filter(|_| env.uri_offers.original && {
                 (env.audio_sid <= 0 || source_audio.is_some())
                     && (env.subtitle_override.unwrap_or(0) <= 0 || source_sub_stream.is_some())
             }) {
@@ -2032,6 +2038,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             }
             #[cfg(feature = "play-uri")]
             let pms_uri_possible = !forced && !env.preview
+                && env.uri_offers.any_pms()
                 && env.uri_preflight_port.as_ref().is_some_and(|port| port.could_qualify_pms());
             #[cfg(not(feature = "play-uri"))]
             let pms_uri_possible = false;
@@ -2753,7 +2760,13 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 plan.verdict = Some(PlayVerdict::PreviewNeedsDirectPlay);
                 return plan;
             }
-            if (directplay || rk.is_empty()) && !part.is_empty() {
+            if (directplay || rk.is_empty()) && !part.is_empty()
+                && (rk.is_empty() || !pms_uri_possible || {
+                    #[cfg(feature = "play-uri")]
+                    { env.feed_original_eligible }
+                    #[cfg(not(feature = "play-uri"))]
+                    { true }
+                }) {
                 // direct-play: the pipeline decodes the SOURCE codecs natively, so the Load payload uses
                 // them (h264/hevc + the chosen audio track's codec).
                 fill_direct_plan(&mut plan, client, part, &session, vcodec, acodec, audio_sel.as_ref(), dovi, dv_decision, sub_pick);
@@ -3021,7 +3034,8 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             if !forced && !env.preview {
                 if let (Some(port), Some(selection), Some(recipe), Some((video_codec, audio_output, output_dovi))) = (
                     env.uri_preflight_port.as_ref(), plan.source_selection,
-                    accepted_pms_recipe, accepted_pms_output) {
+                    accepted_pms_recipe.filter(|recipe| env.uri_offers.permits(*recipe)),
+                    accepted_pms_output) {
                     let accepted_burn_sid = decision.as_ref().and_then(|mc|
                         decision_burns_subtitle(mc, selection.subtitle_sid)
                             .then_some(selection.subtitle_sid));
@@ -3049,7 +3063,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                         Ok(known) => plan.uri_pms = Some(known),
                         Err(reason) => plan.pms_decline = Some(reason),
                     }
-                } else if env.uri_preflight_port.is_some() {
+                } else if env.uri_preflight_port.is_some() && accepted_pms_recipe.is_none() {
                     plan.pms_decline = Some(super::uri_preflight::PmsDecline::MissingOutputEvidence);
                 }
             }

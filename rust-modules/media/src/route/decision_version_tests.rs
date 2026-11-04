@@ -397,13 +397,13 @@ fn selected_external_subtitle_remains_common_source_intent_across_resolve() {
     plx_plex::plex::reset_servers_for_test();
 }
 
-#[cfg(all(feature = "play-uri", feature = "play-feed", feature = "devtriggers"))]
+#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
 struct CountingQualified {
     original: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     pms: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
-#[cfg(all(feature = "play-uri", feature = "play-feed", feature = "devtriggers"))]
+#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
 impl crate::route::uri_preflight::OriginalQualifier for CountingQualified {
     fn qualify(&self, off: &plx_base::task::OffFrame,
         request: crate::route::uri_preflight::OriginalRequest) -> crate::route::uri_preflight::Verdict {
@@ -621,11 +621,13 @@ fn unknown_uri_qualification_keeps_the_existing_feed_decision_path() {
 }
 
 #[test]
-#[cfg(all(feature = "play-uri", feature = "play-feed", feature = "devtriggers"))]
+#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
 fn expired_original_skips_its_spent_recipe_but_qualifies_unspent_pms_uri() {
     use plx_play_uri::backend::Binding;
     use plx_playback_contract::{BackendKind, Capabilities};
-    use super::super::backend_policy::{BackendPolicy, OfferId, Qualification, Selection};
+    use super::super::backend_policy::{BackendPolicy, OfferId, Qualification};
+    #[cfg(feature = "play-feed")]
+    use super::super::backend_policy::Selection;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -650,12 +652,15 @@ fn expired_original_skips_its_spent_recipe_but_qualifies_unspent_pms_uri() {
     assert!(request_play(&mut ps, &mut meta, plx_platform::devcaps::caps(), sid,
         "rk-v", "/library/parts/3134/1/file.mkv", "h264", "dca", "Film", "", None));
 
-    // This is an existing episode, not a fresh catalog: Feed Original was admitted, then
-    // URI Original crossed from Feed, and another URI recipe learned a refusal. Re-resolving
-    // after expiry must preserve all three facts even if Feed chooses a different audio wire.
+    // This is an existing episode, not a fresh catalog. The both-backend variant has
+    // already crossed from Feed to URI; both variants have spent URI Original and learned
+    // a refusal for another URI recipe.
     let mut policy = BackendPolicy::for_request(false);
+    #[cfg(feature = "play-feed")]
+    {
     policy.qualify_planned_feed(OfferId::FEED_ORIGINAL);
     assert!(policy.admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+    }
     policy.qualify(BackendKind::Uri, OfferId::URI_ORIGINAL, Qualification::Qualified);
     assert!(policy.admitted(BackendKind::Uri, OfferId::URI_ORIGINAL));
     policy.qualify(BackendKind::Uri, OfferId::URI_ORIGINAL, Qualification::Refused);
@@ -686,8 +691,10 @@ fn expired_original_skips_its_spent_recipe_but_qualifies_unspent_pms_uri() {
         assert!(slot.as_ref().is_some_and(|landing| landing.plan.uri_pms.is_some()),
             "an unspent compatible PMS URI offer still receives source qualification");
     }
-    let _ = pump_play(&mut ps, &mut meta);
-    assert_ne!(ps.sess, first_session, "the Feed retry owns a fresh resource identity");
+    let next = pump_play(&mut ps, &mut meta);
+    assert!(next.is_some_and(|start| start.uri_offer.is_some()),
+        "the qualified PMS source reaches the URI executor even without Feed");
+    assert_ne!(ps.sess, first_session, "the successor owns a fresh resource identity");
     assert_eq!(qualification_calls.load(AtomicOrdering::SeqCst), 1,
         "the same source episode may not loop through an expired URI offer");
     assert_eq!(pms_calls.load(AtomicOrdering::SeqCst), 1,
@@ -697,13 +704,16 @@ fn expired_original_skips_its_spent_recipe_but_qualifies_unspent_pms_uri() {
         &ps.recovery.as_ref().expect("same recovery episode").attempt()));
     let policy = ps.backend_policy.as_mut().expect("same finite catalog");
     assert!(policy.can_reopen(BackendKind::Uri, OfferId::URI_ORIGINAL),
-        "the admitted URI crossing remains in history");
+        "the admitted URI recipe remains in history");
     assert_eq!(policy.offer(BackendKind::Uri, OfferId::URI_PMS_ENCODE)
         .expect("catalog recipe").qualification, Qualification::Refused);
-    policy.qualify(BackendKind::Feed, OfferId::FEED_PMS_REMUX, Qualification::Qualified);
-    assert!(!policy.admitted(BackendKind::Feed, OfferId::FEED_PMS_REMUX),
-        "crossing back to Feed cannot replenish a spent handoff");
-    assert!(!matches!(policy.choose(), Selection::Open(offer) if offer.backend == BackendKind::Feed));
+    #[cfg(feature = "play-feed")]
+    {
+        policy.qualify(BackendKind::Feed, OfferId::FEED_PMS_REMUX, Qualification::Qualified);
+        assert!(!policy.admitted(BackendKind::Feed, OfferId::FEED_PMS_REMUX),
+            "crossing back to Feed cannot replenish a spent handoff");
+        assert!(!matches!(policy.choose(), Selection::Open(offer) if offer.backend == BackendKind::Feed));
+    }
 
     scrobble_stop(&mut ps, None, None);
     drain_scrobble();
@@ -719,7 +729,7 @@ fn expired_original_skips_its_spent_recipe_but_qualifies_unspent_pms_uri() {
         line.contains("/video/:/transcode/universal/stop?") && line.contains(&old_stop)).count(), 1,
         "the expired resource closes exactly once: {requests:?}");
     assert!(requests.iter().any(|line| line.contains("/decision?")),
-        "the bounded retry used the existing Feed resolve: {requests:?}");
+        "the bounded retry used the existing PMS resolve: {requests:?}");
     plx_plex::plex::reset_servers_for_test();
 }
 
