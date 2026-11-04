@@ -1333,6 +1333,9 @@ impl PlayerAdapter {
             return;
         };
         if !ps.mark_uri_recovery_pending(route_attempt) { return; }
+        if let Some(request) = ps.metric_request() {
+            self.begin_automatic_handoff(request, attempt);
+        }
         self.uri_recovery = Some(PendingUriRecovery { notice: UriRecoveryNotice {
             attempt: route_attempt, offer_id, phase, known_position_ns, viewer_paused,
         }, released: false });
