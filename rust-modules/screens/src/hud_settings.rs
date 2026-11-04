@@ -431,7 +431,7 @@ impl HudPage {
                 let copy = if !listed && self.list.catalog.revoked(sha).is_none() { msg::settings_hud_unavailable().into() }
                     else if let Some(why) = self.list.catalog.revoked(sha) { format!("{} {why}", msg::settings_hud_revoked()) }
                     else if self.list.catalog.refresh_failed && installed.is_none() { msg::settings_hud_catalog_cached().into() }
-                    else { msg::settings_hud_gallery_install_body().into() };
+                    else { msg::settings_hud_copy().into() };
                 (package.name.clone(), msg::settings_hud_gallery().into(), copy)
             }
             SettingsPage::HudAbout(_) => {

@@ -597,6 +597,7 @@ fn gallery_install_and_use_are_separate_and_about_owns_package_metadata() {
     let mut entry=pack(&package.id,&package.name,1,false);entry.sha=Some(sha);
     page.list.entries.push(entry);page.list.notice=Some(Notice::Installed {id:package.id.clone(),version:package.version.clone(),sha,until_restart:false});
     page.rebuild(Some(HudId::Use));
+    assert_eq!(page.copy, plx_platform::i18n::msg::settings_hud_copy(), "Use changes the choice; only installation preserves it");
     let fx=drive(&mut page,ScreenEvent::Activate(1),1);
     assert!(matches!(huds(&fx).as_slice(),[HudCmd::Select(id)] if *id == package.id));
     assert!(fx.iter().any(|e|matches!(e.fx,Fx::Nav(NavOp::PopToArg(SettingsPage::PlayerHud)))));
