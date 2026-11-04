@@ -94,10 +94,34 @@ mod sys {
         pub(super) fn acb_send_video_data(source_info: *const c_char) -> c_int;
         pub(super) fn acb_send_atmos(media_id: *const c_char) -> c_int;
         pub(super) fn acb_start(x: c_long, y: c_long, w: c_long, h: c_long);
-        pub(super) fn acb_unload();
+        pub(super) fn acb_unload(task_out: *mut c_long) -> c_int;
         pub(super) fn acb_pause();
         pub(super) fn acb_resume();
     }
+}
+
+/// The completion mailbox the firmware's thread fills (`acb_on_event` below) and
+/// `PlaneOwner::pump` drains on the main thread. Sized well above the handful of tasks one frame
+/// can have in flight; an overflow is counted and surfaces as a `Dropped` marker, never silently.
+static COMPLETIONS: std::sync::LazyLock<crate::tv::plane::CompletionQueue> =
+    std::sync::LazyLock::new(|| crate::tv::plane::CompletionQueue::new(64));
+
+/// The completion callback of `libAcbAPI`, forwarded by `acb_cb` in `src/video_plane.c` on the
+/// LIBRARY'S thread: `task` is the task id the originating call returned, `ev` the event type
+/// (`-2` timeout, `-1` error, `0` cancel, `1` complete). Takes no `MainThread`, touches no
+/// pipeline state: it only records `(task, ev)` for the main thread and keeps today's log line.
+#[no_mangle]
+pub extern "C" fn acb_on_event(task: c_long, ev: c_long, reply: *const c_char) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let (code, binding_error) = if reply.is_null() { (None, false) } else {
+            // SAFETY: the C seam passes the library's NUL-terminated reply for the call.
+            let text = unsafe { CStr::from_ptr(reply) }.to_string_lossy();
+            let code = serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|value| value.get("errorCode").and_then(serde_json::Value::as_i64));
+            (code, text.contains("ERROR_06"))
+        };
+        plx_base::eventlog::log(&format!("acb_cb task={task} ev={ev} errorCode={code:?} ERROR_06={binding_error}"));
+        COMPLETIONS.push(i64::from(task), i32::try_from(ev).unwrap_or(i32::MIN));
+    }));
 }
 
 /// The television's video sink: each method is the one seam verb of the same name, through the
@@ -283,8 +307,14 @@ impl crate::tv::sink::DisplaySink for StarfishSink {
         sys::acb_start(x, y, w, h)
     }
     #[inline]
-    unsafe fn plane_unload(&self, _: &MainThread) {
-        sys::acb_unload()
+    unsafe fn plane_unload(&self, _: &MainThread) -> crate::tv::sink::PlaneUnload {
+        let mut task: c_long = 0;
+        let rv = sys::acb_unload(&mut task);
+        crate::tv::sink::PlaneUnload { rv, task }
+    }
+    #[inline]
+    fn plane_completions(&self, _: &MainThread) -> Vec<crate::tv::plane::PlaneCompletion> {
+        COMPLETIONS.drain()
     }
     #[inline]
     unsafe fn plane_pause(&self, _: &MainThread) {

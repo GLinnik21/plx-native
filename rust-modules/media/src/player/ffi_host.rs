@@ -66,7 +66,8 @@
 //! they touch, and the tests reach them as `crate::player::ffi_host::<hook>`.
 
 use plx_base::task::MainThread;
-use plx_platform::tv::sink::{DisplaySink, VideoSink};
+use plx_platform::tv::plane::{CompletionQueue, PlaneCompletion};
+use plx_platform::tv::sink::{DisplaySink, PlaneUnload, VideoSink};
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_long, c_uint};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering::Relaxed};
@@ -1147,9 +1148,19 @@ unsafe fn acb_start(_x: c_long, _y: c_long, _w: c_long, _h: c_long) {
     #[cfg(test)]
     ACB_START_CALLS.fetch_add(1, Relaxed);
 }
-unsafe fn acb_unload() {
+/// The simulator's completion mailbox and task counter. The host has no firmware thread, so its
+/// `setState(UNLOADED)` is accepted (`rv` 1) with a fresh task id and completes at once (event 1),
+/// which is what lets the host tests drive the plane owner's fence end to end.
+static HOST_PLANE_MAILBOX: std::sync::LazyLock<CompletionQueue> =
+    std::sync::LazyLock::new(|| CompletionQueue::new(64));
+static HOST_PLANE_TASK: AtomicI64 = AtomicI64::new(0);
+
+unsafe fn acb_unload() -> PlaneUnload {
     #[cfg(any(test, feature = "test-support"))]
     note_dispatch("acb_unload");
+    let task = HOST_PLANE_TASK.fetch_add(1, Relaxed) + 1;
+    HOST_PLANE_MAILBOX.push(task, 1);
+    PlaneUnload { rv: 1, task: task as c_long }
 }
 unsafe fn acb_pause() {
     #[cfg(any(test, feature = "test-support"))]
@@ -1302,8 +1313,11 @@ impl DisplaySink for HostSink {
     unsafe fn plane_start(&self, _: &MainThread, x: c_long, y: c_long, w: c_long, h: c_long) {
         acb_start(x, y, w, h)
     }
-    unsafe fn plane_unload(&self, _: &MainThread) {
+    unsafe fn plane_unload(&self, _: &MainThread) -> PlaneUnload {
         acb_unload()
+    }
+    fn plane_completions(&self, _: &MainThread) -> Vec<PlaneCompletion> {
+        HOST_PLANE_MAILBOX.drain()
     }
     unsafe fn plane_pause(&self, _: &MainThread) {
         acb_pause()

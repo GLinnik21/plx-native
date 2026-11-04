@@ -32,6 +32,7 @@ pub mod ass_script; // a sidecar script fed in windows around the playhead
 pub mod ass_source; // bounded embedded scripts and subtitle presentation clock
 #[cfg(feature = "play-feed")]
 pub mod engine;
+mod plane_boot; // the backend-neutral boot of the ACB plane owner (was Feed's `acb_init`)
 #[cfg(feature = "play-feed")]
 mod feed_driver;
 #[cfg(feature = "play-feed")]
@@ -132,6 +133,31 @@ fn sink() -> &'static dyn plx_platform::tv::sink::VideoSink {
     }
 }
 
+/// The display surface of whichever backend set is built, for composition code that has no Feed
+/// (the URI driver, the plane boot). With `play-feed` it IS [`sink`], so it keeps both of its
+/// behaviours: the simulator's `HostSink` under hostsim, and the [`FENCE`] while an off-frame
+/// `Unload` owns the native object. Without it the installed display sink (or `HostSink`) answers.
+fn display() -> &'static dyn plx_platform::tv::sink::DisplaySink {
+    #[cfg(feature = "play-feed")]
+    {
+        sink()
+    }
+    #[cfg(all(not(feature = "play-feed"), any(test, feature = "test-support"), feature = "hostsim"))]
+    {
+        &ffi_host::HostSink
+    }
+    #[cfg(all(not(feature = "play-feed"), not(all(any(test, feature = "test-support"), feature = "hostsim"))))]
+    {
+        plx_platform::tv::sink::display_installed()
+    }
+}
+
+/// The process's ACB plane owner: the one holder of the video-plane binding for both backends,
+/// booted once by [`acb_init`]. It replaces the old `ACB_OK` / `PTYPE` statics.
+pub(crate) fn plane() -> &'static plx_platform::tv::plane::PlaneOwner {
+    plx_platform::tv::plane::installed()
+}
+
 /// What a main-thread verb gets while the object is inside its off-frame `Unload`: nothing happens
 /// (every verb refused, `NoSink`'s answers), except the memoized queries that say nothing about the
 /// object, which keep the real answer.
@@ -206,19 +232,19 @@ pub fn seed_dev_track_names() {
     ));
     *SHARED.track_names.lock().unwrap() = TrackNames { audio, subs };
 }
-use std::ffi::CStr;
-use std::os::raw::{c_char, c_int, c_long};
 #[cfg(feature = "play-feed")]
-use std::os::raw::c_uint;
+use std::ffi::CStr;
+#[cfg(feature = "play-feed")]
+use std::os::raw::{c_char, c_uint};
+use std::os::raw::c_int;
+#[cfg(feature = "play-feed")]
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 #[cfg(feature = "play-feed")]
-use std::sync::atomic::{AtomicI32, AtomicU8};
+use std::sync::atomic::AtomicU8;
 
 pub static SHARED: Shared = Shared::new();
 pub static TX: Transport = Transport::new();
-#[cfg(feature = "play-feed")]
-static ACB_OK: AtomicBool = AtomicBool::new(false); // was the g_acb availability flag
 
 /// **Is the Stats-for-nerds read-out on screen?** The bit `pump::publish_diag` asks before it
 /// samples the queues (`aq_bytes` takes each queue's pthread mutex, so nobody pays for a panel
@@ -404,8 +430,6 @@ pub fn seek_mode() -> SeekMode {
 pub(crate) fn set_seek_mode(mode: SeekMode) {
     SEEK_MODE.store(mode.to_u8(), Relaxed);
 }
-#[cfg(feature = "play-feed")]
-static PTYPE: AtomicI32 = AtomicI32::new(10); // g_ptype (PLAYER_TYPE_MSE)
 
 // ---- API app.rs calls (were extern "C" fns in playback.h) ----
 //
@@ -454,9 +478,10 @@ pub fn clock_user_held_for_test() -> bool {
     SHARED.clock_user_held_for_test()
 }
 
+pub use plane_boot::acb_init;
 #[cfg(feature = "play-feed")]
 pub use engine::{
-    acb_init, start_bufferfeed, start_bufferfeed_tracked,
+    start_bufferfeed, start_bufferfeed_tracked,
 };
 pub use route_start::{begin_resume, exit_native, land_resume, stop_bufferfeed,
     suspend_bufferfeed, BufferfeedStartOutcome, NativeExit, ResumeOutcome, ResumeStart,
@@ -733,7 +758,7 @@ pub fn acb_mirror_playstate(pa: &mut adapter::PlayerAdapter, playing: bool) {
 /// could only assert was safe.
 #[cfg(feature = "play-feed")]
 pub fn acb_mirror_playstate_at(mt: &MainThread, stage: shared::Stage, playing: bool) {
-    if !ACB_OK.load(Relaxed) {
+    if !plane().handle() {
         return;
     }
     if !acb_playstate_ready(stage) {
@@ -1649,7 +1674,6 @@ pub use engine::aq_caps;
 /// throttle without making the simulated plant read its subject's geometry.
 #[cfg(feature = "play-feed")]
 pub use engine::feed_leads_ms;
-#[cfg(feature = "play-feed")]
 pub use plx_platform::tv::sink::{VP_ACB, VP_EXPORTED, VP_NONE};
 #[cfg(all(feature = "hostsim", feature = "play-feed"))]
 /// The simulator's clock-sink stop; the television's pipeline has no such control.
@@ -1869,7 +1893,7 @@ pub fn diag(ps: &crate::route::PlaybackSession) -> Diag {
         observed,
         vp_mode: sink().window_mode(),
         window_id,
-        acb_ok: ACB_OK.load(Relaxed),
+        acb_ok: plane().handle(),
         place_rv: SHARED.dg_place_rv.load(Relaxed),
         placed_w: SHARED.dg_placed_w.load(Relaxed),
         placed_h: SHARED.dg_placed_h.load(Relaxed),
@@ -3087,19 +3111,6 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::Event
             *si = Some(v);
         }
     }
-}
-
-// Shared display callback: video_plane.c references it independently of packet feeding.
-#[no_mangle]
-pub extern "C" fn acb_on_event(ev: c_long, reply: *const c_char) {
-    let _ = catch_unwind(AssertUnwindSafe(|| {
-        let (code, binding_error) = if reply.is_null() { (None, false) } else {
-            let text = unsafe { CStr::from_ptr(reply) }.to_string_lossy();
-            let code = serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|value| value.get("errorCode").and_then(serde_json::Value::as_i64));
-            (code, text.contains("ERROR_06"))
-        };
-        log(&format!("acb_cb ev={ev} errorCode={code:?} ERROR_06={binding_error}"));
-    }));
 }
 
 /// The shape the `failtest=policy` arm builds, for tests outside this module.

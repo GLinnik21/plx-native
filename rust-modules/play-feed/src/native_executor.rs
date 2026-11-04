@@ -132,7 +132,9 @@ pub struct StopHooks {
 /// Each call asks the provider afresh; no native object pointer survives across transitions.
 pub struct ReleaseHooks {
     pub raw_sink: fn() -> &'static dyn VideoSink,
-    pub acb_bound: fn() -> bool,
+    /// The process's plane owner: whether this device's plane is ACB, and the one that records
+    /// (and never waits on) the release's `setState(UNLOADED)`.
+    pub plane: &'static plx_platform::tv::plane::PlaneOwner,
     pub on_release_step: fn(crate::native_release::ReleaseStep),
     pub on_exported_window_destroy: fn(),
     pub spawn_unload: fn(UnloadTicket) -> Option<std::thread::JoinHandle<()>>,
@@ -184,8 +186,10 @@ impl crate::native_release::NativeReleasePort for SinkReleasePort<'_> {
         unsafe { (self.0.raw_sink)().callback_intercepts(mt) }
     }
 
+    /// Recorded in the plane owner so a later bind, from either backend, can wait for the
+    /// firmware's completion; this release itself never blocks on it.
     fn plane_unload(&self, mt: &MainThread) {
-        unsafe { (self.0.raw_sink)().plane_unload(mt) };
+        self.0.plane.unload((self.0.raw_sink)(), mt);
     }
 
     fn destroy(&self, mt: &MainThread) -> bool {
@@ -664,7 +668,7 @@ fn finish_unloaded_object(
         shared,
         mt,
         epoch,
-        || (hooks.acb_bound)(),
+        || hooks.plane.handle(),
         |label| sp.mark(label),
         |step| {
             if step == ReleaseStep::NativeDestroyed {

@@ -2,6 +2,7 @@
 pub mod device;
 pub mod home;
 pub mod launch;
+pub mod plane;
 pub mod sandbox;
 pub mod secure;
 pub mod sink;

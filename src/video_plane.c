@@ -190,7 +190,8 @@ static long g_acb = 0, g_taskId = 0;
 static void acb_cb(long a, long t, long ev, long app, long play, const char *reply) {
     (void)a;
     if (elogf) { fprintf(elogf, "acb callback task=%ld ev=%ld app=%ld play=%ld\n", t, ev, app, play); fflush(elogf); }
-    acb_on_event(ev, reply);
+    /* `t` is the task id the originating call wrote; the Rust mailbox matches the UNLOADED fence on it. */
+    acb_on_event(t, ev, reply);
 }
 
 /* ---- ACB verbs (the 3-arg taskId ABI is hidden) ----
@@ -336,11 +337,16 @@ static int acb_start_impl(long x, long y, long w, long h, int strict) {
 }
 void acb_start(long x, long y, long w, long h) { (void)acb_start_impl(x, y, w, h, 0); }
 int acb_probe_finish(void) { return acb_start_impl(0, 0, 1280, 720, 1); }
-void acb_unload(void) {
-    if (g_acb) {
-        int rv = acb.setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_UNLOADED, &g_taskId);
-        if (elogf) { fprintf(elogf, "acb unloaded rv=%d task=%ld\n", rv, g_taskId); fflush(elogf); }
-    }
+int acb_unload(long *taskOut) {
+    if (taskOut) *taskOut = 0;
+    if (!g_acb) return 0;
+    /* A local, not g_taskId: setState writes nothing on -2 (not registered), and g_taskId would
+     * then still hold the pause / resume / video-data task of an earlier call. */
+    long task = 0;
+    int rv = acb.setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_UNLOADED, &task);
+    if (elogf) { fprintf(elogf, "acb unloaded rv=%d task=%ld\n", rv, task); fflush(elogf); }
+    if (rv == 1 && taskOut) *taskOut = task;
+    return rv;
 }
 /* Kodi-parity: mirror the ACB PLAYSTATE on transport pause/resume (the app owns the sink; the
  * pipeline Pause/Play alone leaves the ACB state stale). Only meaningful once the plane is bound. */

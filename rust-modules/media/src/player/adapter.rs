@@ -2205,6 +2205,7 @@ impl PlayerAdapter {
     /// Install the probe's session. `uriprobe_drive::start` guards on [`uri_live`](Self::uri_live)
     /// first: overwriting a live slot would drop a session without ending it.
     #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
+    #[cfg(feature = "play-feed")]
     pub(super) fn install_uri(&mut self, session: super::uriprobe_drive::UriSession) {
         debug_assert!(self.uri.is_none(), "a second URI-mode session cannot start under a live one");
         self.uri = Some(session);

@@ -154,9 +154,10 @@ mod uri_boot_tests {
             x: c_long, y: c_long, w: c_long, h: c_long) {
             NoSink.plane_start(mt, x, y, w, h)
         }
-        unsafe fn plane_unload(&self, mt: &plx_base::task::MainThread) {
-            NoSink.plane_unload(mt)
-        }
+        unsafe fn plane_unload(&self, mt: &plx_base::task::MainThread)
+            -> plx_platform::tv::sink::PlaneUnload { NoSink.plane_unload(mt) }
+        fn plane_completions(&self, mt: &plx_base::task::MainThread)
+            -> Vec<plx_platform::tv::sink::PlaneCompletion> { NoSink.plane_completions(mt) }
         unsafe fn plane_pause(&self, mt: &plx_base::task::MainThread) {
             NoSink.plane_pause(mt)
         }

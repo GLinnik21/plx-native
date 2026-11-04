@@ -3,7 +3,7 @@
 
 use super::engine::{arm_live_clock_prime, feed_both_lanes, feed_sample, Engine};
 use super::feed_resources::FeedResources;
-use super::{ACB_OK, SHARED, TX};
+use super::{SHARED, TX};
 use super::shared::Stage;
 use super::shared::{HlsPauseCompletion, HlsSeekPause};
 use super::SeekMode;
@@ -260,7 +260,7 @@ pub(super) fn paused_seek_step(
 /// Resume), because the pause stops the ticks the bind is waiting on. So the landing needs the
 /// bind complete AND one tick after it (`Engine::bound_at_frames`).
 fn plane_shows_the_picture(eng: &Engine) -> bool {
-    if !ACB_OK.load(Relaxed) {
+    if !super::plane().handle() {
         return true;
     }
     eng.stage >= Stage::Streaming && eng.bound_at_frames.is_none_or(|at| SHARED.frames.load(Relaxed) != at)
@@ -890,9 +890,19 @@ pub(super) fn tick_presentation(feed: &mut FeedResources, mt: &MainThread,
     let eng = feed.engine().expect("presentation tick belongs to live feed");
     let stream = matches!(eng.source, super::engine::Source::Stream);
     // ---------- ACB bind, Kodi/ss4s order: setSinkType(MAIN)+setMediaId+setState(LOADED) ----------
-    if eng.stage == Stage::Playing && ACB_OK.load(Relaxed) {
+    if eng.stage == Stage::Playing && super::plane().handle() {
         let id = SHARED.media_id.lock().unwrap().clone();
-        if let Some(id) = id {
+        // One binding at a time, across both backends: a bind waits for the previous release to
+        // be proven (the firmware's completion callback), pumping the plane owner each tick it
+        // waits, and goes ahead anyway once that release has failed or timed out (`Rebind`), so a
+        // firmware that never completes still gets its picture. A deferred tick leaves the stage
+        // at Playing, exactly as a media id that has not arrived yet does.
+        let granted = id.as_ref().is_some_and(|id| {
+            use plx_platform::tv::plane::{BindPolicy, BindVerdict};
+            matches!(super::plane().bind(super::sink(), mt, BindPolicy::Rebind, &id.to_string_lossy()),
+                BindVerdict::Granted)
+        });
+        if let Some(id) = id.filter(|_| granted) {
             unsafe { super::sink().plane_bind(mt, id.as_ptr()) };
             super::log(&format!("SMP ACB bound id={}", id.to_string_lossy()));
             // **Dolby Atmos, to ACB, exactly here** — this is where LG's own client fires it

@@ -41,7 +41,7 @@ pub(crate) use plx_play_feed::load_video_refused;
 #[cfg(all(test, feature = "hostsim"))]
 use super::shared::Stage;
 use super::SeekMode;
-use super::{log, sink, threads, ACB_OK, PTYPE, SHARED, TX};
+use super::{log, sink, threads, SHARED, TX};
 use plx_base::task::MainThread;
 #[cfg(test)]
 use plx_platform::devcaps::AudioStack;
@@ -181,7 +181,7 @@ fn exported_window_destroyed() {
 const RELEASE_HOOKS: plx_play_feed::native_executor::ReleaseHooks =
     plx_play_feed::native_executor::ReleaseHooks {
         raw_sink: super::raw_sink,
-        acb_bound: || ACB_OK.load(Ordering::Relaxed),
+        plane: plx_platform::tv::plane::installed(),
         on_release_step: release_step,
         on_exported_window_destroy: exported_window_destroyed,
         spawn_unload,
@@ -221,64 +221,6 @@ fn window_step(stage: WindowStage) {
     plx_telemetry::telemetry::window::record_in_cycle(
         plx_telemetry::telemetry::window::Observation::step(stage, None),
     );
-}
-
-/// Bind the decoded video sink to the display plane, whichever way this television does it.
-///
-/// **Boot-scoped.** Called once, from `plex_run`, and never again — which is why the webOS 5
-/// exported window is NOT created here: that one is created per session in [`start_bufferfeed`],
-/// beside the payload it has to be spliced into, and destroyed by the matching `teardown`.
-///
-///   - `VP_ACB` — create + initialize the ACB. We deliberately DON'T register our own
-///     com.webos.media client; it collides with the pipeline's uMS connection. The handle lives
-///     for the process; what teardown calls is `acb_unload`, a session-scoped state change.
-///   - `VP_EXPORTED` — nothing to do at boot. There is no handle, and no state mirroring:
-///     webOS 5 deleted that sequence outright rather than replacing it.
-pub fn acb_init(mt: &MainThread) {
-    match sink().window_mode() {
-        super::VP_EXPORTED => {
-            log("vplane: exported window (webOS 5+) — created per session");
-            // Nothing to bind later; the pump's ACB stages are skipped by ACB_OK staying false.
-            ACB_OK.store(false, Ordering::Relaxed);
-        }
-        super::VP_NONE => {
-            log(
-                "vplane: this device has NEITHER libAcbAPI nor SDL's exported window — audio \
-                 will play and the picture will not appear. Please report your webOS version.",
-            );
-            ACB_OK.store(false, Ordering::Relaxed);
-        }
-        _ => acb_init_acb(mt),
-    }
-}
-
-/// The webOS 4.x half of [`acb_init`].
-fn acb_init_acb(mt: &MainThread) {
-    if let Some(s) = plx_base::devtrig::read("ptype") {
-        if let Ok(p) = s.parse::<c_int>() {
-            PTYPE.store(p, Ordering::Relaxed);
-        }
-    }
-    let pt = PTYPE.load(Ordering::Relaxed);
-    log(&format!("ptype={pt}"));
-    // Which app ACB is being initialized for. The third argument of `AcbAPI_initialize` is an app
-    // id — that much is certain, and both reference implementations pass one (Kodi's webOS port
-    // passes `getenv("APPID")`; see docs/distribution.md). What ACB does with it has not been
-    // decompiled here, so the rule is simply that it must be the install SAM actually launched —
-    // and with a developer build able to sit beside the shipped one, "the id compiled in" and
-    // "the id we were launched as" are no longer the same question.
-    //
-    // It used to be `env::var("APPID")` with a NULL fallback, which `starfish.c` then turned into
-    // the shipped app's literal id. That is a double fallback whose failure is invisible: on any
-    // launch where SAM did not export APPID, a developer install would announce itself as the
-    // shipped app. `paths::app_id` reads the install directory instead, which is the id webOS
-    // registered by definition. The environment is still logged, one line at boot, as the
-    // independent witness for whether SAM sets it at all on this firmware.
-    let app_c = std::ffi::CString::new(plx_base::paths::app_id()).ok();
-    let app_ptr = app_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
-    let acb = unsafe { sink().plane_create(mt, app_ptr, pt) };
-    ACB_OK.store(acb != 0, Ordering::Relaxed);
-    log(&format!("acb create={acb}"));
 }
 
 /// **The frame rate a playback speed may feed this stream at**: [`super::SPEED_MAX_FPS`], or the
@@ -1207,9 +1149,10 @@ mod native_lifecycle_host_seam_tests {
         let consent = Consented::grant_in_cycle();
         let mt = unsafe { MainThread::assume() };
         let epoch = loaded_epoch(&mt);
-        ACB_OK.store(true, Ordering::Relaxed);
+        super::plane().reset_for_test();
+        super::plane().boot(plx_platform::tv::plane::PlaneFacts { handle: true, player_type: 10 });
         release_native_object(&mt, epoch);
-        ACB_OK.store(false, Ordering::Relaxed);
+        super::plane().reset_for_test();
         let recorded = plx_telemetry::telemetry::window::take_recorded_for_test();
         let at = |label| recorded.iter().position(|l| *l == label);
         assert!(

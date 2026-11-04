@@ -4,6 +4,7 @@
 use plx_base::task::MainThread;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_long, c_uint};
+pub use super::plane::PlaneCompletion;
 
 /// Which video-plane binding this television has. See `src/starfish.h`'s `VP_*` and the long
 /// comment at the top of `src/starfish.c`.
@@ -36,6 +37,22 @@ impl UnloadTicket {
 /// The volume a freshly loaded pipeline starts at (libpf's `CustomPipeline::getVolume` defaults to
 /// 100 when the property is absent): what the paused preroll restores after muting.
 pub const PIPELINE_DEFAULT_VOLUME: c_int = 100;
+
+/// What `setState(UNLOADED)` answered (`src/starfish.h`, `acb_unload`). `rv` is the library's own
+/// return value: 1 accepted (a completion callback will carry `task`), -2 not registered (nothing
+/// was sent, no callback comes), 0 no ACB handle or refused. `task` is the id the call wrote and
+/// is meaningful ONLY when `rv == 1`; the seam writes it from a local, never from the slot the
+/// other verbs share.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlaneUnload {
+    pub rv: c_int,
+    pub task: c_long,
+}
+
+impl PlaneUnload {
+    /// A sink with no plane to unload: nothing was sent, nothing will complete.
+    pub const NOT_REGISTERED: Self = Self { rv: super::plane::UNLOAD_NOT_REGISTERED, task: 0 };
+}
 
 /// Shared display surface for URI playback and the buffer-feed player. Window and ACB verbs
 /// retain their original main-thread token and native call order. Only the two memoized window
@@ -76,7 +93,14 @@ pub trait DisplaySink: Sync {
     unsafe fn plane_send_video_data(&self, mt: &MainThread, source_info: *const c_char) -> c_int;
     unsafe fn plane_send_atmos(&self, mt: &MainThread, media_id: *const c_char) -> c_int;
     unsafe fn plane_start(&self, mt: &MainThread, x: c_long, y: c_long, w: c_long, h: c_long);
-    unsafe fn plane_unload(&self, mt: &MainThread);
+    /// `setState(UNLOADED)`: dispatch only. The release is complete when the completion carrying
+    /// the returned task arrives through [`plane_completions`](Self::plane_completions); route it
+    /// through `tv::plane::PlaneOwner`, which is the only caller of both.
+    unsafe fn plane_unload(&self, mt: &MainThread) -> PlaneUnload;
+    /// Drain the completion callbacks the firmware delivered on its own thread since the last
+    /// call, oldest first, with a `Dropped` marker if the mailbox overflowed. One consumer only:
+    /// `PlaneOwner::pump`.
+    fn plane_completions(&self, mt: &MainThread) -> Vec<PlaneCompletion>;
     unsafe fn plane_pause(&self, mt: &MainThread);
     unsafe fn plane_resume(&self, mt: &MainThread);
 }
@@ -196,9 +220,17 @@ macro_rules! refuse_display_verbs {
         unsafe fn plane_send_video_data(&self, _mt: &MainThread, _source_info: *const c_char) -> c_int { -1 }
         unsafe fn plane_send_atmos(&self, _mt: &MainThread, _media_id: *const c_char) -> c_int { 0 }
         unsafe fn plane_start(&self, _mt: &MainThread, _x: c_long, _y: c_long, _w: c_long, _h: c_long) {}
-        unsafe fn plane_unload(&self, _mt: &MainThread) {}
         unsafe fn plane_pause(&self, _mt: &MainThread) {}
         unsafe fn plane_resume(&self, _mt: &MainThread) {}
+    };
+}
+
+/// The two plane verbs a refusing sink answers with nothing to unload and nothing completed.
+/// Separate from [`refuse_display_verbs`] so a test double can script just these.
+macro_rules! refuse_plane_unload {
+    () => {
+        unsafe fn plane_unload(&self, _mt: &MainThread) -> PlaneUnload { PlaneUnload::NOT_REGISTERED }
+        fn plane_completions(&self, _mt: &MainThread) -> Vec<PlaneCompletion> { Vec::new() }
     };
 }
 
@@ -207,6 +239,7 @@ pub struct NoSink;
 
 impl DisplaySink for NoSink {
     refuse_display_verbs!();
+    refuse_plane_unload!();
     fn window_mode(&self) -> c_int { VP_NONE }
     fn window_id(&self) -> &'static CStr { c"" }
 }
@@ -224,6 +257,7 @@ pub struct RefusingSink(pub fn() -> &'static dyn VideoSink);
 
 impl DisplaySink for RefusingSink {
     refuse_display_verbs!();
+    refuse_plane_unload!();
     fn window_mode(&self) -> c_int { (self.0)().window_mode() }
     fn window_id(&self) -> &'static CStr { (self.0)().window_id() }
 }
@@ -231,4 +265,45 @@ impl DisplaySink for RefusingSink {
 impl VideoSink for RefusingSink {
     refuse_video_verbs!();
     fn feed_abi_is_cow(&self) -> bool { (self.0)().feed_abi_is_cow() }
+}
+
+/// A display sink for tests of the plane owner and of the backends that use it: every verb is
+/// refused as `NoSink` does, except the plane unload, whose answer a test scripts, and the
+/// completion mailbox, which a test (or the unload itself, with `complete_at_once`) fills.
+#[cfg(any(test, feature = "test-support"))]
+pub struct ScriptedPlaneSink {
+    pub unload_answer: std::sync::Mutex<PlaneUnload>,
+    /// When set, `plane_unload` queues `(task, 1)` as the firmware would, before it returns.
+    pub complete_at_once: std::sync::atomic::AtomicBool,
+    pub mailbox: super::plane::CompletionQueue,
+    pub unloads: std::sync::atomic::AtomicUsize,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl ScriptedPlaneSink {
+    pub fn new(unload_answer: PlaneUnload) -> Self {
+        Self {
+            unload_answer: std::sync::Mutex::new(unload_answer),
+            complete_at_once: std::sync::atomic::AtomicBool::new(false),
+            mailbox: super::plane::CompletionQueue::new(8),
+            unloads: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+    pub fn unload_count(&self) -> usize { self.unloads.load(std::sync::atomic::Ordering::Relaxed) }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl DisplaySink for ScriptedPlaneSink {
+    refuse_display_verbs!();
+    fn window_mode(&self) -> c_int { VP_ACB }
+    fn window_id(&self) -> &'static CStr { c"" }
+    unsafe fn plane_unload(&self, _mt: &MainThread) -> PlaneUnload {
+        self.unloads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let answer = *self.unload_answer.lock().unwrap();
+        if answer.rv == 1 && self.complete_at_once.load(std::sync::atomic::Ordering::Relaxed) {
+            self.mailbox.push(i64::from(answer.task), 1);
+        }
+        answer
+    }
+    fn plane_completions(&self, _mt: &MainThread) -> Vec<PlaneCompletion> { self.mailbox.drain() }
 }
