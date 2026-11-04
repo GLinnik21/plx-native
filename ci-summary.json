@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-04T22:17:56Z",
+ "generated": "2026-11-04T22:24:18Z",
  "metrics": [
   {
    "change30_pct": 190.9,
@@ -144,18 +144,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -57.2,
-   "change7_pct": 18.1,
+   "change30_pct": -57.3,
+   "change7_pct": 18.0,
    "d30": 975.0,
-   "delta30": -558.0,
-   "delta7": 64,
+   "delta30": -558.5,
+   "delta7": 63.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 77,
+   "n_now": 78,
    "n_prev": 85,
-   "now": 417,
+   "now": 416.5,
    "prev7": 353,
    "shown": true,
    "state": "worse",
@@ -165,10 +165,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -59.1,
+   "change30_pct": -59.2,
    "change7_pct": 15.6,
-   "d30": 1045.0,
-   "delta30": -618.0,
+   "d30": 1046,
+   "delta30": -619,
    "delta7": 57.5,
    "group": "ci",
    "id": "pr_wait",
@@ -305,8 +305,8 @@
   {
    "change30_pct": 32.8,
    "change7_pct": 5.3,
-   "d30": 749.5,
-   "delta30": 245.5,
+   "d30": 749,
+   "delta30": 246,
    "delta7": 50,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
@@ -387,18 +387,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 28.3,
-   "change7_pct": 11.9,
+   "change30_pct": 28.5,
+   "change7_pct": 12.1,
    "d30": 231.5,
-   "delta30": 65.5,
-   "delta7": 31.5,
+   "delta30": 66.0,
+   "delta7": 32.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 69,
+   "n_now": 70,
    "n_prev": 74,
-   "now": 297,
+   "now": 297.5,
    "prev7": 265.5,
    "shown": true,
    "state": "flat",
@@ -409,17 +409,17 @@
   },
   {
    "change30_pct": -78.1,
-   "change7_pct": 6.4,
+   "change7_pct": 6.2,
    "d30": 980.0,
-   "delta30": -765.0,
-   "delta7": 13,
+   "delta30": -765.5,
+   "delta7": 12.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 69,
+   "n_now": 70,
    "n_prev": 73,
-   "now": 215,
+   "now": 214.5,
    "prev7": 202,
    "shown": true,
    "state": "flat",
@@ -432,15 +432,15 @@
    "change30_pct": -35.4,
    "change7_pct": 19.0,
    "d30": 316,
-   "delta30": -112,
+   "delta30": -112.0,
    "delta7": 32.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 69,
+   "n_now": 70,
    "n_prev": 74,
-   "now": 204,
+   "now": 204.0,
    "prev7": 171.5,
    "shown": true,
    "state": "flat",
@@ -517,8 +517,8 @@
   {
    "change30_pct": 41.2,
    "change7_pct": 26.3,
-   "d30": 17.0,
-   "delta30": 7.0,
+   "d30": 17,
+   "delta30": 7,
    "delta7": 5,
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
@@ -545,9 +545,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 69,
+   "n_now": 70,
    "n_prev": 74,
-   "now": 19,
+   "now": 19.0,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -559,8 +559,8 @@
   {
    "change30_pct": 21.4,
    "change7_pct": 0.0,
-   "d30": 14.0,
-   "delta30": 3.0,
+   "d30": 14,
+   "delta30": 3,
    "delta7": 0,
    "group": "ci",
    "id": "nightly|plan today's nightly",
@@ -667,11 +667,6 @@
    "change_pct": 41.9,
    "commits": [
     {
-     "pr": 1223,
-     "sha": "5d66b9619",
-     "title": "Report diagnostic export failures and add DV CRA/IDR controls"
-    },
-    {
      "pr": 1224,
      "sha": "a97bc1b49",
      "title": "Separate library navigation from Sort & Filter"
@@ -715,6 +710,11 @@
      "pr": 1237,
      "sha": "95c526366",
      "title": "Make three timing-dependent unit tests deterministic"
+    },
+    {
+     "pr": 1238,
+     "sha": "c5c2b7e1a",
+     "title": "Cycle HUD preview backgrounds and use shared glass controls"
     }
    ],
    "from": 248,
@@ -728,11 +728,6 @@
    "change_pct": 34.7,
    "commits": [
     {
-     "pr": 1223,
-     "sha": "5d66b9619",
-     "title": "Report diagnostic export failures and add DV CRA/IDR controls"
-    },
-    {
      "pr": 1224,
      "sha": "a97bc1b49",
      "title": "Separate library navigation from Sort & Filter"
@@ -776,6 +771,11 @@
      "pr": 1237,
      "sha": "95c526366",
      "title": "Make three timing-dependent unit tests deterministic"
+    },
+    {
+     "pr": 1238,
+     "sha": "c5c2b7e1a",
+     "title": "Cycle HUD preview backgrounds and use shared glass controls"
     }
    ],
    "from": 219,
@@ -789,11 +789,6 @@
    "change_pct": 31.9,
    "commits": [
     {
-     "pr": 1223,
-     "sha": "5d66b9619",
-     "title": "Report diagnostic export failures and add DV CRA/IDR controls"
-    },
-    {
      "pr": 1224,
      "sha": "a97bc1b49",
      "title": "Separate library navigation from Sort & Filter"
@@ -837,6 +832,11 @@
      "pr": 1237,
      "sha": "95c526366",
      "title": "Make three timing-dependent unit tests deterministic"
+    },
+    {
+     "pr": 1238,
+     "sha": "c5c2b7e1a",
+     "title": "Cycle HUD preview backgrounds and use shared glass controls"
     }
    ],
    "from": 63.7,
@@ -850,11 +850,6 @@
    "change_pct": 28.7,
    "commits": [
     {
-     "pr": 1223,
-     "sha": "5d66b9619",
-     "title": "Report diagnostic export failures and add DV CRA/IDR controls"
-    },
-    {
      "pr": 1224,
      "sha": "a97bc1b49",
      "title": "Separate library navigation from Sort & Filter"
@@ -898,6 +893,11 @@
      "pr": 1237,
      "sha": "95c526366",
      "title": "Make three timing-dependent unit tests deterministic"
+    },
+    {
+     "pr": 1238,
+     "sha": "c5c2b7e1a",
+     "title": "Cycle HUD preview backgrounds and use shared glass controls"
     }
    ],
    "from": 147.2,
@@ -908,13 +908,8 @@
    "to": 189.5
   },
   {
-   "change_pct": 18.1,
+   "change_pct": 18.0,
    "commits": [
-    {
-     "pr": 1223,
-     "sha": "5d66b9619",
-     "title": "Report diagnostic export failures and add DV CRA/IDR controls"
-    },
     {
      "pr": 1224,
      "sha": "a97bc1b49",
@@ -959,6 +954,11 @@
      "pr": 1237,
      "sha": "95c526366",
      "title": "Make three timing-dependent unit tests deterministic"
+    },
+    {
+     "pr": 1238,
+     "sha": "c5c2b7e1a",
+     "title": "Cycle HUD preview backgrounds and use shared glass controls"
     }
    ],
    "from": 353,
@@ -966,7 +966,7 @@
    "label": "Wait after merge",
    "since": "2026-11-04",
    "threshold_pct": 15.0,
-   "to": 417
+   "to": 416.5
   }
  ],
  "schema": 2,
