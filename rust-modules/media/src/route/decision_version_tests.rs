@@ -586,6 +586,54 @@ fn an_explicit_external_source_pick_can_use_a_server_accepted_burned_wire() {
 
 #[test]
 #[cfg(all(feature = "play-uri", feature = "devtriggers"))]
+fn viewer_off_re_resolves_a_burned_pms_uri_without_reusing_its_subtitle() {
+    use plx_play_uri::backend::Binding;
+    use plx_playback_contract::{BackendKind, Capabilities};
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    assert!(plx_net::net::global_init());
+    let capabilities = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
+        pause: true, seek: true, audio_track: true, subtitle_track: true,
+        audio_off: false, subtitle_off: false };
+    ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
+        crate::route::uri_preflight::ProductEvidence { display_exported: true,
+            binding: Binding::Exported { canvas: (1920, 1080) },
+            callable: capabilities, certified: capabilities, preview_rectangle: false },
+        std::sync::Arc::new(QualifiedPms(std::sync::Arc::new(std::sync::Mutex::new(Vec::new()))))));
+    let (port, done, server) = versions_pms_with(URI_DTS_EXTERNAL_SUBTITLE, MDE_PMS_BURNED_EXTERNAL);
+    let sid = plx_plex::plex::register_for_test("burned-off", "127.0.0.1", port,
+        "token", "burned-off-client");
+    let mut meta = plx_data::stores::metadata::MetadataStore::default();
+    assert!(request_play(&mut ps, &mut meta, plx_platform::devcaps::caps(), sid,
+        "rk-v", "/library/parts/3134/1/file.mkv", "h264", "dca", "Film", "", None));
+    assert!(wait_resolve_workers_for_test(std::time::Duration::from_secs(15)));
+    let first = pump_play(&mut ps, &mut meta).expect("accepted burned PMS output");
+    let burned = first.uri_offer.expect("accepted server burn is a qualified URI output");
+    assert_eq!(ps.source_selection().expect("source intent").subtitle_sid, 31343);
+    assert!(ps.backend_offer_admitted(BackendKind::Uri, burned.offer_id()));
+    ps.begin_attempt_view(RouteStartAttempt::fixture(), crate::player::attempt_view::Backend::Uri);
+    let prior_request = ps.metric_request();
+    assert!(request_viewer_reconfigure(&mut ps, &mut meta,
+        ViewerReconfigure::SourceSubtitle { sid: 0, mode: SubMode::Off, forced_lang: None },
+        Some(12_000_000_000), Some(true)),
+        "Off is an explicit source change even when the current URI output burned subtitles");
+    assert_ne!(ps.metric_request(), prior_request);
+    assert_eq!(ps.reconfigure_pause_goal(), Some(true));
+    assert!(wait_resolve_workers_for_test(std::time::Duration::from_secs(15)));
+    let next = pump_play(&mut ps, &mut meta).expect("Off resolves the same source anew");
+    assert_eq!(next.resume_ns, 12_000_000_000);
+    assert_eq!(ps.source_selection().expect("Off source intent").subtitle_sid, 0);
+    assert!(next.uri_offer.is_none(),
+        "the old accepted burn cannot certify a new output whose viewer selected Off");
+    done.send(()).unwrap();
+    let requests = server.join().unwrap();
+    assert!(requests.iter().filter(|line| line.contains("/decision?")).count() >= 2,
+        "the new subtitle choice must reach PMS, not merely change the menu: {requests:?}");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
+#[cfg(all(feature = "play-uri", feature = "devtriggers"))]
 fn native_hls_master_offer_requires_the_fetched_multi_variant_response() {
     use plx_play_uri::backend::Binding;
     use plx_playback_contract::Capabilities;
