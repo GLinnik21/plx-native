@@ -95,7 +95,7 @@ fn opened() -> (crate::route::PlaybackSession, PlayerAdapter, &'static Bus,
         super::super::attempt_metrics::Origin::Fresh, at);
     assert!(!started.playback.iter().any(|fx| matches!(fx,
         plx_playback_contract::Fx::Rejected { .. })));
-    pa.bind_uri_attempt(route_attempt);
+    pa.bind_uri_attempt(route_attempt, crate::route::backend_policy::OfferId::URI_ORIGINAL);
     bus.say("register", "");
     let at = pa.backend_tick();
     let _ = pa.backend_poll_session_at(&mut ps, at);
