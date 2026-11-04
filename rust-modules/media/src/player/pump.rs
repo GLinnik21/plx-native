@@ -1993,9 +1993,12 @@ mod flight_tests {
             super::super::claim_hold::clear();
             super::super::ffi_host::reset_native_lifecycle_for_test();
             super::super::ffi_host::force_clocksink_for_test(true);
-            super::super::ffi_host::force_object_ready_for_test(true);
             let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
             let epoch = SHARED.begin_native_session().expect("native session");
+            // The installed Engine represents a completed Load. Give the host sink that same
+            // object and callback epoch so a later rollback must prove its real Unload/D1.
+            assert_eq!(unsafe { super::super::sink().load(c"{}".as_ptr(), epoch) }, 1);
+            assert!(SHARED.mark_native_load_returned(epoch, None).is_some());
             let engine = super::super::engine::streaming_engine_for_test(epoch);
             assert!(ps.qualify_installed_feed_offer(crate::route::CandidatePurpose::NewCandidate));
             let offer = ps.planned_feed_offer().expect("installed Feed recipe");
