@@ -8,9 +8,10 @@
 //! Sort & Filter control), and each logs one line when its state is REACHED rather than when it was asked for, so
 //! the driver can verify from the event log that the picture it captured is the one the manifest
 //! named. `libtype` chooses the listing the others then act on (the Show-menu type, or the
-//! Collections / Recommended page the header pushes). Every arm
-//! gives up after [`CEILING_MS`] with a log line of its own, so a scene whose data never arrives
-//! fails loudly instead of capturing the wrong screen.
+//! Collections / Recommended page the header pushes). Every arm gives up with a log line of its
+//! own, so a scene whose data never arrives fails loudly instead of capturing the wrong screen: after
+//! [`CEILING_MS`], except the two that wait on playback, `clockstop` (`CLOCKSTOP_CEILING_MS`) and
+//! `autopause` (`AUTOPAUSE_CEILING_MS`), which wait up to a minute.
 //!
 //! Dev-only, like every arm in [`super`]: the reads go through `devtrig::read`, which is `None` at
 //! compile time without the `devtriggers` feature.
@@ -76,8 +77,8 @@ impl ScreenshotArms {
 /// frame)`, no picture, no pause. So the capture waits on the debt, as it waits on a seat or a
 /// clock stop ([`ScreenshotArms::pending`]).
 ///
-/// `Unread` is the trigger not read yet, which counts as owed, as an unread `clockstop` does: a
-/// frame that has not reached the arm cannot say there is nothing to wait for.
+/// `Unread` is the trigger not read yet, which counts as owed, as an unread `clockstop` does: until
+/// the first frame has read it, nothing can say there is nothing to wait for.
 #[cfg(feature = "hostsim")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum PauseDebt {
@@ -111,13 +112,22 @@ impl PauseDebt {
 #[cfg(feature = "hostsim")]
 const AUTOPAUSE_CEILING_MS: u32 = 60_000;
 
-/// Keep [`ScreenshotArms`]' `autopause` debt current. Called every frame by `each_frame` BEFORE
-/// the arms that can return early, so the debt is known on every frame. Simulator only, as the
-/// settled capture is.
+/// Has `autopause`'s Pause not landed yet? True while the arm has not armed itself (`pause_tried`
+/// is its once-latch, set six seconds into the run on the Player route, whether or not a trigger
+/// asked for a pause) and while it is armed and waiting on its playhead (`script_armed`, the
+/// scheduled pause still in hand). Without the first clause the frames before the arm arms itself
+/// would read as "nothing left to wait for", which is the flake this debt exists to close.
+#[cfg(feature = "hostsim")]
+fn pause_edges_left(pause_tried: bool, script_armed: bool) -> bool {
+    !pause_tried || script_armed
+}
+
+/// Keep [`ScreenshotArms`]' `autopause` debt current. Called every frame by `each_frame`, ahead of
+/// the arms that act on the player. Simulator only, as the settled capture is.
 #[cfg(feature = "hostsim")]
 pub(crate) fn autopause_debt(app: &mut App, fr: &Frame) {
     let sc = &mut app.scenarios;
-    let edges_left = !sc.pause_tried || sc.pause_script.is_some();
+    let edges_left = pause_edges_left(sc.pause_tried, sc.pause_script.is_some());
     let expired = fr.now.wrapping_sub(app.t0) > AUTOPAUSE_CEILING_MS;
     let before = sc.shots.autopause;
     sc.shots.autopause = before.step(|| crate::dev::pause_script().is_some(), edges_left, expired);
@@ -493,6 +503,24 @@ mod tests {
         arms.autopause = arms.autopause.step(|| panic!("the trigger is read once"), false, false);
         assert_eq!(arms.autopause, PauseDebt::Paid);
         assert!(!arms.pending(), "the Pause landed: the capture may take the rest it is waiting for");
+    }
+
+    /// The line that holds the frames BEFORE the arm arms itself: the arm's latch is not set and no
+    /// pause is scheduled yet, which is the state of the first six seconds of every run. Reading
+    /// that as "nothing left" paid the debt on the first frame and brought the flake back.
+    #[cfg(feature = "hostsim")]
+    #[test]
+    fn autopause_stays_owed_on_the_frames_before_its_arm_arms_itself() {
+        use super::{pause_edges_left, PauseDebt};
+        assert!(pause_edges_left(false, false), "not armed yet: the Pause is still to come");
+        assert!(pause_edges_left(true, true), "armed, waiting on its playhead");
+        assert!(!pause_edges_left(true, false), "armed and the Pause landed (or no trigger asked)");
+
+        let mut arms = only_autopause_unlanded();
+        arms.autopause = arms.autopause.step(|| true, pause_edges_left(false, false), false);
+        arms.autopause = arms.autopause.step(|| true, pause_edges_left(false, false), false);
+        assert_eq!(arms.autopause, PauseDebt::Owed);
+        assert!(arms.pending(), "a quiet player before the arm armed itself is not the scene's state");
     }
 
     #[cfg(feature = "hostsim")]

@@ -2200,8 +2200,7 @@ pub(crate) unsafe fn each_frame(app: &mut App, fr: &mut Frame) -> bool {
     screenshot::libshelf_arm(app, fr);
     screenshot::libmenu_arm(app, fr);
     screenshot::clockstop_arm(app, fr);
-    // Before the arms that can return early below: the debt must be known on every frame, or a
-    // frame that returns first leaves the settled capture waiting on an unread trigger for good.
+    // What `autopause` still owes the settled capture (`screenshot::PauseDebt`).
     #[cfg(feature = "hostsim")]
     screenshot::autopause_debt(app, fr);
     if !detail_arm(app, fr) {
