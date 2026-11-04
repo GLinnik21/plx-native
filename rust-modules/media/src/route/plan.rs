@@ -1947,10 +1947,14 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 pick_subtitle(p, &show_prefs, account, &source_audio_lang, env.subtitle_override, memory_sub)
             });
             let source_sub_pick = source_sub_decision.as_ref().and_then(|decision| decision.pick);
-            // Source intent retains an embedded stream even if Feed cannot render its codec.
-            // The URI qualifier must certify this exact format before selecting it natively.
+            // Source intent retains an exact viewer pick, including an external sidecar that
+            // Feed draws. Native URI eligibility is checked separately below, so filtering
+            // renderer formats here would erase the selected source track on reconfiguration.
             let source_sub_stream = plan.playing.as_ref().and_then(|item| {
-                source_sub_pick.and_then(|(id, _)| item.subs.iter().find(|sub| sub.id == id))
+                env.subtitle_override.filter(|id| *id > 0)
+                    .and_then(|id| item.subs.iter().find(|sub| sub.id == id))
+                    .or_else(|| source_sub_pick.and_then(|(id, _)|
+                        item.subs.iter().find(|sub| sub.id == id)))
                     .or_else(|| source_sub_decision.as_ref()
                         .filter(|decision| decision.source == SubPickSource::Server)
                         .and_then(|_| item.subs.iter().find(|sub| sub.selected && sub.id > 0)))
@@ -3053,8 +3057,14 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                         output_dovi,
                         dolby_vision_mode: env.dolby_vision_mode,
                         applied_audio: plan.contract.audio,
-                        subtitle_choice,
-                        requires_client_subtitle: requires_client_subtitle || client_draws,
+                        // An accepted server burn carries the selected source SID in video.
+                        // It needs no native subtitle track or client renderer; without exact
+                        // burn evidence the qualifier below still refuses this wire.
+                        subtitle_choice: if burn_rides_wire {
+                            plx_playback_contract::TrackChoice::Unspecified
+                        } else { subtitle_choice },
+                        requires_client_subtitle: !burn_rides_wire
+                            && (requires_client_subtitle || client_draws),
                         burned_subtitle: burn_rides_wire,
                         accepted_burn_sid,
                         requested_rate_permille: env.requested_rate_permille,
