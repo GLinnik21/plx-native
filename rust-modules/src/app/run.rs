@@ -8647,6 +8647,10 @@ mod lifecycle_regression_tests {
         assert!(matches!(summary.outcome,
             Some(plx_media::player::attempt_metrics::RequestOutcome::Failed(_))),
             "the terminal error decision, rather than a raw Load refusal, finishes the request");
+        assert!(rig.app.adapters.player.backend_metric_notices().any(|notice| matches!(notice,
+            plx_media::player::backend::MetricNotice::Measured(
+                plx_media::player::attempt_metrics::Fx::Finished(done)) if done.id == request)),
+            "the app consumes the runner's terminal metric into bounded local history");
     }
 
     /// **The plan's headline test.** Library -> play -> the stream reaches its end -> back on the

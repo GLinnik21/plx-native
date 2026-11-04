@@ -37,6 +37,9 @@ use super::feed_driver::{FeedDriver, FeedTransportAction};
 #[cfg(all(test, feature = "play-feed"))]
 use super::threads;
 use plx_base::task::MainThread;
+use std::collections::VecDeque;
+
+const MAX_METRIC_NOTICES: usize = 32;
 use plx_playback_contract::{AttemptId, BackendEvent, BackendKind, Capabilities, CommandId,
     DispatchResult, DriverSet, ExitDisposition, Failure, Intent, Operation,
     SourceKey};
@@ -478,6 +481,9 @@ pub struct PlayerAdapter {
     pub(super) feed: FeedResources,
     /// The one neutral attempt owner, with its physical feed and optional URI executors below.
     backend: backend::BackendRunner,
+    /// Recent typed measurements for local diagnostics. Older notices are evicted; the
+    /// reducer's aggregate summary keeps the logical request's counts and durations.
+    metric_notices: VecDeque<backend::MetricNotice>,
     #[cfg(feature = "play-feed")]
     feed_driver: FeedDriver,
     #[cfg(any(feature = "play-feed", feature = "play-uri"))]
@@ -563,6 +569,7 @@ impl PlayerAdapter {
             #[cfg(feature = "play-feed")]
             feed: FeedResources::new(&super::SHARED.feed),
             backend: backend::BackendRunner::new(),
+            metric_notices: VecDeque::new(),
             #[cfg(feature = "play-feed")]
             feed_driver: FeedDriver::new(),
             #[cfg(any(feature = "play-feed", feature = "play-uri"))]
@@ -619,7 +626,7 @@ impl PlayerAdapter {
                 backend::RequestLifecycle::Finish { request, outcome } =>
                     self.backend.finish_request_at(request, outcome, self.backend_tick()),
             };
-            Self::record_backend_metrics(&result.metrics);
+            self.record_backend_metrics(&result.metrics);
         }
     }
 
@@ -649,15 +656,24 @@ impl PlayerAdapter {
             }
         };
         let result = self.backend.condition_at(backend, attempt, condition, self.backend_tick());
-        Self::record_backend_metrics(&result.metrics);
+        self.record_backend_metrics(&result.metrics);
     }
 
-    /// The existing bounded, credential-scrubbed local diagnostic ring is the recorder for
-    /// every typed backend metric notice. These values contain only IDs, enums and durations.
-    fn record_backend_metrics(notices: &[backend::MetricNotice]) {
+    /// Retain every runner result in a bounded local typed window. Notices contain only numeric
+    /// IDs, enums and durations; the ordinary event log is not a bounded default-build sink.
+    fn record_backend_metrics(&mut self, notices: &[backend::MetricNotice]) {
         for notice in notices {
-            plx_base::eventlog::log(&format!("backend metric: {notice:?}"));
+            if self.metric_notices.len() == MAX_METRIC_NOTICES {
+                self.metric_notices.pop_front();
+            }
+            self.metric_notices.push_back(notice.clone());
         }
+    }
+
+    /// Recent local measurement effects; older details have been folded into the reducer's
+    /// bounded request summary and are intentionally no longer retained here.
+    pub fn backend_metric_notices(&self) -> impl Iterator<Item = &backend::MetricNotice> {
+        self.metric_notices.iter()
     }
 
     pub fn backend_snapshot(&self) -> &plx_playback_contract::Snapshot {
@@ -931,7 +947,7 @@ impl PlayerAdapter {
             }
             self.capture_uri_release(&result.playback);
         }
-        Self::record_backend_metrics(&result.metrics);
+        self.record_backend_metrics(&result.metrics);
         result
     }
 
@@ -951,7 +967,7 @@ impl PlayerAdapter {
         let result = self.finish_backend_actions(result, at);
         #[cfg(feature = "play-uri")]
         self.capture_uri_release(&result.playback);
-        Self::record_backend_metrics(&result.metrics);
+        self.record_backend_metrics(&result.metrics);
         result
     }
 
@@ -988,7 +1004,7 @@ impl PlayerAdapter {
         };
         let result = self.backend.set_foreground_at(&mut drivers, &self.mt, foreground, at);
         let result = self.finish_backend_actions(result, at);
-        Self::record_backend_metrics(&result.metrics);
+        self.record_backend_metrics(&result.metrics);
         result
     }
 
@@ -2068,6 +2084,28 @@ impl PlayerAdapter {
 mod repair_receipt_tests {
     use super::*;
     use plx_platform::tv::sandbox::{Failure, State};
+    #[test]
+    fn local_metric_history_evicts_old_effects_after_real_reducer_results() {
+        use super::super::attempt_metrics::{Origin, RequestOutcome, Tick, Fx};
+        let mut adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
+        for revision in 1..=40 {
+            let request = backend::LogicalRequestId::new(revision);
+            let begun = adapter.backend.begin_request_at(request, Origin::Fresh,
+                Tick::from_millis(revision));
+            adapter.record_backend_metrics(&begun.metrics);
+            let finished = adapter.backend.finish_request_at(request, RequestOutcome::Cancelled,
+                Tick::from_millis(revision + 1));
+            adapter.record_backend_metrics(&finished.metrics);
+        }
+        let recent: Vec<_> = adapter.backend_metric_notices().collect();
+        assert_eq!(recent.len(), MAX_METRIC_NOTICES);
+        assert!(matches!(recent.first(), Some(backend::MetricNotice::Measured(Fx::Finished(s)))
+            if s.id.get() == 9));
+        assert!(matches!(recent.last(), Some(backend::MetricNotice::Measured(Fx::Finished(s)))
+            if s.id.get() == 40));
+        assert_eq!(adapter.backend_metrics_snapshot().unwrap().id.get(), 40);
+    }
+
     #[test]
     fn a_receipt_lands_without_a_player_screen_and_cannot_rearm_the_attempt() {
         let mut owner = super::super::machine::RepairAttempt::new();
