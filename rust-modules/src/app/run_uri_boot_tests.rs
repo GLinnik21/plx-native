@@ -290,6 +290,11 @@ mod uri_boot_tests {
                 if choice.backend == BackendKind::Feed));
         assert_eq!(rig.app.player.session.reconfigure_pause_goal(), Some(true),
             "the next physical Start still owes the paused viewer goal");
+        let next = plx_media::player::start_playback_tracked(
+            &mut rig.app.player.session, &mut rig.app.adapters.player);
+        assert_eq!(next, plx_media::player::BufferfeedStartOutcome::Deferred,
+            "the qualified Feed successor waits for addressed URI release");
+        assert!(rig.app.adapters.player.release_has_queued_start());
     }
 }
 
