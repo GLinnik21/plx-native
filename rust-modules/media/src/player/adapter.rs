@@ -1191,7 +1191,7 @@ impl PlayerAdapter {
         let initialized = unsafe { display.plane_initialized(&self.mt) };
         let evidence = crate::route::uri_preflight::ProductEvidence::unqualified_on(
             display.window_mode(),
-            crate::route::uri_preflight::product_binding(display.window_mode(), super::plane().facts(), initialized));
+            plx_play_uri::backend::product_binding(display.window_mode(), super::plane().facts(), initialized));
         let port = crate::route::uri_preflight::ResolvePort::new(evidence,
             std::sync::Arc::new(crate::route::uri_preflight::ProductQualifier));
         self.install_uri_product_with_ports(session, port,

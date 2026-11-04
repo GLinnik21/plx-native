@@ -46,7 +46,7 @@ fn expired_uri_landing_retires_its_unstarted_logical_resource_once() {
         audio_sid: 42, subtitle_sid: 0,
         audio_contract: plx_plex::plex::AudioEnhancements::NONE };
     let known = crate::route::uri_preflight::KnownSource { selection,
-        source: plx_play_uri::backend::UriSource::new(
+        source: plx_playback_contract::uri::UriSource::new(
             "https://example.invalid/expired.mkv".to_owned(), Vec::new()),
         requirements: Requirements { source: SourceKind::ProgressiveUri,
             video: Fidelity::Exact, audio: Fidelity::Exact,

@@ -247,7 +247,7 @@ impl crate::route::uri_preflight::OriginalQualifier for QualifiedNativeMaster {
                 video: Fidelity::Compatible, audio: Fidelity::Compatible,
                 audio_track: TrackChoice::Selected(31342),
                 subtitle_track: TrackChoice::Unspecified },
-            native_tracks: vec![plx_play_uri::backend::NativeTrackIndex {
+            native_tracks: vec![plx_playback_contract::uri::NativeTrackIndex {
                 selection: TrackSelection { kind: TrackKind::Audio, id: 31342 }, index: 1,
             }],
             applied_audio: request.applied_audio, video_codec: request.video_codec,
@@ -289,7 +289,7 @@ impl crate::route::uri_preflight::OriginalQualifier for QualifiedPms {
                 video: Fidelity::Compatible, audio: Fidelity::Compatible,
                 audio_track: TrackChoice::Selected(31342),
                 subtitle_track: TrackChoice::Unspecified },
-            native_tracks: vec![plx_play_uri::backend::NativeTrackIndex {
+            native_tracks: vec![plx_playback_contract::uri::NativeTrackIndex {
                 selection: TrackSelection { kind: TrackKind::Audio, id: 31342 }, index: 1,
             }],
             applied_audio: request.applied_audio, video_codec: request.video_codec,
@@ -317,13 +317,13 @@ impl crate::route::uri_preflight::OriginalQualifier for QualifiedOriginal {
         assert!(request.source_url.contains("/library/parts/3134/1/file.mkv"));
         let selected = request.selection;
         let subtitle = request.subtitle_source.clone();
-        let mut tracks = vec![plx_play_uri::backend::NativeTrackIndex {
+        let mut tracks = vec![plx_playback_contract::uri::NativeTrackIndex {
             selection: plx_playback_contract::TrackSelection {
                 kind: plx_playback_contract::TrackKind::Audio, id: 31342,
             }, index: 1,
         }];
         let subtitle_choice = if selected.subtitle_sid > 0 {
-            tracks.push(plx_play_uri::backend::NativeTrackIndex {
+            tracks.push(plx_playback_contract::uri::NativeTrackIndex {
                 selection: plx_playback_contract::TrackSelection {
                     kind: plx_playback_contract::TrackKind::Subtitle,
                     id: selected.subtitle_sid as u64,
@@ -333,7 +333,7 @@ impl crate::route::uri_preflight::OriginalQualifier for QualifiedOriginal {
         } else { TrackChoice::Unspecified };
         crate::route::uri_preflight::Verdict::Known(crate::route::uri_preflight::KnownSource {
             selection: selected,
-            source: plx_play_uri::backend::UriSource::new(request.source_url, tracks),
+            source: plx_playback_contract::uri::UriSource::new(request.source_url, tracks),
             requirements: Requirements { source: SourceKind::ProgressiveUri,
                 video: Fidelity::Exact, audio: Fidelity::Exact,
                 audio_track: TrackChoice::Selected(31342), subtitle_track: subtitle_choice },
@@ -347,7 +347,7 @@ impl crate::route::uri_preflight::OriginalQualifier for QualifiedOriginal {
 #[test]
 #[cfg(all(feature = "play-uri", feature = "devtriggers"))]
 fn remembered_subtitle_off_remains_off_during_uri_source_qualification() {
-    use plx_play_uri::backend::Binding;
+    use plx_playback_contract::uri::Binding;
     use plx_playback_contract::Capabilities;
     use plx_plex::plex::session::prefs::{SubtitleMemo, TrackMemoryEntry};
     let mut ps = crate::route::PlaybackSession::IDLE;
@@ -441,7 +441,7 @@ impl crate::route::uri_preflight::OriginalQualifier for CountingQualified {
 #[test]
 #[cfg(all(feature = "play-uri", feature = "devtriggers"))]
 fn a_qualified_dts_original_lands_from_the_real_resolve_worker_before_feed_decision() {
-    use plx_play_uri::backend::Binding;
+    use plx_playback_contract::uri::Binding;
     use plx_playback_contract::Capabilities;
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -484,7 +484,7 @@ fn a_qualified_dts_original_lands_from_the_real_resolve_worker_before_feed_decis
 #[test]
 #[cfg(all(feature = "play-uri", feature = "devtriggers"))]
 fn a_certified_av1_uri_original_does_not_inherit_feeds_video_refusal() {
-    use plx_play_uri::backend::Binding;
+    use plx_playback_contract::uri::Binding;
     use plx_playback_contract::Capabilities;
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -520,7 +520,7 @@ fn a_certified_av1_uri_original_does_not_inherit_feeds_video_refusal() {
 #[test]
 #[cfg(all(feature = "play-uri", feature = "devtriggers"))]
 fn an_accepted_pms_decision_produces_an_owned_uri_offer_from_its_output() {
-    use plx_play_uri::backend::Binding;
+    use plx_playback_contract::uri::Binding;
     use plx_playback_contract::Capabilities;
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -562,7 +562,7 @@ fn an_accepted_pms_decision_produces_an_owned_uri_offer_from_its_output() {
 #[test]
 #[cfg(all(feature = "play-uri", feature = "devtriggers"))]
 fn an_explicit_external_source_pick_can_use_a_server_accepted_burned_wire() {
-    use plx_play_uri::backend::Binding;
+    use plx_playback_contract::uri::Binding;
     use plx_playback_contract::Capabilities;
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -595,7 +595,7 @@ fn an_explicit_external_source_pick_can_use_a_server_accepted_burned_wire() {
 #[test]
 #[cfg(all(feature = "play-uri", feature = "devtriggers"))]
 fn viewer_off_re_resolves_a_burned_pms_uri_without_reusing_its_subtitle() {
-    use plx_play_uri::backend::Binding;
+    use plx_playback_contract::uri::Binding;
     use plx_playback_contract::{BackendKind, Capabilities};
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -655,7 +655,7 @@ fn viewer_off_re_resolves_a_burned_pms_uri_without_reusing_its_subtitle() {
 #[test]
 #[cfg(all(feature = "play-uri", feature = "devtriggers"))]
 fn native_hls_master_offer_requires_the_fetched_multi_variant_response() {
-    use plx_play_uri::backend::Binding;
+    use plx_playback_contract::uri::Binding;
     use plx_playback_contract::Capabilities;
     for (master_body, qualifies) in [
         (TWO_VARIANT_MASTER as &[u8], true), (FIXED_MEDIA_PLAYLIST as &[u8], false)
@@ -700,7 +700,7 @@ fn native_hls_master_offer_requires_the_fetched_multi_variant_response() {
 #[test]
 #[cfg(all(feature = "play-uri", feature = "play-feed", feature = "devtriggers"))]
 fn unknown_uri_qualification_keeps_the_existing_feed_decision_path() {
-    use plx_play_uri::backend::Binding;
+    use plx_playback_contract::uri::Binding;
     use plx_playback_contract::Capabilities;
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -733,7 +733,7 @@ fn unknown_uri_qualification_keeps_the_existing_feed_decision_path() {
 #[test]
 #[cfg(all(feature = "play-uri", feature = "devtriggers"))]
 fn expired_original_skips_its_spent_recipe_but_qualifies_unspent_pms_uri() {
-    use plx_play_uri::backend::Binding;
+    use plx_playback_contract::uri::Binding;
     use plx_playback_contract::{BackendKind, Capabilities};
     use super::super::backend_policy::{BackendPolicy, OfferId, Qualification};
     #[cfg(feature = "play-feed")]
@@ -872,7 +872,7 @@ fn unknown_uri_without_feed_has_a_named_refusal_before_pms_encoder_work() {
 #[test]
 #[cfg(all(feature = "play-uri", not(feature = "play-feed"), feature = "devtriggers"))]
 fn unknown_pms_output_in_uri_only_retires_the_accepted_encoder_once() {
-    use plx_play_uri::backend::Binding;
+    use plx_playback_contract::uri::Binding;
     use plx_playback_contract::Capabilities;
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);

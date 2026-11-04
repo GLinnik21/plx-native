@@ -14,18 +14,26 @@ use plx_playback_contract::{AttemptId, BackendEvent, BackendKind, Capabilities, 
     Failure, Observation, Observed, Operation, Playback, ReleaseStatus, SourceKey, SourceKind,
     TrackChoice, TrackKind, TrackSelection};
 use std::collections::{BTreeMap, VecDeque};
-use std::os::raw::c_int;
 
 /// A monotonic clock supplied by the runner. The ownership reducer only receives its value.
 pub trait MonotonicClock { fn now_ms(&self) -> u64; }
 
-/// An explicitly qualified display path. `Acb` is the webOS 4.x plane: the paced bind sequence of
-/// `acb_bind` through the one plane owner, released by `UNLOADED` and its completion fence. It
-/// refuses to start unless the display is in ACB mode and the gate (`acb_bind::gate`) passes, and
-/// it forwards only a descriptor the service itself reported. Present, and not routed: no
-/// qualifier produces an offer for it yet.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Binding { Exported { canvas: (c_int, c_int) }, Acb, Unbound }
+/// The display path the URI executor is composed with (`Binding` is the contract's value). `Acb`
+/// is the webOS 4.x plane: the paced bind sequence of `acb_bind` through the one plane owner,
+/// released by `UNLOADED` and its completion fence. The executor refuses to start on it unless the
+/// display is in ACB mode and the gate (`acb_bind::gate`) passes, and it forwards only a descriptor
+/// the service itself reported. Present, and not routed: no qualifier produces an offer for it yet.
+pub use plx_playback_contract::uri::Binding;
+
+/// The display path composition chooses for the executor: the ACB plane when the display is in ACB
+/// mode and the same gate the executor re-checks at every Start holds (a handle the library
+/// confirmed initialized, player type 0; `connectDass` is a developer arm and is not asked for);
+/// otherwise nothing: the exported window is not selected here because no source is certified for
+/// it either. `initialized` is the sink's `plane_initialized`, read by the caller at the IO boundary.
+pub fn product_binding(display_mode: i32, plane: plx_platform::tv::plane::PlaneFacts, initialized: bool) -> Binding {
+    let gate = crate::acb_bind::gate(false, display_mode, plane.handle, plane.player_type, false, initialized);
+    if gate.ready { Binding::Acb } else { Binding::Unbound }
+}
 
 /// No firmware capability is inferred from the display mode or transport response.
 pub struct Config {
@@ -42,41 +50,10 @@ pub struct Config {
     pub source_ttl_ms: u64,
 }
 
-/// Explicit translation from a neutral selected track to this source's URI-native index.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NativeTrackIndex { pub selection: TrackSelection, pub index: i64 }
+pub use plx_playback_contract::uri::{NativeTrackIndex, UriSource};
+use plx_playback_contract::uri::native_index;
 
-/// The authorized URL stays opaque; callers provide the exact native track map with it.
-pub struct UriSource { url: String, tracks: Vec<NativeTrackIndex> }
-impl UriSource {
-    pub fn new(url: String, tracks: Vec<NativeTrackIndex>) -> Self { Self { url, tracks } }
-
-    fn valid_track_map(&self) -> bool {
-        !self.tracks.iter().enumerate().any(|(i, track)| track.index < 0
-            || self.tracks[..i].iter().any(|prior| prior.selection == track.selection
-                || (prior.selection.kind == track.selection.kind && prior.index == track.index)))
-    }
-
-    /// Whether this owned source can execute its required native track choices. The same
-    /// check guards qualification and the physical Start; no URL or index map escapes.
-    pub fn can_supply(&self, requirements: plx_playback_contract::Requirements) -> bool {
-        let mapped = |choice, kind| match choice {
-            TrackChoice::Unspecified => true,
-            TrackChoice::Off => false,
-            TrackChoice::Selected(id) => native_index(&self.tracks, TrackSelection { kind, id }).is_some(),
-        };
-        !self.url.is_empty() && self.valid_track_map()
-            && mapped(requirements.audio_track, TrackKind::Audio)
-            && mapped(requirements.subtitle_track, TrackKind::Subtitle)
-    }
-}
 struct StagedSource { attempt: AttemptId, key: SourceKey, source: UriSource, deadline_ms: u64 }
-
-fn native_index(tracks: &[NativeTrackIndex], selected: TrackSelection) -> Option<i64> {
-    let mut matches = tracks.iter().filter(|track| track.selection == selected);
-    let first = matches.next()?;
-    (first.index >= 0 && matches.next().is_none()).then_some(first.index)
-}
 
 #[derive(Clone, Copy)]
 enum ControlKind { Transport, Track(TrackSelection), Seek { ack: bool, done: bool } }
@@ -136,7 +113,7 @@ impl UriBackend {
     /// Give exactly one authorized, owned URL to the next matching Start. Superseding a staged
     /// source destroys its old locator; a failed, cancelled or expired Start cannot reuse it.
     pub fn stage_source(&mut self, attempt: AttemptId, key: SourceKey, source: UriSource) -> Result<(), Failure> {
-        if source.url.is_empty() || self.last_started.is_some_and(|last| attempt <= last) {
+        if !source.has_url() || self.last_started.is_some_and(|last| attempt <= last) {
             return Err(Failure::Stale);
         }
         if !source.valid_track_map() {
@@ -244,8 +221,9 @@ impl UriBackend {
         };
         self.last_started = Some(attempt);
         self.active = Some(attempt);
-        self.url = Some(staged.source.url);
-        self.tracks = staged.source.tracks;
+        let (url, tracks) = staged.source.into_parts();
+        self.url = Some(url);
+        self.tracks = tracks;
         self.window_id = window_id;
         self.start_deadline_ms = Some(self.config.clock.now_ms().saturating_add(self.config.startup_timeout_ms));
         self.loaded = false;
@@ -789,6 +767,19 @@ impl DriverSet for UriBackend {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn composition_selects_the_acb_plane_only_when_the_gate_holds() {
+        use plx_platform::tv::plane::PlaneFacts;
+        use plx_platform::tv::sink::{VP_ACB, VP_EXPORTED, VP_NONE};
+        let facts = PlaneFacts { handle: true, player_type: 0 };
+        assert_eq!(product_binding(VP_ACB, facts, true), Binding::Acb);
+        assert_eq!(product_binding(VP_ACB, facts, false), Binding::Unbound, "a created handle is not an initialized one");
+        assert_eq!(product_binding(VP_ACB, PlaneFacts { handle: true, player_type: 10 }, true), Binding::Unbound);
+        assert_eq!(product_binding(VP_ACB, PlaneFacts::ABSENT, true), Binding::Unbound);
+        assert_eq!(product_binding(VP_EXPORTED, facts, true), Binding::Unbound);
+        assert_eq!(product_binding(VP_NONE, facts, true), Binding::Unbound);
+    }
+
     use super::*;
     use plx_platform::tv::sink::{NoSink, PlaneUnload, ScriptedPlaneSink};
     use plx_platform::tv::uri::{CloseStatus, RequestId, SessionId, UriPoll, UriReply};
