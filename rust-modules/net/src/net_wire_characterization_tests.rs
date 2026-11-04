@@ -35,8 +35,7 @@ fn sent(verb: &str, headers: &[String], body: Option<&[u8]>) -> String {
     use std::io::{Read, Write};
     let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = srv.local_addr().unwrap().port();
-    let served = std::thread::spawn(move || {
-        let (mut sock, _) = srv.accept().expect("accept");
+    let served = plx_base::testnet::serve_once(srv, plx_base::testnet::CLIENT_WAIT, move |mut sock| {
         let _ = sock.set_read_timeout(Some(std::time::Duration::from_secs(5)));
         let mut seen = Vec::new();
         let mut buf = [0u8; 4096];
