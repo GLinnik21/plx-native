@@ -39,6 +39,29 @@ mod uri_boot_tests {
         }
     }
 
+    struct QualifiedTwoAudio;
+    impl OriginalQualifier for QualifiedTwoAudio {
+        fn qualify(&self, _: &plx_base::task::OffFrame, request: OriginalRequest) -> Verdict {
+            let selected = request.selection;
+            Verdict::Known(KnownSource {
+                selection: selected,
+                source: UriSource::new(request.source_url, vec![
+                    NativeTrackIndex { selection: TrackSelection {
+                        kind: TrackKind::Audio, id: 2 }, index: 0 },
+                    NativeTrackIndex { selection: TrackSelection {
+                        kind: TrackKind::Audio, id: 3 }, index: 1 },
+                ]),
+                requirements: Requirements { source: SourceKind::ProgressiveUri,
+                    video: Fidelity::Exact, audio: Fidelity::Exact,
+                    audio_track: TrackChoice::Selected(selected.audio_sid as u64),
+                    subtitle_track: TrackChoice::Unspecified },
+                expires_at: plx_media::player::adapter::uri_source_expiry_after(
+                    Duration::from_secs(30)),
+                certified_dolby_vision: None, certified_subtitle_source: None,
+            })
+        }
+    }
+
     struct Bus(Mutex<(bool, CloseStatus, Vec<(&'static str, RequestId, String)>, Vec<UriReply>)>);
     impl Bus {
         fn new() -> Self { Self(Mutex::new((false, CloseStatus::Open, Vec::new(), Vec::new()))) }
@@ -560,6 +583,62 @@ mod uri_boot_tests {
             "the explicit pick starts its own bounded viewer episode");
         assert_eq!(rig.app.player.session.attempt_origin(),
             plx_media::player::attempt_metrics::Origin::ViewerReconfigure);
+    }
+
+    #[cfg(feature = "play-feed")]
+    #[test]
+    fn forced_only_audio_pick_with_native_index_still_re_resolves_the_source() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving_with(|request| {
+            queue_body(request, false).replace(
+                r#"{"id":2,"streamType":2,"codec":"aac","selected":true}"#,
+                r#"{"id":2,"streamType":2,"codec":"aac","selected":true},{"id":3,"streamType":2,"codec":"ac3","channels":6}"#)
+        }) else { return };
+        plx_plex::plex::client_for(rig.sid).unwrap()
+            .set_link(plx_plex::plex::probe::Location::Local);
+        let bus: &'static Bus = Box::leak(Box::new(Bus::new()));
+        let display: &'static Display = Box::leak(Box::new(Display));
+        let caps = Capabilities { progressive_uri: true, hls_uri: false,
+            packet_feed: false, pause: true, seek: true, audio_track: true,
+            subtitle_track: true, audio_off: false, subtitle_off: false };
+        let port = ResolvePort::new(ProductEvidence { display_exported: true,
+            binding: Binding::Exported { canvas: (1920, 1080) },
+            callable: caps, certified: caps, preview_rectangle: false },
+            Arc::new(QualifiedTwoAudio));
+        assert!(rig.app.adapters.player.install_uri_product_with_ports(
+            &mut rig.app.player.session, port, bus, display));
+        rig.request();
+        rig.release.send(()).unwrap();
+        let mut resolved = None;
+        poll_until("qualified URI source did not resolve", || {
+            resolved = plx_media::route::pump_play(&mut rig.app.player.session,
+                rig.app.bridge.metadata_mut());
+            resolved.is_some()
+        });
+        assert!(rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session,
+            resolved.unwrap().uri_offer.expect("qualified original source")).is_ok());
+        assert!(matches!(plx_media::player::start_playback_tracked(
+            &mut rig.app.player.session, &mut rig.app.adapters.player),
+            plx_media::player::BufferfeedStartOutcome::Launched(_)));
+        let poll = |rig: &mut Rig| {
+            let at = rig.app.adapters.player.backend_tick();
+            let _ = rig.app.adapters.player.backend_poll_session_at(&mut rig.app.player.session, at);
+        };
+        poll(&mut rig);
+        bus.say("load", r#"{"returnValue":true,"mediaId":"m1","loadCompleted":true}"#);
+        poll(&mut rig);
+        bus.say("selectTrack", r#"{"returnValue":true,"mediaId":"m1"}"#);
+        bus.say("subscribe", r#"{"mediaId":"m1","trackSelected":{"type":"audio","index":0}}"#);
+        poll(&mut rig);
+        bus.say("play", r#"{"returnValue":true,"mediaId":"m1","playing":true,"currentTime":12000}"#);
+        poll(&mut rig);
+        assert_eq!(rig.app.adapters.player.uri_maps_track(&rig.app.player.session,
+            TrackKind::Audio, 3), Some(true));
+        plx_media::route::set_sub_mode_for_test(&mut rig.app.player.session,
+            plx_media::route::SubMode::ForcedOnly);
+        rig.pick_audio(3);
+        assert!(plx_media::route::play_pending(),
+            "an audio pick under Forced only must re-resolve when native control refuses it");
     }
 }
 
