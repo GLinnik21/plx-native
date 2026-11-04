@@ -252,8 +252,8 @@ impl ResolvePort {
             || request.video_codec.is_empty() || request.audio_codec.is_empty()
             || request.applied_audio != request.selection.audio_contract
             || request.resume_ns < 0 || request.duration_ms.is_none_or(|ms| ms == 0
-                || ms.checked_mul(1_000_000).is_none_or(|ns| ns > i64::MAX as u64)
-                || u64::try_from(request.resume_ns / 1_000_000).ok().is_none_or(|resume| resume > ms))
+                || ms.checked_mul(1_000_000).is_none_or(|ns|
+                    ns > i64::MAX as u64 || request.resume_ns as u64 > ns))
             || !self.could_qualify_pms() {
             return None;
         }
@@ -365,7 +365,8 @@ mod tests {
     const MASTER: &[u8] = b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nlow/index.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=3000000\nhigh/index.m3u8\n";
 
     #[derive(Clone, Copy)]
-    enum PmsCase { Valid, Unknown, WrongSession, UnknownClock, Expired, FixedHls, FalseMaster }
+    enum PmsCase { Valid, Unknown, WrongSource, WrongSession, UnknownClock,
+        NoRelease, Expired, FixedHls, FalseMaster }
 
     struct CertifiedPms(PmsCase);
     impl OriginalQualifier for CertifiedPms {
@@ -382,7 +383,9 @@ mod tests {
             )).flatten();
             PmsVerdict::Known(PmsCertificate {
                 selection: request.selection,
-                source_url: request.source_url,
+                source_url: if matches!(self.0, PmsCase::WrongSource) {
+                    "https://example.invalid/earlier-source".to_owned()
+                } else { request.source_url },
                 resource_session: if matches!(self.0, PmsCase::WrongSession) {
                     "earlier-transcode".to_owned()
                 } else { request.resource_session },
@@ -404,7 +407,7 @@ mod tests {
                     HlsController::AppFixed
                 } else { HlsController::NativeMaster }),
                 hls_master: master,
-                release_certified: true,
+                release_certified: !matches!(self.0, PmsCase::NoRelease),
                 expires_at: if matches!(self.0, PmsCase::Expired) {
                     Instant::now() - std::time::Duration::from_secs(1)
                 } else { Instant::now() + std::time::Duration::from_secs(5) },
@@ -448,8 +451,8 @@ mod tests {
             assert_eq!(source.resource_session, "current-transcode");
             assert!(source.source.can_supply(source.requirements));
         }
-        for case in [PmsCase::Unknown, PmsCase::WrongSession, PmsCase::UnknownClock,
-            PmsCase::Expired] {
+        for case in [PmsCase::Unknown, PmsCase::WrongSource, PmsCase::WrongSession,
+            PmsCase::UnknownClock, PmsCase::NoRelease, PmsCase::Expired] {
             assert!(pms_port(case).qualify_pms(&off, pms_request(PmsRecipe::Encode)).is_none(),
                 "unproven PMS source cannot start");
         }

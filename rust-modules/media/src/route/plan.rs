@@ -2883,6 +2883,8 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 );
             }
             let mut accepted_output_codecs = false;
+            #[cfg(feature = "play-uri")]
+            let mut accepted_pms_recipe = None;
             if let Some(mc) = &decision {
                 // The server has already answered, and it is allowed to answer NO. Stop here rather than
                 // stream a `start.mkv` it has just said it cannot produce: the plan leaves with no URL —
@@ -2901,6 +2903,26 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     plan.vcodec = v;
                     plan.acodec = a;
                     accepted_output_codecs = true;
+                    #[cfg(feature = "play-uri")]
+                    {
+                        use crate::player::recovery::Lane;
+                        let lanes = decision_lanes(&mc);
+                        if lanes.audio != Lane::Unstated {
+                            accepted_pms_recipe = if matches!(plan.contract.delivery,
+                                plx_plex::plex::TranscodeDelivery::FixedHls { .. }) {
+                                (lanes.video != Lane::Unstated)
+                                    .then_some(super::uri_preflight::PmsRecipe::Hls)
+                            } else {
+                                match lanes.video {
+                                    Lane::Copy | Lane::DirectPlay =>
+                                        Some(super::uri_preflight::PmsRecipe::Remux),
+                                    Lane::Transcode =>
+                                        Some(super::uri_preflight::PmsRecipe::Encode),
+                                    Lane::Unstated => None,
+                                }
+                            };
+                        }
+                    }
                 }
             }
             // A video copy is still the file's elementary stream, DOVI record included, so the
@@ -2910,15 +2932,8 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             plan.tsession = session;
             #[cfg(feature = "play-uri")]
             if !forced && !env.preview && accepted_output_codecs {
-                if let (Some(port), Some(selection)) = (env.uri_preflight_port.as_ref(), plan.source_selection) {
-                    let recipe = if matches!(plan.contract.delivery,
-                        plx_plex::plex::TranscodeDelivery::FixedHls { .. }) {
-                        super::uri_preflight::PmsRecipe::Hls
-                    } else if plan.contract.remux {
-                        super::uri_preflight::PmsRecipe::Remux
-                    } else {
-                        super::uri_preflight::PmsRecipe::Encode
-                    };
+                if let (Some(port), Some(selection), Some(recipe)) = (
+                    env.uri_preflight_port.as_ref(), plan.source_selection, accepted_pms_recipe) {
                     plan.uri_pms = port.qualify_pms(off, super::uri_preflight::PmsRequest {
                         selection,
                         source_url: plan.url.clone(),
