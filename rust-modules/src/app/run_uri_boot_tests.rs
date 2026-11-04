@@ -771,5 +771,53 @@ mod uri_boot_tests {
             plx_media::route::backend_policy::OfferId::URI_ORIGINAL,
             "Force may choose the selected original URI; it cannot convert or pick sibling audio");
     }
+
+    #[cfg(feature = "play-feed")]
+    #[test]
+    fn uri_track_pick_without_a_known_playhead_cannot_restart_the_source_at_zero() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving_with(|request| {
+            queue_body(request, false).replace(
+                r#"{"id":2,"streamType":2,"codec":"aac","selected":true}"#,
+                r#"{"id":2,"streamType":2,"codec":"aac","selected":true},{"id":3,"streamType":2,"codec":"ac3","channels":6}"#)
+        }) else { return };
+        plx_plex::plex::client_for(rig.sid).unwrap()
+            .set_link(plx_plex::plex::probe::Location::Local);
+        let bus: &'static Bus = Box::leak(Box::new(Bus::new()));
+        let display: &'static Display = Box::leak(Box::new(Display));
+        let caps = Capabilities { progressive_uri: true, hls_uri: false,
+            packet_feed: false, pause: true, seek: true, audio_track: true,
+            subtitle_track: true, audio_off: false, subtitle_off: false };
+        let port = ResolvePort::new(ProductEvidence { display_exported: true,
+            binding: Binding::Exported { canvas: (1920, 1080) },
+            callable: caps, certified: caps, preview_rectangle: false },
+            Arc::new(QualifiedOriginal));
+        assert!(rig.app.adapters.player.install_uri_product_with_ports(
+            &mut rig.app.player.session, port, bus, display));
+        rig.request();
+        rig.release.send(()).unwrap();
+        let mut resolved = None;
+        poll_until("qualified URI source did not resolve", || {
+            resolved = plx_media::route::pump_play(&mut rig.app.player.session,
+                rig.app.bridge.metadata_mut());
+            resolved.is_some()
+        });
+        assert!(rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session,
+            resolved.unwrap().uri_offer.expect("qualified original source")).is_ok());
+        assert!(matches!(plx_media::player::start_playback_tracked(
+            &mut rig.app.player.session, &mut rig.app.adapters.player),
+            plx_media::player::BufferfeedStartOutcome::Launched(_)));
+        let at = rig.app.adapters.player.backend_tick();
+        let _ = rig.app.adapters.player.backend_poll_session_at(&mut rig.app.player.session, at);
+        assert!(bus.load_payload().is_some(), "the URI attempt owns an active Load");
+        assert_eq!(plx_media::player::intended_pos_known_ns(&rig.app.player.session), None,
+            "neither dispatch nor Load is a content position");
+        let request = rig.app.player.session.metric_request();
+        rig.pick_audio(3);
+        assert!(!plx_media::route::play_pending(),
+            "without a known playhead the source cannot be re-resolved at a guessed zero");
+        assert_eq!(rig.app.player.session.metric_request(), request);
+        assert_eq!(rig.app.player.session.source_selection().expect("source intent").audio_sid, 2);
+    }
 }
 
