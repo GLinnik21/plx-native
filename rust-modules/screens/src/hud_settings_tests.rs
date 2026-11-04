@@ -676,3 +676,29 @@ fn the_first_hud_listing_seats_the_current_choice_until_the_reader_moves() {
     tx.send(list()).unwrap();drive(&mut page,tick(),ADDRESS_KEY);
     assert_eq!(page.form.selected_id(),Some(&HudId::Address),"an intentional cursor is preserved across the listing");
 }
+
+#[test]
+fn gallery_keeps_packages_visible_on_development_app_releases() {
+    let mut page = gallery_page(SettingsPage::HudGallery);
+    page.list.app_version = "0.10.0-dev".into();
+    page.rebuild(None);
+    assert_eq!(page.form.table.n_rows(), 2);
+}
+
+#[test]
+fn about_cannot_remove_an_installed_hud_while_its_update_is_pending() {
+    let list = gallery_list();
+    let package = list.catalog.index.as_ref().unwrap().entries[0].clone();
+    let mut page = gallery_page(SettingsPage::HudAbout(package.sha()));
+    page.list.entries.push(pack(&package.id, &package.name, 1, false));
+    for fetching in [true, false] {
+        // Fetching and held-offer/confirmed-write phases share the complete operation flag.
+        page.list.fetching = fetching;
+        page.list.package_busy = true;
+        page.rebuild(None);
+        let key = key_of(&page, &HudId::Remove(package.id.clone()));
+        let emitted = drive(&mut page, ScreenEvent::Activate(key), key);
+        assert!(huds(&emitted).is_empty(), "a busy store cannot accept a removal");
+        assert!(!emitted.iter().any(|e| matches!(e.fx, Fx::Nav(_))));
+    }
+}

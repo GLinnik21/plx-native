@@ -154,6 +154,12 @@ impl std::fmt::Debug for Sha {
 pub struct Semver(u64, u64, u64);
 
 impl Semver {
+    /// Numeric release targeted by an app build, including development/nightly and build suffixes.
+    /// Package versions stay strict through `parse`; app compatibility ignores those suffixes.
+    pub fn app_release(text: &str) -> Option<Self> {
+        Self::parse(text.split(['-', '+']).next()?)
+    }
+
     /// `None` for anything but three plain decimal numbers (no sign, no leading zero) joined by dots.
     pub fn parse(text: &str) -> Option<Self> {
         fn number(part: &str) -> Option<u64> {

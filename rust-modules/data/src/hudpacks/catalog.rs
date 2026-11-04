@@ -65,7 +65,7 @@ impl Package {
 
     /// Latest transition at or before this app wins, including a later repaired translation.
     pub fn fits(&self, app: &str, language: &str) -> bool {
-        let Some(app) = Semver::parse(app) else {
+        let Some(app) = Semver::app_release(app) else {
             return false;
         };
         self.unfit
@@ -76,7 +76,7 @@ impl Package {
     }
 
     pub fn compatible(&self, app: &str, language: &str, pack_limit: usize) -> bool {
-        let Some(app_version) = Semver::parse(app) else {
+        let Some(app_version) = Semver::app_release(app) else {
             return false;
         };
         self.package_format == "1.0"

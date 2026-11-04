@@ -906,7 +906,7 @@ fn playback_diagnostics_requests_are_effects_and_answered_status_drives_the_togg
 }
 
 fn hud_return_to_player_hud(remove: bool) {
-    use crate::hud_settings::HudList;
+    use crate::registry::HudList;
     use crate::registry::HudCmd;
     use plx_data::hudpacks::{Entry,Meta,Source,Trust,BUILTIN_CLASSIC};
     let _g=plx_base::testlock::serial();let _session=scratch_session("hud-ancestor-return");

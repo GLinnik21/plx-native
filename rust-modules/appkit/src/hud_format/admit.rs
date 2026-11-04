@@ -12,7 +12,7 @@
 use plx_ui::rec::strict_json::{decode_ordered, Ordered};
 
 use super::bundle::{self, MAX_ARTIFACT_BYTES};
-use plx_data::hudpacks::valid_package_id;
+use plx_data::hudpacks::{valid_package_id, Semver};
 use super::{codes, REASON_NEWER};
 
 /// The longest `name` the list keeps, in characters.
@@ -80,9 +80,9 @@ pub fn admit(bytes: &[u8], app_version: &str) -> Admission {
         hud_format: format!("{}.{}", manifest.hud_format.0, manifest.hud_format.1),
     };
     let in_range = manifest.app.as_ref().is_none_or(|range| {
-        let app = triple(app_version);
-        let below = matches!((app, range.min.as_deref().and_then(triple)), (Some(app), Some(min)) if app < min);
-        let above = matches!((app, range.max.as_deref().and_then(triple)), (Some(app), Some(max)) if app > max);
+        let app = Semver::app_release(app_version);
+        let below = matches!((app, range.min.as_deref().and_then(Semver::parse)), (Some(app), Some(min)) if app < min);
+        let above = matches!((app, range.max.as_deref().and_then(Semver::parse)), (Some(app), Some(max)) if app > max);
         !(below || above)
     });
     if in_range {
@@ -90,14 +90,6 @@ pub fn admit(bytes: &[u8], app_version: &str) -> Admission {
     } else {
         Admission::Cannot(facts, Cannot::AppRange)
     }
-}
-
-/// The leading `MAJOR.MINOR.PATCH` of a release string (`0.2.1`, `0.2.1-nightly.3`); `None` when it has none.
-fn triple(text: &str) -> Option<(u64, u64, u64)> {
-    let core = text.split(['-', '+']).next()?;
-    let mut parts = core.split('.');
-    let mut next = || parts.next()?.parse::<u64>().ok();
-    Some((next()?, next()?, next()?))
 }
 
 fn clean_name(name: &str) -> String {

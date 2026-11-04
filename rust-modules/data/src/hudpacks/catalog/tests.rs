@@ -62,6 +62,10 @@ fn compatibility_hides_future_formats_and_uses_latest_language_transition() {
         {"from":"0.10.1","langs":["fr"]}, {"from":"0.10.2","langs":[]}]);
     let mut package = parse(&body(&value)).unwrap().entries.remove(0);
     assert!(package.compatible("0.10.0", "fr", 1000));
+    assert!(package.compatible("0.10.0-dev", "fr", 1000));
+    assert!(!package.compatible("0.10.1-nightly.4", "fr", 1000));
+    assert!(package.compatible("0.10.2+build.7", "fr", 1000));
+    assert!(!package.compatible("dev", "fr", 1000));
     assert!(!package.compatible("0.10.1", "fr", 1000));
     assert!(package.compatible("0.10.1", "en", 1000));
     assert!(package.compatible("0.10.2", "fr", 1000));

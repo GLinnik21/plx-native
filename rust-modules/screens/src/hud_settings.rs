@@ -69,6 +69,8 @@ pub struct HudList {
     pub offer: Option<OfferView>,
     /// A fetch from an address is in flight (the row is busy and takes no second request).
     pub fetching: bool,
+    /// Any package operation, including a held offer and a confirmed write, excludes removal.
+    pub package_busy: bool,
 }
 
 /// A row's id: what it IS, so the cursor keeps its place across a re-listing.
@@ -275,7 +277,7 @@ fn hud_form(list: &HudList, draft: Option<&TextBuffer>, browse: Option<SettingsP
                 && list.catalog.revoked(sha).is_none() && !list.unfit.contains(&sha));
         if entry.id != BUILTIN_CLASSIC && !managed_in_gallery {
             let row = Row::new(&name).server_label().detail(plx_platform::i18n::msg::settings_hud_remove());
-            removals = removals.item_keyed(HudId::Remove(entry.id.clone()), RowKey(REMOVE_KEY + i as u32), RowKind::Button, HudAction::Remove(entry.id.clone()), row);
+            removals = removals.item_keyed(HudId::Remove(entry.id.clone()), RowKey(REMOVE_KEY + i as u32), RowKind::Button, HudAction::Remove(entry.id.clone()), row).disabled(list.package_busy);
         }
     }
     // The address row: the keyboard's text while it is up, "Downloading…" while a fetch runs, else what to type.
@@ -329,7 +331,7 @@ impl HudPage {
             page: SettingsPage::PlayerHud,
             title: String::new(),
             parent: String::new(),
-            form: FormTable::new(BAND),
+            form: { let mut form = FormTable::new(BAND); form.table.set_empty_text(Some("")); form },
             state: State { selected: 0, rows: 0, notice: 0, confirming: false, affirmative: false, alert_scroll: 0, editing: false, fetching: false, kind: 0, scene: 0, visible: false, pending_select_focus: false, registry_request: false, provisional: true },
             list: HudList::default(),
             copy: String::new(),
@@ -415,7 +417,7 @@ impl HudPage {
                     let newer = installed.and_then(|e| e.meta.as_ref()).is_none_or(|m|
                         plx_data::hudpacks::Semver::parse(&m.version) < plx_data::hudpacks::Semver::parse(&package.version));
                     let listed = self.list.catalog.index.as_ref().is_some_and(|index| index.entries.iter().any(|p| p.sha() == sha));
-                    let can = listed && newer && !self.list.fetching
+                    let can = listed && newer && !self.list.package_busy
                         && self.list.catalog.revoked(sha).is_none() && !self.list.unfit.contains(&sha)
                         && package.compatible(&self.list.app_version, &self.list.language_tag, plx_appkit::hud_format::bundle::MAX_ARTIFACT_BYTES);
                     let label = if self.list.fetching { msg::settings_hud_fetching() }
@@ -445,7 +447,7 @@ impl HudPage {
                 if !self.list.catalog_date.is_empty() { rows = rows.note(msg::settings_hud_cached(&self.list.catalog_date)); }
                 if self.list.entries.iter().any(|e| e.id == package.id) {
                     rows = rows.item_keyed(HudId::Remove(package.id.clone()), RowKey(4), RowKind::Button,
-                        HudAction::RemoveAndReturn(package.id.clone()), Row::new(msg::settings_hud_remove()));
+                        HudAction::RemoveAndReturn(package.id.clone()), Row::new(msg::settings_hud_remove())).disabled(self.list.package_busy);
                 }
                 (msg::settings_hud_about().into(), package.name.clone(), String::new())
             }

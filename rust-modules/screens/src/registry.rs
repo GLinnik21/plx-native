@@ -81,15 +81,18 @@ pub enum AppFx {
     Huds(HudCmd),
 }
 
+/// The package-store view delivered through the HUD command channels.
+pub use crate::hud_settings::HudList;
+
 /// What the Player HUD settings page asks of the package store (`plx_data::hudpacks::HudStore`). The
 /// answers come back as the page's own data, the list the Bridge sends down the channel `Open` carries.
 #[derive(Clone)]
 pub enum HudCmd {
     /// The page opened: read every candidate directory again, and publish the list (now and whenever it
     /// changes) down this channel until the page drops its end.
-    Open(std::sync::mpsc::Sender<crate::hud_settings::HudList>),
+    Open(std::sync::mpsc::Sender<HudList>),
     /// A child gallery view subscribes without cancelling an installation or rescanning files.
-    Watch(std::sync::mpsc::Sender<crate::hud_settings::HudList>),
+    Watch(std::sync::mpsc::Sender<HudList>),
     /// Pick a package id (or `builtin:classic`) for the seated profile.
     Select(String),
     /// Download the exact package from the checked registry index, pending confirmation.

@@ -1090,6 +1090,7 @@ impl Bridge {
             notice: self.huds_notice.clone(),
             offer: self.huds.store().offer(),
             fetching: self.huds.store().fetching(),
+            package_busy: self.huds.store().busy(),
         };
         let mut delivered = false;
         self.huds_pages.retain_mut(|(page, sent)| {

@@ -20,8 +20,8 @@
 //! Three routes qualify today and a hard count here would be the fourth transcription of a number
 //! this project keeps letting rot — take the census by CALL SITE: a screen composed through
 //! `table_screen.rs` names its crumb in `Header::new(layout, None, …)` and the literal
-//! `draw_narrative` call sits once, generically, inside `Header::paint`, so
-//! `git grep -nE 'draw_narrative\(|Header::new\(' -- 'rust-modules/ui/src/*.rs' 'rust-modules/screens/src/*.rs'`
+//! `Header::paint` calls `draw_narrative_pending`; `draw_narrative` wraps it for callers without loading copy, so
+//! `git grep -nE 'draw_narrative(_pending)?\(|Header::new\(' -- 'rust-modules/ui/src/*.rs' 'rust-modules/screens/src/*.rs'`
 //! with the `None` crumbs read off each site is the census — a call-site grep rather than a
 //! transcribed count exactly so a file move cannot make it stale silently, which already happened
 //! once: phase 5b moved every real screen of this family out of `ui/` and into `screens/`, and a
