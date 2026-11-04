@@ -14,8 +14,8 @@
 //! returns without dialing (`plx_plex::http`'s `Deadline` pre-check), and a loaded machine can
 //! carry a short deadline past before the client's first `connect`. The joiner then waits forever,
 //! the suite never finishes, and a run that should have failed (or should never have depended on
-//! the clock) hangs for an hour instead. [`accept_within`] and [`serve_once`] turn "no client
-//! arrived" into an error, or a panic the joiner sees, after a wait the caller names.
+//! the clock) hangs for an hour instead. [`accept_within`], [`accept_client`] and [`serve_once`] turn
+//! "no client arrived" into an error, or a panic the joiner sees, after a wait the caller names.
 
 use std::io;
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -75,7 +75,16 @@ pub fn accept_within(listener: &TcpListener, wait: Duration) -> io::Result<(TcpS
     }
 }
 
-/// Serve ONE client on a new thread: wait up to `wait` for it ([`accept_within`]), then hand its
+/// [`accept_within`] for a server that cannot go on without its client: when nobody connects
+/// within `wait` it panics ("its client never arrived", naming the listener), so the thread running
+/// it ends and whoever joins that thread fails instead of blocking. A scoped server (`thread::scope`
+/// over state the test borrows, or a fixture that keeps its listener for a second look) cannot hand
+/// its listener to [`serve_once`]; it accepts through this.
+pub fn accept_client(listener: &TcpListener, wait: Duration) -> (TcpStream, SocketAddr) {
+    accept_within(listener, wait).unwrap_or_else(|e| panic!("loopback server: its client never arrived: {e}"))
+}
+
+/// Serve ONE client on a new thread: wait up to `wait` for it ([`accept_client`]), then hand its
 /// socket to `serve` and return what `serve` returns through the handle. If nobody connects, the
 /// thread panics with that error, so the test's `join()` fails instead of blocking.
 pub fn serve_once<T: Send + 'static>(
@@ -86,8 +95,7 @@ pub fn serve_once<T: Send + 'static>(
     std::thread::Builder::new()
         .name("loopback server".into())
         .spawn(move || {
-            let (socket, _) = accept_within(&listener, wait)
-                .unwrap_or_else(|e| panic!("loopback server: its client never arrived: {e}"));
+            let (socket, _) = accept_client(&listener, wait);
             serve(socket)
         })
         .expect("the OS refused a loopback server thread")
@@ -124,6 +132,32 @@ mod tests {
         let payload = server.join().expect_err("the joiner sees the failure instead of blocking");
         let message = payload.downcast_ref::<String>().cloned().unwrap_or_default();
         assert!(message.contains("its client never arrived"), "{message}");
+    }
+
+    #[test]
+    fn accepting_a_client_that_never_dials_panics_naming_the_listener() {
+        let (listener, port) = bound();
+        let payload = std::panic::catch_unwind(|| accept_client(&listener, Duration::from_millis(50)))
+            .expect_err("nobody dialed");
+        let message = payload.downcast_ref::<String>().cloned().unwrap_or_default();
+        assert!(message.contains("its client never arrived") && message.contains(&port.to_string()), "{message}");
+    }
+
+    #[test]
+    fn accepting_a_client_that_dials_hands_back_its_blocking_socket() {
+        let (listener, port) = bound();
+        let client = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        let (mut socket, peer) = accept_client(&listener, CLIENT_WAIT);
+        assert_eq!(peer, client.local_addr().expect("client address"));
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            (&client).write_all(b"ping").expect("write");
+            client
+        });
+        let mut got = [0u8; 4];
+        socket.read_exact(&mut got).expect("a blocking read waits for the bytes");
+        assert_eq!(&got, b"ping");
+        drop(writer.join().expect("writer"));
     }
 
     #[test]
