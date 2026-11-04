@@ -22,6 +22,11 @@ impl OfferId {
     /// Original candidate's own progressive PMS remux after an HLS/remux route. It is a
     /// distinct source recipe from the route being replaced, even when both use start.mkv.
     pub const FEED_ORIGINAL_TRIAL_REMUX: Self = Self(10);
+    /// A refused audio lane rebuilt with a PMS-converted audio track. The requested source
+    /// transformation differs from an ordinary remux even when both copy the video.
+    pub const FEED_REFUSAL_AUDIO: Self = Self(11);
+    pub const FEED_REFUSAL_VIDEO: Self = Self(12);
+    pub const FEED_REFUSAL_BOTH: Self = Self(13);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,6 +124,12 @@ impl BackendPolicy {
             (OfferId::URI_PMS_ENCODE, BackendKind::Uri, Fidelity::Compatible, Fidelity::Compatible),
             (OfferId::URI_PMS_HLS, BackendKind::Uri, Fidelity::Compatible, Fidelity::Compatible),
             (OfferId::FEED_ORIGINAL_TRIAL_REMUX, BackendKind::Feed,
+                Fidelity::Compatible, Fidelity::Compatible),
+            (OfferId::FEED_REFUSAL_AUDIO, BackendKind::Feed,
+                Fidelity::Compatible, Fidelity::Compatible),
+            (OfferId::FEED_REFUSAL_VIDEO, BackendKind::Feed,
+                Fidelity::Compatible, Fidelity::Compatible),
+            (OfferId::FEED_REFUSAL_BOTH, BackendKind::Feed,
                 Fidelity::Compatible, Fidelity::Compatible),
         ];
         Self::new(recipes.into_iter().map(|(id, backend, video, audio)| Offer {

@@ -824,6 +824,37 @@ mod backend_offer_session_tests {
         assert!(!session.backend_planned_feed_allowed(),
             "another automatic trial of the same source is still spent");
     }
+
+    #[cfg(feature = "play-feed")]
+    #[test]
+    fn refused_audio_and_both_facets_have_distinct_finite_conversion_recipes() {
+        let mut session = PlaybackSession::IDLE;
+        set_url(&mut session, "https://example.invalid/initial.mkv");
+        session.tsession = "initial".into();
+        session.cur_contract.remux = true;
+        assert!(session.qualify_installed_feed_offer(CandidatePurpose::NewCandidate));
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_PMS_REMUX));
+
+        // The worker's requested transformation, captured before PMS can change the URL,
+        // names each refusal recovery. An ordinary remux cannot spend the audio recovery.
+        for (id, url) in [
+            (OfferId::FEED_REFUSAL_AUDIO, "https://example.invalid/audio.mkv"),
+            (OfferId::FEED_REFUSAL_BOTH, "https://example.invalid/both.mkv"),
+        ] {
+            set_url(&mut session, url);
+            assert!(session.qualify_resolved_feed_offer(id, CandidatePurpose::NewCandidate));
+            assert!(session.backend_planned_feed_allowed());
+            assert!(session.backend_offer_admitted(BackendKind::Feed, id));
+            assert_eq!(session.installed_feed_recipe(), id);
+            assert!(session.qualify_installed_feed_offer(CandidatePurpose::ReopenCurrent));
+            assert!(session.backend_planned_feed_allowed());
+        }
+
+        assert!(session.qualify_resolved_feed_offer(OfferId::FEED_REFUSAL_AUDIO,
+            CandidatePurpose::NewCandidate));
+        assert!(!session.backend_planned_feed_allowed(),
+            "a new URL or later refusal cannot replenish the spent audio conversion");
+    }
 }
 
 /// What the server actually did with a requested Plex Pass audio enhancement (issue #266) — as
@@ -971,6 +1002,11 @@ impl PlaybackSession {
         } else if matches!(self.cur_contract.delivery,
             plx_plex::plex::TranscodeDelivery::FixedHls { .. }) {
             super::backend_policy::OfferId::FEED_PMS_HLS
+        } else if matches!(self.planned_feed_offer, Some(
+            super::backend_policy::OfferId::FEED_REFUSAL_AUDIO
+            | super::backend_policy::OfferId::FEED_REFUSAL_VIDEO
+            | super::backend_policy::OfferId::FEED_REFUSAL_BOTH)) {
+            self.planned_feed_offer.expect("checked recovery recipe")
         } else if self.cur_contract.remux {
             if self.planned_feed_offer == Some(
                 super::backend_policy::OfferId::FEED_ORIGINAL_TRIAL_REMUX) {
@@ -4783,7 +4819,11 @@ pub fn dispatch_refusal_conversion(ps: &mut PlaybackSession, offset_secs: i64, v
         offset_ns,
         offset_ns,
         Some(inputs),
-        ClaimWork::Encode(contract),
+        ClaimWork::EncodeRecovery(contract, match video {
+            VideoLane::AsPlanned => super::backend_policy::OfferId::FEED_REFUSAL_AUDIO,
+            VideoLane::Encode => super::backend_policy::OfferId::FEED_REFUSAL_VIDEO,
+            VideoLane::Both => super::backend_policy::OfferId::FEED_REFUSAL_BOTH,
+        }),
         RetranscodeFallback::RejectWith(REFUSAL_CONVERSION_REJECTED),
     ) {
         RecoveryDispatch::Flying { serial: ticket.serial }
@@ -10567,6 +10607,9 @@ pub(super) struct RetranscodeClaimInputs {
 /// What one accepted `/decision` attempt produced: the session the worker started and committed
 /// as the route's encoder, and everything the main thread needs to install, retire or discard it.
 pub(super) struct AppliedRetranscode {
+    /// Stable source/transformation recipe captured when a recovery flight was dispatched.
+    /// Ordinary track/seek rebuilds leave this absent and reuse their installed route recipe.
+    pub(super) recovery_offer: Option<super::backend_policy::OfferId>,
     pub(super) qsess: String,
     url: String,
     vcodec: String,
@@ -10778,6 +10821,7 @@ pub(super) fn commit_retranscode(
     ));
     let PreparedEncode { qsess, url, vcodec, acodec, dovi, dv_decision, contract, enhancement, lanes } = prepared;
     Ok(AppliedRetranscode {
+        recovery_offer: None,
         qsess,
         url,
         vcodec,
