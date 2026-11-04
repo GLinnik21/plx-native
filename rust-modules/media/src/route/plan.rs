@@ -2907,7 +2907,11 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     {
                         use crate::player::recovery::Lane;
                         let lanes = decision_lanes(&mc);
-                        if lanes.audio != Lane::Unstated {
+                        let registered_output = mc.metadata.first()
+                            .and_then(|m| m.decided_media())
+                            .and_then(|md| md.part.first())
+                            .is_some_and(|part| part.decision == "transcode");
+                        if registered_output && lanes.audio != Lane::Unstated {
                             accepted_pms_recipe = if matches!(plan.contract.delivery,
                                 plx_plex::plex::TranscodeDelivery::FixedHls { .. }) {
                                 (lanes.video != Lane::Unstated)
