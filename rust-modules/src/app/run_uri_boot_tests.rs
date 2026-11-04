@@ -645,10 +645,15 @@ mod uri_boot_tests {
     #[test]
     fn sidecar_pick_on_uri_re_resolves_with_the_selected_external_source_sid() {
         let _serial = plx_base::testlock::serial();
-        let Some(mut rig) = Rig::serving_with(|request| {
-            queue_body(request, false).replace(
-                r#"{"id":2,"streamType":2,"codec":"aac","selected":true}"#,
-                r#"{"id":2,"streamType":2,"codec":"aac","selected":true},{"id":3,"streamType":3,"codec":"srt","languageCode":"eng","key":"/library/streams/3"}"#)
+        let sidecar_listed = Arc::new(AtomicBool::new(false));
+        let listing = sidecar_listed.clone();
+        let Some(mut rig) = Rig::serving_with(move |request| {
+            let body = queue_body(request, false).to_owned();
+            if listing.load(Ordering::Acquire) && request.contains("/library/metadata/") {
+                body.replace(
+                    r#"{"id":2,"streamType":2,"codec":"aac","selected":true}"#,
+                    r#"{"id":2,"streamType":2,"codec":"aac","selected":true},{"id":3,"streamType":3,"codec":"srt","languageCode":"eng","key":"/library/streams/3"}"#)
+            } else { body }
         }) else { return };
         plx_plex::plex::client_for(rig.sid).unwrap()
             .set_link(plx_plex::plex::probe::Location::Local);
@@ -688,6 +693,15 @@ mod uri_boot_tests {
         poll(&mut rig);
         bus.say("play", r#"{"returnValue":true,"mediaId":"m1","playing":true,"currentTime":12000}"#);
         poll(&mut rig);
+        // A sidecar becomes available while the original URI is playing. The initial source
+        // contained no subtitle, so its Unspecified native subtitle requirement was truthful.
+        sidecar_listed.store(true, Ordering::Release);
+        let client = plx_plex::plex::client_for(rig.sid).unwrap();
+        let (refreshed, _) = plx_data::metadata::fetch_playing_item(client, rig.sid, "1", None)
+            .expect("the refreshed item lists the newly available sidecar");
+        assert_eq!(refreshed.subs.first().map(|sub| sub.id), Some(3));
+        rig.app.bridge.metadata_mut().run(
+            plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(refreshed)));
         let before = rig.app.player.session.metric_request();
         rig.pick_subtitle(3);
         assert!(plx_media::route::play_pending(),

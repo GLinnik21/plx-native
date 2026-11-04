@@ -175,6 +175,14 @@ const URI_DTS_EXTERNAL_SUBTITLE: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ra
      {"id":31343,"streamType":3,"codec":"srt","index":2,"languageCode":"eng","selected":true,"key":"/library/streams/31343"}]}]}]}]}}"#;
 
 #[cfg(feature = "play-uri")]
+const URI_AV1_EXTERNAL_SUBTITLE: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-v","type":"movie","duration":600000,"Media":[
+  {"id":3086,"duration":450000,"bitrate":2372,"width":1920,"height":1080,"videoCodec":"av1","audioCodec":"dca","container":"mkv",
+   "Part":[{"id":3134,"duration":450000,"key":"/library/parts/3134/1/file.mkv","container":"mkv","Stream":[
+     {"id":31341,"streamType":1,"codec":"av1","index":0},
+     {"id":31342,"streamType":2,"codec":"dca","channels":6,"index":1,"languageCode":"eng","default":true,"selected":true},
+     {"id":31343,"streamType":3,"codec":"srt","index":2,"languageCode":"eng","selected":true,"key":"/library/streams/31343"}]}]}]}]}}"#;
+
+#[cfg(feature = "play-uri")]
 const URI_AV1: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-v","type":"movie","duration":450000,"Media":[
   {"id":3086,"bitrate":2372,"width":1920,"height":1080,"videoCodec":"av1","audioCodec":"aac","container":"mkv",
    "Part":[{"id":3134,"duration":450000,"key":"/library/parts/3134/1/file.mkv","container":"mkv","Stream":[
@@ -600,18 +608,26 @@ fn viewer_off_re_resolves_a_burned_pms_uri_without_reusing_its_subtitle() {
             binding: Binding::Exported { canvas: (1920, 1080) },
             callable: capabilities, certified: capabilities, preview_rectangle: false },
         std::sync::Arc::new(QualifiedPms(std::sync::Arc::new(std::sync::Mutex::new(Vec::new()))))));
-    let (port, done, server) = versions_pms_with(URI_DTS_EXTERNAL_SUBTITLE, MDE_PMS_BURNED_EXTERNAL);
+    let (port, done, server) = versions_pms_with(URI_AV1_EXTERNAL_SUBTITLE, MDE_PMS_BURNED_EXTERNAL);
     let sid = plx_plex::plex::register_for_test("burned-off", "127.0.0.1", port,
         "token", "burned-off-client");
     let mut meta = plx_data::stores::metadata::MetadataStore::default();
-    assert!(request_play(&mut ps, &mut meta, plx_platform::devcaps::caps(), sid,
-        "rk-v", "/library/parts/3134/1/file.mkv", "h264", "dca", "Film", "", None));
+    let feed_cannot_decode_av1 = std::sync::Arc::new(plx_platform::devcaps::Caps {
+        av1: false, ..plx_platform::devcaps::Caps::assumed()
+    });
+    assert!(request_play(&mut ps, &mut meta, feed_cannot_decode_av1, sid,
+        "rk-v", "/library/parts/3134/1/file.mkv", "av1", "dca", "Film", "", None));
     assert!(wait_resolve_workers_for_test(std::time::Duration::from_secs(15)));
     let first = pump_play(&mut ps, &mut meta).expect("accepted burned PMS output");
     let burned = first.uri_offer.expect("accepted server burn is a qualified URI output");
     assert_eq!(ps.source_selection().expect("source intent").subtitle_sid, 31343);
-    assert!(ps.backend_offer_admitted(BackendKind::Uri, burned.offer_id()));
-    ps.begin_attempt_view(RouteStartAttempt::fixture(), crate::player::attempt_view::Backend::Uri);
+    let ticket = first.route_start.expect("the accepted plan owns one start transaction");
+    assert!(prepare_route_start(ticket));
+    let attempt = claim_route_start_attempt(ticket).expect("one physical URI attempt");
+    assert!(ps.backend_offer_admitted(BackendKind::Uri, burned.offer_id()),
+        "this source has no Feed original, so the accepted URI PMS output is the catalog choice");
+    ps.begin_attempt_view(attempt, crate::player::attempt_view::Backend::Uri);
+    assert!(settle_route_start(&mut ps, attempt, RouteStartResult::Started));
     let prior_request = ps.metric_request();
     assert!(request_viewer_reconfigure(&mut ps, &mut meta,
         ViewerReconfigure::SourceSubtitle { sid: 0, mode: SubMode::Off, forced_lang: None },
