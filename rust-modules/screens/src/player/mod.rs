@@ -3306,10 +3306,10 @@ mod step_ladder_tests {
     #[test]
     fn the_capsule_leaving_leaves_the_transport_dismissed_however_it_closed() {
         let _g = plx_base::testlock::serial();
-        let paused = plx_media::player::TX.paused.swap(true, std::sync::atomic::Ordering::Relaxed);
         let cx = cx();
         let ps = TestHost::session(&cx);
         let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
+        page.model.paused = true; // the HUD reads the screen's model, not `TX.paused`
         assert!(page.hud_drawn(ps, 1_000), "paused: the transport is up before the capsule");
         page.set_hud_policy(HudPolicy::Hidden);
         assert!(!page.hud_drawn(ps, 1_000), "hidden under the capsule");
@@ -3317,7 +3317,6 @@ mod step_ladder_tests {
         assert!(!page.hud_drawn(ps, 1_000), "and stays down once the capsule has left");
         page.hud.note_fresh_press(ps, 1_100, true);
         assert!(page.hud_drawn(ps, 1_100), "a bound key raises it again");
-        plx_media::player::TX.paused.store(paused, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// **A fresh LEFT on the capsule while paused keeps the transport hidden.** The capsule's own
@@ -3327,10 +3326,10 @@ mod step_ladder_tests {
     #[test]
     fn a_fresh_press_on_the_capsule_while_paused_keeps_the_transport_hidden() {
         let _g = plx_base::testlock::serial();
-        let paused = plx_media::player::TX.paused.swap(true, std::sync::atomic::Ordering::Relaxed);
         let cx = cx();
         let ps = TestHost::session(&cx);
         let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
+        page.model.paused = true; // the HUD reads the screen's model, not `TX.paused`
         page.set_hud_policy(HudPolicy::Hidden);
         page.hud.dismissed = true;
         page.hud.note_fresh_press(ps, 1_000, true); // the LEFT that steps the capsule
@@ -3338,7 +3337,6 @@ mod step_ladder_tests {
         assert!(!page.hud_up(ps, 1_000), "yet the transport stays hidden under the capsule");
         assert!(!page.hud_drawn(ps, 1_000));
         assert!(!page.subs_lift(ps, 1_000), "and the captions do not lift for it");
-        plx_media::player::TX.paused.store(paused, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// **A click lands on the disc under it, and falls through to the scrubber in the gaps and past the row's
