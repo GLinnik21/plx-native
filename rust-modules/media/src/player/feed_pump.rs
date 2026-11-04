@@ -336,7 +336,7 @@ pub(super) fn inject_refuse601(
     }
     #[cfg(feature = "devtriggers")]
     super::log("devtrig refuse601: publishing type=18 num=601 after the Load");
-    super::sf_on_event(eng.native_epoch, 18, 601, std::ptr::null());
+    plx_play_feed::sf_event::sf_on_event(eng.native_epoch, 18, 601, std::ptr::null());
 }
 
 /// The native surround audio watchdog ([`super::native_stall`]): the pipeline took the Load and a few
@@ -399,7 +399,7 @@ pub(super) fn note_missing_era_callback(feed: &mut FeedResources) {
         displayed: FEED_SHARED.dg_sink_displayed_cb.load(Relaxed),
         other_numbering: FEED_SHARED.dg_sink_other_cb.load(Relaxed),
         major,
-        expected_type: super::displayed_counter_type(major),
+        expected_type: plx_play_feed::sf_event::displayed_counter_type(major),
     };
     if let Step::Missing(m) = eng.era_watch.step(&probe) {
         super::log(&line(&m));
@@ -612,7 +612,7 @@ pub(super) fn tick_load(feed: &mut FeedResources, mt: &MainThread, now: u32,
 
     // ---------- playback speed: the safety net ----------
     // A speed session's Load declared PCM. The pipeline reports what it set up (audio-info
-    // callback, `player::note_speed_audio_report`); a report that is not the declared 48 kHz
+    // callback, `plx_play_feed::sf_event`); a report that is not the declared 48 kHz
     // stereo, or none within speed_deadline_ms of loadCompleted, means this television
     // does not take app-fed PCM the way the 3.9.3 set does — fall back to 1x rather than play
     // silence or a drifting sound. Video-only Loads (the `noaudio` trigger) have no audio to judge.
@@ -622,10 +622,10 @@ pub(super) fn tick_load(feed: &mut FeedResources, mt: &MainThread, now: u32,
         && FEED_TX.seek_to_ns.load(Relaxed) < 0
     {
         match FEED_SHARED.speed_audio_verdict.load(Relaxed) {
-            super::SPEED_AUDIO_BAD => {
+            plx_play_feed::shared::SPEED_AUDIO_BAD => {
                 notice.speed_fallback = Some("the pipeline set up different audio than the PCM declared");
             }
-            super::SPEED_AUDIO_UNKNOWN
+            plx_play_feed::shared::SPEED_AUDIO_UNKNOWN
                 if now.wrapping_sub(FEED_SHARED.dg_load_at.load(Relaxed)) > speed_deadline_ms =>
             {
                 notice.speed_fallback = Some("the pipeline never reported its audio");
@@ -1034,9 +1034,7 @@ pub(super) fn native_attempt_facts() -> plx_playback_contract::readout::AttemptF
     let position = FEED_SHARED.playpos_ns.load(Relaxed);
     let duration = FEED_SHARED.duration_ns.load(Relaxed);
     let (width, height) = FEED_SHARED.video_raster();
-    let aspect = FEED_SHARED.video_aspect.load(std::sync::atomic::Ordering::Acquire);
-    let aspect_num = (aspect >> 32) as u32;
-    let aspect_den = aspect as u32;
+    let (aspect_num, aspect_den) = FEED_SHARED.video_aspect_pair();
     let stage = FEED_SHARED.dg_stage.load(Relaxed);
     let pipeline_error = FEED_SHARED.dg_cb_err_num.load(Relaxed);
     let http_status = FEED_SHARED.dg_http_status.load(Relaxed);

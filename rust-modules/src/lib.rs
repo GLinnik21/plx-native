@@ -7,7 +7,7 @@
 //! boot shim. The crate's C surface is tiny: C calls `plex_run` (port.rs), writes the fallback
 //! image marker through `plx_crash_write_image_marker`, re-enters the native-crash spool through
 //! `plx_sentry_spool_external`, and forwards the two library-thread callbacks (`sf_on_event`,
-//! `plx_media`'s player/mod.rs; `acb_on_event`, the platform port's `webos::video_sink`). Everything
+//! `plx_play_feed`'s sf_event.rs; `acb_on_event`, the platform port's `webos::video_sink`). Everything
 //! else is Rust-internal (the per-module `repr(C)`
 //! shapes are migration legacy, not ABI).
 // Host checks may build without an executor; a native television artifact must select one.

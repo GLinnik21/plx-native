@@ -52,6 +52,7 @@ pub mod native_executor;
 pub mod native_release;
 pub mod open;
 pub mod seek;
+pub mod sf_event;
 pub mod playurl;
 pub mod pcm_lead;
 pub mod side_reader;

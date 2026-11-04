@@ -3364,7 +3364,7 @@ mod flight_tests {
     /// the callback the firmware calls: the same entry `inject_refuse601` publishes on.
     fn pipeline_refuses_601(rig: &mut Rig) {
         let epoch = engine_epoch(rig).expect("the rig's Engine");
-        super::super::sf_on_event(epoch, 18, 601, std::ptr::null());
+        plx_play_feed::sf_event::sf_on_event(epoch, 18, 601, std::ptr::null());
     }
 
     /// **The pipeline takes the exact Load a test just started.** A host Load can now either
@@ -3483,7 +3483,7 @@ mod flight_tests {
         let epoch = engine_epoch(rig);
         rig.flight.hold_answers();
         let refusal_log = plx_base::eventlog::with_private_log(|| {
-            super::super::sf_on_event(epoch.expect("the rig's Engine"), 18, num, std::ptr::null());
+            plx_play_feed::sf_event::sf_on_event(epoch.expect("the rig's Engine"), 18, num, std::ptr::null());
             rig.frame();
             std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
         });
@@ -3597,7 +3597,7 @@ mod flight_tests {
         pipeline_takes_the_load(&mut rig);
         let reloaded = engine_epoch(&mut rig).expect("the encoded route's Engine");
         rig.frame();
-        super::super::sf_on_event(reloaded, 18, 601, std::ptr::null());
+        plx_play_feed::sf_event::sf_on_event(reloaded, 18, 601, std::ptr::null());
         rig.frame();
         assert_eq!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error, "the third refusal reads out");
         assert!(!crate::route::flight_outstanding(), "no third flight");
@@ -3807,7 +3807,7 @@ mod flight_tests {
         plx_plex::plex::session::save(&remembered);
         assert_eq!(recorded_refusals(), [dts_row(1)], "the second Play begins with the persisted first proof");
         let epoch = engine_epoch(&mut rig).expect("the rig's Engine");
-        super::super::sf_on_event(epoch, 18, 601, std::ptr::null());
+        plx_play_feed::sf_event::sf_on_event(epoch, 18, 601, std::ptr::null());
         rig.frame();
         rig.frames_until("the second conversion's landing", |_| !crate::route::flight_outstanding());
         first_picture(&mut rig);
@@ -3900,7 +3900,7 @@ mod flight_tests {
         let epoch = engine_epoch(&mut rig).expect("the rig's Engine");
         crate::ff::native_audio::publish_fed(crate::ff::native_audio::Kind::Opus, 6);
         rig.flight.hold_answers();
-        super::super::sf_on_event(epoch, 18, 200, std::ptr::null());
+        plx_play_feed::sf_event::sf_on_event(epoch, 18, 200, std::ptr::null());
         rig.frame();
         assert!(crate::route::flight_outstanding(), "the conversion flight is outstanding");
         let rows = recorded_refusals();
@@ -3966,7 +3966,7 @@ mod flight_tests {
 
         crate::ff::native_audio::publish_fed(crate::ff::native_audio::Kind::Opus, 6);
         rig.flight.hold_answers();
-        super::super::sf_on_event(epoch, 18, 200, std::ptr::null());
+        plx_play_feed::sf_event::sf_on_event(epoch, 18, 200, std::ptr::null());
         rig.frame();
         assert_ne!(
             crate::player::state(&rig.ps),
@@ -4413,7 +4413,7 @@ mod flight_tests {
         pipeline_takes_the_load(&mut rig);
         assert!(FEED_SHARED.mark_native_load_returned(reloaded, None).is_some(), "the reload's Load returned");
         let second = plx_base::eventlog::with_private_log(|| {
-            super::super::sf_on_event(reloaded, 18, 601, std::ptr::null());
+            plx_play_feed::sf_event::sf_on_event(reloaded, 18, 601, std::ptr::null());
             for _ in 0..4 {
                 rig.frame();
             }
@@ -5672,8 +5672,8 @@ mod end_of_film_tests {
             for _ in 0..80 {
                 rig.step();
                 let epoch = rig.eng().native_epoch;
-                let ty = crate::player::displayed_counter_type(plx_platform::tv::device::info().major);
-                crate::player::sf_on_event(epoch, ty, 5, std::ptr::null());
+                let ty = plx_play_feed::sf_event::displayed_counter_type(plx_platform::tv::device::info().major);
+                plx_play_feed::sf_event::sf_on_event(epoch, ty, 5, std::ptr::null());
             }
         });
         assert!(FEED_SHARED.dg_sink_displayed_cb.load(Relaxed) > 0, "PRECONDITION FAILED, not the defect: the counter was not counted");

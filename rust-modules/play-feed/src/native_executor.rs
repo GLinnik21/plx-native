@@ -147,8 +147,6 @@ pub struct FeedHooks {
     pub sink: fn() -> &'static dyn VideoSink,
     pub mirror_playstate: fn(&MainThread, Stage, bool),
     pub mute_for_preroll: fn(&MainThread),
-    pub presentation_event: fn(i64),
-    pub vclock_ms: fn() -> u32,
     pub feed_clock_us: fn() -> u64,
 }
 
@@ -1496,7 +1494,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks: 
         // pts-ordered, so if the head is over budget everything behind it is too; breaking is right.
         let pres = eng.feed_pace.reference_at(
             shared.pres_fed.load(Ordering::Relaxed),
-            (hooks.vclock_ms)(),
+            crate::shared::vclock_ms(),
             shared.applied_rate_permille.load(Ordering::Relaxed),
         );
         if !eng.prime_play {
@@ -1536,7 +1534,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks: 
         if presentation_probe {
             if (r as u8) == b'O' {
                 if !shared.commit_native_presentation_probe(eng.native_epoch, |num| {
-                    (hooks.presentation_event)(num)
+                    crate::sf_event::sf_on_event_inner(0, num, std::ptr::null(), crate::shared::EventScope::Live)
                 }) {
                     plx_base::eventlog::log("rebase: native presentation probe lost its epoch after accepted Feed");
                 }
@@ -1628,7 +1626,7 @@ fn feed_audio_lane(mt: &MainThread, eng: &mut Engine, hooks: &FeedHooks) {
     let shift = shared.pts_shift.load(Ordering::Relaxed);
     let pres = eng.feed_pace.reference_at(
         shared.pres_fed.load(Ordering::Relaxed),
-        (hooks.vclock_ms)(),
+        crate::shared::vclock_ms(),
         shared.applied_rate_permille.load(Ordering::Relaxed),
     );
     let slice = FeedSlice::begin(hooks.feed_clock_us);

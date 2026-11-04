@@ -487,6 +487,9 @@ pub enum QueuedLanding {
 impl PlayerAdapter {
     /// Take the token. `app::boot` calls this once, with the token `plex_run` minted.
     pub fn new(mt: MainThread) -> Self {
+        // The pipeline callback has no user-data pointer, so its hooks are installed once per process.
+        #[cfg(feature = "play-feed")]
+        super::install_sf_event_hooks();
         Self {
             mt,
             #[cfg(feature = "play-feed")]

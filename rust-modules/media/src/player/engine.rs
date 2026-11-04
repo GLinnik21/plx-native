@@ -659,17 +659,11 @@ use plx_play_feed::native_executor::{settle_pcm_lead, hls_candidate_snapshot_sta
 pub use plx_play_feed::native_executor::arm_live_clock_prime;
 
 
-fn replay_native_presentation(num: i64) {
-    super::sf_on_event_inner(0, num, std::ptr::null(), super::shared::EventScope::Live);
-}
-
 const FEED_HOOKS: plx_play_feed::native_executor::FeedHooks =
     plx_play_feed::native_executor::FeedHooks {
         sink,
         mirror_playstate: super::acb_mirror_playstate_at,
         mute_for_preroll: super::mute_for_preroll,
-        presentation_event: replay_native_presentation,
-        vclock_ms: super::vclock_ms,
         feed_clock_us,
     };
 
@@ -2734,7 +2728,7 @@ mod off_frame_release_tests {
         // A callback the stopped object delivers now (a late error, say) is dropped: the session
         // state was already reset for whatever plays next.
         let before = FEED_SHARED.dg_cb_count.load(Ordering::Relaxed);
-        super::super::sf_on_event(epoch, 5, 0, std::ptr::null());
+        plx_play_feed::sf_event::sf_on_event(epoch, 5, 0, std::ptr::null());
         assert_eq!(
             FEED_SHARED.dg_cb_count.load(Ordering::Relaxed),
             before,
@@ -3211,8 +3205,8 @@ mod off_frame_release_tests {
         stop_bufferfeed(&mut ps, &mut pa);
         assert!(pa.has_pending_release());
         let before = FEED_SHARED.dg_cb_count.load(Ordering::Relaxed);
-        super::super::sf_on_event(epoch + 1, 23, 0, std::ptr::null());
-        super::super::sf_on_event(0, 23, 0, std::ptr::null());
+        plx_play_feed::sf_event::sf_on_event(epoch + 1, 23, 0, std::ptr::null());
+        plx_play_feed::sf_event::sf_on_event(0, 23, 0, std::ptr::null());
         assert_eq!(FEED_SHARED.dg_cb_count.load(Ordering::Relaxed), before, "a wrong-epoch event was processed");
         assert!(
             !FEED_SHARED.native_unload_completed(epoch),
@@ -3647,7 +3641,7 @@ mod load_in_flight_tests {
         // Hand-set the in-flight window and publish loadCompleted via the existing sf_on_event
         // path — simulating "Load has not returned" without a real second thread.
         crate::player::ffi_host::set_load_in_flight_for_test(true);
-        super::super::sf_on_event(epoch, 2, 0, c"{\"loadCompleted\":true}".as_ptr());
+        plx_play_feed::sf_event::sf_on_event(epoch, 2, 0, c"{\"loadCompleted\":true}".as_ptr());
 
         crate::player::pump::pump(&mut ps, &mut pa, 1_000);
         assert_eq!(
@@ -4840,12 +4834,12 @@ mod load_refusal_tests {
         pa.install(eng);
 
         // `Load()` returned ok=1 — nothing here says otherwise — and then the pipeline talked.
-        super::super::sf_on_event(epoch, 13, 1, c"".as_ptr());
-        super::super::sf_on_event(epoch, 14, 0, c"1".as_ptr());
-        super::super::sf_on_event(epoch, 5, 0, ECHO_SINK.as_ptr());
-        super::super::sf_on_event(epoch, 15, 0, c"1".as_ptr());
-        super::super::sf_on_event(epoch, 8, 0, c"audio/mpeg".as_ptr());
-        super::super::sf_on_event(epoch, 18, 601, REFUSAL.as_ptr());
+        plx_play_feed::sf_event::sf_on_event(epoch, 13, 1, c"".as_ptr());
+        plx_play_feed::sf_event::sf_on_event(epoch, 14, 0, c"1".as_ptr());
+        plx_play_feed::sf_event::sf_on_event(epoch, 5, 0, ECHO_SINK.as_ptr());
+        plx_play_feed::sf_event::sf_on_event(epoch, 15, 0, c"1".as_ptr());
+        plx_play_feed::sf_event::sf_on_event(epoch, 8, 0, c"audio/mpeg".as_ptr());
+        plx_play_feed::sf_event::sf_on_event(epoch, 18, 601, REFUSAL.as_ptr());
 
         crate::player::pump::pump(&mut ps, &mut pa, 1_000);
 
@@ -5192,11 +5186,11 @@ mod pcm_sink_lead_pure_tests {
         let _serial = plx_base::testlock::serial();
         let _restore = Restore;
         FEED_SHARED.applied_rate_permille.store(crate::player::RATE_NORMAL, Ordering::Relaxed);
-        assert_eq!(audio_sink_pts(7_000_000_000, 0), crate::player::to_sink_ns(7_000_000_000));
+        assert_eq!(audio_sink_pts(7_000_000_000, 0), plx_play_feed::shared::to_sink_ns(7_000_000_000));
         assert_eq!(audio_sink_pts(7_000_000_000, PCM_SINK_LEAD_NS), 7_000_000_000 + PCM_SINK_LEAD_NS);
 
         FEED_SHARED.applied_rate_permille.store(1500, Ordering::Relaxed);
-        assert_eq!(audio_sink_pts(3_000_000_000, 0), crate::player::to_sink_ns(3_000_000_000));
+        assert_eq!(audio_sink_pts(3_000_000_000, 0), plx_play_feed::shared::to_sink_ns(3_000_000_000));
         assert_eq!(
             audio_sink_pts(3_000_000_000, 400_000_000),
             2_000_000_000 + 400_000_000,
@@ -5832,9 +5826,9 @@ mod pcm_sink_lead_tests {
         FEED_SHARED.seek_target_ns.store(T_NS, Ordering::Relaxed);
         tick(&mut eng);
         let (v0, a0, audio) = first_feeds();
-        assert_eq!(a0, crate::player::to_sink_ns(T_NS) + PCM_SINK_LEAD_NS);
+        assert_eq!(a0, plx_play_feed::shared::to_sink_ns(T_NS) + PCM_SINK_LEAD_NS);
         assert!((a0 - v0 - PCM_SINK_LEAD_NS).abs() <= 1, "audio is {} ns after the picture", a0 - v0);
-        let last_content = crate::player::from_sink_ns(audio.last().unwrap() - PCM_SINK_LEAD_NS);
+        let last_content = plx_play_feed::shared::from_sink_ns(audio.last().unwrap() - PCM_SINK_LEAD_NS);
         assert!(
             (eng.max_fed_audio_pts - last_content).abs() <= 2,
             "max_fed_audio_pts {} is content time, the sink's last audio gives {last_content}",
