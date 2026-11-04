@@ -872,16 +872,15 @@ fn install_claim_landing(
             }
         }
         RetranscodeClaimResult::NativeAudio { ordinal, codec } => {
-            #[cfg(feature = "play-feed")]
-            {
-            // `stage_native_audio` moves `ps.stream_acodec`; it touches no other projection field
-            // (the desired audio index and cues live outside it).
-            advance_claim_snapshot(&mut action, |p| p.stream_acodec = codec.clone());
-            crate::player::stage_native_audio(ps, ordinal, &codec);
-            ClaimTail::NativeAudio
+            if !ps.backends().feed {
+                ClaimTail::Rejected("native audio requires Feed")
+            } else {
+                // `stage_native_audio` moves `ps.stream_acodec`; it touches no other projection field
+                // (the desired audio index and cues live outside it).
+                advance_claim_snapshot(&mut action, |p| p.stream_acodec = codec.clone());
+                crate::player::route_fx::stage_native_audio(ps, ordinal, &codec);
+                ClaimTail::NativeAudio
             }
-            #[cfg(not(feature = "play-feed"))]
-            { let _ = (ordinal, codec); ClaimTail::Rejected("native audio requires Feed") }
         }
         RetranscodeClaimResult::Rejected(reason) => ClaimTail::Rejected(reason),
     };

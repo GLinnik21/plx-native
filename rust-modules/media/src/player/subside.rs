@@ -46,7 +46,7 @@ const REOPEN_LEAD_NS: i64 = 15_000_000_000;
 /// [`Spec::ordinal`] of a CLOCK-ONLY run: no track is read (a sidecar is drawn), only the clock is
 /// measured. Negative, so it is never a track position and two runs of different roles never
 /// compare equal in `apply`.
-pub const CLOCK_ONLY: i32 = -1;
+pub const CLOCK_ONLY: i32 = crate::route::SIDE_READER_CLOCK_ONLY;
 
 /// Everything one run of the reader is started with. `url` carries the token: held, never logged.
 #[derive(Clone)]
