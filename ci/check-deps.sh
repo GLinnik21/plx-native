@@ -1213,9 +1213,12 @@ LG_LEDGERS=ci/allow/blocking.txt LG_COUNT_FILE=ci/allow/blocking.txt \
 # lines of the machine it made pure. MACHINES is the scope of workers and globals; FORK_SCOPE is the
 # scope of forks: the whole of every crate that holds a machine (a fork anywhere in them is a test that
 # does not run the product's code), which is each crate MACHINES names a directory or file of, plus all
-# of the Plex client and the player:
+# of the Plex client and the player. The one exception is `platform/src/tv/plane.rs` (the ACB plane's
+# pure `Plane`, in the file of its runner `PlaneOwner`): platform holds forks of its own (i18n,
+# keymanager, storage, toast, webos, ...) that no ledger lists, so that one file is scanned for workers
+# and globals and the crate is not in FORK_SCOPE:
 MACHINES=("$SRC_DATA" "$SRC_SESSION" rust-modules/plex/src/plex/session.rs "$SRC_MEDIA/player/lifecycle.rs"
-  "$SRC_MEDIA/player/attempt_metrics.rs" "$SRC_MEDIA/player/attempt_view.rs" "$SRC_MEDIA/player/backend_startup.rs" "$SRC_MEDIA/player/backend_metrics.rs" "$SRC_MEDIA/player/recovery.rs" "$SRC_MEDIA/player/release.rs" "$SRC_PLAYBACK_CONTRACT" "$SRC_PLAY_URI/uriprobe.rs" "$SRC_PLAY_URI/uri_protocol.rs" "$SRC_PLAY_URI/uri_lifecycle.rs" "$SRC_MEDIA/route/backend_policy.rs" "$SRC_MEDIA/route/plan.rs" "$SRC_MEDIA/route/plan_memory.rs" "$SRC_SCREENS" "$SRC_UI" "$SRC_APPKIT" "$SRC_MACHINE")
+  "$SRC_MEDIA/player/attempt_metrics.rs" "$SRC_MEDIA/player/attempt_view.rs" "$SRC_MEDIA/player/backend_startup.rs" "$SRC_MEDIA/player/backend_metrics.rs" "$SRC_MEDIA/player/recovery.rs" "$SRC_MEDIA/player/release.rs" "$SRC_PLAYBACK_CONTRACT" "$SRC_PLAY_URI/uriprobe.rs" "$SRC_PLAY_URI/uri_protocol.rs" "$SRC_PLAY_URI/uri_lifecycle.rs" "$SRC_PLAY_URI/acb_bind.rs" "$SRC_PLATFORM/tv/plane.rs" "$SRC_MEDIA/route/backend_policy.rs" "$SRC_MEDIA/route/plan.rs" "$SRC_MEDIA/route/plan_memory.rs" "$SRC_SCREENS" "$SRC_UI" "$SRC_APPKIT" "$SRC_MACHINE")
 FORK_SCOPE=("$SRC_DATA" "$SRC_PLEX" "$SRC_MEDIA" "$SRC_PLAYBACK_CONTRACT" "$SRC_PLAY_URI" "$SRC_PLAY_FEED" "$SRC_MEDIA_CODECS" "$SRC_SESSION" "$SRC_SCREENS" "$SRC_UI" "$SRC_APPKIT" "$SRC_MACHINE")
 
 # scope_re <path>...: an ERE over repo-relative file paths that matches those paths (a `.rs` file
@@ -1245,7 +1248,7 @@ globals_pat='client_for|current_server|current_snapshot|keypin::(revision|blocke
 forks_pat='cfg.*test|test.*cfg|#!?\[cfg\([^]]*$|cfg!\([^)]*$'
 forks_plain_re='^[[:space:]]*#\[cfg\((test|any\(test, feature = "test-support"\)|all\((test|any\(test, feature = "test-support"\)), [^()]*\))\)\][[:space:]]*$'
 ledger_hits=$(
-  find "$SRC_DATA" "$SRC_SESSION" "$SRC_PLEX" "$SRC_MEDIA" "$SRC_PLAYBACK_CONTRACT" "$SRC_PLAY_URI" "$SRC_PLAY_FEED" "$SRC_MEDIA_CODECS" "$SRC_SCREENS" "$SRC_UI" "$SRC_APPKIT" "$SRC_MACHINE" \
+  find "$SRC_DATA" "$SRC_SESSION" "$SRC_PLEX" "$SRC_MEDIA" "$SRC_PLAYBACK_CONTRACT" "$SRC_PLAY_URI" "$SRC_PLAY_FEED" "$SRC_MEDIA_CODECS" "$SRC_SCREENS" "$SRC_UI" "$SRC_APPKIT" "$SRC_MACHINE" "$SRC_PLATFORM/tv/plane.rs" \
       -name '*.rs' -type f 2>/dev/null \
     | W_PAT="$workers_pat" G_PAT="$globals_pat" F_PAT="$forks_pat" F_PLAIN="$forks_plain_re" \
       M_RE="$machines_re" K_RE="$fork_scope_re" \
