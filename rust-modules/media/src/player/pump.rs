@@ -4121,6 +4121,7 @@ mod flight_tests {
             let refusals = |log: &str| log.matches("Load refused by the pipeline before any picture (type=18 num=601)").count();
             let log = plx_base::eventlog::with_private_log(|| {
                 let epoch = engine_epoch(&mut rig).expect("the rig's Engine");
+                assert!(!SHARED.native_load_returned(epoch), "the callback preceded the worker's Load-return receipt");
                 rig.frame();
                 assert!(!SHARED.load_failed.load(Acquire), "nothing is published before the Load returned");
                 assert!(SHARED.mark_native_load_returned(epoch, None).is_some(), "the Load returned");
