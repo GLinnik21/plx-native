@@ -321,6 +321,19 @@ fn remember_track_pick(ps: &PlaybackSession, pick: TrackPick) -> bool {
     })
 }
 
+/// A URI source-track edit is remembered only after the common viewer request door accepts its
+/// same-source resolve. The old physical route stays confirmed until the replacement lands; this
+/// uses the existing show-memory writer without running Feed track or sidecar controls.
+#[cfg(feature = "play-uri")]
+pub fn remember_accepted_source_audio(ps: &PlaybackSession, memo: AudioMemo) {
+    let _ = remember_track_pick(ps, TrackPick::Audio(memo));
+}
+
+#[cfg(feature = "play-uri")]
+pub fn remember_accepted_source_subtitle(ps: &PlaybackSession, memo: SubtitleMemo) {
+    let _ = remember_track_pick(ps, TrackPick::Subtitle(memo));
+}
+
 /// **The track menu's audio pick: commit it, and remember it if the route took it.** `memo` is the
 /// descriptor of the picked row ([`memo_of_audio`](super::super::memo_of_audio)); `None` is a commit that is
 /// not a viewer's choice and remembers nothing. The write is made when

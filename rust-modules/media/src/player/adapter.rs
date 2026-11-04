@@ -74,6 +74,16 @@ struct PendingUriSubtitle {
     memo: Option<plx_plex::plex::session::prefs::SubtitleMemo>,
 }
 
+/// A delivered native track command was refused for this exact URI attempt. The app can ask the
+/// existing same-source resolver for a new physical output; this is not a second Start queue.
+#[cfg(feature = "play-uri")]
+pub enum UriTrackFallback {
+    Audio { audio: crate::route::CarriedAudio,
+        memo: Option<plx_plex::plex::session::prefs::AudioMemo> },
+    Subtitle { ordinal: i32, stream_id: i64,
+        memo: Option<plx_plex::plex::session::prefs::SubtitleMemo> },
+}
+
 /// Explicit product URI settings captured with the resolve port's certification evidence.
 /// Platform transport and display are supplied at the IO composition boundary.
 #[cfg(feature = "play-uri")]
@@ -525,6 +535,10 @@ pub struct PlayerAdapter {
     pending_uri_audio: Option<PendingUriAudio>,
     #[cfg(feature = "play-uri")]
     pending_uri_subtitle: Option<PendingUriSubtitle>,
+    #[cfg(feature = "play-uri")]
+    refused_uri_audio: Option<PendingUriAudio>,
+    #[cfg(feature = "play-uri")]
+    refused_uri_subtitle: Option<PendingUriSubtitle>,
     /// Route identity and product trace for the installed physical attempt. The feed itself
     /// receives only the canonical contract ID and native epoch.
     #[cfg(feature = "play-feed")]
@@ -615,6 +629,10 @@ impl PlayerAdapter {
             pending_uri_audio: None,
             #[cfg(feature = "play-uri")]
             pending_uri_subtitle: None,
+            #[cfg(feature = "play-uri")]
+            refused_uri_audio: None,
+            #[cfg(feature = "play-uri")]
+            refused_uri_subtitle: None,
             #[cfg(feature = "play-feed")]
             feed_attempt: None,
             #[cfg(any(feature = "play-feed", feature = "play-uri"))]
@@ -820,6 +838,40 @@ impl PlayerAdapter {
         { let _ = (ps, permille); false }
     }
 
+    /// `None` is a Feed attempt. A URI answer is derived from the active source's private
+    /// native map, so a PMS output with one selected track never advertises source siblings.
+    #[cfg(feature = "play-uri")]
+    pub fn uri_maps_track(&self, ps: &crate::route::PlaybackSession,
+        kind: plx_playback_contract::TrackKind, source_id: i64) -> Option<bool> {
+        if ps.attempt_view().backend() != Some(super::attempt_view::Backend::Uri) {
+            return None;
+        }
+        let Some(id) = u64::try_from(source_id).ok().filter(|id| *id > 0) else {
+            return Some(false);
+        };
+        Some(self.uri_backend.as_ref().is_some_and(|driver| driver.maps_track(
+            plx_playback_contract::TrackSelection { kind, id })))
+    }
+
+    /// Drain one exact refused interactive choice after polling the native driver. The two
+    /// per-kind slots are bounded and a later choice supersedes an earlier one of that kind.
+    #[cfg(feature = "play-uri")]
+    pub fn take_uri_track_fallback(&mut self) -> Option<UriTrackFallback> {
+        let active = self.uri_route_attempt.map(|route| route.contract_id());
+        if let Some(pending) = self.refused_uri_audio.take() {
+            if Some(pending.attempt) == active {
+                return Some(UriTrackFallback::Audio { audio: pending.audio, memo: pending.memo });
+            }
+        }
+        if let Some(pending) = self.refused_uri_subtitle.take() {
+            if Some(pending.attempt) == active {
+                return Some(UriTrackFallback::Subtitle { ordinal: pending.ordinal,
+                    stream_id: pending.stream_id, memo: pending.memo });
+            }
+        }
+        None
+    }
+
     /// `None` means the active route is Feed. `Some(false)` is an explicit URI refusal, so a
     /// caller must never fall through to Feed track or sidecar controls for this route.
     #[cfg(feature = "play-uri")]
@@ -831,6 +883,7 @@ impl PlayerAdapter {
             return Some(false);
         }
         let Some(route_attempt) = self.uri_route_attempt else { return Some(false); };
+        self.refused_uri_audio = None;
         let Ok(id) = u64::try_from(audio.sid) else { return Some(false); };
         let attempt = route_attempt.contract_id();
         let operation = Operation::SelectTrack { kind: plx_playback_contract::TrackKind::Audio,
@@ -857,6 +910,7 @@ impl PlayerAdapter {
         let Ok(id) = u64::try_from(stream_id) else { return Some(false); };
         if id == 0 || ordinal < 0 || has_sidecar { return Some(false); }
         let Some(route_attempt) = self.uri_route_attempt else { return Some(false); };
+        self.refused_uri_subtitle = None;
         let attempt = route_attempt.contract_id();
         let operation = Operation::SelectTrack { kind: plx_playback_contract::TrackKind::Subtitle,
             choice: plx_playback_contract::TrackChoice::Selected(id) };
@@ -1311,6 +1365,8 @@ impl PlayerAdapter {
         self.uri_finalized = false;
         self.pending_uri_audio = None;
         self.pending_uri_subtitle = None;
+        self.refused_uri_audio = None;
+        self.refused_uri_subtitle = None;
     }
 
     #[cfg(feature = "play-uri")]
@@ -1492,6 +1548,7 @@ impl PlayerAdapter {
                             pending.attempt == attempt && pending.command == command
                                 && u64::try_from(pending.audio.sid).ok() == Some(id)) {
                         let pending = self.pending_uri_audio.take().expect("matched URI audio pick");
+                        self.refused_uri_audio = None;
                         crate::route::confirm_uri_audio_pick(ps, pending.audio, pending.memo);
                     }
                 }
@@ -1505,6 +1562,7 @@ impl PlayerAdapter {
                             pending.attempt == attempt && pending.command == command
                                 && u64::try_from(pending.stream_id).ok() == Some(id)) {
                         let pending = self.pending_uri_subtitle.take().expect("matched URI subtitle pick");
+                        self.refused_uri_subtitle = None;
                         crate::route::confirm_uri_subtitle_pick(ps, pending.ordinal,
                             pending.stream_id, pending.memo);
                     }
@@ -1516,13 +1574,13 @@ impl PlayerAdapter {
                     plx_playback_contract::TrackKind::Audio => {
                         if self.pending_uri_audio.as_ref().is_some_and(|pending|
                             pending.attempt == attempt && pending.command == command) {
-                            self.pending_uri_audio = None;
+                            self.refused_uri_audio = self.pending_uri_audio.take();
                         }
                     }
                     plx_playback_contract::TrackKind::Subtitle => {
                         if self.pending_uri_subtitle.as_ref().is_some_and(|pending|
                             pending.attempt == attempt && pending.command == command) {
-                            self.pending_uri_subtitle = None;
+                            self.refused_uri_subtitle = self.pending_uri_subtitle.take();
                         }
                     }
                 },
@@ -1565,6 +1623,8 @@ impl PlayerAdapter {
                         self.uri_stop_requested = false;
                         self.pending_uri_audio = None;
                         self.pending_uri_subtitle = None;
+                        self.refused_uri_audio = None;
+                        self.refused_uri_subtitle = None;
                     }
                 }
                 _ => {}

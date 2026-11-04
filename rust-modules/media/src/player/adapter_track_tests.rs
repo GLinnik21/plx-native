@@ -33,6 +33,12 @@ impl Bus {
         state.replies.push_back(UriReply { session, request, method,
             payload: payload.into(), ok: true });
     }
+    fn say_request(&self, method: &'static str, request: RequestId, payload: &str) {
+        let mut state = self.0.lock().unwrap();
+        let session = state.session;
+        state.replies.push_back(UriReply { session, request, method,
+            payload: payload.into(), ok: true });
+    }
     fn calls(&self, method: &str) -> usize {
         self.0.lock().unwrap().calls.iter().filter(|(name, _)| *name == method).count()
     }
@@ -124,6 +130,8 @@ fn queued_and_acknowledged_uri_picks_keep_the_prior_route_until_exact_confirmati
     let (mut ps, mut pa, bus, _) = opened();
     assert!(pa.commit_audio_track(&mut ps, crate::route::CarriedAudio::named(42, 3), None));
     let first = pa.pending_uri_audio.as_ref().expect("queued audio command").command;
+    let first_native = bus.0.lock().unwrap().calls.iter()
+        .find(|(method, _)| *method == "selectTrack").expect("first native command").1;
     assert_eq!(bus.calls("selectTrack"), 1);
     assert_eq!(crate::route::cur_audio_sid(&ps), 0, "queue success is not selection");
 
@@ -150,11 +158,19 @@ fn queued_and_acknowledged_uri_picks_keep_the_prior_route_until_exact_confirmati
     let _ = pa.backend_poll_session_at(&mut ps, at);
     assert_eq!(crate::route::cur_audio_sid(&ps), 42,
         "late old selection cannot commit the pending successor");
+    bus.say_request("selectTrack", first_native,
+        r#"{"returnValue":false,"mediaId":"m1"}"#);
+    let at = pa.backend_tick();
+    let _ = pa.backend_poll_session_at(&mut ps, at);
+    assert!(pa.refused_uri_audio.is_none(),
+        "a retired native request cannot schedule an old source reconfiguration");
     bus.say("selectTrack", r#"{"returnValue":false,"mediaId":"m1"}"#);
     let at = pa.backend_tick();
     let _ = pa.backend_poll_session_at(&mut ps, at);
     assert!(pa.pending_uri_audio.is_none(), "exact refusal retires only the pending command");
     assert_eq!(crate::route::cur_audio_sid(&ps), 42);
+    assert!(matches!(pa.take_uri_track_fallback(), Some(UriTrackFallback::Audio { audio, .. })
+        if audio.sid == 43), "only the latest refused command can ask the resolver");
     assert!(pa.commit_subtitle_track(&mut ps, 5, 77, None, String::new(), None),
         "a later interactive refusal cannot poison another selected track");
     bus.say("subscribe", r#"{"mediaId":"m1","trackSelected":{"type":"text","index":5}}"#);

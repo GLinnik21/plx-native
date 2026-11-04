@@ -2019,6 +2019,9 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         let backend_at = app.adapters.player.backend_tick();
         let _ = app.adapters.player.backend_poll_session_at(&mut app.player.session, backend_at);
         #[cfg(feature = "play-uri")]
+        super::playback::drain_uri_track_fallbacks(&mut app.player.session,
+            &mut app.adapters.player, app.bridge.metadata_mut());
+        #[cfg(feature = "play-uri")]
         if let Some(recovery) = app.adapters.player.take_released_uri_recovery() {
             // The driver has proved this exact URI owner Released and the adapter has retired
             // its reporter. Re-resolve the same source episode before generic report::tick can

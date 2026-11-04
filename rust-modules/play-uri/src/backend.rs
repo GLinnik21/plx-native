@@ -149,6 +149,17 @@ impl UriBackend {
     /// its window. This is an ownership fact, not proof that a picture reached the panel.
     pub fn plane_owned(&self) -> bool { self.window && self.played_once }
 
+    /// Whether the active source has an exact native index for this selected source track.
+    /// This is source evidence, independent of a general SelectTrack capability flag; a PMS
+    /// single-track output cannot switch to a different source track in place.
+    pub fn maps_track(&self, selection: TrackSelection) -> bool {
+        let enabled = match selection.kind {
+            TrackKind::Audio => self.config.capabilities.audio_track,
+            TrackKind::Subtitle => self.config.capabilities.subtitle_track,
+        };
+        self.active.is_some() && enabled && native_index(&self.tracks, selection).is_some()
+    }
+
     fn observe(&mut self, observation: Observation) {
         if let Some(attempt) = self.active {
             self.pending.push_back(DriverEvent::Observation { attempt, observation });

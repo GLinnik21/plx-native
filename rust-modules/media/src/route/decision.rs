@@ -35,7 +35,8 @@ pub use memory::{
     on_decoded_frame, persist_subtitle_offset, rematch_subtitle_with_names, repoint_parked_subtitle, send_parked_write_back,
 };
 #[cfg(feature = "play-uri")]
-pub use memory::{confirm_uri_audio_pick, confirm_uri_subtitle_pick};
+pub use memory::{confirm_uri_audio_pick, confirm_uri_subtitle_pick,
+    remember_accepted_source_audio, remember_accepted_source_subtitle};
 #[cfg(any(test, feature = "test-support"))]
 pub use memory::{park_write_back_for_test, write_back_parked};
 pub(super) use memory::ParkedWriteBack;
@@ -813,8 +814,8 @@ mod backend_offer_session_tests {
         });
         let mut meta = plx_data::stores::metadata::MetadataStore::default();
         let change = ViewerReconfigure::Speed(1500);
-        assert!(!request_viewer_reconfigure(&mut session, &mut meta, change, None, Some(true)));
-        assert!(!request_viewer_reconfigure(&mut session, &mut meta, change,
+        assert!(!request_viewer_reconfigure(&mut session, &mut meta, change.clone(), None, Some(true)));
+        assert!(!request_viewer_reconfigure(&mut session, &mut meta, change.clone(),
             Some(42_000_000_000), None));
         assert!(!request_viewer_reconfigure(&mut session, &mut meta,
             ViewerReconfigure::Speed(plx_playback_contract::RATE_NORMAL),
@@ -9397,10 +9398,14 @@ fn request_play_inner(
 
 /// An explicit viewer edit that needs a new physical executor. Its desired value is installed
 /// only after the common request door accepts the resolve, so Busy leaves the current play intact.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ViewerReconfigure {
     Speed(i32),
     Audio(plx_plex::plex::AudioEnhancements),
+    /// The viewer selected a source stream that this URI output cannot switch to natively.
+    SourceAudio(i64),
+    /// Off and Forced only are source intent, not a fabricated URI native index.
+    SourceSubtitle { sid: i64, mode: SubMode, forced_lang: Option<String> },
 }
 
 /// Re-resolve the same source and selected tracks at a proven viewer position. This is one new
@@ -9412,19 +9417,41 @@ pub fn request_viewer_reconfigure(ps: &mut PlaybackSession,
     let (Some(request), Some(position_ns), Some(paused)) =
         (ps.request.clone(), position_ns, paused) else { return false };
     if position_ns < 0 || ps.preview { return false; }
-    match change {
+    let mut retry = current_retry_context(ps, position_ns);
+    match &change {
         ViewerReconfigure::Speed(rate) => {
-            if !crate::player::PLAY_RATES.contains(&rate)
-                || rate == ps.requested_rate_permille
+            if !crate::player::PLAY_RATES.contains(rate)
+                || *rate == ps.requested_rate_permille
                 || (ps.direct_play_mode == DirectPlayMode::Forced
-                    && rate != plx_playback_contract::RATE_NORMAL) { return false; }
+                    && *rate != plx_playback_contract::RATE_NORMAL) { return false; }
         }
         ViewerReconfigure::Audio(audio) => {
-            if audio == crate::player::audio_enhancements()
+            if *audio == crate::player::audio_enhancements()
                 || (ps.direct_play_mode == DirectPlayMode::Forced && audio.any()) { return false; }
         }
+        ViewerReconfigure::SourceAudio(sid) => {
+            let Some(source) = ps.source_selection else { return false };
+            if ps.attempt_view().backend() != Some(crate::player::attempt_view::Backend::Uri)
+                || *sid <= 0 || *sid == source.audio_sid
+                || !meta.view().playing().is_some_and(|item|
+                    item.audio.iter().any(|track| track.id == *sid)) { return false; }
+            retry.selection = Some((*sid, source.subtitle_sid));
+        }
+        ViewerReconfigure::SourceSubtitle { sid, mode, forced_lang } => {
+            let Some(source) = ps.source_selection else { return false };
+            if ps.attempt_view().backend() != Some(crate::player::attempt_view::Backend::Uri)
+                || *sid < 0 || (*sid == source.subtitle_sid && *mode == ps.sub_mode) {
+                return false;
+            }
+            if *sid > 0 && !meta.view().playing().is_some_and(|item|
+                item.subs.iter().any(|track| track.id == *sid)) { return false; }
+            if (*mode == SubMode::Off && *sid != 0)
+                || (*mode == SubMode::Track && *sid == 0)
+                || (*mode == SubMode::ForcedOnly) != forced_lang.is_some() { return false; }
+            retry.selection = Some((source.audio_sid, *sid));
+            retry.sub_mode = *mode;
+        }
     }
-    let mut retry = current_retry_context(ps, position_ns);
     retry.candidate_purpose = CandidatePurpose::NewCandidate;
     let caps = ps.attempt_caps();
     request_play_with_queue(ps, meta, caps, request, Some(retry), None, false,
@@ -9499,6 +9526,12 @@ fn request_play_with_queue(
         match change {
             ViewerReconfigure::Speed(rate) => ps.requested_rate_permille = rate,
             ViewerReconfigure::Audio(audio) => crate::player::set_audio_enhancements(audio),
+            ViewerReconfigure::SourceAudio(_) => {}
+            ViewerReconfigure::SourceSubtitle { mode: SubMode::ForcedOnly,
+                forced_lang: Some(lang), .. } => {
+                ps.track_ctx.get_or_insert_with(TrackContext::default).forced_lang = lang;
+            }
+            ViewerReconfigure::SourceSubtitle { .. } => {}
         }
     }
     // **The playback funnel's denominator, minted HERE and not where the plan lands.** Every way
