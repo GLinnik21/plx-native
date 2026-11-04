@@ -6254,6 +6254,8 @@ class DepGates(unittest.TestCase):
         "rust-modules/data/src",
         "rust-modules/session/src",
         "rust-modules/media/src",
+        # `SRC_PLAY_FEED`: the fork ledger holds the simulator's sink (`ffi_host.rs`), which lives here.
+        "rust-modules/play-feed/src",
         "rust-modules/appkit/src",
         "rust-modules/screens/src",
         "rust-modules/Cargo.toml",
