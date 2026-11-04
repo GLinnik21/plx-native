@@ -262,7 +262,8 @@ impl RouteGround {
 
     pub fn draw_host(&mut self, p: Painter) {
         // `ModalStack::draw_scrims_on`'s rule, for its reason — see [`ground_reads_host`].
-        if ground_reads_host(p.opacity(), plx_gfx::gfx::snapshot_captured_this_frame()) {
+        // Recording a layout must neither sample the framebuffer nor change its host latch.
+        if !p.is_recording() && ground_reads_host(p.opacity(), plx_gfx::gfx::snapshot_captured_this_frame()) {
             self.latch_host();
         }
         self.field.draw(p, Rect::FULL, Role::Ground, 1.0);
@@ -1082,6 +1083,15 @@ fn ground_reads_host(opacity: f32, captured: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_recorded_host_ground_neither_captures_nor_latches() {
+        let mut ground = super::RouteGround::new();
+        ground.draw_host(crate::Painter::recording());
+        assert!(!ground.is_latched());
+        crate::record_walk(|| ground.draw_host(crate::Painter::root()));
+        assert!(!ground.is_latched(), "nested root painters obey the recording walk too");
+    }
+
     /// `ModalStack::draw_scrims_on`'s rule, for a route ground: the host is read on the frame that
     /// captured it (whose GPU work is waited out before anything presents) or once the ground is
     /// seen — never on a held, invisible frame that captured nothing.
@@ -1662,7 +1672,7 @@ mod tests {
     /// from under the content moving over it.
     ///
     /// Exercises `latch_default` rather than `draw_default` itself — see [`RouteGround::latch_host`]'s
-    /// doc for why a host test cannot call through to `field.draw`.
+    /// doc for why these latch assertions avoid a visible GL draw.
     #[test]
     fn a_latched_route_ground_does_not_re_latch() {
         let mut ground = RouteGround::new();
@@ -1688,7 +1698,7 @@ mod tests {
     /// a live GL context this binary never creates.
     ///
     /// Exercises `latch_host` rather than `draw_host` itself — see [`RouteGround::latch_host`]'s doc
-    /// for why a host test cannot call through to `field.draw`.
+    /// for why these latch assertions avoid a visible GL draw.
     #[test]
     fn a_route_ground_whose_frame_latch_fails_falls_back_to_corners() {
         // A refusal is not a pending read, and the deferred read must not turn one into a frame of

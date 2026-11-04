@@ -622,6 +622,36 @@ fn preview_focus_and_back_never_choose_a_different_scene() {
 }
 
 #[test]
+fn preview_press_commits_choose_scenes_and_activate_back() {
+    let list = gallery_list();
+    let package = list.catalog.index.as_ref().unwrap().entries.iter()
+        .find(|package| package.name == "Reference").unwrap();
+    let mut page = gallery_page(SettingsPage::HudPreview(package.sha()));
+    drive(&mut page, tick(), 0);
+
+    // Control groups and pointer stops use the shared press protocol: OK-up and
+    // pointer release deliver PressCommit rather than the direct Activate shortcut.
+    drive(&mut page, ScreenEvent::PressCommit(PressId(1)), 2);
+    assert_eq!(page.state.scene, 1, "committing Chapters & info selects its preview");
+    drive(&mut page, ScreenEvent::PressCommit(PressId(2)), 3);
+    assert_eq!(page.state.scene, 2, "committing Up Next selects its preview");
+    for current in [None, Some(FocusKey { entry: EntryId(44), elem: 2 })] {
+        let mut cx = context(2);
+        cx.focus.current = current;
+        let mut effects = Vec::new();
+        let mut present = Present::new();
+        let handled = page.step(&ScreenEvent::PressCommit(PressId(9)), &cx,
+            &mut Effects::new(&mut effects, MachineId::Instance(InstanceId(0)), &mut present));
+        assert!(matches!(handled, Handled::No));
+        assert!(effects.is_empty(), "a commit without this page's focus cannot act");
+        assert_eq!(page.state.scene, 2);
+    }
+    let effects = drive(&mut page, ScreenEvent::PressCommit(PressId(3)), 0);
+    assert!(effects.iter().any(|effect| matches!(effect.fx, Fx::Nav(NavOp::Pop))));
+    assert_eq!(page.state.scene, 2, "Back does not change the chosen scene");
+}
+
+#[test]
 fn gallery_forms_and_preview_controls_fit_every_shipped_language() {
     let mut failures=Vec::new();
     for language in SHIPPED {

@@ -471,6 +471,19 @@ impl HudPage {
 
     fn is_preview(&self) -> bool { matches!(self.page, SettingsPage::HudPreview(..)) }
 
+    fn activate_preview(&mut self, key: u32, fx: &mut Effects<'_, InnerHost>) -> Handled {
+        if key == 0 {
+            fx.push(Fx::Nav(NavOp::Pop));
+        } else {
+            let at = key as usize - 1;
+            if at < self.scenes().len() {
+                self.state.scene = at as u32;
+                fx.invalidate(plx_machine::present::Provenance::Input);
+            }
+        }
+        Handled::Yes
+    }
+
     fn scenes(&self) -> Vec<(&'static str, &plx_data::hudpacks::catalog::Preview)> {
         use plx_platform::i18n::msg;
         let Some(package) = self.package() else { return Vec::new() };
@@ -709,12 +722,11 @@ impl Machine<InnerHost> for HudPage {
         if self.is_preview() {
             match ev {
                 ScreenEvent::FocusMoved { to, .. } => { self.state.selected = to.elem; return Handled::Yes }
-                ScreenEvent::Activate(0) => { fx.push(Fx::Nav(NavOp::Pop)); return Handled::Yes }
-                ScreenEvent::Activate(key) => {
-                    let at = *key as usize - 1;
-                    if at < self.scenes().len() { self.state.scene = at as u32; fx.invalidate(plx_machine::present::Provenance::Input); }
-                    return Handled::Yes;
-                }
+                ScreenEvent::Activate(key) => return self.activate_preview(*key, fx),
+                ScreenEvent::PressCommit(_) => return match cx.focus.current.filter(|key| key.entry == self.entry) {
+                    Some(key) => self.activate_preview(key.elem, fx),
+                    None => Handled::No,
+                },
                 ScreenEvent::Input(_) => return Handled::No,
                 _ => (),
             }

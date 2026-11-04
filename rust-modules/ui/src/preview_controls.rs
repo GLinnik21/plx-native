@@ -1,5 +1,5 @@
 //! Full-image preview chrome: one shared CircleButton and TabStrip, one engine-owned row.
-//! Focus never chooses a scene. The owner changes selection only on Activate.
+//! Focus never chooses a scene. Activation is handled by the owner.
 use crate::screen::{AxisMask, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Placed, Seat, Step};
 use crate::widgets::{self, CircleButton, ControlGround, SelMark, StripLay, TabGround, TabStrip};
 use crate::{consts::SAFE, icons::Icon, theme, Env, Painter, Rect, View};
