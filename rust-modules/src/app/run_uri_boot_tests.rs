@@ -324,11 +324,24 @@ mod uri_boot_tests {
         assert_eq!(rig.app.adapters.player.backend_transport_control(true), Some(true));
         bus.say("pause", r#"{"returnValue":true,"mediaId":"m1","paused":true}"#);
         frame(&mut rig);
+        let reports_before_failure = plx_telemetry::telemetry::playback::report_calls_for_test();
+        let uri_metrics = rig.app.adapters.player.backend_metrics_snapshot()
+            .expect("URI physical attempt reached the measurement owner");
+        assert_eq!(uri_metrics.id, request);
+        assert_eq!(uri_metrics.attempt_count, 1);
+        assert!(!uri_metrics.current_attempt.expect("URI attempt").evidence.picture_presented,
+            "native Playing and a 12-second clock are not proof of a presented picture");
         let source = rig.app.player.session.source_selection();
         bus.say("subscribe", r#"{"mediaId":"m1","error":"native playback failed","errorCode":104}"#);
         frame(&mut rig);
         assert_eq!(rig.app.player.session.metric_request(), Some(request));
         assert!(!plx_media::route::play_pending());
+        let closing = rig.app.adapters.player.backend_metrics_snapshot().unwrap();
+        assert_eq!(closing.attempt_count, 1);
+        assert_eq!(closing.handoff_count, 1);
+        assert!(closing.outcome.is_none(), "native Closing is a recoverable physical failure");
+        assert_eq!(plx_telemetry::telemetry::playback::report_calls_for_test(),
+            reports_before_failure, "Closing must not send a handled terminal error");
         bus.release();
         frame(&mut rig);
         assert!(plx_media::route::play_pending());
@@ -345,6 +358,24 @@ mod uri_boot_tests {
         assert_eq!(replacement.resume_ns, 12_000_000_000);
         assert_eq!(rig.app.player.session.source_selection(), source);
         assert_eq!(rig.app.player.session.metric_request(), Some(request));
+        assert!(matches!(plx_media::player::begin_resume(&mut rig.app.player.session,
+            replacement.resume_ns), plx_media::player::ResumeStart::Settled(
+                plx_media::player::ResumeOutcome::Prepared)));
+        assert!(matches!(plx_media::player::start_playback_tracked(
+            &mut rig.app.player.session, &mut rig.app.adapters.player),
+            plx_media::player::BufferfeedStartOutcome::Launched(_)));
+        let feed_metrics = rig.app.adapters.player.backend_metrics_snapshot()
+            .expect("the same request now owns its Feed attempt");
+        assert_eq!(feed_metrics.id, request);
+        assert_eq!(feed_metrics.attempt_count, 2);
+        assert_eq!(feed_metrics.handoff_count, 1);
+        assert!(feed_metrics.outcome.is_none());
+        assert_eq!(feed_metrics.current_attempt.expect("Feed successor").backend,
+            plx_media::player::attempt_metrics::Backend::Feed);
+        assert!(!feed_metrics.recent_attempts[0].evidence.picture_presented,
+            "the old URI service clock did not become picture evidence");
+        assert_eq!(plx_telemetry::telemetry::playback::report_calls_for_test(),
+            reports_before_failure, "a successful handoff has no terminal handled report");
     }
 
     #[cfg(feature = "play-feed")]
