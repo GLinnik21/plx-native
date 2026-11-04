@@ -331,7 +331,7 @@ fn start_qualified_uri_inner(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
         position.as_millis().checked_mul(1_000_000))
         .and_then(|ns| i64::try_from(ns).ok());
     let _ = ps.ingest_attempt_facts(route_attempt, super::attempt_view::Backend::Uri, facts);
-    pa.bind_uri_attempt(route_attempt);
+    pa.bind_uri_attempt(route_attempt, offer.offer_id);
     pa.start_timeline(ps, route_attempt);
     Ok(route_attempt)
 }
@@ -1241,6 +1241,8 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
     for_reload: bool, reason: plx_playback_contract::StopReason) {
     #[cfg(feature = "play-feed")]
     engine::clear_failed_engine_release_arm();
+    #[cfg(feature = "play-uri")]
+    pa.cancel_uri_recovery(ps);
     #[cfg(feature = "play-uri")]
     if let Some(route_attempt) = pa.active_uri_attempt() {
         let at = pa.backend_tick();

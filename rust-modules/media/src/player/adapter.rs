@@ -152,6 +152,22 @@ pub struct QualifiedUriOffer {
     pub(super) expires_at: std::time::Instant,
 }
 
+/// One physical URI failure awaiting an exact native release verdict before a Feed resolve.
+/// This records evidence about the canonical attempt; it does not queue or admit a successor.
+#[cfg(feature = "play-uri")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UriRecoveryNotice {
+    pub attempt: crate::route::RouteStartAttempt,
+    pub offer_id: crate::route::backend_policy::OfferId,
+    pub phase: crate::route::UriFailurePhase,
+    pub known_position_ns: Option<i64>,
+    pub viewer_paused: bool,
+}
+
+#[cfg(feature = "play-uri")]
+#[derive(Clone, Copy)]
+struct PendingUriRecovery { notice: UriRecoveryNotice, released: bool }
+
 #[cfg(all(test, feature = "play-uri"))]
 mod qualified_uri_offer_tests {
     use super::*;
@@ -496,6 +512,10 @@ pub struct PlayerAdapter {
     #[cfg(feature = "play-uri")]
     uri_route_attempt: Option<crate::route::RouteStartAttempt>,
     #[cfg(feature = "play-uri")]
+    uri_offer_id: Option<crate::route::backend_policy::OfferId>,
+    #[cfg(feature = "play-uri")]
+    uri_recovery: Option<PendingUriRecovery>,
+    #[cfg(feature = "play-uri")]
     uri_route_settled: bool,
     #[cfg(feature = "play-uri")]
     uri_stop_requested: bool,
@@ -581,6 +601,10 @@ impl PlayerAdapter {
             qualified_uri: None,
             #[cfg(feature = "play-uri")]
             uri_route_attempt: None,
+            #[cfg(feature = "play-uri")]
+            uri_offer_id: None,
+            #[cfg(feature = "play-uri")]
+            uri_recovery: None,
             #[cfg(feature = "play-uri")]
             uri_route_settled: false,
             #[cfg(feature = "play-uri")]
@@ -1262,13 +1286,56 @@ impl PlayerAdapter {
     }
 
     #[cfg(feature = "play-uri")]
-    pub(super) fn bind_uri_attempt(&mut self, attempt: crate::route::RouteStartAttempt) {
+    pub(super) fn bind_uri_attempt(&mut self, attempt: crate::route::RouteStartAttempt,
+        offer_id: crate::route::backend_policy::OfferId) {
         self.uri_route_attempt = Some(attempt);
+        self.uri_offer_id = Some(offer_id);
+        self.uri_recovery = None;
         self.uri_route_settled = false;
         self.uri_stop_requested = false;
         self.uri_finalized = false;
         self.pending_uri_audio = None;
         self.pending_uri_subtitle = None;
+    }
+
+    #[cfg(feature = "play-uri")]
+    pub fn uri_recovery_pending(&self) -> bool {
+        self.uri_recovery.is_some_and(|pending| !pending.released)
+    }
+
+    #[cfg(feature = "play-uri")]
+    pub fn take_released_uri_recovery(&mut self) -> Option<UriRecoveryNotice> {
+        if self.uri_recovery.is_some_and(|pending| pending.released) {
+            self.uri_recovery.take().map(|pending| pending.notice)
+        } else { None }
+    }
+
+    #[cfg(feature = "play-uri")]
+    pub(super) fn cancel_uri_recovery(&mut self, ps: &mut crate::route::PlaybackSession) {
+        if let Some(pending) = self.uri_recovery.take() {
+            ps.clear_uri_recovery_pending(pending.notice.attempt);
+        }
+    }
+
+    #[cfg(feature = "play-uri")]
+    fn note_uri_failure(&mut self, ps: &mut crate::route::PlaybackSession,
+        attempt: AttemptId) {
+        let Some(route_attempt) = self.uri_route_attempt.filter(|route|
+            route.contract_id() == attempt) else { return; };
+        if self.uri_recovery.as_ref().is_some_and(|pending|
+            pending.notice.attempt == route_attempt) { return; }
+        let Some(offer_id) = self.uri_offer_id else { return; };
+        let phase = if self.uri_route_settled { crate::route::UriFailurePhase::Runtime }
+            else { crate::route::UriFailurePhase::Startup };
+        let known_position_ns = super::intended_pos_known_ns(ps);
+        if !ps.can_retry_uri_as_feed(route_attempt, offer_id, phase, known_position_ns) { return; }
+        let Some(viewer_paused) = self.backend.viewer_paused(BackendKind::Uri, attempt) else {
+            return;
+        };
+        if !ps.mark_uri_recovery_pending(route_attempt) { return; }
+        self.uri_recovery = Some(PendingUriRecovery { notice: UriRecoveryNotice {
+            attempt: route_attempt, offer_id, phase, known_position_ns, viewer_paused,
+        }, released: false });
     }
 
     #[cfg(feature = "play-uri")]
@@ -1310,6 +1377,9 @@ impl PlayerAdapter {
             if let plx_playback_contract::Fx::AcceptedObservation {
                 backend: BackendKind::Uri, attempt, observation,
             } = *notice {
+                if matches!(observation, plx_playback_contract::Observation::Failed(_)) {
+                    self.note_uri_failure(ps, attempt);
+                }
                 self.publish_uri_observation(ps, attempt, observation);
             }
             match *notice {
@@ -1337,6 +1407,7 @@ impl PlayerAdapter {
                     backend: BackendKind::Uri, attempt, failure, ..
                 } => {
                     failed_startup = Some(attempt);
+                    self.note_uri_failure(ps, attempt);
                     self.publish_uri_observation(ps, attempt,
                         plx_playback_contract::Observation::Failed(failure));
                     if let Some(route_attempt) = self.uri_route_attempt.filter(|route|
@@ -1432,6 +1503,16 @@ impl PlayerAdapter {
                 plx_playback_contract::Fx::ReleaseOutcome {
                     backend: BackendKind::Uri, attempt, status,
                 } => {
+                    if self.uri_recovery.as_ref().is_some_and(|pending|
+                        pending.notice.attempt.contract_id() == attempt) {
+                        if status == ReleaseStatus::Released {
+                            if let Some(pending) = &mut self.uri_recovery {
+                                pending.released = true;
+                            }
+                        } else if status == ReleaseStatus::Quarantined {
+                            self.cancel_uri_recovery(ps);
+                        }
+                    }
                     if let Some(route_attempt) = self.uri_route_attempt.filter(|route|
                         route.contract_id() == attempt && !self.uri_route_settled) {
                         if !self.uri_stop_requested {
@@ -1454,6 +1535,7 @@ impl PlayerAdapter {
                             let _ = self.stop_timeline(route_attempt);
                         }
                         self.uri_route_attempt = None;
+                        self.uri_offer_id = None;
                         self.uri_stop_requested = false;
                         self.pending_uri_audio = None;
                         self.pending_uri_subtitle = None;

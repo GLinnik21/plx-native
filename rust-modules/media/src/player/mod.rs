@@ -916,6 +916,12 @@ pub fn is_playing(ps: &crate::route::PlaybackSession) -> bool {
 }
 /// The derived playback state — the ONE thing the HUD renders from. See `PlaybackState`.
 pub fn state(ps: &crate::route::PlaybackSession) -> PlaybackState {
+    #[cfg(feature = "play-uri")]
+    if ps.uri_recovery_pending().is_some() {
+        // The native URI owner still has to prove Released before a same-episode Feed resolve.
+        // A physical Failed report during that close cannot be a handled terminal error yet.
+        return PlaybackState::Resolving;
+    }
     // Resolving is DERIVED here rather than stored: the pump owns `pb_state` but only runs once
     // an engine exists, which is false for the whole resolve window. Deriving in the one reader
     // keeps a single writer instead of poking the state in from the frame loop.

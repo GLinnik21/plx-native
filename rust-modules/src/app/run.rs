@@ -2018,6 +2018,17 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // Engine and is polled here on every frame as well.
         let backend_at = app.adapters.player.backend_tick();
         let _ = app.adapters.player.backend_poll_session_at(&mut app.player.session, backend_at);
+        #[cfg(feature = "play-uri")]
+        if let Some(recovery) = app.adapters.player.take_released_uri_recovery() {
+            // The driver has proved this exact URI owner Released and the adapter has retired
+            // its reporter. Re-resolve the same source episode before generic report::tick can
+            // mistake a recoverable physical failure for a handled terminal error.
+            let _ = plx_media::route::retry_failed_uri_as_feed(
+                &mut app.player.session, app.bridge.metadata_mut(), recovery.attempt,
+                recovery.offer_id, recovery.phase, recovery.known_position_ns,
+                recovery.viewer_paused);
+            app.player.session.clear_uri_recovery_pending(recovery.attempt);
+        }
         app.adapters.player.observe_backend_condition(&app.player.session, foreground);
         // **The ONE place the Player machine is asked whether the hardware video plane is bound**
         // (spec §9), immediately after the pump that advances the ACB bind transaction and BEFORE
