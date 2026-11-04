@@ -330,16 +330,22 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   counted or reclaimed them (28 of them, 45.6 GiB, were found in `/tmp` on 2026-10-19). Refused
   under `RELEASE=1`; `ci/test_managed_targets.py` pins that the target dir is inside the checkout.
 - `make check-nodef` — the shipping-feature-set type check, `cargo check --lib
-  --no-default-features`, which is the configuration `RELEASE=1` ships and which `make check` does
-  not cover. `CARGO_INCREMENTAL=0`, as every one-shot gate. It builds in the checkout's own
+  --no-default-features --features play-uri,play-feed`, which is the configuration `RELEASE=1`
+  ships and which `make check` does not cover. The backend features are part of the shipping set:
+  both are in the application crate's `default`, so the bare `--no-default-features` would check a
+  build with no playback backend (`PLAYBACK_BACKENDS=uri|feed|none` checks the matching
+  single-backend set, as for `RELEASE=1`). `CARGO_INCREMENTAL=0`, as every one-shot gate. It
+  builds in the checkout's own
   `target/` (or the `CARGO_TARGET_DIR` a lane exports, as `make lint` does) rather than a tree of
   its own, and restores the cargo seed first like `lint`. Sharing is safe because cargo hashes a
-  unit by package, target, kind, mode, features and profile: of the 165 units this check needs, 139
+  unit by package, target, kind, mode, features and profile: of the 181 units this check needs, 151
   third-party units match `make lint`'s exactly (a `--unit-graph` comparison, nothing compiled) and
-  are reused, while all 26 workspace units differ in features (the application crate no longer
+  are reused, while the workspace units differ in features (the application crate no longer
   forwards `devtools`, `devtriggers` and `threadcheck`, so the layer crates get `default` only) and
   coexist beside lint's under their own hashes; `cargo check` writes no unhashed artifact that
-  could collide. The price is cargo's build-directory lock: a `make check-nodef` started while
+  could collide. The backend features add no third-party feature of their own: they reach only
+  workspace crates and activate `play-feed`'s `dolby_vision` subtree, which lint builds with the
+  same features. The price is cargo's build-directory lock: a `make check-nodef` started while
   another cargo runs in the same tree waits for it. The recipe carries neither `HOST_ENV` nor
   `TELEMETRY_ENV`: both change the third-party units it shares with lint. It never touches the
   release binaries (`SIDE_EFFECT_FREE`).

@@ -1824,8 +1824,9 @@ test-hostsim:
 	  $(HOST_ENV) \
 	  $(UNIT_RUN) --require-match $(if $(T),--filter '$(T)') -- cargo +$(RUST_TOOLCHAIN) test --lib $(addprefix -p ,$(HOSTSIM_PKGS)) --features hostsim
 
-# `make check-nodef` -- type-check the SHIPPING feature set (`--no-default-features`: devtools,
-# devtriggers and threadcheck off, what `RELEASE=1` builds). `make check`, `make` and `make sim` all
+# `make check-nodef` -- type-check the SHIPPING feature set (`--no-default-features` plus the
+# playback backends, `$(RUST_BACKEND_FEATURES)`: devtools, devtriggers and threadcheck off, what
+# `RELEASE=1` builds). `make check`, `make` and `make sim` all
 # build the DEV features, so a break that only the release set has is invisible to every one of them
 # (docs/agent-reference.md; AGENTS.md says when to run it). It replaces the hand command
 # `CARGO_INCREMENTAL=0 cargo +<pin> check --manifest-path rust-modules/Cargo.toml --lib
@@ -1849,6 +1850,20 @@ test-hostsim:
 # fresh lane whose first cargo call is this one would otherwise create `target` unseeded and every
 # later `make check` there would build third-party cold. `CARGO_INCREMENTAL=0`: a one-shot gate has
 # no use for an incremental cache, and (unlike `test-hostsim`) there is no loop here.
+#
+# THE BACKENDS ARE NOT OPTIONAL HERE. `--no-default-features` also drops `play-uri` and `play-feed`
+# (they are in the application crate's `default`), so the bare flag would type-check a build with
+# no playback backend at all: neither backend crate, none of the `cfg(feature = "play-feed")` code
+# in the application, and not `dolby_vision` and the rest of play-feed's third-party tree, all of
+# which the release ships. `RELEASE=1` passes the backend features explicitly (`RUST_BUILD_FEATURES`),
+# so this passes the same ones; `PLAYBACK_BACKENDS=uri|feed|none` checks the matching single-backend
+# set. They cannot change the units shared with `lint`: measured 2026-11-04 with `--unit-graph`,
+# every third-party unit of `--no-default-features --features play-uri,play-feed` (151 of its 181)
+# matches a unit of `check --workspace --all-targets` in package, target kind, mode, features and
+# profile, and the two backend features enable no third-party feature (they reach only workspace
+# crates and make the optional `plx_play_feed` -> `dolby_vision` subtree active, which `lint`
+# already builds with the same features). ci/test_managed_targets.py holds it to `$(RUST_BACKEND_FEATURES)`
+# alone, never `$(RUST_FEATFLAGS)`, whose devtools / devtriggers / threadcheck / LAB words do change them.
 .PHONY: check-nodef
 check-nodef:
 	$(CARGO_SEED) restore target rust-modules/target --env-var CARGO_TARGET_DIR --env-base rust-modules
