@@ -135,6 +135,7 @@ use plx_play_feed::feed_state::engines_dropped_for_test;
 // four `static mut` accessors used to carry here, and says what the owned slot proves that the
 // `&MainThread` argument could only assert.
 
+#[cfg(feature = "devtriggers")]
 use plx_play_feed::native_executor::NativeSessionStartGuard;
 
 #[cfg(test)]
