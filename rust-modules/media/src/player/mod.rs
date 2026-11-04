@@ -3205,6 +3205,36 @@ mod tests {
         assert_eq!(intended_pos_known_ns(&ps), Some(42_000_000_000));
     }
 
+    #[cfg(feature = "play-uri")]
+    #[test]
+    fn reported_uri_clock_supersedes_unpresented_resume_but_not_a_new_seek() {
+        let _serial = plx_base::testlock::serial();
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let mut meta = plx_data::stores::metadata::MetadataStore::default();
+        assert!(crate::route::request_play(&mut ps, &mut meta,
+            plx_platform::devcaps::caps(), plx_plex::plex::ServerId::from_raw(0),
+            "film", "/library/parts/1/file.mkv", "h264", "aac", "Film", "", None));
+        assert!(crate::route::arm_play_resume(&mut ps, 12_000_000_000));
+        let attempt = crate::route::RouteStartAttempt::fixture();
+        ps.begin_attempt_view(attempt, attempt_view::Backend::Uri);
+        assert!(ps.ingest_attempt_facts(attempt, attempt_view::Backend::Uri,
+            attempt_view::AttemptFacts {
+                status: Some(PlaybackState::Playing), position_ns: Some(30_000_000_000),
+                ..Default::default()
+            }));
+        assert_eq!(intended_pos_known_ns(&ps), Some(30_000_000_000),
+            "a confirmed service clock outranks the old unpresented resume target");
+        assert!(ps.ingest_attempt_facts(attempt, attempt_view::Backend::Uri,
+            attempt_view::AttemptFacts {
+                status: Some(PlaybackState::Seeking), position_ns: Some(30_000_000_000),
+                seek_pending_ns: Some(45_000_000_000),
+                seek_display_ns: Some(45_000_000_000), ..Default::default()
+            }));
+        assert_eq!(intended_pos_known_ns(&ps), Some(45_000_000_000),
+            "the viewer's pending exact seek still outranks the older reported clock");
+        crate::route::cancel_play(&mut ps);
+    }
+
     /// The safety net's evidence: the pipeline's audio-info report for a speed session. 48 kHz
     /// stereo raw is what the payload declared; the 44.1 a mis-declared rate produced, or any
     /// compressed type, is not. At 1x the report is not judged at all.
