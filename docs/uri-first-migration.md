@@ -100,7 +100,7 @@ Each attempt starts with fresh observations. Unknown remains unknown; an acknowl
 advancing clock is not picture evidence. Separate logical-request metrics from backend attempts,
 startup from rebuffering, and handoff gaps from ordinary stalls. Keep bounded typed errors and
 independent reporting consent. Preserve the existing local recorder limits and privacy policy;
-new transmitted fields require schema, consent-preview and privacy updates. The closed attempt-origin domain includes `viewer_reconfigure` for a viewer-requested speed or audio-processing route change; it is listed by the same domain table in the consent preview. It does not add a payload field or enable reporting.
+new transmitted fields require schema, consent-preview and privacy updates. The closed attempt-origin domain includes `viewer_reconfigure` for a viewer-requested speed, audio-processing or source-track route change; it is listed by the same domain table in the consent preview. It does not add a payload field or enable reporting.
 
 ## Completion gates
 
