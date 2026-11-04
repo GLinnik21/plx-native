@@ -169,13 +169,18 @@ fn every_failed_open_retires_its_fd_and_leaks_nothing() {
     //
     // The slack is deliberately loose, because `open_fd_count` is PROCESS-wide and this suite
     // runs in parallel: the sibling socket tests (loopback listeners, the two `ff.rs` counting
-    // accepts) hold descriptors open across this window, so a strict +2 made the assertion fire
-    // on their scheduling rather than on a leak — it was already failing ~1 run in 6 before this
-    // branch and got worse as the suite grew, which is a red gate that says nothing. What is
-    // being detected is 32 leaked sockets; anything under a handful is other tests, and the two
-    // are three quarters of an order of magnitude apart.
+    // accepts, the `range_io` servers) hold descriptors open across this window, so a strict +2
+    // made the assertion fire on their scheduling rather than on a leak — it was already failing
+    // ~1 run in 6 before this branch and got worse as the suite grew. With the `range_io` servers
+    // beside the `stream` ones the siblings' share was measured at +10 (54 -> 64), over the old
+    // 32-open / +8 pair, in a run in several. What is being detected is a socket leaked per open:
+    // the loop is long enough, and the slack a fraction of it, that no plausible set of siblings
+    // (a few dozen sockets at most) reaches the slack, while a leak on one open in three (85 of
+    // 256) clears it.
+    const OPENS: usize = 256;
+    const SIBLING_SLACK: usize = 64;
     let before = open_fd_count();
-    for _ in 0..32 {
+    for _ in 0..OPENS {
         let mut hs = http_stream_boxed();
         let _ = http_open(
             &mut *hs,
@@ -188,7 +193,7 @@ fn every_failed_open_retires_its_fd_and_leaks_nothing() {
     }
     let after = open_fd_count();
     assert!(
-        after <= before + 8,
+        after <= before + SIBLING_SLACK,
         "failed opens leaked descriptors: {before} -> {after}"
     );
 }
