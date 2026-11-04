@@ -5312,15 +5312,15 @@ mod native_seek_pump_tests {
     struct AcbGuard;
     impl AcbGuard {
         fn arm() -> AcbGuard {
-            super::plane().reset_for_test();
-            super::plane().boot(plx_platform::tv::plane::PlaneFacts { handle: true, player_type: 10 });
+            crate::player::plane().reset_for_test();
+            crate::player::plane().boot(plx_platform::tv::plane::PlaneFacts { handle: true, player_type: 10 });
             ffi_host::reset_acb_for_test(true);
             AcbGuard
         }
     }
     impl Drop for AcbGuard {
         fn drop(&mut self) {
-            super::plane().reset_for_test();
+            crate::player::plane().reset_for_test();
             ffi_host::reset_acb_for_test(false);
         }
     }

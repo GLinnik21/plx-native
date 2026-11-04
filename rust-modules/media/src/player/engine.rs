@@ -1149,10 +1149,10 @@ mod native_lifecycle_host_seam_tests {
         let consent = Consented::grant_in_cycle();
         let mt = unsafe { MainThread::assume() };
         let epoch = loaded_epoch(&mt);
-        super::plane().reset_for_test();
-        super::plane().boot(plx_platform::tv::plane::PlaneFacts { handle: true, player_type: 10 });
+        crate::player::plane().reset_for_test();
+        crate::player::plane().boot(plx_platform::tv::plane::PlaneFacts { handle: true, player_type: 10 });
         release_native_object(&mt, epoch);
-        super::plane().reset_for_test();
+        crate::player::plane().reset_for_test();
         let recorded = plx_telemetry::telemetry::window::take_recorded_for_test();
         let at = |label| recorded.iter().position(|l| *l == label);
         assert!(
