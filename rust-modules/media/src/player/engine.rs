@@ -35,7 +35,9 @@ use plx_play_feed::pcm_lead::{pcm_output_lead, PCM_LEAD_BY_OUTPUT, PCM_SINK_LEAD
 use plx_play_feed::{
     fed_fps_rational, opus_head, pcm_rate_khz, ENVELOPE_FHD60, ENVELOPE_UHD60, PAYLOAD_AV,
 };
-pub(crate) use plx_play_feed::{load_video_refused, LoadVideo};
+pub(crate) use plx_play_feed::LoadVideo;
+#[cfg(test)]
+pub(crate) use plx_play_feed::load_video_refused;
 #[cfg(test)]
 use super::shared::Stage;
 use super::SeekMode;
