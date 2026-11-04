@@ -640,5 +640,71 @@ mod uri_boot_tests {
         assert!(plx_media::route::play_pending(),
             "an audio pick under Forced only must re-resolve when native control refuses it");
     }
+
+    #[cfg(feature = "play-feed")]
+    #[test]
+    fn sidecar_pick_on_uri_re_resolves_with_the_selected_external_source_sid() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving_with(|request| {
+            queue_body(request, false).replace(
+                r#"{"id":2,"streamType":2,"codec":"aac","selected":true}"#,
+                r#"{"id":2,"streamType":2,"codec":"aac","selected":true},{"id":3,"streamType":3,"codec":"srt","languageCode":"eng","key":"/library/streams/3"}"#)
+        }) else { return };
+        plx_plex::plex::client_for(rig.sid).unwrap()
+            .set_link(plx_plex::plex::probe::Location::Local);
+        let bus: &'static Bus = Box::leak(Box::new(Bus::new()));
+        let display: &'static Display = Box::leak(Box::new(Display));
+        let caps = Capabilities { progressive_uri: true, hls_uri: false,
+            packet_feed: false, pause: true, seek: true, audio_track: true,
+            subtitle_track: true, audio_off: false, subtitle_off: false };
+        let port = ResolvePort::new(ProductEvidence { display_exported: true,
+            binding: Binding::Exported { canvas: (1920, 1080) },
+            callable: caps, certified: caps, preview_rectangle: false },
+            Arc::new(QualifiedOriginal));
+        assert!(rig.app.adapters.player.install_uri_product_with_ports(
+            &mut rig.app.player.session, port, bus, display));
+        rig.request();
+        rig.release.send(()).unwrap();
+        let mut resolved = None;
+        poll_until("qualified URI source did not resolve", || {
+            resolved = plx_media::route::pump_play(&mut rig.app.player.session,
+                rig.app.bridge.metadata_mut());
+            resolved.is_some()
+        });
+        assert!(rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session,
+            resolved.unwrap().uri_offer.expect("qualified original source")).is_ok());
+        assert!(matches!(plx_media::player::start_playback_tracked(
+            &mut rig.app.player.session, &mut rig.app.adapters.player),
+            plx_media::player::BufferfeedStartOutcome::Launched(_)));
+        let poll = |rig: &mut Rig| {
+            let at = rig.app.adapters.player.backend_tick();
+            let _ = rig.app.adapters.player.backend_poll_session_at(&mut rig.app.player.session, at);
+        };
+        poll(&mut rig);
+        bus.say("load", r#"{"returnValue":true,"mediaId":"m1","loadCompleted":true}"#);
+        poll(&mut rig);
+        bus.say("selectTrack", r#"{"returnValue":true,"mediaId":"m1"}"#);
+        bus.say("subscribe", r#"{"mediaId":"m1","trackSelected":{"type":"audio","index":0}}"#);
+        poll(&mut rig);
+        bus.say("play", r#"{"returnValue":true,"mediaId":"m1","playing":true,"currentTime":12000}"#);
+        poll(&mut rig);
+        let before = rig.app.player.session.metric_request();
+        rig.pick_subtitle(3);
+        assert!(plx_media::route::play_pending(),
+            "a sidecar is a source reconfiguration because native URI cannot draw it");
+        assert_ne!(rig.app.player.session.metric_request(), before);
+        assert!(matches!(rig.app.player.session.attempt_origin(),
+            plx_media::player::attempt_metrics::Origin::ViewerReconfigure));
+        let mut replacement = None;
+        poll_until("external subtitle resolve did not land", || {
+            replacement = plx_media::route::pump_play(&mut rig.app.player.session,
+                rig.app.bridge.metadata_mut());
+            replacement.is_some()
+        });
+        assert!(replacement.unwrap().uri_offer.is_none(),
+            "a client sidecar cannot be certified by the original native URI output");
+        assert_eq!(rig.app.player.session.source_selection().expect("source intent").subtitle_sid, 3,
+            "the Feed successor must keep the sidecar SID, not treat it as subtitle Off");
+    }
 }
 
