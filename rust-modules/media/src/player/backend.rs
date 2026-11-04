@@ -114,6 +114,18 @@ impl BackendRunner {
     fn send_inner<C>(&mut self, drivers: &mut dyn DriverSet<Context = C>, ctx: &C,
         intent: Intent, attempt_origin: Option<measure::Origin>, at: measure::Tick) -> RunResult {
         let mut result = RunResult::default();
+        if let Intent::Start { backend, attempt, .. } = intent {
+            if self.state.snapshot().phase == Phase::Vacant && matches!(attempt_origin,
+                Some(measure::Origin::AutomaticHandoff | measure::Origin::Recovery)) {
+                let handoff = self.metrics.snapshot().and_then(|request|
+                    request.current_attempt
+                        .filter(|current| current.backend != backend && current.id != attempt)
+                        .map(|current| (request.id, current.id)));
+                if let Some((request, from)) = handoff {
+                    self.metrics.handoff(request, from, attempt, at, &mut result.metrics);
+                }
+            }
+        }
         match intent {
             Intent::Start { backend, attempt, requirements, initial, .. }
                 if self.state.snapshot().phase == Phase::Vacant => {

@@ -607,6 +607,30 @@ impl PlayerAdapter {
         )
     }
 
+    /// Drain route facts before any physical Start. Acceptance happened in a pure route step,
+    /// where this monotonic clock is unavailable; the request's exact start tick remains Unknown.
+    /// Subsequent physical observations use this adapter's single clock domain.
+    pub fn sync_request_metrics(&mut self, ps: &mut crate::route::PlaybackSession) {
+        for effect in ps.take_metric_lifecycle() {
+            let result = match effect {
+                backend::RequestLifecycle::Begin { request, origin } =>
+                    self.backend.begin_request_at(request, origin,
+                        super::attempt_metrics::Tick::Unknown),
+                backend::RequestLifecycle::Finish { request, outcome } =>
+                    self.backend.finish_request_at(request, outcome, self.backend_tick()),
+            };
+            Self::record_backend_metrics(&result.metrics);
+        }
+    }
+
+    /// The existing bounded, credential-scrubbed local diagnostic ring is the recorder for
+    /// every typed backend metric notice. These values contain only IDs, enums and durations.
+    fn record_backend_metrics(notices: &[backend::MetricNotice]) {
+        for notice in notices {
+            plx_base::eventlog::log(&format!("backend metric: {notice:?}"));
+        }
+    }
+
     pub fn backend_snapshot(&self) -> &plx_playback_contract::Snapshot {
         self.backend.snapshot()
     }
@@ -868,6 +892,7 @@ impl PlayerAdapter {
             }
             self.capture_uri_release(&result.playback);
         }
+        Self::record_backend_metrics(&result.metrics);
         result
     }
 
@@ -887,6 +912,7 @@ impl PlayerAdapter {
         let result = self.finish_backend_actions(result, at);
         #[cfg(feature = "play-uri")]
         self.capture_uri_release(&result.playback);
+        Self::record_backend_metrics(&result.metrics);
         result
     }
 
@@ -922,7 +948,9 @@ impl PlayerAdapter {
             uri: &mut self.uri_backend,
         };
         let result = self.backend.set_foreground_at(&mut drivers, &self.mt, foreground, at);
-        self.finish_backend_actions(result, at)
+        let result = self.finish_backend_actions(result, at);
+        Self::record_backend_metrics(&result.metrics);
+        result
     }
 
     /// The native user transport door owns TX, Starfish and ACB together. A queued Feed control

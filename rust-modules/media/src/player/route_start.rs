@@ -296,6 +296,7 @@ fn start_qualified_uri_inner(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
             return Err(fail);
         }
     };
+    pa.sync_request_metrics(ps);
     let at = pa.backend_tick();
     let result = pa.backend_send_at(plx_playback_contract::Intent::Start {
         backend: plx_playback_contract::BackendKind::Uri,
@@ -423,6 +424,7 @@ pub(super) fn start_bufferfeed_inner(
     let source = pa.next_source_key();
     pa.stage_native_feed(attempt, source, prepared_native)
         .map_err(|_| crate::route::RouteStartResult::StartFailed)?;
+    pa.sync_request_metrics(ps);
     let backend_at = pa.backend_tick();
     let result = pa.backend_send_at(
         plx_playback_contract::Intent::Start {
