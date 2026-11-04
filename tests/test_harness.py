@@ -1990,6 +1990,7 @@ class PipelineTier(unittest.TestCase):
         cfg = {"tv": "test-tv", "extra_triggers": [("plxnative-uriprobe", "load")]}
         server = mock.Mock()
         server.stats.return_value = (1, 0, 0)
+        server.segment_rungs.return_value = {}
         with mock.patch.object(run, "require_tv"), mock.patch.object(run, "make"), \
                 mock.patch.object(run, "apply_triggers") as arm, \
                 mock.patch.object(run, "early_exit_allowed", return_value=(False, None)), \
@@ -5133,6 +5134,106 @@ class AbrResponseProfile(unittest.TestCase):
         shape = case["expect"]["abr_shape"]
         self.assertEqual(shape["floor_kbps"], 22000)
         self.assertGreaterEqual(shape["decoded_width_floor"], 3800)
+
+
+class AbrLadderMaster(unittest.TestCase):
+    """`/__abr/ladder/master.m3u8`: every rung as its own variant, for a player that chooses itself."""
+
+    def _server(self):
+        srv = serve_fixtures.FixtureServer.__new__(serve_fixtures.FixtureServer)
+        srv.lock = threading.Lock()
+        srv.abr_response_profile = {}
+        srv.abr_response_counts = {}
+        srv.abr_response_generations = {}
+        srv.rung_segments = {}
+        return srv
+
+    def _playlist(self, srv, path):
+        handler = serve_fixtures.FixtureHandler.__new__(serve_fixtures.FixtureHandler)
+        handler.server = srv
+        handler.path = path
+        return handler._abr_playlist().decode()
+
+    @staticmethod
+    def _variants(text):
+        """[(bandwidth, resolution, uri)] in playlist order."""
+        rows = text.splitlines()
+        out = []
+        for i, row in enumerate(rows):
+            if row.startswith("#EXT-X-STREAM-INF:"):
+                attrs = dict(kv.split("=", 1) for kv in row.split(":", 1)[1].split(","))
+                out.append((int(attrs["BANDWIDTH"]), attrs["RESOLUTION"], rows[i + 1]))
+        return out
+
+    def test_it_lists_every_rung_lowest_first_pointing_at_that_rungs_own_media_playlist(self):
+        text = self._playlist(self._server(), "/__abr/ladder/master.m3u8")
+        self.assertTrue(text.startswith("#EXTM3U\n#EXT-X-VERSION:3\n"))
+        rungs = serve_fixtures.ABR_RUNGS.split("|")
+        self.assertEqual(
+            self._variants(text),
+            [(int(r) * 1000, serve_fixtures.ABR_RASTER[r], f"/__abr/{r}/media.m3u8") for r in rungs])
+        self.assertEqual(rungs[:2], ["320", "720"], "the manifest caps at the second-lowest rung")
+        bandwidths = [bw for bw, _, _ in self._variants(text)]
+        self.assertEqual(bandwidths, sorted(bandwidths))
+
+    def test_the_single_rung_master_is_unchanged(self):
+        self.assertEqual(
+            self._playlist(self._server(), "/__abr/720/master.m3u8"),
+            "#EXTM3U\n#EXT-X-VERSION:3\n"
+            "#EXT-X-STREAM-INF:BANDWIDTH=720000,RESOLUTION=854x480\nmedia.m3u8\n")
+
+    def test_a_response_profile_composes_per_rung(self):
+        srv = self._server()
+        srv.set_abr_response_profile({"22000": ["2000", "22000"]})
+        first = self._variants(self._playlist(srv, "/__abr/ladder/master.m3u8"))
+        top = first[-1]
+        self.assertEqual(top, (2_000_000, "1280x720", "/__abr/22000/media.m3u8?fixtureGeneration=1"),
+                         "the first fresh master maps 22000 to the 2000 rendition, as its own master would")
+        self.assertTrue(all("fixtureGeneration" not in uri for _, _, uri in first[:-1]),
+                        "unprofiled rungs are untouched")
+        media = self._playlist(srv, "/__abr/22000/media.m3u8?fixtureGeneration=1")
+        self.assertIn("segment.ts?sequence=0&fixtureGeneration=1", media)
+        second = self._variants(self._playlist(srv, "/__abr/ladder/master.m3u8"))
+        self.assertEqual(second[-1], (22_000_000, "3840x2160", "/__abr/22000/media.m3u8?fixtureGeneration=2"))
+        # the ordinary single-rung master still allocates from the same counter
+        self.assertIn("fixtureGeneration=3", self._playlist(srv, "/__abr/22000/master.m3u8"))
+
+    def test_segment_requests_are_counted_by_the_rung_in_the_request_path(self):
+        with tempfile.TemporaryDirectory() as root:
+            for rung in ("320", "720"):
+                with open(os.path.join(root, serve_fixtures.ABR_FIXTURE[rung]), "wb") as stream:
+                    stream.write(b"fixture")
+            srv = serve_fixtures.FixtureServer(root, 0, bind="127.0.0.1")
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            try:
+                self.assertEqual(srv.segment_rungs(), {})
+                conn = http.client.HTTPConnection(*srv.server_address, timeout=5)
+
+                def get(path):
+                    conn.request("GET", path)
+                    response = conn.getresponse()
+                    response.read()
+                    return response.status
+
+                self.assertEqual(get("/__abr/ladder/master.m3u8"), 200)
+                self.assertEqual(get("/__abr/320/media.m3u8"), 200)
+                self.assertEqual(srv.segment_rungs(), {}, "playlists carry no media")
+                for path in ("/__abr/720/segment.ts?sequence=0", "/__abr/320/segment.ts?sequence=0",
+                             "/__abr/720/segment.ts?sequence=1"):
+                    self.assertEqual(get(path), 200)
+                self.assertEqual(get("/__abr/2000/segment.ts?sequence=0"), 404,
+                                 "this pack has no 720p clip and the 1080p fallback is refused for it")
+                conn.close()
+            finally:
+                srv.shutdown()
+                srv.server_close()
+        self.assertEqual(list(srv.segment_rungs().items()), [("320", 1), ("720", 2)],
+                         "lowest rung first; a 404 is not a fetch")
+
+    def test_the_case_line_reports_only_what_this_case_fetched(self):
+        self.assertEqual(run.rung_segments_line({"320": 1}, {"320": 1, "720": 3, "2000": 2}), "720=3 2000=2")
+        self.assertEqual(run.rung_segments_line({"320": 1, "720": 2}, {"320": 4, "720": 2}), "320=3")
+        self.assertEqual(run.rung_segments_line({}, {}), "")
 
 
 class SharedLinkShaping(unittest.TestCase):
