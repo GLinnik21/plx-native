@@ -1,6 +1,5 @@
-{"updated":"2026-11-03T23:07:23Z",
+{"updated":"2026-11-04T01:52:52Z",
 "ci":[
-{"id":31025719515,"at":"2026-08-05T16:31:58Z","sha":"363548b32","title":"ff: prove the ABI table instead of asserting it, and refuse a foreign FFmpeg","jobs":{"cross-build (armv7) + artifact assertions":86,"host checks (NOT a device gate)":64},"pr":null,"conclusion":"success","attempt":1},
 {"id":31093855724,"at":"2026-08-06T10:35:26Z","sha":"bdbf8a099","title":"docs: the README promised a ceiling the binary no longer has","jobs":{"cross-build (armv7) + artifact assertions":124,"host checks (NOT a device gate)":73},"pr":null,"conclusion":"success","attempt":1},
 {"id":31099939125,"at":"2026-08-06T12:05:30Z","sha":"dd7266471","title":"docs: cite webosbrew's own guidance on the system FFmpeg","jobs":{"cross-build (armv7) + artifact assertions":122,"host checks (NOT a device gate)":81},"pr":null,"conclusion":"success","attempt":1},
 {"id":31108248972,"at":"2026-08-06T13:55:28Z","sha":"aa544ec8c","title":"player: the exported window was told a 4K stream was 1080p","jobs":{"cross-build (armv7) + artifact assertions":81,"host checks (NOT a device gate)":75},"pr":null,"conclusion":"success","attempt":1},
@@ -4481,7 +4480,8 @@
 {"id":41709810531,"at":"2026-11-03T20:08:36Z","sha":"5fec89f0a","title":"Align library header and favorites editor comments with their behavior","pr":1224,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":206,"Windows launcher syntax":37,"Linux simulator build + launch":378,"macOS tests against bundled FFmpeg and ASS":248}},
 {"id":41714121529,"at":"2026-11-03T20:36:24Z","sha":"a97bc1b49","title":"Separate library navigation from Sort & Filter","pr":1224,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":249,"macOS simulator build + launch":258,"Windows launcher syntax":56,"Linux simulator build + launch":315}},
 {"id":41734203704,"at":"2026-11-03T22:50:10Z","sha":"7b94dee71","title":"Cover short OK clicks with screenshot clocks pinned","pr":1225,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":20,"macOS simulator build + launch":169,"macOS tests against bundled FFmpeg and ASS":150,"Linux simulator build + launch":318}},
-{"id":41735396072,"at":"2026-11-03T22:58:57Z","sha":"579f44b97","title":"Avoid flashing hold-options hint on short OK presses","pr":1225,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":167,"Windows launcher syntax":23,"Linux simulator build + launch":299,"macOS tests against bundled FFmpeg and ASS":213}}
+{"id":41735396072,"at":"2026-11-03T22:58:57Z","sha":"579f44b97","title":"Avoid flashing hold-options hint on short OK presses","pr":1225,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":167,"Windows launcher syntax":23,"Linux simulator build + launch":299,"macOS tests against bundled FFmpeg and ASS":213}},
+{"id":41756365784,"at":"2026-11-04T01:46:48Z","sha":"8128a42a3","title":"Keep installation reassurance in the confirmation only","pr":1226,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":253,"Windows launcher syntax":21,"Linux simulator build + launch":351,"macOS simulator build + launch":221}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
@@ -4676,7 +4676,8 @@
 "daily":[
 {"day":"2026-08-02","wf":"ci","event":"push","runs":1,"failed":1,"jobs":{"host checks (NOT a device gate)":119},"longest":119},
 {"day":"2026-08-03","wf":"ci","event":"push","runs":1,"failed":1,"jobs":{"host checks (NOT a device gate)":118},"longest":118},
-{"day":"2026-08-04","wf":"ci","event":"push","runs":19,"failed":14,"jobs":{"cross-build (armv7) + artifact assertions":89,"host checks (NOT a device gate)":94},"longest":95}
+{"day":"2026-08-04","wf":"ci","event":"push","runs":19,"failed":14,"jobs":{"cross-build (armv7) + artifact assertions":89,"host checks (NOT a device gate)":94},"longest":95},
+{"day":"2026-08-05","wf":"ci","event":"push","runs":1,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":86,"host checks (NOT a device gate)":64},"longest":86}
 ],
 "flaky":[
 {"run":40071490036,"at":"2026-10-24T06:58:17Z","sha":"f596f952d","pr":977,"job":"host unit tests (default features)","test":"plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once","fail":[1],"pass":[2]},
