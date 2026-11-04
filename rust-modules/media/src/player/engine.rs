@@ -553,7 +553,7 @@ impl NativeStop {
     }
 
     pub(super) fn terminal_facts(&self) -> plx_playback_contract::readout::AttemptFacts {
-        super::feed_pump::native_attempt_facts()
+        plx_play_feed::feed_pump::native_attempt_facts()
     }
 
     pub(super) fn report_dispatched(&mut self) {
@@ -1759,7 +1759,7 @@ mod prime_livelock_tests {
             side_reader: Box::new(super::super::feed_open::SideReaderOpen::empty()),
             preview_abandon: false,
             foreground_follows_load: false,
-            era_watch: crate::player::era_callbacks::Watch::new(),
+            era_watch: plx_play_feed::era_callbacks::Watch::new(),
         }
     }
 

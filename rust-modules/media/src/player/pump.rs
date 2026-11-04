@@ -28,16 +28,16 @@ pub const NATIVE_LOAD_BUDGET: Duration = Duration::from_secs(20);
 /// Attach the physical Load gate's addressed timeout to the current common trace. Both the
 /// constructor wait and loadCompleted arm call this after demux-failure precedence is settled.
 fn native_load_gate_ready(epoch: u32) -> bool {
-    let gate = super::feed_pump::load_gate(epoch, NATIVE_LOAD_BUDGET);
+    let gate = plx_play_feed::feed_pump::load_gate(epoch, NATIVE_LOAD_BUDGET);
     debug_assert_eq!(gate.native_epoch, epoch);
     let timeout = match gate.verdict {
-        super::feed_pump::LoadGateVerdict::Returned => return true,
-        super::feed_pump::LoadGateVerdict::Deferred => return false,
-        super::feed_pump::LoadGateVerdict::TimedOut(elapsed) => {
+        plx_play_feed::feed_pump::LoadGateVerdict::Returned => return true,
+        plx_play_feed::feed_pump::LoadGateVerdict::Deferred => return false,
+        plx_play_feed::feed_pump::LoadGateVerdict::TimedOut(elapsed) => {
             super::report::LoadElapsedClass::from_ms(elapsed.as_millis() as i64)
         }
         // The epoch retired before this poll could measure its elapsed time.
-        super::feed_pump::LoadGateVerdict::LostEpoch => super::report::LoadElapsedClass::Over20s,
+        plx_play_feed::feed_pump::LoadGateVerdict::LostEpoch => super::report::LoadElapsedClass::Over20s,
     };
     super::report::note_load_gate_for(crate::route::playback_trace_generation(), timeout);
     false
@@ -86,9 +86,9 @@ fn take_coalesced() -> u32 {
 }
 
 #[cfg(test)]
-use super::feed_pump::prime_before_play;
+use plx_play_feed::feed_pump::prime_before_play;
 #[cfg(test)]
-use super::feed_pump::{
+use plx_play_feed::feed_pump::{
     hls_buffered_ms, native_clock_silence_ms, native_clock_stopped,
     rebuffer_request_is_current, should_begin_hls_rebuffer,
     CLOCK_WATCH_SINCE_MS, NATIVE_CLOCK_STOPPED_MS,
@@ -1133,7 +1133,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
     }
     // A constructor still in flight yields its exact native epoch for the existing Load budget
     // gate; no route decision below may treat it as a callable object.
-    if let super::feed_pump::CtorGate::Awaiting { budget_epoch } = pa.feed_ctor_gate() {
+    if let plx_play_feed::feed_pump::CtorGate::Awaiting { budget_epoch } = pa.feed_ctor_gate() {
         if let Some(epoch) = budget_epoch { native_load_gate_ready(epoch); }
         set_state(PlaybackState::Connecting);
         return;
@@ -1454,13 +1454,13 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         let tgt = if pending >= 0 { pending } else { FEED_SHARED.seek_target_ns.load(Relaxed) }.max(0);
         if pending >= 0 { crate::route::commit_user_seek(); }
         match pa.retry_stuck_seek(now, tgt, !seek_reloads(seek_mode())) {
-            super::feed_pump::StuckSeekAction::Retried(retries) => {
+            plx_play_feed::feed_pump::StuckSeekAction::Retried(retries) => {
                 super::log(&format!(
                     "seek: in-place stuck → retry reopen at {}s (#{}) coalesced={}",
                     tgt / 1_000_000_000, retries, take_coalesced(),
                 ));
             }
-            super::feed_pump::StuckSeekAction::Reload => {
+            plx_play_feed::feed_pump::StuckSeekAction::Reload => {
                 super::log(&format!("seek: in-place stuck → reload at {}s", tgt / 1_000_000_000));
                 settle_reload(super::engine::reload_at(ps, pa, tgt), "stuck in-place seek reload");
                 return;
@@ -1521,22 +1521,22 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         // particular a seek from Paused must not issue a redundant native Pause, and a result from
         // an older transition must not authorize flushing this session's queues.
         match pa.prepare_seek_pause() {
-            super::feed_pump::SeekPause::Ready => {}
-            super::feed_pump::SeekPause::Refused => {
+            plx_play_feed::feed_pump::SeekPause::Ready => {}
+            plx_play_feed::feed_pump::SeekPause::Refused => {
                 super::log("seek(in-place): Starfish refused Pause → reload fallback");
                 crate::route::commit_user_seek();
                 own_seek_under_pause(t);
                 settle_reload(super::engine::reload_at(ps, pa, t), "seek reload after native Pause refusal");
                 return;
             }
-            super::feed_pump::SeekPause::Stale => {
+            plx_play_feed::feed_pump::SeekPause::Stale => {
                 super::log("seek(in-place): stale Pause result → reload fallback");
                 crate::route::commit_user_seek();
                 own_seek_under_pause(t);
                 settle_reload(super::engine::reload_at(ps, pa, t), "seek reload after stale Pause");
                 return;
             }
-            super::feed_pump::SeekPause::Busy => {
+            plx_play_feed::feed_pump::SeekPause::Busy => {
                 FEED_TX.seek_to_ns.store(t, Release);
                 FEED_TX.seek_reqs.store(1, Release);
                 super::log("seek(in-place): clock transition busy; retrying");
@@ -1566,9 +1566,9 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         NATIVE_LOAD_BUDGET, SPEED_AUDIO_DEADLINE_MS);
     if let Some(timeout) = load.timeout {
         let class = match timeout {
-            super::feed_pump::LoadTimeout::Elapsed(elapsed) =>
+            plx_play_feed::feed_pump::LoadTimeout::Elapsed(elapsed) =>
                 super::report::LoadElapsedClass::from_ms(elapsed.as_millis() as i64),
-            super::feed_pump::LoadTimeout::LostEpoch => super::report::LoadElapsedClass::Over20s,
+            plx_play_feed::feed_pump::LoadTimeout::LostEpoch => super::report::LoadElapsedClass::Over20s,
         };
         super::report::note_load_gate_for(crate::route::playback_trace_generation(), class);
     }

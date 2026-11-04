@@ -1852,7 +1852,7 @@ impl PlayerAdapter {
     #[cfg(feature = "play-feed")]
     pub(super) fn publish_feed_attempt_view(&self, ps: &mut crate::route::PlaybackSession) {
         let Some(attempt) = self.active_feed_attempt() else { return; };
-        let Some(facts) = super::feed_pump::attempt_facts(&self.feed) else { return; };
+        let Some(facts) = plx_play_feed::feed_pump::attempt_facts(&self.feed) else { return; };
         let _ = ps.ingest_attempt_facts(attempt, crate::player::attempt_view::Backend::Feed, facts);
     }
 
@@ -1896,15 +1896,16 @@ impl PlayerAdapter {
     /// the returned finish request after this borrow of feed resources ends.
     #[cfg(feature = "play-feed")]
     pub(super) fn paused_seek_step(&mut self, now: u32, route_flight: bool,
-        claim_owns_pause: bool) -> super::feed_pump::PausedSeekStep {
-        super::feed_pump::paused_seek_step(&mut self.feed, now, route_flight, claim_owns_pause)
+        claim_owns_pause: bool) -> plx_play_feed::feed_pump::PausedSeekStep {
+        plx_play_feed::feed_pump::paused_seek_step(&mut self.feed, now, route_flight, claim_owns_pause)
     }
 
     /// Publish native queue and frame diagnostics without exposing Engine to the common prelude.
     #[cfg(feature = "play-feed")]
     pub(super) fn publish_feed_diag(&mut self, now: u32,
         last_frames: &std::sync::atomic::AtomicI32) {
-        super::feed_pump::publish_diag(&mut self.feed, now, last_frames);
+        plx_play_feed::feed_pump::publish_diag(&mut self.feed, now, last_frames,
+            super::DIAG_READOUT_ON.load(std::sync::atomic::Ordering::Relaxed));
     }
 
     /// Feed the dev firmware-refusal probe with route facts, before any route landing can replace
@@ -1912,72 +1913,72 @@ impl PlayerAdapter {
     #[cfg(feature = "play-feed")]
     pub(super) fn inject_refuse601(&mut self, generation: u32, preview: bool,
         refused_for: &std::sync::atomic::AtomicU32) {
-        super::feed_pump::inject_refuse601(&mut self.feed, generation, preview, refused_for);
+        plx_play_feed::feed_pump::inject_refuse601(&mut self.feed, generation, preview, refused_for);
     }
 
     /// Probe the native audio feed's own stall evidence after common Load-refusal handling.
     #[cfg(feature = "play-feed")]
     pub(super) fn native_audio_stall_fired(&mut self, now: u32) -> bool {
-        super::feed_pump::native_audio_stall_fired(&mut self.feed, now)
+        plx_play_feed::feed_pump::native_audio_stall_fired(&mut self.feed, now)
     }
 
     /// Gate the active physical tick on native constructor readiness.
     #[cfg(feature = "play-feed")]
-    pub(super) fn feed_ctor_gate(&mut self) -> super::feed_pump::CtorGate {
-        super::feed_pump::ctor_gate(&mut self.feed, &self.mt)
+    pub(super) fn feed_ctor_gate(&mut self) -> plx_play_feed::feed_pump::CtorGate {
+        plx_play_feed::feed_pump::ctor_gate(&mut self.feed, &self.mt)
     }
 
     /// Emit the physical callback-cadence diagnostic after first-picture route settlement.
     #[cfg(feature = "play-feed")]
     pub(super) fn note_missing_era_callback(&mut self) {
-        super::feed_pump::note_missing_era_callback(&mut self.feed);
+        plx_play_feed::feed_pump::note_missing_era_callback(&mut self.feed);
     }
 
     #[cfg(feature = "play-feed")]
     pub(super) fn stuck_seek_due(&mut self, now: u32, feed_allowed: bool,
         route_flight: bool, budget_ms: u32) -> bool {
-        super::feed_pump::stuck_seek_due(&mut self.feed, now, feed_allowed, route_flight, budget_ms)
+        plx_play_feed::feed_pump::stuck_seek_due(&mut self.feed, now, feed_allowed, route_flight, budget_ms)
     }
 
     #[cfg(feature = "play-feed")]
     pub(super) fn retry_stuck_seek(&mut self, now: u32, target_ns: i64,
-        can_retry: bool) -> super::feed_pump::StuckSeekAction {
-        super::feed_pump::retry_stuck_seek(&mut self.feed, now, target_ns, can_retry)
+        can_retry: bool) -> plx_play_feed::feed_pump::StuckSeekAction {
+        plx_play_feed::feed_pump::retry_stuck_seek(&mut self.feed, now, target_ns, can_retry)
     }
 
     #[cfg(feature = "play-feed")]
     pub(super) fn pending_seek_ready(&self, seek_reloads: bool) -> bool {
-        super::feed_pump::pending_seek_ready(&self.feed, seek_reloads)
+        plx_play_feed::feed_pump::pending_seek_ready(&self.feed, seek_reloads)
     }
     #[cfg(feature = "play-feed")]
-    pub(super) fn prepare_seek_pause(&self) -> super::feed_pump::SeekPause {
-        super::feed_pump::prepare_seek_pause(&self.mt)
+    pub(super) fn prepare_seek_pause(&self) -> plx_play_feed::feed_pump::SeekPause {
+        plx_play_feed::feed_pump::prepare_seek_pause(&self.feed, &self.mt)
     }
     #[cfg(feature = "play-feed")]
     pub(super) fn begin_seek_discontinuity(&self) -> bool {
-        super::feed_pump::begin_seek_discontinuity(&self.feed)
+        plx_play_feed::feed_pump::begin_seek_discontinuity(&self.feed)
     }
     #[cfg(feature = "play-feed")]
     pub(super) fn apply_inplace_seek_pre(&mut self, target_ns: i64,
         mode: plx_play_feed::seek::SeekMode, coalesced: u32) {
-        super::feed_pump::apply_inplace_seek_pre(&mut self.feed, &self.mt, target_ns, mode, coalesced);
+        plx_play_feed::feed_pump::apply_inplace_seek_pre(&mut self.feed, &self.mt, target_ns, mode, coalesced);
     }
     #[cfg(feature = "play-feed")]
     pub(super) fn apply_inplace_seek_post(&mut self, target_ns: i64, now: u32) {
-        super::feed_pump::apply_inplace_seek_post(&mut self.feed, target_ns, now);
+        plx_play_feed::feed_pump::apply_inplace_seek_post(&mut self.feed, target_ns, now);
     }
 
     #[cfg(feature = "play-feed")]
     pub(super) fn tick_feed_load(&mut self, now: u32, segmented_hls: bool,
-        budget: std::time::Duration, speed_deadline_ms: u32) -> super::feed_pump::LoadTick {
-        super::feed_pump::tick_load(&mut self.feed, &self.mt, now,
-            segmented_hls, budget, speed_deadline_ms)
+        budget: std::time::Duration, speed_deadline_ms: u32) -> plx_play_feed::feed_pump::LoadTick {
+        plx_play_feed::feed_pump::tick_load(&mut self.feed, &self.mt, now,
+            segmented_hls, budget, speed_deadline_ms, super::no_audio_armed())
     }
 
     #[cfg(feature = "play-feed")]
     pub(super) fn tick_feed_presentation(&mut self, segmented_hls: bool,
-        immersive: bool) -> super::feed_pump::PresentationTick {
-        super::feed_pump::tick_presentation(&mut self.feed, &self.mt, segmented_hls, immersive)
+        immersive: bool) -> plx_play_feed::feed_pump::PresentationTick {
+        plx_play_feed::feed_pump::tick_presentation(&mut self.feed, &self.mt, segmented_hls, immersive)
     }
 
     /// Is a session live? Distinct from [`engine`](Self::engine) because it answers without taking

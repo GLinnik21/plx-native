@@ -41,8 +41,6 @@ mod feed_driver;
 #[cfg(feature = "play-feed")]
 mod feed_open; // one resolved request for the prepared route's physical feed open
 #[cfg(feature = "play-feed")]
-mod feed_pump; // physical Load gate and exported-window placement
-#[cfg(feature = "play-feed")]
 mod feed_resources; // private ownership of the native feed slot and worker receipts
 pub mod foreground;
 pub mod lifecycle;
@@ -71,8 +69,6 @@ pub use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
 #[cfg(all(feature = "hostsim", feature = "play-feed"))]
 pub use plx_play_feed::ffi_host; // the simulator's Starfish/ACB stand-in: the Feed backend's, so it lives in `plx_play_feed`
 pub mod attempt_metrics; // pure logical-request and physical-attempt measurement reducer
-#[cfg(feature = "play-feed")]
-mod era_callbacks; // the one diagnostic line for an era-chosen sink counter that never arrives (pure state)
 #[cfg(feature = "play-feed")]
 mod native_stall; // re-export of `plx_play_feed::native_stall` (the surround native-audio stall watchdog), removed with its callers (W3h)
 #[cfg(feature = "play-feed")]
