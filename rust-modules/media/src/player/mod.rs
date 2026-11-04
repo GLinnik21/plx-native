@@ -76,7 +76,7 @@ pub mod attempt_metrics; // pure logical-request and physical-attempt measuremen
 #[cfg(feature = "play-feed")]
 mod era_callbacks; // the one diagnostic line for an era-chosen sink counter that never arrives (pure state)
 #[cfg(feature = "play-feed")]
-mod native_stall; // the surround native-audio stall watchdog (pure state) and the AU size evidence line
+mod native_stall; // re-export of `plx_play_feed::native_stall` (the surround native-audio stall watchdog), removed with its callers (W3h)
 #[cfg(feature = "play-feed")]
 mod pump;
 pub mod report;
