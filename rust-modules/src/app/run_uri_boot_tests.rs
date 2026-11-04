@@ -279,6 +279,12 @@ mod uri_boot_tests {
         bus.say("pause", r#"{"returnValue":true,"mediaId":"m1","paused":true}"#);
         poll(&mut rig);
         assert_eq!(rig.app.adapters.player.backend_viewer_paused(), Some(true));
+        let uri_metrics = rig.app.adapters.player.backend_metrics_snapshot()
+            .expect("the original URI request reached the metrics owner");
+        let uri_request = uri_metrics.id;
+        assert_eq!(uri_metrics.attempt_count, 1);
+        assert_eq!(uri_metrics.current_attempt.expect("URI physical attempt").backend,
+            plx_media::player::attempt_metrics::Backend::Uri);
         let source = rig.app.player.session.source_selection();
         assert!(plx_media::route::source_decodable(&rig.app.player.session));
         assert!(plx_media::player::speed_offer(&rig.app.player.session).contains(&1500));
@@ -289,6 +295,9 @@ mod uri_boot_tests {
         assert_eq!(rig.app.player.session.reconfigure_pause_goal(), Some(true));
         assert_eq!(rig.app.player.session.attempt_origin(),
             plx_media::player::attempt_metrics::Origin::ViewerReconfigure);
+        let revised_request = rig.app.player.session.metric_request()
+            .expect("accepted viewer edit has its own request identity");
+        assert_ne!(revised_request, uri_request);
         assert!(!plx_media::route::request_viewer_reconfigure(&mut rig.app.player.session,
             rig.app.bridge.metadata_mut(), plx_media::route::ViewerReconfigure::Speed(1500),
             Some(12_000_000_000), Some(true)), "the same viewer choice is a no-op");
@@ -325,6 +334,16 @@ mod uri_boot_tests {
         assert!(!rig.app.adapters.player.release_has_queued_start());
         assert_eq!(rig.app.adapters.player.backend_snapshot().backend, Some(BackendKind::Feed));
         assert_eq!(rig.app.adapters.player.backend_viewer_paused(), Some(true));
+        let feed_metrics = rig.app.adapters.player.backend_metrics_snapshot()
+            .expect("the queued Feed successor reached the metrics owner");
+        assert_eq!(feed_metrics.id, revised_request);
+        assert_eq!(feed_metrics.origin,
+            plx_media::player::attempt_metrics::Origin::ViewerReconfigure);
+        assert_eq!(feed_metrics.attempt_count, 1);
+        assert_eq!(feed_metrics.handoff_count, 0,
+            "an explicit viewer edit is a new request, not an automatic handoff");
+        assert_eq!(feed_metrics.current_attempt.expect("Feed physical attempt").backend,
+            plx_media::player::attempt_metrics::Backend::Feed);
         assert_eq!(plx_media::player::play_rate_permille(), 1500,
             "Feed physical preparation applied the requested rate before its first Play");
     }
