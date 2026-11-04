@@ -429,7 +429,7 @@ pub(super) fn start_bufferfeed_inner(
         if crate::route::is_preview(ps) {
             super::attempt_metrics::Origin::Preview
         } else {
-            super::attempt_metrics::Origin::Fresh
+            ps.attempt_origin()
         },
         backend_at,
     );
