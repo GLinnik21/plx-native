@@ -331,6 +331,9 @@ mod qualified_uri_offer_tests {
 
 #[cfg(feature = "play-uri")]
 impl QualifiedUriOffer {
+    /// Stable recipe identity retained when an addressed offer cannot be installed.
+    pub fn offer_id(&self) -> crate::route::backend_policy::OfferId { self.offer_id }
+
     pub fn new(offer_id: crate::route::backend_policy::OfferId,
         recipe: UriSourceRecipe,
         route_start: crate::route::RouteStartTransaction,
@@ -1404,7 +1407,7 @@ impl PlayerAdapter {
         } else {
             super::intended_pos_known_ns(ps)
         };
-        if !ps.can_retry_uri_as_feed(route_attempt, offer_id, phase, known_position_ns) { return; }
+        if !ps.can_retry_uri_after_release(route_attempt, offer_id, phase, known_position_ns) { return; }
         let Some(viewer_paused) = viewer_paused else {
             return;
         };

@@ -2026,7 +2026,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
             // The driver has proved this exact URI owner Released and the adapter has retired
             // its reporter. Re-resolve the same source episode before generic report::tick can
             // mistake a recoverable physical failure for a handled terminal error.
-            let _ = plx_media::route::retry_failed_uri_as_feed(
+            let _ = plx_media::route::retry_failed_uri_after_release(
                 &mut app.player.session, app.bridge.metadata_mut(), recovery.attempt,
                 recovery.offer_id, recovery.phase, recovery.known_position_ns,
                 recovery.viewer_paused);
@@ -2830,10 +2830,11 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                     // route ticket before the common start door chooses a physical backend.
                     #[cfg(feature = "play-uri")]
                     if let Some(offer) = r.uri_offer {
+                        let offer_id = offer.offer_id();
                         if app.adapters.player.offer_qualified_uri(&mut app.player.session, offer).is_err() {
                             if let Some(ticket) = r.route_start {
-                                let _ = plx_media::route::retry_uri_source_as_feed(
-                                    &mut app.player.session, app.bridge.metadata_mut(), ticket);
+                                let _ = plx_media::route::retry_declined_uri_source(
+                                    &mut app.player.session, app.bridge.metadata_mut(), ticket, offer_id);
                             }
                             return;
                         }
