@@ -1,4 +1,4 @@
-{"updated":"2026-11-04T17:02:08Z",
+{"updated":"2026-11-04T17:17:25Z",
 "ci":[
 {"id":31093855724,"at":"2026-08-06T10:35:26Z","sha":"bdbf8a099","title":"docs: the README promised a ceiling the binary no longer has","jobs":{"cross-build (armv7) + artifact assertions":124,"host checks (NOT a device gate)":73},"pr":null,"conclusion":"success","attempt":1},
 {"id":31099939125,"at":"2026-08-06T12:05:30Z","sha":"dd7266471","title":"docs: cite webosbrew's own guidance on the system FFmpeg","jobs":{"cross-build (armv7) + artifact assertions":122,"host checks (NOT a device gate)":81},"pr":null,"conclusion":"success","attempt":1},
@@ -4497,7 +4497,7 @@
 {"id":41829211231,"at":"2026-11-04T12:25:55Z","sha":"7c09c3490","title":"Merge main marker-skipping settings into the HUD gallery branch","pr":1226,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":237,"macOS tests against bundled FFmpeg and ASS":186,"macOS simulator build + launch":227,"Windows launcher syntax":28}},
 {"id":41834515952,"at":"2026-11-04T13:02:43Z","sha":"b20a7105c","title":"Bound every plx_plex test server's accept, and give its deadlines room","pr":1229,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":189,"Linux simulator build + launch":335,"Windows launcher syntax":18,"macOS tests against bundled FFmpeg and ASS":236}},
 {"id":41835747967,"at":"2026-11-04T13:10:51Z","sha":"991a36eac","title":"CI snapshot of integ/uri-first at d24cc8023 (not for merge)","pr":1231,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":260,"Windows launcher syntax":20,"macOS tests against bundled FFmpeg and ASS":143,"macOS simulator build + launch":148}},
-{"id":41851331973,"at":"2026-11-04T16:46:52Z","sha":"62ab43d4c","title":"Settle the HUD preview route before probing pointer controls","pr":1226,"event":"pull_request","conclusion":"failure","attempt":6,"jobs":{"macOS tests against bundled FFmpeg and ASS":246,"Linux simulator build + launch":331,"Windows launcher syntax":32},"wall":7981}
+{"id":41851331973,"at":"2026-11-04T17:02:55Z","sha":"62ab43d4c","title":"Settle the HUD preview route before probing pointer controls","pr":1226,"event":"pull_request","conclusion":"success","attempt":7,"jobs":{"macOS simulator build + launch":252,"macOS tests against bundled FFmpeg and ASS":246,"Linux simulator build + launch":331,"Windows launcher syntax":32},"wall":8897}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
