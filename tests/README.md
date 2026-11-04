@@ -999,6 +999,18 @@ buffer-feed assertions or control scripts into a URI backend: inspect each saved
 probe variants are restricted to their known SDR720p24 fixture and must not be applied to this
 mixed-codec matrix.
 
+Two synthetic cases run the URI probe's adaptive-streaming experiment (R-ABR-2) and arm
+`plxnative-uriprobe` themselves, through the case's `triggers`, so they take no `--extra-trigger`
+(one for the same name would replace their tokens). Both play the fixture server's own
+`/__abr/ladder/master.m3u8`, which lists every rung as a variant and so needs the whole ABR clip
+set from `make fixtures-pipeline`: `pipe_abr_uri_ladder_collapse` (`pipe_abr_down_collapse`'s
+40 Mbit/s then 0.5 Mbit/s link, probe `load`) and `pipe_abr_uri_ladder_capped` (an unshaped link,
+probe `load bpsmax=720000`, the second-lowest rung). Run
+`./tests/run.py --filter pipe_abr_uri_ladder --save-logs DIR`. The app's controller does not run in
+URI mode, so the harness verdict is FAIL by construction; the evidence is `DIR/<case>.log`
+(`uriprobe:` lines) and `DIR/<case>.rungs`, the segments the TV fetched per requested rung
+(also printed as `segments fetched by rung (kbps)`).
+
 If the TV cannot reach the fixture server over the LAN, `--fixtures-loopback --fixtures-port PORT`
 advertises the fixtures through the TV's loopback interface. Hold the TV lease and keep
 `tools/tv-ssh ssh -o ExitOnForwardFailure=yes -R PORT:127.0.0.1:PORT -N tv` running for that

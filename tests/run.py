@@ -92,7 +92,7 @@ CONFIG_LOCAL_H = os.path.join(REPO_ROOT, "src", "config.local.h")
 TV_SSH = os.path.join(REPO_ROOT, "tools", "tv-ssh")  # key-first ssh/scp front door; see its header
 
 sys.path.insert(0, TESTS_DIR)
-from serve_fixtures import serve, default_root as serve_fixtures_default_root  # noqa: E402  (needs TESTS_DIR on the path first)
+from serve_fixtures import serve, default_root as serve_fixtures_default_root, ABR_FIXTURE, RE_ABR_LADDER  # noqa: E402  (needs TESTS_DIR on the path first)
 import mock_fps  # noqa: E402  (the --mock tier; same path juggling as above)
 sys.path.insert(0, TOOLS_DIR)
 import tv_config  # noqa: E402  (the TV address: tools/tv-config.sh is the one lookup)
@@ -5127,6 +5127,17 @@ def _resolve_fixtures(cases, root):
         name = c.get("fixture")
         if not name:
             c["skip"] = "case declares no `fixture`"
+            continue
+        if RE_ABR_LADDER.match("/" + name):
+            # The server writes this playlist itself, so there is no file to find or probe. What
+            # it points at is every rung's clip, and a missing one would 404 (or fall back to
+            # 1080p) under the player and confound which rung it fetched, so the whole set must exist.
+            absent = sorted(f for f in ABR_FIXTURE.values() if not os.path.isfile(os.path.join(root, f)))
+            if absent:
+                c["skip"] = (f"the ladder master serves every rung but {root} lacks {', '.join(absent)} "
+                             "-- run `make fixtures-pipeline`")
+            else:
+                c["path"] = None   # no single file: the server writes the playlist
             continue
         path = os.path.join(root, name)
         if not os.path.isfile(path):

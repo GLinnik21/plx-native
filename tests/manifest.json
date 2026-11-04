@@ -4702,6 +4702,74 @@
       "_collapse_note": "Measures E_tx_down under collapse -- the plan's 5th-ranked device case, and the one that matters most because it is where the descent is priced. It was written when DOWNSHIFTS HAD NO DEADLINE AT ALL (`candidate_prime_budget` and `candidate_warmup_budget` both returned None for Direction::Down), and it is the case that produced the evidence: one warm-up fetch of 36 156 ms against a 5 793 ms reserve, which is 6.2x the reserve it was spending. Since J3b (2026-08-27) a candidate transfer is bounded by that reserve in both directions while a picture remains; after observed B=0, a floor downshift keeps the only available response instead of re-requesting it. The case therefore measures descent with the reserve bound in place, and `warmup_dl=` on each ordinary `abr: tx` line states that bound. The 500 kbps floor is derived rather than picked: at that rate only rung 320 is sustainable (A/D 0.90 from the measured fixed cost and rung 320's own 380 kbps of media), while 720 is at 1.74 and 2000 at 4.58 -- so the controller has to walk the WHOLE ladder down from the top rung an unshaped start puts it on, which is what makes the descent cost observable rather than inferred. Distinct from `pipe_abr_brief_dropout`, which dips for 3 s and grades the RECOVERY: this one holds the floor for the rest of the run and grades the descent. `settle_max_kbps: 720` is deliberately one rung looser than the arithmetic demands -- the assertion is that the full descent happens, not that it lands on exactly the rung a model predicts, since a model that also chose the leg rate would be marking its own work. No `max_stall_s`: a collapse from the ladder top through a ~4.9 s reserve may legitimately stall, and asserting it must not would be asserting a result nobody has measured."
     },
     {
+      "name": "pipe_abr_uri_ladder_collapse",
+      "fixture": "__abr/ladder/master.m3u8",
+      "title": "URI mode, no Plex: a multi-variant ladder master through a sustained link collapse",
+      "covers": [
+        "uri-mode",
+        "abr-ladder",
+        "collapse"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "aac",
+        "fps": 24.0
+      },
+      "triggers": {
+        "uriprobe": "load"
+      },
+      "network_profile": [
+        {
+          "until_s": 25.0,
+          "kbps": 40000
+        },
+        {
+          "until_s": 300.0,
+          "kbps": 500
+        }
+      ],
+      "run_secs": 120,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "require_video_bound": false,
+        "no_playing_error": true
+      },
+      "_uri_note": "R-ABR-2: does the TV's own HLS controller switch between the ladder's variants (/__abr/ladder/master.m3u8 lists every rung, lowest first) when the link collapses, and what do streamingInfo/customizedStreamingInfo/bufferRange/videoInfo say while it does? The link is pipe_abr_down_collapse's: 40 Mbit/s for 25 s, then 0.5 Mbit/s. The app's ABR controller does not run in URI mode, so the harness verdict is FAIL BY CONSTRUCTION (stream_path, load_decl, pos_climb and presented_rate grade buffer-feed lines this backend never writes); the evidence is the saved `uriprobe:` log lines (--save-logs) and the `<case>.rungs` file beside them, which counts the segments the TV fetched per rung. The armed line reads kind=direct for this entry. Do not pass --extra-trigger plxnative-uriprobe: it is written after the case's own and would replace its tokens."
+    },
+    {
+      "name": "pipe_abr_uri_ladder_capped",
+      "fixture": "__abr/ladder/master.m3u8",
+      "title": "URI mode, no Plex: a multi-variant ladder master on a fast link with a native bit-rate cap",
+      "covers": [
+        "uri-mode",
+        "abr-ladder",
+        "bps-cap"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "aac",
+        "fps": 24.0
+      },
+      "triggers": {
+        "uriprobe": "load bpsmax=720000"
+      },
+      "run_secs": 60,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "require_video_bound": false,
+        "no_playing_error": true
+      },
+      "_uri_note": "R-ABR-2: does option.adaptiveStreaming.bps.maximum hold? The link is unshaped and the master lists every rung, so an uncapped controller climbs to the top; the cap is the second-lowest rung's BANDWIDTH (720 kbit/s, bit/s in the trigger), so a cap that holds keeps the `<case>.rungs` count on 320 and 720 and nothing above, and the `armed` line ends in bpsmax=720000. Same verdict caveat as pipe_abr_uri_ladder_collapse: the harness grades FAIL by construction and the saved log is the evidence."
+    },
+    {
       "name": "pipe_abr_down_staircase",
       "fixture": "pipe_h264_aac_mp4.mp4",
       "title": "no-Plex Auto: a TWO-STEP collapse, the shape that outruns a downshift",

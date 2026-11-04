@@ -2006,6 +2006,49 @@ class PipelineTier(unittest.TestCase):
         self.assertFalse(passed)
         self.assertEqual(results, [("video_bound", False, "missing")])
 
+    def test_the_uri_ladder_cases_serve_the_ladder_master_and_arm_the_probe(self):
+        cases = {c["name"]: c for c in self._pipeline_cases()}
+        collapse, capped = cases["pipe_abr_uri_ladder_collapse"], cases["pipe_abr_uri_ladder_capped"]
+        for case in (collapse, capped):
+            self.assertTrue(serve_fixtures.RE_ABR_LADDER.match("/" + case["fixture"]), case["fixture"])
+            self.assertNotIn("auto_network", case, "the app's own ABR controller never runs in URI mode")
+            files = dict(run.triggers_for_case(case, url_base="http://fixture.invalid"))
+            self.assertEqual(json.loads(files["plxnative-playurl"])["url"],
+                             "http://fixture.invalid/__abr/ladder/master.m3u8")
+        self.assertEqual(dict(run.triggers_for_case(collapse, url_base="http://fixture.invalid"))["plxnative-uriprobe"],
+                         "load")
+        # the link is the sibling's, so the two cases differ in the controller under test only
+        self.assertEqual(collapse["network_profile"], cases["pipe_abr_down_collapse"]["network_profile"])
+        self.assertNotIn("network_profile", capped, "the capped case runs on an unshaped link")
+        # the cap is the second-lowest rung's BANDWIDTH, and the trigger parses as the probe's syntax
+        second_lowest = int(serve_fixtures.ABR_RUNGS.split("|")[1]) * 1000
+        text = dict(run.triggers_for_case(capped, url_base="http://fixture.invalid"))["plxnative-uriprobe"]
+        self.assertEqual(text, f"load bpsmax={second_lowest}")
+
+    def test_a_ladder_case_needs_every_rung_clip_and_no_file_of_its_own(self):
+        def fresh():
+            return [{"name": "ladder", "fixture": "__abr/ladder/master.m3u8"}]
+
+        with tempfile.TemporaryDirectory() as root:
+            cases = fresh()
+            run._resolve_fixtures(cases, root)
+            self.assertNotIn("path", cases[0])
+            for rung_file in serve_fixtures.ABR_FIXTURE.values():
+                self.assertIn(rung_file, cases[0]["skip"], "every missing clip is named")
+            for rung_file in serve_fixtures.ABR_FIXTURE.values():
+                with open(os.path.join(root, rung_file), "wb") as stream:
+                    stream.write(b"\0")
+            partial = os.path.join(root, serve_fixtures.ABR_FIXTURE["22000"])
+            os.rename(partial, partial + ".gone")
+            cases = fresh()
+            run._resolve_fixtures(cases, root)
+            self.assertIn(serve_fixtures.ABR_FIXTURE["22000"], cases[0]["skip"])
+            os.rename(partial + ".gone", partial)
+            cases = fresh()
+            run._resolve_fixtures(cases, root)
+            self.assertNotIn("skip", cases[0])
+            self.assertIn("path", cases[0])
+
     def test_every_case_ends_with_a_path_or_a_skip(self):
         """The invariant behind `case["fixture"]`/`case["path"]` downstream. Run against an EMPTY
         pack, which is every machine that has not built one."""
@@ -2833,11 +2876,19 @@ class AutoNetworkProfile(unittest.TestCase):
         same disturbance to the media-segment COUNT, which makes it exact instead of a phase
         coincidence. The rule this test enforces is unchanged — a case that DISTURBS the link must
         assert what the controller does about it — and "disturbs" is what widened, not the duty.
+
+        SCOPED AGAIN on 2026-11-04 for a FOURTH family, `pipe_abr_uri_*`: URI mode hands the
+        playlist to the television's own player, so the app's controller never runs and there is no
+        `abr:` line for an `abr_shape` bound to read. The family measures that native player (what
+        it fetches, per rung, and what its events report), one case collapses the link and one
+        leaves it alone; `test_the_uri_ladder_cases_serve_the_ladder_master_and_arm_the_probe`
+        is their rule.
         """
         shaped = [c for c in _manifest()["pipeline_cases"]
                   if c["name"].startswith("pipe_abr_")
                   and not c["name"].startswith("pipe_abr_pin_")
-                  and not c["name"].startswith("pipe_abr_band_")]
+                  and not c["name"].startswith("pipe_abr_band_")
+                  and not c["name"].startswith("pipe_abr_uri_")]
         self.assertGreaterEqual(len(shaped), 4, "the bad-network profiles are missing")
         for case in shaped:
             with self.subTest(case["name"]):

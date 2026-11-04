@@ -143,7 +143,8 @@ reports `currentTime` but no duration, so a duration has to come from `sourceInf
    `currentIndexOfRate`), `bufferRange` (`remainingTime`, `percent`) and `videoInfo`
    (`currentBitrate`, `contentBitrate`) from the same log: only numbers are printed, never a
    host. Whether the firmware honours the rates, and what those fields mean on the 4.5 set, is
-   what the run is for.
+   what the run is for. `tests/run.py --filter pipe_abr_uri_ladder` drives it against a ladder
+   master (`tests/README.md`).
 3. Play a title the route chooses to direct-play (`kind=direct` on the `armed` line), watch, press
    Back.
 4. Read `grep 'uriprobe:' /tmp/com.beb.plxnative.debug/plxnative-events.log`: `window=`,
