@@ -57,22 +57,22 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-05T16:00:20Z",
+ "generated": "2026-11-05T16:07:43Z",
  "metrics": [
   {
    "change30_pct": 3.5,
    "change7_pct": 35.0,
    "d30": 287,
    "delta30": 10,
-   "delta7": 77.0,
+   "delta7": 77,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
    "n_now": 71,
-   "n_prev": 86,
+   "n_prev": 87,
    "now": 297,
-   "prev7": 220.0,
+   "prev7": 220,
    "shown": true,
    "state": "worse",
    "state30": "flat",
@@ -103,18 +103,18 @@
   },
   {
    "change30_pct": 176.3,
-   "change7_pct": 21.9,
+   "change7_pct": 21.5,
    "d30": 131,
    "delta30": 231,
-   "delta7": 65.0,
+   "delta7": 64,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
    "n_now": 71,
-   "n_prev": 86,
+   "n_prev": 87,
    "now": 362,
-   "prev7": 297.0,
+   "prev7": 298,
    "shown": true,
    "state": "worse",
    "state30": "worse",
@@ -123,18 +123,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -53.3,
+   "change30_pct": -53.1,
    "change7_pct": 17.8,
-   "d30": 922.0,
-   "delta30": -491.0,
+   "d30": 919,
+   "delta30": -488,
    "delta7": 65.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 70,
+   "n_now": 71,
    "n_prev": 86,
-   "now": 431.0,
+   "now": 431,
    "prev7": 366.0,
    "shown": true,
    "state": "worse",
@@ -282,10 +282,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 4.6,
+   "change30_pct": 4.8,
    "change7_pct": 13.5,
-   "d30": 2492,
-   "delta30": 115.0,
+   "d30": 2486.5,
+   "delta30": 120.5,
    "delta7": 311.0,
    "group": "ci",
    "id": "minutes",
@@ -325,18 +325,18 @@
   },
   {
    "change30_pct": 35.6,
-   "change7_pct": 15.9,
+   "change7_pct": 16.1,
    "d30": 309,
    "delta30": 110.0,
-   "delta7": 57.5,
+   "delta7": 58.0,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
    "n_now": 70,
-   "n_prev": 86,
+   "n_prev": 87,
    "now": 419.0,
-   "prev7": 361.5,
+   "prev7": 361,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -346,18 +346,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 7.4,
+   "change7_pct": 7.7,
    "d30": null,
    "delta30": null,
-   "delta7": 24.0,
+   "delta7": 25,
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
    "n_now": 71,
-   "n_prev": 86,
-   "now": 348,
-   "prev7": 324.0,
+   "n_prev": 87,
+   "now": 349,
+   "prev7": 324,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -376,9 +376,9 @@
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
    "n_now": 70,
-   "n_prev": 86,
+   "n_prev": 87,
    "now": 338.0,
-   "prev7": 313.0,
+   "prev7": 313,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -387,10 +387,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 25.8,
+   "change30_pct": 26.4,
    "change7_pct": 13.2,
-   "d30": 238.0,
-   "delta30": 61.5,
+   "d30": 237,
+   "delta30": 62.5,
    "delta7": 35.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
@@ -408,10 +408,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -77.3,
+   "change30_pct": -76.9,
    "change7_pct": 4.3,
-   "d30": 952.0,
-   "delta30": -736.0,
+   "d30": 934,
+   "delta30": -718.0,
    "delta7": 9.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
@@ -454,15 +454,15 @@
    "change7_pct": 19.4,
    "d30": 175,
    "delta30": 22,
-   "delta7": 32.0,
+   "delta7": 32,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
    "n_now": 71,
-   "n_prev": 86,
+   "n_prev": 87,
    "now": 197,
-   "prev7": 165.0,
+   "prev7": 165,
    "shown": true,
    "state": "flat",
    "state30": "flat",
@@ -559,7 +559,7 @@
   {
    "change30_pct": 18.8,
    "change7_pct": 5.6,
-   "d30": 16.0,
+   "d30": 16,
    "delta30": 3.0,
    "delta7": 1.0,
    "group": "ci",
@@ -582,15 +582,15 @@
    "change7_pct": 0.0,
    "d30": null,
    "delta30": null,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
    "n_now": 71,
-   "n_prev": 86,
+   "n_prev": 87,
    "now": 5,
-   "prev7": 5.0,
+   "prev7": 5,
    "shown": false,
    "state": "flat",
    "state30": "new",
@@ -601,7 +601,7 @@
   {
    "change30_pct": 0.0,
    "change7_pct": 33.3,
-   "d30": 4,
+   "d30": 4.0,
    "delta30": 0.0,
    "delta7": 1.0,
    "group": "ci",
@@ -609,9 +609,9 @@
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
    "n_now": 70,
-   "n_prev": 86,
+   "n_prev": 87,
    "now": 4.0,
-   "prev7": 3.0,
+   "prev7": 3,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -622,17 +622,17 @@
   {
    "change30_pct": -98.9,
    "change7_pct": 0.0,
-   "d30": 261,
-   "delta30": -258,
-   "delta7": 0.0,
+   "d30": 261.0,
+   "delta30": -258.0,
+   "delta7": 0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
    "n_now": 71,
-   "n_prev": 86,
+   "n_prev": 87,
    "now": 3,
-   "prev7": 3.0,
+   "prev7": 3,
    "shown": false,
    "state": "flat",
    "state30": "better",
@@ -667,11 +667,6 @@
    "change_pct": 35.0,
    "commits": [
     {
-     "pr": 1229,
-     "sha": "b20a7105c",
-     "title": "Bound every plx_plex test server's accept, and give its deadlines room"
-    },
-    {
      "pr": 1226,
      "sha": "a1fccea41",
      "title": "Add the native Player HUD gallery and cached registry"
@@ -715,9 +710,14 @@
      "pr": 1241,
      "sha": "951db621f",
      "title": "HUD plugins: tools/hud-dev, and Play re-fetches a development-source HUD on the TV"
+    },
+    {
+     "pr": 1230,
+     "sha": "e1ea6e2ec",
+     "title": "Add Catalan localization"
     }
    ],
-   "from": 220.0,
+   "from": 220,
    "id": "ci|host python/shell/C gates",
    "label": "CI: host python/shell/C gates",
    "since": "2026-11-05",
@@ -728,11 +728,6 @@
    "change_pct": 31.9,
    "commits": [
     {
-     "pr": 1229,
-     "sha": "b20a7105c",
-     "title": "Bound every plx_plex test server's accept, and give its deadlines room"
-    },
-    {
      "pr": 1226,
      "sha": "a1fccea41",
      "title": "Add the native Player HUD gallery and cached registry"
@@ -776,6 +771,11 @@
      "pr": 1241,
      "sha": "951db621f",
      "title": "HUD plugins: tools/hud-dev, and Play re-fetches a development-source HUD on the TV"
+    },
+    {
+     "pr": 1230,
+     "sha": "e1ea6e2ec",
+     "title": "Add Catalan localization"
     }
    ],
    "from": 63.7,
@@ -786,13 +786,8 @@
    "to": 84.1
   },
   {
-   "change_pct": 21.9,
+   "change_pct": 21.5,
    "commits": [
-    {
-     "pr": 1229,
-     "sha": "b20a7105c",
-     "title": "Bound every plx_plex test server's accept, and give its deadlines room"
-    },
     {
      "pr": 1226,
      "sha": "a1fccea41",
@@ -837,9 +832,14 @@
      "pr": 1241,
      "sha": "951db621f",
      "title": "HUD plugins: tools/hud-dev, and Play re-fetches a development-source HUD on the TV"
+    },
+    {
+     "pr": 1230,
+     "sha": "e1ea6e2ec",
+     "title": "Add Catalan localization"
     }
    ],
-   "from": 297.0,
+   "from": 298,
    "id": "ci|host harness tests",
    "label": "CI: host harness tests",
    "since": "2026-11-05",
@@ -850,11 +850,6 @@
    "change_pct": 17.8,
    "commits": [
     {
-     "pr": 1229,
-     "sha": "b20a7105c",
-     "title": "Bound every plx_plex test server's accept, and give its deadlines room"
-    },
-    {
      "pr": 1226,
      "sha": "a1fccea41",
      "title": "Add the native Player HUD gallery and cached registry"
@@ -898,14 +893,19 @@
      "pr": 1241,
      "sha": "951db621f",
      "title": "HUD plugins: tools/hud-dev, and Play re-fetches a development-source HUD on the TV"
+    },
+    {
+     "pr": 1230,
+     "sha": "e1ea6e2ec",
+     "title": "Add Catalan localization"
     }
    ],
    "from": 366.0,
    "id": "push_wait",
    "label": "Wait after merge",
-   "since": "2026-11-04",
+   "since": "2026-11-05",
    "threshold_pct": 15.0,
-   "to": 431.0
+   "to": 431
   }
  ],
  "schema": 2,
@@ -932,7 +932,7 @@
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 348
+   "now": 349
   },
   {
    "group": "ci",
