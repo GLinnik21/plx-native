@@ -40,7 +40,7 @@ fn meta(id: &str, name: &str) -> Meta {
 }
 
 fn builtin(selected: bool) -> Entry {
-    Entry { id: BUILTIN_CLASSIC.into(), meta: None, sha: None, source: None, trust: Trust::BuiltIn, loadable: Ok(()), until_restart: false, selected }
+    Entry { id: BUILTIN_CLASSIC.into(), meta: None, sha: None, source: None, trust: Trust::BuiltIn, loadable: Ok(()), until_restart: false, selected, dev_source: None }
 }
 
 fn pack(id: &str, name: &str, byte: u8, selected: bool) -> Entry {
@@ -53,6 +53,7 @@ fn pack(id: &str, name: &str, byte: u8, selected: bool) -> Entry {
         loadable: Ok(()),
         until_restart: false,
         selected,
+        dev_source: None,
     }
 }
 
@@ -559,6 +560,126 @@ fn the_address_caret_follows_an_interior_correction() {
     assert_eq!(address_row(&page).1, "gh:owner/rep|o");
     let emitted = drive(&mut page, press(Key::Ok), key);
     assert!(matches!(huds(&emitted).as_slice(), [HudCmd::Fetch(address)] if address.url() == "https://github.com/owner/repo/releases/latest/download/hud.plxhud"));
+}
+
+// ---- fetch a dev source again (PR15) ----
+
+const DEV_A: &str = "http://192.168.1.20:8123/hud.plxhud";
+const DEV_B: &str = "http://10.0.0.7:9000/b.plxhud";
+
+/// The Play key as the remote's ▶ reaches a page: an `Other` key whose `wcode` the shared classifier names.
+fn play_key(edge: Edge) -> ScreenEvent<InnerHost> {
+    input(InputKind::Key { key: Key::Other, sym: 0, wcode: plx_ui::consts::WCODE_PLAY, edge, at_edge: false })
+}
+
+/// An installed package that came from the development source `from`.
+fn dev_pack(id: &str, byte: u8, from: &str) -> Entry {
+    Entry { source: Some(Source::Address), dev_source: Some(address::parse(from).unwrap()), ..pack(id, id, byte, false) }
+}
+
+/// `drive`, with the answer too: whether the page took the key.
+fn drive_handled(page: &mut HudPage, ev: ScreenEvent<InnerHost>, focus: u32) -> (Handled, Vec<Stamped<InnerHost>>) {
+    let mut out = Vec::new();
+    let mut present = Present::new();
+    let handled = page.step(&ev, &context(focus), &mut Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present));
+    (handled, out)
+}
+
+fn dev_page() -> HudPage {
+    let mut l = list();
+    l.entries.push(dev_pack("com.example.dev.a", 3, DEV_A));
+    l.entries.push(dev_pack("com.example.dev.b", 4, DEV_B));
+    page_with(l).0
+}
+
+/// **Play on the row of a package from a development source fetches the address it came from**: the same `HudCmd::Fetch`
+/// "Install from address" sends, so the store's offer, the prompt and its confirmation follow and nothing is installed
+/// without the viewer's OK. Each row asks for its own address.
+#[test]
+fn play_on_a_dev_source_row_fetches_its_recorded_address() {
+    let mut page = dev_page();
+    for (id, url) in [("com.example.dev.a", DEV_A), ("com.example.dev.b", DEV_B)] {
+        let key = key_of(&page, &HudId::Pack(id.into()));
+        let (handled, emitted) = drive_handled(&mut page, play_key(Edge::Down), key);
+        assert_eq!(handled, Handled::Yes, "{id}");
+        match huds(&emitted).as_slice() {
+            [HudCmd::Fetch(address)] => assert_eq!((address.url(), address.dev_source()), (url, true), "{id}"),
+            other => panic!("{id}: one fetch, got {} commands", other.len()),
+        }
+        assert!(!page.state.editing && !page.prompt.is_open(), "nothing else opens: the offer arrives with the next listing");
+    }
+}
+
+/// The remote's other spellings of ▶ are the same key (`consts::classify_input` is the one reading).
+#[test]
+fn every_spelling_of_play_asks_the_same() {
+    let mut page = dev_page();
+    let key = key_of(&page, &HudId::Pack("com.example.dev.a".into()));
+    for (sym, wcode) in [(0, plx_ui::consts::WCODE_PLAY), (plx_ui::consts::WCODE_PLAY_ALT_A, 0), (0, plx_ui::consts::WCODE_PLAY_ALT_B)] {
+        let ev = input(InputKind::Key { key: Key::Other, sym, wcode, edge: Edge::Down, at_edge: false });
+        let emitted = drive(&mut page, ev, key);
+        assert!(matches!(huds(&emitted).as_slice(), [HudCmd::Fetch(a)] if a.url() == DEV_A), "sym {sym} wcode {wcode}");
+    }
+}
+
+/// Every row that is not a dev source's, and every other key, is left as it was: Classic, a drop file's package, an
+/// address install from a published source, the address row, a removal row and a drop file. The key goes unhandled.
+#[test]
+fn play_elsewhere_sends_nothing() {
+    let mut l = list();
+    l.entries.push(Entry { source: Some(Source::Address), ..pack("com.example.published", "Published", 5, false) });
+    l.entries.push(dev_pack("com.example.dev", 6, DEV_A));
+    let (mut page, _tx) = page_with(l);
+    let ids = [
+        HudId::Pack(BUILTIN_CLASSIC.into()),
+        HudId::Pack("com.example.a".into()),
+        HudId::Pack("com.example.published".into()),
+        HudId::Address,
+        HudId::Remove("com.example.a".into()),
+        HudId::Remove("com.example.dev".into()),
+        HudId::Drop(Sha::of(&[9])),
+    ];
+    for id in ids {
+        let key = key_of(&page, &id);
+        let (handled, emitted) = drive_handled(&mut page, play_key(Edge::Down), key);
+        assert!(emitted.iter().all(|e| !matches!(e.fx, Fx::App(_))), "{id:?}: {} effects", emitted.len());
+        assert_eq!(handled, Handled::No, "{id:?}");
+    }
+    let key = key_of(&page, &HudId::Pack("com.example.dev".into()));
+    for other in [press(Key::Ok), press(Key::Left), input(InputKind::Key { key: Key::Other, sym: 0, wcode: plx_ui::consts::WCODE_PAUSE, edge: Edge::Down, at_edge: false })] {
+        assert!(huds(&drive(&mut page, other, key)).is_empty(), "only Play fetches again");
+    }
+    // A press is one fetch: its auto-repeat and its release are not.
+    for edge in [Edge::Repeat, Edge::Up] {
+        assert!(huds(&drive(&mut page, play_key(edge), key)).is_empty(), "{edge:?}");
+    }
+}
+
+/// The key waits for the page to be free: a fetch or another package operation in flight, the keyboard up for the
+/// address, or the prompt open (its answers are the prompt's).
+#[test]
+fn play_waits_for_a_free_page() {
+    for busy in ["fetching", "package_busy", "editing", "prompt"] {
+        let mut l = list();
+        l.entries.push(dev_pack("com.example.dev", 6, DEV_A));
+        match busy {
+            "fetching" => l.fetching = true,
+            "package_busy" => l.package_busy = true,
+            "prompt" => l.offer = Some(offered()),
+            _ => (),
+        }
+        let (mut page, _tx) = page_with(l);
+        if busy == "editing" {
+            let address = key_of(&page, &HudId::Address);
+            drive(&mut page, ScreenEvent::Activate(address), address);
+            assert!(page.state.editing);
+        }
+        assert_eq!(page.prompt.is_open(), busy == "prompt");
+        // The dev row keeps the focus in every case, so the prompt's own hold on the key (not an empty focus) is what stops it.
+        let key = key_of(&page, &HudId::Pack("com.example.dev".into()));
+        let emitted = drive(&mut page, play_key(Edge::Down), key);
+        assert!(huds(&emitted).is_empty(), "{busy}: {} commands", huds(&emitted).len());
+    }
 }
 
 fn gallery_list() -> HudList {
