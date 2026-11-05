@@ -53,8 +53,6 @@ const DRIVE_STEP_MS: u64 = 2_500;
 const DRIVE_SEEK_MS: i64 = 20_000;
 /// How close to the requested position a following `currentTime` counts as landing on it.
 const DRIVE_SEEK_TOLERANCE_MS: i64 = 5_000;
-/// `currentTime` is logged when it first moves and then at most this often.
-const TIME_LOG_EVERY_MS: u64 = 1_000;
 /// The longest an error text is kept after [`scrub_text`], in characters.
 
 // ---------------------------------------------------------------------------------------------
@@ -213,6 +211,9 @@ pub struct Config {
 
 pub use super::uri_protocol::{build_load, parse_event, scrub_text, AbrBps, MediaId, Message, Method, UriCall, MAX_ABR_BPS};
 use super::uri_protocol::{Ev, Seen};
+// What each event reads as is the shared fn's; `currentTime` is logged when it first moves and
+// then at most every `CLOCK_LOG_EVERY_MS`.
+use super::event_text::{event_text, unparsed_text, CLOCK_LOG_EVERY_MS};
 #[cfg(test)]
 use super::uri_protocol::SCRUBBED_TEXT_CHARS;
 
@@ -569,10 +570,6 @@ impl UriProbe {
         UriEffect::Log(format!("uriprobe: t={} {body}", now_ms.saturating_sub(self.started_ms)))
     }
 
-    fn event_line(&self, now_ms: u64, name: &str, detail: &str) -> UriEffect {
-        self.line(now_ms, format!("ev={name} {detail}").trim_end())
-    }
-
     fn start(&mut self, now_ms: u64, fx: &mut Vec<UriEffect>) {
         if self.phase != Phase::Idle {
             return;
@@ -833,32 +830,28 @@ impl UriProbe {
                 return;
             }
             if message.normalized.contains(&seen.ev) { self.event(seen, message, now_ms, fx); }
-            else if seen.ev == Ev::CurrentTime { self.current_time(None, now_ms, fx); }
-            else { fx.push(self.event_line(now_ms, seen.ev.name(), "(unparsed)")); }
+            else if seen.ev == Ev::CurrentTime { self.current_time(seen, message, now_ms, fx); }
+            else { fx.push(self.line(now_ms, &event_text(message, seen, false))); }
         }
         if message.seen.is_empty() {
             if let Some(name) = &message.unknown {
-                fx.push(self.line(now_ms, &format!("ev={name} (unparsed)")));
+                fx.push(self.line(now_ms, &unparsed_text(name)));
             }
         }
     }
 
     fn event(&mut self, seen: &Seen, message: &Message, now_ms: u64, fx: &mut Vec<UriEffect>) {
+        if seen.ev != Ev::CurrentTime {
+            fx.push(self.line(now_ms, &event_text(message, seen, false)));
+        }
         match seen.ev {
-            Ev::Error => {
-                let code = message.error_code;
-                let shown = code.map_or_else(|| "?".to_owned(), |c| c.to_string());
-                fx.push(self.line(now_ms, &format!("ev=error code={shown} text=\"{}\"", message.error_text.clone().unwrap_or_default())));
-                self.stop(now_ms, End::Error(code), fx);
-            }
+            Ev::Error => self.stop(now_ms, End::Error(message.error_code), fx),
             Ev::LoadCompleted => {
-                fx.push(self.line(now_ms, "ev=loadCompleted"));
                 if matches!(self.phase, Phase::Loading { .. }) {
                     self.loaded(message, now_ms, fx);
                 }
             }
             Ev::Playing => {
-                fx.push(self.line(now_ms, "ev=playing"));
                 if self.facts.playing_ms.is_none() {
                     self.facts.playing_ms = Some(now_ms.saturating_sub(self.started_ms));
                 }
@@ -871,19 +864,16 @@ impl UriProbe {
                 }
             }
             Ev::Paused => {
-                fx.push(self.line(now_ms, "ev=paused"));
                 self.facts.paused_ev = true;
                 if self.facts.pause == CallResult::Unconfirmed {
                     self.facts.pause = CallResult::Ok;
                 }
             }
             Ev::SeekDone => {
-                fx.push(self.line(now_ms, "ev=seekDone"));
                 self.facts.seek_done_ev = true;
                 // The subscription's request ID is not the seek command's identity.
             }
             Ev::TrackSelected => {
-                fx.push(self.line(now_ms, "ev=trackSelected"));
                 // A generic subscription event cannot name a text or audio command.
                 match message.confirmed_track {
                     Some("text") if self.facts.text == CallResult::Unconfirmed => self.facts.text = CallResult::Ok,
@@ -892,16 +882,14 @@ impl UriProbe {
                 }
             }
             Ev::EndOfStream => {
-                fx.push(self.line(now_ms, "ev=endOfStream"));
                 self.facts.eos_ev = true;
                 if matches!(self.phase, Phase::Starting { .. } | Phase::Playing { .. } | Phase::Driving { .. } | Phase::Acb) {
                     self.stop(now_ms, End::Eos, fx);
                 }
             }
-            Ev::CurrentTime => self.current_time(message.current_time, now_ms, fx),
+            Ev::CurrentTime => self.current_time(seen, message, now_ms, fx),
             Ev::VideoInfo => {
                 self.facts.video_seen.get_or_insert(now_ms.saturating_sub(self.started_ms));
-                fx.push(self.event_line(now_ms, "videoInfo", &seen.detail));
                 if let (Some((width, height)), true) = (message.dims, self.config.window_id.is_some()) {
                     if self.placed != Some((width, height)) {
                         self.placed = Some((width, height));
@@ -911,9 +899,8 @@ impl UriProbe {
             }
             Ev::AudioInfo => {
                 self.facts.audio_seen.get_or_insert(now_ms.saturating_sub(self.started_ms));
-                fx.push(self.event_line(now_ms, "audioInfo", &seen.detail));
             }
-            other => fx.push(self.event_line(now_ms, other.name(), &seen.detail)),
+            _ => {}
         }
     }
 
@@ -993,13 +980,13 @@ impl UriProbe {
         }
     }
 
-    fn current_time(&mut self, value: Option<i64>, now_ms: u64, fx: &mut Vec<UriEffect>) {
-        let Some(value) = value else {
+    fn current_time(&mut self, seen: &Seen, message: &Message, now_ms: u64, fx: &mut Vec<UriEffect>) {
+        let Some(value) = message.current_time else {
             // Reported, but in neither known shape: say so once, with no payload. It is no report
             // of a position, so it moves nothing and arms no timeout.
             if self.time_unparsed_ms.is_none() {
                 self.time_unparsed_ms = Some(now_ms);
-                fx.push(self.line(now_ms, "ev=currentTime (unparsed)"));
+                fx.push(self.line(now_ms, &event_text(message, seen, false)));
             }
             return;
         };
@@ -1017,14 +1004,14 @@ impl UriProbe {
             }
             let first = self.facts.time_moved.is_none();
             self.facts.time_moved.get_or_insert(now_ms.saturating_sub(self.started_ms));
-            let due = self.time_logged_ms.is_none_or(|at| now_ms.saturating_sub(at) >= TIME_LOG_EVERY_MS);
+            let due = self.time_logged_ms.is_none_or(|at| now_ms.saturating_sub(at) >= CLOCK_LOG_EVERY_MS);
             if first || due {
                 self.time_logged_ms = Some(now_ms);
-                fx.push(self.line(now_ms, &format!("ev=currentTime value={value}")));
+                fx.push(self.line(now_ms, &event_text(message, seen, false)));
             }
         } else if self.facts.time_moved.is_none() && self.time_logged_ms.is_none() {
             self.time_logged_ms = Some(now_ms);
-            fx.push(self.line(now_ms, &format!("ev=currentTime value={value} (first report)")));
+            fx.push(self.line(now_ms, &event_text(message, seen, true)));
         }
     }
 

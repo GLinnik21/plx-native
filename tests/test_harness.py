@@ -5885,7 +5885,7 @@ class UriProductGrading(unittest.TestCase):
         self.assertTrue(passed, results)
         self.assertEqual({label for label, _, _ in results},
                          {"uri_playing", "uri_plane_bound", "uri_presented", "uri_service_playing",
-                          "uri_clock_past", "uri_max_stall", "no_error", "server_wire"})
+                          "uri_dev_offer", "uri_clock_past", "uri_max_stall", "no_error", "server_wire"})
 
     def test_the_probe_prefix_is_not_product_evidence_and_the_trace_prefix_is_not_probe_evidence(self):
         probe_lines = [ln.replace("uri-trace:", "uriprobe:") for ln in _product_run(66)]
@@ -6039,6 +6039,36 @@ class UriProductGrading(unittest.TestCase):
         # a log line that merely mentions the dev route is not a refusal
         self.assertTrue(run.a_no_error(["uri-dev: armed part=990001"], self.P)[0])
 
+    # -- the dev route armed, but no product offer --
+
+    ARMED = "uri-dev: armed part=990001"
+
+    def test_an_armed_dev_route_that_never_reaches_the_product_backend_fails_with_the_pin_reason(self):
+        """The pin matches no server, the qualifier answers Unknown, the route plays the Feed, and the log
+        says nothing else: the grade names the likely cause."""
+        lines = [self.ARMED] + _product_run(66, service=False, presented=False)
+        ok, why = run.a_uri_dev_offer(lines)
+        self.assertFalse(ok)
+        self.assertEqual(why, "dev route armed but no product offer (pin mismatch?)")
+        passed, results = run.evaluate_pipeline(self.CASE, lines, (36, 36, 2))
+        self.assertFalse(passed)
+        graded = {label: (ok, why) for label, ok, why in results}
+        self.assertEqual(graded["uri_dev_offer"],
+                         (False, "dev route armed but no product offer (pin mismatch?)"))
+
+    def test_an_armed_dev_route_that_played_passes_and_an_unarmed_log_has_nothing_to_check(self):
+        self.assertTrue(run.a_uri_dev_offer([self.ARMED] + _product_run(66))[0])
+        self.assertTrue(run.a_uri_dev_offer(_product_run(66))[0])
+        self.assertTrue(run.a_uri_dev_offer([])[0])
+        # the grade runs on a healthy product log too, and passes
+        passed, results = run.evaluate_pipeline(self.CASE, [self.ARMED] + _product_run(66), (36, 36, 2))
+        self.assertEqual(dict((label, ok) for label, ok, _ in results)["uri_dev_offer"], True)
+        self.assertTrue(passed, results)
+
+    def test_a_probe_case_does_not_grade_the_dev_route(self):
+        _, results = run.evaluate_pipeline(UriModeGrading.BOUND_CASE, _uri_run(10), (1, 1, 1))
+        self.assertNotIn("uri_dev_offer", [label for label, _, _ in results])
+
     def test_the_product_error_gate_has_no_summary_to_read(self):
         summary = _uri(9000, SUMMARY.format(playing="no", moved="no", end="refused:acb"))
         self.assertTrue(run.a_no_error([summary], self.P)[0])
@@ -6072,7 +6102,8 @@ class UriProductRunner(unittest.TestCase):
     back. Nothing here touches a television, a mock PMS process or the network: every seam is patched."""
 
     URL = "http://192.0.2.10:8020/pipe_hls_720p24_20m/index.m3u8"
-    MACHINE = "0123456789abcdef0123456789abcdef01234567"
+    HOST, PORT = "192.0.2.5", 32499
+    PMS = (HOST, PORT)
     SYN = "pms: server 0 version=1.41.0.0000-synthetic name=demo"
 
     @staticmethod
@@ -6084,8 +6115,8 @@ class UriProductRunner(unittest.TestCase):
     # -- the trigger text --
 
     def test_the_dev_trigger_text_is_the_grammar_the_app_parses(self):
-        self.assertEqual(run.uri_dev_trigger(991001, self.MACHINE, self.URL),
-                         f"acb part=991001 server={self.MACHINE} url={self.URL}")
+        self.assertEqual(run.uri_dev_trigger(991001, self.HOST, self.PORT, self.URL),
+                         f"acb part=991001 pms={self.HOST}:{self.PORT} url={self.URL}")
 
     def test_the_dev_trigger_refuses_what_the_app_would_ignore_silently(self):
         bad_urls = ["https://192.0.2.10:8020/a.m3u8", "http://fixtures.local:8020/a.m3u8",
@@ -6096,18 +6127,32 @@ class UriProductRunner(unittest.TestCase):
         for url in bad_urls:
             with self.subTest(url=url):
                 with self.assertRaises(run.UriProductRefused):
-                    run.uri_dev_trigger(991001, self.MACHINE, url)
-        for machine in ("", "a b", "a'b", "a=b"):
-            with self.subTest(machine=machine), self.assertRaises(run.UriProductRefused):
-                run.uri_dev_trigger(991001, machine, self.URL)
+                    run.uri_dev_trigger(991001, self.HOST, self.PORT, url)
         for part in (0, -3, "991001", None):
             with self.subTest(part=part), self.assertRaises(run.UriProductRefused):
-                run.uri_dev_trigger(part, self.MACHINE, self.URL)
+                run.uri_dev_trigger(part, self.HOST, self.PORT, self.URL)
+
+    def test_the_pms_pin_is_the_origin_the_app_dials_or_it_is_refused(self):
+        """The app compares ORIGINS: its client holds `http://PMS_HOST:PMS_PORT` verbatim, so a host spelling
+        it would parse differently (leading zeros, a name) or a port it cannot dial never matches, and the
+        mock never takes the real PMS's port."""
+        self.assertEqual(run.uri_dev_pms("192.0.2.5", 32499), "192.0.2.5:32499")
+        self.assertEqual(run.uri_dev_pms("10.0.0.1", 1), "10.0.0.1:1")
+        for host in ("", "localhost", "mac.local", "192.0.2", "192.0.2.5.6", "192.0.2.256", "192.000.2.5",
+                     "192.0.2.05", " 192.0.2.5", "192.0.2.5 ", "::1", None, 5):
+            with self.subTest(host=host), self.assertRaises(run.UriProductRefused):
+                run.uri_dev_pms(host, 32499)
+        for port in (0, -1, 65536, "32499", None, True, 32400):
+            with self.subTest(port=port), self.assertRaises(run.UriProductRefused):
+                run.uri_dev_pms("192.0.2.5", port)
+        with self.assertRaises(run.UriProductRefused) as why:
+            run.uri_dev_pms("192.0.2.5", run.REAL_PMS_PORT)
+        self.assertIn("real PMS", str(why.exception))
 
     # -- the trigger files --
 
     def test_the_files_pin_the_routing_contract_and_name_the_carrier(self):
-        files = run.uri_product_files(self.case(), "http://192.0.2.10:8020", self.MACHINE)
+        files = run.uri_product_files(self.case(), "http://192.0.2.10:8020", self.PMS)
         names = [n for n, _ in files]
         self.assertEqual(len(names), len(set(names)), "a trigger name written twice is read once")
         got = dict(files)
@@ -6115,23 +6160,23 @@ class UriProductRunner(unittest.TestCase):
         self.assertEqual((got["plxnative-quality"], got["plxnative-audioenh"], got["plxnative-ptype"]),
                          ("original", "off", "0"))
         self.assertEqual(got["plxnative-uridev"],
-                         f"acb part={run.mock_fps.CARRIER_PART_ID} server={self.MACHINE} "
+                         f"acb part={run.mock_fps.CARRIER_PART_ID} pms={self.HOST}:{self.PORT} "
                          f"url=http://192.0.2.10:8020/pipe_hls_720p24_20m/index.m3u8")
         for never in ("plxnative-uriprobe", "plxnative-playurl"):
             self.assertNotIn(never, got)
 
     def test_nothing_may_arm_the_probe_or_the_dev_route_by_hand_in_a_product_run(self):
-        for name in ("plxnative-uriprobe", "plxnative-playurl", "plxnative-uridev", "plxnative-play",
-                     "plxnative-ptype", "plxnative-quality"):
+        for name in ("plxnative-uriprobe", "plxnative-playurl", "plxnative-uridev", "plxnative-pms-origin",
+                     "plxnative-play", "plxnative-ptype", "plxnative-quality"):
             with self.subTest(extra=name), self.assertRaises(run.UriProductRefused):
-                run.uri_product_files(self.case(), "http://192.0.2.10:8020", self.MACHINE,
+                run.uri_product_files(self.case(), "http://192.0.2.10:8020", self.PMS,
                                       extra=[(name, "x")])
-        for key in ("uriprobe", "uridev", "playurl"):
+        for key in ("uriprobe", "uridev", "playurl", "pms-origin"):
             with self.subTest(case_trigger=key), self.assertRaises(run.UriProductRefused):
                 run.uri_product_files(self.case(triggers={"ptype": "0", key: "x"}),
-                                      "http://192.0.2.10:8020", self.MACHINE)
+                                      "http://192.0.2.10:8020", self.PMS)
         # an unrelated extra trigger still passes through, after the case's own
-        files = run.uri_product_files(self.case(), "http://192.0.2.10:8020", self.MACHINE,
+        files = run.uri_product_files(self.case(), "http://192.0.2.10:8020", self.PMS,
                                       extra=[("plxnative-framedrop", "20")])
         self.assertEqual(files[-1], ("plxnative-framedrop", "20"))
 
@@ -6169,47 +6214,9 @@ class UriProductRunner(unittest.TestCase):
             run._resolve_uri_product(feed, root, flavour="stable", config=cfg + ".gone")
             self.assertNotIn("skip", feed[0])
 
-    def test_the_mock_identifies_itself_or_the_run_is_refused(self):
-        import http.server
-
-        body = {"MediaContainer": {"machineIdentifier": self.MACHINE, "version": "1.41.0.0000-synthetic"}}
-
-        class H(http.server.BaseHTTPRequestHandler):
-            def log_message(self, *a):
-                pass
-
-            def do_GET(self):
-                data = json.dumps(body).encode()
-                self.send_response(200)
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
-
-        class Quiet(http.server.HTTPServer):
-            def server_bind(self):   # HTTPServer's own bind does a reverse-DNS lookup (slow on a Mac)
-                socketserver.TCPServer.server_bind(self)
-                self.server_port = self.server_address[1]
-
-        srv = Quiet(("127.0.0.1", 0), H)
-        threading.Thread(target=lambda: srv.serve_forever(poll_interval=0.05), daemon=True).start()
-        try:
-            port = srv.server_address[1]
-            self.assertEqual(run.mock_fps.mock_machine_identifier("127.0.0.1", port), self.MACHINE)
-            body["MediaContainer"]["version"] = "1.40.1.8227"
-            with self.assertRaises(SystemExit) as why:
-                run.mock_fps.mock_machine_identifier("127.0.0.1", port)
-            self.assertIn("synthetic", str(why.exception))
-            body["MediaContainer"] = {"version": "1.41.0.0000-synthetic"}
-            with self.assertRaises(SystemExit):
-                run.mock_fps.mock_machine_identifier("127.0.0.1", port)
-        finally:
-            srv.shutdown()
-            srv.server_close()
-
     # -- the run --
 
-    def _run(self, lines=None, *, stream=None, apply=None, case=None, endpoint=("127.0.0.1", 32400),
-             machine=None, cfg_extra=None):
+    def _run(self, lines=None, *, stream=None, apply=None, case=None, endpoint=PMS, cfg_extra=None):
         """`run_uri_product_case` with every seam patched. Returns (outcome, record)."""
         rec = {"ssh": [], "apply": [], "mock": [], "reported": []}
         lines = lines if lines is not None else [self.SYN] + _product_run(66)
@@ -6252,7 +6259,6 @@ class UriProductRunner(unittest.TestCase):
                                   side_effect=lambda *a, **k: rec["reported"].append(a[2:4])), \
                 mock.patch.object(run.mock_fps, "MockPms", FakeMock), \
                 mock.patch.object(run.mock_fps, "resolve_mock_token", return_value="plxnative-mock-guest"), \
-                mock.patch.object(run.mock_fps, "mock_machine_identifier", return_value=machine or self.MACHINE), \
                 endpoint_patch:
             srv = mock.Mock()
             reads = iter([(0, 0, 0), (36, 36, 2)] * 4)   # before the stream, then after it
@@ -6268,12 +6274,14 @@ class UriProductRunner(unittest.TestCase):
         out, rec = self._run()
         self.assertEqual(out[0], True, out)
         # the mock carries the carrier, on the configured address, alive across the stream
-        self.assertEqual(rec["mock"][0], ("new", "127.0.0.1", 32400,
+        self.assertEqual(rec["mock"][0], ("new", self.HOST, self.PORT,
                                           ["--extra-media", "/packs/pipe_uri_carrier_720p24.mp4"]))
         self.assertEqual(rec["mock"][1:], ["enter", "stream", "exit"])
         files, extra = rec["apply"][0]
         got = dict(files)
-        self.assertIn(f"server={self.MACHINE}", got["plxnative-uridev"])
+        # the pin is the origin the mock was started on: one source, the configured address
+        self.assertIn(f" pms={rec['mock'][0][1]}:{rec['mock'][0][2]} ", got["plxnative-uridev"])
+        self.assertNotIn("server=", got["plxnative-uridev"])
         self.assertNotIn("plxnative-uriprobe", got)
         # the token rides `extra=` so it never reaches stdout, and is the fabricated guest's
         self.assertTrue(any("plxnative-token" in cmd and "plxnative-mock-guest" in cmd for cmd in extra))
@@ -6311,6 +6319,19 @@ class UriProductRunner(unittest.TestCase):
         self.assertFalse(out[0])
         self.assertIn("uriprobe", out[1][0][2])
         self.assertEqual((rec["apply"], rec["mock"]), ([], []), "refused before the mock started")
+
+    def test_an_address_the_dev_route_cannot_pin_is_refused_before_the_mock_starts(self):
+        """The real PMS's port, and a configured host that is not a canonical dotted quad: the case FAILS
+        with the reason, and neither the mock nor the set is touched."""
+        for endpoint, why in (((self.HOST, run.REAL_PMS_PORT), "real PMS"),
+                              (("mac.local", self.PORT), "dotted quad"),
+                              (("192.0.2.05", self.PORT), "dotted quad")):
+            with self.subTest(endpoint=endpoint):
+                out, rec = self._run(endpoint=endpoint)
+                self.assertFalse(out[0])
+                self.assertEqual(out[1][0][:2], ("uri_product", False))
+                self.assertIn(why, out[1][0][2])
+                self.assertEqual((rec["apply"], rec["mock"], rec["ssh"]), ([], [], []))
 
     def test_the_suite_dispatches_a_product_case_to_the_product_runner(self):
         with mock.patch.object(run, "run_uri_product_case", return_value=(True, [], [])) as product, \
@@ -6666,7 +6687,7 @@ class UriModeGrading(unittest.TestCase):
         self.assertNotIn("uri_max_stall_s", collapse["expect"], "the clock stops in a collapse on purpose")
 
     def test_the_product_cases_arm_neither_the_probe_nor_the_dev_route_by_hand(self):
-        """`uridev` carries the carrier's part id, the mock's machine identifier and the fixture URL, none
+        """`uridev` carries the carrier's part id, the mock's origin and the fixture URL, none
         of which a manifest knows, so the RUNNER writes it; `uriprobe` would divert the very route under
         test; `playurl` would play the Feed."""
         for case in self._product_cases():

@@ -1040,9 +1040,15 @@ harness's own mock PMS is the plan carrier: it starts on the configured `PMS_HOS
 `pipe_uri_carrier_720p24.mp4` clip (a 90 s 720p24 progressive twin; one audio stream, no subtitles; built
 by `make fixtures-pipeline`) as ratingKey 990001, the app signs in as the synthetic guest and opens that
 item (`plxnative-play=990001`, with `quality=original`, `audioenh=off`, `ptype=0` pinned), and the runner
-writes `plxnative-uridev` as `acb part=991001 server=<the mock's machineIdentifier> url=<fixture
-server>/<fixture>`, so the app's qualifier answers with the fixture's URL and the TV fetches the HLS stream
-from the fixture server (shaper and wire counters keep working). `uriprobe` is never armed in this mode
+writes `plxnative-uridev` as `acb part=991001 pms=<PMS_HOST>:<PMS_PORT> url=<fixture server>/<fixture>`,
+so the app's qualifier answers with the fixture's URL and the TV fetches the HLS stream from the fixture
+server (shaper and wire counters keep working). `pms=` pins the server by ORIGIN, not by machine
+identifier: a `--guest --mock` boot registers its primary by address only (nothing learns the id before the
+first play), as `http://PMS_HOST:PMS_PORT` from the same `src/config.local.h` the mock listens on, so the
+runner writes that exact address (a canonical dotted quad; a hostname, a leading-zero spelling or the real
+PMS's port 32400 is refused before anything starts), and `plxnative-pms-origin` is never armed in this mode
+(it would move the primary off that address). A log that has `uri-dev: armed` and never `uri: service
+playing` fails the case with `dev route armed but no product offer (pin mismatch?)`. `uriprobe` is never armed in this mode
 (`--extra-trigger` for it, `playurl`, `uridev`, `play`, `ptype` or `quality` is refused), the runner
 deletes `plxnative-uridev` when the case ends however it ends, and a log that does not show the
 synthetic mock (`check_synthetic_identity`) is not graded. A case skips with a reason when the install is

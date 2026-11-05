@@ -65,6 +65,7 @@ import atexit
 import contextlib
 import datetime as datetime_module
 import functools
+import ipaddress
 import json
 import math
 import os
@@ -1743,6 +1744,21 @@ def a_uri_service_playing(lines):
     return True, hit.strip()
 
 
+RE_URI_DEV_ARMED = re.compile(r"\buri-dev: armed\b")
+
+
+def a_uri_dev_offer(lines):
+    """A product run whose dev route armed (`uri-dev: armed ...`) must reach the production backend
+    (`uri: service playing`). Armed and silent afterwards is the pin not matching: the dev qualifier
+    answers Unknown for any other origin or Part, the route plays the Feed, and nothing in the log says
+    why. A log that never armed has no pin to check (the refusal itself is `no_error`'s)."""
+    if not any(RE_URI_DEV_ARMED.search(ln) for ln in lines):
+        return True, "the dev route did not arm (a refusal is graded by no_error)"
+    if a_uri_service_playing(lines)[0]:
+        return True, "the dev route armed and the production backend played"
+    return False, "dev route armed but no product offer (pin mismatch?)"
+
+
 def a_uri_presented(lines):
     """The production backend claimed a picture and its clock moved: `uri: presented (... from P to N ms)`
     with N > P. A claim whose clock did not advance is not a presentation."""
@@ -1909,6 +1925,8 @@ def evaluate_uri(case, lines, srv_delta):
         results.append(("uri_service_playing", *a_uri_service_playing(lines)))
     if exp.get("uri_presented"):
         results.append(("uri_presented", *a_uri_presented(lines)))
+    if mode == URI_PRODUCT:
+        results.append(("uri_dev_offer", *a_uri_dev_offer(lines)))
     if "uri_clock_past_s" in exp:
         results.append(("uri_clock_past", *a_uri_clock_past(lines, exp["uri_clock_past_s"], mode)))
     if "uri_max_stall_s" in exp:
@@ -1926,42 +1944,69 @@ def evaluate_uri(case, lines, srv_delta):
 # ---------------------------------------------------------------------------------------------
 # URI product route: the runner's pure half. `plxnative-uridev` is the debug-only dev route that makes the
 # PRODUCTION URI backend play a URL on a 4.x set bound through ACB; its grammar is
-# `acb part=<N> server=<machineIdentifier> url=<http://dotted-quad:port/path>`. The app ignores a
-# trigger it cannot parse (one log line), so every refusal the app would make is made here first.
+# `acb part=<N> pms=<dotted-quad:port> url=<http://dotted-quad:port/path>`. `pms=` is the ORIGIN the app's
+# own client holds for the mock: a `--guest --mock` boot registers its primary by ADDRESS ONLY (no
+# machineIdentifier is known before the first play), as `http://PMS_HOST:PMS_PORT` from the same
+# `src/config.local.h` the mock listens on. The app ignores a trigger it cannot parse (one log line), so
+# every refusal the app would make is made here first.
 # ---------------------------------------------------------------------------------------------
 class UriProductRefused(Exception):
     """The product route cannot run as asked; the case FAILS with the reason instead of ending the suite."""
 
 
 RE_URI_DEV_URL = re.compile(r"http://(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3}):(\d{1,5})/[^\s']+")
-RE_URI_DEV_WORD = re.compile(r"[A-Za-z0-9._-]+")
+# The port a real PMS listens on. The mock never takes it: the `pms=` pin names an ORIGIN, and the
+# default PMS port at a LAN address is exactly where a real server lives.
+REAL_PMS_PORT = 32400
 
 
-def uri_dev_trigger(part_id, machine_id, url):
-    """The content of `plxnative-uridev`, in the order the app documents it: `acb part= server= url=`."""
+def uri_dev_pms(host, port):
+    """The `pms=` value for the mock at `host`:`port`: a canonical dotted quad (the app compares ORIGINS, and
+    its client holds `http://PMS_HOST:PMS_PORT` verbatim, so a spelling it would not parse the same way, or a
+    hostname, could never match) and a port other than the real PMS's."""
+    quad = None
+    if isinstance(host, str) and re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", host):
+        try:
+            quad = str(ipaddress.IPv4Address(host))
+        except ValueError:
+            quad = None
+    if quad is None or quad != host:
+        raise UriProductRefused(f"PMS_HOST {host!r} must be a canonical dotted quad: the dev route pins the "
+                                f"server by origin (pms=<dotted-quad:port>)")
+    if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+        raise UriProductRefused(f"PMS_PORT {port!r} is not 1-65535")
+    if port == REAL_PMS_PORT:
+        raise UriProductRefused(f"PMS_PORT {REAL_PMS_PORT} is a real PMS's port: the mock must listen "
+                                f"elsewhere (mock_pms.py's default is 32499)")
+    return f"{host}:{port}"
+
+
+def uri_dev_trigger(part_id, host, port, url):
+    """The content of `plxnative-uridev`, in the order the app documents it: `acb part= pms= url=`."""
     if not isinstance(part_id, int) or isinstance(part_id, bool) or part_id <= 0:
         raise UriProductRefused(f"part id {part_id!r} is not a positive integer")
-    if not isinstance(machine_id, str) or not RE_URI_DEV_WORD.fullmatch(machine_id):
-        raise UriProductRefused(f"machine identifier {machine_id!r} is not a plain word")
+    pms = uri_dev_pms(host, port)
     m = RE_URI_DEV_URL.fullmatch(url or "")
     if m is None or any(int(m.group(i)) > 255 for i in (1, 2, 3, 4)) or not 1 <= int(m.group(5)) <= 65535:
         raise UriProductRefused("the fixture URL must be http://<dotted-quad>:<port>/<path> with no space "
                                 "or apostrophe (the app ignores anything else)")
-    return f"acb part={part_id} server={machine_id} url={url}"
+    return f"acb part={part_id} pms={pms} url={url}"
 
 
 # What a product run must never inherit from the case or the command line: `uriprobe` would divert the
 # route under test, `playurl` would play the Feed, and the rest are written by the runner itself.
-URI_PRODUCT_RESERVED = ("plxnative-uriprobe", "plxnative-playurl", "plxnative-uridev", "plxnative-play",
-                        "plxnative-ptype", "plxnative-quality")
+# `pms-origin` would move the app's primary off the configured address the trigger's `pms=` names.
+URI_PRODUCT_DIVERTING = ("plxnative-uriprobe", "plxnative-playurl", "plxnative-uridev", "plxnative-pms-origin")
+URI_PRODUCT_RESERVED = URI_PRODUCT_DIVERTING + ("plxnative-play", "plxnative-ptype", "plxnative-quality")
 
 
-def uri_product_files(case, url_base, machine_id, extra=()):
+def uri_product_files(case, url_base, pms, extra=()):
     """The trigger files of a product case: the integration tier's routing pins (`play=<rk>`,
     `quality=original`, `audioenh=off`, the case's `ptype`) pointed at the CARRIER clip's ratingKey, plus
-    `plxnative-uridev` carrying the carrier's part, the mock's machine identifier and the fixture URL."""
+    `plxnative-uridev` carrying the carrier's part, the mock's origin and the fixture URL. `pms` is the
+    mock's `(host, port)` as `configured_endpoint` reads it from `src/config.local.h`."""
     for name in (f"plxnative-{k}" for k in (case.get("triggers") or {})):
-        if name in URI_PRODUCT_RESERVED[:3]:
+        if name in URI_PRODUCT_DIVERTING:
             raise UriProductRefused(f"a product case must not set {name} itself: the runner writes it")
     for name, _ in extra:
         if name in URI_PRODUCT_RESERVED:
@@ -1970,7 +2015,7 @@ def uri_product_files(case, url_base, machine_id, extra=()):
     carrier = dict(case, rk=str(mock_fps.CARRIER_RK))
     files = triggers_for_case(carrier)
     files.append(("plxnative-uridev", uri_dev_trigger(
-        mock_fps.CARRIER_PART_ID, machine_id, f"{url_base}/{case['fixture']}")))
+        mock_fps.CARRIER_PART_ID, *pms, f"{url_base}/{case['fixture']}")))
     files.extend(extra)
     names = [n for n, _ in files]
     dup = sorted({n for n in names if names.count(n) > 1})
@@ -6022,8 +6067,8 @@ def run_uri_product_case(case, cfg, srv, url_base, verbose):
     The harness's own mock PMS is only the plan CARRIER: the app resolves its clip as an ordinary movie
     (guest, `--mock`), the dev route (`plxnative-uridev`) answers the qualification with the fixture
     server's URL, and the TV fetches the HLS stream from the fixture server (shaper and wire counters
-    keep working). Order matters and is kept: mock up -> fabricated guest token -> machine identifier ->
-    triggers -> stream; the dev trigger is deleted in a `finally` however the run ends, and the log must
+    keep working). Order matters and is kept: refuse (case, address) -> mock up -> fabricated guest token
+    (which proves the synthetic mock) -> triggers -> stream; the dev trigger is deleted in a `finally` however the run ends, and the log must
     prove the synthetic mock before anything is graded (fail closed). A refusal that comes before the
     set is touched fails THIS case, not the suite.
     """
@@ -6038,15 +6083,16 @@ def run_uri_product_case(case, cfg, srv, url_base, verbose):
             if not case.get("carrier_path"):
                 raise UriProductRefused("no carrier clip resolved (see _resolve_uri_product)")
             extra = list(cfg.get("extra_triggers") or ())
-            uri_product_files(case, url_base, "placeholder", extra)   # refuse a bad case/CLI BEFORE any start
             host, port = mock_fps.configured_endpoint(CONFIG_LOCAL_H)
+            # The dev route pins the app's own primary origin (`http://PMS_HOST:PMS_PORT`, address only:
+            # no machineIdentifier is known on a dev-token boot), so the trigger comes from the SAME
+            # configured address the mock listens on. Refuse a bad case/CLI/address BEFORE any start.
+            files = uri_product_files(case, url_base, (host, port), extra)
             log = os.path.join(tempfile.gettempdir(), f"plx-mock-pms-{os.getpid()}-{name}.log")
             args = mock_fps.carrier_server_args(case["carrier_path"])
             print(f"    mock: tests/mock_pms.py {' '.join(args)}")
             stack.enter_context(mock_fps.MockPms(host, port, args, log_path=log))
             token = mock_fps.resolve_mock_token(CONFIG_LOCAL_H)
-            machine = mock_fps.mock_machine_identifier(host, port)
-            files = uri_product_files(case, url_base, machine, extra)
         except (SystemExit, UriProductRefused) as why:
             print(f"    [FAIL] {why}")
             return False, [("uri_product", False, str(why))], []

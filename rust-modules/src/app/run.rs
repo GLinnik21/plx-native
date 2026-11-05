@@ -5573,6 +5573,21 @@ mod lifecycle_regression_tests {
         /// [`Self::serving`] with the server's answers chosen by `respond(request line)`. The first
         /// request still parks until [`Self::resolve`] releases it.
         fn serving_with(respond: impl Fn(&str) -> String + Send + 'static) -> Option<Rig> {
+            Self::serving_registered_as("lifecycle-fixture", respond)
+        }
+
+        /// [`Self::serving`] with the server registered by ADDRESS ONLY (`""` for its machine
+        /// identifier), the way a dev-token boot registers its primary
+        /// (`install_captured_registry` calls `register("", …)`): nothing has learned the id.
+        #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
+        fn serving_by_address(successor: bool) -> Option<Rig> {
+            Self::serving_registered_as("",
+                move |request: &str| queue_body(request, successor).to_owned())
+        }
+
+        /// The fixture server, registered under `machine_id` (the registry's id for the client).
+        fn serving_registered_as(machine_id: &str, respond: impl Fn(&str) -> String + Send + 'static)
+            -> Option<Rig> {
             plx_plex::plex::reset_servers_for_test();
             plx_media::route::retire_pending_stops(); // the stop mailbox is process-global
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -5649,7 +5664,7 @@ mod lifecycle_regression_tests {
                 }
             };
             let sid = plx_plex::plex::register_for_test(
-                "lifecycle-fixture",
+                machine_id,
                 "127.0.0.1",
                 port as i32,
                 "synthetic",

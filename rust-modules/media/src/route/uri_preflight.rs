@@ -34,8 +34,9 @@ impl ProductEvidence {
     }
 
     /// [`unqualified`](Self::unqualified) with the display path composition chose for the
-    /// executor (the URI driver's `product_binding`). The binding configures the executor only: `permits` and
-    /// `could_qualify_pms` still require `Binding::Exported`, so no source is offered through it.
+    /// executor (the URI driver's `product_binding`). The binding configures the executor and
+    /// names the display path an offer would use; it certifies nothing. `certified` stays all
+    /// false, so `permits` and `could_qualify_pms` offer no source through any binding.
     pub fn unqualified_on(display_mode: i32, binding: Binding) -> Self {
         let exported = display_mode == plx_platform::tv::sink::VP_EXPORTED;
         let callable = Capabilities { progressive_uri: true, hls_uri: true, packet_feed: false,
@@ -48,9 +49,20 @@ impl ProductEvidence {
             certified, preview_rectangle: false }
     }
 
+    /// Whether the composed display path can show a URI source at all: the exported window with
+    /// a real canvas (and the display mode that exports it), or the ACB plane. An unbound
+    /// executor shows nothing. This is only the path; what may be offered through it is still
+    /// decided by `certified`.
+    fn display_path_offerable(&self) -> bool {
+        match self.binding {
+            Binding::Exported { canvas: (w, h) } => self.display_exported && w > 0 && h > 0,
+            Binding::Acb => true,
+            Binding::Unbound => false,
+        }
+    }
+
     pub fn permits(&self, requirements: Requirements, preview: bool) -> bool {
-        self.display_exported
-            && matches!(self.binding, Binding::Exported { canvas: (w, h) } if w > 0 && h > 0)
+        self.display_path_offerable()
             && (!preview || self.preview_rectangle)
             && self.callable.pause && self.callable.seek
             && self.certified.pause && self.certified.seek
@@ -63,6 +75,13 @@ impl ProductEvidence {
 /// The Part URL and stream identifiers are intentionally absent from Debug/log output.
 pub struct OriginalRequest {
     pub selection: SourceSelection,
+    /// Where `selection.server`'s client dials: the scheme, host and port the registry holds for it,
+    /// exactly as the connection was registered (a dev-token boot registers its primary by ADDRESS
+    /// ONLY, so this is the one thing about that server that is always known). `selection.server` is
+    /// only a process-local registry slot, so a qualifier that must tell one SERVER from another (a
+    /// developer pin) compares this. Like the URL it stays out of Debug/log output: it is a
+    /// household address.
+    pub server_origin: plx_plex::plex::Origin,
     pub source_url: String,
     pub duration_ms: Option<u64>,
     pub video_codec: String,
@@ -303,8 +322,7 @@ impl ResolvePort {
     /// preflight cost gate; it never qualifies a source or promises release.
     pub fn could_qualify_pms(&self) -> bool {
         let caps = self.evidence.certified;
-        self.evidence.display_exported
-            && matches!(self.evidence.binding, Binding::Exported { canvas: (w, h) } if w > 0 && h > 0)
+        self.evidence.display_path_offerable()
             && self.evidence.callable.pause && self.evidence.callable.seek
             && caps.pause && caps.seek
             && ((self.evidence.callable.progressive_uri && caps.progressive_uri)
@@ -485,6 +503,65 @@ mod tests {
         let evidence = ProductEvidence::unqualified_on(VP_ACB, Binding::Acb);
         assert!(!evidence.permits(Requirements { source: SourceKind::ProgressiveUri, video: Fidelity::Exact,
             audio: Fidelity::Exact, audio_track: TrackChoice::Unspecified, subtitle_track: TrackChoice::Unspecified }, false));
+    }
+
+    const PROGRESSIVE_EXACT: Requirements = Requirements { source: SourceKind::ProgressiveUri,
+        video: Fidelity::Exact, audio: Fidelity::Exact, audio_track: TrackChoice::Unspecified,
+        subtitle_track: TrackChoice::Unspecified };
+
+    fn uri_caps(on: bool) -> Capabilities {
+        Capabilities { progressive_uri: on, hls_uri: false, packet_feed: false, pause: on,
+            seek: on, audio_track: on, subtitle_track: false, audio_off: false, subtitle_off: false }
+    }
+
+    fn evidence_with(display_exported: bool, binding: Binding, certified: Capabilities)
+        -> ProductEvidence {
+        ProductEvidence { display_exported, binding, callable: uri_caps(true), certified,
+            preview_rectangle: false }
+    }
+
+    #[test]
+    fn acb_binding_is_offerable_only_with_certified_capabilities() {
+        // The ACB display path is an offerable path beside the exported canvas: with the source
+        // class, pause and seek certified there is an offer, and `could_qualify_pms` agrees.
+        let certified = evidence_with(false, Binding::Acb, uri_caps(true));
+        assert!(certified.permits(PROGRESSIVE_EXACT, false));
+        let port = ResolvePort::new(certified, Arc::new(ProductQualifier));
+        assert!(port.could_qualify_pms());
+        // Nothing certified: the display path alone offers nothing, so production stays locked.
+        let uncertified = evidence_with(false, Binding::Acb, uri_caps(false));
+        assert!(!uncertified.permits(PROGRESSIVE_EXACT, false));
+        assert!(!ResolvePort::new(uncertified, Arc::new(ProductQualifier)).could_qualify_pms());
+        // The preview rectangle is its own certificate, ACB or not.
+        assert!(!certified.permits(PROGRESSIVE_EXACT, true));
+    }
+
+    #[test]
+    fn only_an_exported_canvas_or_acb_is_an_offerable_display_path() {
+        let all = uri_caps(true);
+        let exported = Binding::Exported { canvas: (1920, 1080) };
+        assert!(evidence_with(true, exported, all).permits(PROGRESSIVE_EXACT, false));
+        // An exported canvas needs the display mode that exports it and a real canvas.
+        assert!(!evidence_with(false, exported, all).permits(PROGRESSIVE_EXACT, false));
+        assert!(!evidence_with(true, Binding::Exported { canvas: (0, 1080) }, all)
+            .permits(PROGRESSIVE_EXACT, false));
+        for display_exported in [false, true] {
+            let unbound = evidence_with(display_exported, Binding::Unbound, all);
+            assert!(!unbound.permits(PROGRESSIVE_EXACT, false));
+            assert!(!ResolvePort::new(unbound, Arc::new(ProductQualifier)).could_qualify_pms());
+        }
+    }
+
+    #[test]
+    fn the_production_evidence_certifies_nothing_on_any_binding() {
+        use plx_platform::tv::sink::{VP_ACB, VP_EXPORTED};
+        for (mode, binding) in [(VP_ACB, Binding::Acb), (VP_EXPORTED, Binding::Acb),
+            (VP_EXPORTED, Binding::Exported { canvas: (1920, 1080) }), (VP_ACB, Binding::Unbound)] {
+            let evidence = ProductEvidence::unqualified_on(mode, binding);
+            assert!(!evidence.permits(PROGRESSIVE_EXACT, false));
+            assert!(!ResolvePort::new(evidence, Arc::new(ProductQualifier)).could_qualify_pms());
+            assert!(!evidence.certified.supports(PROGRESSIVE_EXACT));
+        }
     }
 
     const MASTER: &[u8] = b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nlow/index.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=3000000\nhigh/index.m3u8\n";
@@ -743,6 +820,7 @@ mod tests {
         let request = || OriginalRequest { selection: SourceSelection {
                 server: plx_plex::plex::ServerId::from_raw(1), part_id: 4, audio_sid: 42,
                 subtitle_sid: 0, audio_contract: plx_plex::plex::AudioEnhancements::NONE },
+            server_origin: plx_plex::plex::Origin::http("192.0.2.5", 32499),
             source_url: "https://example.invalid/part.mkv".to_owned(), duration_ms: Some(60_000),
             video_codec: "hevc".to_owned(), dolby_vision: dovi,
             dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode::Auto,
