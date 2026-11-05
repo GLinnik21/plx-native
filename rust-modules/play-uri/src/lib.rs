@@ -5,6 +5,7 @@
 //! referenced from this crate.
 
 pub mod acb_bind;
+mod acb_envelope;
 pub mod acb_drive;
 pub mod picture_gate;
 pub mod uri_protocol;

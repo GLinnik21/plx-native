@@ -97,11 +97,18 @@ therefore does not determine whether an ACB arm can display its picture.
 
 That sequence is now one shared machine (`rust-modules/play-uri/src/acb_bind.rs`) that the probe and
 the production URI backend (`Binding::Acb`, present and not routed) both step. The production
-backend forwards only the descriptor envelope the service reported (`sourceInfo`); the fixture
-descriptor that the controlled arms fell back to stays a developer-probe exception. On the 4.5 set
-those arms did see `ev=sourceInfo` yet still used the fixture descriptor, so the service's envelope was
-observed and not usable there; the cause is not determined, and a production bind on that set would
-wait for an envelope it cannot use and time out. The ACB plane is released
+backend never uses the fixture descriptor that the controlled arms fell back to (a developer-probe
+exception). It sends the video-data envelope the service itself reported in the ACB schema (a
+`sourceInfo` with a string `context` and a decodable `video`) when there is one, and otherwise an
+envelope derived from the service's own `videoInfo` event. The 4.5 service never sends the ACB schema:
+its `sourceInfo` is a track list, so the controlled arms saw `ev=sourceInfo` and still used the fixture
+descriptor, and a production bind that waited only for the schema timed out and fell back to Feed. The
+firmware's own conversion (libplayerAPIs builds the envelope Feed binds with from the same members the LS2 `videoInfo` reports)
+is measured and mapped in [the envelope measurement](measurements/uri-acb-envelope-2026-11-05.md); the
+backend applies that map as pure functions (`acb_envelope.rs`), writes only the firmware's own constants
+itself, and builds nothing when a member the firmware always writes is missing, so a run with no usable
+`videoInfo` still waits and times out. Whether ACB accepts the derived envelope on the set has not been
+measured yet. The ACB plane is released
 by `UNLOADED` and a fence on its completion callback
 ([evidence](measurements/acb-release-fence-2026-11-04.md)), so a later bind in the same process waits
 for that fence instead of needing a relaunch; only a failed fence quarantines the plane until exit.

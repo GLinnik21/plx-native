@@ -1048,7 +1048,15 @@ first play), as `http://PMS_HOST:PMS_PORT` from the same `src/config.local.h` th
 runner writes that exact address (a canonical dotted quad; a hostname, a leading-zero spelling or the real
 PMS's port 32400 is refused before anything starts), and `plxnative-pms-origin` is never armed in this mode
 (it would move the primary off that address). A log that has `uri-dev: armed` and never `uri: service
-playing` fails the case with `dev route armed but no product offer (pin mismatch?)`. `uriprobe` is never armed in this mode
+playing` fails the case (`uri_dev_offer`), and the message says which way: `dev route armed but no product
+offer (pin mismatch?)` when the log has no `uri-acb:` line at all (the qualifier never offered the
+backend the stream), `offer made but the ACB bind never completed ...` when the backend started its
+ACB sequence and stopped before the picture (the log has `uri-acb: waiting for the service's source
+envelope` when the service sent no usable video facts). A product case also fails by name, as
+`uri_route_held`, when the route fell back to the Feed: the URI session ended (`ls2uri: released` or
+`quarantined`) and a line only the Feed route writes follows (`decision: part=... ->`, `load: v=...`,
+`stream: ... path=`). A fallback plays the same stream and writes every plane line the URI backend does,
+so without this grade it reads as a pass. `uriprobe` is never armed in this mode
 (`--extra-trigger` for it, `playurl`, `uridev`, `play`, `ptype` or `quality` is refused), the runner
 deletes `plxnative-uridev` when the case ends however it ends, and a log that does not show the
 synthetic mock (`check_synthetic_identity`) is not graded. A case skips with a reason when the install is
@@ -1088,6 +1096,9 @@ The URI expectations, all in `expect` and all optional:
   route the task ids are read from the log instead: `acb display fullscreen=1 rv=1 task=N` and
   `acb playing rv=1 task=M` (both `rv=1`) each need an `acb callback task=<id> ev=1`, no callback may
   answer another `ev` except the id in an `acb unloaded ... task=K` line, and line order is not graded.
+  Those plane lines are written through the display sink by the Feed route too, so a product case
+  reads them only after the URI backend's OWN lines: `uri-acb: bound` and `uri-acb: display/PLAYING
+  completed` (a `uri-acb: display/PLAYING completion failed` line fails it).
 - **`uri_clock_past_s: N`**: the largest `ev=currentTime value=<ms>` is at least N seconds. It also
   counts as the depth the pack must have (`_resolve_fixtures` skips a pack shorter than 0.8 x N).
 - **`uri_max_stall_s: S`**: while playing, the media clock never stood still for more than S seconds
