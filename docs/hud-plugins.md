@@ -1932,7 +1932,10 @@ ordered), so the tool raises the PATCH, never below the author's own, by the sec
 restart still lands above what the set holds, and never reuses a number. On the set, a pack installed from a
 development source remembers that address (`Entry::dev_source`, persisted in `installed.json`, dev sources only), and
 Play on its focused row in the Player HUD page sends the same `HudCmd::Fetch` "Install from address" does: the offer
-dialog follows, and OK installs. The confirmation is kept. The local state-matrix preview is
+dialog follows, and OK installs. The confirmation is kept. The dev patch outranks a later release that only raises the
+patch (a dev `1.0.26000000` makes the published `1.0.4` NotNewer), so the comparator is left alone and the author is told, by
+the recipe and the tool's own output, to remove the dev install (the page's Remove row) before installing the published one.
+The local state-matrix preview is
 `tools/hud_preview.py --hud <file>` (already on main), the PR15 "`plxnative-sim --hud <file>`" of this plan; a static web
 editor stays later. Verified on the host (the store, the page, the tool against a stub simulator and a local HTTP
 client). Not verified on the set: the whole loop on the television.

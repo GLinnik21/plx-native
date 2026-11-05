@@ -66,9 +66,10 @@ higher after every change and after a restart of the tool, and never below your 
 address; a registry or drop-folder install has no such action.
 
 **Remove the dev install before installing the registry one.** A dev build's patch number (millions, growing by one a
-second) is above any release that only raises the patch, so the registry's `1.0.1` would be refused as not newer than
-your dev build and the TV would say so. In the Player HUD page, use the row named after your HUD whose detail reads
-"Remove", then install from the gallery. The TV also records the dev address in its installed list; a PlxNative build
+second) is above any release that only raises the patch: a dev build installed as `1.0.26000000` makes the published
+`1.0.4` "not newer", so the TV refuses it and does not treat it as an update. Before you install the published
+version, open the Player HUD page and use the row named after your HUD whose detail reads "Remove" (the page's existing
+way to remove a package), then install from the gallery. The TV also records the dev address in its installed list; a PlxNative build
 older than this feature reads such a list as read-only until the dev install is removed.
 
 Submit the source folder, attribution README and maintainer contact to

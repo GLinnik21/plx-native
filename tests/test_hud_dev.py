@@ -162,6 +162,16 @@ class TheAddressTheTvMayFetchFrom(unittest.TestCase):
         self.assertIn("Play", recipe[0])
         self.assertNotIn("\n", recipe[0])
 
+    def test_the_banner_says_to_remove_the_dev_install_before_installing_the_published_version(self):
+        # A dev build's patch (seconds since 2026-01-01) is above a later published release, so the TV would call that
+        # release "not newer" and never offer it; the one way out is the page's existing Remove row.
+        lines = hud_dev.banner(["192.168.1.20"], 8731, "my-hud")
+        removal = [line for line in lines if "Remove" in line]
+        self.assertEqual(len(removal), 1, lines)
+        self.assertIn("published", removal[0])
+        self.assertIn("Player HUD", removal[0])
+        self.assertNotIn("\n", removal[0])
+
     def test_the_file_name_in_the_address_is_the_sources_own_and_url_safe(self):
         self.assertEqual(hud_dev.package_name("/x/my-hud"), "my-hud")
         self.assertEqual(hud_dev.package_name("/x/My Hud v2.plxhud"), "My-Hud-v2")

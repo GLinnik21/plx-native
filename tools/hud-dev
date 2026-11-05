@@ -16,6 +16,10 @@ fetched package only when its `version` is higher than the installed one. The co
 2026-01-01. A clock-seeded number is higher after a restart of the tool too, when a counter that started over would
 land under what the set already holds. Your own manifest on disk is never touched.
 
+That number is also above any later release that only raises the patch, so the TV would call the published version
+not newer and never offer it: remove the dev install (Player HUD page, the row named after the HUD, "Remove") before
+installing the published one.
+
 On the Mac, run it with `/usr/bin/python3`: macOS's firewall lets only that interpreter accept LAN connections by
 default, and a Homebrew Python is silently blocked (the set then never reaches the server).
 """
@@ -55,6 +59,10 @@ MANIFEST = "manifest.json"
 HOW_TO = (
     "On the TV: Settings > Video & playback > Player HUD > Install from address (type the address, OK, confirm); "
     "for every later build focus that HUD's row on the same page, press Play, confirm."
+)
+REMOVE_FIRST = (
+    "Before you install the published version of this HUD, remove this dev install (Player HUD page, the row named "
+    "after the HUD, 'Remove'): its version is above the release's, so the TV would not offer the release."
 )
 
 
@@ -403,6 +411,7 @@ def banner(addresses, port, name):
     lines = [f"TV address: {urls[0]}"]
     lines += [f"  or, on another interface: {url}" for url in urls[1:]]
     lines.append(HOW_TO)
+    lines.append(REMOVE_FIRST)
     return lines
 
 
