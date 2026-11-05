@@ -1483,7 +1483,8 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         FEED_TX.seek_to_ns.store(-1, Relaxed);
         let coalesced = take_coalesced(); // read here so BOTH branches consume this seek's requests
         // Consumed by whichever branch lands this seek: a transcode seek is a fresh Load anyway.
-        let rate_reload = FEED_SHARED.rate_reload.swap(false, Relaxed);
+        let rate_reload = ps.readout().rate_reload();
+        ps.step_readout(super::readout::ReadoutEvent::RateReloadTaken);
         let t = t.max(0);
         // TRANSCODE seek: restart the encode at the new &offset and do a FULL RELOAD (fresh Load).
         // A flush()+refeed of the new start.mkv left a STALE GStreamer segment → visual artifacts on
@@ -1509,7 +1510,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         // plx_play_feed::seek::select_seek_mode), or set by feed_stream when sendSegmentEvent can't find the
         // pipeline or a native Seek is refused — is reload-per-seek. reload_at REPLACES the ENGINE,
         // so `eng` dangles after it: return immediately.
-        if seek_must_reload(seek_mode(), super::play_rate_permille(), rate_reload) {
+        if seek_must_reload(seek_mode(), super::play_rate_permille(ps), rate_reload) {
             crate::route::commit_user_seek();
             own_seek_under_pause(t);
             settle_reload(super::engine::reload_at(ps, pa, t), "direct seek reload", ps);
@@ -4667,6 +4668,34 @@ mod native_seek_pump_tests {
         // A fresh play is a new playback and gets to try the native Seek again.
         let _ = crate::player::start_bufferfeed_tracked(&mut rig.ps, &mut super::super::adapter::PlayerAdapter::new(unsafe { MainThread::assume() }));
         assert!(!plx_play_feed::seek::native_seek_refused(), "a fresh play clears the latch");
+    }
+
+    /// The one-shot reload a speed change arms lives in the session's readout: it turns the next
+    /// in-place seek into a full reload, and the pump takes it with that seek, so the one after
+    /// lands in place again.
+    #[test]
+    fn an_armed_rate_reload_turns_the_next_in_place_seek_into_one_reload_and_is_taken_once() {
+        use crate::player::readout::ReadoutEvent;
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        rig.ps.step_readout(ReadoutEvent::RateReloadArmed);
+        assert!(rig.ps.readout().rate_reload());
+        crate::player::request_seek(&mut rig.ps, TARGET_NS);
+        for _ in 0..6 {
+            rig.frame();
+            if !reloads().is_empty() {
+                break;
+            }
+        }
+        assert_eq!(reloads(), vec![TARGET_NS], "a native-seek mode still reloads the seek that carries a speed");
+        assert!(ffi_host::seek_log_for_test().is_empty(), "no in-place Seek");
+        assert!(!rig.ps.readout().rate_reload(), "the pump took the one-shot with that seek");
+
+        // Taken exactly once: what the pump asks of the NEXT seek (a native-seek mode, 1x, nothing
+        // armed) is an ordinary in-place seek.
+        assert!(!super::seek_must_reload(plx_play_feed::seek::seek_mode(),
+            crate::player::play_rate_permille(&rig.ps), rig.ps.readout().rate_reload()),
+            "the reload was one-shot");
     }
 
     // ---- a seek armed under a viewer Pause is owned by the media layer (a bare request_seek) ----

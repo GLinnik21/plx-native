@@ -697,10 +697,11 @@ something.
   `speed_audio` time-stretches the sound, and every timestamp to the pipeline is divided by the speed
   (`player::to_sink_ns`, inverted on the presented-frame callback by `from_sink_ns`; an audio AU's
   sink pts also carries the PCM lead of the next bullet, added after the division).
-  A speed change is a seek to the viewer's own position marked `rate_reload`, and while the speed is not
-  1x every direct-play seek reloads in every mode (`pump::seek_must_reload`). `play_rate_permille` is the
-  viewer's choice and persists across reloads; `applied_rate_permille` is the current pipeline's and is
-  reset by `reset_session`. The feed throttle's run-on reads the applied one (`FeedPace::reference_at`).
+  A speed change is a seek to the viewer's own position marked with the readout's `rate_reload`, and while the speed is not
+  1x every direct-play seek reloads in every mode (`pump::seek_must_reload`). The readout's `play_rate_permille` is
+  the rate the session OFFERS its next Load (`session_rate_for` lowers it to 1x when the playback does not offer
+  the pick; the viewer's intent is the session's `requested_rate_permille` and survives that) and persists across
+  reloads; `applied_rate_permille` is the current pipeline's and is reset by `reset_session`. The feed throttle's run-on reads the applied one (`FeedPace::reference_at`).
 - **A Load that declares `"audio":"PCM"` on one of LG's audio stacks has its audio fed later than the
   picture it belongs with, by an amount the stack decides; a set with no lead (`adecsink` on 2016/2017, not
   determined; Realtek; MStar; an unknown stack) gets none at all** (#1086, #1088, #1092, #1093; FLAC and every other app-decoded codec (a DTS the app decodes under the lossy gate
