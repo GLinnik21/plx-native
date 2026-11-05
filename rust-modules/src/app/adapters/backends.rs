@@ -122,24 +122,14 @@ pub(crate) struct UriDriverSettings {
     pub source_ttl_ms: u64,
 }
 
-/// Product clock lives at the player IO boundary; the URI reducer receives elapsed values.
+/// The URI driver's clock: the player's IO-boundary monotonic clock behind the driver's trait. The
+/// wall clock itself is read in `plx_media` (the `wall` gate keeps raw clock reads out of `app/`).
 #[cfg(feature = "play-uri")]
-struct ProductUriClock(std::time::Instant);
+struct ProductUriClock(plx_media::player::adapter::MonotonicMs);
 
 #[cfg(feature = "play-uri")]
 impl MonotonicClock for ProductUriClock {
-    fn now_ms(&self) -> u64 {
-        self.0.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
-    }
-}
-
-/// Expiry for an off-frame source qualification, read at the player IO boundary. A qualifier
-/// owns the returned deadline with its source; the route only compares the supplied value. Only
-/// the loopback rigs qualify a source today, and they run under `hostsim`.
-#[cfg(all(test, feature = "play-uri"))]
-#[allow(dead_code)]
-pub(crate) fn uri_source_expiry_after(ttl: std::time::Duration) -> std::time::Instant {
-    std::time::Instant::now() + ttl
+    fn now_ms(&self) -> u64 { self.0.now_ms() }
 }
 
 /// Capture the installed display and URI bus at the playback IO boundary. Current product
@@ -166,7 +156,7 @@ pub(crate) fn install_uri_product_with_ports(adapter: &mut PlayerAdapter,
     display: &'static dyn DisplaySink) -> bool {
     let evidence = port.evidence();
     let settings = UriDriverSettings {
-        clock: Box::new(ProductUriClock(std::time::Instant::now())),
+        clock: Box::new(ProductUriClock(plx_media::player::adapter::MonotonicMs::start())),
         app_id: plx_base::paths::app_id().to_owned(),
         binding: evidence.binding,
         capabilities: evidence.certified,

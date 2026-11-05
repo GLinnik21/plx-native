@@ -82,6 +82,24 @@ pub enum UriTrackFallback {
 
 pub use crate::route::{QualifiedUriOffer, UriRecoveryNotice, UriSourceRecipe};
 
+/// A monotonic millisecond clock read at the player IO boundary. The composition root hands one to
+/// the URI driver as its clock, and the driver only ever receives elapsed values from it.
+pub struct MonotonicMs(std::time::Instant);
+
+impl MonotonicMs {
+    pub fn start() -> Self { Self(std::time::Instant::now()) }
+
+    pub fn now_ms(&self) -> u64 {
+        self.0.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+    }
+}
+
+/// Expiry for an off-frame source qualification, read at the player IO boundary. A qualifier
+/// owns the returned deadline with its source; the route only compares the supplied value.
+pub fn uri_source_expiry_after(ttl: std::time::Duration) -> std::time::Instant {
+    std::time::Instant::now() + ttl
+}
+
 #[derive(Clone, Copy)]
 struct PendingUriRecovery { notice: UriRecoveryNotice, released: bool }
 

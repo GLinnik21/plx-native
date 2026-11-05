@@ -31,7 +31,7 @@ mod uri_boot_tests {
                 requirements: Requirements { source: SourceKind::ProgressiveUri,
                     video: Fidelity::Exact, audio: Fidelity::Exact,
                     audio_track: audio, subtitle_track: TrackChoice::Unspecified },
-                    expires_at: crate::app::adapters::backends::uri_source_expiry_after(
+                    expires_at: plx_media::player::adapter::uri_source_expiry_after(
                         Duration::from_secs(30)),
                 certified_dolby_vision: None,
                 certified_subtitle_source: None,
@@ -55,7 +55,7 @@ mod uri_boot_tests {
                     video: Fidelity::Exact, audio: Fidelity::Exact,
                     audio_track: TrackChoice::Selected(selected.audio_sid as u64),
                     subtitle_track: TrackChoice::Unspecified },
-                expires_at: crate::app::adapters::backends::uri_source_expiry_after(
+                expires_at: plx_media::player::adapter::uri_source_expiry_after(
                     Duration::from_secs(30)),
                 certified_dolby_vision: None, certified_subtitle_source: None,
             })
