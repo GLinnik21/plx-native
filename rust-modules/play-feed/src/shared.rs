@@ -1042,6 +1042,22 @@ impl Shared {
         self.playpos_ns.store(playpos_ns, Ordering::Relaxed);
     }
 
+    /// A transcode restarted at a content offset (`FeedCommand::Rebase`): the published position
+    /// carries `disp_base` from the first frame and `playpos_ns` gives instant HUD feedback until
+    /// frames land. No seek is armed (the encode is 0-based at the offset), and `pts_shift` is the
+    /// video lane's alone. Main thread only, like [`Self::arm_open`].
+    pub fn rebase(&self, playpos_ns: i64, disp_base: i64) {
+        self.disp_base.store(disp_base, Ordering::Relaxed);
+        self.playpos_ns.store(playpos_ns, Ordering::Relaxed);
+    }
+
+    /// The audio stream the demuxer feeds from its next container open (`FeedCommand::SelectAudio`;
+    /// `-1` feeds the file's own default). Not cleared by a session reset: the player's choice
+    /// outlives a reload and is sent again before every start.
+    pub fn select_audio(&self, idx: i32) {
+        self.desired_audio_idx.store(idx, Ordering::Relaxed);
+    }
+
     /// Publish the display aspect the sourceInfo declared, as a reduced `(num, den)`. Packed
     /// `(num << 32) | den` in one word so a reader never sees half of a pair.
     pub fn publish_video_aspect(&self, num: u32, den: u32) {

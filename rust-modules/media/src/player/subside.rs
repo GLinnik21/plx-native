@@ -10,10 +10,8 @@
 //! See `plx_play_feed::side_reader` for what the reader does, when it starts and stops, and how a
 //! SIDECAR gets it clock-only (`plx_playback_contract::subtitle::SIDE_READER_CLOCK_ONLY`).
 
-use plx_play_feed::shared::FEED_SHARED;
 use plx_play_feed::side_reader::{ReadCfg, RunEnd, SideReaderJobPort, SideStop, Spec};
 use plx_playback_contract::subtitle::{Anchor, CaptionRetention};
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 /// The common caption runner the reader thread calls back into.
@@ -57,17 +55,29 @@ pub fn dev_armed_ordinal() -> Option<i32> {
 /// shape PMS serves a second reader of the Part (the live session's own identifier is refused while
 /// the remux runs). It carries the token and is handed to the reader, never logged. `None` when the
 /// target's server is gone.
-pub fn spec_for(target: &crate::route::SideReaderTarget) -> Option<Spec> {
+///
+/// `offset_ns` is where the remux was started in the film (the feed's display base at the start): the
+/// start path reads it from [`capture_offset_ns`], a reader begun mid-play from the live sample.
+pub fn spec_for(target: &crate::route::SideReaderTarget, offset_ns: i64) -> Option<Spec> {
     let client = plx_plex::plex::client_for(target.sid)?;
     let su = client.direct_play_url(&target.part, &format!("{}-subs", target.session));
     Some(Spec {
         url: format!("{}{}", su.origin.base(), su.path),
-        offset_ns: FEED_SHARED.disp_base.load(Ordering::Relaxed),
+        offset_ns,
         part_kbps: target.part_kbps,
         ordinal: target.ordinal,
         from_playhead: false,
         delta: None,
     })
+}
+
+/// Where the remux a start is about to open begins in the film, for the reader captured with it: the
+/// display base the player last commanded the feed to open with. A restart's `Rebase` was sent after
+/// the old session's reset idled the readout, and the attempt this start mints has not sampled yet,
+/// so the feed's own `disp_base` is not in `raw` here; reading it from there would hand a resumed
+/// remux's reader offset 0.
+pub(super) fn capture_offset_ns(ps: &crate::route::PlaybackSession) -> i64 {
+    ps.readout().open_disp_base_ns()
 }
 
 /// Make the running reader match `desired` while the stream plays on (see
@@ -95,7 +105,9 @@ pub(crate) fn take_test_syncs() -> Vec<Option<i32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use plx_play_feed::shared::FEED_SHARED;
     use plx_play_feed::side_reader::{active, start, stop, take_failure};
+    use std::sync::atomic::Ordering;
 
     /// A listener that accepts connections and never answers: a stalled server. Held connections
     /// are dropped when the test ends.

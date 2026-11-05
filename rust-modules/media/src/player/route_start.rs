@@ -491,6 +491,10 @@ fn start_bufferfeed_prepared(
     let source = pa.next_source_key();
     pa.stage_native_feed(attempt, source, prepared_native)
         .map_err(|_| crate::route::RouteStartResult::StartFailed)?;
+    // The demuxer spawns inside the Start below and reads the feed's audio copy as it opens the
+    // container. Every writer of the choice that has no adapter in hand (the route's landing, a
+    // retry's reset, a displaced pick) stepped the session's readout; this is where it reaches the feed.
+    super::publish_audio_choice(ps, pa);
     pa.sync_request_metrics(ps);
     let backend_at = pa.backend_tick();
     let result = pa.backend_send_at(
@@ -737,8 +741,7 @@ fn reload_transcode_start(ps: &mut crate::route::PlaybackSession, pa: &mut super
         offset_ns / 1_000_000_000
     ));
     teardown(ps, pa, true, plx_playback_contract::StopReason::Replace); // keep the session; reload mode
-    FEED_SHARED.disp_base.store(offset_ns, Ordering::Relaxed); // transcode is 0-based at content=offset
-    FEED_SHARED.playpos_ns.store(offset_ns, Ordering::Relaxed);
+    super::rebase_transcode(ps, pa, offset_ns); // transcode is 0-based at content=offset
     Some(start_bufferfeed_for(ps, pa, ticket))
 }
 
@@ -798,7 +801,8 @@ pub fn reload_at(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter
 /// chosen stream and the choice survives later seeks.
 #[cfg(feature = "play-feed")]
 pub fn switch_audio_native(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, audio_idx: i32, pos_ns: i64) -> ReloadOutcome {
-    FEED_SHARED.desired_audio_idx.store(audio_idx, Ordering::Relaxed);
+    ps.step_readout(super::readout::ReadoutEvent::AudioSelected { idx: audio_idx });
+    super::publish_audio_choice(ps, pa);
     log(&format!(
         "switch_audio_native: audio_idx={audio_idx} at {}s",
         pos_ns / 1_000_000_000
@@ -928,9 +932,8 @@ fn resume_prelude(
 /// The transcode half of a resume, once its encode restarts at the offset (0-based): `disp_base`
 /// carries the offset so the HUD reads content time.
 #[cfg(feature = "play-feed")]
-fn note_transcode_resumed(resume_ns: i64) {
-    FEED_SHARED.disp_base.store(resume_ns, Ordering::Relaxed);
-    FEED_SHARED.playpos_ns.store(resume_ns, Ordering::Relaxed);
+fn note_transcode_resumed(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, resume_ns: i64) {
+    super::rebase_transcode(ps, pa, resume_ns);
     log(&format!(
         "resume(transcode): restart at offset {}s",
         resume_ns / 1_000_000_000
@@ -966,7 +969,10 @@ pub fn begin_resume(
 /// flight owns what happens next). `Some` is the outcome of the rebuild: the
 /// route is installed and `Prepared` (the caller starts the Load), or the rebuild was refused and
 /// the transaction is `Failed`.
-pub fn land_resume(ps: &mut crate::route::PlaybackSession) -> Option<ResumeOutcome> {
+pub fn land_resume(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+) -> Option<ResumeOutcome> {
     crate::route::discard_stale_flight_landing();
     if !crate::route::resume_flight_outstanding() {
         return None;
@@ -975,9 +981,9 @@ pub fn land_resume(ps: &mut crate::route::PlaybackSession) -> Option<ResumeOutco
     Some(match landing.verdict {
         crate::route::RecoveryVerdict::Install => {
             #[cfg(feature = "play-feed")]
-            note_transcode_resumed(landing.offset_ns);
+            note_transcode_resumed(ps, pa, landing.offset_ns);
             #[cfg(not(feature = "play-feed"))]
-            let _ = landing.offset_ns;
+            let _ = (pa, landing.offset_ns);
             ResumeOutcome::Prepared
         }
         crate::route::RecoveryVerdict::Refused => ResumeOutcome::RebuildRejected,
@@ -1303,6 +1309,9 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
     begin_feed_teardown(for_reload);
     FEED_SHARED.stop_hls_clock();
     let route_attempt = pa.active_feed_attempt().expect("live feed has a route owner");
+    // The outgoing attempt's last position, sampled while it is still the addressed one: the stop
+    // below retires the address and the reset after it idles the readout.
+    pa.publish_feed_attempt_view(ps);
     let mut native = pa.take_native_stop();
     let final_report = final_report(ps, for_reload);
     native.stop_side_reader(for_reload);
@@ -1455,8 +1464,9 @@ pub(super) fn final_report(ps: &mut crate::route::PlaybackSession, for_reload: b
     // The duration is the session's last sample of the live attempt (the pump's, taken at the
     // frame's start and end), which is the container's duration for the whole of a playback.
     let dur = super::duration_ns(ps).unwrap_or(0);
+    let pos_ns = ps.readout().raw().playpos_ns;
     if !for_reload {
-        crate::player::report::ended(ps, FEED_SHARED.playpos_ns.load(Ordering::Relaxed), dur);
+        crate::player::report::ended(ps, pos_ns, dur);
     }
     if for_reload {
         None
@@ -1465,7 +1475,7 @@ pub(super) fn final_report(ps: &mut crate::route::PlaybackSession, for_reload: b
         if !rk.is_empty() && dur > 0 {
             Some((
                 rk,
-                FEED_SHARED.playpos_ns.load(Ordering::Relaxed) / 1_000_000,
+                pos_ns / 1_000_000,
                 dur / 1_000_000,
             ))
         } else {

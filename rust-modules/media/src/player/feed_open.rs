@@ -37,7 +37,7 @@ impl SideReaderOpen {
         Self {
             selected: true,
             clock_only: target.clock_only(),
-            spec: super::subside::spec_for(&target),
+            spec: super::subside::spec_for(&target, super::subside::capture_offset_ns(ps)),
         }
     }
 

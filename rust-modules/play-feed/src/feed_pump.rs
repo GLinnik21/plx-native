@@ -1132,6 +1132,16 @@ pub fn arm_open(target_ns: i64, disp_base: i64, playpos_ns: i64) {
     FEED_SHARED.arm_open(target_ns, disp_base, playpos_ns);
 }
 
+/// A transcode restarted at a content offset (`FeedCommand::Rebase`).
+pub fn rebase(playpos_ns: i64, disp_base: i64) {
+    FEED_SHARED.rebase(playpos_ns, disp_base);
+}
+
+/// The player's audio choice (`FeedCommand::SelectAudio`): what the demuxer feeds from its next open.
+pub fn select_audio(idx: i32) {
+    FEED_SHARED.select_audio(idx);
+}
+
 /// The seek was given up on (`FeedCommand::AbandonSeek`): the spinner and the frozen playhead end
 /// with it. `seek_display_ns` goes back to `-1`, the HUD's "no seek target".
 pub fn seek_abandoned() {
@@ -1208,6 +1218,7 @@ fn native_feed_raw(failure: FailureSample) -> FeedRaw {
         http_status: failure.http_status,
         vpres_gap_sum_ms: FEED_SHARED.dg_vpres_gap_sum.load(Relaxed),
         vpres_gap_count: FEED_SHARED.dg_vpres_gap_ct.load(Relaxed),
+        disp_base: FEED_SHARED.disp_base.load(Relaxed),
     }
 }
 

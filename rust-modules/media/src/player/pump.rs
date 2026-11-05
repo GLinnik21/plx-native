@@ -11,7 +11,7 @@ use plx_playback_contract::feed::SeekMode;
 #[cfg(all(test, feature = "hostsim"))]
 #[cfg(all(test, feature = "hostsim"))]
 use plx_base::task::MainThread;
-use std::sync::atomic::Ordering::{Acquire, Relaxed};
+use std::sync::atomic::Ordering::Acquire;
 #[cfg(all(test, feature = "hostsim"))]
 use std::sync::atomic::Ordering::Release;
 use std::time::Duration;
@@ -389,7 +389,7 @@ fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::rec
                         "open recovery: converting {facet:?} (flight {flight}/{})",
                         super::recovery::MAX_RECOVERY_FLIGHTS
                     ));
-                    let secs = (FEED_SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
+                    let secs = (ps.readout().raw().playpos_ns / 1_000_000_000).max(0);
                     // A refused video is converted by an encode that withdraws the video copy; a
                     // refused audio keeps the route as planned (an Original remux still copies the
                     // video).
@@ -406,7 +406,7 @@ fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::rec
                         "open recovery: converting both facets (flight {flight}/{})",
                         super::recovery::MAX_RECOVERY_FLIGHTS
                     ));
-                    let secs = (FEED_SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
+                    let secs = (ps.readout().raw().playpos_ns / 1_000_000_000).max(0);
                     crate::route::dispatch_refusal_conversion(ps, secs, crate::route::VideoLane::Both)
                 }
                 RecoveryEffect::StartAutoHls => {
@@ -416,14 +416,14 @@ fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::rec
                     } else {
                         super::note_original_failure(super::ABR_FAILURE_ORIGINAL_OPEN, status);
                     }
-                    let secs = (FEED_SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
+                    let secs = (ps.readout().raw().playpos_ns / 1_000_000_000).max(0);
                     crate::route::dispatch_unopened_auto_hls(ps, secs)
                 }
                 RecoveryEffect::DecodeInApp { audio, refusal } => {
                     if let plx_platform::devcaps::Facet::Audio { codec, .. } = &audio {
                         super::log(&format!("open recovery: decoding {codec} in the app (stereo) after {refusal}"));
                     }
-                    run = OpenRecoveryRun::DecodeInApp { offset_ns: FEED_SHARED.playpos_ns.load(Relaxed) };
+                    run = OpenRecoveryRun::DecodeInApp { offset_ns: ps.readout().raw().playpos_ns };
                     continue;
                 }
                 RecoveryEffect::NameRefusedAudio { codec } => {
@@ -854,7 +854,20 @@ fn start_transcode_seek_flight(
     }
 }
 
-/// A staged native audio switch (`desired_audio_idx` + payload codec): settle, reload direct.
+/// A claimed action that owes a displaced pick its reload stages the pick (route), and the feed's copy
+/// follows at once: the session's audio choice is what the demuxer is told to feed.
+fn honour_displaced_pick(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    displaced_pick: bool,
+    arm: &str,
+) {
+    let idx = ps.readout().audio_choice();
+    crate::route::honour_displaced_pick(ps, displaced_pick, idx, arm);
+    super::publish_audio_choice(ps, pa);
+}
+
+/// A staged native audio switch (the session's audio choice + payload codec): settle, reload direct.
 fn native_audio_tail(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
@@ -862,7 +875,7 @@ fn native_audio_tail(
     pending_seek: i64,
     user_target: i64,
 ) {
-    let idx = FEED_SHARED.desired_audio_idx.load(Relaxed);
+    let idx = ps.readout().audio_choice();
     land_prepared_route(
         ps,
         pa,
@@ -1011,7 +1024,7 @@ fn settle_paused_seek(ps: &mut crate::route::PlaybackSession, pa: &mut super::ad
 fn apply_paused_seek_step(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter,
     step: plx_playback_contract::feed::PausedSeekStep) {
     #[cfg(test)]
-    if step.mid_seek_claimed { MID_SEEK_CLAIMS.fetch_add(1, Relaxed); }
+    if step.mid_seek_claimed { MID_SEEK_CLAIMS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
     if step.preroll_opened { ps.step_readout(super::readout::ReadoutEvent::BeginPausedSeek); }
     if step.finish { super::finish_paused_seek(ps, pa); }
 }
@@ -1084,7 +1097,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
     pa.drain_load_outcomes(ps);
     if let Some(attempt) = pa.active_feed_attempt() {
         let snapshot = super::timeline::TimelineSnapshot::from_content_ns(
-            FEED_SHARED.playpos_ns.load(Relaxed),
+            ps.readout().raw().playpos_ns,
             super::duration_ns(ps).unwrap_or(0),
             ps.readout().paused(),
         );
@@ -1287,7 +1300,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
             }
         } else if let Some(action) = crate::route::claim_route_action() {
             let pending_seek = ps.readout().pending_seek().unwrap_or(-1);
-            let current_pos = FEED_SHARED.playpos_ns.load(Relaxed).max(0);
+            let current_pos = ps.readout().raw().playpos_ns.max(0);
             let user_target = if pending_seek >= 0 {
                 pending_seek
             } else {
@@ -1317,7 +1330,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
                         }
                     }
                     crate::route::UserRouteIntent::NativeAudioReload => {
-                        crate::route::honour_displaced_pick(ps, action.displaced_pick, FEED_SHARED.desired_audio_idx.load(Relaxed), "NativeAudioReload");
+                        honour_displaced_pick(ps, pa, action.displaced_pick, "NativeAudioReload");
                         native_audio_tail(ps, pa, &action, pending_seek, user_target);
                         return;
                     }
@@ -1327,7 +1340,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
                             // the claim stays `Applying`, and the drain at the top of this block
                             // lands it (`adaptive_tail`). The claim offset is where the reload
                             // goes, so presentation holds there for the flight.
-                            crate::route::honour_displaced_pick(ps, action.displaced_pick, FEED_SHARED.desired_audio_idx.load(Relaxed), "AdaptiveReload");
+                            honour_displaced_pick(ps, pa, action.displaced_pick, "AdaptiveReload");
                             let secs = user_target / 1_000_000_000;
                             match crate::route::execute_adaptive_reload_claim(ps, &action, secs, pending_seek, user_target) {
                                 crate::route::RetranscodeClaimDispatch::Sync(tail) => {
@@ -1341,7 +1354,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
                                                         }
                             }
                         } else {
-                            crate::route::honour_displaced_pick(ps, action.displaced_pick, FEED_SHARED.desired_audio_idx.load(Relaxed), "AdaptiveReload");
+                            honour_displaced_pick(ps, pa, action.displaced_pick, "AdaptiveReload");
                             crate::route::finish_route_action(
                                 ps,
                                 &action,
@@ -2045,6 +2058,7 @@ mod tests {
 /// thread did: a frame that makes a PMS round trip is a frame the viewer waits on.
 #[cfg(all(test, feature = "hostsim"))]
 mod flight_tests {
+    use std::sync::atomic::Ordering::Relaxed;
     use super::*;
     use crate::player::{begin_resume, land_resume, suspend_bufferfeed, ResumeOutcome, ResumeStart};
     use crate::route::flight_rig::FlightRig;
@@ -2769,7 +2783,7 @@ mod flight_tests {
         while replacement_stops(&rig.flight) == 0 {
             {
                 let _frame = plx_base::task::FrameScope::enter();
-                assert!(land_resume(&mut rig.ps).is_none(), "a dropped flight landed");
+                assert!(land_resume(&mut rig.ps, &mut rig.pa).is_none(), "a dropped flight landed");
             }
             assert!(std::time::Instant::now() < deadline, "timed out waiting for the late landing's reap");
             std::thread::sleep(Duration::from_millis(5));
@@ -2783,7 +2797,7 @@ mod flight_tests {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             let _frame = plx_base::task::FrameScope::enter();
-            if let Some(outcome) = land_resume(&mut rig.ps) {
+            if let Some(outcome) = land_resume(&mut rig.ps, &mut rig.pa) {
                 assert_eq!(outcome, ResumeOutcome::Prepared);
                 break;
             }
@@ -4014,7 +4028,7 @@ mod flight_tests {
         while replacement_stops(&rig.flight) == 0 {
             {
                 let _frame = plx_base::task::FrameScope::enter();
-                assert!(land_resume(&mut rig.ps).is_none(), "a dropped flight landed");
+                assert!(land_resume(&mut rig.ps, &mut rig.pa).is_none(), "a dropped flight landed");
             }
             assert!(std::time::Instant::now() < deadline, "timed out waiting for the dropped flight's reap");
             std::thread::sleep(Duration::from_millis(5));
@@ -4565,6 +4579,7 @@ mod flight_tests {
 /// reload's EFFECT (a new Engine) where the next seek needs one.
 #[cfg(all(test, feature = "hostsim"))]
 mod native_seek_pump_tests {
+    use std::sync::atomic::Ordering::Relaxed;
     use super::*;
     use crate::player::ffi_host;
     use plx_playback_contract::feed::SeekMode;
@@ -5164,7 +5179,8 @@ mod native_seek_pump_tests {
         // The real entry the tail calls; this rig has no route, so it logs and returns NoRoute.
         let _ = super::super::engine::switch_audio_native(&mut rig.ps, &mut rig.pa, 2, pos);
         assert_eq!(reloads(), vec![pos], "the audio switch reloaded at the playhead");
-        assert_eq!(FEED_SHARED.desired_audio_idx.load(Relaxed), 2);
+        assert_eq!(FEED_SHARED.desired_audio_idx.load(Relaxed), 2, "the pick reached the feed's demuxer copy at once");
+        assert_eq!(rig.ps.readout().audio_choice(), 2, "and the session's own record");
         // What `reload_at` leaves once its route accepts: the session reset keeping the Pause, a
         // demuxer seek armed at the playhead, a fresh Engine awaiting its keyframe's rebase.
         rig.complete_reload(pos);
@@ -5625,6 +5641,7 @@ mod native_seek_pump_tests {
 /// whole chain, the sink, its callback, the flag and the pump.
 #[cfg(all(test, feature = "hostsim"))]
 mod end_of_film_tests {
+    use std::sync::atomic::Ordering::Relaxed;
     use super::*;
     use crate::player::ffi_host;
     use crate::player::readout::EOS_TAIL_NS;

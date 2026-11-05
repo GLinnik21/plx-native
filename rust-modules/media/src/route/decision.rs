@@ -6114,6 +6114,7 @@ fn recover_original_direct(
         s.stream_immersive = candidate.audio.as_ref().is_some_and(|a| a.immersive);
     } };
     crate::player::route_fx::set_audio_track(
+        ps,
         candidate.audio.as_ref().map_or(-1, |a| a.ordinal),
     );
     crate::player::request_subtitle(candidate.subtitle_ordinal.unwrap_or(-1));
@@ -9934,7 +9935,7 @@ fn request_play_with_queue(
             ps.requested_rate_permille = plx_playback_contract::RATE_NORMAL;
             crate::player::route_fx::reset_play_rate(ps);
         }
-        reset_track_selection(request.sid, &request.rk, retry);
+        reset_track_selection(ps, request.sid, &request.rk, retry);
     }
     // Capture the reducer revision BEFORE projecting the environment. Both happen on the main
     // thread, so a later quality/track edit necessarily advances this revision after the snapshot
@@ -10059,8 +10060,8 @@ fn begin_track_selection(s: &mut PlaybackSession, retry: Option<RetryContext>) {
 /// CHANGE within one playback already zeros it, `commit_subtitle_selection`'s own doc). Either way
 /// the landing re-clamps it once the subtitle is re-selected (`player::reclamp_subtitle_offset`),
 /// since the reset has just deselected the sidecar whose range allows an advance.
-fn reset_track_selection(sid: ServerId, rk: &str, retry: Option<RetryContext>) {
-    crate::player::route_fx::reset_audio_track();
+fn reset_track_selection(ps: &mut PlaybackSession, sid: ServerId, rk: &str, retry: Option<RetryContext>) {
+    crate::player::route_fx::reset_audio_track(ps);
     crate::player::reset_subtitle();
     match retry {
         Some(retry) => crate::player::restore_subtitle_offset(retry.sub_offset_ms),
@@ -10806,9 +10807,9 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
     }
     settle_landing_selection(ps);
     let start = prepare_playback_landing(ps, source_ready);
-    // FEED_SHARED.desired_audio_idx is read by the DEMUX THREAD on every reopen — main thread only.
+    // The session's audio choice reaches the Feed's demuxer copy at the start (`SelectAudio`) — main thread only.
     if let Some(ord) = plan.feed_audio_ordinal {
-        crate::player::route_fx::set_audio_track(ord);
+        crate::player::route_fx::set_audio_track(ps, ord);
     }
     // `request_play` turned subtitles off; apply the resolved part/show selection
     // AFTER that reset (this lands a frame or more later, on the main thread, before the engine
@@ -11815,7 +11816,7 @@ pub fn subtitles_burned(ps: &PlaybackSession) -> bool {
 /// track, run it clock-only for a sidecar, or stop it for Off. Never blocks (see
 /// `player::subside::sync`, which hands it to `plx_play_feed::side_reader::sync`).
 fn sync_side_reader(ps: &PlaybackSession) {
-    crate::player::route_fx::sync_side_reader(side_reader_target(ps));
+    crate::player::route_fx::sync_side_reader(ps, side_reader_target(ps));
 }
 
 /// **The side reader gave up** (every reopen failed, the Part has no such track, or it could not

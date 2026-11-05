@@ -213,6 +213,8 @@ impl FeedControl for FeedBackend {
             FeedCommand::OwnPausedSeek { target_ns } => { FEED_TX.own_paused_seek(target_ns); }
             FeedCommand::FinishSeekPreroll => FEED_TX.finish_seek_preroll(),
             FeedCommand::NoteFailure(flag) => feed_pump::note_failure(flag),
+            FeedCommand::Rebase { playpos_ns, disp_base } => feed_pump::rebase(playpos_ns, disp_base),
+            FeedCommand::SelectAudio { idx } => feed_pump::select_audio(idx),
         }
     }
 
@@ -403,6 +405,48 @@ mod tests {
 
         FEED_SHARED.reset_session();
         FEED_TX.reset();
+    }
+
+    /// A transcode restart's `Rebase` stores the display base and the HUD position, arms no seek, and
+    /// both come back in the NEXT sample (`FeedRaw::disp_base` / `playpos_ns`), which is how the
+    /// player reads them now. The feed's own reset zeroes the base again, and the sample says so.
+    #[test]
+    fn rebase_sets_the_display_base_and_the_position_and_the_next_sample_reads_them() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let _serial = plx_base::testlock::serial();
+        FEED_SHARED.reset_session();
+        FEED_TX.reset();
+        let mut backend = backend();
+        let control: &mut dyn FeedControl = &mut backend;
+        assert_eq!(FeedLoad::sample(control).raw.disp_base, 0);
+
+        control.command(FeedCommand::Rebase { playpos_ns: 600_000_000_000, disp_base: 600_000_000_000 });
+        assert_eq!(FEED_SHARED.disp_base.load(Relaxed), 600_000_000_000);
+        assert_eq!(FEED_SHARED.playpos_ns.load(Relaxed), 600_000_000_000);
+        assert_eq!(FEED_SHARED.seek_to_ns.load(Relaxed), -1, "a rebase arms no demuxer seek");
+        let raw = FeedLoad::sample(control).raw;
+        assert_eq!((raw.disp_base, raw.playpos_ns), (600_000_000_000, 600_000_000_000));
+
+        FEED_SHARED.reset_session();
+        assert_eq!(FeedLoad::sample(control).raw.disp_base, 0, "the session reset is the feed's own");
+        FEED_TX.reset();
+    }
+
+    /// `SelectAudio` writes the copy the demuxer reads as it opens the container, and the feed's own
+    /// session reset leaves it alone: the player's choice survives a reload and is sent again.
+    #[test]
+    fn select_audio_sets_the_stream_the_demuxer_feeds_and_a_session_reset_keeps_it() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let _serial = plx_base::testlock::serial();
+        FEED_SHARED.reset_session();
+        let mut backend = backend();
+        let control: &mut dyn FeedControl = &mut backend;
+        control.command(FeedCommand::SelectAudio { idx: 3 });
+        assert_eq!(FEED_SHARED.desired_audio_idx.load(Relaxed), 3);
+        FEED_SHARED.reset_session();
+        assert_eq!(FEED_SHARED.desired_audio_idx.load(Relaxed), 3, "a reload keeps the choice");
+        control.command(FeedCommand::SelectAudio { idx: -1 });
+        assert_eq!(FEED_SHARED.desired_audio_idx.load(Relaxed), -1);
     }
 
     /// The transport commands make the stores the player's own calls made: `CommitPaused` publishes

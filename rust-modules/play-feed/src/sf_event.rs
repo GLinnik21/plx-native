@@ -158,6 +158,16 @@ pub enum SinkCounter {
     Displayed,
 }
 
+/// The inverse of the rebase `sf_on_event_inner` applies to a reported position (`playpos = fed -
+/// pts_shift + disp_base`): the fed PTS at which the app reads `media_ns`. The simulator's sink asks
+/// it from its own clock thread, which holds no session, so it reads the feed's two members here,
+/// beside the forward rebase, instead of the player carrying copies.
+pub fn media_to_fed(media_ns: i64) -> i64 {
+    media_ns
+        .saturating_add(FEED_SHARED.pts_shift.load(Relaxed))
+        .saturating_sub(FEED_SHARED.disp_base.load(Relaxed))
+}
+
 /// PURE: which sink counter a raw callback type is, on a firmware of this major. Decompiled from
 /// libpf on webOS 4.10 (`CustomPipeline::updateDroppedFrame` → 0x2e = 46,
 /// `updateDisplayedFrame` → 0x2f = 47); every type above 0x1c is two higher on webOS 5+

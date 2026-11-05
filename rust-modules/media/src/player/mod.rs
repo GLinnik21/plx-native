@@ -153,23 +153,14 @@ fn raw_sink() -> &'static dyn plx_platform::tv::sink::VideoSink {
 
 /// The simulator's video sink ([`ffi_host::HostSink`]), built with this crate's side of what the
 /// Feed backend's stand-in cannot name: the pipeline-event entry `plx_play_feed::sf_event::sf_on_event`, the inverse of the
-/// position rebase that entry applies, and the simulator's decoded picture ([`sim_video`]). The
+/// position rebase that entry applies (`plx_play_feed::sf_event::media_to_fed`), and the simulator's decoded picture ([`sim_video`]). The
 /// simulator's port table holds it as `Port.sink`; a hostsim test binary reads it directly.
 #[cfg(all(feature = "hostsim", feature = "play-feed"))]
 pub static HOST_SINK: ffi_host::HostSink = ffi_host::HostSink::new(ffi_host::Hooks {
     deliver_event: plx_play_feed::sf_event::sf_on_event,
-    media_to_fed: host_media_to_fed,
+    media_to_fed: plx_play_feed::sf_event::media_to_fed,
     frames: &sim_video::SimVideo,
 });
-
-/// The rebase `sf_on_event` (`plx_play_feed::sf_event`) applies to a reported position (`playpos = fed - pts_shift +
-/// disp_base`), inverted: the fed PTS at which the app will read `media_ns`.
-#[cfg(all(feature = "hostsim", feature = "play-feed"))]
-fn host_media_to_fed(media_ns: i64) -> i64 {
-    media_ns
-        .saturating_add(FEED_SHARED.pts_shift.load(Relaxed))
-        .saturating_sub(FEED_SHARED.disp_base.load(Relaxed))
-}
 
 /// `/tmp/plxnative-tracknames[=<audio>;<subs>]` — **stand in for the container's own track names**,
 /// which nothing off-device can read.
@@ -638,7 +629,7 @@ pub fn finish_paused_seek(ps: &mut crate::route::PlaybackSession, pa: &mut adapt
     restore_preroll_volume(pa);
     // One receipt after the accepted pause, never per frame: device scrub checks pair this
     // boundary with stationary playhead samples rather than assuming CommitSeek held the pause.
-    log(&format!("seek: paused frame restored ns={}", FEED_SHARED.playpos_ns.load(Relaxed)));
+    log(&format!("seek: paused frame restored ns={}", ps.readout().raw().playpos_ns));
     true
 }
 
@@ -896,6 +887,16 @@ pub(super) fn requeue_seek(
 pub(super) fn arm_open(pa: &mut adapter::PlayerAdapter, target_ns: i64) {
     let at = target_ns.max(0);
     pa.feed_command(FeedCommand::ArmOpen { target_ns: at, disp_base: 0, playpos_ns: at });
+}
+
+/// **A transcode restarted at `offset_ns`** (`reload_transcode`, a resume's rebuild landing): the
+/// encode is 0-based there, so the published position carries the offset as its display base from
+/// the first frame and the HUD reads it until frames land. Nothing is armed to seek, and the feed's
+/// video lane alone owns the pts shift.
+#[cfg(feature = "play-feed")]
+pub(super) fn rebase_transcode(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter, offset_ns: i64) {
+    ps.step_readout(readout::ReadoutEvent::OpenRebased { disp_base: offset_ns });
+    pa.feed_command(FeedCommand::Rebase { playpos_ns: offset_ns, disp_base: offset_ns });
 }
 
 /// true while a seek is resolving (request → reopen/reload → prime → Play): the HUD shows a
@@ -1618,11 +1619,11 @@ pub fn swap_state_for_test(ps: &mut crate::route::PlaybackSession, s: shared::Pl
 pub fn restore_state_for_test(ps: &mut crate::route::PlaybackSession, raw: u8) {
     ps.step_readout(readout::ReadoutEvent::StateDerived(shared::PlaybackState::from_u8(raw)));
 }
-/// Test-only: the native audio-track index the Feed's demuxer reads (what `set_audio_track`
-/// stores; -1 feeds the file's own default). `route` tests read it here instead of naming the
-/// Feed's owner, which route may not.
+/// Test-only: the native audio-track index the Feed's demuxer reads (what `SelectAudio` stores;
+/// -1 feeds the file's own default). Media's own choice is the session readout's
+/// (`PlayerReadout::audio_choice`).
 #[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
-pub fn desired_audio_idx_for_test() -> i32 {
+pub fn feed_audio_idx_for_test() -> i32 {
     FEED_SHARED.desired_audio_idx.load(Relaxed)
 }
 /// Test-only: the kind of the last Original open failure the Feed carried (0 = none).
@@ -1984,13 +1985,21 @@ pub fn request_audio_track(ps: &mut crate::route::PlaybackSession, audio_idx: i3
 #[cfg(feature = "play-feed")]
 pub fn stage_native_audio(ps: &mut crate::route::PlaybackSession, audio_idx: i32, codec: &str) {
     crate::route::set_stream_acodec(ps, codec); // the reload's Load payload uses this audio codec
-    FEED_SHARED.desired_audio_idx.store(audio_idx, Relaxed);
+    ps.step_readout(readout::ReadoutEvent::AudioSelected { idx: audio_idx });
 }
 /// reset to the default (best) audio stream — called on a new item so a prior track choice
-/// does not leak across items (desired_audio_idx persists across seeks, not across items).
+/// does not leak across items (the choice persists across seeks and reloads, not across items).
 #[cfg(feature = "play-feed")]
-pub fn reset_audio_track() {
-    FEED_SHARED.desired_audio_idx.store(-1, Relaxed);
+pub fn reset_audio_track(ps: &mut crate::route::PlaybackSession) {
+    ps.step_readout(readout::ReadoutEvent::AudioSelected { idx: -1 });
+}
+
+/// Hand the feed the session's audio choice: its demuxer reads that copy as it opens the container,
+/// so every start that spawns one sends it first (`start_bufferfeed_prepared`), and a pick made where
+/// the adapter is in hand sends it at once. The choice itself is the readout's.
+#[cfg(feature = "play-feed")]
+pub(super) fn publish_audio_choice(ps: &crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter) {
+    pa.feed_command(FeedCommand::SelectAudio { idx: ps.readout().audio_choice() });
 }
 
 /// Normal speed, in the thousandths every playback-rate value here is counted in.
@@ -2206,8 +2215,8 @@ pub fn reset_subtitle() {
 /// used by the decision to direct-play a non-default direct-playable track (e.g. an AC3 track on
 /// a TrueHD-default item). -1 = default/best.
 #[cfg(feature = "play-feed")]
-pub fn set_audio_track(idx: i32) {
-    FEED_SHARED.desired_audio_idx.store(idx, Relaxed);
+pub fn set_audio_track(ps: &mut crate::route::PlaybackSession, idx: i32) {
+    ps.step_readout(readout::ReadoutEvent::AudioSelected { idx });
 }
 /// request a re-transcode at the current position with the CURRENT audio + subtitle —
 /// used when a subtitle is (de)selected while already transcoding, so the server

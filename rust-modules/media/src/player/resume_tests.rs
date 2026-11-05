@@ -50,7 +50,7 @@ impl Rig {
         loop {
             {
                 let _frame = plx_base::task::FrameScope::enter();
-                if let Some(outcome) = land_resume(&mut self.ps) {
+                if let Some(outcome) = land_resume(&mut self.ps, &mut self.pa) {
                     return outcome;
                 }
             }
@@ -68,7 +68,7 @@ impl Rig {
             assert!(std::time::Instant::now() < deadline, "timed out waiting for the replacement's stop");
             {
                 let _frame = plx_base::task::FrameScope::enter();
-                assert!(land_resume(&mut self.ps).is_none(), "a stale flight landed");
+                assert!(land_resume(&mut self.ps, &mut self.pa).is_none(), "a stale flight landed");
             }
             std::thread::sleep(Duration::from_millis(2));
         }
@@ -117,6 +117,10 @@ fn a_cold_resume_frame_makes_no_pms_call_and_the_worker_lands_the_load_later() {
     assert!(crate::route::url(&rig.ps).contains("offset=1800"), "{}", crate::route::url(&rig.ps));
     assert_eq!(FEED_SHARED.disp_base.load(Relaxed), RESUME_NS, "the HUD reads content time from the offset");
     assert_eq!(FEED_SHARED.playpos_ns.load(Relaxed), RESUME_NS);
+    // No attempt has sampled the feed: the readout is idle, so a side reader captured by the Load that
+    // follows reads the resume offset from the player's record of the Rebase, not 0 from `raw`.
+    assert_eq!(rig.ps.readout().raw().disp_base, 0, "nothing sampled the Rebase yet");
+    assert_eq!(super::subside::capture_offset_ns(&rig.ps), RESUME_NS, "the reader starts where the remux was resumed");
     assert!(crate::route::control_phase_label().contains("Prepared"), "{}", crate::route::control_phase_label());
     let start = crate::route::pending_route_start().expect("the Load claims the landing's own transaction");
     assert!(crate::route::claim_route_start_attempt(start).is_some());
@@ -152,10 +156,10 @@ fn back_during_a_cold_resume_discards_the_landing_and_stops_its_replacement() {
     rig.flight.wait_for("the resume's request", |f| f.decisions() == 1);
     stop_bufferfeed(&mut rig.ps, &mut rig.pa);
     assert!(!crate::route::resume_flight_outstanding());
-    assert!(land_resume(&mut rig.ps).is_none());
+    assert!(land_resume(&mut rig.ps, &mut rig.pa).is_none());
     rig.frames_until_replacement_stopped();
     assert_eq!(FEED_SHARED.disp_base.load(Relaxed), 0, "nothing was installed over the next playback");
-    assert!(land_resume(&mut rig.ps).is_none());
+    assert!(land_resume(&mut rig.ps, &mut rig.pa).is_none());
     assert_eq!(rig.replacement_stops(), 1, "stopped exactly once: {:?}", rig.flight.stopped());
 }
 
@@ -174,7 +178,7 @@ fn a_suspend_during_a_cold_resume_drops_the_flight_and_leaves_the_foreground_res
     suspend_bufferfeed(&mut rig.ps, &mut rig.pa);
     assert!(!crate::route::resume_flight_outstanding());
     assert!(crate::route::control_phase_label().contains("Stable"), "{}", crate::route::control_phase_label());
-    assert!(land_resume(&mut rig.ps).is_none());
+    assert!(land_resume(&mut rig.ps, &mut rig.pa).is_none());
     rig.frames_until_replacement_stopped();
     assert_eq!(crate::route::transcode_session(&rig.ps), "rig-1", "the suspended session keeps its route");
 

@@ -1091,7 +1091,7 @@ fn audio_change_invalidates_a_pending_original_recovery() {
 
     reset_session(&mut ps);
     reset_player_control_for_test(&ps);
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
 }
 
 #[test]
@@ -1505,6 +1505,7 @@ fn the_visible_switch_stamp_is_the_frame_tick_and_a_landing_cannot_rewind_it() {
 /// genuinely new request (no retry) still starts at 0.
 #[test]
 fn a_retry_keeps_the_subtitle_offset_a_new_item_does_not() {
+    let mut ps = PlaybackSession::IDLE;
     let _g = plx_base::testlock::serial();
     crate::player::reset_subtitle();
     crate::player::set_subtitle_offset(2_000);
@@ -1517,31 +1518,31 @@ fn a_retry_keeps_the_subtitle_offset_a_new_item_does_not() {
         suppress_enhancement: false,
         sub_mode: SubMode::Track,
     };
-    reset_track_selection(plx_plex::plex::ServerId::UNSET, "rk-no-memory", Some(retry));
+    reset_track_selection(&mut ps, plx_plex::plex::ServerId::UNSET, "rk-no-memory", Some(retry));
     assert_eq!(
         crate::player::subtitle_offset_ms(),
         2_000,
         "a retry of the same item must keep the offset tuned against its subtitle",
     );
-    reset_track_selection(plx_plex::plex::ServerId::UNSET, "rk-no-memory", None);
+    reset_track_selection(&mut ps, plx_plex::plex::ServerId::UNSET, "rk-no-memory", None);
     assert_eq!(crate::player::subtitle_offset_ms(), 0, "a new item with no remembered correction starts at 0");
 
     // A sidecar's advance survives the reset (which deselects the sidecar) and is held to the
     // range of whatever the landing re-selected: kept for the sidecar, dropped for anything else.
     let advanced = RetryContext { sub_offset_ms: -2_000, ..retry };
-    reset_track_selection(plx_plex::plex::ServerId::UNSET, "rk-no-memory", Some(advanced));
+    reset_track_selection(&mut ps, plx_plex::plex::ServerId::UNSET, "rk-no-memory", Some(advanced));
     assert_eq!(crate::player::subtitle_offset_ms(), -2_000);
     crate::player::sidecar::select_without_fetch_for_test(23);
     crate::player::reclamp_subtitle_offset();
     assert_eq!(crate::player::subtitle_offset_ms(), -2_000, "the sidecar landed again");
-    reset_track_selection(plx_plex::plex::ServerId::UNSET, "rk-no-memory", Some(advanced));
+    reset_track_selection(&mut ps, plx_plex::plex::ServerId::UNSET, "rk-no-memory", Some(advanced));
     crate::player::reclamp_subtitle_offset();
     assert_eq!(
         crate::player::subtitle_offset_ms(),
         0,
         "an advance never outlives the sidecar that allowed it",
     );
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 
@@ -2509,17 +2510,17 @@ fn a_subtitle_offset_survives_a_resume_of_the_same_item() {
     plx_base::storage_worker::drain_for_test();
 
     // a resume of the SAME item restores the correction before the resolve even starts
-    reset_track_selection(sid, "rk-resume-a", None);
+    reset_track_selection(&mut ps, sid, "rk-resume-a", None);
     assert_eq!(crate::player::subtitle_offset_ms(), 1_800, "the same item's correction comes back");
 
     // a DIFFERENT item on the same server has no record of its own
-    reset_track_selection(sid, "rk-resume-b", None);
+    reset_track_selection(&mut ps, sid, "rk-resume-b", None);
     assert_eq!(crate::player::subtitle_offset_ms(), 0, "another item has no record");
 
     // setting it back to Original forgets the record
     persist_subtitle_offset(&ps, 0);
     plx_base::storage_worker::drain_for_test();
-    reset_track_selection(sid, "rk-resume-a", None);
+    reset_track_selection(&mut ps, sid, "rk-resume-a", None);
     assert_eq!(crate::player::subtitle_offset_ms(), 0, "Original forgets the correction");
 
     plx_plex::plex::reset_servers_for_test();
