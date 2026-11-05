@@ -51,6 +51,16 @@ rust-modules/target-fast/
 # in the checkout so `make disk` / `tools/build-gc.sh` see it and `git add -A` cannot commit it.
 # (`make check-nodef` has no dir of its own: it builds into `target/` above.)
 rust-modules/target-hostsim/
+# `make fuzz-hud` -- the fuzz package's own tree and the files its tool generates (fuzz/Cargo.toml says why
+# the lock is a copy of the shipped one rather than a committed file). All of it is derived and may go with a
+# lane except `fuzz/artifacts/`: a crash input is a finding, so tools/build-gc.sh keeps a lane that holds one.
+rust-modules/target-fuzz/
+fuzz/Cargo.lock
+fuzz/.lock-base
+fuzz/seeds/
+fuzz/corpus/
+fuzz/artifacts/
+fuzz/coverage/
 # `make LAB=1` and `make LAB=1 sim` — the Lab Diagnostics feature set gets its own build trees for
 # the reason every other feature set does (cargo does not hash its output; see the Makefile).
 rust-modules/target-lab/

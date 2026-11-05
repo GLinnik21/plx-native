@@ -5,6 +5,7 @@ import gzip
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tarfile
@@ -561,6 +562,19 @@ class RepositoryTreeScan(unittest.TestCase):
                 failures.append(str(error))
         self.assertGreater(count, 100)
         self.assertEqual(failures, [])
+
+    def test_vendored_sample_exemptions_name_crates_the_lock_pins(self):
+        """An exemption for a vendored crate the lock no longer holds is a dead hole in the scan.
+
+        (The converse, a crate with a sample key that has no entry yet, shows only when the release
+        step vendors the lock; nightly.yml's pull-request dry run is the first place that runs.)
+        """
+        from source_bundle import PUBLIC_SAMPLE_FILES
+        lock = (Path(__file__).resolve().parents[1] / 'rust-modules/Cargo.lock').read_text()
+        pinned = set(re.findall(r'^name = "([^"]+)"$', lock, re.M))
+        vendored = {name.split('/')[1] for name in PUBLIC_SAMPLE_FILES if name.startswith('cargo-vendor/')}
+        self.assertIn('ed25519-compact', vendored)
+        self.assertEqual(sorted(vendored - pinned), [])
 
 
 if __name__ == '__main__':

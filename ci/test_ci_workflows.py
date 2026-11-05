@@ -17,6 +17,8 @@
   repository-metadata-only change (issue forms, a PR template, prose, images) starts no run, while
   every file a gate reads (PRIVACY.md, the credits pair, an `include_str!` target, the workflows)
   still does, and no other workflow carries a catch-all `'**'` filter;
+* the HUD parser fuzzing workflow (`FuzzWorkflow`): path-filtered on a PR, weekly otherwise, read-only, a dated
+  nightly, every action pinned, and every target the tool lists is a bin of the package and a file;
 * the nightly Homebrew Channel repository: the nightly build generates its manifest (and debug never
   does), a real nightly can only be cut from main, the manifest reaches the release, and the site
   stages the repository and the guide.
@@ -1119,6 +1121,112 @@ class PerTestResults(unittest.TestCase):
         # artifacts are listed through the same token that lists the jobs: no new permission
         self.assertRegex(metrics, r"(?m)^      actions: read ")
         self.assertNotIn("actions: write", metrics)
+
+
+class FuzzWorkflow(unittest.TestCase):
+    """The `cargo fuzz` package over the HUD parsers (fuzz/, fuzz.yml, tools/fuzz-hud.py).
+
+    The package is outside the rust-modules workspace, so `ci.yml` never compiles it: this workflow is the only
+    thing that does, and a drift between the workflow, the tool's target table and the package's own bins
+    would leave a target nobody builds, or a path nobody fuzzes, with everything else still green.
+    """
+
+    NAME = "fuzz.yml"
+
+    def targets(self):
+        out = subprocess.run([sys.executable, str(ROOT / "tools/fuzz-hud.py"), "list"], capture_output=True,
+                             text=True, check=True).stdout
+        return out.split()
+
+    def test_the_triggers_are_a_filtered_pull_request_a_weekly_schedule_and_a_dispatch_only(self):
+        body = code(self.NAME)
+        on = body[body.index("\non:\n") + 1:body.index("\npermissions:")]
+        self.assertEqual(re.findall(r"(?m)^  ([a-z_]+):", on), ["pull_request", "schedule", "workflow_dispatch"])
+        self.assertEqual(len(re.findall(r"(?m)^    paths:", on)), 1, "a PR runs it only for the files it fuzzes or builds from")
+        self.assertRegex(on, r"(?m)^    - cron: '\d+ \d+ \* \* \d'$")   # weekly, not daily
+        for trigger in ("pull_request_target", "push", "workflow_run", "issue_comment"):
+            self.assertNotIn(trigger, on)
+        for path in ("fuzz/**", "tools/fuzz-hud.py", "rust-modules/appkit/src/hud_format/**",
+                     "rust-modules/data/src/hudpacks/**", "rust-modules/ui/src/rec/strict_json.rs"):
+            self.assertIn(f"'{path}'", on, path)
+
+    def test_it_reads_the_repository_and_nothing_else(self):
+        body = code(self.NAME)
+        self.assertEqual(re.findall(r"(?m)^permissions:\n((?:  .*\n)+)", body + "\n"), ["  contents: read\n"])
+        self.assertEqual(len(re.findall(r"(?m)^\s+(?:[a-z-]+): write\b", body)), 0)
+        self.assertIn("persist-credentials: false", body)
+
+    def test_the_toolchain_is_a_dated_nightly_and_cargo_fuzz_is_an_exact_version(self):
+        body = code(self.NAME)
+        self.assertRegex(body, r"(?m)^  FUZZ_TOOLCHAIN: nightly-\d{4}-\d{2}-\d{2}$")
+        self.assertRegex(body, r"(?m)^  CARGO_FUZZ_VERSION: \d+\.\d+\.\d+$")
+        self.assertIn('cargo install cargo-fuzz --locked --version "$CARGO_FUZZ_VERSION"', body)
+        # the fuzz tree is 3 GiB with debuginfo and the Actions cache is already evicting: not cached
+        self.assertIn("cache-targets: false", body)
+
+    def test_every_action_is_pinned_to_a_commit(self):
+        for line in code(self.NAME).splitlines():
+            m = re.match(r"\s*(?:- )?uses: (\S+)", line)
+            if m and not m.group(1).startswith("./"):
+                self.assertRegex(m.group(1), r"@[0-9a-f]{40}$", line)
+
+    def test_a_crash_fails_the_run_and_keeps_its_input(self):
+        body = code(self.NAME)
+        self.assertIn("run: make fuzz-hud", body)
+        self.assertRegex(body, r"(?s)if: failure\(\)\n\s+uses: actions/upload-artifact@[0-9a-f]{40}.*?path: fuzz/artifacts/")
+
+    def test_a_dispatch_that_asks_for_too_long_fails_the_step_not_the_job(self):
+        # A timed-out JOB is cancelled, and the corpus save and the crash upload (`!cancelled()`, `failure()`)
+        # are then skipped: the run step must give up first, with the time to save and upload left over.
+        body = code(self.NAME)
+        job = int(re.search(r"(?m)^    timeout-minutes: (\d+)$", body).group(1))
+        step = re.search(r"(?s)- name: Build every target, then run each for a bounded time\n\s+timeout-minutes: (\d+)\n", body)
+        self.assertIsNotNone(step, "the run step needs its own timeout-minutes")
+        self.assertLessEqual(int(step.group(1)) + 10, job)
+
+    def test_rust_cache_reads_the_fuzz_package_not_the_repository_root(self):
+        # The root has no Cargo.toml, so `cargo metadata` there fails and the cache keys on, and prunes to, nothing.
+        body = code(self.NAME)
+        self.assertRegex(body, r"(?m)^          workspaces: fuzz -> \.\./rust-modules/target-fuzz$")
+        self.assertLess(body.index("tools/fuzz-hud.py lock"), body.index("Swatinem/rust-cache@"))
+
+    def test_the_signed_index_seeds_come_from_a_signer_that_matches_rfc_8032(self):
+        # The standard library has no Ed25519, so the tool carries the RFC's reference signer to sign the
+        # registry-index seeds with the TEST ONLY keys; two of the RFC's own vectors pin it.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("fuzz_hud", ROOT / "tools/fuzz-hud.py")
+        tool = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tool)
+        for seed, message, public, signature in (
+            ("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60", b"",
+             "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+             "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"),
+            ("4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb", b"\x72",
+             "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+             "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00"),
+        ):
+            got = tool.ed25519_sign(bytes.fromhex(seed), message)
+            self.assertEqual((got[0].hex(), got[1].hex()), (public, signature))
+        # and what it reads from the data layer is the contract's: two shipped keys, three TEST ONLY seeds
+        self.assertEqual(len(tool.real_key_ids()), 2)
+        self.assertEqual(tool.test_only_seeds(), {"PRIMARY": 7, "STANDBY": 8, "STRANGER": 9})
+
+    def test_a_pull_request_never_reads_or_writes_the_corpus_cache(self):
+        steps = re.split(r"(?m)^      - ", code(self.NAME))
+        for action in ("restore", "save"):
+            step = next(s for s in steps if f"actions/cache/{action}@" in s)
+            self.assertIn("github.event_name != 'pull_request'", step, action)
+
+    def test_every_target_is_a_bin_of_the_package_a_file_and_offered_to_a_dispatch(self):
+        manifest = (ROOT / "fuzz/Cargo.toml").read_text()
+        bins = re.findall(r'(?ms)^\[\[bin\]\]\nname = "(\w+)"\npath = "([^"]+)"', manifest)
+        listed = self.targets()
+        self.assertEqual(sorted(name for name, _ in bins), sorted(listed))
+        for name, path in bins:
+            self.assertEqual(path, f"fuzz_targets/{name}.rs")
+            self.assertTrue((ROOT / "fuzz" / path).is_file(), path)
+            self.assertIn(name, text(self.NAME), f"{name} is not in the dispatch input's list")
+        self.assertEqual(sorted(p.stem for p in (ROOT / "fuzz/fuzz_targets").glob("*.rs")), sorted(listed))
 
 
 if __name__ == "__main__":
