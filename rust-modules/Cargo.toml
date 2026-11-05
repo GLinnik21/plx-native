@@ -339,6 +339,8 @@ plx_data = { path = "data", features = ["test-support"] }
 plx_session = { path = "session", features = ["test-support"] }
 # Likewise the media layer's seams (`player::preview`, `player::restore_state_for_test`, ...).
 plx_media = { path = "media", default-features = false, features = ["test-support"] }
+# Likewise the codec layer's seams (`ffi::force_speed_decoder_for_test`: a host test loads no FFmpeg).
+plx_media_codecs = { path = "media-codecs", features = ["test-support"] }
 # Likewise the appkit layer's seams (`player_hud::SkipIntervalGuard`, the `overscan_rects` audits, ...).
 plx_appkit = { path = "appkit", features = ["test-support"] }
 # Likewise the screens layer's seams (`account_menu::overscan_rects`, `registry::every_surface_arg`, ...).

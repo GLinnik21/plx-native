@@ -14,6 +14,11 @@ mount = "playback_contract"
 name = "plx_playback_contract"
 crate-type = ["rlib"]
 
+[features]
+# `test_support::FakeUriDriver`, a scriptable `UriDriver` for the crates that test against the
+# trait. Enabled only from the dependents' `[dev-dependencies]`; never in a shipped build.
+test-support = []
+
 [dependencies]
 # The worker-only adaptive session carries the existing off-frame proof across its port.
 plx_base = { path = "../base" }

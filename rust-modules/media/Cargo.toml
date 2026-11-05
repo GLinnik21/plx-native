@@ -72,6 +72,7 @@ dolby_vision = { version = "3.4", default-features = false }
 plx_play_feed = { path = "../play-feed", features = ["test-support"] }
 plx_media_codecs = { path = "../media-codecs", features = ["test-support"] }
 plx_play_uri = { path = "../play-uri", features = ["devtriggers", "test-support"] }
+plx_playback_contract = { path = "../playback-contract", features = ["test-support"] }
 # THE rule of the layer crates: dev-depend on ITSELF with `devtriggers`, so `cargo test -p plx_media`
 # alone builds the crate and every layer below it as the Makefile's suite does.
 plx_media = { path = ".", default-features = false, features = ["devtriggers"] }
