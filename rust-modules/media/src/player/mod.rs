@@ -124,11 +124,13 @@ fn sink() -> &'static dyn plx_platform::tv::sink::VideoSink {
     }
 }
 
-/// The display surface of whichever backend set is built, for composition code that has no Feed
-/// (the URI driver, the plane boot). With `play-feed` it IS [`sink`], so it keeps both of its
-/// behaviours: the simulator's `HostSink` under hostsim, and the [`FENCE`] while an off-frame
-/// `Unload` owns the native object. Without it the port's installed display sink answers (a
-/// simulator always carries Feed).
+/// The display surface of whichever backend set is built, for the URI probe's route half
+/// (`uriprobe_drive`), the one caller left in this crate that has no Feed. With `play-feed` it IS
+/// [`sink`], so it keeps both of its behaviours: the simulator's `HostSink` under hostsim, and the
+/// [`FENCE`] while an off-frame `Unload` owns the native object. Without it the port's installed
+/// display sink answers (a simulator always carries Feed). The plane's boot no longer comes through
+/// here: the application reads `display_installed()` itself (`app/adapters/backends.rs`).
+#[cfg(all(feature = "devtriggers", feature = "play-uri", any(test, feature = "play-feed")))]
 fn display() -> &'static dyn plx_platform::tv::sink::DisplaySink {
     #[cfg(feature = "play-feed")]
     {
