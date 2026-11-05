@@ -654,7 +654,7 @@ def ffmpeg_encoders():
 # Musically distinct ratios so a swapped channel or a bad downmix is AUDIBLE. LFE sits two
 # octaves below the front-left so it is unmistakable even through a phone speaker.
 CH_RATIOS = {2: (1.0, 1.5), 6: (1.0, 1.26, 1.5, 0.25, 2.0, 2.52)}
-CH_LAYOUT = {2: "stereo", 6: "5.1"}
+CH_LAYOUT = {1: "mono", 2: "stereo", 6: "5.1"}
 # join's `map=` — see the module docstring. Without it join fills the output layout in its
 # own order (every mono input's layout is FC, so input 0 lands on CENTRE), which rotates
 # the channel map silently.
@@ -1497,6 +1497,28 @@ PIPE_SHAPES = {
         "subs": [],
     },
     # -----------------------------------------------------------------------------------
+    # **A 20 Mbit/s 720p24 HLS stream the TV's NATIVE player can play for a minute and a half on
+    # an ACB-bound video plane.** It is a DIRECTORY (`pipe_hls_720p24_20m/index.m3u8` plus
+    # `seg_000.ts` ...), the one shape in this pack that is, and it is not played by the app's
+    # buffer feed: the URI-probe cases `pipe_uri_hls_720p24_20m_bound*` hand its playlist to the
+    # firmware (`uriprobe=acb-control`, `ptype=0`).
+    #
+    # 720p at 24 fps because the ACB arm accepts nothing else (`uri_protocol.rs`
+    # `build_acb_fixture_video`: videoInfo exactly 1280x720 at 24 fps). 20 Mbit/s CBR because that is
+    # the rate at which an UNBOUND arm stalls after about 40 MB (the clock stops near 14 s) while a
+    # bound plane plays on, so the pair separates the fixture from the plane. Mono AAC, because the
+    # sine source is mono; nothing here reads the audio. Rate, GOP and segment length are the recipe
+    # that played 55 s on the television, unchanged: the GOP is exactly one segment, so every
+    # segment opens on an IDR.
+    "pipe_hls_720p24_20m": {
+        "kind": "clip", "ext": "m3u8", "builder": "hls_vod", "entry": "index.m3u8",
+        "duration": 90, "rate": 0.1, "hls_seg_s": 2,
+        "declare": {"vcodec": "h264", "acodec": "aac", "fps": float(FPS), "atmos": False},
+        "video": {"codec": "h264", "size": "1280x720", "mbit": 20},
+        "audio": [{"codec": "aac", "ch": 1, "lang": "und", "br": "128k", "default": True}],
+        "subs": [],
+    },
+    # -----------------------------------------------------------------------------------
     # ...and the one shape in either pack that is SUPPOSED to run out — LG item #46.
     "pipe_h264_ac3_short": {
         # 20 s, and the short length IS the feature: every other clip in both packs is sized so
@@ -1633,6 +1655,11 @@ def out_paths(root, key, spec):
     # A clip is flat by definition: the Plex tree exists for a SCANNER, and nothing scans the
     # pipeline pack — tests/serve_fixtures.py serves a directory. (`flat` was a second key set on
     # exactly the shapes whose kind was already "clip", and read only here.)
+    if spec["kind"] == "clip" and spec.get("entry"):
+        # A shape that is a DIRECTORY (an HLS playlist and its segments): the record's path, and
+        # so a case's `fixture`, is the playlist inside it. The segments are the playlist's
+        # business and travel with the directory (`build_hls_vod`, `verify_hls_vod`).
+        return [(key, root / key / spec["entry"])]
     if spec["kind"] == "clip":
         # The pipeline tier. `tests/serve_fixtures.py` serves a DIRECTORY — the trees below
         # exist for a Plex scanner and this tier has none — and the file is named for the
@@ -1731,6 +1758,7 @@ PIPE_MBIT = {
     # 192 kbps audio track, i.e. the rung's own request. That is the point of them.
     **{f"pipe_abr_1080p_{mbit}m": float(mbit) for mbit in (6, 8, 10, 12, 14, 16, 18, 20)},
     "pipe_abr_4k_22m": 22.0,
+    "pipe_hls_720p24_20m": 20.1,        # CBR 20 Mbit/s video + 128 kbps AAC; MPEG-TS overhead not measured
     "pipe_h264_ac3_short": 1.71,        # = pipe_h264_ac3_480p, of which it is a 20 s copy
     "pipe_h264_ac3_audio_tail": 1.71,   # = pipe_h264_ac3_short (the 3 s tail is audio only)
 }
@@ -2040,6 +2068,139 @@ def cut_hls_segments(spec, dur, dest):
         leftover.unlink()
     work.rmdir()
     return written
+
+
+def build_hls_vod(ctx, key, spec, dur, ep, dest, work):
+    """A VOD HLS stream from lavfi: `index.m3u8` and `seg_NNN.ts` in a directory of its own.
+
+    One ffmpeg invocation, the recipe that played on the television. The video is CBR (`-b:v` =
+    `-minrate` = `-maxrate` = `-bufsize`, `nal-hrd=cbr`) so the wire rate is the declared one for
+    every segment, and the GOP is one segment long with scene-cut detection off, so every segment
+    opens on an IDR and is independently decodable.
+
+    It is built in a staging directory under the work root and renamed into place, so a build that
+    dies half way leaves no directory for `verify_hls_vod` to find and call a pack.
+    """
+    v, seg = spec["video"], int(spec["hls_seg_s"])
+    fps = v.get("fps", FPS)
+    rate = "%dM" % v["mbit"]
+    stage = work / (key + "__hls")
+    shutil.rmtree(stage, ignore_errors=True)
+    stage.mkdir(parents=True)
+    run(["ffmpeg", "-y", "-v", "error", "-nostdin",
+         "-f", "lavfi", "-i", "testsrc2=size=%s:rate=%s" % (v["size"], _rate_arg(fps)),
+         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+         "-t", str(dur),
+         "-c:v", "libx264", "-preset", "veryfast", "-profile:v", "high", "-level", "4.1",
+         "-pix_fmt", "yuv420p",
+         "-b:v", rate, "-minrate", rate, "-maxrate", rate, "-bufsize", rate,
+         "-x264-params", "nal-hrd=cbr",
+         "-g", str(round(seg * fps)), "-keyint_min", str(round(seg * fps)), "-sc_threshold", "0",
+         "-c:a", "aac", "-b:a", spec["audio"][0]["br"],
+         "-f", "hls", "-hls_time", str(seg), "-hls_playlist_type", "vod",
+         "-hls_segment_filename", str(stage / "seg_%03d.ts"), str(stage / spec["entry"])])
+    shutil.rmtree(dest.parent, ignore_errors=True)
+    stage.rename(dest.parent)
+    return layout_lines(key, spec, dur, ep)
+
+
+def verify_hls_vod(key, spec, dur, path):
+    """`(record, problems)` for an HLS directory shape: the playlist, every segment it names, and
+    what the first segment says the stream is.
+
+    Its own function because `verify` reads ONE file, and here the file `ffprobe` is pointed at is
+    the playlist: `format.size` is the playlist's few kilobytes and a per-file container tag does
+    not exist. The size is the sum of the segments and the rate is derived from it.
+    """
+    problems, rec = [], {"tier": spec["tier"]}
+    seg = int(spec["hls_seg_s"])
+    text = path.read_text(errors="replace")
+    names = [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.startswith("#")]
+    absent = [n for n in names if not (path.parent / n).is_file()]
+    rec["segments"] = len(names)
+    rec["size_bytes"] = sum((path.parent / n).stat().st_size for n in names
+                            if (path.parent / n).is_file()) + path.stat().st_size
+    if "#EXT-X-ENDLIST" not in text or "#EXT-X-PLAYLIST-TYPE:VOD" not in text:
+        problems.append("the playlist is not a complete VOD (needs #EXT-X-PLAYLIST-TYPE:VOD and "
+                        "#EXT-X-ENDLIST)")
+    if absent:
+        problems.append("the playlist names %d segment(s) that are not on disk (%s)"
+                        % (len(absent), ", ".join(absent[:3])))
+    if problems:
+        # Stop at the structure. ffprobe on a playlist with a segment gone does not fail, it RETRIES
+        # the fetch on the demuxer's reload schedule (minutes), and every check below needs a stream
+        # it can read.
+        return rec, problems
+    j = probe(path)
+    measured = float(j.get("format", {}).get("duration") or 0.0)
+    rec["duration_s"] = round(measured, 3)
+    rec["quick"] = measured < spec["duration"] * 0.9
+    tol = max(2.0, dur * 0.03)
+    if abs(measured - dur) > tol:
+        # The prefix main() reads to tell "longer than asked, keep it" from every other mismatch.
+        problems.append("duration %.2fs, wanted %ds (+-%.1f)" % (measured, dur, tol))
+    if abs(len(names) * seg - measured) > seg:
+        # The playlist's own arithmetic, independent of the length this run asked for.
+        problems.append("%d segments of %ds do not add up to the %.1fs the playlist measures"
+                        % (len(names), seg, measured))
+    if measured > 0:
+        rec["bitrate_mbit"] = round(rec["size_bytes"] * 8 / measured / 1e6, 2)
+        want = spec["video"]["mbit"] + int(spec["audio"][0]["br"].rstrip("k")) / 1000.0
+        if not 0.95 <= rec["bitrate_mbit"] / want <= 1.20:
+            problems.append("%.2f Mbit/s over the segments, wanted about %.2f (CBR plus MPEG-TS "
+                            "overhead) -- this stream does not deliver the rate it exists for"
+                            % (rec["bitrate_mbit"], want))
+    streams = j.get("streams", [])
+    vs = [s for s in streams if s["codec_type"] == "video"]
+    aus = [s for s in streams if s["codec_type"] == "audio"]
+    v = spec["video"]
+    want_w, want_h = (int(x) for x in v["size"].split("x"))
+    if len(vs) != 1:
+        problems.append("expected 1 video stream, found %d" % len(vs))
+    else:
+        s = vs[0]
+        rec["video"] = {"codec": s.get("codec_name"), "width": s.get("width"),
+                        "height": s.get("height"), "pix_fmt": s.get("pix_fmt"),
+                        "profile": s.get("profile"), "level": s.get("level"),
+                        "avg_frame_rate": s.get("avg_frame_rate")}
+        if s.get("codec_name") != VCODEC_NAME[v["codec"]]:
+            problems.append("video codec %r, wanted %r" % (s.get("codec_name"), v["codec"]))
+        if (s.get("width"), s.get("height")) != (want_w, want_h):
+            problems.append("video %sx%s, wanted %s" % (s.get("width"), s.get("height"), v["size"]))
+        if s.get("pix_fmt") != "yuv420p":
+            problems.append("pix_fmt %r, wanted 'yuv420p'" % s.get("pix_fmt"))
+        if s.get("profile") != "High":
+            problems.append("H.264 profile %r, wanted 'High'" % s.get("profile"))
+        if abs(_rate(s.get("avg_frame_rate") or s.get("r_frame_rate")) - shape_fps(spec)) > 0.01:
+            problems.append("frame rate %s, wanted %g" % (s.get("avg_frame_rate"), shape_fps(spec)))
+    want_a = spec["audio"][0]
+    rec["audio"] = [{"codec": s.get("codec_name"), "channels": s.get("channels"),
+                     "sample_rate": s.get("sample_rate")} for s in aus]
+    if len(aus) != 1:
+        problems.append("%d audio streams, wanted 1" % len(aus))
+    elif (aus[0].get("codec_name"), aus[0].get("channels")) != (ACODEC_NAME[want_a["codec"]], want_a["ch"]):
+        problems.append("audio %s x%s, wanted %s x%d" % (aus[0].get("codec_name"),
+                        aus[0].get("channels"), ACODEC_NAME[want_a["codec"]], want_a["ch"]))
+    # One IDR per segment: the property that makes each segment independently decodable (and the
+    # player's variant switch, or a seek, land on a boundary).
+    try:
+        flags = run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                     "-show_entries", "packet=flags", "-of", "csv=p=0", str(path)]).split()
+        keys = sum(1 for f in flags if f.startswith("K"))
+        rec["video"] = dict(rec.get("video", {}), key_packets=keys)
+        if keys != len(names):
+            problems.append("%d key packets for %d segments -- the GOP is not one segment, so a "
+                            "segment does not open on an IDR" % (keys, len(names)))
+    except Fail:
+        problems.append("could not count the key packets")
+    dec = spec["declare"]
+    rec["declare"] = dict(dec)
+    if vs and vs[0].get("codec_name") != dec["vcodec"]:
+        problems.append("declares vcodec %r, the stream is %r" % (dec["vcodec"], vs[0].get("codec_name")))
+    if not any((s.get("codec_name") or "").lower() == dec["acodec"] for s in aus):
+        problems.append("declares acodec %r and no audio stream is that codec" % dec["acodec"])
+    rec["description_ok"] = True
+    return rec, problems
 
 
 def resolution_spike_plan(spec, dur):
@@ -2684,6 +2845,8 @@ def verify(key, spec, dur, path, ep=None):
     problems, rec = [], {}
     if not path.exists():
         return {}, ["missing file %s" % path]
+    if spec.get("builder") == "hls_vod":
+        return verify_hls_vod(key, spec, dur, path)
     j = probe(path)
     fmt = j.get("format", {})
     rec["size_bytes"] = int(fmt.get("size") or path.stat().st_size)
@@ -3421,6 +3584,8 @@ def main(argv=None):
                     lines = build_dovi(ctx, k, spec, dur, ep, dest, work)
                 elif spec.get("builder") == "resolution_spike":
                     lines = build_resolution_spike(ctx, k, spec, dur, ep, dest, work)
+                elif spec.get("builder") == "hls_vod":
+                    lines = build_hls_vod(ctx, k, spec, dur, ep, dest, work)
                 else:
                     lines = build_generic(ctx, k, spec, dur, ep, dest, work)
             except Fail as e:

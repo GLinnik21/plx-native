@@ -1528,13 +1528,274 @@ def a_codec(lines, expected, min_width, size=None):
     return ok, f"codec={name} {w}x{h} (want {want}) :: {ln.strip()}"
 
 
+# ---------------------------------------------------------------------------------------------
+# URI mode. A case whose own `triggers` arm `uriprobe` plays through the TV's NATIVE player, not
+# the app's buffer feed, so none of the Feed vocabulary (`stream: ... path=`, `load:`, media-position
+# samples) is ever written. The evidence is the probe's `uriprobe: t=<ms since arm> ...` lines,
+# graded below; `evaluate_pipeline` runs this branch INSTEAD of the Feed checks.
+# ---------------------------------------------------------------------------------------------
+URI_EXPECT_KEYS = ("uri_playing", "uri_plane_bound", "uri_clock_past_s", "uri_max_stall_s",
+                   "uri_drain_warning_s")
+RE_URI_LINE = re.compile(r"uriprobe: t=(\d+) (\S.*?)\s*$")
+RE_URI_CLOCK = re.compile(r"ev=currentTime value=(-?\d+)")
+RE_URI_REMAINING = re.compile(r"ev=bufferRange .*?remainingTime=(-?\d+(?:\.\d+)?)")
+RE_ACB_CALLBACK = re.compile(r"acb callback task=(\d+) ev=(-?\d+)")
+# The ends that mean the probe could not START or was refused. `timeout:currentTime` is not among
+# them: it is the probe's own watchdog noticing the clock stood still, and whether that is a failure
+# is the case's to say (`uri_max_stall_s` makes it one; a link-collapse case expects it).
+URI_START_PHASES = ("register", "acb", "acb-video", "load", "play", "setWindowId")
+
+
+def uri_mode(case):
+    """Whether this case arms the URI probe itself, through its own `triggers`.
+
+    Deliberately NOT `--extra-trigger plxnative-uriprobe=...`: that flag runs the Feed assertions
+    with the probe armed on top (README), and grading it as a URI case would swallow them.
+    """
+    return "uriprobe" in (case.get("triggers") or {})
+
+
+def _uri_events(lines):
+    """`[(t_ms, text), ...]` for every `uriprobe: t=<ms> ...` line, in log order."""
+    out = []
+    for ln in lines:
+        m = RE_URI_LINE.search(ln)
+        if m:
+            out.append((int(m.group(1)), m.group(2)))
+    return out
+
+
+def _uri_summary(events):
+    """`(t_ms, {key: value})` for the LAST `summary` line (the terminal one), or None.
+
+    A healthy run has none: the probe does not end on its own, so a harness that stops at the cap
+    leaves the log without it. Values keep their parentheses (`load=fail(register)`).
+    """
+    found = None
+    for t, text in events:
+        if text.startswith("summary "):
+            found = (t, dict(re.findall(r"(\S+?)=(\S+)", text)))
+    return found
+
+
+def _uri_summary_error(fields):
+    """Why a summary says the probe failed or was refused, or None."""
+    if fields.get("load", "ok") != "ok":
+        return f"load={fields['load']}"
+    kind, _, phase = fields.get("end", "back").partition(":")
+    if kind in ("error", "refused"):
+        return f"end={fields['end']}"
+    if kind == "timeout" and phase in URI_START_PHASES:
+        return f"end={fields['end']}"
+    return None
+
+
 def a_no_error(lines):
     for ln in lines:
         if "smp_cb type=18" in ln or "Playing error" in ln:
             return False, f"error surfaced :: {ln.strip()}"
-        if "uriprobe:" in ln and re.search(r"\bsummary\b.*\bend=(?:error|timeout|refused):", ln):
-            return False, f"URI error surfaced :: {ln.strip()}"
+        m = RE_URI_LINE.search(ln)
+        if m and m.group(2).startswith("summary "):
+            # The summary is the probe's own closing line and exists on a healthy run that ended
+            # normally too, so it is read, not matched: only a failure or a refusal in it is an error.
+            why = _uri_summary_error(dict(re.findall(r"(\S+?)=(\S+)", m.group(2))))
+            if why:
+                return False, f"URI error surfaced ({why}) :: {ln.strip()}"
     return True, "no Starfish playing error or terminal URI error"
+
+
+def _uri_clock(events):
+    """`[(t_ms, clock_ms), ...]`: every parsed `ev=currentTime` sample."""
+    out = []
+    for t, text in events:
+        m = RE_URI_CLOCK.match(text)
+        if m:
+            out.append((t, int(m.group(1))))
+    return out
+
+
+def a_uri_playing(lines):
+    """The native player played: `playing` and a media clock that advanced.
+
+    Read from the probe's terminal `summary` when there is one (`playing=yes`,
+    `currentTime_advanced=yes`). A run the harness cut off at its cap has none, so the same claim
+    is then read from the events: an `ev=playing`, and a `currentTime` that strictly advanced after it.
+    """
+    events = _uri_events(lines)
+    summary = _uri_summary(events)
+    if summary:
+        fields = summary[1]
+        ok = fields.get("playing") == "yes" and fields.get("currentTime_advanced") == "yes"
+        return ok, (f"summary playing={fields.get('playing')} "
+                    f"currentTime_advanced={fields.get('currentTime_advanced')}")
+    play = next((i for i, (_, text) in enumerate(events) if text == "ev=playing"), None)
+    if play is None:
+        return False, "no `uriprobe: ... ev=playing` and no summary"
+    clock = [v for _, v in _uri_clock(events[play:])]
+    if not any(b > a for a, b in zip(clock, clock[1:])):
+        return False, f"ev=playing seen, but the media clock never advanced ({len(clock)} sample(s))"
+    return True, f"ev=playing, then the media clock advanced to {max(clock) / 1000:.1f}s"
+
+
+def a_uri_plane_bound(lines):
+    """The ACB video plane was bound: `videoplane: BOUND`, and ACB callback tasks 1-4, all `ev=1`.
+
+    A `videoplane: unbound` line (case-sensitive match) is a plane that was never attached or has
+    been released, and a task that answered anything but `ev=1` did not complete.
+    """
+    if not any("videoplane: BOUND" in ln for ln in lines):
+        return False, "no `videoplane: BOUND` line"
+    seen = {}
+    for ln in lines:
+        m = RE_ACB_CALLBACK.search(ln)
+        if m:
+            seen.setdefault(int(m.group(1)), []).append(int(m.group(2)))
+    absent = [n for n in (1, 2, 3, 4) if n not in seen]
+    if absent:
+        return False, f"`videoplane: BOUND`, but no acb callback for task(s) {absent}"
+    bad = {n: seen[n] for n in (1, 2, 3, 4) if any(ev != 1 for ev in seen[n])}
+    if bad:
+        return False, f"acb callback task(s) answered other than ev=1: {bad}"
+    return True, "videoplane: BOUND, acb callbacks 1-4 all ev=1"
+
+
+def a_uri_clock_past(lines, secs):
+    """The media clock reached `secs` seconds: the largest `ev=currentTime value=` (ms)."""
+    clock = _uri_clock(_uri_events(lines))
+    if not clock:
+        return False, "no `ev=currentTime` sample"
+    top = max(v for _, v in clock)
+    return top >= secs * 1000, f"max currentTime {top / 1000:.1f}s (want >= {secs}s)"
+
+
+def _uri_exempt_spans(events):
+    """`[(start_t, end_t), ...]`: where the clock is allowed to stand still, because the case
+    drove it there. A pause runs from `drive pause`/`call pause` to the `ev=playing` after its
+    `drive resume`; a seek from `drive seek`/`call seek` to `ev=seekDone`. A window the log never
+    closes runs to the end."""
+    spans, start, kind = [], None, None
+    for t, text in events:
+        if kind is None and text.startswith(("drive pause", "call pause")):
+            start, kind = t, "pause"
+        elif kind is None and text.startswith(("drive seek", "call seek")):
+            start, kind = t, "seek"
+        elif kind == "seek" and text.startswith("ev=seekDone"):
+            spans.append((start, t))
+            kind = None
+        elif kind == "pause" and text.startswith("drive resume"):
+            kind = "resume"
+        elif kind == "resume" and text == "ev=playing":
+            spans.append((start, t))
+            kind = None
+    if kind is not None:
+        spans.append((start, float("inf")))
+    return spans
+
+
+def a_uri_max_stall(lines, max_s):
+    """While playing, the media clock never stood still for more than `max_s` seconds of wall time.
+
+    The unit is the gap between successive STRICTLY INCREASING `currentTime` samples (a sample
+    that repeats or steps back is not an advance), on the probe's own `t=` clock. The stretch from
+    the last advance to the end of what the probe observed counts too, and that is the one that
+    matters: a stream that stops delivering simply stops advancing, so every gap BETWEEN samples
+    stays at about a second. The end of observation is the last periodic report (`currentTime`,
+    `bufferRange`, `streamingInfo`), which keeps arriving through a stall, or the probe's closing
+    `summary` if that is later. A gap that overlaps a pause or seek the case drove is not a stall.
+    """
+    events = _uri_events(lines)
+    play = next((i for i, (_, text) in enumerate(events) if text == "ev=playing"), None)
+    if play is None:
+        return False, "no `ev=playing`, so there was no playback to hold steady"
+    advances, last = [], None
+    for t, v in _uri_clock(events[play:]):
+        if last is None or v > last:
+            advances.append(t)
+        last = v
+    if not advances:
+        return False, "no `ev=currentTime` sample after `ev=playing`"
+    periodic = [t for t, text in events if text.startswith(("ev=currentTime", "ev=bufferRange",
+                                                            "ev=streamingInfo"))]
+    horizon = max(periodic + [t for t, text in events if text.startswith("summary ")])
+    exempt = _uri_exempt_spans(events)
+    gaps = list(zip(advances, advances[1:]))
+    if horizon > advances[-1]:
+        gaps.append((advances[-1], horizon))
+    worst = (0, 0, 0)
+    for a, b in gaps:
+        if any(a <= end and start <= b for start, end in exempt):
+            continue
+        worst = max(worst, (b - a, a, b))
+    ok = worst[0] <= max_s * 1000
+    where = f" (t={worst[1] / 1000:.1f}s to t={worst[2] / 1000:.1f}s)" if worst[0] else ""
+    return ok, f"longest stall {worst[0] / 1000:.1f}s{where}, want <= {max_s}s"
+
+
+def a_uri_drain_warning(lines, min_s):
+    """A collapse is WARNED of: before the first mid-playback `bufferingStart`, `remainingTime`
+    declined without once rising for at least `min_s` seconds.
+
+    "Mid-playback" is the first `bufferingStart` after the first `ev=playing`; the one before it is
+    the initial fill. Equal successive readings are allowed (`remainingTime` is whole seconds and
+    repeats 2-3 times per step), a rise ends the run. The decline is counted from the LAST sample
+    at the run's peak, so a buffer that sat full and then stalled with no slope in between is not
+    a warning, and it must be a net decline.
+    """
+    events = _uri_events(lines)
+    play = next((i for i, (_, text) in enumerate(events) if text == "ev=playing"), None)
+    if play is None:
+        return False, "no `ev=playing`"
+    stall = next((i for i in range(play + 1, len(events)) if events[i][1] == "ev=bufferingStart"), None)
+    if stall is None:
+        return False, "no `ev=bufferingStart` after `ev=playing`: the buffer never ran dry"
+    samples = []
+    for t, text in events[play:stall]:
+        m = RE_URI_REMAINING.match(text)
+        if m:
+            samples.append((t, float(m.group(1))))
+    if not samples:
+        return False, "no `ev=bufferRange` sample between `ev=playing` and the stall"
+    first = len(samples) - 1
+    while first > 0 and samples[first - 1][1] >= samples[first][1]:
+        first -= 1
+    peak = samples[first][1]
+    top = max(i for i in range(first, len(samples)) if samples[i][1] == peak)
+    slope = samples[top:]
+    declined = peak - slope[-1][1]
+    secs = (events[stall][0] - slope[0][0]) / 1000
+    ok = declined > 0 and secs >= min_s
+    return ok, (f"remainingTime fell {peak:g} -> {slope[-1][1]:g} over {secs:.1f}s before the "
+                f"bufferingStart at t={events[stall][0] / 1000:.1f}s (want a net decline lasting >= {min_s}s)")
+
+
+def evaluate_uri(case, lines, srv_delta):
+    """Every assertion for a case that arms the URI probe. Returns (passed, [(label, ok, evidence)]).
+
+    No Feed check runs: the native player writes none of the lines they read, so they fail by
+    construction. Kept: `no_error` (a refusal or a failed load is still a failure) and
+    `server_wire` (the TV did fetch from the fixture server).
+    """
+    exp = case["expect"]
+    unknown = sorted(k for k in exp if k.startswith("uri_") and k not in URI_EXPECT_KEYS)
+    results = []
+    if unknown:
+        results.append(("uri_expect", False, f"unknown expect key(s): {', '.join(unknown)}"))
+    if exp.get("uri_playing"):
+        results.append(("uri_playing", *a_uri_playing(lines)))
+    if exp.get("uri_plane_bound"):
+        results.append(("uri_plane_bound", *a_uri_plane_bound(lines)))
+    if "uri_clock_past_s" in exp:
+        results.append(("uri_clock_past", *a_uri_clock_past(lines, exp["uri_clock_past_s"])))
+    if "uri_max_stall_s" in exp:
+        results.append(("uri_max_stall", *a_uri_max_stall(lines, exp["uri_max_stall_s"])))
+    if "uri_drain_warning_s" in exp:
+        results.append(("uri_drain_warning", *a_uri_drain_warning(lines, exp["uri_drain_warning_s"])))
+    if exp.get("no_playing_error", True):
+        results.append(("no_error", *a_no_error(lines)))
+    results.append(("server_wire", *a_server_wire(
+        srv_delta, exp.get("server_opens_min", 1), exp.get("server_range_opens_min", 0),
+        exp.get("server_opens_exact"), exp.get("server_range_opens_exact"))))
+    return all(ok for _, ok, _ in results), results
 
 
 def a_resolve_pin(lines, want="any"):
@@ -2219,6 +2480,9 @@ def early_exit_allowed(case, cfg):
     is why the rule keys on the SCHEDULE rather than on the operation kind -- an undelayed seek
     fires promptly and stays eligible.
 
+    A URI case (`uriprobe` in its own `triggers`): the whole `uriprobe:` window is its evidence, and
+    `uri_max_stall_s` grades the worst stretch of the clock, which a prefix cannot settle.
+
     `min_play_rate_pm`: the same shape from the other side. It grades the WORST window of the
     media clock, so it is satisfied by every prefix that has not met the slow leg yet, and a case
     that stopped early would report the rate of its healthy opening. Both tiers ask it now, which
@@ -2228,6 +2492,12 @@ def early_exit_allowed(case, cfg):
     exp = case.get("expect") or {}
     if cfg.get("no_early"):
         return False, ""                      # the operator already said so; no need to explain
+    if uri_mode(case):
+        # The saved `uriprobe:` log over the whole window IS a URI case's evidence (an R-ABR-2
+        # instrument exists to show the collapse, which comes late), and `uri_max_stall_s` grades the
+        # WORST stretch of the clock, which a prefix cannot settle: a stall at 50 s is invisible to a
+        # run that stopped at 8 s because every assertion held.
+        return False, "a URI case's evidence is the whole `uriprobe:` window, and a stall can come late"
     if case.get("gst_trace"):
         return False, "gst_trace assertions are graded only after the run"
     if "abr_shape" in exp:
@@ -5104,11 +5374,30 @@ def _case_depth_s(case):
     deepest step, which was both dead (no synthetic case declares a rapid seek) and wrong (it
     read a tap-relative `+10` as an absolute 10).
     """
-    depth = case.get("expect", {}).get("min_pos_climb_s", 0)
+    exp = case.get("expect", {})
+    # `uri_clock_past_s` is a depth too: the native player's clock has to reach it, so a pack
+    # shorter than that plays out (or ends the session) before the case can pass.
+    depth = max(exp.get("min_pos_climb_s", 0), exp.get("uri_clock_past_s", 0))
     for op in case.get("operations", []):
         if op.get("op") == "seek":
             depth = max(depth, op.get("final_s", op.get("target_s", 140)))
     return depth
+
+
+def _playlist_missing_segments(playlist):
+    """The relative segment files a local HLS playlist names that are not beside it, in order.
+
+    URI lines only (a line that is not a `#` tag); an absolute URL is the server's and is left
+    alone. A playlist that cannot be read names nothing missing: the fixture's own `isfile` check
+    has already said the file is there.
+    """
+    try:
+        with open(playlist, encoding="utf-8") as f:
+            names = [ln.strip() for ln in f if ln.strip() and not ln.startswith("#")]
+    except (OSError, UnicodeDecodeError):
+        return []
+    base = os.path.dirname(playlist)
+    return [n for n in names if "://" not in n and not os.path.isfile(os.path.join(base, n))]
 
 
 def _resolve_fixtures(cases, root):
@@ -5151,6 +5440,16 @@ def _resolve_fixtures(cases, root):
         if not os.path.isfile(path):
             c["skip"] = f"no fixture {name!r} in {root} — run `make fixtures-pipeline`"
             continue
+        if name.split("?", 1)[0].endswith(".m3u8"):
+            # A static playlist is only as good as the segment files it names, and the player
+            # fetches those by relative URL: a pack with the playlist and not its segments (a
+            # build interrupted, or one directory copied) would 404 under the player mid-run.
+            absent = _playlist_missing_segments(path)
+            if absent:
+                c["skip"] = (f"{name} names {len(absent)} segment file(s) the pack lacks "
+                             f"({', '.join(absent[:3])}{', ...' if len(absent) > 3 else ''}) -- "
+                             f"run `make fixtures-pipeline`")
+                continue
         if c.get("auto_network"):
             abr_names = ["pipe_abr_240p.ts", "pipe_abr_480p.ts",
                          "pipe_abr_720p.ts", "pipe_abr_1080p.ts"]
@@ -5200,6 +5499,8 @@ def evaluate_pipeline(case, lines, srv_delta, gst_lines=None):
     off, and that assertion can never hold here. Splitting keeps the integration tier's behaviour
     bit-identical instead of making it depend on a flag it never sets.
     """
+    if uri_mode(case):
+        return evaluate_uri(case, lines, srv_delta)
     exp = case["expect"]
     results = [("stream_path", *a_stream_path(
         lines, case["fixture"],
