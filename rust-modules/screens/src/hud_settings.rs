@@ -18,6 +18,14 @@
 //! anything else `DeclineOffer`, which leaves nothing on disk. While the fetch runs the row is dimmed and OK on it does
 //! nothing (the Preferences pages' busy idiom).
 //!
+//! **Fetch a development source again** (PR15, `tools/hud-dev`). A package installed from a development source (an
+//! `http://` address on the home network: an author's machine) is listed with that address ([`Entry::dev_source`]).
+//! Play on its row sends the same `HudCmd::Fetch` the address row sends, so the author sees the next build through
+//! the same offer, prompt and confirmation, and nothing is installed without the OK. It is the remote's own ▶ read by
+//! the shared classifier ([`consts::classify_input`]), taken on a fresh press only and only while the page is free
+//! (no fetch or package work in flight, no keyboard or prompt up). On any other row Play is left unhandled; no row
+//! and no string is added.
+//!
 //! **What a row says.** The package's `name` (the author's text: a server-style label, never measured by
 //! the fit report), then its trust tier (*Built-in*, *Unreviewed*) and one more fact: why it cannot run (a
 //! format the app does not read, an app range it is outside of, or "Doesn't fit in {language}": a compile the
@@ -41,7 +49,7 @@ use plx_ui::route_screen::RouteLayout;
 use plx_ui::screen::{At, Dir, DrawFrame, Enter, Focusable, FocusSource, FocusTarget, GroupSpec, HitSource, Placed, RenderStrategy, Screen, ScreenEvent, Step};
 use plx_ui::table::Row;
 use plx_ui::table_screen::{Header, TableScreen};
-use plx_ui::{theme, Rect};
+use plx_ui::{consts, theme, Rect};
 
 use super::family::{form_activate, form_focus, form_right_target, InnerHost, SettingsPage, ALERT_GROUP};
 use super::registry::{word, AppFx, HudCmd, ALERT, BAND};
@@ -691,6 +699,21 @@ impl HudPage {
         }
     }
 
+    /// Play on the row of a package from a development source: its recorded address leaves as the fetch the address row
+    /// sends. Unhandled on any other row, and while a fetch or other package work runs or the prompt is up.
+    fn refetch(&mut self, cx: &Cx<'_, InnerHost>, fx: &mut Effects<'_, InnerHost>) -> Handled {
+        if self.list.fetching || self.list.package_busy || self.prompt.is_open() {
+            return Handled::No;
+        }
+        let row = cx.focus.current.and_then(|key| self.form.index_of_key(RowKey(key.elem)));
+        let Some(HudId::Pack(id)) = row.and_then(|i| self.form.id_at(i)) else { return Handled::No };
+        let Some(address) = self.list.entries.iter().find(|entry| entry.id == *id).and_then(|entry| entry.dev_source.clone()) else {
+            return Handled::No;
+        };
+        fx.push(Fx::App(AppFx::Huds(HudCmd::Fetch(address))));
+        Handled::Yes
+    }
+
     fn activate(&mut self, key: u32, fx: &mut Effects<'_, InnerHost>) {
         self.state.provisional = false;
         match form_activate(&self.form, key, fx) {
@@ -861,6 +884,8 @@ impl Machine<InnerHost> for HudPage {
                 self.activate(*key, fx);
                 Handled::Yes
             }
+            ScreenEvent::Input(InputEvent { kind: InputKind::Key { key, sym, wcode, edge: Edge::Down, .. }, .. })
+                if matches!(consts::classify_input(*key, *sym, *wcode), consts::Key::Play) => self.refetch(cx, fx),
             ScreenEvent::Input(plx_machine::machine::InputEvent {
                 kind: plx_machine::machine::InputKind::Key { key: plx_machine::machine::Key::Right, at_edge: true, .. },
                 ..

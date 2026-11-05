@@ -98,7 +98,7 @@ before `SDL_Init` (§5).
 
 | Code | Field | `Key` | What it does | Provenance |
 | --- | --- | --- | --- | --- |
-| `450` | `wcode` only | `Play` | resume, or start playback off a card | evdev 207 `KEY_PLAYCD` |
+| `450` | `wcode` only | `Play` | resume, or start playback off a card; on the Player HUD settings page, on the row of a HUD installed from a development address (`tools/hud-dev`), fetch that address again | evdev 207 `KEY_PLAYCD` |
 | `72` | `wcode` only | `Pause` | pause | evdev 119 `KEY_PAUSE` |
 | `261` | either | `PlayPause` | toggles — its own variant, since `key_play`/`key_pause` are each one direction | evdev 164 `KEY_PLAYPAUSE` |
 | `451` | either | `Right { alt: true }` | fast-forward: scrubs in the player, does nothing elsewhere | evdev 208 `KEY_FASTFORWARD` |

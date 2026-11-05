@@ -1492,12 +1492,15 @@ New `paths::hud_candidates()` on F39's pattern, keyed by `app_id()`:
 
 The first candidate that accepts a write is used; all are read when listing; the flavours never share (D14).
 Layout: `packs/<sha256>.plxhud` (content-addressed, so an update is a new file and a switch is atomic),
-`installed.json` (id -> sha, source, installed-at), `index-cache.json` (the signed index it was verified from, plus ETag), `drop/` (the sideload
+`installed.json` (id -> sha, source, installed-at, and for a package fetched from a development source the address it came from), `index-cache.json` (the signed index it was verified from, plus ETag), `drop/` (the sideload
 drop folder, scanned when HUD settings open).
 
 The current installed index requires integer v1 and closed records containing the complete archive SHA,
-source, install timestamp, package_format and hud_format. Both format fields are 1.0 in this baseline.
-Duplicate fields or ids, unknown fields, malformed identities and unsupported headers make the entire
+source, install timestamp, package_format and hud_format, plus an optional `from` (PR15: the `http://` address of a
+development source, written only for an address install from one). Both format fields are 1.0 in this baseline.
+A `from` that is not a development address, or that sits on a record of another source, is dropped on read (the
+package stays listed and the index writable); an older build, which does not know the field, reads an index that
+holds one as read-only, which only an author who ran `tools/hud-dev` can reach. Duplicate fields or ids, unknown fields, malformed identities and unsupported headers make the entire
 index read-only. Installation uses another writable candidate. Removal reports an incomplete result
 when any unreadable candidate might retain a copy. Index failures never trigger deletion of that
 candidate's files.
@@ -1919,9 +1922,20 @@ recipe accepts it; a release build on the TV dropped the PR13-era cache (`cause=
 logged), and after a relaunch verified the cache it had written, with no `hud:` line and no new fetch. Not verified on the TV: a tampered or rolled-back index
 (the host tests cover every refusal cause).
 
-PR15. Authoring tools: `tools/hud-dev` (serves a package over LAN http with a version counter; the TV re-fetches a
-dev source on a key while the dev row is focused), `plxnative-sim --hud <file>` rendering the state matrix locally,
-later a static web editor on the site.
+PR15. Authoring tools (shipped): `tools/hud-dev` (Python standard library, runs on macOS's `/usr/bin/python3`) bundles a
+package source with `tools/hud_package.py` (the simulator's `--hud-pack`, never a second packer), lints it with
+`plxnative-sim --hud-lint` on every change (it polls mtimes), serves the last CLEAN bundle over plain http on the
+Mac's RFC 1918 address, and prints the address to type under Settings > Player HUD > "Install from address". A source
+with findings is printed and not served; the previous clean bundle stays up. Every clean change is served under a
+strictly higher version: `Semver` is numeric `MAJOR.MINOR.PATCH` only (no pre-release, so `1.2.0-dev.7` cannot be
+ordered), so the tool raises the PATCH, never below the author's own, by the seconds since 2026-01-01 so that a
+restart still lands above what the set holds, and never reuses a number. On the set, a pack installed from a
+development source remembers that address (`Entry::dev_source`, persisted in `installed.json`, dev sources only), and
+Play on its focused row in the Player HUD page sends the same `HudCmd::Fetch` "Install from address" does: the offer
+dialog follows, and OK installs. The confirmation is kept. The local state-matrix preview is
+`tools/hud_preview.py --hud <file>` (already on main), the PR15 "`plxnative-sim --hud <file>`" of this plan; a static web
+editor stays later. Verified on the host (the store, the page, the tool against a stub simulator and a local HTTP
+client). Not verified on the set: the whole loop on the television.
 
 PR16. A `cargo fuzz` package over `parse + compile` and the SVG checker, with its `make build-bench` table.
 
