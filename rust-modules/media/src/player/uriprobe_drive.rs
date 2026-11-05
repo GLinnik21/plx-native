@@ -136,11 +136,19 @@ pub fn drive(ps: &mut PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
 }
 
 /// End a logical probe, preserving its slot until unregister is acknowledged.
-pub fn stop(ps: &mut PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
+pub(super) fn stop(ps: &mut PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
     let (session, mt) = pa.uri_split();
     if let Some(session) = session {
         session.stop(&mut |attempt, how| settle(ps, attempt, how), mt);
     }
+}
+
+/// [`stop`] for a suite outside this crate that drives a session it built over a scripted
+/// transport (`dev::uriprobe`'s tests); the product reaches it only through `begin_teardown` and
+/// `exit_native`.
+#[cfg(any(test, feature = "test-support"))]
+pub fn stop_for_test(ps: &mut PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
+    stop(ps, pa);
 }
 
 /// The port, driven through the trait objects with scripted fakes: no play-uri, no transport. These

@@ -82,7 +82,7 @@ impl UriProbeSession for Seated {
 
 use super::*;
 use plx_media::player::attempt_view::Backend;
-use plx_media::player::uriprobe_drive::{drive, ingest_position, settle, stop};
+use plx_media::player::uriprobe_drive::{drive, ingest_position, settle, stop_for_test as stop};
 use plx_media::route::PlaybackSession;
 use plx_platform::tv::uri::UriMedia;
 use std::cell::RefCell;
@@ -753,13 +753,13 @@ mod hostsim {
             // UNLOADED ran once and the plane waits on the firmware: still closing, plane held.
             assert_eq!(sink.unload_count(),1); assert_eq!(plane.phase(),Phase::Releasing);
             assert!(rig.pa.uri_closing()); assert!(rig.pa.uri_plane_open());
-            assert!(!rig.pa.uri_acb_exit_quarantine(),"a plane still being released is not yet quarantined");
+            assert!(!rig.pa.uri_acb_exit_quarantine_for_test(),"a plane still being released is not yet quarantined");
             // The firmware answers the dispatch (task 5) with something other than "complete".
             sink.mailbox.push(5,-1);
             drive(&mut rig.ps,&mut rig.pa);
             assert_eq!(plane.phase(),Phase::Quarantined(Why::Completion(-1)));
             assert!(rig.pa.uri_closing()); assert!(rig.pa.uri_plane_open());
-            assert!(rig.pa.uri_acb_exit_quarantine());
+            assert!(rig.pa.uri_acb_exit_quarantine_for_test());
             let exit=plx_media::player::exit_native_with(&mut rig.pa,Instant::now,||panic!("released-bus plane quarantine needs no extra wait"));
             assert_eq!(exit,plx_media::player::NativeExit::WorkerInFirmware);
             assert!(!rig.pa.uri_live()); assert_eq!(rig.transport.closed(),1);

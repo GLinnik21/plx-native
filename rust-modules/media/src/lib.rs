@@ -4,7 +4,7 @@
 //! `plx_net::range_io`), the adaptive-bitrate controller (`abr`), the buffer-feed engine (`player`)
 //! and route selection (`route`). The HLS parser and access-unit queues live in `plx_play_feed`.
 //! It is the `media` layer of `ci/module-layers.ini`: it
-//! uses `playback-contract`, `media-codecs`, optional `play-feed` and `play-uri`, `base`, `machine`,
+//! uses `playback-contract`, `media-codecs`, optional `play-feed`, `base`, `machine`,
 //! `platform`, `gfx`, `net`, `plex`, `telemetry` and `data`, and nothing above them. The remaining
 //! media orchestration members (`abr`, `curlio`, `player` and
 //! `route`) and the `ff` facade share a crate. The bundled FFmpeg binding, encoder and pure
