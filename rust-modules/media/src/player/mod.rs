@@ -1801,7 +1801,11 @@ pub fn diag(ps: &crate::route::PlaybackSession) -> Diag {
         placed_h: FEED_SHARED.dg_placed_h.load(Relaxed),
         stage: observed.pipeline_stage.unwrap_or(0),
         load_completed: FEED_SHARED.load_completed.load(Relaxed),
-        load_failed: ps.readout().raw().flags.load_failed,
+        // A start refused for a parked Load builds no Engine and begins no attempt, so the readout's
+        // flags are idle: the session's refusal is the fact (`live_runtime_failure` reads it the
+        // same way), for a fresh start and a refused reload alike.
+        load_failed: ps.readout().raw().flags.load_failed
+            || ps.native_start_refused == Some(crate::route::StartRefusal::LoadTimeout),
         cb_count: FEED_SHARED.dg_cb_count.load(Relaxed),
         pushed_any: crate::ff::pushed_any(),
         fed_v,

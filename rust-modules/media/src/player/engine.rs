@@ -3536,11 +3536,26 @@ mod load_in_flight_tests {
         let started = crate::player::pump::settle_reload(outcome, "test HLS recovery", &mut ps);
         assert!(!started, "the recovery start must be refused while the Load is outstanding");
         assert!(pa.has_abandoned_load(), "PRECONDITION FAILED: the Load must still be parked");
-        assert_eq!(crate::player::state(&ps), crate::player::PlaybackState::Error);
+
+        // One frame later: with no Engine live the pump's no-engine arm sets Idle. The refusal is
+        // the session's own fact (`native_start_refused`, the slot a fresh start refused for the
+        // same Load sets), so the read-out outlives that frame, as the fresh-start sibling's does:
+        // Error with Try Again until a start clears it, not an Error that lasts one frame.
+        crate::player::pump::pump(&mut ps, &mut pa, 1_000);
+        assert_eq!(
+            crate::player::state(&ps),
+            crate::player::PlaybackState::Error,
+            "the refused reload's Error must outlive the next pump frame, not fall back to Idle"
+        );
         assert_eq!(
             crate::player::error_now(&ps).kind,
             crate::player::FailureKind::LoadTimeout,
             "the refusal must keep the timeout as its cause, not report `unspecified`"
+        );
+        assert_eq!(ps.native_start_refused, Some(crate::route::StartRefusal::LoadTimeout));
+        assert!(
+            crate::player::diag(&ps).load_failed,
+            "the diagnostics Load row (and the lab snapshot) must read the refused reload as refused"
         );
     }
 
@@ -3584,6 +3599,10 @@ mod load_in_flight_tests {
         assert!(
             actions.contains(&crate::player::FailureAction::TryAgain),
             "the read-out must offer Try Again: {actions:?}"
+        );
+        assert!(
+            crate::player::diag(&ps).load_failed,
+            "the diagnostics Load row (and the lab snapshot) must read the refused start as refused"
         );
 
         // The Load returns and is reaped: the next start is no longer refused for it, and the
