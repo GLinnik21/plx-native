@@ -1539,6 +1539,7 @@ URI_EXPECT_KEYS = ("uri_playing", "uri_plane_bound", "uri_clock_past_s", "uri_ma
 RE_URI_LINE = re.compile(r"uriprobe: t=(\d+) (\S.*?)\s*$")
 RE_URI_CLOCK = re.compile(r"ev=currentTime value=(-?\d+)")
 RE_URI_REMAINING = re.compile(r"ev=bufferRange .*?remainingTime=(-?\d+(?:\.\d+)?)")
+RE_URI_RANGE = re.compile(r"ev=bufferRange beginTime=(-?\d+(?:\.\d+)?) endTime=(-?\d+(?:\.\d+)?)")
 RE_ACB_CALLBACK = re.compile(r"acb callback task=(\d+) ev=(-?\d+)")
 # The ends that mean the probe could not START or was refused. `timeout:currentTime` is not among
 # them: it is the probe's own watchdog noticing the clock stood still, and whether that is a failure
@@ -1731,12 +1732,28 @@ def a_uri_max_stall(lines, max_s):
     return ok, f"longest stall {worst[0] / 1000:.1f}s{where}, want <= {max_s}s"
 
 
+def _uri_lead(text):
+    """The seconds of media buffered ahead, from one `ev=bufferRange` line, or None for any other.
+
+    `remainingTime` when the line carries it, else `endTime - beginTime`. The field is not reliably
+    there on the 4.5 set: the same binary printed it on every sample in one session and on none in
+    the next (cause not determined). The window is the same quantity on a bound plane, whose
+    `endTime` is real and which `beginTime` trails by the lead.
+    """
+    m = RE_URI_REMAINING.match(text)
+    if m:
+        return float(m.group(1))
+    m = RE_URI_RANGE.match(text)
+    return float(m.group(2)) - float(m.group(1)) if m else None
+
+
 def a_uri_drain_warning(lines, min_s):
-    """A collapse is WARNED of: before the first mid-playback `bufferingStart`, `remainingTime`
-    declined without once rising for at least `min_s` seconds.
+    """A collapse is WARNED of: before the first mid-playback `bufferingStart`, the buffered lead
+    (`bufferRange.remainingTime`, else `endTime - beginTime`: see `_uri_lead`) declined without once
+    rising for at least `min_s` seconds.
 
     "Mid-playback" is the first `bufferingStart` after the first `ev=playing`; the one before it is
-    the initial fill. Equal successive readings are allowed (`remainingTime` is whole seconds and
+    the initial fill. Equal successive readings are allowed (the lead is whole seconds and
     repeats 2-3 times per step), a rise ends the run. The decline is counted from the LAST sample
     at the run's peak, so a buffer that sat full and then stalled with no slope in between is not
     a warning, and it must be a net decline.
@@ -1750,9 +1767,9 @@ def a_uri_drain_warning(lines, min_s):
         return False, "no `ev=bufferingStart` after `ev=playing`: the buffer never ran dry"
     samples = []
     for t, text in events[play:stall]:
-        m = RE_URI_REMAINING.match(text)
-        if m:
-            samples.append((t, float(m.group(1))))
+        lead = _uri_lead(text)
+        if lead is not None:
+            samples.append((t, lead))
     if not samples:
         return False, "no `ev=bufferRange` sample between `ev=playing` and the stall"
     first = len(samples) - 1
@@ -1764,7 +1781,7 @@ def a_uri_drain_warning(lines, min_s):
     declined = peak - slope[-1][1]
     secs = (events[stall][0] - slope[0][0]) / 1000
     ok = declined > 0 and secs >= min_s
-    return ok, (f"remainingTime fell {peak:g} -> {slope[-1][1]:g} over {secs:.1f}s before the "
+    return ok, (f"buffered lead fell {peak:g} -> {slope[-1][1]:g} over {secs:.1f}s before the "
                 f"bufferingStart at t={events[stall][0] / 1000:.1f}s (want a net decline lasting >= {min_s}s)")
 
 

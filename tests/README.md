@@ -1027,7 +1027,7 @@ The gates. `pipe_uri_hls_720p24_20m_bound` plays `pipe_hls_720p24_20m/index.m3u8
 `plxnative-NAME=CONTENT`, so those are the two files `plxnative-uriprobe` and `plxnative-ptype`): the
 plane is ACB-bound, and the same 20 Mbit/s stream that stalls an unbound arm plays through the
 75 s cap. `pipe_uri_hls_720p24_20m_bound_collapse` is that arm through the collapse link, where the
-bound plane's `remainingTime` drains in plain sight before a mid-playback `bufferingStart`. The ACB
+bound plane's buffered lead drains in plain sight before a mid-playback `bufferingStart`. The ACB
 arm accepts only a stream whose `videoInfo` is exactly 1280x720 at 24 fps, which is why the fixture
 is that and not a 1080p one. Both skip with a reason when the pack lacks the stream or any of its
 segments (a build that stopped half way); `make fixtures-pipeline` builds it (about 230 MB, ~10 s).
@@ -1073,10 +1073,15 @@ The URI expectations, all in `expect` and all optional:
   not a stall. A rebuffer is: a mid-playback `bufferingStart` stops the clock.
 - **`uri_drain_warning_s: W`**, for collapse cases: a collapse is warned of. There is a
   `bufferingStart` after the first `ev=playing` (the one before it is the initial fill), and before
-  it `bufferRange.remainingTime` fell without once rising for at least W seconds, counted from the
-  last sample at the run's peak to the `bufferingStart`. Equal consecutive readings are allowed
-  (the value is whole seconds and repeats); a buffer that sat full and then stopped is not a
-  warning, however long it sat.
+  it the buffered lead fell without once rising for at least W seconds, counted from the last
+  sample at the run's peak to the `bufferingStart`. Equal consecutive readings are allowed (the
+  lead is whole seconds and repeats); a buffer that sat full and then stopped is not a warning,
+  however long it sat. The lead is `bufferRange.remainingTime` where the line carries it and
+  `endTime - beginTime` where it does not, sample by sample. The field is NOT reliably present on the
+  4.5 set: the same binary printed it on every `bufferRange` line in one session and on none in the
+  next (cause not determined), and a bound plane reports a real `endTime` either way, so the window
+  is the same drain (12, 11, 10, 8, 7, 5, 4, 3 ahead of the `bufferingStart` on the TV capture
+  without the field).
 
 A key starting `uri_` that is not in this list fails the case (`uri_expect`) instead of grading
 nothing, and `test_harness.py` pins that every such key sits on a case that arms the probe.
