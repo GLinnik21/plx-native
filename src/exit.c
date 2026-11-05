@@ -27,15 +27,27 @@
  * run AFTER everything registered later), it keeps the caller's real status, and it runs before
  * glibc's `__call_tls_dtors`.
  *
- * It binds only because the Makefile exports it: an executable's own symbol is otherwise invisible
- * to the dynamic linker. `ci/check-elf.sh` asserts the export on the shipped binary, and
- * `ci/exit-interpose-test.c` proves the whole chain on a host with and without the flag.
+ * The firmware's own SDL2 imports `exit@GLIBC_2.4` through an `R_ARM_JUMP_SLOT` on the inventoried
+ * images (webOS 4.x W19P/W19R, 6.x W21O, 9.2 W24G, 11.2 W23O), so an `exit` SDL makes binds to this
+ * definition. Whether PLX-NATIVE-1P's call came through a PLT at all is not determined: the event
+ * has no frame above `__run_exit_handlers`.
+ *
+ * The Makefile exports the symbol explicitly so the export does not rest on an implicit rule (the
+ * NDK's ld exports the executable's `exit` even without the flag, because libc.so, always on the
+ * link line, defines `exit` too) and so `exit` is a `--gc-sections` root. `ci/check-elf.sh` asserts
+ * the export on the shipped binary, and `ci/exit-interpose-test.c` proves the chain on a Linux host
+ * against a control built without this file.
  *
  * # What it does not cover
  *
- * glibc's own callers of `exit` (`error(3)` and `err(3)` with a nonzero status, `__libc_start_main`
- * after `main` returns) reach libc's hidden alias, never the PLT, so they still run the handlers.
- * The app's own `main` does not return into libc: `plex_run` ends through `exit_now`.
+ * libc.so.6's own internal callers of `exit` (`error(3)` and `err(3)` with a nonzero status,
+ * `__libc_start_main` after `main` returns) call libc's `exit` directly, not through the PLT (the
+ * firmware libc has no `exit@` relocation, glibc 2.24-2.39), so they still run the handlers.
+ * libpthread's last-thread `exit(0)` on glibc <= 2.31 (webOS 4.x-8.x, before libpthread merged into
+ * libc) does go through its PLT and is interposed, which is harmless: the app never ends its main
+ * thread with `pthread_exit`. Every exit of the app session itself goes through `exit_now`;
+ * `src/main.c` returns 0 from `main` only on the Sentry-spool re-entry
+ * (`plx_sentry_spool_external`), which runs libc's own `exit` as before.
  */
 #include <stdlib.h>
 

@@ -45,6 +45,11 @@ pub fn exit_now(code: c_int) -> ! {
 /// to that definition. It lands here with the caller's real `status`; one event-log line names the
 /// calling thread, and [`exit_now`] ends the process: no `atexit` handler and no finalizer runs.
 ///
+/// The firmware's own SDL2 imports `exit@GLIBC_2.4` through an `R_ARM_JUMP_SLOT` on the inventoried
+/// images (webOS 4.x, 6.x, 9.2, 11.2), so an `exit` SDL makes binds here; whether PLX-NATIVE-1P's
+/// call came through a PLT at all is not determined, the event has no frame above
+/// `__run_exit_handlers`.
+///
 /// What the event shows (0.9.0, webOS TV Lite 4.10, board k5lp, firmware `p.649.grampians.k5lp.1`):
 /// the breadcrumbs run `will_background {playing:true}`, `wayland_released` (+9 ms),
 /// `native_unload` / `acb_plane_unload` / `native_destroyed` (about 1.2 s later), and the crash comes
@@ -60,9 +65,13 @@ pub fn exit_now(code: c_int) -> ! {
 /// runs after `exit` has run the thread-local destructors (`__call_tls_dtors`). Interposing `exit`
 /// is independent of when any finalizer registered, keeps the status, and acts before any of it.
 ///
-/// **Not covered:** glibc's own callers of `exit` (`error(3)` and `err(3)` with a nonzero status,
-/// `__libc_start_main` after `main` returns) reach libc's hidden alias, not the PLT, so they are not
-/// interposed. The app's own exits all go through [`exit_now`] already.
+/// **Not covered:** libc.so.6's own internal callers of `exit` (`error(3)` and `err(3)` with a
+/// nonzero status, `__libc_start_main` after `main` returns) call libc's `exit` directly, not
+/// through the PLT, so they still run the handlers. libpthread's last-thread `exit(0)` on glibc
+/// <= 2.31 (before libpthread merged into libc) does go through its PLT and is interposed, which is
+/// harmless: the app never ends its main thread with `pthread_exit`. Every exit of the app session
+/// itself goes through [`exit_now`]; `src/main.c` returns from `main` only on the Sentry-spool
+/// re-entry, which runs libc's own `exit` as before.
 ///
 /// This can run on a thread this app did not create, after that thread's thread-local destructors
 /// ran, or before `main`, so it must not panic and must not use `std::thread::current()` or any
