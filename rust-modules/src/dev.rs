@@ -198,7 +198,7 @@ const DIAG: [&str; 49] = [
     // plays a title. A non-DIAG trigger would suppress the who's-watching picker and move that
     // boot away from the one the probe is meant to run on.
     "plxnative-uriprobe",
-    // The URI dev route (`dev::uri_product`): content = `acb part=<N> server=<machineIdentifier>
+    // The URI dev route (`dev::uri_product`): content = `acb part=<N> pms=<dotted-quad:port>
     // url=<http://dotted-quad:port/path>`, read once at boot. It changes which source one play is
     // certified for and nothing about the boot, so a test run still signs in and boots as always;
     // a non-DIAG trigger would suppress the who's-watching picker. It is listed here so that

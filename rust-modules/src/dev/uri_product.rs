@@ -11,19 +11,29 @@
 //! worker, `ResolvePort::qualify`'s own checks, the plan landing, the offer, the backend policy,
 //! `UriBackend`, the ACB bind. The mock PMS only carries the plan.
 //!
-//! **Grammar.** `acb part=<N> server=<machineIdentifier> url=<http://dotted-quad:port/path>`: the
-//! mode word first, then the three keys in any order, space separated. A missing, unknown or
-//! repeated key, a bad value, or a URL with a query, a fragment, a space or a hostname refuses the
-//! whole trigger, and [`compose`] logs why (never the URL or the server: the URL is opaque and a
-//! machine identifier is a household fingerprint).
+//! **Grammar.** `acb part=<N> pms=<dotted-quad:port> url=<http://dotted-quad:port/path>`: the mode
+//! word first, then the three keys in any order, space separated. A missing, unknown or repeated
+//! key, a bad value, or a URL with a query, a fragment, a space or a hostname refuses the whole
+//! trigger, and [`compose`] logs why (never the URL or the address: the URL is opaque and a LAN
+//! address is a household's).
+//!
+//! **Why the server is pinned by ORIGIN.** `selection.server` is only a process-local registry slot,
+//! and the PMS's `machineIdentifier` is not there to compare: a dev-token boot (the harness's
+//! `--guest --mock`) registers its primary by ADDRESS ONLY (`session::auth::install_captured_registry`
+//! calls `register("", ...)`), and nothing learns the id before the first play. What such a slot
+//! always has is the origin it was registered at, `http://PMS_HOST:PMS_PORT` verbatim, which is also
+//! the address the harness's mock listens on, so `pms=` is that origin and the request carries the
+//! client's own ([`OriginalRequest::server_origin`]).
 //!
 //! **Safety.** A trigger file left in the shared `/tmp` by an aborted run must never certify
 //! whatever title a later dev boot on a real account opens, and the production path reports
 //! timelines (a write to a real Plex account). So the qualifier answers only for the one Part
-//! (`part=`) on the one server (`server=`, compared exactly with the PMS's own
-//! `machineIdentifier` the request carries) and answers `Unknown` for everything else, an unknown
-//! server identifier included. The qualifier is a plain value: no IO, no global, no clock but the
-//! expiry media's `uri_source_expiry_after` stamps.
+//! (`part=`) on the one server (`pms=`, compared as an [`Origin`] with the request's, scheme
+//! included) and answers `Unknown` for everything else, another origin included. The two pins are
+//! independent: a Part id is the PMS's own number and an origin says where a server is, so neither
+//! one alone names a title on a real account the way both together name the harness's carrier on
+//! its mock. The qualifier is a plain value: no IO, no global, no clock but the expiry media's
+//! `uri_source_expiry_after` stamps.
 //!
 //! **Compile-away.** The whole file is behind the `devtriggers` feature, so no statement here
 //! needs a cfg of its own; the one statement outside it (the call in `adapters::backends`) has
@@ -32,6 +42,7 @@
 
 use plx_media::route::uri_preflight::{KnownSource, OriginalQualifier, OriginalRequest,
     ProductEvidence, Verdict};
+use plx_plex::plex::Origin;
 use plx_play_uri::backend::{Binding, NativeTrackIndex, UriSource};
 use plx_playback_contract::{Capabilities, Fidelity, Requirements, SourceKind, TrackChoice,
     TrackKind, TrackSelection};
@@ -42,12 +53,12 @@ use std::time::Duration;
 /// source (the driver's own TTL is 30 s), as the product qualifier's would.
 const VERDICT_TTL: Duration = Duration::from_secs(30);
 
-/// A parsed trigger: the one Part on the one server the dev route may certify, and the URL it
-/// certifies for it.
+/// A parsed trigger: the one Part on the one server (by origin) the dev route may certify, and the
+/// URL it certifies for it.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Trigger {
     part: i64,
-    server: String,
+    pms: Origin,
     url: String,
 }
 
@@ -60,7 +71,7 @@ pub(crate) enum Refusal {
     Repeated,
     NotKeyValue,
     BadPart,
-    BadServer,
+    BadPms,
     NotHttp,
     HostNotDottedQuad,
     NoPort,
@@ -77,13 +88,13 @@ impl Refusal {
         match self {
             Refusal::NotAcb => "the first word is not acb",
             Refusal::Missing("part") => "part is missing",
-            Refusal::Missing("server") => "server is missing",
+            Refusal::Missing("pms") => "pms is missing",
             Refusal::Missing(_) => "url is missing",
             Refusal::UnknownKey => "unknown key",
             Refusal::Repeated => "a key is given twice",
             Refusal::NotKeyValue => "a word is not key=value (a space in the url?)",
             Refusal::BadPart => "part is not a positive number",
-            Refusal::BadServer => "server is not a plain word",
+            Refusal::BadPms => "pms is not a dotted-quad:port",
             Refusal::NotHttp => "url is not http",
             Refusal::HostNotDottedQuad => "url host is not a dotted quad",
             Refusal::NoPort => "url has no port",
@@ -121,19 +132,19 @@ pub(crate) fn trigger() -> Option<String> {
     plx_base::devtrig::read("uridev")
 }
 
-/// Parse a trigger's text: the mode word `acb`, then `part=`, `server=` and `url=` once each, in
-/// any order.
+/// Parse a trigger's text: the mode word `acb`, then `part=`, `pms=` and `url=` once each, in any
+/// order.
 pub(crate) fn parse(text: &str) -> Result<Trigger, Refusal> {
     let mut words = text.split_ascii_whitespace();
     if words.next() != Some("acb") {
         return Err(Refusal::NotAcb);
     }
-    let (mut part, mut server, mut url) = (None, None, None);
+    let (mut part, mut pms, mut url) = (None, None, None);
     for word in words {
         let (key, value) = word.split_once('=').ok_or(Refusal::NotKeyValue)?;
         let slot = match key {
             "part" => &mut part,
-            "server" => &mut server,
+            "pms" => &mut pms,
             "url" => &mut url,
             _ => return Err(Refusal::UnknownKey),
         };
@@ -142,9 +153,9 @@ pub(crate) fn parse(text: &str) -> Result<Trigger, Refusal> {
         }
     }
     let part = part.ok_or(Refusal::Missing("part"))?;
-    let server = server.ok_or(Refusal::Missing("server"))?;
+    let pms = pms.ok_or(Refusal::Missing("pms"))?;
     let url = url.ok_or(Refusal::Missing("url"))?;
-    Ok(Trigger { part: parse_part(part)?, server: parse_server(server)?, url: parse_url(url)? })
+    Ok(Trigger { part: parse_part(part)?, pms: parse_pms(pms)?, url: parse_url(url)? })
 }
 
 /// A Part id: ASCII digits only (no sign), positive, in range. Zero is refused because the plan
@@ -156,13 +167,17 @@ fn parse_part(value: &str) -> Result<i64, Refusal> {
     value.parse::<i64>().ok().filter(|part| *part > 0).ok_or(Refusal::BadPart)
 }
 
-/// A machine identifier as the harness writes it: a plain word.
-fn parse_server(value: &str) -> Result<String, Refusal> {
-    let plain = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-');
-    if value.is_empty() || !value.bytes().all(plain) {
-        return Err(Refusal::BadServer);
-    }
-    Ok(value.to_owned())
+/// The server's origin as the harness writes it: `<dotted quad>:<port>`, nothing else. The origin
+/// is plaintext HTTP (`Origin::http`): that is what a dev-token boot registers its primary as, and
+/// what the request's origin is compared with. The quad is read by `Ipv4Addr`, which refuses a
+/// leading zero, so the one spelling the client holds is the one accepted.
+fn parse_pms(value: &str) -> Result<Origin, Refusal> {
+    let (host, port) = value.split_once(':').ok_or(Refusal::BadPms)?;
+    let quad = host.parse::<std::net::Ipv4Addr>().map_err(|_| Refusal::BadPms)?;
+    let port_ok = !port.is_empty() && port.len() <= 5 && port.bytes().all(|b| b.is_ascii_digit());
+    let port = port.parse::<u32>().ok().filter(|n| port_ok && (1..=65_535).contains(n))
+        .and_then(|n| i32::try_from(n).ok()).ok_or(Refusal::BadPms)?;
+    Ok(Origin::http(&quad.to_string(), port))
 }
 
 /// `http://<dotted quad>:<port>/<path>` over a closed alphabet, with no query or fragment.
@@ -241,8 +256,7 @@ struct DevQualifier {
 
 impl OriginalQualifier for DevQualifier {
     fn qualify(&self, _off: &plx_base::task::OffFrame, request: OriginalRequest) -> Verdict {
-        if request.selection.part_id != self.trigger.part
-            || request.server_machine_id != self.trigger.server {
+        if request.selection.part_id != self.trigger.part || request.server_origin != self.trigger.pms {
             return Verdict::Unknown;
         }
         let selected_audio = u64::try_from(request.selection.audio_sid).ok().filter(|sid| *sid > 0);
@@ -270,9 +284,14 @@ mod tests {
     use plx_media::route::SourceSelection;
     use plx_platform::tv::sink::VP_ACB;
 
-    const GOOD: &str = "acb part=991001 server=mock-machine \
+    const GOOD: &str = "acb part=991001 pms=192.0.2.5:32499 \
         url=http://10.1.2.3:8080/pipe_hls_720p24_20m/index.m3u8";
     const URL: &str = "http://10.1.2.3:8080/pipe_hls_720p24_20m/index.m3u8";
+
+    /// The origin `GOOD` pins: what a dev-token boot's client holds for `PMS_HOST:PMS_PORT`.
+    fn mock_origin() -> Origin {
+        Origin::http("192.0.2.5", 32499)
+    }
 
     fn parsed() -> Trigger {
         parse(GOOD).unwrap_or_else(|why| panic!("the harness's trigger refused: {}", why.reason()))
@@ -283,63 +302,82 @@ mod tests {
     #[test]
     fn the_harness_order_parses() {
         let t = parsed();
-        assert_eq!((t.part, t.server.as_str(), t.url.as_str()), (991001, "mock-machine", URL));
+        assert_eq!((t.part, t.url.as_str()), (991001, URL));
+        assert_eq!(t.pms, mock_origin());
     }
 
     #[test]
     fn the_three_keys_parse_in_any_order() {
-        let words = ["part=991001".to_owned(), "server=mock-machine".to_owned(), format!("url={URL}")];
+        let words = ["part=991001".to_owned(), "pms=192.0.2.5:32499".to_owned(), format!("url={URL}")];
         for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
             let text = format!("acb {} {} {}", words[order[0]], words[order[1]], words[order[2]]);
             let t = parse(&text).unwrap_or_else(|why| panic!("{text}: {}", why.reason()));
-            assert_eq!((t.part, t.server.as_str(), t.url.as_str()), (991001, "mock-machine", URL),
-                "{text}");
+            assert_eq!((t.part, t.pms, t.url.as_str()), (991001, mock_origin(), URL), "{text}");
         }
     }
 
     #[test]
     fn surrounding_whitespace_and_runs_of_it_are_fine() {
-        assert!(parse(&format!("  acb   part=7\tserver=m \n url={URL}\n")).is_ok());
+        assert!(parse(&format!("  acb   part=7\tpms=10.0.0.1:80 \n url={URL}\n")).is_ok());
     }
 
     #[test]
     fn each_refusal_names_its_reason() {
         let cases: &[(&str, Refusal)] = &[
             ("", Refusal::NotAcb),
-            ("feed part=1 server=m url=http://1.2.3.4:80/x", Refusal::NotAcb),
-            ("part=1 server=m url=http://1.2.3.4:80/x", Refusal::NotAcb),
-            ("acb server=m url=http://1.2.3.4:80/x", Refusal::Missing("part")),
-            ("acb part=1 url=http://1.2.3.4:80/x", Refusal::Missing("server")),
-            ("acb part=1 server=m", Refusal::Missing("url")),
-            ("acb part=1 server=m url=http://1.2.3.4:80/x ttl=5", Refusal::UnknownKey),
-            ("acb part=1 part=2 server=m url=http://1.2.3.4:80/x", Refusal::Repeated),
-            ("acb part=1 server=m url=http://1.2.3.4:80/a b", Refusal::NotKeyValue),
-            ("acb part=1 server=m url", Refusal::NotKeyValue),
-            ("acb part=abc server=m url=http://1.2.3.4:80/x", Refusal::BadPart),
-            ("acb part= server=m url=http://1.2.3.4:80/x", Refusal::BadPart),
-            ("acb part=0 server=m url=http://1.2.3.4:80/x", Refusal::BadPart),
-            ("acb part=-3 server=m url=http://1.2.3.4:80/x", Refusal::BadPart),
-            ("acb part=+3 server=m url=http://1.2.3.4:80/x", Refusal::BadPart),
-            ("acb part=99999999999999999999 server=m url=http://1.2.3.4:80/x", Refusal::BadPart),
-            ("acb part=1 server= url=http://1.2.3.4:80/x", Refusal::BadServer),
-            ("acb part=1 server=a'b url=http://1.2.3.4:80/x", Refusal::BadServer),
-            ("acb part=1 server=m url=https://1.2.3.4:80/x", Refusal::NotHttp),
-            ("acb part=1 server=m url=1.2.3.4:80/x", Refusal::NotHttp),
-            ("acb part=1 server=m url=http://localhost:80/x", Refusal::HostNotDottedQuad),
-            ("acb part=1 server=m url=http://1.2.3:80/x", Refusal::HostNotDottedQuad),
-            ("acb part=1 server=m url=http://1.2.3.256:80/x", Refusal::HostNotDottedQuad),
-            ("acb part=1 server=m url=http://1.2.3.4.5:80/x", Refusal::HostNotDottedQuad),
-            ("acb part=1 server=m url=http://1.2.3.4/x", Refusal::NoPort),
-            ("acb part=1 server=m url=http://1.2.3.4:0/x", Refusal::BadPort),
-            ("acb part=1 server=m url=http://1.2.3.4:65536/x", Refusal::BadPort),
-            ("acb part=1 server=m url=http://1.2.3.4:http/x", Refusal::BadPort),
-            ("acb part=1 server=m url=http://1.2.3.4:80", Refusal::NoPath),
-            ("acb part=1 server=m url=http://1.2.3.4:80/", Refusal::NoPath),
-            ("acb part=1 server=m url=http://1.2.3.4:80/x?token=1", Refusal::QueryOrFragment),
-            ("acb part=1 server=m url=http://1.2.3.4:80/x#frag", Refusal::QueryOrFragment),
-            ("acb part=1 server=m url=http://1.2.3.4:80/it's", Refusal::BadCharacter),
-            ("acb part=1 server=m url=http://1.2.3.4:80/a\"b", Refusal::BadCharacter),
-            ("acb part=1 server=m url=http://user@1.2.3.4:80/x", Refusal::BadCharacter),
+            ("feed part=1 pms=1.2.3.4:5 url=http://1.2.3.4:80/x", Refusal::NotAcb),
+            ("part=1 pms=1.2.3.4:5 url=http://1.2.3.4:80/x", Refusal::NotAcb),
+            ("acb pms=1.2.3.4:5 url=http://1.2.3.4:80/x", Refusal::Missing("part")),
+            ("acb part=1 url=http://1.2.3.4:80/x", Refusal::Missing("pms")),
+            ("acb part=1 pms=1.2.3.4:5", Refusal::Missing("url")),
+            ("acb part=1 pms=1.2.3.4:5 url=http://1.2.3.4:80/x ttl=5", Refusal::UnknownKey),
+            // the machine-identifier grammar this one replaced is refused loudly, not half-read
+            ("acb part=1 server=mock-machine url=http://1.2.3.4:80/x", Refusal::UnknownKey),
+            ("acb part=1 pms=1.2.3.4:5 server=m url=http://1.2.3.4:80/x", Refusal::UnknownKey),
+            ("acb part=1 part=2 pms=1.2.3.4:5 url=http://1.2.3.4:80/x", Refusal::Repeated),
+            ("acb part=1 pms=1.2.3.4:5 pms=1.2.3.4:6 url=http://1.2.3.4:80/x", Refusal::Repeated),
+            ("acb part=1 pms=1.2.3.4:5 url=http://1.2.3.4:80/a b", Refusal::NotKeyValue),
+            ("acb part=1 pms=1.2.3.4:5 url", Refusal::NotKeyValue),
+            ("acb part=abc pms=1.2.3.4:5 url=http://1.2.3.4:80/x", Refusal::BadPart),
+            ("acb part= pms=1.2.3.4:5 url=http://1.2.3.4:80/x", Refusal::BadPart),
+            ("acb part=0 pms=1.2.3.4:5 url=http://1.2.3.4:80/x", Refusal::BadPart),
+            ("acb part=-3 pms=1.2.3.4:5 url=http://1.2.3.4:80/x", Refusal::BadPart),
+            ("acb part=+3 pms=1.2.3.4:5 url=http://1.2.3.4:80/x", Refusal::BadPart),
+            ("acb part=99999999999999999999 pms=1.2.3.4:5 url=http://1.2.3.4:80/x", Refusal::BadPart),
+            ("acb part=1 pms= url=http://1.2.3.4:80/x", Refusal::BadPms),
+            ("acb part=1 pms=mock-machine url=http://1.2.3.4:80/x", Refusal::BadPms),
+            ("acb part=1 pms=1.2.3.4 url=http://1.2.3.4:80/x", Refusal::BadPms),
+            ("acb part=1 pms=1.2.3.4: url=http://1.2.3.4:80/x", Refusal::BadPms),
+            ("acb part=1 pms=:5 url=http://1.2.3.4:80/x", Refusal::BadPms),
+            ("acb part=1 pms=localhost:5 url=http://1.2.3.4:80/x", Refusal::BadPms),
+            ("acb part=1 pms=1.2.3:5 url=http://1.2.3.4:80/x", Refusal::BadPms),
+            ("acb part=1 pms=1.2.3.256:5 url=http://1.2.3.4:80/x", Refusal::BadPms),
+            ("acb part=1 pms=1.2.3.4.5:5 url=http://1.2.3.4:80/x", Refusal::BadPms),
+            ("acb part=1 pms=01.2.3.4:5 url=http://1.2.3.4:80/x", Refusal::BadPms),
+            ("acb part=1 pms=1.2.3.4:0 url=http://1.2.3.4:80/x", Refusal::BadPms),
+            ("acb part=1 pms=1.2.3.4:65536 url=http://1.2.3.4:80/x", Refusal::BadPms),
+            ("acb part=1 pms=1.2.3.4:+5 url=http://1.2.3.4:80/x", Refusal::BadPms),
+            ("acb part=1 pms=1.2.3.4:http url=http://1.2.3.4:80/x", Refusal::BadPms),
+            ("acb part=1 pms=1.2.3.4:5/x url=http://1.2.3.4:80/x", Refusal::BadPms),
+            ("acb part=1 pms=http://1.2.3.4:5 url=http://1.2.3.4:80/x", Refusal::BadPms),
+            ("acb part=1 pms=[::1]:5 url=http://1.2.3.4:80/x", Refusal::BadPms),
+            ("acb part=1 pms=1.2.3.4:5 url=https://1.2.3.4:80/x", Refusal::NotHttp),
+            ("acb part=1 pms=1.2.3.4:5 url=1.2.3.4:80/x", Refusal::NotHttp),
+            ("acb part=1 pms=1.2.3.4:5 url=http://localhost:80/x", Refusal::HostNotDottedQuad),
+            ("acb part=1 pms=1.2.3.4:5 url=http://1.2.3:80/x", Refusal::HostNotDottedQuad),
+            ("acb part=1 pms=1.2.3.4:5 url=http://1.2.3.256:80/x", Refusal::HostNotDottedQuad),
+            ("acb part=1 pms=1.2.3.4:5 url=http://1.2.3.4.5:80/x", Refusal::HostNotDottedQuad),
+            ("acb part=1 pms=1.2.3.4:5 url=http://1.2.3.4/x", Refusal::NoPort),
+            ("acb part=1 pms=1.2.3.4:5 url=http://1.2.3.4:0/x", Refusal::BadPort),
+            ("acb part=1 pms=1.2.3.4:5 url=http://1.2.3.4:65536/x", Refusal::BadPort),
+            ("acb part=1 pms=1.2.3.4:5 url=http://1.2.3.4:http/x", Refusal::BadPort),
+            ("acb part=1 pms=1.2.3.4:5 url=http://1.2.3.4:80", Refusal::NoPath),
+            ("acb part=1 pms=1.2.3.4:5 url=http://1.2.3.4:80/", Refusal::NoPath),
+            ("acb part=1 pms=1.2.3.4:5 url=http://1.2.3.4:80/x?token=1", Refusal::QueryOrFragment),
+            ("acb part=1 pms=1.2.3.4:5 url=http://1.2.3.4:80/x#frag", Refusal::QueryOrFragment),
+            ("acb part=1 pms=1.2.3.4:5 url=http://1.2.3.4:80/it's", Refusal::BadCharacter),
+            ("acb part=1 pms=1.2.3.4:5 url=http://1.2.3.4:80/a\"b", Refusal::BadCharacter),
+            ("acb part=1 pms=1.2.3.4:5 url=http://user@1.2.3.4:80/x", Refusal::BadCharacter),
         ];
         for (text, want) in cases {
             assert_eq!(parse(text).err(), Some(*want), "{text:?}");
@@ -347,12 +385,39 @@ mod tests {
     }
 
     #[test]
-    fn a_reason_never_carries_the_triggers_own_content() {
-        for text in ["acb part=1 server=secret-machine url=http://10.9.9.9:80/x?t=1",
-            "acb part=1 server=secret-machine url=http://10.9.9.9:80/x ttl=5"] {
-            let why = parse(text).err().expect("refused").reason();
-            assert!(!why.contains("secret") && !why.contains("10.9.9.9"), "{why}");
+    fn the_pms_pin_parses_to_a_plaintext_origin() {
+        let t = parse("acb part=1 pms=10.9.8.7:32499 url=http://1.2.3.4:80/x").unwrap();
+        assert_eq!(t.pms, Origin::http("10.9.8.7", 32499));
+        assert_eq!(t.pms.base(), "http://10.9.8.7:32499");
+        for port in ["1", "65535", "32499"] {
+            assert!(parse(&format!("acb part=1 pms=10.9.8.7:{port} url={URL}")).is_ok(), "{port}");
         }
+    }
+
+    #[test]
+    fn each_pms_refusal_reads_the_way_the_log_and_the_harness_expect() {
+        assert_eq!(Refusal::Missing("pms").reason(), "pms is missing");
+        assert_eq!(Refusal::BadPms.reason(), "pms is not a dotted-quad:port");
+        for refusal in [Refusal::Missing("pms"), Refusal::BadPms] {
+            let line = Decision::Ignored(refusal).line().unwrap();
+            assert!(line.starts_with("uri-dev: ") && line.contains(" ignored"), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_reason_never_carries_the_triggers_own_content() {
+        for text in ["acb part=1 pms=10.8.8.8:4242 url=http://10.9.9.9:80/x?t=1",
+            "acb part=1 pms=10.8.8.8:4242 url=http://10.9.9.9:80/x ttl=5",
+            "acb part=1 pms=10.8.8.8:99999 url=http://10.9.9.9:80/x",
+            "acb part=1 pms=10.8.8.8.1:4242 url=http://10.9.9.9:80/x"] {
+            let why = parse(text).err().expect("refused").reason();
+            assert!(!why.contains("10.8.8.8") && !why.contains("10.9.9.9") && !why.contains("4242"),
+                "{why}");
+        }
+        // nor does the line a refusal logs
+        let line = decide(Binding::Acb, Some("acb part=1 pms=10.8.8.8:99999 url=http://10.9.9.9:80/x"))
+            .line().unwrap();
+        assert!(!line.contains("10.8.8.8") && !line.contains("10.9.9.9"), "{line}");
     }
 
     // ---- the decision, and the lines it owes ----
@@ -383,7 +448,7 @@ mod tests {
 
     #[test]
     fn every_refused_trigger_logs_a_line_the_harness_keys_on() {
-        for text in ["", "acb", "acb part=1 server=m url=http://h/x", "bogus"] {
+        for text in ["", "acb", "acb part=1 pms=1.2.3.4:5 url=http://h/x", "acb part=1 pms=h:5 url=x", "bogus"] {
             let line = decide(Binding::Acb, Some(text)).line().expect("a refusal is never silent");
             assert!(line.starts_with("uri-dev: ") && line.contains(" ignored"), "{line}");
             // the harness's regex `uri-dev: .* ignored`
@@ -454,12 +519,12 @@ mod tests {
 
     // ---- the dev qualifier ----
 
-    fn request(part: i64, server: &str, audio_sid: i64) -> OriginalRequest {
+    fn request(part: i64, server: &Origin, audio_sid: i64) -> OriginalRequest {
         OriginalRequest {
             selection: SourceSelection { server: plx_plex::plex::ServerId::from_raw(1),
                 part_id: part, audio_sid, subtitle_sid: 0,
                 audio_contract: plx_plex::plex::AudioEnhancements::NONE },
-            server_machine_id: server.to_owned(),
+            server_origin: server.clone(),
             source_url: "http://pms.invalid/library/parts/9/file.mkv".to_owned(),
             duration_ms: Some(90_000),
             video_codec: "h264".to_owned(),
@@ -483,10 +548,10 @@ mod tests {
     }
 
     #[test]
-    fn the_qualifier_certifies_the_triggers_url_for_its_part_on_its_server() {
+    fn the_qualifier_certifies_the_triggers_url_for_its_part_on_its_origin() {
         let (_, qualifier) = armed_pair();
         let off = plx_base::task::OffFrame::for_test();
-        let Verdict::Known(known) = qualifier.qualify(&off, request(991001, "mock-machine", 42))
+        let Verdict::Known(known) = qualifier.qualify(&off, request(991001, &mock_origin(), 42))
             else { panic!("the pinned part on the pinned server was not certified") };
         assert_eq!(known.selection.part_id, 991001);
         assert_eq!(known.requirements.source, SourceKind::ProgressiveUri);
@@ -506,7 +571,7 @@ mod tests {
     fn with_no_audio_selected_the_source_maps_no_audio_track() {
         let (_, qualifier) = armed_pair();
         let off = plx_base::task::OffFrame::for_test();
-        let Verdict::Known(known) = qualifier.qualify(&off, request(991001, "mock-machine", 0))
+        let Verdict::Known(known) = qualifier.qualify(&off, request(991001, &mock_origin(), 0))
             else { panic!("not certified") };
         assert_eq!(known.requirements.audio_track, TrackChoice::Unspecified);
         assert!(known.source.into_parts().1.is_empty());
@@ -517,18 +582,20 @@ mod tests {
         let (_, qualifier) = armed_pair();
         let off = plx_base::task::OffFrame::for_test();
         for part in [991002, 1, 0, -991001] {
-            assert!(matches!(qualifier.qualify(&off, request(part, "mock-machine", 42)),
+            assert!(matches!(qualifier.qualify(&off, request(part, &mock_origin(), 42)),
                 Verdict::Unknown), "part {part}");
         }
     }
 
     #[test]
-    fn another_server_is_unknown_and_so_is_one_nobody_has_learned() {
+    fn another_origin_is_unknown() {
         let (_, qualifier) = armed_pair();
         let off = plx_base::task::OffFrame::for_test();
-        for server in ["other-machine", "mock-machin", "mock-machine ", "MOCK-MACHINE", ""] {
-            assert!(matches!(qualifier.qualify(&off, request(991001, server, 42)),
-                Verdict::Unknown), "server {server:?}");
+        for other in [Origin::http("192.0.2.6", 32499), Origin::http("192.0.2.5", 32498),
+            Origin::http("192.0.2.5", 32400), Origin::http("127.0.0.1", 32499),
+            Origin::new(plx_plex::plex::Scheme::Https, "192.0.2.5", 32499)] {
+            assert!(matches!(qualifier.qualify(&off, request(991001, &other, 42)),
+                Verdict::Unknown), "origin {}", other.base());
         }
     }
 
@@ -536,7 +603,7 @@ mod tests {
     fn a_dolby_vision_request_is_certified_for_exactly_that_layering() {
         let (_, qualifier) = armed_pair();
         let off = plx_base::task::OffFrame::for_test();
-        let mut req = request(991001, "mock-machine", 0);
+        let mut req = request(991001, &mock_origin(), 0);
         req.dolby_vision = plx_data::metadata::Dovi { present: true, profile: 8,
             ..plx_data::metadata::Dovi::NONE };
         let dovi = req.dolby_vision;
@@ -549,11 +616,11 @@ mod tests {
         let off = plx_base::task::OffFrame::for_test();
         let (evidence, qualifier) = armed_pair();
         let armed = ResolvePort::new(evidence, qualifier);
-        assert!(matches!(armed.qualify(&off, request(991001, "mock-machine", 42)),
+        assert!(matches!(armed.qualify(&off, request(991001, &mock_origin(), 42)),
             Verdict::Known(_)));
-        assert!(matches!(armed.qualify(&off, request(991001, "other", 42)), Verdict::Unknown));
+        assert!(matches!(armed.qualify(&off, request(991001, &Origin::http("192.0.2.6", 32499), 42)), Verdict::Unknown));
         let unarmed = ResolvePort::new(today(Binding::Acb), Arc::new(ProductQualifier));
-        assert!(matches!(unarmed.qualify(&off, request(991001, "mock-machine", 42)),
+        assert!(matches!(unarmed.qualify(&off, request(991001, &mock_origin(), 42)),
             Verdict::Unknown));
     }
 }

@@ -300,15 +300,21 @@ mod uri_boot_tests {
         assert!(bus.load_payload().is_none(), "unknown evidence never dispatches a URI URL");
     }
 
+    /// The trigger the harness writes for the rig's server: `pms=` is the ORIGIN its client holds
+    /// (`http://127.0.0.1:<the fixture's port>`, what `PMS_HOST:PMS_PORT` is on a real boot).
     #[cfg(feature = "devtriggers")]
-    const ARMED: &str = "acb part=1 server=lifecycle-fixture url=http://10.9.8.7:8080/dev/index.m3u8";
+    fn armed_for(rig: &Rig, part: i64) -> String {
+        let pms = plx_plex::plex::client_for(rig.sid).unwrap().origin().authority();
+        format!("acb part={part} pms={pms} url={DEV_URL}")
+    }
 
     #[cfg(feature = "devtriggers")]
     #[test]
     fn uri_dev_armed_acb_port_offers_the_trigger_url() {
         let _serial = plx_base::testlock::serial();
         let Some(mut rig) = Rig::serving(false) else { return };
-        let (_, resolved) = land_acb_play(&mut rig, Some(ARMED));
+        let trigger = armed_for(&rig, 1);
+        let (_, resolved) = land_acb_play(&mut rig, Some(&trigger));
         let offer = resolved.uri_offer.expect("the armed dev route certified the pinned Part");
         assert_eq!(offer.requirements.source, SourceKind::ProgressiveUri);
         let (url, _) = offer.source.into_parts();
@@ -320,7 +326,8 @@ mod uri_boot_tests {
     fn uri_dev_armed_acb_offer_is_accepted_and_opens_the_uri_backend() {
         let _serial = plx_base::testlock::serial();
         let Some(mut rig) = Rig::serving(false) else { return };
-        let (_, resolved) = land_acb_play(&mut rig, Some(ARMED));
+        let trigger = armed_for(&rig, 1);
+        let (_, resolved) = land_acb_play(&mut rig, Some(&trigger));
         let offer = resolved.uri_offer.expect("the armed dev route certified the pinned Part");
         assert!(rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session,
             offer).is_ok());
@@ -329,15 +336,35 @@ mod uri_boot_tests {
                 if choice.backend == BackendKind::Uri));
     }
 
-    /// The pin is on the PMS's own machine identifier, which the plan's request now carries: the
-    /// same Part id on another server is not certified.
+    /// The harness's boot: `--guest --mock` registers the primary by ADDRESS ONLY (`""` for its
+    /// machine identifier, nothing learns it before the first play), and the trigger names that
+    /// server the only way the harness can, by the origin its client holds. The armed route must
+    /// still offer the trigger's URL. (RED against the machine-identifier pin this replaced: the
+    /// request carried `""`, the qualifier answered Unknown and the Feed played.)
     #[cfg(feature = "devtriggers")]
     #[test]
-    fn uri_dev_armed_for_another_server_keeps_the_feed_offer() {
+    fn uri_dev_armed_on_an_address_only_slot_offers_the_trigger_url() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving_by_address(false) else { return };
+        assert_eq!(plx_plex::plex::client_for(rig.sid).unwrap().machine_id(), "",
+            "the rig registered the slot by address only");
+        let trigger = armed_for(&rig, 1);
+        let (_, resolved) = land_acb_play(&mut rig, Some(&trigger));
+        let offer = resolved.uri_offer.expect("the trigger pins the slot's address, not its id");
+        let (url, _) = offer.source.into_parts();
+        assert_eq!(url, DEV_URL, "the trigger's URL, not the PMS Part's");
+    }
+
+    /// The pin is on the server's ORIGIN, which the plan's request carries from the client: the same
+    /// Part id at another address, or on another port of the same one, is not certified.
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn uri_dev_armed_for_another_origin_keeps_the_feed_offer() {
         let _serial = plx_base::testlock::serial();
         let Some(mut rig) = Rig::serving(false) else { return };
-        let (bus, resolved) = land_acb_play(&mut rig, Some(
-            "acb part=1 server=some-other-machine url=http://10.9.8.7:8080/dev/index.m3u8"));
+        let port = plx_plex::plex::client_for(rig.sid).unwrap().port();
+        let other = format!("acb part=1 pms=10.9.8.7:{port} url={DEV_URL}");
+        let (bus, resolved) = land_acb_play(&mut rig, Some(&other));
         assert!(resolved.uri_offer.is_none());
         assert!(matches!(rig.app.player.session.backend_offer(),
             plx_media::route::backend_policy::Selection::Open(choice)
@@ -347,11 +374,22 @@ mod uri_boot_tests {
 
     #[cfg(feature = "devtriggers")]
     #[test]
+    fn uri_dev_armed_for_another_port_of_the_same_host_keeps_the_feed_offer() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else { return };
+        let port = plx_plex::plex::client_for(rig.sid).unwrap().port() ^ 1;
+        let other = format!("acb part=1 pms=127.0.0.1:{port} url={DEV_URL}");
+        let (_, resolved) = land_acb_play(&mut rig, Some(&other));
+        assert!(resolved.uri_offer.is_none());
+    }
+
+    #[cfg(feature = "devtriggers")]
+    #[test]
     fn uri_dev_armed_for_another_part_keeps_the_feed_offer() {
         let _serial = plx_base::testlock::serial();
         let Some(mut rig) = Rig::serving(false) else { return };
-        let (_, resolved) = land_acb_play(&mut rig, Some(
-            "acb part=2 server=lifecycle-fixture url=http://10.9.8.7:8080/dev/index.m3u8"));
+        let trigger = armed_for(&rig, 2);
+        let (_, resolved) = land_acb_play(&mut rig, Some(&trigger));
         assert!(resolved.uri_offer.is_none());
     }
 

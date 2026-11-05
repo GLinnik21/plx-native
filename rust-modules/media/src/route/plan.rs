@@ -1983,7 +1983,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 let quality = if forced { Quality::Original } else { env.quality };
                 let request = super::uri_preflight::OriginalRequest {
                     selection: source_selection,
-                    server_machine_id: known_machine_id(client.machine_id(), &env.machine_id).to_owned(),
+                    server_origin: client.origin().clone(),
                     source_url: client.direct_play_url(part, &session).to_url(),
                     duration_ms: plan.playing.as_ref().and_then(|p| p.duration_ms),
                     video_codec: vcodec.to_owned(),
@@ -3069,15 +3069,6 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         }
         plan
     })
-}
-
-/// The PMS's own `machineIdentifier` as far as this resolve already KNOWS it, for the request an
-/// Original qualification sees: the registry's id for the client (the first rung of
-/// [`resolve_playqueue`]'s ladder), else the id the session cached from this same server (its
-/// second). `""` when neither knows: a dev-token or stored-session primary registers by address
-/// only, and the third rung (`GET /identity`) is a round trip the qualification does not make.
-fn known_machine_id<'a>(registry: &'a str, learned: &'a str) -> &'a str {
-    if registry.is_empty() { learned } else { registry }
 }
 
 /// The play queue's answer joins the plan. Destructured whole, so a field `QueueInfo` gains cannot
@@ -4277,26 +4268,6 @@ pub(super) fn take_resume_for(pending: &mut Option<(u32, i64)>, gen: u32) -> i64
             0
         }
         None => 0,
-    }
-}
-
-#[cfg(test)]
-mod known_machine_id_tests {
-    use super::known_machine_id;
-
-    #[test]
-    fn the_registrys_id_wins_over_the_sessions_cache() {
-        assert_eq!(known_machine_id("registry", "cached"), "registry");
-    }
-
-    #[test]
-    fn an_address_only_slot_falls_back_to_what_the_session_learned() {
-        assert_eq!(known_machine_id("", "cached"), "cached");
-    }
-
-    #[test]
-    fn nothing_known_stays_empty_rather_than_guessing() {
-        assert_eq!(known_machine_id("", ""), "");
     }
 }
 
