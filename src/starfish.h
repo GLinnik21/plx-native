@@ -73,7 +73,11 @@ int acb_probe_dass_available(void);                         /* developer arm onl
 int acb_media_id(const char *mediaId);                      /* setSinkType(MAIN)+setMediaId; 1 = both accepted */
 int acb_loaded(void);                                       /* setState(FOREGROUND, LOADED); setState's answer */
 int acb_probe_connect_dass(void);                           /* developer arm only */
-int acb_finish(void);                                       /* setDisplayWindow(0,0,1280,720,fullscreen)+setState(PLAYING); 1 = both accepted */
+/* setDisplayWindow(0,0,1280,720,fullscreen)+setState(PLAYING); 1 = both accepted. *displayTask and
+ * *playingTask (either may be NULL) are set to the task id each call wrote ONLY when that call
+ * answered 1, else 0; the firmware completes each call with its own id (acb_on_event), and the plane
+ * owner's `Shown` fence matches on them. A refused window skips PLAYING, so *playingTask stays 0. */
+int acb_finish(long *displayTask, long *playingTask);
 void acb_bind(const char *mediaId);                        /* setSinkType(MAIN)+setMediaId+setState(LOADED) */
 int  acb_send_video_data(const char *sourceInfo);  /* setMediaVideoData; normal playback forwards the native envelope; explicit developer fixture descriptor is experimental. -1 = rejected */
 void acb_start(long x, long y, long w, long h);            /* setDisplayWindow + setState(PLAYING) */

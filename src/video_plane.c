@@ -327,17 +327,28 @@ int acb_send_video_data(const char *sourceInfo) {
     if (elogf) { fprintf(elogf, "acb videoData rv=%d task=%ld\n", rv, g_taskId); fflush(elogf); }
     return rv;
 }
-static int acb_start_impl(long x, long y, long w, long h, int strict) {
+/* setDisplayWindow + setState(PLAYING). `displayTask` / `playingTask` (either may be NULL) receive
+ * the task id the firmware will complete each call with, ONLY when that call answered 1, else 0:
+ * the plane owner matches the two completions on them (tv::plane, `Shown`). Both are written from
+ * locals, never from g_taskId, which setState leaves untouched on a refusal (see acb_unload). */
+static int acb_start_impl(long x, long y, long w, long h, int strict, long *displayTask, long *playingTask) {
+    if (displayTask) *displayTask = 0;
+    if (playingTask) *playingTask = 0;
     if (!g_acb) return 0;
-    int display = acb.setDisplayWindow(g_acb, x, y, w, h, 1, &g_taskId);
-    if (elogf) { fprintf(elogf, "acb display fullscreen=1 rv=%d task=%ld\n", display, g_taskId); fflush(elogf); }
+    long dTask = 0, pTask = 0;
+    int display = acb.setDisplayWindow(g_acb, x, y, w, h, 1, &dTask);
+    if (elogf) { fprintf(elogf, "acb display fullscreen=1 rv=%d task=%ld\n", display, dTask); fflush(elogf); }
+    if (display == 1 && displayTask) *displayTask = dTask;
     if (strict && display != 1) return 0;
-    int playing = acb.setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_PLAYING, &g_taskId);
-    if (elogf) { fprintf(elogf, "acb playing rv=%d task=%ld\n", playing, g_taskId); fflush(elogf); }
+    int playing = acb.setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_PLAYING, &pTask);
+    if (elogf) { fprintf(elogf, "acb playing rv=%d task=%ld\n", playing, pTask); fflush(elogf); }
+    if (playing == 1 && playingTask) *playingTask = pTask;
     return display == 1 && playing == 1;
 }
-void acb_start(long x, long y, long w, long h) { (void)acb_start_impl(x, y, w, h, 0); }
-int acb_finish(void) { return acb_start_impl(0, 0, 1280, 720, 1); }
+void acb_start(long x, long y, long w, long h) { (void)acb_start_impl(x, y, w, h, 0, NULL, NULL); }
+int acb_finish(long *displayTask, long *playingTask) {
+    return acb_start_impl(0, 0, 1280, 720, 1, displayTask, playingTask);
+}
 int acb_unload(long *taskOut) {
     if (taskOut) *taskOut = 0;
     if (!g_acb) return 0;

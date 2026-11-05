@@ -79,7 +79,7 @@
 
 use plx_base::task::MainThread;
 use plx_platform::tv::plane::{CompletionQueue, PlaneCompletion};
-use plx_platform::tv::sink::{DisplaySink, PlaneUnload, VideoSink};
+use plx_platform::tv::sink::{DisplaySink, PlaneFinish, PlaneUnload, VideoSink};
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_long, c_uint};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering::Relaxed};
@@ -1396,7 +1396,7 @@ impl DisplaySink for HostSink {
     unsafe fn plane_loaded(&self, _: &MainThread) -> c_int { 0 }
     #[cfg(feature = "devtriggers")]
     unsafe fn plane_probe_connect_dass(&self, _: &MainThread) -> c_int { 0 }
-    unsafe fn plane_finish(&self, _: &MainThread) -> c_int { 0 }
+    unsafe fn plane_finish(&self, _: &MainThread) -> PlaneFinish { PlaneFinish::REFUSED }
     unsafe fn plane_bind(&self, _: &MainThread, media_id: *const c_char) {
         acb_bind(media_id)
     }

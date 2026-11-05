@@ -13,6 +13,12 @@
 //! addresses, the device log, and what is not determined) is
 //! `docs/measurements/acb-release-fence-2026-11-04.md`.
 //!
+//! The plane owner also tracks the other half of a URI bind: the full-screen window and
+//! `setState(PLAYING)` that end it. [`PlaneOwner::show`] dispatches them and [`Shown`] says whether
+//! the firmware has completed BOTH (event 1, matched on each call's own task id, never the event
+//! alone). That is necessary evidence for a picture, not proof of one; the URI backend combines it
+//! with the service's `playing` and a clock advance (`play-uri`'s `picture_gate`).
+//!
 //! **Shape.** [`Plane`] is the pure machine (no clock, no global, no IO: time arrives as `now_ms`
 //! in events, work leaves as [`Fx`]). [`PlaneOwner`] is its runner: the single holder of the
 //! machine, the only consumer of the sink's completion mailbox ([`CompletionQueue`], the shape of
@@ -20,7 +26,7 @@
 //! backends (Feed's `plane_bind`/`plane_unload`, the URI probe's ACB experiment) go through it, so
 //! "one binding at a time" holds across them. The mailbox static itself lives in the webOS port
 //! (`webos::video_sink`), which is the only place that has a library thread to receive from.
-use super::sink::{DisplaySink, PlaneUnload};
+use super::sink::{DisplaySink, PlaneFinish, PlaneUnload};
 use plx_base::task::MainThread;
 use std::collections::VecDeque;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
@@ -133,12 +139,31 @@ pub enum Refusal {
     Quarantined(Why),
 }
 
+/// Whether the firmware has completed the two calls that put a bound plane on the panel: the
+/// full-screen `setDisplayWindow` and `setState(PLAYING)` of [`PlaneOwner::show`]. Each call
+/// completes with event 1 on its own task id; a completion on any other id is not one of them.
+/// Reset by a granted bind and by an unload, so a previous binding's tasks never count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shown {
+    /// No accepted show is outstanding on this binding.
+    No,
+    /// Both calls were accepted; each id is still `Some` until its event-1 completion arrives.
+    Waiting { display: Option<i64>, playing: Option<i64> },
+    /// Both calls completed with event 1.
+    Done,
+    /// One of the two completed with this event (`-2` timeout, `-1` error, `0` cancel): final.
+    Failed { ev: i32 },
+}
+
 pub enum Event {
     Boot { facts: PlaneFacts },
     BindRequested { media_id: String, policy: BindPolicy },
     /// `setState(UNLOADED)` was called: its answer, the task id it wrote (trusted only for `rv == 1`)
     /// and when.
     UnloadDispatched { rv: i32, task: i64, now_ms: u64 },
+    /// `setDisplayWindow` + `setState(PLAYING)` were called: the answer (1 only when both were
+    /// accepted) and the two task ids, trusted only for `rv == 1`.
+    FinishDispatched { rv: i32, display: i64, playing: i64 },
     Completion { task: i64, ev: i32 },
     /// The mailbox lost `count` completions to overflow.
     Dropped { count: u64 },
@@ -165,6 +190,7 @@ pub struct Plane {
     booted: bool,
     state: State,
     early: VecDeque<(i64, i32)>,
+    shown: Shown,
 }
 
 impl Default for Plane {
@@ -175,10 +201,43 @@ impl Default for Plane {
 
 impl Plane {
     pub const fn new() -> Self {
-        Self { facts: PlaneFacts::ABSENT, booted: false, state: State::Unavailable, early: VecDeque::new() }
+        Self { facts: PlaneFacts::ABSENT, booted: false, state: State::Unavailable, early: VecDeque::new(),
+            shown: Shown::No }
     }
     pub fn state(&self) -> &State {
         &self.state
+    }
+    pub fn shown(&self) -> Shown {
+        self.shown
+    }
+
+    /// A granted bind starts a new binding: the previous one's completions and show are history.
+    fn bound(&mut self, media_id: String, fx: &mut Vec<Fx>) {
+        self.state = State::Bound { media_id: media_id.clone() };
+        self.shown = Shown::No;
+        self.early.clear();
+        fx.push(Fx::Bind { media_id });
+    }
+
+    /// Account `(task, ev)` against the outstanding show. True when it was one of the show's two
+    /// tasks (it is then consumed: it is not the unload fence, and not worth an `early` slot).
+    fn complete_shown(&mut self, task: i64, ev: i32) -> bool {
+        let Shown::Waiting { display, playing } = self.shown else { return false };
+        let (display, playing) = if display == Some(task) {
+            (None, playing)
+        } else if playing == Some(task) {
+            (display, None)
+        } else {
+            return false;
+        };
+        self.shown = if ev != 1 {
+            Shown::Failed { ev }
+        } else if display.is_none() && playing.is_none() {
+            Shown::Done
+        } else {
+            Shown::Waiting { display, playing }
+        };
+        true
     }
     pub fn facts(&self) -> PlaneFacts {
         self.facts
@@ -205,30 +264,44 @@ impl Plane {
             Event::BindRequested { media_id, policy } => match &self.state {
                 State::Unavailable => fx.push(Fx::Refuse(Refusal::NoPlane)),
                 State::Releasing { .. } => fx.push(Fx::Defer),
-                State::Idle | State::Released => {
-                    self.state = State::Bound { media_id: media_id.clone() };
-                    fx.push(Fx::Bind { media_id });
-                }
+                State::Idle | State::Released => self.bound(media_id, fx),
                 State::Bound { .. } => match policy {
                     BindPolicy::Strict => fx.push(Fx::Refuse(Refusal::Bound)),
-                    BindPolicy::Rebind => {
-                        self.state = State::Bound { media_id: media_id.clone() };
-                        fx.push(Fx::Bind { media_id });
-                    }
+                    BindPolicy::Rebind => self.bound(media_id, fx),
                 },
                 State::Quarantined { why } => match policy {
                     BindPolicy::Strict => fx.push(Fx::Refuse(Refusal::Quarantined(*why))),
                     BindPolicy::Rebind => {
                         fx.push(Fx::OverQuarantine(*why));
-                        self.state = State::Bound { media_id: media_id.clone() };
-                        fx.push(Fx::Bind { media_id });
+                        self.bound(media_id, fx);
                     }
                 },
             },
+            Event::FinishDispatched { rv, display, playing } => {
+                // Only a bound plane has a window and a play state to complete. A refused call, or
+                // an id of 0 (the seam's "none"), leaves nothing to wait for and is never `Done`.
+                if !matches!(self.state, State::Bound { .. }) {
+                    return;
+                }
+                self.shown = Shown::No;
+                if rv == 1 && display != 0 && playing != 0 && display != playing {
+                    self.shown = Shown::Waiting { display: Some(display), playing: Some(playing) };
+                    // The firmware may have been quicker than this bookkeeping, as for the unload.
+                    for task in [display, playing] {
+                        if let Some(at) = self.early.iter().position(|(t, _)| *t == task) {
+                            let (_, ev) = self.early.remove(at).expect("position is in range");
+                            self.complete_shown(task, ev);
+                        }
+                    }
+                }
+            }
             Event::UnloadDispatched { rv, task, now_ms } => {
                 if matches!(self.state, State::Unavailable | State::Releasing { .. }) {
                     return;
                 }
+                // The binding is going: a show still outstanding is that binding's, and its ids
+                // must never match a completion of the next one.
+                self.shown = Shown::No;
                 if rv == UNLOAD_NOT_REGISTERED {
                     self.state = State::Released;
                     fx.push(Fx::Released { task: 0 });
@@ -244,16 +317,21 @@ impl Plane {
                     fx.push(Fx::Quarantined { why: Why::UnloadRefused(rv) });
                 }
             }
-            Event::Completion { task, ev } => match self.state {
-                State::Releasing { task: waiting, .. } if waiting == task => self.settle(ev, task, fx),
-                State::Releasing { .. } | State::Unavailable => {}
-                _ => {
-                    if self.early.len() >= MAX_EARLY_COMPLETIONS {
-                        self.early.pop_front();
-                    }
-                    self.early.push_back((task, ev));
+            Event::Completion { task, ev } => {
+                if self.complete_shown(task, ev) {
+                    return;
                 }
-            },
+                match self.state {
+                    State::Releasing { task: waiting, .. } if waiting == task => self.settle(ev, task, fx),
+                    State::Releasing { .. } | State::Unavailable => {}
+                    _ => {
+                        if self.early.len() >= MAX_EARLY_COMPLETIONS {
+                            self.early.pop_front();
+                        }
+                        self.early.push_back((task, ev));
+                    }
+                }
+            }
             Event::Dropped { count } => fx.push(Fx::Lost { count }),
             Event::Tick { now_ms } => {
                 if let State::Releasing { deadline_ms, .. } = self.state {
@@ -444,6 +522,26 @@ impl PlaneOwner {
         inner.plane.state().phase()
     }
 
+    /// The full-screen `setDisplayWindow` and `setState(PLAYING)` through the sink, recorded: the
+    /// last step of the paced URI bind. True only when the library accepted both. Does not wait:
+    /// [`shown`](Self::shown) says when the firmware has completed them. The sink is called even
+    /// when the plane is not bound (the bind sequence is the caller's), but only a bound plane
+    /// tracks the completions.
+    pub fn show(&self, sink: &dyn DisplaySink, mt: &MainThread) -> bool {
+        self.pump(sink, mt);
+        let mut inner = self.lock();
+        // SAFETY: main thread (the witness), and the owner is the only caller of the finish verb.
+        let PlaneFinish { rv, display_task, playing_task } = unsafe { sink.plane_finish(mt) };
+        inner.run(Event::FinishDispatched { rv, display: i64::from(display_task), playing: i64::from(playing_task) });
+        rv == 1
+    }
+
+    /// Drain the completion mailbox, then say how the outstanding [`show`](Self::show) stands.
+    pub fn shown(&self, sink: &dyn DisplaySink, mt: &MainThread) -> Shown {
+        self.pump(sink, mt);
+        self.lock().plane.shown()
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn reset_for_test(&self) {
         *self.lock() = Inner { plane: Plane::new(), epoch: None, defer_logged: false };
@@ -470,6 +568,17 @@ mod tests {
     fn unload(m: &mut Plane, rv: i32, task: i64, now_ms: u64) -> Vec<Fx> {
         step(m, Event::UnloadDispatched { rv, task, now_ms })
     }
+    fn finish(m: &mut Plane, rv: i32, display: i64, playing: i64) -> Vec<Fx> {
+        step(m, Event::FinishDispatched { rv, display, playing })
+    }
+    /// Booted, bound, window and PLAYING accepted as tasks 3 and 4 (the device log's ids).
+    fn showing() -> Plane {
+        let mut m = booted();
+        bind(&mut m, BindPolicy::Strict);
+        finish(&mut m, 1, 3, 4);
+        m
+    }
+    const WAITING_BOTH: Shown = Shown::Waiting { display: Some(3), playing: Some(4) };
     /// Booted, bound, unload accepted as `task` at t=100.
     fn releasing(task: i64) -> Plane {
         let mut m = booted();
@@ -566,6 +675,137 @@ mod tests {
         // Task 1 was pushed out, so its unload waits for a completion that will not come again.
         assert!(unload(&mut m, 1, 1, 100).is_empty());
         assert!(matches!(m.state(), State::Releasing { task: 1, .. }));
+    }
+
+    #[test]
+    fn a_show_is_done_only_when_both_of_its_own_tasks_complete_with_event_1() {
+        let mut m = showing();
+        assert_eq!(m.shown(), WAITING_BOTH);
+        // Another task (a pause, the video data) is no part of it; neither is a task 0.
+        for other in [1, 2, 5, 0] {
+            step(&mut m, Event::Completion { task: other, ev: 1 });
+            assert_eq!(m.shown(), WAITING_BOTH, "task {other}");
+        }
+        step(&mut m, Event::Completion { task: 3, ev: 1 });
+        assert_eq!(m.shown(), Shown::Waiting { display: None, playing: Some(4) }, "one of two is not done");
+        step(&mut m, Event::Completion { task: 4, ev: 1 });
+        assert_eq!(m.shown(), Shown::Done);
+        // A repeat is inert, and the show never touches the release state.
+        step(&mut m, Event::Completion { task: 4, ev: 1 });
+        assert_eq!(m.shown(), Shown::Done);
+        assert_eq!(m.state(), &State::Bound { media_id: "m1".into() });
+    }
+
+    #[test]
+    fn the_order_of_the_two_show_completions_does_not_matter() {
+        for order in [[3, 4], [4, 3]] {
+            let mut m = showing();
+            step(&mut m, Event::Completion { task: order[0], ev: 1 });
+            assert!(matches!(m.shown(), Shown::Waiting { .. }), "{order:?}");
+            step(&mut m, Event::Completion { task: order[1], ev: 1 });
+            assert_eq!(m.shown(), Shown::Done, "{order:?}");
+        }
+    }
+
+    #[test]
+    fn a_show_completion_that_is_not_complete_fails_for_good() {
+        for (task, ev) in [(3, -2), (3, -1), (3, 0), (4, -2), (4, -1), (4, 0)] {
+            let mut m = showing();
+            step(&mut m, Event::Completion { task, ev });
+            assert_eq!(m.shown(), Shown::Failed { ev }, "task {task} ev {ev}");
+            // The other half completing cleanly does not undo it.
+            step(&mut m, Event::Completion { task: 7 - task, ev: 1 });
+            assert_eq!(m.shown(), Shown::Failed { ev }, "task {task} ev {ev}");
+        }
+    }
+
+    #[test]
+    fn show_completions_that_beat_the_dispatch_are_matched_from_the_early_queue() {
+        let mut m = booted();
+        bind(&mut m, BindPolicy::Strict);
+        step(&mut m, Event::Completion { task: 3, ev: 1 });
+        step(&mut m, Event::Completion { task: 4, ev: 1 });
+        assert_eq!(m.shown(), Shown::No, "nothing was waiting yet");
+        finish(&mut m, 1, 3, 4);
+        assert_eq!(m.shown(), Shown::Done);
+        // One early and one late.
+        let mut m = booted();
+        bind(&mut m, BindPolicy::Strict);
+        step(&mut m, Event::Completion { task: 4, ev: 1 });
+        finish(&mut m, 1, 3, 4);
+        assert_eq!(m.shown(), Shown::Waiting { display: Some(3), playing: None });
+        step(&mut m, Event::Completion { task: 3, ev: 1 });
+        assert_eq!(m.shown(), Shown::Done);
+        // An early failure is as final as a late one.
+        let mut m = booted();
+        bind(&mut m, BindPolicy::Strict);
+        step(&mut m, Event::Completion { task: 3, ev: -1 });
+        finish(&mut m, 1, 3, 4);
+        assert_eq!(m.shown(), Shown::Failed { ev: -1 });
+    }
+
+    #[test]
+    fn a_completion_from_before_the_bind_never_counts_toward_the_show() {
+        // The previous binding's tasks 3 and 4 sit in the early queue when it is unloaded.
+        let mut m = booted();
+        bind(&mut m, BindPolicy::Strict);
+        step(&mut m, Event::Completion { task: 3, ev: 1 });
+        step(&mut m, Event::Completion { task: 4, ev: 1 });
+        unload(&mut m, 1, 5, 100);
+        step(&mut m, Event::Completion { task: 5, ev: 1 });
+        assert_eq!(m.state(), &State::Released);
+        // A new binding whose tasks reuse the ids does not inherit those completions.
+        bind(&mut m, BindPolicy::Strict);
+        finish(&mut m, 1, 3, 4);
+        assert_eq!(m.shown(), WAITING_BOTH);
+        step(&mut m, Event::Completion { task: 3, ev: 1 });
+        step(&mut m, Event::Completion { task: 4, ev: 1 });
+        assert_eq!(m.shown(), Shown::Done, "its own completions do");
+    }
+
+    #[test]
+    fn a_show_with_nothing_to_wait_for_is_never_done() {
+        // Refused, task-less, a repeated id, and a plane that is not bound.
+        for (rv, display, playing) in [(0, 3, 4), (1, 0, 4), (1, 3, 0), (1, 3, 3), (-2, 3, 4)] {
+            let mut m = booted();
+            bind(&mut m, BindPolicy::Strict);
+            finish(&mut m, rv, display, playing);
+            assert_eq!(m.shown(), Shown::No, "rv {rv} tasks {display}/{playing}");
+            step(&mut m, Event::Completion { task: 3, ev: 1 });
+            step(&mut m, Event::Completion { task: 4, ev: 1 });
+            assert_eq!(m.shown(), Shown::No, "rv {rv} tasks {display}/{playing}");
+        }
+        let mut m = booted();
+        finish(&mut m, 1, 3, 4);
+        assert_eq!(m.shown(), Shown::No, "an idle plane has no window to show");
+    }
+
+    #[test]
+    fn an_unload_and_a_new_bind_both_end_the_show() {
+        let mut m = showing();
+        step(&mut m, Event::Completion { task: 3, ev: 1 });
+        unload(&mut m, 1, 5, 100);
+        assert_eq!(m.shown(), Shown::No);
+        // The stale half cannot complete anything now, and the unload fence is untouched.
+        step(&mut m, Event::Completion { task: 4, ev: 1 });
+        assert_eq!(m.shown(), Shown::No);
+        assert!(matches!(m.state(), State::Releasing { task: 5, .. }));
+        assert_eq!(step(&mut m, Event::Completion { task: 5, ev: 1 }), [Fx::Released { task: 5 }]);
+        // Feed re-binds over a bound plane without an unload: that is a new binding too.
+        let mut m = showing();
+        bind(&mut m, BindPolicy::Rebind);
+        assert_eq!(m.shown(), Shown::No);
+    }
+
+    #[test]
+    fn the_unload_fence_still_releases_after_a_show_consumed_its_tasks() {
+        let mut m = showing();
+        step(&mut m, Event::Completion { task: 3, ev: 1 });
+        step(&mut m, Event::Completion { task: 4, ev: 1 });
+        assert_eq!(m.shown(), Shown::Done);
+        unload(&mut m, 1, 5, 100);
+        assert_eq!(step(&mut m, Event::Completion { task: 5, ev: 1 }), [Fx::Released { task: 5 }]);
+        assert_eq!(m.state(), &State::Released);
     }
 
     #[test]
@@ -670,6 +910,44 @@ mod tests {
         // still finds it.
         assert_eq!(owner.unload(&sink, &mt), Phase::Releasing);
         assert_eq!(owner.pump(&sink, &mt), Phase::Released);
+    }
+
+    #[test]
+    fn the_owner_shows_through_the_sink_and_reports_done_after_both_pumped_completions() {
+        use super::super::sink::{ScriptedPlaneSink, SCRIPTED_DISPLAY_TASK, SCRIPTED_PLAYING_TASK};
+        let owner = PlaneOwner::new();
+        let sink = ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 });
+        let mt = mt();
+        owner.boot(PlaneFacts { handle: true, player_type: 0 });
+        assert_eq!(owner.bind(&sink, &mt, BindPolicy::Strict, "m1"), BindVerdict::Granted);
+        assert_eq!(owner.shown(&sink, &mt), Shown::No, "nothing was shown yet");
+        assert!(owner.show(&sink, &mt));
+        assert_eq!(sink.calls(), ["plane_finish"]);
+        let waiting = Shown::Waiting { display: Some(SCRIPTED_DISPLAY_TASK.into()), playing: Some(SCRIPTED_PLAYING_TASK.into()) };
+        assert_eq!(owner.shown(&sink, &mt), waiting, "dispatched is not completed");
+        sink.mailbox.push(SCRIPTED_DISPLAY_TASK.into(), 1);
+        assert_eq!(owner.shown(&sink, &mt),
+            Shown::Waiting { display: None, playing: Some(SCRIPTED_PLAYING_TASK.into()) });
+        sink.mailbox.push(SCRIPTED_PLAYING_TASK.into(), 1);
+        assert_eq!(owner.shown(&sink, &mt), Shown::Done);
+        // The unload fence is a different task and still resolves after the show.
+        assert_eq!(owner.unload(&sink, &mt), Phase::Releasing);
+        assert_eq!(owner.shown(&sink, &mt), Shown::No);
+        sink.mailbox.push(5, 1);
+        assert_eq!(owner.pump(&sink, &mt), Phase::Released);
+    }
+
+    #[test]
+    fn a_show_the_library_refused_is_not_accepted_and_waits_for_nothing() {
+        use super::super::sink::ScriptedPlaneSink;
+        let owner = PlaneOwner::new();
+        let sink = ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 });
+        sink.failing.lock().unwrap().push("plane_finish");
+        let mt = mt();
+        owner.boot(PlaneFacts { handle: true, player_type: 0 });
+        owner.bind(&sink, &mt, BindPolicy::Strict, "m1");
+        assert!(!owner.show(&sink, &mt));
+        assert_eq!(owner.shown(&sink, &mt), Shown::No);
     }
 
     #[test]
