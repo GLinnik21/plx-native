@@ -31,6 +31,7 @@ struct LoadOutcome {
 // route settlement, reporting, release policy and admission.
 
 use crate::feed_state;
+use plx_playback_contract::feed::{defer_media_join, LoadRaw};
 use plx_playback_contract::AttemptId;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -97,13 +98,6 @@ impl FeedResources {
     pub fn uses_stream_queues(&self) -> bool {
         self.engine.as_ref().is_some_and(feed_state::Engine::uses_stream_queues)
     }
-    pub fn stage(&self) -> Option<crate::shared::Stage> {
-        self.engine.as_ref().map(|engine| engine.stage)
-    }
-    pub fn load_thread_finished(&self) -> bool {
-        self.engine.as_ref().and_then(|engine| engine.load_th.as_ref())
-            .is_none_or(|thread| thread.is_finished())
-    }
     pub fn pending_seek_ready(&self, seek_reloads: bool) -> bool {
         self.engine.as_ref().is_some_and(|eng| {
             matches!(&eng.source, feed_state::Source::Stream)
@@ -115,35 +109,29 @@ impl FeedResources {
         self.engine.as_ref().is_some_and(|eng| self.shared.begin_native_media_discontinuity(eng.native_epoch))
     }
     pub fn is_live(&self) -> bool { self.engine.is_some() }
-    pub fn active_attempt(&self) -> Option<AttemptId> { self.engine.as_ref().map(|e| e.attempt) }
-    pub fn loading(&self) -> bool {
-        self.engine.as_ref().is_some_and(|e| e.stage == crate::shared::Stage::Loading)
+
+    /// The Engine's Load-side facts for one sample ([`LoadRaw`]); the idle value with no Engine.
+    pub fn load_raw(&self) -> LoadRaw {
+        let Some(engine) = self.engine.as_ref() else { return LoadRaw::IDLE; };
+        LoadRaw {
+            stage: Some(engine.stage),
+            load_thread_finished: engine.load_th.as_ref().is_none_or(|thread| thread.is_finished()),
+            route_actions_ready: matches!(&engine.source, feed_state::Source::Stream)
+                && engine.stage >= crate::shared::Stage::Playing
+                && !(engine.flushed && engine.rebase_pending),
+        }
     }
-    pub fn foreground_follows_load(&self) -> bool {
-        self.engine.as_ref().is_some_and(|e| e.foreground_follows_load)
-    }
-    pub fn mark_foreground_follows_load(&mut self, attempt: AttemptId) -> bool {
-        let Some(engine) = self.engine.as_mut().filter(|engine| engine.attempt == attempt) else {
-            return false;
-        };
-        engine.foreground_follows_load = true;
-        true
-    }
-    pub fn preview_load_join_state(&self) -> Option<(bool, bool)> {
-        self.engine.as_ref().map(|engine| (
-            engine.stage == crate::shared::Stage::Loading,
-            engine.load_th.as_ref().is_none_or(|thread| thread.is_finished()),
-        ))
-    }
-    pub fn abandon_preview(&mut self) {
-        if let Some(engine) = self.engine.as_mut() { engine.preview_abandon = true; }
-    }
-    pub fn route_actions_ready(&self) -> bool {
-        self.engine.as_ref().is_some_and(|e| {
-            matches!(&e.source, feed_state::Source::Stream)
-                && e.stage >= crate::shared::Stage::Playing
-                && !(e.flushed && e.rebase_pending)
-        })
+
+    /// Retiring a preview: defer the join of a Load that has not returned, marking the preview
+    /// abandoned. Answers `false` and marks nothing otherwise (the caller joins), and with no
+    /// Engine.
+    pub fn defer_preview_join(&mut self) -> bool {
+        let load = self.load_raw();
+        let defer = defer_media_join(load.loading(), load.load_thread_finished);
+        if defer {
+            if let Some(engine) = self.engine.as_mut() { engine.preview_abandon = true; }
+        }
+        defer
     }
     pub fn install(&mut self, value: feed_state::Engine) { self.engine = Some(value); }
     pub fn take(&mut self) -> Option<feed_state::Engine> { self.engine.take() }

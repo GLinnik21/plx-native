@@ -12,7 +12,7 @@ use crate::shared::FEED_TX;
 use plx_base::task::MainThread;
 use plx_playback_contract::feed::{
     AcceptedLoadOutcome, CtorGate, FeedCommand, FeedControl, FeedFacts, FeedLoad, FeedSeek,
-    LoadTick, PausedSeekStep, PresentationTick, SeekMode, SeekPause, Stage, StuckSeekAction,
+    LoadTick, PausedSeekStep, PresentationTick, SeekMode, SeekPause, StuckSeekAction,
     UserPauseOutcome, UserResumeOutcome,
 };
 use plx_playback_contract::{
@@ -173,24 +173,15 @@ impl FeedLoad for FeedBackend {
         feed_pump::publish_diag(&mut self.resources, now, last_frames, diag_readout_on);
     }
 
-    fn abandon_preview(&mut self) { self.resources.abandon_preview(); }
+    fn defer_preview_join(&mut self) -> bool { self.resources.defer_preview_join() }
 
-    fn mark_foreground_follows_load(&mut self, attempt: AttemptId) -> bool {
-        self.resources.mark_foreground_follows_load(attempt)
+    fn sample(&self) -> Option<FeedFacts> {
+        self.resources.is_live().then(|| {
+            let mut facts = feed_pump::native_feed_facts();
+            facts.raw.load = self.resources.load_raw();
+            facts
+        })
     }
-
-    fn sample(&self) -> FeedFacts { feed_pump::native_feed_facts() }
-
-    fn stage(&self) -> Option<Stage> { self.resources.stage() }
-    fn loading(&self) -> bool { self.resources.loading() }
-    fn load_thread_finished(&self) -> bool { self.resources.load_thread_finished() }
-    fn preview_load_join_state(&self) -> Option<(bool, bool)> {
-        self.resources.preview_load_join_state()
-    }
-    fn foreground_follows_load(&self) -> bool { self.resources.foreground_follows_load() }
-    fn route_actions_ready(&self) -> bool { self.resources.route_actions_ready() }
-    fn is_live(&self) -> bool { self.resources.is_live() }
-    fn active_attempt(&self) -> Option<AttemptId> { self.resources.active_attempt() }
 }
 
 impl FeedControl for FeedBackend {
@@ -244,6 +235,10 @@ mod tests {
 
     fn sink() -> &'static dyn VideoSink { &NoSink }
 
+    /// The mailbox half of a sample, which needs no installed session: these tests grade what a
+    /// command stores, not the session gate of [`FeedLoad::sample`].
+    fn mailboxes() -> FeedFacts { feed_pump::native_feed_facts() }
+
     /// Hooks the tests never call: with no session installed no verb reaches a native seam.
     const HOOKS: NativeHooks = NativeHooks {
         prepare: PrepareHooks {
@@ -283,16 +278,16 @@ mod tests {
         assert_eq!(control.ctor_gate(&mt), wrapped);
     }
 
-    /// The pure queries read the same session slot as the resources they forward to.
+    /// With no session the sample is `None`, the Load half is the idle value and nothing defers
+    /// (the sample's own gate is the session slot, which nothing here installs).
     #[test]
-    fn the_queries_read_the_same_slot_as_the_resources() {
-        let backend = backend();
-        let control: &dyn FeedControl = &backend;
-        assert!(!control.is_live());
-        assert_eq!(control.stage(), backend.resources().stage());
-        assert_eq!(control.active_attempt(), backend.resources().active_attempt());
-        assert_eq!(control.loading(), backend.resources().loading());
-        assert_eq!(control.route_actions_ready(), backend.resources().route_actions_ready());
+    fn a_feed_with_no_session_has_no_sample_and_nothing_to_defer() {
+        use plx_playback_contract::feed::LoadRaw;
+        let mut backend = backend();
+        assert_eq!(backend.resources().load_raw(), LoadRaw::IDLE);
+        let control: &mut dyn FeedControl = &mut backend;
+        assert!(control.sample().is_none());
+        assert!(!control.defer_preview_join());
         assert!(!control.pending_seek_ready(false));
         assert!(!control.begin_seek_discontinuity());
     }
@@ -318,7 +313,7 @@ mod tests {
         assert!(!FEED_SHARED.pipeline_eos.load(Relaxed), "a seek back from the end un-ends it");
         assert_eq!(FEED_SHARED.seek_display_ns.load(Relaxed), 50_000_000_000);
         assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), 50_000_000_000, "the newest target wins");
-        let raw = control.sample().raw;
+        let raw = mailboxes().raw;
         assert_eq!(raw.seek_landed_epoch, 0, "requested is not landed");
         assert!(!raw.pipeline_eos);
 
@@ -331,10 +326,10 @@ mod tests {
         control.command(FeedCommand::Seek { epoch: 3, target_ns: 1, display_ns: 1 });
         FEED_SHARED.seek_landed_epoch
             .store(FEED_SHARED.seek_epoch.load(Relaxed), std::sync::atomic::Ordering::Release);
-        assert_eq!(control.sample().raw.seek_landed_epoch, 3, "the landing reports the newest request");
+        assert_eq!(mailboxes().raw.seek_landed_epoch, 3, "the landing reports the newest request");
         FEED_SHARED.reset_session();
         FEED_TX.reset();
-        assert_eq!(control.sample().raw.seek_landed_epoch, 0, "a new session has landed nothing");
+        assert_eq!(mailboxes().raw.seek_landed_epoch, 0, "a new session has landed nothing");
         assert_eq!(FEED_SHARED.seek_epoch.load(Relaxed), 0);
     }
 
@@ -418,17 +413,17 @@ mod tests {
         FEED_TX.reset();
         let mut backend = backend();
         let control: &mut dyn FeedControl = &mut backend;
-        assert_eq!(FeedLoad::sample(control).raw.disp_base, 0);
+        assert_eq!(mailboxes().raw.disp_base, 0);
 
         control.command(FeedCommand::Rebase { playpos_ns: 600_000_000_000, disp_base: 600_000_000_000 });
         assert_eq!(FEED_SHARED.disp_base.load(Relaxed), 600_000_000_000);
         assert_eq!(FEED_SHARED.playpos_ns.load(Relaxed), 600_000_000_000);
         assert_eq!(FEED_SHARED.seek_to_ns.load(Relaxed), -1, "a rebase arms no demuxer seek");
-        let raw = FeedLoad::sample(control).raw;
+        let raw = mailboxes().raw;
         assert_eq!((raw.disp_base, raw.playpos_ns), (600_000_000_000, 600_000_000_000));
 
         FEED_SHARED.reset_session();
-        assert_eq!(FeedLoad::sample(control).raw.disp_base, 0, "the session reset is the feed's own");
+        assert_eq!(mailboxes().raw.disp_base, 0, "the session reset is the feed's own");
         FEED_TX.reset();
     }
 
@@ -553,23 +548,21 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         FEED_SHARED.reset_session();
         FEED_TX.reset();
-        let mut backend = backend();
-        let control: &mut dyn FeedControl = &mut backend;
-        let idle = control.sample().raw;
+        let idle = mailboxes().raw;
         assert_eq!(idle.seek_requeue, plx_playback_contract::feed::SeekRequeue::NONE);
         assert_eq!(idle.seek_target_ns, None);
 
         FEED_SHARED.seek_target_ns.store(61_000_000_000, Relaxed);
         FEED_SHARED.seek_requeue_target.store(61_000_000_000, Relaxed);
         FEED_SHARED.seek_requeue_epoch.fetch_add(1, Release);
-        let raw = control.sample().raw;
+        let raw = mailboxes().raw;
         assert_eq!(raw.seek_target_ns, Some(61_000_000_000));
         assert_eq!(raw.seek_requeue.epoch, 1);
         assert_eq!(raw.seek_requeue.target_ns, 61_000_000_000);
 
         FEED_SHARED.reset_session();
         FEED_TX.reset();
-        let raw = control.sample().raw;
+        let raw = mailboxes().raw;
         assert_eq!(raw.seek_requeue.epoch, 0, "a new session has requested nothing");
         assert_eq!(raw.seek_target_ns, None);
     }
@@ -587,27 +580,27 @@ mod tests {
         FEED_TX.reset();
         let mut backend = backend();
         let control: &mut dyn FeedControl = &mut backend;
-        assert_eq!(control.sample().raw.flags, FailureFlags::default());
+        assert_eq!(mailboxes().raw.flags, FailureFlags::default());
 
         control.command(FeedCommand::NoteFailure(FailureFlag::LoadFailed));
         control.command(FeedCommand::NoteFailure(FailureFlag::LoadTimedOut));
-        let raw = control.sample().raw;
+        let raw = mailboxes().raw;
         assert!(raw.flags.load_failed && raw.flags.load_timed_out, "the notes come back as flags");
         assert!(!raw.flags.demux_io_failed && !raw.flags.demux_failed, "and only those");
-        assert_eq!(control.sample().attempt.runtime_failure,
+        assert_eq!(mailboxes().attempt.runtime_failure,
             Some(plx_playback_contract::readout::RuntimeFailure::LoadTimeout),
             "the mapped half collapses the same flags");
 
         FEED_SHARED.dg_cb_err_num.store(601, Relaxed);
         FEED_SHARED.dg_http_status.store(404, Relaxed);
         control.command(FeedCommand::NoteFailure(FailureFlag::DemuxIoFailed));
-        let raw = control.sample().raw;
+        let raw = mailboxes().raw;
         assert!(raw.flags.demux_io_failed);
         assert_eq!((raw.cb_err_num, raw.http_status), (601, 404), "the codes ride the same sample");
 
         FEED_SHARED.reset_session();
-        assert_eq!(control.sample().raw.flags, FailureFlags::default(), "a reset retires the notes");
-        assert_eq!(control.sample().raw.cb_err_num, 0);
+        assert_eq!(mailboxes().raw.flags, FailureFlags::default(), "a reset retires the notes");
+        assert_eq!(mailboxes().raw.cb_err_num, 0);
     }
 
     /// The pipeline's decoder revocations and native-audio refusals are COUNTS the feed keeps for
@@ -617,16 +610,14 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         FEED_SHARED.reset_session();
         FEED_TX.reset();
-        let backend = backend();
-        let control: &dyn FeedControl = &backend;
-        assert_eq!((control.sample().raw.decoder_revocations, control.sample().raw.native_audio_refusals), (0, 0));
+        assert_eq!((mailboxes().raw.decoder_revocations, mailboxes().raw.native_audio_refusals), (0, 0));
         FEED_SHARED.raise_decoder_revoked();
         FEED_SHARED.raise_decoder_revoked();
         FEED_SHARED.raise_native_audio_refused();
-        let raw = control.sample().raw;
+        let raw = mailboxes().raw;
         assert_eq!((raw.decoder_revocations, raw.native_audio_refusals), (2, 1));
         FEED_SHARED.reset_session();
-        let raw = control.sample().raw;
+        let raw = mailboxes().raw;
         assert_eq!((raw.decoder_revocations, raw.native_audio_refusals), (0, 0));
     }
 

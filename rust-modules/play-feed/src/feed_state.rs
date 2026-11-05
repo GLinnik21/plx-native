@@ -197,11 +197,6 @@ pub struct Engine {
     pub side_reader: Box<dyn crate::side_reader::SideReaderPort>,
     /// Preview Load that must land unbound. The media join waits until the thread has returned.
     pub preview_abandon: bool,
-    /// The foreground lifecycle follows this Engine's Load attempt (`foreground_follows_load`).
-    /// It then owns the Load call's own synchronous result (`route_start_status` `Failed`, the
-    /// refusal #1018 retries), so the pump's failed-open ladder leaves that one alone
-    /// (the common pump's `settled_by_foreground`).
-    pub foreground_follows_load: bool,
     /// Whether this session's era-chosen sink counter has shown up (the callback-era watch).
     pub era_watch: crate::era_callbacks::Watch,
 }

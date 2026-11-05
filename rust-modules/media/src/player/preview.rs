@@ -437,12 +437,6 @@ pub fn accepts_direct_play(direct_play: bool, part_nonempty: bool, adaptive: boo
     direct_play && part_nonempty && !adaptive
 }
 
-/// Defer the media join while an in-flight Load has not returned. Joining it on the main thread
-/// is the stall Abandoning exists to avoid.
-pub fn defer_media_join(loading: bool, thread_finished: bool) -> bool {
-    loading && !thread_finished
-}
-
 plx_base::devtrig::latched_flag!(
     /// `/tmp/plxnative-nopreview` — disable background trailer autoplay. Latched: `enabled()`
     /// runs on `preview_tick`'s every-frame path (via `blocked`) while the detail hero holds
@@ -751,7 +745,7 @@ pub fn after_pump(
         // resource an OS thread may still be executing against — a real memory-safety question
         // (does the leaked `SfSlot` pattern in `src/starfish.c` make that safe, or does it not)
         // that needs `player/CLAUDE.md`'s device verification + fw-compat review, not a desk fix.
-        let finished = pa.feed_load_thread_finished();
+        let finished = ps.readout().raw().load.load_thread_finished;
         if finished {
             retire(ps, pa, "abandoned Load returned");
         }
@@ -762,7 +756,7 @@ pub fn after_pump(
     if preview && live && occupies() {
         if seen_frame {
             note_picture(now_ms);
-        } else if pa.feed_stage().is_some_and(|stage| stage >= super::shared::Stage::Playing) {
+        } else if ps.readout().raw().load.stage.is_some_and(|stage| stage >= super::shared::Stage::Playing) {
             transition("bound", Machine::bound);
         }
     }
@@ -1186,13 +1180,6 @@ mod tests {
         assert!(accepts_direct_play(true, true, false));
         assert!(!accepts_direct_play(true, true, true));
         assert!(!accepts_direct_play(true, false, false));
-    }
-
-    #[test]
-    fn abandon_defers_the_join_until_the_load_thread_has_returned() {
-        assert!(defer_media_join(true, false));
-        assert!(!defer_media_join(true, true));
-        assert!(!defer_media_join(false, false));
     }
 
     #[test]

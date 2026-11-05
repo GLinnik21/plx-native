@@ -1346,7 +1346,6 @@ mod prime_livelock_tests {
             load_th: None,
             side_reader: Box::new(super::super::feed_open::SideReaderOpen::empty()),
             preview_abandon: false,
-            foreground_follows_load: false,
             era_watch: plx_play_feed::era_callbacks::Watch::new(),
         }
     }

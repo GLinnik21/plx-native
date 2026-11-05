@@ -349,6 +349,40 @@ pub struct FeedRaw {
     /// transcode restart's content offset, 0 once the feed rebases onto a landed keyframe and after
     /// the session's reset.
     pub disp_base: i64,
+    /// What the live Engine's Load side reads, taken in the same sample ([`LoadRaw`]).
+    pub load: LoadRaw,
+}
+
+/// The Load-side facts of the feed's session, which the Engine holds in its own fields rather than
+/// in a mailbox: `FeedBackend::sample` fills them beside the mailbox half, so a reader takes them
+/// from the readout like every other raw fact. `stage` is `None` exactly while no Engine is
+/// installed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LoadRaw {
+    /// The session's stage; `None` with no Engine.
+    pub stage: Option<Stage>,
+    /// Whether the Load thread has returned (or never ran): `true` with no Engine or no thread. It
+    /// only goes `false` to `true` within a session, so a stale sample says "still running", never
+    /// the reverse.
+    pub load_thread_finished: bool,
+    /// Native readiness for a route or action claim: a stream source at `Playing` or later whose
+    /// seek flush has not yet been rebased.
+    pub route_actions_ready: bool,
+}
+
+impl LoadRaw {
+    /// A feed with no session.
+    pub const IDLE: Self = Self { stage: None, load_thread_finished: true,
+        route_actions_ready: false };
+
+    /// Whether the session has yet to leave its Load stage.
+    pub fn loading(&self) -> bool { self.stage == Some(Stage::Loading) }
+}
+
+/// Whether to defer joining a preview's Load thread: while an in-flight Load has not returned,
+/// joining it on the main thread is the stall abandoning a preview exists to avoid.
+pub fn defer_media_join(loading: bool, thread_finished: bool) -> bool {
+    loading && !thread_finished
 }
 
 /// A seek the feed asked the player to take up again. `epoch` counts the feed's requests this
@@ -376,7 +410,7 @@ impl FeedRaw {
         applied_rate_permille: crate::RATE_NORMAL, speed_audio_ok: None, vpres_count: 0,
         pts_shift: 0, pipeline_eos: false, seek_landed_epoch: 0, seek_target_ns: None,
         seek_requeue: SeekRequeue::NONE, cb_err_num: 0, http_status: 0,
-        vpres_gap_sum_ms: 0, vpres_gap_count: 0, disp_base: 0,
+        vpres_gap_sum_ms: 0, vpres_gap_count: 0, disp_base: 0, load: LoadRaw::IDLE,
     };
 }
 
@@ -493,27 +527,17 @@ pub trait FeedLoad {
     fn inject_refuse601(&mut self, generation: u32, preview: bool, refused_for: &AtomicU32);
     /// Publish native queue and frame diagnostics; `diag_readout_on` is the panel's switch.
     fn publish_diag(&mut self, now: u32, last_frames: &AtomicI32, diag_readout_on: bool);
-    fn abandon_preview(&mut self);
-    /// Mark the foreground as following this Load, for `attempt` only; false for any other.
-    fn mark_foreground_follows_load(&mut self, attempt: AttemptId) -> bool;
+    /// Retiring a preview whose Load has not returned: when the session is still in its Load
+    /// stage and the Load thread is unfinished ([`defer_media_join`]), mark the preview abandoned
+    /// and answer `true`, and the caller leaves the Engine installed for the abandoned-Load poll.
+    /// `false` (nothing marked) otherwise, and with no session. The Feed answers in the call that
+    /// acts, because the thread's completion moves on another thread and no sample can be current.
+    fn defer_preview_join(&mut self) -> bool;
 
-    /// One sample of what the feed observed: the sparse facts the HUD and the route read and the
-    /// raw ones a decision reads. Ungated: the caller asks [`Self::is_live`] first, because a feed
-    /// with no session answers its idle mailboxes, which is not an observation of any attempt.
-    fn sample(&self) -> FeedFacts;
-
-    fn stage(&self) -> Option<Stage>;
-    /// Whether the live session has yet to leave its Load stage.
-    fn loading(&self) -> bool;
-    fn load_thread_finished(&self) -> bool;
-    /// `(still loading, load thread finished)` of the live session.
-    fn preview_load_join_state(&self) -> Option<(bool, bool)>;
-    fn foreground_follows_load(&self) -> bool;
-    /// Native readiness for a route or action claim.
-    fn route_actions_ready(&self) -> bool;
-    /// Whether a session is live.
-    fn is_live(&self) -> bool;
-    fn active_attempt(&self) -> Option<AttemptId>;
+    /// One sample of what the feed observed: the sparse facts the HUD and the route read, the raw
+    /// ones a decision reads and the Engine's Load-side ones ([`FeedRaw::load`]). `None` with no
+    /// session: an idle feed's mailboxes are not an observation of any attempt.
+    fn sample(&self) -> Option<FeedFacts>;
 }
 
 /// One buffer-feed backend as the player drives it: the seek and Load halves, and the one verb
@@ -574,6 +598,28 @@ mod tests {
         assert_eq!(facts.raw.flags, FailureFlags::default());
         assert!(facts.attempt.position_ns.is_none() && facts.attempt.status.is_none());
         assert_eq!(facts.raw.speed_audio_ok, None, "no report is not a refusal");
+    }
+
+    /// A feed with no session has no stage, no Load to wait for and nothing ready; the IDLE value
+    /// is what a session reset hands back.
+    #[test]
+    fn the_idle_load_half_has_no_stage_and_no_load_to_wait_for() {
+        assert_eq!(FeedRaw::IDLE.load, LoadRaw::IDLE);
+        assert_eq!(LoadRaw::IDLE.stage, None);
+        assert!(LoadRaw::IDLE.load_thread_finished, "no thread is a finished one");
+        assert!(!LoadRaw::IDLE.route_actions_ready && !LoadRaw::IDLE.loading());
+        let loading = LoadRaw { stage: Some(Stage::Loading), load_thread_finished: false,
+            route_actions_ready: false };
+        assert!(loading.loading());
+        assert!(!LoadRaw { stage: Some(Stage::Playing), ..loading }.loading());
+    }
+
+    /// Abandoning a preview defers the join only while the Load thread has not returned.
+    #[test]
+    fn abandon_defers_the_join_until_the_load_thread_has_returned() {
+        assert!(defer_media_join(true, false));
+        assert!(!defer_media_join(true, true));
+        assert!(!defer_media_join(false, false));
     }
 
     /// The set a composition hands the adapter is a boxed trait object, so the trait must be

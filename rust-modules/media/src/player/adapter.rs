@@ -35,7 +35,7 @@ use super::backend;
 #[cfg(feature = "play-feed")]
 use plx_play_feed::feed_driver::FeedTransportAction;
 #[cfg(feature = "play-feed")]
-use plx_playback_contract::feed::{FeedLoad, FeedSeek, PhysicalSet};
+use plx_playback_contract::feed::PhysicalSet;
 #[cfg(all(test, feature = "play-feed", feature = "hostsim"))]
 use super::threads;
 use plx_base::task::MainThread;
@@ -293,6 +293,20 @@ fn uri_offer_executable(ps: &crate::route::PlaybackSession, offer: &QualifiedUri
             || crate::route::applied_audio_enhancements(ps) == offer.recipe.audio())
 }
 
+/// The record of the physical attempt the adapter has bound ([`PlayerAdapter::bind_feed_attempt`]).
+#[cfg(feature = "play-feed")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BoundFeed {
+    attempt: crate::route::RouteStartAttempt,
+    /// The product trace captured at the start, for the reports of this attempt.
+    trace_generation: u32,
+    /// The foreground lifecycle follows this attempt's Load: it then owns the Load call's own
+    /// synchronous result (`route_start_status` `Failed`, the refusal #1018 retries), so the
+    /// pump's failed-open ladder leaves that one alone (`settled_by_foreground`). False at every
+    /// bind; the bound record is dropped with the attempt, so it cannot outlive it.
+    foreground_follows_load: bool,
+}
+
 /// Common coordinator and main-thread proof, as one owned value (`App.adapters.player`).
 pub struct PlayerAdapter {
     /// Proof, held rather than passed: see the module doc. It is a ZST, so this costs nothing and
@@ -319,10 +333,12 @@ pub struct PlayerAdapter {
     pending_uri_subtitle: Option<PendingUriSubtitle>,
     refused_uri_audio: Option<PendingUriAudio>,
     refused_uri_subtitle: Option<PendingUriSubtitle>,
-    /// Route identity and product trace for the installed physical attempt. The feed itself
-    /// receives only the canonical contract ID and native epoch.
+    /// The bound physical attempt: its route identity, product trace and foreground follow mark.
+    /// The feed itself receives only the canonical contract ID and native epoch. Bound right after
+    /// the Engine is installed, dropped by [`Self::take_native_stop`]: an Engine is installed
+    /// exactly while this is `Some`, which is what [`Self::is_live`] answers.
     #[cfg(feature = "play-feed")]
-    feed_attempt: Option<(crate::route::RouteStartAttempt, u32)>,
+    feed_attempt: Option<BoundFeed>,
     /// Backend-independent periodic reporting resource for the current physical attempt.
     timeline: Option<timeline::TimelineRunner>,
     repair: Option<(u64, std::sync::mpsc::Receiver<Result<(), plx_platform::tv::sandbox::Failure>>)>,
@@ -1548,17 +1564,18 @@ impl PlayerAdapter {
     /// Route identity of the active physical feed, without lending Engine state to admission.
     #[cfg(feature = "play-feed")]
     pub(super) fn active_feed_attempt(&self) -> Option<crate::route::RouteStartAttempt> {
-        let (attempt, _) = self.feed_attempt?;
-        (self.physical.feed_backend().active_attempt() == Some(attempt.contract_id()))
-            .then_some(attempt)
+        self.feed_attempt.map(|bound| bound.attempt)
     }
 
+    /// Record the attempt the Engine just installed belongs to. Called by the one start that
+    /// installs, right after the install.
     #[cfg(feature = "play-feed")]
     pub(super) fn bind_feed_attempt(&mut self, attempt: crate::route::RouteStartAttempt,
         trace_generation: u32) {
-        debug_assert_eq!(FeedLoad::active_attempt(self.physical.feed_backend()),
-            Some(attempt.contract_id()));
-        self.feed_attempt = Some((attempt, trace_generation));
+        debug_assert!(self.physical.feed().is_some_and(|feed| feed.sample().is_some()),
+            "a bound attempt has an installed Engine");
+        self.feed_attempt = Some(BoundFeed { attempt, trace_generation,
+            foreground_follows_load: false });
     }
 
     #[cfg(feature = "play-feed")]
@@ -1590,16 +1607,15 @@ impl PlayerAdapter {
     }
 
     /// One sample of the live feed, `None` with no session: an idle feed's mailboxes are not an
-    /// observation of any attempt. Reads the concrete backend (`&self`) until L3b.
+    /// observation of any attempt.
     #[cfg(feature = "play-feed")]
-    pub(super) fn sample_feed(&self) -> Option<plx_playback_contract::feed::FeedFacts> {
-        let feed = self.physical.feed_backend();
-        FeedLoad::is_live(feed).then(|| FeedLoad::sample(feed))
+    pub(super) fn sample_feed(&mut self) -> Option<plx_playback_contract::feed::FeedFacts> {
+        self.physical.feed().and_then(|feed| feed.sample())
     }
 
     /// Address the physical callback snapshot to the current route-owned attempt.
     #[cfg(feature = "play-feed")]
-    pub(super) fn publish_feed_attempt_view(&self, ps: &mut crate::route::PlaybackSession) {
+    pub(super) fn publish_feed_attempt_view(&mut self, ps: &mut crate::route::PlaybackSession) {
         let Some(attempt) = self.active_feed_attempt() else { return; };
         let Some(facts) = self.sample_feed() else { return; };
         let _ = ps.ingest_feed_facts(attempt, facts);
@@ -1629,41 +1645,25 @@ impl PlayerAdapter {
     pub(super) fn feed_take_preroll_volume(&mut self) -> Option<i32> {
         self.physical.feed().and_then(|feed| feed.take_preroll_volume())
     }
+    /// Retiring a preview: the feed defers the join of a Load that has not returned and marks the
+    /// preview abandoned (see [`FeedLoad::defer_preview_join`]); `true` when it deferred.
     #[cfg(feature = "play-feed")]
-    pub(super) fn feed_stage(&self) -> Option<super::shared::Stage> {
-        self.physical.feed_backend().stage()
+    pub(super) fn defer_preview_join(&mut self) -> bool {
+        self.physical.feed().is_some_and(|feed| feed.defer_preview_join())
     }
-    #[cfg(feature = "play-feed")]
-    pub(super) fn feed_load_thread_finished(&self) -> bool {
-        self.physical.feed_backend().load_thread_finished()
-    }
-
-    /// Whether the current physical feed has yet to leave its Load stage.
-    #[cfg(feature = "play-feed")]
-    pub(super) fn feed_loading(&self) -> bool { self.physical.feed_backend().loading() }
-    #[cfg(feature = "play-feed")]
-    pub(super) fn preview_load_join_state(&self) -> Option<(bool, bool)> {
-        self.physical.feed_backend().preview_load_join_state()
-    }
-    #[cfg(feature = "play-feed")]
-    pub(super) fn abandon_preview_load(&mut self) {
-        if let Some(feed) = self.physical.feed() { feed.abandon_preview(); }
-    }
+    /// Whether the foreground lifecycle follows the bound attempt's Load.
     #[cfg(feature = "play-feed")]
     pub(super) fn foreground_follows_feed_load(&self) -> bool {
-        self.physical.feed_backend().foreground_follows_load()
+        self.feed_attempt.is_some_and(|bound| bound.foreground_follows_load)
     }
+    /// Mark the foreground as following `attempt`'s Load: true only for the bound attempt.
     #[cfg(feature = "play-feed")]
     pub(super) fn mark_foreground_follows_feed_load(&mut self,
         attempt: crate::route::RouteStartAttempt) -> bool {
-        if self.active_feed_attempt() != Some(attempt) { return false; }
-        self.physical.feed().is_some_and(|feed|
-            feed.mark_foreground_follows_load(attempt.contract_id()))
-    }
-    /// Native readiness for a route/action claim; the route policy itself stays in the pump.
-    #[cfg(feature = "play-feed")]
-    pub(super) fn route_actions_ready(&self) -> bool {
-        self.physical.feed_backend().route_actions_ready()
+        let Some(bound) = self.feed_attempt.as_mut().filter(|bound| bound.attempt == attempt)
+            else { return false; };
+        bound.foreground_follows_load = true;
+        true
     }
 
     /// One physical seek-preroll tick. The common pump supplies route-flight facts and applies
@@ -1731,16 +1731,20 @@ impl PlayerAdapter {
     }
 
     #[cfg(feature = "play-feed")]
-    pub(super) fn pending_seek_ready(&self, seek_reloads: bool) -> bool {
-        self.physical.feed_backend().pending_seek_ready(seek_reloads)
+    pub(super) fn pending_seek_ready(&mut self, seek_reloads: bool) -> bool {
+        self.physical.feed().is_some_and(|feed| feed.pending_seek_ready(seek_reloads))
+    }
+    /// One native Pause transition before an in-place seek. A composition with no feed has no
+    /// native session to pause: `Busy`, so the seek waits and applies nothing.
+    #[cfg(feature = "play-feed")]
+    pub(super) fn prepare_seek_pause(&mut self) -> plx_playback_contract::feed::SeekPause {
+        let mt = &self.mt;
+        self.physical.feed().map_or(plx_playback_contract::feed::SeekPause::Busy,
+            |feed| feed.prepare_seek_pause(mt))
     }
     #[cfg(feature = "play-feed")]
-    pub(super) fn prepare_seek_pause(&self) -> plx_playback_contract::feed::SeekPause {
-        self.physical.feed_backend().prepare_seek_pause(&self.mt)
-    }
-    #[cfg(feature = "play-feed")]
-    pub(super) fn begin_seek_discontinuity(&self) -> bool {
-        self.physical.feed_backend().begin_seek_discontinuity()
+    pub(super) fn begin_seek_discontinuity(&mut self) -> bool {
+        self.physical.feed().is_some_and(|feed| feed.begin_seek_discontinuity())
     }
     #[cfg(feature = "play-feed")]
     pub(super) fn apply_inplace_seek_pre(&mut self, target_ns: i64,
@@ -1775,12 +1779,14 @@ impl PlayerAdapter {
             |feed| feed.tick_presentation(mt, segmented_hls, immersive))
     }
 
-    /// Is a session live? Distinct from [`engine`](Self::engine) because it answers without taking
-    /// the exclusive borrow — `start_bufferfeed`'s double-start guard only needs to ask.
+    /// Is a session live? Answered from the bound attempt, which the one start that installs the
+    /// Engine binds right after the install and [`take_native_stop`](Self::take_native_stop)
+    /// drops in the call that takes it out; `start_bufferfeed`'s double-start guard only needs to
+    /// ask.
     #[inline]
     #[cfg(feature = "play-feed")]
     pub fn is_live(&self) -> bool {
-        self.physical.feed_backend().is_live()
+        self.feed_attempt.is_some()
     }
 
     /// Address one Load verdict without handing route state to the native worker.
@@ -1803,12 +1809,12 @@ impl PlayerAdapter {
     pub(super) fn drain_load_outcomes(&mut self, ps: &mut crate::route::PlaybackSession) {
         // Construction may still be installing the Engine when the synchronous Load returns.
         // Leave the inbox intact until its owner can validate the native epoch and attempt.
+        if self.feed_attempt.is_none() { return; }
         let Some(feed) = self.physical.feed() else { return; };
-        if !feed.is_live() { return; }
         let outcomes = feed.take_load_outcomes();
         for outcome in outcomes {
-            let Some((attempt, trace_generation)) = self.feed_attempt
-                .filter(|(attempt, _)| attempt.contract_id() == outcome.attempt) else { continue; };
+            let Some(BoundFeed { attempt, trace_generation, .. }) = self.feed_attempt
+                .filter(|bound| bound.attempt.contract_id() == outcome.attempt) else { continue; };
             if let Some(elapsed_ms) = outcome.elapsed_ms {
                 super::report::note_load_gate_for(
                     trace_generation,
@@ -1853,7 +1859,8 @@ impl PlayerAdapter {
     #[inline]
     #[cfg(all(test, feature = "play-feed"))]
     pub fn install(&mut self, e: Engine) {
-        self.feed_attempt = Some((crate::route::RouteStartAttempt::fixture(), 0));
+        self.feed_attempt = Some(BoundFeed { attempt: crate::route::RouteStartAttempt::fixture(),
+            trace_generation: 0, foreground_follows_load: false });
         self.physical.feed_backend_mut().resources_mut().install(e);
     }
 
@@ -2233,7 +2240,8 @@ mod load_outcome_tests {
         let admitted = pa.physical.feed().expect("the feed is installed").take_load_outcomes();
         assert_eq!(admitted.len(), 1, "only the installed Engine's exact attempt and epoch are admitted");
         assert_eq!(admitted[0].attempt, attempt.contract_id());
-        assert_eq!(pa.feed_attempt, Some((attempt, 41)), "the common owner retains the captured trace");
+        assert_eq!(pa.feed_attempt.map(|bound| (bound.attempt, bound.trace_generation)),
+            Some((attempt, 41)), "the common owner retains the captured trace");
         assert_eq!(admitted[0].elapsed_ms, Some(123));
         assert!(admitted[0].ok);
         assert!(pa.physical.feed().expect("the feed is installed").take_load_outcomes().is_empty(),

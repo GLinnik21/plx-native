@@ -497,7 +497,6 @@ pub fn launch_native_open(
         load_th,
         side_reader,
         preview_abandon: false,
-        foreground_follows_load: false,
         era_watch: crate::era_callbacks::Watch::new(),
     };
     // Select this session's direct-play seek mode (`SeekMode`, seek.rs, whose SCOPE note argues why
