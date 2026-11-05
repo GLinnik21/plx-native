@@ -773,6 +773,11 @@ impl NativeStop {
 
     pub fn report_dispatched(&mut self) { self.spans.mark("scrobble"); }
 
+    /// Whether the unblock just found a Load past its budget still inside the native call and
+    /// parked it: the release that follows hands it to the abandoned-Load release. Known from
+    /// [`Self::unblock_join_close`] on, before the native phase says so.
+    pub fn load_abandoned(&self) -> bool { self.abandoned_load.is_some() }
+
     pub fn release_status(&self) -> plx_playback_contract::ReleaseStatus {
         self.release_status
     }
