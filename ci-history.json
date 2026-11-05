@@ -1,4 +1,4 @@
-{"updated":"2026-11-05T15:08:21Z",
+{"updated":"2026-11-05T15:10:13Z",
 "ci":[
 {"id":31142003278,"at":"2026-08-07T02:41:31Z","sha":"dd7138b09","title":"pkg: satisfy webosbrew's packager check honestly, and record why not ares-package","jobs":{"host checks (NOT a device gate)":81,"cross-build (armv7) + artifact assertions":95},"pr":null,"conclusion":"success","attempt":1},
 {"id":31319241597,"at":"2026-08-09T14:44:31Z","sha":"6c3858f9e","title":"docs: webOS 5+ is known broken, not untested \u2014 restore the 4.x bound","jobs":{"cross-build (armv7) + artifact assertions":89,"host checks (NOT a device gate)":80},"pr":null,"conclusion":"success","attempt":1},
@@ -4583,6 +4583,7 @@
 {"id":42029613309,"at":"2026-11-05T12:43:51Z","sha":"c689adea1","title":"exit interposer: correct what the comments claim about binding and coverage","pr":1242,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":29,"macOS simulator build + launch":251,"macOS tests against bundled FFmpeg and ASS":210,"Linux simulator build + launch":256}},
 {"id":42034915300,"at":"2026-11-05T13:20:34Z","sha":"c655c508f","title":"ci snapshot of integ/uri-first dd3a3f790 (not for merge)","pr":1231,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":210,"Linux simulator build + launch":377,"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":201}},
 {"id":42035103766,"at":"2026-11-05T13:21:52Z","sha":"031210b22","title":"HUD registry: serve from huds.plxnative.com","pr":1243,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":228,"Linux simulator build + launch":327,"Windows launcher syntax":23,"macOS simulator build + launch":244}},
+{"id":42050980079,"at":"2026-11-05T15:02:59Z","sha":"2fd49e956","title":"ci snapshot: integ/uri-first at 0907e7b71 (L3b-2a)","pr":1231,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":240,"Linux simulator build + launch":366,"macOS simulator build + launch":217}},
 {"id":42024510554,"at":"2026-11-05T15:05:55Z","sha":"9fdc1fc13","title":"Update shipped-language lint documentation","pr":1230,"event":"pull_request","conclusion":"failure","attempt":2,"jobs":{"Windows launcher syntax":23},"wall":10831,"failed":["Linux simulator build + launch","macOS simulator build + launch","macOS tests against bundled FFmpeg and ASS"]}
 ],
 "nightly":[
