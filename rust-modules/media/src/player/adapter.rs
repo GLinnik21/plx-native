@@ -1760,7 +1760,7 @@ impl PlayerAdapter {
     /// the returned finish request after this borrow of feed resources ends.
     #[cfg(feature = "play-feed")]
     pub(super) fn paused_seek_step(&mut self, now: u32, route_flight: bool,
-        claim_owns_pause: bool) -> plx_play_feed::feed_pump::PausedSeekStep {
+        claim_owns_pause: bool) -> plx_playback_contract::feed::PausedSeekStep {
         plx_play_feed::feed_pump::paused_seek_step(&mut self.feed, now, route_flight, claim_owns_pause)
     }
 
@@ -1788,7 +1788,7 @@ impl PlayerAdapter {
 
     /// Gate the active physical tick on native constructor readiness.
     #[cfg(feature = "play-feed")]
-    pub(super) fn feed_ctor_gate(&mut self) -> plx_play_feed::feed_pump::CtorGate {
+    pub(super) fn feed_ctor_gate(&mut self) -> plx_playback_contract::feed::CtorGate {
         plx_play_feed::feed_pump::ctor_gate(&mut self.feed, &self.mt)
     }
 
@@ -1806,7 +1806,7 @@ impl PlayerAdapter {
 
     #[cfg(feature = "play-feed")]
     pub(super) fn retry_stuck_seek(&mut self, now: u32, target_ns: i64,
-        can_retry: bool) -> plx_play_feed::feed_pump::StuckSeekAction {
+        can_retry: bool) -> plx_playback_contract::feed::StuckSeekAction {
         plx_play_feed::feed_pump::retry_stuck_seek(&mut self.feed, now, target_ns, can_retry)
     }
 
@@ -1815,7 +1815,7 @@ impl PlayerAdapter {
         plx_play_feed::feed_pump::pending_seek_ready(&self.feed, seek_reloads)
     }
     #[cfg(feature = "play-feed")]
-    pub(super) fn prepare_seek_pause(&self) -> plx_play_feed::feed_pump::SeekPause {
+    pub(super) fn prepare_seek_pause(&self) -> plx_playback_contract::feed::SeekPause {
         plx_play_feed::feed_pump::prepare_seek_pause(&self.feed, &self.mt)
     }
     #[cfg(feature = "play-feed")]
@@ -1824,7 +1824,7 @@ impl PlayerAdapter {
     }
     #[cfg(feature = "play-feed")]
     pub(super) fn apply_inplace_seek_pre(&mut self, target_ns: i64,
-        mode: plx_play_feed::seek::SeekMode, coalesced: u32) {
+        mode: plx_playback_contract::feed::SeekMode, coalesced: u32) {
         plx_play_feed::feed_pump::apply_inplace_seek_pre(&mut self.feed, &self.mt, target_ns, mode, coalesced);
     }
     #[cfg(feature = "play-feed")]
@@ -1834,14 +1834,14 @@ impl PlayerAdapter {
 
     #[cfg(feature = "play-feed")]
     pub(super) fn tick_feed_load(&mut self, now: u32, segmented_hls: bool,
-        budget: std::time::Duration, speed_deadline_ms: u32) -> plx_play_feed::feed_pump::LoadTick {
+        budget: std::time::Duration, speed_deadline_ms: u32) -> plx_playback_contract::feed::LoadTick {
         plx_play_feed::feed_pump::tick_load(&mut self.feed, &self.mt, now,
             segmented_hls, budget, speed_deadline_ms, super::no_audio_armed())
     }
 
     #[cfg(feature = "play-feed")]
     pub(super) fn tick_feed_presentation(&mut self, segmented_hls: bool,
-        immersive: bool) -> plx_play_feed::feed_pump::PresentationTick {
+        immersive: bool) -> plx_playback_contract::feed::PresentationTick {
         plx_play_feed::feed_pump::tick_presentation(&mut self.feed, &self.mt, segmented_hls, immersive)
     }
 

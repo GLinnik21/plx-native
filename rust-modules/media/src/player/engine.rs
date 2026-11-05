@@ -42,7 +42,9 @@ pub(crate) use plx_play_feed::load_video_refused;
 use super::shared::Stage;
 use plx_play_feed::native_executor::{FeedHooks, LaunchHooks, NativeHooks, PrepareHooks, ReleaseHooks};
 #[cfg(all(test, feature = "hostsim"))]
-use plx_play_feed::seek::{inplace_layout_known, old_abi_seek_tested, select_seek_mode, SeekMode};
+use plx_play_feed::seek::{inplace_layout_known, old_abi_seek_tested, select_seek_mode};
+#[cfg(all(test, feature = "hostsim"))]
+use plx_playback_contract::feed::SeekMode;
 use super::{sink, threads};
 #[cfg(test)]
 use super::log;
@@ -367,7 +369,7 @@ fn with_immersive(p: &str, audio: &str, atmos: bool) -> String {
 #[cfg(test)]
 fn with_dolby_hdr_info(p: &str, video: &str, dv: plx_data::metadata::DvPresentation) -> String {
     let (payload, notice) = plx_play_feed::with_dolby_hdr_info(
-        p, video, dv.declared().map(|n| plx_play_feed::DolbyHdrInfo {
+        p, video, dv.declared().map(|n| plx_playback_contract::feed::DolbyHdrInfo {
             profile_id: n.profile_id, track_type: n.track_type, encryption_type: n.encryption_type,
         }), dv.declared().is_some() && plx_data::metadata::dv_node_suppressed(),
     );

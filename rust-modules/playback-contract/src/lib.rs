@@ -49,6 +49,7 @@ impl BackendSet {
     }
 }
 pub mod demux;
+pub mod feed;
 
 /// One logical start, supplied by the existing route owner. Its pair matches a route
 /// transaction and that transaction's physical start attempt; the contract does not mint a

@@ -19,6 +19,12 @@ use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::os::raw::c_char;
 use std::time::Duration;
 
+// The verdict types a tick returns are contract vocabulary (`plx_playback_contract::feed`); the
+// old paths stay for this crate's own code.
+pub use plx_playback_contract::feed::{
+    CtorGate, LoadTick, LoadTimeout, PausedSeekStep, PresentationTick, SeekPause, StuckSeekAction,
+};
+
 pub struct LoadGate {
     pub native_epoch: u32,
     pub verdict: LoadGateVerdict,
@@ -67,12 +73,6 @@ pub fn load_gate(epoch: u32, budget: Duration) -> LoadGate {
     LoadGate { native_epoch: epoch, verdict }
 }
 
-/// Whether native construction is callable yet. A blocked Load exposes its exact epoch only
-/// while the live non-preview Engine still owes the Load budget check.
-pub enum CtorGate {
-    Ready,
-    Awaiting { budget_epoch: Option<u32> },
-}
 
 pub fn ctor_gate(feed: &mut FeedResources, mt: &MainThread) -> CtorGate {
     let hooks = feed.hooks();
@@ -96,8 +96,6 @@ pub fn stuck_seek_due(feed: &mut FeedResources, now: u32, feed_allowed: bool,
         && !route_flight
 }
 
-pub enum StuckSeekAction { Retried(i32), Reload }
-
 /// Re-arm only the native demux target after common has committed any newer route seek.
 pub fn retry_stuck_seek(feed: &mut FeedResources, now: u32, target_ns: i64,
     can_retry: bool) -> StuckSeekAction {
@@ -117,8 +115,6 @@ pub fn retry_stuck_seek(feed: &mut FeedResources, now: u32, target_ns: i64,
 pub fn pending_seek_ready(feed: &FeedResources, seek_reloads: bool) -> bool {
     feed.pending_seek_ready(seek_reloads)
 }
-
-pub enum SeekPause { Ready, Refused, Stale, Busy }
 
 /// One native Pause transition before an in-place seek. The common route owner chooses any
 /// fallback reload from this typed verdict.
@@ -159,12 +155,6 @@ pub fn place_exported(mt: &MainThread, eng: &mut Engine, hooks: &NativeHooks) {
         "vplane: exported window placed src={}x{} rv={rv}",
         src.0, src.1
     ));
-}
-
-#[derive(Default)]
-pub struct PausedSeekStep {
-    pub finish: bool,
-    pub mid_seek_claimed: bool,
 }
 
 /// The pump's half of "a paused film stays paused across a scrub", run at the head of every tick:
@@ -501,13 +491,6 @@ pub fn apply_inplace_seek_post(feed: &mut FeedResources, t: i64, now: u32) {
 
 pub fn prime_before_play(rebase_pending: bool, segmented_hls: bool) -> bool {
     rebase_pending || segmented_hls
-}
-
-pub enum LoadTimeout { Elapsed(Duration), LostEpoch }
-#[derive(Default)]
-pub struct LoadTick {
-    pub timeout: Option<LoadTimeout>,
-    pub speed_fallback: Option<&'static str>,
 }
 
 /// Physical Load/Play transition. Route and report side effects are returned as addressed facts
@@ -1044,12 +1027,6 @@ pub fn tick_presentation(feed: &mut FeedResources, mt: &MainThread,
     }
 
     PresentationTick { stage: eng.stage, eos_pushed: eng.eos_pushed }
-}
-
-#[derive(Clone, Copy)]
-pub struct PresentationTick {
-    pub stage: Stage,
-    pub eos_pushed: bool,
 }
 
 /// Snapshot the physical feed callback mailboxes without route or session access.

@@ -212,38 +212,12 @@ struct HlsAutomaticOwner {
     user_sequence: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HlsPauseCompletion {
-    Accepted,
-    Refused,
-    Stale,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HlsSeekPause {
-    Issue(u64),
-    AlreadyHeld,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HlsUserPause {
-    Issue(u64),
-    AlreadyHeld,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HlsUserResume {
-    Issue(u64),
-    Deferred,
-    Prime,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HlsPlayCompletion {
-    Accepted { resume_acb: bool },
-    Refused,
-    Stale,
-}
+// The HLS pause handshake's outcome enums and the feed `Stage` are contract vocabulary
+// (`plx_playback_contract::feed`); the old paths stay for this crate's own code and for media's
+// `player::shared` glob.
+pub use plx_playback_contract::feed::{
+    HlsPauseCompletion, HlsPlayCompletion, HlsSeekPause, HlsUserPause, HlsUserResume, Stage,
+};
 
 #[derive(Clone, Copy, Debug)]
 struct AbrSeed {
@@ -2302,19 +2276,6 @@ impl Transport {
         self.seek_to_ns.store(-1, Ordering::Relaxed);
         self.seek_reqs.store(0, Ordering::Relaxed);
     }
-}
-
-#[repr(u8)]
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-/// **`Bound` is the ACB bind, and the webOS 5 path SKIPS it** — `VP_EXPORTED` goes
-/// `Playing -> Streaming` directly, because there is no bind sequence to be in the middle of.
-/// So `stage >= Bound` means "bound or later" on webOS 4 and "is Streaming" on webOS 5; a new
-/// test against it has to decide which of those it wants.
-pub enum Stage {
-    Loading = 0,
-    Playing,
-    Bound,
-    Streaming,
 }
 
 #[cfg(test)]

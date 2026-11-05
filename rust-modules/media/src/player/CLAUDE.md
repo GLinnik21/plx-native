@@ -845,7 +845,7 @@ something.
   "AV Sync Adjust" menu, whose effect on a mixer channel is not known; a Bluetooth device whose own latency
   differs from the filmed one; another sample rate, chip or firmware. Also unfilmed: a seek, and the speed
   path (it takes the same lead from the same code).
-- **Seeks are in-place**, in one of three per-session modes (`plx_play_feed::seek::SeekMode`, chosen by
+- **Seeks are in-place**, in one of three per-session modes (`plx_playback_contract::feed::SeekMode`, chosen by
   `plx_play_feed::seek::select_seek_mode_for_load` at every Load, the `/tmp/plxnative-seekmode` dev trigger
   `native|segment|reload` wins): the demuxer is `av_seek_frame`d to the target, then on the first
   post-seek keyframe `feed_stream` re-anchors the pipeline — no reload/decoder re-init.
