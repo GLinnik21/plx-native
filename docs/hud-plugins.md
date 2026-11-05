@@ -1577,8 +1577,8 @@ this session, no network).
 - Re-lint on every app release, with `unfit`, `app.max` and an issue for the author (Text fit, (a)).
 - Publish on merge: a static `index.json` (`id`, `version`, `package_format`, `hud_format`, `app` range, `sha256`, `bytes`, preview
   URLs, author, license, `unfit` per Text fit), packages at `p/<sha256>.plxhud`, a `revoked` list of hashes with reasons, a
-  `serial`, and `index.signed`, the same index signed (PR14, "Trust and safety"). Hosted on that repo's Pages under a
-  plxnative.com subdomain (UNVERIFIED: DNS), or under this repo's `site/` if the owner prefers one Pages site.
+  `serial`, and `index.signed`, the same index signed (PR14, "Trust and safety"). Hosted on that repo's Pages, on the
+  custom domain `huds.plxnative.com` (the app's `catalog::ORIGIN`; the registry's `--base-url` is the same value).
 - TV side: one conditional GET of `index.signed` (ETag) that does NOT follow redirects, because a
   redirect-following request may carry no headers (F40); the URL is pinned to the host that serves it, and a
   3xx is an error. It refreshes only when HUD settings open, at most once per 24 h, never at boot or during
@@ -1893,7 +1893,7 @@ server). STILL OWED on the set: a real GitHub release fetch and the CA question.
 
 PR12. Registry repository (shipped): [plxnative-huds](https://github.com/GLinnik21/plxnative-huds) with CI
 (lint, xvfb previews, diff), the publisher (index, original-byte packs, revoked list),
-[Pages](https://glinnik21.github.io/plxnative-huds/), and the authoring kit (`AGENTS.md`, `llms.txt`, `AUTHORING.md`,
+[Pages](https://huds.plxnative.com/), and the authoring kit (`AGENTS.md`, `llms.txt`, `AUTHORING.md`,
 examples, schema mirror and schema/parser agreement test); this repo publishes the `plxnative-sim` artifact.
 [Seeded PR #1](https://github.com/GLinnik21/plxnative-huds/pull/1) passed 70 Reference and 32 Minimal native Linux
 states, all eleven languages, and the two-iteration authoring exercise. Public readback matched all 87 catalog files.
