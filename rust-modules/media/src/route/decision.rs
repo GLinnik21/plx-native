@@ -6382,6 +6382,14 @@ fn recover_original_direct(
         s.stream_vcodec = candidate.vcodec.clone();
         // A server-default candidate carries no track facts; the file's own default codec
         // (`src_acodec`, the resolve's source argument) is what that direct play decodes.
+        //
+        // When a track IS picked, the demuxer feeds THAT track's bytes (the ordinal just set
+        // below via `set_audio_track`), so the declaration follows the picked track's codec —
+        // which is why releasing an E-AC3 JOC source to a picked AC3 track declares `ac3`, not
+        // the file's `eac3`. The FileFlows kill is the NO-pick case: PMS's track metadata still
+        // lists the default as `eac3` while the file on disk is the AAC remux, so the default
+        // play fed AAC frames under an `eac3` declaration. `fill_direct_plan` (plan.rs) carries
+        // the file's ground truth for that path; here the picked track's codec is the bytes.
         s.stream_acodec = candidate
             .audio
             .as_ref()
@@ -6389,7 +6397,20 @@ fn recover_original_direct(
         s.stream_fps = candidate.fps;
         s.stream_dovi = candidate.dovi;
         s.stream_dv_decision = candidate.dv_decision;
-        s.stream_immersive = candidate.audio.as_ref().is_some_and(|a| a.immersive);
+        // The immersive node raises the pipeline's Atmos mode for the E-AC3 being fed, so it is
+        // valid only when the FED bytes are E-AC3. When a track is picked, that's the picked
+        // track's codec (the `ac3` release above must NOT carry the node even though the FILE is
+        // an E-AC3 JOC source); with no track picked it's the file's default. A non-E-AC3 feed
+        // never carries the `immersive:ATMOS` node, which would wedge the audio ES the same way.
+        s.stream_immersive = candidate
+            .audio
+            .as_ref()
+            .is_some_and(|a| a.immersive)
+            && candidate
+                .audio
+                .as_ref()
+                .map_or_else(|| s.src_acodec.clone(), |a| a.codec.clone())
+                .eq_ignore_ascii_case("eac3");
     } };
     crate::player::route_fx::set_audio_track(
         ps,

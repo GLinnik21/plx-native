@@ -3228,12 +3228,21 @@ fn fill_direct_plan(
     dv_decision: plx_data::metadata::DvDecision,
     sub_pick: Option<(i64, i32)>,
 ) {
-    let (aidx, achosen, asid) = audio_sel.cloned().unwrap_or((-1, acodec.to_string(), 0));
+    let (aidx, _achosen, asid) = audio_sel.cloned().unwrap_or((-1, acodec.to_string(), 0));
     // source fps for the Load esInfo — from the playing item's own store (present for the
     // straight-from-Home path too, which never ran load_detail)
     let fps = plan.playing.as_ref().map(|p| p.video_fps).unwrap_or(0.0);
     plan.vcodec = vcodec.to_string();
-    plan.acodec = achosen.clone();
+    // Direct play feeds the FILE's own elementary stream, so the Load audio declaration must
+    // name the codec of the BYTES actually fed — the file's default audio codec (`src_acodec`,
+    // the demuxer's ground truth) — NOT the PMS track's `achosen`. They agree for an untouched
+    // original, but diverge when the file is a remux/transcode of a different codec than PMS
+    // reports: a FileFlows AAC 5.1 cut of an E-AC3 7.1 source, where PMS still lists the track
+    // as `eac3`. Declaring `eac3` ("AC3 PLUS" / audio/x-eac3) while the pipeline feeds AAC frames
+    // misconfigures the audio ES, and with audioSync the video sink slaves to the dead audio
+    // clock and stalls — the "one title kills playback" defect. `_achosen` (the PMS codec) is
+    // kept for the timeline/track metadata below; the declaration follows the file.
+    plan.acodec = plan.src_acodec.clone();
     plan.fps = fps;
     // Set here for the direct play, which feeds the FILE's own elementary stream; a server remux
     // that copies the video sets the same pair after its `/decision` (`copied_video_dv`).
@@ -3259,17 +3268,26 @@ fn fill_direct_plan(
     // play as the conservative rule, since a wrong declaration is worse than a missing one.
     // Nothing is lost visibly: an undeclared Atmos plays as ordinary E-AC3, which is what it does
     // today.
+    // The immersive node raises the pipeline's Atmos mode for the E-AC3 it is about to decode,
+    // so it is valid only when the FED bytes are E-AC3. The PMS track's `has_atmos` flag is stale
+    // metadata once the file is a non-Atmos remux/transcode (the FileFlows AAC case): an AAC feed
+    // must never carry the `immersive:ATMOS` node, or it wedges the audio ES the same way the codec
+    // mismatch does. Gate on the file's codec (`src_acodec`) being E-AC3, AND the picked track's
+    // Atmos flag — both must agree.
     plan.immersive = plan
-        .playing
-        .as_ref()
-        .and_then(|p| {
-            if aidx >= 0 {
-                p.audio.get(aidx as usize)
-            } else {
-                p.audio.iter().find(|a| a.selected)
-            }
-        })
-        .is_some_and(|a| a.has_atmos());
+        .src_acodec
+        .eq_ignore_ascii_case("eac3")
+        && plan
+            .playing
+            .as_ref()
+            .and_then(|p| {
+                if aidx >= 0 {
+                    p.audio.get(aidx as usize)
+                } else {
+                    p.audio.iter().find(|a| a.selected)
+                }
+            })
+            .is_some_and(|a| a.has_atmos());
     if plan.immersive {
         crate::player::log("audio: dolby atmos — declaring contents.immersive=ATMOS");
     }
