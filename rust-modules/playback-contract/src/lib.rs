@@ -15,6 +15,8 @@ pub mod uri;
 pub use uri::UriDriver;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+#[cfg(any(test, feature = "test-support"))]
+pub mod feed_fake;
 pub mod video;
 pub use state::{BackendState, Event, Fx, Intent, Phase, Snapshot, TrackFact};
 
