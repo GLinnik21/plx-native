@@ -20,6 +20,7 @@ struct Script {
     mapped: Vec<TrackSelection>,
     fail_open: Option<Failure>,
     refuse_start: Option<Failure>,
+    refuse_track: Option<Failure>,
     exit_preserved: bool,
 }
 
@@ -66,6 +67,11 @@ impl FakeUriHandle {
     }
     /// Refuse a Start at dispatch.
     pub fn refuse_start(&self, failure: Failure) { self.0.lock().unwrap().refuse_start = Some(failure); }
+    /// Refuse the next `SelectTrack` at dispatch, as the product driver does while an earlier
+    /// pick of the same kind is unresolved. One-shot: later picks queue again.
+    pub fn refuse_next_track(&self, failure: Failure) {
+        self.0.lock().unwrap().refuse_track = Some(failure);
+    }
     /// Whether the driver claims the plane.
     pub fn set_plane_owned(&self, owned: bool) { self.0.lock().unwrap().plane_owned = owned; }
     /// Declare that the active source maps this selected track.
@@ -98,6 +104,9 @@ impl DriverSet for FakeUriDriver {
                 script.events.push_back(DriverEvent::Release { attempt,
                     status: ReleaseStatus::Released });
             }
+        }
+        if let Operation::SelectTrack { .. } = operation {
+            if let Some(failure) = script.refuse_track.take() { return DispatchResult::Refused(failure); }
         }
         DispatchResult::Queued
     }
@@ -203,6 +212,18 @@ mod tests {
         assert!(driver.plane_owned() && driver.maps_track(audio));
         assert!(!driver.maps_track(TrackSelection { kind: TrackKind::Subtitle, id: 42 }));
         assert_eq!(driver.exit_disposition(), ExitDisposition::PreserveNativeOwnership);
+    }
+
+    #[test]
+    fn a_track_pick_is_refused_once_when_scripted_and_queued_after() {
+        let (mut driver, handle) = boxed();
+        handle.refuse_next_track(Failure::Busy);
+        let pick = |id| Operation::SelectTrack { kind: TrackKind::Audio, choice: TrackChoice::Selected(id) };
+        assert_eq!(driver.dispatch(BackendKind::Uri, &mt(), attempt(3), CommandId(1), pick(4)),
+            DispatchResult::Refused(Failure::Busy));
+        assert_eq!(driver.dispatch(BackendKind::Uri, &mt(), attempt(3), CommandId(2), pick(4)),
+            DispatchResult::Queued);
+        assert_eq!(handle.dispatched().len(), 2, "a refused command was still dispatched");
     }
 
     #[test]
