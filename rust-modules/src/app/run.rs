@@ -4644,7 +4644,7 @@ mod lifecycle_regression_tests {
         let _paused = TransportPaused::set(false);
         let (size, position, tone) =
             (plx_media::route::subtitle_size(), plx_media::route::subtitle_position(), plx_media::player::subtitle_tone());
-        let state = plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Buffering);
+        plx_media::player::swap_state_for_test(&mut app.player.session, plx_media::player::PlaybackState::Buffering);
         plx_media::route::restore_subtitle_size(SubtitleSize::Large);
         plx_media::route::restore_subtitle_position(SubtitlePosition::High);
         plx_media::player::restore_subtitle_tone(SubtitleTone::Charcoal);
@@ -4664,7 +4664,6 @@ mod lifecycle_regression_tests {
         model.marker_prefs = app.bridge.marker_preferences();
         model.covered = app.pages.surface_up();
         // restore before grading: a failed assertion must not leak a scrub target into the next test
-        plx_media::player::restore_state_for_test(state);
         plx_media::route::restore_subtitle_size(size);
         plx_media::route::restore_subtitle_position(position);
         plx_media::player::restore_subtitle_tone(tone);
@@ -4997,6 +4996,15 @@ mod lifecycle_regression_tests {
         let mut facts = *ps.attempt_view().facts();
         update(&mut facts);
         assert!(ps.ingest_attempt_facts(attempt, Backend::Feed, facts));
+    }
+
+    /// Deliver the Feed's end of stream to `ps`, as the pump does (`ReadoutEvent::StreamEnded`).
+    /// `player::ended` reads the readout only when the session's attempt view is a Feed attempt, so
+    /// the fixture's attempt is installed first when no engine claimed one (the update changes no
+    /// fact): without it the end would be read from the attempt's facts and never seen.
+    fn deliver_stream_end(ps: &mut plx_media::route::PlaybackSession) {
+        publish_feed_fixture_facts(ps, |_| {});
+        ps.step_readout(plx_media::player::readout::ReadoutEvent::StreamEnded);
     }
 
     /// The Feed seek mailbox the performer's seeks write, restored even after an assertion.
@@ -7439,21 +7447,19 @@ mod lifecycle_regression_tests {
     /// Deliver the end of the stream to a rig's session, once its engine has stopped changing under
     /// the test. The rig's media URL answers with JSON, so every rig engine's source open fails and
     /// the pump flies a recovery (`land_recovery_flight`: a worker round trip to the fixture, then
-    /// `reload_transcode`, which resets the session and with it `FEED_SHARED.ended`) before the engine
-    /// settles on `Error`. That landing is a worker's, so the frame it lands in is timing: an end
-    /// stored while the flight is still out is cleared by the reload in the very frame that would
-    /// have acted on it, and the page never leaves the player. Wait for the flight to land and the
-    /// engine to settle, then store the end.
+    /// `reload_transcode`, which resets the session: it steps `ReadoutEvent::SessionReset`, which
+    /// clears the readout's `ended` and puts its state back to `Idle`) before the engine settles on
+    /// `Error`. That landing is a worker's, so the frame it lands in is timing: an end delivered
+    /// while the flight is still out is cleared by the reload in the very frame that would have
+    /// acted on it, and the page never leaves the player. Wait for the flight to land and the
+    /// engine to settle, then deliver the end.
     fn end_the_stream(app: &mut App, t: &mut u32) {
         poll_until("the rig engine's failed-open recovery never settled", || {
             step(app, t, vec![]);
             !plx_media::route::recovery_flight_outstanding()
                 && plx_media::player::state(&app.player.session) == plx_media::player::PlaybackState::Error
         });
-        plx_media::player::FEED_SHARED.ended.store(true, std::sync::atomic::Ordering::Relaxed);
-        publish_feed_fixture_facts(&mut app.player.session, |facts| {
-            facts.ended = Some(true);
-        });
+        deliver_stream_end(&mut app.player.session);
     }
 
     /// `settle` for the frames after BACK from the player to Home: the page dip may wait dark at its
@@ -9213,7 +9219,7 @@ mod lifecycle_regression_tests {
                 final_seg: true,
             }],
         );
-        plx_media::player::restore_state_for_test(plx_media::player::PlaybackState::Playing as u8);
+        plx_media::player::swap_state_for_test(&mut rig.app.player.session, plx_media::player::PlaybackState::Playing);
         publish_feed_fixture_facts(&mut rig.app.player.session, |facts| {
             facts.position_ns = Some(30_000_000_000);
             facts.duration_ns = Some(60_000_000_000);
@@ -9250,10 +9256,7 @@ mod lifecycle_regression_tests {
         assert_eq!(plx_media::route::up_next(&rig.app.player.session).unwrap().rk, "2");
 
         // No engine in this rig (the state is forced), so nothing recovers under the end.
-        plx_media::player::FEED_SHARED.ended.store(true, std::sync::atomic::Ordering::Relaxed);
-        publish_feed_fixture_facts(&mut rig.app.player.session, |facts| {
-            facts.ended = Some(true);
-        });
+        deliver_stream_end(&mut rig.app.player.session);
         let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
         fr.now = t;
         unsafe { playback_tick(&mut rig.app, &mut fr); }

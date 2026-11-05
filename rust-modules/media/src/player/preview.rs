@@ -773,7 +773,7 @@ pub fn after_pump(
         preview,
         live,
         resolving: crate::route::play_pending(),
-        ended: crate::player::feed_ended(),
+        ended: crate::player::feed_ended(ps),
         failed: FEED_SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
         seen_frame,
     };

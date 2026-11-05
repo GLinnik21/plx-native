@@ -67,6 +67,14 @@ pub(super) fn playback_session(position_ns: i64, duration_ns: i64) -> plx_media:
     ps
 }
 
+/// Deliver the pump's `StateDerived` event to `ps`: the state `player::state(ps)` then reads, for a
+/// test that needs a stalled load, a seek or a failure on screen. The state is the session's own
+/// readout, so the test owns the session it steps and hands THAT to the `Cx` the screen reads; it
+/// never writes a global, and there is nothing to restore.
+pub(super) fn derive_state(ps: &mut plx_media::route::PlaybackSession, state: plx_media::player::PlaybackState) {
+    ps.step_readout(plx_media::player::readout::ReadoutEvent::StateDerived(state));
+}
+
 pub(super) fn publish_facts(ps: &mut plx_media::route::PlaybackSession, facts: plx_media::player::attempt_view::AttemptFacts) {
     use plx_media::player::attempt_view::Backend;
     let attempt = plx_media::route::RouteStartAttempt::fixture();

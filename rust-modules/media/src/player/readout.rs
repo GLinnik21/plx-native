@@ -1,9 +1,9 @@
 //! The player's own readout: the members only the player writes, and the last facts the feed
 //! sampled, as one `Copy` value with one writer.
 //!
-//! Today these live in the feed's process-global mailbox (`FEED_SHARED`: `pb_state`, `ended`,
+//! They lived in the feed's process-global mailbox (`FEED_SHARED`: `pb_state`, `ended`,
 //! `start_queued`, `speed_unsupported`, `rate_reload`, `play_rate_permille`), although the feed
-//! never writes any of them. They move here (D2 v2, 1.2 and 3.3) so a reader asks the session,
+//! never wrote any of them. They move here (D2 v2, 1.2 and 3.3) so a reader asks the session,
 //! and a test and a replay drive the same events the product does. A writer is an event; the
 //! session applies it through [`PlayerReadout::step`] and nothing else can change a field.
 //!
@@ -12,8 +12,11 @@
 //! It has no effects yet: the intents that also yield a feed command (seek, pause, audio) are
 //! L3b's, and join as events beside these. The pump feeds it: the session's one ingestion
 //! (`ingest_feed_facts`) takes the raw facts, and `present` derives the state and the end of
-//! stream at the pump's derivation point, both addressed by attempt. The readers still use the
-//! mailbox statics until L3a-2 step 4 moves each beside its writer.
+//! stream at the pump's derivation point, both addressed by attempt. `state` and `ended` are read
+//! from here alone (`player::state`, `player::ended`; their mailbox statics are gone), and a
+//! `SessionReset` at every real call of the Feed's session reset retires them; the speed, latch
+//! and queue members still have their mailbox statics until L3a-2 step 4b moves each beside its
+//! writer.
 
 use plx_playback_contract::feed::{FeedRaw, PresentationTick, Stage};
 use plx_playback_contract::RATE_NORMAL;
@@ -422,5 +425,41 @@ mod tests {
         assert!(r.ended(), "a later frame without the EOS does not un-end it");
         r.step(ReadoutEvent::EndSuperseded);
         assert!(!r.ended());
+    }
+
+    // ---- the readout is the READER of `state` and `ended` (L3a-2 step 4a) ----
+
+    /// What `player::state` and `player::ended` say follows the readout: a presented end of stream
+    /// is what the app's end-of-film rule polls, and a real stop's `SessionReset` clears it, so a
+    /// replay does not find the finished play's end.
+    #[test]
+    fn the_readers_follow_the_readout_after_a_presented_eos_and_a_real_stop_clears_it() {
+        let _serial = plx_base::testlock::serial();
+        let a = RouteStartAttempt::fixture();
+        let mut ps = PlaybackSession::IDLE;
+        ps.begin_attempt_view(a, Backend::Feed);
+        assert_eq!(crate::player::ended(&ps), Some(false), "a live feed attempt has not ended");
+        assert!(ps.present(a, tick(Stage::Streaming, true), facts(30, Some(100)), QUIET));
+        assert_eq!(crate::player::state(&ps), PlaybackState::Playing, "the reader is the readout's state");
+        assert_eq!(crate::player::ended(&ps), Some(true), "the reader is the readout's end of stream");
+        ps.step_readout(ReadoutEvent::SessionReset);
+        assert_eq!(crate::player::ended(&ps), Some(false), "a real stop retires the end");
+        assert_eq!(crate::player::state(&ps), PlaybackState::Idle);
+    }
+
+    /// The URI backend keeps its own fact: its end of stream is an `AttemptFacts` value its driver
+    /// writes, and the Feed's readout does not speak for it.
+    #[test]
+    fn the_uri_backends_end_of_stream_is_still_its_own_fact() {
+        let _serial = plx_base::testlock::serial();
+        let a = RouteStartAttempt::fixture();
+        let mut ps = PlaybackSession::IDLE;
+        ps.begin_attempt_view(a, Backend::Uri);
+        let mut f = *ps.attempt_view().facts();
+        f.ended = Some(true);
+        assert!(ps.ingest_attempt_facts(a, Backend::Uri, f));
+        assert_eq!(crate::player::ended(&ps), Some(true));
+        ps.step_readout(ReadoutEvent::SessionReset);
+        assert_eq!(crate::player::ended(&ps), Some(true), "a Feed reset leaves a URI attempt's fact alone");
     }
 }

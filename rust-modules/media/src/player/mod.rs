@@ -730,17 +730,23 @@ pub fn seek_pending(ps: &crate::route::PlaybackSession) -> Option<i64> {
 /// true once the pipeline has drained to true end-of-stream (see pump's EOS check). app.rs polls
 /// this to tear the player down at the credits.
 #[cfg(feature = "play-feed")]
-pub(crate) fn feed_ended() -> bool {
-    FEED_SHARED.ended.load(Relaxed)
+pub(crate) fn feed_ended(ps: &crate::route::PlaybackSession) -> bool {
+    ps.readout().ended()
 }
+/// The Feed's end of stream is the session's readout (`readout::PlayerReadout::ended`: the pump's
+/// `Presented` event sets it, a seek or a `SessionReset` clears it); the URI backend's is the
+/// `AttemptFacts` value its driver writes.
 pub fn ended(ps: &crate::route::PlaybackSession) -> Option<bool> {
-    ps.attempt_view().facts().ended
+    match ps.attempt_view().backend() {
+        Some(attempt_view::Backend::Feed) => Some(ps.readout().ended()),
+        _ => ps.attempt_view().facts().ended,
+    }
 }
 #[cfg(feature = "play-feed")]
-pub fn request_seek(ns: i64) {
+pub fn request_seek(ps: &mut crate::route::PlaybackSession, ns: i64) {
     report::note_seek_for(crate::route::playback_trace_generation());
     crate::route::note_user_seek_intent(ns);
-    FEED_SHARED.ended.store(false, Relaxed); // seeking back from the end un-ends the stream
+    ps.step_readout(readout::ReadoutEvent::EndSuperseded); // seeking back from the end un-ends the stream
     FEED_SHARED.pipeline_eos.store(false, Relaxed);
     FEED_SHARED.seek_display_ns.store(ns, Relaxed);
     FEED_SHARED.seeking.store(true, std::sync::atomic::Ordering::Release);
@@ -754,7 +760,7 @@ pub fn request_seek(ns: i64) {
 ///
 /// [`request_seek`] sets `FEED_SHARED.seeking`, and until 2026-08-27 exactly ONE place ever cleared it:
 /// the successful prime→Play in `native_executor::try_prime`. Every path that gives UP on a seek
-/// therefore leaked the flag — and that flag is what `pump::set_state` reads to publish
+/// therefore leaked the flag — and that flag is what the readout's `Presented` derivation reads to publish
 /// `PlaybackState::Seeking`, which means a spinner over the picture, the playhead frozen at
 /// `seek_display_ns`, and `is_playing()` false, **for the rest of the playback**, while the
 /// pipeline goes on fetching and presenting underneath.
@@ -805,7 +811,7 @@ pub fn state(ps: &crate::route::PlaybackSession) -> PlaybackState {
         // A physical Failed report during that close cannot be a handled terminal error yet.
         return PlaybackState::Resolving;
     }
-    // Resolving is DERIVED here rather than stored: the pump owns `pb_state` but only runs once
+    // Resolving is DERIVED here rather than stored: the pump derives the readout's state but only runs once
     // an engine exists, which is false for the whole resolve window. Deriving in the one reader
     // keeps a single writer instead of poking the state in from the frame loop.
     //
@@ -821,11 +827,11 @@ pub fn state(ps: &crate::route::PlaybackSession) -> PlaybackState {
     }
     // …and so is the PRE-FLIGHT refusal, for exactly the same reason: `/decision` answers before a
     // byte of video moves, so the plan fails with no URL, no engine is ever built, and the pump
-    // that owns `pb_state` never runs. Deriving it in the one reader keeps a single writer — the
+    // that derives the readout's state never runs. Deriving it in the one reader keeps a single writer — the
     // alternative is poking `Error` into the player's state from the frame loop. It sits BELOW the
     // resolve check because a fresh resolve is the thing that retires the last verdict.
     // A start refused because a timed-out Load is still parked, or because the previous object's
-    // off-frame Unload outlived `RELEASE_DEADLINE` (`ps.native_start_refused`) is the same kind of fact: no Engine was built, so the pump that owns `pb_state` never runs and
+    // off-frame Unload outlived `RELEASE_DEADLINE` (`ps.native_start_refused`) is the same kind of fact: no Engine was built, so the pump that derives the readout's state never runs and
     // nothing else could say why the player is empty.
     if ps.jail_load_blocked
         || ps.native_start_refused.is_some()
@@ -837,7 +843,7 @@ pub fn state(ps: &crate::route::PlaybackSession) -> PlaybackState {
     }
     // A seek in flight is derived HERE too, not only published by the pump's own ladder (which
     // says the same thing in the same order — a seek outranks frames). `request_seek` sets the
-    // flag at the press, but `pb_state` is only republished at the end of a pump pass, so a
+    // flag at the press, but the readout's state is only republished at the end of a pump pass, so a
     // reader between the two still saw Playing: the HUD, which freezes the playhead at the
     // target only while busy, drew one frame of the PRE-seek position between the scrub preview
     // and the frozen target — a visible jump back and forth on every seek.
@@ -855,7 +861,7 @@ pub fn state(ps: &crate::route::PlaybackSession) -> PlaybackState {
         if claim_hold::active() {
             return PlaybackState::Buffering;
         }
-        PlaybackState::from_u8(FEED_SHARED.pb_state.load(Relaxed))
+        ps.readout().state()
     }
     #[cfg(not(feature = "play-feed"))]
     { PlaybackState::Idle }
@@ -1480,21 +1486,21 @@ pub fn error_caption(ps: &crate::route::PlaybackSession) -> &'static std::ffi::C
 pub fn error_reason(ps: &crate::route::PlaybackSession) -> &'static str {
     error_now(ps).panel
 }
-/// Test-only: drive the derived playback state, returning the previous raw value to restore.
+/// Test-only: drive the derived playback state of `ps`, returning the previous raw value to restore.
 ///
-/// `pb_state` is the pump's field and `shared` is a private module, so a host test that needs the
-/// app in a given state — `app.rs`'s HUD-visibility pair, which pins the bug that made the `…` disc
-/// unreachable while stalled — sets it through here rather than widening the module for a test.
-/// Callers must hold `plx_base::testlock::serial()`: this is a crate global.
+/// The derived state is the session's readout (`StateDerived`, the pump's event), so a host test
+/// that needs the app in a given state — `app.rs`'s HUD-visibility pair, which pins the bug that
+/// made the `…` disc unreachable while stalled — delivers that event here rather than widening a
+/// module for a test. It writes nothing but the readout it is given.
 #[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
-pub fn swap_state_for_test(s: shared::PlaybackState) -> u8 {
-    let prev = FEED_SHARED.pb_state.load(Relaxed);
-    FEED_SHARED.pb_state.store(s as u8, Relaxed);
+pub fn swap_state_for_test(ps: &mut crate::route::PlaybackSession, s: shared::PlaybackState) -> u8 {
+    let prev = ps.readout().state() as u8;
+    ps.step_readout(readout::ReadoutEvent::StateDerived(s));
     prev
 }
 #[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
-pub fn restore_state_for_test(raw: u8) {
-    FEED_SHARED.pb_state.store(raw, Relaxed);
+pub fn restore_state_for_test(ps: &mut crate::route::PlaybackSession, raw: u8) {
+    ps.step_readout(readout::ReadoutEvent::StateDerived(shared::PlaybackState::from_u8(raw)));
 }
 /// Test-only: the native audio-track index the Feed's demuxer reads (what `set_audio_track`
 /// stores; -1 feeds the file's own default). `route` tests read it here instead of naming the
@@ -1929,7 +1935,8 @@ pub fn set_play_rate(ps: &mut crate::route::PlaybackSession, permille: i32) -> b
         return true; // nothing on screen: the next Load applies it
     }
     FEED_SHARED.rate_reload.store(true, Relaxed);
-    request_seek(intended_pos_ns(ps).max(0));
+    let target = intended_pos_ns(ps).max(0);
+    request_seek(ps, target);
     true
 }
 #[cfg(feature = "play-feed")]
@@ -2041,12 +2048,13 @@ pub fn speed_audio_report() -> Option<bool> {
 /// ([`speed_unsupported`]), put the viewer's speed back to Normal, and reload at their position —
 /// the same reload a speed change is, which now lands at 1x on the TV's own audio path.
 #[cfg(feature = "play-feed")]
-pub(crate) fn fall_back_from_speed(ps: &crate::route::PlaybackSession, why: &str) {
+pub(crate) fn fall_back_from_speed(ps: &mut crate::route::PlaybackSession, why: &str) {
     log(&format!("speed: FALLING BACK to 1x — {why}; speed is off until the app restarts"));
     FEED_SHARED.speed_unsupported.store(true, Relaxed);
     FEED_SHARED.play_rate_permille.store(RATE_NORMAL, Relaxed);
     FEED_SHARED.rate_reload.store(true, Relaxed);
-    request_seek(intended_pos_ns(ps).max(0));
+    let target = intended_pos_ns(ps).max(0);
+    request_seek(ps, target);
 }
 
 /// Back to 1x — called on a new item, like [`reset_audio_track`]: a speed is a choice about what
@@ -2662,7 +2670,7 @@ mod tests {
         ps.begin_attempt_view(crate::route::RouteStartAttempt::fixture(), attempt_view::Backend::Uri);
         FEED_SHARED.load_failed.store(true, Relaxed);
         FEED_SHARED.demux_no_video.store(true, Relaxed);
-        FEED_SHARED.pb_state.store(PlaybackState::Error as u8, Relaxed);
+        ps.step_readout(readout::ReadoutEvent::StateDerived(PlaybackState::Error)); // a stale Feed readout
         FEED_SHARED.playpos_ns.store(123, Relaxed);
         FEED_SHARED.duration_ns.store(456, Relaxed);
         FEED_SHARED.seen_frame.store(true, Relaxed);
@@ -3118,7 +3126,8 @@ mod tests {
         sf_on_event(epoch, 0, 7_000_000_000, std::ptr::null());
         sf_on_event(epoch, 28, 1, c"true".as_ptr());
         assert!(FEED_SHARED.pipeline_eos.load(Relaxed), "the pipeline said it reached the end");
-        request_seek(1_000_000_000);
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        request_seek(&mut ps, 1_000_000_000);
         assert!(!FEED_SHARED.pipeline_eos.load(Relaxed), "a seek back from the end un-ends it");
         FEED_SHARED.retire_native_session(epoch);
         SHARED.reset_session();
@@ -3479,7 +3488,7 @@ mod tests {
     /// **A seek that is given up on must not leave the spinner armed forever.**
     ///
     /// `request_seek` sets `FEED_SHARED.seeking`, and the ONLY place that cleared it was the successful
-    /// prime→Play. `pump::set_state` publishes `PlaybackState::Seeking` from that flag ahead of
+    /// prime→Play. the readout's `Presented` derivation publishes `PlaybackState::Seeking` from that flag ahead of
     /// every other arm — deliberately, since the frames on the panel during a seek are the
     /// pre-seek ones — so a leaked flag means a permanent spinner, a playhead frozen at the target
     /// and `is_playing()` false, while the pipeline plays on underneath. Device-measured: 84
@@ -3496,7 +3505,8 @@ mod tests {
         let was_seeking = FEED_SHARED.seeking.load(Relaxed);
         let was_display = FEED_SHARED.seek_display_ns.load(Relaxed);
 
-        request_seek(40_000_000_000);
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        request_seek(&mut ps, 40_000_000_000);
         assert!(
             FEED_SHARED.seeking.load(Relaxed),
             "the requester arms the spinner"
@@ -4385,21 +4395,21 @@ mod seek_hud_regressions {
     }
 
     /// **A requested seek reads as Seeking at once**, not one pump pass later. `request_seek`
-    /// sets the flag at the press; `pb_state` is republished only at the end of a pump pass, so
+    /// sets the flag at the press; the readout's state is republished only at the end of a pump pass, so
     /// a reader in between saw Playing with the scrub preview already cleared, and the HUD drew
     /// one frame of the pre-seek position before freezing on the target.
     #[test]
     fn a_requested_seek_reads_as_seeking_before_the_pump_republishes() {
         let _serial = plx_base::testlock::serial();
-        let ps = crate::route::PlaybackSession::IDLE;
+        let mut ps = crate::route::PlaybackSession::IDLE;
         crate::route::reset_player_control_for_test(&ps);
         SHARED.reset_session();
         FEED_TX.reset();
-        FEED_SHARED.pb_state.store(PlaybackState::Playing as u8, Relaxed);
+        ps.step_readout(readout::ReadoutEvent::StateDerived(PlaybackState::Playing));
         assert_eq!(state(&ps), PlaybackState::Playing);
         // the REAL press path — and deliberately so: `tests/test_harness.py` holds that exactly
         // one place in the tree arms this flag, which a test arming it by hand would break
-        request_seek(90_000_000_000);
+        request_seek(&mut ps, 90_000_000_000);
         assert_eq!(state(&ps), PlaybackState::Seeking, "the pump has not run yet");
         assert!(state(&ps).is_busy(), "busy is what freezes the HUD's playhead on the target");
         assert_eq!(FEED_SHARED.seek_display_ns.load(Relaxed), 90_000_000_000, "…and this is the target it freezes on");

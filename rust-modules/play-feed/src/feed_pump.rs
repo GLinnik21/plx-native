@@ -15,7 +15,7 @@ use crate::shared::{HlsPauseCompletion, HlsSeekPause};
 use plx_base::eventlog::log;
 use plx_base::task::MainThread;
 use plx_playback_contract::feed::{FailureFlags, FeedFacts, FeedRaw};
-use plx_playback_contract::readout::{AttemptFacts, PlaybackState, RuntimeFailure};
+use plx_playback_contract::readout::{AttemptFacts, RuntimeFailure};
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::os::raw::c_char;
 use std::time::Duration;
@@ -1095,11 +1095,11 @@ pub fn native_attempt_facts() -> plx_playback_contract::readout::AttemptFacts {
     let facts = AttemptFacts {
         started: Some(FEED_TX.started.load(Relaxed)),
         playing_observed: None,
-        ended: Some(FEED_SHARED.ended.load(Relaxed)),
+        ended: None, // the player's readout owns the end of stream (`PlayerReadout::ended`)
         seek_pending_ns: (seek_pending_ns >= 0).then_some(seek_pending_ns),
         rebuffering: Some(FEED_SHARED.hls_rebuffering.load(Relaxed)),
         seek_display_ns: (seek_display_ns >= 0).then_some(seek_display_ns),
-        status: Some(PlaybackState::from_u8(FEED_SHARED.pb_state.load(Relaxed))),
+        status: None, // ... and the derived UI state (`PlayerReadout::state`)
         requested_kbps: (requested_kbps > 0).then_some(requested_kbps),
         refusal_path: Some(FEED_SHARED.refusal_path()),
         runtime_failure: (failure != RuntimeFailure::Unknown).then_some(failure),
