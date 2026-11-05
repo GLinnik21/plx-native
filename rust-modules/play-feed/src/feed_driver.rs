@@ -152,6 +152,11 @@ impl FeedDriver {
             return;
         }
         self.presented_emitted = true;
+        // The one line that says a device run reached the rule; the evidence lines before it are
+        // `setMediaVideoData ... window+PLAYING` (the bind) and `sink: displayed=N` (the counter).
+        plx_base::eventlog::log(&format!(
+            "feed: presented (plane shows the picture; displayed-frame callbacks so far: {})",
+            shared.dg_sink_displayed_cb.load(std::sync::atomic::Ordering::Relaxed)));
         self.events.push_back(BackendEvent { backend: BackendKind::Feed,
             event: DriverEvent::Observation { attempt, observation: Observation::Presented } });
     }
