@@ -9,12 +9,35 @@
 //! drive. Its `feed` answers the buffer-feed half as a [`FeedControl`], or `None` when the
 //! composition installed no feed (the default, [`NoPhysical`]), so the player runs without naming
 //! the crate that implements the feed.
+//!
+//! # Facts: the mapped readout and the raw one
+//!
+//! What the feed observed reaches the player as [`FeedFacts`]: the sparse [`AttemptFacts`] the
+//! HUD and the route already read (`None` is "not known yet"), and a [`FeedRaw`] holding the values
+//! whose `None` or collapsed form would change a decision. The audit of every member the player
+//! reads (D2 v2, 1.3; counts are the production reads in `media/src`):
+//!
+//! | member (reads) | mapped as | decision |
+//! |---|---|---|
+//! | `playpos_ns` (10) | `position_ns = reported_frame.then_some(pos.max(0))` | **raw**: every resume seeds it before any frame, and the open-recovery resume offset (`pump.rs` `drive_open_recovery`) reads it before one; through `position_ns` a refused resume would reconvert at 0 |
+//! | `frames` (6) | `reported_frame.then_some(frames)` | **raw**: `== 0` and `> 0` tests where "no callback yet" differs from "0 frames" whenever frames > 0 arrive without a frame callback (not proven impossible) |
+//! | `load_failed`, `load_timed_out`, `demux_failed`, `demux_io_failed` (10) | one collapsed `runtime_failure` (`play-feed/src/readout.rs`) | **raw**: [`FailureFlags`]; readers test single flags and `live_runtime_failure` re-derives the collapse in media |
+//! | `duration_ns` (5) | `(d > 0).then_some(d)` | **mapped**, `unwrap_or(0)`: every reader tests `> 0` (`timeline.rs` `from_content_ns`, `pump.rs` `stream_ended` and the `> 0` seek gate, `route_start.rs` `final_report`) or passes it to `report::ended`; the store is 0 or positive (`reset` stores 0), so `<= 0` never carries a meaning `None` loses |
+//! | `dg_http_status` (3), `dg_cb_err_num` (1) | `> 0` and `!= 0` gates | **mapped**, `unwrap_or(0)`: every site compares a code against a constant, and 0 is "none" |
+//! | `hls_rebuffering` (1), `seen_frame` (1) | plain bool | **mapped** |
+//! | `native_audio_refused`, `decoder_revoked`, `file_size`, `applied_rate_permille`, `speed_audio_verdict`, `native_load_abandoned`, `dg_vpres_ct`, `dg_vpres_gap`, `pts_shift` (13) | no `AttemptFacts` field | **raw**, in [`FeedRaw`] |
+//!
+//! Not here yet: the seek family (`seeking`, `seek_target_ns`, `disp_base`, `pipeline_eos`, and the
+//! epoch'd `seek_requeue`/`seek_landed_epoch`; they have media writers and join with L3b's intents),
+//! `abr_seed` (a worker event, L3c), and the `DemuxAbr` and diagnostics halves of [`FeedFacts`] (L3c).
+//! A value that is `-1` in the feed's mailbox is an `Option` here, as in [`AttemptFacts`].
 
 use std::sync::atomic::{AtomicI32, AtomicU32};
 use std::time::Duration;
 
 use plx_base::task::MainThread;
 
+use crate::readout::AttemptFacts;
 use crate::{
     AttemptId, BackendEvent, BackendKind, Capabilities, CommandId, DispatchResult, DriverSet,
     ExitDisposition, Failure, Operation, SourceKey,
@@ -181,6 +204,79 @@ pub enum Stage {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Facts: what the feed observed, by value.
+// ---------------------------------------------------------------------------------------------
+
+/// The four runtime failure flags as the feed holds them, before `runtime_failure` collapses them
+/// by precedence. Readers test one flag, so the collapse is re-derived in the player.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FailureFlags {
+    /// The pipeline refused the Load, or its Load never returned.
+    pub load_failed: bool,
+    /// Set beside `load_failed` only by the Load budget expiring: a hang, not a refusal.
+    pub load_timed_out: bool,
+    /// The producer died before publishing a duration.
+    pub demux_failed: bool,
+    /// The media transport failed after open, possibly after frames were presented.
+    pub demux_io_failed: bool,
+}
+
+/// The feed's observations whose `AttemptFacts` form would lose what a decision reads (the
+/// module doc audits each member). A fresh `Default` is a feed with no session: nothing seen,
+/// every counter 0, 1x applied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FeedRaw {
+    /// The reported playhead in content time, before any frame has been shown.
+    pub playpos_ns: i64,
+    /// Frames the pipeline reported, 0 before any.
+    pub frames: i32,
+    pub flags: FailureFlags,
+    /// The pipeline took the video decoder back from an established session.
+    pub decoder_revoked: bool,
+    /// The pipeline refused the PCM audio of a speed session.
+    pub native_audio_refused: bool,
+    /// A timed-out Load is still inside the native call.
+    pub load_abandoned: bool,
+    /// The source's size in bytes; 0 while unknown.
+    pub file_size: i64,
+    /// The speed this session's Load plays at, 1000 = 1x.
+    pub applied_rate_permille: i32,
+    /// What the pipeline reported for a speed session's audio: `None` before any report,
+    /// `Some(true)` for the declared 48 kHz stereo, `Some(false)` otherwise.
+    pub speed_audio_ok: Option<bool>,
+    /// Native presentation callbacks seen, and the largest gap between two of them.
+    pub vpres_count: u32,
+    pub vpres_gap: u32,
+    /// The shift between the container's timestamps and the pipeline's.
+    pub pts_shift: i64,
+}
+
+impl FeedRaw {
+    /// A feed with no session; the const a holder initialises from.
+    pub const IDLE: Self = Self {
+        playpos_ns: 0, frames: 0,
+        flags: FailureFlags {
+            load_failed: false, load_timed_out: false, demux_failed: false, demux_io_failed: false,
+        },
+        decoder_revoked: false, native_audio_refused: false, load_abandoned: false, file_size: 0,
+        applied_rate_permille: crate::RATE_NORMAL, speed_audio_ok: None, vpres_count: 0,
+        vpres_gap: 0, pts_shift: 0,
+    };
+}
+
+impl Default for FeedRaw {
+    fn default() -> Self { Self::IDLE }
+}
+
+/// One sample of the feed: the mapped facts and the raw ones. `Copy`, addressed by the attempt
+/// that is ingesting it. L3c adds the demux ABR and the diagnostics.
+#[derive(Clone, Copy, Default)]
+pub struct FeedFacts {
+    pub attempt: AttemptFacts,
+    pub raw: FeedRaw,
+}
+
+// ---------------------------------------------------------------------------------------------
 // The traits.
 // ---------------------------------------------------------------------------------------------
 
@@ -279,6 +375,18 @@ impl PhysicalSet for NoPhysical {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A feed with no session has seen nothing and runs at 1x, and a default sample is the empty
+    /// readout beside it: the starting value every ingestion replaces.
+    #[test]
+    fn a_default_sample_is_a_feed_with_no_session() {
+        let facts = FeedFacts::default();
+        assert_eq!(facts.raw, FeedRaw::default());
+        assert_eq!(facts.raw.applied_rate_permille, crate::RATE_NORMAL);
+        assert_eq!(facts.raw.flags, FailureFlags::default());
+        assert!(facts.attempt.position_ns.is_none() && facts.attempt.status.is_none());
+        assert_eq!(facts.raw.speed_audio_ok, None, "no report is not a refusal");
+    }
 
     /// The set a composition hands the adapter is a boxed trait object, so the trait must be
     /// object-safe, and the default set answers like a composition with nothing installed.

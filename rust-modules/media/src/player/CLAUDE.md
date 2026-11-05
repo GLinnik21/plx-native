@@ -9,7 +9,7 @@ one-paragraph playback summary.
 
 ## Sans-IO
 
-`lifecycle.rs`, `attempt_metrics.rs`, `attempt_view.rs`, `recovery.rs`, `release.rs` and the route planners `route/plan.rs` and
+`lifecycle.rs`, `attempt_metrics.rs`, `attempt_view.rs`, `readout.rs`, `recovery.rs`, `release.rs` and the route planners `route/plan.rs` and
 `plan_memory.rs` are machines: a step starts no worker, reads no registry and has no `cfg(test)`
 fork. The engine, the pump and the drivers beside them execute their effects.
 
