@@ -2205,6 +2205,59 @@ mod load_outcome_tests {
         crate::route::reset_player_control_for_test(&ps);
     }
 
+    /// `is_live` is the bound attempt: the Engine the start installs is bound right after, and the
+    /// call that takes it out drops the binding.
+    #[test]
+    fn a_session_is_live_exactly_while_an_attempt_is_bound() {
+        let _serial = plx_base::testlock::serial();
+        let attempt = crate::route::RouteStartAttempt::fixture();
+        let mut pa = PlayerAdapter::new(unsafe { MainThread::assume() });
+        assert!(!pa.is_live() && pa.active_feed_attempt().is_none());
+        let mut eng = crate::player::engine::streaming_engine_for_test(8);
+        eng.attempt = attempt.contract_id();
+        pa.install(eng);
+        pa.bind_feed_attempt(attempt, 7);
+        assert!(pa.is_live());
+        assert_eq!(pa.active_feed_attempt(), Some(attempt));
+        assert!(pa.sample_feed().is_some(), "the Feed has the Engine the binding names");
+        drop(pa.take_native_stop());
+        assert!(!pa.is_live() && pa.active_feed_attempt().is_none(), "the stop drops the binding");
+        assert!(pa.sample_feed().is_none(), "and the Feed has no session to sample");
+        crate::player::SHARED.reset_session();
+        FEED_TX.reset();
+    }
+
+    /// The foreground's "I follow this Load" mark belongs to the bound attempt: a mark for another
+    /// attempt, or with nothing bound, is refused; every bind starts unmarked; the stop drops it.
+    #[test]
+    fn the_foreground_follows_mark_belongs_to_the_bound_attempt() {
+        let _serial = plx_base::testlock::serial();
+        let bound = crate::route::RouteStartAttempt::fixture();
+        let other = crate::route::RouteStartAttempt::fixture_n(2);
+        let mut pa = PlayerAdapter::new(unsafe { MainThread::assume() });
+        assert!(!pa.mark_foreground_follows_feed_load(bound), "nothing is bound");
+        assert!(!pa.foreground_follows_feed_load());
+
+        let mut eng = crate::player::engine::streaming_engine_for_test(8);
+        eng.attempt = bound.contract_id();
+        pa.install(eng);
+        pa.bind_feed_attempt(bound, 0);
+        assert!(!pa.foreground_follows_feed_load(), "a bind starts unmarked");
+        assert!(!pa.mark_foreground_follows_feed_load(other), "another attempt's mark is refused");
+        assert!(!pa.foreground_follows_feed_load());
+        assert!(pa.mark_foreground_follows_feed_load(bound));
+        assert!(pa.foreground_follows_feed_load());
+
+        pa.bind_feed_attempt(bound, 0);
+        assert!(!pa.foreground_follows_feed_load(), "a rebind resets the mark");
+        assert!(pa.mark_foreground_follows_feed_load(bound));
+        drop(pa.take_native_stop());
+        assert!(!pa.foreground_follows_feed_load(), "the stop drops the mark with the binding");
+        assert!(!pa.mark_foreground_follows_feed_load(bound), "and nothing is bound to mark");
+        crate::player::SHARED.reset_session();
+        FEED_TX.reset();
+    }
+
     #[test]
     fn elapsed_fact_keeps_its_captured_trace_after_engine_installation() {
         let _serial = plx_base::testlock::serial();

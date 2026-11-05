@@ -5541,6 +5541,44 @@ mod explicit_source_start_tests {
         });
     }
 
+    /// **`is_live` is the adapter's bound attempt, so a start that returns before it binds must
+    /// leave no Engine installed.** `start_bufferfeed_prepared` returns early on any `Rejected` or
+    /// `CommandRefused` for its attempt. A `Rejected` Start never reaches the driver; a refused
+    /// dispatch (`FeedDriver::dispatch`: no staged open, a busy slot, a failed launch) returns
+    /// before `launch_native_open` installs, which is its last step; and one `send_at(Start)`
+    /// dispatches no follow-on command (the startup plan waits at `Ready` for the Load's own
+    /// observation), so no refusal of a later command can reach that exit with an Engine standing.
+    /// This drives the refused dispatch through the adapter, as the start does, with nothing
+    /// staged for it.
+    #[test]
+    fn a_start_the_driver_refuses_leaves_no_engine_installed() {
+        with_playurl_armed(|ps, pa| {
+            let attempt = crate::route::RouteStartAttempt::fixture().contract_id();
+            let source = pa.next_source_key();
+            let at = pa.backend_tick();
+            let result = pa.backend_send_at(ps, plx_playback_contract::Intent::Start {
+                backend: plx_playback_contract::BackendKind::Feed,
+                attempt,
+                source,
+                requirements: plx_playback_contract::Requirements {
+                    source: plx_playback_contract::SourceKind::PacketFeed,
+                    video: plx_playback_contract::Fidelity::Exact,
+                    audio: plx_playback_contract::Fidelity::Exact,
+                    audio_track: plx_playback_contract::TrackChoice::Unspecified,
+                    subtitle_track: plx_playback_contract::TrackChoice::Unspecified,
+                },
+                initial: plx_playback_contract::InitialPlayback { position: None, paused: false },
+            }, crate::player::attempt_metrics::Origin::Fresh, at);
+            assert!(result.playback.iter().any(|fx| matches!(fx,
+                plx_playback_contract::Fx::Rejected { attempt: id, .. }
+                | plx_playback_contract::Fx::CommandRefused { attempt: id, .. } if *id == attempt)),
+                "PRECONDITION FAILED: the Start must be refused: {:?}", result.playback);
+            assert!(result.controls.is_empty(), "a refused Start dispatches nothing after it");
+            assert!(pa.engine().is_none(), "a refused Start installs no Engine");
+            assert!(!pa.is_live(), "and binds no attempt");
+        });
+    }
+
     /// LG App Self Checklist #46: the finished stream starts again (`maybe_replay_after_eos`: the
     /// arm re-fires and clears the URL). The first play spent the catalog's original recipe; the
     /// second is a new request and begins its own.
