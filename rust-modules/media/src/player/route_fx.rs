@@ -1,8 +1,11 @@
-//! The physical effects route policy asks of the Feed executor. Route decides (it names no backend and
-//! carries no backend `cfg`); this module executes, and every function is a no-op when the build composes
-//! no Feed driver. Each one writes the Feed executor's shared state or its side reader, which only a
-//! composed Feed reads. Which backends a session may offer is not decided here: the application's boot
-//! installs the set its drivers form (`PlayerAdapter::composed_backends`).
+//! What route policy asks of the player. Route decides (it names no backend and carries no backend
+//! `cfg`); this module executes. The audio and speed picks step the session's readout, which is
+//! backend-neutral, so those run in every build. The rest still write the Feed executor's process
+//! state (the claim hold, the Original failure mark, the side reader), which only a composed Feed
+//! reads: each is a no-op when the build composes no Feed driver, and each waits for its route
+//! caller to hold the adapter (route effects as typed effects a runner executes, L4). Which
+//! backends a session may offer is not decided here: the application's boot installs the set its
+//! drivers form (`PlayerAdapter::composed_backends`).
 
 use crate::route::{PlaybackSession, SideReaderTarget};
 
@@ -20,43 +23,28 @@ pub fn clear_original_failure() {
 
 /// Select the audio stream index the demuxer feeds at the first Load (`-1`: the default).
 pub fn set_audio_track(ps: &mut PlaybackSession, idx: i32) {
-    #[cfg(feature = "play-feed")]
     super::set_audio_track(ps, idx);
-    #[cfg(not(feature = "play-feed"))]
-    let _ = (ps, idx);
 }
 
 /// Back to the default audio stream, for a new item.
 pub fn reset_audio_track(ps: &mut PlaybackSession) {
-    #[cfg(feature = "play-feed")]
     super::reset_audio_track(ps);
-    #[cfg(not(feature = "play-feed"))]
-    let _ = ps;
 }
 
 /// Back to 1x, for a new item: the session's readout drops the offered rate and a pending reload.
 pub fn reset_play_rate(ps: &mut PlaybackSession) {
-    #[cfg(feature = "play-feed")]
     super::reset_play_rate(ps);
-    #[cfg(not(feature = "play-feed"))]
-    let _ = ps;
 }
 
 /// Stage a native audio switch (the Load codec and the demuxer's stream index) without queueing
 /// its reload.
 pub fn stage_native_audio(ps: &mut PlaybackSession, audio_idx: i32, codec: &str) {
-    #[cfg(feature = "play-feed")]
     super::stage_native_audio(ps, audio_idx, codec);
-    #[cfg(not(feature = "play-feed"))]
-    let _ = (ps, audio_idx, codec);
 }
 
 /// Request a native audio-track switch: stage it and queue the direct-play reload.
 pub fn request_audio_track(ps: &mut PlaybackSession, audio_idx: i32, codec: &str) {
-    #[cfg(feature = "play-feed")]
     super::request_audio_track(ps, audio_idx, codec);
-    #[cfg(not(feature = "play-feed"))]
-    let _ = (ps, audio_idx, codec);
 }
 
 /// Is the side subtitle reader running?

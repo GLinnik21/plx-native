@@ -272,6 +272,13 @@ impl PlayerReadout {
     pub fn paused(&self) -> bool { self.paused }
     /// A paused seek is allowed to decode one frame before the re-pause.
     pub fn seek_preroll(&self) -> bool { self.seek_preroll }
+    /// Feeding is an actuator concern, not the viewer's pause intent: the feed gate is open unless
+    /// the viewer is Paused, and a paused seek's preroll is the one bounded exception (it must
+    /// decode a landed frame under a Pause). Derived from [`Self::paused`] and
+    /// [`Self::seek_preroll`], the same two members the feed's own `Transport::feed_allowed`
+    /// derives it from (a rig frame asserts the copies agree), so media reads its own and the gate's
+    /// word is not needed.
+    pub fn feed_allowed(&self) -> bool { !self.paused || self.seek_preroll }
     /// The foreground restore's re-pause is owed.
     pub fn resume_pend(&self) -> bool { self.resume_pend }
     /// The pipeline took the video decoder back and nobody has taken that yet.
@@ -431,6 +438,29 @@ mod tests {
     /// A seek request for `secs`, the HUD freezing at the same target.
     fn tap(secs: i64) -> ReadoutEvent {
         ReadoutEvent::SeekRequested { target_ns: secs * 1_000_000_000, display_ns: secs * 1_000_000_000 }
+    }
+
+    /// The feed gate is open for a playing transport, shut for a viewer Pause, and open again
+    /// while a paused seek's preroll lets one landed frame through; closing the preroll, resuming
+    /// and stopping each leave it as the feed's own `feed_allowed` leaves its gate.
+    #[test]
+    fn feeding_is_allowed_unless_paused_and_a_paused_seek_preroll_reopens_it() {
+        assert!(PlayerReadout::IDLE.feed_allowed(), "nothing paused: the gate is open");
+        let paused = stepped(&[ReadoutEvent::CommitPaused { paused: true }]);
+        assert!(!paused.feed_allowed(), "a viewer Pause shuts the gate");
+        let mut r = stepped(&[ReadoutEvent::CommitPaused { paused: true }, ReadoutEvent::BeginPausedSeek]);
+        assert!(r.paused() && r.seek_preroll());
+        assert!(r.feed_allowed(), "a paused seek's preroll lets the keyframe through");
+        r.step(ReadoutEvent::FinishSeekPreroll);
+        assert!(r.paused() && !r.seek_preroll() && !r.feed_allowed(), "the gate shuts behind the closed preroll");
+        r.step(ReadoutEvent::BeginPausedSeek);
+        r.step(ReadoutEvent::CommitPaused { paused: false });
+        assert!(r.feed_allowed(), "a Resume opens it, preroll or not");
+        r.step(ReadoutEvent::CommitPaused { paused: true });
+        r.step(ReadoutEvent::TransportStopped);
+        assert!(r.feed_allowed(), "a stop retires the Pause and the preroll with it");
+        let unpaused_seek = stepped(&[ReadoutEvent::BeginPausedSeek]);
+        assert!(!unpaused_seek.seek_preroll() && unpaused_seek.feed_allowed(), "no preroll opens without a Pause");
     }
 
     #[test]
