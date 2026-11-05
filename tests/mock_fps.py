@@ -91,7 +91,6 @@ A scene with no `mock` block is never run under --mock: it needs real library co
 which scenes do not is how a synthetic library grades the wrong thing.
 """
 import importlib.util
-import json
 import os
 import re
 import socket
@@ -272,28 +271,6 @@ def carrier_server_args(path):
     `--extra-media` movie (ratingKey `CARRIER_RK`, part `CARRIER_PART_ID`). `path` is absolute, resolved
     by the runner against the pack it is serving, not against `fixtures_base()`."""
     return ["--extra-media", str(path)]
-
-
-def mock_machine_identifier(host, port):
-    """The started mock's `machineIdentifier`, read from its tokenless `/identity`.
-
-    The URI dev route pins the server it may certify (`server=`), and the mock derives its identifier
-    from the catalog, so the runner asks rather than assumes. Refuses (SystemExit) a server whose
-    version is not the synthetic one: this is the same guard `tools/mock-guest.py` applies.
-    """
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    try:
-        with opener.open(f"http://{host}:{port}/identity", timeout=5) as r:
-            container = (json.loads(r.read(65537)) or {}).get("MediaContainer") or {}
-    except (OSError, ValueError) as e:
-        raise SystemExit(f"refusing to run: the mock at {host}:{port} did not answer /identity: {e}")
-    if container.get("version") != MOCK_SERVER_VERSION:
-        raise SystemExit(f"refusing to run: {host}:{port} is not the synthetic mock "
-                         f"(version {container.get('version')!r}, want {MOCK_SERVER_VERSION!r})")
-    machine = container.get("machineIdentifier")
-    if not isinstance(machine, str) or not machine:
-        raise SystemExit(f"refusing to run: the mock at {host}:{port} reports no machineIdentifier")
-    return machine
 
 
 def _mock_guest_module():

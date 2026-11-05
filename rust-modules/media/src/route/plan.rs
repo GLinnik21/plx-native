@@ -1983,6 +1983,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 let quality = if forced { Quality::Original } else { env.quality };
                 let request = super::uri_preflight::OriginalRequest {
                     selection: source_selection,
+                    server_origin: client.origin().clone(),
                     source_url: client.direct_play_url(part, &session).to_url(),
                     duration_ms: plan.playing.as_ref().and_then(|p| p.duration_ms),
                     video_codec: vcodec.to_owned(),

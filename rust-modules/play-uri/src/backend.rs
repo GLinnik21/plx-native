@@ -23,7 +23,10 @@ pub trait MonotonicClock { fn now_ms(&self) -> u64; }
 /// is the webOS 4.x plane: the paced bind sequence of `acb_bind` through the one plane owner,
 /// released by `UNLOADED` and its completion fence. The executor refuses to start on it unless the
 /// display is in ACB mode and the gate (`acb_bind::gate`) passes, and it forwards only a descriptor
-/// the service itself reported. Present, and not routed: no qualifier produces an offer for it yet.
+/// the service itself reported. Present, and not routed in production: the product composition certifies
+/// no source for it, so no offer reaches it. A `devtriggers` build can compose a dev qualifier and
+/// certified capabilities for it (the app's `dev::uri_product`); its attempt then also writes the
+/// `uri-trace:` stream (`uri_trace`).
 pub use plx_playback_contract::uri::Binding;
 
 /// The display path composition chooses for the executor: the ACB plane when the display is in ACB
@@ -97,6 +100,9 @@ pub struct UriBackend {
     /// `playing`, the plane owner's `Shown`, then a clock advance. Only an ACB attempt is ever
     /// told the plane's verdict, so any other binding never presents.
     picture: PictureGate,
+    /// The attempt's `uri-trace:` stream (devtriggers only; see `uri_trace`).
+    #[cfg(feature = "devtriggers")]
+    trace: crate::uri_trace::Trace,
 }
 
 impl UriBackend {
@@ -112,7 +118,9 @@ impl UriBackend {
             dispatching: None, controls: BTreeMap::new(),
             pending: VecDeque::new(), close_reported: false, quarantine_reported: false,
             acb: AcbBind::new(false), acb_source: None, foreground_sent: false, acb_refusal: None,
-            transport_paused: false, plane_paused: false, picture: PictureGate::new() }
+            transport_paused: false, plane_paused: false, picture: PictureGate::new(),
+            #[cfg(feature = "devtriggers")]
+            trace: crate::uri_trace::Trace::new(0) }
     }
 
     /// Give exactly one authorized, owned URL to the next matching Start. Superseding a staged
@@ -245,6 +253,8 @@ impl UriBackend {
         self.transport_paused = false;
         self.plane_paused = false;
         self.picture_step(PictureEvent::Reset);
+        #[cfg(feature = "devtriggers")]
+        { self.trace = crate::uri_trace::Trace::new(self.config.clock.now_ms()); }
         self.lifecycle = Lifecycle::new();
         self.feed(LifeEvent::Open(Shape::Named), mt, self.config.clock.now_ms());
         DispatchResult::Queued
@@ -423,6 +433,8 @@ impl UriBackend {
 
     fn delivered(&mut self, method: Method, ok: bool, message: Message,
         mt: &MainThread, now_ms: u64) {
+        #[cfg(feature = "devtriggers")]
+        for line in self.trace.lines(&message, now_ms) { plx_base::eventlog::log(&line); }
         let denied = !ok || message.accepted() == Some(false);
         let refused_control = self.control_message(method, denied, &message, mt);
         if denied {
@@ -473,6 +485,7 @@ impl UriBackend {
                         None
                     } else {
                         self.played_once = true;
+                        plx_base::eventlog::log("uri: service playing");
                         self.picture_step(PictureEvent::ServicePlaying);
                         Some(Playback::Playing)
                     }
@@ -992,6 +1005,23 @@ mod tests {
             assert_eq!(self.bus.calls("subscribe"), 1);
             assert_eq!(self.bus.calls("play"), 0);
         }
+    }
+
+    #[test]
+    fn an_accepted_playing_is_logged_and_traced_in_the_probes_words() {
+        plx_base::eventlog::with_private_log(|| {
+            let mut rig = Rig::new(); rig.opened();
+            assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, Operation::Play), DispatchResult::Queued);
+            rig.bus.say("play", r#"{"returnValue":true,"mediaId":"m1","playing":true,"currentTime":123}"#);
+            rig.driver.poll(&rig.mt);
+            let log = std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default();
+            assert!(log.contains("uri: service playing"), "{log}");
+            #[cfg(feature = "devtriggers")]
+            {
+                assert!(log.contains("uri-trace: t=") && log.contains(" ev=playing\n"), "{log}");
+                assert!(log.contains(" ev=currentTime value=123 (first report)"), "{log}");
+            }
+        });
     }
 
     #[test]
