@@ -241,6 +241,7 @@ def main():
     parser.add_argument("--only", help="comma-separated scene names for iteration; incomplete output cannot publish")
     parser.add_argument("--plan", action="store_true")
     args = parser.parse_args()
+    screenshots.unwind_on_signals()
     if args.plan:
         env = {key: value for key, value in screenshots.os.environ.items() if not key.startswith("PLXNATIVE_")}
         env["PLXNATIVE_APP_DIR"] = str(ROOT / "pkg")

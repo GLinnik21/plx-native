@@ -62,6 +62,7 @@ import json
 import os
 import pathlib
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -94,6 +95,15 @@ REFUSALS = ("BADTRIGGER", "gave up")
 def die(msg):
     print(f"screenshots: {msg}", file=sys.stderr)
     sys.exit(1)
+
+
+def unwind_on_signals():
+    """Make SIGTERM and SIGHUP raise `SystemExit`, as Ctrl-C raises `KeyboardInterrupt`, so the
+    `finally` blocks that remove a scene's instance root and the staging directory run, and
+    `subprocess.run` kills the simulator it is waiting on. Unhandled, either ends Python on the
+    spot and leaves both behind (a virtual capture's root is up to 0.7 GiB)."""
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, lambda n, _f: sys.exit(128 + n))
 
 
 def size_of(spec):
@@ -474,6 +484,7 @@ def main():
                     help="also render home-hero-<film>.jpg for the catalog's hero and its alternatives")
     ap.add_argument("--keep", action="store_true", help="keep each scene's instance root (for debugging)")
     a = ap.parse_args()
+    unwind_on_signals()
 
     if not a.bin.exists():
         die(f"{a.bin} does not exist — build it with `make screenshots-sim`")
