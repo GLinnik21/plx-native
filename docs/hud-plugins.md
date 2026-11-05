@@ -1579,6 +1579,8 @@ this session, no network).
   URLs, author, license, `unfit` per Text fit), packages at `p/<sha256>.plxhud`, a `revoked` list of hashes with reasons, a
   `serial`, and `index.signed`, the same index signed (PR14, "Trust and safety"). Hosted on that repo's Pages, on the
   custom domain `huds.plxnative.com` (the app's `catalog::ORIGIN`; the registry's `--base-url` is the same value).
+  On 2026-11-05 the TV's own libcurl and trust store fetched `index.signed` and a package from it with
+  `ssl_verify_result=0`. The chain is Let's Encrypt YR2, then Root YR cross-signed by ISRG Root X1.
 - TV side: one conditional GET of `index.signed` (ETag) that does NOT follow redirects, because a
   redirect-following request may carry no headers (F40); the URL is pinned to the host that serves it, and a
   3xx is an error. It refreshes only when HUD settings open, at most once per 24 h, never at boot or during
@@ -1993,9 +1995,8 @@ the curl path and got `fw-compat-reviewer`; PR14 took a pure-Rust crate and need
 - That the `info-panel` and `chapters-panel` fps scenes enter their scene on the set under the ` section=` word (PR8
   stage 2b settled the word; the host tests grade the table, only a TV run grades the scenes).
 - Whether a rooted set runs under one of the two jails; HBC availability for testing; USB mounts.
-- The TV's CA set and `objects.githubusercontent.com`; the TV's first fetch from `huds.plxnative.com`, whose chain
-  (Let's Encrypt YR2, then Root YR cross-signed by ISRG Root X1) has the shape the TV accepted from
-  `glinnik21.github.io` in PR14; GitHub's unauthenticated rate limit figure; Homebrew 4.0's API move.
+- The TV's CA set and `objects.githubusercontent.com`; GitHub's unauthenticated rate limit figure; Homebrew 4.0's
+  API move.
 - OpenSSL EVP reachability through the TV's libcrypto.
 - External format facts (JSON Schema 2020-12 support in Python `jsonschema`, DTCG, Adaptive Cards, DivKit, Lottie,
   `llms.txt`).
