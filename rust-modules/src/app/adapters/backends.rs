@@ -142,7 +142,7 @@ mod tests {
         unsafe fn plane_probe_connect_dass(&self, mt: &MainThread) -> c_int {
             NoSink.plane_probe_connect_dass(mt)
         }
-        unsafe fn plane_finish(&self, mt: &MainThread) -> c_int { NoSink.plane_finish(mt) }
+        unsafe fn plane_finish(&self, mt: &MainThread) -> sink::PlaneFinish { NoSink.plane_finish(mt) }
         unsafe fn plane_bind(&self, mt: &MainThread, id: *const c_char) { NoSink.plane_bind(mt, id) }
         unsafe fn plane_send_video_data(&self, mt: &MainThread, info: *const c_char) -> c_int {
             NoSink.plane_send_video_data(mt, info)
