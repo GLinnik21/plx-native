@@ -84,6 +84,13 @@ pub struct SampleBuf {
     pub loops: i64,
 }
 
+impl SampleBuf {
+    /// The local validation sample, positioned at its first AU.
+    pub fn new(data: Vec<u8>, au: Vec<usize>) -> Self {
+        Self { data, au, next: 0, loops: 0 }
+    }
+}
+
 pub enum Source {
     Stream, // host/port/path are consumed by the demux thread at spawn
     Sample(Box<SampleBuf>),
@@ -272,5 +279,87 @@ impl PendingRelease {
         if let Some(thread) = self.unload_th.take() {
             plx_base::task::join("sf-unload", thread);
         }
+    }
+}
+
+#[cfg(test)]
+mod feed_pace_tests {
+    use super::{FeedPace, FEED_PACE_CAP_MS, MAX_FEED_AHEAD_NS, PRES_NONE};
+
+    const MS: i64 = 1_000_000;
+
+    /// Video AUs (24 fps, 41.7 ms apart) the throttle admits at each 60 Hz frame of a 1x clock
+    /// whose position reports arrive every 200 ms — with `reference` as the throttle's position.
+    fn admitted_per_frame(reference: impl Fn(&mut FeedPace, i64, u32) -> i64) -> Vec<u32> {
+        let mut pace = FeedPace::default();
+        let au_ns = 41_708_333i64;
+        let mut next_pts = MAX_FEED_AHEAD_NS; // the lane starts full
+        let mut out = Vec::new();
+        for frame in 0..120u32 {
+            let now = 1_000 + frame * 1000 / 60;
+            let true_pos = (now as i64 - 1_000) * MS;
+            let pres = true_pos - true_pos % (200 * MS); // the 5 Hz step function
+            let refpos = reference(&mut pace, pres, now);
+            let mut n = 0;
+            while next_pts - refpos <= MAX_FEED_AHEAD_NS {
+                next_pts += au_ns;
+                n += 1;
+            }
+            out.push(n);
+        }
+        out
+    }
+
+    /// **Regression: the 5 Hz feed burst.** Against the raw report the lane opens 200 ms at a
+    /// time: ~5 AUs land on one frame and none on the eleven around it. Run on at 1x it never
+    /// admits more than one video AU a frame, and admits the same media over the same time.
+    #[test]
+    fn the_reference_spreads_the_five_hertz_burst_across_frames() {
+        let raw = admitted_per_frame(|_, pres, _| pres);
+        let paced = admitted_per_frame(|p, pres, now| p.reference(pres, now));
+        assert!(raw.iter().max().copied().unwrap_or(0) >= 4, "the raw step feeds in bursts: {raw:?}");
+        assert!(paced.iter().all(|&n| n <= 1), "paced: at most one AU a frame: {paced:?}");
+        let (r, p): (u32, u32) = (raw.iter().sum(), paced.iter().sum());
+        assert!(p.abs_diff(r) <= 6, "same media over the same two seconds: raw {r}, paced {p}");
+    }
+
+    /// A `now` BEFORE the stamp of the last report (the throttle read its clock earlier than the
+    /// report was first seen) is no run-on, not a full-cap one.
+    #[test]
+    fn a_clock_behind_the_report_stamp_does_not_run_on() {
+        let mut pace = FeedPace::default();
+        assert_eq!(pace.reference(5_000 * MS, 1_000), 5_000 * MS);
+        assert_eq!(pace.reference(5_000 * MS, 900), 5_000 * MS);
+    }
+
+    /// A clock that stops reporting new positions (paused, stalled) opens the lane by at most
+    /// the cap, never without bound; `PRES_NONE` passes through and forgets the last report.
+    #[test]
+    fn a_frozen_report_runs_on_at_most_the_cap_and_none_passes_through() {
+        let mut pace = FeedPace::default();
+        assert_eq!(pace.reference(5_000 * MS, 100), 5_000 * MS);
+        assert_eq!(pace.reference(5_000 * MS, 150), 5_050 * MS);
+        assert_eq!(pace.reference(5_000 * MS, 100_000), 5_000 * MS + FEED_PACE_CAP_MS as i64 * MS);
+        assert_eq!(pace.reference(PRES_NONE, 100_001), PRES_NONE);
+        assert_eq!(pace.reference(5_000 * MS, 100_002), 5_000 * MS, "a fresh report restarts the run-on");
+    }
+
+    /// At 1.5x the playhead moves 1.5 ms of media per wall-clock ms between reports, so the
+    /// estimate runs on that much faster; capped by the same wall-clock bound.
+    #[test]
+    fn the_run_on_follows_the_pipeline_rate() {
+        let mut pace = FeedPace::default();
+        assert_eq!(pace.reference_at(5_000 * MS, 100, 1500), 5_000 * MS);
+        assert_eq!(pace.reference_at(5_000 * MS, 150, 1500), 5_075 * MS);
+        assert_eq!(pace.reference_at(5_000 * MS, 200, 500), 5_050 * MS, "half speed runs on at half");
+        assert_eq!(
+            pace.reference_at(5_000 * MS, 100_000, 2000),
+            5_000 * MS + 2 * FEED_PACE_CAP_MS as i64 * MS,
+            "the cap is wall-clock time; at 2x it covers twice the media"
+        );
+        assert_eq!(
+            FeedPace::default().reference(5_000 * MS, 100),
+            FeedPace::default().reference_at(5_000 * MS, 100, plx_playback_contract::RATE_NORMAL)
+        );
     }
 }

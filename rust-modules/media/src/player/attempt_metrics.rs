@@ -129,11 +129,40 @@ pub struct RequestSummary<R, A> {
     pub unknown_time_events: u32,
 }
 
+/// What one discrete record reports. Closed and local: it is never serialized, and it adds no
+/// variant to `Backend`, `Stage` or `Origin`, whose domains the consent preview lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Incident {
+    /// A physical attempt failed at the record's stage (`Open` is a failed start).
+    Failed(Cause),
+    /// An involuntary rebuffer began after the request's first confirmed picture.
+    Rebuffer,
+    /// The route owner accepted a switch away from this attempt's backend.
+    Handoff,
+}
+
+/// One occurrence of an [`Incident`], addressed to its logical request and physical attempt.
+/// `stage` is only what the evidence proves: a handoff or rebuffer whose attempt has shown no
+/// evidence reports `Stage::Unknown` rather than a guessed default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Record<R, A> {
+    pub request: R,
+    pub attempt: A,
+    pub backend: Backend,
+    pub stage: Stage,
+    pub incident: Incident,
+    pub at: Tick,
+}
+
 /// Typed local results. The runner decides whether a terminal failure becomes an existing
 /// consented handled report. A recovered refusal is a different observation, emitted only when
-/// a later physical attempt presents its first picture.
+/// a later physical attempt presents its first picture. An `Incident` is the per-event record:
+/// exactly one per accepted failure, rebuffer episode and handoff. Start rejections never reach
+/// this reducer (no attempt exists) and release failures outlive the logical request; both are
+/// recorded by the physical-lifecycle owner (`backend_metrics`), not here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Fx<R, A> {
+    Incident(Record<R, A>),
     Finished(RequestSummary<R, A>),
     HandledError { request: R, attempt: Option<A>, backend: Backend, failure: Failure },
     RecoveredRefusal { request: R, refused_attempt: A, recovered_attempt: A, refused_backend: Backend },
@@ -141,6 +170,20 @@ pub enum Fx<R, A> {
 
 #[derive(Clone, Copy)]
 struct Handoff<A> { from: A }
+
+impl<A: Copy> AttemptSummary<A> {
+    /// The stage the attempt's own evidence proves. No evidence stays `Unknown`.
+    fn proven_stage(&self) -> Stage {
+        if self.evidence.picture_presented { Stage::Decode }
+        else if self.evidence.playback_observed || self.evidence.command_acknowledged
+            || self.evidence.clock_advanced { Stage::Presentation }
+        else { Stage::Unknown }
+    }
+
+    fn record<R>(&self, request: R, stage: Stage, incident: Incident, at: Tick) -> Record<R, A> {
+        Record { request, attempt: self.id, backend: self.backend, stage, incident, at }
+    }
+}
 
 /// A single request is enough: the route owner serializes logical playback requests. The
 /// caller may use its existing playback-level `plx_playback_contract::AttemptId` and a
@@ -177,6 +220,15 @@ impl<R: Copy + Ord, A: Copy + Ord> AttemptMetrics<R, A> {
     }
 
     pub fn snapshot(&self) -> Option<&RequestSummary<R, A>> { self.request.as_ref() }
+
+    /// The stage a handoff leaves: the source attempt's own failure stage, else what its
+    /// evidence proves. A source that neither failed nor showed evidence stays `Unknown`.
+    fn handoff_stage(source: &AttemptSummary<A>) -> Stage {
+        match source.outcome {
+            Some(AttemptOutcome::Failed(Failure { stage, .. })) => stage,
+            _ => source.proven_stage(),
+        }
+    }
 
     fn advance(&mut self, to: Tick) -> bool {
         let Tick::Known(to) = to else {
@@ -343,6 +395,9 @@ impl<R: Copy + Ord, A: Copy + Ord> AttemptMetrics<R, A> {
                 // already-counted episode stays one episode across a backend handoff.
                 if first_for_request && self.condition == Condition::Rebuffering {
                     r.rebuffer_count = r.rebuffer_count.saturating_add(1);
+                    if let Some(a) = r.current_attempt {
+                        effects.push(Fx::Incident(a.record(request, a.proven_stage(), Incident::Rebuffer, at)));
+                    }
                 }
                 // A failed first target may be followed by another physical try. The gap
                 // ends at the first successor picture, not only the original target's.
@@ -351,34 +406,43 @@ impl<R: Copy + Ord, A: Copy + Ord> AttemptMetrics<R, A> {
                     effects.push(Fx::RecoveredRefusal { request, refused_attempt, recovered_attempt: attempt, refused_backend: backend });
                 }
             }
-            Event::Condition { request, attempt, condition, .. } => {
+            Event::Condition { request, attempt, condition, at } => {
                 let Some(r) = self.request.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
-                if !r.current_attempt.is_some_and(|a| a.id == attempt && a.outcome.is_none()) { return; }
+                let Some(current) = r.current_attempt.filter(|a| a.id == attempt && a.outcome.is_none()) else { return };
                 if condition == Condition::Rebuffering && self.condition != Condition::Rebuffering && r.first_picture_at.is_some() {
                     r.rebuffer_count = r.rebuffer_count.saturating_add(1);
+                    effects.push(Fx::Incident(current.record(request, current.proven_stage(), Incident::Rebuffer, at)));
                 }
                 self.condition = condition;
             }
-            Event::HandoffBegun { request, from, .. } => {
+            Event::HandoffBegun { request, from, at } => {
                 let Some(r) = self.request.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
-                if !r.current_attempt.is_some_and(|a| a.id == from) || self.handoff.is_some() { return; }
+                let Some(source) = r.current_attempt.filter(|a| a.id == from) else { return };
+                if self.handoff.is_some() { return; }
                 r.handoff_count = r.handoff_count.saturating_add(1);
                 self.handoff = Some(Handoff { from });
+                effects.push(Fx::Incident(source.record(request, Self::handoff_stage(&source), Incident::Handoff, at)));
             }
-            Event::Handoff { request, from, to, .. } => {
+            Event::Handoff { request, from, to, at } => {
                 let Some(r) = self.request.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
-                if !r.current_attempt.is_some_and(|a| a.id == from) || to <= from
-                    || self.handoff.is_some() || self.last_handoff_to == Some(to) { return; }
+                let Some(source) = r.current_attempt.filter(|a| a.id == from) else { return };
+                if to <= from || self.handoff.is_some() || self.last_handoff_to == Some(to) { return; }
                 r.handoff_count = r.handoff_count.saturating_add(1);
                 self.handoff = Some(Handoff { from });
                 self.last_handoff_to = Some(to);
+                effects.push(Fx::Incident(source.record(request, Self::handoff_stage(&source), Incident::Handoff, at)));
             }
-            Event::AttemptFinished { request, attempt, outcome, .. } => {
+            Event::AttemptFinished { request, attempt, outcome, at } => {
                 let Some(r) = self.request.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
                 let Some(current) = r.current_attempt.as_mut().filter(|a| a.id == attempt && a.outcome.is_none()) else { return };
                 current.outcome = Some(if outcome == AttemptOutcome::Ended && current.first_picture_at.is_none() {
                     AttemptOutcome::Unconfirmed
                 } else { outcome });
+                if let AttemptOutcome::Failed(Failure { stage, cause }) = outcome {
+                    if stage != Stage::Release {
+                        effects.push(Fx::Incident(current.record(request, stage, Incident::Failed(cause), at)));
+                    }
+                }
                 if matches!(outcome, AttemptOutcome::Failed(Failure { cause: Cause::Refused, .. })) {
                     self.pending_refusal = Some((attempt, current.backend));
                 }
@@ -617,5 +681,58 @@ mod tests {
             request: 12, attempt: 121, outcome: AttemptOutcome::Ended, at: t(5),
         });
         assert_eq!(model.snapshot().unwrap().current_attempt.unwrap().outcome, Some(AttemptOutcome::Unconfirmed));
+    }
+
+    fn record(attempt: u64, stage: Stage, incident: Incident, at: u64) -> Fx<u64, u64> {
+        Fx::Incident(Record { request: 1, attempt, backend: Backend::Uri, stage, incident, at: t(at) })
+    }
+
+    #[test]
+    fn a_handoff_is_one_incident_and_its_stage_is_only_what_the_source_proves() {
+        let mut model = Model::new();
+        start(&mut model, 1, 11);
+        // The source has neither failed nor shown any evidence: the stage stays Unknown.
+        assert_eq!(send(&mut model, Event::HandoffBegun { request: 1, from: 11, at: t(5) }),
+            [record(11, Stage::Unknown, Incident::Handoff, 5)]);
+        assert!(send(&mut model, Event::HandoffBegun { request: 1, from: 11, at: t(6) }).is_empty());
+        assert!(send(&mut model, Event::Handoff { request: 1, from: 11, to: 12, at: t(7) }).is_empty(),
+            "the successor Start completes the begun handoff and is not a second one");
+        assert_eq!(model.snapshot().unwrap().handoff_count, 1);
+    }
+
+    #[test]
+    fn a_failed_attempt_is_one_incident_at_its_stage_and_release_faults_are_not_recorded_here() {
+        let mut model = Model::new();
+        start(&mut model, 1, 11);
+        let open = Failure { stage: Stage::Open, cause: Cause::Timeout };
+        assert_eq!(send(&mut model, Event::AttemptFinished { request: 1, attempt: 11,
+            outcome: AttemptOutcome::Failed(open), at: t(4) }),
+            [record(11, Stage::Open, Incident::Failed(Cause::Timeout), 4)]);
+        assert!(send(&mut model, Event::AttemptFinished { request: 1, attempt: 11,
+            outcome: AttemptOutcome::Failed(open), at: t(5) }).is_empty(), "a finished attempt answers once");
+        send(&mut model, Event::AttemptStarted { request: 1, attempt: 12, backend: Backend::Uri,
+            origin: Origin::Recovery, at: t(6) });
+        // The release of a native resource outlives the request; the physical owner records it.
+        assert!(send(&mut model, Event::AttemptFinished { request: 1, attempt: 12,
+            outcome: AttemptOutcome::Failed(Failure { stage: Stage::Release, cause: Cause::Native }),
+            at: t(7) }).is_empty());
+    }
+
+    #[test]
+    fn a_rebuffer_reports_the_stage_its_attempt_evidence_proves() {
+        let mut model = Model::new();
+        start(&mut model, 1, 11);
+        send(&mut model, picture(1, 11, 10));
+        assert_eq!(send(&mut model, condition(1, 11, 20, Condition::Rebuffering)),
+            [record(11, Stage::Decode, Incident::Rebuffer, 20)]);
+        assert!(send(&mut model, condition(1, 11, 25, Condition::Rebuffering)).is_empty());
+        // A second attempt that has shown nothing yet reports Unknown, not a borrowed stage.
+        send(&mut model, condition(1, 11, 30, Condition::Playing));
+        send(&mut model, Event::AttemptStarted { request: 1, attempt: 12, backend: Backend::Feed,
+            origin: Origin::Recovery, at: t(31) });
+        let fx = send(&mut model, Event::Condition { request: 1, attempt: 12,
+            condition: Condition::Rebuffering, at: t(40) });
+        assert!(matches!(fx.as_slice(), [Fx::Incident(Record { attempt: 12, backend: Backend::Feed,
+            stage: Stage::Unknown, incident: Incident::Rebuffer, .. })]));
     }
 }

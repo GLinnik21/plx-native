@@ -43,18 +43,18 @@ fn publish_action(action: ActionReadout) {
     let ActionReadout { direction, target_kbps, refreshing, committed } = action;
     let code = if refreshing {
         match committed {
-            None => crate::player::ABR_ACTION_PRIME_REFRESH,
-            Some(true) => crate::player::ABR_ACTION_COMMIT_REFRESH,
-            Some(false) => crate::player::ABR_ACTION_REJECT_REFRESH,
+            None => plx_playback_contract::readout::ABR_ACTION_PRIME_REFRESH,
+            Some(true) => plx_playback_contract::readout::ABR_ACTION_COMMIT_REFRESH,
+            Some(false) => plx_playback_contract::readout::ABR_ACTION_REJECT_REFRESH,
         }
     } else {
         match (direction, committed) {
-            (Down, None) => crate::player::ABR_ACTION_PRIME_DOWN,
-            (Up, None) => crate::player::ABR_ACTION_PRIME_UP,
-            (Down, Some(true)) => crate::player::ABR_ACTION_COMMIT_DOWN,
-            (Up, Some(true)) => crate::player::ABR_ACTION_COMMIT_UP,
-            (Down, Some(false)) => crate::player::ABR_ACTION_REJECT_DOWN,
-            (Up, Some(false)) => crate::player::ABR_ACTION_REJECT_UP,
+            (Down, None) => plx_playback_contract::readout::ABR_ACTION_PRIME_DOWN,
+            (Up, None) => plx_playback_contract::readout::ABR_ACTION_PRIME_UP,
+            (Down, Some(true)) => plx_playback_contract::readout::ABR_ACTION_COMMIT_DOWN,
+            (Up, Some(true)) => plx_playback_contract::readout::ABR_ACTION_COMMIT_UP,
+            (Down, Some(false)) => plx_playback_contract::readout::ABR_ACTION_REJECT_DOWN,
+            (Up, Some(false)) => plx_playback_contract::readout::ABR_ACTION_REJECT_UP,
         }
     };
     FEED_SHARED.dg_abr_action.store(code, Ordering::Relaxed);
@@ -157,20 +157,20 @@ impl OriginalProbeDiagnostics for PlayerOriginalProbeDiagnostics {
         let shared = &FEED_SHARED;
         match action {
             ProbeTraceAction::Start => {
-                shared.dg_abr_action.store(crate::player::ABR_ACTION_PROBE_ORIGINAL, Ordering::Relaxed);
+                shared.dg_abr_action.store(plx_playback_contract::readout::ABR_ACTION_PROBE_ORIGINAL, Ordering::Relaxed);
                 shared.dg_abr_target_kbps.store(i64::from(target_kbps), Ordering::Relaxed);
                 crate::player::clear_original_failure();
             }
             ProbeTraceAction::Failed => {
-                shared.dg_abr_action.store(crate::player::ABR_ACTION_ORIGINAL_PROBE_FAILED, Ordering::Relaxed);
+                shared.dg_abr_action.store(plx_playback_contract::readout::ABR_ACTION_ORIGINAL_PROBE_FAILED, Ordering::Relaxed);
                 shared.dg_abr_target_kbps.store(0, Ordering::Relaxed);
             }
             ProbeTraceAction::Steady => {
-                shared.dg_abr_action.store(crate::player::ABR_ACTION_STEADY, Ordering::Relaxed);
+                shared.dg_abr_action.store(plx_playback_contract::readout::ABR_ACTION_STEADY, Ordering::Relaxed);
                 shared.dg_abr_target_kbps.store(0, Ordering::Relaxed);
             }
             ProbeTraceAction::RecoverOriginal => {
-                shared.dg_abr_action.store(crate::player::ABR_ACTION_RECOVER_ORIGINAL, Ordering::Relaxed);
+                shared.dg_abr_action.store(plx_playback_contract::readout::ABR_ACTION_RECOVER_ORIGINAL, Ordering::Relaxed);
             }
         }
     }
@@ -3363,14 +3363,14 @@ impl AdaptiveSession for Session {
         let (proposal, reserve_policy, sample, start) = match coordinator.advance_round(
             cycle, physical, || now_ms(),
             || FEED_SHARED.dg_abr_action.store(
-                crate::player::ABR_ACTION_RECOVER_ORIGINAL, Ordering::Relaxed,
+                plx_playback_contract::readout::ABR_ACTION_RECOVER_ORIGINAL, Ordering::Relaxed,
             ),
             publish_action,
             |diagnostic| match diagnostic {
                 RoundDiagnostic::Line(line) => crate::player::log(&line),
                 RoundDiagnostic::Steady(line) => {
                     FEED_SHARED.dg_abr_action.store(
-                        crate::player::ABR_ACTION_STEADY, Ordering::Relaxed,
+                        plx_playback_contract::readout::ABR_ACTION_STEADY, Ordering::Relaxed,
                     );
                     FEED_SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
                     crate::player::log(&line);

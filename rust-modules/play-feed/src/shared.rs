@@ -274,6 +274,14 @@ pub struct Shared {
     /// see `appkit::player_hud::busy_surface`. Monotone within a session (false→true only), which is
     /// what lets two readers in one frame sample it independently without disagreeing.
     pub seen_frame: AtomicBool,
+    /// **Has the video sink counted a displayed frame since the plane was last bound?** Set by the
+    /// displayed-frame counter callback (`sink_counter_kind`) when its `num` is above zero, cleared
+    /// when the ACB plane bind completes ([`Shared::forget_displayed_before_bind`]) and by every
+    /// session reset, so a count taken before the bind, or by an earlier session, never stands for
+    /// a picture on the panel. Read only through [`Shared::displayed_after_bind`] (it is what the
+    /// Feed driver's `Observation::Presented` waits for); unlike the `dg_*` mirrors, a decision
+    /// branches on it.
+    sink_displayed_live: AtomicBool,
     /// **The raw pts of the first audio AU the demuxer pushed since its last open or seek**.
     /// Written by `ff::demux` BEFORE that push, so the feed thread that pops the AU
     /// sees it. The audio lane uses it to tell the real start of a late audio track (an MKV
@@ -781,6 +789,7 @@ impl Shared {
             pres_fed: AtomicI64::new(0),
             frames: AtomicI32::new(0),
             seen_frame: AtomicBool::new(false),
+            sink_displayed_live: AtomicBool::new(false),
             first_audio_pts: AtomicI64::new(i64::MIN),
             load_completed: AtomicBool::new(false),
             media_id: Mutex::new(None),
@@ -971,6 +980,28 @@ impl Shared {
     ) -> Option<R> {
         self.native_session.with_native_session_scoped(epoch, class, num, event)
     }
+    /// Library thread, inside the epoch barrier: the displayed-frame counter reported `num`
+    /// frames. Only a positive count is a displayed frame; `0` is the sink saying it has shown
+    /// nothing yet. (The callback census, `dg_sink_displayed_cb`, counts every callback and is
+    /// written beside this call by `sf_event::note_sink_counter`.)
+    pub fn note_displayed_frames(&self, num: i64) {
+        if num > 0 {
+            self.sink_displayed_live.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Main thread, when the ACB plane bind completes: a displayed count taken until now was
+    /// taken before the plane was connected, so it is not a picture on the panel.
+    pub fn forget_displayed_before_bind(&self) {
+        self.sink_displayed_live.store(false, Ordering::Relaxed);
+    }
+
+    /// Has the sink counted a displayed frame since the plane bind (or since the session began,
+    /// where there is no bind to wait for)?
+    pub fn displayed_after_bind(&self) -> bool {
+        self.sink_displayed_live.load(Ordering::Relaxed)
+    }
+
     /// reset per-file state on stop (mirrors the tail of stop_bufferfeed).
     /// **Drop the carried link estimate.** Called from `engine::teardown` on a real STOP only —
     /// `reset_session` runs on a reload too, and a reload is the same item on the same link at a
@@ -1014,6 +1045,18 @@ impl Shared {
         self.video_w.store(width, Ordering::Relaxed);
         self.video_h.store(height, Ordering::Relaxed);
         self.video_raster.store(packed, Ordering::Release);
+    }
+
+    /// Arm the demuxer to open+seek to `target_ns` on the NEXT Load, displaying honest content
+    /// time. disp_base=0 and (via start_bufferfeed) rebase_pending=true, so feed_stream rebases
+    /// the landed keyframe K to fed-pts 0 and the presented position reads as num+K = content
+    /// time. Call BEFORE start_bufferfeed (resume) or via reload_at (mid-play seek). Main thread
+    /// only, and it takes no `MainThread` token: it publishes to this struct and reaches no slot.
+    pub fn arm_seek(&self, target_ns: i64) {
+        let t = target_ns.max(0);
+        self.seek_to_ns.store(t, Ordering::Release);
+        self.disp_base.store(0, Ordering::Relaxed);
+        self.playpos_ns.store(t, Ordering::Relaxed); // instant HUD feedback until frames land
     }
 
     /// Publish the display aspect the sourceInfo declared, as a reduced `(num, den)`. Packed
@@ -1127,6 +1170,7 @@ impl Shared {
         // places (declaration, `new`, here): a reload that forgot the bit would silently suppress
         // the centred read-out for the rest of the app's life.
         self.seen_frame.store(false, Ordering::Relaxed);
+        self.sink_displayed_live.store(false, Ordering::Relaxed);
         self.first_audio_pts.store(i64::MIN, Ordering::Relaxed);
         self.load_completed.store(false, Ordering::Relaxed);
         // issue #74 D.1: both are only ever cleared by the loadCompleted arm that consumes them

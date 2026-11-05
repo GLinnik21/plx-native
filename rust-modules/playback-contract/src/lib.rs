@@ -172,9 +172,26 @@ pub struct Observed<T> { pub value: T, pub from: EvidenceSource }
 pub enum Observation {
     Playback(Observed<Playback>),
     Position(Observed<ContentTime>),
+    /// The first picture of this attempt is on the panel, as far as the process can know. Its
+    /// grade is **necessary-condition evidence (the plane bound / the sink counted displayed
+    /// frames), not photon proof**: a driver emits it once, only when the conditions below hold,
+    /// and otherwise emits nothing, so startup, rebuffer and handoff-gap metrics stay Unknown
+    /// rather than guessed. A position clock, a service state report or a command acknowledgment
+    /// is never this. Per backend:
+    ///
+    /// - **Feed, webOS 4 (ACB plane):** the plane bind is complete and one position tick has
+    ///   followed it (`plane_shows_the_picture`), and the sink's displayed-frame counter
+    ///   (callback type 47) has reported a count above zero since that bind.
+    /// - **Feed, webOS 5+ (no bind):** the first displayed-frame counter callback (type 49) with
+    ///   a count above zero. Never the type-0 `FRAMEREADY` tick, which is a 5 Hz position report.
+    /// - A firmware that never delivers the counter never presents; startup stays Unknown.
     Presented,
     TrackSelected(Observed<TrackSelection>),
     TrackOff(Observed<TrackKind>),
+    /// A running attempt's media supply ran dry (`true`) and recovered (`false`). Startup
+    /// buffering is not a rebuffer: a driver that cannot tell the two apart emits nothing, and
+    /// the absence stays unknown rather than becoming `false`.
+    Rebuffering(Observed<bool>),
     Failed(Failure),
 }
 

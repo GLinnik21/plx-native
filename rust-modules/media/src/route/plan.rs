@@ -2242,7 +2242,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 .filter(|&v| v > 0)
                 .unwrap_or(env.src_kbps);
             // **Does the app draw the picked EMBEDDED subtitle itself, beside a remux?** On a local link
-            // with a known, moderate Part bitrate the side reader (`player::subside`) reads the track from
+            // with a known, moderate Part bitrate the side reader (`plx_play_feed::side_reader`) reads the track from
             // the film's own Part, so the server neither burns it nor needs a different audio track for
             // it: the intended track is kept, the route is the plain (or enhanced) remux and the wire says
             // `subtitles=none`. The cold-start twin of `decision::side_reader_admitted`. A declared Dolby

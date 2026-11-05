@@ -264,6 +264,10 @@ impl BackendState {
                             TrackKind::Subtitle => self.snapshot.subtitle_track = Some(fact),
                         }
                     }
+                    // Carried to the readout by the accepted effect; the metrics read it back
+                    // from that readout (`observe_backend_condition`), and the sparse snapshot
+                    // keeps no rebuffer flag a stale value could outlive.
+                    Observation::Rebuffering(_) => {}
                     Observation::Failed(reason) => self.snapshot.failure = Some(reason),
                 }
                 effects.push(Fx::AcceptedObservation { backend, attempt, observation });

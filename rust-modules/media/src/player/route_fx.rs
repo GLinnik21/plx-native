@@ -62,7 +62,7 @@ pub fn request_audio_track(ps: &mut PlaybackSession, audio_idx: i32, codec: &str
 /// Is the side subtitle reader running?
 pub fn side_reader_active() -> bool {
     #[cfg(feature = "play-feed")]
-    { super::subside::active() }
+    { plx_play_feed::side_reader::active() }
     #[cfg(not(feature = "play-feed"))]
     { false }
 }

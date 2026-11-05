@@ -27,7 +27,7 @@ pub mod attempt_view;
 pub mod demux_session;
 pub mod backend;
 #[cfg(feature = "play-feed")]
-pub mod claim_hold;
+pub mod claim_hold; // gated: it calls `pause`/`resume` and `transport::paused`, which exist only with the Feed
 pub mod ass; // pinned libass worker and immutable rendered frames
 pub mod ass_perf; // per-second libass cost line (`assperf:`)
 pub mod ass_timing; // libass clock reading and the validity window of a rendered frame
@@ -37,13 +37,7 @@ pub mod ass_source; // bounded embedded scripts and subtitle presentation clock
 pub mod engine;
 mod plane_boot; // the backend-neutral boot of the ACB plane owner (was Feed's `acb_init`)
 #[cfg(feature = "play-feed")]
-mod feed_driver;
-#[cfg(feature = "play-feed")]
-mod feed_open; // one resolved request for the prepared route's physical feed open
-#[cfg(feature = "play-feed")]
-mod feed_pump; // physical Load gate and exported-window placement
-#[cfg(feature = "play-feed")]
-mod feed_resources; // private ownership of the native feed slot and worker receipts
+mod feed_open; // gated: one resolved request for the prepared route's physical feed open, built over `plx_play_feed` types
 pub mod foreground;
 pub mod lifecycle;
 pub mod machine;
@@ -72,11 +66,7 @@ pub use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
 pub use plx_play_feed::ffi_host; // the simulator's Starfish/ACB stand-in: the Feed backend's, so it lives in `plx_play_feed`
 pub mod attempt_metrics; // pure logical-request and physical-attempt measurement reducer
 #[cfg(feature = "play-feed")]
-mod era_callbacks; // the one diagnostic line for an era-chosen sink counter that never arrives (pure state)
-#[cfg(feature = "play-feed")]
-mod native_stall; // re-export of `plx_play_feed::native_stall` (the surround native-audio stall watchdog), removed with its callers (W3h)
-#[cfg(feature = "play-feed")]
-mod pump;
+mod pump; // gated: the per-frame tick reads and drives `FEED_SHARED`/`FEED_TX` and `plx_play_feed::feed_pump`
 pub mod report;
 #[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
 mod foreground_flight_tests;
@@ -90,9 +80,9 @@ use shared_resources::{AudioSwitch, Shared, Transport, AUDIO_PICK_WINDOW_MS};
 pub mod sidecar;
 pub mod sub_charset; // legacy-encoding text subtitles (GBK, Big5, Shift_JIS, ...) read as UTF-8; decided once per track
 #[cfg(feature = "play-feed")]
-pub mod subside; // the side subtitle reader's thread and state (dev trigger `plxnative-subside`)
+pub mod subside; // the media half of the side subtitle reader (the thread is `plx_play_feed::side_reader`; dev trigger `plxnative-subside`)
 #[cfg(feature = "play-feed")]
-pub(crate) mod subtitle_cue; // embedded/side-reader cue bridge; caption stores remain common
+pub(crate) mod subtitle_cue; // embedded/side-reader cue bridge; caption stores remain common. Gated: it calls `push/close_subtitle_bitmap_for_generation` and `ass_source::begin_inventory`, which exist only with the Feed
 #[cfg(all(feature = "hostsim", feature = "play-feed"))]
 pub mod sim_video; // the simulator's decoded picture, for screenshots (see its doc)
 pub mod text_ass; // text subtitles to ASS: dialect converter, synthesized header, sidecar scripts (pure)
@@ -270,23 +260,6 @@ pub static TX: Transport = Transport::new();
 /// Off at boot, and never persisted.
 pub static DIAG_READOUT_ON: AtomicBool = AtomicBool::new(false);
 
-// Diagnostics-only Auto state. These codes cross the demux/UI thread boundary through atomics;
-// named constants keep the writer and the photograph formatter from growing separate vocabularies.
-pub const ABR_MODE_ORIGINAL: u8 = 1;
-pub const ABR_MODE_HLS: u8 = 2;
-pub const ABR_ACTION_STEADY: u8 = 1;
-pub const ABR_ACTION_PRIME_DOWN: u8 = 2;
-pub const ABR_ACTION_PRIME_UP: u8 = 3;
-pub const ABR_ACTION_COMMIT_DOWN: u8 = 4;
-pub const ABR_ACTION_COMMIT_UP: u8 = 5;
-pub const ABR_ACTION_REJECT_DOWN: u8 = 6;
-pub const ABR_ACTION_REJECT_UP: u8 = 7;
-pub const ABR_ACTION_PROBE_ORIGINAL: u8 = 8;
-pub const ABR_ACTION_RECOVER_ORIGINAL: u8 = 9;
-pub const ABR_ACTION_ORIGINAL_PROBE_FAILED: u8 = 10;
-pub const ABR_ACTION_PRIME_REFRESH: u8 = 11;
-pub const ABR_ACTION_COMMIT_REFRESH: u8 = 12;
-pub const ABR_ACTION_REJECT_REFRESH: u8 = 13;
 /// Typed, playback-scoped reason the last Original source experiment/open failed. It deliberately
 /// survives the engine reload that restores HLS, otherwise the successful rollback erases the
 /// only fact explaining why Original is no longer being attempted.
@@ -512,7 +485,7 @@ pub(crate) fn pause_result(pa: &mut adapter::PlayerAdapter) -> TransportResult {
     acb_mirror_playstate(pa, false);
     TransportResult::native(true)
 } // playback_pause
-/// Mute the sink for a paused preroll's Play window (`engine::try_prime`, immediately before that
+/// Mute the sink for a paused preroll's Play window (`native_executor::try_prime`, immediately before that
 /// Play): the preroll plays ONE picture for a viewer who is paused, and the ~0.2-0.3 s until the
 /// plane binds is audible. The mute is the pipeline's own `setVolume` (per pipeline: the next Load
 /// starts at the default); [`restore_preroll_volume`] sets that default back. The volume is never
@@ -657,7 +630,7 @@ pub fn acb_mirror_playstate(pa: &mut adapter::PlayerAdapter, playing: bool) {
 }
 
 /// [`acb_mirror_playstate`] for a caller that already holds the session's `&mut Engine` and so
-/// cannot ask the adapter for it a second time — `engine::try_prime`, inside the feed. Splitting
+/// cannot ask the adapter for it a second time — `native_executor::try_prime`, inside the feed. Splitting
 /// the two is what the owned slot forces: with `ENGINE` a `static mut` handing out `&'static mut`,
 /// the prime path re-entered the slot it was already holding, which is the aliasing the token
 /// could only assert was safe.
@@ -799,7 +772,7 @@ pub fn request_seek(ns: i64) {
 /// **The seek was ABANDONED — put the playhead back on reality.**
 ///
 /// [`request_seek`] sets `FEED_SHARED.seeking`, and until 2026-08-27 exactly ONE place ever cleared it:
-/// the successful prime→Play in `engine::try_prime`. Every path that gives UP on a seek
+/// the successful prime→Play in `native_executor::try_prime`. Every path that gives UP on a seek
 /// therefore leaked the flag — and that flag is what `pump::set_state` reads to publish
 /// `PlaybackState::Seeking`, which means a spinner over the picture, the playhead frozen at
 /// `seek_display_ns`, and `is_playing()` false, **for the rest of the playback**, while the
@@ -1188,32 +1161,8 @@ pub struct ErrorShape {
 }
 
 pub(crate) use attempt_view::RuntimeFailure;
-
-/// PURE: turn the four terminal worker signals into one cause. More specific downstream evidence
-/// wins over the generic producer flag when concurrent teardown makes more than one bit visible.
-/// `load_timed_out` is checked FIRST and independently of `load_failed`, even though `pump.rs`
-/// always sets both together on a budget expiry: the distinction this function exists to make is
-/// "did the pipeline refuse this, or did it never answer at all", and only the timed-out signal
-/// can tell the two apart.
 #[cfg(feature = "play-feed")]
-fn runtime_failure(
-    demux_failed: bool,
-    io_failed: bool,
-    load_failed: bool,
-    load_timed_out: bool,
-) -> RuntimeFailure {
-    if load_timed_out {
-        RuntimeFailure::LoadTimeout
-    } else if load_failed {
-        RuntimeFailure::TvPipeline
-    } else if io_failed {
-        RuntimeFailure::PlaybackInterrupted
-    } else if demux_failed {
-        RuntimeFailure::MediaSource
-    } else {
-        RuntimeFailure::Unknown
-    }
-}
+use plx_play_feed::readout::runtime_failure;
 
 /// The cause the worker signals publish right now: what [`error_now`] reads while an Engine is up,
 /// and what a failed Engine freezes into the session as it is released.
@@ -1698,38 +1647,6 @@ pub struct Diag {
     pub abr_pred_pm: i64,
     pub abr_risk: i64,
     pub abr_why: u8,
-}
-
-/// One physical reserve definition for every delivery mode. Direct-file tails already use movie
-/// time and have `display_base_ns == 0`; segmented HLS and offset progressive transcodes publish a
-/// zero-based tail and carry the movie offset in `display_base_ns`. Adding that base universally
-/// makes all three shapes land in the same timeline without a route-specific heuristic.
-#[cfg(feature = "play-feed")]
-fn playable_buffer_ms(
-    video_tail_ns: i64,
-    audio_tail_ns: i64,
-    audio_expected: bool,
-    display_base_ns: i64,
-    playpos_ns: i64,
-) -> Option<i64> {
-    if video_tail_ns < 0 {
-        return None;
-    }
-    let tail_ns = if audio_expected {
-        if audio_tail_ns < 0 {
-            return None;
-        }
-        video_tail_ns.min(audio_tail_ns)
-    } else {
-        video_tail_ns
-    };
-    Some(
-        tail_ns
-            .saturating_add(display_base_ns.max(0))
-            .saturating_sub(playpos_ns.max(0))
-            .max(0)
-            / 1_000_000,
-    )
 }
 
 impl Diag {
@@ -2334,7 +2251,7 @@ pub fn subtitle_draw(ps: &crate::route::PlaybackSession) -> Option<(std::sync::A
 ///
 /// Moved only when ALL hold: the attempt uses Feed, the selection is a sidecar, the app draws it over a live remux
 /// ([`crate::route::SubtitlePresenter::ClientOverRemux`]) and the reader matched this run's first
-/// keyframe byte for byte (`subside::exact_delta_ns` on Feed). Never for an embedded track — the reader
+/// keyframe byte for byte (`side_reader::exact_delta_ns` on Feed). Never for an embedded track — the reader
 /// has moved its cues by `-delta` already, so adding it here too would correct them twice — and
 /// never from an ASSUMED delta, which was measured 2.002 s wrong (see `ff_subside`'s
 /// `sidecar_clock_at_917…` test). **Off the reader's gate** (a remote link, a Part above the
@@ -2350,7 +2267,7 @@ pub fn sidecar_clock_ns(ps: &crate::route::PlaybackSession, playhead_ns: i64) ->
     }
     #[cfg(feature = "play-feed")]
     if ps.attempt_view().backend() == Some(attempt_view::Backend::Feed) {
-        return subside::exact_delta_ns().map_or(playhead_ns, |delta| playhead_ns.saturating_add(delta));
+        return plx_play_feed::side_reader::exact_delta_ns().map_or(playhead_ns, |delta| playhead_ns.saturating_add(delta));
     }
     // A URI attempt has no side reader measurement; its source clock is used as observed.
     playhead_ns
@@ -3088,37 +3005,6 @@ mod tests {
         assert!(!acb_playstate_ready(shared::Stage::Playing));
         assert!(!acb_playstate_ready(shared::Stage::Bound));
         assert!(acb_playstate_ready(shared::Stage::Streaming));
-    }
-
-    #[cfg(feature = "play-feed")]
-    #[test]
-    fn playable_buffer_uses_one_movie_timeline_for_every_transport() {
-        assert_eq!(
-            playable_buffer_ms(70_000_000_000, 69_500_000_000, true, 0, 60_000_000_000,),
-            Some(9_500),
-            "a direct file publishes absolute movie timestamps",
-        );
-        assert_eq!(
-            playable_buffer_ms(
-                4_000_000_000,
-                3_500_000_000,
-                true,
-                120_000_000_000,
-                122_000_000_000,
-            ),
-            Some(1_500),
-            "an HLS or offset-transcode tail is translated by its display base",
-        );
-        assert_eq!(
-            playable_buffer_ms(4_000_000_000, -1, true, 0, 1_000_000_000),
-            None,
-            "an A/V stream cannot claim reserve before its audio lane arrives",
-        );
-        assert_eq!(
-            playable_buffer_ms(4_000_000_000, -1, false, 0, 1_000_000_000),
-            Some(3_000),
-            "a declared video-only stream uses its video tail",
-        );
     }
 
     #[test]

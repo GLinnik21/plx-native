@@ -41,6 +41,7 @@ pub type UnloadSpawner = fn(plx_platform::tv::sink::UnloadTicket)
 
 pub struct FeedResources {
     shared: &'static crate::shared::PhysicalShared,
+    hooks: &'static crate::native_executor::NativeHooks,
     engine: Option<feed_state::Engine>,
     load_tx: mpsc::Sender<LoadOutcome>,
     load_rx: mpsc::Receiver<LoadOutcome>,
@@ -65,10 +66,12 @@ pub struct AcceptedLoadOutcome {
 }
 
 impl FeedResources {
-    pub fn new(shared: &'static crate::shared::PhysicalShared) -> Self {
+    pub fn new(shared: &'static crate::shared::PhysicalShared,
+        hooks: &'static crate::native_executor::NativeHooks) -> Self {
         let (load_tx, load_rx) = mpsc::channel();
         Self {
             shared,
+            hooks,
             engine: None,
             load_tx,
             load_rx,
@@ -82,6 +85,10 @@ impl FeedResources {
     }
 
     pub fn shared(&self) -> &'static crate::shared::PhysicalShared { self.shared }
+
+    /// The composition's hooks for the physical executor. `'static`, so a caller copies it out
+    /// before it borrows the Engine out of `self`.
+    pub fn hooks(&self) -> &'static crate::native_executor::NativeHooks { self.hooks }
 
     /// Override the task-start port for this owner; None uses the composition's default.
     pub fn set_unload_spawner(&mut self, spawner: Option<UnloadSpawner>) {

@@ -27,14 +27,14 @@ mod tests {
         // with no writer, so adding one here is part of adding one there.
         const WRITERS: [&str; 9] = [
             include_str!("pump.rs"),
-            include_str!("feed_pump.rs"),
+            include_str!("../../../play-feed/src/feed_pump.rs"),
             include_str!("engine.rs"),
             include_str!("../../../play-feed/src/native_executor.rs"),
             include_str!("../../../play-feed/src/sf_event.rs"),
             include_str!("mod.rs"),
             include_str!("../ff.rs"),
             include_str!("../adaptive.rs"),
-            include_str!("demux_session.rs"),
+            include_str!("../../../play-feed/src/demux_clock.rs"),
         ];
 
         let declared: Vec<&str> = SHARED_SRC

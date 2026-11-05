@@ -59,7 +59,7 @@ one of TWO transports** (design record: `docs/ffmpeg-demuxer-plan.md`; the hand-
 fallback is retired/deleted). `media/src/ff.rs` reexports its application entry points. **Which transport is decided in `ff::demux` from the part URL's
 scheme, or by a plaintext open's redirect to https (`stream::redirect` hands that hop to curl)** —
 `AvioState` holds a source enum and `read_cb`/`seek_cb` dispatch: `http` → `stream.rs`'s raw socket, `https` → media's `curlio` credential facade over `plx_net::range_io`. That matters *here* because teardown is a
-different mechanism per arm: `engine::teardown` fires `stream::http_shutdown` at the socket **and**
+different mechanism per arm: `route_start::teardown` (through `NativeStop::unblock_join_close`) fires `stream::http_shutdown` at the socket **and**
 `curlio::abort_active()` through `net::range_io` at the curl source's wake pipe, since a thread parked in `curl_multi_wait`
 is not one any `shutdown(2)` of ours can reach. Exactly one of the two ever has anything to do. Ours ships beside the binary as `libav*-plx.so.*`, is `dlopen`'d by absolute path
 and pinned to majors 63/63/61, and is built `--disable-network` with `file` as its only protocol —
@@ -73,10 +73,11 @@ and the native feed refuses a source shape it cannot represent.
 
 ## Threading model (this is the whole ballgame)
 
-- `engine.rs` — the **main-thread-confined** session object. Every ACB/Starfish *control* call
+- The session object (`plx_play_feed::feed_state::Engine`, driven by `plx_play_feed::native_executor`
+  and `plx_play_feed::feed_driver`) is **main-thread-confined**. Every ACB/Starfish *control* call
   happens on the main thread except two Starfish verbs: `Load` (on `load_thread`) and a real stop's
-  `Unload` (on the `sf-unload` worker, below). `engine` spawns the workers below.
-- **A real stop's `Unload` runs off the frame (`engine::PendingRelease`).** Measured on the dev set
+  `Unload` (on the `sf-unload` worker, below). `launch_native_open` spawns the workers below.
+- **A real stop's `Unload` runs off the frame (`plx_play_feed::feed_state::PendingRelease`).** Measured on the dev set
   2026-10-15 (release build, mock, Guest): `StarfishMediaAPIs::Unload` alone held the frame that
   handled BACK for 113-150 ms on every return (`teardown spans:` line, `sf_unload:`); the sched
   trace put the main thread in D state in `ioctl` (~31 ms), then in `futex` (~74 ms), inside that
@@ -84,7 +85,7 @@ and the native feed refuses a source shape it cannot represent.
   `Releasing`, hands the Unload to an `sf-unload` worker with an `UnloadTicket`, and parks the
   worker on the adapter. The rest of the release — callback gate, epoch retire, ACB
   `setState(UNLOADED)`, D1 or quarantine, `destroy_window` — stays on the main thread and runs in
-  `engine::poll_release` (a pure machine, `release.rs`, decides): on the first frame after the Unload
+  `route_start::poll_release` (a pure machine, `release.rs`, decides): on the first frame after the Unload
   returns (`run.rs` → `poll_release_frame`). Nothing blocks on the worker: a start over a running
   Unload returns `BufferfeedStartOutcome::Deferred` (the player reads Connecting) and runs the frame
   the tail has run; `pa.mt()`/`pa.split()` hand out the token at once while `player::sink()` answers
@@ -106,7 +107,7 @@ and the native feed refuses a source shape it cannot represent.
   returns an addressed result to the adapter. `timeline.rs` owns the adapter's periodic PMS
   reporter: it consumes fresh normalized samples, never backend globals. Its stopped handle
   joins off-frame before the final stopped report. The **demux thread body is `ff::demux`**
-  (spawned by `engine::start_bufferfeed`): open
+  (spawned by `route_start::start_bufferfeed`): open
   the part URL, read+convert packets, push AUs to the two lanes; **and service seeks** — it
   `av_seek_frame`s on `seek_to_ns` between two `av_read_frame` calls, which is the whole seek
   mechanism (nothing interrupts it; see the seek gotcha below).
@@ -164,7 +165,7 @@ something.
   stored presentation rather than re-reading the later cache; `dvnonode` is the logged diagnostic
   exception. Atmos routing and ACB forwarding are independent and unchanged. The payload evidence,
   Profile 5 one-tick fix and instrument traps live in that document.
-- **The Load's `adaptiveStreaming` ceiling is derived per session (`engine::sink_envelope`), and
+- **The Load's `adaptiveStreaming` ceiling is derived per session (`plx_play_feed::sink_envelope`), and
   it was a 4K60 constant for EVERY codec until 2026-09-03 — which on webOS 10 refused every H.264
   stream: `docs/webos10-resource-allocation.md`.** Lab-measured 2026-08-27 on release 10.3.1: the
   pipeline allocates against the DECLARED ceiling rather than the bitstream, so the Load came back
@@ -236,7 +237,7 @@ something.
   20-second issued→return and return→loadCompleted budgets. Timeout has code `load_timeout`;
   firmware refusal remains `tv_pipeline`. Teardown after that timeout does NOT join a media
   thread still inside `sf_load` (that froze the SDL thread on BACK): the thread, payload and
-  epoch are parked as `engine::AbandonedLoad` (Rust phase `Abandoned`), native starts are
+  epoch are parked as `plx_play_feed::feed_state::AbandonedLoad` (Rust phase `Abandoned`), native starts are
   refused, and `reap_abandoned_load` runs the ordinary Unload → gate → retire → D1 release on the
   main thread once Load returns; a Load that never returns leaks its object. A refusal says why:
   a reload refused for the parked Load (`pump::settle_reload`) republishes `load_timed_out`, and a
@@ -542,7 +543,7 @@ something.
   applied after the facets, with the refused video raster given back since the reload feeds the same source video), and
   `pump::decode_in_app` reloads the same direct play (`reload_at`, logged `open recovery: decoding dts in the app (stereo)
   after type=18 num=601`), whose Load declares the PCM and so is planned the audio stack's PCM lead like any other PCM Load
-  (`engine::load_audio`); a surround track it takes is labelled "played in stereo" in the track menu. It never proves a facet, and a flight after an app-decoded refusal
+  (`plx_play_feed::native_executor::load_audio`); a surround track it takes is labelled "played in stereo" in the track menu. It never proves a facet, and a flight after an app-decoded refusal
   never does either (`unprovable`); it flies no flight and so has no rescue to report (`ReportRecovered` names a flight's
   rung). A remux or transcode route and a refused app decode go on to (5) or the read-out. A rebuild rung for a refused remux or
   transcode, and a resolve-time `PlayVerdict::Server` refusal, are not covered;
@@ -562,7 +563,7 @@ something.
   error-report consent and no other. A play that was never refused, a ladder that read out, an app decode, a
   source failure and a flight Home abandoned send nothing. **A Load the machine did not
   ask for re-opens the ladder:** `RecoveryEvent::LoadStarted`, raised by
-  `engine::start_bufferfeed_for` (which every Engine start passes: a fresh play, a reload, the
+  `route_start::start_bufferfeed_for` (which every Engine start passes: a fresh play, a reload, the
   foreground restore), takes a machine left in `Flight` (Home cleared the flight with the Engine)
   or `Failed` (the read-out was up) back to `Opening` with its spent flights and excluded facet
   kept; the recovery landing's own reload finds the machine already moved by `FlightLanded` (a
@@ -645,14 +646,14 @@ something.
   player screen with `draw_subtitle_message` (and `notice_shown()` is a term of its `clock_fingerprint`, so
   the expiry owes a frame). It is silent where the server burns the selection (a re-encode, or a remux whose embedded
   track the app may not read itself); over a plain remux the app draws it, and draws an embedded
-  track too (`subside.rs`) when the link is local and the Part is 1..=30000 kbps. A sidecar is in
+  track too (`plx_play_feed::side_reader`; `subside.rs` is its media half) when the link is local and the Part is 1..=30000 kbps. A sidecar is in
   the Part's FILE time while a remux starts on a Part keyframe EARLIER than or at the requested
   offset — not always the last one (a 917 s request started on 914.914 s while 916.916 s existed;
   see `ff_subside`'s `sidecar_clock_at_917…` test) — and the app labels that frame with the
   requested offset, so under the same local-link and bitrate gate the side
-  reader also runs CLOCK-ONLY for it (`subside::CLOCK_ONLY`: no track, no store, no
+  reader also runs CLOCK-ONLY for it (`SIDE_READER_CLOCK_ONLY`: no track, no store, no
   `side_subs_owner`, never the burn) to find that keyframe by the byte-exact anchor match;
-  `player::sidecar_clock_ns` adds the published delta (`subside::exact_delta_ns`) to the sidecar's
+  `player::sidecar_clock_ns` adds the published delta (`side_reader::exact_delta_ns`) to the sidecar's
   playhead, for a sidecar over a remux only (embedded cues were shifted by the reader already) and
   never from the assumed mapping (2.002 s wrong at 917 s on one file). That delta is known a moment
   after each remux start (the scan reads the Part up to the anchor); until then — and off the gate,
@@ -686,7 +687,7 @@ something.
 - **A Load that declares `"audio":"PCM"` on one of LG's audio stacks has its audio fed later than the
   picture it belongs with, by an amount the stack decides; a set with no lead (`adecsink` on 2016/2017, not
   determined; Realtek; MStar; an unknown stack) gets none at all** (#1086, #1088, #1092, #1093; FLAC and every other app-decoded codec (a DTS the app decodes under the lossy gate
-  included: `engine::load_audio` plans the lead from the name the Load declares, which is PCM for it), and a speed
+  included: `plx_play_feed::native_executor::load_audio` plans the lead from the name the Load declares, which is PCM for it), and a speed
   session at any speed other than 1x; a compressed Load, DTS the set decodes itself included, gets none).
   App-decoded DTS, TrueHD, MP3 and Vorbis get the lead of the set's stack exactly as FLAC does, but none of them
   was FILMED (the measurements below are FLAC on `liblxa`); the converter's own clock corrects the filter's lookahead
@@ -709,7 +710,7 @@ something.
   `liblxa.so.2` plays through `lgaudiosink`, and reading it as `Liblxa` would give Bluetooth 250 instead of
   400, a needless bus read and a log naming the wrong stack.
 
-  | Stack (label) | Present | Sets | The lead (`engine::pcm_output_lead`) | Evidence |
+  | Stack (label) | Present | Sets | The lead (`plx_play_feed::pcm_lead::pcm_output_lead`) | Evidence |
   |---|---|---|---|---|
   | `Liblxa` (`liblxa`) | `libgstlxaudiosink.so` (first), or `/usr/lib/liblxa.so.2` (third, after `libgstlgaudiosink.so`) | 2019-2021 LG chips (dev set W19H 4.10.2), 2022/23 OLEDs before webOS 11 (INFERRED from the `tools/fwcompat.py` inventories, which carry `liblxa.so.2.0.0` for W22O 7.4.0 and W23O 8.3.0 / 9.2.0 and hold no plugin; no such image was unpacked) | `tv_speaker` 400 and `bt_soundbar` 250 (both MEASURED), any other output or none 400 (not measured) | dev set 505 with +105 = 400; W21O 6.5.3: template 400 raw, no +105, effective 400 by the same convention, its per-output walk still there |
   | `LgAudioSink` (`lgaudiosink`) | `libgstlgaudiosink.so` | 2022/23 OLEDs on webOS 11 (W22O 11.2.0-74, W23O 11.2.0-3711), 2024 OLED (W24G 9.2.4), 2025 OLED (W25G 10.3.1) | 400 on every output, no read (not measured) | template `{150,150,400,5000,5000}`, 400 raw, no bias |
@@ -769,12 +770,12 @@ something.
   -0.02. Bluetooth headphones (`soundOutput` read `bt_soundbar`, phone microphone against an earcup): 400 ms
   +0.13 to +0.19 s, late; 250 ms (`pcmavoffset=250`) +0.017 s, three of three; the set's own DTS decoder
   -0.028 s.
-  *The ONE correction* is `engine::audio_sink_pts`, at the audio lane's single Feed: the Load's
+  *The ONE correction* is `plx_play_feed::native_executor::audio_sink_pts`, at the audio lane's single Feed: the Load's
   `Engine::pcm_sink_lead_ns` is added to the SINK pts AFTER `to_sink_ns`, because it is real time and must
-  not be divided by the speed. `engine::load_audio` yields the declared audio name and a `PcmLead` plan as
+  not be divided by the speed. `plx_play_feed::native_executor::load_audio` yields the declared audio name and a `PcmLead` plan as
   one value (`Off` for a compressed Load; a speed override makes any codec declare PCM, so it plans a lead);
   `PcmLead::resolve` settles the plan against the output with the table `PCM_LEAD_BY_OUTPUT`, and
-  `engine::pcm_output_lead(stack, output)` is the whole table (the stack table above): `liblxa` +
+  `plx_play_feed::pcm_lead::pcm_output_lead(stack, output)` is the whole table (the stack table above): `liblxa` +
   `tv_speaker` 400, `liblxa` + `bt_soundbar` 250, `liblxa` + any other output or no answer
   `PCM_SINK_LEAD_NS` = 400 (not measured); `audiosink_new` the same three answers, none measured (its plan
   is `PcmLead::FromOutput(stack)`, as `liblxa`'s, so the stack the log names is the one that was read for);
@@ -830,12 +831,12 @@ something.
   differs from the filmed one; another sample rate, chip or firmware. Also unfilmed: a seek, and the speed
   path (it takes the same lead from the same code).
 - **Seeks are in-place**, in one of three per-session modes (`plx_play_feed::seek::SeekMode`, chosen by
-  `engine::select_seek_mode` in `start_bufferfeed`, the `/tmp/plxnative-seekmode` dev trigger
+  `plx_play_feed::seek::select_seek_mode_for_load` at every Load, the `/tmp/plxnative-seekmode` dev trigger
   `native|segment|reload` wins): the demuxer is `av_seek_frame`d to the target, then on the first
   post-seek keyframe `feed_stream` re-anchors the pipeline — no reload/decoder re-init.
   `Segment` (webOS 4.x) is Kodi-style: pump `flush()`, then `setTimeToDecode` + `sendSegmentEvent`
   through decompile-derived private offsets. `NativeSeek` (`VP_EXPORTED`, webOS 5+, issue #568; and a
-  known webOS 3 release on the ACB plane, `engine::old_abi_seek_tested`) is
+  known webOS 3 release on the ACB plane, `plx_play_feed::seek::old_abi_seek_tested`) is
   LG's PUBLIC `StarfishMediaAPIs::Seek(millis)` (`sink().seek`, `sf_seek_ms`): it flushes itself, so
   the pump does NOT `flush()` and nothing may flush after it (a `flush()` is a seek to 0 and re-creates
   the stale-segment stall); it re-anchors the segment AT the millis passed, so `feed_stream` feeds

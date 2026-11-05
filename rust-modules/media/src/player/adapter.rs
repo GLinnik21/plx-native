@@ -30,12 +30,14 @@ use plx_play_feed::shared::FEED_SHARED;
 #[cfg(all(test, feature = "play-feed"))]
 use super::engine::Engine;
 #[cfg(feature = "play-feed")]
-use super::feed_resources::FeedResources;
+use plx_play_feed::feed_resources::FeedResources;
+#[cfg(feature = "play-feed")]
+use plx_play_feed::native_executor::NativeStop;
 #[cfg(any(feature = "play-feed", feature = "play-uri"))]
 use super::timeline;
 use super::backend;
 #[cfg(feature = "play-feed")]
-use super::feed_driver::{FeedDriver, FeedTransportAction};
+use plx_play_feed::feed_driver::{FeedDriver, FeedTransportAction};
 #[cfg(all(test, feature = "play-feed", feature = "hostsim"))]
 use super::threads;
 use plx_base::task::MainThread;
@@ -493,7 +495,7 @@ impl PlayerAdapter {
         Self {
             mt,
             #[cfg(feature = "play-feed")]
-            feed: FeedResources::new(&FEED_SHARED),
+            feed: FeedResources::new(&FEED_SHARED, &super::engine::NATIVE_HOOKS),
             backend: backend::BackendRunner::new(),
             metric_notices: VecDeque::new(),
             #[cfg(feature = "play-feed")]
@@ -1599,6 +1601,9 @@ impl PlayerAdapter {
                         plx_playback_contract::readout::PlaybackState::Buffering,
                     plx_playback_contract::Playback::Playing => {
                         facts.playing_observed = Some(true);
+                        // Playing again ends a rebuffer whose `bufferingEnd` never arrived;
+                        // a rebuffer never reported stays unknown.
+                        if facts.rebuffering == Some(true) { facts.rebuffering = Some(false); }
                         plx_playback_contract::readout::PlaybackState::Playing
                     },
                     plx_playback_contract::Playback::Paused =>
@@ -1626,6 +1631,24 @@ impl PlayerAdapter {
                         plx_playback_contract::readout::RuntimeFailure::Unknown,
                 });
             }
+            plx_playback_contract::Observation::Rebuffering(observed) => {
+                // The same readout the Feed publishes: `rebuffering` plus the Buffering state.
+                // The service need not re-send Playing after `bufferingEnd`, so the state is
+                // restored here, and only from the Buffering this event itself entered.
+                let state = plx_playback_contract::readout::PlaybackState::Buffering;
+                if observed.value {
+                    facts.rebuffering = Some(true);
+                    if facts.status == Some(plx_playback_contract::readout::PlaybackState::Playing) {
+                        facts.status = Some(state);
+                    }
+                } else {
+                    if facts.rebuffering == Some(true) && facts.status == Some(state)
+                        && facts.playing_observed == Some(true) {
+                        facts.status = Some(plx_playback_contract::readout::PlaybackState::Playing);
+                    }
+                    facts.rebuffering = Some(false);
+                }
+            }
             plx_playback_contract::Observation::Presented
             | plx_playback_contract::Observation::TrackSelected(_)
             | plx_playback_contract::Observation::TrackOff(_) => {}
@@ -1648,7 +1671,7 @@ impl PlayerAdapter {
 
     #[cfg(feature = "play-feed")]
     pub(super) fn stage_native_feed(&mut self, attempt: AttemptId, key: SourceKey,
-        prepared: super::engine::NativePrepared) -> Result<(), Failure> {
+        prepared: plx_play_feed::native_executor::NativePrepared) -> Result<(), Failure> {
         self.feed_driver.stage(attempt, key, prepared)
     }
 
@@ -1827,21 +1850,20 @@ impl PlayerAdapter {
     }
 
     #[cfg(feature = "play-feed")]
-    pub(super) fn take_native_stop(&mut self) -> super::engine::NativeStop {
-        let stop = super::engine::NativeStop::take(&mut self.feed);
+    pub(super) fn take_native_stop(&mut self) -> NativeStop {
+        let stop = NativeStop::take(&mut self.feed);
         self.clear_feed_attempt();
         stop
     }
 
     #[cfg(feature = "play-feed")]
-    pub(super) fn release_native_stop(&mut self, stop: &mut super::engine::NativeStop,
-        for_reload: bool) {
-        stop.release_and_drain(&self.mt, &mut self.feed, for_reload);
+    pub(super) fn release_native_stop(&mut self, stop: &mut NativeStop, for_reload: bool) {
+        let hooks = self.feed.hooks();
+        stop.release_and_drain(&self.mt, &mut self.feed, for_reload, &hooks.release);
     }
 
     #[cfg(feature = "play-feed")]
-    pub(super) fn finish_native_stop(&mut self, stop: super::engine::NativeStop,
-        for_reload: bool) {
+    pub(super) fn finish_native_stop(&mut self, stop: NativeStop, for_reload: bool) {
         if let Some(release) = stop.finish(for_reload) {
             // This event is the release machine's admission fence for the next start.
             self.park_release(release);
@@ -1852,7 +1874,7 @@ impl PlayerAdapter {
     #[cfg(feature = "play-feed")]
     pub(super) fn publish_feed_attempt_view(&self, ps: &mut crate::route::PlaybackSession) {
         let Some(attempt) = self.active_feed_attempt() else { return; };
-        let Some(facts) = super::feed_pump::attempt_facts(&self.feed) else { return; };
+        let Some(facts) = plx_play_feed::feed_pump::attempt_facts(&self.feed) else { return; };
         let _ = ps.ingest_attempt_facts(attempt, crate::player::attempt_view::Backend::Feed, facts);
     }
 
@@ -1896,15 +1918,16 @@ impl PlayerAdapter {
     /// the returned finish request after this borrow of feed resources ends.
     #[cfg(feature = "play-feed")]
     pub(super) fn paused_seek_step(&mut self, now: u32, route_flight: bool,
-        claim_owns_pause: bool) -> super::feed_pump::PausedSeekStep {
-        super::feed_pump::paused_seek_step(&mut self.feed, now, route_flight, claim_owns_pause)
+        claim_owns_pause: bool) -> plx_play_feed::feed_pump::PausedSeekStep {
+        plx_play_feed::feed_pump::paused_seek_step(&mut self.feed, now, route_flight, claim_owns_pause)
     }
 
     /// Publish native queue and frame diagnostics without exposing Engine to the common prelude.
     #[cfg(feature = "play-feed")]
     pub(super) fn publish_feed_diag(&mut self, now: u32,
         last_frames: &std::sync::atomic::AtomicI32) {
-        super::feed_pump::publish_diag(&mut self.feed, now, last_frames);
+        plx_play_feed::feed_pump::publish_diag(&mut self.feed, now, last_frames,
+            super::DIAG_READOUT_ON.load(std::sync::atomic::Ordering::Relaxed));
     }
 
     /// Feed the dev firmware-refusal probe with route facts, before any route landing can replace
@@ -1912,72 +1935,72 @@ impl PlayerAdapter {
     #[cfg(feature = "play-feed")]
     pub(super) fn inject_refuse601(&mut self, generation: u32, preview: bool,
         refused_for: &std::sync::atomic::AtomicU32) {
-        super::feed_pump::inject_refuse601(&mut self.feed, generation, preview, refused_for);
+        plx_play_feed::feed_pump::inject_refuse601(&mut self.feed, generation, preview, refused_for);
     }
 
     /// Probe the native audio feed's own stall evidence after common Load-refusal handling.
     #[cfg(feature = "play-feed")]
     pub(super) fn native_audio_stall_fired(&mut self, now: u32) -> bool {
-        super::feed_pump::native_audio_stall_fired(&mut self.feed, now)
+        plx_play_feed::feed_pump::native_audio_stall_fired(&mut self.feed, now)
     }
 
     /// Gate the active physical tick on native constructor readiness.
     #[cfg(feature = "play-feed")]
-    pub(super) fn feed_ctor_gate(&mut self) -> super::feed_pump::CtorGate {
-        super::feed_pump::ctor_gate(&mut self.feed, &self.mt)
+    pub(super) fn feed_ctor_gate(&mut self) -> plx_play_feed::feed_pump::CtorGate {
+        plx_play_feed::feed_pump::ctor_gate(&mut self.feed, &self.mt)
     }
 
     /// Emit the physical callback-cadence diagnostic after first-picture route settlement.
     #[cfg(feature = "play-feed")]
     pub(super) fn note_missing_era_callback(&mut self) {
-        super::feed_pump::note_missing_era_callback(&mut self.feed);
+        plx_play_feed::feed_pump::note_missing_era_callback(&mut self.feed);
     }
 
     #[cfg(feature = "play-feed")]
     pub(super) fn stuck_seek_due(&mut self, now: u32, feed_allowed: bool,
         route_flight: bool, budget_ms: u32) -> bool {
-        super::feed_pump::stuck_seek_due(&mut self.feed, now, feed_allowed, route_flight, budget_ms)
+        plx_play_feed::feed_pump::stuck_seek_due(&mut self.feed, now, feed_allowed, route_flight, budget_ms)
     }
 
     #[cfg(feature = "play-feed")]
     pub(super) fn retry_stuck_seek(&mut self, now: u32, target_ns: i64,
-        can_retry: bool) -> super::feed_pump::StuckSeekAction {
-        super::feed_pump::retry_stuck_seek(&mut self.feed, now, target_ns, can_retry)
+        can_retry: bool) -> plx_play_feed::feed_pump::StuckSeekAction {
+        plx_play_feed::feed_pump::retry_stuck_seek(&mut self.feed, now, target_ns, can_retry)
     }
 
     #[cfg(feature = "play-feed")]
     pub(super) fn pending_seek_ready(&self, seek_reloads: bool) -> bool {
-        super::feed_pump::pending_seek_ready(&self.feed, seek_reloads)
+        plx_play_feed::feed_pump::pending_seek_ready(&self.feed, seek_reloads)
     }
     #[cfg(feature = "play-feed")]
-    pub(super) fn prepare_seek_pause(&self) -> super::feed_pump::SeekPause {
-        super::feed_pump::prepare_seek_pause(&self.mt)
+    pub(super) fn prepare_seek_pause(&self) -> plx_play_feed::feed_pump::SeekPause {
+        plx_play_feed::feed_pump::prepare_seek_pause(&self.feed, &self.mt)
     }
     #[cfg(feature = "play-feed")]
     pub(super) fn begin_seek_discontinuity(&self) -> bool {
-        super::feed_pump::begin_seek_discontinuity(&self.feed)
+        plx_play_feed::feed_pump::begin_seek_discontinuity(&self.feed)
     }
     #[cfg(feature = "play-feed")]
     pub(super) fn apply_inplace_seek_pre(&mut self, target_ns: i64,
         mode: plx_play_feed::seek::SeekMode, coalesced: u32) {
-        super::feed_pump::apply_inplace_seek_pre(&mut self.feed, &self.mt, target_ns, mode, coalesced);
+        plx_play_feed::feed_pump::apply_inplace_seek_pre(&mut self.feed, &self.mt, target_ns, mode, coalesced);
     }
     #[cfg(feature = "play-feed")]
     pub(super) fn apply_inplace_seek_post(&mut self, target_ns: i64, now: u32) {
-        super::feed_pump::apply_inplace_seek_post(&mut self.feed, target_ns, now);
+        plx_play_feed::feed_pump::apply_inplace_seek_post(&mut self.feed, target_ns, now);
     }
 
     #[cfg(feature = "play-feed")]
     pub(super) fn tick_feed_load(&mut self, now: u32, segmented_hls: bool,
-        budget: std::time::Duration, speed_deadline_ms: u32) -> super::feed_pump::LoadTick {
-        super::feed_pump::tick_load(&mut self.feed, &self.mt, now,
-            segmented_hls, budget, speed_deadline_ms)
+        budget: std::time::Duration, speed_deadline_ms: u32) -> plx_play_feed::feed_pump::LoadTick {
+        plx_play_feed::feed_pump::tick_load(&mut self.feed, &self.mt, now,
+            segmented_hls, budget, speed_deadline_ms, super::no_audio_armed())
     }
 
     #[cfg(feature = "play-feed")]
     pub(super) fn tick_feed_presentation(&mut self, segmented_hls: bool,
-        immersive: bool) -> super::feed_pump::PresentationTick {
-        super::feed_pump::tick_presentation(&mut self.feed, &self.mt, segmented_hls, immersive)
+        immersive: bool) -> plx_play_feed::feed_pump::PresentationTick {
+        plx_play_feed::feed_pump::tick_presentation(&mut self.feed, &self.mt, segmented_hls, immersive)
     }
 
     /// Is a session live? Distinct from [`engine`](Self::engine) because it answers without taking
@@ -2137,12 +2160,14 @@ impl PlayerAdapter {
 
     #[cfg(feature = "play-feed")]
     pub(super) fn begin_native_open(&mut self) -> bool {
-        super::engine::begin_native_open(&mut self.feed, &self.mt)
+        plx_play_feed::native_executor::begin_native_open(&mut self.feed, &self.mt)
     }
 
     #[cfg(feature = "play-feed")]
     pub fn reap_abandoned_load(&mut self) -> bool {
-        super::engine::reap_abandoned_load_resource(&mut self.feed, &self.mt)
+        let hooks = self.feed.hooks();
+        plx_play_feed::native_executor::reap_abandoned_load_resource(
+            &mut self.feed, &self.mt, &hooks.release)
     }
 
     /// The parked Load, borrowed mutably (its once-only log latch), or taken once it returned.
@@ -2242,6 +2267,38 @@ mod uri_stop_refusal_tests {
         fn discard_staged(&mut self, _: BackendKind, _: plx_playback_contract::AttemptId,
             _: SourceKey) {}
         fn exit_disposition(&self) -> ExitDisposition { ExitDisposition::Clean }
+    }
+
+    #[test]
+    fn uri_rebuffering_publishes_the_shared_readout_and_unreported_stays_unknown() {
+        use plx_playback_contract::readout::PlaybackState as S;
+        let _serial = plx_base::testlock::serial();
+        let mut adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
+        let route = crate::route::RouteStartAttempt::fixture();
+        adapter.uri_route_attempt = Some(route);
+        let mut ps = crate::route::PlaybackSession::default();
+        ps.begin_attempt_view(route, super::super::attempt_view::Backend::Uri);
+        let attempt = route.contract_id();
+        let say = |value| Observation::Playback(Observed { value,
+            from: EvidenceSource::BackendReport });
+        let rebuffer = |value| Observation::Rebuffering(Observed { value,
+            from: EvidenceSource::BackendReport });
+        let facts = |ps: &crate::route::PlaybackSession| {
+            let f = ps.attempt_view().facts(); (f.status, f.rebuffering)
+        };
+        adapter.publish_uri_observation(&mut ps, attempt, say(Playback::ReadyAwaitPlay));
+        assert_eq!(facts(&ps), (Some(S::Buffering), None), "startup buffering is not a rebuffer");
+        adapter.publish_uri_observation(&mut ps, attempt, say(Playback::Playing));
+        assert_eq!(facts(&ps), (Some(S::Playing), None), "unreported stays unknown, not false");
+        adapter.publish_uri_observation(&mut ps, attempt, rebuffer(true));
+        assert_eq!(facts(&ps), (Some(S::Buffering), Some(true)));
+        adapter.publish_uri_observation(&mut ps, attempt, rebuffer(false));
+        assert_eq!(facts(&ps), (Some(S::Playing), Some(false)),
+            "bufferingEnd restores Playing; the service need not re-send it");
+        adapter.publish_uri_observation(&mut ps, attempt, rebuffer(true));
+        adapter.publish_uri_observation(&mut ps, attempt, say(Playback::Playing));
+        assert_eq!(facts(&ps), (Some(S::Playing), Some(false)),
+            "a Playing report after a lost bufferingEnd ends the rebuffer");
     }
 
     #[test]

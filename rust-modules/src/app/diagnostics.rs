@@ -934,7 +934,7 @@ fn connection_line(ps: &plx_media::route::PlaybackSession) -> String {
 }
 
 fn route_line(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::Diag) -> String {
-    let transport = if d.abr_mode == plx_media::player::ABR_MODE_HLS || plx_media::route::is_segmented_hls(ps)
+    let transport = if d.abr_mode == plx_playback_contract::readout::ABR_MODE_HLS || plx_media::route::is_segmented_hls(ps)
     {
         "HLS"
     } else {
@@ -1103,8 +1103,8 @@ fn abr_rows(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::Diag,
 
 fn abr_mode(d: &plx_media::player::Diag, selected: plx_media::route::Quality) -> String {
     match d.abr_mode {
-        plx_media::player::ABR_MODE_ORIGINAL => plx_platform::i18n::msg::browse_diagnostics_auto_original().to_string(),
-        plx_media::player::ABR_MODE_HLS => plx_platform::i18n::msg::browse_diagnostics_auto_hls().to_string(),
+        plx_playback_contract::readout::ABR_MODE_ORIGINAL => plx_platform::i18n::msg::browse_diagnostics_auto_original().to_string(),
+        plx_playback_contract::readout::ABR_MODE_HLS => plx_platform::i18n::msg::browse_diagnostics_auto_hls().to_string(),
         _ if selected == plx_media::route::Quality::Auto => plx_platform::i18n::msg::browse_diagnostics_auto_idle().to_string(),
         _ => plx_platform::i18n::msg::browse_diagnostics_manual_quality(&selected.label()),
     }
@@ -1150,7 +1150,7 @@ fn abr_budget(d: &plx_media::player::Diag, selected: plx_media::route::Quality) 
     if d.abr_safe_kbps < 0 {
         return plx_platform::i18n::msg::browse_diagnostics_budget_pending().to_string();
     }
-    let demand = if d.abr_mode == plx_media::player::ABR_MODE_HLS {
+    let demand = if d.abr_mode == plx_playback_contract::readout::ABR_MODE_HLS {
         d.abr_media_kbps
     } else {
         d.abr_kbps
@@ -1276,11 +1276,11 @@ fn abr_rate(kbps: i64) -> String {
 /// honest planning demand; Original uses the whole-file transport rate captured by the resolve.
 fn chart_demand_kbps(d: &plx_media::player::Diag, selected: plx_media::route::Quality) -> i64 {
     match d.abr_mode {
-        plx_media::player::ABR_MODE_HLS => [d.abr_media_kbps, d.abr_declared_kbps, d.abr_kbps]
+        plx_playback_contract::readout::ABR_MODE_HLS => [d.abr_media_kbps, d.abr_declared_kbps, d.abr_kbps]
             .into_iter()
             .find(|&v| v > 0)
             .unwrap_or(-1),
-        plx_media::player::ABR_MODE_ORIGINAL if d.abr_kbps > 0 => d.abr_kbps,
+        plx_playback_contract::readout::ABR_MODE_ORIGINAL if d.abr_kbps > 0 => d.abr_kbps,
         _ if selected == plx_media::route::Quality::Original && d.source_kbps > 0 => d.source_kbps,
         _ => selected.ceiling().map_or(-1, |c| i64::from(c.max_kbps)),
     }
@@ -1395,8 +1395,8 @@ fn decoded_raster(d: &plx_media::player::Diag) -> String {
 /// widest real row wrap and therefore made every row below it move between photographs.
 fn abr_quality(d: &plx_media::player::Diag, selected: plx_media::route::Quality) -> String {
     match d.abr_mode {
-        plx_media::player::ABR_MODE_ORIGINAL => plx_platform::i18n::msg::browse_diagnostics_quality_original(&decoded_raster(d), &abr_rate(d.abr_kbps)),
-        plx_media::player::ABR_MODE_HLS => {
+        plx_playback_contract::readout::ABR_MODE_ORIGINAL => plx_platform::i18n::msg::browse_diagnostics_quality_original(&decoded_raster(d), &abr_rate(d.abr_kbps)),
+        plx_playback_contract::readout::ABR_MODE_HLS => {
             let mut now = plx_platform::i18n::msg::browse_diagnostics_quality_request(abr_raster(d.abr_kbps), &abr_rate(d.abr_kbps));
             if d.abr_declared_kbps > 0 {
                 now.push_str(&format!(" · PMS {}", abr_rate(d.abr_declared_kbps)));
@@ -1416,7 +1416,7 @@ fn abr_action(d: &plx_media::player::Diag, selected: plx_media::route::Quality) 
             plx_platform::i18n::msg::browse_diagnostics_fixed_user().to_string()
         };
     }
-    if d.abr_mode == plx_media::player::ABR_MODE_ORIGINAL {
+    if d.abr_mode == plx_playback_contract::readout::ABR_MODE_ORIGINAL {
         // **How long has this been going on**, in seconds of WALL clock. It printed a count of
         // measurement windows, and a window was 750 ms of ACTIVE BODY-READ time — a clock that
         // stops under backpressure, i.e. exactly when the buffer is healthy — so "3 windows" named
@@ -1433,24 +1433,24 @@ fn abr_action(d: &plx_media::player::Diag, selected: plx_media::route::Quality) 
     }
     let target = abr_rate(d.abr_target_kbps);
     let action = match d.abr_action {
-        plx_media::player::ABR_ACTION_STEADY
+        plx_playback_contract::readout::ABR_ACTION_STEADY
             if d.abr_optimal_kbps > 0 && d.abr_optimal_kbps != d.abr_kbps =>
         {
             plx_platform::i18n::msg::browse_diagnostics_hold_requested(&abr_rate(d.abr_optimal_kbps))
         }
-        plx_media::player::ABR_ACTION_STEADY => plx_platform::i18n::msg::browse_diagnostics_hold_current().to_string(),
-        plx_media::player::ABR_ACTION_PRIME_DOWN => plx_platform::i18n::msg::browse_diagnostics_prime_down(&target),
-        plx_media::player::ABR_ACTION_PRIME_UP => plx_platform::i18n::msg::browse_diagnostics_prime_up(&target),
-        plx_media::player::ABR_ACTION_COMMIT_DOWN => plx_platform::i18n::msg::browse_diagnostics_changed_down(&target),
-        plx_media::player::ABR_ACTION_COMMIT_UP => plx_platform::i18n::msg::browse_diagnostics_changed_up(&target),
-        plx_media::player::ABR_ACTION_REJECT_DOWN => plx_platform::i18n::msg::browse_diagnostics_target_rejected(&target),
-        plx_media::player::ABR_ACTION_REJECT_UP => plx_platform::i18n::msg::browse_diagnostics_target_rejected(&target),
-        plx_media::player::ABR_ACTION_PROBE_ORIGINAL => plx_platform::i18n::msg::browse_diagnostics_checking_original().to_string(),
-        plx_media::player::ABR_ACTION_RECOVER_ORIGINAL => plx_platform::i18n::msg::browse_diagnostics_recover_original().to_string(),
-        plx_media::player::ABR_ACTION_ORIGINAL_PROBE_FAILED => plx_platform::i18n::msg::browse_diagnostics_original_check_failed(&if d.abr_failure_status > 0 { format!(" · HTTP {}", d.abr_failure_status) } else { String::new() }),
-        plx_media::player::ABR_ACTION_PRIME_REFRESH => plx_platform::i18n::msg::browse_diagnostics_refreshing(&target),
-        plx_media::player::ABR_ACTION_COMMIT_REFRESH => plx_platform::i18n::msg::browse_diagnostics_refreshed(&target),
-        plx_media::player::ABR_ACTION_REJECT_REFRESH => {
+        plx_playback_contract::readout::ABR_ACTION_STEADY => plx_platform::i18n::msg::browse_diagnostics_hold_current().to_string(),
+        plx_playback_contract::readout::ABR_ACTION_PRIME_DOWN => plx_platform::i18n::msg::browse_diagnostics_prime_down(&target),
+        plx_playback_contract::readout::ABR_ACTION_PRIME_UP => plx_platform::i18n::msg::browse_diagnostics_prime_up(&target),
+        plx_playback_contract::readout::ABR_ACTION_COMMIT_DOWN => plx_platform::i18n::msg::browse_diagnostics_changed_down(&target),
+        plx_playback_contract::readout::ABR_ACTION_COMMIT_UP => plx_platform::i18n::msg::browse_diagnostics_changed_up(&target),
+        plx_playback_contract::readout::ABR_ACTION_REJECT_DOWN => plx_platform::i18n::msg::browse_diagnostics_target_rejected(&target),
+        plx_playback_contract::readout::ABR_ACTION_REJECT_UP => plx_platform::i18n::msg::browse_diagnostics_target_rejected(&target),
+        plx_playback_contract::readout::ABR_ACTION_PROBE_ORIGINAL => plx_platform::i18n::msg::browse_diagnostics_checking_original().to_string(),
+        plx_playback_contract::readout::ABR_ACTION_RECOVER_ORIGINAL => plx_platform::i18n::msg::browse_diagnostics_recover_original().to_string(),
+        plx_playback_contract::readout::ABR_ACTION_ORIGINAL_PROBE_FAILED => plx_platform::i18n::msg::browse_diagnostics_original_check_failed(&if d.abr_failure_status > 0 { format!(" · HTTP {}", d.abr_failure_status) } else { String::new() }),
+        plx_playback_contract::readout::ABR_ACTION_PRIME_REFRESH => plx_platform::i18n::msg::browse_diagnostics_refreshing(&target),
+        plx_playback_contract::readout::ABR_ACTION_COMMIT_REFRESH => plx_platform::i18n::msg::browse_diagnostics_refreshed(&target),
+        plx_playback_contract::readout::ABR_ACTION_REJECT_REFRESH => {
             plx_platform::i18n::msg::browse_diagnostics_response_unchanged().to_string()
         }
         _ => plx_platform::i18n::msg::browse_diagnostics_starting().to_string(),
@@ -1472,7 +1472,7 @@ fn abr_reason(d: &plx_media::player::Diag, selected: plx_media::route::Quality) 
             plx_platform::i18n::msg::browse_diagnostics_controller_inactive().to_string()
         };
     }
-    if d.abr_mode == plx_media::player::ABR_MODE_ORIGINAL {
+    if d.abr_mode == plx_playback_contract::readout::ABR_MODE_ORIGINAL {
         return if d.abr_unsafe_deficit_ms <= 0 {
             plx_platform::i18n::msg::browse_diagnostics_sample_sustains().to_string()
         } else {
@@ -2320,7 +2320,7 @@ mod tests {
             28_000
         );
         let hls = plx_media::player::Diag {
-            abr_mode: plx_media::player::ABR_MODE_HLS,
+            abr_mode: plx_playback_contract::readout::ABR_MODE_HLS,
             abr_kbps: 22_000,
             abr_declared_kbps: 18_600,
             abr_media_kbps: 17_900,
@@ -2347,8 +2347,8 @@ mod tests {
         ] {
             for abr_mode in [
                 0,
-                plx_media::player::ABR_MODE_ORIGINAL,
-                plx_media::player::ABR_MODE_HLS,
+                plx_playback_contract::readout::ABR_MODE_ORIGINAL,
+                plx_playback_contract::readout::ABR_MODE_HLS,
             ] {
                 let d = plx_media::player::Diag {
                     vp_mode: vp,
@@ -2392,12 +2392,12 @@ mod tests {
             "the end-to-end cadence was mislabeled as server state"
         );
         assert_eq!(
-            schema(plx_media::player::ABR_MODE_ORIGINAL),
+            schema(plx_playback_contract::readout::ABR_MODE_ORIGINAL),
             fixed,
             "Original moved or added rows"
         );
         assert_eq!(
-            schema(plx_media::player::ABR_MODE_HLS),
+            schema(plx_playback_contract::readout::ABR_MODE_HLS),
             fixed,
             "HLS moved or added rows"
         );
@@ -2411,7 +2411,7 @@ mod tests {
     fn a_conservative_horizon_does_not_overrule_an_observed_filling_buffer() {
         let ps = plx_media::route::PlaybackSession::IDLE;
         let d = plx_media::player::Diag {
-            abr_mode: plx_media::player::ABR_MODE_HLS,
+            abr_mode: plx_playback_contract::readout::ABR_MODE_HLS,
             abr_kbps: 320,
             abr_safe_kbps: 301,
             abr_net_kbps: 499,
@@ -2481,7 +2481,7 @@ mod tests {
         // a skew, and the full model line with every optional part present.
         let d = plx_media::player::Diag {
             vp_mode: plx_platform::tv::sink::VP_EXPORTED,
-            abr_mode: plx_media::player::ABR_MODE_HLS,
+            abr_mode: plx_playback_contract::readout::ABR_MODE_HLS,
             video_w: 3_840,
             video_h: 2_160,
             pos_ns: 3_600_000_000_000,
@@ -2501,7 +2501,7 @@ mod tests {
             abr_pred_pm: 1_050,
             abr_risk: 3,
             abr_why: plx_media::player::ABR_WHY_PRODUCTION,
-            abr_action: plx_media::player::ABR_ACTION_PRIME_DOWN,
+            abr_action: plx_playback_contract::readout::ABR_ACTION_PRIME_DOWN,
             abr_target_kbps: 14_000,
             cb_count: 812,
             http_status: 200,
@@ -2802,8 +2802,8 @@ mod tests {
         ] {
             for abr_mode in [
                 0,
-                plx_media::player::ABR_MODE_ORIGINAL,
-                plx_media::player::ABR_MODE_HLS,
+                plx_playback_contract::readout::ABR_MODE_ORIGINAL,
+                plx_playback_contract::readout::ABR_MODE_HLS,
             ] {
                 let d = plx_media::player::Diag {
                     vp_mode: vp,
@@ -2846,7 +2846,7 @@ mod tests {
         let build = |d: &plx_media::player::Diag| build_with(d, plx_media::route::Quality::Auto);
 
         let original = plx_media::player::Diag {
-            abr_mode: plx_media::player::ABR_MODE_ORIGINAL,
+            abr_mode: plx_playback_contract::readout::ABR_MODE_ORIGINAL,
             abr_kbps: 11_356,
             abr_net_kbps: 4_016,
             abr_safe_kbps: 3_800,
@@ -2886,7 +2886,7 @@ mod tests {
         let at = |ms: i64| {
             val(
                 &build(&plx_media::player::Diag {
-                    abr_mode: plx_media::player::ABR_MODE_ORIGINAL,
+                    abr_mode: plx_playback_contract::readout::ABR_MODE_ORIGINAL,
                     abr_unsafe_deficit_ms: ms,
                     ..Default::default()
                 }),
@@ -2901,7 +2901,7 @@ mod tests {
         );
 
         let hls = plx_media::player::Diag {
-            abr_mode: plx_media::player::ABR_MODE_HLS,
+            abr_mode: plx_playback_contract::readout::ABR_MODE_HLS,
             abr_kbps: 4_000,
             abr_optimal_kbps: 10_000,
             abr_net_kbps: 12_400,
@@ -2915,7 +2915,7 @@ mod tests {
             abr_pred_pm: 900,
             abr_risk: 0,
             abr_why: plx_media::player::ABR_WHY_SAFE_BUDGET,
-            abr_action: plx_media::player::ABR_ACTION_COMMIT_UP,
+            abr_action: plx_playback_contract::readout::ABR_ACTION_COMMIT_UP,
             abr_target_kbps: 4_000,
             abr_declared_kbps: 3_493,
             abr_media_kbps: 3_200,
@@ -2943,7 +2943,7 @@ mod tests {
         // 896 kbps and every decoded segment was 720x404. The panel must expose all three facts
         // rather than promote a ceiling into a statement about the picture.
         let mismatched = build(&plx_media::player::Diag {
-            abr_mode: plx_media::player::ABR_MODE_HLS,
+            abr_mode: plx_playback_contract::readout::ABR_MODE_HLS,
             abr_kbps: 22_000,
             abr_declared_kbps: 896,
             abr_media_kbps: 1_051,
@@ -2961,7 +2961,7 @@ mod tests {
         // was written — the failure mode is a photograph reading `unknown raster`.
         for rung in plx_media::abr::LADDER {
             let probe = plx_media::player::Diag {
-                abr_mode: plx_media::player::ABR_MODE_HLS,
+                abr_mode: plx_playback_contract::readout::ABR_MODE_HLS,
                 abr_kbps: i64::from(rung.kbps()),
                 abr_optimal_kbps: -1,
                 ..Default::default()
@@ -2973,16 +2973,16 @@ mod tests {
         }
 
         let probing = plx_media::player::Diag {
-            abr_mode: plx_media::player::ABR_MODE_HLS,
+            abr_mode: plx_playback_contract::readout::ABR_MODE_HLS,
             abr_risk: -1,
-            abr_action: plx_media::player::ABR_ACTION_PROBE_ORIGINAL,
+            abr_action: plx_playback_contract::readout::ABR_ACTION_PROBE_ORIGINAL,
             ..Default::default()
         };
         assert_eq!(val(&build(&probing), "Action"), "checking Original link");
         let recovering = plx_media::player::Diag {
-            abr_mode: plx_media::player::ABR_MODE_HLS,
+            abr_mode: plx_playback_contract::readout::ABR_MODE_HLS,
             abr_risk: -1,
-            abr_action: plx_media::player::ABR_ACTION_RECOVER_ORIGINAL,
+            abr_action: plx_playback_contract::readout::ABR_ACTION_RECOVER_ORIGINAL,
             ..Default::default()
         };
         assert_eq!(
@@ -2990,9 +2990,9 @@ mod tests {
             "switching back to Original"
         );
         let unavailable = plx_media::player::Diag {
-            abr_mode: plx_media::player::ABR_MODE_HLS,
+            abr_mode: plx_playback_contract::readout::ABR_MODE_HLS,
             abr_risk: -1,
-            abr_action: plx_media::player::ABR_ACTION_ORIGINAL_PROBE_FAILED,
+            abr_action: plx_playback_contract::readout::ABR_ACTION_ORIGINAL_PROBE_FAILED,
             abr_failure_kind: plx_media::player::ABR_FAILURE_ORIGINAL_HTTP,
             abr_failure_status: 503,
             ..Default::default()
@@ -3007,8 +3007,8 @@ mod tests {
         );
 
         let refreshing = plx_media::player::Diag {
-            abr_mode: plx_media::player::ABR_MODE_HLS,
-            abr_action: plx_media::player::ABR_ACTION_PRIME_REFRESH,
+            abr_mode: plx_playback_contract::readout::ABR_MODE_HLS,
+            abr_action: plx_playback_contract::readout::ABR_ACTION_PRIME_REFRESH,
             abr_target_kbps: 22_000,
             abr_why: plx_media::player::ABR_WHY_RESPONSE_LIMITED,
             ..Default::default()
@@ -3071,10 +3071,10 @@ mod tests {
 
         let hls_backoff = build_with(
             &plx_media::player::Diag {
-                abr_mode: plx_media::player::ABR_MODE_HLS,
+                abr_mode: plx_playback_contract::readout::ABR_MODE_HLS,
                 abr_kbps: 18_600,
                 abr_optimal_kbps: 22_000,
-                abr_action: plx_media::player::ABR_ACTION_STEADY,
+                abr_action: plx_playback_contract::readout::ABR_ACTION_STEADY,
                 abr_why: plx_media::player::ABR_WHY_REJECT_BACKOFF,
                 ..Default::default()
             },

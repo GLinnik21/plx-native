@@ -180,6 +180,25 @@ pub fn displayed_counter_type(major: u32) -> c_int {
         .unwrap_or(0)
 }
 
+/// Account one callback type 46 to 49 against `shared`, reading the numbering shift through
+/// `major` (the callback thread passes the device's own). A displayed-frame counter with a
+/// positive `num` is the only presentation instrument measured on the device (`presented: 24.1
+/// fps` in `docs/measurements/`); `FRAMEREADY` (type 0) is a 5 Hz position tick and never counts.
+pub(crate) fn note_sink_counter(shared: &shared::Shared, ty: c_int, num: i64, major: u32) {
+    match sink_counter_kind(ty, major) {
+        Some(SinkCounter::Displayed) => {
+            shared.dg_sink_displayed_cb.fetch_add(1, Relaxed);
+            shared.note_displayed_frames(num);
+            log(&format!("sink: displayed={num} (type={ty})"));
+        }
+        Some(SinkCounter::Dropped) => log(&format!("sink: dropped={num} (type={ty})")),
+        None if (46..=49).contains(&ty) => {
+            shared.dg_sink_other_cb.fetch_add(1, Relaxed);
+        }
+        None => {}
+    }
+}
+
 pub fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::EventScope) {
     if scope == shared::EventScope::Release {
         // The lifecycle evidence of an object being released after the main thread reset the
@@ -229,17 +248,7 @@ pub fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::E
         // callback numbering shifts by two between webOS 4 and 5+ (`docs/webos5-port.md` §5):
         // 46/47 on this set are 48/49 on a webOS 5+ set. The harness reads THIS line, never
         // the raw type.
-        match sink_counter_kind(ty, plx_platform::tv::device::info().major) {
-            Some(SinkCounter::Displayed) => {
-                FEED_SHARED.dg_sink_displayed_cb.fetch_add(1, Relaxed);
-                log(&format!("sink: displayed={num} (type={ty})"));
-            }
-            Some(SinkCounter::Dropped) => log(&format!("sink: dropped={num} (type={ty})")),
-            None if (46..=49).contains(&ty) => {
-                FEED_SHARED.dg_sink_other_cb.fetch_add(1, Relaxed);
-            }
-            None => {}
-        }
+        note_sink_counter(&FEED_SHARED, ty, num, plx_platform::tv::device::info().major);
         // **A refusal before the first picture is a VERDICT, not a statistic.** Until 2026-09-03
         // the latch above was all this arm did, and `docs/webos10-lab-report.md` §3.5 records the
         // result on a set that refused the Load asynchronously (`Load()` returned ok=1, then

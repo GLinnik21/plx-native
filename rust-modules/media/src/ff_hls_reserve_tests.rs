@@ -9,7 +9,8 @@ use super::test_support::*;
 use crate::abr::Direction;
 
 // These fixtures exercise the native generation fence directly. Production
-// ownership lives in PlayerDemuxSession and is reached through DemuxSession.
+// ownership lives in the Feed's demux session (`plx_play_feed::demux_clock`) and is reached through
+// DemuxSession.
 struct HlsCandidateTransition(u64);
 
 impl HlsCandidateTransition {
@@ -969,7 +970,7 @@ fn retired_reserve_does_not_sample_successor_playhead() {
     let _reset = Reset;
     SHARED.reset_session();
     let first_epoch = FEED_SHARED.begin_native_session().expect("first native epoch");
-    let first = crate::player::demux_session::PlayerDemuxSession::capture(
+    let first = crate::player::demux_session::capture(
         plx_playback_contract::AttemptId::new(8, 1), first_epoch,
     );
     let mut reserve = ReserveDeadlineState::from_playhead_at(

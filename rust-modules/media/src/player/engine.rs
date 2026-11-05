@@ -7,10 +7,10 @@
 //! [`crate::player::adapter::PlayerAdapter`] that consumes a [`MainThread`] at construction, so a
 //! `&mut PlayerAdapter` borrow is what confines it now (see `player::adapter`). Which is also the
 //! rule for the rest of this file — a function here takes the token **iff** it reaches the slot
-//! or the ACB/Starfish seam, so the parameter carries information. `arm_seek` runs on the main
-//! thread too and deliberately does not take one: it only publishes to `FEED_SHARED`.
-use plx_play_feed::open::PhysicalOpen;
-use plx_play_feed::shared::{PhysicalShared, FEED_SHARED, FEED_TX};
+//! or the ACB/Starfish seam, so the parameter carries information. `FEED_SHARED.arm_seek` runs on
+//! the main thread too and deliberately takes none: it only publishes to the Feed's own state.
+#[cfg(test)]
+use plx_play_feed::shared::FEED_SHARED;
 #[cfg(all(test, feature = "hostsim"))]
 use super::route_start::{exit_native, exit_native_with, finish_release_for_test, poll_release,
     reap_abandoned_load, NativeExit};
@@ -40,8 +40,12 @@ pub(crate) use plx_play_feed::LoadVideo;
 pub(crate) use plx_play_feed::load_video_refused;
 #[cfg(all(test, feature = "hostsim"))]
 use super::shared::Stage;
-use plx_play_feed::seek::SeekMode;
-use super::{log, sink, threads};
+use plx_play_feed::native_executor::{FeedHooks, LaunchHooks, NativeHooks, PrepareHooks, ReleaseHooks};
+#[cfg(all(test, feature = "hostsim"))]
+use plx_play_feed::seek::{inplace_layout_known, old_abi_seek_tested, select_seek_mode, SeekMode};
+use super::{sink, threads};
+#[cfg(test)]
+use super::log;
 #[cfg(all(test, feature = "hostsim"))]
 use super::SHARED;
 use plx_base::task::MainThread;
@@ -50,9 +54,8 @@ use plx_platform::devcaps::AudioStack;
 use plx_platform::tv::sink::UnloadTicket;
 use plx_telemetry::telemetry::classes::DemuxExitClass;
 use plx_telemetry::telemetry::window::Stage as WindowStage;
-use std::os::raw::c_int;
 #[cfg(all(test, feature = "hostsim"))]
-use std::os::raw::c_char;
+use std::os::raw::{c_char, c_int};
 use std::sync::atomic::Ordering;
 
 pub use plx_play_feed::native_executor::fed_totals;
@@ -129,9 +132,6 @@ use plx_play_feed::feed_state::engines_dropped_for_test;
 #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
 use plx_play_feed::native_executor::NativeSessionStartGuard;
 
-#[cfg(test)]
-use plx_play_feed::native_release::{native_object_disposition, NativeObjectDisposition};
-
 /// A native `Load` that teardown could not wait for.
 ///
 /// The D.1.4 budget turns a `Load` that never returns into a failure read-out, but the object that
@@ -139,19 +139,11 @@ use plx_play_feed::native_release::{native_object_disposition, NativeObjectDispo
 /// while the load thread is still inside is the issue #74 race — and joining the media thread on
 /// the SDL main thread froze the whole app on exactly the set where the Load was hung. So teardown
 /// parks the thread, the payload it reads and the epoch here instead, and
-/// [`reap_abandoned_load_resource`] runs the ordinary native release (`Unload` → callback gate → epoch
+/// [`plx_play_feed::native_executor::reap_abandoned_load_resource`] runs the ordinary native release (`Unload` → callback gate → epoch
 /// retirement → D1 or quarantine) on the main thread once the thread has finished. Until then every
 /// start is refused rather than handed the same object; if the `Load` never returns the object is
 /// leaked for the life of the process, which is what the C seam would have to do anyway.
 pub use plx_play_feed::feed_state::AbandonedLoad;
-
-/// Release a parked [`AbandonedLoad`] if its `Load` has returned. Cheap when there is nothing to
-/// do; called once per app frame and at the top of every native start. `true` when the parked
-/// object was released by this call.
-pub(super) fn reap_abandoned_load_resource(feed: &mut super::feed_resources::FeedResources,
-    mt: &MainThread) -> bool {
-    plx_play_feed::native_executor::reap_abandoned_load_resource(feed, mt, &RELEASE_HOOKS)
-}
 
 /// A real stop hands its native object to off-frame Unload and retains its Engine until the tail.
 pub use plx_play_feed::feed_state::PendingRelease;
@@ -180,42 +172,19 @@ fn exported_window_destroyed() {
     window_step(WindowStage::ExportedWindowDestroy);
 }
 
-const RELEASE_HOOKS: plx_play_feed::native_executor::ReleaseHooks =
-    plx_play_feed::native_executor::ReleaseHooks {
-        raw_sink: super::raw_sink,
-        plane: plx_platform::tv::plane::installed(),
-        on_release_step: release_step,
-        on_exported_window_destroy: exported_window_destroyed,
-        spawn_unload,
-    };
-
-fn release_off_frame(mt: &MainThread, feed: &super::feed_resources::FeedResources,
-    epoch: u32, sp: &mut TeardownSpans,
-    status: &mut plx_playback_contract::ReleaseStatus) -> Option<std::thread::JoinHandle<()>> {
-    let hooks = plx_play_feed::native_executor::ReleaseHooks {
-        spawn_unload: feed.unload_spawner().unwrap_or(spawn_unload),
-        ..RELEASE_HOOKS
-    };
-    plx_play_feed::native_executor::release_off_frame(
-        mt, epoch, sp, status, feed.shared(), &hooks)
-}
-
-pub(super) fn run_release_tail(mt: &MainThread, p: PendingRelease)
-    -> plx_playback_contract::ReleaseStatus {
-    plx_play_feed::native_executor::run_release_tail(mt, p, &FEED_SHARED, &RELEASE_HOOKS)
-}
-
 #[cfg(all(test, feature = "hostsim"))]
 fn release_native_object(mt: &MainThread, epoch: u32) {
     let _ = release_native_object_timed(mt, epoch, &mut TeardownSpans::new());
 }
 
+#[cfg(all(test, feature = "hostsim"))]
 use plx_play_feed::native_executor::TeardownSpans;
 
+#[cfg(all(test, feature = "hostsim"))]
 fn release_native_object_timed(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans)
     -> plx_playback_contract::ReleaseStatus {
     plx_play_feed::native_executor::release_native_object_timed(
-        mt, epoch, sp, &FEED_SHARED, &RELEASE_HOOKS)
+        mt, epoch, sp, &FEED_SHARED, &NATIVE_HOOKS.release)
 }
 
 /// Release breadcrumbs belong to the common telemetry owner, not the physical executor.
@@ -411,19 +380,49 @@ use plx_play_feed::native_executor::{app_id_key, with_app_id};
 
 #[cfg(all(test, feature = "hostsim"))]
 fn with_window_id(mt: &MainThread, p: &str) -> String {
-    plx_play_feed::native_executor::with_window_id(mt, p, &PREPARE_HOOKS)
+    plx_play_feed::native_executor::with_window_id(mt, p, &NATIVE_HOOKS.prepare)
 }
 
 fn exported_window_created() {
     window_step(WindowStage::ExportedWindowCreate);
 }
 
-const PREPARE_HOOKS: plx_play_feed::native_executor::PrepareHooks =
-    plx_play_feed::native_executor::PrepareHooks {
+/// The `demux_transport` hook: the HTTPS credential facade is media-owned (`curlio`), so the
+/// composition names it and the executor only calls the function.
+fn demux_transport() -> crate::ff::DemuxTransport {
+    crate::ff::DemuxTransport::new(crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE)
+}
+
+/// **Everything the common composition lends the physical executor, as one value.** A `const`,
+/// not a registry: `PlayerAdapter` hands `&NATIVE_HOOKS` to the `FeedResources` it owns, and every
+/// caller reaches the executor through that owner (`feed.hooks()`), so there is no installer and no
+/// process-global. `sink` is the FENCED one (`player::sink`) for every verb but the release, which
+/// takes `raw_sink`.
+pub(super) const NATIVE_HOOKS: NativeHooks = NativeHooks {
+    prepare: PrepareHooks {
         sink,
         on_exported_window_create: exported_window_created,
         load_refusal_latch: DemuxExitClass::LoadRefused.latch(),
-    };
+    },
+    launch: LaunchHooks {
+        demux_transport,
+        load_thread: threads::load_thread,
+        sink,
+    },
+    feed: FeedHooks {
+        sink,
+        mirror_playstate: super::acb_mirror_playstate_at,
+        mute_for_preroll: super::mute_for_preroll,
+        feed_clock_us,
+    },
+    release: ReleaseHooks {
+        raw_sink: super::raw_sink,
+        plane: plx_platform::tv::plane::installed(),
+        on_release_step: release_step,
+        on_exported_window_destroy: exported_window_destroyed,
+        spawn_unload,
+    },
+};
 
 pub use super::route_start::{reload_at, reload_transcode, reload_transcode_tracked,
     stop_bufferfeed, suspend_bufferfeed, switch_audio_native, ReloadOutcome};
@@ -435,111 +434,9 @@ pub use super::route_start::{start_bufferfeed, start_bufferfeed_tracked, Bufferf
 #[cfg(test)]
 use plx_play_feed::native_executor::stream_open_log_line;
 
-pub(super) fn begin_native_open(feed: &mut super::feed_resources::FeedResources,
-    mt: &MainThread) -> bool {
-    reap_abandoned_load_resource(feed, mt);
-    if feed.has_abandoned_load() {
-        log("start_bufferfeed: an abandoned Load has not returned yet (refusing native start)");
-        return false;
-    }
-    plx_play_feed::native_executor::reset_fed_counters();
-    super::native_stall::reset();
-    true
-}
-
 #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
 pub(super) fn native_slot_available() -> Option<()> {
-    NativeSessionStartGuard::arm(&FEED_SHARED).map(|guard| { drop(guard); })
-}
-
-/// Native construction failed before a usable Load could be installed. Route settlement is
-/// mapped by the common owner, never by the physical executor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum NativeOpenError { Refused }
-
-/// Construct one physical feed from the route's frozen source facts.
-pub(super) fn prepare_native_open(
-    mt: &MainThread,
-    shared: &'static PhysicalShared,
-    user_held: bool,
-    seek_preroll: bool,
-    open: Option<PhysicalOpen>,
-    sample: Option<super::feed_open::SampleSource>,
-    is_h265: bool,
-    session_rate: i32,
-    side_reader: Box<dyn plx_play_feed::side_reader::SideReaderPort>,
-) -> Result<NativePrepared, NativeOpenError> {
-    let sample = sample.map(|sample| Box::new(SampleBuf {
-        data: sample.data, au: sample.au, next: 0, loops: 0,
-    }));
-    plx_play_feed::native_executor::prepare_native_open(
-        mt, shared, user_held, seek_preroll, open, sample, is_h265, session_rate,
-        side_reader, super::no_audio_armed(), super::play_rate_permille(), &PREPARE_HOOKS,
-    ).map(NativePrepared).map_err(|refusal| {
-        match refusal {
-            plx_play_feed::native_executor::PrepareRefusal::ClockBusy => {
-                log("start_bufferfeed: clock state is not idle (refusing overlapping start)");
-            }
-            plx_play_feed::native_executor::PrepareRefusal::NativeBusy => {
-                log("start_bufferfeed: native session is not idle (refusing overlapping Load)");
-            }
-            plx_play_feed::native_executor::PrepareRefusal::Refused => {}
-        }
-        NativeOpenError::Refused
-    })
-}
-
-/// One physical Load declaration and its native callback guards, prepared before the route owner
-/// mints an attempt. Dropping it on a superseded route retracts both guards automatically.
-pub(super) struct NativePrepared(plx_play_feed::native_executor::NativePrepared);
-
-impl NativePrepared {
-    /// The route claim supplies the canonical attempt only after native preflight succeeds.
-    pub(super) fn bind_demux_session(&mut self, attempt: plx_playback_contract::AttemptId) {
-        let epoch = self.0.native_epoch();
-        self.0.bind_demux_session(super::demux_session::PlayerDemuxSession::capture(attempt, epoch));
-    }
-}
-
-/// Launch workers against the route's exact attempt; this owns no route/session policy.
-pub(super) fn launch_native_open(
-    feed: &mut super::feed_resources::FeedResources,
-    attempt: plx_playback_contract::AttemptId,
-    prepared: NativePrepared,
-) -> Result<(), NativeOpenError> {
-    let hooks = plx_play_feed::native_executor::LaunchHooks {
-        demux_transport: || crate::ff::DemuxTransport::new(
-            crate::curlio::range_factory(), crate::curlio::CREDENTIAL_GATE),
-        load_thread: threads::load_thread,
-        select_seek_mode: select_seek_mode_for_load,
-    };
-    plx_play_feed::native_executor::launch_native_open(
-        feed, &FEED_TX, attempt, prepared.0, &hooks,
-    ).map_err(|_| NativeOpenError::Refused)
-}
-
-fn select_seek_mode_for_load() {
-    let major = plx_platform::tv::device::info().major;
-    let layout_known = inplace_layout_known(major, sink().feed_abi_is_cow());
-    let old_abi_seek = old_abi_seek_tested(major);
-    let mode = session_seek_mode(layout_known, old_abi_seek, sink().window_mode(), dev_seek_mode());
-    log(&format!("seek mode: {mode:?} (layout_known={layout_known} old_abi_seek={old_abi_seek})"));
-    plx_play_feed::seek::set_seek_mode(mode);
-}
-
-
-/// Validate and publish the no-Plex synthetic route as one admission step. The URL must remain
-/// absent when declaration policy refuses it: a later PLAY uses URL presence to decide whether to
-/// revisit this validation, so publishing first turns a one-time refusal into a retry bypass.
-/// Arm the demuxer to open+seek to `target_ns` on the NEXT Load, displaying honest content
-/// time. disp_base=0 and (via start_bufferfeed) rebase_pending=true, so feed_stream rebases
-/// the landed keyframe K to fed-pts 0 and the presented position reads as num+K = content
-/// time. Call BEFORE start_bufferfeed (resume) or via reload_at (mid-play seek).
-pub fn arm_seek(target_ns: i64) {
-    let t = target_ns.max(0);
-    FEED_SHARED.seek_to_ns.store(t, Ordering::Release);
-    FEED_SHARED.disp_base.store(0, Ordering::Relaxed);
-    FEED_SHARED.playpos_ns.store(t, Ordering::Relaxed); // instant HUD feedback until frames land
+    NativeSessionStartGuard::arm(&plx_play_feed::shared::FEED_SHARED).map(|guard| { drop(guard); })
 }
 
 /// Set where the pump ends an Engine for good under the failure read-out; spent by
@@ -560,48 +457,6 @@ pub(super) fn clear_failed_engine_release_arm() {
     FAILED_ENGINE_RELEASE_ARMED.store(false, Ordering::Release);
 }
 
-/// Owns a removed Engine through worker joins, native release and queue destruction.
-pub(super) struct NativeStop(plx_play_feed::native_executor::NativeStop);
-
-impl NativeStop {
-    pub(super) fn take(feed: &mut super::feed_resources::FeedResources) -> Self {
-        Self(plx_play_feed::native_executor::NativeStop::take(feed))
-    }
-
-    pub(super) fn stop_side_reader(&mut self, for_reload: bool) {
-        self.0.stop_side_reader(for_reload);
-    }
-
-    pub(super) fn unblock_join_close(&mut self) {
-        self.0.unblock_join_close();
-    }
-
-    pub(super) fn terminal_facts(&self) -> plx_playback_contract::readout::AttemptFacts {
-        super::feed_pump::native_attempt_facts()
-    }
-
-    pub(super) fn report_dispatched(&mut self) {
-        self.0.report_dispatched();
-    }
-
-    pub(super) fn release_status(&self) -> plx_playback_contract::ReleaseStatus {
-        self.0.release_status()
-    }
-
-    pub(super) fn release_and_drain(&mut self, mt: &MainThread,
-        feed: &mut super::feed_resources::FeedResources, for_reload: bool) {
-        let hooks = plx_play_feed::native_executor::StopHooks {
-            release_off_frame,
-            release_native_object_timed,
-        };
-        self.0.release_and_drain(mt, feed, for_reload, &hooks);
-    }
-
-    pub(super) fn finish(self, for_reload: bool) -> Option<PendingRelease> {
-        self.0.finish(for_reload)
-    }
-}
-
 pub use plx_play_feed::native_executor::drain_aq;
 
 
@@ -609,8 +464,6 @@ pub(crate) use plx_play_feed::feed_state::MAX_FEED_AHEAD_NS;
 #[cfg(test)]
 pub(crate) use plx_play_feed::feed_state::{AUDIO_LEAD_IN_NS, PRIME_VIDEO_MAX_NS};
 pub use plx_play_feed::feed_state::PRES_NONE;
-#[cfg(test)]
-use plx_play_feed::feed_state::FEED_PACE_CAP_MS;
 pub(crate) use plx_play_feed::native_executor::AUDIO_SLACK_NS;
 #[cfg(all(test, feature = "hostsim"))]
 use plx_play_feed::native_executor::{
@@ -659,24 +512,14 @@ use plx_play_feed::native_executor::{settle_pcm_lead, hls_candidate_snapshot_sta
 pub use plx_play_feed::native_executor::arm_live_clock_prime;
 
 
-const FEED_HOOKS: plx_play_feed::native_executor::FeedHooks =
-    plx_play_feed::native_executor::FeedHooks {
-        sink,
-        mirror_playstate: super::acb_mirror_playstate_at,
-        mute_for_preroll: super::mute_for_preroll,
-        feed_clock_us,
-    };
-
-pub(super) fn play_initial_now(mt: &MainThread, eng: &mut Engine) -> Option<bool> {
-    plx_play_feed::native_executor::play_initial_now(mt, eng, &FEED_HOOKS)
+#[cfg(all(test, feature = "hostsim"))]
+pub(super) fn try_prime(mt: &MainThread, eng: &mut Engine) {
+    plx_play_feed::native_executor::try_prime(mt, eng, &plx_play_feed::shared::FEED_TX, &NATIVE_HOOKS.feed);
 }
 
-pub fn try_prime(mt: &MainThread, eng: &mut Engine) {
-    plx_play_feed::native_executor::try_prime(mt, eng, &FEED_TX, &FEED_HOOKS);
-}
-
-pub fn feed_both_lanes(mt: &MainThread, eng: &mut Engine) {
-    plx_play_feed::native_executor::feed_both_lanes(mt, eng, &FEED_TX, &FEED_HOOKS);
+#[cfg(all(test, feature = "hostsim"))]
+pub(super) fn feed_both_lanes(mt: &MainThread, eng: &mut Engine) {
+    plx_play_feed::native_executor::feed_both_lanes(mt, eng, &plx_play_feed::shared::FEED_TX, &NATIVE_HOOKS.feed);
 }
 
 #[cfg(test)]
@@ -687,210 +530,6 @@ pub fn feed_sample(mt: &MainThread, eng: &mut Engine) {
     plx_play_feed::native_executor::feed_sample(mt, eng, sink);
 }
 
-
-/// Whether the decompiled StarfishMediaAPIs offsets (see the NOR comment in `start_bufferfeed_inner`)
-/// may be trusted for in-place seek. The old-ABI `Feed` is the primary gate: it proves
-/// libplayerAPIs is the pre-C++11 build, so 3.9.x is excluded without listing releases. A known
-/// release below 4 is refused too; `major == 0` (release unknown) defers to the Feed evidence.
-fn inplace_layout_known(major: u32, feed_abi_is_cow: bool) -> bool {
-    !feed_abi_is_cow && (major == 0 || major >= 4)
-}
-
-/// **Is LG's public `Seek` device-tested where the private layout is not known?** Only on a KNOWN
-/// webOS 3 release: 80 seeks on platform release 3.9.3 (`docs/webos5-port.md`, "The public
-/// `Seek`"). It reads the release alone, not the Feed ABI: every 3.x library seen has the old
-/// (COW) one, and a release-3 set with the cxx11 Feed would get `Seek` too. webOS 2, an old-ABI
-/// 4.x build and an unknown release (`major == 0`) keep reloading, because an accepted `Seek` that
-/// anchors wrong is caught by no net ([`select_seek_mode`]).
-fn old_abi_seek_tested(major: u32) -> bool {
-    major == 3
-}
-
-/// [`select_seek_mode`] for a session that is starting: a `NativeSeek` this playback already had
-/// REFUSED stays `Reload` (the latch `feed_stream` sets, which `reload_at` preserves and a fresh
-/// play clears), instead of paying reopen + keyframe + refused `Seek` + full `Load` on every seek.
-pub(super) fn session_seek_mode(
-    layout_known: bool,
-    old_abi_seek: bool,
-    window_mode: c_int,
-    dev: Option<SeekMode>,
-) -> SeekMode {
-    match select_seek_mode(layout_known, old_abi_seek, window_mode, dev) {
-        SeekMode::NativeSeek if plx_play_feed::seek::native_seek_refused() => SeekMode::Reload,
-        mode => mode,
-    }
-}
-
-/// How a direct-play seek re-anchors the pipeline in a new session (see [`SeekMode`]).
-///
-/// - `VP_EXPORTED` (webOS 5+) -> [`SeekMode::NativeSeek`]: LG's PUBLIC `StarfishMediaAPIs::Seek`.
-///   The Kodi in-place path (`Segment`) is NOT used there: it reaches LG-private C++ objects
-///   through two decompile-derived offsets (`StarfishMediaAPIs::player` at object+0x4c, then
-///   `AbstractPlayer::pipeline` at +0x04, plus `MEDIA_CUSTOM_CONTENT_INFO`'s `ptsToDecode` at
-///   +0x28) read off a webOS 4.5 binary, which nothing in a symbol table can confirm on another
-///   firmware: a field added to StarfishMediaAPIs by any 5.x build moves +0x4c and the very next
-///   seek dereferences whatever now lives there. `Seek` is an exported symbol, present on every
-///   firmware 1.2 to 11.2, so it assumes no layout at all.
-/// - A known layout without `VP_EXPORTED` (webOS 4.x) -> [`SeekMode::Segment`], unchanged.
-/// - NOT `Segment` when the library is the pre-C++11 build (`inplace_layout_known` false): its
-///   StarfishMediaAPIs is a different object from the 4.5 one, and the first fast-forward on a
-///   3.4.0 set crashed through those offsets. The old-ABI Feed (`sf_feed_abi_is_cow`) is the
-///   direct evidence, and it covers 3.9.x too. A KNOWN release below 4 is refused as well; an
-///   UNKNOWN one (`major == 0`, os_info unreadable) with the C++11 Feed keeps in-place seek, as
-///   before #578, because that Feed says the library is 4.x or later.
-/// - A layout-unknown library on the ACB plane in a KNOWN webOS 3 release
-///   ([`old_abi_seek_tested`]) -> [`SeekMode::NativeSeek`] too. `Seek` takes a `const char*`, so
-///   its symbol and calling convention are the same on both C++ ABIs; that it also behaves the
-///   same rests on the device test in `docs/webos5-port.md` ("The public `Seek`"), not on the
-///   decompile, which is of 4.5.
-///   The nets are the ones webOS 5+ has: a refused `Seek` drops the playback to `Reload`
-///   (`native_seek_refused`), and a seek that does not anchor within `SEEK_STUCK_MS` is retried,
-///   then reloaded. Neither catches a `Seek` that is accepted and then anchors wrong (the
-///   stale-segment stall, about 48 s later), which is why the release is gated to the one tested.
-/// - Any other layout-unknown library (webOS 2, an old-ABI 4.x build, an unknown release) and no
-///   video plane (`VP_NONE`) -> [`SeekMode::Reload`], as before.
-/// `dev` is the `plxnative-seekmode` dev trigger and wins when present, so a webOS 4.5 set can
-/// exercise `NativeSeek`.
-pub(super) fn select_seek_mode(
-    layout_known: bool,
-    old_abi_seek: bool,
-    window_mode: c_int,
-    dev: Option<SeekMode>,
-) -> SeekMode {
-    if let Some(forced) = dev {
-        return forced;
-    }
-    if window_mode == super::VP_EXPORTED {
-        SeekMode::NativeSeek
-    } else if layout_known {
-        SeekMode::Segment
-    } else if old_abi_seek && window_mode == super::VP_ACB {
-        SeekMode::NativeSeek
-    } else {
-        SeekMode::Reload
-    }
-}
-
-/// `/tmp/plxnative-seekmode`: `native`, `segment` or `reload`. `None` without the `devtriggers`
-/// feature (`devtrig::read` folds away), so a release build cannot be steered.
-fn dev_seek_mode() -> Option<SeekMode> {
-    match plx_base::devtrig::read("seekmode")?.trim() {
-        "native" => Some(SeekMode::NativeSeek),
-        "segment" => Some(SeekMode::Segment),
-        "reload" => Some(SeekMode::Reload),
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-mod feed_pace_tests {
-    use super::{FeedPace, FEED_PACE_CAP_MS, MAX_FEED_AHEAD_NS, PRES_NONE};
-
-    const MS: i64 = 1_000_000;
-
-    /// Video AUs (24 fps, 41.7 ms apart) the throttle admits at each 60 Hz frame of a 1x clock
-    /// whose position reports arrive every 200 ms — with `reference` as the throttle's position.
-    fn admitted_per_frame(reference: impl Fn(&mut FeedPace, i64, u32) -> i64) -> Vec<u32> {
-        let mut pace = FeedPace::default();
-        let au_ns = 41_708_333i64;
-        let mut next_pts = MAX_FEED_AHEAD_NS; // the lane starts full
-        let mut out = Vec::new();
-        for frame in 0..120u32 {
-            let now = 1_000 + frame * 1000 / 60;
-            let true_pos = (now as i64 - 1_000) * MS;
-            let pres = true_pos - true_pos % (200 * MS); // the 5 Hz step function
-            let refpos = reference(&mut pace, pres, now);
-            let mut n = 0;
-            while next_pts - refpos <= MAX_FEED_AHEAD_NS {
-                next_pts += au_ns;
-                n += 1;
-            }
-            out.push(n);
-        }
-        out
-    }
-
-    /// **Regression: the 5 Hz feed burst.** Against the raw report the lane opens 200 ms at a
-    /// time: ~5 AUs land on one frame and none on the eleven around it. Run on at 1x it never
-    /// admits more than one video AU a frame, and admits the same media over the same time.
-    #[test]
-    fn the_reference_spreads_the_five_hertz_burst_across_frames() {
-        let raw = admitted_per_frame(|_, pres, _| pres);
-        let paced = admitted_per_frame(|p, pres, now| p.reference(pres, now));
-        assert!(raw.iter().max().copied().unwrap_or(0) >= 4, "the raw step feeds in bursts: {raw:?}");
-        assert!(paced.iter().all(|&n| n <= 1), "paced: at most one AU a frame: {paced:?}");
-        let (r, p): (u32, u32) = (raw.iter().sum(), paced.iter().sum());
-        assert!(p.abs_diff(r) <= 6, "same media over the same two seconds: raw {r}, paced {p}");
-    }
-
-    /// A `now` BEFORE the stamp of the last report (the throttle read its clock earlier than the
-    /// report was first seen) is no run-on, not a full-cap one.
-    #[test]
-    fn a_clock_behind_the_report_stamp_does_not_run_on() {
-        let mut pace = FeedPace::default();
-        assert_eq!(pace.reference(5_000 * MS, 1_000), 5_000 * MS);
-        assert_eq!(pace.reference(5_000 * MS, 900), 5_000 * MS);
-    }
-
-    /// A clock that stops reporting new positions (paused, stalled) opens the lane by at most
-    /// the cap, never without bound; `PRES_NONE` passes through and forgets the last report.
-    #[test]
-    fn a_frozen_report_runs_on_at_most_the_cap_and_none_passes_through() {
-        let mut pace = FeedPace::default();
-        assert_eq!(pace.reference(5_000 * MS, 100), 5_000 * MS);
-        assert_eq!(pace.reference(5_000 * MS, 150), 5_050 * MS);
-        assert_eq!(pace.reference(5_000 * MS, 100_000), 5_000 * MS + FEED_PACE_CAP_MS as i64 * MS);
-        assert_eq!(pace.reference(PRES_NONE, 100_001), PRES_NONE);
-        assert_eq!(pace.reference(5_000 * MS, 100_002), 5_000 * MS, "a fresh report restarts the run-on");
-    }
-
-    /// At 1.5x the playhead moves 1.5 ms of media per wall-clock ms between reports, so the
-    /// estimate runs on that much faster; capped by the same wall-clock bound.
-    #[test]
-    fn the_run_on_follows_the_pipeline_rate() {
-        let mut pace = FeedPace::default();
-        assert_eq!(pace.reference_at(5_000 * MS, 100, 1500), 5_000 * MS);
-        assert_eq!(pace.reference_at(5_000 * MS, 150, 1500), 5_075 * MS);
-        assert_eq!(pace.reference_at(5_000 * MS, 200, 500), 5_050 * MS, "half speed runs on at half");
-        assert_eq!(
-            pace.reference_at(5_000 * MS, 100_000, 2000),
-            5_000 * MS + 2 * FEED_PACE_CAP_MS as i64 * MS,
-            "the cap is wall-clock time; at 2x it covers twice the media"
-        );
-        assert_eq!(
-            FeedPace::default().reference(5_000 * MS, 100),
-            FeedPace::default().reference_at(5_000 * MS, 100, crate::player::RATE_NORMAL)
-        );
-    }
-}
-
-#[cfg(test)]
-mod native_lifecycle_proof_tests {
-    use super::{native_object_disposition, NativeObjectDisposition};
-
-    #[test]
-    fn destructor_requires_every_independent_runtime_proof() {
-        assert_eq!(
-            native_object_disposition(true, true, true),
-            NativeObjectDisposition::Destroy,
-        );
-        for (unload_completed, callback_gate_proven, rust_epoch_retired) in [
-            (false, true, true),
-            (true, false, true),
-            (true, true, false),
-            (false, false, false),
-        ] {
-            assert_eq!(
-                native_object_disposition(
-                    unload_completed,
-                    callback_gate_proven,
-                    rust_epoch_retired,
-                ),
-                NativeObjectDisposition::Quarantine,
-            );
-        }
-    }
-}
 
 #[cfg(all(test, feature = "hostsim"))]
 mod native_lifecycle_host_seam_tests {
@@ -904,46 +543,6 @@ mod native_lifecycle_host_seam_tests {
             crate::player::ffi_host::force_clocksink_for_test(false);
             SHARED.reset_session();
         }
-    }
-
-    #[test]
-    fn host_seam_destroys_only_with_evidence_and_latches_quarantine() {
-        let _serial = plx_base::testlock::serial();
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
-        SHARED.reset_session();
-        let _fresh_process = FreshProcess;
-        let mt = unsafe { MainThread::assume() };
-
-        let first = FEED_SHARED.begin_native_session().expect("first native epoch");
-        assert_eq!(unsafe { crate::player::sink().load(c"{}".as_ptr(), first) }, 1);
-        assert!(unsafe { crate::player::sink().callback_intercepts(&mt) } > 0);
-        unsafe { crate::player::sink().unload(&plx_platform::tv::sink::UnloadTicket::issue(&mt)) };
-        assert!(FEED_SHARED.native_unload_completed(first));
-        assert_eq!(unsafe { crate::player::sink().callback_gate_retire(&mt) }, 1);
-        assert!(FEED_SHARED.retire_native_session(first));
-        assert_eq!(unsafe { crate::player::sink().destroy(&mt) }, 1);
-        assert_eq!(unsafe { crate::player::sink().ready(&mt) }, 0);
-
-        SHARED.reset_session();
-        let unproven = FEED_SHARED
-            .begin_native_session()
-            .expect("unproven native epoch");
-        assert_eq!(unsafe { crate::player::sink().load(c"{}".as_ptr(), unproven) }, 1);
-        crate::player::ffi_host::force_callback_intercepts_for_test(0);
-        unsafe { crate::player::sink().unload(&plx_platform::tv::sink::UnloadTicket::issue(&mt)) };
-        assert_eq!(unsafe { crate::player::sink().callback_gate_retire(&mt) }, 0);
-        assert!(FEED_SHARED.retire_native_session(unproven));
-        unsafe { crate::player::sink().quarantine(&mt) };
-
-        SHARED.reset_session();
-        let refused = FEED_SHARED.begin_native_session().expect("refused native epoch");
-        assert_eq!(
-            unsafe { crate::player::sink().load(c"{}".as_ptr(), refused) },
-            0,
-            "quarantine must remain a process-long refusal",
-        );
-        assert!(FEED_SHARED.retire_native_session(refused));
     }
 
     /// S12a: the window breadcrumbs `release_native_object` leaves, as a host can see them. The
@@ -989,58 +588,6 @@ mod native_lifecycle_host_seam_tests {
         assert_eq!(unsafe { crate::player::sink().load(c"{}".as_ptr(), epoch) }, 1);
         assert_eq!(unsafe { crate::player::sink().ready(mt) }, 1);
         epoch
-    }
-
-    #[test]
-    fn a_refused_load_with_no_constructed_object_releases_its_epoch() {
-        let _serial = plx_base::testlock::serial();
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(false);
-        SHARED.reset_session();
-        let _fresh_process = FreshProcess;
-        let mt = unsafe { MainThread::assume() };
-        let epoch = FEED_SHARED.begin_native_session().expect("native epoch");
-        assert_eq!(unsafe { crate::player::sink().load(c"{}".as_ptr(), epoch) }, 0);
-        assert_eq!(unsafe { crate::player::sink().ready(&mt) }, 0);
-        assert_eq!(release_native_object_timed(&mt, epoch, &mut TeardownSpans::new()),
-            plx_playback_contract::ReleaseStatus::Released,
-            "the joined host Load refused before constructing any native object");
-        let next = FEED_SHARED.begin_native_session()
-            .expect("an explicitly empty native seam must not quarantine subsequent attempts");
-        assert!(FEED_SHARED.retire_native_session(next));
-    }
-
-    #[test]
-    fn ready_zero_with_an_allocated_epoch_is_still_uncertain() {
-        let _serial = plx_base::testlock::serial();
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
-        SHARED.reset_session();
-        let _fresh_process = FreshProcess;
-        let mt = unsafe { MainThread::assume() };
-        let epoch = loaded_epoch(&mt);
-        // Hide dispatchability while retaining the constructed object's callback epoch.
-        crate::player::ffi_host::force_object_ready_for_test(false);
-        assert_eq!(unsafe { crate::player::sink().ready(&mt) }, 0);
-        assert_eq!(release_native_object_timed(&mt, epoch, &mut TeardownSpans::new()),
-            plx_playback_contract::ReleaseStatus::Quarantined,
-            "ready=0 alone cannot authorize release of an allocated object");
-    }
-
-    #[test]
-    fn a_blocked_host_lifecycle_never_becomes_no_object_proof() {
-        let _serial = plx_base::testlock::serial();
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
-        SHARED.reset_session();
-        let _fresh_process = FreshProcess;
-        let mt = unsafe { MainThread::assume() };
-        let epoch = loaded_epoch(&mt);
-        unsafe { crate::player::sink().quarantine(&mt) };
-        assert!(crate::player::ffi_host::lifecycle_blocked_for_test());
-        assert_eq!(unsafe { crate::player::sink().ready(&mt) }, 0);
-        assert_eq!(release_native_object_timed(&mt, epoch, &mut TeardownSpans::new()),
-            plx_playback_contract::ReleaseStatus::Quarantined);
     }
 
     #[test]
@@ -1797,7 +1344,7 @@ mod prime_livelock_tests {
             side_reader: Box::new(super::super::feed_open::SideReaderOpen::empty()),
             preview_abandon: false,
             foreground_follows_load: false,
-            era_watch: crate::player::era_callbacks::Watch::new(),
+            era_watch: plx_play_feed::era_callbacks::Watch::new(),
         }
     }
 
@@ -4867,22 +4414,6 @@ mod load_refusal_tests {
 }
 
 #[cfg(test)]
-mod inplace_layout_tests {
-    use super::inplace_layout_known;
-
-    #[test]
-    fn in_place_seek_needs_the_cxx11_feed_and_a_release_that_is_unknown_or_4_plus() {
-        assert!(inplace_layout_known(4, false));
-        assert!(inplace_layout_known(0, false));
-        assert!(inplace_layout_known(11, false));
-        assert!(!inplace_layout_known(3, false));
-        assert!(!inplace_layout_known(3, true));
-        assert!(!inplace_layout_known(4, true));
-        assert!(!inplace_layout_known(0, true));
-    }
-}
-
-#[cfg(test)]
 mod audio_lead_in_tests {
     use super::{audio_lead_in, AUDIO_LEAD_IN_NS};
 
@@ -5056,7 +4587,7 @@ mod native_seek_tests {
     }
 
     /// The mode a set on release `major` (old-ABI Feed when `cow`) gets from a window of kind
-    /// `window_mode`, composed from the same facts `start_bufferfeed_inner` composes.
+    /// `window_mode`, composed from the same facts `select_seek_mode_for_load` composes.
     fn mode_for(major: u32, cow: bool, window_mode: c_int) -> SeekMode {
         select_seek_mode(inplace_layout_known(major, cow), old_abi_seek_tested(major), window_mode, None)
     }
@@ -5075,32 +4606,13 @@ mod native_seek_tests {
         );
     }
 
+    /// The table of modes per firmware is `plx_play_feed::seek`'s test; what stays here is the
+    /// pump's reading of them: only `Reload` is a fresh `Load`.
     #[test]
-    fn each_firmware_gets_its_seek_mode() {
-        use crate::player::{VP_ACB, VP_EXPORTED, VP_NONE};
-        assert_eq!(mode_for(4, false, VP_ACB), SeekMode::Segment, "webOS 4.x is unchanged");
-        assert_eq!(mode_for(5, false, VP_EXPORTED), SeekMode::NativeSeek, "webOS 5+ is unchanged");
-        assert_eq!(mode_for(3, true, VP_ACB), SeekMode::NativeSeek, "webOS 3 (a 3.9.3 set: COW Feed) uses LG's public Seek");
-        assert_eq!(mode_for(2, true, VP_ACB), SeekMode::Reload, "webOS 2 is untested and reloads, as before");
-        assert_eq!(mode_for(4, true, VP_ACB), SeekMode::Reload, "an old-ABI 4.x build is untested and reloads");
-        assert_eq!(mode_for(0, true, VP_ACB), SeekMode::Reload, "an unknown release with the old ABI reloads");
-        assert_eq!(mode_for(3, true, VP_NONE), SeekMode::Reload, "no video plane, nothing to seek in place");
-        assert_eq!(select_seek_mode(true, false, VP_ACB, Some(SeekMode::NativeSeek)), SeekMode::NativeSeek, "the dev trigger wins");
+    fn only_the_reload_mode_reloads_the_pipeline_on_a_seek() {
         assert!(crate::player::pump::seek_reloads(SeekMode::Reload));
         assert!(!crate::player::pump::seek_reloads(SeekMode::Segment));
         assert!(!crate::player::pump::seek_reloads(SeekMode::NativeSeek));
-    }
-
-    /// A webOS 3 playback whose `Seek` was refused stays on the reload path across the reload's
-    /// fresh session, as a webOS 5+ one does (`pump`'s refused-Seek test); a fresh play clears it.
-    #[test]
-    fn a_refused_seek_on_webos3_keeps_the_playback_on_reload() {
-        let _serial = plx_base::testlock::serial();
-        let webos3 = || session_seek_mode(inplace_layout_known(3, true), old_abi_seek_tested(3), crate::player::VP_ACB, None);
-        plx_play_feed::seek::set_native_seek_refused(true);
-        assert_eq!(webos3(), SeekMode::Reload, "the downgrade survives reload_at");
-        plx_play_feed::seek::set_native_seek_refused(false);
-        assert_eq!(webos3(), SeekMode::NativeSeek, "a fresh play offers Seek again");
     }
 
     /// A speed is applied only to a freshly loaded pipeline, so a seek that carries a speed
