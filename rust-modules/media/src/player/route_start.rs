@@ -74,7 +74,7 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
     // A URI-mode probe session (dev trigger `plxnative-uriprobe`) holds the route-start attempt and
     // the exported window without an Engine in the slot. Active double-start stays a no-op;
     // closing or quarantined ownership refuses a new start until actual release.
-    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
+    #[cfg(feature = "devtriggers")]
     if pa.uri_live() {
         log("start_bufferfeed: a URI-mode registration still owns its resources");
         if pa.uri_closing() {
@@ -182,7 +182,7 @@ pub(super) fn start_bufferfeed_for(
     pa: &mut super::adapter::PlayerAdapter,
     route_start: crate::route::RouteStartTransaction,
 ) -> BufferfeedStartOutcome {
-    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
+    #[cfg(feature = "devtriggers")]
     if pa.uri_live() {
         // Reload/foreground starts reach this seam directly too. The diagnostic probe's
         // registration is separate from the product URI release queue.
@@ -373,11 +373,11 @@ pub(super) fn start_bufferfeed_inner(
     // URL and the foreground play which owns the screen. The content names the variant, then
     // optionally the native ABR rates (`bpsstart=N bpsmax=N bpsmin=N`); text which names none
     // leaves the probe unarmed and the play normal rather than running a variant nobody asked for.
-    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
-    if stream && !crate::route::is_preview(ps) {
+    #[cfg(feature = "devtriggers")]
+    if stream && !crate::route::is_preview(ps) && pa.uri_probe_installed() {
         if let Some(text) = plx_base::devtrig::read("uriprobe") {
-            match super::uriprobe_drive::armed(&text) {
-                Some((variant, bps)) => {
+            match pa.uri_probe_armed(&text) {
+                Some(launch) => {
                     // The probe takes no native session of its own, but its window verbs reach the
                     // same seam, so it refuses like an Engine does while an earlier session still
                     // owns the object (a parked timed-out Load): the tester plays again.
@@ -385,7 +385,7 @@ pub(super) fn start_bufferfeed_inner(
                         log("uriprobe: the native object is still owned by an earlier session: probe NOT started");
                         return Err(crate::route::RouteStartResult::StartFailed);
                     }
-                    return super::uriprobe_drive::start(ps, pa, route_start, &url, variant, bps);
+                    return super::uriprobe_drive::start(ps, pa, route_start, &url, launch);
                 }
                 None => log("uriprobe: the trigger file names no variant (empty, load, late, none or drive, then optional bpsstart=N bpsmax=N bpsmin=N from 1 to 1000000000): NOT armed, playing normally"),
             }
@@ -1017,7 +1017,7 @@ pub fn exit_native(pa: &mut super::adapter::PlayerAdapter) -> NativeExit {
     exit_native_with(pa, std::time::Instant::now, || std::thread::sleep(std::time::Duration::from_millis(2)))
 }
 
-pub(super) fn exit_native_with(
+pub fn exit_native_with(
     pa: &mut super::adapter::PlayerAdapter,
     _clock: impl FnMut() -> std::time::Instant,
     _idle: impl FnMut(),
@@ -1041,7 +1041,7 @@ pub(super) fn exit_native_with(
                 crate::route::RouteStartResult::StartFailed);
         }
     }
-    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
+    #[cfg(feature = "devtriggers")]
     if pa.uri_live() {
         let started = clock();
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -1312,7 +1312,7 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
     // still pending and requests unload/close; the adapter retains its window until release. It owns no Engine, so the
     // Engine-less ritual below then finishes the stop (the transcode session, the route) as it does
     // for a start which failed before an Engine existed.
-    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
+    #[cfg(feature = "devtriggers")]
     super::uriprobe_drive::stop(ps, pa);
     // A start still queued behind the previous object's `Unload` is the playback this stop ends.
     // Always sent: the machine owns whether anything is queued (a no-op otherwise), and no copy of
