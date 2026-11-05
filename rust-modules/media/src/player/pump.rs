@@ -1058,7 +1058,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
     if let Some(attempt) = pa.active_feed_attempt() {
         let snapshot = super::timeline::TimelineSnapshot::from_content_ns(
             FEED_SHARED.playpos_ns.load(Relaxed),
-            FEED_SHARED.duration_ns.load(Relaxed),
+            super::duration_ns(ps).unwrap_or(0),
             FEED_TX.paused.load(Relaxed),
         );
         pa.publish_timeline(attempt, snapshot);
@@ -1147,10 +1147,10 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
     // PAYLOAD DECLARATION; it says nothing about the source delivering. `frames` is zeroed by
     // `teardown(for_reload=true)` on the way into this reload (`SHARED::reset_session`), so a
     // non-zero count here belongs to the new source and to nothing else.
-    if crate::route::original_recovery_pending() && FEED_SHARED.frames.load(Relaxed) > 0 {
+    if crate::route::original_recovery_pending() && ps.readout().raw().frames > 0 {
         crate::route::confirm_original_recovery(ps);
     }
-    if FEED_SHARED.frames.load(Relaxed) > 0 {
+    if ps.readout().raw().frames > 0 {
         // **The first decoded frame** (`route::on_decoded_frame`, one call per frame, each step once
         // per landing), in the one order its doc fixes: the container-name re-match of a remembered
         // subtitle (FO: the demuxer's track names exist now), the resume confirmation, and
@@ -1190,7 +1190,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         }
         return;
     }
-    if FEED_SHARED.demux_failed.load(Acquire) && FEED_SHARED.frames.load(Relaxed) == 0 {
+    if ps.readout().raw().flags.demux_failed && ps.readout().raw().frames == 0 {
         if crate::route::preview_request(ps) {
             finish_preview_open_failure(ps, pa);
             return;
@@ -1477,8 +1477,8 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         && !crate::route::flight_outstanding() // see the SEEK_STUCK_MS branch's doc above
         // coalesce: don't stack in-place seeks. Not in `Reload` mode: a refused native `Seek`
         // leaves the engine flushed and re-posts the target for exactly this branch to reload at.
-        && FEED_SHARED.duration_ns.load(Relaxed) > 0
-        && (is_transcode || FEED_SHARED.file_size.load(Relaxed) > 0)
+        && super::duration_ns(ps).unwrap_or(0) > 0
+        && (is_transcode || ps.readout().raw().file_size > 0)
     {
         FEED_TX.seek_to_ns.store(-1, Relaxed);
         let coalesced = take_coalesced(); // read here so BOTH branches consume this seek's requests
@@ -5625,7 +5625,7 @@ mod end_of_film_tests {
              (the prime, the feed or the sink did not run): {}",
             rig.facts()
         );
-        assert!(crate::player::feed_seen_frame(), "PRECONDITION FAILED, not the defect: no picture was reported");
+        assert!(crate::player::seen_frame(&rig.ps) == Some(true), "PRECONDITION FAILED, not the defect: no picture was reported");
         for _ in 0..10 {
             rig.step();
         }

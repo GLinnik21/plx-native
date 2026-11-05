@@ -760,7 +760,7 @@ pub fn after_pump(
         return;
     }
     let live = pa.is_live();
-    let seen_frame = crate::player::feed_seen_frame();
+    let seen_frame = crate::player::seen_frame(ps) == Some(true);
     if preview && live && occupies() {
         if seen_frame {
             note_picture(now_ms);
