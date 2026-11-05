@@ -108,8 +108,9 @@ HOST_ONLY_GOALS = (
     # the unit-test loops and the lint pass (host cargo in a tree under rust-modules/), and the pieces of
     # `check` that are plain host work: `check-cargo-lint` (clippy and the lab-diagnostics type-check),
     # `check-cargo-unit-hostsim` and `check-python-harness` (tests/test_harness.py alone). `test-hostsim`
-    # and `check-nodef` were the first two to be listed.
-    "test-hostsim", "check-nodef", "test-fast", "test-crate", "lint", "check-cargo-lint", "check-cargo-unit-hostsim",
+    # and `check-nodef` were the first two to be listed. `fuzz-hud` runs tools/fuzz-hud.py (a cargo tree
+    # under rust-modules/ and files under fuzz/); it reads nothing the stamp guards.
+    "test-hostsim", "check-nodef", "test-fast", "test-crate", "fuzz-hud", "lint", "check-cargo-lint", "check-cargo-unit-hostsim",
     "check-localization", "check-c-unit", "check-python-harness",
     # the documentation tables
     "notices", "notices-verify",
