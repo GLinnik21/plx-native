@@ -10,7 +10,9 @@
 //! spelling the names it always did. Moved out of `app.rs` verbatim in phase 1a (a pure move;
 //! `pub(crate)` widening only).
 
-#[cfg(feature = "play-feed")]
+// Only the Feed-gated tests below name the loop's items unqualified: the lifecycle adapter
+// itself spells every one it uses, so the glob would be unused in a shipping build.
+#[cfg(all(test, feature = "play-feed"))]
 use super::*;
 
 pub(crate) use plx_media::player::foreground::{
@@ -129,26 +131,26 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
                 *self.repause_at = _resume_ns;
                 #[cfg(feature = "play-feed")]
                 if feed_load {
-                    set_resume_pend(true);
+                    plx_media::player::arm_resume_pend(ps);
                     // The common runner's paused viewer goal survives the park in `clock`, but
                     // a never-started native Load may have accepted no physical Pause. Prepare
                     // the new Feed's hold before arming its one-frame seek preroll.
                     if !self.pa.is_live() {
-                        plx_media::player::commit_paused(self.pa, true);
+                        plx_media::player::commit_paused(ps, self.pa, true);
                     }
-                    plx_media::player::begin_paused_seek(self.pa);
+                    plx_media::player::begin_paused_seek(ps, self.pa);
                 }
             }
             // A paused save the claim restores Playing (a PLAY press, or a toggle on a paused
             // decoder-release park): the park left the viewer's pause standing, and the Load is
             // about to arm its clock hold from it. Only a Load that will BUILD the Engine arms
-            // from `FEED_TX.paused`: a live Engine (a replacement the pump launched after a refused
+            // from the transport's Pause: a live Engine (a replacement the pump launched after a refused
             // restore) owns its clock, and `PlayClock` resumes it after `Started`, which it does
-            // only while `FEED_TX.paused` still reads Paused.
+            // only while the transport still reads Paused.
             ForegroundClock::Playing => {
                 #[cfg(feature = "play-feed")]
-                if feed_load && viewer_paused_for(self.pa) && !self.pa.is_live() {
-                    plx_media::player::transport::commit_viewer_resume_for_load(self.pa);
+                if feed_load && viewer_paused_for(ps, self.pa) && !self.pa.is_live() {
+                    plx_media::player::transport::commit_viewer_resume_for_load(ps, self.pa);
                 }
             }
         }
@@ -207,9 +209,9 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
         #[cfg(feature = "play-feed")]
         if matches!(_clock, ForegroundClock::Paused) {
             if started {
-                set_resume_pend(true);
+                plx_media::player::arm_resume_pend(ps);
             } else {
-                plx_media::player::finish_seek_preroll(self.pa);
+                plx_media::player::finish_seek_preroll(ps, self.pa);
             }
         }
         if !started && attempt.is_some() {
@@ -221,9 +223,9 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
     }
 
     fn play_clock(&mut self, ps: &mut plx_media::route::PlaybackSession) -> bool {
-        // start_bufferfeed has installed the Initial native-clock hold from FEED_TX.paused. Publish
+        // start_bufferfeed has installed the Initial native-clock hold from the transport's Pause. Publish
         // Play through the synchronized reducer so that hold and the feed gate reopen together.
-        !viewer_paused_for(self.pa) || set_transport_paused(ps, self.pa, false)
+        !viewer_paused_for(ps, self.pa) || set_transport_paused(ps, self.pa, false)
     }
 }
 

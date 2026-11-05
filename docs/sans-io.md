@@ -88,9 +88,10 @@ widening recorded the 17 forks that were already there (three in `screens/`: `le
 - The command worker's `.submit(` is not covered: it is `#[cfg(any(test, feature = "test-support"))]`
   in `base/src/storage_worker.rs`, so no production line can call it. `.submit_ticket(` is covered
   although no machine calls it today: a machine that did would be starting a worker.
-- The transport-pause atomic (`FEED_TX.paused`, the Feed backend's, in `plx_play_feed::shared`) is reached by a machine through three readers,
-  `transport::paused`, `transport::viewer_paused` and `preview::paused` (each is `FEED_TX.paused` behind
-  a function), so those spellings are sites, qualified or bare after an import; a `use ... as`
+- The transport Pause is the session's readout (`PlayerReadout::paused`), stepped at every writer, and the Feed keeps its own
+  gate copy (`FEED_TX.paused`, in `plx_play_feed::shared`) written by commands only. A machine reaches it through three readers,
+  `transport::paused`, `transport::viewer_paused` and `preview::paused` (each takes the session and reads its readout; the
+  spellings stay guarded because the old ones read the atomic), so those spellings are sites, qualified or bare after an import; a `use ... as`
   rename of any of them fails outright. The spellings of the owners themselves (`crate::player::TX`,
   `player::TX`, `super::TX`, a bare `TX`, and the Feed owners `shared::FEED_TX`, `shared::FEED_SHARED`
   and a bare `FEED_TX` / `FEED_SHARED`) stay pinned to `lifecycle.rs`, the machine, which now reads

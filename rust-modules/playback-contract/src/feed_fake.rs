@@ -398,7 +398,7 @@ mod tests {
         handle.script(|script| {
             script.stage = Some(Stage::Streaming);
             script.live = true;
-            script.paused_seek_step = PausedSeekStep { finish: true, mid_seek_claimed: false };
+            script.paused_seek_step = PausedSeekStep { finish: true, mid_seek_claimed: false, preroll_opened: false };
             script.retry_stuck_seek = StuckSeekAction::Retried(1);
             script.seek_pause = SeekPause::Busy;
             script.load_outcomes = vec![outcome];
@@ -408,7 +408,7 @@ mod tests {
         assert_eq!(feed.stage(), Some(Stage::Streaming));
         assert!(feed.is_live());
         assert_eq!(feed.paused_seek_step(1, false, false),
-            PausedSeekStep { finish: true, mid_seek_claimed: false });
+            PausedSeekStep { finish: true, mid_seek_claimed: false, preroll_opened: false });
         assert_eq!(feed.retry_stuck_seek(1, 0, true), StuckSeekAction::Retried(1));
         assert_eq!(feed.prepare_seek_pause(&mt()), SeekPause::Busy);
         assert_eq!(feed.take_load_outcomes(), [outcome]);

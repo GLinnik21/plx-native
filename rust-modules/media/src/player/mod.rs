@@ -435,21 +435,25 @@ impl TransportResult {
 }
 
 #[cfg(feature = "play-feed")]
-pub fn pause(pa: &mut adapter::PlayerAdapter) -> bool {
-    pause_result(pa).accepted
+pub fn pause(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter) -> bool {
+    pause_result(ps, pa).accepted
 }
 #[cfg(feature = "play-feed")]
-pub(crate) fn pause_result(pa: &mut adapter::PlayerAdapter) -> TransportResult {
+pub(crate) fn pause_result(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter)
+    -> TransportResult {
     // The feed runs the clock transition, the native Pause and the transport commit as one step,
     // and publishes the feed gate at the same accepted actuator boundary (leaving that to the
     // caller let a deadline transaction charge accepted Pause time as active playback). What is
-    // left here is the ACB mirror and the log, which are the common player's.
+    // left here is the readout's copy of the commit, stepped from the answer (the feed commits on
+    // exactly these two outcomes), the ACB mirror and the log, which are the common player's.
     match pa.feed_user_pause() {
         UserPauseOutcome::AlreadyHeld => {
+            ps.step_readout(readout::ReadoutEvent::CommitPaused { paused: true });
             acb_mirror_playstate(pa, false);
             TransportResult::deferred(true)
         }
         UserPauseOutcome::Issued(HlsPauseCompletion::Accepted) => {
+            ps.step_readout(readout::ReadoutEvent::CommitPaused { paused: true });
             acb_mirror_playstate(pa, false);
             TransportResult::native(true)
         }
@@ -493,11 +497,22 @@ pub(crate) fn restore_preroll_volume(pa: &mut adapter::PlayerAdapter) {
 }
 
 #[cfg(feature = "play-feed")]
-pub fn resume(pa: &mut adapter::PlayerAdapter) -> bool {
-    resume_result(pa).accepted
+pub fn resume(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter) -> bool {
+    resume_result(ps, pa).accepted
+}
+/// The readout's half of the feed's "close an open preroll with the commit" (`feed_pump::user_resume`):
+/// the close only when one is open (it also ends the owed re-pause, which a Resume with no preroll
+/// must leave alone), then the commit.
+#[cfg(feature = "play-feed")]
+fn step_resume_commit(ps: &mut crate::route::PlaybackSession) {
+    if ps.readout().seek_preroll() {
+        ps.step_readout(readout::ReadoutEvent::FinishSeekPreroll);
+    }
+    ps.step_readout(readout::ReadoutEvent::CommitPaused { paused: false });
 }
 #[cfg(feature = "play-feed")]
-pub(crate) fn resume_result(pa: &mut adapter::PlayerAdapter) -> TransportResult {
+pub(crate) fn resume_result(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter)
+    -> TransportResult {
     // First, whichever branch follows: the viewer asked for sound, and a Play below must not run muted.
     restore_preroll_volume(pa);
     // The feed runs the clock transition, the native Play (or the prime's arming) and the
@@ -505,12 +520,14 @@ pub(crate) fn resume_result(pa: &mut adapter::PlayerAdapter) -> TransportResult 
     // Play and the log lines are the common player's.
     match pa.feed_user_resume() {
         UserResumeOutcome::Fenced => {
+            step_resume_commit(ps);
             // Feeding may resume, but an initial/seek/recovery certificate still owns the physical
             // clock. Its eventual Play also carries the pending ACB Resume.
             log("player: user Resume accepted; physical Play remains fenced");
             TransportResult::deferred(true)
         }
         UserResumeOutcome::Priming => {
+            step_resume_commit(ps);
             // Physical Starfish and ACB stay Paused. Opening TX first lets the two AU lanes fill
             // together; their ordinary exact prime certificate owns the eventual Play + ACB
             // Resume. Starting the clock here recreates the pause-to-fill A/V drift race.
@@ -522,6 +539,7 @@ pub(crate) fn resume_result(pa: &mut adapter::PlayerAdapter) -> TransportResult 
             TransportResult::deferred(false)
         }
         UserResumeOutcome::Played { resume_acb } => {
+            step_resume_commit(ps);
             if resume_acb {
                 acb_mirror_playstate(pa, true);
             }
@@ -538,7 +556,10 @@ pub(crate) fn resume_result(pa: &mut adapter::PlayerAdapter) -> TransportResult 
         // The viewer cancelled "stay paused" after the seek had already transferred the physical
         // hold to Initial/Seek (or after its one-frame Play). No native command is needed; the
         // prime owns Play if it has not happened yet.
-        UserResumeOutcome::PrerollCancelled => TransportResult::deferred(true),
+        UserResumeOutcome::PrerollCancelled => {
+            step_resume_commit(ps);
+            TransportResult::deferred(true)
+        }
         UserResumeOutcome::NoHold => {
             log("player: Resume has no accepted user hold");
             TransportResult::deferred(false)
@@ -548,42 +569,65 @@ pub(crate) fn resume_result(pa: &mut adapter::PlayerAdapter) -> TransportResult 
 
 /// Publish a committed transport transition to the feed gate and its exact pause clock (an active
 /// object reaches this only after native acceptance; before a new object exists the common
-/// foreground owner seeds its saved paused viewer goal as the initial hold). The feed is the writer.
+/// foreground owner seeds its saved paused viewer goal as the initial hold). The feed is the writer
+/// of its gate; the readout's copy is stepped in the same call.
 #[cfg(feature = "play-feed")]
-pub fn commit_paused(pa: &mut adapter::PlayerAdapter, paused: bool) {
+pub fn commit_paused(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter,
+    paused: bool) {
+    ps.step_readout(readout::ReadoutEvent::CommitPaused { paused });
     pa.feed_command(FeedCommand::CommitPaused { paused });
 }
 
 /// Open the one-frame paused-seek preroll for a restore that is about to Load (a feed that is not
 /// paused opens nothing).
 #[cfg(feature = "play-feed")]
-pub fn begin_paused_seek(pa: &mut adapter::PlayerAdapter) {
+pub fn begin_paused_seek(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter) {
+    ps.step_readout(readout::ReadoutEvent::BeginPausedSeek);
     pa.feed_command(FeedCommand::BeginPausedSeek);
 }
 
-/// Close the paused-seek preroll and any ownership of it.
+/// Close the paused-seek preroll and any ownership of it, and the re-pause the foreground restore
+/// owed with it.
 #[cfg(feature = "play-feed")]
-pub fn finish_seek_preroll(pa: &mut adapter::PlayerAdapter) {
+pub fn finish_seek_preroll(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter) {
+    ps.step_readout(readout::ReadoutEvent::FinishSeekPreroll);
     pa.feed_command(FeedCommand::FinishSeekPreroll);
 }
 
+/// Test-only: the feed's gate copy and the session's readout copy of the transport say the same
+/// (both are stepped at every writer, so a drift is a missed site).
+#[cfg(all(test, feature = "play-feed"))]
+pub(crate) fn assert_transport_copies_agree(ps: &crate::route::PlaybackSession) {
+    assert_eq!(FEED_TX.paused.load(Relaxed), ps.readout().paused(),
+        "the feed's Pause and the readout's disagree");
+    assert_eq!(FEED_TX.seek_preroll_active(), ps.readout().seek_preroll(),
+        "the feed's preroll and the readout's disagree");
+}
+
+/// The foreground restore of a paused film owes a re-pause for the instant its resume frame is on
+/// screen ([`finish_paused_seek`] settles it, and anything that closes the preroll ends it).
 #[cfg(feature = "play-feed")]
-pub fn seek_preroll_active() -> bool {
-    FEED_TX.seek_preroll_active()
+pub fn arm_resume_pend(ps: &mut crate::route::PlaybackSession) {
+    ps.step_readout(readout::ReadoutEvent::ResumePending);
+}
+
+/// A paused seek may decode one frame before the re-pause.
+#[cfg(feature = "play-feed")]
+pub fn seek_preroll_active(ps: &crate::route::PlaybackSession) -> bool {
+    ps.readout().seek_preroll()
 }
 
 /// Re-establish the viewer's Pause after the seek prime has decoded its first landed frame. The
 /// transport intent stayed Paused throughout; only this method closes the temporary feed override.
 #[cfg(feature = "play-feed")]
 pub fn finish_paused_seek(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter) -> bool {
-    let _ = ps;
-    if !FEED_TX.seek_preroll_active() {
+    if !ps.readout().seek_preroll() {
         return true;
     }
-    if !pause(pa) {
+    if !pause(ps, pa) {
         return false;
     }
-    finish_seek_preroll(pa);
+    finish_seek_preroll(ps, pa);
     restore_preroll_volume(pa);
     // One receipt after the accepted pause, never per frame: device scrub checks pair this
     // boundary with stationary playhead samples rather than assuming CommitSeek held the pause.
@@ -794,8 +838,8 @@ pub fn abandon_seek(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::Pl
     pa.feed_command(FeedCommand::AbandonSeek);
     // A failed seek never got the one-frame preroll it was promised. Preserve the viewer's Paused
     // intent and close only the feed override; the existing user clock hold remains authoritative.
-    if FEED_TX.seek_preroll_active() {
-        finish_seek_preroll(pa);
+    if ps.readout().seek_preroll() {
+        finish_seek_preroll(ps, pa);
     }
 }
 /// The seek the pump took off the pending slot: where it is aimed and how many requests it folded.
@@ -3631,7 +3675,6 @@ mod tests {
             FEED_SHARED.prepare_hls_user_pause(),
             Some(shared::HlsUserPause::AlreadyHeld)
         );
-        FEED_TX.commit_paused(true);
         struct Restore(bool);
         impl Drop for Restore {
             fn drop(&mut self) {
@@ -3642,8 +3685,11 @@ mod tests {
         let _restore = Restore(old_paused);
         let before = ffi_host::play_calls_for_test();
         let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        commit_paused(&mut ps, &mut pa, true);
 
-        assert!(resume(&mut pa));
+        assert!(resume(&mut ps, &mut pa));
+        assert!(!ps.readout().paused(), "the readout's copy follows the feed's commit");
 
         assert_eq!(
             ffi_host::play_calls_for_test(),
@@ -3660,20 +3706,22 @@ mod tests {
     fn an_abandoned_paused_seek_keeps_user_pause_and_closes_only_its_feed_override() {
         let _guard = plx_base::testlock::serial();
         FEED_TX.reset();
-        FEED_TX.commit_paused(true);
-        FEED_TX.resume_pend
-            .store(true, std::sync::atomic::Ordering::Release);
-        assert!(FEED_TX.begin_paused_seek());
         let mut ps = crate::route::PlaybackSession::IDLE;
         let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        commit_paused(&mut ps, &mut pa, true);
+        arm_resume_pend(&mut ps);
+        begin_paused_seek(&mut ps, &mut pa);
+        assert!(ps.readout().seek_preroll() && FEED_TX.seek_preroll_active(), "both copies opened it");
         request_seek(&mut ps, &mut pa, 1_000_000_000);
 
         abandon_seek(&mut ps, &mut pa);
         assert!(!ps.readout().seeking(), "the give-up ended the seek the press put in flight");
 
         assert!(FEED_TX.paused.load(std::sync::atomic::Ordering::Acquire));
+        assert!(ps.readout().paused(), "the viewer's Pause is the readout's too");
         assert!(!FEED_TX.seek_preroll_active());
-        assert!(!FEED_TX.resume_pend.load(std::sync::atomic::Ordering::Acquire));
+        assert!(!ps.readout().seek_preroll(), "both copies closed it");
+        assert!(!ps.readout().resume_pend(), "closing the preroll ends the owed re-pause");
         FEED_TX.reset();
     }
 

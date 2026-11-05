@@ -10,29 +10,26 @@
 //!
 //! Moved out of `lifecycle.rs` verbatim in the Sans-IO lifecycle PR B (a pure move).
 
-#[cfg(feature = "play-feed")]
-use plx_play_feed::shared::FEED_TX;
-#[cfg(feature = "play-feed")]
-use std::sync::atomic::Ordering::Relaxed;
-
-// transport state — was the C playback globals; now crate::player (atomics)
+// transport state — was the C playback globals; now the session's readout (the feed keeps its own
+// copy to gate feeding, written by the matching commands)
 #[inline]
 #[cfg(feature = "play-feed")]
-pub fn paused() -> bool {
-    FEED_TX.paused.load(Relaxed)
+pub fn paused(ps: &crate::route::PlaybackSession) -> bool {
+    ps.readout().paused()
 }
-/// Publish the viewer's Play for a restore that is about to Load with no Engine. A park keeps
-/// `FEED_TX.paused` across the reload (`TX::reset_for_reload`), and the Load arms its initial clock
+/// Publish the viewer's Play for a restore that is about to Load with no Engine. A park keeps the
+/// transport's Pause across the reload (`TX::reset_for_reload`), and the Load arms its initial clock
 /// hold from it (`engine::ClockStartGuard`): a paused save restored PLAYING would otherwise start
 /// under the viewer's pause, whose hold fences the Load's first Play behind a prime and leaves the
 /// real Play to the late `PlayClock`. There is nothing native to resume yet, so this is the commit
 /// half of [`set_transport_paused`] alone; the new Load's own first Play is the native half. The
 /// caller guarantees there is no Engine (`PlayerForegroundActuator::before_load` checks
-/// `is_live`): over a live one this would leave its pause standing while `FEED_TX` reads Playing.
+/// `is_live`): over a live one this would leave its pause standing while the transport reads Playing.
 #[cfg(feature = "play-feed")]
-pub fn commit_viewer_resume_for_load(pa: &mut crate::player::adapter::PlayerAdapter) {
+pub fn commit_viewer_resume_for_load(ps: &mut crate::route::PlaybackSession,
+    pa: &mut crate::player::adapter::PlayerAdapter) {
     crate::player::claim_hold::note_user_transport();
-    crate::player::commit_paused(pa, false);
+    crate::player::commit_paused(ps, pa, false);
 }
 /// PURE: the paused value a transport request settles on. `Some(true)` is the remote's PLAY key,
 /// `Some(false)` its PAUSE, and `None` the single PLAYPAUSE toggle — which is the only one of the
@@ -57,18 +54,19 @@ pub fn transport_target(play: Option<bool>, paused: bool) -> bool {
 /// so the toggle means Pause (their intent, which the hold's restore then honours) and a seek's
 /// resume leaves the stream held until the landing.
 #[cfg(feature = "play-feed")]
-pub fn viewer_paused() -> bool {
-    paused() && !crate::player::claim_hold::owns_pause()
+pub fn viewer_paused(ps: &crate::route::PlaybackSession) -> bool {
+    paused(ps) && !crate::player::claim_hold::owns_pause()
 }
 
 /// During common startup, the viewer's desired pause can differ from the native pause hold.
 /// Read the addressed goal first so a toggle never mistakes that hold for a viewer Pause.
-pub fn viewer_paused_for(pa: &crate::player::adapter::PlayerAdapter) -> bool {
+pub fn viewer_paused_for(ps: &crate::route::PlaybackSession,
+    pa: &crate::player::adapter::PlayerAdapter) -> bool {
     if let Some(goal) = pa.backend_viewer_paused() { return goal; }
     #[cfg(feature = "play-feed")]
-    { viewer_paused() }
+    { viewer_paused(ps) }
     #[cfg(not(feature = "play-feed"))]
-    { false }
+    { let _ = ps; false }
 }
 
 /// Ask the synchronized player clock to commit a user Pause/Resume. The player publishes the feed
@@ -97,14 +95,14 @@ pub fn set_transport_paused(
     // press that finds the transport already in the state it asks for.
     #[cfg(feature = "play-feed")]
     crate::player::claim_hold::note_user_transport();
-    if viewer_paused_for(pa) == value {
+    if viewer_paused_for(ps, pa) == value {
         return true;
     }
     if let Some(accepted) = pa.backend_transport_control(ps, value) {
         return accepted;
     }
     #[cfg(feature = "play-feed")]
-    { if value { crate::player::pause(pa) } else { crate::player::resume(pa) } }
+    { if value { crate::player::pause(ps, pa) } else { crate::player::resume(ps, pa) } }
     #[cfg(not(feature = "play-feed"))]
     { false }
 }
@@ -116,7 +114,7 @@ pub fn set_transport_paused(
 /// moved it into `lifecycle.rs`, and the Sans-IO lifecycle PR B moved it on, here).
 pub fn resume_if_paused(ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter) {
-    if viewer_paused_for(pa) {
+    if viewer_paused_for(ps, pa) {
         set_transport_paused(ps, pa, false);
     }
 }
@@ -157,15 +155,18 @@ mod viewer_resume_for_load_tests {
             }
         }
         let _restore = Restore(FEED_TX.paused.load(Ordering::Acquire));
-        FEED_TX.commit_paused(true);
-
+        let mut ps = crate::route::PlaybackSession::IDLE;
         let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
             plx_base::task::MainThread::assume()
         });
-        super::commit_viewer_resume_for_load(&mut pa);
-        assert!(!super::paused(), "the viewer's Play is published");
-        assert!(!super::viewer_paused());
+        crate::player::commit_paused(&mut ps, &mut pa, true);
+        assert!(super::paused(&ps), "the premise: a Paused transport");
+
+        super::commit_viewer_resume_for_load(&mut ps, &mut pa);
+        assert!(!super::paused(&ps), "the viewer's Play is published");
+        assert!(!super::viewer_paused(&ps));
         assert!(!FEED_TX.seek_preroll_active(), "no preroll opens for a Playing Load");
+        crate::player::assert_transport_copies_agree(&ps);
     }
 }
 
@@ -218,24 +219,26 @@ mod transport_pause_contract_tests {
         crate::player::force_pause_result_for_test(Some(0));
         assert!(!set_transport_paused(&mut ps, &mut pa, true));
         assert!(
-            !paused(),
+            !paused(&ps),
             "feed must continue when the native clock refused Pause"
         );
 
         crate::player::force_pause_result_for_test(Some(1));
         assert!(set_transport_paused(&mut ps, &mut pa, true));
-        assert!(paused());
+        assert!(paused(&ps));
+        crate::player::assert_transport_copies_agree(&ps);
 
         crate::player::force_play_result_for_test(Some(0));
         assert!(!set_transport_paused(&mut ps, &mut pa, false));
         assert!(
-            paused(),
+            paused(&ps),
             "feed must remain stopped when the native clock refused Play"
         );
 
         crate::player::force_play_result_for_test(Some(1));
         assert!(set_transport_paused(&mut ps, &mut pa, false));
-        assert!(!paused());
+        assert!(!paused(&ps));
+        crate::player::assert_transport_copies_agree(&ps);
     }
 
     #[test]
@@ -353,7 +356,8 @@ mod transport_pause_contract_tests {
             ForegroundState::ClockPending { .. }
         ));
         assert_eq!((actuator.prepares, actuator.loads), (1, 1));
-        assert!(paused(), "a refused native Play keeps the feed held");
+        assert!(paused(&ps), "a refused native Play keeps the feed held");
+        crate::player::assert_transport_copies_agree(&ps);
 
         crate::player::force_play_result_for_test(Some(1));
         assert_eq!(
@@ -366,6 +370,7 @@ mod transport_pause_contract_tests {
             "the retry reached preparation or Load instead of the native clock",
         );
         assert_eq!(lifecycle.state(), ForegroundState::Idle);
-        assert!(!paused());
+        assert!(!paused(&ps));
+        crate::player::assert_transport_copies_agree(&ps);
     }
 }

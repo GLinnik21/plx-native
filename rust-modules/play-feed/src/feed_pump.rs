@@ -205,6 +205,7 @@ pub fn paused_seek_step(
             if FEED_SHARED.hand_hold_to_seek_prime() && FEED_TX.own_paused_seek(target) {
                 eng.seek_armed_at = now;
                 step.mid_seek_claimed = true;
+                step.preroll_opened = true;
                 log("seek: viewer paused mid-seek; the pump opened the preroll");
             }
         }
@@ -236,6 +237,7 @@ pub fn paused_seek_step(
         // target` guard fail for a reload that lands behind the old playhead, and the film then
         // plays on under a Paused transport.
         if FEED_TX.own_paused_seek(0) {
+            step.preroll_opened = true;
             log("reload: viewer paused with no picture yet; the pump opened the preroll");
         }
     }

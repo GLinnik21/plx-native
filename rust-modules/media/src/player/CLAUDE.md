@@ -302,7 +302,7 @@ something.
   seek, no frame yet), whichever route reloaded, so the stream presents one frame and re-pauses
   instead of showing "Buffering…" over a blank plane. Where the preroll cannot open (the clock is
   not held yet), the pump ladder still never publishes Buffering for a paused, idle player with no
-  picture (`pump::paused_and_idle`): Buffering means work is happening, and Playing means a frame
+  picture (the readout's `Presented` rule: its own Pause with no preroll open, plus `pump::nothing_in_flight`): Buffering means work is happening, and Playing means a frame
   is presented, so that state is `PlaybackState::Paused` (not busy, not `is_playing`, no
   `PlaybackStarted`). The preroll opens only while the prime is still owed (`Engine::prime_play`)
   and is owned at 0: `frames` is per-session, so the first presented frame is the landing.
