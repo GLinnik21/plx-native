@@ -97,7 +97,9 @@ pub fn execute(op: &Op, mt: &MainThread, sink: &dyn DisplaySink, plane: &PlaneOw
             let Ok(text) = std::ffi::CString::new(described.text) else { return Executed::invoked(false) };
             Executed::invoked(unsafe { sink.plane_send_video_data(mt, text.as_ptr()) } == 1)
         }
-        Op::Display => Executed::invoked(unsafe { sink.plane_finish(mt) } == 1),
+        // The window and PLAYING go through the plane owner, which keeps their two task ids so the
+        // caller can ask `plane.shown(..)` whether the firmware has completed both.
+        Op::Display => Executed::invoked(plane.show(sink, mt)),
     }
 }
 
@@ -155,6 +157,27 @@ mod tests {
             "acb control connectDass skipped (same timed slot)",
             "acb video facts width=1280 height=720 frameRate=24 bitRate=None",
             "acb descriptor=test-envelope"]);
+    }
+
+    #[test]
+    fn the_display_step_goes_through_the_owner_which_then_waits_for_both_completions() {
+        use plx_platform::tv::plane::Shown;
+        use plx_platform::tv::sink::{SCRIPTED_DISPLAY_TASK, SCRIPTED_PLAYING_TASK};
+        let mut world = World::new(0);
+        world.run(&Op::MediaId { media_id: media("m1") }, fixture());
+        assert_eq!(world.plane.shown(&world.sink, &world.mt), Shown::No, "no display step ran yet");
+        assert_eq!(world.run(&Op::Display, fixture()).verdict, Verdict::Invoked(true));
+        let waiting = Shown::Waiting { display: Some(SCRIPTED_DISPLAY_TASK.into()), playing: Some(SCRIPTED_PLAYING_TASK.into()) };
+        assert_eq!(world.plane.shown(&world.sink, &world.mt), waiting, "dispatched is not completed");
+        world.sink.mailbox.push(SCRIPTED_DISPLAY_TASK.into(), 1);
+        world.sink.mailbox.push(SCRIPTED_PLAYING_TASK.into(), 1);
+        assert_eq!(world.plane.shown(&world.sink, &world.mt), Shown::Done);
+        // A refused display answers "not invoked" and leaves nothing to wait for.
+        let mut world = World::new(0);
+        world.run(&Op::MediaId { media_id: media("m1") }, fixture());
+        world.sink.failing.lock().unwrap().push("plane_finish");
+        assert_eq!(world.run(&Op::Display, fixture()).verdict, Verdict::Invoked(false));
+        assert_eq!(world.plane.shown(&world.sink, &world.mt), Shown::No);
     }
 
     #[test]

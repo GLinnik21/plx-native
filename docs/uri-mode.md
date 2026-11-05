@@ -105,6 +105,10 @@ wait for an envelope it cannot use and time out. The ACB plane is released
 by `UNLOADED` and a fence on its completion callback
 ([evidence](measurements/acb-release-fence-2026-11-04.md)), so a later bind in the same process waits
 for that fence instead of needing a relaunch; only a failed fence quarantines the plane until exit.
+The production backend also reports the first picture (`Observation::Presented`) on this binding,
+once the service has played, the firmware has completed the bind's window and PLAYING calls, and the
+service's clock then advances (`docs/uri-first-migration.md`); the probe shares the display step but
+reports no observation.
 
 ## Driving it: what is settled and what is not
 

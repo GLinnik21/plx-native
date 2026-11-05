@@ -62,6 +62,12 @@ never the event alone.
   call (answer 1). The plane is released when `Completion { task, ev: 1 }` for that id is drained
   from the callback mailbox. A completion for another task is not the fence; one that arrives
   before the dispatch is recorded is held (`MAX_EARLY_COMPLETIONS`) and matched when it is.
+- The window and PLAYING calls that end a URI bind complete the same way. `acb_finish` returns each
+  call's task id (only for a call that answered 1) and `PlaneOwner::show` / `shown` track both:
+  `Shown::Done` once each id has an event-1 completion, `Shown::Failed` on any other event. A
+  completion that beat the dispatch is matched from the early queue; the early queue is dropped at a
+  granted bind and `Shown` is reset by a bind and by an unload, so a previous binding's task ids never
+  count. This is the plane half of the URI `Observation::Presented` rule (`docs/uri-first-migration.md`).
 - An answer of `-2` releases at once (point 1); any other refusal quarantines.
 - A completion that is not event 1, or none within `RELEASE_FENCE_MS` (2000 ms; the device logs
   show the callback within about 100 ms), quarantines the plane. A late completion does not undo a
