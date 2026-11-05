@@ -6191,9 +6191,11 @@ class UriProductGrading(unittest.TestCase):
 
 
 # The lines the production URI backend writes about the startup audio selection
-# (`rust-modules/play-uri/src/backend.rs`): the settle without a native call, the refusal of an
-# unconfirmed control (`{:?}` of the Operation, whose Selected(..) is the Plex stream id, not the
-# native index), and, under `devtriggers`, the service's own events as `uri-trace:` lines.
+# (`rust-modules/play-uri/src/backend.rs`): the select it SENDS (the native index and the Plex stream id
+# it stands for), the settle without a native call, the refusal of an unconfirmed control (`{:?}` of the
+# Operation, whose Selected(..) is the Plex stream id, not the native index), and, under `devtriggers`,
+# the service's own events as `uri-trace:` lines.
+SENT = "uri: selectTrack sent kind=audio index={n} stream={sid}"
 ALREADY = "uri: audio index={n} is already selected (audioInfo); no selectTrack sent"
 TIMED_OUT = ("uri: control SelectTrack {{ kind: Audio, choice: Selected({sid}) }} unconfirmed "
              "after 15000 ms; refused (TimedOut)")
@@ -6211,6 +6213,7 @@ def _audio_info(track, t=300):
 
 
 TRACK_SELECTED = _trace(900, "ev=trackSelected")
+SENT_1 = SENT.format(n=1, sid=99100102)
 SELECT_1 = {"path": "select", "index": 1}
 ALREADY_0 = {"path": "already", "index": 0}
 
@@ -6226,20 +6229,64 @@ class UriAudioSelectedGrading(unittest.TestCase):
     # -- select: a non-default track, really asked for --
 
     def test_a_select_the_service_confirmed_with_trackselected_passes(self):
-        ok, why = self.grade(_audio_log(_audio_info(0), TRACK_SELECTED), SELECT_1)
+        ok, why = self.grade(_audio_log(_audio_info(0), SENT_1, TRACK_SELECTED), SELECT_1)
         self.assertTrue(ok, why)
+        self.assertIn(SENT_1, why, "the index it proves comes from the line the backend wrote when it sent")
         self.assertIn("ev=trackSelected", why)
         self.assertIn("service playing", why)
 
+    def test_a_confirmation_that_names_the_track_must_name_the_one_asked_for(self):
+        typed = _trace(900, "ev=trackSelected type=audio index=1")
+        ok, why = self.grade(_audio_log(_audio_info(0), SENT_1, typed), SELECT_1)
+        self.assertTrue(ok, why)
+        self.assertIn("type=audio index=1", why)
+        for wrong in ("ev=trackSelected type=audio index=0", "ev=trackSelected type=audio index=2",
+                      "ev=trackSelected type=text index=1"):
+            line = _trace(900, wrong)
+            ok, why = self.grade(_audio_log(_audio_info(0), SENT_1, line), SELECT_1)
+            self.assertFalse(ok, wrong)
+            self.assertIn(line, why)
+            self.assertIn("not audio index=1", why)
+
+    def test_a_confirmation_that_names_the_wrong_track_fails_even_after_a_right_one(self):
+        right, wrong = _trace(900, "ev=trackSelected type=audio index=1"), _trace(950, "ev=trackSelected type=audio index=0")
+        ok, why = self.grade(_audio_log(_audio_info(0), SENT_1, right, wrong), SELECT_1)
+        self.assertFalse(ok)
+        self.assertIn(wrong, why)
+
+    def test_a_select_with_no_sent_line_fails_even_when_the_service_moved_and_confirmed(self):
+        """The sent line is what proves WHICH index went out: a confirmation alone does not."""
+        for log in (_audio_log(_audio_info(0), TRACK_SELECTED),
+                    _audio_log(_audio_info(0), _audio_info(1, t=700))):
+            ok, why = self.grade(log, SELECT_1)
+            self.assertFalse(ok)
+            self.assertIn("selectTrack sent kind=audio index=N stream=SID", why)
+            self.assertIn("never sent", why)
+
+    def test_a_select_sent_to_another_index_than_the_one_wanted_fails_and_names_the_line(self):
+        for n in (0, 2):
+            line = SENT.format(n=n, sid=99100101)
+            ok, why = self.grade(_audio_log(_audio_info(0), line, TRACK_SELECTED), SELECT_1)
+            self.assertFalse(ok, n)
+            self.assertIn(line, why)
+            self.assertIn(f"index={n}, wanted 1", why)
+
+    def test_a_subtitle_select_is_not_the_audio_one(self):
+        sub = "uri: selectTrack sent kind=text index=1 stream=99100103"
+        ok, why = self.grade(_audio_log(_audio_info(0), sub, TRACK_SELECTED), SELECT_1)
+        self.assertFalse(ok)
+        self.assertIn("never sent", why)
+
     def test_a_select_the_service_confirmed_by_naming_the_new_track_passes(self):
-        log = _audio_log(_audio_info(0), _audio_info(1, t=700))
+        log = _audio_log(_audio_info(0), SENT_1, _audio_info(1, t=700))
         ok, why = self.grade(log, SELECT_1)
         self.assertTrue(ok, why)
         self.assertIn("track=1", why)
 
     def test_the_already_selected_line_is_the_dev_routes_index_zero_and_fails_a_select(self):
-        """**RED on today's app.** `dev::uri_product::DevQualifier` maps whatever audio the plan picked to
-        native index 0, so the backend finds the track the service already has (0) and sends nothing."""
+        """The failure a dev route that maps the second stream to native index 0 shows (as
+        `DevQualifier` once did): the backend finds the track the service already has (0) and sends
+        nothing."""
         line = ALREADY.format(n=0)
         ok, why = self.grade(_audio_log(_audio_info(0), line), SELECT_1)
         self.assertFalse(ok)
@@ -6257,29 +6304,29 @@ class UriAudioSelectedGrading(unittest.TestCase):
         self.assertIn("refused (TimedOut)", why)
 
     def test_a_select_nothing_confirmed_fails(self):
-        ok, why = self.grade(_audio_log(_audio_info(0), _audio_info(0, t=700)), SELECT_1)
+        ok, why = self.grade(_audio_log(_audio_info(0), SENT_1, _audio_info(0, t=700)), SELECT_1)
         self.assertFalse(ok)
         self.assertIn("no confirmation", why)
 
     def test_a_service_that_ends_on_another_track_than_the_one_asked_fails(self):
-        ok, why = self.grade(_audio_log(_audio_info(0), _audio_info(2, t=700)), SELECT_1)
+        ok, why = self.grade(_audio_log(_audio_info(0), SENT_1, _audio_info(2, t=700)), SELECT_1)
         self.assertFalse(ok)
         self.assertIn("track=2", why)
-        ok, why = self.grade(_audio_log(_audio_info(0), TRACK_SELECTED, _audio_info(2, t=950)), SELECT_1)
+        ok, why = self.grade(_audio_log(_audio_info(0), SENT_1, TRACK_SELECTED, _audio_info(2, t=950)), SELECT_1)
         self.assertFalse(ok, "a confirmation does not excuse a service that names another track after it")
 
     def test_a_select_without_the_service_ever_playing_fails(self):
-        ok, why = self.grade(_audio_log(_audio_info(0), TRACK_SELECTED, playing=False), SELECT_1)
+        ok, why = self.grade(_audio_log(_audio_info(0), SENT_1, TRACK_SELECTED, playing=False), SELECT_1)
         self.assertFalse(ok)
         self.assertIn("uri: service playing", why)
 
     def test_a_select_needs_the_service_to_have_named_its_own_track_first(self):
-        ok, why = self.grade(_audio_log(TRACK_SELECTED), SELECT_1)
+        ok, why = self.grade(_audio_log(SENT_1, TRACK_SELECTED), SELECT_1)
         self.assertFalse(ok)
         self.assertIn("ev=audioInfo", why)
 
     def test_a_select_of_the_track_the_service_started_on_has_nothing_to_select(self):
-        ok, why = self.grade(_audio_log(_audio_info(1), TRACK_SELECTED), SELECT_1)
+        ok, why = self.grade(_audio_log(_audio_info(1), SENT_1, TRACK_SELECTED), SELECT_1)
         self.assertFalse(ok)
         self.assertIn("nothing to select", why)
 
@@ -6295,6 +6342,17 @@ class UriAudioSelectedGrading(unittest.TestCase):
         ok, why = self.grade(_audio_log(_audio_info(0), TRACK_SELECTED), ALREADY_0)
         self.assertFalse(ok)
         self.assertIn("already selected", why)
+        sent = SENT.format(n=0, sid=99100101)
+        ok, why = self.grade(_audio_log(_audio_info(0), sent, TRACK_SELECTED), ALREADY_0)
+        self.assertFalse(ok)
+        self.assertIn(sent, why)
+
+    def test_the_control_fails_when_it_sent_a_select_as_well_as_settling(self):
+        sent = SENT.format(n=0, sid=99100101)
+        ok, why = self.grade(_audio_log(_audio_info(0), sent, ALREADY.format(n=0)), ALREADY_0)
+        self.assertFalse(ok)
+        self.assertIn(sent, why)
+        self.assertIn("sent a selectTrack", why)
 
     def test_the_control_fails_on_another_index_or_a_report_that_disagrees(self):
         ok, why = self.grade(_audio_log(_audio_info(1), ALREADY.format(n=1)), ALREADY_0)
@@ -6350,7 +6408,7 @@ class UriAudioSelectedGrading(unittest.TestCase):
         self.assertIn("uri_audio_selected", results[0][2])
 
     def test_a_healthy_select_log_passes_every_product_grade_with_the_new_one(self):
-        passed, results = self._graded(self.CASE, _audio_info(0), TRACK_SELECTED)
+        passed, results = self._graded(self.CASE, _audio_info(0), SENT_1, TRACK_SELECTED)
         self.assertTrue(passed, results)
         self.assertEqual(dict((label, ok) for label, ok, _ in results)["uri_audio_selected"], True)
 

@@ -260,8 +260,13 @@ impl OriginalQualifier for DevQualifier {
             return Verdict::Unknown;
         }
         let selected_audio = u64::try_from(request.selection.audio_sid).ok().filter(|sid| *sid > 0);
-        let tracks = selected_audio.map(|id| NativeTrackIndex {
-            selection: TrackSelection { kind: TrackKind::Audio, id }, index: 0,
+        // The carrier lists its audio in the Part's order, so the stream's position in the Part is
+        // its native index (`OriginalRequest::audio_ordinal`, a hypothesis the 4.5 service has not
+        // yet confirmed). A stream whose position the plan could not name maps to nothing: the
+        // source then cannot supply the selection and the route plays the Feed, instead of the
+        // service silently staying on track 0.
+        let tracks = selected_audio.zip(request.audio_ordinal).map(|(id, index)| NativeTrackIndex {
+            selection: TrackSelection { kind: TrackKind::Audio, id }, index,
         });
         Verdict::Known(KnownSource {
             selection: request.selection,
@@ -519,7 +524,7 @@ mod tests {
 
     // ---- the dev qualifier ----
 
-    fn request(part: i64, server: &Origin, audio_sid: i64) -> OriginalRequest {
+    fn request_at(part: i64, server: &Origin, audio_sid: i64, audio_ordinal: Option<i64>) -> OriginalRequest {
         OriginalRequest {
             selection: SourceSelection { server: plx_plex::plex::ServerId::from_raw(1),
                 part_id: part, audio_sid, subtitle_sid: 0,
@@ -530,7 +535,7 @@ mod tests {
             video_codec: "h264".to_owned(),
             dolby_vision: plx_data::metadata::Dovi::NONE,
             dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode::Auto,
-            audio_codec: "aac".to_owned(),
+            audio_codec: "aac".to_owned(), audio_ordinal,
             subtitle_source: None,
             subtitle_choice: TrackChoice::Unspecified,
             source_kbps: Some(4000), raster: Some((1280, 720)),
@@ -538,6 +543,11 @@ mod tests {
             quality_allows_original: true, link_allows_original: true, auto_allows_original: true,
             requires_subtitle_burn: false, requires_client_subtitle: false, preview: false,
         }
+    }
+
+    /// A request for a Part whose selected audio stream `audio_sid` is the Part's first audio stream.
+    fn request(part: i64, server: &Origin, audio_sid: i64) -> OriginalRequest {
+        request_at(part, server, audio_sid, (audio_sid > 0).then_some(0))
     }
 
     fn armed_pair() -> (ProductEvidence, Arc<dyn OriginalQualifier>) {
@@ -565,6 +575,36 @@ mod tests {
         assert_eq!(url, URL, "the trigger's URL, not the PMS Part's");
         assert_eq!(tracks, [NativeTrackIndex { selection: TrackSelection {
             kind: TrackKind::Audio, id: 42 }, index: 0 }]);
+    }
+
+    /// **W6.** The selected audio stream maps to ITS position among the Part's audio streams, not to a
+    /// fixed 0: the carrier lists its audio in the Part's order, and the service loads on track 0, so a
+    /// second stream is only reached by a `selectTrack` to native index 1. RED while the qualifier
+    /// mapped every selected stream to index 0 (the backend then found the service already there and
+    /// sent nothing).
+    #[test]
+    fn the_selected_audio_stream_maps_to_its_position_among_the_parts_audio_streams() {
+        let (_, qualifier) = armed_pair();
+        let off = plx_base::task::OffFrame::for_test();
+        for (sid, ordinal) in [(99100101, 0), (99100102, 1), (99100103, 2)] {
+            let Verdict::Known(known) = qualifier.qualify(&off,
+                request_at(991001, &mock_origin(), sid, Some(ordinal))) else { panic!("not certified") };
+            assert!(known.source.can_supply(known.requirements), "sid {sid}");
+            assert_eq!(known.source.into_parts().1, [NativeTrackIndex { selection: TrackSelection {
+                kind: TrackKind::Audio, id: sid as u64 }, index: ordinal }], "sid {sid}");
+        }
+    }
+
+    /// A selected stream whose position the plan could not name has no native index: the source cannot
+    /// supply it (the route then plays the Feed) rather than quietly selecting track 0.
+    #[test]
+    fn a_selected_audio_stream_with_no_known_position_maps_nothing_and_cannot_be_supplied() {
+        let (_, qualifier) = armed_pair();
+        let off = plx_base::task::OffFrame::for_test();
+        let Verdict::Known(known) = qualifier.qualify(&off,
+            request_at(991001, &mock_origin(), 42, None)) else { panic!("not certified") };
+        assert_eq!(known.requirements.audio_track, TrackChoice::Selected(42));
+        assert!(!known.source.can_supply(known.requirements));
     }
 
     #[test]

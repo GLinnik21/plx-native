@@ -1076,15 +1076,18 @@ subtitles, about 10 MB); `make fixtures-pipeline` builds both. They measure what
 backend's startup audio choice is NOT the track it loaded on. `audio2` sets `carrier_audio: 2`
 (`mock_pms.py --extra-media-audio 2`: the mock reports the second stream `selected` and not default, which the
 app's own audio ladder takes once track memory is cleared), and `uri_audio_selected` `{"path": "select",
-"index": 1}` passes only when a native `selectTrack` was sent and confirmed before the first Play
-(`uri-trace: ... ev=trackSelected`, or an `ev=audioInfo ... track=` that moved off the load-time track, then
-`uri: service playing`): a refusal fails quoting the `uri: control SelectTrack ... refused (TimedOut)` line, and
-`uri: audio index=N is already selected (audioInfo); no selectTrack sent` fails it as "nothing was sent". The
-backend writes no line for a select it sends, so the index is graded through `audioInfo` only, taken 0-based
-among the audio streams (that numbering is part of what the case tests). `audio1` is the control: no
+"index": 1}` passes only when the backend SENT a native `selectTrack` to that index (`uri: selectTrack sent
+kind=audio index=1 stream=SID`: the native index and the Plex stream id it stands for) and the service
+confirmed it before the first Play (`uri-trace: ... ev=trackSelected`, which names `type=audio index=N` when the
+service does and then must name index 1, or an `ev=audioInfo ... track=` that moved off the load-time track,
+then `uri: service playing`): a refusal fails quoting the `uri: control SelectTrack ... refused (TimedOut)`
+line, a send to another index fails quoting the sent line, no sent line at all fails as "never sent", and `uri:
+audio index=N is already selected (audioInfo); no selectTrack sent` fails it as "nothing was sent". The native
+index the app asks for is the selected stream's 0-based position among the Part's audio streams in container
+order (`OriginalRequest::audio_ordinal`, mapped by `dev::uri_product::DevQualifier`), the numbering
+`audioInfo.track` is taken to use; that numbering is part of what the case tests. `audio1` is the control: no
 `carrier_audio`, the first stream is the pick, and `{"path": "already", "index": 0}` wants that
-already-selected line. Today `dev::uri_product::DevQualifier` maps whatever audio the plan picked to native
-index 0, so `audio2` fails on the already-selected line until it maps the stream's position.
+already-selected line and no sent line.
 
 ### URI mode — how a URI case is graded
 

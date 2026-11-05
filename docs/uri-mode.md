@@ -151,9 +151,12 @@ selection is already made at load: `audioInfo` names it (`{"audioInfo":{"track":
 timed out 15 s later. The backend therefore settles a selection of the track `audioInfo` (or a
 `trackSelected`) last reported without a native call (`uri: audio index=N is already selected
 (audioInfo); no selectTrack sent`), and an `audioInfo` that names a pending select's track after its
-acknowledgement settles it like `trackSelected` would. Measured only with a one-track source: that
-`audioInfo.track` and the `selectTrack` index are one numbering, and whether a select of a
-different track before `play` is confirmed at all, are not. A control that is never confirmed is
+acknowledgement settles it like `trackSelected` would. A `selectTrack` the backend does send is logged
+first, `uri: selectTrack sent kind=audio index=N stream=SID` (the native index and the Plex stream id), and a
+`trackSelected` the service names is traced with its `type` and `index`. The dev route maps the selected
+stream to its 0-based position among the Part's audio streams in container order. Measured only with a
+one-track source: that `audioInfo.track` and the `selectTrack` index are one numbering, that this position is
+that index, and whether a select of a different track before `play` is confirmed at all, are not. A control that is never confirmed is
 refused when its deadline passes and logs `uri: control ... unconfirmed after N ms; refused
 (TimedOut)`.
 

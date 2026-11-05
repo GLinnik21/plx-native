@@ -89,6 +89,15 @@ pub struct OriginalRequest {
     pub dolby_vision: plx_data::metadata::Dovi,
     pub dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode,
     pub audio_codec: String,
+    /// The selected audio stream's 0-based position among the Part's audio streams, in container
+    /// order ([`plx_data::metadata::audio_ordinal`], the numbering the Feed demuxer's nth-of-type
+    /// selection already uses); `None` when no audio stream is selected or the Part lists none.
+    ///
+    /// HYPOTHESIS, unmeasured on the 4.5 service: that this position is also the native track
+    /// index the service names in `audioInfo.track` and takes in `selectTrack`. A qualifier may map
+    /// it to a [`NativeTrackIndex`] only for a source it knows lists its audio in the Part's order;
+    /// `selection.audio_sid` stays the stream's identity, this is only where it sits.
+    pub audio_ordinal: Option<i64>,
     pub subtitle_source: Option<SourceSubtitle>,
     /// Off is an actual viewer choice, distinct from no subtitle streams being present.
     /// The current URI driver has no native disable operation.
@@ -824,7 +833,7 @@ mod tests {
             source_url: "https://example.invalid/part.mkv".to_owned(), duration_ms: Some(60_000),
             video_codec: "hevc".to_owned(), dolby_vision: dovi,
             dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode::Auto,
-            audio_codec: "ac3".to_owned(),
+            audio_codec: "ac3".to_owned(), audio_ordinal: Some(0),
             subtitle_source: None,
             subtitle_choice: TrackChoice::Unspecified,
             source_kbps: Some(4000), raster: Some((1920, 1080)),

@@ -700,6 +700,14 @@ impl UriBackend {
                                 | (UriCall::SelectTrack { .. }, ControlKind::Track(_)));
                         if matches { self.controls.insert(*request, pending); }
                     }
+                    // The select the service is about to be asked for: the one place the native index
+                    // that goes out is named, with the Plex stream it stands for (the confirmation does
+                    // not say which index it confirms). Audio only; the subtitle path is unchanged.
+                    if let (UriCall::SelectTrack { kind: "audio", index, .. }, Some(PendingControl {
+                        kind: ControlKind::Track(track), .. })) = (call, self.dispatching) {
+                        plx_base::eventlog::log(&format!(
+                            "uri: selectTrack sent kind=audio index={index} stream={}", track.id));
+                    }
                 }
                 if let Some(answer) = session_io::transport_answer(
                     &effect, self.config.transport, self.url.as_deref().unwrap_or(""), &self.config.app_id,
@@ -1049,15 +1057,23 @@ mod tests {
             Self { driver, clock, bus, mt: unsafe { MainThread::assume() }, command: *command }
         }
         fn start(&mut self, attempt: AttemptId) -> DispatchResult {
-            self.driver.stage_source(attempt, KEY, UriSource::new(URL.into(), vec![
+            self.start_with(attempt, vec![
                 NativeTrackIndex { selection: TrackSelection { kind: TrackKind::Audio, id: 3 }, index: 3 },
                 NativeTrackIndex { selection: TrackSelection { kind: TrackKind::Audio, id: 4 }, index: 4 },
-            ])).unwrap();
+            ])
+        }
+        /// Start `attempt` on a source carrying `tracks`.
+        fn start_with(&mut self, attempt: AttemptId, tracks: Vec<NativeTrackIndex>) -> DispatchResult {
+            self.driver.stage_source(attempt, KEY, UriSource::new(URL.into(), tracks)).unwrap();
             self.driver.dispatch(&self.mt, attempt, self.command,
                 Operation::Start { source: KEY, requirements: REQ })
         }
         fn opened(&mut self) {
             assert_eq!(self.start(A), DispatchResult::Queued);
+            self.finish_open();
+        }
+        /// The service registers and loads: the attempt is open and awaiting the first Play.
+        fn finish_open(&mut self) {
             self.bus.say("register", "");
             assert!(self.driver.poll(&self.mt).is_empty());
             assert_eq!(self.bus.calls("load"), 1);
@@ -1170,6 +1186,28 @@ mod tests {
             "a retired native request cannot make a repeated selection ambiguous");
     }
 
+    /// **W6.** The select the backend SENDS is named in the log with the kind, the native index and the
+    /// Plex stream id, so a harness can tell which index went out (the confirmation says nothing of it).
+    /// RED while the backend wrote no line for a sent select. The index differs from the stream id on
+    /// purpose: the two numberings must not be mistaken for each other.
+    #[test]
+    fn an_audio_select_that_is_sent_names_its_kind_native_index_and_stream_id() {
+        plx_base::eventlog::with_private_log(|| {
+            let mut rig = Rig::new();
+            assert_eq!(rig.start_with(A, vec![
+                NativeTrackIndex { selection: TrackSelection { kind: TrackKind::Audio, id: 99100102 }, index: 1 },
+            ]), DispatchResult::Queued);
+            rig.finish_open();
+            let select = Operation::SelectTrack { kind: TrackKind::Audio, choice: TrackChoice::Selected(99100102) };
+            assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, select), DispatchResult::Queued);
+            assert_eq!(rig.bus.calls("selectTrack"), 1);
+            let log = std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default();
+            assert!(log.contains("uri: selectTrack sent kind=audio index=1 stream=99100102\n"), "{log}");
+            assert_eq!(log.matches("uri: selectTrack sent").count(), 1, "{log}");
+            assert!(!log.contains("no selectTrack sent"), "{log}");
+        });
+    }
+
     const SELECT_AUDIO_3: Operation = Operation::SelectTrack { kind: TrackKind::Audio,
         choice: TrackChoice::Selected(3) };
     const AUDIO_3: TrackSelection = TrackSelection { kind: TrackKind::Audio, id: 3 };
@@ -1199,6 +1237,7 @@ mod tests {
             assert_eq!(rig.bus.calls("play"), 1);
             let log = std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default();
             assert!(log.contains("uri: audio index=3 is already selected (audioInfo); no selectTrack sent"), "{log}");
+            assert!(!log.contains("uri: selectTrack sent"), "the settle sent nothing, so it names no send: {log}");
         });
     }
 
