@@ -1,4 +1,4 @@
-{"updated":"2026-11-05T18:06:48Z",
+{"updated":"2026-11-05T19:31:45Z",
 "ci":[
 {"id":31142003278,"at":"2026-08-07T02:41:31Z","sha":"dd7138b09","title":"pkg: satisfy webosbrew's packager check honestly, and record why not ares-package","jobs":{"host checks (NOT a device gate)":81,"cross-build (armv7) + artifact assertions":95},"pr":null,"conclusion":"success","attempt":1},
 {"id":31319241597,"at":"2026-08-09T14:44:31Z","sha":"6c3858f9e","title":"docs: webOS 5+ is known broken, not untested \u2014 restore the 4.x bound","jobs":{"cross-build (armv7) + artifact assertions":89,"host checks (NOT a device gate)":80},"pr":null,"conclusion":"success","attempt":1},
@@ -4598,7 +4598,8 @@
 {"id":42065365711,"at":"2026-11-05T16:31:44Z","sha":"8f4ed3ab1","title":"ci snapshot: integ/uri-first at 2c0455921 (L3b-2b + Original pause cases)","pr":1231,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":226,"macOS simulator build + launch":254,"Linux simulator build + launch":360,"Windows launcher syntax":23}},
 {"id":42074803737,"at":"2026-11-05T17:27:30Z","sha":"150654ee6","title":"ci snapshot: integ/uri-first at 365e0d825 (L3b-4 merged)","pr":1231,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":148,"Linux simulator build + launch":326,"Windows launcher syntax":27,"macOS simulator build + launch":221}},
 {"id":42077675405,"at":"2026-11-05T17:45:12Z","sha":"f7af909bb","title":"Docs: the TV fetched the registry from huds.plxnative.com","pr":1243,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":22,"Linux simulator build + launch":324,"macOS tests against bundled FFmpeg and ASS":266,"macOS simulator build + launch":328}},
-{"id":42079758407,"at":"2026-11-05T17:58:21Z","sha":"8c6904d1b","title":"HUD registry: serve from huds.plxnative.com","pr":1243,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":196,"macOS tests against bundled FFmpeg and ASS":215,"Linux simulator build + launch":226,"Windows launcher syntax":19}}
+{"id":42079758407,"at":"2026-11-05T17:58:21Z","sha":"8c6904d1b","title":"HUD registry: serve from huds.plxnative.com","pr":1243,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":196,"macOS tests against bundled FFmpeg and ASS":215,"Linux simulator build + launch":226,"Windows launcher syntax":19}},
+{"id":42093762784,"at":"2026-11-05T19:25:35Z","sha":"cec45846c","title":"ci snapshot: integ/uri-first at e9011ffaf (L3b-2c merged)","pr":1231,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":17,"macOS simulator build + launch":154,"macOS tests against bundled FFmpeg and ASS":258,"Linux simulator build + launch":333}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
