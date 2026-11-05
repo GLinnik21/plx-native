@@ -3,7 +3,7 @@
 //! The headline is `compiled_classic_matches_the_hand_written_layout`: the shipped classic package,
 //! compiled, reports the SAME rects as the hand-written layout (`classic::geometry`, since deleted) reported, field for field and
 //! to the exact `f32`, in every compact slot, for a movie and an episode, with and without chapters, in
-//! every shipped language and under both measurers (`FixtureMeasure`, whose advances are arithmetic, and
+//! the eleven historical languages and under both measurers (`FixtureMeasure`, whose advances are arithmetic, and
 //! `ShippedMeasure`, the real fonts' advances, which is headless here). A mismatch means the compiler or
 //! the fixture is wrong, never the frozen numbers. (The deleted layout's numbers are pinned as literals:
 //! see `frozen_classic_geometry`.) Then every fixture compiles in every state
@@ -103,6 +103,17 @@ fn diff(got: &HudGeometry, want: &HudGeometry) -> Vec<String> {
 /// are the same in every case are literals in [`frozen_base`].
 const FROZEN_CLASSIC_GEOMETRY: &str = include_str!("fixtures/classic-geometry.golden.tsv");
 
+fn frozen_golden_languages() -> Vec<Preference> {
+    SHIPPED
+        .iter()
+        .copied()
+        .filter(|language| {
+            let prefix = format!("{language:?}/");
+            FROZEN_CLASSIC_GEOMETRY.lines().any(|line| line.starts_with(&prefix))
+        })
+        .collect()
+}
+
 /// The slot-independent facts of the hand-written layout, the same in all 352 frozen cases.
 fn frozen_base() -> HudGeometry {
     HudGeometry {
@@ -144,9 +155,10 @@ fn frozen_classic_geometry(key: &str) -> HudGeometry {
 #[test]
 fn compiled_classic_matches_the_hand_written_layout() {
     let measures: [(&str, &dyn Measure); 2] = [("FixtureMeasure", &FM), ("ShippedMeasure", &ShippedMeasure)];
+    let frozen_languages = frozen_golden_languages();
     let mut mismatches = Vec::new();
     let mut compared = 0;
-    for language in SHIPPED {
+    for language in frozen_languages.iter().copied() {
         let _language = language_on_this_thread_for_test(language);
         for (measure_name, measure) in measures {
             let compiled = build(CLASSIC, measure);
@@ -173,9 +185,9 @@ fn compiled_classic_matches_the_hand_written_layout() {
             }
         }
     }
-    // 11 languages x 2 measurers x (movie, episode) x (without, with chapters) x (Discs, Up Next, Skip at
-    // each label): a count, so a loop that quietly compares less cannot pass.
-    assert_eq!(compared, SHIPPED.len() * 2 * 2 * 2 * 4, "the golden's comparisons");
+    // Every language represented in the frozen golden x 2 measurers x (movie, episode) x (without, with chapters)
+    // x (Discs, Up Next, Skip at each label): a count, so a loop that quietly compares less cannot pass.
+    assert_eq!(compared, frozen_languages.len() * 2 * 2 * 2 * 4, "the golden's comparisons");
     assert_eq!(FROZEN_CLASSIC_GEOMETRY.lines().count(), compared, "the frozen file holds one line per case");
     assert!(mismatches.is_empty(), "{} mismatches:\n{}", mismatches.len(), mismatches.join("\n"));
 }
@@ -225,9 +237,10 @@ fn compiled_classic_title_yields_to_the_skip_pill_actually_shown() {
         })
     };
     let measures: [(&str, &dyn Measure); 2] = [("FixtureMeasure", &FM), ("ShippedMeasure", &ShippedMeasure)];
+    let frozen_languages = frozen_golden_languages();
     let mut differing = 0;
     let mut compared = 0;
-    for language in SHIPPED {
+    for language in frozen_languages.iter().copied() {
         let _language = language_on_this_thread_for_test(language);
         for (measure_name, measure) in measures {
             let compiled = build(CLASSIC, measure);
@@ -245,7 +258,7 @@ fn compiled_classic_title_yields_to_the_skip_pill_actually_shown() {
             }
         }
     }
-    assert_eq!(compared, SHIPPED.len() * 2 * 2 * 2, "the comparisons");
+    assert_eq!(compared, frozen_languages.len() * 2 * 2 * 2, "the comparisons");
     assert_eq!(FROZEN_CLASSIC_TITLE_RIGHT.lines().count(), compared + 4, "the frozen file holds one line per case");
     assert!(differing > 0, "the two pills must differ somewhere, or this test pins nothing");
 }
