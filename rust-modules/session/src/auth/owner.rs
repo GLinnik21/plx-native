@@ -1133,6 +1133,9 @@ pub struct SessionSnapshot {
     pub png: Arc<[u8]>,
     pub code_replaced: bool,
     pub users: Arc<[UserTile]>,
+    /// The uuid of the user the saved session seats (empty for none), which the roster opens on:
+    /// unlike `profile`, it is still named while the picker is up.
+    pub seated: Arc<str>,
     pub error: Arc<str>,
     pub pin_denied: bool,
     pub profile: Option<ProfileRead>,
@@ -1208,6 +1211,7 @@ impl SessionSnapshot {
         self.flow_epoch == state.epoch && self.phase == state.phase && self.qr_generation == state.qr_gen
             && &*self.code == state.pin_code.as_str() && &*self.png == state.qr_png.as_slice()
             && &*self.users == state.users.as_slice() && &*self.error == state.error.as_str()
+            && &*self.seated == state.persisted.user.uuid.as_str()
             && self.code_replaced == state.code_replaced && self.pin_denied == state.pin_denied
             && self.scope == state.profile_scope && self.delete_leftovers == state.delete_leftovers
             && self.persistence_warning == state.persistence_warning
@@ -1242,6 +1246,8 @@ impl SessionSnapshot {
             .map(|old| Arc::clone(&old.error)).unwrap_or_else(|| Arc::from(state.error.as_str()));
         Self { flow_epoch: state.epoch, phase: state.phase, qr_generation: state.qr_gen,
             code, png, code_replaced: state.code_replaced, users,
+            seated: previous.filter(|old| &*old.seated == state.persisted.user.uuid.as_str())
+                .map(|old| Arc::clone(&old.seated)).unwrap_or_else(|| Arc::from(state.persisted.user.uuid.as_str())),
             error, pin_denied: state.pin_denied,
             profile: state.active_profile.as_ref().map(|p| ProfileRead {
                 uuid: p.uuid.clone(), title: p.title.clone(), thumb: p.thumb.clone(),

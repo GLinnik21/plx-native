@@ -66,7 +66,7 @@ pub(crate) mod framedump;
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 47] = [
+const DIAG: [&str; 48] = [
     "plxnative-diag.log",
     "plxnative-hud-text-metrics",
     "plxnative-hud-text-metrics.json",
@@ -183,6 +183,12 @@ const DIAG: [&str; 47] = [
     // The side subtitle reader (`media::player::subside`): content = the 0-based position of the
     // embedded subtitle stream to draw over a plain remux, read at each playback start.
     "plxnative-subside",
+    // The URI-mode probe (`media::player::uriprobe_drive`, issue #1064): content = `load`, `late`
+    // or `none` (empty = `load`), read at each playback start. It changes how ONE play is carried
+    // out and nothing about the boot: the tester signs in and picks a profile as always, then
+    // plays a title. A non-DIAG trigger would suppress the who's-watching picker and move that
+    // boot away from the one the probe is meant to run on.
+    "plxnative-uriprobe",
 ];
 
 /// **Turn on the TELEVISION'S OWN GStreamer logging** — `/tmp/plxnative-gstlog`.
@@ -566,7 +572,10 @@ pub(crate) fn quality_switch_script() -> Option<(u32, Vec<plx_plex::plex::sessio
 /// media position (and, in the simulator, stops the clock sink exactly on it, so the pause freezes
 /// that position: `ffi_host.rs::stop_clock_at`): a wall-clock delay pauses wherever the host's
 /// scheduling has got playback to, which moves from run to run, and the documentation's player
-/// figure wants the same frame and the same clock every time. Unknown/duplicate/invalid fields fail the whole trigger closed; silently
+/// figure wants the same frame and the same clock every time. The simulator's settled capture
+/// (`PLXNATIVE_SHOT_SETTLE`) waits for the Pause to land (`scenarios::screenshot::PauseDebt`): the
+/// edge arms six seconds in, and a slow host can leave the player still for longer than the
+/// capture's quiet meanwhile. Unknown/duplicate/invalid fields fail the whole trigger closed; silently
 /// substituting a duration would exercise a different interleaving from the manifest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PauseScript {
@@ -1302,6 +1311,17 @@ mod tests {
     #[test]
     fn servers_trigger_is_not_diagnostic() {
         assert!(!super::DIAG.contains(&"plxnative-servers"));
+    }
+
+    // ---- plxnative-uriprobe (the URI-mode probe, issue #1064) ----
+
+    /// The probe changes how one play is carried out, never which screen the app boots to: a tester
+    /// signs in through the normal boot, then plays. Out of DIAG, the file would suppress the
+    /// who's-watching picker and the probe would run on a different boot than the one it is meant
+    /// to be run on.
+    #[test]
+    fn uriprobe_trigger_is_diagnostic() {
+        assert!(super::DIAG.contains(&"plxnative-uriprobe"));
     }
 
     // ---- plxnative-playurl (the pipeline test tier's one trigger) ----

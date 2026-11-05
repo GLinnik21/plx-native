@@ -55,10 +55,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use plx_appkit::hud_format::admit::{admit, Admission, Cannot};
-use plx_appkit::hud_format::lint::{lint_fit, lint_price, LintLang, LintOptions};
-use plx_appkit::hud_format::parse::MAX_PACKAGE_BYTES;
+use plx_appkit::hud_format::lint::{fit_package, price_package, LintLang, LintOptions};
+use plx_appkit::hud_format::bundle::{self, VerifiedPackage, MAX_ARTIFACT_BYTES};
 use plx_appkit::hud_format::{Finding, Severity};
-use plx_appkit::player_hud::loaded::{load, LoadedHud};
+use plx_appkit::player_hud::loaded::{load_verified, LoadedHud};
 use plx_base::fontcov::advances::WholePixelMeasure;
 use plx_base::storage_worker::submit_retained;
 use plx_data::hudpacks::address::Address;
@@ -67,6 +67,7 @@ use plx_data::hudpacks::{
     Unloadable, Verdict, WriteOutcome, BUILTIN_CLASSIC,
 };
 use plx_net::net::{RequestFailure, Resp};
+use plx_data::hudpacks::catalog;
 use plx_machine::machine::Measure;
 use plx_platform::i18n::LocaleContext;
 
@@ -86,12 +87,26 @@ pub(crate) fn live_setup() -> Setup {
             Candidate { dir, volatile }
         })
         .collect();
-    Setup { candidates, max_pack_bytes: MAX_PACKAGE_BYTES }
+    Setup { candidates, max_pack_bytes: MAX_ARTIFACT_BYTES }
 }
 
 /// One effect's blocking work. `None` is an effect with no answer (`Delete`).
 fn run_effect(effect: HudEffect, app_version: &str) -> Option<HudEvent> {
     match effect {
+        // The cache is verified again here, on the storage worker, with the same function a reply goes through.
+        HudEffect::Catalog(catalog::CatalogEffect::Read { tag, at }) => Some(HudEvent::Catalog(catalog::Event::Read {
+            tag, result: read_file(&at, catalog::CACHE_BYTE_LIMIT).and_then(|bytes| catalog::CacheRecord::decode(&bytes, &catalog::ACCEPTED_KEYS).map_err(|cause| {
+                plx_base::eventlog::log(&format!("hud: index cache refused cause={}", cause.cause()));
+                ReadError::Failed
+            })) })),
+        HudEffect::Catalog(catalog::CatalogEffect::Write { tag, at, record }) => Some(HudEvent::Catalog(catalog::Event::Written {
+            tag, outcome: write_file(&at, &record.encode()) })),
+        // The machine kept its cached index and counted the attempt; this is the one line saying why.
+        HudEffect::Catalog(catalog::CatalogEffect::Refused { cause }) => {
+            plx_base::eventlog::log(&format!("hud: index refused cause={}", cause.cause()));
+            None
+        }
+        HudEffect::Catalog(catalog::CatalogEffect::Get { .. }) | HudEffect::FetchRegistry { .. } => None,
         HudEffect::ScanDir { tag, at } => Some(HudEvent::Scanned { tag, result: scan_dir(&at) }),
         HudEffect::ReadFile { tag, at, max_bytes } => Some(HudEvent::Read { tag, result: read_file(&at, max_bytes) }),
         HudEffect::WriteFile { tag, at, bytes } => Some(HudEvent::Written { tag, outcome: write_file(&at, &bytes) }),
@@ -109,6 +124,14 @@ fn run_effect(effect: HudEffect, app_version: &str) -> Option<HudEvent> {
 
 /// The bounded public GET a fetch makes: `plx_net::net::https_get_public_bounded` live, a fake in a host test.
 type Get = fn(&str, usize) -> Result<Resp, RequestFailure>;
+
+/// Registry requests share the bounded public transport, with redirects disabled and no Plex identity.
+type CatalogGet = fn(&str, Option<&str>, usize) -> Result<Resp, RequestFailure>;
+fn catalog_get(url: &str, etag: Option<&str>, limit: usize) -> Result<Resp, RequestFailure> {
+    let headers = etag.map(|value| format!("If-None-Match: {value}")).into_iter().collect::<Vec<_>>();
+    plx_net::net::request_result_evidence(url, &headers, "GET", None, plx_net::net::API, false, Some(limit), None, false)
+}
+
 
 /// One fetch's blocking work: the body at `address`, or why there is none. A failure writes the one `hud:` line it is
 /// owed: the host (never the URL, whose query may carry a token) and a code, the HTTP status, `too_large`, or the
@@ -139,7 +162,7 @@ fn lost_fetch(tag: Tag) -> HudEvent {
 
 /// `appkit`'s verdict as the store's.
 fn verdict(bytes: &[u8], app_version: &str) -> Verdict {
-    let meta = |f: plx_appkit::hud_format::admit::Facts| Meta { id: f.id, name: f.name, version: f.version, format: f.format };
+    let meta = |f: plx_appkit::hud_format::admit::Facts| Meta { id: f.id, name: f.name, version: f.version, package_format: f.package_format, hud_format: f.hud_format };
     match admit(bytes, app_version) {
         Admission::Runs(facts) => Verdict::Loadable(meta(facts)),
         Admission::Cannot(facts, why) => Verdict::Unloadable(
@@ -296,9 +319,9 @@ fn delete_file(at: &Loc) {
 /// The bytes of the pack `sha` from the first candidate that holds a copy whose hash is `sha`: what the
 /// player compiles. A file that was altered, or went missing since the listing, is `None`.
 fn read_pack(candidates: &[PathBuf], sha: Sha) -> Option<Vec<u8>> {
-    let rel = format!("packs/{}.plxhud.json", sha.hex());
+    let rel = format!("packs/{}.plxhud", sha.hex());
     candidates.iter().find_map(|root| {
-        let bytes = read_file(&Loc { root: root.clone(), rel: rel.clone() }, MAX_PACKAGE_BYTES).ok()?;
+        let bytes = read_file(&Loc { root: root.clone(), rel: rel.clone() }, MAX_ARTIFACT_BYTES).ok()?;
         (Sha::of(&bytes) == sha).then_some(bytes)
     })
 }
@@ -371,16 +394,28 @@ impl Executor {
     }
 }
 
+enum CacheFailure { Read(u64), Write(u64) }
+impl CacheFailure {
+    fn event(self) -> HudEvent {
+        HudEvent::Catalog(match self {
+            Self::Read(tag) => catalog::Event::Read { tag, result: Err(ReadError::Failed) },
+            Self::Write(tag) => catalog::Event::Written { tag, outcome: WriteOutcome::Refused },
+        })
+    }
+}
+
 /// The IO effects of the store in flight, in the order they were started.
 pub(crate) struct HudRunner {
     exec: Executor,
     app_version: Arc<str>,
-    effects: VecDeque<Slot<Option<HudEvent>>>,
+    effects: VecDeque<(Option<CacheFailure>, Slot<Option<HudEvent>>)>,
     /// The fetches in flight, each on its own network thread and answered whenever it finishes, outside `effects`' order:
     /// a fetch that takes seconds must not hold back the listing a `Refresh` starts behind it. The store is busy for the
     /// whole of one, so there is one at most, plus any a `Refresh` displaced whose late answer the store drops.
     fetches: Vec<(Tag, Slot<HudEvent>)>,
     get: Get,
+    catalog_get: CatalogGet,
+    catalog_fetch: Option<(u64, Slot<HudEvent>)>,
 }
 
 impl HudRunner {
@@ -391,6 +426,8 @@ impl HudRunner {
             effects: VecDeque::new(),
             fetches: Vec::new(),
             get: plx_net::net::https_get_public_bounded,
+            catalog_get,
+            catalog_fetch: None,
         }
     }
 
@@ -406,6 +443,8 @@ impl HudRunner {
             effects: VecDeque::new(),
             fetches: Vec::new(),
             get: offline,
+            catalog_get: |_, _, _| Err(plx_net::net::RequestError::Transport.into()),
+            catalog_fetch: None,
         }
     }
 
@@ -418,7 +457,7 @@ impl HudRunner {
 
     /// Nothing is running.
     pub(crate) fn is_idle(&self) -> bool {
-        self.effects.is_empty() && self.fetches.is_empty()
+        self.effects.is_empty() && self.fetches.is_empty() && self.catalog_fetch.is_none()
     }
 
     /// Start the IO effects of `fx`, in order, and leave the ones that are not IO in `fx`.
@@ -429,6 +468,26 @@ impl HudRunner {
                 rest.push(effect);
                 continue;
             }
+            if let HudEffect::Catalog(catalog::CatalogEffect::Get { tag, etag }) = effect {
+                let get = self.catalog_get;
+                self.catalog_fetch = Some((tag, self.exec.run_net(move || {
+                    // The signature and the index are checked here, on the network lane, before the reply reaches the machine.
+                    let result = get(&format!("{}/{}", catalog::ORIGIN, catalog::SIGNED_FILE), etag.as_deref(), catalog::SIGNED_BYTE_LIMIT)
+                        .map(|r| catalog::Reply::http(r.status, r.etag, &r.body, &catalog::ACCEPTED_KEYS)).map_err(|_| ());
+                    HudEvent::Catalog(catalog::Event::Reply { tag, result })
+                })));
+                continue;
+            }
+            if let HudEffect::FetchRegistry { tag, package, max_bytes } = effect {
+                let get = self.catalog_get;
+                let slot = self.exec.run_net(move || {
+                    let result = get(&package.url, None, max_bytes).map_err(|_| FetchError::Unreachable)
+                        .and_then(|r| if r.status == 200 { Ok(r.body) } else { Err(FetchError::Unreachable) });
+                    HudEvent::Fetched { tag, result }
+                });
+                self.fetches.push((tag, slot));
+                continue;
+            }
             if let HudEffect::Fetch { tag, address, max_bytes } = effect {
                 let get = self.get;
                 let slot = self.exec.run_net(move || HudEvent::Fetched { tag, result: fetch(get, &address, max_bytes) });
@@ -436,7 +495,12 @@ impl HudRunner {
                 continue;
             }
             let version = Arc::clone(&self.app_version);
-            self.effects.push_back(self.exec.run(move || run_effect(effect, &version)));
+            let fallback = match &effect {
+                HudEffect::Catalog(catalog::CatalogEffect::Read { tag, .. }) => Some(CacheFailure::Read(*tag)),
+                HudEffect::Catalog(catalog::CatalogEffect::Write { tag, .. }) => Some(CacheFailure::Write(*tag)),
+                _ => None,
+            };
+            self.effects.push_back((fallback, self.exec.run(move || run_effect(effect, &version))));
         }
         *fx = rest;
     }
@@ -445,9 +509,15 @@ impl HudRunner {
     /// hears them in.
     fn ready(&mut self, out: &mut Vec<HudEvent>) {
         while let Some(front) = self.effects.front_mut() {
-            let Some(answer) = front.poll() else { break };
-            self.effects.pop_front();
-            out.extend(answer.flatten());
+            let Some(answer) = front.1.poll() else { break };
+            let (fallback, _) = self.effects.pop_front().expect("front exists");
+            out.extend(answer.flatten().or_else(|| fallback.map(CacheFailure::event)));
+        }
+        if let Some((tag, slot)) = &mut self.catalog_fetch {
+            if let Some(answer) = slot.poll() {
+                out.push(answer.unwrap_or(HudEvent::Catalog(catalog::Event::Reply { tag: *tag, result: Err(()) })));
+                self.catalog_fetch = None;
+            }
         }
         let mut at = 0;
         while at < self.fetches.len() {
@@ -495,7 +565,7 @@ struct Reading {
 /// What a pack read brings back to the main thread.
 struct Landed {
     /// The pack's bytes, `None` when no candidate holds a copy that is still the pack.
-    bytes: Option<Vec<u8>>,
+    package: Option<Result<VerifiedPackage, &'static str>>,
     /// The price model, read in the same job when the driver had none ([`HudDriver::price`]) and the pack was read: the
     /// two faces are IO and two parses, which no frame may carry.
     model: Option<Result<WholePixelMeasure, String>>,
@@ -516,7 +586,7 @@ enum Stage {
 /// A pack that was read and has not been compiled yet, waiting at its [`Stage`].
 struct Pending {
     sha: Sha,
-    bytes: Vec<u8>,
+    package: VerifiedPackage,
     stage: Stage,
 }
 
@@ -615,6 +685,16 @@ impl HudDriver {
         Self::new(HudRunner::live(""))
     }
 
+    /// A started driver on an offline runner that runs each effect where it is started, with its files in `dir`: what a
+    /// Bridge test puts in place of [`off`](Self::off) to see the commands the Settings page sends reach the store.
+    #[cfg(test)]
+    pub(crate) fn started_in(dir: PathBuf, classic: LoadedHud, app_version: &str) -> Self {
+        let mut driver = Self::new(HudRunner::inline(app_version));
+        driver.setup = Some(Setup { candidates: vec![Candidate { dir, volatile: false }], max_pack_bytes: MAX_ARTIFACT_BYTES });
+        driver.start(classic, app_version);
+        driver
+    }
+
     /// Begin: keep the compiled classic as what draws until a package lands.
     pub(crate) fn start(&mut self, classic: LoadedHud, app_version: &str) {
         self.shown = Some(Arc::clone(&classic.compiled));
@@ -645,6 +725,23 @@ impl HudDriver {
             return;
         }
         self.step(HudEvent::Refresh { setup: self.setup(), selected });
+        self.step(HudEvent::Catalog(catalog::Event::Load { candidates: self.setup().candidates }));
+    }
+
+    pub(crate) fn open_catalog(&mut self, now: u64) {
+        if self.started {
+            self.step(HudEvent::Catalog(catalog::Event::Open { candidates: self.setup().candidates, now }));
+        }
+    }
+
+    pub(crate) fn cancel_registry(&mut self, sha: Sha) {
+        if self.started { self.step(HudEvent::CancelRegistry { sha }); }
+    }
+
+    pub(crate) fn fetch_registry(&mut self, sha: Sha, app: &str, language: &str) {
+        if self.started {
+            self.step(HudEvent::FetchRegistry { sha, app: app.into(), language: language.into() });
+        }
     }
 
     /// The viewer picked a package (or the built-in).
@@ -846,7 +943,11 @@ impl HudDriver {
         let job = move || {
             let bytes = read_pack(&roots, sha);
             let model = faces.filter(|_| bytes.is_some()).map(|[regular, bold]| plx_gfx::text::read_price_model(&regular, &bold));
-            Landed { bytes, model }
+            let package = bytes.map(|bytes| {
+                let decoded = bundle::read(&bytes, None);
+                decoded.package.ok_or_else(|| decoded.findings.first().map_or("parse", |finding| finding.code))
+            });
+            Landed { package, model }
         };
         Reading { sha, slot: self.runner.exec.run(job) }
     }
@@ -862,7 +963,7 @@ impl HudDriver {
         self.dirty = true;
         self.revision += 1;
         let language = env.cx.language().tag();
-        let Landed { bytes, model } = answer.unwrap_or(Landed { bytes: None, model: None });
+        let Landed { package, model } = answer.unwrap_or(Landed { package: None, model: None });
         match model {
             Some(Ok(model)) => self.price = Some(model),
             Some(Err(reason)) => self.log.push(format!("hud: price model unavailable: {reason}")),
@@ -873,7 +974,7 @@ impl HudDriver {
             // no verdict and logs no line, and a `fall_back` always concerns the pack the selection names.
             return;
         }
-        let Some(bytes) = bytes else {
+        let Some(package) = package else {
             self.read_failed.insert(sha);
             if self.logged.insert((sha, language, "read")) {
                 self.log.push(format!("hud: fallback package={} language={language} code=read", self.resolved_id()));
@@ -885,7 +986,11 @@ impl HudDriver {
             self.fall_back(sha, language, FACES);
             return;
         }
-        self.pending = Some(Pending { sha, bytes, stage: Stage::Fit });
+        let package = match package {
+            Ok(package) => package,
+            Err(code) => { self.fall_back(sha, language, code); return; }
+        };
+        self.pending = Some(Pending { sha, package, stage: Stage::Fit });
     }
 
     /// One compile stage, off the player: the fit, the price or the load of the landed bytes in this language, each on
@@ -907,9 +1012,9 @@ impl HudDriver {
         let language = env.cx.language().tag();
         let sha = pending.sha;
         let next = match pending.stage {
-            Stage::Fit => self.fit_step(&pending.bytes, env, language).map(|()| Stage::Price),
-            Stage::Price => self.price_step(&pending.bytes, env, language).map(|()| Stage::Load),
-            Stage::Load => match self.load_step(&pending.bytes, env) {
+            Stage::Fit => self.fit_step(&pending.package, env, language).map(|()| Stage::Price),
+            Stage::Price => self.price_step(&pending.package, env, language).map(|()| Stage::Load),
+            Stage::Load => match self.load_step(&pending.package, env) {
                 Ok(hud) => {
                     self.unfit.remove(&(sha, language));
                     self.compiled = Some((sha, language, hud));
@@ -955,23 +1060,21 @@ impl HudDriver {
 
     /// **Stage one, the fit** in this language, measured by the television's own text measure: every check but the cost.
     /// Errors only; the television applies no margin.
-    fn fit_step(&self, bytes: &[u8], env: &Env<'_>, language: &'static str) -> Result<(), &'static str> {
-        let text = std::str::from_utf8(bytes).map_err(|_| "utf8")?;
-        Self::first_error(&lint_fit(text, env.measure, &[Self::lint_lang(env, language)], &LintOptions { text_skew: 0.0, ..LintOptions::default() }))
+    fn fit_step(&self, package: &VerifiedPackage, env: &Env<'_>, language: &'static str) -> Result<(), &'static str> {
+        Self::first_error(&fit_package(package, env.measure, &[Self::lint_lang(env, language)], &LintOptions { text_skew: 0.0, ..LintOptions::default() }))
     }
 
     /// **Stage two, the price** in this language: `HUD-E1401` alone, priced by the model and never by `env.measure`. The
     /// ceilings are numbers taken with the model, so a text measure whose line height or hinting differs (every
     /// firmware's SDL_ttf) must not move the verdict.
-    fn price_step(&self, bytes: &[u8], env: &Env<'_>, language: &'static str) -> Result<(), &'static str> {
-        let text = std::str::from_utf8(bytes).map_err(|_| "utf8")?;
+    fn price_step(&self, package: &VerifiedPackage, env: &Env<'_>, language: &'static str) -> Result<(), &'static str> {
         let Some(price) = self.price.as_ref() else { return Err(FACES) };
-        Self::first_error(&lint_price(text, price, &[Self::lint_lang(env, language)]).findings)
+        Self::first_error(&price_package(package, price, &[Self::lint_lang(env, language)]).findings)
     }
 
     /// **Stage three, the compile** the player draws from.
-    fn load_step(&self, bytes: &[u8], env: &Env<'_>) -> Result<LoadedHud, &'static str> {
-        let hud = load(bytes, env.app_version, env.cx, env.measure).map_err(|_| "parse")?;
+    fn load_step(&self, package: &VerifiedPackage, env: &Env<'_>) -> Result<LoadedHud, &'static str> {
+        let hud = load_verified(package, env.app_version, env.cx, env.measure);
         // A package with no state for some frame the transport can be in draws nothing there: classic does instead.
         if plx_appkit::player_hud::loaded::answers_every_frame(&hud.compiled) { Ok(hud) } else { Err("states") }
     }
@@ -991,14 +1094,26 @@ impl HudDriver {
 mod tests {
     use super::*;
     use plx_appkit::hud_format::admit::Facts;
-    use plx_appkit::hud_format::CLASSIC_PACKAGE;
+    use plx_appkit::hud_format::{CLASSIC_PACKAGE, fixtures};
     use plx_appkit::player_hud::loaded::load_classic;
     use plx_base::fontcov::advances::ShippedMeasure;
     use plx_data::hudpacks::{Refusal, Source};
     use plx_platform::i18n::{LocaleContext, Preference};
 
-    const REFERENCE: &str = include_str!("../../../appkit/src/hud_format/fixtures/reference.plxhud.json");
-    const MINIMAL: &str = include_str!("../../../appkit/src/hud_format/fixtures/minimal.plxhud.json");
+    const REFERENCE: &str = include_str!("../../../appkit/src/hud_format/fixtures/reference/hud.json");
+    const MINIMAL: &str = include_str!("../../../appkit/src/hud_format/fixtures/minimal/hud.json");
+    fn fixture_bytes(text: &str) -> Vec<u8> {
+        fixtures::with_hud_resources(if text == MINIMAL { "minimal" } else { "reference" }, text)
+    }
+    fn verified(text: &str) -> plx_appkit::hud_format::bundle::VerifiedPackage {
+        plx_appkit::hud_format::bundle::read(&fixture_bytes(text), None).package.expect("valid fixture")
+    }
+    fn lint_fit(text: &str, measure: &dyn Measure, langs: &[LintLang], options: &LintOptions) -> Vec<plx_appkit::hud_format::Finding> {
+        fit_package(&verified(text), measure, langs, options)
+    }
+    fn lint_price(text: &str, measure: &dyn Measure, langs: &[LintLang]) -> plx_appkit::hud_format::lint::Priced {
+        price_package(&verified(text), measure, langs)
+    }
     const REFERENCE_ID: &str = "com.plxnative.examples.reference";
     const APP: &str = "0.2.1";
 
@@ -1013,10 +1128,10 @@ mod tests {
             Dir(dir)
         }
         fn drop_file(&self, name: &str, text: &str) {
-            std::fs::write(self.0.join("drop").join(name), text).unwrap();
+            std::fs::write(self.0.join("drop").join(name), fixture_bytes(text)).unwrap();
         }
         fn setup(&self) -> Setup {
-            Setup { candidates: vec![Candidate { dir: self.0.clone(), volatile: false }], max_pack_bytes: MAX_PACKAGE_BYTES }
+            Setup { candidates: vec![Candidate { dir: self.0.clone(), volatile: false }], max_pack_bytes: MAX_ARTIFACT_BYTES }
         }
     }
     impl Drop for Dir {
@@ -1114,7 +1229,14 @@ mod tests {
 
     /// Drop `text` in the folder and install it, selecting nothing.
     fn install(dir: &Dir, driver: &mut HudDriver, cx: &LocaleContext, name: &str, text: &str, id: &str) -> Sha {
-        dir.drop_file(name, text);
+        let mut files = plx_appkit::hud_format::bundle::archive::read(&fixture_bytes(text)).unwrap();
+        let manifest = files.iter_mut().find(|file| file.path == "manifest.json").unwrap();
+        let mut value: serde_json::Value = serde_json::from_slice(&manifest.bytes).unwrap();
+        if value["id"].as_str() != Some(id) {
+            value["id"] = id.into();
+            manifest.bytes = format!("{value:#}\n").into_bytes().into();
+        }
+        std::fs::write(dir.0.join("drop").join(name), plx_appkit::hud_format::bundle::archive::pack(&files).unwrap()).unwrap();
         driver.refresh(String::new());
         settle(driver, cx);
         let drop = driver.store().drops().into_iter().find(|d| d.name == name).expect("the file is listed");
@@ -1131,7 +1253,7 @@ mod tests {
     }
 
     fn install_reference(dir: &Dir, driver: &mut HudDriver, cx: &LocaleContext) {
-        dir.drop_file("reference.plxhud.json", REFERENCE);
+        dir.drop_file("reference.plxhud", REFERENCE);
         driver.refresh(String::new());
         settle(driver, cx);
         let drops = driver.store().drops();
@@ -1149,9 +1271,9 @@ mod tests {
         use plx_net::net::RequestError;
         let reply = |status: u16, body: &[u8]| Ok(Resp { status, body: body.to_vec(), peer_pin: None, etag: None });
         match url {
-            "https://example.com/hud.plxhud.json" => {
-                assert_eq!(max_bytes, MAX_PACKAGE_BYTES, "the fetch is bounded by the format's package limit");
-                reply(200, REFERENCE.as_bytes())
+            "https://example.com/hud.plxhud" => {
+                assert_eq!(max_bytes, MAX_ARTIFACT_BYTES, "the fetch is bounded by the format's package limit");
+                reply(200, &fixture_bytes(REFERENCE))
             }
             "https://example.com/missing.json" => reply(404, b"nope"),
             "https://example.com/page.html" => reply(200, b"<html>not a package</html>"),
@@ -1191,12 +1313,12 @@ mod tests {
         let mut driver = fetching_driver(&dir);
         driver.refresh(String::new());
         pump(&mut driver, &cx);
-        driver.fetch(plx_data::hudpacks::address::parse("https://example.com/hud.plxhud.json").unwrap());
+        driver.fetch(plx_data::hudpacks::address::parse("https://example.com/hud.plxhud").unwrap());
         pump(&mut driver, &cx);
         assert!(driver.take_notices().is_empty(), "an offer is not a result yet");
         let offer = driver.store().offer().expect("a loadable package is offered");
         assert_eq!(offer.meta.id, REFERENCE_ID);
-        assert_eq!(offer.sha, Sha::of(REFERENCE.as_bytes()));
+        assert_eq!(offer.sha, Sha::of(&fixture_bytes(REFERENCE)));
         assert!(entry(&driver, REFERENCE_ID).is_none(), "nothing is installed before the viewer confirms");
         assert!(!dir.0.join("packs").exists() || std::fs::read_dir(dir.0.join("packs")).unwrap().next().is_none());
 
@@ -1206,7 +1328,7 @@ mod tests {
         assert_eq!(installed.sha, Some(offer.sha));
         assert_eq!(installed.source, Some(plx_data::hudpacks::Source::Address));
         assert_eq!(installed.trust, plx_data::hudpacks::Trust::Unreviewed);
-        let on_disk = std::fs::read(dir.0.join("packs").join(format!("{}.plxhud.json", offer.sha.hex()))).unwrap();
+        let on_disk = std::fs::read(dir.0.join("packs").join(format!("{}.plxhud", offer.sha.hex()))).unwrap();
         assert_eq!(Sha::of(&on_disk), offer.sha, "the bytes written are the bytes the viewer was shown");
         assert!(driver.take_notices().iter().any(|n| matches!(n, Notice::Installed { id, .. } if id == REFERENCE_ID)));
     }
@@ -1220,7 +1342,7 @@ mod tests {
         pump(&mut driver, &cx);
         let nothing = |dir: &Dir| !dir.0.join("packs").exists() || std::fs::read_dir(dir.0.join("packs")).unwrap().next().is_none();
 
-        driver.fetch(plx_data::hudpacks::address::parse("https://example.com/hud.plxhud.json").unwrap());
+        driver.fetch(plx_data::hudpacks::address::parse("https://example.com/hud.plxhud").unwrap());
         pump(&mut driver, &cx);
         let sha = driver.store().offer().expect("offered").sha;
         driver.decline_offer(sha);
@@ -1256,7 +1378,7 @@ mod tests {
         let mut runner = HudRunner::inline(APP);
         let (worker, answer) = std::sync::mpsc::channel::<HudEvent>();
         runner.fetches.push((tag, Slot::Waiting(answer)));
-        runner.effects.push_back(Slot::Done(Some(None)));
+        runner.effects.push_back((None, Slot::Done(Some(None))));
         let mut out = Vec::new();
         runner.ready(&mut out);
         assert!(runner.effects.is_empty() && out.is_empty(), "the queue behind a slow fetch still drains");
@@ -1277,7 +1399,7 @@ mod tests {
         install_reference(&dir, &mut driver, &cx);
         let installed = entry(&driver, REFERENCE_ID).expect("installed");
         assert_eq!((installed.trust, installed.source), (plx_data::hudpacks::Trust::Unreviewed, Some(Source::Drop)));
-        assert!(dir.0.join("packs").join(format!("{}.plxhud.json", installed.sha.unwrap().hex())).is_file());
+        assert!(dir.0.join("packs").join(format!("{}.plxhud", installed.sha.unwrap().hex())).is_file());
         assert!(dir.0.join("installed.json").is_file());
         assert!(driver.take_notices().iter().any(|n| matches!(n, Notice::Installed { id, .. } if id == REFERENCE_ID)));
 
@@ -1289,7 +1411,7 @@ mod tests {
         let classic = load_classic(APP, &cx, &ShippedMeasure);
         assert_ne!(shown[0].compiled.states().len(), 0);
         assert!(!Arc::ptr_eq(&shown[0].compiled, &classic.compiled), "not classic");
-        assert_eq!(shown[0].key.sha256, plx_base::sha256::sha256(REFERENCE.as_bytes()), "compiled from the installed bytes");
+        assert_eq!(shown[0].key.sha256, plx_base::sha256::sha256(&fixture_bytes(REFERENCE)), "compiled from the installed bytes");
         assert_eq!(driver.store().resolved(), REFERENCE_ID);
 
         driver.select(BUILTIN_CLASSIC.to_string());
@@ -1332,8 +1454,8 @@ mod tests {
         let dir = Dir::new("two-profiles");
         let cx = english();
         let mut first = driver(&dir);
-        dir.drop_file("reference.plxhud.json", REFERENCE);
-        dir.drop_file("minimal.plxhud.json", MINIMAL);
+        dir.drop_file("reference.plxhud", REFERENCE);
+        dir.drop_file("minimal.plxhud", MINIMAL);
         first.refresh(String::new());
         settle(&mut first, &cx);
         for drop in first.store().drops() {
@@ -1360,8 +1482,8 @@ mod tests {
         let stored = plx_plex::plex::session::peek();
         let seat = |user: &str| plx_plex::plex::session::Seat::Seated { user: user.into(), stamp: stamp.clone() };
         for (user, id, sha) in [
-            ("a", REFERENCE_ID, plx_base::sha256::sha256(REFERENCE.as_bytes())),
-            ("b", minimal_id, plx_base::sha256::sha256(MINIMAL.as_bytes())),
+            ("a", REFERENCE_ID, plx_base::sha256::sha256(&fixture_bytes(REFERENCE))),
+            ("b", minimal_id, plx_base::sha256::sha256(&fixture_bytes(MINIMAL))),
         ] {
             let mut restarted = driver(&dir);
             let own = plx_plex::plex::session::stored_effective_hud(&stored, &seat(user));
@@ -1382,7 +1504,7 @@ mod tests {
             let mut first = driver(&dir);
             install_reference(&dir, &mut first, &cx);
             let sha = entry(&first, REFERENCE_ID).unwrap().sha.unwrap();
-            let pack = dir.0.join("packs").join(format!("{}.plxhud.json", sha.hex()));
+            let pack = dir.0.join("packs").join(format!("{}.plxhud", sha.hex()));
             if damage == "missing" {
                 std::fs::remove_file(&pack).unwrap();
             } else {
@@ -1404,7 +1526,7 @@ mod tests {
         let dir = Dir::new("builtin-id");
         let mut driver = driver(&dir);
         let cx = english();
-        dir.drop_file("imposter.plxhud.json", CLASSIC_PACKAGE);
+        std::fs::write(dir.0.join("drop/imposter.plxhud"), CLASSIC_PACKAGE).unwrap();
         driver.refresh(String::new());
         settle(&mut driver, &cx);
         let drops = driver.store().drops();
@@ -1454,7 +1576,7 @@ mod tests {
 
         let dir = Dir::new("unfit");
         let mut driver = driver(&dir);
-        dir.drop_file("tight.plxhud.json", &tight);
+        dir.drop_file("tight.plxhud", &tight);
         driver.refresh(String::new());
         settle(&mut driver, &en);
         let sha = driver.store().drops()[0].sha.unwrap();
@@ -1464,7 +1586,7 @@ mod tests {
 
         let in_narrow = settle(&mut driver, &narrow);
         assert_eq!(in_narrow.len(), 1, "classic, compiled for the new language, is the one hand-over");
-        assert_eq!((in_narrow[0].key.lang.as_str(), in_narrow[0].key.sha256), (narrow_tag, plx_base::sha256::sha256(CLASSIC_PACKAGE.as_bytes())));
+        assert_eq!((in_narrow[0].key.lang.as_str(), in_narrow[0].key.sha256), (narrow_tag, plx_base::sha256::sha256(CLASSIC_PACKAGE)));
         assert!(driver.unfit(sha, narrow.language().tag()).is_some_and(|u| u.code == "HUD-E0601"));
         assert_eq!(driver.store().selected(), REFERENCE_ID, "the selection is kept");
         let lines = driver.take_log();
@@ -1488,13 +1610,13 @@ mod tests {
         let mut driver = driver(&dir);
         let (tight, narrow_tag) = tight_reference();
         let narrow = LocaleContext::resolve(Preference::SHIPPED.into_iter().find(|p| p.tag() == narrow_tag).unwrap(), None, None, None, None);
-        dir.drop_file("tight.plxhud.json", &tight);
+        dir.drop_file("tight.plxhud", &tight);
         driver.refresh(String::new());
         settle(&mut driver, &narrow);
         let sha = driver.store().drops()[0].sha.unwrap();
         driver.install_drop(sha, 1);
         settle(&mut driver, &narrow);
-        let pack = dir.0.join("packs").join(format!("{}.plxhud.json", sha.hex()));
+        let pack = dir.0.join("packs").join(format!("{}.plxhud", sha.hex()));
         let kept = std::fs::read(&pack).unwrap();
         std::fs::remove_file(&pack).unwrap();
         driver.select(REFERENCE_ID.to_string());
@@ -1545,7 +1667,7 @@ mod tests {
         assert!(driver.compiled.is_none(), "the price tick compiles nothing the player draws from");
         assert!(driver.pending.as_ref().is_some_and(|p| p.stage == Stage::Load), "priced, the load is next");
         let shown = tick(&mut driver, false);
-        assert!(shown.is_some_and(|h| h.key.sha256 == plx_base::sha256::sha256(REFERENCE.as_bytes())), "the load tick hands the package over");
+        assert!(shown.is_some_and(|h| h.key.sha256 == plx_base::sha256::sha256(&fixture_bytes(REFERENCE))), "the load tick hands the package over");
         assert!(driver.pending.is_none() && driver.compiled.is_some());
         assert!(driver.take_log().is_empty());
     }
@@ -1686,7 +1808,7 @@ mod tests {
         let dir = Dir::new("over-ceiling");
         let cx = english();
         let mut driver = driver(&dir);
-        let sha = install_and_select(&dir, &mut driver, &cx, "heavy.plxhud.json", &over_a_ceiling(), HEAVY_ID);
+        let sha = install_and_select(&dir, &mut driver, &cx, "heavy.plxhud", &over_a_ceiling(), HEAVY_ID);
         let asked = std::cell::Cell::new(0);
         let measure = Counting(&asked);
         let env = Env { measure: &measure, cx: &cx, app_version: APP, player: false };
@@ -1732,7 +1854,7 @@ mod tests {
                 }
             }
             driver.faces = Some(faces);
-            dir.drop_file("reference.plxhud.json", REFERENCE);
+            dir.drop_file("reference.plxhud", REFERENCE);
             driver.refresh(String::new());
             settle(&mut driver, &cx);
             driver.install_drop(driver.store().drops()[0].sha.unwrap(), 1_700_000_000);
@@ -1770,14 +1892,14 @@ mod tests {
             std::fs::copy(shipped, copy).unwrap();
         }
         driver.faces = Some(faces.clone());
-        let reference = install_and_select(&dir, &mut driver, &cx, "reference.plxhud.json", REFERENCE, REFERENCE_ID);
-        let minimal = install_and_select(&dir, &mut driver, &cx, "minimal.plxhud.json", MINIMAL, "com.plxnative.examples.minimal");
+        let reference = install_and_select(&dir, &mut driver, &cx, "reference.plxhud", REFERENCE, REFERENCE_ID);
+        let minimal = install_and_select(&dir, &mut driver, &cx, "minimal.plxhud", MINIMAL, "com.plxnative.examples.minimal");
         driver.select(REFERENCE_ID.to_string());
         assert!(driver.price.is_none(), "nothing has been read yet");
         // the first pack read carries the faces, in its own job; the listing and the install read none
         let mut job = driver.begin_read(reference);
         let landed = job.slot.poll().flatten().expect("the inline job ran");
-        assert!(landed.bytes.is_some() && landed.model.as_ref().is_some_and(|m| m.is_ok()), "the first pack read reads the faces too");
+        assert!(landed.package.is_some() && landed.model.as_ref().is_some_and(|m| m.is_ok()), "the first pack read reads the faces too");
         assert!(settle(&mut driver, &cx).len() == 1 && driver.price.is_some(), "and the driver keeps the model");
         // once it is kept, no pack read carries it again
         let mut job = driver.begin_read(reference);
@@ -1789,7 +1911,7 @@ mod tests {
         }
         driver.select("com.plxnative.examples.minimal".to_string());
         let shown = settle(&mut driver, &cx);
-        assert!(shown.len() == 1 && shown[0].key.sha256 == plx_base::sha256::sha256(MINIMAL.as_bytes()), "priced without a second read");
+        assert!(shown.len() == 1 && shown[0].key.sha256 == plx_base::sha256::sha256(&fixture_bytes(MINIMAL)), "priced without a second read");
         assert!(driver.unfit(minimal, "en").is_none() && driver.take_log().is_empty());
     }
 
@@ -1881,12 +2003,12 @@ mod tests {
     #[test]
     fn the_runner_refuses_links_and_oversize_files_and_writes_whole_files() {
         let dir = Dir::new("runner");
-        dir.drop_file("real.plxhud.json", MINIMAL);
-        std::os::unix::fs::symlink(dir.0.join("drop/real.plxhud.json"), dir.0.join("drop/link.plxhud.json")).unwrap();
+        dir.drop_file("real.plxhud", MINIMAL);
+        std::os::unix::fs::symlink(dir.0.join("drop/real.plxhud"), dir.0.join("drop/link.plxhud")).unwrap();
         let at = |rel: &str| Loc { root: dir.0.clone(), rel: rel.to_string() };
-        assert_eq!(scan_dir(&at("drop")), Ok(vec!["real.plxhud.json".to_string()]), "the link is not a file");
-        assert_eq!(read_file(&at("drop/link.plxhud.json"), 1 << 20), Err(ReadError::Failed));
-        assert_eq!(read_file(&at("drop/real.plxhud.json"), 10), Err(ReadError::TooLarge));
+        assert_eq!(scan_dir(&at("drop")), Ok(vec!["real.plxhud".to_string()]), "the link is not a file");
+        assert_eq!(read_file(&at("drop/link.plxhud"), 1 << 20), Err(ReadError::Failed));
+        assert_eq!(read_file(&at("drop/real.plxhud"), 10), Err(ReadError::TooLarge));
         assert_eq!(read_file(&at("drop/none.json"), 10), Err(ReadError::Missing));
         assert_eq!(scan_dir(&at("nowhere")), Err(ReadError::Missing));
         assert_eq!(write_file(&at("packs/a.json"), b"hello"), WriteOutcome::Done);
@@ -1895,7 +2017,7 @@ mod tests {
         delete_file(&at("packs/a.json"));
         delete_file(&at("packs/a.json"));
         assert!(!dir.0.join("packs/a.json").exists());
-        let blocked = Loc { root: dir.0.join("drop/real.plxhud.json"), rel: "packs/b.json".into() };
+        let blocked = Loc { root: dir.0.join("drop/real.plxhud"), rel: "packs/b.json".into() };
         assert_eq!(write_file(&blocked, b"x"), WriteOutcome::Refused, "a root that is a file takes no write");
     }
 
@@ -1929,7 +2051,7 @@ mod tests {
         let mut driver = driver(&dir);
         install_reference(&dir, &mut driver, &cx);
         let sha = entry(&driver, REFERENCE_ID).unwrap().sha.unwrap();
-        let pack = dir.0.join("packs").join(format!("{}.plxhud.json", sha.hex()));
+        let pack = dir.0.join("packs").join(format!("{}.plxhud", sha.hex()));
         let kept = std::fs::read(&pack).unwrap();
         driver.select(REFERENCE_ID.to_string());
         std::fs::remove_file(&pack).unwrap();
@@ -1978,7 +2100,7 @@ mod tests {
         assert!(driver.tick(&env).is_none() && driver.compiled.is_none());
         assert!(driver.pending.as_ref().is_some_and(|p| p.stage == Stage::Load), "priced, the load is next");
         let shown = driver.tick(&env);
-        assert!(shown.is_some_and(|h| h.key.sha256 == plx_base::sha256::sha256(text.as_bytes())), "the third tick hands the package over");
+        assert!(shown.is_some_and(|h| h.key.sha256 == plx_base::sha256::sha256(&fixture_bytes(text))), "the third tick hands the package over");
         let language = cx.language().tag();
         assert!(driver.compiled.as_ref().is_some_and(|(s, l, _)| *s == sha && *l == language) && driver.pending.is_none());
     }
@@ -1999,8 +2121,8 @@ mod tests {
             let dir = Dir::new("moved-on");
             let cx = english();
             let mut driver = driver(&dir);
-            let old = install(&dir, &mut driver, &cx, "old.plxhud.json", &text, id);
-            let new = install(&dir, &mut driver, &cx, "minimal.plxhud.json", MINIMAL, MINIMAL_ID);
+            let old = install(&dir, &mut driver, &cx, "old.plxhud", &text, id);
+            let new = install(&dir, &mut driver, &cx, "minimal.plxhud", MINIMAL, MINIMAL_ID);
             wait_at(&mut driver, &cx, id, stage);
             assert!(driver.pending.as_ref().is_some_and(|p| p.sha == old), "{stage:?}: the old pack waits");
 
@@ -2025,7 +2147,7 @@ mod tests {
             let dir = Dir::new("back-to-classic");
             let cx = english();
             let mut driver = driver(&dir);
-            install(&dir, &mut driver, &cx, "old.plxhud.json", &text, id);
+            install(&dir, &mut driver, &cx, "old.plxhud", &text, id);
             wait_at(&mut driver, &cx, id, stage);
 
             driver.select(BUILTIN_CLASSIC.to_string());
@@ -2050,8 +2172,8 @@ mod tests {
             let dir = Dir::new("read-in-flight");
             let cx = english();
             let mut driver = driver(&dir);
-            let reference = install(&dir, &mut driver, &cx, "reference.plxhud.json", REFERENCE, REFERENCE_ID);
-            install(&dir, &mut driver, &cx, "minimal.plxhud.json", MINIMAL, MINIMAL_ID);
+            let reference = install(&dir, &mut driver, &cx, "reference.plxhud", REFERENCE, REFERENCE_ID);
+            install(&dir, &mut driver, &cx, "minimal.plxhud", MINIMAL, MINIMAL_ID);
             driver.select(REFERENCE_ID.to_string());
             let (answer, slot) = std::sync::mpsc::channel();
             driver.reading = Some(Reading { sha: reference, slot: Slot::Waiting(slot) });
@@ -2060,8 +2182,8 @@ mod tests {
 
             let [regular, bold] = pkg_faces();
             let model = plx_gfx::text::read_price_model(&regular, &bold);
-            let bytes = found.then(|| REFERENCE.as_bytes().to_vec());
-            answer.send(Landed { bytes, model: Some(model) }).unwrap();
+            let package = found.then(|| Ok(verified(REFERENCE)));
+            answer.send(Landed { package, model: Some(model) }).unwrap();
             let env = Env { measure: &ShippedMeasure, cx: &cx, app_version: APP, player: false };
             let shown = driver.tick(&env);
             let what = format!("found={found}, wanted={wanted}");
@@ -2083,7 +2205,7 @@ mod tests {
             let dir = Dir::new("language-moves");
             let en = english();
             let mut driver = driver(&dir);
-            let sha = install(&dir, &mut driver, &en, "reference.plxhud.json", REFERENCE, REFERENCE_ID);
+            let sha = install(&dir, &mut driver, &en, "reference.plxhud", REFERENCE, REFERENCE_ID);
             wait_at(&mut driver, &en, REFERENCE_ID, stage);
             assert!(driver.pending.as_ref().is_some_and(|p| p.sha == sha && p.stage == stage));
 
@@ -2132,7 +2254,7 @@ mod tests {
         }
         driver.select(REFERENCE_ID.to_string());
         let shown = settle(&mut driver, &cx);
-        assert!(shown.len() == 1 && shown[0].key.sha256 == plx_base::sha256::sha256(REFERENCE.as_bytes()), "the package draws");
+        assert!(shown.len() == 1 && shown[0].key.sha256 == plx_base::sha256::sha256(&fixture_bytes(REFERENCE)), "the package draws");
         assert!(driver.unfit(sha, "en").is_none() && driver.price.is_some());
         assert!(driver.take_log().is_empty(), "and no second `hud: fallback` line for the cause already logged");
     }
@@ -2160,11 +2282,11 @@ mod tests {
 
     #[test]
     fn the_verdict_maps_appkit_onto_the_stores_and_never_trusts_what_does_not_parse() {
-        assert!(matches!(verdict(REFERENCE.as_bytes(), APP), Verdict::Loadable(Meta { ref id, .. }) if id == REFERENCE_ID));
+        assert!(matches!(verdict(&fixture_bytes(REFERENCE), APP), Verdict::Loadable(Meta { ref id, .. }) if id == REFERENCE_ID));
         assert_eq!(verdict(b"{", APP), Verdict::Invalid);
-        let newer = MINIMAL.replacen("\"format\": \"1.0\"", "\"format\": \"9.0\"", 1);
-        assert!(matches!(verdict(newer.as_bytes(), APP), Verdict::Unloadable(_, Unloadable::NewerFormat)));
-        let _ = Facts { id: String::new(), name: String::new(), version: String::new(), format: String::new() };
+        let newer = include_str!("../../../appkit/src/hud_format/fixtures/minimal/manifest.json").replacen("\"format\": \"1.0\"", "\"format\": \"9.0\"", 1);
+        assert!(matches!(verdict(&fixtures::with_manifest("minimal", &newer), APP), Verdict::Unloadable(_, Unloadable::NewerFormat)));
+        let _ = Facts { id: String::new(), name: String::new(), version: String::new(), package_format: String::new(), hud_format: String::new() };
     }
 
 }

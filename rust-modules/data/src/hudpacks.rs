@@ -19,9 +19,10 @@
 //! "fits every language" and not "under its cost ceiling".
 //! Nothing is decided before that answer, and the sha the store trusts is always its own.
 //!
-//! **Layout** per candidate directory: `packs/<sha256>.plxhud.json` (content-addressed, so an update is
-//! a new file), `installed.json` (id -> sha, source, installed-at), `drop/` (the sideload drop folder).
-//! `index-cache.json` belongs to the registry gallery (PR13) and is neither read nor written here.
+//! **Layout** per candidate directory: `packs/<sha256>.plxhud` (content-addressed, so an update is
+//! a new file), `installed.json` (id -> sha, source, installed-at, and for a package fetched from a development
+//! source the address it came from), `drop/` (the sideload drop folder).
+//! `index-cache.json` is the registry gallery's dated conditional-GET cache of the signed index ([`catalog`], verified again on every load); boot reads cached revocations, while only a settings visit authorizes an index GET.
 //! A listing reads every candidate; one sha found in two of them is one package; for one id the higher
 //! `version` wins, and on a tie the earlier candidate.
 //!
@@ -32,17 +33,21 @@
 //! installed one of its id only with a strictly higher `version` ([`Semver`]). `builtin:classic` is
 //! refused from every source: the built-in entry is compiled in, always listed, always selectable.
 //!
-//! **Unreadable is not empty.** An `installed.json` that is missing is an empty candidate, free to take
-//! the first install. One that failed to read, is not JSON, or says it is from a newer layout is listed
-//! as far as it parses and never written (an install goes to the next candidate, a removal reports
-//! itself incomplete), and a partial view never overwrites what it did not see: a record this build
-//! cannot read (a source or a sha it does not know) and the fields of a record it can read that a later
-//! build added are written back unchanged by every rewrite of their file. Only an install of the same
-//! id replaces an unreadable record (the list never shows it, so no one could remove it; the install
-//! says so with [`Notice::ReplacedUnreadable`]), and a removal of the id takes it out.
+//! **A development source is remembered** (PR15). An install from an address whose [`Address::dev_source`] is set (an
+//! `http://` URL on a private LAN address: an author's machine) records that address with the package, and
+//! [`Entry::dev_source`] hands it back, so the Settings page can send the same [`HudEvent::Fetch`] again and
+//! the author sees the next build through the same confirmation. No other source records an address. An address a
+//! record could not have been written with (not a development one, or on a record of another source) is dropped
+//! on read, never obeyed.
 //!
-//! **Work is sequential**: at most one request is in flight, so a runner may execute effects in the
-//! order they are pushed and memory stays bounded by one file, with no cap on how many packages exist.
+//! A missing installed index is an empty writable candidate. An invalid, unreadable or unsupported
+//! index is read-only in its entirety. Installs use another candidate, and the original index and its
+//! potentially referenced archives stay on disk. Current records bind the archive SHA and both format
+//! axes, which are checked against the manifest returned by the validator.
+//!
+//! **Package work is sequential**: at most one package request is in flight, so a runner may execute its effects in
+//! order and memory stays bounded by one package, with no cap on how many packages exist. The independent catalog
+//! machine may read or fetch concurrently; its response and cache have their own byte bounds and generation.
 //! A `Refresh` replaces work in flight, so it ends an install, a fetch, a held offer or a removal it displaces with a notice and,
 //! once the indexes are read again, deletes the packs that work may have left that no index names (an
 //! unreadable index shields its candidate). A process that dies mid-install is not covered: the store
@@ -61,10 +66,15 @@
 //! | `Removed` | idle | `WriteFile(installed.json)` per candidate holding a record of the id (an unreadable one too), `Delete(pack)`; `Selection(builtin)` when the selected one went |
 //! | `Selected` | any | `Selection(id)` for the built-in or a listed, loadable package; else not handled |
 //!
+//! | `Catalog` | its own addressed phase | bounded cache read/write or conditional index GET; cached revocations apply at boot, network only on settings Open |
+//! | `FetchRegistry` | idle, compatible current index entry | exact-hash GET, validate identity and formats, then hold the same confirmation offer as an address fetch |
+//! | `CancelRegistry` | matching pending fetch/validation/offer | abandon unconfirmed work; confirmed atomic installs continue |
+//!
 //! A pair not listed (a result for a tag nothing awaits, an install while busy) is [`Handled::No`] and
 //! changes nothing. A runner that loses an answer is recovered by the next `Refresh`.
 
 pub mod address;
+pub mod catalog;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
@@ -73,7 +83,7 @@ use std::sync::Arc;
 use plx_base::sha256::sha256;
 use plx_machine::machine::Handled;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Map;
 
 /// The id of the built-in HUD: compiled in, always listed, always selectable, and claimed by no file.
 /// The same literal as `appkit::hud_format::schema::BUILTIN_CLASSIC_ID` (the format accepts it so the
@@ -82,14 +92,25 @@ use serde_json::{Map, Value};
 /// (`app/adapters/huds.rs::tests`).
 pub const BUILTIN_CLASSIC: &str = "builtin:classic";
 
+/// The manifest/index identifier bound, shared with the appkit descriptor walker.
+pub const MAX_PACKAGE_ID_BYTES: usize = 256;
+
+/// A reverse-DNS package identity, including the reserved embedded Classic identity.
+pub fn valid_package_id(text: &str) -> bool {
+    if text == BUILTIN_CLASSIC {
+        return true;
+    }
+    text.len() <= MAX_PACKAGE_ID_BYTES
+        && text.contains('.')
+        && text.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-'))
+        && text.split('.').all(|label| matches!(label.bytes().next(), Some(byte) if byte.is_ascii_lowercase()))
+}
+
 const PACKS_DIR: &str = "packs";
 const DROP_DIR: &str = "drop";
 const INDEX_FILE: &str = "installed.json";
-const PACK_SUFFIX: &str = ".plxhud.json";
-/// The `v` of an `installed.json` this build writes. A build that adds a field to a record keeps `v`
-/// (an older build carries the field through, [`Record::extra`]); a change an older build could not
-/// carry through (a new top-level key, a different meaning for a field) raises it, and an older build
-/// then reads the file and never writes it.
+const PACK_SUFFIX: &str = ".plxhud";
+/// The strict installed-index contract this build reads and writes.
 const INDEX_FORMAT: u64 = 1;
 
 // ---------------------------------------------------------------------------------------------
@@ -141,6 +162,12 @@ impl std::fmt::Debug for Sha {
 pub struct Semver(u64, u64, u64);
 
 impl Semver {
+    /// Numeric release targeted by an app build, including development/nightly and build suffixes.
+    /// Package versions stay strict through `parse`; app compatibility ignores those suffixes.
+    pub fn app_release(text: &str) -> Option<Self> {
+        Self::parse(text.split(['-', '+']).next()?)
+    }
+
     /// `None` for anything but three plain decimal numbers (no sign, no leading zero) joined by dots.
     pub fn parse(text: &str) -> Option<Self> {
         fn number(part: &str) -> Option<u64> {
@@ -209,7 +236,8 @@ pub struct Meta {
     pub id: String,
     pub name: String,
     pub version: String,
-    pub format: String,
+    pub package_format: String,
+    pub hud_format: String,
 }
 
 /// Why a package that parsed cannot run on this app. A file that stays on disk with one of these is
@@ -222,6 +250,8 @@ pub enum Unloadable {
     OlderFormat,
     /// Outside the package's own `app.min`/`app.max`.
     AppRange,
+    /// This exact archive was withdrawn by the registry, regardless of its install source.
+    Revoked,
 }
 
 /// The runner's answer to a [`HudEffect::Validate`]: `admit`'s strict parse, invariants and app-range check, reduced to what
@@ -309,7 +339,7 @@ pub struct Setup {
     /// the validator enforces too; also bounds an `installed.json`) and the most an install may carry.
     /// `Setup::default()` leaves it 0, so an `Install` before the first `Refresh` is refused as
     /// [`Refusal::TooLarge`]: the runner that wires the store (`app/adapters/huds.rs`) sets it from `appkit`'s
-    /// `MAX_PACKAGE_BYTES` in the `Setup` it sends.
+    /// `MAX_ARTIFACT_BYTES` in the `Setup` it sends.
     pub max_pack_bytes: usize,
 }
 
@@ -345,14 +375,18 @@ pub enum Notice {
     Removed { id: String },
     /// Some candidate kept the entry (its index could not be rewritten), so the id may list again.
     RemoveIncomplete { id: String },
-    /// An install took the place of a record of its id in `installed.json` that this build cannot read
-    /// (so the list never showed it). Sent just before `Installed`.
-    ReplacedUnreadable { id: String },
 }
 
 /// The events [`HudStore::step`] takes.
 #[derive(Debug)]
 pub enum HudEvent {
+    /// A registry settings visit, boot cache load or addressed cache/HTTP result. Boot never authorizes a GET.
+    Catalog(catalog::Event),
+    /// Fetch a compatible catalog package. The hash is looked up again in the checked index.
+    FetchRegistry { sha: Sha, app: String, language: String },
+    /// The initiating detail page was destroyed. Pending download/validation/offers may be abandoned;
+    /// an already-confirmed atomic installation continues.
+    CancelRegistry { sha: Sha },
     /// HUD settings opened (or the store started): forget the listing and read every candidate. Always
     /// taken, and it replaces whatever is in flight. A listing is dropped silently. An install ends
     /// with [`Notice::NotWritten`] and a removal with [`Notice::RemoveIncomplete`] (the listing that
@@ -391,6 +425,10 @@ pub enum HudEvent {
 /// The work the store asks of the runner.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HudEffect {
+    /// Registry cache IO or a conditional, redirect-free index request.
+    Catalog(catalog::CatalogEffect),
+    /// A catalog-bound package GET; no redirects and no account headers.
+    FetchRegistry { tag: Tag, package: catalog::Package, max_bytes: usize },
     /// List a directory: [`HudEvent::Scanned`].
     ScanDir { tag: Tag, at: Loc },
     /// Read a file, at most `max_bytes`: [`HudEvent::Read`].
@@ -429,6 +467,10 @@ pub struct Entry {
     /// The profile's selection names this row. It may name a package that cannot load: what plays is
     /// [`HudStore::resolved`].
     pub selected: bool,
+    /// The development source it was installed from: the `http://` address of an author's machine on the
+    /// home network, recorded with the package so the Settings page can fetch the next build of it again
+    /// (PR15). `None` for the built-in and for every package that did not come from such an address.
+    pub dev_source: Option<address::Address>,
 }
 
 /// A fetched package the store holds for the viewer to confirm: what the prompt shows, and the sha
@@ -437,7 +479,7 @@ pub struct Entry {
 pub struct OfferView {
     pub sha: Sha,
     pub meta: Meta,
-    /// Always [`Source::Address`] today; carried so the prompt reads the trust tier from the source.
+    /// The verified fetch source; the prompt distinguishes registry review from an address install.
     pub source: Source,
     /// The address the bytes came from.
     pub from: Option<address::Address>,
@@ -466,14 +508,21 @@ struct Record {
     sha: Sha,
     source: Source,
     at: u64,
-    /// The fields of the entry this build does not know (a later build added them): written back with
-    /// it by every rewrite, and gone with it when the record is replaced or removed.
-    extra: Map<String, Value>,
+    package_format: String,
+    hud_format: String,
+    /// The development source the bytes came from: only ever an address install's, and only a [`Address::dev_source`].
+    from: Option<address::Address>,
 }
 
 impl Record {
-    fn new(sha: Sha, source: Source, at: u64) -> Self {
-        Record { sha, source, at, extra: Map::new() }
+    fn new(sha: Sha, source: Source, at: u64, package_format: &str, hud_format: &str) -> Self {
+        Record { sha, source, at, package_format: package_format.into(), hud_format: hud_format.into(), from: None }
+    }
+
+    /// This record with the development source `from` names, when a record of `self.source` may carry one.
+    fn from_dev_source(mut self, from: Option<&address::Address>) -> Self {
+        self.from = from.filter(|address| self.source == Source::Address && address.dev_source()).cloned();
+        self
     }
 }
 
@@ -483,16 +532,13 @@ enum Access {
     #[default]
     Writable,
     /// What is there could not be read whole (a read failure, text that is not JSON, a layout from a
-    /// newer build): it is listed as far as it parses and never written, so a partial view cannot
-    /// overwrite what it did not see.
+    /// newer build). Its contents are never used for mutation or rewritten from a partial view.
     ReadOnly,
 }
 
 #[derive(Clone, Default)]
 struct Dir {
     index: Index,
-    /// The entries of the file this build cannot read, written back unchanged with every rewrite.
-    kept: Map<String, Value>,
     access: Access,
 }
 
@@ -558,6 +604,7 @@ struct Offer {
     /// Where the bytes came from, for the prompt: the address of a fetch.
     from: Option<address::Address>,
     bytes: Arc<[u8]>,
+    expected: Option<catalog::Package>,
 }
 
 enum Write {
@@ -571,7 +618,7 @@ enum Step {
     /// A drop file is being read again so that what is installed is what was listed.
     Reading { sha: Sha, now: u64 },
     /// A fetch is in flight.
-    Fetching { address: address::Address },
+    Fetching { address: address::Address, expected: Option<catalog::Package> },
     Validating(Offer),
     /// A validated fetch waits for the viewer to confirm or decline (`offer.now` is `None`).
     Offered { offer: Offer, meta: Meta },
@@ -596,7 +643,6 @@ struct Rewrite {
     tag: Tag,
     dir: usize,
     index: Index,
-    kept: Map<String, Value>,
     /// The packs the removed records named (a record this build cannot read may name one too).
     gone: Vec<Sha>,
 }
@@ -619,6 +665,7 @@ pub struct HudStore {
     selected: String,
     op: Op,
     tags: u32,
+    catalog: catalog::Catalog,
 }
 
 impl Default for HudStore {
@@ -637,10 +684,14 @@ impl HudStore {
             selected: BUILTIN_CLASSIC.to_string(),
             op: Op::Idle,
             tags: 0,
+            catalog: catalog::Catalog::default(),
         }
     }
 
     // -------- readers --------
+
+    /// The current gallery view, including dated cache status and revocation reasons.
+    pub fn catalog(&self) -> &catalog::Snapshot { self.catalog.snapshot() }
 
     /// Whether a listing, install or removal is running (installing and removing wait for the idle).
     pub fn busy(&self) -> bool {
@@ -655,7 +706,7 @@ impl HudStore {
     /// What a playback starts with: the selection when it is listed and loadable, else the built-in.
     pub fn resolved(&self) -> &str {
         if self.selected != BUILTIN_CLASSIC
-            && self.winners().get(self.selected.as_str()).is_some_and(|w| w.loaded.loadable.is_ok())
+            && self.winners().get(self.selected.as_str()).is_some_and(|w| w.loaded.loadable.is_ok() && self.catalog.snapshot().revoked(w.record.sha).is_none())
         {
             &self.selected
         } else {
@@ -674,6 +725,7 @@ impl HudStore {
             loadable: Ok(()),
             until_restart: false,
             selected: self.selected == BUILTIN_CLASSIC,
+            dev_source: None,
         }];
         for (id, win) in self.winners() {
             out.push(Entry {
@@ -682,9 +734,10 @@ impl HudStore {
                 sha: Some(win.record.sha),
                 source: Some(win.record.source),
                 trust: win.record.source.trust(),
-                loadable: win.loaded.loadable,
+                loadable: if self.catalog.snapshot().revoked(win.record.sha).is_some() { Err(Unloadable::Revoked) } else { win.loaded.loadable },
                 until_restart: win.loaded.volatile,
                 selected: self.selected == id,
+                dev_source: win.record.from.clone(),
             });
         }
         out
@@ -753,7 +806,42 @@ impl HudStore {
     /// The one writer. The table is in the module doc; a pair it does not list answers
     /// [`Handled::No`] and changes nothing.
     pub fn step(&mut self, ev: HudEvent, fx: &mut Vec<HudEffect>) -> Handled {
+        let handled = self.reduce(ev, fx);
+        // The cache can land before the installed-pack listing: apply the same rule after either.
+        if self.winners().get(self.selected.as_str()).is_some_and(|w| self.catalog.snapshot().revoked(w.record.sha).is_some()) {
+            self.selected = BUILTIN_CLASSIC.into();
+            fx.push(HudEffect::Selection { id: self.selected.clone() });
+        }
+        handled
+    }
+
+    fn reduce(&mut self, ev: HudEvent, fx: &mut Vec<HudEffect>) -> Handled {
         match ev {
+            HudEvent::Catalog(event) => {
+                let mut work = Vec::new();
+                let handled = self.catalog.step(event, &mut work);
+                fx.extend(work.into_iter().map(HudEffect::Catalog));
+                if handled { Handled::Yes } else { Handled::No }
+            }
+            HudEvent::CancelRegistry { sha } => {
+                let cancels = match &self.op {
+                    Op::Installing(Installing { step: Step::Fetching { expected: Some(p), .. }, .. }) => p.sha() == sha,
+                    Op::Installing(Installing { step: Step::Validating(offer) | Step::Offered { offer, .. }, .. }) =>
+                        offer.source == Source::Registry && offer.sha == sha && offer.now.is_none(),
+                    _ => false,
+                };
+                if cancels { self.op = Op::Idle; Handled::Yes } else { Handled::No }
+            }
+            HudEvent::FetchRegistry { sha, app, language } => {
+                if self.busy() || self.catalog.snapshot().revoked(sha).is_some() { return Handled::No }
+                let Some(package) = self.catalog.snapshot().index.as_ref().and_then(|i| i.entries.iter().find(|p| p.sha() == sha))
+                    .filter(|p| p.compatible(&app, &language, self.setup.max_pack_bytes)).cloned() else { return Handled::No };
+                let Ok(address) = address::parse(&package.url) else { return Handled::No };
+                let tag = self.tag();
+                fx.push(HudEffect::FetchRegistry { tag, package: package.clone(), max_bytes: self.setup.max_pack_bytes });
+                self.op = Op::Installing(Installing { tag, step: Step::Fetching { address, expected: Some(package) } });
+                Handled::Yes
+            }
             HudEvent::Refresh { setup, selected } => {
                 // Always taken: it is how a store whose runner lost an answer recovers. Whatever it
                 // displaces wrote atomically and put the index last, so disk is consistent, and the
@@ -770,7 +858,7 @@ impl HudStore {
                 if bytes.len() > self.setup.max_pack_bytes {
                     fx.push(HudEffect::Notice(Notice::Refused { sha, reason: Refusal::TooLarge }));
                 } else {
-                    self.op = self.validate(Offer { sha, source, now: Some(now), from: None, bytes: bytes.into() }, fx);
+                    self.op = self.validate(Offer { sha, source, now: Some(now), from: None, bytes: bytes.into(), expected: None }, fx);
                 }
                 Handled::Yes
             }
@@ -780,11 +868,15 @@ impl HudStore {
                 }
                 let tag = self.tag();
                 fx.push(HudEffect::Fetch { tag, address: address.clone(), max_bytes: self.setup.max_pack_bytes });
-                self.op = Op::Installing(Installing { tag, step: Step::Fetching { address } });
+                self.op = Op::Installing(Installing { tag, step: Step::Fetching { address, expected: None } });
                 Handled::Yes
             }
             HudEvent::InstallOffer { sha, now } => match std::mem::replace(&mut self.op, Op::Idle) {
                 Op::Installing(Installing { step: Step::Offered { mut offer, meta }, .. }) if offer.sha == sha => {
+                    if self.catalog.snapshot().revoked(sha).is_some() {
+                        Self::notice(fx, Notice::Refused { sha, reason: Refusal::Unloadable(Unloadable::Revoked) });
+                        return Handled::Yes;
+                    }
                     offer.now = Some(now);
                     self.op = self.write_pack(offer, meta, 0, fx);
                     Handled::Yes
@@ -855,7 +947,7 @@ impl HudStore {
 
     fn select(&mut self, id: String, fx: &mut Vec<HudEffect>) -> Handled {
         let allowed = id == BUILTIN_CLASSIC
-            || self.winners().get(id.as_str()).is_some_and(|w| w.loaded.loadable.is_ok());
+            || self.winners().get(id.as_str()).is_some_and(|w| w.loaded.loadable.is_ok() && self.catalog.snapshot().revoked(w.record.sha).is_none());
         if !allowed {
             return Handled::No;
         }
@@ -872,7 +964,7 @@ impl HudStore {
         for dir in &self.dirs {
             for (id, record) in &dir.index {
                 let Some(loaded) = self.packs.get(&record.sha) else { continue };
-                if loaded.meta.id != *id {
+                if loaded.meta.id != *id || loaded.meta.package_format != record.package_format || loaded.meta.hud_format != record.hud_format {
                     continue;
                 }
                 let win = Winner { record, loaded };
@@ -889,6 +981,7 @@ impl HudStore {
 
     /// Whether `verdict` for `sha` may be installed now, and the package it describes.
     fn judge(&self, sha: Sha, verdict: &Verdict) -> Result<Meta, Refusal> {
+        if self.catalog.snapshot().revoked(sha).is_some() { return Err(Refusal::Unloadable(Unloadable::Revoked)) }
         let (meta, unloadable) = match verdict {
             Verdict::Invalid => return Err(Refusal::Invalid),
             Verdict::Loadable(meta) => (meta, None),
@@ -915,7 +1008,7 @@ impl HudStore {
     /// Whether an index of candidate `dir` names the pack, in a record this build reads or one it keeps.
     fn referenced(&self, dir: usize, sha: Sha) -> bool {
         self.dirs.get(dir).is_some_and(|d| {
-            d.index.values().any(|r| r.sha == sha) || d.kept.values().any(|raw| raw_sha(raw) == Some(sha))
+            d.index.values().any(|r| r.sha == sha)
         })
     }
 
@@ -1136,31 +1229,39 @@ impl HudStore {
         let op = match (step, ev) {
             (Step::Reading { sha, now }, HudEvent::Read { result, .. }) => match result {
                 Ok(bytes) if Sha::of(&bytes) == sha => {
-                    self.validate(Offer { sha, source: Source::Drop, now: Some(now), from: None, bytes: bytes.into() }, fx)
+                    self.validate(Offer { sha, source: Source::Drop, now: Some(now), from: None, bytes: bytes.into(), expected: None }, fx)
                 }
                 _ => {
                     Self::notice(fx, Notice::Refused { sha, reason: Refusal::Changed });
                     Op::Idle
                 }
             },
-            (Step::Fetching { address }, HudEvent::Fetched { result, .. }) => match result {
+            (Step::Fetching { address, expected }, HudEvent::Fetched { result, .. }) => match result {
                 Err(reason) => {
                     Self::notice(fx, Notice::FetchFailed { reason });
                     Op::Idle
                 }
                 Ok(bytes) => {
                     let sha = Sha::of(&bytes);
-                    if bytes.len() > self.setup.max_pack_bytes {
+                    if expected.as_ref().is_some_and(|p| p.sha() != sha || p.bytes != bytes.len()) {
+                        Self::notice(fx, Notice::Refused { sha, reason: Refusal::Changed });
+                        Op::Idle
+                    } else if bytes.len() > self.setup.max_pack_bytes {
                         Self::notice(fx, Notice::Refused { sha, reason: Refusal::TooLarge });
                         Op::Idle
                     } else {
-                        let offer = Offer { sha, source: Source::Address, now: None, from: Some(address), bytes: bytes.into() };
+                        let source = if expected.is_some() { Source::Registry } else { Source::Address };
+                        let offer = Offer { sha, source, now: None, from: Some(address), bytes: bytes.into(), expected };
                         self.validate(offer, fx)
                     }
                 }
             },
             (Step::Validating(offer), HudEvent::Validated { sha, verdict, .. }) if sha == offer.sha => {
-                match self.judge(offer.sha, &verdict) {
+                let checked = self.judge(offer.sha, &verdict).and_then(|meta| {
+                    if offer.expected.as_ref().is_some_and(|p| p.id != meta.id || p.name != meta.name || p.version != meta.version
+                        || p.package_format != meta.package_format || p.hud_format != meta.hud_format) { Err(Refusal::Changed) } else { Ok(meta) }
+                });
+                match checked {
                     Err(reason) => {
                         Self::notice(fx, Notice::Refused { sha: offer.sha, reason });
                         Op::Idle
@@ -1176,13 +1277,14 @@ impl HudStore {
                     // The pack is down: switch the candidate's index to it.
                     let mut index = self.dirs[dir].index.clone();
                     let replaced = index
-                        .insert(meta.id.clone(), Record::new(offer.sha, offer.source, offer.now.unwrap_or_default()))
+                        .insert(meta.id.clone(), Record::new(offer.sha, offer.source, offer.now.unwrap_or_default(), &meta.package_format, &meta.hud_format)
+                            .from_dev_source(offer.from.as_ref()))
                         .map(|old| old.sha);
                     let tag = self.tag();
                     fx.push(HudEffect::WriteFile {
                         tag,
                         at: self.loc(dir, INDEX_FILE.to_string()),
-                        bytes: index_bytes(&index, &self.dirs[dir].kept),
+                        bytes: index_bytes(&index),
                     });
                     Op::Installing(Installing {
                         tag,
@@ -1192,21 +1294,13 @@ impl HudStore {
                 (Write::Pack, WriteOutcome::Refused) => self.write_pack(offer, meta, dir + 1, fx),
                 (Write::Index { index, replaced }, WriteOutcome::Done) => {
                     self.dirs[dir].index = index;
-                    // A record of this id that only the kept entries held is replaced by the one just
-                    // written (`index_bytes` left it out): forget it, or a removal would write it back.
-                    let unreadable = self.dirs[dir].kept.remove(&meta.id);
                     let until_restart = self.volatile(dir);
                     self.packs
                         .insert(offer.sha, Loaded { meta: meta.clone(), loadable: Ok(()), volatile: until_restart });
-                    let mut old = Vec::new();
-                    for sha in replaced.into_iter().chain(unreadable.as_ref().and_then(raw_sha)) {
-                        if sha != offer.sha && !old.contains(&sha) && !self.referenced(dir, sha) {
-                            old.push(sha);
+                    if let Some(sha) = replaced {
+                        if sha != offer.sha && !self.referenced(dir, sha) {
                             fx.push(HudEffect::Delete { at: self.loc(dir, pack_rel(sha)) });
                         }
-                    }
-                    if unreadable.is_some() {
-                        Self::notice(fx, Notice::ReplacedUnreadable { id: meta.id.clone() });
                     }
                     Self::notice(
                         fx,
@@ -1249,12 +1343,12 @@ impl HudStore {
         if self.busy() || id == BUILTIN_CLASSIC {
             return Handled::No;
         }
-        let dirs: VecDeque<usize> = (0..self.dirs.len())
-            .filter(|d| self.dirs[*d].index.contains_key(&id) || self.dirs[*d].kept.contains_key(&id))
-            .collect();
-        if dirs.is_empty() {
+        if !self.dirs.iter().any(|dir| dir.index.contains_key(&id)) {
             return Handled::No;
         }
+        let dirs: VecDeque<usize> = (0..self.dirs.len())
+            .filter(|dir| self.dirs[*dir].access == Access::ReadOnly || self.dirs[*dir].index.contains_key(&id))
+            .collect();
         self.op = self.advance_removal(Removing { id, dirs, incomplete: false, flight: None }, fx);
         Handled::Yes
     }
@@ -1266,22 +1360,16 @@ impl HudStore {
                 removing.incomplete = true;
                 continue;
             }
-            // The record of the id in this candidate, whether this build reads it or only keeps it.
             let mut index = self.dirs[dir].index.clone();
-            let mut kept = self.dirs[dir].kept.clone();
-            let mut gone: Vec<Sha> = index.remove(&removing.id).map(|r| r.sha).into_iter().collect();
-            let unreadable = kept.remove(&removing.id);
-            gone.extend(unreadable.as_ref().and_then(raw_sha).filter(|sha| !gone.contains(sha)));
-            if gone.is_empty() && unreadable.is_none() {
-                continue;
-            }
+            let Some(record) = index.remove(&removing.id) else { continue };
+            let gone = vec![record.sha];
             let tag = self.tag();
             fx.push(HudEffect::WriteFile {
                 tag,
                 at: self.loc(dir, INDEX_FILE.to_string()),
-                bytes: index_bytes(&index, &kept),
+                bytes: index_bytes(&index),
             });
-            removing.flight = Some(Rewrite { tag, dir, index, kept, gone });
+            removing.flight = Some(Rewrite { tag, dir, index, gone });
             return Op::Removing(removing);
         }
         // Whatever no candidate lists any more is forgotten, and the selection follows the package.
@@ -1303,11 +1391,10 @@ impl HudStore {
     fn removing_result(&mut self, mut removing: Removing, ev: HudEvent, fx: &mut Vec<HudEffect>) -> (Op, Handled) {
         let HudEvent::Written { tag, outcome } = ev else { return (Op::Removing(removing), Handled::No) };
         match removing.flight.take() {
-            Some(Rewrite { tag: awaited, dir, index, kept, gone }) if awaited == tag => {
+            Some(Rewrite { tag: awaited, dir, index, gone }) if awaited == tag => {
                 match outcome {
                     WriteOutcome::Done => {
                         self.dirs[dir].index = index;
-                        self.dirs[dir].kept = kept;
                         for sha in gone.into_iter().filter(|sha| !self.referenced(dir, *sha)) {
                             fx.push(HudEffect::Delete { at: self.loc(dir, pack_rel(sha)) });
                         }
@@ -1347,83 +1434,104 @@ fn drop_name_ok(name: &str) -> bool {
 // ---------------------------------------------------------------------------------------------
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct IndexFile {
-    #[serde(default)]
     v: u64,
-    #[serde(default)]
-    packs: BTreeMap<String, Value>,
+    #[serde(deserialize_with = "index_records")]
+    packs: BTreeMap<String, IndexRecord>,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct IndexRecord {
     sha: String,
     source: Source,
     at: u64,
-    /// What a later build added to the entry; [`Record::extra`].
-    #[serde(flatten)]
-    extra: Map<String, Value>,
+    package_format: String,
+    hud_format: String,
+    /// Absent unless the package came from a development source (PR15), so an index without one is the
+    /// bytes it always was.
+    #[serde(default)]
+    from: Option<String>,
 }
 
-/// The sha an entry of `installed.json` names, read off the raw JSON: it works for a record this build
-/// cannot otherwise read (an unknown source) too, so the pack that record names is not deleted from
-/// under it.
-fn raw_sha(raw: &Value) -> Option<Sha> {
-    raw.get("sha").and_then(Value::as_str).and_then(Sha::parse)
+/// Require JSON objects at both struct boundaries. Serde's struct decoder also accepts sequences,
+/// which have no field names and are outside the installed-index contract.
+struct JsonObject<T>(T);
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for JsonObject<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Object<T>(std::marker::PhantomData<T>);
+        impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for Object<T> {
+            type Value = T;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a JSON object")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<T, A::Error> {
+                T::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+            }
+        }
+        deserializer.deserialize_map(Object(std::marker::PhantomData)).map(Self)
+    }
 }
 
-/// The entries of an `installed.json`, leniently. One bad record (an unknown source, a sha that is not
-/// 64 lowercase hex digits, a missing field) costs only itself: it is not listed, and it is kept to be
-/// written back unchanged. A record that parses keeps any field beyond `sha`, `source` and `at`
-/// ([`Record::extra`]). A claim on `builtin:classic` is dropped outright. A file that is not JSON,
-/// or that a newer layout wrote (`v` above [`INDEX_FORMAT`]), lists what parses and is read-only.
+/// Serde's derived structs reject repeated fields. The id-keyed map needs the same rule.
+fn index_records<'de, D>(deserializer: D) -> Result<BTreeMap<String, IndexRecord>, D::Error>
+where D: serde::Deserializer<'de> {
+    struct Records;
+    impl<'de> serde::de::Visitor<'de> for Records {
+        type Value = BTreeMap<String, IndexRecord>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("an object with unique HUD ids")
+        }
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where A: serde::de::MapAccess<'de> {
+            let mut records = BTreeMap::new();
+            while let Some((id, JsonObject(record))) = map.next_entry::<String, JsonObject<IndexRecord>>()? {
+                if records.insert(id, record).is_some() {
+                    return Err(serde::de::Error::custom("duplicate HUD id"));
+                }
+            }
+            Ok(records)
+        }
+    }
+    deserializer.deserialize_map(Records)
+}
+
+/// An invalid or unsupported index is read-only in its entirety. Its evidence and every possible
+/// referenced blob stay on disk. A current record binds the archive digest and both format axes.
 fn parse_index(bytes: &[u8]) -> Dir {
-    // An object, not just anything serde would fill a struct from (an empty array reads as all defaults).
-    let file = serde_json::from_slice::<Value>(bytes)
-        .ok()
-        .filter(Value::is_object)
-        .and_then(|doc| serde_json::from_value::<IndexFile>(doc).ok());
-    let Some(file) = file else { return Dir { access: Access::ReadOnly, ..Dir::default() } };
-    let mut dir = Dir { access: if file.v > INDEX_FORMAT { Access::ReadOnly } else { Access::Writable }, ..Dir::default() };
-    for (id, value) in file.packs {
-        if id == BUILTIN_CLASSIC {
-            continue;
+    let readonly = || Dir { access: Access::ReadOnly, ..Dir::default() };
+    let Ok(JsonObject(file)) = serde_json::from_slice::<JsonObject<IndexFile>>(bytes) else { return readonly() };
+    if file.v != INDEX_FORMAT { return readonly(); }
+    let mut index = Index::new();
+    for (id, record) in file.packs {
+        if id == BUILTIN_CLASSIC || !valid_package_id(&id) || record.package_format != "1.0" || record.hud_format != "1.0" {
+            return readonly();
         }
-        let record = serde_json::from_value::<IndexRecord>(value.clone())
-            .ok()
-            .and_then(|r| Some(Record { extra: r.extra, ..Record::new(Sha::parse(&r.sha)?, r.source, r.at) }));
-        match (record, value) {
-            (Some(record), _) => {
-                dir.index.insert(id, record);
-            }
-            (None, Value::Object(raw)) => {
-                dir.kept.insert(id, Value::Object(raw));
-            }
-            (None, _) => {}
-        }
+        let Some(sha) = Sha::parse(&record.sha) else { return readonly() };
+        // Fail closed: an address that does not parse as a development one, or that sits on a record another
+        // source wrote, is no address (the package is still listed and the index still writable).
+        let from = record.from.as_deref().and_then(|text| address::parse(text).ok());
+        index.insert(id, Record::new(sha, record.source, record.at, &record.package_format, &record.hud_format)
+            .from_dev_source(from.as_ref()));
     }
-    dir
+    Dir { index, access: Access::Writable }
 }
 
-/// An `installed.json` holding `index` and, unchanged, the `kept` entries no record of `index`
-/// replaces; keys in order so the bytes are the same for the same state.
-fn index_bytes(index: &Index, kept: &Map<String, Value>) -> Arc<[u8]> {
+/// Deterministic current-contract index bytes, published only after its archive is durable.
+fn index_bytes(index: &Index) -> Arc<[u8]> {
     let mut packs = Map::new();
-    for (id, raw) in kept {
-        if !index.contains_key(id) {
-            packs.insert(id.clone(), raw.clone());
-        }
-    }
     for (id, record) in index {
-        let mut entry = record.extra.clone();
-        entry.insert("sha".to_string(), Value::String(record.sha.hex()));
-        entry.insert("source".to_string(), Value::String(record.source.as_str().to_string()));
-        entry.insert("at".to_string(), Value::from(record.at));
-        packs.insert(id.clone(), Value::Object(entry));
+        let mut entry = serde_json::json!({
+            "sha": record.sha.hex(), "source": record.source.as_str(), "at": record.at,
+            "package_format": record.package_format, "hud_format": record.hud_format
+        });
+        if let (Some(from), Some(object)) = (&record.from, entry.as_object_mut()) {
+            object.insert("from".to_owned(), from.url().into());
+        }
+        packs.insert(id.clone(), entry);
     }
-    let mut doc = Map::new();
-    doc.insert("v".to_string(), Value::from(INDEX_FORMAT));
-    doc.insert("packs".to_string(), Value::Object(packs));
-    Value::Object(doc).to_string().into_bytes().into()
+    serde_json::json!({"v": INDEX_FORMAT, "packs": packs}).to_string().into_bytes().into()
 }
 
 #[cfg(test)]

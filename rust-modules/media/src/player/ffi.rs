@@ -67,6 +67,18 @@ mod sys {
         pub(super) fn vp_destroy_window();
 
         pub(super) fn acb_create(app_id: *const c_char, player_type: c_int) -> c_long;
+        #[cfg(feature = "devtriggers")]
+        pub(super) fn acb_probe_initialized() -> c_int;
+        #[cfg(feature = "devtriggers")]
+        pub(super) fn acb_probe_dass_available() -> c_int;
+        #[cfg(feature = "devtriggers")]
+        pub(super) fn acb_probe_media_id(media_id: *const c_char) -> c_int;
+        #[cfg(feature = "devtriggers")]
+        pub(super) fn acb_probe_loaded() -> c_int;
+        #[cfg(feature = "devtriggers")]
+        pub(super) fn acb_probe_connect_dass() -> c_int;
+        #[cfg(feature = "devtriggers")]
+        pub(super) fn acb_probe_finish() -> c_int;
         pub(super) fn acb_bind(media_id: *const c_char);
         pub(super) fn acb_send_video_data(source_info: *const c_char) -> c_int;
         pub(super) fn acb_send_atmos(media_id: *const c_char) -> c_int;
@@ -229,6 +241,18 @@ impl plx_platform::tv::sink::VideoSink for StarfishSink {
         sys::acb_create(app_id, player_type)
     }
     #[inline]
+    #[cfg(feature = "devtriggers")]
+    unsafe fn plane_probe_initialized(&self, _: &MainThread) -> bool { sys::acb_probe_initialized() != 0 }
+    #[cfg(feature = "devtriggers")]
+    unsafe fn plane_probe_dass_available(&self, _: &MainThread) -> bool { sys::acb_probe_dass_available() != 0 }
+    #[cfg(feature = "devtriggers")]
+    unsafe fn plane_probe_media_id(&self, _: &MainThread, media_id: *const c_char) -> c_int { sys::acb_probe_media_id(media_id) }
+    #[cfg(feature = "devtriggers")]
+    unsafe fn plane_probe_loaded(&self, _: &MainThread) -> c_int { sys::acb_probe_loaded() }
+    #[cfg(feature = "devtriggers")]
+    unsafe fn plane_probe_connect_dass(&self, _: &MainThread) -> c_int { sys::acb_probe_connect_dass() }
+    #[cfg(feature = "devtriggers")]
+    unsafe fn plane_probe_finish(&self, _: &MainThread) -> c_int { sys::acb_probe_finish() }
     unsafe fn plane_bind(&self, _: &MainThread, media_id: *const c_char) {
         sys::acb_bind(media_id)
     }

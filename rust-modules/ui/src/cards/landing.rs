@@ -177,6 +177,8 @@ impl Anim {
 
 pub(crate) struct Landing {
     on: bool,
+    /// Runtime enabling adopts the rows already on screen before observing future changes.
+    adopt_next: bool,
     /// The cards (element keys) the section last adopted.
     keys: Vec<u64>,
     /// Whether any of them had content (a section of placeholders has nothing to animate from).
@@ -203,10 +205,13 @@ pub(crate) struct Landing {
 
 impl Landing {
     pub(crate) const fn new() -> Self {
-        Self { on: false, keys: Vec::new(), loaded: false, window: (0, 0), revision: None, shift: (0.0, 0.0), anim: None, paused: false, fresh: false, stepped: false, hold_first: false }
+        Self { on: false, adopt_next: false, keys: Vec::new(), loaded: false, window: (0, 0), revision: None, shift: (0.0, 0.0), anim: None, paused: false, fresh: false, stepped: false, hold_first: false }
     }
 
     pub(crate) const fn set_enabled(&mut self, on: bool) {
+        if on && !self.on && self.anim.is_none() {
+            self.adopt_next = true;
+        }
         self.on = on;
     }
 
@@ -217,6 +222,7 @@ impl Landing {
 
     /// Take the cards as they are, with nothing to play (a first load, a dormant section, a slid window).
     fn adopt<H: Host, S: CardSource<H>>(&mut self, src: &S) {
+        self.adopt_next = false;
         let n = src.len();
         self.keys.clear();
         self.keys.extend((0..n).map(|i| key(&src.elem(i))));
@@ -324,6 +330,10 @@ impl Landing {
     /// change plays; whether it started one.
     pub(crate) fn observe<H: Host, S: CardSource<H>>(&mut self, src: &S, scene: &Scene<'_>) -> bool {
         if !self.on {
+            return false;
+        }
+        if self.adopt_next {
+            self.adopt(src);
             return false;
         }
         let n = src.len();

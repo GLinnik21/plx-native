@@ -375,6 +375,12 @@ pub enum Art<'a> {
 }
 
 impl Art<'_> {
+    /// A credential-free PNG whose filename is its SHA-256. Resolved by the shared image cache,
+    /// never through a media server; the source verifies both network responses and disk hits.
+    pub fn content_png(url: &str) -> Art<'_> {
+        Art::Thumb { sid: crate::tex::CONTENT_SOURCE, key: url, res: (1920, 1080) }
+    }
+
     fn motion_identity(&self) -> Option<crate::card_motion::Identity> {
         use std::hash::{Hash, Hasher};
         let (owner, sid, key, kind) = match self {
@@ -387,6 +393,153 @@ impl Art<'_> {
         let mut hash = std::collections::hash_map::DefaultHasher::new();
         (sid, key, kind).hash(&mut hash);
         Some(crate::card_motion::Identity { owner, asset: hash.finish() })
+    }
+}
+
+/// A display-only cycle of equivalent, content-addressed PNGs. The owner supplies the frames
+/// and Tick time; image requests still use the shared card source. Holds are quiet, hidden
+/// owners pause, and a slow next image never replaces the current picture with a skeleton.
+#[derive(Default)]
+pub struct ArtCycle {
+    frames: Vec<String>,
+    current: usize,
+    clock: plx_machine::motion::Ramp,
+    mix: f32,
+    fading: bool,
+    ready: std::cell::Cell<bool>,
+}
+
+impl ArtCycle {
+    const HOLD_MS: u32 = 6000;
+    const FADE_MS: u32 = 1200;
+
+    pub fn set_frames(&mut self, frames: &[&str]) {
+        let mut unique = Vec::new();
+        for frame in frames {
+            if !unique.contains(frame) { unique.push(*frame); }
+        }
+        if self.frames.iter().map(String::as_str).eq(unique.iter().copied()) { return; }
+        self.frames = unique.into_iter().map(str::to_owned).collect();
+        self.current = 0;
+        self.clock = plx_machine::motion::Ramp::default();
+        self.mix = 0.0;
+        self.fading = false;
+        self.ready.set(false);
+        plx_machine::idle::invalidate();
+    }
+
+    pub fn is_empty(&self) -> bool { self.frames.is_empty() }
+
+    /// Pause at the lifecycle event itself; no ticks are required while suspended.
+    pub fn pause(&mut self, t: plx_machine::machine::Tick) { self.clock.pause(t); }
+
+    pub fn tick(&mut self, t: plx_machine::machine::Tick, active: bool,
+        present: &mut plx_machine::machine::PresentHandle<'_>) {
+        if !active || self.frames.len() < 2 || !self.ready.get() {
+            self.clock.pause(t);
+            return;
+        }
+        self.clock.resume(t);
+        if self.clock.len_ms == 0 { self.clock.start(t, Self::HOLD_MS); }
+        if !self.fading {
+            if self.clock.sample(t) < 1.0 { return; }
+            self.fading = true;
+            self.clock.start(t, Self::FADE_MS);
+        }
+        self.mix = self.clock.advance(t, present);
+        if self.mix >= 1.0 {
+            self.current = (self.current + 1) % self.frames.len();
+            self.clock = plx_machine::motion::Ramp::default();
+            self.mix = 0.0;
+            self.fading = false;
+            self.ready.set(false);
+            present.note(plx_machine::present::PresentEvent::Motion);
+        }
+    }
+
+    pub fn draw(&self, p: Painter, r: Rect, radius: f32) {
+        let Some(url) = self.frames.get(self.current) else { return };
+        let art = Art::content_png(url);
+        if p.is_recording() {
+            card(p, r, art, radius, false, 1.0, 0.0);
+            return;
+        }
+        let image = resolve_card_art(p, r, &art);
+        let next_url = &self.frames[(self.current + 1) % self.frames.len()];
+        let next_art = Art::content_png(next_url);
+        let next = if self.frames.len() > 1 { resolve_card_art(p, r, &next_art) } else { image };
+        let ready = image.tex != 0 && next.tex != 0 && image.w == next.w && image.h == next.h;
+        self.ready.set(ready);
+        if self.fading && ready && p.tex_carded_blend(image.tex, next.tex,
+            crate::xfade::smooth(self.mix), art_uv(&art, image.w, image.h, r), r, radius) { return; }
+        card_named_led(p, r, art, None, radius, false, 1.0, 0.0, Some(image));
+    }
+}
+
+#[cfg(test)]
+mod art_cycle_tests {
+    use super::ArtCycle;
+    use plx_machine::machine::{PresentHandle, Tick};
+    use plx_machine::present::Present;
+
+    fn tick(ms: u32) -> Tick { Tick { ms, dt_us: 16_000 } }
+
+    #[test]
+    fn equivalent_frames_cycle_without_changing_the_owners_scene() {
+        let _g = plx_base::testlock::serial();
+        let mut cycle = ArtCycle::default();
+        let mut present = Present::new();
+        cycle.set_frames(&["coast", "painted", "city"]);
+        cycle.ready.set(true);
+        let _ = present.take(0);
+        cycle.tick(tick(16), true, &mut PresentHandle(&mut present));
+        cycle.tick(tick(5000), true, &mut PresentHandle(&mut present));
+        assert_eq!(cycle.current, 0);
+        assert!(!cycle.fading);
+        assert!(!present.take(0), "the hold must not redraw at 60 FPS");
+        cycle.tick(tick(6000), true, &mut PresentHandle(&mut present));
+        assert!(cycle.fading);
+        assert!(present.take(0), "the first fade frame must wake the idle gate");
+        for frame in 1..60 {
+            cycle.tick(tick(6000 + frame * 16), true, &mut PresentHandle(&mut present));
+            assert!(present.take(0), "every overlapping frame must be presented");
+        }
+        cycle.tick(tick(7300), true, &mut PresentHandle(&mut present));
+        assert_eq!(cycle.current, 1);
+        assert!(!cycle.fading);
+        assert!(present.take(0), "the final frame must be presented too");
+        cycle.ready.set(true);
+        cycle.tick(tick(7316), true, &mut PresentHandle(&mut present));
+        assert!(!present.take(0));
+    }
+
+    #[test]
+    fn slow_images_hidden_owners_and_single_frames_never_animate() {
+        let _g = plx_base::testlock::serial();
+        let mut cycle = ArtCycle::default();
+        let mut present = Present::new();
+        cycle.set_frames(&["one", "two"]);
+        let _ = present.take(0);
+        cycle.tick(tick(1000), true, &mut PresentHandle(&mut present));
+        assert_eq!(cycle.clock.len_ms, 0);
+        assert!(!present.take(0));
+        cycle.ready.set(true);
+        cycle.tick(tick(1016), true, &mut PresentHandle(&mut present));
+        cycle.pause(tick(1100));
+        cycle.tick(tick(20000), false, &mut PresentHandle(&mut present));
+        cycle.tick(tick(21000), true, &mut PresentHandle(&mut present));
+        assert!(!cycle.fading, "suspension must not consume the hold");
+        assert!(!present.take(0));
+        cycle.set_frames(&["one", "one"]);
+        let _ = present.take(0);
+        cycle.ready.set(true);
+        cycle.tick(tick(100000), true, &mut PresentHandle(&mut present));
+        assert_eq!(cycle.frames.len(), 1);
+        assert!(!present.take(0));
+        cycle.set_frames(&["two", "three"]);
+        assert_eq!(cycle.current, 0);
+        assert_eq!(cycle.clock.len_ms, 0);
+        assert!(!cycle.ready.get(), "a new pack cannot inherit readiness");
     }
 }
 
@@ -1519,8 +1672,8 @@ const KEYLINE_PAD_X: f32 = 7.0;
 const KEYLINE_PAD_Y: f32 = 6.0;
 const KEYLINE_RAD: f32 = 5.0;
 const KEYLINE_W: f32 = 1.5;
-/// The chip's label weight — the mock's `font-weight:600`. See [`keyline_chip`] for why it is bold.
-const KEYLINE_BOLD: std::os::raw::c_int = 1;
+/// Fine-print keylines use regular CAPTION, matching the hero identity and episode date family.
+const KEYLINE_BOLD: std::os::raw::c_int = 0;
 
 /// The width [`keyline_chip`] will occupy for `text` — the measure-first companion.
 pub fn keyline_chip_w(text: &str, measure: &dyn plx_machine::machine::Measure) -> f32 {
@@ -1545,9 +1698,8 @@ pub fn keyline_chip_w(text: &str, measure: &dyn plx_machine::machine::Measure) -
 /// ink is what makes a 1.5px ring exist at all here, and it is what shipped before this was
 /// briefly "corrected" to the mock's literal value.
 ///
-/// The label is BOLD for the same reason the mock sets `font-weight:600` on it: two or three caps
-/// at `CAPTION` inside a ring have to hold their own against it, and regular weight is what made
-/// this chip read as an empty frame in the first device photograph of the identity line.
+/// Regular CAPTION keeps the outlined label at the identity line's weight. The ring retains
+/// opaque ink so its thin SDF edge survives television rasterization.
 pub fn keyline_chip(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4], measure: &dyn plx_machine::machine::Measure) -> f32 {
     let lc = match std::ffi::CString::new(text) {
         Ok(c) => c,
@@ -1571,6 +1723,92 @@ pub fn keyline_chip(p: Painter, x: f32, cy: f32, text: &str, col: [f32; 4], meas
         KEYLINE_BOLD,
     );
     w
+}
+
+/// The identity band shared by both full-bleed heroes. The text run yields room to the
+/// outlined resolution/accessibility chips, and overlong metadata elides within its column.
+pub fn hero_identity(p: Painter, r: Rect, parts: &[&str], resolution: Option<&str>, chips: &[&str], measure: &dyn plx_machine::machine::Measure) -> f32 {
+    use crate::hstack::{Flow, Item};
+    let labels: Vec<&str> = resolution.into_iter().chain(chips.iter().copied()).collect();
+    let widths: Vec<Item> = labels.iter().map(|s| Item::new(keyline_chip_w(s, measure))).collect();
+    let chip_w = HStack::new(&widths, theme::space::XS, StackAlign::Leading(0.0)).width();
+    let budget = (r.w - chip_w - if labels.is_empty() { 0.0 } else { theme::space::SM }).max(0.0);
+    let cy = r.y + r.h * 0.5;
+    let y = plx_gfx::text::text_vcenter_y(theme::hero::IDENTITY_SIZE, 0, cy);
+    let run = DottedRun::new(theme::hero::IDENTITY_SIZE, theme::TEXT_SECONDARY, theme::space::SM).measured(measure);
+    let natural = run.width(measure, parts);
+    let text_w = if natural > budget {
+        let joined = parts.iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" \u{b7} ");
+        let elided = plx_gfx::text::elide_by(&joined, budget, false,
+            |text| measure.width_str(text, theme::hero::IDENTITY_SIZE, false));
+        if let Ok(text) = CString::new(elided.as_str()) {
+            p.text(text.as_ptr(), r.x, y, theme::hero::IDENTITY_SIZE, theme::TEXT_SECONDARY, 0, 0);
+        }
+        measure.width_str(&elided, theme::hero::IDENTITY_SIZE, false)
+    } else { run.draw(p, parts, r.x, y) };
+    let mut flow = Flow::new(r.x, theme::space::XS);
+    flow.push(if text_w > 0.0 { Item::new(text_w).after(theme::space::SM) } else { Item::absent() });
+    for label in labels {
+        flow.place(|x| Item::new(keyline_chip(p, x, cy, label, theme::TEXT_SECONDARY, measure)));
+    }
+    flow.end() - r.x
+}
+
+#[cfg(test)]
+#[test]
+fn pdf_proposal_identity_uses_regular_caption_for_fitting_and_elided_metadata() {
+    let measure = crate::fixture::FixtureMeasure;
+    for (width, parts) in [(943.0, vec!["Movie", "Drama", "PG"]),
+        (260.0, vec!["An exceptionally long edition name that must be elided", "Movie", "Drama", "PG"])] {
+        let runs = crate::draw_census::capture_runs(|| {
+            hero_identity(Painter::recording(), Rect::new(96.0, 582.0, width, BADGE_H),
+                &parts, Some("4K"), &["CC"], &measure);
+        });
+        assert!(!runs.is_empty());
+        for run in runs {
+            assert_eq!(run.size, theme::size::CAPTION, "PDF identity is 24 px, including {:?}", run.text);
+            assert!(!run.bold, "PDF metadata and chips use regular weight");
+        }
+    }
+}
+
+/// The year/episode date and length/remaining-time band, with source attribution last.
+/// Resuming time is primary ink; the surrounding facts remain secondary. Every run is bounded.
+pub fn hero_facts(p: Painter, r: Rect, date: &str, length: &str, resumes: bool, source: &str, measure: &dyn plx_machine::machine::Measure) {
+    use crate::hstack::{Flow, Item};
+    let cy = r.y + r.h * 0.5;
+    let y = plx_gfx::text::text_vcenter_y(theme::size::CAPTION, 0, cy);
+    let mut flow = Flow::new(r.x, theme::space::SM);
+    let mut any = false;
+    for (text, ink) in [(date, theme::TEXT_SECONDARY), (length, if resumes { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY }), (source, theme::TEXT_SECONDARY)] {
+        if text.is_empty() { continue; }
+        let prefix = if any { measure.width(c"\u{b7}", theme::size::CAPTION, false) + theme::space::SM } else { 0.0 };
+        let budget = (r.x + r.w - flow.next_x() - prefix).max(0.0);
+        if budget <= 0.0 { break; }
+        let text = plx_gfx::text::elide_by(text, budget, false, |s| measure.width_str(s, theme::size::CAPTION, false));
+        let run = DottedRun::new(theme::size::CAPTION, ink, theme::space::SM).measured(measure);
+        let run = if any { run.lead_dot() } else { run };
+        flow.place(|x| Item::new(run.draw(p, &[text.as_str()], x, y)));
+        any = true;
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn pdf_proposal_facts_keep_air_on_both_sides_of_each_dot() {
+    let m = crate::fixture::FixtureMeasure;
+    let runs = crate::draw_census::capture_runs(|| hero_facts(Painter::recording(),
+        Rect::new(96.0, 668.0, theme::hero::TEXT_W, theme::hero::FACTS_H),
+        "2024", "38 min left", true, "Shared by friend", &m));
+    assert_eq!(runs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+        ["2024", "·", "38 min left", "·", "Shared by friend"]);
+    use plx_machine::machine::Measure;
+    for pair in runs.windows(2) {
+        let right = pair[0].at.x + m.width_str(&pair[0].text, theme::size::CAPTION, false);
+        assert!((pair[1].at.x - right - theme::space::SM).abs() < 0.01);
+    }
+    assert_eq!(runs[2].ink, theme::TEXT_PRIMARY);
+    assert_eq!(runs[4].ink, theme::TEXT_SECONDARY);
 }
 
 // ---- Key cap + key hint: a REMOTE BUTTON named in running prose --------------------------------
@@ -2381,45 +2619,34 @@ pub fn art_scrim(p: Painter, card: Rect, rad: f32, h: f32, a: f32) {
 /// (`MARGIN_X` + its `HERO_TEXT_W`) and its facts line to ~1270. A tighter falloff strands exactly
 /// the ends of the lines a long title or blurb produces. The last fifth of the frame is left
 /// completely alone: that is the side of the picture the composition is usually about.
-const HERO_SCRIM_W: f32 = 0.80 * crate::consts::SCR_W; // 1536
+const HERO_SCRIM_W: f32 = crate::consts::SCR_W; // covers the shared 943 px title column
 
 /// Where the wedge starts feathering in. Clears the tab track's own band ([`TOP_BAR_Y`] 62 +
 /// [`TAB_PILL_H`] 60 + [`TAB_TRACK_PAD`] 8 = 130) by 32px: the top chrome owns its legibility with
 /// its own dark capsule (`draw_tab_row`) and must not get a second treatment stacked under it.
 const HERO_SCRIM_TOP: f32 = 0.15 * crate::consts::SCR_H; // 162
-/// Where the wedge reaches full strength — and the seam between its two quads, named once so the
-/// pair is watertight by construction. It sits above every hero TEXT anchor, which is what lets
-/// [`hero_scrim_a`] be a function of x alone: both heroes baseline their title on the bottom of a
-/// `hero_logo::band_h` band (home's stack bottoms out at y≈528, detail's on `TITLE_BOTTOM` 566), so
-/// the highest cap top on either screen is ~479, and every line below it is lower still.
-///
-/// What DOES cross this line is a clearLogo, which is art: the band is a layout floor and a squarer
-/// mark spills upward out of it as paint, to y=298 on detail and y=260 on home. Up there the wedge
-/// is still feathering in (~0.27 of its peak at y=260) rather than absent, which is the reason nit
-/// 2's taller logos were sequenced AFTER this component; the clearance that binds them is the top
-/// chrome's ([`TOP_BAR_BOTTOM`]), asserted in `home.rs`, not this knee.
-const HERO_SCRIM_KNEE: f32 = 0.39 * crate::consts::SCR_H; // 421.2
+/// Full strength begins above the highest two-line fallback in Home's three-line synopsis case.
+/// A clearLogo can paint higher as art; the feather stays clear of the top navigation.
+const HERO_SCRIM_KNEE: f32 = 0.32 * crate::consts::SCR_H;
 
 /// The mirrored RIGHT wedge — for a hero with a right-aligned column, which today means detail's
 /// "Starring" block at x 1270..1830, the one piece of hero copy the left wedge by definition cannot
-/// reach. Weaker and shorter than the left one because the bottom-up ramp is already ~0.65 across
-/// that band: this closes the gap, it does not carry the load. It is also the component's banding
+/// reach. Shorter than the left one, feathered across both axes; its corner weight preserves
+/// contrast at the top of a wrapped credits block under the shared atmospheric ramp. It is also the component's banding
 /// risk (`GL_DITHER` is deliberately off) — ~1 8-bit code per 4–5px near its origin. If it bands,
 /// make these SMALLER (steeper = fewer codes per pixel); never re-enable dithering.
 const HERO_SCRIM_R_W: f32 = 700.0;
-const HERO_SCRIM_R_TOP: f32 = 0.65 * crate::consts::SCR_H; // 702
-const HERO_SCRIM_R_A: f32 = 0.50;
+const HERO_SCRIM_R_TOP: f32 = 0.28 * crate::consts::SCR_H; // four-line credits above actions
+const HERO_SCRIM_R_A: f32 = theme::hero::SCRIM_RIGHT_A;
 
 /// Where the frame-wide ATMOSPHERIC ramp starts — the treatment's other half, which both heroes
 /// paint under this wedge (`screens::home`'s `Backdrop::draw` / `detail::draw_backdrop`): nothing above this
 /// line, running to the foot of the panel. It sits here with the wedge's own stops because it is
 /// one treatment's first stop, and it was declared verbatim, under the same name, in two screens.
 ///
-/// The two screens' CURVES below it are deliberately **not** unified — home's is a two-stop ramp
-/// with a midpoint knee, detail's a single linear stop, and they land within ~0.05 alpha of each
-/// other everywhere. Retuning the atmospheric floor is a different decision from sharing its
-/// origin, and only the panel can judge it; the curves stay as `ui::landing_hero::base_scrim_a` /
-/// `detail::base_scrim_a`, which is also what the legibility table below grades.
+/// Both screens share the three-stop curve in `landing_hero::base_scrim_ramp`: zero at this
+/// origin, .55 at 62% of the remaining height, .86 at the foot. Fused ground and layered
+/// drawing use those same stops; `detail_layout::base_scrim_a` delegates to the same curve.
 pub const HERO_BASE_SCRIM_Y0: f32 = 0.34 * crate::consts::SCR_H; // 367.2
 
 /// The hero wedge's alpha at `x`, at or below [`HERO_SCRIM_KNEE`] — which is where every hero text
@@ -2761,7 +2988,8 @@ pub(crate) fn chip_face(face: plx_gfx::gfx::GlassFace, e: f32) -> plx_gfx::gfx::
     }
 }
 
-/// **The focused chip's capsule, in the BAR's material** — the band's second glass surface.
+/// Standing glass shared by tab tracks, the profile chip and glass-backed circular controls.
+/// The profile chip uses its bar's material as the band's second glass surface.
 ///
 /// Returns whether it drew. `false` is the flat capsule's cue, and it is the answer in every case
 /// the track is also flat: `bar_material` (this frame's
@@ -2794,7 +3022,7 @@ pub(crate) fn chip_face(face: plx_gfx::gfx::GlassFace, e: f32) -> plx_gfx::gfx::
 /// is not representable here: [`lift_profile_chip`] draws no lift at all until the field has latched,
 /// because a flat capsule over the bar's own would darken the chip twice. The chip on the tab strip
 /// passes `None` and keeps the live glass.
-fn chip_capsule(
+fn glass_capsule(
     p: Painter,
     cap: Rect,
     e: f32,
@@ -2850,7 +3078,7 @@ fn chip_capsule(
 /// was far too quiet to read as focus against bright hero art — and the name is what the stop is
 /// actually *for*.
 ///
-/// **That capsule is the bar's MATERIAL, not a copy of its weights** ([`chip_capsule`]). The track
+/// **That capsule is the bar's MATERIAL, not a copy of its weights** ([`glass_capsule`]). The track
 /// became solved glass on 2026-08-19 and the chip went on wearing the flat stops it used to share
 /// with it, which is one band drawn in two materials — so it takes the face [`StripRender::draw`]
 /// published this frame ([`BarMaterial`]) and is glass exactly when the track is. Neither surface
@@ -2963,7 +3191,7 @@ fn profile_chip_on(
         let cap = chip_cap(e, name_w);
         // the tab track's own material — literally the same material: glass when the track
         // resolved glass this frame, the flat capsule when it did not.
-        if !chip_capsule(p, cap, 1.0, bar_material, frozen) {
+        if !glass_capsule(p, cap, 1.0, bar_material, frozen) {
             p.rect_sheened(
                 cap,
                 cap.h * 0.5,
@@ -3114,6 +3342,8 @@ pub struct CircleButton {
     pub ground: ControlGround,
     /// Local page palette. It is copied in by a Hero row and ignored on an unkeyed ground.
     pub palette: ControlPalette,
+    /// Optional standing glass, shared with the container this control belongs to.
+    pub glass: Option<plx_gfx::gfx::GlassFace>,
     /// The FOCUS POP, as a factor on the frame — see [`CircleButton::scale`].
     pub scale: f32,
     /// The unfurled label and how far open it is (0..1) — see [`DISC_LABEL_LEAD`]. `None` is a
@@ -3135,6 +3365,7 @@ impl CircleButton {
             style: ControlStyle::Accent,
             ground: ControlGround::Keyed,
             palette: ControlPalette::default(),
+            glass: None,
             scale: 1.0,
             label: None,
         }
@@ -3212,6 +3443,11 @@ impl CircleButton {
     /// Answer to a page-drawn ground with the palette it published for this control row.
     pub fn palette(mut self, palette: ControlPalette) -> Self {
         self.palette = palette;
+        self
+    }
+    /// Use the enclosing track's standing material. Focus keeps the shared bright control face.
+    pub fn glass(mut self, face: Option<plx_gfx::gfx::GlassFace>) -> Self {
+        self.glass = face;
         self
     }
     /// Give this disc the [UNFURL](DISC_LABEL_LEAD): `text` is the verb the press performs and `e`
@@ -3320,15 +3556,15 @@ impl View for CircleButton {
         if self.focused {
             control_cast_at(p, plate, plate.h * 0.5, self.focus.unwrap_or(1.0));
         }
-        control_rim(
-            p,
-            plate,
-            plate.h * 0.5,
-            face.top,
-            face.body,
-            self.focused,
-            self.ground,
-        );
+        let glass = self.ground == ControlGround::Keyed
+            && glass_capsule(p, plate, 1.0, self.glass, None);
+        if !glass {
+            control_rim(p, plate, plate.h * 0.5, face.top, face.body, self.focused, self.ground);
+        } else if self.focused {
+            let focus = self.focus.unwrap_or(1.0);
+            let bright = self.style.face_at(1.0, self.ground, self.palette);
+            control_rim(p.alpha(focus), plate, plate.h * 0.5, bright.top, bright.body, true, self.ground);
+        }
         // Resolve the unfurl from the FRAME, before anything is placed by it: `cap_label_w` answers
         // `None` for a frame that is not a capsule, and that verdict governs the GLYPH as well as
         // the word. Sliding the icon off the caller's raw `e` was a real defect — a control whose
@@ -3430,6 +3666,9 @@ impl PageDots {
         self.x = x;
         self.y = y;
         self
+    }
+    pub fn centered_y(self, x: f32, cy: f32) -> Self {
+        self.at(x, cy - Self::DOT * 0.5)
     }
     /// Place the row so it is CENTRED on `cx` — the billboard pager idiom, where the dots belong to
     /// the screen rather than to the control they sit under. Resolves to a left origin through
@@ -5926,6 +6165,14 @@ pub fn strip_span(lays: &[StripLay], i: usize, h: f32) -> Option<(f32, f32)> {
     })
 }
 
+/// The standing track around measured pills, with the top bar's own uniform inset.
+pub fn strip_track_rect(lays: &[StripLay], top: f32, h: f32) -> Option<Rect> {
+    let first = strip_pill_rect(lays.first()?, top, h);
+    let last = strip_pill_rect(lays.last()?, top, h);
+    Some(Rect::new(first.x - TAB_TRACK_PAD, top - TAB_TRACK_PAD,
+        last.x + last.w - first.x + 2.0 * TAB_TRACK_PAD, h + 2.0 * TAB_TRACK_PAD))
+}
+
 /// **Draw a whole strip — both capsules, then every on-screen pill — through ONE scroll offset.**
 ///
 /// This is the one draw path of the strips built from [`StripLay`] pills (the detail page's season
@@ -5957,10 +6204,12 @@ pub fn draw_strip(
         if !crate::on_axis(pill.x + p.dx(), pill.w, crate::consts::SCR_W, 0.0) {
             continue;
         }
-        // The idle ground is the pill's, laid down ONCE at the whole pill's focus coverage (it retires
-        // as the opaque capsule arrives); the label is inked region by region (`pill_ink`).
-        if let Some(fill) = TabPill::idle_fill_at(strip.mixes((pill.x, pill.w)).0) {
-            p.rrect(pill, pill.h * 0.5, pill.h * 0.5, fill);
+        // Standalone pills own an idle face; a tracked row already has its container ground.
+        // The label is inked region by region (`pill_ink`).
+        if !matches!(ground, TabGround::Tracked { .. }) {
+            if let Some(fill) = TabPill::idle_fill_at(strip.mixes((pill.x, pill.w)).0) {
+                p.rrect(pill, pill.h * 0.5, pill.h * 0.5, fill);
+            }
         }
         let ink = strip.pill_ink(pill, ground);
         paint_inked(p, &ink, |fm, sm| {
@@ -6065,7 +6314,7 @@ pub enum SelMark {
 /// press and transform handler it writes on `plated`.
 #[derive(Clone, Copy)]
 pub enum TabGround {
-    /// **The shared top tab bar**, inside its own track. The pills have no ground of their own and
+    /// **A shared tracked tab row** (the top bar or full-image preview), inside its own track. The pills have no ground of their own and
     /// nothing here scales: the capsule TRAVELLING under a row that encloses it is the whole focus
     /// mark, and a pill that also grew would be two answers to one question. `glass` is whether that
     /// track is drawn as the standing glass container this frame (it goes flat behind a panel and
@@ -6908,8 +7157,8 @@ impl TrackDensity {
     }
 }
 
-/// The tab track's persistent glass state. `GlassPlan` owns one; the strip borrows it only for
-/// update/prepare/draw, keeping the renderer and the frame scheduler on one state instance.
+/// A standing track's persistent glass state. The chrome's `GlassPlan` and the image preview
+/// each own their instance, sharing the same density solve, spring and material.
 pub struct TabBand {
     material: BarMaterial,
     density: TrackDensity,
@@ -6925,6 +7174,32 @@ impl TabBand {
 
     pub fn step(&mut self, dt: f32) {
         track_density_step(dt, &mut self.density);
+    }
+
+    /// Solve once for a container and publish its face for sibling controls. A caller that
+    /// chooses a flat track never requests a readback; unsettled pages retain their last sample.
+    pub fn prepare(&mut self, p: Painter, track: Rect, settled: bool, glass: bool) -> [f32; 3] {
+        let (r, g, b) = theme::CLEAR_RGB;
+        let flat = [r, g, b];
+        let ground = if glass {
+            let at = p.place(track);
+            plx_gfx::gfx::sample_ground([at.x, at.y, at.w, at.h], settled).unwrap_or(flat)
+        } else { flat };
+        self.material = if glass {
+            let (top, body) = tab_glass_stops(ground, &mut self.density);
+            let (rim, rim_lit) = track_rim(top[3]);
+            BarMaterial::Glass(plx_gfx::gfx::GlassFace {
+                scrim_top: top, scrim_bot: body, rim, rim_lit, rim_w: 1.0,
+            })
+        } else { BarMaterial::Flat };
+        ground
+    }
+
+    /// The shared standing capsule, including the same fallback when no blur source is available.
+    pub fn draw(&self, p: Painter, track: Rect) {
+        if !glass_capsule(p, track, 1.0, self.face(), None) {
+            p.rect_sheened(track, track.h * 0.5, theme::TAB_TRACK_TOP, theme::TAB_TRACK_BOT);
+        }
     }
 
     pub fn face(&self) -> Option<plx_gfx::gfx::GlassFace> {
@@ -7768,21 +8043,7 @@ impl StripRender {
         // screen wearing the bar, for as long as the app was open.
         let glass_on = tab_glass_on();
         let groundlog = ground_log_armed();
-        // …and FASTER while a polarity is being decided: the decision is gated on two independent
-        // readings, so the sampler's rate is the decision's rate, and every frame of it is spent
-        // showing the material the bar is about to stop being.
-        let (cr, cg, cb) = theme::CLEAR_RGB; // the app ground, as the token that names it
-        let flat_ground = [cr, cg, cb];
-        let ground = if glass_on {
-            // The rect the glass below is DRAWN at: the painter's placement (a lifted or zoomed
-            // chrome band) is part of it, and the band the ground is read from is found by that
-            // rect (`gfx::sample_ground`), so the unplaced `track` would match no band.
-            let at = p.place(track);
-            plx_gfx::gfx::sample_ground([at.x, at.y, at.w, at.h], settled)
-                .unwrap_or(flat_ground)
-        } else {
-            flat_ground
-        };
+        let ground = band.prepare(p, track, settled, glass_on);
         // `/tmp/plxnative-groundlog` — the density is now a FUNCTION of something invisible, so the
         // instrument that says what it read and what it chose is not optional. It is how the first
         // version of this was caught reading Plex's `UltraBlurColors`, which gave (0.30,0.23,0.18)
@@ -7820,89 +8081,7 @@ impl StripRender {
             }
             LAST.store(n.wrapping_add(1), Relaxed);
         }
-        if glass_on {
-            // The track never moves, so its drawn rect IS its rest rect — no slide to correct for.
-            // Hoisted out of the call, because it is now the BAND's face and not just this
-            // surface's: [`profile_chip_with`] draws the other half of it from this same `bar_material`
-            // field, at the same stops and the same rim weight, off this one solve. See [`BarMaterial`].
-            let face = {
-                let (gt, gb) = tab_glass_stops(ground, &mut band.density);
-                let (rim, rim_lit) = track_rim(gt[3]);
-                plx_gfx::gfx::GlassFace {
-                    scrim_top: gt,
-                    scrim_bot: gb,
-                    rim,
-                    rim_lit,
-                    rim_w: 1.0,
-                }
-            };
-            // Material choice is independent of capture success. Both members must visit the
-            // same live-source slots even when the renderer falls back for this band.
-            band.material = BarMaterial::Glass(face);
-            if Glass::DYNAMIC_BACKDROP.backdrop(
-                p,
-                track,
-                0.0,
-                track.h * 0.5,
-                [1.0, 1.0, 1.0, 1.0],
-                // The line and the hairline, no ramp — the design system's rule for this container,
-                // and the one the panel treatment gets wrong here: 76px tall has 20px of interior
-                // left once a 28px chamfer has run in from both edges, so the "rim" stops being an
-                // edge and becomes most of the object.
-                plx_gfx::gfx::GlassRim::Standing,
-                face,
-                // The bar is UltraThin by construction: it takes no extra sample, so the page comes
-                // through as sharp as the chain left it. Its FROST is not read from the scale at all
-                // — `tab_glass_stops` above solves it against the ground every frame.
-                theme::Material::UltraThin,
-            ) {
-                // NOTHING IS DRAWN HERE ANY MORE, and that is the fix. The darkening and the edge —
-                // `inset 0 0 0 1px var(--glass-rim), inset 0 1px 0 var(--glass-rim-light)`, the whole
-                // of what the design system puts on this container — used to be a SECOND rounded rect
-                // over the backdrop, and two surfaces of one shape means two antialiased edges, each
-                // blending its own colour against the page. They ride inside the surface now, as its
-                // `GlassFace`; `fs_glass.frag` composites scrim then rim then coverage, in that order.
-                //
-                // The two weights are still one ring: `theme::GLASS_RIM` .14 the whole way round plus
-                // the difference up to `theme::GLASS_RIM_LIGHT` .28 on the edge facing the light,
-                // boosted by the surface NORMAL so it dies out along each cap's arc. It was a second
-                // ring scissored to the top half for one build, and the scissor lands exactly on the
-                // widest point of a cap — a hard step from .28 to .14 in the middle of a curve, which
-                // reads as the outline snapping off. Reported from a screenshot before it was measured.
-                //
-                // And the weight TRAVELS with the ground (`track_rim`), because a lit edge is a
-                // relationship and not a colour — `theme::GLASS_RIM_MAX` carries that measurement.
-                // The ring is white in both weights: it was a PAIR while the track had two
-                // polarities, an ink line for the light one and a light line for the dark, and the
-                // ink half went with the polarity.
-            } else {
-                // …and the same here: the chain refused, so the flat dark material is what draws —
-                // said to the spring, not to the value the spring publishes. See the note below.
-                p.rect_sheened(
-                    track,
-                    track.h * 0.5,
-                    theme::TAB_TRACK_TOP,
-                    theme::TAB_TRACK_BOT,
-                );
-            }
-        } else {
-            // Only the `flattabs` experiment lands here: `tab_glass_on` is `!flat_tabs_armed()` and
-            // nothing else. It does NOT go false during a blur source pass (nor with a popover up):
-            // the glass arm above runs and the glass call answers the pass itself
-            // (`gfx::draw_blur_backdrop`, `backdrop::surface_with`), and a chain that refuses is
-            // that arm's own flat `else`.
-            // The flat capsule, which is the same material at its ceiling — there is nothing for
-            // this path to say about ink any more. It once wrote the row's POLARITY here, and that
-            // was a reported bug twice over: the write clobbered a value the spring owned, so the
-            // next frame cut it back, and the hysteresis read the same clobbered value and walked
-            // the committed polarity across with it. Both are gone with the polarity itself.
-            p.rect_sheened(
-                track,
-                track.h * 0.5,
-                theme::TAB_TRACK_TOP,
-                theme::TAB_TRACK_BOT,
-            );
-        }
+        band.draw(p, track);
         // A strip wider than its track is a bounded panel, not a scrolling document, so this is the
         // scissor case (see the ui/CLAUDE.md clipping rule): a pill leaving the row is cut at the
         // pill area's edge — which is also the "there is more over there" affordance. Paired below.
@@ -9211,7 +9390,7 @@ fn rating_walk<'a>(
     use crate::hstack::{Flow, Item};
     let mut flow = Flow::new(x, 0.0);
     let item = |w: f32, after: f32| Item::new(w).after(after);
-    if let Some(span) = flow.push(item(measure.width_str(caption, theme::size::MICRO, true), RATING_CAPTION_GAP)) {
+    if let Some(span) = flow.push(item(measure.width_str(caption, theme::size::MICRO, false), RATING_CAPTION_GAP)) {
         each(RatingPart::Caption, span);
     }
     for (i, cell) in cells.iter().enumerate() {
@@ -9221,10 +9400,10 @@ fn rating_walk<'a>(
                 each(RatingPart::Mark(cell.mark), span);
             }
         }
-        if let Some(span) = flow.push(item(measure.width_str(cell.value, theme::size::LABEL, true), 0.0)) {
+        if let Some(span) = flow.push(item(measure.width_str(cell.value, theme::size::LABEL, false), 0.0)) {
             each(RatingPart::Value(cell.value), span);
         }
-        if let Some(span) = flow.push(item(measure.width_str(cell.suffix, theme::size::MICRO, true), next)) {
+        if let Some(span) = flow.push(item(measure.width_str(cell.suffix, theme::size::MICRO, false), next)) {
             each(RatingPart::Suffix(cell.suffix), span);
         }
     }
@@ -9261,10 +9440,10 @@ pub fn rating_group(
     // the number's baseline or it floats. `text::baseline_y` is that rule, shared.
     let base = plx_gfx::text::baseline_y(
         theme::size::MICRO,
-        1,
+        0,
         theme::size::LABEL,
-        1,
-        plx_gfx::text::text_vcenter_y(theme::size::LABEL, 1, cy),
+        0,
+        plx_gfx::text::text_vcenter_y(theme::size::LABEL, 0, cy),
     );
     let text = |s: &str, x: f32, y: f32, sz, ink, bold| {
         if let Ok(c) = std::ffi::CString::new(s) {
@@ -9275,7 +9454,7 @@ pub fn rating_group(
     // returns is the drawn width, not a second measurement (the host test compares it with
     // rating_group_w).
     rating_walk(x, caption, cells, measure, |part, span| match part {
-        RatingPart::Caption => text(caption, span.x, base, theme::size::MICRO, theme::TEXT_TERTIARY, 1),
+        RatingPart::Caption => text(caption, span.x, base, theme::size::MICRO, theme::TEXT_TERTIARY, 0),
         RatingPart::Mark(layers) => {
             // every layer rides the SAME rect, so all of them rasterize at one size from one
             // viewBox and register exactly — see `ui/icons.rs`'s note on the layered marks
@@ -9285,10 +9464,10 @@ pub fn rating_group(
             }
         }
         RatingPart::Value(v) => {
-            let ty = plx_gfx::text::text_vcenter_y(theme::size::LABEL, 1, cy);
-            text(v, span.x, ty, theme::size::LABEL, theme::TEXT_PRIMARY, 1);
+            let ty = plx_gfx::text::text_vcenter_y(theme::size::LABEL, 0, cy);
+            text(v, span.x, ty, theme::size::LABEL, theme::TEXT_PRIMARY, 0);
         }
-        RatingPart::Suffix(s) => text(s, span.x, base, theme::size::MICRO, theme::TEXT_TERTIARY, 1),
+        RatingPart::Suffix(s) => text(s, span.x, base, theme::size::MICRO, theme::TEXT_TERTIARY, 0),
     })
 }
 

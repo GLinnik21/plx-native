@@ -1,6 +1,7 @@
 //! Shared fixtures and helpers for the `stream` test modules split out below.
 
 use super::*;
+use plx_base::testnet;
 
 /// What [`loopback_get`] saw: the status the server sent and the body bytes that arrived.
 pub(super) struct LoopbackReply {
@@ -129,18 +130,18 @@ pub(super) fn ainfo(
 /// Answer ONE request with `resp` verbatim, then close; hands back the bound port and the
 /// server thread to join. `resp` is written as raw bytes precisely so a test can put things in
 /// a header that no `&str` could hold. The listener moves into the thread, so the socket is
-/// released once the response is out — which is also what gives the reader its EOF.
+/// released once the response is out — which is also what gives the reader its EOF. A client that
+/// never dials is a failed join after [`testnet::CLIENT_WAIT`], not a thread blocked in `accept`.
 pub(super) fn one_shot_server(resp: Vec<u8>) -> (u16, std::thread::JoinHandle<()>) {
     use std::io::{Read, Write};
     let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = srv.local_addr().unwrap().port();
-    let h = std::thread::spawn(move || {
-        if let Ok((mut s, _)) = srv.accept() {
-            // Drain the request so our send() completes; it arrives in one write.
-            let mut req = [0u8; 2048];
-            let _ = s.read(&mut req);
-            let _ = s.write_all(&resp);
-        }
+    let h = testnet::serve_once(srv, testnet::CLIENT_WAIT, move |mut s| {
+        let _ = s.set_read_timeout(Some(testnet::CLIENT_WAIT));
+        // Drain the request so our send() completes; it arrives in one write.
+        let mut req = [0u8; 2048];
+        let _ = s.read(&mut req);
+        let _ = s.write_all(&resp);
     });
     (port, h)
 }
@@ -168,7 +169,7 @@ pub(super) fn open_host_against(host: &str, port: u16) -> (Box<HttpStream>, c_in
 }
 
 /// A one-shot server that hands the REQUEST back to the test as well as answering it — the
-/// only way to grade a header we emit rather than one we parse.
+/// only way to grade a header we emit rather than one we parse. Bounded like [`one_shot_server`].
 pub(crate) fn one_shot_echo(
     bind: &str,
     resp: Vec<u8>,
@@ -176,15 +177,14 @@ pub(crate) fn one_shot_echo(
     use std::io::{Read, Write};
     let srv = std::net::TcpListener::bind(bind)?;
     let port = srv.local_addr().unwrap().port();
-    let h = std::thread::spawn(move || {
+    let h = testnet::serve_once(srv, testnet::CLIENT_WAIT, move |mut sk| {
+        let _ = sk.set_read_timeout(Some(testnet::CLIENT_WAIT));
         let mut req = Vec::new();
-        if let Ok((mut sk, _)) = srv.accept() {
-            let mut b = [0u8; 2048];
-            if let Ok(n) = sk.read(&mut b) {
-                req.extend_from_slice(&b[..n]);
-            }
-            let _ = sk.write_all(&resp);
+        let mut b = [0u8; 2048];
+        if let Ok(n) = sk.read(&mut b) {
+            req.extend_from_slice(&b[..n]);
         }
+        let _ = sk.write_all(&resp);
         req
     });
     Ok((port, h))
@@ -238,7 +238,7 @@ pub(super) fn with_keepalive_listener(
     std::thread::scope(|sc| {
         sc.spawn(|| {
             while !stop.load(Ordering::Acquire) {
-                match srv.accept() {
+                match testnet::accept(&srv) {
                     Ok((s, _)) => {
                         accepts.fetch_add(1, Ordering::AcqRel);
                         let (rq, st) = (&requests, &stop);

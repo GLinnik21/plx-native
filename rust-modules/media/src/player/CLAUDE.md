@@ -17,10 +17,25 @@ fork. The engine, the pump and the drivers beside them execute their effects.
 
 ## Pipeline
 
-In-process is the point: ACB can only bind an app-owned sink, which the earlier URI/out-of-process
-path (`com.webos.media/load`, `start_playback()`) could not provide — that path is kept only as
-dead-ish reference, and `docs/buffer-feed-plan.md` records the pivot (treat it as history, not
-spec). The stream side: `PMS HTTP GET` → demux → per-lane access-unit
+Normal playback uses in-process buffer-feed. Earlier URI/out-of-process experiments
+(`com.webos.media/load`) failed to bind, prompting the pivot recorded in `docs/buffer-feed-plan.md`
+(history, not spec). The controlled 2026-11-02 experiment later displayed its SDR720p24 fixture
+through ACB on the webOS 4.5 dev set, both with and without `connectDass`; see
+`docs/measurements/uri-acb-dass-2026-11-02.md`. URI mode exists in the tree only as a
+developer probe: `uriprobe.rs` (the pure machine) and `uriprobe_drive.rs` (its driver, forked to
+from `engine::start_bufferfeed_inner` by the `plxnative-uriprobe` trigger) play one stream through
+`com.webos.media` with no Engine behind it, to learn what webOS 5+ does with the exported window id
+(issue #1064). Its `drive` variant goes one step further and drives the transport the way a real
+URI backend would have to — pause, resume, a seek, a text and an audio `selectTrack`, and
+`setSubtitleEnable` — logging the position around each call, because the binding question is
+settled and the remaining question is whether the pipeline can be controlled. It is
+`devtriggers`-only, so a release build carries none of it, and it reports nothing to Plex.
+`uri_protocol.rs` holds shared pure builders/strict decoding; `uri_lifecycle.rs` owns registration
+and request correlation, close deadlines and quarantine. The probe's logical Done does not release
+its adapter slot or exported window: the driver waits for successful bus unregister, keeps polling
+outside the player screen, and blocks reuse through unresolved close. Generic track/seek events and
+method ACKs remain distinct observations; they do not invent confirmation or resume policy.
+The stream side: `PMS HTTP GET` → demux → per-lane access-unit
 queues with byte-cap backpressure (`aq.rs`) → the pump `Feed()`s each AU to the Starfish pipeline.
 The demuxer is **`ff.rs` — the libavformat the app BUNDLES (not the TV's), over a custom AVIO on
 one of TWO transports** (design record: `docs/ffmpeg-demuxer-plan.md`; the hand-rolled `mkv.rs`
@@ -317,7 +332,7 @@ something.
   collides with the pipeline's uMS connection (CONN_FIND_ERR). See the comment in `load_thread`.
 - **ACB bind order matters** (mirrors Kodi/ss4s): `setSinkType(MAIN)` → `setMediaId` →
   `setState(LOADED)` → *wait for decoded frames* → `setMediaVideoData(<sourceInfo envelope
-  as captured; a PQ VP9 gets its HDR keys written in first, see below>)` → `setDisplayWindow` → `setState(PLAYING)`. The payload passed to
+  as captured; a PQ VP9 gets its HDR keys written in first, see below>)` → `setDisplayWindow` → `setState(PLAYING)`. In normal buffer-feed playback, the payload passed to
   `setMediaVideoData` is the **whole `sourceInfo` envelope** captured verbatim from the pipeline's
   callback (`sourceInfoRaw`), not a reconstructed one — with ONE exception: a VP9 stream whose container says PQ gets `hdrType` / `mediaVui` / `mediaSei` written in first (`player/vp9_hdr.rs`), because a VP9 bitstream cannot carry the transfer function, so the pipeline's own envelope says `"hdrType":"none"` and the panel stays SDR (device-measured on the dev set, whose ACB path is the only one that sends the envelope: the TV's `picture.dynamicRange` flips to HDR with the rewrite and stays SDR with `/tmp/plxnative-novp9hdr`; webOS 5+ has no ACB, so nothing is sent there and its VP9 HDR behaviour is unknown). The envelope is otherwise untouched, and an envelope that already names an HDR type is never overridden. Audio is owned by the pipeline — **never feed
   ACB an audio SINK or elementary stream**. That half is real and unchanged. Its long-stated
@@ -330,7 +345,9 @@ something.
   "Dolby Vision / Dolby Atmos" read-out captured on screen. Details and addresses:
   `acb_send_atmos` in `src/starfish.c`. `AcbAPI_setMediaVideoData`/`setState`/
   `setDisplayWindow` take a `long *taskId` out-param as their last arg — the 3-arg ABI is required
-  (2-arg calls corrupt memory / segfault).
+  (2-arg calls corrupt memory / segfault). The developer-only `acb-control`/`acb-dass` URI
+  experiment separately permits a reconstructed descriptor for its known SDR720p24 fixture;
+  that exception does not apply to normal buffer-feed playback.
 - **Opus goes to LG's own decoder only as far as the set is known to take it** (`ff_native_audio.rs`,
   `devcaps.rs`). What a set announces is layered, in this order and logged at boot as `devcaps: ...
   audio layers:`: the codec table, minus the codecs `/etc/gst/gstcool.conf` shows nothing can decode

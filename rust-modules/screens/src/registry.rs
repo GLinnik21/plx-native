@@ -83,15 +83,24 @@ pub enum AppFx {
     Huds(HudCmd),
 }
 
+/// The package-store view delivered through the HUD command channels.
+pub use crate::hud_settings::HudList;
+
 /// What the Player HUD settings page asks of the package store (`plx_data::hudpacks::HudStore`). The
 /// answers come back as the page's own data, the list the Bridge sends down the channel `Open` carries.
 #[derive(Clone)]
 pub enum HudCmd {
     /// The page opened: read every candidate directory again, and publish the list (now and whenever it
     /// changes) down this channel until the page drops its end.
-    Open(std::sync::mpsc::Sender<crate::hud_settings::HudList>),
+    Open(std::sync::mpsc::Sender<HudList>),
+    /// A child gallery view subscribes without cancelling an installation or rescanning files.
+    Watch(std::sync::mpsc::Sender<HudList>),
     /// Pick a package id (or `builtin:classic`) for the seated profile.
     Select(String),
+    /// Download the exact package from the checked registry index, pending confirmation.
+    FetchRegistry(plx_data::hudpacks::Sha),
+    /// The initiating detail view went away before confirming its offer.
+    CancelRegistry(plx_data::hudpacks::Sha),
     /// Delete an installed package.
     Remove(String),
     /// Install the drop file listed under this hash; the viewer has confirmed it.
@@ -113,6 +122,10 @@ pub struct AccountPreferenceReply {
 }
 
 pub enum PreferenceCmd {
+    /// Demand viewer features; the app coalesces this profile-scoped read.
+    EnsureMarkerAccess,
+    ChooseMarker { kind: plx_data::metadata::MarkerKind, mode: plx_plex::plex::session::MarkerSkipMode,
+        scope: u64, reply: std::sync::mpsc::Sender<bool> },
     /// Capture the live profile only after admission.
     Load { reply: std::sync::mpsc::Sender<AccountPreferenceReply> },
     Save {
@@ -194,6 +207,8 @@ pub struct ItemMenuReq {
 /// So the panel decides and the loop performs, exactly as `LibraryReq` does for the Library.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlayerReq {
+    AutoSkip { id: plx_appkit::skip_policy::OfferId, reply: plx_machine::machine::MachineId },
+    CancelAutoSkip(plx_appkit::skip_policy::OfferId),
     /// Accepted only after the owned player confirmation. Never emitted by boot or Play.
     RepairSandbox,
     /// The failure read-out's *Try again*: resolve the failed item again, unchanged, at the
@@ -1338,6 +1353,7 @@ pub trait SearchLike: AppLike<Memory = PageMemory> + Sized {
 
 /// A host that publishes all three retained Library views captured at the frame split.
 pub trait LibraryLike: AppLike<Memory = PageMemory> + Sized {
+    fn marker_prefs(_cx: &Cx<'_, Self>) -> plx_appkit::skip_policy::MarkerPrefsView { Default::default() }
     fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a>;
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a>;
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a>;
@@ -1380,10 +1396,12 @@ pub struct Forbidden;
 /// Full Library hosts implement this automatically; the nested Settings host carries only this
 /// one publication so its Onboard child never falls back to the compatibility selector.
 pub trait DirectoryLike: AppLike + Sized {
+    fn marker_prefs(_cx: &Cx<'_, Self>) -> plx_appkit::skip_policy::MarkerPrefsView { Default::default() }
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a>;
 }
 
 impl<H: LibraryLike> DirectoryLike for H {
+    fn marker_prefs(cx: &Cx<'_, Self>) -> plx_appkit::skip_policy::MarkerPrefsView { LibraryLike::marker_prefs(cx) }
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> {
         LibraryLike::directory(cx)
     }
@@ -1405,6 +1423,7 @@ pub enum DetailRefreshPhase {
 
 /// The application's messages (spec §3.1).
 pub enum AppMsg {
+    AutoSkipResolved { id: plx_appkit::skip_policy::OfferId, outcome: plx_appkit::skip_policy::OfferOutcome },
     PlaybackTrace(plx_platform::playback_trace::Status),
     Session(plx_session::auth::owner::SessionEvent),
     Consent(ConsentCmd),
@@ -1488,8 +1507,8 @@ pub enum LoopReq {
     AccountSignIn,
     AccountSignOut,
     /// PRESENTS the Settings surface, rooted at the page, over the same page, so the host route
-    /// does not move: `Root` for the account menu's Settings row, `Favourites` for the Library's
-    /// Sort & Filter menu's Favorite libraries row.
+    /// does not move: `Root` for the account menu's Settings row, `LibraryFavourites` for the
+    /// Library options menu's Favorite libraries row.
     /// Reachable signed OUT as well: a person who cannot sign in has still received a copy of this
     /// software, and LG requires the privacy notice to be readable in the app rather than only on
     /// the store listing.
@@ -1545,6 +1564,10 @@ pub mod word {
     pub const PICKER: &str = "picker";
     /// The Player HUD page (`screens::hud_settings`), a page of the Settings family's inner stack.
     pub const PLAYER_HUD: &str = "player-hud";
+    pub const HUD_GALLERY: &str = "hud-gallery";
+    pub const HUD_DETAIL: &str = "hud-detail";
+    pub const HUD_ABOUT: &str = "hud-about";
+    pub const HUD_PREVIEW: &str = "hud-preview";
     pub const CONSENT: &str = "consent";
     pub const ONBOARD: &str = "onboard";
     /// The QR sign-in (`screens::login::LoginScreen`). Same spelling as `app::words::route_word`'s
@@ -1943,7 +1966,7 @@ pub enum AppArg {
     /// identity rides on the argument instead of being a variant of a page alphabet.
     Content(ContentArg),
     /// The Settings family, rooted at this page (`SettingsPage::Root` for every opening but the
-    /// Library's Favorite libraries row, `LoopReq::OpenSettings(SettingsPage::Favourites)`).
+    /// Library's Favorite libraries row, `LoopReq::OpenSettings(SettingsPage::LibraryFavourites)`).
     Settings(SettingsPage),
     /// The first-run consent question, rooted at this stage byte (0 for every real opening;
     /// `screens::consent`'s `STAGE_PRODUCT` for `/tmp/plxnative-consent=product`).
@@ -1959,8 +1982,8 @@ impl AppArg {
     }
 }
 
-pub const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,LibraryCollections{section:u32},LibraryRecommended{section:u32},Search,Watchlist,LiveTv,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str},Collection{sid:u32,rk:str,sec:i64,tag:i64,name:str},Catalog{hex:str}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8),Language,Contribute},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\\\\
-     PlayerOverlay{Tracks(tab:i32),Info,Chapters,More(page:u8)},\\\\
+pub const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,LibraryCollections{section:u32},LibraryRecommended{section:u32},Search,Watchlist,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str},Collection{sid:u32,rk:str,sec:i64,tag:i64,name:str},Catalog{hex:str}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,LibraryFavourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8),Language,Contribute},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
+     PlayerOverlay{Tracks(tab:i32),Info,Chapters,More(page:u8)},\
      AltSources{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
      VersionsPanel{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
      TracksPanel{page:i32},AboutPanel,PersonBio,CollectionAbout,AccountMenu,\
@@ -2726,9 +2749,13 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // addressed. One bump; the three replay fixtures were re-recorded against it; the previous pin was
 // 0x9425_f33f_3f53_6aa5.
 // Opt-in playback diagnostics adds Root status and addressed command replies.
-// Live TV page: `ARG_SHAPE` gains `LiveTv`, `SCREEN_SHAPES` appends `LiveTvScreen::SHAPE`.
-// Merged both after rebase on main; shapes and replays need re-recording.
-const SCREEN_SHAPES_PIN: u64 = 0x912450b81a25451c;
+// Replay anchors are re-recorded through tools/plxnative-rec rerecord.
+// Contextual Library favorites editor adds a distinct SettingsPage address.
+// Automatic marker skipping adds per-kind preferences, addressed grant scope and timer/offer state.
+// Incompatible replay anchors are re-recorded through tools/plxnative-rec rerecord.
+// The restored Up Next pair retains a scoped declined segment across timer/grant changes.
+// Previous screen pin: 0x1802_f17e_e583_f977; re-record incompatible replay anchors.
+const SCREEN_SHAPES_PIN: u64 = 0xf852_85cc_f116_356b;
 
 #[cfg(test)]
 mod arg_tests {

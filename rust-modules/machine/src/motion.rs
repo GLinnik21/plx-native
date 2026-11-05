@@ -166,6 +166,7 @@ pub struct Ramp {
     pub at_ms: u32,
     pub len_ms: u32,
     pub running: bool,
+    paused_at: Option<u32>,
 }
 
 impl Ramp {
@@ -182,20 +183,33 @@ impl Ramp {
         self.at_ms = t.ms.wrapping_sub(t.dt_us / 1000);
         self.len_ms = len_ms.max(1);
         self.running = true;
+        self.paused_at = None;
+    }
+
+    /// Freeze at this addressed tick. Hidden owners may receive no further ticks at all.
+    pub fn pause(&mut self, t: Tick) {
+        if self.running && self.paused_at.is_none() { self.paused_at = Some(t.ms); }
+    }
+
+    /// Exclude the complete hidden interval, including suspension without intermediate ticks.
+    pub fn resume(&mut self, t: Tick) {
+        if let Some(at) = self.paused_at.take() { self.at_ms = self.at_ms.wrapping_add(t.ms.wrapping_sub(at)); }
+    }
+
+    /// Read a deadline without requesting frames during its quiet hold. An overlapping dissolve
+    /// uses this for its hold and `advance` for its moving portion, on the same shared clock.
+    pub fn sample(&mut self, t: Tick) -> f32 {
+        if !self.running { return 1.0; }
+        let el = self.paused_at.unwrap_or(t.ms).wrapping_sub(self.at_ms);
+        if el >= self.len_ms { self.running = false; return 1.0; }
+        el as f32 / self.len_ms as f32
     }
 
     /// 0..1 progress; reports `Motion` while running and stops itself at the end.
     pub fn advance(&mut self, t: Tick, present: &mut PresentHandle<'_>) -> f32 {
-        if !self.running {
-            return 1.0;
-        }
-        let el = t.ms.wrapping_sub(self.at_ms);
-        if el >= self.len_ms {
-            self.running = false;
-            return 1.0;
-        }
-        present.note(PresentEvent::Motion);
-        el as f32 / self.len_ms as f32
+        let progress = self.sample(t);
+        if self.running && self.paused_at.is_none() { present.note(PresentEvent::Motion); }
+        progress
     }
 }
 
@@ -509,4 +523,23 @@ mod tests {
         let _ = ph_clock.advance(Tick { ms: 1_000, dt_us: 0 }, &mut ph);
         assert!(present.take(1_000), "released, it runs again");
     }
+}
+
+#[cfg(test)]
+#[test]
+fn a_ramp_can_wait_quietly_and_exclude_a_suspended_interval() {
+    let mut ramp = Ramp::default();
+    let tick = |ms| Tick { ms, dt_us: 16_000 };
+    let mut present = super::present::Present::new();
+    let _ = present.take(0);
+    ramp.start(tick(100), 1000);
+    let before = ramp.sample(tick(600));
+    assert!(!present.take(0), "a quiet deadline must not report motion");
+    ramp.pause(tick(600));
+    assert_eq!(ramp.advance(tick(9000), &mut PresentHandle(&mut present)), before);
+    assert!(!present.take(0), "a paused ramp must not keep presenting");
+    ramp.resume(tick(10600));
+    assert_eq!(ramp.sample(tick(10600)), before);
+    assert!(ramp.advance(tick(10700), &mut PresentHandle(&mut present)) > before);
+    assert!(present.take(0));
 }

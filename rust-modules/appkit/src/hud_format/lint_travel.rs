@@ -199,14 +199,13 @@ mod tests {
     use crate::hud_format::compile::{compile, CompileCtx, OPEN_CHAPTERS, OPEN_INFO};
     use crate::hud_format::lint::testing::apply;
     use crate::hud_format::lint::{lint, LintLang, LintOptions};
-    use crate::hud_format::parse;
     use plx_base::fontcov::advances::ShippedMeasure;
 
-    const RISING_TABS: &str = include_str!("fixtures/rising-tabs.plxhud.json");
+    const RISING_TABS: &str = include_str!("fixtures/rising-tabs/hud.json");
 
     fn in_en<R>(text: &str, f: impl FnOnce(&LangCtx<'_>) -> R) -> R {
         let lang = LintLang::for_tag("en").expect("English");
-        let package = parse::parse(text.as_bytes()).package.expect("a package");
+        let package = crate::hud_format::fixtures::parse(text.as_bytes()).package.expect("a package");
         let compiled = compile(&package, &ShippedMeasure, CompileCtx { labels: lang.labels.clone() });
         let opts = LintOptions::default();
         f(&LangCtx { package: &package, compiled: &compiled, measure: &ShippedMeasure, lang: &lang, opts: &opts })
@@ -241,7 +240,7 @@ mod tests {
     /// in every state with a section open, and the walk is not vacuous: each has such a state.
     #[test]
     fn tabs_above_or_below_the_page_are_clean() {
-        for text in [crate::hud_format::BUILTIN_CLASSIC, RISING_TABS] {
+        for text in [crate::hud_format::CLASSIC_HUD, RISING_TABS] {
             assert_eq!(found(text), Vec::<Finding>::new());
             let checked = in_en(text, |cx| cx.states().filter(|s| s.key.open != 0 && spans(s).is_some()).count());
             assert!(checked > 0, "a state with a section open, tabs and a page");
@@ -284,7 +283,7 @@ mod tests {
     /// by no tab, and the reference, whose openers are discs of the row.
     #[test]
     fn a_state_with_no_tabs_is_skipped() {
-        in_en(include_str!("fixtures/reference.plxhud.json"), |cx| {
+        in_en(include_str!("fixtures/reference/hud.json"), |cx| {
             for state in cx.states().filter(|s| s.key.open != 0) {
                 assert!(tabs_span(&state.state.geometry(SkipKind::Intro)).is_none(), "the reference places no tab pill");
                 assert!(spans(&state).is_none());

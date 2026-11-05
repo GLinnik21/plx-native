@@ -271,5 +271,8 @@
   "browse.clock.notice_year": "De tv-klok lijkt verkeerd te staan ({year}). Verbonden met de onthouden sleutel.",
   "browse.clock.notice": "De tv-klok lijkt verkeerd te staan. Verbonden met de onthouden sleutel.",
   "browse.clock.no_key": "De klok van deze tv lijkt verkeerd te staan. Verbind de tv één keer met internet en probeer het opnieuw.",
-  "browse.clock.key_changed": "De sleutel van je server is gewijzigd. Verbind de tv één keer met internet zodat de app hem opnieuw kan controleren."
+  "browse.clock.key_changed": "De sleutel van je server is gewijzigd. Verbind de tv één keer met internet zodat de app hem opnieuw kan controleren.",
+  "browse.detail.mark_episode_watched": "Aflevering markeren als bekeken",
+  "browse.detail.mark_episode_unwatched": "Aflevering markeren als niet bekeken",
+  "browse.detail.minutes_left": "Nog {minutes} min"
 }

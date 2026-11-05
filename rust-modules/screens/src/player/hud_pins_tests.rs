@@ -1986,8 +1986,8 @@ mod sections {
     /// The `rising-tabs` fixture: a MODAL package whose tab pills are compiled above the page an open section draws,
     /// so the way into the page is Down from a tab and the way out is Up off the page (`travel::Order::toward_tabs`).
     fn rising_tabs_run() -> Run {
-        let text = include_str!("../../../appkit/src/hud_format/fixtures/rising-tabs.plxhud.json");
-        let package = plx_appkit::player_hud::loaded::load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &FixtureMeasure)
+        let bytes = plx_appkit::hud_format::fixtures::bytes("rising-tabs");
+        let package = plx_appkit::player_hud::loaded::load(&bytes, "0.0.0-test", plx_platform::i18n::english(), &FixtureMeasure)
             .expect("the rising-tabs fixture loads")
             .compiled;
         let mut run = Run::boot_in(Occupant::Plain, package, true);
@@ -2503,8 +2503,8 @@ mod sections {
         let _g = plx_base::testlock::serial();
         assert_idle_playhead();
         let _chapters = Chaptered::install();
-        let text = include_str!("../../../appkit/src/hud_format/fixtures/tabs.plxhud.json");
-        let tabs = plx_appkit::player_hud::loaded::load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &FixtureMeasure)
+        let bytes = plx_appkit::hud_format::fixtures::bytes("tabs");
+        let tabs = plx_appkit::player_hud::loaded::load(&bytes, "0.0.0-test", plx_platform::i18n::english(), &FixtureMeasure)
             .expect("the tabs fixture loads")
             .compiled;
         let mut run = Run::boot_in(Occupant::Plain, tabs, true);
@@ -2713,8 +2713,8 @@ mod sections {
     fn a_pill_that_opens_a_section_keeps_its_tab_stop() {
         let _g = plx_base::testlock::serial();
         assert_idle_playhead();
-        let tabs_text = include_str!("../../../appkit/src/hud_format/fixtures/tabs.plxhud.json");
-        let tabs = plx_appkit::player_hud::loaded::load(tabs_text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &FixtureMeasure)
+        let bytes = plx_appkit::hud_format::fixtures::bytes("tabs");
+        let tabs = plx_appkit::player_hud::loaded::load(&bytes, "0.0.0-test", plx_platform::i18n::english(), &FixtureMeasure)
             .expect("the tabs fixture loads")
             .compiled;
         for (name, package) in [("classic", plx_appkit::player_hud::loaded::classic_for_test()), ("tabs", tabs)] {

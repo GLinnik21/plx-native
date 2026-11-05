@@ -5,16 +5,9 @@
 //! one duplicate-key-preserving reader in the tree, so a duplicate key is a finding at its own pointer and
 //! a state-keyed value keeps its conditions in document order. The module is pure: no IO, no globals.
 //!
-//! **One walker, two doors.** [`parse`] (the version gate, then the top level) and [`validate_json`] (one
-//! fragment against one node) both run the SAME `Walker`; there is no second copy of a rule. A key, a cell
-//! kind, a command, a condition or a theme token is never named in this file to JUDGE it: the walker reads
-//! them from the table. The one place keys are named is [`Package::from_object`], which READS the package's
-//! top-level scalars and the `app` range out of an object that has already passed the table; a test
-//! (`the_package_reader_names_only_keys_the_table_has`) fails if the table drops or renames one. What
-//! this file also names is the format's own grammar, which is not a table row: the
-//! `{"value": v, "if": {...}}` keys of a state-keyed value, the `builtin:` face prefix, the `#rrggbb`
-//! palette form, the string shapes a [`schema::Pattern`] checks, and the node `card`, which is the scope
-//! of the `item.*` bindings and conditions (the table carries no flag for it; see `schema`'s module doc).
+//! The bundle loader and standalone fragment validation share one descriptor walker. Typed manifest
+//! metadata and the HUD tree form the compiler's Package through from_documents. The walker owns
+//! the state-keyed value grammar, builtin face prefix, palette form and card-scoped bindings.
 //!
 //! **Where a finding points** (the module doc of `hud_format` lists the conventions). Beyond them:
 //! * a value that fails under a command PARAMETER is reported with the command code, not the generic one
@@ -26,39 +19,27 @@
 //!   (`E0304` for `NonZero`) at the same places.
 //!
 //! **Order.** Findings are in DOCUMENT order of the keys of each object, whatever order the keys were
-//! walked in: `palette` and `assets` are walked first (so a reference can be resolved) and their findings
+//! walked in. The palette is walked first so references can resolve, and its findings
 //! are put back where the keys stand.
 //!
-//! **The version gate runs first and answers alone.** Before any other key is read, `/format` is checked,
-//! and a package that fails the gate returns ONE finding at `/format`: `E0401` if `format` is missing,
-//! not a string, or not `MAJOR.MINOR`; `E0402` if the major is supported but the minor is above its
-//! highest (message [`REASON_NEWER`](super::REASON_NEWER)); `E0403` if the major is not supported (message
-//! `REASON_NEWER` when it is above the highest supported major, `REASON_OLDER` when below). An older app
-//! cannot know whether an unknown key of a newer minor is cosmetic, so strictness makes the gate mandatory.
-//! A document that is not JSON is `E0100` at `""` and also answers alone.
-//!
-//! **Findings are collected, not thrown.** After the gate the walker reports every problem it finds, in
-//! document order, and keeps going: `Parsed::package` is `Some` exactly when no finding is an `Error`
-//! (a `Warning` does not block a package).
+//! Package version gates and cross-member validation live in the bundle module. This module walks
+//! the separately validated manifest and HUD roots and combines their typed values for compilation.
+//! Findings retain document-local RFC 6901 pointers. The bundle loader supplies their source member.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use plx_ui::rec::strict_json::{decode_ordered, Ordered};
 
 use super::schema::{self, Cmd, Field, Node, NodeKind, Pattern, Rule, Since, Ty};
 use super::{
-    codes, has_error, nearest, pointer_index, pointer_push, svg_subset, Code, Finding,
-    REASON_NEWER, REASON_OLDER,
+    codes, nearest, pointer_index, pointer_push, Code, Finding,
 };
 
-/// The most bytes a package file may carry; a larger input is `E0100` (a limit of the format: the
-/// strict reader's memory is bounded by it).
-pub const MAX_PACKAGE_BYTES: usize = 1024 * 1024;
+/// The HUD document source-byte bound, separate from the complete archive and manifest limits.
+pub const MAX_HUD_JSON_BYTES: usize = 1024 * 1024;
 
-/// The decoded-memory budget given to `decode_ordered`, which charges three times the source and then
-/// every node (a string eight times its length, a value a few hundred bytes). 16 MiB holds a full
-/// 1 MiB package of inline SVG text (about 11 MiB) and about 45 000 other values, many times the worked
-/// example's 600 nodes; past it the file is refused as too large, not read into 64 MiB of tree.
+/// Standalone fragment validation has the same 16 MiB decoder budget as a complete package.
 const DECODE_MEMORY_BYTES: usize = 16 * 1024 * 1024;
 /// The longest identifier ([`schema::Pattern::Id`]: a band, segment or control id, an asset id).
 const ID_LEN: usize = 40;
@@ -80,11 +61,10 @@ const KEYED_IF: &str = "if";
 /// The `node` names of the objects the walker builds that are not nodes of the table: the palette, the
 /// assets, and a face map with its Skip-interval ladder.
 const PALETTE_NODE: &str = "palette";
-const ASSETS_NODE: &str = "assets";
 const FACE_MAP_NODE: &str = "face_map";
 const FACE_LADDER_NODE: &str = "face_ladder";
 
-/// The result of [`parse`].
+/// The result of [`validate_json`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct Parsed {
     /// `Some` iff no finding is an `Error`.
@@ -107,7 +87,7 @@ pub struct Package {
     /// `(name, rgb)` in document order; every name is lower-case, every colour from `#rrggbb`.
     pub palette: Vec<(String, [u8; 3])>,
     /// `(id, svg source)` in document order; every source passed `svg_subset::check_asset`.
-    pub assets: Vec<(String, String)>,
+    pub assets: Vec<(String, Arc<str>)>,
     /// The `layout` object (node `layout`).
     pub layout: Object,
 }
@@ -248,42 +228,8 @@ impl Ctx {
     }
 }
 
-/// Parse a package. Pure: the same bytes always give the same [`Parsed`].
-///
-/// The input is size-checked and read strictly (`E0100`), the version gate answers alone (`E0401`,
-/// `E0402`, `E0403`), then the table walker judges the whole document and builds the typed [`Package`]
-/// when it finds no error.
-pub fn parse(bytes: &[u8]) -> Parsed {
-    let root = match decode(bytes, "") {
-        Ok(root) => root,
-        Err(finding) => return Parsed::failed(finding),
-    };
-    let format = match version_gate(&root) {
-        Ok(format) => format,
-        Err(finding) => return Parsed::failed(finding),
-    };
-    let ctx = Ctx {
-        palette: Vec::new(),
-        assets: Vec::new(),
-        format,
-        in_strip_card: false,
-    };
-    let (object, mut findings) = walk_fragment(&schema::ROOT, &root, "", &ctx);
-    let package = object.and_then(|object| Package::from_object(&object, format));
-    if package.is_none() && !has_error(&findings) {
-        // Unreachable while the table carries every key `Package` reads; a finding, never a panic.
-        findings.push(Finding::new(
-            &codes::E0103,
-            "",
-            "the parsed package lacks a top-level key the format requires",
-            "this is a bug in the format table, not in the package",
-        ));
-    }
-    Parsed { package, findings }
-}
-
 /// Walk `json` against `node` as if it sat at `pointer` in a package, resolving references against `ctx`:
-/// the SAME walker [`parse`] runs, exposed so wave B's lint and tests can check one fragment (a cell, a
+/// the SAME walker [`validate_json`] runs, exposed so wave B's lint and tests can check one fragment (a cell, a
 /// control item) without a whole package. Returns the typed object when it has no `Error` finding, and
 /// every finding. `json` that is not JSON is `E0100` at `pointer`; JSON that is not an object is `E0104`
 /// there. No version gate runs here: `ctx.format` is the declared format.
@@ -299,16 +245,23 @@ pub fn validate_json(
     }
 }
 
-impl Parsed {
-    fn failed(finding: Finding) -> Parsed {
-        Parsed {
-            package: None,
-            findings: vec![finding],
-        }
-    }
-}
-
 impl Package {
+    /// Build the compiler's normalized value from separately validated documents. Identity comes
+    /// only from the manifest and the layout only from the HUD document.
+    pub(super) fn from_documents(
+        manifest: &Object,
+        hud: &Object,
+        format: Since,
+        assets: Vec<(String, Arc<str>)>,
+    ) -> Option<Package> {
+        let mut fields = manifest.fields.clone();
+        fields.extend(hud.fields.iter().filter(|(key, _)| matches!(key.as_str(), "palette" | "layout")).cloned());
+        let normalized = Object { node: "normalized_package", pointer: String::new(), fields };
+        let mut package = Self::from_object(&normalized, format)?;
+        package.assets = assets;
+        Some(package)
+    }
+
     /// The top-level scalars out of the walked ROOT object. `None` only if the table lacks a key this
     /// struct reads (a table bug); a walked package always has them.
     fn from_object(object: &Object, format: Since) -> Option<Package> {
@@ -331,14 +284,6 @@ impl Package {
                 .collect::<Option<Vec<_>>>()?,
             _ => Vec::new(),
         };
-        let assets = match object.get("assets") {
-            Some(Val::Object(files)) => files
-                .fields
-                .iter()
-                .map(|(id, svg)| Some((id.clone(), svg.as_str()?.to_owned())))
-                .collect::<Option<Vec<_>>>()?,
-            _ => Vec::new(),
-        };
         Some(Package {
             format,
             id: text("id")?,
@@ -348,7 +293,7 @@ impl Package {
             license: text("license")?,
             app,
             palette,
-            assets,
+            assets: Vec::new(),
             layout: object.get("layout")?.as_object()?.clone(),
         })
     }
@@ -360,15 +305,15 @@ impl Package {
 
 /// The bytes as one JSON document with its objects in document order, or `E0100` at `pointer`.
 fn decode(bytes: &[u8], pointer: &str) -> Result<Ordered, Finding> {
-    if bytes.len() > MAX_PACKAGE_BYTES {
+    if bytes.len() > MAX_HUD_JSON_BYTES {
         return Err(Finding::new(
             &codes::E0100,
             pointer,
             format!(
-                "the input is {} bytes; a package may be at most {MAX_PACKAGE_BYTES}",
+                "the input is {} bytes; a HUD document may be at most {MAX_HUD_JSON_BYTES}",
                 bytes.len()
             ),
-            "a HUD package is one small JSON file; keep each inline SVG to a few KiB",
+            "keep the HUD layout document within its source-byte limit",
         ));
     }
     decode_ordered(bytes, DECODE_MEMORY_BYTES).map_err(|error| {
@@ -380,7 +325,7 @@ fn decode(bytes: &[u8], pointer: &str) -> Result<Ordered, Finding> {
                 format!(
                     "the package is too large to read: it decodes to more than {DECODE_MEMORY_BYTES} bytes"
                 ),
-                "a HUD package is a small description of a layout: shorten the SVG assets and drop repeated or unused parts",
+                "a HUD package is a small description of a layout: drop repeated or unused layout parts",
             );
         }
         Finding::new(
@@ -392,75 +337,8 @@ fn decode(bytes: &[u8], pointer: &str) -> Result<Ordered, Finding> {
     })
 }
 
-/// `format` must be `MAJOR.MINOR` and one this build reads; the answer is one finding at `/format`.
-/// An older app cannot know whether an unknown key of a newer minor is cosmetic, so this runs before
-/// anything else is judged.
-fn version_gate(root: &Ordered) -> Result<Since, Finding> {
-    if !matches!(root, Ordered::Object(_)) {
-        return Err(Finding::new(
-            &codes::E0104,
-            "",
-            format!("a package is a JSON object, found {}", root.type_name()),
-            "write the package as one JSON object",
-        ));
-    }
-    let malformed = |why: String| {
-        Finding::new(
-            &codes::E0401,
-            "/format",
-            why,
-            "write \"format\": \"MAJOR.MINOR\", for example \"1.0\"",
-        )
-    };
-    let Some(declared) = root.get("format") else {
-        return Err(malformed("`format` is missing".to_owned()));
-    };
-    let Ordered::String(text) = declared else {
-        return Err(malformed(format!(
-            "`format` must be a string, found {}",
-            declared.type_name()
-        )));
-    };
-    let Some((major, minor)) = parse_format(text) else {
-        return Err(malformed(format!(
-            "`{}` is not MAJOR.MINOR with two plain decimal numbers",
-            clip(text)
-        )));
-    };
-    let hint = format!("this PlxNative reads HUD format {}", supported_text());
-    match schema::SUPPORTED
-        .iter()
-        .find(|(m, _)| u64::from(*m) == major)
-    {
-        Some(&(m, highest)) if minor <= u64::from(highest) => {
-            Ok((m, u8::try_from(minor).unwrap_or(highest)))
-        }
-        Some(_) => Err(Finding::new(&codes::E0402, "/format", REASON_NEWER, hint)),
-        None => {
-            let newer = schema::SUPPORTED.iter().all(|(m, _)| major > u64::from(*m));
-            let reason = if newer { REASON_NEWER } else { REASON_OLDER };
-            Err(Finding::new(&codes::E0403, "/format", reason, hint))
-        }
-    }
-}
-
-/// The formats this build reads, for a hint: `1.0` or `1.0 to 1.3`, one range per supported major.
-fn supported_text() -> String {
-    schema::SUPPORTED
-        .iter()
-        .map(|&(major, minor)| {
-            if minor == 0 {
-                format!("{major}.0")
-            } else {
-                format!("{major}.0 to {major}.{minor}")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 /// Validate a decoded fragment as an object of `node`.
-fn walk_fragment(
+pub(super) fn walk_fragment(
     node: &'static Node,
     root: &Ordered,
     pointer: &str,
@@ -632,7 +510,7 @@ impl Walker {
             for (i, (key, value)) in pairs.iter().enumerate() {
                 let declares = first[i]
                     && lookup(node, cmd, key)
-                        .is_some_and(|(f, _)| matches!(f.ty, Ty::Palette | Ty::Assets));
+                        .is_some_and(|(f, _)| matches!(f.ty, Ty::Palette));
                 if done[i] || declares != (pass == 0) {
                     continue;
                 }
@@ -1215,7 +1093,7 @@ impl Walker {
                 (self.errors == errors_before).then_some(Val::List(out))
             }
             Ty::Palette => self.walk_palette(json, pointer),
-            Ty::Assets => self.walk_assets(json, pointer),
+            Ty::Resources => self.walk_resources(json, pointer),
             Ty::Command => {
                 let Ordered::String(s) = json else {
                     return self.wrong_type(&ty, json, pointer);
@@ -1582,73 +1460,34 @@ impl Walker {
         })
     }
 
-    fn walk_assets(&mut self, json: &Ordered, pointer: &str) -> Option<Val> {
+    fn walk_resources(&mut self, json: &Ordered, pointer: &str) -> Option<Val> {
         let Ordered::Object(pairs) = json else {
-            return self.wrong_type(&Ty::Assets, json, pointer);
+            return self.wrong_type(&Ty::Resources, json, pointer);
         };
+        if pairs.len() > super::bundle::MAX_ENTRIES {
+            self.report(&codes::E0105, pointer, "too many resource declarations", "keep the resource inventory within the package profile");
+            return None;
+        }
         let errors_before = self.errors;
         let mut seen = BTreeSet::new();
-        let mut ids = BTreeSet::new();
         let mut fields = Vec::new();
-        for (id, value) in pairs {
+        for (id, path) in pairs {
             let at = pointer_push(pointer, id);
             if !seen.insert(id.as_str()) {
-                self.report(
-                    &codes::E0101,
-                    &at,
-                    format!("the asset `{}` is written more than once", clip(id)),
-                    "keep one",
-                );
+                self.report(&codes::E0101, &at, "resource id is written more than once", "keep one declaration per resource id");
                 continue;
             }
-            let named = is_id(id);
-            if named {
-                ids.insert(id.clone());
-            } else {
-                self.report(
-                    &codes::E0105,
-                    &at,
-                    format!("`{}` is not an asset id", clip(id)),
-                    format!("write {}", pattern_name(Pattern::Id)),
-                );
+            if !is_id(id) {
+                self.report(&codes::E0105, &at, "invalid resource id", pattern_name(Pattern::Id));
             }
-            let Ordered::String(svg) = value else {
-                self.report(
-                    &codes::E0104,
-                    &at,
-                    format!(
-                        "expected the SVG source as a string, found {}",
-                        value.type_name()
-                    ),
-                    "write the whole <svg>...</svg> document as one JSON string",
-                );
-                continue;
-            };
-            let accepted = match svg_subset::check_asset(&at, svg) {
-                Ok(_) => true,
-                Err(found) => {
-                    let accepted = !has_error(&found);
-                    found.into_iter().for_each(|f| self.emit(f));
-                    accepted
-                }
-            };
-            if accepted && named {
-                fields.push((id.clone(), Val::Text(svg.clone())));
+            if let Some(value) = self.walk_typed(Ty::Pattern(Pattern::PackagePath), false, path, &at, Scope { in_card: false, cmd: None }) {
+                fields.push((id.clone(), value));
             }
         }
-        self.assets = ids;
-        (self.errors == errors_before).then(|| {
-            Val::Object(Object {
-                node: ASSETS_NODE,
-                pointer: pointer.to_owned(),
-                fields,
-            })
-        })
+        (self.errors == errors_before).then(|| Val::Object(Object { node: "resources", pointer: pointer.to_owned(), fields }))
     }
 
-    // ----- faces -----
 
-    /// A single face: `builtin:<icon>` or a declared asset id.
     fn face_single(&mut self, face: &str, pointer: &str) -> Option<Val> {
         if let Some(icon) = face.strip_prefix(schema::BUILTIN_FACE_PREFIX) {
             if schema::builtin_icon(icon).is_some() {
@@ -1958,7 +1797,7 @@ fn since_text(since: Since) -> String {
 /// Whether a type is read from a JSON object (so an object value is not a state-keyed value).
 fn takes_object(ty: &Ty) -> bool {
     match ty {
-        Ty::Object(_) | Ty::Face | Ty::Palette | Ty::Assets | Ty::Cond => true,
+        Ty::Object(_) | Ty::Face | Ty::Palette | Ty::Resources | Ty::Cond => true,
         Ty::Either(a, b) => takes_object(a) || takes_object(b),
         Ty::Bool
         | Ty::Int { .. }
@@ -1993,7 +1832,7 @@ fn kind_fits(ty: &Ty, json: &Ordered) -> bool {
         Ty::Gap => matches!(json, Ordered::String(_) | Ordered::Number(_)),
         Ty::Face => matches!(json, Ordered::String(_) | Ordered::Object(_)),
         Ty::Cond => matches!(json, Ordered::String(_) | Ordered::Array(_)),
-        Ty::Object(_) | Ty::Palette | Ty::Assets => matches!(json, Ordered::Object(_)),
+        Ty::Object(_) | Ty::Palette | Ty::Resources => matches!(json, Ordered::Object(_)),
         Ty::EnumList(_) | Ty::List { .. } => matches!(json, Ordered::Array(_)),
         Ty::Either(a, b) => kind_fits(a, json) || kind_fits(b, json),
     }
@@ -2019,7 +1858,7 @@ fn describe(ty: &Ty) -> String {
         Ty::Object(name) => format!("a `{name}` object"),
         Ty::List { max_len, .. } => format!("an array of at most {max_len} values"),
         Ty::Palette => "an object of palette names to \"#rrggbb\"".to_owned(),
-        Ty::Assets => "an object of asset ids to SVG text".to_owned(),
+        Ty::Resources => "an object of resource ids to package-relative paths".to_owned(),
         Ty::Command => "a command name".to_owned(),
         Ty::Either(a, b) => format!("{} or {}", describe(a), describe(b)),
     }
@@ -2035,6 +1874,7 @@ fn pattern_name(pattern: Pattern) -> &'static str {
         Pattern::Semver => "a MAJOR.MINOR.PATCH version such as 1.0.0",
         Pattern::FormatVersion => "MAJOR.MINOR such as 1.0",
         Pattern::SchemaUrl => "an https:// URL",
+        Pattern::PackagePath => "a canonical lower-case package-relative path",
         Pattern::Id => {
             "a lower-case identifier (a-z, 0-9, _ and -, starting with a letter, at most 40 characters)"
         }
@@ -2043,10 +1883,11 @@ fn pattern_name(pattern: Pattern) -> &'static str {
 
 fn matches_pattern(pattern: Pattern, text: &str) -> bool {
     match pattern {
-        Pattern::ReverseDns => is_reverse_dns(text),
+        Pattern::ReverseDns => plx_data::hudpacks::valid_package_id(text),
         Pattern::Semver => is_semver(text),
         Pattern::FormatVersion => parse_format(text).is_some(),
         Pattern::SchemaUrl => is_schema_url(text),
+        Pattern::PackagePath => super::bundle::valid_path(text),
         Pattern::Id => is_id(text),
     }
 }
@@ -2065,7 +1906,7 @@ fn decimal(text: &str) -> Option<u64> {
 }
 
 /// `MAJOR.MINOR`, two plain decimal numbers.
-fn parse_format(text: &str) -> Option<(u64, u64)> {
+pub(super) fn parse_format(text: &str) -> Option<(u64, u64)> {
     let (major, minor) = text.split_once('.')?;
     Some((decimal(major)?, decimal(minor)?))
 }
@@ -2077,21 +1918,6 @@ fn is_semver(text: &str) -> bool {
     }
 }
 
-pub(super) fn is_reverse_dns(text: &str) -> bool {
-    if text == schema::BUILTIN_CLASSIC_ID {
-        return true;
-    }
-    let alphabet = text
-        .bytes()
-        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'-');
-    let labels: Vec<&str> = text.split('.').collect();
-    text.len() <= PATTERN_LEN
-        && alphabet
-        && labels.len() >= 2
-        && labels
-            .iter()
-            .all(|l| matches!(l.bytes().next(), Some(b) if b.is_ascii_lowercase()))
-}
 
 fn is_schema_url(text: &str) -> bool {
     text.len() <= PATTERN_LEN
@@ -2195,9 +2021,18 @@ mod freeze_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hud_format::{fixtures, has_error, REASON_NEWER, REASON_OLDER};
+    fn parse(bytes: &[u8]) -> Parsed {
+        if std::str::from_utf8(bytes).is_ok_and(|text| text.contains("\"hud\":")) {
+            fixtures::parse_manifest("minimal", bytes)
+        } else {
+            fixtures::parse_for(if bytes == MINIMAL.as_bytes() { "minimal" } else { "reference" }, bytes)
+        }
+    }
 
-    const REFERENCE: &str = include_str!("fixtures/reference.plxhud.json");
-    const MINIMAL: &str = include_str!("fixtures/minimal.plxhud.json");
+    const REFERENCE: &str = include_str!("fixtures/reference/hud.json");
+    const MINIMAL: &str = include_str!("fixtures/minimal/hud.json");
+    const MINIMAL_MANIFEST: &str = include_str!("fixtures/minimal/manifest.json");
 
     /// The only control of `MINIMAL`, and its playbar.
     const ITEM_AT: &str = "/layout/block/1/cells/0/segment/items/0";
@@ -2219,6 +2054,9 @@ mod tests {
 
     /// `base` with each `(from, to)` applied once; a `from` that is absent or repeated is a broken test.
     fn edit(base: &str, edits: &[(&str, &str)]) -> String {
+        let base = if base == MINIMAL && edits.first().is_some_and(|(from, _)| !MINIMAL.contains(from) && MINIMAL_MANIFEST.contains(from)) {
+            MINIMAL_MANIFEST
+        } else { base };
         let mut text = base.to_owned();
         for (from, to) in edits {
             assert_eq!(text.matches(from).count(), 1, "`{from}` must occur once");
@@ -2229,11 +2067,7 @@ mod tests {
 
     /// `MINIMAL` with `extra` (a `"key": value` fragment) written before `layout`.
     fn with_header(extra: &str) -> String {
-        let license = r#""license": "CC0-1.0","#;
-        edit(
-            MINIMAL,
-            &[(license, &format!(r#""license": "CC0-1.0", {extra},"#))],
-        )
+        edit(MINIMAL, &[(r#""layout": {"#, &format!(r#"{extra}, "layout": {{"#))])
     }
 
     /// `MINIMAL` with the control's `"command": "open_more"` replaced by `command_and_keys`.
@@ -2494,10 +2328,10 @@ mod tests {
     #[test]
     fn one_walker_serves_both_doors() {
         let package = parse_text(REFERENCE).package.expect("reference");
-        let (object, findings) = validate_json(&schema::ROOT, REFERENCE, "", &Ctx::v1());
+        let (object, findings) = validate_json(&schema::ROOT, REFERENCE, "", &Ctx { assets: package.assets.iter().map(|(id, _)| id.clone()).collect(), ..Ctx::v1() });
         assert!(findings.is_empty(), "{findings:#?}");
         let object = object.expect("typed");
-        assert_eq!(object.node, "package");
+        assert_eq!(object.node, "hud");
         assert_eq!(object.get("layout"), Some(&Val::Object(package.layout)));
 
         // A fragment is judged by the same rules, in the scope its context gives.
@@ -2554,16 +2388,16 @@ mod tests {
             let parsed = parse(bytes);
             only(&parsed, &codes::E0100, "");
         }
-        let oversize = vec![b' '; MAX_PACKAGE_BYTES + 1];
+        let oversize = vec![b' '; MAX_HUD_JSON_BYTES + 1];
         let parsed = parse(&oversize);
         let finding = only(&parsed, &codes::E0100, "");
-        assert!(finding.message.contains(&MAX_PACKAGE_BYTES.to_string()));
+        assert!(finding.message.contains(&MAX_HUD_JSON_BYTES.to_string()));
         // Within the byte cap but past the decoded-memory bound the HUD gives the reader: 100 000
         // array nodes in 200 KB. The refusal is worded for a package, not for the recorder.
         let mut many = String::from("{\"layout\": [0");
         many.push_str(&",0".repeat(100_000));
         many.push_str("]}");
-        assert!(many.len() < MAX_PACKAGE_BYTES);
+        assert!(many.len() < MAX_HUD_JSON_BYTES);
         let parsed = parse(many.as_bytes());
         let finding = only(&parsed, &codes::E0100, "");
         assert!(finding.message.contains("too large"), "{}", finding.message);
@@ -2608,16 +2442,11 @@ mod tests {
         let near = nearest(&"a".repeat(48), [long_candidate.as_str(), &"b".repeat(48)]);
         assert_eq!(near.first(), Some(&long_candidate));
         // An unknown face lists a dozen declared assets and counts the rest, however many are declared.
-        let assets: Vec<String> = (0..40).map(|n| format!(r#""a{n:02}": "{SVG}""#)).collect();
-        let text = with_header(&format!(r#""assets": {{ {} }}"#, assets.join(", ")));
-        let finding = refuses(
-            &edit(
-                &text,
-                &[(r#""size": 52 }"#, r#""size": 52, "face": "nope" }"#)],
-            ),
-            &codes::E0203,
-            &format!("{ITEM_AT}/face"),
-        );
+        let ctx = Ctx { assets: (0..40).map(|n| format!("a{n:02}")).collect(), ..Ctx::v1() };
+        let item = r#"{ "id": "more", "command": "open_more", "widget": "disc", "size": 52, "face": "nope" }"#;
+        let (_, findings) = validate_json(&schema::ITEM, item, ITEM_AT, &ctx);
+        let finding = &findings[0];
+        assert_eq!((finding.code, finding.pointer.as_str()), (codes::E0203.id, &*format!("{ITEM_AT}/face")));
         assert!(finding.hint.contains("a00"), "{}", finding.hint);
         assert!(!finding.hint.contains("a39"), "{}", finding.hint);
         assert!(finding.hint.contains("and 28 more"), "{}", finding.hint);
@@ -2626,10 +2455,10 @@ mod tests {
     #[test]
     fn the_package_reader_names_only_keys_the_table_has() {
         for key in [
-            "id", "version", "name", "author", "license", "app", "palette", "assets", "layout",
+            "id", "version", "name", "author", "license", "app", "palette", "layout",
         ] {
             assert!(
-                schema::ROOT.fields.iter().any(|f| f.key == key),
+                schema::ROOT.fields.iter().chain(schema::MANIFEST.fields).any(|f| f.key == key),
                 "`Package::from_object` reads `{key}`, which `schema::ROOT` does not list"
             );
         }
@@ -2661,24 +2490,24 @@ mod tests {
             r#""format": null"#,
             r#""format": ["1.0"]"#,
         ] {
-            refuses(&with_format(malformed), &codes::E0401, "/format");
+            refuses(&with_format(malformed), &codes::E0401, "/hud/format");
         }
         let missing = edit(MINIMAL, &[(r#""format": "1.0","#, ""), other_mistake]);
-        refuses(&missing, &codes::E0401, "/format");
+        refuses(&missing, &codes::E0401, "/hud/format");
 
         for newer_minor in ["1.1", "1.7", "1.255", "1.99999999999999999999999"] {
             let text = with_format(&format!(r#""format": "{newer_minor}""#));
-            let finding = refuses(&text, &codes::E0402, "/format");
+            let finding = refuses(&text, &codes::E0402, "/hud/format");
             assert_eq!(finding.message, REASON_NEWER, "{newer_minor}");
         }
         for newer_major in ["2.0", "9.9", "256.0", "99999999999999999999999.0"] {
             let text = with_format(&format!(r#""format": "{newer_major}""#));
-            let finding = refuses(&text, &codes::E0403, "/format");
+            let finding = refuses(&text, &codes::E0403, "/hud/format");
             assert_eq!(finding.message, REASON_NEWER, "{newer_major}");
         }
-        let finding = refuses(&with_format(r#""format": "0.9""#), &codes::E0403, "/format");
+        let finding = refuses(&with_format(r#""format": "0.9""#), &codes::E0403, "/hud/format");
         assert_eq!(finding.message, REASON_OLDER);
-        let finding = refuses(&with_format(r#""format": "0.0""#), &codes::E0403, "/format");
+        let finding = refuses(&with_format(r#""format": "0.0""#), &codes::E0403, "/hud/format");
         assert_eq!(finding.message, REASON_OLDER);
         // Past the gate, the same other mistake is reported.
         let parsed = parse_text(&with_format(r#""format": "1.0""#));
@@ -3475,79 +3304,31 @@ mod tests {
     }
 
     #[test]
-    fn assets_are_ids_and_pass_the_svg_subset() {
-        let parsed = parse_text(&with_header(&format!(r#""assets": {{ "mark": "{SVG}" }}"#)));
-        assert!(parsed.findings.is_empty(), "{:#?}", parsed.findings);
-        assert_eq!(
-            parsed.package.expect("package").assets,
-            vec![("mark".to_owned(), SVG.to_owned())]
-        );
-
-        // An SVG finding is merged as it is: its code, its pointer.
-        let circle = "<svg viewBox='0 0 24 24'><circle r='1'/></svg>";
-        let parsed = parse_text(&with_header(&format!(
-            r#""assets": {{ "mark": "{circle}" }}"#
-        )));
-        assert!(parsed.package.is_none());
-        let direct =
-            svg_subset::check_asset("/assets/mark", circle).expect_err("a circle is refused");
-        assert_eq!(parsed.findings, direct);
-        assert_eq!(parsed.findings[0].pointer, "/assets/mark");
-        assert_eq!(parsed.findings[0].code, codes::E0701.id);
-
-        refuses(
-            &with_header(&format!(r#""assets": {{ "Bad Id": "{SVG}" }}"#)),
-            &codes::E0105,
-            "/assets/Bad Id",
-        );
-        refuses(
-            &with_header(r#""assets": { "mark": 5 }"#),
-            &codes::E0104,
-            "/assets/mark",
-        );
-        refuses(
-            &with_header(r#""assets": [ "x" ]"#),
-            &codes::E0104,
-            "/assets",
-        );
-        refuses(
-            &with_header(&format!(
-                r#""assets": {{ "mark": "{SVG}", "mark": "{SVG}" }}"#
-            )),
-            &codes::E0101,
-            "/assets/mark",
-        );
-
-        // A face may name a declared asset, wherever `assets` is written; findings stay in document order.
-        let with_face = edit(
-            MINIMAL,
-            &[(r#""size": 52 }"#, r#""size": 52, "face": "late" }"#)],
-        );
-        let body = with_face.trim_end().strip_suffix('}').expect("an object");
-        let late = format!(r#"{body}, "assets": {{ "late": "{SVG}" }} }}"#);
-        let parsed = parse_text(&late);
-        assert!(parsed.findings.is_empty(), "{:#?}", parsed.findings);
-        let package = parsed.package.expect("package");
-        assert_eq!(
-            control(&package.layout, "more").get("face"),
-            Some(&Val::Ref("late".to_owned()))
-        );
-
-        let both = edit(
-            &late,
-            &[(r#""fill": "ACCENT""#, r#""fill": "ACCNT""#), (SVG, circle)],
-        );
-        let parsed = parse_text(&both);
-        assert!(parsed.package.is_none());
-        assert_eq!(
-            parsed.findings[0].code,
-            codes::E0202.id,
-            "the layout's finding stands first"
-        );
-        assert!(parsed.findings[1..]
-            .iter()
-            .all(|f| f.pointer == "/assets/late" && f.code.starts_with("HUD-E07")));
-        assert!(parsed.findings.len() >= 2, "{:#?}", parsed.findings);
+    fn resources_are_ids_and_svg_findings_name_the_member() {
+        use crate::hud_format::bundle::{self, archive::File};
+        let mut files = fixtures::files("minimal");
+        let metadata = MINIMAL_MANIFEST.replacen(r#""hud": {"#, r#""resources": { "mark": "assets/mark.svg" }, "hud": {"#, 1);
+        let hud = with_command(r#""command": "open_more", "face": "mark""#);
+        files[0].bytes = metadata.as_bytes().into();
+        files[1].bytes = hud.as_bytes().into();
+        files.push(File::new("assets/mark.svg", SVG.as_bytes()));
+        let bytes = bundle::archive::pack(&files).unwrap();
+        let decoded = bundle::read(&bytes, None);
+        assert!(decoded.findings.is_empty(), "{:?}", decoded.findings);
+        assert_eq!(decoded.package.unwrap().hud().assets, vec![("mark".into(), Arc::<str>::from(SVG))]);
+        files[2].bytes = b"<svg viewBox='0 0 24 24'><circle r='1'/></svg>".as_slice().into();
+        let decoded = bundle::read(&bundle::archive::pack(&files).unwrap(), None);
+        assert!(decoded.package.is_none());
+        assert!(decoded.findings.iter().all(|finding| finding.file.as_deref() == Some("assets/mark.svg") && finding.pointer.is_empty() && finding.code.starts_with("HUD-E07")));
+        for (resource, code, pointer) in [
+            (r#"{ "Bad Id": "assets/mark.svg" }"#, &codes::E0105, "/resources/Bad Id"),
+            (r#"{ "mark": 5 }"#, &codes::E0104, "/resources/mark"),
+            (r#"[ "x" ]"#, &codes::E0104, "/resources"),
+            (r#"{ "mark": "assets/mark.svg", "mark": "assets/mark.svg" }"#, &codes::E0101, "/resources/mark"),
+        ] {
+            let metadata = MINIMAL_MANIFEST.replacen(r#""hud": {"#, &format!(r#""resources": {resource}, "hud": {{"#), 1);
+            refuses(&metadata, code, pointer);
+        }
     }
 
     // ----- (5) hostile input -----
@@ -3575,10 +3356,10 @@ mod tests {
         only(&parse(deep_array.as_bytes()), &codes::E0100, "");
         only(&parse(deep_object.as_bytes()), &codes::E0100, "");
         only(&parse(deep_layout.as_bytes()), &codes::E0100, "");
-        only(&parse(b"{}"), &codes::E0401, "/format");
+        only(&parse(b"{}"), &codes::E0103, "");
         // Deep but legal nesting reaches the walker, which reports it and goes on.
         let nested = format!(
-            r#"{{"format": "1.0", "id": {}0{}, "layout": {}0{}}}"#,
+            r#"{{"palette": {}0{}, "layout": {}0{}}}"#,
             "[".repeat(100),
             "]".repeat(100),
             "[".repeat(100),
@@ -3586,7 +3367,7 @@ mod tests {
         );
         let parsed = parse_text(&nested);
         assert!(
-            found(&parsed.findings).contains(&(codes::E0104.id, "/id")),
+            found(&parsed.findings).contains(&(codes::E0104.id, "/palette")),
             "{:#?}",
             parsed.findings
         );

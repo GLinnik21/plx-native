@@ -1,5 +1,28 @@
 # `tests/fixtures` — synthesizing the media the suite needs
 
+## Dolby Vision random-access comparison (issue #1166)
+
+The pipeline tier has an original DV Profile 8.1 A/B pair:
+
+```sh
+python3 tests/fixtures/make_fixtures.py --tier pipeline \
+  --only pipe_hevc_eac3_4k_dovi_p8,pipe_hevc_eac3_4k_dovi_idr --out /path/out
+```
+
+Both clips use synthetic 4K HDR10-compatible video, authored Dolby Vision RPU metadata,
+E-AC-3 audio, and a 60-second duration. The `p8` clip begins with an IDR and has CRA seek
+points; the `idr` control uses closed GOPs and later IDRs. Each banner identifies its clip.
+Verification reads the first five seconds' actual key-packet NAL types and requires an RPU
+at each inspected key, rather than trusting the container's keyframe flag. The results are
+in `video.random_access` in `fixtures.json`. Builds shorter than three seconds verify only
+the initial key; use the full clips for the comparison.
+
+Compare playback from the start, seeking to 4.2 seconds, and a cold resume at 4.2 seconds
+with Dolby Vision enabled. The reported webOS 5.5 failure skips CRA at the DV splitter's
+initial random-access gate. Matching that packet structure is a candidate reproducer;
+it is not proof that a generated clip reproduces the fault on that TV. See
+[the trace analysis](../../docs/measurements/issue1166-cra.md).
+
 `tests/run.py` grades the player against nine symbolic **item shapes**
 (`movie_h264_ac3_1080p`, `episode_hevc_4k_hdr10_eac3`, …), and
 `tests/manifest.local.json` maps each shape to a ratingKey on whatever PMS you own. That

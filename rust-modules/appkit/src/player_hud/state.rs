@@ -102,9 +102,10 @@ pub enum ControlSlot {
     Discs(Controls),
     /// a marker segment is under the playhead
     Skip(crate::skip_pill::Prompt),
-    /// …and the show has another episode queued, which outranks skipping the credits. Carries the
-    /// segment for the same reason `Skip` does — so the row has a stable IDENTITY.
+    /// Final credits with a queued successor under the existing ten-second countdown.
     UpNext(plx_data::metadata::Marker),
+    /// The same two controls, driven by the viewer's five presented second automatic policy.
+    AutomaticUpNext(plx_data::metadata::Marker),
 }
 
 impl ControlSlot {
@@ -114,7 +115,7 @@ impl ControlSlot {
         match self {
             ControlSlot::Discs(_) => BTN_N,
             // Watch Credits + Next Episode — the one stand-in with a pair
-            ControlSlot::UpNext(_) => 2,
+            ControlSlot::UpNext(_) | ControlSlot::AutomaticUpNext(_) => 2,
             ControlSlot::Skip(_) => 1,
         }
     }
@@ -124,7 +125,7 @@ impl ControlSlot {
     /// would disarm the timer on the frame after it armed.
     pub fn primary_btn(self) -> c_int {
         match self {
-            ControlSlot::UpNext(_) => crate::up_next::PRIMARY_BTN,
+            ControlSlot::UpNext(_) | ControlSlot::AutomaticUpNext(_) => crate::up_next::PRIMARY_BTN,
             ControlSlot::Discs(controls) => controls.primary(),
             _ => 0,
         }
@@ -156,13 +157,23 @@ impl ControlSlot {
         match self {
             ControlSlot::Discs(_) => None,
             ControlSlot::Skip(pr) => Some(pr.marker),
-            ControlSlot::UpNext(m) => Some(m),
+            ControlSlot::UpNext(m) | ControlSlot::AutomaticUpNext(m) => Some(m),
+        }
+    }
+    pub fn is_up_next_pair(self) -> bool {
+        matches!(self, Self::UpNext(_) | Self::AutomaticUpNext(_))
+    }
+    pub fn automatic_marker(self) -> Option<plx_data::metadata::Marker> {
+        match self {
+            Self::AutomaticUpNext(marker) => Some(marker),
+            Self::Skip(prompt) if prompt.automatic => Some(prompt.marker),
+            _ => None,
         }
     }
 }
 
-/// PURE precedence: given the segment under the playhead and whether the queue has a successor,
-/// which control owns the row. Host-testable, and the ONLY place the ordering is written down.
+/// Legacy precedence: given the segment under the playhead and whether the queue has a successor,
+/// which control owns the row. `slot_for_preferences` applies the new viewer-authorized modes.
 ///
 /// Up Next outranks Skip Credits deliberately: with somewhere to go, "next episode" is the better
 /// offer, and Skip Credits stays for the last episode of a show, where there is nowhere to go.
@@ -195,6 +206,11 @@ pub fn slot_for(marker: Option<plx_data::metadata::Marker>, has_next: bool, mode
 /// handlers and the draw, so re-deriving per call site let a keypress dispatch to a control that
 /// the same frame then declined to draw.
 pub fn slot(ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>) -> ControlSlot {
+    slot_with_preferences(ps, meta, crate::skip_policy::MarkerPrefsView::default())
+}
+
+pub fn slot_with_preferences(ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>,
+    prefs: crate::skip_policy::MarkerPrefsView) -> ControlSlot {
     let has_next = plx_media::route::up_next(ps).is_some();
     let mode = plx_media::route::next_episode_mode();
     // The data layer does not read the player: the playhead is sampled here, once, and handed in.
@@ -206,13 +222,40 @@ pub fn slot(ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::Me
     // Server marker first; the synthesized tail only exists where credits DETECTION does not
     // (a Plex Pass server feature) — see `metadata::synthesized_tail_marker` — and only to feed
     // the Up Next countdown, so it is not even computed in the other modes.
-    let m = meta.active_marker(head).or_else(|| {
+    let real = meta.active_marker(head);
+    let m = real.or_else(|| {
         (mode == plx_media::route::NextEpisodeMode::Countdown)
             .then(|| meta.synthesized_tail_marker(head, has_next))
             .flatten()
     });
-    let slot = slot_for(m, has_next, mode);
+    let slot = slot_for_preferences(m, real.is_some(), has_next, mode, prefs);
     if slot.is_discs() { ControlSlot::Discs(Controls::now(ps)) } else { slot }
+}
+
+/// New modes apply only to genuine server markers and a fresh matching viewer grant.
+pub fn slot_for_preferences(marker: Option<plx_data::metadata::Marker>, real: bool, has_next: bool,
+    next: plx_media::route::NextEpisodeMode, prefs: crate::skip_policy::MarkerPrefsView) -> ControlSlot {
+    use plx_plex::plex::session::MarkerSkipMode;
+    if let Some(m) = marker.filter(|_| real) {
+        match prefs.mode(m.kind) {
+            MarkerSkipMode::Automatic => {
+                if matches!(slot_for(Some(m), has_next, next), ControlSlot::UpNext(_)) {
+                    return ControlSlot::AutomaticUpNext(m);
+                }
+                let mut prompt = crate::skip_pill::prompt_for(m);
+                prompt.automatic = true;
+                return ControlSlot::Skip(prompt);
+            }
+            MarkerSkipMode::Disabled => {
+                if has_next && m.kind == plx_data::metadata::MarkerKind::Credits && m.final_seg {
+                    return slot_for(Some(m), has_next, next);
+                }
+                return ControlSlot::Discs(Controls::NONE);
+            }
+            MarkerSkipMode::Manual => {}
+        }
+    }
+    slot_for(marker, has_next, next)
 }
 
 /// PURE edge: has a stand-in just vanished OUT FROM UNDER the focus ring, so the ring has to go

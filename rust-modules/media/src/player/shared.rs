@@ -780,8 +780,8 @@ pub struct Shared {
     /// Whether the active HLS segment declared an audio stream that this session feeds. The prime
     /// gate must not reinterpret a temporarily empty audio lane as a genuinely video-only file.
     pub hls_audio_expected: AtomicBool,
-    /// Retrospective replay reserve used at a fresh HLS Load/seek boundary and when a viewer
-    /// resumes a queue-backed stream. Automatic runtime rebuffer uses the pause-local
+    /// Retrospective replay reserve used only at a fresh HLS Load/seek boundary. Viewer Resume
+    /// requires the balanced decoder prime; automatic runtime rebuffer uses the pause-local
     /// `hls_recovery` certificate below; carrying this history into every controller-created hold
     /// was the source of repeated freeze/catch-up on an otherwise stable stream. Zero leaves the
     /// decoder's ordinary prime threshold in charge.

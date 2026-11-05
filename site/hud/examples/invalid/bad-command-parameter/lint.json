@@ -1,0 +1,21 @@
+{
+  "costs": [],
+  "file": "examples/invalid/bad-command-parameter",
+  "findings": [
+    {
+      "code": "HUD-E0304",
+      "file": "hud.json",
+      "hint": "write one of: subtitles, audio",
+      "message": "`video` is not a known name",
+      "nearest": [
+        "audio",
+        "subtitles"
+      ],
+      "path": "/layout/block/1/cells/0/segment/items/0/tab",
+      "rule": "command-param-value",
+      "severity": "error"
+    }
+  ],
+  "package_sha256": "7f223d36a93ee4ee7e74d8d013b813075913eb2f95eacd9b1e671ef9382539bd",
+  "protocol": 1
+}

@@ -203,6 +203,9 @@ pub mod space {
 /// **Panel geometry tokens** — widths a whole class of popover shares, so no panel carries a width
 /// literal of its own.
 pub mod layout {
+    /// Reading column for Settings, consent and the shared route-page family.
+    /// Independent of the wider full-bleed hero column so adjacent tables retain their measure.
+    pub const ROUTE_COPY_W: f32 = 660.0;
     /// Narrowest an in-player popover (Tracks, More) is drawn, at 1080p. A small page (Style, a
     /// Size / Position / Color picker, the More menu) would otherwise shrink to its labels and wrap
     /// its note into a column too narrow to read; this floor keeps it a panel. A FLOOR only: wider
@@ -213,55 +216,49 @@ pub mod layout {
     pub const PLAYER_MENU_GAP: f32 = 28.0;
 }
 
-/// The **logo presence ladder** — how big a clearLogo is DRAWN. The third size axis of the design
-/// system, beside [`size`] (type) and [`space`] (gaps), and it exists for the same reason: a logo
-/// used to be sized by a per-screen literal (96 on the home hero, 120 on the detail hero, 54 on the
-/// scrolled compact title), so the SAME mark was three sizes in one app.
-///
-/// **The rule is constant AREA, not constant height** ([`crate::hero_logo::fit`]). A clearLogo's
-/// aspect runs from ~1:1 (an emblem) to ~10:1 (a long wordmark); under a height clamp the drawn area
-/// is LINEAR in aspect, so a 5:1 wordmark covered five times the ink of a 1:1 emblem — which is
-/// exactly why square logos read as an afterthought. Solving for a target AREA instead makes a
-/// square grow TALL and a wordmark grow WIDE, so both carry the same weight. The floor then stops a
-/// very wide mark thinning to a pinstripe, the ceiling stops a taller-than-wide asset swallowing the
-/// hero, and the caller's column contains the result last.
+/// Full-bleed hero treatment shared by Home and Detail (1920×1080 proposal).
+pub mod hero {
+    /// Both full-bleed heroes use the same reading column in the proposal.
+    pub const TEXT_W: f32 = 943.0;
+    /// Edition, kind, genres and content rating in both heroes: regular 24 px, as in the PDF.
+    pub const IDENTITY_SIZE: i32 = super::size::CAPTION;
+    /// Long titles without a clearLogo wrap over at most two DISPLAY lines.
+    pub const TITLE_LINES: usize = 2;
+    pub const TITLE_LEAD: f32 = super::size::DISPLAY as f32 * 1.06;
+    /// Facts are a CAPTION line box, including its optical air.
+    pub const FACTS_H: f32 = super::size::CAPTION as f32;
+
+    /// Minimum Play/Resume capsule; translated labels may grow beyond it.
+    pub const PLAY_MIN_W: f32 = 224.0;
+    /// Atmospheric midpoint, 62% of the distance from the 34% origin to the foot.
+    pub const SCRIM_MID_Y: f32 = (0.34 + (1.0 - 0.34) * 0.62) * crate::consts::SCR_H;
+    /// People-column corner weight: four wrapped credit lines retain the 2.5:1 pure-white
+    /// contrast floor under the lighter atmosphere; its feather starts higher for the raised credits.
+    pub const SCRIM_RIGHT_A: f32 = 0.78;
+    /// Opacity at the atmospheric midpoint. The corner wedges supply local contrast.
+    pub const SCRIM_MID_A: f32 = 0.55;
+    /// Opacity at the foot: retain the artwork's colour under the action row.
+    pub const SCRIM_FOOT_A: f32 = 0.86;
+}
+
+/// Shared logo presence: target bounding-box area, with independent width/height limits.
+/// A wide mark may paint shorter than its layout band; a tall mark may paint above it.
+/// The band remains constant so artwork never moves the metadata or actions.
 pub mod logo {
-    /// HERO rung — the home hero's title band AND the detail hero's title band (one mark on two
-    /// screens, one value; the user directive is "mutual logic for logo size for all hero"). The
-    /// target ink in px², anchored on the shape this rule must NOT move: a 5:1 wordmark at the
-    /// height floor, i.e. 600×120 — the detail hero's on-device-tuned size today. Every other
-    /// aspect is solved from it, so the commonest logo shape is unchanged and only squarer ones grow.
-    pub const HERO_AREA: f32 = 72_000.0;
-    /// The shortest a hero logo is ever drawn, and the height everything ~5:1 and wider lands on.
-    /// The detail hero's tuned 120; home's old 96 is retired, because two heroes drawing the same
-    /// clearLogo must draw it the same size. Deliberately a step ABOVE one line of [`super::size::HERO`]
-    /// text (72 × 1.32 ≈ 95): the logo is the brand mark and outranks the text title it stands in
-    /// for. ALSO the LAYOUT height of the title band ([`crate::hero_logo::band_h`]) — a taller
-    /// logo spills upward as paint, never as layout.
-    pub const HERO_H_MIN: f32 = 120.0;
-    /// The tallest. = √[`HERO_AREA`], i.e. precisely where the area rule lands a 1:1 logo — so the
-    /// ceiling never touches a real wordmark and bites only on a taller-than-wide asset. This is the
-    /// ONE knob to pull down (to ~200) if a device capture says a square emblem shouts or crowds the
-    /// detail page's compact title mid-scroll; do not reach for the area, which is what keeps
-    /// wordmarks where they are.
-    pub const HERO_H_MAX: f32 = 268.0;
-    /// COMPACT rung — the pinned title the detail page scrolls up to. The hero rung scaled by
-    /// ([`COMPACT_H_MIN`]/[`HERO_H_MIN`])² = 0.45², so the two rungs cannot drift apart: a 5:1
-    /// wordmark lands on the floor at BOTH rungs, by construction.
-    pub const COMPACT_AREA: f32 = 14_580.0;
-    /// One line of [`super::size::TITLE`] text (40 × 1.32 ≈ 53) — the compact title's own text
-    /// fallback, which is what this rung stands in for. Unchanged from the literal 54 it replaces,
-    /// so a wordmark in the pinned strip is pixel-identical to today.
-    pub const COMPACT_H_MIN: f32 = 54.0;
-    /// Set by the BAND, not by the area rule (which would want 121 here): the pinned strip has to
-    /// clear the screen top and stop short of `detail::TOP_MARGIN`, where the first scrolled
-    /// section lifts to.
-    ///
-    /// Since 2026-08-23 the strip is solved from this number rather than fitted around it — "clear
-    /// the screen top" now means clear the OVERSCAN frame (`consts::MARGIN_Y` 54), so
-    /// `detail::COMPACT_TITLE_BOT` is `54 + this` and `TOP_MARGIN` is that plus 26px of air. Pulling
-    /// this down (still the one knob to pull if a device capture says a square emblem crowds the
-    /// pinned title) now lifts the whole strip with it instead of only shrinking the mark.
+    /// Comparable presence for ordinary wordmarks and emblems, before either axis limit binds.
+    pub const HERO_AREA: f32 = 60_000.0;
+    /// The title flow reserves this height independently of the painted logo.
+    pub const HERO_BAND_H: f32 = 120.0;
+    /// Wide wordmarks stop here instead of growing to the full reading column.
+    pub const HERO_W_MAX: f32 = 640.0;
+    /// Tall and square marks cannot dominate the artwork or reach the top navigation.
+    pub const HERO_H_MAX: f32 = 240.0;
+    /// The pinned compact title retains its existing layout band.
+    pub const COMPACT_BAND_H: f32 = 54.0;
+    /// Compact presence derives from the same scale, rather than a separate aspect rule.
+    pub const COMPACT_AREA: f32 = HERO_AREA * (COMPACT_BAND_H / HERO_BAND_H) * (COMPACT_BAND_H / HERO_BAND_H);
+    pub const COMPACT_W_MAX: f32 = HERO_W_MAX * COMPACT_BAND_H / HERO_BAND_H;
+    /// The compact strip's overscan and following content use this height limit too.
     pub const COMPACT_H_MAX: f32 = 72.0;
 }
 
@@ -695,12 +692,10 @@ pub const SCRIM_BLACK_INK: [f32; 3] = [BLACK[0], BLACK[1], BLACK[2]];
 /// The binding case is a `TEXT_SECONDARY` BODY line where the hero's bottom-up ramp supplies only
 /// ~0.29: it needs 0.655 total, so the wedge must carry ~0.51 there and rather more at the title.
 ///
-/// The same weight the tab bar's own track capsule already uses for the same job over the same
-/// artwork ([`TAB_TRACK_A_TOP`]) — one value per role, arrived at independently twice. An alpha
-/// rather than a colour, like [`CARD_SHADOW_REST_A`]: the ink is [`SCRIM_INK`], only the weight is
-/// the decision. **This is the one knob** if the treatment reads heavy — 0.60 still clears 3:1
-/// everywhere.
-pub const SCRIM_TEXT_A: f32 = 0.72;
+/// The wider, two-line fallback can end at x=1039 above the atmospheric ramp. Its corner
+/// treatment peaks at .84 across the full frame width to preserve the bright-art and pure-white
+/// contrast floors. The treatment's geometry and these floors are pinned together by the tests.
+pub const SCRIM_TEXT_A: f32 = 0.84;
 
 /// **White overlay at alpha `a`** — the ramp every overlay on this palette rides.
 ///
@@ -1116,7 +1111,7 @@ pub const TAB_TRACK_BOT: [f32; 4] = scrim_black(TAB_TRACK_A_BOT);
 /// | .56 | 1.73 | | **.72** | **3.23** |
 ///
 /// The bar is **3:1** — the same one `widgets`' ground test holds an ambient wash to, and the same
-/// arithmetic that put [`SCRIM_TEXT_A`] and [`TAB_TRACK_A_TOP`] at .72 in the first place. Read as a
+/// arithmetic used to derive [`SCRIM_TEXT_A`] and [`TAB_TRACK_A_TOP`]. Read as a
 /// CONSTANT that table says the first legal density is the flat track's own, because **a blur
 /// removes DETAIL, not brightness**: a quarter-res Kawase of a white poster is still white. That was
 /// the verdict for a day, and it is the right verdict for a constant.

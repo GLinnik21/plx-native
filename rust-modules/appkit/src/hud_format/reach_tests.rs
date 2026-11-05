@@ -8,13 +8,13 @@
 
 use std::collections::BTreeSet;
 
-use super::parse::{self, Package};
+use super::parse::Package;
 use super::reach::Layout;
 use super::{check, codes, Code, Finding, Fold};
 
-const CLASSIC: &str = crate::hud_format::CLASSIC_PACKAGE;
-const REFERENCE: &str = include_str!("fixtures/reference.plxhud.json");
-const MINIMAL: &str = include_str!("fixtures/minimal.plxhud.json");
+const CLASSIC: &str = crate::hud_format::CLASSIC_HUD;
+const REFERENCE: &str = include_str!("fixtures/reference/hud.json");
+const MINIMAL: &str = include_str!("fixtures/minimal/hud.json");
 
 /// `classic`'s control row: the segment `row` of the band `top`, and the one control every row edits.
 const ROW: &str = "/layout/block/0/cells/1/segment/items";
@@ -36,7 +36,7 @@ fn edit(src: &str, from: &str, to: &str) -> String {
 }
 
 fn package(text: &str) -> Package {
-    let parsed = parse::parse(text.as_bytes());
+    let parsed = crate::hud_format::fixtures::parse(text.as_bytes());
     assert!(
         parsed.findings.is_empty(),
         "the package must parse clean: {:?}",
@@ -76,7 +76,7 @@ fn fold(command: &'static str, section: Option<&'static str>) -> Fold {
 
 #[test]
 fn builtin_classic_passes_package_invariants() {
-    let parsed = parse::parse(CLASSIC.as_bytes());
+    let parsed = crate::hud_format::fixtures::parse_for("classic", CLASSIC.as_bytes());
     assert!(parsed.findings.is_empty(), "{}", dump(&parsed.findings));
     let package = parsed.package.expect("a package");
     assert_eq!(package.id, "builtin:classic");
@@ -192,9 +192,9 @@ fn every_fixture_passes_r1_and_r2_with_the_states_its_valuations_make() {
     //   hero-center 1 valuation, modal sections but no opener: 3 slots
     //   palette     1 valuation, modal sections but no opener: 3 slots
     //   tabs        2 valuations (chapters.present only): absent 3 + {info} = 4, present 3 + 3 subsets = 6
-    let hero = include_str!("fixtures/hero-center.plxhud.json");
-    let palette = include_str!("fixtures/palette.plxhud.json");
-    let tabs = include_str!("fixtures/tabs.plxhud.json");
+    let hero = include_str!("fixtures/hero-center/hud.json");
+    let palette = include_str!("fixtures/palette/hud.json");
+    let tabs = include_str!("fixtures/tabs/hud.json");
     for (name, text, valuations, states) in [
         ("classic", CLASSIC, 4, 18),
         ("reference", REFERENCE, 2, 12),
@@ -334,7 +334,7 @@ fn rows() -> Vec<Row> {
         row(
             "i9_palette_in_builtin_classic",
             edit(
-                &c(r#""license": "GPL-3.0-or-later","#, r##""license": "GPL-3.0-or-later", "palette": { "gold": "#f2b535" },"##),
+                &c(r#""layout": {"#, r##""palette": { "gold": "#f2b535" }, "layout": {"##),
                 r#""track": "RAIL_TRACK""#,
                 r#""track": "gold""#,
             ),
@@ -366,7 +366,8 @@ fn rows() -> Vec<Row> {
 #[test]
 fn every_invalid_package_reports_its_code_at_its_pointer() {
     for row in rows() {
-        let package = package(&row.text);
+        let mut package = package(&row.text);
+        if row.code.id == "HUD-E0902" { package.id = "builtin:classic".into(); }
         let checked = check(&package);
         let found = assert_finding(&checked.findings, row.code, &row.pointer);
         assert!(
@@ -486,7 +487,7 @@ fn parse_rows() {
         ),
     ];
     for (label, text, code, pointer) in rows {
-        let parsed = parse::parse(text.as_bytes());
+        let parsed = crate::hud_format::fixtures::parse(text.as_bytes());
         assert!(parsed.package.is_none(), "row `{label}`: must not parse");
         assert_finding(&parsed.findings, code, &pointer);
     }

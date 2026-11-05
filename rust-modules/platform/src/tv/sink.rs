@@ -8,10 +8,7 @@ use std::os::raw::{c_char, c_int, c_long, c_uint};
 /// Which video-plane binding this television has. See `src/starfish.h`'s `VP_*` and the long
 /// comment at the top of `src/starfish.c`.
 pub const VP_NONE: c_int = 0;
-/// Not referenced in Rust: the ACB path is selected by the SEAM (every `acb_*` verb no-ops in the
-/// other modes) rather than by a branch here, and `ACB_OK` carries the fact the pump needs. Kept
-/// so the three values are readable together, matching `starfish.h`.
-#[allow(dead_code)]
+/// The legacy ACB plane; controlled URI experiments require this mode and a boot-created handle.
 pub const VP_ACB: c_int = 1;
 pub const VP_EXPORTED: c_int = 2;
 
@@ -106,6 +103,18 @@ pub trait VideoSink: Sync {
         dst_y: c_int, dst_w: c_int, dst_h: c_int) -> c_int;
     unsafe fn destroy_window(&self, mt: &MainThread);
     unsafe fn plane_create(&self, mt: &MainThread, app_id: *const c_char, player_type: c_int) -> c_long;
+    #[cfg(feature = "devtriggers")]
+    unsafe fn plane_probe_initialized(&self, mt: &MainThread) -> bool;
+    #[cfg(feature = "devtriggers")]
+    unsafe fn plane_probe_dass_available(&self, mt: &MainThread) -> bool;
+    #[cfg(feature = "devtriggers")]
+    unsafe fn plane_probe_media_id(&self, mt: &MainThread, media_id: *const c_char) -> c_int;
+    #[cfg(feature = "devtriggers")]
+    unsafe fn plane_probe_loaded(&self, mt: &MainThread) -> c_int;
+    #[cfg(feature = "devtriggers")]
+    unsafe fn plane_probe_connect_dass(&self, mt: &MainThread) -> c_int;
+    #[cfg(feature = "devtriggers")]
+    unsafe fn plane_probe_finish(&self, mt: &MainThread) -> c_int;
     unsafe fn plane_bind(&self, mt: &MainThread, media_id: *const c_char);
     unsafe fn plane_send_video_data(&self, mt: &MainThread, source_info: *const c_char) -> c_int;
     unsafe fn plane_send_atmos(&self, mt: &MainThread, media_id: *const c_char) -> c_int;
@@ -150,6 +159,18 @@ macro_rules! refuse_every_verb {
             _dst_y: c_int, _dst_w: c_int, _dst_h: c_int) -> c_int { 0 }
         unsafe fn destroy_window(&self, _mt: &MainThread) {}
         unsafe fn plane_create(&self, _mt: &MainThread, _app_id: *const c_char, _player_type: c_int) -> c_long { 0 }
+        #[cfg(feature = "devtriggers")]
+        unsafe fn plane_probe_initialized(&self, _mt: &MainThread) -> bool { false }
+        #[cfg(feature = "devtriggers")]
+        unsafe fn plane_probe_dass_available(&self, _mt: &MainThread) -> bool { false }
+        #[cfg(feature = "devtriggers")]
+        unsafe fn plane_probe_media_id(&self, _mt: &MainThread, _media_id: *const c_char) -> c_int { 0 }
+        #[cfg(feature = "devtriggers")]
+        unsafe fn plane_probe_loaded(&self, _mt: &MainThread) -> c_int { 0 }
+        #[cfg(feature = "devtriggers")]
+        unsafe fn plane_probe_connect_dass(&self, _mt: &MainThread) -> c_int { 0 }
+        #[cfg(feature = "devtriggers")]
+        unsafe fn plane_probe_finish(&self, _mt: &MainThread) -> c_int { 0 }
         unsafe fn plane_bind(&self, _mt: &MainThread, _media_id: *const c_char) {}
         unsafe fn plane_send_video_data(&self, _mt: &MainThread, _source_info: *const c_char) -> c_int { -1 }
         unsafe fn plane_send_atmos(&self, _mt: &MainThread, _media_id: *const c_char) -> c_int { 0 }

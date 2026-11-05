@@ -3,12 +3,12 @@ use super::*;
 use plx_machine::machine::Measure;
 use std::sync::Arc;
 
-const REFERENCE: &str = include_str!("../../../hud_format/fixtures/reference.plxhud.json");
+const REFERENCE: &str = include_str!("../../../hud_format/fixtures/reference/hud.json");
 
 fn load(text: &str) -> Arc<Compiled> {
-    let parsed = crate::hud_format::parse::parse(text.as_bytes());
+    let parsed = crate::hud_format::fixtures::parse(text.as_bytes());
     assert!(parsed.findings.is_empty(), "{:?}", parsed.findings);
-    crate::player_hud::loaded::load(text.as_bytes(), "0.0.0-test", plx_platform::i18n::english(), &FM).unwrap().compiled
+    crate::player_hud::loaded::load(&crate::hud_format::fixtures::with_hud_resources("reference", &text), "0.0.0-test", plx_platform::i18n::english(), &FM).unwrap().compiled
 }
 
 fn frame(compiled: &Compiled) -> Census {
@@ -76,7 +76,7 @@ fn a_more_pill_or_button_draws_its_measured_app_label() {
 #[test]
 fn a_custom_rest_without_any_declared_inks_is_rejected() {
     let text = REFERENCE.replace(r#""rest": "bare""#, r#""rest": "custom""#);
-    let parsed = crate::hud_format::parse::parse(text.as_bytes());
+    let parsed = crate::hud_format::fixtures::parse(text.as_bytes());
     assert!(crate::hud_format::has_error(&parsed.findings), "format1.0 has no custom rest ink keys; accepting it silently draws an unrelated film");
 }
 
@@ -259,12 +259,12 @@ fn a_standalone_kicker_is_not_discarded_without_a_main_title() {
 #[test]
 fn numeric_up_next_reserves_every_countdown_label_in_every_language() {
     let _serial = plx_base::testlock::serial();
-    let minimal = include_str!("../../../hud_format/fixtures/minimal.plxhud.json");
+    let minimal = include_str!("../../../hud_format/fixtures/minimal/hud.json");
     let text = minimal.replace(r#""countdown": "fill_sweep""#, r#""countdown": "numeric""#);
     for language in plx_platform::i18n::SHIPPED {
         let _lang = language_on_this_thread_for_test(language);
         let locale = plx_platform::i18n::current();
-        let hud = crate::player_hud::loaded::load(text.as_bytes(), "0.0.0-test", locale, &FM).unwrap();
+        let hud = crate::player_hud::loaded::load(&crate::hud_format::fixtures::with_hud_resources("reference", &text), "0.0.0-test", locale, &FM).unwrap();
         let state = hud.compiled.lookup(0, crate::hud_format::Slot::UpNext, false, false, false).unwrap();
         let next = state.standin.up_next.unwrap().next;
         let labels = crate::hud_format::compile::AppLabels::in_language(locale);
@@ -279,7 +279,7 @@ fn numeric_up_next_reserves_every_countdown_label_in_every_language() {
 #[test]
 fn declared_countdown_primitives_and_labelled_glyphs_are_priced() {
     let _serial = plx_base::testlock::serial();
-    let minimal = include_str!("../../../hud_format/fixtures/minimal.plxhud.json");
+    let minimal = include_str!("../../../hud_format/fixtures/minimal/hud.json");
     let priced = |kind| {
         let text = minimal.replace(r#""countdown": "fill_sweep""#, &format!(r#""countdown": "{kind}""#));
         let compiled = load(&text);
@@ -409,7 +409,7 @@ fn interactive_card_descendants_are_rejected_with_a_focus_explanation() {
             _ => r#"{ "strip": { "bind": "chapters", "w": 80, "card_w": 40, "card_h": 20, "card": { "art": { "bind": "item.thumb", "crop": "cover" } } } }"#,
         };
         let text = REFERENCE.replace(r#""below": ["#, &format!(r#""below": [{node},"#));
-        let parsed = crate::hud_format::parse::parse(text.as_bytes());
+        let parsed = crate::hud_format::fixtures::parse(text.as_bytes());
         let package = parsed.package.unwrap_or_else(|| panic!("{kind}: {:?}", parsed.findings));
         let findings = crate::hud_format::reach::check(&package).findings;
         assert!(findings.iter().any(|f| f.code == "HUD-E0905"), "{kind}: no card-child focus diagnostic: {findings:?}");

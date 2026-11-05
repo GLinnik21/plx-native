@@ -812,13 +812,14 @@ mod tests {
     #[test]
     fn transcode_ping_distinguishes_present_absent_and_unknown_cleanup_state() {
         use std::io::{BufRead, BufReader, Write};
+        use plx_base::testnet::{self, CLIENT_WAIT};
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().unwrap().port() as i32;
         let (tx, rx) = std::sync::mpsc::channel();
         let server = std::thread::spawn(move || {
             for status in ["200 OK", "404 Not Found", "500 Internal Server Error"] {
-                let (mut socket, _) = listener.accept().expect("accept ping");
+                let (mut socket, _) = testnet::accept_within(&listener, CLIENT_WAIT).expect("accept ping");
                 let mut line = String::new();
                 BufReader::new(&socket)
                     .read_line(&mut line)
@@ -865,11 +866,11 @@ mod tests {
     #[test]
     fn transcode_stop_closes_its_exact_streaming_resource() {
         use std::io::{BufRead, BufReader, Write};
+        use plx_base::testnet::{self, CLIENT_WAIT};
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().unwrap().port() as i32;
-        let server = std::thread::spawn(move || {
-            let (mut socket, _) = listener.accept().expect("accept stop");
+        let server = testnet::serve_once(listener, CLIENT_WAIT, move |mut socket| {
             let mut line = String::new();
             BufReader::new(&socket)
                 .read_line(&mut line)
@@ -904,13 +905,14 @@ mod tests {
     #[test]
     fn resource_close_is_posted_and_accepts_only_terminated_or_absent() {
         use std::io::{BufRead, BufReader, Write};
+        use plx_base::testnet::{self, CLIENT_WAIT};
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().unwrap().port() as i32;
         let (tx, rx) = std::sync::mpsc::channel();
         let server = std::thread::spawn(move || {
             for status in ["200 OK", "404 Not Found", "500 Internal Server Error"] {
-                let (mut socket, _) = listener.accept().expect("accept close");
+                let (mut socket, _) = testnet::accept_within(&listener, CLIENT_WAIT).expect("accept close");
                 let mut line = String::new();
                 BufReader::new(&socket)
                     .read_line(&mut line)
@@ -1992,12 +1994,12 @@ mod tests {
     #[test]
     fn mde_never_carries_enhancements() {
         use std::io::{BufRead, BufReader, Write};
+        use plx_base::testnet::{self, CLIENT_WAIT};
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().unwrap().port() as i32;
         let (tx, rx) = std::sync::mpsc::channel();
-        let server = std::thread::spawn(move || {
-            let (mut socket, _) = listener.accept().expect("accept decision");
+        let server = testnet::serve_once(listener, CLIENT_WAIT, move |mut socket| {
             let mut line = String::new();
             BufReader::new(&socket)
                 .read_line(&mut line)

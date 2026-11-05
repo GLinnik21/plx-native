@@ -509,6 +509,134 @@ fn the_settings_surface_owns_input_and_walks_its_own_stack() {
     assert_eq!(d.nav.tabs.stack.depth(), 1, "the app's page never moved");
 }
 
+/// The gate that kept the registry out of the stable install sat on the Bridge's `HudCmd::Open` arm
+/// (`ENV_STEERABLE || flavour().is_some()`), a second copy of the field PR14 deleted from the page, so the
+/// gallery showed in stable and never fetched `index.signed`. This suite builds with no flavour in its app
+/// directory and without `hostsim`, which is the stable install's answer to both halves of that test.
+#[test]
+fn opening_the_player_hud_settings_asks_the_registry_in_the_stable_install_too() {
+    assert!(plx_base::paths::flavour().is_none(), "this test stands for the stable install");
+    let dir = std::env::temp_dir().join(format!("plx-hud-gallery-open-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
+    let _cleanup = Cleanup(dir.clone());
+    let mut world = World::new("hud-gallery-opens");
+    world.step(vec![]);
+    let classic = plx_appkit::player_hud::loaded::load_classic("0.10.0", plx_platform::i18n::current(), world.bridge.measure());
+    world.bridge.huds = crate::app::adapters::huds::HudDriver::started_in(dir, classic, "0.10.0");
+    assert!(!world.bridge.huds.store().catalog().refresh_failed);
+    open_settings_at(&mut world.d, SettingsPage::PlayerHud);
+    world.settle(40);
+    for _ in 0..8 { world.bridge.huds_tick(false); }
+    // The runner is offline, so a request that was made is a refresh that failed; none made is none failed.
+    assert!(world.bridge.huds.store().catalog().refresh_failed, "the Open command reached the catalog and dialled");
+}
+
+fn hud_preview_world(name: &str) -> World {
+    let mut world = World::new(name);
+    world.step(vec![]);
+    let index = plx_data::hudpacks::catalog::parse(include_bytes!(
+        "../../../tests/fixtures/hud-gallery/index.json"
+    )).unwrap();
+    let sha = index.entries.iter().find(|package| package.name == "Reference").unwrap().sha();
+    open_settings_at(&mut world.d, SettingsPage::HudDetail(sha));
+    world.settle(40);
+    let list = plx_screens::hud_settings::HudList {
+        catalog: plx_data::hudpacks::catalog::Snapshot {
+            index: Some(std::sync::Arc::new(index)),
+            ..Default::default()
+        },
+        app_version: "0.10.0".into(),
+        language_tag: "en".into(),
+        ..Default::default()
+    };
+    assert_eq!(world.bridge.huds_pages.len(), 1);
+    world.bridge.huds_pages[0].0.send(list.clone()).unwrap();
+    world.frames(2);
+    assert_eq!(overlay_word(&world.d), Some("hud-detail"));
+    world.press(Key::Ok);
+    assert_eq!(world.bridge.huds_pages.len(), 2);
+    for (page, _) in &world.bridge.huds_pages { page.send(list.clone()).unwrap(); }
+    // Let the shared route spring settle: during a push both pages register drawn stops.
+    world.settle(60);
+    assert_eq!(overlay_word(&world.d), Some("hud-preview"));
+    world
+}
+
+fn hud_preview_scene(world: &World) -> u32 {
+    let mut probe = String::new();
+    world.d.nav.modals.top().unwrap().entry.inst.as_ref().unwrap().screen.state().probe(&mut probe);
+    // The surface reports pages bottom-to-top; read the active preview, not its opener's scene.
+    probe.rsplit_once("scene=").expect("HUD scene in the logical state").1
+        .split(|ch: char| !ch.is_ascii_digit()).next().unwrap().parse().unwrap()
+}
+
+fn hud_preview_stops(world: &mut World) -> Vec<plx_ui::screen::Stop<u32>> {
+    let owner = world.d.nav.modals.top().unwrap().entry.id;
+    let parts = CxParts {
+        tick: tick(world.frame),
+        press: Default::default(),
+        focus: plx_machine::machine::FocusRead {
+            current: world.d.input.engine.current(InputOwner::Entry(owner)),
+            ..Default::default()
+        },
+        owner: InputOwner::Entry(owner),
+    };
+    let cx = parts.cx::<AppHost>(world.bridge.views(), world.bridge.measure());
+    let mut draw = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
+    let surface = world.d.nav.modals.surface_mut(owner).unwrap().entry.inst.as_mut().unwrap();
+    plx_ui::record_walk(|| plx_ui::screen::record_stops_while_recording(|| {
+        plx_gfx::gfx::without_frame_clear(|| surface.screen.draw(&mut draw));
+    }));
+    draw.into_stops()
+}
+
+#[test]
+fn hud_preview_remote_ok_commits_scenes_and_the_back_control() {
+    let mut world = hud_preview_world("hud-preview-remote");
+    world.press(Key::Right);
+    world.press(Key::Right);
+    assert_eq!(hud_preview_scene(&world), 0, "focus travel does not select a scene");
+    world.press(Key::Ok);
+    assert_eq!(hud_preview_scene(&world), 1, "OK release selects Chapters & info");
+    world.press(Key::Right);
+    world.press(Key::Ok);
+    assert_eq!(hud_preview_scene(&world), 2, "OK release selects Up Next");
+    for _ in 0..3 { world.press(Key::Left); }
+    world.press(Key::Ok);
+    assert_eq!(overlay_word(&world.d), Some("hud-detail"), "the Back control returns to the opener");
+}
+
+#[test]
+fn hud_preview_pointer_release_commits_scenes_and_the_back_control() {
+    let mut world = hud_preview_world("hud-preview-pointer");
+    for (elem, scene) in [(2, 1), (3, 2), (0, 2)] {
+        let stops = hud_preview_stops(&mut world);
+        let owner = world.d.nav.modals.top().unwrap().entry.id;
+        let matching = stops.iter().filter(|stop| stop.key.entry == owner && stop.key.elem == elem)
+            .collect::<Vec<_>>();
+        assert_eq!(matching.len(), 1, "only the settled preview contributes this control");
+        assert_eq!(matching[0].activate, plx_ui::screen::Activate::Press,
+            "the click targets the preview control, not its opening table row");
+        let rect = matching[0].rect;
+        world.d.input.hit.fill(stops);
+        world.d.input.hit.swap();
+        let before = hud_preview_scene(&world);
+        world.step(vec![click_input(rect.cx(), rect.cy(), tick(world.frame + 1))]);
+        assert!(world.d.input.arm.is_some(), "pointer down uses the shared press arm");
+        assert_eq!(hud_preview_scene(&world), before, "pointer down alone does not activate");
+        world.step(vec![release_input(tick(world.frame + 1))]);
+        world.frames(28);
+        if elem == 0 {
+            assert_eq!(overlay_word(&world.d), Some("hud-detail"), "pointer release on Back returns to the opener");
+        } else {
+            assert_eq!(hud_preview_scene(&world), scene, "pointer release selects its scene");
+        }
+    }
+}
+
 /// **Phase 10: the profile menu is a SURFACE over the page whose chip was pressed.**
 ///
 /// `Route::Account { over: BarHost }` existed to answer three questions the container answers

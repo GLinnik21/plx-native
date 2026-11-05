@@ -40,6 +40,7 @@ struct ListingData {
     genre: Option<Arc<GenreEntry>>,
     unwatched: bool,
     membership_stale: bool,
+    relist: bool,
     cursor: Option<Arc<super::Cursor>>,
 }
 
@@ -56,6 +57,13 @@ impl ListingSnapshot {
     pub fn with_cursor(mut self, cursor: super::Cursor) -> Self {
         if let Some(data) = &mut self.data {
             data.cursor = Some(Arc::new(cursor));
+        }
+        self
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_relist(mut self) -> Self {
+        if let Some(data) = &mut self.data {
+            data.relist = true;
         }
         self
     }
@@ -212,6 +220,7 @@ impl ListingSnapshot {
                 genre: None,
                 unwatched: false,
                 membership_stale: false,
+                relist: false,
                 cursor: None,
             }),
         }
@@ -317,6 +326,11 @@ impl<'a> ListingView<'a> {
     pub fn membership_stale(self) -> bool {
         self.0.data.as_ref().is_some_and(|s| s.membership_stale)
     }
+    /// The server created or removed items and the re-list is out: the rows shown are the old
+    /// listing's, which the replacement wanted window replaces in place (`BrowseCmd::ListingsChanged`).
+    pub fn relisting(self) -> bool {
+        self.0.data.as_ref().is_some_and(|s| s.relist)
+    }
     pub fn library_type(self) -> super::LibraryType {
         self.0.data.as_ref().map_or(super::LibraryType::default(), |s| s.library_type)
     }
@@ -415,6 +429,7 @@ impl super::BrowseState {
                     genre: state.genre.clone(),
                     unwatched: state.unwatched,
                     membership_stale: state.membership_stale,
+                    relist: state.relist,
                     cursor: state.cursor.clone(),
                 }),
         }
@@ -453,6 +468,7 @@ pub struct DirectorySnapshot {
     source: Option<usize>,
     source_fetch: SecFetch,
     discovery: SecFetch,
+    refreshing: bool,
     sections_gen: u32,
     tabs_gen: u32,
 }
@@ -468,6 +484,7 @@ impl Default for DirectorySnapshot {
             source: None,
             source_fetch: SecFetch::Loading,
             discovery: SecFetch::Loading,
+            refreshing: false,
             sections_gen: 0,
             tabs_gen: 0,
         }
@@ -499,6 +516,7 @@ impl DirectorySnapshot {
         self.source = state.cur_source_idx();
         self.source_fetch = state.cur_source_state();
         self.discovery = state.discovery_state();
+        self.refreshing = state.sources().iter().any(|source| source.reachable() && !source.sections_done);
         self.sections_gen = state.sections_gen();
         self.tabs_gen = state.tabs_gen();
         for (i, kind) in [super::SecKind::Movie, super::SecKind::Show].into_iter().enumerate() {
@@ -527,6 +545,7 @@ impl DirectorySnapshot {
             source: Some(0),
             source_fetch: fetch,
             discovery: fetch,
+            refreshing: fetch == SecFetch::Loading,
             sections_gen: 0,
             tabs_gen: 0,
         }
@@ -544,6 +563,7 @@ impl DirectorySnapshot {
             && self.source == other.source
             && self.source_fetch == other.source_fetch
             && self.discovery == other.discovery
+            && self.refreshing == other.refreshing
             && self.sections_gen == other.sections_gen
             && self.tabs_gen == other.tabs_gen
             && self.preferred == other.preferred
@@ -581,6 +601,7 @@ impl DirectorySnapshot {
             source: None,
             source_fetch: SecFetch::Ready,
             discovery: SecFetch::Ready,
+            refreshing: false,
             sections_gen: 0,
             tabs_gen: 0,
         }
@@ -695,6 +716,8 @@ impl<'a> DirectoryView<'a> {
     pub fn source_fetch(self) -> SecFetch {
         self.0.source_fetch
     }
+    /// A reachable server still has a library-directory read outstanding.
+    pub fn refreshing(self) -> bool { self.0.refreshing }
     pub fn discovery(self) -> SecFetch {
         self.0.discovery
     }

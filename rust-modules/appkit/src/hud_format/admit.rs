@@ -11,9 +11,9 @@
 
 use plx_ui::rec::strict_json::{decode_ordered, Ordered};
 
-use super::parse::{self, is_reverse_dns, MAX_PACKAGE_BYTES};
-use super::reach::check;
-use super::{codes, Severity, REASON_NEWER};
+use super::bundle::{self, MAX_ARTIFACT_BYTES};
+use plx_data::hudpacks::{valid_package_id, Semver};
+use super::{codes, REASON_NEWER};
 
 /// The longest `name` the list keeps, in characters.
 const NAME_CHARS: usize = 64;
@@ -27,7 +27,8 @@ pub struct Facts {
     pub name: String,
     pub version: String,
     /// `MAJOR.MINOR`.
-    pub format: String,
+    pub package_format: String,
+    pub hud_format: String,
 }
 
 /// Why a package that parsed cannot run on this app.
@@ -54,12 +55,12 @@ pub enum Admission {
 
 /// Judge `bytes` for the app release `app_version`.
 pub fn admit(bytes: &[u8], app_version: &str) -> Admission {
-    if bytes.len() > MAX_PACKAGE_BYTES {
+    if bytes.len() > MAX_ARTIFACT_BYTES {
         return Admission::Invalid;
     }
-    let parsed = parse::parse(bytes);
-    let Some(package) = parsed.package else {
-        return match parsed.findings.as_slice() {
+    let decoded = bundle::read(bytes, None);
+    let Some(package) = decoded.package else {
+        return match decoded.findings.as_slice() {
             [gate] if gate.code == codes::E0402.id || gate.code == codes::E0403.id => match gated_facts(bytes) {
                 Some(facts) => {
                     let why = if gate.message == REASON_NEWER { Cannot::NewerFormat } else { Cannot::OlderFormat };
@@ -70,19 +71,18 @@ pub fn admit(bytes: &[u8], app_version: &str) -> Admission {
             _ => Admission::Invalid,
         };
     };
-    if check(&package).findings.iter().any(|f| f.severity == Severity::Error) {
-        return Admission::Invalid;
-    }
+    let manifest = package.manifest();
     let facts = Facts {
-        id: package.id.clone(),
-        name: clean_name(&package.name),
-        version: package.version.clone(),
-        format: format!("{}.{}", package.format.0, package.format.1),
+        id: manifest.id.clone(),
+        name: clean_name(&manifest.name),
+        version: manifest.version.clone(),
+        package_format: format!("{}.{}", manifest.package_format.0, manifest.package_format.1),
+        hud_format: format!("{}.{}", manifest.hud_format.0, manifest.hud_format.1),
     };
-    let in_range = package.app.as_ref().is_none_or(|range| {
-        let app = triple(app_version);
-        let below = matches!((app, range.min.as_deref().and_then(triple)), (Some(app), Some(min)) if app < min);
-        let above = matches!((app, range.max.as_deref().and_then(triple)), (Some(app), Some(max)) if app > max);
+    let in_range = manifest.app.as_ref().is_none_or(|range| {
+        let app = Semver::app_release(app_version);
+        let below = matches!((app, range.min.as_deref().and_then(Semver::parse)), (Some(app), Some(min)) if app < min);
+        let above = matches!((app, range.max.as_deref().and_then(Semver::parse)), (Some(app), Some(max)) if app > max);
         !(below || above)
     });
     if in_range {
@@ -92,14 +92,6 @@ pub fn admit(bytes: &[u8], app_version: &str) -> Admission {
     }
 }
 
-/// The leading `MAJOR.MINOR.PATCH` of a release string (`0.2.1`, `0.2.1-nightly.3`); `None` when it has none.
-fn triple(text: &str) -> Option<(u64, u64, u64)> {
-    let core = text.split(['-', '+']).next()?;
-    let mut parts = core.split('.');
-    let mut next = || parts.next()?.parse::<u64>().ok();
-    Some((next()?, next()?, next()?))
-}
-
 fn clean_name(name: &str) -> String {
     name.chars().filter(|c| !c.is_control()).take(NAME_CHARS).collect()
 }
@@ -107,34 +99,37 @@ fn clean_name(name: &str) -> String {
 /// The four facts of a package the version gate turned away, read from its tree; `None` when any is
 /// missing, is not a string, or the id is not a reverse-DNS id.
 fn gated_facts(bytes: &[u8]) -> Option<Facts> {
-    let root = decode_ordered(bytes, DECODE_BYTES).ok()?;
+    let files = bundle::archive::read(bytes).ok()?;
+    let manifest = files.iter().find(|file| file.path == bundle::manifest::FILE)?;
+    let root = decode_ordered(&manifest.bytes, DECODE_BYTES).ok()?;
     let text = |key: &str| match root.get(key)? {
         Ordered::String(s) => Some(s.clone()),
         _ => None,
     };
-    let id = text("id").filter(|id| is_reverse_dns(id))?;
-    Some(Facts { id, name: clean_name(&text("name")?), version: text("version")?, format: text("format")? })
+    let id = text("id").filter(|id| valid_package_id(id))?;
+    Some(Facts { id, name: clean_name(&text("name")?), version: text("version")?,
+        package_format: text("package_format")?, hud_format: root.get("hud")?.get("format")?.as_str()?.to_owned() })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hud_format::CLASSIC_PACKAGE;
+    use crate::hud_format::{CLASSIC_PACKAGE, fixtures};
 
-    const REFERENCE: &str = include_str!("fixtures/reference.plxhud.json");
-    const MINIMAL: &str = include_str!("fixtures/minimal.plxhud.json");
+    const REFERENCE: &str = include_str!("fixtures/reference/hud.json");
+    const MINIMAL: &str = include_str!("fixtures/minimal/manifest.json");
 
     #[test]
     fn the_embedded_classic_runs_and_says_who_it_is() {
-        let Admission::Runs(facts) = admit(CLASSIC_PACKAGE.as_bytes(), "0.2.1") else { panic!("classic runs") };
+        let Admission::Runs(facts) = admit(CLASSIC_PACKAGE, "0.2.1") else { panic!("classic runs") };
         assert_eq!(facts.id, "builtin:classic");
-        assert_eq!(facts.format, "1.0");
+        assert_eq!(facts.hud_format, "1.0");
     }
 
     #[test]
     fn a_fixture_package_runs() {
-        assert!(matches!(admit(REFERENCE.as_bytes(), "0.2.1"), Admission::Runs(_)));
-        assert!(matches!(admit(MINIMAL.as_bytes(), "0.2.1"), Admission::Runs(_)));
+        assert!(matches!(admit(&fixtures::bytes("reference"), "0.2.1"), Admission::Runs(_)));
+        assert!(matches!(admit(&fixtures::bytes("minimal"), "0.2.1"), Admission::Runs(_)));
     }
 
     #[test]
@@ -142,7 +137,7 @@ mod tests {
         for bytes in [&b""[..], b"{", b"[]", b"{}", b"\xff\xfe"] {
             assert_eq!(admit(bytes, "0.2.1"), Admission::Invalid, "{bytes:?}");
         }
-        let huge = vec![b' '; MAX_PACKAGE_BYTES + 1];
+        let huge = vec![b' '; MAX_ARTIFACT_BYTES + 1];
         assert_eq!(admit(&huge, "0.2.1"), Admission::Invalid);
     }
 
@@ -151,11 +146,11 @@ mod tests {
         let with = |format: &str| MINIMAL.replacen("\"format\": \"1.0\"", &format!("\"format\": \"{format}\""), 1);
         assert_ne!(with("9.0"), MINIMAL, "the fixture spells its format as the test expects");
         for (format, why) in [("9.0", Cannot::NewerFormat), ("1.99", Cannot::NewerFormat), ("0.5", Cannot::OlderFormat)] {
-            match admit(with(format).as_bytes(), "0.2.1") {
+            match admit(&fixtures::with_manifest("minimal", &with(format)), "0.2.1") {
                 Admission::Cannot(facts, got) => {
                     assert_eq!(got, why, "{format}");
-                    assert_eq!(facts.format, format);
-                    assert!(is_reverse_dns(&facts.id));
+                    assert_eq!(facts.hud_format, format);
+                    assert!(valid_package_id(&facts.id));
                 }
                 other => panic!("{format}: {other:?}"),
             }
@@ -167,14 +162,14 @@ mod tests {
         let hostile = MINIMAL.replacen("\"format\": \"1.0\"", "\"format\": \"9.0\"", 1);
         let id = hostile.split("\"id\": \"").nth(1).and_then(|r| r.split('"').next()).expect("an id").to_owned();
         let bad = hostile.replacen(&format!("\"id\": \"{id}\""), "\"id\": \"../../etc\"", 1);
-        assert_eq!(admit(bad.as_bytes(), "0.2.1"), Admission::Invalid);
+        assert_eq!(admit(&fixtures::with_manifest("minimal", &bad), "0.2.1"), Admission::Invalid);
     }
 
     #[test]
     fn an_app_range_is_judged_against_the_leading_release_triple() {
-        let with = |range: &str| MINIMAL.replacen("\"format\": \"1.0\",", &format!("\"format\": \"1.0\", \"app\": {range},"), 1);
+        let with = |range: &str| MINIMAL.replacen("\"package_format\": \"1.0\",", &format!("\"package_format\": \"1.0\", \"app\": {range},"), 1);
         assert_ne!(with("{}"), MINIMAL, "the fixture has a place for `app`");
-        let case = |range: &str, app: &str| admit(with(range).as_bytes(), app);
+        let case = |range: &str, app: &str| admit(&fixtures::with_manifest("minimal", &with(range)), app);
         assert!(matches!(case(r#"{"min": "0.3.0"}"#, "0.2.9"), Admission::Cannot(_, Cannot::AppRange)));
         assert!(matches!(case(r#"{"min": "0.3.0"}"#, "0.3.0-nightly.4"), Admission::Runs(_)));
         assert!(matches!(case(r#"{"max": "0.2.0"}"#, "0.2.1"), Admission::Cannot(_, Cannot::AppRange)));

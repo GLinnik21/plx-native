@@ -1,0 +1,18 @@
+{
+  "costs": [],
+  "file": "examples/invalid/missing-key",
+  "findings": [
+    {
+      "code": "HUD-E0103",
+      "file": "hud.json",
+      "hint": "add \"anchor\": one of: bottom",
+      "message": "the required key `anchor` is missing",
+      "nearest": [],
+      "path": "/layout",
+      "rule": "key-required",
+      "severity": "error"
+    }
+  ],
+  "package_sha256": "45aace7bba7fae203a5f2313c4daf0e6a97b42b4e76bf561ffe49729ed89be37",
+  "protocol": 1
+}

@@ -616,22 +616,40 @@ fn run_release_tail(mt: &MainThread, p: PendingRelease) {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeExit {
     Clean,
-    /// A native worker (the `sf-unload` worker, or a timed-out Load's media thread) is still
-    /// inside firmware: `SDL_Quit` / the Wayland window destroy must not run under it.
+    /// Native ownership is unresolved: a worker may still be inside firmware, or a URI
+    /// registration may remain quarantined after its worker ended. Skip `SDL_Quit` and the
+    /// Wayland window destroy until the OS reclaims that ownership.
     WorkerInFirmware,
 }
 
-/// The native half of `app::run::shutdown`, after the final stop. Waits for the `Unload` up to
-/// the release deadline (the process is ending anyway; the old wait was unbounded).
+/// The native half of `app::run::shutdown`, after the final stop. Waits for the native Unload or
+/// URI registration release up to the release deadline, then preserves unresolved display ownership.
 pub fn exit_native(pa: &mut super::adapter::PlayerAdapter) -> NativeExit {
     exit_native_with(pa, std::time::Instant::now, || std::thread::sleep(std::time::Duration::from_millis(2)))
 }
 
-fn exit_native_with(
+pub(super) fn exit_native_with(
     pa: &mut super::adapter::PlayerAdapter,
     mut clock: impl FnMut() -> std::time::Instant,
     mut idle: impl FnMut(),
 ) -> NativeExit {
+    #[cfg(feature = "devtriggers")]
+    if pa.uri_live() {
+        let started = clock();
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        super::uriprobe_drive::stop(&mut ps, pa);
+        while pa.uri_live() {
+            super::uriprobe_drive::drive(&mut ps, pa);
+            if !pa.uri_live() { break; }
+            if pa.uri_acb_exit_quarantine() || clock().saturating_duration_since(started) >= super::release::RELEASE_DEADLINE {
+                log("exit: URI ownership unresolved; the display is left to the OS");
+                if let Some(session) = pa.take_uri() { std::mem::forget(session); }
+                leak_parked_for_exit(pa);
+                return NativeExit::WorkerInFirmware;
+            }
+            idle();
+        }
+    }
     reap_abandoned_load(pa);
     if pa.has_abandoned_load() {
         log("exit: a timed-out Load is still inside firmware; the display is left to the OS");
@@ -1674,6 +1692,22 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
     if pa.engine().is_none() {
         super::set_native_seek_refused(false);
     }
+    // A URI-mode probe session (dev trigger `plxnative-uriprobe`) holds the route-start attempt and
+    // the exported window without an Engine in the slot. Active double-start stays a no-op;
+    // closing or quarantined ownership refuses a new start until actual release.
+    #[cfg(feature = "devtriggers")]
+    if pa.uri_live() {
+        log("start_bufferfeed: a URI-mode registration still owns its resources");
+        if pa.uri_closing() {
+            if let Some(existing) = pa.uri_attempt() {
+                if let crate::route::LiveEngineStartRelation::Conflict(transaction) = crate::route::classify_live_engine_start(existing) {
+                    let _ = crate::route::abort_route_start(transaction, crate::route::RouteStartResult::StartFailed);
+                }
+            }
+            return BufferfeedStartOutcome::Failed;
+        }
+        return BufferfeedStartOutcome::AlreadyRunning;
+    }
     if let Some(existing) = pa.engine().map(|engine| engine.route_start) {
         match crate::route::classify_live_engine_start(existing) {
             crate::route::LiveEngineStartRelation::CurrentAttempt => {
@@ -1731,6 +1765,12 @@ fn start_bufferfeed_for(
     pa: &mut super::adapter::PlayerAdapter,
     route_start: crate::route::RouteStartTransaction,
 ) -> BufferfeedStartOutcome {
+    #[cfg(feature = "devtriggers")]
+    if pa.uri_live() {
+        // Reload/foreground starts reach this seam directly too. URI ownership never queues one.
+        let _ = crate::route::abort_route_start(route_start, crate::route::RouteStartResult::StartFailed);
+        return BufferfeedStartOutcome::Failed;
+    }
     // The last real stop's object may still be inside its off-frame `Unload`. A tail that is ready
     // runs now; one that is not defers this start into the release machine (never a blocking join:
     // PLX-NATIVE-1Q), which starts it the frame the tail has run or refuses it at the deadline.
@@ -1915,6 +1955,31 @@ fn start_bufferfeed_inner(
         return Err(crate::route::RouteStartResult::StartFailed);
     }
     let stream = sample.is_none();
+    // dev: /tmp/plxnative-uriprobe — play this URL through `com.webos.media` (URI mode) instead of
+    // building an Engine, to learn what webOS 5+ does with it (issue #1064). Taken AFTER the route
+    // is prepared and BEFORE anything native is touched (the clock and session guards, the exported
+    // window, the payload), and never for a preview or a local sample: the probe needs a real stream
+    // URL and the foreground play which owns the screen. The content names the variant; text which
+    // names none leaves the probe unarmed and the play normal rather than running a variant nobody
+    // asked for.
+    #[cfg(feature = "devtriggers")]
+    if stream && !crate::route::is_preview(ps) {
+        if let Some(text) = plx_base::devtrig::read("uriprobe") {
+            match super::uriprobe::Variant::from_trigger(&text) {
+                Some(variant) => {
+                    // The probe takes no native session of its own, but its window verbs reach the
+                    // same seam, so it refuses like an Engine does while an earlier session still
+                    // owns the object (a parked timed-out Load): the tester plays again.
+                    if NativeSessionStartGuard::arm().is_none() {
+                        log("uriprobe: the native object is still owned by an earlier session: probe NOT started");
+                        return Err(crate::route::RouteStartResult::StartFailed);
+                    }
+                    return super::uriprobe_drive::start(ps, pa, route_start, &url, variant);
+                }
+                None => log("uriprobe: the trigger file names no variant (empty, load, late, none or drive): NOT armed, playing normally"),
+            }
+        }
+    }
     // For a streamed direct-play/transcode, pick the Load codecs from the item: video H264 vs
     // H265 (native HEVC direct-play), audio AC3/EAC3/AAC/DTS. (The local sample paths keep their
     // fixed payloads.)
@@ -2729,6 +2794,13 @@ pub fn foreground_follows_load(pa: &mut super::adapter::PlayerAdapter, attempt: 
 /// the "stopped" timeline scrobble, the server transcode stop, and the URL clear.
 fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, for_reload: bool) {
     FAILED_ENGINE_RELEASE_ARMED.store(false, Ordering::Release);
+    // A URI-mode probe session (dev trigger `plxnative-uriprobe`) ends with the playback it stands
+    // in for, whatever ended it (Back, an app switch, the next Play): its machine settles a start
+    // still pending and requests unload/close; the adapter retains its window until release. It owns no Engine, so the
+    // Engine-less ritual below then finishes the stop (the transcode session, the route) as it does
+    // for a start which failed before an Engine existed.
+    #[cfg(feature = "devtriggers")]
+    super::uriprobe_drive::stop(ps, pa);
     // A start still queued behind the previous object's `Unload` is the playback this stop ends.
     // Always sent: the machine owns whether anything is queued (a no-op otherwise), and no copy of
     // that fact in the session can go stale across a landing that replaced the session.
@@ -3767,7 +3839,14 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine) {
             };
             recovery.ready(playable)
         }
-        HlsPrimeKind::Fresh | HlsPrimeKind::Resume => balanced_runway_ready,
+        HlsPrimeKind::Fresh => balanced_runway_ready,
+        // A viewer Resume continues an existing timeline, not a replay of every acquisition
+        // since the rung was selected. That historical worst-permutation reserve can exceed
+        // native + AU queue capacity (#1216); no further media can arrive until Play. Keep the
+        // accepted A/V decoder prime below, but do not make user intent repay historical stress.
+        // An automatic rebuffer remains Rebuffer even across user Pause/Resume and must still
+        // close its own pause-local recovery epoch above.
+        HlsPrimeKind::Resume => true,
     };
     if decoder_ready && boundary_ready && TX.feed_allowed() {
         let Some((play_token, recovery)) =
@@ -5918,10 +5997,20 @@ mod prime_livelock_tests {
 
     /// Reproduces the device sequence: Pause, let the demux queues fill, then Resume. The user
     /// intent may reopen feeding, but it must not run the native/ACB clock until Starfish has
-    /// accepted a balanced decoder prime. The measured runway may extend into the validated queue
-    /// tails because a paused native source buffer is finite and cannot accept the whole runway.
+    /// accepted a balanced decoder prime. Historical stress runway is not a runtime Resume floor.
     #[test]
     fn pause_to_fill_resume_primes_both_lanes_before_native_play() {
+        assert_viewer_resume_primes(3_000, 3_500_000_000);
+    }
+
+    /// Issue #1216: 14.754 s of historical runway, but the paused native pipeline and
+    /// validated queues can hold only 10.8 s. Neither tail grows until Play.
+    #[test]
+    fn a_resume_prime_whose_runway_exceeds_the_queue_capacity_still_plays() {
+        assert_viewer_resume_primes(14_754, 10_800_000_000);
+    }
+
+    fn assert_viewer_resume_primes(runway_ms: i64, playable_ns: i64) {
         let _serial = plx_base::testlock::serial();
         struct Restore {
             runway: i64,
@@ -5958,13 +6047,13 @@ mod prime_livelock_tests {
         SHARED.reset_hls_clock_for_test();
         let base = 10_000_000_000;
         let _restore = Restore {
-            runway: SHARED.hls_prime_runway_ms.swap(3_000, Ordering::Relaxed),
+            runway: SHARED.hls_prime_runway_ms.swap(runway_ms, Ordering::Relaxed),
             video_tail: SHARED
                 .hls_video_tail_ns
-                .swap(base + 3_500_000_000, Ordering::Relaxed),
+                .swap(base + playable_ns, Ordering::Relaxed),
             audio_tail: SHARED
                 .hls_audio_tail_ns
-                .swap(base + 3_500_000_000, Ordering::Relaxed),
+                .swap(base + playable_ns, Ordering::Relaxed),
             audio_expected: SHARED.hls_audio_expected.swap(true, Ordering::Relaxed),
             pts_shift: SHARED.pts_shift.swap(0, Ordering::Relaxed),
             presented: SHARED.pres_fed.swap(base, Ordering::Relaxed),
@@ -5999,19 +6088,26 @@ mod prime_livelock_tests {
         );
 
         TX.commit_paused(false);
-        tick(&mt, &mut eng);
+        // Balanced decoder prime is still mandatory even when historical runway is ignored.
+        eng.max_fed_video_pts = base + PRIME_NS;
+        eng.max_fed_audio_pts = base;
+        try_prime(&mt, &mut eng);
+        assert_eq!(crate::player::ffi_host::play_calls_for_test(), before);
+        for _ in 0..600 {
+            tick(&mt, &mut eng);
+        }
 
         let accepted_video = eng.max_fed_video_pts - base;
         let accepted_audio = eng.max_fed_audio_pts - base;
         assert!(accepted_video >= PRIME_NS && accepted_audio >= PRIME_AUDIO_NS);
         assert!(
-            accepted_video < 3_000_000_000 && accepted_audio < 3_000_000_000,
+            accepted_video < runway_ms * 1_000_000 && accepted_audio < runway_ms * 1_000_000,
             "the fixture must leave part of the measured runway in the application queues",
         );
         assert_eq!(crate::player::ffi_host::play_calls_for_test(), before + 1);
         assert!(
             !eng.prime_play,
-            "balanced accepted A/V plus validated queued runway did not release ResumePrime",
+            "viewer Resume stayed fenced after a balanced decoder prime",
         );
     }
 

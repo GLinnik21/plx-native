@@ -1333,7 +1333,7 @@ fn hero_focus_follows_its_control_when_the_set_grows_under_it() {
 
 #[test]
 fn hero_focus_survives_a_control_appearing_in_the_middle_of_the_row() {
-    let before = hero::HeroSet {
+    let before = hero::HeroSet { more: false,
         watchlist: true,
         go_show: false,
         version: false,
@@ -1502,7 +1502,7 @@ fn a_landed_view_state_refresh_puts_the_browsed_season_back_and_never_steers_ano
 #[test]
 fn a_pointer_lands_on_the_capsule_the_unfurl_drew() {
     let y = 812.0;
-    let set = hero::HeroSet {
+    let set = hero::HeroSet { more: false,
         watchlist: true,
         go_show: false,
         version: false,
@@ -5254,14 +5254,6 @@ fn identity_detail(parts_empty: bool) -> Detail {
     d
 }
 
-/// The left edge of the chip whose label was painted at `label_x`: a filled badge centres its
-/// label in the chip, a keyline chip pads it by a fixed 7px.
-fn filled_left(label_x: f32, text: &str, m: &dyn plx_machine::machine::Measure) -> (f32, f32) {
-    let w = plx_ui::widgets::badge_w(text, None, m);
-    let tw = m.width_str(text, theme::size::CAPTION, true);
-    let left = label_x - (w - tw) * 0.5;
-    (left, left + w)
-}
 fn keyline_left(label_x: f32, text: &str, m: &dyn plx_machine::machine::Measure) -> (f32, f32) {
     let left = label_x - 7.0;
     (left, left + plx_ui::widgets::keyline_chip_w(text, m))
@@ -5277,8 +5269,10 @@ fn the_identity_line_paints_sm_after_the_run_and_xs_between_chips() {
     let runs = plx_ui::draw_census::capture_runs(|| screen.draw_identity_line(plx_ui::Painter::recording(), &d, 300.0, m));
     let kind = plx_platform::i18n::msg::browse_kind_movie();
     let kind_run = runs.iter().find(|r| r.text == kind).expect("the kind label is painted");
-    let run_right = kind_run.at.x + kind_run.at.w;
-    let res = filled_left(painted_x(&runs, "1080p").expect("resolution chip"), "1080p", m);
+    // The recording painter has no loaded font. Geometry comes from the same injected measure
+    // as the run, rather than the painter's uninitialized-font width estimate.
+    let run_right = kind_run.at.x + plx_machine::machine::Measure::width_str(m, kind, theme::hero::IDENTITY_SIZE, false);
+    let res = keyline_left(painted_x(&runs, "1080p").expect("resolution chip"), "1080p", m);
     let cc_label = plx_platform::i18n::msg::widgets_badge_cc();
     let sdh_label = plx_platform::i18n::msg::widgets_badge_sdh();
     let cc = keyline_left(painted_x(&runs, cc_label).expect("CC chip"), cc_label, m);
@@ -5296,7 +5290,7 @@ fn an_empty_identity_run_leaves_no_gap_before_the_first_chip() {
     let d = identity_detail(true);
     let m = &plx_base::fontcov::advances::ShippedMeasure;
     let runs = plx_ui::draw_census::capture_runs(|| screen.draw_identity_line(plx_ui::Painter::recording(), &d, 300.0, m));
-    let res = filled_left(painted_x(&runs, "1080p").expect("resolution chip"), "1080p", m);
+    let res = keyline_left(painted_x(&runs, "1080p").expect("resolution chip"), "1080p", m);
     assert!((res.0 - plx_ui::consts::MARGIN_X).abs() < 0.5, "no run, no gap: chip at {}", res.0);
 }
 
@@ -5614,6 +5608,26 @@ fn a_show_page_offers_and_plays_its_hero_episodes_versions() {
     clear();
 }
 
+#[test]
+fn pdf_proposal_on_deck_watched_action_targets_one_episode() {
+    let _guard = plx_base::testlock::serial();
+    plx_plex::plex::reset_servers_for_test();
+    let sid = plx_plex::plex::register_for_test("pdf-episode-watch", "127.0.0.1", 1, "t", "c");
+    let mut d = Detail { sid, rk: "show".into(), is_show: true, kind: "show".into(), ..Default::default() };
+    d.on_deck = Some(plx_data::metadata::Episode { rk: "next-episode".into(), resume_ms: 60_000, dur_ms: 120_000, ..Default::default() });
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(d));
+    let mut screen = bare(&_guard, sid, "show");
+    let (_, effects) = step(&mut screen, &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)), Some(hero::ELEM_MARK_WATCHED));
+    let target = effects.iter().find_map(|effect| match &effect.fx {
+        Fx::App(AppFx::Store(StoreId::ViewState, StoreCmd::ViewState(ViewStateCmd::Request { rk, scope, .. }))) => Some((rk.as_str(), scope)),
+        _ => None,
+    }).expect("one addressed watched request");
+    assert_eq!(target.0, "next-episode");
+    assert!(matches!(target.1, plx_data::viewstate::Scope::Leaf));
+    clear();
+    plx_plex::plex::reset_servers_for_test();
+}
+
 // ---- the Go to Show disc on an episode's page ------------------------------------------------
 
 fn episode_naming_its_show() -> Detail {
@@ -5639,6 +5653,7 @@ fn an_episode_gets_a_go_to_show_disc_that_presses_the_item_menus_navigation() {
     let mut screen = bare(&_guard, ServerId::UNSET, "ep");
     let set = screen.hero_set(test_store().view());
     assert!(set.go_show);
+    assert!(!set.more, "More belongs to a show’s on-deck hero, not this episode page");
     assert!(!set.watchlist, "no plex guid: the bookmark disc is not in this row");
     assert_eq!(hero::index_of(set, hero::HeroCtl::GoToShow), Some(1));
     let (_, fx) = step(

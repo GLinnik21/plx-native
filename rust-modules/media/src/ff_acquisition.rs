@@ -308,7 +308,9 @@ impl AcquisitionRuntime {
 
 /// A host-suite seam: a test registers ONE thread and receives every answer an acquisition
 /// runtime on that thread gives, with the phase it gave it in — so it can change the world
-/// strictly AFTER a given `Continue` instead of sleeping and hoping.
+/// strictly AFTER a given `Continue` instead of sleeping and hoping. A change made by ANOTHER thread
+/// that received the answer races the watched thread's next ask; `on_nth_continue` runs the change
+/// on the watched thread itself, between that answer and its next ask.
 #[cfg(any(test, feature = "test-support"))]
 pub(super) mod observe {
     use super::{Flow, Phase};
@@ -316,11 +318,51 @@ pub(super) mod observe {
     use std::sync::Mutex;
     use std::thread::ThreadId;
 
-    static WATCHED: Mutex<Option<(ThreadId, SyncSender<(Phase, Flow)>)>> = Mutex::new(None);
+    /// One registered observer: the thread it watches, where that thread's answers go, and an
+    /// optional action to run ON that thread (see [`on_nth_continue`]).
+    struct Watched {
+        thread: ThreadId,
+        tx: SyncSender<(Phase, Flow)>,
+        hook: Option<Hook>,
+    }
+
+    struct Hook {
+        phase: Phase,
+        /// `Continue`s in `phase` still to be answered before the action runs.
+        remaining: usize,
+        action: Box<dyn FnOnce() + Send>,
+    }
+
+    static WATCHED: Mutex<Option<Watched>> = Mutex::new(None);
 
     pub(in crate::ff) fn watch_this_thread(tx: SyncSender<(Phase, Flow)>) {
-        *WATCHED.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some((std::thread::current().id(), tx));
+        *WATCHED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Watched {
+            thread: std::thread::current().id(),
+            tx,
+            hook: None,
+        });
+    }
+
+    /// Run `action` on the WATCHED thread itself, synchronously, once the runtime has answered
+    /// its `nth` `Continue` in `phase` (counted from this call): before that answer reaches the
+    /// channel and before that thread can ask again. The channel [`watch_this_thread`] feeds cannot give that ordering: another
+    /// thread that receives the answer and then changes the world races the watched thread's
+    /// next ask, so a stalled receiver let a recheck slip in ahead of the change.
+    pub(in crate::ff) fn on_nth_continue(
+        phase: Phase,
+        nth: usize,
+        action: impl FnOnce() + Send + 'static,
+    ) {
+        assert!(nth > 0, "nth counts from 1");
+        let mut watched = WATCHED.lock().unwrap_or_else(|e| e.into_inner());
+        let watched = watched
+            .as_mut()
+            .expect("watch_this_thread must run before on_nth_continue");
+        watched.hook = Some(Hook {
+            phase,
+            remaining: nth,
+            action: Box::new(action),
+        });
     }
 
     pub(in crate::ff) fn unwatch() {
@@ -328,11 +370,32 @@ pub(super) mod observe {
     }
 
     pub(super) fn report(phase: Phase, flow: Flow) {
-        let watched = WATCHED.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((thread, tx)) = watched.as_ref() {
-            if *thread == std::thread::current().id() {
-                let _ = tx.try_send((phase, flow));
+        let (tx, action) = {
+            let mut watched = WATCHED.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(watched) = watched.as_mut() else {
+                return;
+            };
+            if watched.thread != std::thread::current().id() {
+                return;
             }
+            let action = match watched.hook.as_mut() {
+                Some(hook) if hook.phase == phase && matches!(flow, Flow::Continue { .. }) => {
+                    hook.remaining -= 1;
+                    if hook.remaining == 0 {
+                        watched.hook.take().map(|hook| hook.action)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+            (watched.tx.clone(), action)
+        };
+        // Outside the lock (the action is the test's own code), and BEFORE the answer is
+        // delivered: a receiver that wakes on this answer finds the change already made.
+        if let Some(action) = action {
+            action();
         }
+        let _ = tx.try_send((phase, flow));
     }
 }

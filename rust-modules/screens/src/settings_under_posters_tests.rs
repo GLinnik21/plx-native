@@ -465,7 +465,7 @@ fn the_root_page_reads_the_stored_setting_into_its_row() {
     let _sess = seated_scratch_session("root-reads-under-posters");
     let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
     let _live = Live::set(UnderPosters { title: true, details: UnderPostersDetails::Genre, sort_value: false });
-    let page = RootPage::new(EntryId(0), test_support::cx(None).views);
+    let page = RootPage::new(EntryId(0), test_support::cx(None).views.directory);
     assert_eq!(page.state.under_posters, UnderPosters { title: true, details: UnderPostersDetails::Genre, sort_value: false });
 }
 

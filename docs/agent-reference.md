@@ -328,6 +328,29 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `CARGO_TARGET_DIR` at a `/tmp` directory: those trees were not in any checkout, so no tool
   counted or reclaimed them (28 of them, 45.6 GiB, were found in `/tmp` on 2026-10-19). Refused
   under `RELEASE=1`; `ci/test_managed_targets.py` pins that the target dir is inside the checkout.
+- `make fuzz-hud [T=<target> ...] [SECS=60]` — the `cargo fuzz` package over every parser a HUD package or the
+  registry reaches (`docs/hud-plugins.md`, threat model): `admit` (the whole admission path),
+  `bundle_read`, `archive_read` (the 1.0 ZIP container), `svg_check` (the SVG gate in front of nanosvg),
+  `address_parse`, `catalog_parse` (the registry index), `catalog_verify` (the signed index: no input is accepted
+  under the shipped keys; the fuzzer's bytes are also signed with the data layer's TEST ONLY keys to reach what
+  follows the signature check) and `catalog_cache` (its cache record, verified again). Each target
+  asserts only what its code promises (no panic, the documented bounds, round trips) and a crash fails the
+  run, with the input in `fuzz/artifacts/<target>/`. The package is a top-level `fuzz/` with its own
+  `[workspace]`, so no shipped `Cargo.toml` names it and no shipped build changes; it depends on the layer
+  crates by path, with `plx_media/hostsim` (the one configuration that links on a host), and `fuzz/build.rs`
+  reuses `rust-modules/build_support/host_link.rs`. `tools/fuzz-hud.py` is the whole workflow
+  (`list | seed | lock | build | run`): it copies `rust-modules/Cargo.lock` to the gitignored `fuzz/Cargo.lock`
+  (the shared crates are exactly the shipped versions), builds with the nightly named by `FUZZ_TOOLCHAIN`
+  (default `nightly`; CI names a dated one; `cargo install cargo-fuzz --locked` once) in
+  `rust-modules/target-fuzz` (3.1 GiB after a cold build; `make disk` lists it), generates the seeds from
+  the fixtures, the examples and the icons the repository already has plus a dictionary from the published
+  schemas, and runs the targets one after another. A corpus is thousands of tiny files read and written all
+  run long: on a slow or shared disk (the external one a lane may sit on) set `FUZZ_WORK=<dir>` to move seeds,
+  corpora and artifacts to a fast one, or a 5 minute run spends its first two loading the corpus. Minimise a
+  crash with `cargo +nightly fuzz tmin --fuzz-dir fuzz --target-dir rust-modules/target-fuzz <target> <file>`,
+  add it as a red-first test in the owning crate, then fix the code. `.github/workflows/fuzz.yml` builds
+  every target and runs each for 10 s on a PR that touches the package or a parser, and runs each for 5
+  minutes weekly, resuming from a cached corpus when the cache still holds one. Not a gate: nothing in `make check` runs it.
 - `make check-nodef` — the shipping-feature-set type check, `cargo check --lib
   --no-default-features`, which is the configuration `RELEASE=1` ships and which `make check` does
   not cover. `CARGO_INCREMENTAL=0`, as every one-shot gate. It builds in the checkout's own
@@ -371,7 +394,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
     counted the layer crates' `test-support` optional dependencies (rcgen, rustls, ...) that only a
     `[dev-dependencies]` entry switches on. A fourth, the line count of `rust-modules/src` and every
     layer crate's `src`, only warns. Each entry records the value it was set
-    from and the date (10% headroom on sizes, +3 on counts). **To raise a budget deliberately, edit
+    from, the date and its declared headroom. **To raise a budget deliberately, edit
     the json in the same PR, update `measured`/`measured_on`, and justify the growth in the PR body**;
     the failing message says the same. Run it locally with
     `python3 ci/check-build-budgets.py --graph --src rust-modules/src` plus one `--src` per layer crate,
@@ -645,7 +668,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   popover or modal, any title flagged `not_in_video` opened (`gates` checks the mock's request log,
   and that no stream, transcode, timeline, scrobble or play-queue request was made), and the
   hold-hint capsule: the film is shot with the hint taught. The capsule is a one-time teaching
-  overlay (it stands after 1.5 s of rest on a card, once per install across every card screen, Home included, and once more on the Detail season pill after a shorter rest, and for the length of an `ok` held on a card), and a film has no
+  overlay (it stands after 1.5 s of rest on a card, once per install across every card screen, Home included, and once more on the Detail season pill after a shorter rest). A hidden hint also appears after 200 ms of an `ok` hold, with a fill in its cap; a short click leaves it hidden. A film has no
   viewer to teach, so `render --storyboard` writes the `plxnative-hintoff` trigger
   (`HINT_OFF` in `site_video.py`; the app reads it once at boot, in `devtriggers` builds only, and
   calls `hold_hint::teach_all_for_dev`, which marks the hint learned and both of its showings spent for the run) and `render.json` records `hold_hint: suppressed`. The hint's own timing is unchanged,
@@ -1096,7 +1119,9 @@ input decoding live in `system.rs` / `app/events.rs` + `app/input.rs`, not the C
 threading model, the Starfish/ACB ABI + bind-order gotchas, seek/PTS rebase. Read it before
 touching playback):** LG's in-process **StarfishMediaAPIs** (`libplayerAPIs.so`) in
 `BUFFERSTREAM` **buffer-feed** mode, the decoded sink bound to the hardware video plane via
-**`libAcbAPI` (ACB)** — in-process is what lets ACB bind the app-owned sink. The media pipeline
+**`libAcbAPI` (ACB)**. Normal playback uses this in-process buffer-feed path; the controlled
+[URI experiment](measurements/uri-acb-dass-2026-11-02.md) also displayed its SDR720p24 fixture
+through ACB on the webOS 4.5 dev set, with and without `connectDass`. The normal media pipeline
 is all Rust: `PMS HTTP GET` → demux (**`ff.rs`, over a custom AVIO on the
 FFmpeg the app BUNDLES** — not the television's; see the linking section, and note ours is built
 `--disable-network`, so the AVIO is the *only* way bytes reach it) → AU queues with backpressure
@@ -1333,6 +1358,16 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   and queue is capped, and there is no filesystem serving or subprocess. `tools/plxnative-lab
   selftest` proves upload, ordered redelivery/ack and refusal paths on loopback with no television,
   and runs inside `make check`.
+- `tools/hud-dev` — **Player HUD authoring server** (host-side, python3 stdlib only; on a Mac run it with
+  `/usr/bin/python3`, the interpreter the application firewall allows by default; any other python is dropped
+  silently until its "allow incoming connections?" prompt is clicked, as for `tools/netcond.py` below):
+  `tools/hud-dev SOURCE --sim PATH [--port N]` packs a HUD source folder or `.plxhud` with `tools/hud_package.py` (the simulator's `--hud-pack`),
+  lints it with `--hud-lint` on every mtime change, serves the last CLEAN bundle on `0.0.0.0` at a
+  `http://<RFC 1918 address>:<port>/<name>.plxhud` it prints (and refuses to start without such an address), and
+  raises the served patch version on every clean change (numeric `MAJOR.MINOR.PATCH` is all the store compares). It
+  touches no TV: the TV side is Settings > Player HUD > Install from address, then Play on the HUD's row to fetch the
+  next build. `tests/test_hud_dev.py` (a stub simulator, loopback port 0) is in `ci/check-python-steps.txt`; the
+  recipe is `site/hud/AUTHORING.md`, "Developing a HUD on the TV".
 - `tools/netcond.py` — **network-conditioning TCP proxy** (host-side), for the failures a healthy LAN
   cannot produce. Sits between the TV and the PMS (`--listen 32499 --target 127.0.0.1:32400
   --allow-client <TV_IP>`; the PMS runs on the dev Mac) and makes the server misbehave on demand
@@ -1533,7 +1568,8 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   inside `is_back`, in `consts.rs` itself, beside the constant and the comment explaining it).
   Preserve this raw-offset reading if you touch input.
 - **Starfish/ACB ABI + bind-order rules** (the C++-from-C mangled-symbol seam, `Load` with
-  `uid=NULL`, the exact ACB bind sequence, sourceInfo-verbatim (one exception: PQ VP9 is rewritten to HDR10), never feed audio to ACB, the
+  `uid=NULL`, the exact ACB bind sequence, buffer-feed sourceInfo-verbatim (PQ VP9 is rewritten to HDR10;
+  the developer URI ACB fixture uses a separate experimental descriptor), never feed audio to ACB, the
   3-arg taskId ABI) — moved to **`rust-modules/media/src/player/CLAUDE.md`**; read it before touching
   playback or `src/starfish.c`.
 - **Wayland transparency** (`system.rs`)**:** the UI surface is forced to a 32-bit RGBA config and
@@ -2440,6 +2476,18 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   reader demuxes the Part's subtitle packets over a fresh-session range read and the client
   renderer draws that track; logs `subside: open|anchor|reopen|failed|stop …`, never a URL, token
   or session; `media::player::subside`, `ff_subside.rs`),
+  `/tmp/plxnative-uriprobe[=load|late|none|drive]` (the webOS 5+ URI-mode probe, issue #1064: the
+  next Play hands its stream URL to `com.webos.media` over the platform bus instead of building an
+  Engine, to learn whether the exported window id is honoured and where it may go. The content
+  picks the variant: empty or `load` puts `windowId` in the `load` payload, `late` sends it with
+  `setWindowId` after `loadCompleted`, `none` sends no window at all, and `drive` binds like `load`
+  and then exercises the transport — pause, resume, a seek 20 s ahead, a text and an audio
+  `selectTrack`, `setSubtitleEnable` — logging the position before and after each, so the summary
+  says whether the pipeline accepts them; text naming no variant leaves the probe unarmed and the
+  play normal. Read at each playback start, no relaunch; skipped for a hero preview. No Engine
+  runs, so nothing is reported to Plex (no timeline, scrobble or unscrobble). The event log gets `uriprobe: …` lines ending in one `summary` line, never the URL,
+  token, host or a service payload; a tester sends those lines and removes the file.
+  `dev::DIAG`, so it does not move the boot screen; `media::player::uriprobe`, `uriprobe_drive`),
   `/tmp/plxnative-url` (override the streamed part
   URL) and **`/tmp/plxnative-playurl`** (the same, plus the LOAD DECLARATION — one JSON object,
   `{"url":…,"vcodec":…,"acodec":…,"fps":…,"dovi":{…},"atmos":…}`, which is what the pipeline test
@@ -2496,8 +2544,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   within seconds — and two comparisons were silently mis-paired that way before it did.
   And the Library browse set: `/tmp/plxnative-library[=N]` (boot straight into the
   library on section N), **`/tmp/plxnative-libosc`** (a perpetual focus sweep of that library's
-  whole DOCUMENT — the library pill strip at the head where there is one (two or more eligible
-  libraries; a lone favourite draws no selector at all), each published shelf, the grid's control
+  whole DOCUMENT — the favorite library strip and persistent Library options at the head, each published shelf, the grid's control
   row, then the poster grid — reversing at the document's own ENDS rather than on a clock, which is
   the one
   oscillator here that does. The owned Library handles `LibraryCmd::Sweep`; the rule dates to

@@ -80,6 +80,16 @@ class Render(unittest.TestCase):
         with self.assertRaises(SystemExit):
             gen.render('no regions\n**compiler_builtins 1**\n', data(), self.project)
 
+    def test_an_explicit_dev_only_version_is_omitted_but_cannot_hide_a_runtime_version(self):
+        classified = data()
+        classified['not_shipped_versions'] = {'serde': ['0.9.0']}
+        project = {**self.project, 'serde': ['0.9.0', '1.0.1']}
+        self.assertEqual(gen.crate_versions('serde', project, classified), ['1.0.1'])
+        tree = {'serde': {'1.0.1'}, 'libc': {'0.2.9'}, 'icu_x': {'2.0.0'}}
+        self.assertEqual(gen.graph_problems(tree, classified, project), [])
+        tree['serde'].add('0.9.0')
+        self.assertTrue(any('0.9.0' in problem for problem in gen.graph_problems(tree, classified, project)))
+
 
 class Classification(unittest.TestCase):
     def test_a_consistent_tree_has_no_problems(self):

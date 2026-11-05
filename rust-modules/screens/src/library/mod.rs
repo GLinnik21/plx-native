@@ -69,7 +69,7 @@ use layout::COLS;
 use parts::{GridPart, RailPart, GRID_GROUP, RAIL_GROUP};
 use transactions::{PendingTransactions, SectionTarget, GridTarget, GridAction};
 
-/// The header row's group: the library names, "+N" and the page's controls, one Left/Right path.
+/// The header row's group: the library names, Library options and the page's controls, one Left/Right path.
 pub const LIBRARY_GROUP: GroupId = GroupId(0x4c49_4210);
 const STATUS_GROUP: GroupId = GroupId(0x4c49_4212);
 const RETRY: u32 = 3;
@@ -227,10 +227,10 @@ pub struct LibraryScreen {
     values: bool,
     keys: KeyRegistry,
     pair: MasterDetail<RailPart, GridPart, Regions>,
-    /// The names on the header row (the library on view among them) and, last, `MORE` when some
-    /// do not fit. Empty for a single library: the row then carries only the controls.
+    /// The visible favorite names, the current library when outside those shortcuts, and the
+    /// persistent `MORE` action last. A single library retains its name and the options action.
     libraries: Vec<(u32, usize)>,
-    /// The directory sections the fold hid behind "+N" (what the Sources list shows).
+    /// The directory sections the fold hid behind Library options (what the Sources list shows).
     folded: Vec<u32>,
     /// The header row as `sync` last built it (`header.rs`): rebuilt only when [`Self::header_key`]
     /// moves (`RowCache`, the one rule the Recommended page and the Watchlist hold their row by).
@@ -399,7 +399,7 @@ impl LibraryScreen {
     /// What the committed listing lists — the TYPE menu's value as the page last synced it.
     pub fn listed(&self) -> plx_data::browse::LibraryType { self.listed }
 
-    /// The header row's group: the library names, "+N" and the controls.
+    /// The header row's group: the library names, Library options and the controls.
     #[cfg(any(test, feature = "test-support"))]
     pub fn toolbar_group(&self) -> GroupId { LIBRARY_GROUP }
 
@@ -417,8 +417,8 @@ impl LibraryScreen {
         }, elem)).collect()
     }
 
-    /// The library names on the row as `(element, section index)`, "+N" not among them, and the
-    /// section indexes the "+N" list holds: what the fold shows and what it hid.
+    /// The library names on the row as `(element, section index)`, Library options not among them, and the
+    /// section indexes the Library options list holds: what the fold shows and what it hid.
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_names(&self) -> (Vec<(u32, usize)>, Vec<u32>) {
         (self.libraries.iter().filter(|(elem, _)| *elem != MORE).copied().collect(), self.folded.clone())
@@ -456,14 +456,14 @@ impl LibraryScreen {
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_header_builds(&self) -> u32 { self.header.builds() }
 
-    /// The library names on the header row as `(element, directory section index)`, the `+N`
-    /// overflow stop last (its index is `usize::MAX`).
+    /// The library names on the header row as `(element, directory section index)`, the persistent
+    /// options stop last (its index is `usize::MAX`).
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_libraries(&self) -> Vec<(u32, usize)> { self.libraries.clone() }
 
     /// The directory section index of the library the header's selection plate stands under, read
     /// from the BUILT row (the same `selected_stop` the row's motion follows), `None` when the row
-    /// has no plate on a library name (one library: no names).
+    /// has no selected library name, as on the Collections breadcrumb row.
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_plate_section(&self) -> Option<usize> {
         let stop = self.header.row()?.selected_stop()?;
@@ -482,8 +482,8 @@ impl LibraryScreen {
     }
 
     /// Does the page draw the scroll capsule once its chrome has tucked? The one predicate
-    /// [`Self::draw`] asks (the header names two or more libraries to restate).
-    pub(super) fn capsule_wanted(&self) -> bool { plx_ui::scroll_chrome::capsule_shown(self.libraries.len()) }
+    /// [`Self::draw`] asks: keep the current library's identity when its header scrolls away.
+    pub(super) fn capsule_wanted(&self) -> bool { self.listing != Listing::Collections && self.section.is_some() }
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_capsule_wanted(&self) -> bool { self.capsule_wanted() }
@@ -499,6 +499,16 @@ impl LibraryScreen {
     fn reseat<H: LibraryLike>(&self, focus: FocusTarget<u32>, fx: &mut Effects<'_, H>) {
         fx.push(Fx::Deliver(MachineId::Instance(self.instance),
             Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus }))));
+    }
+
+    /// Address only the committed listing this instance owns, never a foreign frame snapshot.
+    fn committed_address<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> Option<SectionAddress> {
+        let id = H::listing(cx).id()?;
+        if self.epoch != Some(id.epoch) || self.query != Some(id.query)
+            || self.section.as_ref().is_none_or(|section| section.sid != id.sid || section.key != id.section) {
+            return None;
+        }
+        self.address(cx)
     }
 
     fn address<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> Option<SectionAddress> {
@@ -729,7 +739,8 @@ impl LibraryScreen {
     /// Seat the page's own focus in `group`; the library row seats the library on view.
     fn seat_on<H: LibraryLike>(&self, group: GroupId, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         if group == LIBRARY_GROUP {
-            if let Some((elem, _)) = self.libraries.iter().find(|(_, index)| Some(*index) == self.view_section(cx)) {
+            if let Some((elem, _)) = self.libraries.iter().find(|(_, index)| Some(*index) == self.view_section(cx))
+                .or_else(|| self.libraries.iter().find(|(elem, _)| *elem == MORE)) {
                 fx.remember(LIBRARY_GROUP, *elem);
             }
         }
@@ -1027,9 +1038,7 @@ impl LibraryScreen {
         // and none of them moves focus, so no `FocusMoved` will release it.
         self.provisional = None;
         self.placed.retain(|(_, placed)| *placed != elem);
-        // A singleton selector never exists (`refresh_header` names 2+ libraries or none), so
-        // `MORE` is the only way into the Sources menu: an ordinary library name below always
-        // requests a section transition, never a menu.
+        // Options opens its menu; each favorite name requests a section transition.
         match elem {
             // The Collections page lists the library's collections (type 18).
             COLLECTIONS => { self.open_listing(Listing::Collections, cx, fx); return Handled::Yes; }
@@ -1135,11 +1144,22 @@ impl LibraryScreen {
         }
     }
 
+    /// Child pages and overlays retain the visit. Retiring the Library root or changing its
+    /// type ends it through the store's ordinary typed effect lane.
+    fn end_visit<H: LibraryLike>(&self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        if self.listing != Listing::All { return; }
+        if let Some(target) = self.committed_address(cx) {
+            fx.push(Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(
+                BrowseCmd::EndVisit { epoch: target.epoch, kind: self.kind }))));
+        }
+    }
+
     fn command<H: LibraryLike>(&mut self, command: LibraryCmd, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         match command {
             LibraryCmd::Enter(kind) => {
                 self.save_cursor(cx, fx);
                 self.flush(fx);
+                if kind != self.kind { self.end_visit(cx, fx); }
                 self.wanted_kind = Some(kind);
                 self.enter_remembered = false;
                 self.initial = true;
@@ -1348,6 +1368,7 @@ impl LibraryScreen {
                 if matches!(leave, plx_machine::machine::Leave::Deeper) { self.buried = true; }
                 self.save_cursor(cx, fx);
                 self.flush(fx);
+                if matches!(leave, plx_machine::machine::Leave::ForGood) { self.end_visit(cx, fx); }
             }
             ScreenEvent::App(AppMsg::Library(command)) => return self.command(*command, cx, fx),
             ScreenEvent::App(AppMsg::LibraryEdit { target, edit }) => {
@@ -1594,7 +1615,7 @@ impl LibraryScreen {
 impl<H: LibraryLike> Focusable<H> for LibraryScreen {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
         if self.plaintext_alert.groups(out) { return; }
-        // The header row: the names (when there are two or more), "+N" and the controls, or the
+        // The header row: the favorite names, Library options and the controls, or the
         // crumb and Sort. One group, declared by the shared `HeaderFocus`.
         out.extend(self.header_focus().and_then(|focus| focus.group_spec()));
         if self.readout == Readout::Failed {

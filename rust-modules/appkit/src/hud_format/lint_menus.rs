@@ -39,8 +39,8 @@
 //! **M5 is not here.** The overscan audit's menu rects coming from the placer rather than from constants is the
 //! renderer's (PR7): this lint cannot see the renderer and does not pretend to.
 //!
-//! **Which states.** Every compiled state of the language (state x slot x valuation, and a Skip state's credits
-//! layout, `CompiledState::skip_alt`): a menu opens from any state that draws its opener, and the reference
+//! **Which states.** Every compiled state of the language (state x slot x valuation, and every distinct
+//! Skip/Watch layout from `CompiledState::skip_variants`): a menu opens from any state that draws its opener, and the reference
 //! needs the Start side in its chapters-plus-info state. A violation is reported ONCE per (code, opener
 //! item) in the first state, in `Compiled::states` order, that has it; fixing the node fixes it everywhere,
 //! and the finding's context names that one state. The pointer is always the opener's item.
@@ -65,7 +65,7 @@ use super::lint::testing::{Base, InvalidCase};
 pub(super) fn check(cx: &LangCtx<'_>, out: &mut Vec<Finding>) {
     for state in cx.states() {
         // a Skip state whose credits pill changes the layout is a second layout of the same state
-        for variant in std::iter::once(state.state).chain(state.state.skip_alt.as_deref()) {
+        for (_, variant) in state.state.skip_variants() {
             let here = StateCtx { key: state.key, state: variant };
             // More's root grows with the folded rows (R2), so its room is asked at every count from none up to
             // the most the package folds: the rows a movie or a playback leaves out shorten the root, and each
@@ -465,17 +465,16 @@ mod tests {
     use super::super::compile::{compile, widen, CompileCtx};
     use super::super::lint::testing::assert_case;
     use super::super::lint::{lint, LintLang, LintOptions};
-    use super::super::parse;
     use super::super::reach::Slot;
-    use super::super::BUILTIN_CLASSIC;
+    use super::super::CLASSIC_HUD;
     use super::*;
     use crate::player_hud::classic::{CTRL_H, CTRL_RIGHT, CTRL_Y};
 
-    const REFERENCE: &str = include_str!("fixtures/reference.plxhud.json");
-    const MINIMAL: &str = include_str!("fixtures/minimal.plxhud.json");
-    const HERO: &str = include_str!("fixtures/hero-center.plxhud.json");
-    const TABS: &str = include_str!("fixtures/tabs.plxhud.json");
-    const PALETTE: &str = include_str!("fixtures/palette.plxhud.json");
+    const REFERENCE: &str = include_str!("fixtures/reference/hud.json");
+    const MINIMAL: &str = include_str!("fixtures/minimal/hud.json");
+    const HERO: &str = include_str!("fixtures/hero-center/hud.json");
+    const TABS: &str = include_str!("fixtures/tabs/hud.json");
+    const PALETTE: &str = include_str!("fixtures/palette/hud.json");
 
     /// Every case of [`INVALID`] yields exactly its code at its pointer, in all eleven languages.
     #[test]
@@ -491,7 +490,7 @@ mod tests {
     fn classic_and_the_reference_place_both_menus_cleanly_in_all_eleven_languages() {
         let langs = LintLang::shipped();
         assert_eq!(langs.len(), 11);
-        for (name, text) in [("classic", BUILTIN_CLASSIC), ("reference", REFERENCE)] {
+        for (name, text) in [("classic", CLASSIC_HUD), ("reference", REFERENCE)] {
             let found: Vec<_> = lint(text, &ShippedMeasure, &langs).into_iter().filter(|f| f.code.starts_with("HUD-E13")).collect();
             assert!(found.is_empty(), "{name}: {found:?}");
         }
@@ -510,7 +509,7 @@ mod tests {
     /// Run `f` over a compile of `text` in English.
     fn with_cx<R>(text: &str, f: impl FnOnce(&LangCtx<'_>) -> R) -> R {
         let lang = LintLang::for_tag("en").expect("English");
-        let package = parse::parse(text.as_bytes()).package.expect("a package");
+        let package = crate::hud_format::fixtures::parse(text.as_bytes()).package.expect("a package");
         let compiled = compile(&package, &ShippedMeasure, CompileCtx { labels: lang.labels.clone() });
         let opts = LintOptions::default();
         f(&LangCtx { package: &package, compiled: &compiled, measure: &ShippedMeasure, lang: &lang, opts: &opts })
@@ -528,7 +527,7 @@ mod tests {
     /// is exactly the rect each menu's overscan audit reports.
     #[test]
     fn classic_places_both_menus_where_the_constants_did() {
-        with_cx(BUILTIN_CLASSIC, |cx| {
+        with_cx(CLASSIC_HUD, |cx| {
             let state = state_of(cx, 0, Slot::Discs);
             let found = openers(state.state, 0);
             assert_eq!(found.iter().map(|o| o.control.id.as_str()).collect::<Vec<_>>(), ["subs", "audio", "more"]);
@@ -599,7 +598,7 @@ mod tests {
                 assert_eq!(m2(cx, &state, more).is_some(), folds == 5, "{folds} folded rows: {:?}", more.placed);
             }
         });
-        with_cx(BUILTIN_CLASSIC, |cx| {
+        with_cx(CLASSIC_HUD, |cx| {
             assert!(cx.compiled.folds().is_empty());
             assert!(cx.states().all(|s| openers(s.state, 0).iter().all(|o| o.need_h == 600.0)));
         });
@@ -702,7 +701,7 @@ mod tests {
 
     /// A classic opener placed by hand where the placer never would: `rect` over `o.control`.
     fn with_placement<R>(rect: Rect, side: Side, f: impl FnOnce(&LangCtx<'_>, &StateCtx<'_>, &Opener<'_>) -> R) -> R {
-        with_cx(BUILTIN_CLASSIC, |cx| {
+        with_cx(CLASSIC_HUD, |cx| {
             let state = state_of(cx, 0, Slot::Discs);
             let mut found = openers(state.state, 0);
             let mut more = found.pop().expect("the gear");

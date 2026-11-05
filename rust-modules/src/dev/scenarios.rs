@@ -114,6 +114,8 @@ pub(crate) struct Scenarios {
     /// `/tmp/plxnative-acct`'s value, once read (see `acct_arm`).
     pub(crate) acct_rest: Option<Option<u32>>,
     pub(crate) auto_tried: bool,
+    /// `/tmp/plxnative-playurl`, once the `autoplay` arm has asked (see `playurl_latched`).
+    pub(crate) playurl_armed: Option<bool>,
     pub(crate) replay_left: u32,
     pub(crate) grid_tried: bool,
     pub(crate) settings_tried: bool,
@@ -166,7 +168,7 @@ pub(crate) struct Scenarios {
     pub(crate) hold_bench: Option<bench::PressBench>,
     /// The boot-time trigger flags the loop consults every frame after.
     pub(crate) dev: DevFlags,
-    /// The screenshot pipeline's arms (`plxnative-libtype`, `-libgrid`, `-libshelf`, `-libmenu`, `-clockstop`) — see [`screenshot`].
+    /// The screenshot pipeline's arms (`plxnative-libtype`, `-libgrid`, `-libshelf`, `-libmenu`, `-clockstop`) and the debt `-autopause` owes the settled capture — see [`screenshot`].
     pub(crate) shots: screenshot::ScreenshotArms,
 }
 
@@ -1130,14 +1132,98 @@ mod script_schedule_tests {
 /// here at the exact points the arms always called it.
 use crate::app::run::pin_headless_hud;
 
+/// Whether the `autoplay`/`playurl` arm may take its one shot this frame.
+///
+/// `autoplay`/`playidx` choose a catalog item, so they need a page that has a catalog: never the
+/// player (already playing), and never the sign-in or picker pages. `playurl` chooses no item and
+/// needs no session ("no home grid to press OK on", `docs/agent-reference.md`), so it may also fire
+/// from those two pages: a boot with no stored session parks on the QR sign-in, and that is exactly
+/// the boot the pipeline test tier runs. The caller spends `auto_tried` only when this answers true,
+/// so on those pages without `playurl` the shot is still unspent for the Home the sign-in leads to.
+///
+/// `playurl` is asked LAST and only on those two pages, because answering it is a `stat` and this
+/// runs every frame of a screen that may sit open for as long as nobody signs in.
+fn autoplay_arm_due(route: &AppArg, auto_tried: bool, elapsed_ms: u32, playurl: impl FnOnce() -> bool) -> bool {
+    if auto_tried || elapsed_ms <= 2000 {
+        return false;
+    }
+    match route {
+        AppArg::Player => false,
+        AppArg::Login | AppArg::Profiles => playurl(),
+        _ => true,
+    }
+}
+
+/// `/tmp/plxnative-playurl` as the `autoplay` arm sees it: read once, then held (see [`latched`]).
+/// Armed before boot like every boot trigger, and `tests/run.py` clears the `/tmp` triggers between
+/// cases, so a later read could answer differently mid-run.
+fn playurl_latched(slot: &mut Option<bool>) -> bool {
+    latched(slot, || Some(plx_base::devtrig::flag("playurl"))) == Some(true)
+}
+
+#[cfg(test)]
+mod autoplay_arm_due_tests {
+    use super::autoplay_arm_due;
+    use plx_screens::registry::AppArg;
+
+    const PAST_DELAY: u32 = 2001;
+
+    #[test]
+    fn playurl_fires_from_the_sign_in_and_picker_routes() {
+        for route in [AppArg::Login, AppArg::Profiles] {
+            assert!(autoplay_arm_due(&route, false, PAST_DELAY, || true),
+                "a boot with no session parks on the sign-in page, which has no home grid for `playurl` to need");
+        }
+    }
+
+    #[test]
+    fn a_catalog_trigger_still_waits_for_a_page_with_a_catalog() {
+        for route in [AppArg::Login, AppArg::Profiles] {
+            assert!(!autoplay_arm_due(&route, false, PAST_DELAY, || false),
+                "autoplay/playidx pick a catalog item, so they must not fire (or spend `auto_tried`) here");
+        }
+    }
+
+    #[test]
+    fn home_fires_without_asking_for_playurl() {
+        let mut reads = 0;
+        assert!(autoplay_arm_due(&AppArg::Home, false, PAST_DELAY, || { reads += 1; false }));
+        assert_eq!(reads, 0, "Home needs no `playurl` answer to be due");
+    }
+
+    #[test]
+    fn the_player_is_never_due_even_for_playurl() {
+        assert!(!autoplay_arm_due(&AppArg::Player, false, PAST_DELAY, || true));
+    }
+
+    #[test]
+    fn the_boot_delay_and_the_one_shot_hold_on_every_route() {
+        for route in [AppArg::Home, AppArg::Login, AppArg::Profiles] {
+            assert!(!autoplay_arm_due(&route, false, 2000, || true), "fired at the delay, not after it");
+            assert!(!autoplay_arm_due(&route, true, PAST_DELAY, || true), "fired a second time");
+        }
+    }
+
+    #[test]
+    fn playurl_is_asked_last_and_only_when_it_decides() {
+        let reads = std::cell::Cell::new(0);
+        let ask = || { reads.set(reads.get() + 1); true };
+        assert!(!autoplay_arm_due(&AppArg::Login, true, PAST_DELAY, ask));
+        assert!(!autoplay_arm_due(&AppArg::Login, false, 2000, ask));
+        assert_eq!(reads.get(), 0, "a stat per frame on the sign-in page while no trigger is armed");
+        assert!(autoplay_arm_due(&AppArg::Login, false, PAST_DELAY, ask));
+        assert_eq!(reads.get(), 1);
+    }
+}
+
 fn autoplay_arm(app: &mut App, fr: &mut Frame) {
     use plx_screens::player::input::HUD_HEADLESS_MS;
-    if !app.scenarios.auto_tried
-        && !matches!(app.route(), AppArg::Player | AppArg::Login | AppArg::Profiles)
-        && fr.now.wrapping_sub(app.t0) > 2000
-    {
+    let route = app.route();
+    let (auto_tried, elapsed) = (app.scenarios.auto_tried, fr.now.wrapping_sub(app.t0));
+    let armed = &mut app.scenarios.playurl_armed;
+    if autoplay_arm_due(&route, auto_tried, elapsed, || playurl_latched(armed)) {
         app.scenarios.auto_tried = true;
-        let playurl = plx_base::devtrig::flag("playurl");
+        let playurl = playurl_latched(&mut app.scenarios.playurl_armed);
         if plx_base::devtrig::flag("autoplay") || playurl {
             let requested = if playurl || plx_base::devtrig::flag("h265") {
                 plx_media::route::clear_url(&mut app.player.session);
@@ -1421,7 +1507,7 @@ pub(crate) fn hud_trigger() -> plx_appkit::player_hud::loaded::DevHud {
     use plx_appkit::player_hud::loaded::{dev_package_path, DevHud, DevPackage};
     let Some(value) = plx_base::devtrig::read("hud") else { return DevHud::Off };
     let Some(path) = dev_package_path(&value) else { return DevHud::Off };
-    let bytes = std::fs::read(path).map_err(|e| e.to_string());
+    let bytes = crate::app::hud_source::read_artifact(std::path::Path::new(path)).map_err(|e| e.to_string());
     #[cfg(feature = "devtriggers")]
     plx_base::eventlog::log(&format!("plxnative-hud: path={path} read={}", bytes.as_ref().map_or_else(|e| e.clone(), |b| format!("{} bytes", b.len()))));
     DevHud::Package(DevPackage::new(path.to_owned(), bytes))
@@ -2200,6 +2286,9 @@ pub(crate) unsafe fn each_frame(app: &mut App, fr: &mut Frame) -> bool {
     screenshot::libshelf_arm(app, fr);
     screenshot::libmenu_arm(app, fr);
     screenshot::clockstop_arm(app, fr);
+    // What `autopause` still owes the settled capture (`screenshot::PauseDebt`).
+    #[cfg(feature = "hostsim")]
+    screenshot::autopause_debt(app, fr);
     if !detail_arm(app, fr) {
         return false;
     }

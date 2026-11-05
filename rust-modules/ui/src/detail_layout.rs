@@ -1,11 +1,11 @@
 //! Shared detail hero geometry, also used by the contrast and safe-area audits.
-use super::{consts::{MARGIN_X, MARGIN_Y, SCR_H}, theme, widgets};
-use super::hstack::Item;
-use super::vstack::{Anchor, VStack};
+use super::{consts::{MARGIN_X, MARGIN_Y}, theme, widgets};
 #[cfg(any(test, feature = "test-support"))]
 use super::{consts::SCR_W, Rect};
+#[cfg(test)]
+use super::consts::SCR_H;
 
-pub const HERO_TEXT_W: f32 = 943.0;
+pub const HERO_TEXT_W: f32 = theme::hero::TEXT_W;
 pub const TITLE_BOTTOM: f32 = 566.0;
 pub const PEOPLE_W: f32 = 560.0;
 pub const PEOPLE_LEAD: f32 = 32.0;
@@ -15,7 +15,7 @@ pub const PEOPLE_INK: [f32; 4] = theme::TEXT_SECONDARY;
 /// (L=0.317) the row needed α≈0.79 of scrim for 4.5:1 — an essentially black hero corner — so
 /// `widgets_hero_scrim_tests` carried it at a lowered 2.6 floor and wrote the ink step down as
 /// deferred. Tightening the hero rhythm is what came due: every rung the row moves up sits in
-/// less of the atmospheric ramp (it is linear in `y`), and the two named rungs the owner asked
+/// less of the atmospheric ramp (each segment is linear in `y`), and the two named rungs the owner asked
 /// for cost 0.16 of contrast, which no scrim retune buys back cheaply — the ramp's own
 /// measurement says it is 97% of the drop, and steepening it darkens the artwork the hero exists
 /// to show. One ink step costs nothing on screen and takes the row to the ordinary 3.0 floor,
@@ -42,77 +42,37 @@ pub struct HeroChain {
     pub btn_y: f32,
 }
 
-/// Every row below the title is placed the same way: the previous row's own MEASURED bottom edge
-/// plus one named rung from [`theme::space`] — never an absolute offset picked to match a mock.
-///
-/// The rungs are not a rhythm to be kept even; they are the page's GRAMMAR, and what they say is
-/// how strongly two things belong together (owner, 2026-09-18). The closer the relation, the
-/// smaller the distance — so an even ladder of one rung all the way down would be the worst answer
-/// available, not the tidiest: it reads as one undifferentiated list and the eye stops seeing any
-/// structure at all. Three degrees are in play here, and the hero uses all three:
-///
-/// * `SM` — one group. Title, identity line and ratings are the item SAYING WHAT IT IS, and are
-///   meant to read almost as a single object.
-/// * `MD` — a change in the KIND of information. The synopsis is prose; the facts line is date,
-///   extent and how it plays. Both still belong to the hero.
-/// * `LG` — information giving way to ACTION (see [`btn_y`]'s own note), and
-/// * `XL` — the hero giving way to the next region entirely, which is `content_top`'s rung in
-///   `screens::detail`, measured off the action row's bottom rather than stated as a page offset.
-///
-/// A gap is between visual OBJECTS, never between coordinates — which is the whole reason this
-/// function adds a measured height before every rung. `+50` between two baselines of 26-tall text
-/// is a 24 gap wearing a number that belongs to neither the type nor the scale.
-/// "Measured" means the row's real bounding box, which for the identity and ratings lines is
-/// their badge/mark (`widgets::BADGE_H`, `widgets::RATING_MARK_D` — both centred on, and taller
-/// than, the caption text beside them), and for the facts line is the `CAPTION` cap band its own
-/// glyphs match. An item with a taller or shorter line at any step still lands the next one a
-/// clean gap below it, and the gaps read the same whether or not the trailer preview has faded a
-/// label's alpha (this function never looks at preview state — see `compute_hero_chain`'s caller,
-/// which only ever asks "does the item HAVE this content", never "is it currently visible").
+/// Shared hero ladder, with Detail anchored at the title's foot. Home uses the same row bands
+/// and gaps while anchoring its actions. Ratings are optional; their absence leaves no gap.
 pub fn hero_chain(
     syn_h: f32,
     has_ratings: bool,
     measure: &dyn plx_machine::machine::Measure,
 ) -> HeroChain {
-    // Heights, by the convention the notes below give for each row: the identity line's BADGE, the
-    // ratings MARK, the synopsis (never under 34), the facts row's `CAPTION` cap band — read
-    // through the `Measure` seam (`check-deps.sh`'s "textmeasure" gate: raw `plx_gfx::text::cap_h`
-    // is not reachable outside `text.rs`/`ui/text_view.rs`/`ui/text_buffer.rs`/a `Measure` impl
-    // body) — and the action row, which is only a position (height 0), so its `y` is the facts
-    // row's bottom plus the LG rung.
-    //
-    // * The identity line's own bounding box is its BADGE, not its caption: `draw_identity_line`
-    //   centres the resolution/HDR/audio badges on the text's cap band, and at `BADGE_H` (34) they
-    //   stand taller than the `BODY` caption (cap_h ~21) that shares their row.
-    // * Same reasoning for the rating marks (`RATING_MARK_D`, 30): centred on the caption's cap
-    //   band and the row's tallest element, not the `LABEL` text (cap_h ~19.5) beside them.
-    // * The facts row's own icons are sized to the `CAPTION` text itself, so its measured height is
-    //   the plain cap band.
-    //
-    // The one rung that is a JUDGEMENT rather than a measurement is the last: the action row is not
-    // information but what you can DO, so the step up to `LG` is the grammar saying so, and an
-    // optical correction too — the Play pill is a filled white capsule ~72 tall against a `CAPTION`
-    // line of ~18, and at an equal gap the heavier object reads as CLOSER.
-    let items = [
-        Item::new(widgets::BADGE_H),
-        if has_ratings { Item::new(widgets::RATING_MARK_D) } else { Item::absent() },
-        Item::new(syn_h.max(34.0)),
-        Item::new(measure.cap_h(theme::size::CAPTION)).before(theme::space::MD),
-        Item::new(0.0).before(theme::space::LG),
-    ];
-    let stack = VStack::new(&items, theme::space::SM, Anchor::Top(TITLE_BOTTOM + theme::space::SM));
-    let y = |i| stack.span(i).map_or(0.0, |(y, _)| y);
-    // An absent ratings row has no place of its own; it reads where the synopsis would start.
-    HeroChain { meta_y: y(0), ratings_y: stack.span(1).map_or_else(|| y(2), |(y, _)| y), syn_y: y(2), facts_y: y(3), btn_y: y(4) }
+    let _ = measure;
+    let rows = super::landing_hero::hero_rows(
+        theme::logo::HERO_BAND_H, widgets::BADGE_H,
+        has_ratings.then_some(widgets::RATING_MARK_D), Some(syn_h.max(34.0)),
+        super::landing_hero::HeroAnchor::TitleBottom(TITLE_BOTTOM),
+    );
+    HeroChain {
+        meta_y: rows.meta.y,
+        ratings_y: rows.ratings.map_or(rows.synopsis.unwrap().y, |r| r.y),
+        syn_y: rows.synopsis.unwrap().y, facts_y: rows.facts.y, btn_y: rows.actions.y,
+    }
 }
 
-pub fn people_top(btn_y: f32, lines: usize) -> f32 {
-    btn_y + widgets::StatusOverlay::CTRL_H - lines as f32 * PEOPLE_LEAD
+/// Bottom of the credits' full leading boxes, aligned by the last cap band to the facts.
+pub fn people_box_bottom(btn_y: f32, cap_h: f32) -> f32 {
+    btn_y - theme::space::MD + PEOPLE_LEAD - (theme::hero::FACTS_H + cap_h) * 0.5
+}
+
+pub fn people_top(btn_y: f32, lines: usize, cap_h: f32) -> f32 {
+    people_box_bottom(btn_y, cap_h) - lines as f32 * PEOPLE_LEAD
 }
 
 pub fn base_scrim_a(y: f32, hero_vis: f32) -> f32 {
-    0.95 * hero_vis.clamp(0.0, 1.0)
-        * ((y - widgets::HERO_BASE_SCRIM_Y0).max(0.0) / (SCR_H - widgets::HERO_BASE_SCRIM_Y0)).min(1.0)
+    super::landing_hero::base_scrim_a(y, hero_vis)
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -128,161 +88,43 @@ pub fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use plx_machine::machine::Measure;
 
-    /// Each row stands one named rung under the previous row's bottom, and an absent ratings row
-    /// leaves no gap behind: SM, SM, SM, MD, LG.
     #[test]
-    fn the_hero_chain_steps_sm_sm_sm_md_lg_and_skips_absent_ratings() {
-        let measure = crate::fixture::FixtureMeasure;
-        let with = hero_chain(76.0, true, &measure);
-        let close = |a: f32, b: f32| (a - b).abs() < 0.01;
-        assert!(close(with.ratings_y, with.meta_y + widgets::BADGE_H + theme::space::SM));
-        assert!(close(with.syn_y, with.ratings_y + widgets::RATING_MARK_D + theme::space::SM));
-        assert!(close(with.facts_y, with.syn_y + 76.0 + theme::space::MD));
-        assert!(close(with.btn_y, with.facts_y + measure.cap_h(theme::size::CAPTION) + theme::space::LG));
-        let bare = hero_chain(10.0, false, &measure);
-        assert!(close(bare.syn_y, bare.meta_y + widgets::BADGE_H + theme::space::SM), "no ratings row, one gap");
-        assert!(close(bare.facts_y, bare.syn_y + 34.0 + theme::space::MD), "synopsis floor is 34");
-    }
-
-    /// The facts row and the people column are LEVEL, so the thing that keeps them apart is a
-    /// width bound and nothing else.
-    #[test]
-    fn the_facts_row_stops_short_of_the_people_column() {
-        let facts_r = SCR_W - MARGIN_X - PEOPLE_W - theme::space::SM;
-        assert!(
-            facts_r < SCR_W - MARGIN_X - PEOPLE_W,
-            "the facts row's bound must sit LEFT of the column it is bounded against"
-        );
-        let measure = crate::fixture::FixtureMeasure;
-        let ch = hero_chain(76.0, true, &measure);
-        let facts_bot = ch.facts_y + measure.cap_h(theme::size::CAPTION);
-        // The case the bound exists for is a FULL column. It is anchored on the action row's
-        // bottom and grows upward, so at `PEOPLE_MAX_LINES` its top line rises past the facts
-        // row's own band and the two share a horizontal strip — nothing but the width keeps the
-        // text apart. A short column does not reach that strip, and since the action row took its
-        // optical rung the three-line case clears it by a few pixels; grading the collision at a
-        // height the column may or may not have is what made this assertion brittle.
-        assert!(
-            people_top(ch.btn_y, PEOPLE_MAX_LINES) < facts_bot,
-            "the tallest people column rises into the facts row's band"
-        );
-        assert!(
-            people_top(ch.btn_y, 1) > facts_bot,
-            "a single line hangs below the facts row entirely"
-        );
-    }
-
-    /// The people column is anchored by its BOTTOM, so its last line sits on the action row's
-    /// bottom edge however many lines the block takes — and each extra line grows UPWARD.
-    #[test]
-    fn the_people_column_grows_upward_off_the_button_row() {
-        let btn_y = 846.0;
-        let bottom = btn_y + widgets::StatusOverlay::CTRL_H;
-        let one = people_top(btn_y, 1);
-        let four = people_top(btn_y, PEOPLE_MAX_LINES);
-        assert_eq!(one, bottom - PEOPLE_LEAD);
-        assert!(four < one, "a taller block starts higher, not lower");
-        assert!(four < bottom, "the block is measured upward from its bottom edge");
-    }
-
-    /// The crew credit takes no vertical space: the action row hangs off the facts line's own
-    /// measured height by a flat [`theme::space::MD`], whether or not PMS sent a Director[] credit
-    /// (the credit is drawn as one more `Bit` inside the same `CAPTION`-sized facts row, so it
-    /// never changes that row's height).
-    #[test]
-    fn the_crew_credit_costs_the_chain_no_vertical_space() {
+    fn pdf_proposal_detail_rows_follow_the_shared_ladder() {
         let m = crate::fixture::FixtureMeasure;
-        let facts_h = m.cap_h(theme::size::CAPTION);
-        for syn_h in [0.0_f32, 108.0] {
-            for ratings in [false, true] {
-                let ch = hero_chain(syn_h, ratings, &m);
-                assert_eq!(
-                    ch.btn_y,
-                    ch.facts_y + facts_h + theme::space::LG,
-                    "the action row hangs off the facts line's measured height, credit or no credit"
-                );
+        let ch = hero_chain(72.0, true, &m);
+        assert_eq!(ch.meta_y, 582.0);
+        assert_eq!(ch.ratings_y, 624.0);
+        assert_eq!(ch.syn_y, 694.0);
+        assert_eq!(ch.facts_y, 790.0);
+        assert_eq!(ch.btn_y, 838.0);
+        let bare = hero_chain(72.0, false, &m);
+        assert_eq!(bare.syn_y, ch.syn_y - widgets::RATING_MARK_D - theme::space::XS);
+        assert_eq!(bare.btn_y, ch.btn_y - widgets::RATING_MARK_D - theme::space::XS);
+    }
+
+    #[test]
+    fn hero_people_share_the_facts_cap_band_and_grow_upward() {
+        let ch = hero_chain(72.0, true, &crate::fixture::FixtureMeasure);
+        let minimum = hero_chain(34.0, false, &crate::fixture::FixtureMeasure);
+        assert_eq!(minimum.facts_y, 714.0);
+        assert_eq!(people_top(minimum.btn_y, PEOPLE_MAX_LINES, 18.0), 621.0);
+        for cap_h in [16.0, 18.0, 24.0] {
+            for lines in 1..=PEOPLE_MAX_LINES {
+                assert_eq!(people_top(ch.btn_y, lines, cap_h) + (lines - 1) as f32 * PEOPLE_LEAD + cap_h * 0.5,
+                    ch.facts_y + theme::hero::FACTS_H * 0.5,
+                    "last credit cap band must share the facts centre");
             }
         }
-    }
-
-    /// The ratings row is the chain's conditional band: it moves everything below it and nothing
-    /// above it, by exactly its own measured height plus the ratings→synopsis rung.
-    #[test]
-    fn the_ratings_band_is_reserved_when_there_are_scores_and_never_otherwise() {
-        let m = crate::fixture::FixtureMeasure;
-        let meta_h = widgets::BADGE_H;
-        let ratings_h = widgets::RATING_MARK_D;
-        for syn_h in [0.0_f32, 108.0] {
-            let none = hero_chain(syn_h, false, &m);
-            let some = hero_chain(syn_h, true, &m);
-
-            assert_eq!(some.meta_y, none.meta_y);
-            assert_eq!(none.syn_y, none.meta_y + meta_h + theme::space::SM);
-            assert_eq!(some.syn_y, some.ratings_y + ratings_h + theme::space::SM);
-            let shift = some.syn_y - none.syn_y;
-            assert_eq!(shift, ratings_h + theme::space::SM);
-            assert_eq!(some.facts_y - none.facts_y, shift);
-            assert_eq!(some.btn_y - none.btn_y, shift);
-        }
-    }
-
-    /// Each rung in the hero chain is a gap between two MEASURED bounding boxes — the previous
-    /// row's own cap-top→baseline height plus a named [`theme::space`] rung — never a difference of
-    /// absolute Y coordinates copied off a mock. This is the systematic form the owner asked for
-    /// in place of the old `+30`/`+50`/`+54` literals, which happened to reproduce one mock's ys
-    /// for one synopsis length and nothing else.
-    #[test]
-    fn every_hero_row_sits_a_named_rung_below_the_previous_rows_measured_bottom() {
-        let syn_h = 72.0_f32;
-        let m = crate::fixture::FixtureMeasure;
-        let meta_h = widgets::BADGE_H;
-        let ratings_h = widgets::RATING_MARK_D;
-        let facts_h = m.cap_h(theme::size::CAPTION);
-
-        let some = hero_chain(syn_h, true, &m);
-        assert_eq!(some.meta_y - TITLE_BOTTOM, theme::space::SM, "logo/title -> meta");
-        assert_eq!(some.ratings_y - (some.meta_y + meta_h), theme::space::SM, "meta -> ratings");
-        assert_eq!(some.syn_y - (some.ratings_y + ratings_h), theme::space::SM, "ratings -> synopsis");
-        assert_eq!(some.facts_y - (some.syn_y + syn_h.max(34.0)), theme::space::MD, "synopsis -> facts");
-        assert_eq!(some.btn_y - (some.facts_y + facts_h), theme::space::LG, "facts -> action row");
-
-        // No ratings: the synopsis follows the meta line directly, off ITS measured bottom.
-        let none = hero_chain(syn_h, false, &m);
-        assert_eq!(none.syn_y - (none.meta_y + meta_h), theme::space::SM, "meta -> synopsis (no ratings)");
-    }
-
-    /// The ladder only ever WIDENS on the way down the hero, and it widens where the meaning
-    /// changes — inside the identity group, then at the change of information kind, then at the
-    /// step from information to action. An even ladder would pass every other test in this file
-    /// and is exactly the answer the owner ruled out: distance is the grammar, so a chain that
-    /// says the same thing at every step says nothing.
-    #[test]
-    fn the_hero_ladder_widens_at_every_change_of_meaning_and_never_narrows() {
-        let m = crate::fixture::FixtureMeasure;
-        let syn_h = 108.0_f32;
-        let ch = hero_chain(syn_h, true, &m);
-        let within_identity = ch.ratings_y - (ch.meta_y + widgets::BADGE_H);
-        let kind_change = ch.facts_y - (ch.syn_y + syn_h);
-        let to_action = ch.btn_y - (ch.facts_y + m.cap_h(theme::size::CAPTION));
-
-        assert!(within_identity < kind_change, "a group must sit tighter than a change of kind");
-        assert!(
-            kind_change < to_action,
-            "the action row is not more information: it takes the next rung up, and the pill's own \
-             mass is why the correction is optical rather than merely the next number"
-        );
-        // And the hero as a whole is further from what follows it than any two rows inside it are
-        // from each other — the region rung `screens::detail::build_layout` adds to `btn_y`.
-        assert!(to_action < theme::space::XL);
+        let facts_r = SCR_W - MARGIN_X - PEOPLE_W - theme::space::SM;
+        assert!(facts_r < SCR_W - MARGIN_X - PEOPLE_W);
     }
 
     #[test]
-    fn base_scrim_preserves_the_legacy_foot_and_clamps_inputs() {
+    fn base_scrim_uses_the_shared_proposal_foot_and_clamps_inputs() {
         assert_eq!(base_scrim_a(0.0, 1.0), 0.0);
-        assert_eq!(base_scrim_a(SCR_H, 1.0), 0.95);
-        assert_eq!(base_scrim_a(SCR_H + 100.0, 2.0), 0.95);
+        assert_eq!(base_scrim_a(SCR_H, 1.0), theme::hero::SCRIM_FOOT_A);
+        assert_eq!(base_scrim_a(SCR_H + 100.0, 2.0), theme::hero::SCRIM_FOOT_A);
         assert_eq!(base_scrim_a(SCR_H, -1.0), 0.0);
     }
 

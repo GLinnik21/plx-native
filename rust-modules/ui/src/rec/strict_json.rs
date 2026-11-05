@@ -20,9 +20,9 @@ pub use serde_json::{Error, Map, Number, Value};
 /// read buffer plus up to twice its size for geometric growth of JSON escape scratch.
 /// Maps also reserve 32 key/value slots for initial BTree nodes and temporary copies; frames
 /// reserve four struct slots for Vec's minimum/growth capacity. Ordinals never index storage.
-pub(super) struct Budget(std::cell::Cell<usize>);
+pub struct Budget(std::cell::Cell<usize>);
 impl Budget {
-    pub(super) fn new(bytes: usize) -> Self {
+    pub fn new(bytes: usize) -> Self {
         Self(std::cell::Cell::new(bytes))
     }
     pub(super) fn charge(&self, bytes: usize) -> Result<(), &'static str> {
@@ -291,15 +291,30 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Value, serde_json::Error> {
 /// bytes are an error). serde_json's own nesting limit (128) bounds the depth.
 pub fn decode_ordered(bytes: &[u8], cap: usize) -> Result<Ordered, serde_json::Error> {
     let budget = Budget::new(cap);
+    decode_ordered_with(bytes, &budget)
+}
+
+/// Decode another document against a shared allocation budget. Each source is charged before the
+/// deserializer allocates its escape scratch or tree, and previous documents retain their charges.
+pub fn decode_ordered_with(bytes: &[u8], budget: &Budget) -> Result<Ordered, serde_json::Error> {
     budget
         .charge(bytes.len().saturating_mul(3))
         .map_err(<serde_json::Error as serde::de::Error>::custom)?;
-    decode_tree::<Ordered>(bytes, &budget)
+    decode_tree::<Ordered>(bytes, budget)
 }
 
 #[cfg(test)]
 mod freeze_tests {
     use super::*;
+
+    #[test]
+    fn documents_share_one_budget_before_the_next_tree_is_allocated() {
+        let document = format!("{{\"value\":\"{}\"}}", "x".repeat(1000));
+        let budget = Budget::new(20_000);
+        assert!(decode_ordered_with(document.as_bytes(), &budget).is_ok());
+        assert!(decode_ordered_with(document.as_bytes(), &budget).is_err());
+        assert!(decode_ordered(document.as_bytes(), 20_000).is_ok());
+    }
 
     #[test]
     fn ordered_keeps_document_order_and_duplicates() {

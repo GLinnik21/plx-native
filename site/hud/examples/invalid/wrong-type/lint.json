@@ -1,0 +1,18 @@
+{
+  "costs": [],
+  "file": "examples/invalid/wrong-type",
+  "findings": [
+    {
+      "code": "HUD-E0104",
+      "file": "hud.json",
+      "hint": "write an integer from 1 to 64 here",
+      "message": "expected an integer from 1 to 64, found string",
+      "nearest": [],
+      "path": "/layout/block/0/cells/0/playbar/thickness",
+      "rule": "type-matches",
+      "severity": "error"
+    }
+  ],
+  "package_sha256": "1cbf313570c7df2331caf999509ec88d2fcf680ef77cce37be5aacd87c972de4",
+  "protocol": 1
+}

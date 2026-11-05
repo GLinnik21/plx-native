@@ -1256,7 +1256,7 @@
     "description": "Settings > Playback row and page title: the look of the playback controls (the player HUD)."
   },
   "settings.hud.copy": {
-    "value": "Choose how the playback controls look. Packages copied to this TV's HUD folder are listed here.",
+    "value": "Choose how the playback controls look.",
     "description": "Settings > Playback > Player HUD: the line under the page title."
   },
   "settings.hud.classic": {
@@ -1432,5 +1432,124 @@
   "settings.trace.saving": {
     "value": "Saving",
     "description": "Local playback diagnostics save in progress."
+  },
+  "settings.hud.browse": {
+    "value": "Browse HUDs",
+    "description": "Player HUD gallery: browse"
+  },
+  "settings.hud.gallery": {
+    "value": "HUD gallery",
+    "description": "Player HUD gallery: gallery"
+  },
+  "settings.hud.gallery_copy": {
+    "value": "Find a look for your playback controls.",
+    "description": "Player HUD gallery: gallery copy"
+  },
+  "settings.hud.preview": {
+    "value": "Preview",
+    "description": "Player HUD gallery: preview"
+  },
+  "settings.hud.use": {
+    "value": "Use HUD",
+    "description": "Player HUD gallery: use"
+  },
+  "settings.hud.about": {
+    "value": "About this HUD",
+    "description": "Player HUD gallery: about"
+  },
+  "settings.hud.loading": {
+    "value": "Loading HUDs…",
+    "description": "Player HUD gallery: loading"
+  },
+  "settings.hud.empty": {
+    "value": "No HUDs are available for this app and language.",
+    "description": "Player HUD gallery: empty"
+  },
+  "settings.hud.gallery_install_question": {
+    "value": "Install this HUD?",
+    "description": "Player HUD gallery: gallery install question"
+  },
+  "settings.hud.gallery_install_body": {
+    "value": "Your current HUD will stay selected.",
+    "description": "Player HUD gallery: gallery install body"
+  },
+  "settings.hud.revoked": {
+    "value": "This HUD was withdrawn.",
+    "description": "Player HUD gallery: revoked"
+  },
+  "settings.hud.update": {
+    "value": "Update",
+    "description": "Player HUD gallery: update"
+  },
+  "settings.hud.cached": {
+    "value": "Catalog checked: {date}",
+    "description": "Player HUD gallery: cached",
+    "args": {
+      "date": "str"
+    }
+  },
+  "settings.hud.author": {
+    "value": "Creator",
+    "description": "Player HUD gallery: author"
+  },
+  "settings.hud.version": {
+    "value": "Version",
+    "description": "Player HUD gallery: version"
+  },
+  "settings.hud.license": {
+    "value": "License",
+    "description": "Player HUD gallery: license"
+  },
+  "settings.hud.download": {
+    "value": "Download size",
+    "description": "Player HUD gallery: download"
+  },
+  "settings.hud.compact": {
+    "value": "Compact",
+    "description": "Player HUD gallery: compact"
+  },
+  "settings.hud.expanded": {
+    "value": "Chapters & info",
+    "description": "Player HUD gallery: expanded"
+  },
+  "settings.hud.up_next": {
+    "value": "Up Next",
+    "description": "Player HUD gallery: up next"
+  },
+  "settings.hud.unavailable": {
+    "value": "This HUD is no longer available in the catalog.",
+    "description": "A catalog refresh removed the package a detail view was showing. Its preview remains viewable; installation is disabled."
+  },
+  "settings.hud.catalog_cached": {
+    "value": "Couldn't refresh HUDs. Showing the saved catalog.",
+    "description": "Gallery index-refresh failure; does not claim the device is disconnected and does not disable explicit package downloads."
+  },
+  "settings.hud.catalog_unavailable": {
+    "value": "Couldn't load HUDs. Try again later.",
+    "description": "Gallery index-refresh failure; does not claim the device is disconnected and does not disable explicit package downloads."
+  },
+  "settings.playback.intro_skip": {
+    "value": "Skip intros",
+    "description": "Playback marker skipping preference or cancellation action."
+  },
+  "settings.playback.credits_skip": {
+    "value": "Skip credits",
+    "description": "Playback marker skipping preference or cancellation action."
+  },
+  "settings.playback.marker.manual": {
+    "value": "Manual",
+    "description": "Playback marker skipping preference or cancellation action."
+  },
+  "settings.playback.marker.automatic": {
+    "value": "Automatic",
+    "description": "Playback marker skipping preference or cancellation action."
+  },
+  "settings.playback.intro_skip.copy": {
+    "value": "Disabled hides the skip button. Manual offers Skip Intro. Automatic skips after five seconds unless you choose Watch Intro. Saved for this profile.",
+    "description": "Playback marker skipping preference or cancellation action."
+  },
+  "settings.playback.credits_skip.copy": {
+    "value": "Disabled hides Skip Credits. Manual keeps the current credit controls. Automatic skips after five seconds unless you choose Watch Credits. Next episode settings still control what plays next; their Up Next countdown is independent.",
+    "description": "Playback marker skipping preference or cancellation action."
   }
 }

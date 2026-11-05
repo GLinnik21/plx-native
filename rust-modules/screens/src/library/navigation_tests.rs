@@ -368,6 +368,35 @@ fn an_external_sources_selection_reseats_the_library_row_once_not_on_metadata_re
 }
 
 #[test]
+fn choosing_a_non_favorite_seats_its_temporary_pill_without_changing_shortcuts() {
+    let _guard = plx_base::testlock::serial();
+    let mut fixture = Fixture::new(3, 12, 0);
+    fixture.sections[2].row.pinned = false;
+    fixture.publish(0, 12);
+    let mut page = fixture.screen();
+    page.initial = false;
+    let before = page.libraries.clone();
+    let mut engine = FocusEngine::new();
+    engine.set(OWNER, page.key(MORE), Some(LIBRARY_GROUP), By::Restore);
+    engine.remember_projected(ENTRY, LIBRARY_GROUP, before[0].0);
+    fixture.step(&mut page, &mut engine, ScreenEvent::App(AppMsg::LibrarySelect(SectionAddress {
+        epoch: fixture.epoch, sid: plx_plex::plex::ServerId::UNSET, section: 3,
+    })));
+    fixture.step(&mut page, &mut engine, ScreenEvent::Tick(Tick { ms: 80, dt_us: 80_000 }));
+    fixture.publish(2, 12);
+    fixture.step(&mut page, &mut engine, ScreenEvent::StoreChanged(StoreId::Browse.ord(), 1));
+    fixture.step(&mut page, &mut engine, ScreenEvent::Tick(Tick { ms: 96, dt_us: 16_000 }));
+    assert_eq!(page.libraries[..2], before[..2]);
+    let selected = page.libraries.iter().find(|(_, index)| *index == 2).unwrap().0;
+    assert_eq!(engine.current(OWNER), Some(page.key(selected)));
+    assert!(page.header.row().unwrap().page.spec().left[2].selected_plate);
+    fixture.publish(2, 24);
+    fixture.step(&mut page, &mut engine, ScreenEvent::StoreChanged(StoreId::Browse.ord(), 2));
+    fixture.step(&mut page, &mut engine, ScreenEvent::Tick(Tick { ms: 112, dt_us: 16_000 }));
+    assert_eq!(engine.current(OWNER), Some(page.key(selected)));
+}
+
+#[test]
 fn source_controls_and_document_groups_match_bare_full_and_failed_content() {
     let _guard = plx_base::testlock::serial();
     for (libraries, items, shelves, failed) in [

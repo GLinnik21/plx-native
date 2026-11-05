@@ -431,3 +431,138 @@ fn value_mode_keeps_the_real_library_focus_and_restores_the_caption_geometry() {
     assert!(seated(&page).abs() < 1.0, "and it stays seated once settled: {}", seated(&page));
     crate::registry::captions::TEST_UNDER_POSTERS.with(|c| c.set(None));
 }
+
+/// A server's re-list plays its landing (the removed card fades out where it stood, the others
+/// slide over), and only its landing: the play is let go once it ends.
+#[test]
+fn a_server_re_list_plays_its_landing_with_a_ghost_and_then_lets_go() {
+    let _guard = plx_base::testlock::serial();
+    let mut fixture = Fixture::new();
+    let sid = plx_plex::plex::ServerId::from_raw(0);
+    let movie = |i: usize| Some(plx_data::pms::PmsMovie { sid, rk: format!("relist-{i}"), ..Default::default() });
+    let listing = |rks: &[usize]| plx_data::browse::view::ListingSnapshot::fixture(sid, rks.iter().map(|&i| movie(i)).collect(), Vec::new());
+    fixture.listing = listing(&[0, 1, 2, 3, 4, 5, 6, 7]);
+    let mut page = fixture.screen();
+    page.initial = false;
+    let mut engine = FocusEngine::new();
+    settle(&mut page, &mut engine, &fixture, 0);
+    assert_eq!(page.pair.detail.relist_probe(), (false, Vec::new()));
+
+    fixture.listing = listing(&[0, 1, 2, 3, 4, 5, 6, 7]).with_relist();
+    page.sync(&fixture.cx(engine.current(OWNER)));
+    settle(&mut page, &mut engine, &fixture, 2000);
+    fixture.listing = listing(&[0, 1, 3, 4, 5, 6, 7]);
+    page.sync(&fixture.cx(engine.current(OWNER)));
+    frame(&mut page, &mut engine, &fixture, 4000);
+    frame(&mut page, &mut engine, &fixture, 4016);
+    let (playing, ghosts) = page.pair.detail.relist_probe();
+    assert!(playing, "the re-list's landing plays");
+    assert_eq!(ghosts, [Some("relist-2".to_string())], "the removed card is its ghost");
+    settle(&mut page, &mut engine, &fixture, 4032);
+    assert_eq!(page.pair.detail.relist_probe(), (false, Vec::new()), "the landing ended and was let go");
+
+    // A later change that is not a re-list cuts, as before.
+    fixture.listing = listing(&[0, 3, 4, 5, 6, 7]);
+    page.sync(&fixture.cx(engine.current(OWNER)));
+    frame(&mut page, &mut engine, &fixture, 7000);
+    frame(&mut page, &mut engine, &fixture, 7016);
+    assert_eq!(page.pair.detail.relist_probe(), (false, Vec::new()));
+}
+
+
+#[test]
+fn relist_regression_the_removed_tail_card_has_its_ghost_pixels() {
+    let _guard = plx_base::testlock::serial();
+    let mut fixture = Fixture::new();
+    fixture.listing = numbered(0..8);
+    let mut page = fixture.screen();
+    page.initial = false;
+    let mut engine = FocusEngine::new();
+    settle(&mut page, &mut engine, &fixture, 0);
+    fixture.listing = fixture.listing.clone().with_relist();
+    page.sync(&fixture.cx(engine.current(OWNER)));
+    settle(&mut page, &mut engine, &fixture, 2000);
+    fixture.listing = numbered(0..7);
+    page.sync(&fixture.cx(engine.current(OWNER)));
+    frame(&mut page, &mut engine, &fixture, 4000);
+    frame(&mut page, &mut engine, &fixture, 4016);
+    let (playing, ghosts) = page.pair.detail.relist_probe();
+    assert!(playing);
+    assert_eq!(ghosts, [Some("7".to_string())], "the removed last tile must fade with its own pixels");
+    plx_machine::idle::frame_begin(1.0 / 60.0);
+    let (_, moving) = plx_machine::idle::scoped_motion(|| frame(&mut page, &mut engine, &fixture, 4032));
+    assert!(moving, "the landing buys frames while moving");
+    settle(&mut page, &mut engine, &fixture, 4048);
+    plx_machine::idle::frame_begin(1.0 / 60.0);
+    let (_, moving) = plx_machine::idle::scoped_motion(|| frame(&mut page, &mut engine, &fixture, 8000));
+    assert!(!moving, "a settled landing buys no frames");
+    assert_eq!(page.pair.detail.relist_probe(), (false, Vec::new()));
+}
+
+#[test]
+fn relist_regression_each_coalesced_relist_keeps_its_removed_card() {
+    let _guard = plx_base::testlock::serial();
+    let mut fixture = Fixture::new();
+    fixture.listing = numbered(0..8);
+    let mut page = fixture.screen();
+    page.initial = false;
+    let mut engine = FocusEngine::new();
+    settle(&mut page, &mut engine, &fixture, 0);
+    fixture.listing = fixture.listing.clone().with_relist();
+    page.sync(&fixture.cx(engine.current(OWNER)));
+    settle(&mut page, &mut engine, &fixture, 2000);
+    // The first answer lands, while the store already owes the next re-list.
+    fixture.listing = numbered(1..8).with_relist();
+    page.sync(&fixture.cx(engine.current(OWNER)));
+    frame(&mut page, &mut engine, &fixture, 4000);
+    frame(&mut page, &mut engine, &fixture, 4016);
+    let (playing, ghosts) = page.pair.detail.relist_probe();
+    assert!(playing);
+    assert_eq!(ghosts, [Some("0".to_string())], "an intermediate re-list must retain the card it removed");
+    settle(&mut page, &mut engine, &fixture, 4032);
+    fixture.listing = numbered(2..8);
+    page.sync(&fixture.cx(engine.current(OWNER)));
+    frame(&mut page, &mut engine, &fixture, 7000);
+    frame(&mut page, &mut engine, &fixture, 7016);
+    assert_eq!(page.pair.detail.relist_probe().1, [Some("1".to_string())]);
+    settle(&mut page, &mut engine, &fixture, 7032);
+    assert_eq!(page.pair.detail.relist_probe(), (false, Vec::new()));
+}
+
+#[test]
+fn relist_regression_reenabling_after_a_query_cut_adopts_current_rows() {
+    let _guard = plx_base::testlock::serial();
+    let mut fixture = Fixture::new();
+    fixture.listing = numbered(0..8);
+    let mut page = fixture.screen();
+    page.initial = false;
+    let mut engine = FocusEngine::new();
+    settle(&mut page, &mut engine, &fixture, 0);
+    fixture.listing = fixture.listing.clone().with_relist();
+    page.sync(&fixture.cx(engine.current(OWNER)));
+    settle(&mut page, &mut engine, &fixture, 2000);
+    fixture.listing = numbered(0..7);
+    page.sync(&fixture.cx(engine.current(OWNER)));
+    settle(&mut page, &mut engine, &fixture, 4000);
+
+    // An ordinary query edit cuts to different cards while landing play is disabled.
+    fixture.listing = numbered(10..18).with_query(9);
+    page.sync(&fixture.cx(engine.current(OWNER)));
+    settle(&mut page, &mut engine, &fixture, 6000);
+    assert_eq!(page.pair.detail.relist_probe(), (false, Vec::new()));
+
+    // The next notification leaves these rows in place while its answer is out.
+    fixture.listing = fixture.listing.clone().with_relist();
+    page.sync(&fixture.cx(engine.current(OWNER)));
+    frame(&mut page, &mut engine, &fixture, 8000);
+    frame(&mut page, &mut engine, &fixture, 8016);
+    assert_eq!(page.pair.detail.relist_probe(), (false, Vec::new()),
+        "arming the next re-list must not animate the previous query's stale keys");
+
+    fixture.listing = numbered(11..18).with_query(9);
+    page.sync(&fixture.cx(engine.current(OWNER)));
+    frame(&mut page, &mut engine, &fixture, 9000);
+    frame(&mut page, &mut engine, &fixture, 9016);
+    assert_eq!(page.pair.detail.relist_probe().1, [Some("10".to_string())],
+        "the new answer still plays against the current query's rows");
+}

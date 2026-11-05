@@ -89,6 +89,7 @@ pub mod popover_morph; // the morph open style (pill -> panel) beside the shared
 pub mod popover; // shared modal open/appear choreography (track menu / info / chapters / account)
 pub mod press; // tvOS-style click: OK-down dips the focused card, OK-up springs it back + activates
 pub use plx_gfx::gfx::profile; // the draw-phase profiler lives in `gfx` now (module-layers step L5)
+pub mod preview_controls;
 pub mod route_screen;
 pub mod rec; // RESTRUCTURE (spec §5.3): the recorder — format, bounded writer, loader, TableMeasure
 pub mod replay; // RESTRUCTURE (spec §5.5): `--targets` replay of a recording over the dispatcher
@@ -742,11 +743,10 @@ impl Painter {
             // A GLASS command lands here on both halves of that gate, and neither is a bug. Under
             // a frozen host boundary (the tab bar's glass on Home while an account or item menu
             // holds Home as a snapshot) it is dead content. In the SURFACES band it is a glass
-            // drawn inside a surface's layer, above the scrim: its backdrop entry was already
-            // requested by `surface_with` before this call, and the entry's source is the page
-            // and scrim recorded below the band. What is skipped is only this command's own
-            // `Paint` — the word a glass ABOVE it would read, and nothing above the surfaces band
-            // is ever recorded or reads one. An assertion here once fired on every frame a menu's
+            // drawn inside a surface's layer, above the scrim: its entry was already requested
+            // by `surface_with`. The cheap initial traversal skips this command word; when live
+            // glass needs a surface prefix, `discover_with` repeats with argument recording
+            // enabled below the highest current consumer. An assertion here once fired on every frame a menu's
             // glass, then such a surface glass, was up. (A menu's glass now stands on frozen
             // ground, `popover_glass`, and requests no entry at all.)
             return true;
@@ -1533,6 +1533,29 @@ impl Painter {
             dy,
         );
     }
+    /// A display-only card dissolving between equally sized images, using the card's own
+    /// coverage, sheen and parent cascade once. Returns false if the optional program failed.
+    pub fn tex_carded_blend(self, tex: u32, next: u32, mix: f32, uv: [f32; 4], r: Rect, rad: f32) -> bool {
+        if self.declare(r, 90, |data| {
+            use frame::backdrop::Value;
+            tex.record(data);
+            next.record(data);
+            plx_gfx::gfx::tex_ledger::revision(tex).record(data);
+            plx_gfx::gfx::tex_ledger::revision(next).record(data);
+            mix.record(data);
+            uv.record(data);
+            rad.record(data);
+        }) { return true; }
+        if self.records() { return true; }
+        let tint = self.c(theme::TINT_WHITE);
+        let (blur, _, sa, _) = card_shadow_params(r.h, 0.0, theme::CARD_SHADOW[3]);
+        let blur = self.px(blur);
+        let shadow = self.c(theme::with_a(theme::CARD_SHADOW, sa));
+        let m = self.place(r);
+        plx_gfx::gfx::draw_tex_carded_blend(tex, next, mix, uv, m.x, m.y, m.w, m.h,
+            self.px(rad), tint.as_ptr(), self.px(theme::CARD_SHEEN_W),
+            self.sheen_rim().as_ptr(), blur + 1.0, blur, shadow.as_ptr())
+    }
     /// The still specialization composes the label ground with the artwork. A fade or unsupported
     /// shader returns false so the component can retain its ordinary card and ground passes.
     #[must_use]
@@ -2250,9 +2273,8 @@ pub fn hero_syn_h(lines: usize) -> f32 {
 /// design canvas for it specifies `--size-label` 26px, `--leading-synopsis` 36px and `--text-reading`
 /// explicitly — while the home canvas has no hero at all and so cannot contradict it. Its own note
 /// (*"lifted to LABEL 26/36, it read too small on-device at MICRO 22"*) is a device reading, which is
-/// the kind of evidence that settles this. The recorded owner directive against MICRO — *"bigger,
-/// but smaller than the meta line"* — still holds at LABEL 26, because the meta line above is
-/// `size::BODY` 28.
+/// the kind of evidence that settles this. The latest PDF retains LABEL 26 for reading copy while
+/// the identity line uses regular CAPTION 24; those are separate roles in the shared ladder.
 ///
 /// `lead` is an optional bold run before the first word (detail's `"S2, E3 · Laura:"` episode
 /// prefix); empty means none, which is home's case and a movie's.
@@ -2664,9 +2686,9 @@ mod tests {
 
     /// …and so is a glass declared IN the surfaces band — a glass the dispatcher draws inside a
     /// surface's layer, as a menu's was until it moved onto frozen ground (`popover_glass`). Its
-    /// entry is requested before the declare and resolves against the page below
+    /// entry is requested before the declare. In the cheap initial discovery scope it resolves against the page below
     /// (`frame::backdrop_tests::a_glass_command_in_the_surfaces_band_…`); only its command word
-    /// goes unrecorded, as everything at/above the band does. This was a `should_panic` pin until
+    /// goes unrecorded; `discover_with` then records any required surface prefix. This was a `should_panic` pin until
     /// the menus became glass, when it panicked every menu frame of a debug build.
     #[test]
     fn a_glass_in_the_surfaces_band_is_consumed_without_recording() {

@@ -104,6 +104,7 @@ mod tests {
         // Exhaustive on purpose: adding a row field owes a codec/shape review, not an implicit
         // default in the only test claiming complete row preservation.
         let m = PmsMovie {
+            edition: String::new(),
             sid: plx_plex::plex::ServerId::from_raw(3), sec: 8, title: "Episode".into(), year: 2026,
             rating: "TV-14".into(), dur_ns: i64::MAX, part: "/part".into(), thumb: "/poster".into(),
             still: "/still".into(), art: "/art".into(), summary: "Summary".into(), rk: "17".into(),

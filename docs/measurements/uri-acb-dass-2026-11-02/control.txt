@@ -1,0 +1,166 @@
+ptype=0
+acb initialize playerType=0 rv=1 callback_installed=1
+uriprobe: t=0 armed variant=acb-control scheme=http kind=direct window=none app=com.beb.plxnative.debug
+uriprobe: t=0 acb request=1 step=Check
+uriprobe: ACB experiment requires known SDR H264720p24 fixture; fallback is explicit fixture data, not content detection
+uriprobe: t=0 acb gate mode=1 boot_handle=true actual_ptype=0 dass_available=true initialized=true
+uriprobe: t=1 acb answer step=Check invoked=true (not plane proof)
+ls2uri: register shape=named ok after 2ms
+uriprobe: t=30 register shape=named ok
+ls2uri: call sent
+uriprobe: t=86 call load ok
+ls2uri: call sent
+ls2uri: call sent
+uriprobe: t=107 call notifyForeground ok
+uriprobe: t=107 ev=unknown (unparsed)
+uriprobe: t=107 call subscribe ok
+uriprobe: t=934 ev=audioInfo
+uriprobe: t=994 ev=bufferRange beginTime=0 endTime=3
+uriprobe: t=1040 ev=videoInfo width=1280 height=720 frameRate=24
+uriprobe: t=1126 ev=sourceInfo
+uriprobe: t=1126 ev=unknown (unparsed)
+uriprobe: t=1126 ev=loadCompleted
+uriprobe: t=1126 acb request=2 step=MediaId
+ls2uri: call sent
+acb probe mediaId sink_rv=1 rv=1
+uriprobe: t=1132 acb answer step=MediaId invoked=true (not plane proof)
+uriprobe: t=1137 call play ok
+uriprobe: t=1155 ev=playing
+uriprobe: t=1340 acb request=3 step=Loaded
+acb probe loaded rv=1 task=1
+uriprobe: t=1341 acb answer step=Loaded invoked=true (not plane proof)
+uriprobe: t=1399 ev=bufferRange beginTime=0 endTime=7
+acb callback task=1 ev=1 app=1 play=1
+acb_cb ev=1 errorCode=None ERROR_06=false
+uriprobe: t=1557 acb request=4 step=Connect
+uriprobe: acb control connectDass skipped (same timed slot)
+uriprobe: t=1558 acb answer step=Connect invoked=true (not plane proof)
+uriprobe: t=1590 ev=streamingInfo
+uriprobe: t=1773 acb request=5 step=VideoData
+uriprobe: acb video facts width=1280 height=720 frameRate=24 bitRate=Some(4139352)
+uriprobe: acb descriptor=explicit-SDR720p24-fixture
+acb videoData rv=1 task=2
+uriprobe: t=1778 acb answer step=VideoData invoked=true (not plane proof)
+acb callback task=2 ev=1 app=1 play=1
+acb_cb ev=1 errorCode=None ERROR_06=false
+uriprobe: t=1834 ev=currentTime value=184 (first report)
+uriprobe: t=1834 ev=bufferRange beginTime=0 endTime=11
+uriprobe: t=2008 ev=currentTime value=381
+uriprobe: t=2090 acb request=6 step=Display
+acb display fullscreen=1 rv=1 task=3
+acb playing rv=1 task=4
+uriprobe: t=2092 acb answer step=Display invoked=true (not plane proof)
+acb callback task=4 ev=1 app=1 play=2
+acb_cb ev=1 errorCode=None ERROR_06=false
+acb callback task=3 ev=1 app=1 play=2
+acb_cb ev=1 errorCode=None ERROR_06=false
+uriprobe: t=2193 ev=bufferRange beginTime=0 endTime=14
+uriprobe: t=2598 ev=streamingInfo
+uriprobe: t=2598 ev=bufferRange beginTime=0 endTime=18
+uriprobe: t=3002 ev=bufferRange beginTime=1 endTime=21
+uriprobe: t=3197 ev=currentTime value=1586
+uriprobe: t=3397 ev=bufferRange beginTime=1 endTime=25
+uriprobe: t=3610 ev=streamingInfo
+uriprobe: t=3816 ev=bufferRange beginTime=2 endTime=28
+uriprobe: t=4204 ev=currentTime value=2590
+uriprobe: t=4204 ev=bufferRange beginTime=2 endTime=31
+uriprobe: t=4596 ev=streamingInfo
+uriprobe: t=4613 ev=bufferRange beginTime=2 endTime=32
+uriprobe: t=5012 ev=bufferRange beginTime=3 endTime=33
+uriprobe: t=5212 ev=currentTime value=3594
+uriprobe: t=5412 ev=bufferRange beginTime=3 endTime=33
+uriprobe: t=5596 ev=streamingInfo
+uriprobe: t=5820 ev=bufferRange beginTime=4 endTime=34
+uriprobe: t=6220 ev=currentTime value=4598
+uriprobe: t=6220 ev=bufferRange beginTime=4 endTime=34
+uriprobe: t=6621 ev=bufferRange beginTime=4 endTime=34
+uriprobe: t=7025 ev=bufferRange beginTime=5 endTime=35
+uriprobe: t=7428 ev=currentTime value=5802
+uriprobe: t=7428 ev=bufferRange beginTime=5 endTime=35
+uriprobe: t=7828 ev=bufferRange beginTime=6 endTime=36
+uriprobe: t=8227 ev=bufferRange beginTime=6 endTime=36
+uriprobe: t=8627 ev=currentTime value=7006
+uriprobe: t=8627 ev=bufferRange beginTime=7 endTime=37
+uriprobe: t=9027 ev=bufferRange beginTime=7 endTime=37
+uriprobe: t=9421 ev=bufferRange beginTime=7 endTime=37
+uriprobe: t=9635 ev=currentTime value=8009
+uriprobe: t=9819 ev=bufferRange beginTime=8 endTime=38
+uriprobe: t=10226 ev=bufferRange beginTime=8 endTime=38
+uriprobe: t=10626 ev=bufferRange beginTime=9 endTime=39
+uriprobe: t=10826 ev=currentTime value=9216
+uriprobe: t=11025 ev=bufferRange beginTime=9 endTime=39
+uriprobe: t=11442 ev=bufferRange beginTime=9 endTime=39
+uriprobe: t=11842 ev=currentTime value=10219
+uriprobe: t=11842 ev=bufferRange beginTime=10 endTime=40
+uriprobe: t=12241 ev=bufferRange beginTime=10 endTime=40
+uriprobe: t=12642 ev=bufferRange beginTime=11 endTime=41
+uriprobe: t=12842 ev=currentTime value=11222
+uriprobe: t=13042 ev=bufferRange beginTime=11 endTime=41
+uriprobe: t=13441 ev=bufferRange beginTime=11 endTime=41
+uriprobe: t=13841 ev=bufferRange beginTime=12 endTime=42
+uriprobe: t=14041 ev=currentTime value=12427
+uriprobe: t=14241 ev=bufferRange beginTime=12 endTime=42
+uriprobe: t=14649 ev=bufferRange beginTime=13 endTime=43
+uriprobe: t=15049 ev=currentTime value=13430
+uriprobe: t=15049 ev=bufferRange beginTime=13 endTime=43
+uriprobe: t=15450 ev=bufferRange beginTime=13 endTime=43
+uriprobe: t=15857 ev=bufferRange beginTime=14 endTime=44
+uriprobe: t=16057 ev=currentTime value=14434
+uriprobe: t=16258 ev=bufferRange beginTime=14 endTime=44
+uriprobe: t=16649 ev=bufferRange beginTime=15 endTime=45
+uriprobe: t=17048 ev=bufferRange beginTime=15 endTime=45
+uriprobe: t=17249 ev=currentTime value=15639
+uriprobe: t=17465 ev=bufferRange beginTime=15 endTime=45
+uriprobe: t=17865 ev=bufferRange beginTime=16 endTime=46
+uriprobe: t=18251 ev=currentTime value=16643
+uriprobe: t=18251 ev=bufferRange beginTime=16 endTime=46
+uriprobe: t=18667 ev=bufferRange beginTime=17 endTime=47
+uriprobe: t=19065 ev=bufferRange beginTime=17 endTime=47
+uriprobe: t=19265 ev=currentTime value=17646
+uriprobe: t=19465 ev=bufferRange beginTime=17 endTime=47
+uriprobe: t=19864 ev=bufferRange beginTime=18 endTime=48
+uriprobe: t=20264 ev=bufferRange beginTime=18 endTime=48
+uriprobe: t=20464 ev=currentTime value=18850
+uriprobe: t=20664 ev=bufferRange beginTime=19 endTime=49
+uriprobe: t=21064 ev=bufferRange beginTime=19 endTime=49
+uriprobe: t=21464 ev=currentTime value=19854
+uriprobe: t=21464 ev=bufferRange beginTime=19 endTime=49
+uriprobe: t=21881 ev=bufferRange beginTime=20 endTime=50
+uriprobe: t=22281 ev=bufferRange beginTime=20 endTime=50
+uriprobe: t=22482 ev=currentTime value=20859
+uriprobe: t=22673 ev=bufferRange beginTime=21 endTime=51
+uriprobe: t=23072 ev=bufferRange beginTime=21 endTime=51
+uriprobe: t=23473 ev=bufferRange beginTime=21 endTime=51
+uriprobe: t=23605 ev=streamingInfo
+uriprobe: t=23672 ev=currentTime value=22063
+uriprobe: t=23880 ev=bufferRange beginTime=22 endTime=52
+uriprobe: t=24280 ev=bufferRange beginTime=22 endTime=52
+uriprobe: t=24680 ev=currentTime value=23067
+uriprobe: t=24680 ev=bufferRange beginTime=23 endTime=53
+uriprobe: t=25080 ev=bufferRange beginTime=23 endTime=53
+uriprobe: t=25497 ev=bufferRange beginTime=23 endTime=53
+uriprobe: t=25696 ev=currentTime value=24072
+uriprobe: t=25897 ev=bufferRange beginTime=24 endTime=54
+uriprobe: t=26296 ev=bufferRange beginTime=24 endTime=54
+uriprobe: t=26696 ev=currentTime value=25076
+uriprobe: t=26696 ev=bufferRange beginTime=25 endTime=55
+uriprobe: t=27088 ev=bufferRange beginTime=25 endTime=55
+uriprobe: t=27504 ev=bufferRange beginTime=25 endTime=55
+uriprobe: t=27704 ev=currentTime value=26080
+uriprobe: t=27904 ev=bufferRange beginTime=26 endTime=56
+uriprobe: t=28307 ev=bufferRange beginTime=26 endTime=56
+uriprobe: t=28704 ev=currentTime value=27086
+uriprobe: t=28704 ev=bufferRange beginTime=27 endTime=57
+uriprobe: t=29104 ev=bufferRange beginTime=27 endTime=57
+uriprobe: t=29504 ev=bufferRange beginTime=27 endTime=57
+uriprobe: t=29704 ev=currentTime value=28090
+uriprobe: t=29904 ev=bufferRange beginTime=28 endTime=58
+uriprobe: t=29938 call unload requested
+uriprobe: t=29938 summary load=ok playing=yes t_load=1126 t_playing=1155 currentTime_advanced=yes videoInfo=seen audioInfo=seen window=none setWindowId=n/a variant=acb-control scheme=http shape=named end=back
+uriprobe: t=29938 tester: report picture yes/no and sound yes/no
+ls2uri: call sent
+ls2uri: released
+acb unloaded rv=1 task=5
+uriprobe: acb=quarantined bus=released plane-release=unproven need-relaunch
+acb callback task=5 ev=1 app=1 play=0
+acb_cb ev=1 errorCode=None ERROR_06=false

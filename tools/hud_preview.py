@@ -15,6 +15,7 @@ import subprocess
 import sys
 
 import screenshots
+from hud_package import snapshot
 
 ROOT = Path(__file__).resolve().parents[1]
 PREROLL = 600
@@ -152,8 +153,8 @@ def fixture(spec, hud):
             # A fresh synthetic, credential-free legacy preference document. The normal boot
             # migration and profile fallback read it; no production identity is opened or modified.
             (runtime / "auth.json").write_text(json.dumps({"subtitle_size": "huge", "subtitle_position": "high"}))
-        (runtime / "preview.plxhud.json").write_bytes(hud.read_bytes())
-        (runtime / "plxnative-hud").write_text(str(runtime / "preview.plxhud.json"))
+        (runtime / "preview.plxhud").write_bytes(hud.read_bytes())
+        (runtime / "plxnative-hud").write_text(str(runtime / "preview.plxhud"))
     return prepare
 
 
@@ -212,26 +213,25 @@ def capture_scene(spec):
 def run(binary, hud, output, only=None):
     env = {k: v for k, v in screenshots.os.environ.items() if not k.startswith("PLXNATIVE_")}
     env["PLXNATIVE_APP_DIR"] = str(ROOT / "pkg")
-    info = json.loads(subprocess.check_output([str(binary), "--hud-info"], env=env, text=True))
-    inspection = json.loads(subprocess.check_output([str(binary), "--hud-inspect", str(hud)], env=env, text=True))
-    matrix = plan(inspection)
-    selected = [scene for scene in matrix if only is None or scene["name"] in only]
-    if only is not None and set(only) != {scene["name"] for scene in selected}:
-        raise ValueError("unknown preview scene selection")
-    output.mkdir(parents=True, exist_ok=True)
-    scenes = []
-    for spec in selected:
-        png, log = screenshots.capture(binary, capture_scene(spec), DEFAULTS, "sintel", False,
-                                       prepare=fixture(spec, hud), assets=ROOT / "pkg")
-        name = spec["name"] + ".png"
-        (output / name).write_bytes(png)
-        (output / (spec["name"] + ".log")).write_text(log)
-        scenes.append({"file": name, "sha256": hashlib.sha256(png).hexdigest(), "state": spec["name"], "lang": spec["lang"]})
-    manifest = {"protocol": 1, "package_sha256": hashlib.sha256(hud.read_bytes()).hexdigest(), "simulator": info,
-                "required": [scene["name"] for scene in matrix], "complete": len(selected) == len(matrix), "scenes": scenes}
-    (output / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n")
-    return manifest
-
+    with snapshot(binary, hud, env=env) as package:
+        inspection = package.inspection
+        matrix = plan(inspection)
+        selected = [scene for scene in matrix if only is None or scene["name"] in only]
+        if only is not None and set(only) != {scene["name"] for scene in selected}:
+            raise ValueError("unknown preview scene selection")
+        output.mkdir(parents=True, exist_ok=True)
+        scenes = []
+        for spec in selected:
+            png, log = screenshots.capture(binary, capture_scene(spec), DEFAULTS, "sintel", False,
+                                           prepare=fixture(spec, package.path), assets=ROOT / "pkg")
+            name = spec["name"] + ".png"
+            (output / name).write_bytes(png)
+            (output / (spec["name"] + ".log")).write_text(log)
+            scenes.append({"file": name, "sha256": hashlib.sha256(png).hexdigest(), "state": spec["name"], "lang": spec["lang"]})
+        manifest = {"protocol": 1, "package_sha256": package.sha256, "simulator": package.info,
+                    "required": [scene["name"] for scene in matrix], "complete": len(selected) == len(matrix), "scenes": scenes}
+        (output / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n")
+        return manifest
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -242,11 +242,12 @@ def main():
     parser.add_argument("--plan", action="store_true")
     args = parser.parse_args()
     if args.plan:
-        env = {**screenshots.os.environ, "PLXNATIVE_APP_DIR": str(ROOT / "pkg")}
-        inspection = json.loads(subprocess.check_output([str(args.bin.resolve()), "--hud-inspect", str(args.hud.resolve())], env=env))
-        print(json.dumps(plan(inspection), indent=2, ensure_ascii=False))
+        env = {key: value for key, value in screenshots.os.environ.items() if not key.startswith("PLXNATIVE_")}
+        env["PLXNATIVE_APP_DIR"] = str(ROOT / "pkg")
+        with snapshot(args.bin.resolve(), args.hud, env=env) as package:
+            print(json.dumps(plan(package.inspection), indent=2, ensure_ascii=False))
     else:
-        run(args.bin.resolve(), args.hud.resolve(), args.out, args.only.split(",") if args.only else None)
+        run(args.bin.resolve(), args.hud, args.out, args.only.split(",") if args.only else None)
 
 
 if __name__ == "__main__":

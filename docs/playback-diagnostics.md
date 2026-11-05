@@ -16,6 +16,8 @@ The saved local file is `plxnative-playback.log` in the install’s runtime dire
 
 The underlying trace is `plxnative-gst.log` beside it. The saved combined log survives a relaunch, but runtime storage is not guaranteed to survive TV standby or reboot. Copy it before powering off. A new recording replaces only the trace; **Save diagnostic log** replaces the combined log.
 
+If saving fails, the row shows **Failed** and the app event log records the failed stage and numeric OS error (`errno`). Worker admission or disconnection failures name that condition and retire **Saving**, so the controls become available again. These messages contain fixed operation labels, not arbitrary error text or viewer paths. A successful save logs `playback diagnostics: saved plxnative-playback.log`; a stopped recording alone does not mean the combined log was saved. Include the app event log when reporting a save failure.
+
 ## Implementation and firmware evidence
 
 The Settings form emits typed `AppFx::PlaybackTrace` commands. The app runner executes them and delivers one `AppMsg::PlaybackTrace` status to the originating surface. The screen opens no file, starts no worker and reads no native/global recorder state. The platform adapter owns native logging and its file; the Bridge owns the off-frame save receipt and delivers its result to the requesting surface. Saving is generation-fenced against a later deletion or new recording, and the IO transaction is serialized with privacy deletion; the cap/deadline writer takes elapsed time as an input and is tested without firmware.

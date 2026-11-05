@@ -112,7 +112,7 @@ fn menu_side_actions_keep_source_sort_and_filter_row_identity() {
     let filter_key = filter.form.key_at(0).unwrap().0;
     let (groups, sections) = source_sections();
     let mut sources = LibraryMenu::new(EntryId(7), menu_arg(LibraryMenuKind::Sources, [0; 4]));
-    sources.apply_draft(source_draft(11, 0, &groups, &sections, &(0..9).collect::<Vec<u32>>()));
+    sources.apply_draft(source_draft(11, 0, &groups, &sections, &(0..9).collect::<Vec<u32>>(), false));
     let source_key = sources.form.key_at(1).unwrap().0;
 
     with_cx(|cx| {
@@ -183,7 +183,7 @@ fn sources_menu_left_is_an_engine_edge_not_an_editor_transition() {
     let _guard = plx_base::testlock::serial();
     let (groups, sections) = source_sections();
     let mut menu = LibraryMenu::new(EntryId(7), menu_arg(LibraryMenuKind::Sources, [0; 4]));
-    menu.apply_draft(source_draft(11, 0, &groups, &sections, &(0..9).collect::<Vec<u32>>()));
+    menu.apply_draft(source_draft(11, 0, &groups, &sections, &(0..9).collect::<Vec<u32>>(), false));
     let owner = InputOwner::Entry(EntryId(7));
     with_cx(|cx| {
         let mut engine = FocusEngine::new();
@@ -283,7 +283,7 @@ fn the_plus_n_list_hangs_from_its_pill_and_fits_its_widest_row() {
     sections[0].row.title = "A long library name that outgrows the shared".into();
     let anchor = [648.0f32.to_bits(), 148.0f32.to_bits(), 59.0f32.to_bits(), 56.0f32.to_bits()];
     let mut menu = LibraryMenu::new(EntryId(7), menu_arg(LibraryMenuKind::Sources, anchor));
-    menu.apply_draft(source_draft(11, 0, &groups, &sections, &(0..9).collect::<Vec<u32>>()));
+    menu.apply_draft(source_draft(11, 0, &groups, &sections, &(0..9).collect::<Vec<u32>>(), false));
     with_cx(|cx| {
         let frame = menu.frame(cx.measure);
         let widest = menu.form.table.measured_width(cx.measure);
