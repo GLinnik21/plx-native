@@ -1767,17 +1767,19 @@ array of `{ "id": "…", "uuid": "…" }` records. `uuid` identifies the feature
 A public unauthenticated read with a synthetic client identifier returned a valid list without
 either marker capability. An empty list is a valid denial; a malformed response is unavailable.
 
-**The viewer's own Plex Pass grants both.** An account with an active Plex Pass, read on a webOS 10
-set on 2026-11-05, listed 109 features including `pass` and neither `intro-markers` nor
-`credits-markers`, so both settings were hidden from a Pass holder watching on that account. `pass`
-in this list is the VIEWER's own subscription (the list is read with the viewer's credential), not
-a server owner's, so it satisfies the rule below.
+**`pass` in this list grants both.** An account with an active Plex Pass, read on a webOS 10 set
+on 2026-11-05, listed 109 features including `pass` and neither `intro-markers` nor
+`credits-markers`, so both settings were hidden from a Pass holder watching on that account. The
+list is read with the viewer's credential, so `pass` there is the Pass plex.tv reports for the
+viewer (their own, or, unmeasured, their Plex Home's), never a shared server owner's. Only the
+Pass holder's own account was measured.
 
 [Plex's intro documentation](https://support.plex.tv/articles/skip-content/) and
 [credits documentation](https://support.plex.tv/articles/credits-detection/) tie skipping to the
 player's viewer or that viewer's eligible Plex Home, rather than an unrelated server owner's Pass.
 Do not infer either grant from PMS `myPlexSubscription`, generic account subscription activity,
-or membership in some server owner's Home.
+or membership in some server owner's Home; `pass` in the viewer-credential `/api/v2/features`
+list above is the one subscription signal accepted.
 
 `PreferenceRequest::load_marker_access` first verifies `/api/v2/user` with the captured viewer
 credential, requiring at least one known ID/UUID to match and neither to conflict, then reads

@@ -469,7 +469,8 @@ impl PreferenceRequest {
         let features: Vec<ViewerFeature> = serde_json::from_slice(&read("/api/v2/features")?)
             .map_err(|_| PreferenceError::InvalidResponse)?;
         if !current() { return Err(PreferenceError::Stale); }
-        // The viewer's OWN Plex Pass (`pass`, in this same viewer-credential list) grants both: an
+        // `pass` in this same viewer-credential list (the Pass plex.tv reports for the viewer, never a
+        // shared server owner's) grants both: an
         // account with an active Pass was measured listing `pass` and neither marker id (a webOS 10
         // set, 2026-11-05: 109 features), which hid both settings from a Pass holder.
         let has = |id: &str| features.iter().any(|f| f.id == id);
