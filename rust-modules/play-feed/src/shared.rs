@@ -472,7 +472,9 @@ pub struct Shared {
     // Engine, republished from the pump.
     // The render path holds no `&mut PlayerAdapter` and so cannot reach the `Engine` at all (when
     // the slot was a `static mut` it could, and a second live borrow was instant UB) — so it reads
-    // these instead, as the pump's sample of them (`FeedRaw::diag`).
+    // these instead. Eighteen of them (`FeedDiag`: `dg_place_rv` ... `video_fps_milli`) reach the
+    // read-out as the pump's sample, `FeedRaw::diag`; the `dg_abr_*` rows and the handled-error
+    // snapshot's `dg_cb_err_num` are still direct mailbox loads.
     //
     // STRICTLY ONE-WAY: written by the pump and seam, read only for observation. Nothing in the
     // playback state machine may ever branch on one, or a diagnostic becomes load-bearing.

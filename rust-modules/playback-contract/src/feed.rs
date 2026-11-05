@@ -399,8 +399,9 @@ pub struct FeedDiag {
     pub load_completed: bool,
     /// Pipeline callbacks seen this session.
     pub cb_count: u32,
-    /// The bytes queued in the video and audio access-unit lanes (sampled only while the read-out
-    /// is on screen; 0 otherwise).
+    /// The bytes queued in the video and audio access-unit lanes. The feed stores them (and
+    /// `fed_v_pts`, `fed_a_pts` and `frame_at`) only while the read-out is on screen, so they hold
+    /// the last value published while it was, and 0 if it never was this session.
     pub aq_video: i64,
     pub aq_audio: i64,
     /// The newest presentation timestamp fed to each lane (ns).
@@ -411,7 +412,8 @@ pub struct FeedDiag {
     pub load_a: u8,
     /// Why the video feeder is where it is, as a code (`0` = nothing fed yet).
     pub feed_state: u8,
-    /// The pipeline's first `type=18` error number and the callback count it arrived at.
+    /// The type of the pipeline's first error callback (`18`, latched; 0 = none) and the callback
+    /// count it arrived at. The firmware's own error number is [`FeedRaw::cb_err_num`], not this.
     pub cb_err: i32,
     pub cb_err_at: u32,
     /// Bytes the movie's transport has delivered this session.
