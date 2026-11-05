@@ -345,6 +345,12 @@ impl Lifecycle {
                 if message.identity_conflict {
                     return;
                 }
+                // `audioInfo.track` is the service's report of the audio track in use: attributed
+                // like `trackSelected`, to the one select request naming that index, and only
+                // after that request's own acknowledgement.
+                if message.selected_track.is_none() {
+                    message.selected_track = message.audio_track.map(|track| ("audio", track));
+                }
                 if let Some((kind, index)) = message.selected_track {
                     let matches = self.requests.values().filter(|request| matches!(&request.call, UriCall::SelectTrack { kind: expected, index: expected_index, .. } if *expected == kind && *expected_index == index)).count();
                     for request in self.requests.values_mut().filter(|_| matches == 1) {

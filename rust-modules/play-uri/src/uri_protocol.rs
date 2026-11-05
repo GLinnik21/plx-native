@@ -344,6 +344,9 @@ pub struct Message {
     /// adaptive) and the dev probe never sees it.
     pub(crate) ls2_video: Option<Ls2VideoInfo>,
     pub(crate) selected_track: Option<(&'static str, i64)>,
+    /// The audio track the service says is selected (`audioInfo.track`). The 4.5 service names it
+    /// at load, before any selection, and sends no `trackSelected` for one that changes nothing.
+    pub(crate) audio_track: Option<i64>,
     pub(crate) reply_request: Option<plx_platform::tv::uri::RequestId>,
     pub(crate) reply_track: Option<&'static str>,
     pub(crate) confirmed_track: Option<&'static str>,
@@ -485,6 +488,7 @@ pub fn parse_event(payload: &str) -> Message {
         "endOfStream",
         "currentTime",
         "videoInfo",
+        "audioInfo",
         "seekDone",
         "trackSelected",
         "unloadCompleted",
@@ -512,6 +516,8 @@ pub fn parse_event(payload: &str) -> Message {
         if source.get("video").and_then(VideoFacts::decode).is_some()
             && source.get("context").is_some_and(|id| !id.is_string()) { message.identity_conflict = true; }
     }
+    message.audio_track = object.get("audioInfo").and_then(|info| info.get("track"))
+        .and_then(Value::as_i64).filter(|track| *track >= 0);
     let track = object.get("trackSelected").and_then(Value::as_object);
     message.selected_track = track.and_then(|track| {
         let kind = match track.get("type")?.as_str()? {
@@ -533,7 +539,7 @@ pub fn parse_event(payload: &str) -> Message {
                 value,
                 &["width", "height", "codec", "frameRate", "hdr", "currentBitrate", "contentBitrate"],
             ),
-            Ev::AudioInfo => details(value, &["codec", "channels", "sampleRate"]),
+            Ev::AudioInfo => details(value, &["codec", "channels", "sampleRate", "track"]),
             Ev::BufferRange => details(value, &["beginTime", "endTime", "remainingTime", "percent"]),
             // Firmware decompile: `instantBitrate` is the measured download rate and `totalBitrate`
             // the selected variant, both bit/s (the R-ABR-2 run tests that). Numbers only: this
@@ -610,6 +616,7 @@ pub fn parse_event(payload: &str) -> Message {
         message.normalized.clear();
         message.current_time = None;
         message.selected_track = None;
+        message.audio_track = None;
         message.video_info = None;
         message.acb_source = None;
         message.ls2_video = None;

@@ -143,6 +143,20 @@ restarts (the first position after resume dropped to 333 ms here), whether text 
 produces `trackSelected` and a rendered subtitle, and what the seek bar can be fed — the service
 reports `currentTime` but no duration, so a duration has to come from `sourceInfo` or from Plex.
 
+The production backend's first Play waits behind the startup selection of the viewer's audio track
+(the common startup owner sequences track, seek, then Play, each confirmed). On the 4.5 service that
+selection is already made at load: `audioInfo` names it (`{"audioInfo":{"track":0,...}}`, before
+`loadCompleted`), the `selectTrack` for it is acknowledged, and no `trackSelected` follows (none in the
+2026-11-05 `ls-monitor` capture), so a backend that waited for the event never played and its control
+timed out 15 s later. The backend therefore settles a selection of the track `audioInfo` (or a
+`trackSelected`) last reported without a native call (`uri: audio index=N is already selected
+(audioInfo); no selectTrack sent`), and an `audioInfo` that names a pending select's track after its
+acknowledgement settles it like `trackSelected` would. Measured only with a one-track source: that
+`audioInfo.track` and the `selectTrack` index are one numbering, and whether a select of a
+different track before `play` is confirmed at all, are not. A control that is never confirmed is
+refused when its deadline passes and logs `uri: control ... unconfirmed after N ms; refused
+(TimedOut)`.
+
 ## Reproducing it
 
 1. Deploy a debug build carrying the probe (devtriggers; no `RELEASE=1` package contains it).
