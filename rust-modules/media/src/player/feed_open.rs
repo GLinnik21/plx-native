@@ -10,6 +10,10 @@ use plx_play_feed::feed_state::SampleBuf;
 
 pub(super) struct FeedOpenRequest {
     pub physical: plx_play_feed::open::PhysicalOpen,
+    /// The player's end of the channel the open's adaptive worker reports on. The open is claimed
+    /// under an attempt only after it is captured, so the caller takes this out
+    /// ([`Self::take_readouts`]) and holds it beside the attempt.
+    readouts: Option<crate::adaptive::AbrInbox>,
 }
 
 /// Original wire evidence for Force preflight and the declaration log. The converted sink
@@ -131,7 +135,9 @@ impl FeedOpenRequest {
         let plant_geometry = crate::abr::PlantGeometry::from_feed(
             video_bytes, audio_bytes, video_lead_ms, audio_lead_ms,
         );
+        let (readouts_tx, readouts) = crate::adaptive::readout_channel();
         Self {
+            readouts: Some(readouts),
             physical: plx_play_feed::open::PhysicalOpen {
                 origin: source.origin,
                 path: source.path,
@@ -148,12 +154,13 @@ impl FeedOpenRequest {
                 hls_abr: route::hls_abr_control(ps).map(|control| {
                     crate::adaptive::boxed_session(
                         crate::adaptive::Start::from(control).with_plant_geometry(plant_geometry),
-                        Box::new(crate::adaptive::PlayerAdaptiveEffects),
+                        Box::new(crate::adaptive::PlayerAdaptiveEffects::new(readouts_tx.clone())),
                     )
                 }),
                 auto_original: route::auto_original_watch(ps).map(|watch| {
                     crate::adaptive::boxed_original_session(
-                        crate::adaptive::OriginalStart::from(watch).with_plant_geometry(plant_geometry)
+                        crate::adaptive::OriginalStart::from(watch).with_plant_geometry(plant_geometry),
+                        Box::new(crate::adaptive::PlayerAdaptiveEffects::new(readouts_tx.clone())),
                     )
                 }),
             },
@@ -163,6 +170,11 @@ impl FeedOpenRequest {
     /// The common owner checks the credential policy before claiming the native attempt.
     pub fn credential_transport_allowed(&self) -> bool {
         plx_plex::http::credential_transport_allowed(&self.physical.origin, &self.physical.path, &[])
+    }
+
+    /// The inbox of the open's adaptive worker (once).
+    pub(super) fn take_readouts(&mut self) -> crate::adaptive::AbrInbox {
+        self.readouts.take().expect("an open's readout inbox is taken once, before it is consumed")
     }
 
     pub fn into_physical(self) -> plx_play_feed::open::PhysicalOpen {

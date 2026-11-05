@@ -69,6 +69,9 @@ impl ActiveObservation {
 pub trait ActiveFeedPort {
     type Error;
     fn step_active(&mut self, action: ActiveAction) -> Result<ActiveObservation, Self::Error>;
+    /// The controller's HLS prime runway after a completed round or a committed trial, in
+    /// milliseconds: the physical feed keeps it, because the feed's own prime reads it back.
+    fn note_prime_runway(&mut self, ms: i64);
 }
 
 /// Instructions for the existing feed worker. A source is an opaque local key;
@@ -140,6 +143,70 @@ pub struct CommitReadout {
     pub observed_height: i32,
 }
 
+/// What the adaptive worker last measured and decided, as one `Copy` photograph: the Auto-quality
+/// fields the diagnostics panel and the error context show. The worker is the only writer of every
+/// member; it accumulates them and ships the whole value through [`AdaptiveEffects::readout`], and
+/// the player's readout keeps the last one it took in. [`AbrReadout::IDLE`] is the value before any
+/// publication (and after the session's reset): `-1` is "no measurement yet" and `0` is "nothing
+/// decided", exactly as the diagnostics mirror these members came from held them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AbrReadout {
+    /// The last completed segment's measured media rate; `-1` before one.
+    pub media_kbps: i64,
+    /// The latest measured body throughput; `-1` before a complete measurement.
+    pub net_kbps: i64,
+    /// The normalized content reserve; `-1` while unknown.
+    pub buffer_ms: i64,
+    /// Total segment acquisition over media duration, per mille; `-1` before a sample (HLS only).
+    pub ratio_pm: i64,
+    /// A `readout::ABR_ACTION_*` code; `0` until the worker has decided anything.
+    pub action: u8,
+    /// The candidate rung of `action`, kbit/s; `0` when it names none.
+    pub target_kbps: i64,
+    /// Wall milliseconds an unsafe Original deficit has held.
+    pub unsafe_deficit_ms: i64,
+    /// The controller's own model state, each `-1` until it has produced it (`slope_ms_per_s` is `0`):
+    /// the safe budget, the unconstrained operating point, the delivery estimate's dispersion and
+    /// sample count, the buffer's slope, the starvation horizon in seconds (`-1` = no deficit), the
+    /// candidate's predicted production cost and the risk score.
+    pub safe_kbps: i64,
+    pub optimal_kbps: i64,
+    pub unc_pm: i64,
+    pub samples: i64,
+    pub slope_ms_per_s: i64,
+    pub starve_secs: i64,
+    pub pred_pm: i64,
+    pub risk: i64,
+    /// Why the last steady-state decision went the way it did (the common reason code); `0` while
+    /// nothing has decided anything.
+    pub why: u8,
+}
+
+impl AbrReadout {
+    /// Before any publication, and after the session's reset.
+    pub const IDLE: Self = Self {
+        media_kbps: -1, net_kbps: -1, buffer_ms: -1, ratio_pm: -1, action: 0, target_kbps: 0,
+        unsafe_deficit_ms: 0, safe_kbps: -1, optimal_kbps: -1, unc_pm: -1, samples: -1,
+        slope_ms_per_s: 0, starve_secs: -1, pred_pm: -1, risk: -1, why: 0,
+    };
+
+    /// The action the panel shows, given what the demux published beside it. A started controller
+    /// (`mode != 0`) that has decided nothing yet is holding its rung: the demux's start used to
+    /// store `ABR_ACTION_STEADY` in the member, where the session's reset stores `0`, and the panel
+    /// words the two differently ("hold current" and "starting").
+    pub fn action_beside(&self, demux: crate::feed::DemuxAbr) -> u8 {
+        if self.action == 0 && demux.mode != 0 {
+            crate::readout::ABR_ACTION_STEADY
+        } else {
+            self.action
+        }
+    }
+}
+
+impl Default for AbrReadout {
+    fn default() -> Self { Self::IDLE }
+}
+
 trait LeaseGuard: Send {}
 impl<T: Send> LeaseGuard for T {}
 
@@ -182,6 +249,9 @@ impl FenceHandle {
 pub trait AdaptiveEffects: Send {
     fn seed(&mut self, readout: SeedReadout);
     fn committed(&mut self, readout: CommitReadout);
+    /// The worker's accumulated [`AbrReadout`], after any member of it changed. The whole value
+    /// crosses each time, so a sink that drops one loses nothing the next does not carry.
+    fn readout(&mut self, readout: AbrReadout);
 }
 
 /// Physical automatic-actuator lease and the existing queue abort fence. The
@@ -339,7 +409,9 @@ pub trait FeedPort {
 pub trait CandidateMediaPort: FeedPort<Locator = String> {
     fn candidate_declared_bps(&self) -> Option<u64>;
     fn stage_queued_timeline(&mut self) -> bool;
-    fn promote_candidate(&mut self) -> bool;
+    /// Make the published candidate the active cursor. `committed` is the commit this promotes:
+    /// the feed publishes its rung and declaration as the active HLS rung it is delivering.
+    fn promote_candidate(&mut self, committed: &CommitReadout) -> bool;
     fn publication_gate(&mut self) -> &mut dyn PublicationGate;
 }
 
@@ -550,5 +622,35 @@ mod tests {
         trial.observe(id, TrialObservation::FirstAcquired).unwrap();
         assert_eq!(trial.observe(id, TrialObservation::Ended), Ok(TrialPhase::Ended));
         assert_eq!(trial.observe(id, TrialObservation::Published), Err(TrialProtocolError::OutOfOrder));
+    }
+
+    /// The idle photograph is what the diagnostics mirror held before any publication and after a
+    /// session reset: `-1` is "no measurement yet" and `0` "nothing decided", per member.
+    #[test]
+    fn the_idle_photograph_is_the_mirrors_reset_values() {
+        let idle = AbrReadout::IDLE;
+        assert_eq!(AbrReadout::default(), idle);
+        assert_eq!((idle.media_kbps, idle.net_kbps, idle.buffer_ms, idle.ratio_pm), (-1, -1, -1, -1));
+        assert_eq!((idle.action, idle.target_kbps, idle.unsafe_deficit_ms, idle.why), (0, 0, 0, 0));
+        assert_eq!((idle.safe_kbps, idle.optimal_kbps, idle.unc_pm, idle.samples), (-1, -1, -1, -1));
+        assert_eq!((idle.slope_ms_per_s, idle.starve_secs, idle.pred_pm, idle.risk), (0, -1, -1, -1));
+    }
+
+    /// The demux's start stored STEADY where the reset stores 0, and the panel words them
+    /// differently ("hold current" and "starting"): a started controller that has decided nothing
+    /// reads as holding its rung, one that has decided keeps its action, and no controller is 0.
+    #[test]
+    fn a_started_controller_that_has_decided_nothing_is_holding() {
+        use crate::feed::DemuxAbr;
+        use crate::readout::{ABR_ACTION_COMMIT_UP, ABR_ACTION_STEADY, ABR_MODE_HLS, ABR_MODE_ORIGINAL};
+        let idle = AbrReadout::IDLE;
+        assert_eq!(idle.action_beside(DemuxAbr::IDLE), 0, "no controller: nothing to hold");
+        let hls = DemuxAbr { mode: ABR_MODE_HLS, kbps: 3_000, declared_kbps: -1 };
+        let original = DemuxAbr { mode: ABR_MODE_ORIGINAL, kbps: 8_000, declared_kbps: -1 };
+        assert_eq!(idle.action_beside(hls), ABR_ACTION_STEADY);
+        assert_eq!(idle.action_beside(original), ABR_ACTION_STEADY);
+        let committed = AbrReadout { action: ABR_ACTION_COMMIT_UP, ..idle };
+        assert_eq!(committed.action_beside(hls), ABR_ACTION_COMMIT_UP);
+        assert_eq!(committed.action_beside(DemuxAbr::IDLE), ABR_ACTION_COMMIT_UP);
     }
 }

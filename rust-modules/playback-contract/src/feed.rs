@@ -38,8 +38,9 @@
 //! [`FeedCommand::AbandonSeek`] and [`FeedCommand::ArmOpen`]. `disp_base` is raw too
 //! ([`FeedRaw::disp_base`]): the feed zeroes it on its own seek and on every reset, so the player reads it
 //! back from the sample, and a transcode restart's new base is the intent [`FeedCommand::Rebase`]. Not
-//! here yet: `abr_seed` (a worker event, L3c), and the `DemuxAbr` and diagnostics halves of
-//! [`FeedFacts`] (L3c).
+//! here yet: the diagnostics half of [`FeedFacts`] (L3c). The demux's Auto-quality facts are
+//! [`FeedRaw::abr`] ([`DemuxAbr`]); the adaptive worker's are not the feed's at all
+//! ([`AbrReadout`](crate::adaptive::AbrReadout), sent by its [`AdaptiveEffects`](crate::adaptive::AdaptiveEffects)).
 //! A value that is `-1` in the feed's mailbox is an `Option` here, as in [`AttemptFacts`].
 
 use std::sync::atomic::{AtomicI32, AtomicU32};
@@ -352,6 +353,33 @@ pub struct FeedRaw {
     pub disp_base: i64,
     /// What the live Engine's Load side reads, taken in the same sample ([`LoadRaw`]).
     pub load: LoadRaw,
+    /// The Auto-quality facts the demux publishes ([`DemuxAbr`]).
+    pub abr: DemuxAbr,
+}
+
+/// The Auto-quality facts the demux publishes about the open it runs: which controller started, the
+/// rung it requested and the master playlist's declaration for it. The adaptive worker's own
+/// measurements are the [`AbrReadout`](crate::adaptive::AbrReadout), which reaches the player on its
+/// own path; the diagnostics combine the two.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DemuxAbr {
+    /// `readout::ABR_MODE_*`: `0` inactive, 1 the progressive Original watchdog, 2 the fixed-session
+    /// HLS controller.
+    pub mode: u8,
+    /// The Original source requirement or the active HLS rung, in kbit/s; `0` before a controller
+    /// started.
+    pub kbps: i64,
+    /// The current HLS master declaration, in kbit/s; `-1` while none is known.
+    pub declared_kbps: i64,
+}
+
+impl DemuxAbr {
+    /// No controller: what a feed with no session publishes.
+    pub const IDLE: Self = Self { mode: 0, kbps: 0, declared_kbps: -1 };
+}
+
+impl Default for DemuxAbr {
+    fn default() -> Self { Self::IDLE }
 }
 
 /// The Load-side facts of the feed's session, which the Engine holds in its own fields rather than
@@ -412,6 +440,7 @@ impl FeedRaw {
         pts_shift: 0, pipeline_eos: false, seek_landed_epoch: 0, seek_target_ns: None,
         seek_requeue: SeekRequeue::NONE, cb_err_num: 0, http_status: 0,
         vpres_gap_sum_ms: 0, vpres_gap_count: 0, disp_base: 0, load: LoadRaw::IDLE,
+        abr: DemuxAbr::IDLE,
     };
 }
 
@@ -599,6 +628,14 @@ mod tests {
         assert_eq!(facts.raw.flags, FailureFlags::default());
         assert!(facts.attempt.position_ns.is_none() && facts.attempt.status.is_none());
         assert_eq!(facts.raw.speed_audio_ok, None, "no report is not a refusal");
+    }
+
+    /// A feed with no session has no controller: the demux's half of the Auto-quality facts is
+    /// what the session's reset stored (`0`, `0`, no declaration).
+    #[test]
+    fn a_feed_with_no_session_has_no_controller() {
+        assert_eq!(FeedRaw::IDLE.abr, DemuxAbr { mode: 0, kbps: 0, declared_kbps: -1 });
+        assert_eq!(DemuxAbr::default(), DemuxAbr::IDLE);
     }
 
     /// A feed with no session has no stage, no Load to wait for and nothing ready; the IDLE value

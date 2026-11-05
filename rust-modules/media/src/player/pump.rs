@@ -1,5 +1,6 @@
 //! Common route and recovery pump. The physical feed tick in `feed_pump` binds the plane,
 //! feeds AUs, and returns the stage and EOS facts used here for common presentation policy.
+#[cfg(all(test, feature = "hostsim"))]
 use plx_play_feed::shared::FEED_SHARED;
 #[cfg(all(test, feature = "hostsim"))]
 use super::engine::Engine;
@@ -1046,13 +1047,17 @@ fn nothing_in_flight() -> bool {
 static REFUSED_FOR: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, now: u32) {
+    // The HLS worker's report first, so this frame's samples carry it (the sparse facts take two of
+    // its members) and the diagnostics read what the worker last said.
+    #[cfg(feature = "play-feed")]
+    pa.drain_abr(ps);
     // Capture before a terminal release can clear the callback mailbox, then capture every
     // surviving/replacement Engine after the frame, including its early-return paths. A callback
     // or timeout raised during this tick must reach reports before the app observes Error.
     pa.publish_feed_attempt_view(ps);
     // The HLS worker's carried link estimate is route's input, delivered here rather than read by it.
     #[cfg(feature = "play-feed")]
-    ps.observe_link_seed(FEED_SHARED.abr_seed());
+    ps.carry_readout_seed();
     deliver_container_names(ps);
     pump_frame(ps, pa, now);
     pa.publish_feed_attempt_view(ps);

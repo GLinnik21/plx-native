@@ -1453,7 +1453,10 @@ impl PlaybackSession {
         attempt: RouteStartAttempt,
         facts: plx_playback_contract::feed::FeedFacts,
     ) -> bool {
-        if !self.attempt_view.ingest(attempt, crate::player::attempt_view::Backend::Feed, facts.attempt) {
+        // The adaptive worker's two members of the sparse facts are the readout's, not the feed's.
+        let mut sparse = facts.attempt;
+        self.readout.fill_abr_facts(&mut sparse);
+        if !self.attempt_view.ingest(attempt, crate::player::attempt_view::Backend::Feed, sparse) {
             return false;
         }
         self.readout.step(crate::player::readout::ReadoutEvent::FactsIngested(facts.raw));
@@ -1484,6 +1487,36 @@ impl PlaybackSession {
             nothing_in_flight,
         }));
         true
+    }
+
+    /// The adaptive worker's photograph, and its carried link estimate with the milliseconds since
+    /// the worker observed it, for `attempt`: the player adapter takes them from the open's channel.
+    /// Refused, changing nothing, for any other attempt or backend, like [`Self::present`]. The
+    /// estimate is stamped on this session's frame clock, where the route reads it back
+    /// ([`Self::carry_readout_seed`]).
+    pub fn ingest_abr(
+        &mut self,
+        attempt: RouteStartAttempt,
+        readout: plx_playback_contract::adaptive::AbrReadout,
+        seed: Option<plx_playback_contract::adaptive::CarriedSeed>,
+    ) -> bool {
+        if !self.attempt_view.addresses(attempt, crate::player::attempt_view::Backend::Feed) {
+            return false;
+        }
+        use crate::player::readout::ReadoutEvent;
+        let now_ms = self.now_ms;
+        self.readout.step(ReadoutEvent::Abr(readout));
+        self.readout.step(ReadoutEvent::AbrSeed(seed.map(|(seed, unobserved_ms)| {
+            (seed, now_ms.wrapping_sub(u32::try_from(unobserved_ms).unwrap_or(u32::MAX)))
+        })));
+        true
+    }
+
+    /// Hand the route the link estimate the readout holds ([`Self::observe_link_seed`], again every
+    /// frame, as the route's only input of it).
+    pub fn carry_readout_seed(&mut self) {
+        let seed = self.readout.abr_seed(self.now_ms);
+        self.observe_link_seed(seed);
     }
 
     /// Nothing playing: what the module holds before the first play, and the value the static is
@@ -4752,6 +4785,44 @@ fn the_carried_estimate_is_the_sessions_own_and_ages_on_its_frame_tick() {
     assert!(auto_prior(&ps).expect("reported late").uncertainty_pm >= aged.uncertainty_pm);
     ps.observe_link_seed(None);
     assert_eq!(auto_prior(&ps).map(|e| e.samples), Some(1), "cleared: the bootstrap seed again");
+}
+
+/// The link estimate reaches the route as the readout's event and nothing else: it ages on the
+/// session's frame tick, survives the reset a reload runs, and dies only with the playback.
+#[test]
+fn the_carried_estimate_reaches_the_route_through_the_readout_and_only_a_real_stop_clears_it() {
+    use crate::player::attempt_view::Backend;
+    use crate::player::readout::ReadoutEvent;
+    let _serial = plx_base::testlock::serial();
+    let seed = plx_playback_contract::adaptive::SeedReadout {
+        slow_kbps: 40_000, fast_kbps: 42_000, uncertainty_pm: 100, samples: 19,
+    };
+    let (a, stale) = (RouteStartAttempt::fixture(), RouteStartAttempt::fixture_n(2));
+    let mut ps = PlaybackSession::IDLE;
+    ps.auto_prior_kbps = 3_000;
+    ps.set_now(10_000);
+    ps.begin_attempt_view(a, Backend::Feed);
+    ps.carry_readout_seed();
+    assert_eq!(auto_prior(&ps).map(|e| e.samples), Some(1), "nothing observed: the bootstrap seed");
+    assert!(!ps.ingest_abr(stale, plx_playback_contract::adaptive::AbrReadout::IDLE, Some((seed, 0))),
+        "a late worker of another attempt carries nothing");
+    ps.carry_readout_seed();
+    assert_eq!(auto_prior(&ps).map(|e| e.samples), Some(1));
+    assert!(ps.ingest_abr(a, plx_playback_contract::adaptive::AbrReadout::IDLE, Some((seed, 0))));
+    ps.carry_readout_seed();
+    let fresh = auto_prior(&ps).expect("the observed estimate wins over the bootstrap seed");
+    assert_eq!((fresh.slow_kbps, fresh.samples), (40_000, 19));
+    let gap = crate::abr::AbrPolicy::measured().stale_half_life_ms * 2;
+    ps.set_now(10_000 + gap);
+    ps.carry_readout_seed();
+    assert!(auto_prior(&ps).expect("still carried").uncertainty_pm > fresh.uncertainty_pm,
+        "re-observing it every pump does not reset its age");
+    ps.step_readout(ReadoutEvent::SessionReset);
+    ps.carry_readout_seed();
+    assert!(auto_prior(&ps).is_some_and(|e| e.samples == 19), "a reload is the same item on the same link");
+    ps.step_readout(ReadoutEvent::AbrSeed(None));
+    ps.carry_readout_seed();
+    assert_eq!(auto_prior(&ps).map(|e| e.samples), Some(1), "a real stop: the bootstrap seed again");
 }
 
 #[test]
