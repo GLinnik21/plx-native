@@ -1334,6 +1334,43 @@ mod tests {
             self.driver.poll(&self.mt);
             for t in [200, 400, 600, 900] { self.at(t); self.driver.poll(&self.mt); }
         }
+        /// The service accepts the first Play and reports `playing`; returns that poll's events.
+        fn service_plays(&mut self) -> Vec<DriverEvent> {
+            assert_eq!(self.driver.dispatch(&self.mt, A, self.command, Operation::Play), DispatchResult::Queued);
+            self.bus.say("play", r#"{"returnValue":true,"mediaId":"m1","playing":true}"#);
+            self.driver.poll(&self.mt)
+        }
+        /// The service reports `currentTime` (ms) on its subscription; returns that poll's events.
+        fn clock_says(&mut self, ms: u64) -> Vec<DriverEvent> {
+            self.bus.say("subscribe", &format!(r#"{{"mediaId":"m1","currentTime":{ms}}}"#));
+            self.driver.poll(&self.mt)
+        }
+    }
+
+    /// How many `Presented` observations `events` carry.
+    fn presented(events: &[DriverEvent]) -> usize {
+        events.iter().filter(|event| matches!(event, DriverEvent::Observation {
+            observation: Observation::Presented, .. })).count()
+    }
+
+    #[test]
+    fn acb_presents_once_when_the_service_plays_the_plane_completed_and_the_clock_then_advances() {
+        let (mut rig, sink, _) = Rig::acb();
+        rig.acb_bound();
+        assert_eq!(presented(&rig.service_plays()), 0, "a state report is not a picture");
+        // The clock runs, but neither plane completion has arrived: no picture is claimed.
+        assert_eq!(presented(&rig.clock_says(1_000)), 0);
+        assert_eq!(presented(&rig.clock_says(1_040)), 0);
+        // Both completions arrive (the display window's task, then PLAYING's): armed, and the
+        // very poll that learns of them cannot also be the advance.
+        sink.mailbox.push(3, 1);
+        sink.mailbox.push(4, 1);
+        assert_eq!(presented(&rig.driver.poll(&rig.mt)), 0);
+        assert_eq!(presented(&rig.clock_says(1_040)), 0, "a clock that did not advance proves nothing");
+        // The first advance after everything else is the picture, and it is reported once.
+        assert_eq!(presented(&rig.clock_says(1_080)), 1);
+        assert_eq!(presented(&rig.clock_says(1_120)), 0);
+        assert_eq!(presented(&rig.driver.poll(&rig.mt)), 0);
     }
 
     #[test]
