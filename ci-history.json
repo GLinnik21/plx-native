@@ -1,9 +1,5 @@
-{"updated":"2026-11-04T23:03:47Z",
+{"updated":"2026-11-05T00:36:57Z",
 "ci":[
-{"id":31093855724,"at":"2026-08-06T10:35:26Z","sha":"bdbf8a099","title":"docs: the README promised a ceiling the binary no longer has","jobs":{"cross-build (armv7) + artifact assertions":124,"host checks (NOT a device gate)":73},"pr":null,"conclusion":"success","attempt":1},
-{"id":31099939125,"at":"2026-08-06T12:05:30Z","sha":"dd7266471","title":"docs: cite webosbrew's own guidance on the system FFmpeg","jobs":{"cross-build (armv7) + artifact assertions":122,"host checks (NOT a device gate)":81},"pr":null,"conclusion":"success","attempt":1},
-{"id":31108248972,"at":"2026-08-06T13:55:28Z","sha":"aa544ec8c","title":"player: the exported window was told a 4K stream was 1080p","jobs":{"cross-build (armv7) + artifact assertions":81,"host checks (NOT a device gate)":75},"pr":null,"conclusion":"success","attempt":1},
-{"id":31114049504,"at":"2026-08-06T15:04:14Z","sha":"e93d79207","title":"three small fixes from the webosbrew doc audit","jobs":{"host checks (NOT a device gate)":78,"cross-build (armv7) + artifact assertions":91},"pr":null,"conclusion":"success","attempt":1},
 {"id":31142003278,"at":"2026-08-07T02:41:31Z","sha":"dd7138b09","title":"pkg: satisfy webosbrew's packager check honestly, and record why not ares-package","jobs":{"host checks (NOT a device gate)":81,"cross-build (armv7) + artifact assertions":95},"pr":null,"conclusion":"success","attempt":1},
 {"id":31319241597,"at":"2026-08-09T14:44:31Z","sha":"6c3858f9e","title":"docs: webOS 5+ is known broken, not untested \u2014 restore the 4.x bound","jobs":{"cross-build (armv7) + artifact assertions":89,"host checks (NOT a device gate)":80},"pr":null,"conclusion":"success","attempt":1},
 {"id":31321824174,"at":"2026-08-09T15:42:19Z","sha":"afedac6b2","title":"webos5: it runs on 6 and 10 \u2014 only playback is unfinished, so the ceiling comes off","jobs":{"cross-build (armv7) + artifact assertions":83,"host checks (NOT a device gate)":70},"pr":null,"conclusion":"success","attempt":1},
@@ -4524,7 +4520,8 @@
 {"id":41921143794,"at":"2026-11-04T21:59:19Z","sha":"95c526366","title":"Make three timing-dependent unit tests deterministic","pr":1237,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":122,"Windows launcher syntax":25,"macOS tests against bundled FFmpeg and ASS":223,"Linux simulator build + launch":338}},
 {"id":41921359294,"at":"2026-11-04T22:00:43Z","sha":"48e86869e","title":"Use shared live glass for full-preview controls and track surface prefixes","pr":1238,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":21,"macOS tests against bundled FFmpeg and ASS":213,"Linux simulator build + launch":312,"macOS simulator build + launch":239}},
 {"id":41924031592,"at":"2026-11-04T22:17:57Z","sha":"c5c2b7e1a","title":"Cycle HUD preview backgrounds and use shared glass controls","pr":1238,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":212,"Windows launcher syntax":26,"Linux simulator build + launch":344,"macOS tests against bundled FFmpeg and ASS":197}},
-{"id":41927882251,"at":"2026-11-04T22:44:25Z","sha":"8dd1151c8","title":"CI snapshot: URI-first integration tree (not for merge)","pr":1231,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":21,"Linux simulator build + launch":266,"macOS simulator build + launch":298,"macOS tests against bundled FFmpeg and ASS":219}}
+{"id":41927882251,"at":"2026-11-04T22:44:25Z","sha":"8dd1151c8","title":"CI snapshot: URI-first integration tree (not for merge)","pr":1231,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":21,"Linux simulator build + launch":266,"macOS simulator build + launch":298,"macOS tests against bundled FFmpeg and ASS":219}},
+{"id":41941938047,"at":"2026-11-05T00:31:19Z","sha":"45004ea66","title":"HUD gallery: Settings Open reaches the catalog in the stable install too","pr":1239,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":234,"Windows launcher syntax":26,"macOS simulator build + launch":196,"Linux simulator build + launch":324}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
@@ -4722,7 +4719,8 @@
 {"day":"2026-08-02","wf":"ci","event":"push","runs":1,"failed":1,"jobs":{"host checks (NOT a device gate)":119},"longest":119},
 {"day":"2026-08-03","wf":"ci","event":"push","runs":1,"failed":1,"jobs":{"host checks (NOT a device gate)":118},"longest":118},
 {"day":"2026-08-04","wf":"ci","event":"push","runs":19,"failed":14,"jobs":{"cross-build (armv7) + artifact assertions":89,"host checks (NOT a device gate)":94},"longest":95},
-{"day":"2026-08-05","wf":"ci","event":"push","runs":1,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":86,"host checks (NOT a device gate)":64},"longest":86}
+{"day":"2026-08-05","wf":"ci","event":"push","runs":1,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":86,"host checks (NOT a device gate)":64},"longest":86},
+{"day":"2026-08-06","wf":"ci","event":"push","runs":4,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":106,"host checks (NOT a device gate)":76},"longest":106}
 ],
 "flaky":[
 {"run":40071490036,"at":"2026-10-24T06:58:17Z","sha":"f596f952d","pr":977,"job":"host unit tests (default features)","test":"plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once","fail":[1],"pass":[2]},
