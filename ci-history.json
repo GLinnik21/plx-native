@@ -1,4 +1,4 @@
-{"updated":"2026-11-05T09:19:50Z",
+{"updated":"2026-11-05T09:28:02Z",
 "ci":[
 {"id":31142003278,"at":"2026-08-07T02:41:31Z","sha":"dd7138b09","title":"pkg: satisfy webosbrew's packager check honestly, and record why not ares-package","jobs":{"host checks (NOT a device gate)":81,"cross-build (armv7) + artifact assertions":95},"pr":null,"conclusion":"success","attempt":1},
 {"id":31319241597,"at":"2026-08-09T14:44:31Z","sha":"6c3858f9e","title":"docs: webOS 5+ is known broken, not untested \u2014 restore the 4.x bound","jobs":{"cross-build (armv7) + artifact assertions":89,"host checks (NOT a device gate)":80},"pr":null,"conclusion":"success","attempt":1},
@@ -4562,7 +4562,8 @@
 {"id":41978417853,"at":"2026-11-05T06:08:23Z","sha":"951db621f","title":"HUD plugins: tools/hud-dev, and Play re-fetches a development-source HUD on the TV","pr":1241,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":182,"Windows launcher syntax":19,"Linux simulator build + launch":318,"macOS simulator build + launch":229}},
 {"id":41983582502,"at":"2026-11-05T06:54:46Z","sha":"8d6266f8b","title":"Merge upstream/main","pr":993,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"Windows launcher syntax":16,"Linux simulator build + launch":244,"macOS tests against bundled FFmpeg and ASS":157},"failed":["macOS simulator build + launch"]},
 {"id":41991920804,"at":"2026-11-05T08:06:10Z","sha":"138de36be","title":"ci snapshot of integ/uri-first 249a10012 (not for merge)","pr":1231,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":20,"macOS tests against bundled FFmpeg and ASS":301,"Linux simulator build + launch":340,"macOS simulator build + launch":243}},
-{"id":41998538411,"at":"2026-11-05T08:58:05Z","sha":"0fb5e10cc","title":"ci snapshot of integ/uri-first 2cc8ec429 (not for merge)","pr":1231,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":30,"macOS tests against bundled FFmpeg and ASS":224,"Linux simulator build + launch":243,"macOS simulator build + launch":238}}
+{"id":41998538411,"at":"2026-11-05T08:58:05Z","sha":"0fb5e10cc","title":"ci snapshot of integ/uri-first 2cc8ec429 (not for merge)","pr":1231,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":30,"macOS tests against bundled FFmpeg and ASS":224,"Linux simulator build + launch":243,"macOS simulator build + launch":238}},
+{"id":42001761449,"at":"2026-11-05T09:21:55Z","sha":"9356a25d1","title":"ci snapshot of integ/uri-first 17a43daea (not for merge)","pr":1231,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":235,"Linux simulator build + launch":355,"Windows launcher syntax":29,"macOS tests against bundled FFmpeg and ASS":207}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
