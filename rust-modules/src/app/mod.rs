@@ -240,6 +240,10 @@ pub(crate) struct App {
     #[cfg(feature = "devtools")]
     fps_shown: i32,
     play_prev: Option<(i64, u32)>,
+    /// The pipeline's `FRAMEREADY` counters at the last heartbeat line (`vtick=` and `vgap=` are
+    /// differences of them).
+    #[cfg(feature = "play-feed")]
+    vpres_prev: plx_media::player::VplaneMark,
     /// The compiled HUD the player page draws from (`player_hud::loaded`), in the language the process
     /// started in (a label's width sets a pill's width; the language cannot change while it runs). Compiled at boot (`boot::enter_application`), outside any frame, and handed to
     /// the mount through the mounter's seed (`Bridge::seed_player_compiled`); `None` only in a controlled

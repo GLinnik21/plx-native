@@ -63,6 +63,23 @@ pub struct PlayerReadout {
     /// The playhead the HUD freezes at while a seek resolves: the newest request's display target,
     /// until the player gives up on it or the session resets.
     seek_display_ns: Option<i64>,
+    /// How many of the feed's decoder revocations ([`FeedRaw::decoder_revocations`]) the app loop
+    /// has taken; the revocation is pending while the feed's count differs from it.
+    taken_decoder_revocations: u32,
+    /// How many of the feed's native-audio refusals ([`FeedRaw::native_audio_refusals`]) the pump
+    /// has taken.
+    taken_native_audio_refusals: u32,
+}
+
+/// A one-shot fact the feed counts and the player takes: the feed keeps a monotonic count of the
+/// edge (zeroed by its own session reset), the readout holds how many it has taken, and the edge
+/// is pending while the two differ. A count of 0 is never an edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Edge {
+    /// The pipeline took the video decoder back from an established session.
+    DecoderRevoked,
+    /// The pipeline refused natively fed audio (the callback, or the stall watchdog).
+    NativeAudioRefused,
 }
 
 /// How close to the container's duration the playhead must be, after the EOS, to count as the end.
@@ -154,6 +171,9 @@ pub enum ReadoutEvent {
     /// ingested and what the pump saw. The session steps it only for the attempt that is live
     /// and only after the post-tick sample, so a frame that returned early derives nothing.
     Presented(Presentation),
+    /// The player took the pending `edge`: it is spent until the feed counts another one. Read
+    /// [`PlayerReadout::decoder_revoked`] or [`PlayerReadout::native_audio_refused`] first.
+    Taken { edge: Edge },
 }
 
 impl PlayerReadout {
@@ -171,6 +191,8 @@ impl PlayerReadout {
         pending_seek_ns: None,
         seek_requests: 0,
         seek_display_ns: None,
+        taken_decoder_revocations: 0,
+        taken_native_audio_refusals: 0,
     };
 
     pub fn state(&self) -> PlaybackState { self.state }
@@ -196,6 +218,14 @@ impl PlayerReadout {
     /// The playhead the HUD freezes at while a seek resolves, until the seek is given up on or the
     /// session resets.
     pub fn seek_display_ns(&self) -> Option<i64> { self.seek_display_ns }
+    /// The pipeline took the video decoder back and nobody has taken that yet.
+    pub fn decoder_revoked(&self) -> bool {
+        edge_pending(self.raw.decoder_revocations, self.taken_decoder_revocations)
+    }
+    /// The pipeline refused natively fed audio and nobody has taken that yet.
+    pub fn native_audio_refused(&self) -> bool {
+        edge_pending(self.raw.native_audio_refusals, self.taken_native_audio_refusals)
+    }
 
     /// The one writer. Applies `event`; there are no effects yet. The session addresses the
     /// events that carry an attempt's facts before it steps them.
@@ -229,6 +259,9 @@ impl PlayerReadout {
                 self.pending_seek_ns = None;
                 self.seek_requests = 0;
                 self.seek_display_ns = None;
+                // The feed's own reset zeroed its counts at the same teardown.
+                self.taken_decoder_revocations = 0;
+                self.taken_native_audio_refusals = 0;
             }
             ReadoutEvent::NewItem => {
                 self.play_rate_permille = RATE_NORMAL;
@@ -280,9 +313,19 @@ impl PlayerReadout {
                     self.ended = true;
                 }
             }
+            ReadoutEvent::Taken { edge } => match edge {
+                Edge::DecoderRevoked => self.taken_decoder_revocations = self.raw.decoder_revocations,
+                Edge::NativeAudioRefused => {
+                    self.taken_native_audio_refusals = self.raw.native_audio_refusals;
+                }
+            },
         }
     }
 }
+
+/// Whether the feed's count of an edge is ahead of what the player has taken. A count the feed
+/// zeroed (its session reset) is no edge, whatever was taken before.
+fn edge_pending(counted: u32, taken: u32) -> bool { counted != 0 && counted != taken }
 
 impl PlayerReadout {
     /// `target_ns` waits for the pump as one request.
@@ -713,6 +756,49 @@ mod tests {
         raw.seek_requeue = SeekRequeue { epoch: 1, target_ns: secs(5) };
         let r = stepped(&[ReadoutEvent::FactsIngested(raw), ReadoutEvent::Presented(paused)]);
         assert_eq!(r.state(), PlaybackState::Buffering, "the feed's own requeue, adopted from the very sample the frame took");
+    }
+
+    // ---- the one-shot edges the feed counts and the readout takes (L3b-4) ----
+
+    fn counted(revocations: u32, refusals: u32) -> ReadoutEvent {
+        let mut raw = FeedRaw::IDLE;
+        raw.decoder_revocations = revocations;
+        raw.native_audio_refusals = refusals;
+        ReadoutEvent::FactsIngested(raw)
+    }
+
+    /// An edge is pending while the feed's count differs from what was taken: a take spends it, the
+    /// same count ingested again (every pump frame re-samples it) adds nothing, a newer count is a
+    /// new edge, and the two edges are taken separately.
+    #[test]
+    fn a_taken_edge_is_counted_once_and_a_new_one_is_seen() {
+        let mut r = stepped(&[counted(1, 0)]);
+        assert!(r.decoder_revoked() && !r.native_audio_refused());
+        r.step(ReadoutEvent::Taken { edge: Edge::DecoderRevoked });
+        assert!(!r.decoder_revoked(), "taken");
+        r.step(counted(1, 0));
+        r.step(counted(1, 0));
+        assert!(!r.decoder_revoked(), "the same count ingested again adds nothing");
+        r.step(counted(2, 1));
+        assert!(r.decoder_revoked(), "a new revocation is seen");
+        assert!(r.native_audio_refused(), "the other edge is its own");
+        r.step(ReadoutEvent::Taken { edge: Edge::NativeAudioRefused });
+        assert!(r.decoder_revoked() && !r.native_audio_refused(), "taking one leaves the other pending");
+    }
+
+    /// The feed zeroes its counts with its session and the readout zeroes what it took at the same
+    /// teardown, so the next session's first edge is seen; a count the feed zeroed alone is no edge.
+    #[test]
+    fn a_session_reset_zeroes_the_takes_and_a_zero_count_is_never_an_edge() {
+        let mut r = stepped(&[counted(3, 2), ReadoutEvent::Taken { edge: Edge::DecoderRevoked }]);
+        r.step(ReadoutEvent::SessionReset);
+        assert!(!r.decoder_revoked() && !r.native_audio_refused(), "the reset forgets an unread edge");
+        r.step(counted(1, 1));
+        assert!(r.decoder_revoked() && r.native_audio_refused(), "a new session's first edge counts from 1 again");
+        let mut r = stepped(&[counted(3, 3), ReadoutEvent::Taken { edge: Edge::DecoderRevoked }, counted(0, 0)]);
+        assert!(!r.decoder_revoked(), "a feed-only reset left taken above the count: 0 is not an edge");
+        r.step(counted(1, 0));
+        assert!(r.decoder_revoked());
     }
 
     // ---- the readout is the READER of `state` and `ended` (L3a-2 step 4a) ----

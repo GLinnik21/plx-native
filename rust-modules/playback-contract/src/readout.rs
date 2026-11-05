@@ -147,6 +147,10 @@ pub struct AttemptFacts {
     pub transport_rc: Option<i32>,
     pub transfer_age_ms: Option<i64>,
     pub transport_reopen_failed: Option<bool>,
+    /// The Load this attempt's teardown found still inside the native call and parked (its budget
+    /// had expired). Set only by that teardown's own ingestion: the live native phase outlives the
+    /// session reset, the attempt's terminal facts are what the reload that follows can still read.
+    pub load_abandoned: Option<bool>,
 }
 
 impl AttemptFacts {
@@ -159,6 +163,7 @@ impl AttemptFacts {
         pipeline_error: None, http_status: None, demux_exit: None,
         declared_kbps: None, media_kbps: None, abr_buffer_ms: None,
         transport_rc: None, transfer_age_ms: None, transport_reopen_failed: None,
+        load_abandoned: None,
     };
 }
 

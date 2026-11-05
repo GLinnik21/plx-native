@@ -156,6 +156,19 @@ and the native feed refuses a source shape it cannot represent.
   `playpos_ns` stores beside it are the Rebase intent, still raw writes.
   Put new state under the owner whose invariant it belongs to; never smuggle it through a raw
   static.
+- **The Feed's failure facts are read from the readout, taken through it, and noted by command.**
+  `load_failed`, `load_timed_out`, `demux_failed` and `demux_io_failed` ride `FeedRaw.flags`, with
+  their companion codes (`cb_err_num`, `http_status`) from the SAME sample: the Feed loads the flags
+  (Acquire) before the codes its writers published ahead of them, so a flag is never read without its
+  code (`feed_pump::failure_sample`). Media sets one only through `FeedCommand::NoteFailure`. The
+  one-shot edges (`decoder_revoked`, `native_audio_refused`) are monotonic Feed counters in `FeedRaw`;
+  the readout holds how many it has TAKEN (`ReadoutEvent::Taken`, `player::take_decoder_revoked` /
+  `confirm_refusal`), an edge is pending while the counts differ, and a session reset zeroes both.
+  The pump samples at its start and end, so a reader between them sees up to a frame of lag: a
+  media-side write inside the frame (the native-audio stall watchdog, the `refuse601` probe) samples again
+  before the branches that read it. `native_load_abandoned` is the Feed's native phase and outlives
+  the session reset the readout does not: the teardown records it as the terminal
+  `AttemptFacts::load_abandoned`.
 
 **The main-thread rule is compiler-enforced.** The seam is the `VideoSink` trait in `plx_platform::tv::sink` (`rust-modules/platform/src/tv/sink.rs`)
 (Starfish-shaped: one method per verb, reached through `player::sink()`). `platform/src/webos/video_sink.rs`'s `extern "C"`
@@ -213,8 +226,9 @@ something.
   read-out instead of parking the player in Connecting on a black screen (lab report §3.5).
   **After a picture, one number acts too (2026-10-13): `type=18 num=600`, "VDEC resource is
   released by policy action".** A paused direct play left until the screensaver came on got it with
-  no `LIFECYCLE: background`, and the dead pipeline refused every Play after it. It raises
-  `decoder_revoked`; the app loop parks the session exactly as an app switch does
+  no `LIFECYCLE: background`, and the dead pipeline refused every Play after it. The feed counts it
+  (`FeedRaw::decoder_revocations`); the app loop reads that count from the readout, spends it with
+  `ReadoutEvent::Taken` (`player::take_decoder_revoked`) and parks the session exactly as an app switch does
   (`run::park_on_decoder_release`) and the viewer's next key or click is spent on the foreground
   claim that rebuilds it at the saved spot. The claiming press chooses the clock (`run::wake_input`,
   whose doc is the table): PLAY, and a play/pause TOGGLE (PLAYPAUSE, or a pointer click on no control — on the
@@ -271,8 +285,9 @@ something.
   epoch are parked as `plx_play_feed::feed_state::AbandonedLoad` (Rust phase `Abandoned`), native starts are
   refused, and `reap_abandoned_load` runs the ordinary Unload → gate → retire → D1 release on the
   main thread once Load returns; a Load that never returns leaks its object. A refusal says why:
-  a reload refused for the parked Load (`pump::settle_reload`) republishes `load_timed_out`, and a
-  refused FRESH start sets `ps.native_start_refused` (`Option<StartRefusal>`), which `player::state` derives `Error` from,
+  a reload refused for the parked Load (`pump::settle_reload`) records the same cause in `ps.native_start_refused`, read from the
+  torn-down attempt's terminal `AttemptFacts::load_abandoned` (the teardown's own ingestion, before the session reset that clears
+  `load_timed_out`), and a refused FRESH start sets `ps.native_start_refused` (`Option<StartRefusal>`), which `player::state` derives `Error` from,
   because no Engine exists to publish it: cause `load_timeout` when a timed-out Load is still parked, `release_timeout` when the previous object's off-frame Unload outlived `RELEASE_DEADLINE`. Both offer Try Again; the first start that is not refused (`start_bufferfeed_for`, which every reload shares) clears it. A Load that has not
   timed out is still joined. The host concurrent tests model this boundary, not
   the firmware's native initialization. ACB dispatch is additionally constrained by stage/bind
@@ -339,7 +354,7 @@ something.
     commit, a seek's rebuild or a new playback changes the route — no timer, no re-ask loop. The
     Original-to-HLS fallback (`route::execute_auto_hls_claim`) never holds, though its worker reaches
     PMS: the Original plays until the landing replaces it, and a refusal (`pump::land_automatic_hls`)
-    raises `demux_io_failed`. A user pick made during an automatic flight WAITS in `pending_user` and
+    notes `demux_io_failed` (`FeedCommand::NoteFailure`). A user pick made during an automatic flight WAITS in `pending_user` and
     is claimed after the landing.
   - **FAILURE-path recoveries are `FlightOwner::Recovery` flights** owned by the failed start
     (`Preparing(serial)`): the rollback's rebase after a failed Original trial
@@ -484,8 +499,8 @@ something.
   decoded names no audio facet in the failed-open ladder (`StreamAudio::app_decoded_lossy`): the pipeline was fed PCM, and a
   facet keyed `dts` would be stored as a refusal of the set's NATIVE decoder.
   A named refusal comes from a native Load that ends
-  in `type=18 num=200 Audio Codec Not Supported` before any picture (`mod.rs`'s callback sets
-  `native_audio_refused` only while `native_audio::fed()` says the audio was fed natively; the
+  in `type=18 num=200 Audio Codec Not Supported` before any picture (`sf_event.rs`'s callback counts
+  `FeedRaw::native_audio_refusals` only while `native_audio::fed()` says the audio was fed natively; the
   machine turns it into `RecoveryEffect::ConfirmRefusal { Evidence::Named }`, which the pump runs as
   `session::record_named_refusal`: one write to the install-scope `native_audio_refused` preference,
   stamped with the firmware `devcaps::learning_firmware()` reads). That preference is the ONE list of
