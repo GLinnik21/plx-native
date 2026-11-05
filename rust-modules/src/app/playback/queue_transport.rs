@@ -13,7 +13,7 @@ pub(super) fn step(
     if direction == QueueStep::Previous && previous_restarts(plx_media::player::intended_pos_ns(ps))
     {
         request_seek(ps, pa, 0);
-        resume_if_paused(pa);
+        resume_if_paused(ps, pa);
         return;
     }
     let Some(row) = queue_neighbor(ps, direction) else {

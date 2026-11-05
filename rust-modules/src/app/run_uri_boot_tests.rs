@@ -649,7 +649,8 @@ mod uri_boot_tests {
         frame(&mut rig);
         assert_eq!(plx_media::player::intended_pos_known_ns(&rig.app.player.session),
             Some(12_000_000_000));
-        assert_eq!(rig.app.adapters.player.backend_transport_control(true), Some(true));
+        assert_eq!(rig.app.adapters.player.backend_transport_control(&mut rig.app.player.session, true),
+            Some(true));
         bus.say("pause", r#"{"returnValue":true,"mediaId":"m1","paused":true}"#);
         frame(&mut rig);
         let reports_before_failure = plx_telemetry::telemetry::playback::report_calls_for_test();
@@ -759,7 +760,8 @@ mod uri_boot_tests {
         poll(&mut rig);
         assert_eq!(plx_media::player::intended_pos_known_ns(&rig.app.player.session),
             Some(12_000_000_000));
-        assert_eq!(rig.app.adapters.player.backend_transport_control(true), Some(true));
+        assert_eq!(rig.app.adapters.player.backend_transport_control(&mut rig.app.player.session, true),
+            Some(true));
         bus.say("pause", r#"{"returnValue":true,"mediaId":"m1","paused":true}"#);
         poll(&mut rig);
         assert_eq!(rig.app.adapters.player.backend_viewer_paused(), Some(true));

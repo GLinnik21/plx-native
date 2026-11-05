@@ -560,14 +560,15 @@ impl PlayerAdapter {
 
     /// Route a viewer transport change through the active common attempt. An absent attempt
     /// leaves legacy no-engine transport handling to the caller.
-    pub fn backend_transport_control(&mut self, paused: bool) -> Option<bool> {
+    pub fn backend_transport_control(&mut self, ps: &mut crate::route::PlaybackSession,
+        paused: bool) -> Option<bool> {
         let snapshot = self.backend.snapshot();
         let (Some(backend), Some(attempt)) = (snapshot.backend, snapshot.attempt) else {
             return None;
         };
         let operation = if paused { Operation::Pause } else { Operation::Play };
         let at = self.backend_tick();
-        let result = self.backend_send_at(Intent::Control { backend, attempt, operation },
+        let result = self.backend_send_at(ps, Intent::Control { backend, attempt, operation },
             super::attempt_metrics::Origin::Fresh, at);
         Some(!result.playback.iter().any(|fx| matches!(fx,
             plx_playback_contract::Fx::Rejected { .. }
@@ -644,7 +645,7 @@ impl PlayerAdapter {
 
     /// `None` means the active route is Feed. `Some(false)` is an explicit URI refusal, so a
     /// caller must never fall through to Feed track or sidecar controls for this route.
-    pub fn select_uri_audio(&mut self, ps: &crate::route::PlaybackSession,
+    pub fn select_uri_audio(&mut self, ps: &mut crate::route::PlaybackSession,
         audio: crate::route::CarriedAudio,
         memo: Option<plx_plex::plex::session::prefs::AudioMemo>) -> Option<bool> {
         if ps.attempt_view().backend() != Some(super::attempt_view::Backend::Uri) { return None; }
@@ -657,7 +658,7 @@ impl PlayerAdapter {
         let attempt = route_attempt.contract_id();
         let operation = Operation::SelectTrack { kind: plx_playback_contract::TrackKind::Audio,
             choice: plx_playback_contract::TrackChoice::Selected(id) };
-        let result = self.backend_send_at(Intent::Control { backend: BackendKind::Uri, attempt,
+        let result = self.backend_send_at(ps, Intent::Control { backend: BackendKind::Uri, attempt,
             operation },
             super::attempt_metrics::Origin::Fresh, self.backend_tick());
         if result.playback.iter().any(|fx| matches!(fx,
@@ -670,7 +671,7 @@ impl PlayerAdapter {
         Some(true)
     }
 
-    pub fn select_uri_subtitle(&mut self, ps: &crate::route::PlaybackSession,
+    pub fn select_uri_subtitle(&mut self, ps: &mut crate::route::PlaybackSession,
         ordinal: i32, stream_id: i64, has_sidecar: bool,
         memo: Option<plx_plex::plex::session::prefs::SubtitleMemo>) -> Option<bool> {
         if ps.attempt_view().backend() != Some(super::attempt_view::Backend::Uri) { return None; }
@@ -682,7 +683,7 @@ impl PlayerAdapter {
         let attempt = route_attempt.contract_id();
         let operation = Operation::SelectTrack { kind: plx_playback_contract::TrackKind::Subtitle,
             choice: plx_playback_contract::TrackChoice::Selected(id) };
-        let result = self.backend_send_at(Intent::Control { backend: BackendKind::Uri, attempt,
+        let result = self.backend_send_at(ps, Intent::Control { backend: BackendKind::Uri, attempt,
             operation },
             super::attempt_metrics::Origin::Fresh, self.backend_tick());
         if result.playback.iter().any(|fx| matches!(fx,
@@ -764,7 +765,7 @@ impl PlayerAdapter {
         let Some(route_attempt) = self.uri_route_attempt else { return Some(false); };
         let attempt = route_attempt.contract_id();
         let target_ms = u64::try_from(target_ns.max(0) / 1_000_000).ok()?;
-        let result = self.backend_send_at(Intent::Control { backend: BackendKind::Uri,
+        let result = self.backend_send_at(ps, Intent::Control { backend: BackendKind::Uri,
             attempt, operation: Operation::Seek(plx_playback_contract::ContentTime::from_millis(target_ms)) },
             super::attempt_metrics::Origin::Fresh, self.backend_tick());
         if result.playback.iter().any(|fx| matches!(fx,
@@ -782,11 +783,13 @@ impl PlayerAdapter {
     }
 
     /// Execute one route-owned intent through the sole backend admission state. The caller
-    /// supplies the physical attempt's origin and a monotonic tick for local measurements.
-    pub fn backend_send_at(&mut self, intent: Intent, origin: super::attempt_metrics::Origin,
-        at: super::attempt_metrics::Tick) -> backend::RunResult {
+    /// supplies the physical attempt's origin and a monotonic tick for local measurements, and
+    /// the session the intent's results step (the release queue today).
+    pub fn backend_send_at(&mut self, ps: &mut crate::route::PlaybackSession, intent: Intent,
+        origin: super::attempt_metrics::Origin, at: super::attempt_metrics::Tick)
+        -> backend::RunResult {
         let result = self.backend.send_at(&mut self.physical, &self.mt, intent, origin, at);
-        let result = self.finish_backend_actions(result, at);
+        let result = self.finish_backend_actions(ps, result, at);
         {
             if let Intent::Stop { backend: BackendKind::Uri, attempt, .. } = intent {
                 let refused = result.playback.iter().any(|notice| matches!(notice,
@@ -801,12 +804,12 @@ impl PlayerAdapter {
                     if self.uri_route_attempt.is_some_and(|route| route.contract_id() == attempt) {
                         self.uri_stop_requested = true;
                     }
-                    self.release_step(&super::release::ReleaseEvent::UriReleaseStarted {
+                    self.release_step(ps, &super::release::ReleaseEvent::UriReleaseStarted {
                         attempt, at: std::time::Instant::now(),
                     }, &mut Vec::new());
                 }
             }
-            self.capture_uri_release(&result.playback);
+            self.capture_uri_release(ps, &result.playback);
         }
         self.record_backend_metrics(&result.metrics);
         result
@@ -814,21 +817,23 @@ impl PlayerAdapter {
 
     /// Poll both physical executors even when no player page is mounted. A terminal observation
     /// and a same-poll release retain their order in the returned addressed results.
-    pub fn backend_poll_at(&mut self, at: super::attempt_metrics::Tick) -> backend::RunResult {
+    pub fn backend_poll_at(&mut self, ps: &mut crate::route::PlaybackSession,
+        at: super::attempt_metrics::Tick) -> backend::RunResult {
         let result = self.backend.poll_at(&mut self.physical, &self.mt, at);
-        let result = self.finish_backend_actions(result, at);
-        self.capture_uri_release(&result.playback);
+        let result = self.finish_backend_actions(ps, result, at);
+        self.capture_uri_release(ps, &result.playback);
         self.record_backend_metrics(&result.metrics);
         result
     }
 
-    fn capture_uri_release(&mut self, notices: &[plx_playback_contract::Fx]) {
+    fn capture_uri_release(&mut self, ps: &mut crate::route::PlaybackSession,
+        notices: &[plx_playback_contract::Fx]) {
         for notice in notices {
             if let plx_playback_contract::Fx::ReleaseOutcome {
                 backend: BackendKind::Uri, attempt, status,
             } = *notice {
                 let mut fx = Vec::new();
-                self.release_step(&match status {
+                self.release_step(ps, &match status {
                     ReleaseStatus::Closing | ReleaseStatus::Quarantined =>
                         super::release::ReleaseEvent::UriReleaseStarted {
                             attempt, at: std::time::Instant::now(),
@@ -841,19 +846,21 @@ impl PlayerAdapter {
         }
     }
 
-    pub fn backend_set_foreground_at(&mut self, foreground: bool,
-        at: super::attempt_metrics::Tick) -> backend::RunResult {
+    pub fn backend_set_foreground_at(&mut self, ps: &mut crate::route::PlaybackSession,
+        foreground: bool, at: super::attempt_metrics::Tick) -> backend::RunResult {
         let result = self.backend.set_foreground_at(&mut self.physical, &self.mt, foreground, at);
-        let result = self.finish_backend_actions(result, at);
+        let result = self.finish_backend_actions(ps, result, at);
         self.record_backend_metrics(&result.metrics);
         result
     }
 
     /// The native user transport door owns TX, Starfish and ACB together. A queued Feed control
     /// is executed only after the runner's temporary driver borrow ends, then its addressed
-    /// acceptance is returned through the same runner before another command can advance.
-    fn finish_backend_actions(&mut self, result: backend::RunResult,
-        at: super::attempt_metrics::Tick) -> backend::RunResult {
+    /// acceptance is returned through the same runner before another command can advance. `ps` is
+    /// the session the door carries to those answers' readout events; none is stepped here yet.
+    fn finish_backend_actions(&mut self, ps: &mut crate::route::PlaybackSession,
+        result: backend::RunResult, at: super::attempt_metrics::Tick) -> backend::RunResult {
+        let _ = ps;
         #[cfg(feature = "play-feed")]
         let mut result = result;
         #[cfg(feature = "play-feed")]
@@ -1079,7 +1086,7 @@ impl PlayerAdapter {
         self.refresh_uri_qualification(ps);
         let uri_viewer_goal = self.uri_route_attempt.and_then(|route|
             self.backend.viewer_paused(BackendKind::Uri, route.contract_id()));
-        let result = self.backend_poll_at(at);
+        let result = self.backend_poll_at(ps, at);
         let mut failed_startup = None;
         for notice in &result.playback {
             if let plx_playback_contract::Fx::AcceptedObservation {
@@ -1260,7 +1267,7 @@ impl PlayerAdapter {
             self.uri_route_attempt.is_some_and(|route| route.contract_id() == *attempt)) {
             // The common startup verdict alone distinguishes mandatory initial selection,
             // seek or Play from a later interactive refusal. Retire its exact native owner.
-            let _ = self.backend_send_at(Intent::Stop { backend: BackendKind::Uri, attempt,
+            let _ = self.backend_send_at(ps, Intent::Stop { backend: BackendKind::Uri, attempt,
                 reason: plx_playback_contract::StopReason::Replace },
                 super::attempt_metrics::Origin::Fresh, at);
         }
@@ -1268,7 +1275,7 @@ impl PlayerAdapter {
         {
             let mut release_fx = std::mem::take(&mut self.release_fx);
             if self.uri_route_attempt.is_some() && self.release.is_busy() {
-                self.release_step(&super::release::ReleaseEvent::Tick {
+                self.release_step(ps, &super::release::ReleaseEvent::Tick {
                     now: std::time::Instant::now(),
                 }, &mut release_fx);
             }
@@ -1455,10 +1462,11 @@ impl PlayerAdapter {
 
     /// Park a real stop's off-frame release. At most one exists: a start over it is deferred.
     #[cfg(feature = "play-feed")]
-    pub fn park_release(&mut self, release: super::engine::PendingRelease) {
+    pub fn park_release(&mut self, ps: &mut crate::route::PlaybackSession,
+        release: super::engine::PendingRelease) {
         let (epoch, at) = (release.epoch(), release.handed_off_at());
         self.physical.feed_backend_mut().resources_mut().park_release(release);
-        self.release_step(&super::release::ReleaseEvent::UnloadHandedOff { epoch, at }, &mut Vec::new());
+        self.release_step(ps, &super::release::ReleaseEvent::UnloadHandedOff { epoch, at }, &mut Vec::new());
     }
 
     /// Is a stopped native object's `Unload` still owed its main-thread tail?
@@ -1467,20 +1475,16 @@ impl PlayerAdapter {
         self.physical.feed_backend().resources().has_pending_release()
     }
 
-    /// The release machine's verdict on one event; the effects are the caller's to run.
-    pub(super) fn release_step(&mut self, event: &super::release::ReleaseEvent, fx: &mut Vec<super::release::ReleaseEffect>) {
+    /// The release machine's verdict on one event; the effects are the caller's to run. The
+    /// machine stays the owner of the queue; the session's readout copy of the one fact
+    /// `player::state` needs (`start_queued`) is stepped here, at the step that changed it, so
+    /// every path that steps the machine (a URI `Released` verdict taken in `backend_poll_at`
+    /// included) reaches the readout without waiting for its queued effect to run.
+    pub(super) fn release_step(&mut self, ps: &mut crate::route::PlaybackSession,
+        event: &super::release::ReleaseEvent, fx: &mut Vec<super::release::ReleaseEffect>) {
         self.release.step(event, fx);
-    }
-
-    /// Publish the release machine's queue to the session's readout, the one fact `player::state`
-    /// needs. The machine stays the owner: this states its current answer, so a session built
-    /// afresh is corrected by the next call rather than carrying a stale copy. The runners of the
-    /// machine's effects (`poll_release`, a start, a stop, the URI poll) call it after a step, so a
-    /// step an adapter-internal path makes without the session (a URI `Released` verdict taken in
-    /// `backend_poll_at`) reaches the readout when its queued effect is run.
-    #[cfg(feature = "play-feed")]
-    pub(super) fn publish_release_queue(&self, ps: &mut crate::route::PlaybackSession) {
-        ps.step_readout(super::readout::ReadoutEvent::ReleaseQueue { queued: self.release.has_queued() });
+        ps.step_readout(super::readout::ReadoutEvent::ReleaseQueue {
+            queued: self.release.has_queued() });
     }
 
     /// An `Unload` is running or overdue: the object slot is not free.
@@ -1575,10 +1579,11 @@ impl PlayerAdapter {
     }
 
     #[cfg(feature = "play-feed")]
-    pub(super) fn finish_native_stop(&mut self, stop: NativeStop, for_reload: bool) {
+    pub(super) fn finish_native_stop(&mut self, ps: &mut crate::route::PlaybackSession,
+        stop: NativeStop, for_reload: bool) {
         if let Some(release) = stop.finish(for_reload) {
             // This event is the release machine's admission fence for the next start.
-            self.park_release(release);
+            self.park_release(ps, release);
         }
     }
 
@@ -2127,8 +2132,9 @@ mod uri_stop_refusal_tests {
         let _ = adapter.backend.poll_at(&mut initial, &adapter.mt,
             crate::player::attempt_metrics::Tick::Unknown);
         assert_eq!(adapter.backend.snapshot().phase, plx_playback_contract::Phase::Active);
+        let mut ps = crate::route::PlaybackSession::IDLE;
         let at = adapter.backend_tick();
-        let result = adapter.backend_send_at(Intent::Stop {
+        let result = adapter.backend_send_at(&mut ps, Intent::Stop {
             backend: BackendKind::Uri,
             attempt: route.contract_id(),
             reason: plx_playback_contract::StopReason::Replace,

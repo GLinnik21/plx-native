@@ -797,7 +797,7 @@ pub(crate) fn player_requests(
             }
             // The fall-through a surface cannot perform (`screens::player::overlay`'s module doc):
             // the same toggle the bare transport reaches, with the panel left untouched.
-            PlayerReq::Transport(play) => apply_transport(pa, play, now, pages),
+            PlayerReq::Transport(play) => apply_transport(&mut player.session, pa, play, now, pages),
             PlayerReq::SeekTo(ns) => apply_seek_to(&mut player.session, pa, ns),
             // …and its twin, which does NOT resume: the scrub bar is how a paused film is moved.
             // The pump keeps the pause across it (see `commit_seek`).
@@ -1274,7 +1274,7 @@ pub(super) fn play_item_now_with<R: PlaybackResources>(
 fn from_beginning(ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter) {
     request_seek(ps, pa, 0);
-    resume_if_paused(pa);
+    resume_if_paused(ps, pa);
 }
 
 /// Leave playback for the page of `rk`, the Info card's *Go to Show/Movie* and the `go_to_detail`
@@ -1381,7 +1381,7 @@ pub(crate) fn perform_hud_command(
         HudCommand::TogglePlay => {
             match super::bridge::player_mut(pages).map(|screen| screen.toggle_play(None, now)) {
                 Some(PlayerReq::SeekTo(ns)) => apply_seek_to(&mut player.session, pa, ns),
-                Some(PlayerReq::Transport(play)) => apply_transport(pa, play, now, pages),
+                Some(PlayerReq::Transport(play)) => apply_transport(&mut player.session, pa, play, now, pages),
                 _ => {}
             }
         }
@@ -1432,13 +1432,14 @@ pub(crate) fn perform_hud_command(
 /// transport up. The one path the keys, OK on the picture, a panel's fall-through and the
 /// `toggle_play` command share.
 fn apply_transport(
+    ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
     play: Option<bool>,
     now: u32,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
     let target = super::lifecycle::transport_target(play, super::lifecycle::viewer_paused_for(pa));
-    set_transport_paused(pa, target);
+    set_transport_paused(ps, pa, target);
     if let Some(player) = super::bridge::player_mut(pages) {
         player.hud.extend(now, HUD_LINGER_MS);
         player.publish();
@@ -1449,7 +1450,7 @@ fn apply_transport(
 fn apply_seek_to(ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter, ns: i64) {
     request_seek(ps, pa, ns);
-    resume_if_paused(pa);
+    resume_if_paused(ps, pa);
 }
 
 /// Activate the player transport's focused CONTROL ROW item — the deferred half of a pointer
@@ -1514,12 +1515,13 @@ fn activate_stand_in(
 
 /// PAUSE — the dedicated transport key, which only ever pauses (PLAY is its other half).
 pub(crate) fn key_pause(
+    ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
     now: u32,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
     if super::bridge::player(pages).is_some() && !super::lifecycle::viewer_paused_for(pa) {
-        if set_transport_paused(pa, true) {
+        if set_transport_paused(ps, pa, true) {
             plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
                 feature: plx_telemetry::diag::schema::Feature::Pause,
             });
@@ -1571,11 +1573,11 @@ pub(crate) unsafe fn key_play(
                 // Keep the ordinary off-route start's existing stale-Pause defense. A foreground
                 // transition applies its explicit clock intent through the lifecycle actuator.
                 if super::lifecycle::viewer_paused_for(pa) {
-                    set_transport_paused(pa, false);
+                    set_transport_paused(ps, pa, false);
                 }
             }
         } else if super::lifecycle::viewer_paused_for(pa) {
-            set_transport_paused(pa, false);
+            set_transport_paused(ps, pa, false);
         }
     }
     if was_off_player && !ptr.dpad_mode {
@@ -2164,7 +2166,7 @@ fn perform_skip_prompt(player: &mut plx_media::player::machine::Player,
                     // is usually still inside it, so without this the button comes straight back
                     // (see `metadata::mark_skipped`).
                     request_seek(&mut player.session, pa, ns);
-                    resume_if_paused(pa);
+                    resume_if_paused(&mut player.session, pa);
                     false
                 }
                 // a `final` credits segment: skipping it IS finishing the item

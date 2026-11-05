@@ -23,8 +23,7 @@
 //! viewer's pick. It is not the viewer's intent, which is the session's `requested_rate_permille`
 //! and survives that downgrade. `rate_reload` is the one-shot the pump takes with the seek that
 //! carries a speed change (read it, then step `RateReloadTaken`). `start_queued` is the release
-//! machine's answer, stated by the runners of its effects after a step
-//! (`PlayerAdapter::publish_release_queue`).
+//! machine's answer, stepped by `PlayerAdapter::release_step` after every step of the machine.
 
 use plx_playback_contract::feed::{FeedRaw, PresentationTick, Stage};
 use plx_playback_contract::RATE_NORMAL;

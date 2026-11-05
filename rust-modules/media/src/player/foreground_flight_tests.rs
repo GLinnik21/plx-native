@@ -58,7 +58,7 @@ impl ForegroundActuator for RigActuator {
 
     fn after_load(&mut self, _ps: &mut crate::route::PlaybackSession, _a: Option<u64>, _c: ForegroundClock, _s: bool) {}
 
-    fn play_clock(&mut self) -> bool {
+    fn play_clock(&mut self, _ps: &mut crate::route::PlaybackSession) -> bool {
         true
     }
 }

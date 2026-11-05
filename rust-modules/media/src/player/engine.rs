@@ -2576,13 +2576,17 @@ mod off_frame_release_tests {
         assert_eq!(start_bufferfeed_tracked(&mut ps, &mut pa), BufferfeedStartOutcome::Deferred);
         assert_eq!(crate::player::state(&ps), crate::player::PlaybackState::Resolving, "derived from the machine");
         // A landing's rebuild keeps the readout (`decision.rs`, `readout: s.readout`); a session built
-        // afresh, as here, learns the queue from the machine at the next sync, so no copy goes stale.
+        // afresh, as here, learns the queue from the machine at the machine's next step (every step
+        // states it), so no copy goes stale and no separate sync call exists.
         ps = crate::route::PlaybackSession::IDLE;
         assert!(!ps.readout().start_queued(), "a session built afresh holds no queue");
-        pa.publish_release_queue(&mut ps);
-        assert_eq!(crate::player::state(&ps), crate::player::PlaybackState::Resolving, "the machine still holds it");
+        assert!(pa.release_has_queued_start(), "the queue is the machine's, and the landing did not touch it");
+        pa.release_step(&mut ps, &crate::player::release::ReleaseEvent::Tick { now: std::time::Instant::now() },
+            &mut Vec::new());
+        assert_eq!(crate::player::state(&ps), crate::player::PlaybackState::Resolving, "the machine's next step states its queue");
         stop_bufferfeed(&mut ps, &mut pa);
         assert!(!pa.release_has_queued_start());
+        assert!(!ps.readout().start_queued(), "and the stop's step states that it is gone");
         let give_up = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while pa.release_busy() {
             assert!(std::time::Instant::now() < give_up, "the Unload never returned");
@@ -2707,6 +2711,7 @@ mod off_frame_release_tests {
         let t0 = std::time::Instant::now();
         let mut ticks = 0u64;
         let exit = exit_native_with(
+            &mut ps,
             &mut pa,
             || {
                 ticks += 1;
@@ -3489,7 +3494,7 @@ mod load_in_flight_tests {
         });
         install_engine_with_timed_out_load(&mut ps, &mut pa);
         stop_bufferfeed(&mut ps, &mut pa);
-        let exit = exit_native(&mut pa);
+        let exit = exit_native(&mut ps, &mut pa);
         assert!(
             exit == NativeExit::WorkerInFirmware || !crate::player::ffi_host::load_in_flight_for_test(),
             "the exit's native half returned with a Load still inside firmware: SDL_Quit would run under it"

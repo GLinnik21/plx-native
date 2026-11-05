@@ -822,7 +822,7 @@ fn start_transcode_seek_flight(
 ) {
     match crate::route::dispatch_transcode_seek(ps, target_ns) {
         crate::route::SeekDispatch::Flying { serial } => {
-            super::claim_hold::engage_inheriting(pa, serial, inherited_hold);
+            super::claim_hold::engage_inheriting(ps, pa, serial, inherited_hold);
             super::log(&format!("seek(transcode): rebuild in flight at {}s", target_ns / 1_000_000_000));
         }
         crate::route::SeekDispatch::Busy => {
@@ -974,13 +974,13 @@ fn own_seek_under_pause(pa: &mut super::adapter::PlayerAdapter, target_ns: i64) 
 #[cfg(test)]
 static MID_SEEK_CLAIMS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-fn settle_paused_seek(pa: &mut super::adapter::PlayerAdapter, now: u32) {
+fn settle_paused_seek(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, now: u32) {
     let step = pa.paused_seek_step(
         now, crate::route::flight_outstanding(), super::claim_hold::owns_pause(),
     );
     #[cfg(test)]
     if step.mid_seek_claimed { MID_SEEK_CLAIMS.fetch_add(1, Relaxed); }
-    if step.finish { super::finish_paused_seek(pa); }
+    if step.finish { super::finish_paused_seek(ps, pa); }
 }
 
 /// The viewer is paused and the pump is doing no work for a picture: the feed gate is shut (no
@@ -1035,7 +1035,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
     if !FEED_TX.seek_preroll_active() {
         super::restore_preroll_volume(pa);
     }
-    settle_paused_seek(pa, now);
+    settle_paused_seek(ps, pa, now);
     // An Engine that failed for good last frame: let go of its pipeline and the video plane.
     if super::route_start::release_failed_engine(ps, pa) {
         return;
@@ -1271,7 +1271,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
                                 // blocked frame. Meanwhile presentation holds at the claim offset:
                                 // the landing reloads THERE, so letting the flight play would show
                                 // the same seconds twice.
-                                super::claim_hold::engage(pa, action.serial());
+                                super::claim_hold::engage(ps, pa, action.serial());
                                                 }
                         }
                     }
@@ -1296,7 +1296,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
                                                         }
                                 crate::route::RetranscodeClaimDispatch::Pending
                                 | crate::route::RetranscodeClaimDispatch::PendingNoHold => {
-                                    super::claim_hold::engage(pa, action.serial());
+                                    super::claim_hold::engage(ps, pa, action.serial());
                                                         }
                             }
                         } else {
@@ -1336,7 +1336,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
                                                 }
                             crate::route::RetranscodeClaimDispatch::Pending
                             | crate::route::RetranscodeClaimDispatch::PendingNoHold => {
-                                super::claim_hold::engage(pa, action.serial());
+                                super::claim_hold::engage(ps, pa, action.serial());
                                                 }
                         }
                     }
@@ -1417,7 +1417,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
                                     }
                                                         }
                                 crate::route::RetranscodeClaimDispatch::Pending => {
-                                    super::claim_hold::engage(pa, action.serial());
+                                    super::claim_hold::engage(ps, pa, action.serial());
                                                         }
                                 crate::route::RetranscodeClaimDispatch::PendingNoHold => {
                                                         }
@@ -2259,7 +2259,7 @@ mod flight_tests {
         rig.frame();
         assert!(!FEED_TX.seek_preroll_active(), "a claim hold's pause opened a preroll");
         FEED_SHARED.frames.store(1, Relaxed);
-        assert!(crate::player::transport::set_transport_paused(&mut rig.pa, true), "the viewer's Pause press");
+        assert!(crate::player::transport::set_transport_paused(&mut rig.ps, &mut rig.pa, true), "the viewer's Pause press");
         assert!(!super::super::claim_hold::owns_pause(), "the viewer's press outranks the hold");
         rig.flight.release_answers();
         rig.frames_until("the adaptive reload to settle", |r| {
