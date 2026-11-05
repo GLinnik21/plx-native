@@ -10,8 +10,8 @@
 //!
 //! The machine is pure: no clock, no registry, no thread. It names no feed type; the facts it
 //! holds are the contract's [`FeedRaw`], so it builds whatever backends a composition installs.
-//! It has no effects of its own: an intent that also yields a feed command (the seek family here;
-//! pause and audio are L3b's) is one event here and one `FeedCommand` the caller sends, so the two
+//! It has no effects of its own: an intent that also yields a feed command (the seek family and the
+//! transport: Pause, the paused-seek preroll, the owed re-pause; audio is L3b's) is one event here and one `FeedCommand` the caller sends, so the two
 //! halves never name the same member twice. The pump feeds it: the session's one ingestion
 //! (`ingest_feed_facts`) takes the raw facts, and `present` derives the state and the end of
 //! stream at the pump's derivation point, both addressed by attempt. `state` and `ended` are read
@@ -63,6 +63,16 @@ pub struct PlayerReadout {
     /// The playhead the HUD freezes at while a seek resolves: the newest request's display target,
     /// until the player gives up on it or the session resets.
     seek_display_ns: Option<i64>,
+    /// The viewer's transport is Paused: the last `CommitPaused` since the playback began. A reload
+    /// keeps it (the new Engine arms its hold from it); a real stop clears it. The feed keeps its
+    /// own copy to gate feeding, written by the matching commands only.
+    paused: bool,
+    /// The viewer is still logically paused while a seek is allowed to decode one frame and then
+    /// re-pause (the paused-seek preroll). A reload keeps it; a real stop and its close clear it.
+    seek_preroll: bool,
+    /// The foreground restore of a paused film owes a re-pause the instant its resume frame is on
+    /// screen. Cleared by whatever closes the preroll and by a real stop; a reload keeps it.
+    resume_pend: bool,
     /// How many of the feed's decoder revocations ([`FeedRaw::decoder_revocations`]) the app loop
     /// has taken; the revocation is pending while the feed's count differs from it.
     taken_decoder_revocations: u32,
@@ -107,11 +117,11 @@ pub(super) fn stream_ended(pos_ns: i64, duration_ns: i64, pipeline_eos: bool) ->
 
 /// What one pump frame hands the derivation of the UI state and the end of stream: the physical
 /// tick, the two sampled facts that have no [`FeedRaw`] field (a runtime rebuffer, the container's
-/// duration), and the one input whose writer is still the player's own mailbox (the pause
-/// transport behind `paused_and_idle`; L3b moves it into the readout beside the intent that writes
-/// it, and this struct loses the field). A seek in flight and the pipeline's own end of stream are
-/// the readout's: the requested epoch against the landed one, and the ingested raw facts; so is a
-/// seek that waits for the pump, which the readout adds to `paused_and_idle` itself.
+/// duration), and the two inputs that are the player's own registries, not the readout's (a claim
+/// hold and a route flight). A seek in flight, the pipeline's own end of stream, the viewer's Pause
+/// with its preroll and a seek that waits for the pump are the readout's: the requested epoch
+/// against the landed one, the ingested raw facts, and the transport events stepped at the calls
+/// that command the feed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Presentation {
     pub tick: PresentationTick,
@@ -119,17 +129,10 @@ pub struct Presentation {
     pub rebuffering: bool,
     /// The container's duration, 0 while unknown.
     pub duration_ns: i64,
-    /// The viewer is paused and the pump is doing no work for a picture, a seek waiting for the
-    /// pump apart: the readout holds that one, and asks it after taking the frame's sample in.
-    pub paused_and_idle: bool,
-}
-
-/// The inputs of the derivation whose writer is still the player's own mailbox: what the pump hands
-/// [`super::super::route::PlaybackSession::present`] beside the post-tick sample. L3b moves it into
-/// the readout beside the intent that writes it and this struct shrinks to nothing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PresentInputs {
-    pub paused_and_idle: bool,
+    /// No claim hold is up and no route flight is out: the two ingredients of "the pump is doing no
+    /// work for a picture" that are not the readout's. The readout combines them with its own
+    /// Pause (no preroll open) and its own pending seek, and asks after taking the frame's sample in.
+    pub nothing_in_flight: bool,
 }
 
 /// What can happen to the readout. Intent-named: a writer states what occurred, never a field
@@ -183,6 +186,24 @@ pub enum ReadoutEvent {
     /// ingested and what the pump saw. The session steps it only for the attempt that is live
     /// and only after the post-tick sample, so a frame that returned early derives nothing.
     Presented(Presentation),
+    /// The viewer's transport was committed to `paused` (the feed's `FeedCommand::CommitPaused`, or
+    /// the commit its own user Pause and Resume run). A reload does not step it.
+    CommitPaused { paused: bool },
+    /// The one-frame paused-seek preroll was opened: by a caller (a restore about to Load, the
+    /// dispatcher of a seek under the viewer's Pause) or by the feed itself
+    /// ([`PausedSeekStep::preroll_opened`](plx_playback_contract::feed::PausedSeekStep)). Opens
+    /// nothing unless the viewer is paused, exactly as the feed's own open.
+    BeginPausedSeek,
+    /// The preroll was closed (the accepted re-pause, a Resume, an abandoned seek, a failed Load):
+    /// the foreground restore's re-pause is no longer owed either.
+    FinishSeekPreroll,
+    /// The foreground restore of a paused film armed its re-pause for the instant the resume frame
+    /// is on screen.
+    ResumePending,
+    /// A REAL stop (not a reload): the playback and its transport are gone, so the Pause, the
+    /// preroll and the owed re-pause go with it. [`ReadoutEvent::SessionReset`] fires on reloads
+    /// too, which keep all three.
+    TransportStopped,
     /// The player took the pending `edge`: it is spent until the feed counts another one. Read
     /// [`PlayerReadout::decoder_revoked`] or [`PlayerReadout::native_audio_refused`] first.
     Taken { edge: Edge },
@@ -211,6 +232,9 @@ impl PlayerReadout {
         pending_seek_ns: None,
         seek_requests: 0,
         seek_display_ns: None,
+        paused: false,
+        seek_preroll: false,
+        resume_pend: false,
         taken_decoder_revocations: 0,
         taken_native_audio_refusals: 0,
         audio_choice: -1,
@@ -244,6 +268,12 @@ impl PlayerReadout {
     /// The playhead the HUD freezes at while a seek resolves, until the seek is given up on or the
     /// session resets.
     pub fn seek_display_ns(&self) -> Option<i64> { self.seek_display_ns }
+    /// The viewer's transport is Paused (a claim hold's loan included: see `transport::viewer_paused`).
+    pub fn paused(&self) -> bool { self.paused }
+    /// A paused seek is allowed to decode one frame before the re-pause.
+    pub fn seek_preroll(&self) -> bool { self.seek_preroll }
+    /// The foreground restore's re-pause is owed.
+    pub fn resume_pend(&self) -> bool { self.resume_pend }
     /// The pipeline took the video decoder back and nobody has taken that yet.
     pub fn decoder_revoked(&self) -> bool {
         edge_pending(self.raw.decoder_revocations, self.taken_decoder_revocations)
@@ -315,6 +345,20 @@ impl PlayerReadout {
                 }
                 self.raw = raw;
             }
+            ReadoutEvent::CommitPaused { paused } => self.paused = paused,
+            ReadoutEvent::BeginPausedSeek => {
+                if self.paused { self.seek_preroll = true; }
+            }
+            ReadoutEvent::FinishSeekPreroll => {
+                self.seek_preroll = false;
+                self.resume_pend = false;
+            }
+            ReadoutEvent::ResumePending => self.resume_pend = true,
+            ReadoutEvent::TransportStopped => {
+                self.paused = false;
+                self.seek_preroll = false;
+                self.resume_pend = false;
+            }
             ReadoutEvent::Presented(p) => {
                 // Order matters: a seek in flight outranks "we have frames", because the frames
                 // on the panel are the PRE-seek ones and the HUD must show the target, not them.
@@ -328,7 +372,8 @@ impl PlayerReadout {
                     // No picture yet. Work pending for one is Buffering; a paused player with
                     // nothing in flight is waiting on the viewer, which is neither a spinner nor
                     // `Playing` (no frame is presented, so `is_playing` stays false).
-                    if p.paused_and_idle && self.pending_seek_ns.is_none() {
+                    if p.nothing_in_flight && self.paused && !self.seek_preroll
+                        && self.pending_seek_ns.is_none() {
                         PlaybackState::Paused
                     } else {
                         PlaybackState::Buffering
@@ -514,7 +559,8 @@ mod tests {
         PresentationTick { stage, eos_pushed }
     }
 
-    const QUIET: PresentInputs = PresentInputs { paused_and_idle: false };
+    /// No claim hold and no route flight: the readout's own Pause alone decides "paused and idle".
+    const CLEAR: bool = true;
 
     /// One sample splits between the attempt view and the readout, and only the attempt the view
     /// belongs to can deliver it: a late worker of a previous attempt changes neither half.
@@ -545,7 +591,7 @@ mod tests {
         ps.begin_attempt_view(c, Backend::Uri);
         assert!(!ps.ingest_feed_facts(c, facts(5, None)));
         assert_eq!(*ps.readout().raw(), FeedRaw::IDLE);
-        assert!(!ps.present(c, tick(Stage::Playing, false), facts(5, None), QUIET));
+        assert!(!ps.present(c, tick(Stage::Playing, false), facts(5, None), CLEAR));
         assert_eq!(ps.readout().state(), PlaybackState::Idle);
     }
 
@@ -558,11 +604,11 @@ mod tests {
         let mut ps = PlaybackSession::IDLE;
         ps.begin_attempt_view(a, Backend::Feed);
         ps.begin_attempt_view(b, Backend::Feed);
-        assert!(!ps.present(a, tick(Stage::Streaming, true), facts(30, Some(10)), QUIET));
+        assert!(!ps.present(a, tick(Stage::Streaming, true), facts(30, Some(10)), CLEAR));
         assert_eq!(ps.readout().state(), PlaybackState::Idle);
         assert!(!ps.readout().ended());
         assert_eq!(*ps.readout().raw(), FeedRaw::IDLE);
-        assert!(ps.present(b, tick(Stage::Streaming, false), facts(30, Some(10)), QUIET));
+        assert!(ps.present(b, tick(Stage::Streaming, false), facts(30, Some(10)), CLEAR));
         assert_eq!(ps.readout().state(), PlaybackState::Playing);
         assert_eq!(ps.readout().raw().frames, 30, "the post-tick sample is the readout's raw facts");
     }
@@ -589,6 +635,17 @@ mod tests {
         stepped(&[ReadoutEvent::FactsIngested(raw), ReadoutEvent::Presented(p)])
     }
 
+    /// [`presented`] under the viewer's Pause.
+    fn presented_paused(raw_frames: i32, p: Presentation) -> PlayerReadout {
+        let mut raw = FeedRaw::IDLE;
+        raw.frames = raw_frames;
+        stepped(&[
+            ReadoutEvent::CommitPaused { paused: true },
+            ReadoutEvent::FactsIngested(raw),
+            ReadoutEvent::Presented(p),
+        ])
+    }
+
     fn presented_seeking(raw_frames: i32, p: Presentation) -> PlayerReadout {
         let mut raw = FeedRaw::IDLE;
         raw.frames = raw_frames;
@@ -602,7 +659,7 @@ mod tests {
     fn pres(stage: Stage) -> Presentation {
         Presentation {
             tick: tick(stage, false), rebuffering: false, duration_ns: 100_000_000_000,
-            paused_and_idle: false,
+            nothing_in_flight: true,
         }
     }
 
@@ -617,9 +674,9 @@ mod tests {
             PlaybackState::Buffering);
         assert_eq!(presented(0, pres(Stage::Streaming)).state(), PlaybackState::Buffering,
             "no picture yet, work pending");
-        assert_eq!(presented(0, Presentation { paused_and_idle: true, ..pres(Stage::Streaming) }).state(),
+        assert_eq!(presented_paused(0, pres(Stage::Streaming)).state(),
             PlaybackState::Paused, "no picture, nothing in flight: waiting on the viewer");
-        assert_eq!(presented(30, Presentation { paused_and_idle: true, ..pres(Stage::Streaming) }).state(),
+        assert_eq!(presented_paused(30, pres(Stage::Streaming)).state(),
             PlaybackState::Playing, "paused-and-idle only matters before the first picture");
         assert_eq!(presented(30, pres(Stage::Streaming)).state(), PlaybackState::Playing);
     }
@@ -805,12 +862,89 @@ mod tests {
     /// A seek waiting for the pump is work: a paused player with one is not "waiting on the viewer".
     #[test]
     fn a_seek_waiting_for_the_pump_keeps_a_paused_player_buffering() {
-        let paused = Presentation { paused_and_idle: true, ..pres(Stage::Streaming) };
-        assert_eq!(presented(0, paused).state(), PlaybackState::Paused);
+        let paused = pres(Stage::Streaming);
+        assert_eq!(presented_paused(0, paused).state(), PlaybackState::Paused);
         let mut raw = FeedRaw::IDLE;
         raw.seek_requeue = SeekRequeue { epoch: 1, target_ns: secs(5) };
-        let r = stepped(&[ReadoutEvent::FactsIngested(raw), ReadoutEvent::Presented(paused)]);
+        let r = stepped(&[
+            ReadoutEvent::CommitPaused { paused: true },
+            ReadoutEvent::FactsIngested(raw),
+            ReadoutEvent::Presented(paused),
+        ]);
         assert_eq!(r.state(), PlaybackState::Buffering, "the feed's own requeue, adopted from the very sample the frame took");
+    }
+
+    // ---- the transport: the Pause, the paused-seek preroll, the owed re-pause (L3b step 2c) ----
+
+    /// The preroll opens only under a Pause, exactly as the feed's own open, and an open that finds
+    /// it open again changes nothing (a coalesced tap retargets the feed's owned preroll).
+    #[test]
+    fn a_preroll_opens_only_under_a_pause_and_opening_it_twice_changes_nothing() {
+        let r = stepped(&[ReadoutEvent::BeginPausedSeek]);
+        assert!(!r.seek_preroll(), "a transport that is not paused opens nothing");
+        let once = stepped(&[ReadoutEvent::CommitPaused { paused: true }, ReadoutEvent::BeginPausedSeek]);
+        assert!(once.paused() && once.seek_preroll());
+        let mut twice = once;
+        twice.step(ReadoutEvent::BeginPausedSeek);
+        assert_eq!(twice, once);
+        let resumed = stepped(&[ReadoutEvent::CommitPaused { paused: true }, ReadoutEvent::BeginPausedSeek,
+            ReadoutEvent::CommitPaused { paused: false }]);
+        assert!(!resumed.paused() && resumed.seek_preroll(),
+            "the commit alone does not close a preroll: the close is its own event, as it is the feed's");
+    }
+
+    /// (b) A reload replaces the Engine and keeps the viewer's Pause, the preroll and the owed
+    /// re-pause (`Transport::reset_for_reload`): the session reset it fires does not touch them. A
+    /// real stop clears all three (`Transport::reset`).
+    #[test]
+    fn a_reload_keeps_the_pause_and_a_real_stop_clears_all_three() {
+        let mut r = stepped(&[ReadoutEvent::CommitPaused { paused: true }, ReadoutEvent::BeginPausedSeek,
+            ReadoutEvent::ResumePending]);
+        r.step(ReadoutEvent::SessionReset);
+        assert!(r.paused(), "a reload keeps the viewer's Pause");
+        assert!(r.seek_preroll(), "and the preroll that outlives the reload");
+        assert!(r.resume_pend(), "and the re-pause the restore still owes");
+        r.step(ReadoutEvent::TransportStopped);
+        assert!(!r.paused() && !r.seek_preroll() && !r.resume_pend(), "a real stop retires all three");
+    }
+
+    /// (c) The owed re-pause ends with the preroll's close, whatever closes it (the feed's own
+    /// `finish_seek_preroll` cleared it too, and does so with no preroll open), and with a real
+    /// stop; a reload's session reset leaves it.
+    #[test]
+    fn the_owed_repause_ends_with_the_preroll_close_and_the_real_stop_not_with_a_reload() {
+        let mut r = stepped(&[ReadoutEvent::CommitPaused { paused: true }, ReadoutEvent::ResumePending]);
+        assert!(r.resume_pend());
+        r.step(ReadoutEvent::SessionReset);
+        assert!(r.resume_pend(), "a reload does not clear it");
+        r.step(ReadoutEvent::FinishSeekPreroll);
+        assert!(!r.resume_pend(), "the close ends it, with no preroll open as with one");
+        assert!(r.paused(), "and closes nothing of the Pause");
+        r.step(ReadoutEvent::ResumePending);
+        r.step(ReadoutEvent::TransportStopped);
+        assert!(!r.resume_pend(), "a real stop ends it");
+    }
+
+    /// "Paused and idle" is the readout's Pause with no preroll open and no seek waiting, plus the
+    /// two inputs it does not own: each one alone keeps the HUD at Buffering.
+    #[test]
+    fn paused_and_idle_needs_the_pause_the_shut_gate_and_nothing_in_flight() {
+        let paused = ReadoutEvent::CommitPaused { paused: true };
+        let mut raw = FeedRaw::IDLE;
+        raw.frames = 0;
+        let derive = |events: &[ReadoutEvent], p: Presentation| {
+            let mut r = stepped(events);
+            r.step(ReadoutEvent::FactsIngested(raw));
+            r.step(ReadoutEvent::Presented(p));
+            r.state()
+        };
+        assert_eq!(derive(&[paused], pres(Stage::Streaming)), PlaybackState::Paused);
+        assert_eq!(derive(&[], pres(Stage::Streaming)), PlaybackState::Buffering, "not paused");
+        assert_eq!(derive(&[paused, ReadoutEvent::BeginPausedSeek], pres(Stage::Streaming)),
+            PlaybackState::Buffering, "a preroll open is work: the gate is not shut");
+        assert_eq!(derive(&[paused], Presentation { nothing_in_flight: false, ..pres(Stage::Streaming) }),
+            PlaybackState::Buffering, "a claim hold or a flight is work");
+        assert_eq!(derive(&[paused, tap(1)], pres(Stage::Streaming)), PlaybackState::Seeking);
     }
 
     // ---- the one-shot edges the feed counts and the readout takes (L3b-4) ----
@@ -868,7 +1002,7 @@ mod tests {
         let mut ps = PlaybackSession::IDLE;
         ps.begin_attempt_view(a, Backend::Feed);
         assert_eq!(crate::player::ended(&ps), Some(false), "a live feed attempt has not ended");
-        assert!(ps.present(a, tick(Stage::Streaming, true), facts(30, Some(100)), QUIET));
+        assert!(ps.present(a, tick(Stage::Streaming, true), facts(30, Some(100)), CLEAR));
         assert_eq!(crate::player::state(&ps), PlaybackState::Playing, "the reader is the readout's state");
         assert_eq!(crate::player::ended(&ps), Some(true), "the reader is the readout's end of stream");
         ps.step_readout(ReadoutEvent::SessionReset);

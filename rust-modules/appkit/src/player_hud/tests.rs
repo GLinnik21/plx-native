@@ -772,9 +772,9 @@ fn an_audio_pick_rebuild_reads_switching_audio_and_nothing_else_does() {
 }
 
 /// A paused session that is doing no work, driven through the state the HUD really reads
-/// (`player::state` over the session's readout, which the pump's `pump::paused_and_idle` derives
-/// as `Paused`): no centred read-out, no transport spinner, and the paused transport (not
-/// "playing").
+/// (`player::state` over the session's readout, which derives `Paused` from its own Pause and
+/// `pump::nothing_in_flight`): no centred read-out, no transport spinner, and the paused transport
+/// (not "playing").
 #[test]
 fn a_paused_idle_session_with_no_picture_draws_the_paused_transport_not_a_busy_surface() {
     let _g = plx_base::testlock::serial();

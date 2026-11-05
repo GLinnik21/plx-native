@@ -126,6 +126,11 @@ pub enum SeekPause { Ready, Refused, Stale, Busy }
 pub struct PausedSeekStep {
     pub finish: bool,
     pub mid_seek_claimed: bool,
+    /// The feed opened (or retargeted) the paused-seek preroll in this very call. The feed is the
+    /// writer of that open, so it says so: the player's readout steps `BeginPausedSeek` from this
+    /// verdict BEFORE it acts on `finish`, which the same call may also report. A sampled level
+    /// would read the pre-open value there.
+    pub preroll_opened: bool,
 }
 
 /// A Load that did not return in time: after how long, or because its native epoch left the

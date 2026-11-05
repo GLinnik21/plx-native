@@ -30,7 +30,7 @@ and the lines are compared to the tree as an exact multiset.
 | Rule | A site is | Key |
 |---|---|---|
 | `workers` | a production call that starts a worker in a machine: `task::spawn(`, `spawn_small(`, `spawn_small_keeping(`, `spawn_small_or_inline(`, `spawn_off_frame(`, `spawn_off_frame_keeping(`, `storage_worker::submit(`, `submit_retained(`, the command worker's `.submit_ticket(` | `<path>::<enclosing fn>::<spelling>` |
-| `globals` | a production read of a process-global registry in a machine: `client_for`, `current_server`, `current_snapshot`, `keypin::revision`, `keypin::blocked_for`, `session::peek`, `grant::offers`, the session cache's `session::peek_settled` and `session::current_gen`, the server registry's roster readers (`server_ids`, `server_roster_gen`, `server_facts_gen`, `server_probe_result`), the controlled-run switch `tape::active`, the player's transport-pause readers (`transport::paused`, `transport::viewer_paused`, `preview::paused`), the device's capability answer (`devcaps::caps`, and the zero-argument `is_dp_audio` / `is_dp_audio_track` that used to read it), and `player::TX` in the player's lifecycle (at zero) | `<path>::<enclosing fn>::<spelling>` |
+| `globals` | a production read of a process-global registry in a machine: `client_for`, `current_server`, `current_snapshot`, `keypin::revision`, `keypin::blocked_for`, `session::peek`, `grant::offers`, the session cache's `session::peek_settled` and `session::current_gen`, the server registry's roster readers (`server_ids`, `server_roster_gen`, `server_facts_gen`, `server_probe_result`), the controlled-run switch `tape::active`, the player's transport-pause readers (`transport::paused`, `transport::viewer_paused`, `preview::paused`: each now reads the session's readout, and the spellings stay guarded), the device's capability answer (`devcaps::caps`, and the zero-argument `is_dp_audio` / `is_dp_audio_track` that used to read it), and `player::TX` in the player's lifecycle (at zero) | `<path>::<enclosing fn>::<spelling>` |
 | `forks` | a production test/production fork whose predicate reads `test` or `feature = "test-support"`: a `#[cfg(..)]` attribute that a production build can satisfy (`not(test)`, `not(any(test, feature = "test-support"))`, `all(target_os = .., not(test))`, ...), or an inline `cfg!(..)` of any value | `<path>::<item name>`, or `<path>::<enclosing fn>` for a statement or an inline `cfg!`, or `<path>::<struct>` for a field |
 | `fxlanes` | an `AppFx::<Variant>` arm of `Bridge::app_effect` that does not push `Fx::Deliver(`: one site for each variant on its head, and one for an arm that names no variant (`other => ..`, `_ => ..`) | `<path>::AppFx::<Variant>`, or `<path>::AppFx::_` |
 
@@ -88,9 +88,10 @@ widening recorded the 17 forks that were already there (three in `screens/`: `le
 - The command worker's `.submit(` is not covered: it is `#[cfg(any(test, feature = "test-support"))]`
   in `base/src/storage_worker.rs`, so no production line can call it. `.submit_ticket(` is covered
   although no machine calls it today: a machine that did would be starting a worker.
-- The transport-pause atomic (`FEED_TX.paused`, the Feed backend's, in `plx_play_feed::shared`) is reached by a machine through three readers,
-  `transport::paused`, `transport::viewer_paused` and `preview::paused` (each is `FEED_TX.paused` behind
-  a function), so those spellings are sites, qualified or bare after an import; a `use ... as`
+- The transport Pause is the session's readout (`PlayerReadout::paused`), stepped at every writer, and the Feed keeps its own
+  gate copy (`FEED_TX.paused`, in `plx_play_feed::shared`) written by commands only. A machine reaches it through three readers,
+  `transport::paused`, `transport::viewer_paused` and `preview::paused` (each takes the session and reads its readout; the
+  spellings stay guarded because the old ones read the atomic), so those spellings are sites, qualified or bare after an import; a `use ... as`
   rename of any of them fails outright. The spellings of the owners themselves (`crate::player::TX`,
   `player::TX`, `super::TX`, a bare `TX`, and the Feed owners `shared::FEED_TX`, `shared::FEED_SHARED`
   and a bare `FEED_TX` / `FEED_SHARED`) stay pinned to `lifecycle.rs`, the machine, which now reads

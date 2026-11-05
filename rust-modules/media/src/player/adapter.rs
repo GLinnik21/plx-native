@@ -857,9 +857,12 @@ impl PlayerAdapter {
     /// The native user transport door owns TX, Starfish and ACB together. A queued Feed control
     /// is executed only after the runner's temporary driver borrow ends, then its addressed
     /// acceptance is returned through the same runner before another command can advance. `ps` is
-    /// the session the door carries to those answers' readout events; none is stepped here yet.
+    /// the session the door carries to those answers' readout events: the Feed's Pause and Resume
+    /// commit the transport, and `pause_result` / `resume_result` step the readout's copy from the
+    /// answer.
     fn finish_backend_actions(&mut self, ps: &mut crate::route::PlaybackSession,
         result: backend::RunResult, at: super::attempt_metrics::Tick) -> backend::RunResult {
+        #[cfg(not(feature = "play-feed"))]
         let _ = ps;
         #[cfg(feature = "play-feed")]
         let mut result = result;
@@ -867,8 +870,8 @@ impl PlayerAdapter {
         while let Some(action) = self.physical.feed_backend_mut().take_transport_action() {
             let transport = match action {
                 FeedTransportAction::Play { .. } | FeedTransportAction::ResumeInitial { .. } =>
-                    super::resume_result(self),
-                FeedTransportAction::Pause { .. } => super::pause_result(self),
+                    super::resume_result(ps, self),
+                FeedTransportAction::Pause { .. } => super::pause_result(ps, self),
             };
             self.physical.feed_backend_mut().note_transport_result(&self.mt, action,
                 transport.accepted, transport.native_acknowledged);
