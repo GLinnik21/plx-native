@@ -80,7 +80,7 @@ use shared_resources::{AudioSwitch, Shared, Transport, AUDIO_PICK_WINDOW_MS};
 pub mod sidecar;
 pub mod sub_charset; // legacy-encoding text subtitles (GBK, Big5, Shift_JIS, ...) read as UTF-8; decided once per track
 #[cfg(feature = "play-feed")]
-pub mod subside; // the side subtitle reader's thread and state (dev trigger `plxnative-subside`)
+pub mod subside; // the media half of the side subtitle reader (the thread is `plx_play_feed::side_reader`; dev trigger `plxnative-subside`)
 #[cfg(feature = "play-feed")]
 pub(crate) mod subtitle_cue; // embedded/side-reader cue bridge; caption stores remain common. Gated: it calls `push/close_subtitle_bitmap_for_generation` and `ass_source::begin_inventory`, which exist only with the Feed
 #[cfg(all(feature = "hostsim", feature = "play-feed"))]
@@ -260,23 +260,6 @@ pub static TX: Transport = Transport::new();
 /// Off at boot, and never persisted.
 pub static DIAG_READOUT_ON: AtomicBool = AtomicBool::new(false);
 
-// Diagnostics-only Auto state. These codes cross the demux/UI thread boundary through atomics;
-// named constants keep the writer and the photograph formatter from growing separate vocabularies.
-pub const ABR_MODE_ORIGINAL: u8 = 1;
-pub const ABR_MODE_HLS: u8 = 2;
-pub const ABR_ACTION_STEADY: u8 = 1;
-pub const ABR_ACTION_PRIME_DOWN: u8 = 2;
-pub const ABR_ACTION_PRIME_UP: u8 = 3;
-pub const ABR_ACTION_COMMIT_DOWN: u8 = 4;
-pub const ABR_ACTION_COMMIT_UP: u8 = 5;
-pub const ABR_ACTION_REJECT_DOWN: u8 = 6;
-pub const ABR_ACTION_REJECT_UP: u8 = 7;
-pub const ABR_ACTION_PROBE_ORIGINAL: u8 = 8;
-pub const ABR_ACTION_RECOVER_ORIGINAL: u8 = 9;
-pub const ABR_ACTION_ORIGINAL_PROBE_FAILED: u8 = 10;
-pub const ABR_ACTION_PRIME_REFRESH: u8 = 11;
-pub const ABR_ACTION_COMMIT_REFRESH: u8 = 12;
-pub const ABR_ACTION_REJECT_REFRESH: u8 = 13;
 /// Typed, playback-scoped reason the last Original source experiment/open failed. It deliberately
 /// survives the engine reload that restores HLS, otherwise the successful rollback erases the
 /// only fact explaining why Original is no longer being attempted.
@@ -2268,7 +2251,7 @@ pub fn subtitle_draw(ps: &crate::route::PlaybackSession) -> Option<(std::sync::A
 ///
 /// Moved only when ALL hold: the attempt uses Feed, the selection is a sidecar, the app draws it over a live remux
 /// ([`crate::route::SubtitlePresenter::ClientOverRemux`]) and the reader matched this run's first
-/// keyframe byte for byte (`subside::exact_delta_ns` on Feed). Never for an embedded track — the reader
+/// keyframe byte for byte (`side_reader::exact_delta_ns` on Feed). Never for an embedded track — the reader
 /// has moved its cues by `-delta` already, so adding it here too would correct them twice — and
 /// never from an ASSUMED delta, which was measured 2.002 s wrong (see `ff_subside`'s
 /// `sidecar_clock_at_917…` test). **Off the reader's gate** (a remote link, a Part above the
@@ -2284,7 +2267,7 @@ pub fn sidecar_clock_ns(ps: &crate::route::PlaybackSession, playhead_ns: i64) ->
     }
     #[cfg(feature = "play-feed")]
     if ps.attempt_view().backend() == Some(attempt_view::Backend::Feed) {
-        return subside::exact_delta_ns().map_or(playhead_ns, |delta| playhead_ns.saturating_add(delta));
+        return plx_play_feed::side_reader::exact_delta_ns().map_or(playhead_ns, |delta| playhead_ns.saturating_add(delta));
     }
     // A URI attempt has no side reader measurement; its source clock is used as observed.
     playhead_ns

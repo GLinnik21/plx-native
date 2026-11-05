@@ -136,20 +136,7 @@ mod load_timing_tests {
     #[cfg(feature = "hostsim")]
     mod hostsim {
         use super::*;
-        use crate::ffi_host::{FrameSink, HostSink, Hooks};
-
-        extern "C" fn ignore_event(_: std::os::raw::c_uint, _: c_int, _: i64, _: *const c_char) {}
-        fn media_to_fed(ns: i64) -> i64 { ns }
-        struct NoFrames;
-        impl FrameSink for NoFrames {
-            fn load(&self, _: &str, _: fn() -> i64) {}
-            fn flush(&self) {}
-            fn feed(&self, _: &[u8], _: i64) {}
-            fn stop(&self) {}
-        }
-        static TEST_SINK: HostSink =
-            HostSink::new(Hooks { deliver_event: ignore_event, media_to_fed, frames: &NoFrames });
-        fn test_sink() -> &'static dyn VideoSink { &TEST_SINK }
+        fn test_sink() -> &'static dyn VideoSink { crate::ffi_host::test_sink::sink() }
 
         /// A read that takes 400 ms in front of a Load that returns at once: the figures the
         /// Load-timing log and telemetry are made from say the Load was quick, while the wall clock

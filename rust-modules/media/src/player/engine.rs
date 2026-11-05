@@ -7,8 +7,9 @@
 //! [`crate::player::adapter::PlayerAdapter`] that consumes a [`MainThread`] at construction, so a
 //! `&mut PlayerAdapter` borrow is what confines it now (see `player::adapter`). Which is also the
 //! rule for the rest of this file — a function here takes the token **iff** it reaches the slot
-//! or the ACB/Starfish seam, so the parameter carries information. `arm_seek` runs on the main
-//! thread too and deliberately does not take one: it only publishes to `FEED_SHARED`.
+//! or the ACB/Starfish seam, so the parameter carries information. `FEED_SHARED.arm_seek` runs on
+//! the main thread too and deliberately takes none: it only publishes to the Feed's own state.
+#[cfg(test)]
 use plx_play_feed::shared::FEED_SHARED;
 #[cfg(all(test, feature = "hostsim"))]
 use super::route_start::{exit_native, exit_native_with, finish_release_for_test, poll_release,
@@ -130,9 +131,6 @@ use plx_play_feed::feed_state::engines_dropped_for_test;
 
 #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
 use plx_play_feed::native_executor::NativeSessionStartGuard;
-
-#[cfg(test)]
-use plx_play_feed::native_release::{native_object_disposition, NativeObjectDisposition};
 
 /// A native `Load` that teardown could not wait for.
 ///
@@ -438,18 +436,7 @@ use plx_play_feed::native_executor::stream_open_log_line;
 
 #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
 pub(super) fn native_slot_available() -> Option<()> {
-    NativeSessionStartGuard::arm(&FEED_SHARED).map(|guard| { drop(guard); })
-}
-
-/// Arm the demuxer to open+seek to `target_ns` on the NEXT Load, displaying honest content
-/// time. disp_base=0 and (via start_bufferfeed) rebase_pending=true, so feed_stream rebases
-/// the landed keyframe K to fed-pts 0 and the presented position reads as num+K = content
-/// time. Call BEFORE start_bufferfeed (resume) or via reload_at (mid-play seek).
-pub fn arm_seek(target_ns: i64) {
-    let t = target_ns.max(0);
-    FEED_SHARED.seek_to_ns.store(t, Ordering::Release);
-    FEED_SHARED.disp_base.store(0, Ordering::Relaxed);
-    FEED_SHARED.playpos_ns.store(t, Ordering::Relaxed); // instant HUD feedback until frames land
+    NativeSessionStartGuard::arm(&plx_play_feed::shared::FEED_SHARED).map(|guard| { drop(guard); })
 }
 
 /// Set where the pump ends an Engine for good under the failure read-out; spent by
@@ -477,8 +464,6 @@ pub(crate) use plx_play_feed::feed_state::MAX_FEED_AHEAD_NS;
 #[cfg(test)]
 pub(crate) use plx_play_feed::feed_state::{AUDIO_LEAD_IN_NS, PRIME_VIDEO_MAX_NS};
 pub use plx_play_feed::feed_state::PRES_NONE;
-#[cfg(test)]
-use plx_play_feed::feed_state::FEED_PACE_CAP_MS;
 pub(crate) use plx_play_feed::native_executor::AUDIO_SLACK_NS;
 #[cfg(all(test, feature = "hostsim"))]
 use plx_play_feed::native_executor::{
@@ -546,116 +531,6 @@ pub fn feed_sample(mt: &MainThread, eng: &mut Engine) {
 }
 
 
-#[cfg(test)]
-mod feed_pace_tests {
-    use super::{FeedPace, FEED_PACE_CAP_MS, MAX_FEED_AHEAD_NS, PRES_NONE};
-
-    const MS: i64 = 1_000_000;
-
-    /// Video AUs (24 fps, 41.7 ms apart) the throttle admits at each 60 Hz frame of a 1x clock
-    /// whose position reports arrive every 200 ms — with `reference` as the throttle's position.
-    fn admitted_per_frame(reference: impl Fn(&mut FeedPace, i64, u32) -> i64) -> Vec<u32> {
-        let mut pace = FeedPace::default();
-        let au_ns = 41_708_333i64;
-        let mut next_pts = MAX_FEED_AHEAD_NS; // the lane starts full
-        let mut out = Vec::new();
-        for frame in 0..120u32 {
-            let now = 1_000 + frame * 1000 / 60;
-            let true_pos = (now as i64 - 1_000) * MS;
-            let pres = true_pos - true_pos % (200 * MS); // the 5 Hz step function
-            let refpos = reference(&mut pace, pres, now);
-            let mut n = 0;
-            while next_pts - refpos <= MAX_FEED_AHEAD_NS {
-                next_pts += au_ns;
-                n += 1;
-            }
-            out.push(n);
-        }
-        out
-    }
-
-    /// **Regression: the 5 Hz feed burst.** Against the raw report the lane opens 200 ms at a
-    /// time: ~5 AUs land on one frame and none on the eleven around it. Run on at 1x it never
-    /// admits more than one video AU a frame, and admits the same media over the same time.
-    #[test]
-    fn the_reference_spreads_the_five_hertz_burst_across_frames() {
-        let raw = admitted_per_frame(|_, pres, _| pres);
-        let paced = admitted_per_frame(|p, pres, now| p.reference(pres, now));
-        assert!(raw.iter().max().copied().unwrap_or(0) >= 4, "the raw step feeds in bursts: {raw:?}");
-        assert!(paced.iter().all(|&n| n <= 1), "paced: at most one AU a frame: {paced:?}");
-        let (r, p): (u32, u32) = (raw.iter().sum(), paced.iter().sum());
-        assert!(p.abs_diff(r) <= 6, "same media over the same two seconds: raw {r}, paced {p}");
-    }
-
-    /// A `now` BEFORE the stamp of the last report (the throttle read its clock earlier than the
-    /// report was first seen) is no run-on, not a full-cap one.
-    #[test]
-    fn a_clock_behind_the_report_stamp_does_not_run_on() {
-        let mut pace = FeedPace::default();
-        assert_eq!(pace.reference(5_000 * MS, 1_000), 5_000 * MS);
-        assert_eq!(pace.reference(5_000 * MS, 900), 5_000 * MS);
-    }
-
-    /// A clock that stops reporting new positions (paused, stalled) opens the lane by at most
-    /// the cap, never without bound; `PRES_NONE` passes through and forgets the last report.
-    #[test]
-    fn a_frozen_report_runs_on_at_most_the_cap_and_none_passes_through() {
-        let mut pace = FeedPace::default();
-        assert_eq!(pace.reference(5_000 * MS, 100), 5_000 * MS);
-        assert_eq!(pace.reference(5_000 * MS, 150), 5_050 * MS);
-        assert_eq!(pace.reference(5_000 * MS, 100_000), 5_000 * MS + FEED_PACE_CAP_MS as i64 * MS);
-        assert_eq!(pace.reference(PRES_NONE, 100_001), PRES_NONE);
-        assert_eq!(pace.reference(5_000 * MS, 100_002), 5_000 * MS, "a fresh report restarts the run-on");
-    }
-
-    /// At 1.5x the playhead moves 1.5 ms of media per wall-clock ms between reports, so the
-    /// estimate runs on that much faster; capped by the same wall-clock bound.
-    #[test]
-    fn the_run_on_follows_the_pipeline_rate() {
-        let mut pace = FeedPace::default();
-        assert_eq!(pace.reference_at(5_000 * MS, 100, 1500), 5_000 * MS);
-        assert_eq!(pace.reference_at(5_000 * MS, 150, 1500), 5_075 * MS);
-        assert_eq!(pace.reference_at(5_000 * MS, 200, 500), 5_050 * MS, "half speed runs on at half");
-        assert_eq!(
-            pace.reference_at(5_000 * MS, 100_000, 2000),
-            5_000 * MS + 2 * FEED_PACE_CAP_MS as i64 * MS,
-            "the cap is wall-clock time; at 2x it covers twice the media"
-        );
-        assert_eq!(
-            FeedPace::default().reference(5_000 * MS, 100),
-            FeedPace::default().reference_at(5_000 * MS, 100, crate::player::RATE_NORMAL)
-        );
-    }
-}
-
-#[cfg(test)]
-mod native_lifecycle_proof_tests {
-    use super::{native_object_disposition, NativeObjectDisposition};
-
-    #[test]
-    fn destructor_requires_every_independent_runtime_proof() {
-        assert_eq!(
-            native_object_disposition(true, true, true),
-            NativeObjectDisposition::Destroy,
-        );
-        for (unload_completed, callback_gate_proven, rust_epoch_retired) in [
-            (false, true, true),
-            (true, false, true),
-            (true, true, false),
-            (false, false, false),
-        ] {
-            assert_eq!(
-                native_object_disposition(
-                    unload_completed,
-                    callback_gate_proven,
-                    rust_epoch_retired,
-                ),
-                NativeObjectDisposition::Quarantine,
-            );
-        }
-    }
-}
-
 #[cfg(all(test, feature = "hostsim"))]
 mod native_lifecycle_host_seam_tests {
     use super::*;
@@ -668,46 +543,6 @@ mod native_lifecycle_host_seam_tests {
             crate::player::ffi_host::force_clocksink_for_test(false);
             SHARED.reset_session();
         }
-    }
-
-    #[test]
-    fn host_seam_destroys_only_with_evidence_and_latches_quarantine() {
-        let _serial = plx_base::testlock::serial();
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
-        SHARED.reset_session();
-        let _fresh_process = FreshProcess;
-        let mt = unsafe { MainThread::assume() };
-
-        let first = FEED_SHARED.begin_native_session().expect("first native epoch");
-        assert_eq!(unsafe { crate::player::sink().load(c"{}".as_ptr(), first) }, 1);
-        assert!(unsafe { crate::player::sink().callback_intercepts(&mt) } > 0);
-        unsafe { crate::player::sink().unload(&plx_platform::tv::sink::UnloadTicket::issue(&mt)) };
-        assert!(FEED_SHARED.native_unload_completed(first));
-        assert_eq!(unsafe { crate::player::sink().callback_gate_retire(&mt) }, 1);
-        assert!(FEED_SHARED.retire_native_session(first));
-        assert_eq!(unsafe { crate::player::sink().destroy(&mt) }, 1);
-        assert_eq!(unsafe { crate::player::sink().ready(&mt) }, 0);
-
-        SHARED.reset_session();
-        let unproven = FEED_SHARED
-            .begin_native_session()
-            .expect("unproven native epoch");
-        assert_eq!(unsafe { crate::player::sink().load(c"{}".as_ptr(), unproven) }, 1);
-        crate::player::ffi_host::force_callback_intercepts_for_test(0);
-        unsafe { crate::player::sink().unload(&plx_platform::tv::sink::UnloadTicket::issue(&mt)) };
-        assert_eq!(unsafe { crate::player::sink().callback_gate_retire(&mt) }, 0);
-        assert!(FEED_SHARED.retire_native_session(unproven));
-        unsafe { crate::player::sink().quarantine(&mt) };
-
-        SHARED.reset_session();
-        let refused = FEED_SHARED.begin_native_session().expect("refused native epoch");
-        assert_eq!(
-            unsafe { crate::player::sink().load(c"{}".as_ptr(), refused) },
-            0,
-            "quarantine must remain a process-long refusal",
-        );
-        assert!(FEED_SHARED.retire_native_session(refused));
     }
 
     /// S12a: the window breadcrumbs `release_native_object` leaves, as a host can see them. The
@@ -753,58 +588,6 @@ mod native_lifecycle_host_seam_tests {
         assert_eq!(unsafe { crate::player::sink().load(c"{}".as_ptr(), epoch) }, 1);
         assert_eq!(unsafe { crate::player::sink().ready(mt) }, 1);
         epoch
-    }
-
-    #[test]
-    fn a_refused_load_with_no_constructed_object_releases_its_epoch() {
-        let _serial = plx_base::testlock::serial();
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(false);
-        SHARED.reset_session();
-        let _fresh_process = FreshProcess;
-        let mt = unsafe { MainThread::assume() };
-        let epoch = FEED_SHARED.begin_native_session().expect("native epoch");
-        assert_eq!(unsafe { crate::player::sink().load(c"{}".as_ptr(), epoch) }, 0);
-        assert_eq!(unsafe { crate::player::sink().ready(&mt) }, 0);
-        assert_eq!(release_native_object_timed(&mt, epoch, &mut TeardownSpans::new()),
-            plx_playback_contract::ReleaseStatus::Released,
-            "the joined host Load refused before constructing any native object");
-        let next = FEED_SHARED.begin_native_session()
-            .expect("an explicitly empty native seam must not quarantine subsequent attempts");
-        assert!(FEED_SHARED.retire_native_session(next));
-    }
-
-    #[test]
-    fn ready_zero_with_an_allocated_epoch_is_still_uncertain() {
-        let _serial = plx_base::testlock::serial();
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
-        SHARED.reset_session();
-        let _fresh_process = FreshProcess;
-        let mt = unsafe { MainThread::assume() };
-        let epoch = loaded_epoch(&mt);
-        // Hide dispatchability while retaining the constructed object's callback epoch.
-        crate::player::ffi_host::force_object_ready_for_test(false);
-        assert_eq!(unsafe { crate::player::sink().ready(&mt) }, 0);
-        assert_eq!(release_native_object_timed(&mt, epoch, &mut TeardownSpans::new()),
-            plx_playback_contract::ReleaseStatus::Quarantined,
-            "ready=0 alone cannot authorize release of an allocated object");
-    }
-
-    #[test]
-    fn a_blocked_host_lifecycle_never_becomes_no_object_proof() {
-        let _serial = plx_base::testlock::serial();
-        crate::player::ffi_host::reset_native_lifecycle_for_test();
-        crate::player::ffi_host::force_clocksink_for_test(true);
-        SHARED.reset_session();
-        let _fresh_process = FreshProcess;
-        let mt = unsafe { MainThread::assume() };
-        let epoch = loaded_epoch(&mt);
-        unsafe { crate::player::sink().quarantine(&mt) };
-        assert!(crate::player::ffi_host::lifecycle_blocked_for_test());
-        assert_eq!(unsafe { crate::player::sink().ready(&mt) }, 0);
-        assert_eq!(release_native_object_timed(&mt, epoch, &mut TeardownSpans::new()),
-            plx_playback_contract::ReleaseStatus::Quarantined);
     }
 
     #[test]

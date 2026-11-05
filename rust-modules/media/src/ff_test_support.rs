@@ -97,7 +97,7 @@ pub(super) fn with_demux_session<R>(run: impl FnOnce(Box<dyn DemuxSession>) -> R
         fn drop(&mut self) { FEED_SHARED.retire_native_session(self.0); }
     }
     let _retire = Retire(epoch);
-    run(crate::player::demux_session::PlayerDemuxSession::capture(
+    run(crate::player::demux_session::capture(
         plx_playback_contract::AttemptId::new(0, u64::from(epoch)), epoch,
     ))
 }

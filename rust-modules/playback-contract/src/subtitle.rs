@@ -125,3 +125,8 @@ pub struct CaptionRetention {
     pub playhead_ns: Option<i64>,
     pub seek_target_ns: Option<i64>,
 }
+
+/// The ordinal of a side-reader run that reads no subtitle and only measures the remux's clock
+/// against the Part's (a sidecar is drawn by the app). Negative, so it is never a track position and
+/// two runs of different roles never compare equal when a reader is asked to switch.
+pub const SIDE_READER_CLOCK_ONLY: i32 = -1;

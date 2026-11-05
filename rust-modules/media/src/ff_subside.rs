@@ -25,9 +25,9 @@ use crate::player::subtitle_cue::{begin_sources, SideTracks, SubCue};
 use plx_playback_contract::subtitle::CaptionRetention;
 use plx_media_codecs::subtitle_extract::{Job, JobOpenError, ReadOutcome, ReadSeek};
 use plx_net::stream::HttpStream;
+use plx_play_feed::side_reader::{ReadCfg, RunEnd, SideStop, SCAN_NS};
 use std::os::raw::c_int;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 // Clock evidence is shared with presentation; this FFmpeg reader only supplies bytes and times.
 pub(crate) use plx_playback_contract::subtitle::{Anchor, delta_exact, playhead_of};
@@ -37,8 +37,6 @@ use plx_playback_contract::subtitle::WINDOW_NS;
 
 /// How long it parks per decision.
 pub(super) const PARK_MS: u64 = 250;
-/// The half-width of the keyframe scan around the start offset, both directions.
-pub(crate) const SCAN_NS: i64 = 15_000_000_000;
 
 // ---- the clock mapping ----------------------------------------------------------------------
 
@@ -46,62 +44,6 @@ pub(crate) const SCAN_NS: i64 = 15_000_000_000;
 #[cfg(test)]
 fn keyframe_at_or_before(keyframes: &[i64], offset_ns: i64) -> Option<i64> {
     keyframes.iter().copied().filter(|k| *k <= offset_ns).max()
-}
-
-// ---- stopping -------------------------------------------------------------------------------
-
-/// What the controlling thread uses to make a reader that is blocked in IO return: a flag every
-/// callback checks, plus the two ways a read can block. Shared (`Arc`) between [`SideIo`], which
-/// registers its transport here, and `player::subside`, which fires it.
-pub(crate) struct SideStop {
-    flag: AtomicBool,
-    /// The socket's `HttpStream` address, or 0. Written under the lock and read under it by
-    /// [`SideStop::trigger`], and [`SideIo`]'s drop clears it under the same lock BEFORE the stream
-    /// is freed, so `trigger` can never shut down a stream that is gone.
-    sock: Mutex<usize>,
-    /// The private curl transfer's abort handle.
-    curl: Mutex<Option<Arc<crate::curlio::Abort>>>,
-}
-
-impl SideStop {
-    pub(crate) fn new() -> Arc<SideStop> {
-        Arc::new(SideStop { flag: AtomicBool::new(false), sock: Mutex::new(0), curl: Mutex::new(None) })
-    }
-
-    pub(crate) fn is_set(&self) -> bool {
-        self.flag.load(Ordering::Acquire)
-    }
-
-    /// Set the flag, then wake whatever is blocked. Idempotent; callable from any thread.
-    pub(crate) fn trigger(&self) {
-        self.flag.store(true, Ordering::Release);
-        let sock = self.sock.lock().unwrap_or_else(|e| e.into_inner());
-        if *sock != 0 {
-            plx_net::stream::http_shutdown(*sock as *mut HttpStream);
-        }
-        drop(sock);
-        if let Some(a) = self.curl.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-            a.signal();
-        }
-    }
-
-    fn publish_curl(&self, abort: &Arc<crate::curlio::Abort>) {
-        *self.curl.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(abort));
-        if self.is_set() {
-            abort.signal(); // fired before the handle existed
-        }
-    }
-
-    fn publish_sock(&self, hs: *mut HttpStream) {
-        *self.sock.lock().unwrap_or_else(|e| e.into_inner()) = hs as usize;
-        if self.is_set() {
-            plx_net::stream::http_shutdown(hs);
-        }
-    }
-
-    fn clear_sock(&self) {
-        *self.sock.lock().unwrap_or_else(|e| e.into_inner()) = 0;
-    }
 }
 
 // ---- the AVIO source ------------------------------------------------------------------------
@@ -267,35 +209,6 @@ impl ReadSeek for SideIo {
 }
 
 // ---- the reader -----------------------------------------------------------------------------
-
-/// What one pass of the reader needs. The URL carries the token and is never logged.
-pub(crate) struct ReadCfg<'a> {
-    pub url: &'a str,
-    /// Where the remux was started in the film, nanoseconds.
-    pub offset_ns: i64,
-    /// The 0-based position of the drawn track among the Part's subtitle streams.
-    pub ordinal: usize,
-    /// The Part's whole-file bitrate, for the log line.
-    pub kbps: u32,
-    /// Measure the clock mapping only: open the Part, scan for the anchor's keyframe and return
-    /// ([`RunEnd::Measured`]). No subtitle track is opened, enumerated or read (`ordinal` is unused),
-    /// no render store is touched, and the Part's connection is closed on return. For a SIDECAR the
-    /// app fetches itself, drawn over a remux.
-    pub clock_only: bool,
-}
-
-/// How a pass of the reader ended.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RunEnd {
-    /// The stop was set (or the Part ended and the reader idled until it was).
-    Stopped,
-    /// A transport or demux error: worth reopening.
-    Failed,
-    /// Retrying cannot help: the Part has no such track, no video stream, or the open was refused.
-    Unusable,
-    /// A [`ReadCfg::clock_only`] pass finished its scan (matched or not): nothing is left to read.
-    Measured,
-}
 
 /// Open the optional extractor over the transport owned by this reader. The lower codec job
 /// owns FFmpeg objects and yields only owned raw/bitmap observations; the common adapter installs
@@ -520,7 +433,7 @@ mod tests {
     use super::*;
     use crate::http_test_support::{serve_file, with_counting_listener};
     use crate::player::SHARED;
-    use std::sync::atomic::AtomicI64;
+    use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
     /// A one-pixel image set on `track` stamped `pts` (Part time).
     fn set(track: i32, pts: i64) -> SubCue<'static> {

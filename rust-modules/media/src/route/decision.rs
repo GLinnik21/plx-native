@@ -14,6 +14,7 @@
 //! memory's effects (the recall at a resolve, the parked write-back, the track menu's picks) are the
 //! child module `memory` (`decision_memory.rs`); the fields it works on stay on [`PlaybackSession`].
 
+use plx_playback_contract::subtitle::SIDE_READER_CLOCK_ONLY;
 use plx_plex::plex::ServerId;
 use plx_plex::plex::session::QualityPref;
 use plx_data::pms::PmsMovie;
@@ -11008,7 +11009,7 @@ fn original_remux_shape(ps: &PlaybackSession) -> bool {
 const SIDE_MAX_PART_KBPS: i64 = 30_000;
 
 /// **May the app read an EMBEDDED track itself** — from a second, subtitle-only demux of the film's
-/// original Part (`player::subside`) — so the server need not burn it? Only on a LOCAL link (a
+/// original Part (`plx_play_feed::side_reader`) — so the server need not burn it? Only on a LOCAL link (a
 /// relay or remote link would carry two reads of the film), with a real server Part to read (not
 /// a fixture or a pinned URL), and a known, moderate Part bitrate: `0` means nobody measured it
 /// and burns by design. A sidecar needs none of this to be DRAWN (the app fetches it on its own);
@@ -11672,7 +11673,7 @@ pub fn subtitles_burned(ps: &PlaybackSession) -> bool {
 
 /// Make the side reader match the live route: start it for an admitted embedded pick, switch its
 /// track, run it clock-only for a sidecar, or stop it for Off. Never blocks (see
-/// `player::subside::sync`).
+/// `player::subside::sync`, which hands it to `plx_play_feed::side_reader::sync`).
 fn sync_side_reader(ps: &PlaybackSession) {
     crate::player::route_fx::sync_side_reader(side_reader_target(ps));
 }
@@ -11699,10 +11700,6 @@ pub fn side_subtitles_failed(ps: &mut PlaybackSession) {
     }
     crate::player::request_transcode_refresh(ps);
 }
-
-/// The [`SideReaderTarget::ordinal`] of a sidecar: the reader reads no subtitle and only measures the
-/// remux's clock against the Part's.
-pub const SIDE_READER_CLOCK_ONLY: i32 = -1;
 
 /// What the side subtitle reader needs to read the film's original Part beside a plain remux.
 pub struct SideReaderTarget {

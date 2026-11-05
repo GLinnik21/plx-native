@@ -441,7 +441,7 @@ impl Transport {
     /// While a LEFT/RIGHT scrub is in flight the playbar and the elapsed/remaining read-out follow
     /// the PREVIEW position instead of the live one — same as the player HUD's scrubber — falling
     /// back to the live position the instant the gesture ends (commit or cancel alike): a commit's
-    /// own `engine::arm_seek` republishes the live position at the target immediately, so there is
+    /// own `FEED_SHARED.arm_seek` republishes the live position at the target immediately, so there is
     /// no frame where the two disagree.
     pub(super) fn draw(
         &self,

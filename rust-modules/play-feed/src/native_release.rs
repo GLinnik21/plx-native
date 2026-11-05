@@ -98,3 +98,31 @@ pub fn finish_unloaded_object(
         }
     }
 }
+
+#[cfg(test)]
+mod native_lifecycle_proof_tests {
+    use super::{native_object_disposition, NativeObjectDisposition};
+
+    #[test]
+    fn destructor_requires_every_independent_runtime_proof() {
+        assert_eq!(
+            native_object_disposition(true, true, true),
+            NativeObjectDisposition::Destroy,
+        );
+        for (unload_completed, callback_gate_proven, rust_epoch_retired) in [
+            (false, true, true),
+            (true, false, true),
+            (true, true, false),
+            (false, false, false),
+        ] {
+            assert_eq!(
+                native_object_disposition(
+                    unload_completed,
+                    callback_gate_proven,
+                    rust_epoch_retired,
+                ),
+                NativeObjectDisposition::Quarantine,
+            );
+        }
+    }
+}

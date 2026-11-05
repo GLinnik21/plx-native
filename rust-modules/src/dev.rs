@@ -180,7 +180,7 @@ const DIAG: [&str; 48] = [
     // Send VP9's sourceInfo envelope as the pipeline made it, without the container-derived HDR10
     // declaration (`plx_play_feed::vp9_hdr`): the A/B for whether the television switches to HDR.
     "plxnative-novp9hdr",
-    // The side subtitle reader (`media::player::subside`): content = the 0-based position of the
+    // The side subtitle reader (`plx_play_feed::side_reader`, `media::player::subside`): content = the 0-based position of the
     // embedded subtitle stream to draw over a plain remux, read at each playback start.
     "plxnative-subside",
     // The URI-mode probe (`media::player::uriprobe_drive`, issue #1064): content = `load`, `late`

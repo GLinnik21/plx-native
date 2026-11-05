@@ -2174,3 +2174,141 @@ pub fn prepare_native_open(
         user_held, seek_preroll, side_reader,
     )
 }
+
+#[cfg(all(test, feature = "hostsim"))]
+mod native_lifecycle_host_seam_tests {
+    use super::*;
+    use crate::native_release::ReleaseStep;
+    use crate::shared::FEED_SHARED;
+
+    fn test_sink() -> &'static dyn VideoSink { crate::ffi_host::test_sink::sink() }
+
+    /// The release verbs against the simulator's sink and a plane of the test's own. The common
+    /// observations the composition records (telemetry crumbs) are not the executor's, so they are
+    /// no-ops here; `plx_media`'s tests keep the ones that read them.
+    fn release_hooks() -> ReleaseHooks {
+        static PLANE: plx_platform::tv::plane::PlaneOwner = plx_platform::tv::plane::PlaneOwner::new();
+        fn no_step(_: ReleaseStep) {}
+        fn no_window() {}
+        fn no_unload(_: UnloadTicket) -> Option<std::thread::JoinHandle<()>> { None }
+        ReleaseHooks {
+            raw_sink: test_sink,
+            plane: &PLANE,
+            on_release_step: no_step,
+            on_exported_window_destroy: no_window,
+            spawn_unload: no_unload,
+        }
+    }
+
+    struct FreshProcess;
+
+    impl Drop for FreshProcess {
+        fn drop(&mut self) {
+            crate::ffi_host::reset_native_lifecycle_for_test();
+            crate::ffi_host::force_clocksink_for_test(false);
+            FEED_SHARED.reset_session();
+        }
+    }
+
+    fn loaded_epoch(mt: &MainThread) -> u32 {
+        let epoch = FEED_SHARED.begin_native_session().expect("native epoch");
+        assert_eq!(unsafe { test_sink().load(c"{}".as_ptr(), epoch) }, 1);
+        assert_eq!(unsafe { test_sink().ready(mt) }, 1);
+        epoch
+    }
+
+    #[test]
+    fn host_seam_destroys_only_with_evidence_and_latches_quarantine() {
+        let _serial = plx_base::testlock::serial();
+        crate::ffi_host::reset_native_lifecycle_for_test();
+        crate::ffi_host::force_clocksink_for_test(true);
+        FEED_SHARED.reset_session();
+        let _fresh_process = FreshProcess;
+        let mt = unsafe { MainThread::assume() };
+
+        let first = FEED_SHARED.begin_native_session().expect("first native epoch");
+        assert_eq!(unsafe { test_sink().load(c"{}".as_ptr(), first) }, 1);
+        assert!(unsafe { test_sink().callback_intercepts(&mt) } > 0);
+        unsafe { test_sink().unload(&plx_platform::tv::sink::UnloadTicket::issue(&mt)) };
+        assert!(FEED_SHARED.native_unload_completed(first));
+        assert_eq!(unsafe { test_sink().callback_gate_retire(&mt) }, 1);
+        assert!(FEED_SHARED.retire_native_session(first));
+        assert_eq!(unsafe { test_sink().destroy(&mt) }, 1);
+        assert_eq!(unsafe { test_sink().ready(&mt) }, 0);
+
+        FEED_SHARED.reset_session();
+        let unproven = FEED_SHARED
+            .begin_native_session()
+            .expect("unproven native epoch");
+        assert_eq!(unsafe { test_sink().load(c"{}".as_ptr(), unproven) }, 1);
+        crate::ffi_host::force_callback_intercepts_for_test(0);
+        unsafe { test_sink().unload(&plx_platform::tv::sink::UnloadTicket::issue(&mt)) };
+        assert_eq!(unsafe { test_sink().callback_gate_retire(&mt) }, 0);
+        assert!(FEED_SHARED.retire_native_session(unproven));
+        unsafe { test_sink().quarantine(&mt) };
+
+        FEED_SHARED.reset_session();
+        let refused = FEED_SHARED.begin_native_session().expect("refused native epoch");
+        assert_eq!(
+            unsafe { test_sink().load(c"{}".as_ptr(), refused) },
+            0,
+            "quarantine must remain a process-long refusal",
+        );
+        assert!(FEED_SHARED.retire_native_session(refused));
+    }
+
+
+    #[test]
+    fn a_refused_load_with_no_constructed_object_releases_its_epoch() {
+        let _serial = plx_base::testlock::serial();
+        crate::ffi_host::reset_native_lifecycle_for_test();
+        crate::ffi_host::force_clocksink_for_test(false);
+        FEED_SHARED.reset_session();
+        let _fresh_process = FreshProcess;
+        let mt = unsafe { MainThread::assume() };
+        let epoch = FEED_SHARED.begin_native_session().expect("native epoch");
+        assert_eq!(unsafe { test_sink().load(c"{}".as_ptr(), epoch) }, 0);
+        assert_eq!(unsafe { test_sink().ready(&mt) }, 0);
+        assert_eq!(release_native_object_timed(&mt, epoch, &mut TeardownSpans::new(), &FEED_SHARED, &release_hooks()),
+            plx_playback_contract::ReleaseStatus::Released,
+            "the joined host Load refused before constructing any native object");
+        let next = FEED_SHARED.begin_native_session()
+            .expect("an explicitly empty native seam must not quarantine subsequent attempts");
+        assert!(FEED_SHARED.retire_native_session(next));
+    }
+
+
+    #[test]
+    fn ready_zero_with_an_allocated_epoch_is_still_uncertain() {
+        let _serial = plx_base::testlock::serial();
+        crate::ffi_host::reset_native_lifecycle_for_test();
+        crate::ffi_host::force_clocksink_for_test(true);
+        FEED_SHARED.reset_session();
+        let _fresh_process = FreshProcess;
+        let mt = unsafe { MainThread::assume() };
+        let epoch = loaded_epoch(&mt);
+        // Hide dispatchability while retaining the constructed object's callback epoch.
+        crate::ffi_host::force_object_ready_for_test(false);
+        assert_eq!(unsafe { test_sink().ready(&mt) }, 0);
+        assert_eq!(release_native_object_timed(&mt, epoch, &mut TeardownSpans::new(), &FEED_SHARED, &release_hooks()),
+            plx_playback_contract::ReleaseStatus::Quarantined,
+            "ready=0 alone cannot authorize release of an allocated object");
+    }
+
+
+    #[test]
+    fn a_blocked_host_lifecycle_never_becomes_no_object_proof() {
+        let _serial = plx_base::testlock::serial();
+        crate::ffi_host::reset_native_lifecycle_for_test();
+        crate::ffi_host::force_clocksink_for_test(true);
+        FEED_SHARED.reset_session();
+        let _fresh_process = FreshProcess;
+        let mt = unsafe { MainThread::assume() };
+        let epoch = loaded_epoch(&mt);
+        unsafe { test_sink().quarantine(&mt) };
+        assert!(crate::ffi_host::lifecycle_blocked_for_test());
+        assert_eq!(unsafe { test_sink().ready(&mt) }, 0);
+        assert_eq!(release_native_object_timed(&mt, epoch, &mut TeardownSpans::new(), &FEED_SHARED, &release_hooks()),
+            plx_playback_contract::ReleaseStatus::Quarantined);
+    }
+}

@@ -646,14 +646,14 @@ something.
   player screen with `draw_subtitle_message` (and `notice_shown()` is a term of its `clock_fingerprint`, so
   the expiry owes a frame). It is silent where the server burns the selection (a re-encode, or a remux whose embedded
   track the app may not read itself); over a plain remux the app draws it, and draws an embedded
-  track too (`subside.rs`) when the link is local and the Part is 1..=30000 kbps. A sidecar is in
+  track too (`plx_play_feed::side_reader`; `subside.rs` is its media half) when the link is local and the Part is 1..=30000 kbps. A sidecar is in
   the Part's FILE time while a remux starts on a Part keyframe EARLIER than or at the requested
   offset — not always the last one (a 917 s request started on 914.914 s while 916.916 s existed;
   see `ff_subside`'s `sidecar_clock_at_917…` test) — and the app labels that frame with the
   requested offset, so under the same local-link and bitrate gate the side
-  reader also runs CLOCK-ONLY for it (`subside::CLOCK_ONLY`: no track, no store, no
+  reader also runs CLOCK-ONLY for it (`SIDE_READER_CLOCK_ONLY`: no track, no store, no
   `side_subs_owner`, never the burn) to find that keyframe by the byte-exact anchor match;
-  `player::sidecar_clock_ns` adds the published delta (`subside::exact_delta_ns`) to the sidecar's
+  `player::sidecar_clock_ns` adds the published delta (`side_reader::exact_delta_ns`) to the sidecar's
   playhead, for a sidecar over a remux only (embedded cues were shifted by the reader already) and
   never from the assumed mapping (2.002 s wrong at 917 s on one file). That delta is known a moment
   after each remux start (the scan reads the Part up to the anchor); until then — and off the gate,

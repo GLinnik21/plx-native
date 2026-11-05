@@ -26,7 +26,7 @@ pub(super) fn original_dv(dv: plx_data::metadata::Dovi) -> plx_play_feed::open::
 pub(super) struct SideReaderOpen {
     selected: bool,
     clock_only: bool,
-    spec: Option<super::subside::Spec>,
+    spec: Option<plx_play_feed::side_reader::Spec>,
 }
 
 impl SideReaderOpen {
@@ -51,9 +51,9 @@ impl plx_play_feed::side_reader::SideReaderPort for SideReaderOpen {
 
     fn start_after_load_spawn(&mut self) {
         if !self.selected { return; }
-        let started = self.spec.take().is_some_and(super::subside::start);
+        let started = self.spec.take().is_some_and(|spec| plx_play_feed::side_reader::start(spec, super::subside::JOB));
         if !started {
-            super::subside::failed_reading(self.clock_only, "subside: could not start the reader thread");
+            plx_play_feed::side_reader::failed_reading(self.clock_only, "subside: could not start the reader thread");
             if !self.clock_only {
                 FEED_SHARED.side_subs_owner.store(false, std::sync::atomic::Ordering::Release);
             }
@@ -61,7 +61,7 @@ impl plx_play_feed::side_reader::SideReaderPort for SideReaderOpen {
     }
 
     fn stop_before_demux_join(&mut self, reason: &str) {
-        super::subside::stop(reason);
+        plx_play_feed::side_reader::stop(reason);
     }
 }
 

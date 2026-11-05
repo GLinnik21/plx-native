@@ -439,7 +439,7 @@ pub(super) fn start_bufferfeed_inner(
     let (video_fidelity, audio_fidelity) = ps.planned_feed_fidelity()
         .expect("qualified feed has fidelity requirements");
     let epoch = prepared_native.native_epoch();
-    prepared_native.bind_demux_session(super::demux_session::PlayerDemuxSession::capture(attempt, epoch));
+    prepared_native.bind_demux_session(super::demux_session::capture(attempt, epoch));
     ps.begin_attempt_view(route_attempt, super::attempt_view::Backend::Feed);
     let source = pa.next_source_key();
     pa.stage_native_feed(attempt, source, prepared_native)
@@ -786,7 +786,7 @@ pub fn reload_at(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter
         target_ns / 1_000_000_000
     ));
     teardown(ps, pa, true, plx_playback_contract::StopReason::Replace); // reload mode: preserve the session (no url-clear / stop-scrobble)
-    engine::arm_seek(target_ns);
+    FEED_SHARED.arm_seek(target_ns);
     reload_start_outcome(ps, pa, ticket)
 }
 
@@ -912,7 +912,7 @@ fn resume_prelude(ps: &mut crate::route::PlaybackSession, resume_ns: i64) -> Res
     }
     if !crate::route::is_transcoding(ps) {
         #[cfg(feature = "play-feed")]
-        engine::arm_seek(resume_ns); // direct-play: av_seek the file at the first open
+        FEED_SHARED.arm_seek(resume_ns); // direct-play: av_seek the file at the first open
         return ResumePrelude::Settled(ResumeOutcome::Prepared);
     }
     ResumePrelude::Rebuild

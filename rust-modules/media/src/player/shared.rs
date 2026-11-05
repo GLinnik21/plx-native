@@ -34,7 +34,7 @@ mod tests {
             include_str!("mod.rs"),
             include_str!("../ff.rs"),
             include_str!("../adaptive.rs"),
-            include_str!("demux_session.rs"),
+            include_str!("../../../play-feed/src/demux_clock.rs"),
         ];
 
         let declared: Vec<&str> = SHARED_SRC

@@ -4268,7 +4268,7 @@ fn side_reader_target_names_the_selected_tracks_ordinal() {
 // ---- a sidecar over a remux is drawn on the CONTENT's clock ---------------------------------------
 
 /// A live admitted remux with a sidecar picked: the app draws it, over a remux whose clock the side
-/// reader maps onto the Part's (`player::subside`, `ff::subside`).
+/// reader maps onto the Part's (`plx_play_feed::side_reader`, `ff::subside`).
 fn sidecar_over_admitted_remux(ps: &mut PlaybackSession) -> Live {
     let live = Live::start(EnhMode::Honor("ac3"));
     install_truehd_remux(ps, &live);
@@ -4295,12 +4295,12 @@ fn remux_started_at(requested_ns: i64, first_pts_ns: i64) -> i64 {
 /// The reader's measurement for such a run, published the way `read_once` publishes it.
 fn measured(part_kf_ns: i64, first_pts_ns: i64, requested_ns: i64) -> i64 {
     let delta = plx_playback_contract::subtitle::delta_exact(part_kf_ns, first_pts_ns, 0, requested_ns);
-    crate::player::subside::publish_exact(delta);
+    plx_play_feed::side_reader::publish_exact(delta);
     delta
 }
 
 fn clear_remux_run() {
-    crate::player::subside::stop("test");
+    plx_play_feed::side_reader::stop("test");
     crate::player::set_clock_for_test(None, 0, 0);
 }
 
@@ -4364,7 +4364,7 @@ fn sidecar_clock_only_a_sidecar_over_a_live_remux_is_moved_and_only_by_a_measure
     assert_eq!(crate::player::sidecar_clock_ns(&ps, playhead), playhead);
     ps.side_subs_refused = false;
     // the engine run is over: its measurement does not survive it
-    crate::player::subside::stop("test");
+    plx_play_feed::side_reader::stop("test");
     assert_eq!(crate::player::sidecar_clock_ns(&ps, playhead), playhead);
     clear_remux_run();
     live.finish();
@@ -4506,7 +4506,7 @@ fn switching_embedded_tracks_on_a_live_remux_queues_no_retranscode() {
     assert!(claim_route_action().is_none());
     assert_eq!(
         crate::player::subside::take_test_syncs(),
-        vec![Some(2), Some(5), Some(crate::player::subside::CLOCK_ONLY), Some(3)],
+        vec![Some(2), Some(5), Some(plx_playback_contract::subtitle::SIDE_READER_CLOCK_ONLY), Some(3)],
         "track 2, switch to 5, a sidecar reads no track (clock only), back to 3"
     );
     assert!(ps.cur_contract.remux);

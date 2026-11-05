@@ -1423,6 +1423,40 @@ impl DisplaySink for HostSink {
     }
 }
 
+/// **The one simulator sink this crate's tests share.** A process builds one `HostSink`: it adopts
+/// its [`Hooks`] at the first `Load` (or stop request) and every later report goes through those, so
+/// two tests that each built a sink of their own would each run with whichever hooks got there first.
+/// The hooks are the application's own pipeline-event entry and the inverse of its position rebase
+/// (`playpos = fed - pts_shift + disp_base`; the stop test sets both, under the crate-wide lock, and
+/// puts them back), with no picture.
+#[cfg(test)]
+pub(crate) mod test_sink {
+    use super::*;
+
+    pub(crate) static PTS_SHIFT: AtomicI64 = AtomicI64::new(0);
+    pub(crate) static DISP_BASE: AtomicI64 = AtomicI64::new(0);
+
+    fn media_to_fed(media_ns: i64) -> i64 {
+        media_ns.saturating_add(PTS_SHIFT.load(Relaxed)).saturating_sub(DISP_BASE.load(Relaxed))
+    }
+
+    struct NoFrames;
+    impl FrameSink for NoFrames {
+        fn load(&self, _: &str, _: fn() -> i64) {}
+        fn flush(&self) {}
+        fn feed(&self, _: &[u8], _: i64) {}
+        fn stop(&self) {}
+    }
+
+    static SINK: HostSink = HostSink::new(Hooks {
+        deliver_event: crate::sf_event::sf_on_event,
+        media_to_fed,
+        frames: &NoFrames,
+    });
+
+    pub(crate) fn sink() -> &'static HostSink { &SINK }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1439,37 +1473,14 @@ mod tests {
         FED_MAX_NS.store(i64::MIN, Relaxed);
     }
 
-    /// The application's rebase, as the player applies it to a reported position:
-    /// `playpos = fed - pts_shift + disp_base`. The stop test sets both.
-    static PTS_SHIFT: AtomicI64 = AtomicI64::new(0);
-    static DISP_BASE: AtomicI64 = AtomicI64::new(0);
-
-    fn media_to_fed_for_test(media_ns: i64) -> i64 {
-        media_ns.saturating_add(PTS_SHIFT.load(Relaxed)).saturating_sub(DISP_BASE.load(Relaxed))
-    }
-
-    extern "C" fn ignore_event(_: c_uint, _: c_int, _: i64, _: *const c_char) {}
-
-    struct NoFrames;
-    impl FrameSink for NoFrames {
-        fn load(&self, _: &str, _: fn() -> i64) {}
-        fn flush(&self) {}
-        fn feed(&self, _: &[u8], _: i64) {}
-        fn stop(&self) {}
-    }
-
-    /// A sink built from the test's own hooks. Only the stop test adopts them (the first sink to
-    /// adopt wins), and no test here runs a `Load`, so no event is ever delivered.
-    fn test_sink() -> HostSink {
-        HostSink::new(Hooks { deliver_event: ignore_event, media_to_fed: media_to_fed_for_test, frames: &NoFrames })
-    }
+    use super::test_sink::{self, DISP_BASE, PTS_SHIFT};
 
     #[test]
     fn a_media_stop_parks_the_running_clock_exactly_on_it_and_a_pause_keeps_it_there() {
         let _g = lock();
         fresh();
         // The fed timeline is rebased onto the movie's: playpos = fed - pts_shift + disp_base.
-        let sink = test_sink();
+        let sink = test_sink::sink();
         PTS_SHIFT.store(2_000_000_000, Relaxed);
         DISP_BASE.store(435_000_000_000, Relaxed);
         FED_MAX_NS.store(600_000_000_000, Relaxed);
