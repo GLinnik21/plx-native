@@ -27,11 +27,12 @@
 //! and no string is added.
 //!
 //! **What a row says.** The package's `name` (the author's text: a server-style label, never measured by
-//! the fit report), then its trust tier (*Built-in*, *Unreviewed*) and one more fact: why it cannot run (a
-//! format the app does not read, an app range it is outside of, or "Doesn't fit in {language}": a compile the
-//! television refused in the current language, where classic draws and the selection is kept), else "Installed
-//! until restart" when only the volatile directory holds it. One fact is what the detail line fits in every
-//! language.
+//! the fit report; the app's own HUD is named *Built-in*, which is also its tier, so its row says no tier under
+//! it), then its trust tier (*Unreviewed* for a sideload, none for a registry package) and one more fact: why it
+//! cannot run (a format the app does not read, an app range it is outside of, or "Doesn't fit in {language}": a
+//! compile the television refused in the current language, where classic draws and the selection is kept), else
+//! "Installed until restart" when only the volatile directory holds it. One fact is what the detail line fits in
+//! every language.
 use std::borrow::Cow;
 use std::sync::mpsc::{self, Receiver};
 
@@ -190,11 +191,12 @@ fn parent_title() -> &'static str {
     plx_platform::i18n::msg::settings_playback_title()
 }
 
-/// The package row's name: the built-in is the app's word, any other the author's text.
+/// The package row's name: the built-in is "Built-in" (the app's own word for itself, and the one string its row says),
+/// any other the author's text.
 fn name_of(entry: &Entry) -> String {
     match &entry.meta {
         Some(meta) => meta.name.clone(),
-        None => plx_platform::i18n::msg::settings_hud_classic().to_owned(),
+        None => plx_platform::i18n::msg::settings_hud_builtin().to_owned(),
     }
 }
 
@@ -241,15 +243,15 @@ fn join(parts: &[String]) -> String {
     parts.join(" \u{b7} ")
 }
 
-/// What a package row says under its name: its trust tier and ONE more fact: why it cannot run (a format or
-/// app range the app does not accept, or a compile the television refused in the current language), else
-/// "Installed until restart" when only the volatile directory holds it.
+/// What a package row says under its name: its trust tier (*Unreviewed* for a sideload; a registry package says
+/// none, and the built-in's tier is its name, [`name_of`], so it is not said twice) and ONE more fact: why it cannot
+/// run (a format or app range the app does not accept, or a compile the television refused in the current
+/// language), else "Installed until restart" when only the volatile directory holds it.
 fn facts_of(entry: &Entry, list: &HudList) -> Vec<String> {
     let mut facts = Vec::new();
     match entry.trust {
-        Trust::BuiltIn => facts.push(plx_platform::i18n::msg::settings_hud_builtin().to_owned()),
+        Trust::BuiltIn | Trust::Registry => {}
         Trust::Unreviewed => facts.push(plx_platform::i18n::msg::settings_hud_unreviewed().to_owned()),
-        Trust::Registry => {}
     }
     // Two facts fit a row's detail line in every language; three do not (French and Belarusian with the
     // longest language name), so the reason a package cannot run outranks "installed until restart".

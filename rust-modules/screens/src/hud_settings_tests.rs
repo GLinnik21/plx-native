@@ -227,6 +227,36 @@ fn the_unfit_reason_names_the_language_and_the_selection_is_still_shown_checked(
     assert!(!classic.3, "and the built-in is not");
 }
 
+/// **The app's own HUD is named "Built-in", and its row says no trust fact under it.** The row's name is the one
+/// word the owner gave it, `settings_hud_builtin()`, in every shipped language (it was "Classic" over a "Built-in"
+/// sub-line, which printed the word twice once it was the name); a built-in with no other fact to give has no detail
+/// line at all. A sideloaded package still says "Unreviewed" and a registry package says no tier, so only the built-in
+/// row changed.
+#[test]
+fn the_builtin_row_is_named_built_in_and_says_no_trust_fact_under_it() {
+    for language in SHIPPED {
+        let _guard = language_on_this_thread_for_test(language);
+        let tag = language.tag();
+        let built_in = plx_platform::i18n::msg::settings_hud_builtin();
+        for selected in [false, true] {
+            let mut l = list();
+            l.entries = vec![builtin(selected), pack("com.example.a", "Alpha", 1, !selected)];
+            let (page, _tx) = page_with(l);
+            let rows = shown(&page);
+            let row = rows.iter().find(|r| r.0 == HudId::Pack(BUILTIN_CLASSIC.into())).expect("the built-in's row");
+            assert_eq!(row.1, built_in, "{tag}: the built-in's row is named Built-in");
+            assert_eq!(row.2, "", "{tag}: and has no detail line: it is not repeated as a trust fact under its own name");
+            assert_eq!(row.3, selected, "{tag}: the checkmark still follows the selection");
+            let alpha = rows.iter().find(|r| r.0 == HudId::Pack("com.example.a".into())).expect("the package's row");
+            assert_eq!(alpha.1, "Alpha", "{tag}: a package keeps the author's name");
+            assert_eq!(alpha.2, plx_platform::i18n::msg::settings_hud_unreviewed(), "{tag}: and a sideload its trust tier");
+        }
+        let mut registry = pack("com.example.r", "Registry", 5, false);
+        registry.trust = Trust::Registry;
+        assert!(facts_of(&registry, &list()).is_empty(), "{tag}: a registry package shows no tier");
+    }
+}
+
 /// The checkmark follows the selection: exactly one row is checked, and it is the selected entry's.
 #[test]
 fn exactly_the_selected_package_is_checked() {

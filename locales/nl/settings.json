@@ -305,7 +305,6 @@
   "settings.consent.placeholder.webos_codename_short": "webOS-codenaam",
   "settings.hud.title": "Spelerinterface",
   "settings.hud.copy": "Kies het uiterlijk van de afspeelbediening.",
-  "settings.hud.classic": "Klassiek",
   "settings.hud.builtin": "Ingebouwd",
   "settings.hud.unreviewed": "Niet beoordeeld",
   "settings.hud.until_restart": "Geïnstalleerd tot herstart",

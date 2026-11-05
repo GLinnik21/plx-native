@@ -308,7 +308,6 @@
   "settings.playback.hdr_overlay.copy": "Quão brilhantes são os controlos e as legendas do leitor em HDR e Dolby Vision, quando o televisor os mostra muito mais brilhantes. Reduza se encandearem. 100% deixa-os como estão.",
   "settings.hud.title": "HUD do player",
   "settings.hud.copy": "Escolha o aspeto dos controlos de reprodução.",
-  "settings.hud.classic": "Clássico",
   "settings.hud.builtin": "Integrado",
   "settings.hud.unreviewed": "Não revisado",
   "settings.hud.until_restart": "Instalado até reiniciar",
