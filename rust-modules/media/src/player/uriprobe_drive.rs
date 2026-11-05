@@ -8,7 +8,7 @@ use plx_base::task::MainThread;
 use plx_platform::tv::uri::UriMedia;
 use plx_play_uri::uriprobe::Settle;
 #[cfg(feature = "play-feed")]
-use plx_play_uri::uriprobe::{AbrBps, Kind, Variant};
+use plx_play_uri::uriprobe::{AbrBps, Kind, Trigger, Variant};
 #[cfg(feature = "play-feed")]
 use plx_play_uri::uriprobe_drive::DriverConfig;
 use plx_play_uri::uriprobe_drive::UriSession as CoreSession;
@@ -78,6 +78,14 @@ fn settle(ps: &mut PlaybackSession, attempt: RouteStartAttempt, how: Settle) -> 
         Settle::StartFailed => RouteStartResult::StartFailed,
     };
     crate::route::settle_route_start(ps, attempt, result)
+}
+
+/// The variant and native ABR rates a `plxnative-uriprobe` trigger text names; `None` when it names
+/// no variant, which leaves the probe unarmed and the play normal.
+#[cfg(feature = "play-feed")]
+pub(super) fn armed(text: &str) -> Option<(Variant, AbrBps)> {
+    let trigger = Trigger::from_trigger(text)?;
+    Some((trigger.variant, trigger.bps))
 }
 
 /// Claim and install the route start before any probe reply can settle it.
