@@ -1063,6 +1063,12 @@ synthetic mock (`check_synthetic_identity`) is not graded. A case skips with a r
 not `debug`, `src/config.local.h` has no `PMS_HOST`/`PMS_PORT`, or the carrier is missing. The probe
 pair stays as the instrument baseline to compare against.
 
+A product case starts at 0 because the runner closes the previous case's app BEFORE it starts the mock
+(`run_uri_product_case`): every case's mock listens on the same address, the previous app is still playing
+when the next case starts, and its close reports `stopped` at its position, which a mock that is already up
+stores as the carrier's `viewOffset` (the collapse case then resumed at 76.8 s of its 90 s clip and ran to
+the end of stream instead of draining). The resume point is server state, not the app's.
+
 ### URI mode — how a URI case is graded
 
 A case whose own `triggers` include `uriprobe` (the probe route), or that says `"uri_route": "product"`

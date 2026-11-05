@@ -6310,9 +6310,16 @@ class UriProductRunner(unittest.TestCase):
 
     def _run(self, lines=None, *, stream=None, apply=None, case=None, endpoint=PMS, cfg_extra=None):
         """`run_uri_product_case` with every seam patched. Returns (outcome, record)."""
-        rec = {"ssh": [], "apply": [], "mock": [], "reported": []}
+        # `make` is every `make` target the runner invoked, `order` the set-and-mock steps in the order
+        # they happened (`kill`, `mock-up`, `apply`, `stream`).
+        rec = {"ssh": [], "apply": [], "mock": [], "reported": [], "make": [], "order": []}
         lines = lines if lines is not None else [self.SYN] + _product_run(66)
         case = case or dict(self.case(), carrier_path="/packs/pipe_uri_carrier_720p24.mp4")
+
+        def fake_make(target_args, timeout, capture=True):
+            rec["make"].append(list(target_args))
+            rec["order"].append(target_args[0])
+            return mock.Mock(returncode=0)
 
         class FakeMock:
             def __init__(self, host, port, args=(), log_path=None):
@@ -6320,6 +6327,7 @@ class UriProductRunner(unittest.TestCase):
 
             def __enter__(self):
                 rec["mock"].append("enter")
+                rec["order"].append("mock-up")
                 return self
 
             def __exit__(self, *exc):
@@ -6328,12 +6336,14 @@ class UriProductRunner(unittest.TestCase):
 
         def fake_stream(c, cfg, secs, early=True, **kw):
             rec["mock"].append("stream")
+            rec["order"].append("stream")
             if stream:
                 raise stream
             return list(lines), 75.0, False, None
 
         def fake_apply(tv, files, extra=None):
             rec["apply"].append((list(files), extra))
+            rec["order"].append("apply")
             if apply:
                 raise apply
 
@@ -6342,7 +6352,7 @@ class UriProductRunner(unittest.TestCase):
                           if not isinstance(endpoint, BaseException) else
                           mock.patch.object(run.mock_fps, "configured_endpoint", side_effect=endpoint))
         with mock.patch.object(run, "RUNDIR", "/tmp/com.beb.plxnative.debug"), \
-                mock.patch.object(run, "require_tv"), mock.patch.object(run, "make"), \
+                mock.patch.object(run, "require_tv"), mock.patch.object(run, "make", side_effect=fake_make), \
                 mock.patch.object(run, "ssh", side_effect=lambda tv, cmd, timeout=30: rec["ssh"].append(cmd)), \
                 mock.patch.object(run, "apply_triggers", side_effect=fake_apply), \
                 mock.patch.object(run, "stream_case", side_effect=fake_stream), \
@@ -6381,6 +6391,24 @@ class UriProductRunner(unittest.TestCase):
         self.assertEqual(rec["ssh"], ["rm -f /tmp/com.beb.plxnative.debug/plxnative-uridev"])
         self.assertTrue(rec["reported"][0][0])
 
+    def test_the_previous_cases_app_is_closed_before_this_cases_mock_is_up(self):
+        """**A case starts where its carrier says (0) because no stale app is alive when its mock comes up.**
+
+        Nothing closes a case's app at the end of its own case, so it is still playing, and still
+        reporting, when the next case starts. A close answers with a `stopped` timeline carrying
+        the position (76795 ms in the 2026-11-05 TV run). Every case's mock listens on the same
+        configured address, so a close that comes AFTER the next case's mock is up delivers that
+        report to the FRESH mock, which stores it as the carrier's `viewOffset`, and the new app
+        resumes from it: `_bound_collapse` resumed at 76.8 s of its 90 s clip, ran 14 s to the end of
+        stream and never drained. This is `run_case`'s rule for the integration tier ("the close is what
+        makes the seed stick: the PREVIOUS case's app is still running"), kept here: close first,
+        then bring up the server state."""
+        out, rec = self._run()
+        self.assertTrue(out[0], out)
+        self.assertEqual(rec["make"], [["kill", "TV=192.0.2.99"]], "the previous app is closed once")
+        self.assertEqual(rec["order"], ["kill", "mock-up", "apply", "stream"],
+                         "the app is closed before the mock listens, and both before the triggers arm")
+
     def test_the_dev_trigger_is_deleted_however_the_run_ends(self):
         for what, kwargs in (("the stream raises", {"stream": RuntimeError("ssh died")}),
                              ("arming raises", {"apply": RuntimeError("no route to host")})):
@@ -6406,11 +6434,12 @@ class UriProductRunner(unittest.TestCase):
         self.assertFalse(out[0])
         self.assertEqual(out[1][0][:2], ("uri_product", False))
         self.assertIn("PMS_HOST", out[1][0][2])
-        self.assertEqual(rec["apply"], [], "nothing was written to the set")
+        self.assertEqual((rec["apply"], rec["make"]), ([], []), "nothing was written to or closed on the set")
         out, rec = self._run(cfg_extra={"extra_triggers": [("plxnative-uriprobe", "load")]})
         self.assertFalse(out[0])
         self.assertIn("uriprobe", out[1][0][2])
-        self.assertEqual((rec["apply"], rec["mock"]), ([], []), "refused before the mock started")
+        self.assertEqual((rec["apply"], rec["mock"], rec["make"]), ([], [], []),
+                         "refused before the mock started and before the set was touched")
 
     def test_an_address_the_dev_route_cannot_pin_is_refused_before_the_mock_starts(self):
         """The real PMS's port, and a configured host that is not a canonical dotted quad: the case FAILS
@@ -6423,7 +6452,7 @@ class UriProductRunner(unittest.TestCase):
                 self.assertFalse(out[0])
                 self.assertEqual(out[1][0][:2], ("uri_product", False))
                 self.assertIn(why, out[1][0][2])
-                self.assertEqual((rec["apply"], rec["mock"], rec["ssh"]), ([], [], []))
+                self.assertEqual((rec["apply"], rec["mock"], rec["ssh"], rec["make"]), ([], [], [], []))
 
     def test_the_suite_dispatches_a_product_case_to_the_product_runner(self):
         with mock.patch.object(run, "run_uri_product_case", return_value=(True, [], [])) as product, \
