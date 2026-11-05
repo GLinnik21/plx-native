@@ -6091,6 +6091,15 @@ class DepGates(unittest.TestCase):
                 shutil.copy2(source, target)
         return root
 
+    def run(self, result=None):
+        """unittest skips `doCleanups` when a `KeyboardInterrupt` ends the test, which a serial run
+        (a named test, `PLX_TEST_JOBS=1`) takes on the main thread; the private copy would stay."""
+        try:
+            return super().run(result)
+        except KeyboardInterrupt:
+            self.doCleanups()
+            raise
+
     def test_check_deps_is_green(self):
         r = subprocess.run([os.path.join(self.ROOT, "ci", "check-deps.sh")], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -8040,8 +8049,8 @@ class DepGatesLeaveNothingWhenStopped(unittest.TestCase):
     (`tools/check-parallel.py` signals the branch's whole process group), and an unhandled SIGTERM
     ends Python on the spot: no `addCleanup`, no `finally`. Every `DepGates` test in flight (up to
     8, `_ParallelSuite`) then left its 40 MB `_check_deps_tree_*` copy in `$TMPDIR`. A completed run
-    removes its trees, and so does Ctrl-C (a `KeyboardInterrupt` unwinds `_ParallelSuite`); only
-    the default SIGTERM did not."""
+    removes its trees; so does an interrupt now, on a pool (`_ParallelSuite` unwinds and each
+    running test cleans up) and serially (`DepGates.run`). Ctrl-C already did the first."""
 
     PROBE = r'''
 import io, os, sys, time, unittest
@@ -8059,31 +8068,34 @@ class Hold(harness.DepGates):
 
 
 harness._unwind_on_termination()
-unittest.TextTestRunner(stream=io.StringIO()).run(harness._ParallelSuite([Hold("test_hold") for _ in range(3)]))
+suite = harness._ParallelSuite([Hold("test_hold") for _ in range(int(os.environ["PLX_TEST_JOBS"]))])
+unittest.TextTestRunner(stream=io.StringIO()).run(suite)
 '''
 
     def trees(self, tmp):
         return sorted(name for name in os.listdir(tmp) if name.startswith("_check_deps_tree_"))
 
     def test_a_run_stopped_by_sigterm_removes_the_trees_its_tests_hold(self):
-        with tempfile.TemporaryDirectory() as scratch:
-            tmp, probe = os.path.join(scratch, "tmp"), os.path.join(scratch, "probe")
-            os.mkdir(tmp)
-            os.mkdir(probe)
-            env = dict(os.environ, TMPDIR=tmp, PROBE_DIR=probe, PLX_TEST_JOBS="3")
-            child = subprocess.Popen([sys.executable, "-I", "-c", self.PROBE, TESTS_DIR], env=env,
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-            self.addCleanup(lambda: child.poll() is None and os.killpg(child.pid, signal.SIGKILL))
-            deadline = time.monotonic() + 120
-            while len(os.listdir(probe)) < 3:
-                self.assertIsNone(child.poll(), "the probe exited before three tests held a tree")
-                self.assertLess(time.monotonic(), deadline, "three tests never held a tree")
-                time.sleep(0.05)
-            self.assertEqual(len(self.trees(tmp)), 3)
-            os.killpg(child.pid, signal.SIGTERM)  # what check-parallel's `stop` sends: the whole group
-            open(os.path.join(probe, "release"), "w").close()  # the tests in flight finish, as they do once their child dies
-            child.wait(timeout=120)
-            self.assertEqual(self.trees(tmp), [])
+        # 3 tests on a pool of 3, then 1 test on the main thread (what a named test or one job does).
+        for jobs in (3, 1):
+            with self.subTest(jobs=jobs), tempfile.TemporaryDirectory() as scratch:
+                tmp, probe = os.path.join(scratch, "tmp"), os.path.join(scratch, "probe")
+                os.mkdir(tmp)
+                os.mkdir(probe)
+                env = dict(os.environ, TMPDIR=tmp, PROBE_DIR=probe, PLX_TEST_JOBS=str(jobs))
+                child = subprocess.Popen([sys.executable, "-I", "-c", self.PROBE, TESTS_DIR], env=env,
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                self.addCleanup(lambda: child.poll() is None and os.killpg(child.pid, signal.SIGKILL))
+                deadline = time.monotonic() + 120
+                while len(os.listdir(probe)) < jobs:
+                    self.assertIsNone(child.poll(), "the probe exited before its tests held a tree")
+                    self.assertLess(time.monotonic(), deadline, "the tests never held a tree")
+                    time.sleep(0.05)
+                self.assertEqual(len(self.trees(tmp)), jobs)
+                os.killpg(child.pid, signal.SIGTERM)  # what check-parallel's `stop` sends: the whole group
+                open(os.path.join(probe, "release"), "w").close()  # a pool's tests in flight finish, as they do once their child dies
+                child.wait(timeout=120)
+                self.assertEqual(self.trees(tmp), [])
 
 
 import contextlib
