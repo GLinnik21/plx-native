@@ -9,6 +9,10 @@ pub mod acb_drive;
 pub mod picture_gate;
 pub mod uri_protocol;
 pub mod uri_lifecycle;
+#[cfg(feature = "devtriggers")]
+mod event_text;
+#[cfg(feature = "devtriggers")]
+mod uri_trace;
 mod session_io;
 pub mod backend;
 #[cfg(feature = "devtriggers")]
