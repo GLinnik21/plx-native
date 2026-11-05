@@ -39,8 +39,10 @@ accepted pause/resume to the plane once the bind has completed. Release is `UNLO
 plane owner's fence on that call's completion callback, pumped from the backend's `poll`
 (`docs/measurements/acb-release-fence-2026-11-04.md`); a quarantine until process exit is only the
 outcome of a failed fence, not the normal one. `uri_preflight::product_binding` selects it at
-composition (ACB display mode, an initialized handle, player type 0); `ProductEvidence::permits`
-still requires `Binding::Exported`, which is what keeps it from being offered a source.
+composition (ACB display mode, an initialized handle, player type 0). `ProductEvidence::permits` and
+`ResolvePort::could_qualify_pms` accept `Binding::Acb` as an offerable display path beside an exported
+canvas, but only through `certified` capabilities: the production evidence certifies nothing and
+`ProductQualifier` answers `Unknown`, which is what keeps the ACB binding from being offered a source.
 
 The sequence's last step (`Op::Display`, the full-screen `setDisplayWindow` and `setState(PLAYING)`)
 goes through `PlaneOwner::show`, not straight to the sink: the C seam (`acb_finish`) returns the task id
