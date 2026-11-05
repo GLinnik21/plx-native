@@ -3282,6 +3282,8 @@ mod load_in_flight_tests {
         let _cleanup = Cleanup;
         let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
         let mut ps = crate::route::PlaybackSession::IDLE;
+        // The readout the pump derives the state into is addressed by the attempt the view began for.
+        ps.begin_attempt_view(crate::route::RouteStartAttempt::fixture(), crate::player::attempt_view::Backend::Feed);
         let epoch = FEED_SHARED.begin_native_session().unwrap();
         pa.install(engine_loading(epoch));
         crate::player::pump::pump(&mut ps, &mut pa, 1000);
@@ -3512,10 +3514,8 @@ mod load_in_flight_tests {
 
         // `land_recovery_flight`'s own two calls: the reload (whose teardown parks the
         // still-running Load) and the settle that publishes the outcome.
-        let started = crate::player::pump::settle_reload(
-            reload_transcode(&mut ps, &mut pa, 0),
-            "test HLS recovery",
-        );
+        let outcome = reload_transcode(&mut ps, &mut pa, 0);
+        let started = crate::player::pump::settle_reload(outcome, "test HLS recovery", &mut ps);
         assert!(!started, "the recovery start must be refused while the Load is outstanding");
         assert!(pa.has_abandoned_load(), "PRECONDITION FAILED: the Load must still be parked");
         assert_eq!(crate::player::state(&ps), crate::player::PlaybackState::Error);
@@ -5486,11 +5486,11 @@ mod explicit_source_start_tests {
         with_playurl_armed(|ps, pa| {
             let first = start_playurl(ps, pa);
             assert!(matches!(first, BufferfeedStartOutcome::Launched(_)), "first start {first:?}");
-            // The pump's end of stream: the physical flag the terminal facts are captured from.
-            FEED_SHARED.ended.store(true, Ordering::Relaxed);
+            // The pump's end of stream: the readout the app's end-of-film rule polls.
+            ps.step_readout(crate::player::readout::ReadoutEvent::StreamEnded);
+            assert_eq!(crate::player::ended(ps), Some(true), "PRECONDITION FAILED: the film has ended");
             crate::player::ffi_host::delay_unload_for_test(50);
             stop_bufferfeed(ps, pa);
-            FEED_SHARED.ended.store(false, Ordering::Relaxed); // `reset_session`, as the real stop does
             assert!(pa.has_pending_release(), "the stop must leave its Unload running");
             let second = start_playurl(ps, pa);
             assert_eq!(second, BufferfeedStartOutcome::Deferred, "the replay over a running Unload");

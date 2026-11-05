@@ -583,8 +583,7 @@ impl PlayerAdapter {
         if let Some(accepted) = self.seek_uri(ps, target_ns) { return accepted; }
         #[cfg(feature = "play-feed")]
         {
-            let _ = ps;
-            super::request_seek(target_ns);
+            super::request_seek(ps, target_ns);
             return true;
         }
         #[cfg(not(feature = "play-feed"))]

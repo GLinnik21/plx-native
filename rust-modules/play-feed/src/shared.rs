@@ -317,9 +317,6 @@ pub struct Shared {
     // What the pipeline reported setting up for THIS speed session's audio
     // (`player::note_speed_audio_report`); per session.
     pub speed_audio_verdict: AtomicU8,
-    // the derived UI state (a `PlaybackState`), published by the pump once a frame and read by
-    // the HUD. Written only on the main thread; atomic because it is read from the draw path.
-    pub pb_state: AtomicU8,
     // demux (D) -> main (M): the producer died before publishing a duration, so the EOS path
     // (which needs `duration_ns > 0`) can never fire and the player would sit on a black screen
     // forever. The pump turns this into `PlaybackState::Error` so the HUD can say so.
@@ -459,9 +456,6 @@ pub struct Shared {
     /// whole tails+epoch snapshot, preventing false->true->false ABA from mixing candidate media
     /// with the previous rung's certificate. This is not a timer or threshold.
     pub hls_candidate_generation: AtomicU64,
-    // set once the pipeline has drained to true end-of-stream (EOS pushed AND the last fed frame
-    // has been presented). app.rs polls player::ended() to tear the player down at the credits.
-    pub ended: AtomicBool,
     /// The pipeline reported end-of-stream: `type=28` (0x1c, `STATE_UPDATE__ENDOFSTREAM`, the same
     /// number on every webOS since the renumbering starts above it), `str=true`, after a picture.
     /// It is the pipeline's own word that it presented the last of what it was given, which the
@@ -781,7 +775,6 @@ impl Shared {
             rate_reload: AtomicBool::new(false),
             speed_unsupported: AtomicBool::new(false),
             speed_audio_verdict: AtomicU8::new(0),
-            pb_state: AtomicU8::new(PlaybackState::Idle as u8),
             demux_failed: AtomicBool::new(false),
             demux_io_failed: AtomicBool::new(false),
             demux_no_video: AtomicBool::new(false),
@@ -811,7 +804,6 @@ impl Shared {
             hls_clock_changed: Condvar::new(),
             hls_trial_reserve_ms: AtomicI64::new(-1),
             hls_candidate_generation: AtomicU64::new(0),
-            ended: AtomicBool::new(false),
             pipeline_eos: AtomicBool::new(false),
             hs_ptr: AtomicPtr::new(std::ptr::null_mut()),
         }
@@ -1170,8 +1162,6 @@ impl Shared {
         // play_rate_permille likewise; the APPLIED rate is the pipeline's, and a fresh one is 1x.
         self.applied_rate_permille.store(RATE_NORMAL, Ordering::Relaxed);
         self.speed_audio_verdict.store(SPEED_AUDIO_UNKNOWN, Ordering::Relaxed);
-        self.pb_state
-            .store(PlaybackState::Idle as u8, Ordering::Relaxed);
         self.demux_failed.store(false, Ordering::Relaxed);
         self.demux_io_failed.store(false, Ordering::Relaxed);
         self.demux_no_video.store(false, Ordering::Relaxed);
@@ -1194,7 +1184,6 @@ impl Shared {
         self.hls_rebuffer_request_tail_ns
             .store(-1, Ordering::Relaxed);
         self.reset_hls_clock();
-        self.ended.store(false, Ordering::Relaxed);
         self.pipeline_eos.store(false, Ordering::Relaxed);
         self.hs_ptr.store(std::ptr::null_mut(), Ordering::Release);
     }
