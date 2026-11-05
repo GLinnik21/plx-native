@@ -5138,6 +5138,52 @@ mod pcm_stack_wiring_tests {
         (pending, lead)
     }
 
+    /// The route a launched FLAC start needs: a source URL, its qualified offer and the carried audio.
+    fn flac_route(ps: &mut crate::route::PlaybackSession) {
+        crate::route::set_url(ps, "http://127.0.0.1:1/track.flac");
+        assert!(ps.qualify_resolved_feed_offer(crate::route::backend_policy::OfferId::FEED_ORIGINAL,
+            crate::route::CandidatePurpose::NewCandidate));
+        crate::route::set_stream_acodec(ps, "flac");
+        crate::route::set_carried_audio_for_test(
+            ps,
+            crate::route::CarriedAudio {
+                sid: 7, ordinal: 1, codec: "flac".into(), channels: 2,
+                can_normalize_loudness: false, immersive: false, sample_rate: 48_000, bit_depth: 16,
+            },
+        );
+    }
+
+    /// A transcode restart's `Rebase` (`reload_transcode`) is visible to the very next position read: the
+    /// start that follows samples the attempt it mints, so the readout carries the offset as the
+    /// position and the display base with no pump between, and the side reader a start captures reads
+    /// the commanded base while `raw` (idle after the teardown) says 0.
+    #[test]
+    fn a_transcode_restarts_rebase_is_visible_to_the_next_position_read_in_the_same_frame() {
+        const OFFSET_NS: i64 = 600_000_000_000;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(&ps);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
+        let _cleanup = Cleanup;
+        let _stack = audio_stack_on_this_thread_for_test(AudioStack::Liblxa);
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        flac_route(&mut ps);
+        assert_eq!(ps.readout().raw().playpos_ns, 0, "no attempt has sampled the feed yet");
+
+        let outcome = reload_transcode(&mut ps, &mut pa, OFFSET_NS);
+        assert_eq!(outcome, ReloadOutcome::Started, "PRECONDITION FAILED: the restart must launch");
+        assert_eq!(ps.readout().raw().playpos_ns, OFFSET_NS, "the position read after the restart is the offset");
+        assert_eq!(ps.readout().raw().disp_base, OFFSET_NS, "and the display base is the offset");
+        assert_eq!(crate::player::subside::capture_offset_ns(&ps), OFFSET_NS);
+
+        crate::player::ffi_host::delay_unload_for_test(0);
+        stop_bufferfeed(&mut ps, &mut pa);
+        finish_release_for_test(&mut pa);
+        assert_eq!(ps.readout().open_disp_base_ns(), 0, "a stop retires the commanded base with the session");
+    }
+
     /// The session's audio choice is the readout's, and reaches the feed's demuxer copy at the start
     /// the demuxer spawns in: a writer with no adapter in hand (the route's landing) is heard by the
     /// readout alone, and a reload keeps the choice on both sides.
@@ -5152,17 +5198,7 @@ mod pcm_stack_wiring_tests {
         let _cleanup = Cleanup;
         let _stack = audio_stack_on_this_thread_for_test(AudioStack::Liblxa);
         let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
-        crate::route::set_url(&mut ps, "http://127.0.0.1:1/track.flac");
-        assert!(ps.qualify_resolved_feed_offer(crate::route::backend_policy::OfferId::FEED_ORIGINAL,
-            crate::route::CandidatePurpose::NewCandidate));
-        crate::route::set_stream_acodec(&mut ps, "flac");
-        crate::route::set_carried_audio_for_test(
-            &mut ps,
-            crate::route::CarriedAudio {
-                sid: 7, ordinal: 1, codec: "flac".into(), channels: 2,
-                can_normalize_loudness: false, immersive: false, sample_rate: 48_000, bit_depth: 16,
-            },
-        );
+        flac_route(&mut ps);
         FEED_SHARED.desired_audio_idx.store(-1, Ordering::Relaxed);
 
         crate::player::set_audio_track(&mut ps, 4);

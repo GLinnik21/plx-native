@@ -11814,7 +11814,7 @@ pub fn subtitles_burned(ps: &PlaybackSession) -> bool {
 /// track, run it clock-only for a sidecar, or stop it for Off. Never blocks (see
 /// `player::subside::sync`, which hands it to `plx_play_feed::side_reader::sync`).
 fn sync_side_reader(ps: &PlaybackSession) {
-    crate::player::route_fx::sync_side_reader(side_reader_target(ps));
+    crate::player::route_fx::sync_side_reader(ps, side_reader_target(ps));
 }
 
 /// **The side reader gave up** (every reopen failed, the Part has no such track, or it could not

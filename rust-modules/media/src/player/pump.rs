@@ -389,7 +389,7 @@ fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::rec
                         "open recovery: converting {facet:?} (flight {flight}/{})",
                         super::recovery::MAX_RECOVERY_FLIGHTS
                     ));
-                    let secs = (FEED_SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
+                    let secs = (ps.readout().raw().playpos_ns / 1_000_000_000).max(0);
                     // A refused video is converted by an encode that withdraws the video copy; a
                     // refused audio keeps the route as planned (an Original remux still copies the
                     // video).
@@ -406,7 +406,7 @@ fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::rec
                         "open recovery: converting both facets (flight {flight}/{})",
                         super::recovery::MAX_RECOVERY_FLIGHTS
                     ));
-                    let secs = (FEED_SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
+                    let secs = (ps.readout().raw().playpos_ns / 1_000_000_000).max(0);
                     crate::route::dispatch_refusal_conversion(ps, secs, crate::route::VideoLane::Both)
                 }
                 RecoveryEffect::StartAutoHls => {
@@ -416,14 +416,14 @@ fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::rec
                     } else {
                         super::note_original_failure(super::ABR_FAILURE_ORIGINAL_OPEN, status);
                     }
-                    let secs = (FEED_SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
+                    let secs = (ps.readout().raw().playpos_ns / 1_000_000_000).max(0);
                     crate::route::dispatch_unopened_auto_hls(ps, secs)
                 }
                 RecoveryEffect::DecodeInApp { audio, refusal } => {
                     if let plx_platform::devcaps::Facet::Audio { codec, .. } = &audio {
                         super::log(&format!("open recovery: decoding {codec} in the app (stereo) after {refusal}"));
                     }
-                    run = OpenRecoveryRun::DecodeInApp { offset_ns: FEED_SHARED.playpos_ns.load(Relaxed) };
+                    run = OpenRecoveryRun::DecodeInApp { offset_ns: ps.readout().raw().playpos_ns };
                     continue;
                 }
                 RecoveryEffect::NameRefusedAudio { codec } => {
@@ -1090,7 +1090,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
     pa.drain_load_outcomes(ps);
     if let Some(attempt) = pa.active_feed_attempt() {
         let snapshot = super::timeline::TimelineSnapshot::from_content_ns(
-            FEED_SHARED.playpos_ns.load(Relaxed),
+            ps.readout().raw().playpos_ns,
             super::duration_ns(ps).unwrap_or(0),
             FEED_TX.paused.load(Relaxed),
         );
@@ -1293,7 +1293,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
             }
         } else if let Some(action) = crate::route::claim_route_action() {
             let pending_seek = ps.readout().pending_seek().unwrap_or(-1);
-            let current_pos = FEED_SHARED.playpos_ns.load(Relaxed).max(0);
+            let current_pos = ps.readout().raw().playpos_ns.max(0);
             let user_target = if pending_seek >= 0 {
                 pending_seek
             } else {

@@ -76,9 +76,11 @@ pub fn side_reader_dev_armed_ordinal() -> Option<i32> {
 }
 
 /// Make the side reader match the route's target: start, switch, run clock-only, or stop for `None`.
-pub fn sync_side_reader(target: Option<SideReaderTarget>) {
+///
+/// A reader begun mid-play starts at the display base the live sample carries.
+pub fn sync_side_reader(ps: &PlaybackSession, target: Option<SideReaderTarget>) {
     #[cfg(feature = "play-feed")]
-    super::subside::sync(target.and_then(|t| super::subside::spec_for(&t)));
+    super::subside::sync(target.and_then(|t| super::subside::spec_for(&t, ps.readout().raw().disp_base)));
     #[cfg(not(feature = "play-feed"))]
-    let _ = target;
+    let _ = (ps, target);
 }

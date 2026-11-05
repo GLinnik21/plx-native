@@ -117,6 +117,10 @@ fn a_cold_resume_frame_makes_no_pms_call_and_the_worker_lands_the_load_later() {
     assert!(crate::route::url(&rig.ps).contains("offset=1800"), "{}", crate::route::url(&rig.ps));
     assert_eq!(FEED_SHARED.disp_base.load(Relaxed), RESUME_NS, "the HUD reads content time from the offset");
     assert_eq!(FEED_SHARED.playpos_ns.load(Relaxed), RESUME_NS);
+    // No attempt has sampled the feed: the readout is idle, so a side reader captured by the Load that
+    // follows reads the resume offset from the player's record of the Rebase, not 0 from `raw`.
+    assert_eq!(rig.ps.readout().raw().disp_base, 0, "nothing sampled the Rebase yet");
+    assert_eq!(super::subside::capture_offset_ns(&rig.ps), RESUME_NS, "the reader starts where the remux was resumed");
     assert!(crate::route::control_phase_label().contains("Prepared"), "{}", crate::route::control_phase_label());
     let start = crate::route::pending_route_start().expect("the Load claims the landing's own transaction");
     assert!(crate::route::claim_route_start_attempt(start).is_some());

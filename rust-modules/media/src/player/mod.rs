@@ -585,7 +585,7 @@ pub fn finish_paused_seek(ps: &mut crate::route::PlaybackSession, pa: &mut adapt
     restore_preroll_volume(pa);
     // One receipt after the accepted pause, never per frame: device scrub checks pair this
     // boundary with stationary playhead samples rather than assuming CommitSeek held the pause.
-    log(&format!("seek: paused frame restored ns={}", FEED_SHARED.playpos_ns.load(Relaxed)));
+    log(&format!("seek: paused frame restored ns={}", ps.readout().raw().playpos_ns));
     true
 }
 
@@ -850,7 +850,8 @@ pub(super) fn arm_open(pa: &mut adapter::PlayerAdapter, target_ns: i64) {
 /// the first frame and the HUD reads it until frames land. Nothing is armed to seek, and the feed's
 /// video lane alone owns the pts shift.
 #[cfg(feature = "play-feed")]
-pub(super) fn rebase_transcode(pa: &mut adapter::PlayerAdapter, offset_ns: i64) {
+pub(super) fn rebase_transcode(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter, offset_ns: i64) {
+    ps.step_readout(readout::ReadoutEvent::OpenRebased { disp_base: offset_ns });
     pa.feed_command(FeedCommand::Rebase { playpos_ns: offset_ns, disp_base: offset_ns });
 }
 

@@ -76,6 +76,11 @@ pub struct PlayerReadout {
     /// feed's copy, which its demuxer reads, is written by `FeedCommand::SelectAudio` from this one
     /// before every start.
     audio_choice: i32,
+    /// The display base the player last commanded the feed to open with ([`ReadoutEvent::OpenRebased`]):
+    /// what a transcode restart's `Rebase` carried, until the feed's session reset zeroed it (so does
+    /// [`ReadoutEvent::SessionReset`]). A start's side subtitle reader is captured before the attempt
+    /// exists to sample the feed's own `disp_base`, and the readout is idle then.
+    open_disp_base_ns: i64,
 }
 
 /// A one-shot fact the feed counts and the player takes: the feed keeps a monotonic count of the
@@ -185,6 +190,10 @@ pub enum ReadoutEvent {
     /// The player sends `FeedCommand::SelectAudio` from [`PlayerReadout::audio_choice`] before the
     /// start that spawns the demuxer.
     AudioSelected { idx: i32 },
+    /// A transcode restart's `FeedCommand::Rebase` was sent: the encode is 0-based at `disp_base`, which
+    /// the feed carries as its display base from the first frame. Appended with the command, before the
+    /// start that follows it.
+    OpenRebased { disp_base: i64 },
 }
 
 impl PlayerReadout {
@@ -205,6 +214,7 @@ impl PlayerReadout {
         taken_decoder_revocations: 0,
         taken_native_audio_refusals: 0,
         audio_choice: -1,
+        open_disp_base_ns: 0,
     };
 
     pub fn state(&self) -> PlaybackState { self.state }
@@ -216,6 +226,8 @@ impl PlayerReadout {
     pub fn raw(&self) -> &FeedRaw { &self.raw }
     /// The audio stream the demuxer is to feed (`-1`: the file's own default).
     pub fn audio_choice(&self) -> i32 { self.audio_choice }
+    /// The display base the player last commanded the feed to open with (0 after any session reset).
+    pub fn open_disp_base_ns(&self) -> i64 { self.open_disp_base_ns }
     /// The epoch of the newest requested seek (the count of requests), 0 before any.
     pub fn seek_epoch(&self) -> u32 { self.seek_epoch }
     /// A seek is in flight: one was requested that neither landed (the feed's last ingested
@@ -276,6 +288,8 @@ impl PlayerReadout {
                 // The feed's own reset zeroed its counts at the same teardown.
                 self.taken_decoder_revocations = 0;
                 self.taken_native_audio_refusals = 0;
+                // ...and its display base with them.
+                self.open_disp_base_ns = 0;
             }
             ReadoutEvent::NewItem => {
                 self.play_rate_permille = RATE_NORMAL;
@@ -334,6 +348,7 @@ impl PlayerReadout {
                 }
             },
             ReadoutEvent::AudioSelected { idx } => self.audio_choice = idx,
+            ReadoutEvent::OpenRebased { disp_base } => self.open_disp_base_ns = disp_base,
         }
     }
 }
@@ -393,6 +408,18 @@ mod tests {
         assert_eq!(r.audio_choice(), 3, "a retry's new-item reset does not clear it either");
         let r = stepped(&[ReadoutEvent::AudioSelected { idx: 3 }, ReadoutEvent::AudioSelected { idx: -1 }]);
         assert_eq!(r.audio_choice(), -1);
+    }
+
+    /// The commanded display base is the player's record of a restart's `Rebase`, held until the feed's
+    /// session reset (which zeroes the feed's own) retires it.
+    #[test]
+    fn a_commanded_display_base_lasts_until_the_session_resets() {
+        assert_eq!(PlayerReadout::IDLE.open_disp_base_ns(), 0);
+        let r = stepped(&[ReadoutEvent::OpenRebased { disp_base: 600_000_000_000 }]);
+        assert_eq!(r.open_disp_base_ns(), 600_000_000_000);
+        assert_eq!(r.raw().disp_base, 0, "no sample has carried it yet");
+        let r = stepped(&[ReadoutEvent::OpenRebased { disp_base: 600_000_000_000 }, ReadoutEvent::SessionReset]);
+        assert_eq!(r.open_disp_base_ns(), 0);
     }
 
     #[test]
