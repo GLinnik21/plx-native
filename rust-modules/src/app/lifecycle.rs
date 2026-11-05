@@ -24,8 +24,6 @@ pub(crate) use plx_media::player::lifecycle::{
 pub(crate) use plx_media::player::transport::{
     resume_if_paused, set_transport_paused, transport_target, viewer_paused_for,
 };
-#[cfg(feature = "play-feed")]
-pub(crate) use plx_media::player::transport::set_paused;
 #[cfg(all(test, feature = "hostsim"))]
 pub(crate) use plx_media::player::transport::paused;
 // Only `app::run`'s hostsim lifecycle tests name the machine's state, so a re-export outside
@@ -136,9 +134,9 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
                     // a never-started native Load may have accepted no physical Pause. Prepare
                     // the new Feed's hold before arming its one-frame seek preroll.
                     if !self.pa.is_live() {
-                        plx_media::player::FEED_TX.commit_paused(true);
+                        plx_media::player::commit_paused(self.pa, true);
                     }
-                    plx_media::player::FEED_TX.begin_paused_seek();
+                    plx_media::player::begin_paused_seek(self.pa);
                 }
             }
             // A paused save the claim restores Playing (a PLAY press, or a toggle on a paused
@@ -150,7 +148,7 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
             ForegroundClock::Playing => {
                 #[cfg(feature = "play-feed")]
                 if feed_load && viewer_paused_for(self.pa) && !self.pa.is_live() {
-                    plx_media::player::transport::commit_viewer_resume_for_load();
+                    plx_media::player::transport::commit_viewer_resume_for_load(self.pa);
                 }
             }
         }
@@ -211,7 +209,7 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
             if started {
                 set_resume_pend(true);
             } else {
-                plx_media::player::FEED_TX.finish_seek_preroll();
+                plx_media::player::finish_seek_preroll(self.pa);
             }
         }
         if !started && attempt.is_some() {

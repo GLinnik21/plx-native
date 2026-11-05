@@ -3895,13 +3895,13 @@ mod lifecycle_regression_tests {
         }
         fn set(value: bool) -> Self {
             let previous = paused();
-            set_paused(value);
+            plx_media::player::FEED_TX.commit_paused(value);
             Self(previous)
         }
     }
     impl Drop for TransportPaused {
         fn drop(&mut self) {
-            set_paused(self.0);
+            plx_media::player::FEED_TX.commit_paused(self.0);
         }
     }
 

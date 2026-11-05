@@ -450,7 +450,7 @@ pub(super) fn start_playback_with<R: PlaybackResources>(
     // already Player, and the exit paths leave the player entirely — so leaving a movie
     // with the Subtitles button focused used to carry `focus == 1` into the next one,
     // where the first OK opened the track menu instead of pausing. Unconditional, like the
-    // `set_paused`/`set_hud` below it: the HUD that is about to be drawn belongs to THIS
+    // `commit_paused`/`set_hud` below it: the HUD that is about to be drawn belongs to THIS
     // attempt either way.
     // A NEW session starts on the scrubber with its transport pinned for `hud_ms`, and both
     // halves of that are now the INSTANCE's: a fresh mount is built at `HudState::IDLE` (which is
@@ -481,7 +481,7 @@ pub(super) fn start_playback_with<R: PlaybackResources>(
         super::bridge::reseat_player_focus(pages);
     }
     #[cfg(feature = "play-feed")]
-    set_paused(false);
+    plx_media::player::commit_paused(pa, false);
     entering
 }
 

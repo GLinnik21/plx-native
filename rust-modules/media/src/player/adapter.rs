@@ -1598,19 +1598,29 @@ impl PlayerAdapter {
         let _ = ps.ingest_feed_facts(attempt, facts);
     }
 
-    #[cfg(feature = "play-feed")]
-    pub(super) fn feed_uses_stream_queues(&self) -> bool {
-        self.physical.feed_backend().uses_stream_queues()
-    }
     /// Hand the feed one player intent. A composition with no feed drops it, as it does every
     /// other feed verb.
     #[cfg(feature = "play-feed")]
     pub(super) fn feed_command(&mut self, command: plx_playback_contract::feed::FeedCommand) {
         if let Some(feed) = self.physical.feed() { feed.command(command); }
     }
+    /// The viewer's Pause, carried out by the feed (clock transition, native Pause, transport
+    /// commit). A composition with no feed has nothing to pause: the Pause is deferred.
     #[cfg(feature = "play-feed")]
-    pub(super) fn arm_feed_live_clock_prime(&mut self) -> bool {
-        self.physical.feed().is_some_and(|feed| feed.arm_live_clock_prime())
+    pub(super) fn feed_user_pause(&mut self) -> plx_playback_contract::feed::UserPauseOutcome {
+        self.physical.feed().map_or(plx_playback_contract::feed::UserPauseOutcome::Deferred,
+            |feed| feed.user_pause(&self.mt))
+    }
+    /// The viewer's Resume, carried out by the feed. A composition with no feed holds nothing.
+    #[cfg(feature = "play-feed")]
+    pub(super) fn feed_user_resume(&mut self) -> plx_playback_contract::feed::UserResumeOutcome {
+        self.physical.feed().map_or(plx_playback_contract::feed::UserResumeOutcome::NoHold,
+            |feed| feed.user_resume(&self.mt))
+    }
+    /// The volume a paused preroll's mute saved, taken from the feed; `None` when nothing is muted.
+    #[cfg(feature = "play-feed")]
+    pub(super) fn feed_take_preroll_volume(&mut self) -> Option<i32> {
+        self.physical.feed().and_then(|feed| feed.take_preroll_volume())
     }
     #[cfg(feature = "play-feed")]
     pub(super) fn feed_stage(&self) -> Option<super::shared::Stage> {

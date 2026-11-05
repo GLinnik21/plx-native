@@ -1277,6 +1277,9 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks
         // A paused preroll plays one picture for a viewer who is paused: keep that window silent.
         if transport.seek_preroll_active() {
             (hooks.mute_for_preroll)(mt);
+            // The mute is the feed's own record (the restore gives back what was saved, which is
+            // always the pipeline default: the volume is never read back).
+            transport.note_preroll_muted(plx_platform::tv::sink::PIPELINE_DEFAULT_VOLUME);
         }
         let played = unsafe { (hooks.sink)().play(mt) };
         match shared.complete_hls_prime_play(play_token, played != 0) {
