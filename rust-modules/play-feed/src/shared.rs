@@ -547,7 +547,7 @@ pub struct Shared {
     /// photograph as twelve seconds.
     pub dg_load_at: AtomicU32,
     pub dg_frame_at: AtomicU32,
-    /// **The video plane's own cadence** — the three counters behind the heartbeat's `vtick=`/`vgap=`.
+    /// **The video plane's own cadence** — the counters behind the heartbeat's `vtick=`/`vgap=`.
     ///
     /// They exist because every other frame number in this app is about the GRAPHICS plane. `fps=`
     /// counts our GL swaps and `worstframe=` times our own draw, and both stay a flat 60/0.5 ms
@@ -556,18 +556,23 @@ pub struct Shared {
     /// the `ty == 0` callback, so that is where these are stamped.
     ///
     /// Written on the LIBRARY thread (`sf_on_event`), sampled on the main thread into
-    /// `FeedRaw::{vpres_count, vpres_gap}` (the heartbeat differences two samples of the count) —
-    /// hence a monotonic COUNT rather than a delta of [`frames`](Self::frames), which a seek resets
-    /// underneath a reader. Nothing drains them: the gap is the session's running maximum, and the
-    /// session reset zeroes all three.
+    /// `FeedRaw::{vpres_count, vpres_gap_sum_ms, vpres_gap_count}` (the heartbeat differences two
+    /// samples of them) — hence monotonic COUNTS rather than a delta of [`frames`](Self::frames),
+    /// which a seek resets underneath a reader. Nothing drains them: `dg_vpres_gap_sum` (ms,
+    /// wrapping) over `dg_vpres_gap_ct` is the mean gap between position callbacks over whatever
+    /// span two samples cover, and the session reset zeroes all four. The gap count is not the
+    /// callback count: a callback with no stamp before it adds a tick and no gap.
     ///
     /// `dg_vpres_at` is the previous presentation's stamp and MUST be zeroed wherever `frames` is
     /// (session reset, and the post-seek re-count in the pump): the pipeline legitimately shows
     /// nothing across a seek, and a gap measured over that pause is the harness reporting the seek
-    /// as a stutter.
+    /// as a stutter. A Pause or hold does NOT clear it (the clock-silence watchdog,
+    /// `native_clock_silence_ms`, reads its age), so the first callback after a hold posts the
+    /// hold's length: one spike in the line that holds it, which the mean over the next line forgets.
     pub dg_vpres_ct: AtomicU32,
     pub dg_vpres_at: AtomicU32,
-    pub dg_vpres_gap: AtomicU32,
+    pub dg_vpres_gap_sum: AtomicU32,
+    pub dg_vpres_gap_ct: AtomicU32,
     /// Bytes queued in each AU lane at the last tick, against `engine::aq_caps`.
     pub dg_aq_video: AtomicI64,
     pub dg_aq_audio: AtomicI64,
@@ -720,7 +725,8 @@ impl Shared {
             dg_frame_at: AtomicU32::new(0),
             dg_vpres_ct: AtomicU32::new(0),
             dg_vpres_at: AtomicU32::new(0),
-            dg_vpres_gap: AtomicU32::new(0),
+            dg_vpres_gap_sum: AtomicU32::new(0),
+            dg_vpres_gap_ct: AtomicU32::new(0),
             dg_aq_video: AtomicI64::new(0),
             dg_aq_audio: AtomicI64::new(0),
             dg_fed_v_pts: AtomicI64::new(0),
@@ -1111,7 +1117,8 @@ impl Shared {
         self.dg_frame_at.store(0, Ordering::Relaxed);
         self.dg_vpres_ct.store(0, Ordering::Relaxed);
         self.dg_vpres_at.store(0, Ordering::Relaxed);
-        self.dg_vpres_gap.store(0, Ordering::Relaxed);
+        self.dg_vpres_gap_sum.store(0, Ordering::Relaxed);
+        self.dg_vpres_gap_ct.store(0, Ordering::Relaxed);
         self.dg_aq_video.store(0, Ordering::Relaxed);
         self.dg_aq_audio.store(0, Ordering::Relaxed);
         self.dg_fed_v_pts.store(0, Ordering::Relaxed);

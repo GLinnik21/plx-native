@@ -26,7 +26,7 @@
 //! | `dg_http_status` (3), `dg_cb_err_num` (1) | `> 0` and `!= 0` gates | **mapped** in `AttemptFacts`, and **raw** beside the flags ([`FeedRaw::http_status`], [`FeedRaw::cb_err_num`], 0 = none): the failure drains read a flag and its code from ONE sample, and a reload's session reset clears the raw one with the mirror it mirrors |
 //! | `hls_rebuffering` (1), `seen_frame` (1) | plain bool | **mapped** |
 //! | `native_audio_refused`, `decoder_revoked` | one-shot takes | **raw counters** ([`FeedRaw::native_audio_refusals`], [`FeedRaw::decoder_revocations`]): the feed counts each edge, the player's readout holds how many it has taken |
-//! | `file_size`, `applied_rate_permille`, `speed_audio_verdict`, `dg_vpres_ct`, `dg_vpres_gap`, `pts_shift` | no `AttemptFacts` field | **raw**, in [`FeedRaw`]; the two presentation counters are diagnostics only (the heartbeat's liveness line differences two samples) |
+//! | `file_size`, `applied_rate_permille`, `speed_audio_verdict`, `dg_vpres_ct`, `dg_vpres_gap_sum`, `dg_vpres_gap_ct`, `pts_shift` | no `AttemptFacts` field | **raw**, in [`FeedRaw`]; the three presentation counters are diagnostics only (the heartbeat's liveness line differences two samples: the tick count, and the mean gap as sum over gap count) |
 //! | `native_load_abandoned` | the Load a teardown parked | **terminal fact**: `AttemptFacts::load_abandoned`, recorded by the teardown's own ingestion, because the live phase outlives the session reset and the readout does not |
 //!
 //! The seek family is here: `pipeline_eos`, the landed seek epoch, the feed's in-place target
@@ -310,9 +310,8 @@ pub struct FeedRaw {
     /// What the pipeline reported for a speed session's audio: `None` before any report,
     /// `Some(true)` for the declared 48 kHz stereo, `Some(false)` otherwise.
     pub speed_audio_ok: Option<bool>,
-    /// Native presentation callbacks seen, and the largest gap between two of them.
+    /// Native presentation callbacks seen this session.
     pub vpres_count: u32,
-    pub vpres_gap: u32,
     /// The shift between the container's timestamps and the pipeline's.
     pub pts_shift: i64,
     /// The pipeline reported its own end of stream after a picture; cleared by a seek and by
@@ -334,6 +333,11 @@ pub struct FeedRaw {
     /// The HTTP status of the last failed transport request, 0 = none; loaded like
     /// [`Self::cb_err_num`].
     pub http_status: i32,
+    /// The summed length (ms, wrapping) of the gaps between consecutive native presentation
+    /// callbacks this session, and how many gaps that is. A gap is counted only between two
+    /// callbacks with no stamp reset between them, so the count is NOT [`Self::vpres_count`].
+    pub vpres_gap_sum_ms: u32,
+    pub vpres_gap_count: u32,
 }
 
 /// A seek the feed asked the player to take up again. `epoch` counts the feed's requests this
@@ -359,8 +363,9 @@ impl FeedRaw {
         },
         decoder_revocations: 0, native_audio_refusals: 0, file_size: 0,
         applied_rate_permille: crate::RATE_NORMAL, speed_audio_ok: None, vpres_count: 0,
-        vpres_gap: 0, pts_shift: 0, pipeline_eos: false, seek_landed_epoch: 0, seek_target_ns: None,
+        pts_shift: 0, pipeline_eos: false, seek_landed_epoch: 0, seek_target_ns: None,
         seek_requeue: SeekRequeue::NONE, cb_err_num: 0, http_status: 0,
+        vpres_gap_sum_ms: 0, vpres_gap_count: 0,
     };
 }
 

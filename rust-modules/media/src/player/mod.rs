@@ -2675,18 +2675,26 @@ fn vclock_ms() -> u32 {
     T0.get_or_init(Instant::now).elapsed().as_millis() as u32
 }
 
-/// What the heartbeat remembers of the pipeline's `FRAMEREADY` count between two of its lines: it
+/// What the heartbeat remembers of the pipeline's `FRAMEREADY` counters between two of its lines: it
 /// differences two samples of the readout's raw facts itself, so nothing is drained from the feed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct VplaneMark {
     count: u32,
+    gap_sum_ms: u32,
+    gap_count: u32,
 }
 
-/// **The pipeline's `FRAMEREADY` cadence since the last line**: ticks received since `mark`, and the
-/// worst gap between two consecutive ones in milliseconds. The tick count is a difference of two
-/// samples (a count the feed zeroed with its session counts from 0); the gap is the feed's running
-/// maximum for the session, so a single late tick stays in it until the session ends. The heartbeat
-/// is the one caller, once a second, like [`plx_machine::idle::take_presents`].
+/// **The pipeline's `FRAMEREADY` cadence since the last line**: ticks received since `mark`, and
+/// the MEAN gap between two consecutive ones over those ticks, in whole milliseconds (0 when no gap
+/// was measured). Both are differences of two samples of the feed's monotonic counters: a gap sum
+/// divided by a gap COUNT, not by the tick count, because a seek zeroes the feed's presentation
+/// stamp and its first callback is a tick with no gap. A counter that went down means the feed
+/// zeroed its session between the two marks, and the line counts from 0 on all of them together.
+/// The heartbeat is the one caller, once a second, like [`plx_machine::idle::take_presents`].
+///
+/// A Pause or hold does not clear the stamp (the clock-silence watchdog needs it to survive holds),
+/// so the first callback after one posts a gap the length of the hold: that line reads it, as one
+/// spike, and the next line is healthy again. Nothing keeps it for the rest of the session.
 ///
 /// **This is a liveness signal, not a frame rate.** See `plx_play_feed::sf_event::sf_on_event`: the healthy reading on
 /// every codec, resolution and container measured so far is `5` and `201`, because the tick is
@@ -2697,9 +2705,17 @@ pub struct VplaneMark {
 #[cfg(feature = "play-feed")]
 pub fn vplane_since(ps: &crate::route::PlaybackSession, mark: &mut VplaneMark) -> (u32, u32) {
     let raw = ps.readout().raw();
-    let ticks = if raw.vpres_count >= mark.count { raw.vpres_count - mark.count } else { raw.vpres_count };
-    mark.count = raw.vpres_count;
-    (ticks, raw.vpres_gap)
+    let now = VplaneMark {
+        count: raw.vpres_count,
+        gap_sum_ms: raw.vpres_gap_sum_ms,
+        gap_count: raw.vpres_gap_count,
+    };
+    let reset = now.count < mark.count || now.gap_sum_ms < mark.gap_sum_ms || now.gap_count < mark.gap_count;
+    let from = if reset { VplaneMark::default() } else { *mark };
+    *mark = now;
+    let gaps = now.gap_count - from.gap_count;
+    let mean_gap_ms = if gaps == 0 { 0 } else { (now.gap_sum_ms - from.gap_sum_ms) / gaps };
+    (now.count - from.count, mean_gap_ms)
 }
 
 /// The shape the `failtest=policy` arm builds, for tests outside this module.
@@ -3394,24 +3410,87 @@ mod tests {
         SHARED.reset_session();
     }
 
+    /// One heartbeat's sample of the Feed's presentation counters, as the readout holds it.
+    fn vplane_sample(count: u32, gap_sum_ms: u32, gap_count: u32) -> crate::route::PlaybackSession {
+        let mut raw = plx_playback_contract::feed::FeedRaw::IDLE;
+        raw.vpres_count = count;
+        raw.vpres_gap_sum_ms = gap_sum_ms;
+        raw.vpres_gap_count = gap_count;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        ps.step_readout(readout::ReadoutEvent::FactsIngested(raw));
+        ps
+    }
+
     /// The heartbeat's presentation line differences two samples of the readout itself: the tick
-    /// count is per line, a count the feed zeroed with its session starts over, and the gap is the
-    /// feed's running maximum.
+    /// count and the mean gap are both per line, and counters the feed zeroed with its session
+    /// start over.
     #[test]
     fn the_heartbeat_differences_two_samples_of_the_presentation_count() {
-        let sampled = |count: u32, gap: u32| {
-            let mut raw = plx_playback_contract::feed::FeedRaw::IDLE;
-            raw.vpres_count = count;
-            raw.vpres_gap = gap;
-            let mut ps = crate::route::PlaybackSession::IDLE;
-            ps.step_readout(readout::ReadoutEvent::FactsIngested(raw));
-            ps
-        };
         let mut mark = VplaneMark::default();
-        assert_eq!(vplane_since(&sampled(5, 201), &mut mark), (5, 201));
-        assert_eq!(vplane_since(&sampled(10, 201), &mut mark), (5, 201), "per line, not since the session");
-        assert_eq!(vplane_since(&sampled(10, 201), &mut mark), (0, 201), "a stopped pipeline reads 0 ticks");
-        assert_eq!(vplane_since(&sampled(3, 40), &mut mark), (3, 40), "a new session counts from 0");
+        // The session's first callback has no predecessor: 5 callbacks, 4 gaps of 201 ms.
+        assert_eq!(vplane_since(&vplane_sample(5, 804, 4), &mut mark), (5, 201));
+        assert_eq!(vplane_since(&vplane_sample(10, 1809, 9), &mut mark), (5, 201), "per line, not since the session");
+        assert_eq!(vplane_since(&vplane_sample(10, 1809, 9), &mut mark), (0, 0), "a stopped pipeline reads no ticks and no gap");
+        assert_eq!(vplane_since(&vplane_sample(3, 400, 2), &mut mark), (3, 200), "a new session counts from 0");
+        // Any one counter going down is a session reset, even when the others have grown past
+        // their marks since (a short session that outran the line before it).
+        assert_eq!(vplane_since(&vplane_sample(20, 100, 1), &mut mark), (20, 100), "a gap count that went down is a reset");
+    }
+
+    /// **A hold reads as one spike line, and the line after it is healthy again.** A Pause does not
+    /// clear the presentation stamp (the clock-silence watchdog needs it to survive holds), so the
+    /// first callback after a hold posts a gap the length of the hold. Measured on the TV in
+    /// `pipe_auto_pause_fill_resume`: one line `vtick=1 vgap=6208ms`, then `vtick=5 vgap=201ms`
+    /// again. A session-long maximum would read 6208 for the rest of the session.
+    #[test]
+    fn a_hold_reads_as_one_spike_line_and_the_next_line_is_healthy_again() {
+        let mut mark = VplaneMark::default();
+        assert_eq!(vplane_since(&vplane_sample(5, 804, 4), &mut mark), (5, 201));
+        // The viewer's hold ended on this line: its one callback carries the hold's length.
+        assert_eq!(vplane_since(&vplane_sample(6, 804 + 6000, 5), &mut mark), (1, 6000), "the hold line");
+        assert_eq!(vplane_since(&vplane_sample(11, 804 + 6000 + 1005, 10), &mut mark), (5, 201), "the next line");
+    }
+
+    /// **The mean is over gaps, not callbacks.** A seek zeroes the presentation stamp, so the first
+    /// callback after it adds a tick but no gap; dividing by the ticks would pull the mean of a
+    /// healthy 201 ms stream down to 160 on the line that holds the seek.
+    #[test]
+    fn a_seek_between_marks_adds_a_tick_but_no_gap_and_does_not_pull_the_mean_down() {
+        let mut mark = VplaneMark::default();
+        assert_eq!(vplane_since(&vplane_sample(5, 804, 4), &mut mark), (5, 201));
+        // Five callbacks this line, the first of them straight after the seek's stamp reset.
+        assert_eq!(vplane_since(&vplane_sample(10, 804 + 804, 4 + 4), &mut mark), (5, 201));
+    }
+
+    /// **The Feed counts a gap only between two stamped callbacks, and a reset zeroes the counters.**
+    /// The first callback of a session, and the first after a seek (which zeroes the stamp), add a
+    /// tick and no gap; a Pause does not clear the stamp, so the callback after a hold adds its gap.
+    /// The counters reach `vplane_since` through the same sample the pump ingests.
+    #[test]
+    fn the_feed_counts_a_gap_only_between_two_stamped_callbacks() {
+        let _guard = plx_base::testlock::serial();
+        SHARED.reset_session();
+        let attempt = crate::route::RouteStartAttempt::fixture();
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        ps.begin_attempt_view(attempt, attempt_view::Backend::Feed);
+        let ingest = |ps: &mut crate::route::PlaybackSession| {
+            assert!(ps.ingest_feed_facts(attempt, plx_play_feed::feed_pump::native_feed_facts()));
+            (ps.readout().raw().vpres_count, ps.readout().raw().vpres_gap_count)
+        };
+        let epoch = FEED_SHARED.begin_native_session().expect("session");
+        sf_on_event(epoch, 0, 7_000_000_000, std::ptr::null());
+        assert_eq!(ingest(&mut ps), (1, 0), "the session's first callback has no predecessor");
+        sf_on_event(epoch, 0, 7_000_000_000, std::ptr::null());
+        assert_eq!(ingest(&mut ps), (2, 1), "the second one measures the first gap");
+        FEED_SHARED.dg_vpres_at.store(0, Relaxed); // a seek's re-count zeroes the stamp
+        sf_on_event(epoch, 0, 7_000_000_000, std::ptr::null());
+        assert_eq!(ingest(&mut ps), (3, 1), "the callback after a seek is a tick with no gap");
+        sf_on_event(epoch, 0, 7_000_000_000, std::ptr::null()); // after a hold: the stamp survived it
+        assert_eq!(ingest(&mut ps), (4, 2));
+        FEED_SHARED.retire_native_session(epoch);
+        SHARED.reset_session();
+        assert_eq!(ingest(&mut ps), (0, 0), "a session reset zeroes the counters");
+        assert_eq!(FEED_SHARED.dg_vpres_gap_sum.load(Relaxed), 0);
     }
 
     /// **The firmware's error number is latched beside the type, once.** `type=18 num=601

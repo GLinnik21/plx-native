@@ -1193,7 +1193,6 @@ fn native_feed_raw(failure: FailureSample) -> FeedRaw {
             _ => None,
         },
         vpres_count: FEED_SHARED.dg_vpres_ct.load(Relaxed),
-        vpres_gap: FEED_SHARED.dg_vpres_gap.load(Relaxed),
         pts_shift: FEED_SHARED.pts_shift.load(Relaxed),
         pipeline_eos: FEED_SHARED.pipeline_eos.load(Relaxed),
         seek_landed_epoch: FEED_SHARED.seek_landed_epoch.load(Acquire),
@@ -1205,6 +1204,8 @@ fn native_feed_raw(failure: FailureSample) -> FeedRaw {
         },
         cb_err_num: failure.cb_err_num,
         http_status: failure.http_status,
+        vpres_gap_sum_ms: FEED_SHARED.dg_vpres_gap_sum.load(Relaxed),
+        vpres_gap_count: FEED_SHARED.dg_vpres_gap_ct.load(Relaxed),
     }
 }
 

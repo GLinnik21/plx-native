@@ -3627,7 +3627,9 @@ pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
             // that has stopped, and a steady 5 / 201 under a stutter report is the pipeline
             // saying the fault is not in anything this process can reach. `vtick` differences two
             // samples (`app.vpres_prev` is the last one), so it is per heartbeat whenever one is
-            // printed; `vgap` is the feed's running maximum for the session.
+            // printed; `vgap` is the MEAN gap between those callbacks over the same line, so a hold
+            // (whose first callback afterwards posts the hold's length) reads as one spike line and
+            // the next line is healthy again.
             #[cfg(feature = "play-feed")]
             let vp = if app.player.session.attempt_view().backend()
                 == Some(plx_media::player::attempt_view::Backend::Feed)

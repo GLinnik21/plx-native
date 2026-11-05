@@ -323,7 +323,8 @@ pub fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::E
         FEED_SHARED.dg_vpres_ct.fetch_add(1, Relaxed);
         if prev != 0 {
             let gap = t.saturating_sub(prev);
-            FEED_SHARED.dg_vpres_gap.fetch_max(gap, Relaxed);
+            FEED_SHARED.dg_vpres_gap_sum.fetch_add(gap, Relaxed);
+            FEED_SHARED.dg_vpres_gap_ct.fetch_add(1, Relaxed);
         }
         FEED_SHARED.frames.fetch_add(1, Relaxed);
         FEED_SHARED.seen_frame.store(true, Relaxed); // session-scoped: unlike `frames`, a seek won't clear it
