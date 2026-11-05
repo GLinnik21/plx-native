@@ -914,9 +914,9 @@ fn hud_return_to_player_hud(remove: bool) {
     let p=index.entries[0].clone();let sha=p.sha();
     let list=HudList {app_version:"0.10.0".into(),language_tag:"en".into(),
         catalog:plx_data::hudpacks::catalog::Snapshot {index:Some(std::sync::Arc::new(index)),..Default::default()},
-        entries:vec![Entry {id:BUILTIN_CLASSIC.into(),meta:None,sha:None,source:None,trust:Trust::BuiltIn,loadable:Ok(()),until_restart:false,selected:true},
+        entries:vec![Entry {id:BUILTIN_CLASSIC.into(),meta:None,sha:None,source:None,trust:Trust::BuiltIn,loadable:Ok(()),until_restart:false,selected:true,dev_source:None},
             Entry {id:p.id.clone(),meta:Some(Meta {id:p.id.clone(),name:p.name.clone(),version:p.version,package_format:p.package_format,hud_format:p.hud_format}),
-                sha:Some(sha),source:Some(Source::Registry),trust:Trust::Registry,loadable:Ok(()),until_restart:false,selected:false}],..HudList::default()};
+                sha:Some(sha),source:Some(Source::Registry),trust:Trust::Registry,loadable:Ok(()),until_restart:false,selected:false,dev_source:None}],..HudList::default()};
     let outer=EntryId(987);let mut s=RouteSurface::new(outer,InstanceId(4),Family::Settings,SettingsPage::Root);
     step(&mut s,ScreenEvent::Mount,None);
     let pages=if remove {vec![SettingsPage::Playback,SettingsPage::PlayerHud,SettingsPage::HudGallery,SettingsPage::HudDetail(sha),SettingsPage::HudAbout(sha)]}

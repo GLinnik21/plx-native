@@ -80,6 +80,10 @@ pub struct UriBackend {
     last_started: Option<AttemptId>,
     url: Option<String>,
     tracks: Vec<NativeTrackIndex>,
+    /// The audio track the service last reported selected (`audioInfo.track`, or a
+    /// `trackSelected`): a selection of exactly that track changes nothing, so the service never
+    /// confirms it and none is sent.
+    audio_current: Option<i64>,
     window: bool,
     window_id: Option<String>,
     start_deadline_ms: Option<u64>,
@@ -117,7 +121,7 @@ impl UriBackend {
         assert!(!config.capabilities.audio_off && !config.capabilities.subtitle_off,
             "URI transport has no confirmed track-disable operation");
         Self { config, lifecycle: Lifecycle::new(), staged: None, active: None,
-            last_started: None, url: None, tracks: Vec::new(),
+            last_started: None, url: None, tracks: Vec::new(), audio_current: None,
             window: false, window_id: None,
             start_deadline_ms: None, loaded: false, play_sent: false, played_once: false,
             subscribed: false,
@@ -243,6 +247,7 @@ impl UriBackend {
         let (url, tracks) = staged.source.into_parts();
         self.url = Some(url);
         self.tracks = tracks;
+        self.audio_current = None;
         self.window_id = window_id;
         self.start_deadline_ms = Some(self.config.clock.now_ms().saturating_add(self.config.startup_timeout_ms));
         self.loaded = false;
@@ -471,6 +476,12 @@ impl UriBackend {
             } else if let Some(info) = message.ls2_video.as_ref() {
                 self.derive_source(info, mt, now_ms);
             }
+        }
+        // What the service says it is playing, taken before a select dispatched later reads it.
+        if let Some(track) = message.audio_track {
+            self.audio_current = Some(track);
+        } else if let Some(("audio", track)) = message.selected_track {
+            self.audio_current = Some(track);
         }
         let mut ended = false;
         for event in &message.normalized {
@@ -701,6 +712,7 @@ impl UriBackend {
                         self.url = None;
                         self.acb_source = None;
                         self.tracks.clear();
+                        self.audio_current = None;
                         self.dispatching = None;
                         self.controls.clear();
                         self.loaded = false;
@@ -787,6 +799,19 @@ impl UriBackend {
                 let Some(index) = native_index(&self.tracks, track) else {
                     return DispatchResult::Refused(Failure::Unsupported);
                 };
+                if kind == TrackKind::Audio && self.audio_current == Some(index) {
+                    // The service reported this very track selected: it will confirm nothing (a
+                    // selection that changes nothing sends no `trackSelected`), and the startup
+                    // plan holds the first Play behind this command. It is settled here, with
+                    // the evidence that settles it, and no native call is made.
+                    plx_base::eventlog::log(&format!(
+                        "uri: audio index={index} is already selected (audioInfo); no selectTrack sent"));
+                    self.observe(Observation::TrackSelected(Observed {
+                        value: track, from: EvidenceSource::BackendReport }));
+                    self.pending.push_back(DriverEvent::TrackSettled { attempt, command, kind,
+                        choice: TrackChoice::Selected(id) });
+                    return DispatchResult::Queued;
+                }
                 (UriCall::SelectTrack { media_id, kind: match kind { TrackKind::Audio => "audio", TrackKind::Subtitle => "text" }, index }, Some(ControlKind::Track(track)))
             }
             _ => return DispatchResult::Refused(Failure::Unsupported),
@@ -834,6 +859,11 @@ impl UriBackend {
             for request in expired {
                 let Some(pending) = self.controls.remove(&request) else { continue };
                 self.retire_control(request);
+                // The refusal reaches the common startup owner, which ends a start whose
+                // mandatory control it was and logs nothing: this line names the closer.
+                plx_base::eventlog::log(&format!(
+                    "uri: control {:?} unconfirmed after {} ms; refused (TimedOut)",
+                    pending.operation, self.config.startup_timeout_ms));
                 if let Some(attempt) = self.active {
                     self.pending.push_back(DriverEvent::ControlRefused { attempt,
                         command: pending.command, operation: pending.operation,
@@ -1015,6 +1045,7 @@ mod tests {
         fn start(&mut self, attempt: AttemptId) -> DispatchResult {
             self.driver.stage_source(attempt, KEY, UriSource::new(URL.into(), vec![
                 NativeTrackIndex { selection: TrackSelection { kind: TrackKind::Audio, id: 3 }, index: 3 },
+                NativeTrackIndex { selection: TrackSelection { kind: TrackKind::Audio, id: 4 }, index: 4 },
             ])).unwrap();
             self.driver.dispatch(&self.mt, attempt, self.command,
                 Operation::Start { source: KEY, requirements: REQ })
@@ -1106,18 +1137,110 @@ mod tests {
                 from: EvidenceSource::BackendReport }) },
             DriverEvent::TrackSettled { attempt: A, command: rig.command,
                 kind: TrackKind::Audio, choice: TrackChoice::Selected(track.id) }]);
+        // The service now has track 3 selected: asking for it again changes nothing, so no native
+        // call is made and the command is settled from that report.
         assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
             Operation::SelectTrack { kind: track.kind, choice: TrackChoice::Selected(track.id) }),
             DispatchResult::Queued);
+        assert_eq!(rig.bus.calls("selectTrack"), 1);
+        assert_eq!(rig.driver.poll(&rig.mt), track_settled(&rig));
+        // Away and back: the first request for index 3 is retired, so the second one is the only
+        // match for its `trackSelected` and the repeated selection is not ambiguous.
+        let other = TrackSelection { kind: TrackKind::Audio, id: 4 };
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
+            Operation::SelectTrack { kind: other.kind, choice: TrackChoice::Selected(other.id) }),
+            DispatchResult::Queued);
+        rig.bus.say("selectTrack", r#"{"returnValue":true,"mediaId":"m1"}"#);
+        rig.bus.say("subscribe", r#"{"mediaId":"m1","trackSelected":{"type":"audio","index":4}}"#);
+        assert_eq!(rig.driver.poll(&rig.mt).len(), 2);
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
+            Operation::SelectTrack { kind: track.kind, choice: TrackChoice::Selected(track.id) }),
+            DispatchResult::Queued);
+        assert_eq!(rig.bus.calls("selectTrack"), 3, "away from the service's track, it is asked");
         rig.bus.say("selectTrack", r#"{"returnValue":true,"mediaId":"m1"}"#);
         assert!(rig.driver.poll(&rig.mt).is_empty());
         rig.bus.say("subscribe", r#"{"mediaId":"m1","trackSelected":{"type":"audio","index":3}}"#);
-        assert_eq!(rig.driver.poll(&rig.mt), [DriverEvent::Observation { attempt: A,
-            observation: Observation::TrackSelected(Observed { value: track,
-                from: EvidenceSource::BackendReport }) },
-            DriverEvent::TrackSettled { attempt: A, command: rig.command,
-                kind: TrackKind::Audio, choice: TrackChoice::Selected(track.id) }],
+        assert_eq!(rig.driver.poll(&rig.mt), track_settled(&rig),
             "a retired native request cannot make a repeated selection ambiguous");
+    }
+
+    const SELECT_AUDIO_3: Operation = Operation::SelectTrack { kind: TrackKind::Audio,
+        choice: TrackChoice::Selected(3) };
+    const AUDIO_3: TrackSelection = TrackSelection { kind: TrackKind::Audio, id: 3 };
+
+    fn track_settled(rig: &Rig) -> [DriverEvent; 2] {
+        [DriverEvent::Observation { attempt: A, observation: Observation::TrackSelected(Observed {
+            value: AUDIO_3, from: EvidenceSource::BackendReport }) },
+         DriverEvent::TrackSettled { attempt: A, command: rig.command, kind: TrackKind::Audio,
+            choice: TrackChoice::Selected(AUDIO_3.id) }]
+    }
+
+    /// The 4.5 service names the audio track it selected in `audioInfo` and sends no
+    /// `trackSelected` for a selection that changes nothing, so a startup selection of that very
+    /// track is already settled (RED: the control waited for an event that never came, held the
+    /// first Play behind it and timed out after the start deadline).
+    #[test]
+    fn the_audio_track_the_service_reports_selected_needs_no_native_selection() {
+        plx_base::eventlog::with_private_log(|| {
+            let mut rig = Rig::new(); rig.opened();
+            rig.bus.say("subscribe", r#"{"audioInfo":{"track":3,"immersive":"none","mediaId":"m1"}}"#);
+            assert!(rig.driver.poll(&rig.mt).is_empty());
+            assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, SELECT_AUDIO_3), DispatchResult::Queued);
+            assert_eq!(rig.bus.calls("selectTrack"), 0, "nothing to select: the service already has it");
+            assert_eq!(rig.driver.poll(&rig.mt), track_settled(&rig));
+            assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, Operation::Play), DispatchResult::Queued,
+                "no track control is left to hold the Play behind");
+            assert_eq!(rig.bus.calls("play"), 1);
+            let log = std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default();
+            assert!(log.contains("uri: audio index=3 is already selected (audioInfo); no selectTrack sent"), "{log}");
+        });
+    }
+
+    /// The service's report can land after the select is already on the bus: the acknowledgement
+    /// and then the report settle it, as `trackSelected` would.
+    #[test]
+    fn an_audio_report_naming_the_pending_track_settles_it_as_trackselected_does() {
+        let mut rig = Rig::new(); rig.opened();
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, SELECT_AUDIO_3), DispatchResult::Queued);
+        assert_eq!(rig.bus.calls("selectTrack"), 1, "nothing says the service has it yet");
+        rig.bus.say("selectTrack", r#"{"returnValue":true,"mediaId":"m1"}"#);
+        assert!(rig.driver.poll(&rig.mt).is_empty(), "an acknowledgement alone selects nothing");
+        rig.bus.say("subscribe", r#"{"audioInfo":{"track":3,"mediaId":"m1"}}"#);
+        assert_eq!(rig.driver.poll(&rig.mt), track_settled(&rig));
+    }
+
+    /// Only the loaded media's report about the very track asked for counts.
+    #[test]
+    fn an_audio_report_of_another_track_or_media_settles_nothing() {
+        let mut rig = Rig::new(); rig.opened();
+        rig.bus.say("subscribe", r#"{"audioInfo":{"track":1,"mediaId":"m1"}}"#);
+        rig.driver.poll(&rig.mt);
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, SELECT_AUDIO_3), DispatchResult::Queued);
+        assert_eq!(rig.bus.calls("selectTrack"), 1, "the service has another track selected");
+        rig.bus.say("selectTrack", r#"{"returnValue":true,"mediaId":"m1"}"#);
+        rig.bus.say("subscribe", r#"{"audioInfo":{"track":3,"mediaId":"another"}}"#);
+        assert!(rig.driver.poll(&rig.mt).is_empty());
+        rig.bus.say("subscribe", r#"{"audioInfo":{"track":1,"mediaId":"m1"}}"#);
+        assert!(rig.driver.poll(&rig.mt).is_empty());
+    }
+
+    /// A control the service never answers is refused when its deadline passes, and the driver
+    /// says which one and why: the refusal ends the start through the common startup owner, which
+    /// logs nothing of its own.
+    #[test]
+    fn an_unconfirmed_control_names_itself_when_its_deadline_refuses_it() {
+        plx_base::eventlog::with_private_log(|| {
+            let mut rig = Rig::new(); rig.opened();
+            assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, SELECT_AUDIO_3), DispatchResult::Queued);
+            rig.bus.say("selectTrack", r#"{"returnValue":true,"mediaId":"m1"}"#);
+            rig.at(499);
+            assert!(rig.driver.poll(&rig.mt).is_empty());
+            rig.at(500);
+            assert!(rig.driver.poll(&rig.mt).contains(&DriverEvent::ControlRefused { attempt: A,
+                command: rig.command, operation: SELECT_AUDIO_3, failure: Failure::TimedOut }));
+            let log = std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default();
+            assert!(log.contains("uri: control SelectTrack { kind: Audio, choice: Selected(3) } unconfirmed after 500 ms; refused (TimedOut)"), "{log}");
+        });
     }
 
     #[test]

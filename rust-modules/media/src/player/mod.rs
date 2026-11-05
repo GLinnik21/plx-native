@@ -24,6 +24,7 @@
 pub mod adapter;
 mod physical; // the adapter's physical drivers as one `PhysicalSet` (the Feed backend and the URI driver)
 pub mod attempt_view;
+pub mod readout; // the player's own readout (pure machine): the members only the player writes, and the feed's last raw facts
 #[cfg(feature = "play-feed")]
 pub mod demux_session;
 pub mod backend;

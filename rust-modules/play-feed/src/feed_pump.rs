@@ -9,11 +9,12 @@ use crate::native_executor::{
 };
 use crate::readout::{playable_buffer_ms, runtime_failure};
 use crate::seek::SeekMode;
-use crate::shared::{FEED_SHARED, FEED_TX};
+use crate::shared::{FEED_SHARED, FEED_TX, SPEED_AUDIO_BAD, SPEED_AUDIO_OK};
 use crate::shared::Stage;
 use crate::shared::{HlsPauseCompletion, HlsSeekPause};
 use plx_base::eventlog::log;
 use plx_base::task::MainThread;
+use plx_playback_contract::feed::{FailureFlags, FeedFacts, FeedRaw};
 use plx_playback_contract::readout::{AttemptFacts, PlaybackState, RuntimeFailure};
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::os::raw::c_char;
@@ -1029,11 +1030,40 @@ pub fn tick_presentation(feed: &mut FeedResources, mt: &MainThread,
     PresentationTick { stage: eng.stage, eos_pushed: eng.eos_pushed }
 }
 
-/// Snapshot the physical feed callback mailboxes without route or session access.
-/// The common adapter addresses this sparse value to the currently installed attempt.
-pub fn attempt_facts(feed: &FeedResources) -> Option<plx_playback_contract::readout::AttemptFacts> {
-    if !feed.is_live() { return None; }
-    Some(native_attempt_facts())
+/// One sample of the physical feed callback mailboxes without route or session access: the sparse
+/// facts and the raw ones, for the player to ingest addressed to the attempt it installed. The
+/// caller asks `FeedLoad::is_live` first; a feed with no session answers its idle mailboxes.
+pub fn native_feed_facts() -> FeedFacts {
+    FeedFacts { attempt: native_attempt_facts(), raw: native_feed_raw() }
+}
+
+/// The values whose sparse `AttemptFacts` form would lose what a decision reads (the contract's
+/// `feed` module audits each member). Plain loads of the mailboxes, in the orderings their writers
+/// publish with.
+fn native_feed_raw() -> FeedRaw {
+    FeedRaw {
+        playpos_ns: FEED_SHARED.playpos_ns.load(Relaxed),
+        frames: FEED_SHARED.frames.load(Relaxed),
+        flags: FailureFlags {
+            load_failed: FEED_SHARED.load_failed.load(Acquire),
+            load_timed_out: FEED_SHARED.load_timed_out.load(Acquire),
+            demux_failed: FEED_SHARED.demux_failed.load(Acquire),
+            demux_io_failed: FEED_SHARED.demux_io_failed.load(Acquire),
+        },
+        decoder_revoked: FEED_SHARED.decoder_revoked.load(Acquire),
+        native_audio_refused: FEED_SHARED.native_audio_refused.load(Acquire),
+        load_abandoned: FEED_SHARED.native_load_abandoned(),
+        file_size: FEED_SHARED.file_size.load(Relaxed),
+        applied_rate_permille: FEED_SHARED.applied_rate_permille.load(Relaxed),
+        speed_audio_ok: match FEED_SHARED.speed_audio_verdict.load(Relaxed) {
+            SPEED_AUDIO_OK => Some(true),
+            SPEED_AUDIO_BAD => Some(false),
+            _ => None,
+        },
+        vpres_count: FEED_SHARED.dg_vpres_ct.load(Relaxed),
+        vpres_gap: FEED_SHARED.dg_vpres_gap.load(Relaxed),
+        pts_shift: FEED_SHARED.pts_shift.load(Relaxed),
+    }
 }
 
 /// The native stop retains the exact Engine while its workers join, so it may capture one last

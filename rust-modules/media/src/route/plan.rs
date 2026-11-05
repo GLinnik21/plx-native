@@ -109,6 +109,15 @@ impl RouteStartAttempt {
             attempt: 1,
         }
     }
+
+    /// The `n`th attempt of the fixture's transaction, for a test that needs a successor.
+    #[cfg(any(test, feature = "test-support"))]
+    pub const fn fixture_n(attempt: u64) -> Self {
+        Self {
+            serial: 1,
+            attempt,
+        }
+    }
 }
 
 

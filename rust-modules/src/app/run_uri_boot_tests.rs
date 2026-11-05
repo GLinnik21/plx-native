@@ -76,6 +76,10 @@ mod uri_boot_tests {
             state.3.push(UriReply { session: SessionId::new(1), request,
                 method, payload: payload.to_owned(), ok: true });
         }
+        /// How many native calls of `method` were queued.
+        fn calls(&self, method: &str) -> usize {
+            self.0.lock().unwrap().2.iter().filter(|(name, _, _)| *name == method).count()
+        }
         /// The request id of the latest native call of `method`.
         fn last_request(&self, method: &str) -> RequestId {
             self.0.lock().unwrap().2.iter().rev().find(|(name, _, _)| *name == method)
@@ -251,6 +255,62 @@ mod uri_boot_tests {
             plx_media::route::backend_policy::Selection::Open(choice)
                 if choice.backend == BackendKind::Feed));
         assert!(bus.load_payload().is_none(), "unknown evidence never dispatches a URI URL");
+    }
+
+    /// The 4.5 service, as captured on the set: it reports the audio track it selected
+    /// (`audioInfo.track`) before `loadCompleted`, acknowledges the startup `selectTrack` of that
+    /// same track, and never sends `trackSelected` for a selection that changes nothing. The
+    /// startup plan holds the first Play behind that selection, so the route must still reach
+    /// `play` on the acknowledgement alone (RED against the driver that waited for a
+    /// `trackSelected` which never comes: no `play` for 15 s, then a refused control and a Feed
+    /// fallback). Every other fixture here injects the `trackSelected` the real service omits.
+    #[test]
+    fn product_uri_plays_when_the_service_never_confirms_the_default_audio_track() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else { return };
+        plx_plex::plex::client_for(rig.sid).unwrap()
+            .set_link(plx_plex::plex::probe::Location::Local);
+        let bus: &'static Bus = Box::leak(Box::new(Bus::new()));
+        let display: &'static Display = Box::leak(Box::new(Display));
+        let caps = Capabilities { progressive_uri: true, hls_uri: false,
+            packet_feed: false, pause: true, seek: true, audio_track: true,
+            subtitle_track: false, audio_off: false, subtitle_off: false };
+        let port = ResolvePort::new(ProductEvidence { display_exported: true,
+            binding: Binding::Exported { canvas: (1920, 1080) },
+            callable: caps, certified: caps, preview_rectangle: false },
+            Arc::new(QualifiedOriginal));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, port, bus, display));
+        rig.request();
+        rig.release.send(()).unwrap();
+        let mut resolved = None;
+        poll_until("qualified URI source did not resolve", || {
+            resolved = plx_media::route::pump_play(&mut rig.app.player.session,
+                rig.app.bridge.metadata_mut());
+            resolved.is_some()
+        });
+        assert!(rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session,
+            resolved.unwrap().uri_offer.expect("qualified source")).is_ok());
+        assert!(matches!(plx_media::player::start_playback_tracked(
+            &mut rig.app.player.session, &mut rig.app.adapters.player),
+            plx_media::player::BufferfeedStartOutcome::Launched(_)));
+        let frame = |rig: &mut Rig| {
+            let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+            unsafe { playback_tick(&mut rig.app, &mut fr); }
+        };
+        frame(&mut rig);
+        bus.say("load", r#"{"returnValue":true,"mediaId":"m1"}"#);
+        frame(&mut rig);
+        // The subscription's events, in the captured order.
+        bus.say("subscribe", r#"{"audioInfo":{"track":0,"immersive":"none","mediaId":"m1"}}"#);
+        frame(&mut rig);
+        bus.say("subscribe", r#"{"loadCompleted":{"mediaId":"m1"}}"#);
+        frame(&mut rig);
+        frame(&mut rig);
+        assert_eq!(bus.calls("play"), 1,
+            "the service has loaded and the startup selection is settled: the first Play goes out");
+        assert_eq!(bus.calls("selectTrack"), 0,
+            "the track the service already selected needs no native selection");
     }
 
     // ---- the URI dev route (`plxnative-uridev`): the production composition, ACB-bound ----

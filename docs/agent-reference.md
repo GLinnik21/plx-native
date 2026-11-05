@@ -1374,6 +1374,16 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   and queue is capped, and there is no filesystem serving or subprocess. `tools/plxnative-lab
   selftest` proves upload, ordered redelivery/ack and refusal paths on loopback with no television,
   and runs inside `make check`.
+- `tools/hud-dev` — **Player HUD authoring server** (host-side, python3 stdlib only; on a Mac run it with
+  `/usr/bin/python3`, the interpreter the application firewall allows by default; any other python is dropped
+  silently until its "allow incoming connections?" prompt is clicked, as for `tools/netcond.py` below):
+  `tools/hud-dev SOURCE --sim PATH [--port N]` packs a HUD source folder or `.plxhud` with `tools/hud_package.py` (the simulator's `--hud-pack`),
+  lints it with `--hud-lint` on every mtime change, serves the last CLEAN bundle on `0.0.0.0` at a
+  `http://<RFC 1918 address>:<port>/<name>.plxhud` it prints (and refuses to start without such an address), and
+  raises the served patch version on every clean change (numeric `MAJOR.MINOR.PATCH` is all the store compares). It
+  touches no TV: the TV side is Settings > Player HUD > Install from address, then Play on the HUD's row to fetch the
+  next build. `tests/test_hud_dev.py` (a stub simulator, loopback port 0) is in `ci/check-python-steps.txt`; the
+  recipe is `site/hud/AUTHORING.md`, "Developing a HUD on the TV".
 - `tools/netcond.py` — **network-conditioning TCP proxy** (host-side), for the failures a healthy LAN
   cannot produce. Sits between the TV and the PMS (`--listen 32499 --target 127.0.0.1:32400
   --allow-client <TV_IP>`; the PMS runs on the dev Mac) and makes the server misbehave on demand

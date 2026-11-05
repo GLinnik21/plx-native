@@ -128,6 +128,9 @@ pub enum StartRefusal {
 pub struct PlaybackSession {
     /// Main-thread observation for the exact physical attempt currently shown by this session.
     attempt_view: crate::player::attempt_view::AttemptView<RouteStartAttempt>,
+    /// The player's own readout beside it: the members only the player writes and the feed's
+    /// last raw facts, changed through [`PlaybackSession::step_readout`] and nothing else.
+    readout: crate::player::readout::PlayerReadout,
     /// A recoverable URI failure held through exact native release. It is a readout projection,
     /// not a second release queue; only the matching current attempt may show Resolving.
     uri_recovery_pending: Option<RouteStartAttempt>,
@@ -1129,6 +1132,14 @@ impl PlaybackSession {
             }
     }
 
+    /// The player's own readout (D2 v2, 3.1).
+    pub fn readout(&self) -> &crate::player::readout::PlayerReadout { &self.readout }
+
+    /// The one writer of the readout: every change to it is an event.
+    pub fn step_readout(&mut self, event: crate::player::readout::ReadoutEvent) {
+        self.readout.step(event);
+    }
+
     pub fn attempt_view(&self) -> &crate::player::attempt_view::AttemptView<RouteStartAttempt> {
         &self.attempt_view
     }
@@ -1433,10 +1444,53 @@ impl PlaybackSession {
         self.attempt_view.ingest(attempt, backend, facts)
     }
 
+    /// One feed sample for the attempt that is ingesting it: the sparse facts replace the attempt
+    /// view's and the raw ones the readout's, behind ONE address check, so a late worker's sample
+    /// of a previous attempt (or of the other backend) changes neither. The URI backend and the
+    /// terminal stop sample deliver only `AttemptFacts`, through [`Self::ingest_attempt_facts`].
+    pub fn ingest_feed_facts(
+        &mut self,
+        attempt: RouteStartAttempt,
+        facts: plx_playback_contract::feed::FeedFacts,
+    ) -> bool {
+        if !self.attempt_view.ingest(attempt, crate::player::attempt_view::Backend::Feed, facts.attempt) {
+            return false;
+        }
+        self.readout.step(crate::player::readout::ReadoutEvent::FactsIngested(facts.raw));
+        true
+    }
+
+    /// The pump presented a frame for `attempt`: take the post-tick `sample`'s raw facts into the
+    /// readout and derive its UI state and end of stream. Refused, changing nothing, for any other
+    /// attempt or backend: the readout holds no attempt, so the address is checked here.
+    pub fn present(
+        &mut self,
+        attempt: RouteStartAttempt,
+        tick: plx_playback_contract::feed::PresentationTick,
+        sample: plx_playback_contract::feed::FeedFacts,
+        inputs: crate::player::readout::PresentInputs,
+    ) -> bool {
+        if !self.attempt_view.addresses(attempt, crate::player::attempt_view::Backend::Feed) {
+            return false;
+        }
+        use crate::player::readout::{Presentation, ReadoutEvent};
+        self.readout.step(ReadoutEvent::FactsIngested(sample.raw));
+        self.readout.step(ReadoutEvent::Presented(Presentation {
+            tick,
+            rebuffering: sample.attempt.rebuffering == Some(true),
+            duration_ns: sample.attempt.duration_ns.unwrap_or(0),
+            seeking: inputs.seeking,
+            paused_and_idle: inputs.paused_and_idle,
+            pipeline_eos: inputs.pipeline_eos,
+        }));
+        true
+    }
+
     /// Nothing playing: what the module holds before the first play, and the value the static is
     /// born as. Every String empty, every id 0 or `UNSET`, both HUD buffers NUL.
     pub const IDLE: PlaybackSession = PlaybackSession {
         attempt_view: crate::player::attempt_view::AttemptView::EMPTY,
+        readout: crate::player::readout::PlayerReadout::IDLE,
         uri_recovery_pending: None,
         backend_policy: None,
         planned_feed_offer: None,
@@ -1543,6 +1597,7 @@ impl PlaybackSession {
     pub fn publication(&self) -> PlaybackSession {
         let PlaybackSession {
             attempt_view,
+            readout,
             uri_recovery_pending,
             backend_policy: _,
             planned_feed_offer,
@@ -1631,6 +1686,7 @@ impl PlaybackSession {
         } = self;
         PlaybackSession {
             attempt_view: *attempt_view,
+            readout: *readout,
             uri_recovery_pending: *uri_recovery_pending,
             backend_policy: None,
             planned_feed_offer: *planned_feed_offer,
@@ -10600,6 +10656,9 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
         let preview = request.as_ref().is_some_and(|r| r.preview);
         *s = PlaybackSession {
             attempt_view: crate::player::attempt_view::AttemptView::EMPTY,
+            // A new plan is not a new item or a torn-down engine: the readout's members live
+            // exactly as long as the mailbox statics they replace, which nothing here resets.
+            readout: s.readout,
             backend_policy: Some(backend_policy),
             planned_feed_offer,
             planned_feed_purpose: candidate_purpose,
