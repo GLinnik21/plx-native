@@ -988,7 +988,6 @@ mod tests {
         Preference::De, Preference::Hu, Preference::Ru, Preference::Pl, Preference::Nl,
     ];
 
-
     /// A host with `u32` elements: the least a `DrawFrame` needs for the renderer to paint the strip's Shelf.
     pub(super) struct HostFixture;
     impl Host for HostFixture {
