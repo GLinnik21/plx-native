@@ -17,6 +17,8 @@
   repository-metadata-only change (issue forms, a PR template, prose, images) starts no run, while
   every file a gate reads (PRIVACY.md, the credits pair, an `include_str!` target, the workflows)
   still does, and no other workflow carries a catch-all `'**'` filter;
+* the HUD parser fuzzing workflow (`FuzzWorkflow`): path-filtered on a PR, weekly otherwise, read-only, a dated
+  nightly, every action pinned, and every target the tool lists is a bin of the package and a file;
 * the nightly Homebrew Channel repository: the nightly build generates its manifest (and debug never
   does), a real nightly can only be cut from main, the manifest reaches the release, and the site
   stages the repository and the guide.
@@ -1119,6 +1121,76 @@ class PerTestResults(unittest.TestCase):
         # artifacts are listed through the same token that lists the jobs: no new permission
         self.assertRegex(metrics, r"(?m)^      actions: read ")
         self.assertNotIn("actions: write", metrics)
+
+
+class FuzzWorkflow(unittest.TestCase):
+    """The `cargo fuzz` package over the HUD parsers (fuzz/, fuzz.yml, tools/fuzz-hud.py).
+
+    The package is outside the rust-modules workspace, so `ci.yml` never compiles it: this workflow is the only
+    thing that does, and a drift between the workflow, the tool's target table and the package's own bins
+    would leave a target nobody builds, or a path nobody fuzzes, with everything else still green.
+    """
+
+    NAME = "fuzz.yml"
+
+    def targets(self):
+        out = subprocess.run([sys.executable, str(ROOT / "tools/fuzz-hud.py"), "list"], capture_output=True,
+                             text=True, check=True).stdout
+        return out.split()
+
+    def test_the_triggers_are_a_filtered_pull_request_a_weekly_schedule_and_a_dispatch_only(self):
+        body = code(self.NAME)
+        on = body[body.index("\non:\n") + 1:body.index("\npermissions:")]
+        self.assertEqual(re.findall(r"(?m)^  ([a-z_]+):", on), ["pull_request", "schedule", "workflow_dispatch"])
+        self.assertEqual(len(re.findall(r"(?m)^    paths:", on)), 1, "a PR runs it only for the files it fuzzes or builds from")
+        self.assertRegex(on, r"(?m)^    - cron: '\d+ \d+ \* \* \d'$")   # weekly, not daily
+        for trigger in ("pull_request_target", "push", "workflow_run", "issue_comment"):
+            self.assertNotIn(trigger, on)
+        for path in ("fuzz/**", "tools/fuzz-hud.py", "rust-modules/appkit/src/hud_format/**",
+                     "rust-modules/data/src/hudpacks/**", "rust-modules/ui/src/rec/strict_json.rs"):
+            self.assertIn(f"'{path}'", on, path)
+
+    def test_it_reads_the_repository_and_nothing_else(self):
+        body = code(self.NAME)
+        self.assertEqual(re.findall(r"(?m)^permissions:\n((?:  .*\n)+)", body + "\n"), ["  contents: read\n"])
+        self.assertEqual(len(re.findall(r"(?m)^\s+(?:[a-z-]+): write\b", body)), 0)
+        self.assertIn("persist-credentials: false", body)
+
+    def test_the_toolchain_is_a_dated_nightly_and_cargo_fuzz_is_an_exact_version(self):
+        body = code(self.NAME)
+        self.assertRegex(body, r"(?m)^  FUZZ_TOOLCHAIN: nightly-\d{4}-\d{2}-\d{2}$")
+        self.assertRegex(body, r"(?m)^  CARGO_FUZZ_VERSION: \d+\.\d+\.\d+$")
+        self.assertIn('cargo install cargo-fuzz --locked --version "$CARGO_FUZZ_VERSION"', body)
+        # the fuzz tree is 3 GiB with debuginfo and the Actions cache is already evicting: not cached
+        self.assertIn("cache-targets: false", body)
+
+    def test_every_action_is_pinned_to_a_commit(self):
+        for line in code(self.NAME).splitlines():
+            m = re.match(r"\s*(?:- )?uses: (\S+)", line)
+            if m and not m.group(1).startswith("./"):
+                self.assertRegex(m.group(1), r"@[0-9a-f]{40}$", line)
+
+    def test_a_crash_fails_the_run_and_keeps_its_input(self):
+        body = code(self.NAME)
+        self.assertIn("run: make fuzz-hud", body)
+        self.assertRegex(body, r"(?s)if: failure\(\)\n\s+uses: actions/upload-artifact@[0-9a-f]{40}.*?path: fuzz/artifacts/")
+
+    def test_a_pull_request_never_reads_or_writes_the_corpus_cache(self):
+        steps = re.split(r"(?m)^      - ", code(self.NAME))
+        for action in ("restore", "save"):
+            step = next(s for s in steps if f"actions/cache/{action}@" in s)
+            self.assertIn("github.event_name != 'pull_request'", step, action)
+
+    def test_every_target_is_a_bin_of_the_package_a_file_and_offered_to_a_dispatch(self):
+        manifest = (ROOT / "fuzz/Cargo.toml").read_text()
+        bins = re.findall(r'(?ms)^\[\[bin\]\]\nname = "(\w+)"\npath = "([^"]+)"', manifest)
+        listed = self.targets()
+        self.assertEqual(sorted(name for name, _ in bins), sorted(listed))
+        for name, path in bins:
+            self.assertEqual(path, f"fuzz_targets/{name}.rs")
+            self.assertTrue((ROOT / "fuzz" / path).is_file(), path)
+            self.assertIn(name, text(self.NAME), f"{name} is not in the dispatch input's list")
+        self.assertEqual(sorted(p.stem for p in (ROOT / "fuzz/fuzz_targets").glob("*.rs")), sorted(listed))
 
 
 if __name__ == "__main__":

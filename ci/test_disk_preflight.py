@@ -100,6 +100,7 @@ DRIVERS = {
     "tools/test-crate.py": "make test-crate: `cargo test` for one crate, in the test-fast tree",
     "tools/build-bench.py": "make build-bench: times the host build",
     "ci/mkmacapp.py": "make macapp / macapp-zip: a release cargo build of the simulator",
+    "tools/fuzz-hud.py": "make fuzz-hud: `cargo fuzz build` of the fuzz package, in the target-fuzz tree",
 }
 # Scripts that mention cargo without building with it. The reason is the point: the detector stays loud.
 NOT_BUILDS = {
