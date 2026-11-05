@@ -6161,7 +6161,9 @@ class UriModeGrading(unittest.TestCase):
         self.assertEqual(after("-x264-params"), "nal-hrd=cbr")
         self.assertEqual([after(f) for f in ("-g", "-keyint_min", "-sc_threshold")], ["48", "48", "0"])
         self.assertEqual([after(f) for f in ("-c:a", "-b:a")], ["aac", "128k"])
-        self.assertEqual([after(f) for f in ("-f", "-hls_time", "-hls_playlist_type")], ["lavfi", "2", "vod"])
+        self.assertEqual([after(f) for f in ("-hls_time", "-hls_playlist_type")], ["2", "vod"])
+        self.assertEqual([argv[i + 1] for i, a in enumerate(argv) if a == "-f"], ["lavfi", "lavfi", "hls"],
+                         "two lavfi inputs and the hls muxer")
         self.assertTrue(after("-hls_segment_filename").endswith("seg_%03d.ts"))
         self.assertTrue(argv[-1].endswith("index.m3u8"))
 
