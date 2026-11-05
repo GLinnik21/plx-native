@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use super::{valid_package_id, Candidate, Loc, ReadError, Semver, Sha, WriteOutcome};
 
 /// One fixed serving origin. URLs in the index are checked against content-addressed paths here.
-pub const ORIGIN: &str = "https://glinnik21.github.io/plxnative-huds";
+pub const ORIGIN: &str = "https://huds.plxnative.com";
 /// The signed index, served from [`ORIGIN`].
 pub const SIGNED_FILE: &str = "index.signed";
 /// Bounds one entire catalog response, including renderer provenance. Entries are never truncated.

@@ -1577,8 +1577,10 @@ this session, no network).
 - Re-lint on every app release, with `unfit`, `app.max` and an issue for the author (Text fit, (a)).
 - Publish on merge: a static `index.json` (`id`, `version`, `package_format`, `hud_format`, `app` range, `sha256`, `bytes`, preview
   URLs, author, license, `unfit` per Text fit), packages at `p/<sha256>.plxhud`, a `revoked` list of hashes with reasons, a
-  `serial`, and `index.signed`, the same index signed (PR14, "Trust and safety"). Hosted on that repo's Pages under a
-  plxnative.com subdomain (UNVERIFIED: DNS), or under this repo's `site/` if the owner prefers one Pages site.
+  `serial`, and `index.signed`, the same index signed (PR14, "Trust and safety"). Hosted on that repo's Pages, on the
+  custom domain `huds.plxnative.com` (the app's `catalog::ORIGIN`; the registry's `--base-url` is the same value).
+  On 2026-11-05 the TV's own libcurl and trust store fetched `index.signed` and a package from it with
+  `ssl_verify_result=0`. The chain is Let's Encrypt YR2, then Root YR cross-signed by ISRG Root X1.
 - TV side: one conditional GET of `index.signed` (ETag) that does NOT follow redirects, because a
   redirect-following request may carry no headers (F40); the URL is pinned to the host that serves it, and a
   3xx is an error. It refreshes only when HUD settings open, at most once per 24 h, never at boot or during
@@ -1893,7 +1895,7 @@ server). STILL OWED on the set: a real GitHub release fetch and the CA question.
 
 PR12. Registry repository (shipped): [plxnative-huds](https://github.com/GLinnik21/plxnative-huds) with CI
 (lint, xvfb previews, diff), the publisher (index, original-byte packs, revoked list),
-[Pages](https://glinnik21.github.io/plxnative-huds/), and the authoring kit (`AGENTS.md`, `llms.txt`, `AUTHORING.md`,
+[Pages](https://huds.plxnative.com/), and the authoring kit (`AGENTS.md`, `llms.txt`, `AUTHORING.md`,
 examples, schema mirror and schema/parser agreement test); this repo publishes the `plxnative-sim` artifact.
 [Seeded PR #1](https://github.com/GLinnik21/plxnative-huds/pull/1) passed 70 Reference and 32 Minimal native Linux
 states, all eleven languages, and the two-iteration authoring exercise. Public readback matched all 87 catalog files.
@@ -1993,8 +1995,8 @@ the curl path and got `fw-compat-reviewer`; PR14 took a pure-Rust crate and need
 - That the `info-panel` and `chapters-panel` fps scenes enter their scene on the set under the ` section=` word (PR8
   stage 2b settled the word; the host tests grade the table, only a TV run grades the scenes).
 - Whether a rooted set runs under one of the two jails; HBC availability for testing; USB mounts.
-- The TV's CA set and `objects.githubusercontent.com`; DNS for a registry subdomain; GitHub's unauthenticated rate
-  limit figure; Homebrew 4.0's API move.
+- The TV's CA set and `objects.githubusercontent.com`; GitHub's unauthenticated rate limit figure; Homebrew 4.0's
+  API move.
 - OpenSSL EVP reachability through the TV's libcrypto.
 - External format facts (JSON Schema 2020-12 support in Python `jsonschema`, DTCG, Adaptive Cards, DivKit, Lottie,
   `llms.txt`).
