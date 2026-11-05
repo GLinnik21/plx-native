@@ -432,10 +432,10 @@ fn catalan_month_day_captions_use_format_and_standalone_month_names() {
     let medium = [
         "12 de gen.",
         "12 de febr.",
-        "12 març",
+        "12 de març",
         "12 d’abr.",
-        "12 maig",
-        "12 juny",
+        "12 de maig",
+        "12 de juny",
         "12 de jul.",
         "12 d’ag.",
         "12 de set.",

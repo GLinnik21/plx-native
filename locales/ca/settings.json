@@ -226,7 +226,7 @@
   "settings.audio.no_preference": "Sense preferència",
   "settings.audio.not_set": "Sense definir",
   "settings.playback.overridden": "Reproducció directa forçada: qualitat original.",
-  "settings.audio.selection_off": "Selecció automàtica desactivada. Tria un idioma per activar-la.",
+  "settings.audio.selection_off": "Tria un idioma per activar la selecció automàtica.",
   "settings.audio.retry": "Torna-ho a provar",
   "settings.audio.retry_detail": "Torna a provar la sol·licitud al compte.",
   "settings.audio.sign_in_again": "Torna a iniciar sessió en aquest perfil de Plex per editar-ne les preferències del compte.",

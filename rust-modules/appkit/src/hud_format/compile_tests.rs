@@ -3,7 +3,7 @@
 //! The headline is `compiled_classic_matches_the_hand_written_layout`: the shipped classic package,
 //! compiled, reports the SAME rects as the hand-written layout (`classic::geometry`, since deleted) reported, field for field and
 //! to the exact `f32`, in every compact slot, for a movie and an episode, with and without chapters, in
-//! every shipped language and under both measurers (`FixtureMeasure`, whose advances are arithmetic, and
+//! the eleven historical languages and under both measurers (`FixtureMeasure`, whose advances are arithmetic, and
 //! `ShippedMeasure`, the real fonts' advances, which is headless here). A mismatch means the compiler or
 //! the fixture is wrong, never the frozen numbers. (The deleted layout's numbers are pinned as literals:
 //! see `frozen_classic_geometry`.) Then every fixture compiles in every state
@@ -15,11 +15,6 @@ use plx_data::metadata::{Marker, MarkerKind};
 use plx_machine::machine::Measure;
 use plx_media::player::text_style::HudBand;
 use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference, SHIPPED};
-
-const FROZEN_GOLDEN_LANGUAGES: [Preference; 11] = [
-    Preference::En, Preference::Es, Preference::Be, Preference::Fr, Preference::It, Preference::Pt,
-    Preference::De, Preference::Hu, Preference::Ru, Preference::Pl, Preference::Nl,
-];
 use plx_ui::consts::{MARGIN_X, SCR_H, SCR_W};
 use plx_ui::fixture::FixtureMeasure;
 use plx_ui::{theme, Rect};
@@ -30,6 +25,11 @@ use super::{check, Slot};
 use crate::player_hud::geometry::{HudGeometry, RowAnchor};
 use crate::player_hud::{classic, Controls};
 use crate::info_panel;
+
+const FROZEN_GOLDEN_LANGUAGES: [Preference; 11] = [
+    Preference::En, Preference::Es, Preference::Be, Preference::Fr, Preference::It, Preference::Pt,
+    Preference::De, Preference::Hu, Preference::Ru, Preference::Pl, Preference::Nl,
+];
 
 const CLASSIC: &str = crate::hud_format::CLASSIC_HUD;
 const REFERENCE: &str = include_str!("fixtures/reference/hud.json");
@@ -178,7 +178,7 @@ fn compiled_classic_matches_the_hand_written_layout() {
             }
         }
     }
-    // 11 languages x 2 measurers x (movie, episode) x (without, with chapters) x (Discs, Up Next, Skip at
+    // 11 historical languages x 2 measurers x (movie, episode) x (without, with chapters) x (Discs, Up Next, Skip at
     // each label): a count, so a loop that quietly compares less cannot pass.
     assert_eq!(compared, FROZEN_GOLDEN_LANGUAGES.len() * 2 * 2 * 2 * 4, "the golden's comparisons");
     assert_eq!(FROZEN_CLASSIC_GEOMETRY.lines().count(), compared, "the frozen file holds one line per case");

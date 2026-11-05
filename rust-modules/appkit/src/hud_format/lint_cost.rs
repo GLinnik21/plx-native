@@ -70,7 +70,7 @@
 //! chapters (4.17; 10, 5, 81920, 942912), the reference's film (3.73; 11, 4, 81280, 838253) and classic's Info in
 //! English (6.84; 10, 14, 230400, 1383936). None draws a strip.
 //!
-//! **What this does not know.** Not every one of the 330 rows was run: a row below a ceiling is admitted because
+//! **What this does not know.** Not every one of the 360 rows was run: a row below a ceiling is admitted because
 //! it costs no more, in each term, than the states the television did run, not because it was run itself. The
 //! terms are the compiler's accounting of what the GPU draws, not the GPU's, so a package under every term can
 //! still read more GPU_ACTIVE than a measured one; PR12 measures that.
@@ -478,7 +478,7 @@ mod tests {
         strip: usize,
     }
 
-    /// **Every state and slot of `classic` and the reference in each of the eleven shipped languages** (360 rows),
+    /// **Every state and slot of `classic` and the reference in each of the twelve shipped languages** (360 rows),
     /// costed as `--hud-lint` prints them ([`state_cost`], the television's advances).
     fn every_row() -> Vec<Row> {
         let mut rows = Vec::new();
@@ -595,7 +595,7 @@ mod tests {
             let rest = PAIRS.iter().enumerate().filter(|&(i, _)| i != skip).fold(0, |m, (_, p)| m | mask_of(p));
             assert_ne!(rest, ALL, "pair {} attains a maximum no other pair does", PAIRS[skip].n);
         }
-        // ... and no six of the 330 rows attain all twelve: search the distinct masks, six at a time
+        // ... and no six of the 360 rows attain all twelve: search the distinct masks, six at a time
         let mut masks: Vec<u16> = by_row.iter().map(|&(m, _)| m).filter(|&m| m != 0).collect();
         masks.sort_unstable();
         masks.dedup();
