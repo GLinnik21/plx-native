@@ -48,7 +48,7 @@ pub mod recovery; // the failed-open ladder (pure machine); `pump` drives it
 pub mod release; // the native object's off-frame release lifecycle (pure machine); `engine` runs it
 mod route_start; // common transaction admission and release-queued start policy
 #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
-pub mod uriprobe_drive; // the URI-mode probe's route half (issue #1064, dev trigger `plxnative-uriprobe`): the transport, the window verbs and the route-start settle the machine leaves to a driver; the machine itself is `plx_play_uri::uriprobe`
+pub mod uriprobe_drive; // the URI-mode probe's route half (issue #1064, dev trigger `plxnative-uriprobe`): the transport, the window verbs and the route-start settle the machine leaves to a driver; the machine itself is the play-uri crate's `uriprobe`
 /// The Feed backend's process-lifetime native mailbox and transport (`plx_play_feed::shared`),
 /// re-exported for the crates that may not name `plx_play_feed`: `screens` (its tests drive them)
 /// and the application loop (its manifest depends on `plx_media` alone). Media's own code spells

@@ -85,7 +85,7 @@ mod tests {
     /// the simulator both must be the host sink, never `NoSink`: a boot that read `NoSink` would
     /// report no plane to every backend and nothing in a simulator run would say so.
     #[test]
-    fn the_simulator_resolves_the_display_the_plane_boots_on_to_the_host_sink() {
+    fn the_simulator_port_display_is_the_host_sink_the_acb_init_reads() {
         let host = std::ptr::from_ref(&plx_media::player::HOST_SINK).cast::<()>();
         assert_eq!(std::ptr::from_ref(PORT.display_sink).cast::<()>(), host,
             "display_installed() is the host sink");
