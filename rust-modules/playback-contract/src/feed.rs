@@ -384,10 +384,12 @@ impl LoadRaw {
 
 /// The feed-written values the Stats-for-nerds read-out and the lab snapshot show, taken in the
 /// same sample as every other raw fact (`FeedRaw::diag`). They are diagnostics only: nothing in the
-/// player decides on one. Each is the value of the feed mailbox of the same name, so a reader gets
-/// what a live read of it would have given, one frame old at most (the pump samples at its start and
-/// end), and [`Self::IDLE`] is what the mailboxes hold after the session's reset. The ABR half of
-/// the read-out is not here.
+/// player decides on one. Each is the value of the feed mailbox of the same name, so while the
+/// feed has a live session a reader gets what a live read of it would have given, one frame old at
+/// most (the pump samples at its start and end), and [`Self::IDLE`] is what the mailboxes hold
+/// after the session's reset. A feed with no live session is not sampled, so a start that failed
+/// after its Load payload was built leaves the read-out at [`Self::IDLE`] while the mailboxes still
+/// hold the refused Load's codecs. The ABR half of the read-out is not here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FeedDiag {
     /// `setDisplayWindow`'s return code of the last placement; `i32::MIN` before any.
