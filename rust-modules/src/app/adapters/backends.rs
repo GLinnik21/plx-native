@@ -19,7 +19,7 @@ use plx_platform::tv::plane::{self, PlaneFacts, PlaneOwner, DEFAULT_PLAYER_TYPE}
 use plx_platform::tv::sink::{self, DisplaySink, VP_EXPORTED, VP_NONE};
 use std::os::raw::c_int;
 #[cfg(feature = "play-uri")]
-use plx_media::route::uri_preflight::{ProductEvidence, ProductQualifier, ResolvePort};
+use plx_media::route::uri_preflight::{OriginalQualifier, ProductEvidence, ProductQualifier, ResolvePort};
 #[cfg(feature = "play-uri")]
 use plx_play_uri::backend::{Binding as UriBinding, Config as UriConfig, MonotonicClock, UriBackend};
 #[cfg(feature = "play-uri")]
@@ -137,7 +137,9 @@ impl MonotonicClock for ProductUriClock {
 }
 
 /// Capture the installed display and URI bus at the playback IO boundary. Current product
-/// evidence remains unqualified; returning a port never certifies a source by itself.
+/// evidence remains unqualified; returning a port never certifies a source by itself. (A debug
+/// build's URI dev route, armed by a trigger read once here, is the one thing that changes that:
+/// `dev::uri_product`.)
 #[cfg(feature = "play-uri")]
 pub(crate) fn install_uri_product(adapter: &mut PlayerAdapter, session: &mut PlaybackSession) -> bool {
     let display = sink::display_installed();
@@ -147,7 +149,14 @@ pub(crate) fn install_uri_product(adapter: &mut PlayerAdapter, session: &mut Pla
         display.window_mode(),
         plx_play_uri::backend::product_binding(display.window_mode(), plane::installed().facts(),
             initialized));
-    let port = ResolvePort::new(evidence, std::sync::Arc::new(ProductQualifier));
+    let qualifier: std::sync::Arc<dyn OriginalQualifier> = std::sync::Arc::new(ProductQualifier);
+    // The URI dev route (`dev::uri_product`): a debug build armed with its trigger, on an ACB-bound
+    // display, swaps in evidence and a qualifier for the one Part it names; otherwise this pair is
+    // returned as built.
+    #[cfg(feature = "devtriggers")]
+    let (evidence, qualifier) = crate::dev::uri_product::compose(evidence, qualifier,
+        crate::dev::uri_product::trigger());
+    let port = ResolvePort::new(evidence, qualifier);
     install_uri_product_with_ports(adapter, session, port, plx_platform::tv::uri::installed(), display)
 }
 

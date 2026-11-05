@@ -75,6 +75,12 @@ impl ProductEvidence {
 /// The Part URL and stream identifiers are intentionally absent from Debug/log output.
 pub struct OriginalRequest {
     pub selection: SourceSelection,
+    /// The PMS's own `machineIdentifier` for `selection.server`, exactly as the registry (or the
+    /// session's cache of what this server answered) holds it; `""` while nobody has learned it.
+    /// `selection.server` is only a process-local registry slot, so a qualifier that must tell one
+    /// SERVER from another (a certificate for one machine's files, a developer pin) compares this.
+    /// Like the URL it stays out of Debug/log output: it is a household fingerprint.
+    pub server_machine_id: String,
     pub source_url: String,
     pub duration_ms: Option<u64>,
     pub video_codec: String,
@@ -813,6 +819,7 @@ mod tests {
         let request = || OriginalRequest { selection: SourceSelection {
                 server: plx_plex::plex::ServerId::from_raw(1), part_id: 4, audio_sid: 42,
                 subtitle_sid: 0, audio_contract: plx_plex::plex::AudioEnhancements::NONE },
+            server_machine_id: "machine-a".to_owned(),
             source_url: "https://example.invalid/part.mkv".to_owned(), duration_ms: Some(60_000),
             video_codec: "hevc".to_owned(), dolby_vision: dovi,
             dolby_vision_mode: plx_plex::plex::session::DolbyVisionMode::Auto,

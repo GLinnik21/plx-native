@@ -243,6 +243,118 @@ mod uri_boot_tests {
         assert!(bus.load_payload().is_none(), "unknown evidence never dispatches a URI URL");
     }
 
+    // ---- the URI dev route (`plxnative-uridev`): the production composition, ACB-bound ----
+
+    /// The pair `install_uri_product` builds on an ACB-bound set (evidence nothing certifies, the
+    /// production qualifier), handed through the dev route's `compose` with `trigger`. The host has
+    /// no ACB plane, so the evidence is built the way `product_binding` yields it for one rather
+    /// than read from the process; the OFFER is what the host proves, the bind is TV-only.
+    #[cfg(feature = "devtriggers")]
+    fn acb_port(trigger: Option<&str>) -> ResolvePort {
+        use crate::dev::uri_product as dev_route;
+        let evidence = ProductEvidence::unqualified_on(plx_platform::tv::sink::VP_ACB,
+            Binding::Acb);
+        let (evidence, qualifier) = dev_route::compose(evidence,
+            Arc::new(plx_media::route::uri_preflight::ProductQualifier),
+            trigger.map(str::to_owned));
+        ResolvePort::new(evidence, qualifier)
+    }
+
+    /// A rig whose boot composed the ACB port for `trigger`, and the play of its one Part (id 1, on
+    /// the server it registered as `lifecycle-fixture`) landed: the bus, and what the plan resolved.
+    #[cfg(feature = "devtriggers")]
+    fn land_acb_play(rig: &mut Rig, trigger: Option<&str>)
+        -> (&'static Bus, plx_media::route::ResolvedStart) {
+        plx_plex::plex::client_for(rig.sid).unwrap()
+            .set_link(plx_plex::plex::probe::Location::Local);
+        let bus: &'static Bus = Box::leak(Box::new(Bus::new()));
+        let display: &'static Display = Box::leak(Box::new(Display));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, acb_port(trigger), bus,
+            display));
+        rig.request();
+        rig.release.send(()).unwrap();
+        let mut resolved = None;
+        poll_until("ACB URI resolve did not land", || {
+            resolved = plx_media::route::pump_play(&mut rig.app.player.session,
+                rig.app.bridge.metadata_mut());
+            resolved.is_some()
+        });
+        (bus, resolved.unwrap())
+    }
+
+    #[cfg(feature = "devtriggers")]
+    const DEV_URL: &str = "http://10.9.8.7:8080/dev/index.m3u8";
+
+    /// Green guard: with no trigger the ACB-bound composition is today's, and Feed is offered.
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn uri_dev_unarmed_acb_port_keeps_todays_offer() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else { return };
+        let (bus, resolved) = land_acb_play(&mut rig, None);
+        assert!(resolved.uri_offer.is_none(), "no trigger, no URI offer on ACB");
+        assert!(matches!(rig.app.player.session.backend_offer(),
+            plx_media::route::backend_policy::Selection::Open(choice)
+                if choice.backend == BackendKind::Feed));
+        assert!(bus.load_payload().is_none(), "unknown evidence never dispatches a URI URL");
+    }
+
+    #[cfg(feature = "devtriggers")]
+    const ARMED: &str = "acb part=1 server=lifecycle-fixture url=http://10.9.8.7:8080/dev/index.m3u8";
+
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn uri_dev_armed_acb_port_offers_the_trigger_url() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else { return };
+        let (_, resolved) = land_acb_play(&mut rig, Some(ARMED));
+        let offer = resolved.uri_offer.expect("the armed dev route certified the pinned Part");
+        assert_eq!(offer.requirements.source, SourceKind::ProgressiveUri);
+        let (url, _) = offer.source.into_parts();
+        assert_eq!(url, DEV_URL, "the trigger's URL, not the PMS Part's");
+    }
+
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn uri_dev_armed_acb_offer_is_accepted_and_opens_the_uri_backend() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else { return };
+        let (_, resolved) = land_acb_play(&mut rig, Some(ARMED));
+        let offer = resolved.uri_offer.expect("the armed dev route certified the pinned Part");
+        assert!(rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session,
+            offer).is_ok());
+        assert!(matches!(rig.app.player.session.backend_offer(),
+            plx_media::route::backend_policy::Selection::Open(choice)
+                if choice.backend == BackendKind::Uri));
+    }
+
+    /// The pin is on the PMS's own machine identifier, which the plan's request now carries: the
+    /// same Part id on another server is not certified.
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn uri_dev_armed_for_another_server_keeps_the_feed_offer() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else { return };
+        let (bus, resolved) = land_acb_play(&mut rig, Some(
+            "acb part=1 server=some-other-machine url=http://10.9.8.7:8080/dev/index.m3u8"));
+        assert!(resolved.uri_offer.is_none());
+        assert!(matches!(rig.app.player.session.backend_offer(),
+            plx_media::route::backend_policy::Selection::Open(choice)
+                if choice.backend == BackendKind::Feed));
+        assert!(bus.load_payload().is_none());
+    }
+
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn uri_dev_armed_for_another_part_keeps_the_feed_offer() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else { return };
+        let (_, resolved) = land_acb_play(&mut rig, Some(
+            "acb part=2 server=lifecycle-fixture url=http://10.9.8.7:8080/dev/index.m3u8"));
+        assert!(resolved.uri_offer.is_none());
+    }
+
     #[cfg(feature = "play-feed")]
     #[test]
     fn refused_product_uri_load_recovers_the_same_request_only_after_native_release() {
