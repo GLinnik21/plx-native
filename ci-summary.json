@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-05T01:09:44Z",
+ "generated": "2026-11-05T01:12:24Z",
  "metrics": [
   {
    "change30_pct": 1.0,
@@ -303,18 +303,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 45.7,
-   "change7_pct": 10.2,
+   "change30_pct": 45.8,
+   "change7_pct": 10.3,
    "d30": 749.5,
-   "delta30": 342.5,
-   "delta7": 101.0,
+   "delta30": 343.5,
+   "delta7": 102,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "kind": "job",
    "label": "Nightly: ARM build + gates / build + verify",
-   "n_now": 4,
+   "n_now": 5,
    "n_prev": 5,
-   "now": 1092.0,
+   "now": 1093,
    "prev7": 991,
    "shown": true,
    "state": "flat",
@@ -515,18 +515,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 71.4,
-   "change7_pct": 36.4,
+   "change30_pct": 77.1,
+   "change7_pct": 40.9,
    "d30": 17.5,
-   "delta30": 12.5,
-   "delta7": 8.0,
+   "delta30": 13.5,
+   "delta7": 9,
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
    "kind": "job",
    "label": "Nightly: publish nightly prerelease",
-   "n_now": 4,
+   "n_now": 5,
    "n_prev": 5,
-   "now": 30.0,
+   "now": 31,
    "prev7": 22,
    "shown": false,
    "state": "flat",
@@ -536,18 +536,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 71.4,
-   "change7_pct": 41.2,
+   "change30_pct": 42.9,
+   "change7_pct": 17.6,
    "d30": 14.0,
-   "delta30": 10.0,
-   "delta7": 7.0,
+   "delta30": 6.0,
+   "delta7": 3,
    "group": "ci",
    "id": "nightly|plan today's nightly",
    "kind": "job",
    "label": "Nightly: plan today's nightly",
-   "n_now": 4,
+   "n_now": 5,
    "n_prev": 5,
-   "now": 24.0,
+   "now": 20,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -975,7 +975,7 @@
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "label": "Nightly: ARM build + gates / build + verify",
-   "now": 1092.0
+   "now": 1093
   },
   {
    "group": "ci",
