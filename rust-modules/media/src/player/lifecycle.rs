@@ -981,7 +981,7 @@ mod foreground_resume_tests {
             }
         }
 
-        fn play_clock(&mut self) -> bool {
+        fn play_clock(&mut self, _ps: &mut crate::route::PlaybackSession) -> bool {
             self.clock_calls += 1;
             Self::answer(&mut self.clocks)
         }
@@ -1536,7 +1536,7 @@ mod foreground_resume_tests {
                 }
             }
 
-            fn play_clock(&mut self) -> bool {
+            fn play_clock(&mut self, _ps: &mut crate::route::PlaybackSession) -> bool {
                 true
             }
         }

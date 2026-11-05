@@ -220,10 +220,10 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
         }
     }
 
-    fn play_clock(&mut self) -> bool {
+    fn play_clock(&mut self, ps: &mut plx_media::route::PlaybackSession) -> bool {
         // start_bufferfeed has installed the Initial native-clock hold from FEED_TX.paused. Publish
         // Play through the synchronized reducer so that hold and the feed gate reopen together.
-        !viewer_paused_for(self.pa) || set_transport_paused(self.pa, false)
+        !viewer_paused_for(self.pa) || set_transport_paused(ps, self.pa, false)
     }
 }
 

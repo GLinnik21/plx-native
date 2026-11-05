@@ -55,7 +55,7 @@ pub trait ForegroundActuator {
         clock: ForegroundClock,
         started: bool,
     );
-    fn play_clock(&mut self) -> bool;
+    fn play_clock(&mut self, ps: &mut crate::route::PlaybackSession) -> bool;
 }
 
 /// What draining a pending flight's landing found.
@@ -143,7 +143,7 @@ fn run_foreground<A: ForegroundActuator>(
                 ForegroundEffect::PlayClock { id } => {
                     next = Some(ForegroundEvent::ClockAnswered {
                         id,
-                        accepted: actuator.play_clock(),
+                        accepted: actuator.play_clock(ps),
                     });
                 }
                 ForegroundEffect::AfterLoad {

@@ -5187,6 +5187,85 @@
       "_pause_note": "The reported failure is specifically a hidden Pause -> Resume interval while the demux worker may be blocked: after enough media accumulates, video initially moves, audio trails, then both become intermittent. This case expresses the two user edges as one app-owned script, so SSH timing cannot create a different race. The operation requires both synchronized transitions to be accepted, observes a stationary integer playhead during the authored hold, and then requires at least 20 s of post-Resume climb. `abr_shape: {}` records stall/rate/lumpiness for the post-change device baseline without inventing a threshold before that run; visual A/V synchrony still requires the television tier."
     },
     {
+      "name": "pipe_original_pause_resume",
+      "fixture": "pipe_h264_aac_mp4.mp4",
+      "title": "direct-play (Original): a user Pause holds the playhead and Resume recovers both A/V lanes",
+      "covers": [
+        "pause-resume",
+        "user-clock-authority",
+        "audio-video-recovery",
+        "direct-play"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "aac",
+        "fps": 24.0
+      },
+      "run_secs": 70,
+      "operations": [
+        {
+          "op": "play"
+        },
+        {
+          "op": "pause_resume",
+          "delay_ms": 20000,
+          "hold_ms": 6000,
+          "min_climb_after_s": 20
+        }
+      ],
+      "expect": {
+        "codec": "h264",
+        "load_video": "H264",
+        "load_audio": "AAC",
+        "min_pos_climb_s": 35,
+        "require_video_bound": true,
+        "no_playing_error": true
+      },
+      "_note": "The ORIGINAL (direct-play, Feed) twin of `pipe_auto_pause_fill_resume`, which is the only device case that pauses and runs on HLS. Same clip and the same authored Pause -> Resume script, with no `auto_network`: the case never enters Auto or HLS, and `stream_path` requires the demuxer to open `pipe_h264_aac_mp4.mp4` itself, so an HLS entry fails it instead of being graded as a pause. It exists because the viewer's Pause/Resume handshake moved into the Feed for every session in W3e L3b-2a (0907e7b71) and the player's readout takes the pause state in L3b-2c, and until this case no device run drove that handshake on the direct-play path. `pause_resume` grades the accepted Pause and Resume edges (`dev/scenarios.rs` logs them on any route), a playhead that stays put through the hold, a climb of `min_climb_after_s` after the Resume, and an accepted video and audio feed after it; nothing in it is HLS-specific, so it is unchanged here. Dropped from the HLS twin: `abr_shape`, which has no controller to read. The pause fires 20 s after its 6 s gate rather than the HLS case's 25 s so that 20 s of post-Resume climb ends before this 60 s clip does."
+    },
+    {
+      "name": "pipe_original_paused_seek",
+      "fixture": "pipe_h264_aac_mp4.mp4",
+      "title": "direct-play (Original): a seek taken UNDER the viewer's Pause lands paused, then Resume plays on from it",
+      "covers": [
+        "pause-resume",
+        "paused-seek",
+        "seek-preroll",
+        "seek-inplace",
+        "direct-play"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "aac",
+        "fps": 24.0
+      },
+      "run_secs": 60,
+      "operations": [
+        {
+          "op": "play"
+        },
+        {
+          "op": "pause_resume",
+          "delay_ms": 10000,
+          "hold_ms": 18000,
+          "seek_s": 30,
+          "seek_delay_ms": 14000,
+          "min_climb_after_s": 12
+        }
+      ],
+      "expect": {
+        "codec": "h264",
+        "load_video": "H264",
+        "load_audio": "AAC",
+        "min_pos_climb_s": 35,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "server_opens_min": 2,
+        "server_range_opens_min": 1
+      },
+      "_note": "The Feed's seek preroll under a Paused transport, on the Original path: with the viewer Paused a seek opens a one-frame preroll, presents the landed frame, and `player::finish_paused_seek` re-holds it (`seek: paused frame restored ns=`, logged once). The script is the app's own pair of dev triggers: `plxnative-autopause=delay=10000,hold=18000` and `plxnative-autoseek=delay=14000,30`, both written by the one `pause_resume` op that carries `seek_s`. They arm at different gates (autopause 6 s into the player route, autoseek 12 s plus a known playhead), so the seek lands between 4 s and 10 s into the hold depending on how fast the boot was, and the 18 s hold leaves at least 6 s of paused landing before the Resume. `paused_seek` (`run.op_paused_seek`) reads the order of the log's own edges instead of trusting those numbers: Pause accepted, `autoseek: step`, `seek(in-place): av_seek`, the receipt within 6 s of the target, stationary `pos=` samples from the receipt to the Resume, then a climb of 12 s and an accepted video and audio feed after the Resume. A seek that fires outside the hold fails by name rather than passing as a different case. The 30 s target is 20 s past where the 10 s pause lands (~8-12 s) and leaves 30 s of the 60 s clip, so 12 s of post-Resume climb ends before the clip does. `server_range_opens_min: 1` is the Range reopen a direct-play seek makes (the same floor `pipe_seek_mp4` measured on this fixture), so a landing served from the AVIO buffer without a seek cannot pass. Not yet run on the device: the timing above is arithmetic on the two gates, and the first run is what confirms it."
+    },
+    {
       "name": "pipe_abr_seek_flat",
       "fixture": "pipe_h264_aac_mp4.mp4",
       "title": "no-Plex Auto: a REFUSED seek must not latch the read-out",

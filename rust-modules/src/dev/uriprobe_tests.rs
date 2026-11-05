@@ -667,7 +667,7 @@ mod hostsim {
             assert!(rig.pa.uri_live()); assert!(rig.pa.uri_closing());
             assert_eq!(plx_media::player::start_bufferfeed_tracked(&mut rig.ps,&mut rig.pa),plx_media::player::BufferfeedStartOutcome::Failed);
             let start=Instant::now(); let mut ticks=0;
-            let exit=plx_media::player::exit_native_with(&mut rig.pa,|| { ticks+=1; start+std::time::Duration::from_secs(ticks*5) },||{});
+            let exit=plx_media::player::exit_native_with(&mut rig.ps,&mut rig.pa,|| { ticks+=1; start+std::time::Duration::from_secs(ticks*5) },||{});
             assert_eq!(exit,plx_media::player::NativeExit::WorkerInFirmware);
             assert_eq!(rig.transport.closed(),1);
             assert!(!rig.pa.uri_live(),"unresolved resource owner is deliberately leaked for process exit");
@@ -760,7 +760,7 @@ mod hostsim {
             assert_eq!(plane.phase(),Phase::Quarantined(Why::Completion(-1)));
             assert!(rig.pa.uri_closing()); assert!(rig.pa.uri_plane_open());
             assert!(rig.pa.uri_acb_exit_quarantine_for_test());
-            let exit=plx_media::player::exit_native_with(&mut rig.pa,Instant::now,||panic!("released-bus plane quarantine needs no extra wait"));
+            let exit=plx_media::player::exit_native_with(&mut rig.ps,&mut rig.pa,Instant::now,||panic!("released-bus plane quarantine needs no extra wait"));
             assert_eq!(exit,plx_media::player::NativeExit::WorkerInFirmware);
             assert!(!rig.pa.uri_live()); assert_eq!(rig.transport.closed(),1);
             assert_eq!(sink.unload_count(),1,"UNLOADED is never dispatched a second time");
@@ -781,7 +781,7 @@ mod hostsim {
             assert_eq!(sink.unload_count(),1); assert_eq!(plane.phase(),Phase::Released);
             assert!(!rig.pa.uri_live(),"the completion released the registration, and the slot with it");
             assert_eq!(rig.transport.closed(),1);
-            let exit=plx_media::player::exit_native_with(&mut rig.pa,Instant::now,||panic!("a released plane needs no wait"));
+            let exit=plx_media::player::exit_native_with(&mut rig.ps,&mut rig.pa,Instant::now,||panic!("a released plane needs no wait"));
             assert_eq!(exit,plx_media::player::NativeExit::Clean);
             assert!(!rig.pa.uri_live()); assert_eq!(rig.transport.closed(),1);
             assert_eq!(sink.unload_count(),1,"UNLOADED is never dispatched a second time");
@@ -800,7 +800,7 @@ mod hostsim {
             let (mut rig,sink,plane)=acb_plane_closed(false);
             assert_eq!(plane.phase(),Phase::Releasing); assert!(rig.pa.uri_live() && rig.pa.uri_closing());
             sink.mailbox.push(5,1);
-            let exit=plx_media::player::exit_native_with(&mut rig.pa,Instant::now,||panic!("the completion was already queued"));
+            let exit=plx_media::player::exit_native_with(&mut rig.ps,&mut rig.pa,Instant::now,||panic!("the completion was already queued"));
             assert_eq!(exit,plx_media::player::NativeExit::Clean);
             assert_eq!(plane.phase(),Phase::Released); assert!(!rig.pa.uri_live());
             assert_eq!(rig.transport.closed(),1); assert_eq!(sink.unload_count(),1);
