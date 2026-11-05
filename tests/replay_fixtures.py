@@ -2,7 +2,9 @@
 """Replay every committed product recording through a built simulator, in both modes.
 
 The simulator owns parsing, controlled bootstrap, recorded ingress, and every frame grade.
-macOS additionally denies outbound networking with sandbox-exec. Evidence roots are retained.
+macOS additionally denies outbound networking with sandbox-exec. An evidence root is retained
+when a replay failed or `--output` named it; a root this run made for itself is removed after a
+clean run, where it would only pile up in `$TMPDIR` with nothing to inspect.
 
 The replays are independent processes and run side by side (`--jobs`, `PLX_REPLAY_JOBS`; 1 is
 serial). What makes that sound: each replay gets its own `PLXNATIVE_RUNTIME_DIR` (triggers, FIFO,
@@ -23,6 +25,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -200,12 +203,20 @@ def main():
         window = resolve_window(args.window, os.environ)
     except ValueError as error:
         parser.error(str(error))
-    output = args.output or Path(tempfile.mkdtemp(prefix='plxnative-replay-gate-'))
+    own = args.output is None
+    output = Path(tempfile.mkdtemp(prefix='plxnative-replay-gate-')) if own else args.output
     output.mkdir(parents=True, exist_ok=True)
     failures = run_all(args.sim.resolve(), args.assets.resolve(), fixtures, output.resolve(),
                        args.timeout, jobs, functools.partial(run_fixture, window=window))
+    keep = bool(failures) or not own
+    if not keep:
+        try:
+            shutil.rmtree(output)
+        except OSError as error:  # a clean run stays clean; the leftover is named, not hidden
+            keep = True
+            print(f'could not remove {output}: {error}', file=sys.stderr)
     print(f'{len(fixtures)} fixtures, {len(fixtures) * len(MODES)} replays, {len(failures)} failures; '
-          f'{jobs} parallel; window {window}; evidence {output}', flush=True)
+          f'{jobs} parallel; window {window}' + (f'; evidence {output}' if keep else ''), flush=True)
     return bool(failures)
 
 

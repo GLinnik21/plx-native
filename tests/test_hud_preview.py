@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+import signal
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -128,6 +129,19 @@ class Matrix(unittest.TestCase):
                             preview.main()
                         self.assertEqual(native.call_count, 1)
                         self.assertEqual(native.call_args.args[1], "--hud-info")
+
+    def test_a_run_stopped_by_sigterm_or_sighup_unwinds_so_its_instance_roots_are_removed(self):
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            self.addCleanup(signal.signal, sig, signal.getsignal(sig))
+        with patch.object(sys, "argv", ["hud_preview.py", "--bin", "/native", "--hud", "/hud", "--out", "/out"]), \
+                patch.object(preview, "run"):
+            preview.main()
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            with self.subTest(signal=sig.name):
+                self.assertTrue(callable(signal.getsignal(sig)), "the default action ends the process at once")
+                with self.assertRaises(SystemExit) as stopped:
+                    signal.raise_signal(sig)
+                self.assertEqual(stopped.exception.code, 128 + sig)
 
     @unittest.skipUnless(hasattr(os, "mkfifo"), "requires a POSIX FIFO")
     def test_special_archive_input_is_rejected_without_opening_it(self):
