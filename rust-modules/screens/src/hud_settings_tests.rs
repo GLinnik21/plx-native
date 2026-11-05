@@ -675,7 +675,8 @@ fn play_waits_for_a_free_page() {
             assert!(page.state.editing);
         }
         assert_eq!(page.prompt.is_open(), busy == "prompt");
-        let key = if busy == "prompt" { ALERT } else { key_of(&page, &HudId::Pack("com.example.dev".into())) };
+        // The dev row keeps the focus in every case, so the prompt's own hold on the key (not an empty focus) is what stops it.
+        let key = key_of(&page, &HudId::Pack("com.example.dev".into()));
         let emitted = drive(&mut page, play_key(Edge::Down), key);
         assert!(huds(&emitted).is_empty(), "{busy}: {} commands", huds(&emitted).len());
     }

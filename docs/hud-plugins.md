@@ -1500,7 +1500,7 @@ source, install timestamp, package_format and hud_format, plus an optional `from
 development source, written only for an address install from one). Both format fields are 1.0 in this baseline.
 A `from` that is not a development address, or that sits on a record of another source, is dropped on read (the
 package stays listed and the index writable); an older build, which does not know the field, reads an index that
-holds one as read-only, which only an author who ran `tools/hud-dev` can reach. Duplicate fields or ids, unknown fields, malformed identities and unsupported headers make the entire
+holds one as read-only, which anyone who installed from a private-LAN `http://` address (an author running `tools/hud-dev`, most often) can reach. Duplicate fields or ids, unknown fields, malformed identities and unsupported headers make the entire
 index read-only. Installation uses another writable candidate. Removal reports an incomplete result
 when any unreadable candidate might retain a copy. Index failures never trigger deletion of that
 candidate's files.

@@ -1336,8 +1336,9 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   selftest` proves upload, ordered redelivery/ack and refusal paths on loopback with no television,
   and runs inside `make check`.
 - `tools/hud-dev` — **Player HUD authoring server** (host-side, python3 stdlib only; on a Mac run it with
-  `/usr/bin/python3`, the one interpreter the firewall lets accept LAN connections): `tools/hud-dev SOURCE --sim
-  PATH [--port N]` packs a HUD source folder or `.plxhud` with `tools/hud_package.py` (the simulator's `--hud-pack`),
+  `/usr/bin/python3`, the interpreter the application firewall allows by default; any other python is dropped
+  silently until its "allow incoming connections?" prompt is clicked, as for `tools/netcond.py` below):
+  `tools/hud-dev SOURCE --sim PATH [--port N]` packs a HUD source folder or `.plxhud` with `tools/hud_package.py` (the simulator's `--hud-pack`),
   lints it with `--hud-lint` on every mtime change, serves the last CLEAN bundle on `0.0.0.0` at a
   `http://<RFC 1918 address>:<port>/<name>.plxhud` it prints (and refuses to start without such an address), and
   raises the served patch version on every clean change (numeric `MAJOR.MINOR.PATCH` is all the store compares). It

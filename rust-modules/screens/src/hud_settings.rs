@@ -700,9 +700,10 @@ impl HudPage {
     }
 
     /// Play on the row of a package from a development source: its recorded address leaves as the fetch the address row
-    /// sends. Unhandled on any other row, and while a fetch or other package work runs or the prompt is up.
+    /// sends. Unhandled on any other row, and while a fetch or other package work runs (an open prompt has already
+    /// taken the key in `step`, before this arm).
     fn refetch(&mut self, cx: &Cx<'_, InnerHost>, fx: &mut Effects<'_, InnerHost>) -> Handled {
-        if self.list.fetching || self.list.package_busy || self.prompt.is_open() {
+        if self.list.fetching || self.list.package_busy {
             return Handled::No;
         }
         let row = cx.focus.current.and_then(|key| self.form.index_of_key(RowKey(key.elem)));

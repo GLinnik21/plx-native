@@ -14,6 +14,7 @@ import importlib.util
 import io
 import json
 import os
+import socket
 import stat
 import sys
 import tempfile
@@ -153,6 +154,15 @@ class TheAddressTheTvMayFetchFrom(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not an RFC 1918 address"):
             hud_dev.addresses_for("8.8.8.8", ["192.168.1.2"])
 
+    def test_the_address_the_default_route_uses_is_listed_first_not_a_vpns(self):
+        # A VPN that routes 10/8 answers the 10.x probe with the tunnel's address, which the TV cannot reach.
+        routes = {"192.0.2.1": "192.168.1.20", "10.255.255.255": "10.8.0.2", "172.31.255.255": "127.0.0.1",
+                  "192.168.255.255": "192.168.1.20"}
+        with mock.patch.object(hud_dev, "route_address", side_effect=lambda destination: routes[destination]), \
+                mock.patch.object(hud_dev.socket, "getaddrinfo", side_effect=OSError), \
+                mock.patch.object(hud_dev.subprocess, "run", side_effect=OSError):
+            self.assertEqual(hud_dev.private_addresses(), ["192.168.1.20", "10.8.0.2"])
+
     def test_the_banner_prints_the_exact_address_and_the_recipe_on_one_line(self):
         lines = hud_dev.banner(["192.168.1.20", "10.0.0.4"], 8731, "my-hud")
         self.assertEqual(lines[0], "TV address: http://192.168.1.20:8731/my-hud.plxhud")
@@ -273,6 +283,12 @@ class OneBuild(Workdir):
         lines = list(hud_dev.finding_lines([{"file": "hud.json", "path": "/layout", "code": "E0001", "severity": "error",
                                              "message": "the stub does not like BAD", "hint": "remove BAD"}]))
         self.assertEqual(lines, ["  hud.json/layout  E0001 error: the stub does not like BAD", "      hint: remove BAD"])
+
+    def test_a_finding_without_a_file_or_a_pointer_prints_as_the_package(self):
+        # The lint report writes null, not an absent key, for a finding that belongs to no file.
+        lines = list(hud_dev.finding_lines([{"file": None, "path": None, "code": "E0002", "severity": "error",
+                                             "message": "the archive is too large", "hint": None}]))
+        self.assertEqual(lines, ["  (package)  E0002 error: the archive is too large"])
 
     def test_a_version_the_set_cannot_order_is_refused_before_packing(self):
         write_json(self.source / "manifest.json", dict(MANIFEST, version="1.2.0-dev.1"))
@@ -395,6 +411,18 @@ class TheServer(Served):
         raised.exception.close()
         self.assertEqual(self.lines, ["127.0.0.1  GET /my-hud.plxhud  200  version 1.2.1000",
                                       "127.0.0.1  GET /nope.plxhud  404  version -"])
+
+
+    def test_a_path_with_terminal_escapes_is_logged_written_out(self):
+        # The server listens on every interface; what a stranger puts in the request line must not drive the terminal.
+        self.start()
+        with socket.create_connection(("127.0.0.1", self.server.server_address[1]), timeout=10) as raw:
+            raw.sendall(b"GET /\x1b[31mred\x07 HTTP/1.0\r\n\r\n")
+            raw.recv(4096)
+        self.assertEqual(len(self.lines), 1, self.lines)
+        self.assertNotIn("\x1b", self.lines[0])
+        self.assertNotIn("\x07", self.lines[0])
+        self.assertIn("\\x1b[31mred\\x07", self.lines[0])
 
 
 class TheLoopKeepsTheLastCleanBundle(Served):

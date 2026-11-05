@@ -43,14 +43,16 @@ repository's `make sim-macos` build) and the repository's `tools/hud_package.py`
 /usr/bin/python3 tools/hud-dev my-hud --sim bin/plxnative-sim
 ```
 
-On a Mac run it with `/usr/bin/python3`: the macOS firewall lets only that interpreter accept connections from
-the network, and a Homebrew Python is blocked without any message. The tool refuses to start on a machine with no
+On a Mac run it with `/usr/bin/python3`, the interpreter the macOS firewall allows by default: any other Python
+(Homebrew's included) has its incoming connections dropped without any message until someone clicks "allow incoming
+connections" for that path. The tool refuses to start on a machine with no
 private IPv4 address (10/8, 172.16/12, 192.168/16), the only kind the TV fetches over plain `http://`. It prints the
 address to type, `http://<your address>:8731/my-hud.plxhud` (`--port` changes the port; `--host` names the address to
 print when the machine has several), and the line below.
 
 1. On the TV, open Settings > Video & playback > Player HUD > Install from address, type that address, press OK, and
-   confirm the offer. The offer is shown with "dev source" and "Unreviewed"; nothing is installed before you confirm.
+   confirm the offer. The offer reads "From <your address>", "Development source" and "Unreviewed"; nothing is installed before you
+   confirm.
 2. Edit the source. Each time a file changes the tool lints it (`--hud-lint`, every language) and packs it with the
    same native packer `--hud-pack` uses. A source with findings is printed (file, pointer, hint) and is **not
    served**: the TV keeps getting the last clean build. A clean build is served at once.
@@ -69,8 +71,9 @@ address; a registry or drop-folder install has no such action.
 second) is above any release that only raises the patch: a dev build installed as `1.0.26000000` makes the published
 `1.0.4` "not newer", so the TV refuses it and does not treat it as an update. Before you install the published
 version, open the Player HUD page and use the row named after your HUD whose detail reads "Remove" (the page's existing
-way to remove a package), then install from the gallery. The TV also records the dev address in its installed list; a PlxNative build
-older than this feature reads such a list as read-only until the dev install is removed.
+way to remove a package), then install from the gallery. The TV also records the dev address in its installed list. A
+PlxNative build older than this feature reads that whole list as read-only: it does not list the dev HUD and cannot
+remove it, so remove the dev install on a newer build before you go back to an older one.
 
 Submit the source folder, attribution README and maintainer contact to
 https://github.com/GLinnik21/plxnative-huds . CI builds once and binds linting, all-language/native

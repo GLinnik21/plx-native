@@ -20,8 +20,9 @@ That number is also above any later release that only raises the patch, so the T
 not newer and never offer it: remove the dev install (Player HUD page, the row named after the HUD, "Remove") before
 installing the published one.
 
-On the Mac, run it with `/usr/bin/python3`: macOS's firewall lets only that interpreter accept LAN connections by
-default, and a Homebrew Python is silently blocked (the set then never reaches the server).
+On the Mac, run it with `/usr/bin/python3`: macOS's firewall allows that interpreter to accept LAN connections by
+default, while any other Python (Homebrew's, say) is silently dropped until "allow incoming connections" is clicked
+for its path (the set then never reaches the server).
 """
 from __future__ import annotations
 
@@ -47,7 +48,7 @@ from pathlib import Path, PurePosixPath
 from hud_package import native_json, snapshot
 
 ROOT = Path(__file__).resolve().parents[1]
-#: Not 32400 (Plex), 32488 (the PlxNative lab) or 8080 (the TV dashboard).
+#: Not 32400 (Plex), 8080 (the TV dashboard) or 39443 (the lab receiver's default, `tools/plxnative-lab`).
 DEFAULT_PORT = 8731
 POLL_SECONDS = 0.5
 #: Dev versions count from here (2026-01-01T00:00:00Z), so they stay far below a u64 patch and above any counter.
@@ -82,20 +83,26 @@ def is_rfc1918(text):
     return first == 10 or (first == 172 and 16 <= second <= 31) or (first == 192 and second == 168)
 
 
+def route_address(destination):
+    """The local address a packet to `destination` would leave from (a UDP `connect` sends nothing)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probing:
+        probing.connect((destination, 9))
+        return probing.getsockname()[0]
+
+
 def private_addresses():
-    """This machine's RFC 1918 IPv4 addresses: the interface a route to a private network would leave by first (a
-    UDP `connect` sends nothing), then the host name's and every interface's."""
+    """This machine's RFC 1918 IPv4 addresses, the one the default route leaves by first (a documentation address
+    the network cannot answer: a VPN that routes 10/8 would put its own tunnel address first otherwise), then the one
+    each private block's route leaves by, then the host name's and every interface's."""
     found = []
 
     def add(address):
         if is_rfc1918(address) and address not in found:
             found.append(address)
 
-    for probe in ("10.255.255.255", "172.31.255.255", "192.168.255.255"):
+    for probe in ("192.0.2.1", "10.255.255.255", "172.31.255.255", "192.168.255.255"):
         try:
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probing:
-                probing.connect((probe, 9))
-                add(probing.getsockname()[0])
+            add(route_address(probe))
         except OSError:
             pass
     try:
@@ -255,9 +262,14 @@ class Builder:
             return bundle
 
 
+def printable(text):
+    """`text` with every control character (a terminal's escape sequences among them) written out as \\xNN."""
+    return "".join(ch if ch.isprintable() else ch.encode("unicode_escape").decode("ascii") for ch in text)
+
+
 def finding_lines(findings):
     for finding in findings:
-        where = f"{finding.get('file', '')}{finding.get('path', '')}".strip() or "(package)"
+        where = f"{finding.get('file') or ''}{finding.get('path') or ''}".strip() or "(package)"
         yield f"  {where}  {finding.get('code', '')} {finding.get('severity', '')}: {finding.get('message', '')}"
         if finding.get("hint"):
             yield f"      hint: {finding['hint']}"
@@ -318,7 +330,7 @@ def make_server(shelf, name, bind, port, log):
                 status, body, kind = 200, bundle.content, "application/octet-stream"
             # Logged before the bytes go out: the line says what was offered, even to a client that hangs up.
             served = bundle.version if status == 200 else "-"
-            log(f"{self.client_address[0]}  {self.command} {self.path}  {status}  version {served}")
+            log(f"{self.client_address[0]}  {printable(self.command)} {printable(self.path)}  {status}  version {served}")
             self.send_response(status)
             self.send_header("Content-Type", kind)
             self.send_header("Content-Length", str(len(body)))
