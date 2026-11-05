@@ -144,6 +144,7 @@ fn display() -> &'static dyn plx_platform::tv::sink::DisplaySink {
 
 /// The process's ACB plane owner: the one holder of the video-plane binding for both backends,
 /// booted once by the application's `acb_init` (`app/adapters/backends.rs`). It replaces the old `ACB_OK` / `PTYPE` statics.
+#[cfg(any(feature = "play-feed", feature = "play-uri"))]
 pub(crate) fn plane() -> &'static plx_platform::tv::plane::PlaneOwner {
     plx_platform::tv::plane::installed()
 }
