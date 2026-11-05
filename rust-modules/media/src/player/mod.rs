@@ -130,7 +130,8 @@ fn sink() -> &'static dyn plx_platform::tv::sink::VideoSink {
 /// [`FENCE`] while an off-frame `Unload` owns the native object. Without it the port's installed
 /// display sink answers (a simulator always carries Feed). The plane's boot no longer comes through
 /// here: the application reads `display_installed()` itself (`app/adapters/backends.rs`).
-#[cfg(all(feature = "devtriggers", feature = "play-uri", any(test, feature = "play-feed")))]
+#[cfg(all(feature = "devtriggers", feature = "play-uri"))]
+#[cfg_attr(not(feature = "play-feed"), allow(dead_code))] // a URI-only build opens no probe: its tests are the caller
 fn display() -> &'static dyn plx_platform::tv::sink::DisplaySink {
     #[cfg(feature = "play-feed")]
     {
