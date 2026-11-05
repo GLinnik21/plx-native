@@ -2,7 +2,7 @@
 //! ownership stays here: the claimed start attempt, the settle into the route reducer, the facts the
 //! attempt view takes, the adapter's one probe slot and when it is freed, and every `uriprobe:` line
 //! the route side writes. The probe itself, the independent driver over the URI transport and the
-//! machine it steps (`plx_play_uri::uriprobe`, `uriprobe_drive`), is the application's: it
+//! machine it steps (the play-uri crate's `uriprobe` and `uriprobe_drive`), is the application's: it
 //! implements [`UriProbe`] and [`UriProbeSession`] (`dev::uriprobe`) and installs them at boot
 //! ([`PlayerAdapter::install_uri_probe`](super::adapter::PlayerAdapter::install_uri_probe)), so this
 //! crate names neither the driver nor its types. Without an installed probe the trigger file is not
