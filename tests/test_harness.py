@@ -6303,6 +6303,21 @@ class UriAudioSelectedGrading(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("refused (TimedOut)", why)
 
+    def test_a_refusal_carries_the_index_that_went_out_and_the_one_the_service_named(self):
+        """A wrong numbering ends in a refusal: the service names an index the backend cannot match to its
+        pending select, and the control times out. The failure must still say which index was sent and
+        which the service answered with."""
+        line = TIMED_OUT.format(sid=99100102)
+        named = _trace(900, "ev=trackSelected type=audio index=2")
+        ok, why = self.grade(_audio_log(_audio_info(0), SENT_1, named, _audio_info(2, t=950), line,
+                                        playing=False), SELECT_1)
+        self.assertFalse(ok)
+        for part in (line, SENT_1, named, "audioInfo last said track=2"):
+            self.assertIn(part, why)
+        ok, why = self.grade(_audio_log(_audio_info(0), line, playing=False), SELECT_1)
+        self.assertFalse(ok)
+        self.assertIn("no `uri: selectTrack sent` line", why)
+
     def test_a_select_nothing_confirmed_fails(self):
         ok, why = self.grade(_audio_log(_audio_info(0), SENT_1, _audio_info(0, t=700)), SELECT_1)
         self.assertFalse(ok)

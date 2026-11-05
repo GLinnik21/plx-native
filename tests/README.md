@@ -1081,7 +1081,7 @@ kind=audio index=1 stream=SID`: the native index and the Plex stream id it stand
 confirmed it before the first Play (`uri-trace: ... ev=trackSelected`, which names `type=audio index=N` when the
 service does and then must name index 1, or an `ev=audioInfo ... track=` that moved off the load-time track,
 then `uri: service playing`): a refusal fails quoting the `uri: control SelectTrack ... refused (TimedOut)`
-line, a send to another index fails quoting the sent line, no sent line at all fails as "never sent", and `uri:
+line together with the sent line and any track the service named, a send to another index fails quoting the sent line, no sent line at all fails as "never sent", and `uri:
 audio index=N is already selected (audioInfo); no selectTrack sent` fails it as "nothing was sent". The native
 index the app asks for is the selected stream's 0-based position among the Part's audio streams in container
 order (`OriginalRequest::audio_ordinal`, mapped by `dev::uri_product::DevQualifier`), the numbering

@@ -1866,9 +1866,6 @@ def a_uri_audio_selected(lines, want):
     if bad:
         return False, (f"uri_audio_selected wants {{'path': 'select'|'already', 'index': N >= 0}}, got {want!r}")
     path, index = want["path"], want["index"]
-    refused = next((ln for ln in lines if RE_URI_AUDIO_REFUSED.search(ln)), None)
-    if refused:
-        return False, f"the audio select was never confirmed :: {refused.strip()}"
     already = next(((i, m) for i, ln in enumerate(lines) if (m := RE_URI_AUDIO_ALREADY.search(ln))), None)
     trace = [(i, m.group(2)) for i, ln in enumerate(lines) if (m := RE_URI_TRACE_LINE.search(ln))]
     tracks = [(i, int(m.group(1))) for i, text in trace if (m := RE_URI_AUDIO_INFO.match(text))]
@@ -1876,6 +1873,16 @@ def a_uri_audio_selected(lines, want):
     confirmed = lines[selected[0][0]] if selected else None
     sent = next(((i, m) for i, ln in enumerate(lines) if (m := RE_URI_AUDIO_SENT.search(ln))), None)
     played = a_uri_service_playing(lines)[0]
+    refused = next((ln for ln in lines if RE_URI_AUDIO_REFUSED.search(ln)), None)
+    if refused:
+        # A refusal is where a wrong numbering ends (the service names an index the backend cannot match
+        # to its pending select, and the control times out), so it carries what the run did say: the
+        # index that went out, the track the service named, and the track it last reported in use.
+        said = [f"sent :: {lines[sent[0]].strip()}"] if sent else ["no `uri: selectTrack sent` line"]
+        said += [f"the service named :: {lines[i].strip()}" for i, m in selected if m.group(1) is not None]
+        if tracks:
+            said.append(f"audioInfo last said track={tracks[-1][1]}")
+        return False, f"the audio select was never confirmed :: {refused.strip()} ; " + " ; ".join(said)
     if path == "already":
         if already is None:
             return False, ("no `uri: audio index=N is already selected (audioInfo); no selectTrack sent` line: "
