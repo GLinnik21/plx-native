@@ -130,6 +130,7 @@ fn run_transport(started: Instant) {
                 code.map(i64::from),
                 Some(&detail),
             );
+            publish_panel(Err(stage), Instant::now());
             return;
         }
     };
@@ -188,6 +189,49 @@ fn run_transport(started: Instant) {
             code.map(i64::from),
             Some(&detail),
         ),
+    }
+    probe_panel(&registration);
+}
+
+#[cfg(all(
+    target_arch = "arm",
+    target_os = "linux",
+    not(feature = "hostsim"),
+    not(any(test, feature = "test-support"))
+))]
+fn probe_panel(registration: &super::ls2::Registration) {
+    let started = Instant::now();
+    let answer = match registration.call(
+        "luna://com.webos.service.tv.systemproperty/getSystemInfo",
+        r#"{"keys":["UHD"]}"#,
+        std::time::Duration::from_millis(1500),
+    ) {
+        Ok(reply) => parse_uhd_reply(&reply).map_err(ProbeFailure::stage),
+        Err(super::ls2::Fail::Timeout) => Err("timeout"),
+        Err(super::ls2::Fail::Setup { stage, .. }) => Err(stage),
+    };
+    publish_panel(answer, started);
+}
+
+#[cfg(all(
+    target_arch = "arm",
+    target_os = "linux",
+    not(feature = "hostsim"),
+    not(any(test, feature = "test-support"))
+))]
+fn publish_panel(answer: Result<crate::devcaps::panel::Panel, &'static str>, started: Instant) {
+    let elapsed = started.elapsed().as_millis();
+    match answer {
+        Ok(panel) => {
+            crate::devcaps::panel::publish(panel);
+            plx_base::eventlog::log(&format!(
+                "webos-caps: key=UHD answer={} elapsed_ms={elapsed}",
+                panel.label()
+            ));
+        }
+        Err(stage) => plx_base::eventlog::log(&format!(
+            "webos-caps: key=UHD answer=unknown stage={stage} elapsed_ms={elapsed}"
+        )),
     }
 }
 
@@ -319,10 +363,57 @@ fn parse_dv_reply(reply: &str) -> Result<DvCapability, ProbeFailure> {
     })
 }
 
+#[cfg(any(
+    test,
+    all(target_arch = "arm", target_os = "linux", not(feature = "hostsim"))
+))]
+fn parse_uhd_reply(reply: &str) -> Result<crate::devcaps::panel::Panel, ProbeFailure> {
+    use crate::devcaps::panel::Panel;
+    let value: serde_json::Value = serde_json::from_str(reply).map_err(|_| ProbeFailure::Json)?;
+    let root = value.as_object().ok_or(ProbeFailure::Json)?;
+    if root.get("returnValue").and_then(serde_json::Value::as_bool) != Some(true) {
+        return Err(ProbeFailure::ReplyReturnValue);
+    }
+    match root.get("UHD").ok_or(ProbeFailure::MissingKey)?.as_str() {
+        Some("true") => Ok(Panel::Uhd),
+        Some("false") => Ok(Panel::NotUhd),
+        _ => Err(ProbeFailure::ValueType),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{override_capability, parse_dv_reply, platform_gate, DvCapability, ProbeFailure};
+    use super::{override_capability, parse_dv_reply, parse_uhd_reply, platform_gate, DvCapability, ProbeFailure};
     use crate::devcaps::dv::{DvProbe, ProbeSource};
+    use crate::devcaps::panel::Panel;
+
+    #[test]
+    fn uhd_reply_parser_reads_only_the_documented_string_answer() {
+        assert_eq!(parse_uhd_reply(r#"{"returnValue":true,"UHD":"true"}"#), Ok(Panel::Uhd));
+        assert_eq!(parse_uhd_reply(r#"{"returnValue":true,"UHD":"false"}"#), Ok(Panel::NotUhd));
+        assert_eq!(
+            parse_uhd_reply(r#"{"returnValue":true,"modelName":"43UQ75006LF","UHD":"false"}"#),
+            Ok(Panel::NotUhd)
+        );
+        assert_eq!(parse_uhd_reply("not json"), Err(ProbeFailure::Json));
+        assert_eq!(parse_uhd_reply("[]"), Err(ProbeFailure::Json));
+        for reply in [
+            r#"{"returnValue":false,"UHD":"true"}"#,
+            r#"{"returnValue":"true","UHD":"true"}"#,
+            r#"{"UHD":"true"}"#,
+        ] {
+            assert_eq!(parse_uhd_reply(reply), Err(ProbeFailure::ReplyReturnValue), "{reply}");
+        }
+        assert_eq!(parse_uhd_reply(r#"{"returnValue":true}"#), Err(ProbeFailure::MissingKey));
+        for reply in [
+            r#"{"returnValue":true,"UHD":true}"#,
+            r#"{"returnValue":true,"UHD":null}"#,
+            r#"{"returnValue":true,"UHD":"yes"}"#,
+            r#"{"returnValue":true,"UHD":1}"#,
+        ] {
+            assert_eq!(parse_uhd_reply(reply), Err(ProbeFailure::ValueType), "{reply}");
+        }
+    }
 
     fn configd(capability: DvCapability) -> DvProbe {
         DvProbe {
