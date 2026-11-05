@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-05T01:34:57Z",
+ "generated": "2026-11-05T01:44:47Z",
  "metrics": [
   {
    "change30_pct": 1.0,
@@ -145,17 +145,17 @@
   },
   {
    "change30_pct": -57.0,
-   "change7_pct": 17.9,
+   "change7_pct": 17.8,
    "d30": 970,
-   "delta30": -552.5,
-   "delta7": 63.5,
+   "delta30": -553,
+   "delta7": 63,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 78,
+   "n_now": 79,
    "n_prev": 83,
-   "now": 417.5,
+   "now": 417,
    "prev7": 354,
    "shown": true,
    "state": "worse",
@@ -387,18 +387,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 28.2,
-   "change7_pct": 12.1,
+   "change30_pct": 28.0,
+   "change7_pct": 11.9,
    "d30": 232,
-   "delta30": 65.5,
-   "delta7": 32.0,
+   "delta30": 65,
+   "delta7": 31.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 70,
+   "n_now": 71,
    "n_prev": 72,
-   "now": 297.5,
+   "now": 297,
    "prev7": 265.5,
    "shown": true,
    "state": "flat",
@@ -409,17 +409,17 @@
   },
   {
    "change30_pct": -78.1,
-   "change7_pct": 5.7,
+   "change7_pct": 5.9,
    "d30": 980,
-   "delta30": -765.5,
-   "delta7": 11.5,
+   "delta30": -765,
+   "delta7": 12,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 70,
+   "n_now": 71,
    "n_prev": 71,
-   "now": 214.5,
+   "now": 215,
    "prev7": 203,
    "shown": true,
    "state": "flat",
@@ -438,9 +438,9 @@
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 70,
+   "n_now": 71,
    "n_prev": 72,
-   "now": 204.0,
+   "now": 204,
    "prev7": 172.0,
    "shown": true,
    "state": "flat",
@@ -560,15 +560,15 @@
    "change30_pct": 18.8,
    "change7_pct": 5.6,
    "d30": 16,
-   "delta30": 3.0,
+   "delta30": 3,
    "delta7": 1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 70,
+   "n_now": 71,
    "n_prev": 72,
-   "now": 19.0,
+   "now": 19,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 36.9,
    "commits": [
     {
-     "pr": 1224,
-     "sha": "a97bc1b49",
-     "title": "Separate library navigation from Sort & Filter"
-    },
-    {
      "pr": 1225,
      "sha": "579f44b97",
      "title": "Avoid flashing hold-options hint on short OK presses"
@@ -715,6 +710,11 @@
      "pr": 1238,
      "sha": "c5c2b7e1a",
      "title": "Cycle HUD preview backgrounds and use shared glass controls"
+    },
+    {
+     "pr": 1239,
+     "sha": "5588f5bfd",
+     "title": "HUD gallery: accept only a signed registry index"
     }
    ],
    "from": 215.5,
@@ -728,11 +728,6 @@
    "change_pct": 31.9,
    "commits": [
     {
-     "pr": 1224,
-     "sha": "a97bc1b49",
-     "title": "Separate library navigation from Sort & Filter"
-    },
-    {
      "pr": 1225,
      "sha": "579f44b97",
      "title": "Avoid flashing hold-options hint on short OK presses"
@@ -776,6 +771,11 @@
      "pr": 1238,
      "sha": "c5c2b7e1a",
      "title": "Cycle HUD preview backgrounds and use shared glass controls"
+    },
+    {
+     "pr": 1239,
+     "sha": "5588f5bfd",
+     "title": "HUD gallery: accept only a signed registry index"
     }
    ],
    "from": 63.7,
@@ -789,11 +789,6 @@
    "change_pct": 28.7,
    "commits": [
     {
-     "pr": 1224,
-     "sha": "a97bc1b49",
-     "title": "Separate library navigation from Sort & Filter"
-    },
-    {
      "pr": 1225,
      "sha": "579f44b97",
      "title": "Avoid flashing hold-options hint on short OK presses"
@@ -837,6 +832,11 @@
      "pr": 1238,
      "sha": "c5c2b7e1a",
      "title": "Cycle HUD preview backgrounds and use shared glass controls"
+    },
+    {
+     "pr": 1239,
+     "sha": "5588f5bfd",
+     "title": "HUD gallery: accept only a signed registry index"
     }
    ],
    "from": 147.2,
@@ -850,11 +850,6 @@
    "change_pct": 22.4,
    "commits": [
     {
-     "pr": 1224,
-     "sha": "a97bc1b49",
-     "title": "Separate library navigation from Sort & Filter"
-    },
-    {
      "pr": 1225,
      "sha": "579f44b97",
      "title": "Avoid flashing hold-options hint on short OK presses"
@@ -898,6 +893,11 @@
      "pr": 1238,
      "sha": "c5c2b7e1a",
      "title": "Cycle HUD preview backgrounds and use shared glass controls"
+    },
+    {
+     "pr": 1239,
+     "sha": "5588f5bfd",
+     "title": "HUD gallery: accept only a signed registry index"
     }
    ],
    "from": 288.5,
@@ -908,18 +908,8 @@
    "to": 353
   },
   {
-   "change_pct": 17.9,
+   "change_pct": 17.8,
    "commits": [
-    {
-     "pr": 1224,
-     "sha": "a97bc1b49",
-     "title": "Separate library navigation from Sort & Filter"
-    },
-    {
-     "pr": 1225,
-     "sha": "579f44b97",
-     "title": "Avoid flashing hold-options hint on short OK presses"
-    },
     {
      "pr": 1227,
      "sha": "9ac44e870",
@@ -959,14 +949,19 @@
      "pr": 1238,
      "sha": "c5c2b7e1a",
      "title": "Cycle HUD preview backgrounds and use shared glass controls"
+    },
+    {
+     "pr": 1239,
+     "sha": "5588f5bfd",
+     "title": "HUD gallery: accept only a signed registry index"
     }
    ],
    "from": 354,
    "id": "push_wait",
    "label": "Wait after merge",
-   "since": "2026-11-04",
+   "since": "2026-11-05",
    "threshold_pct": 15.0,
-   "to": 417.5
+   "to": 417
   }
  ],
  "schema": 2,
