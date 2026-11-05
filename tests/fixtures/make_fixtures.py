@@ -1814,8 +1814,8 @@ PIPE_MBIT = {
     "pipe_abr_4k_22m": 22.0,
     "pipe_hls_720p24_20m": 20.1,        # CBR 20 Mbit/s video + 128 kbps AAC; MPEG-TS overhead not measured
     "pipe_uri_carrier_720p24": 1.3,     # CRF 30 720p24 + 128 kbps AAC: measured 1.26 Mbit/s; nothing plays its bytes
-    "pipe_hls_720p24_2a": 4.3,          # CBR 4 Mbit/s video + two 128 kbps AAC streams; MPEG-TS overhead not measured
-    "pipe_uri_carrier_720p24_2a": 1.5,  # = the carrier above + a second 128 kbps AAC stream; nothing plays its bytes
+    "pipe_hls_720p24_2a": 4.4,          # CBR 4 Mbit/s video + two 128 kbps AAC; measured 4.40 over 33.0 MB of segments
+    "pipe_uri_carrier_720p24_2a": 1.4,  # = the carrier above + a second 128 kbps AAC stream: measured 1.40 (10.5 MB)
     "pipe_h264_ac3_short": 1.71,        # = pipe_h264_ac3_480p, of which it is a 20 s copy
     "pipe_h264_ac3_audio_tail": 1.71,   # = pipe_h264_ac3_short (the 3 s tail is audio only)
 }
