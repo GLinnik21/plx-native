@@ -85,6 +85,11 @@ mod uri_boot_tests {
             self.0.lock().unwrap().2.iter().rev().find(|(name, _, _)| *name == method)
                 .map(|(_, request, _)| *request).expect("the native method was queued")
         }
+        /// The payload of the latest native call of `method`.
+        fn last_payload(&self, method: &str) -> String {
+            self.0.lock().unwrap().2.iter().rev().find(|(name, _, _)| *name == method)
+                .map(|(_, _, payload)| payload.clone()).expect("the native method was queued")
+        }
         /// A reply to one named earlier request, not the latest of its method.
         fn say_request(&self, method: &'static str, request: RequestId, payload: &str) {
             self.0.lock().unwrap().3.push(UriReply { session: SessionId::new(1), request,
@@ -311,6 +316,72 @@ mod uri_boot_tests {
             "the service has loaded and the startup selection is settled: the first Play goes out");
         assert_eq!(bus.calls("selectTrack"), 0,
             "the track the service already selected needs no native selection");
+    }
+
+    /// The same captured 4.5 service, for a start that carries a resume position: the startup plan
+    /// sequences the audio selection, then Seek(resume), then Play, each confirmed. The service
+    /// answers the seek call with a plain reply that has no `seekDone` in it and reports the
+    /// `seekDone` on the subscription about a hundred milliseconds later (the ls-monitor capture
+    /// of a bound session). RED against the driver that looked for `seekDone` only inside the seek's
+    /// own reply: the seek stayed pending, no `play` for 15 s, then a refused control and a Feed
+    /// fallback (the TV run of the `..._bound_collapse` case). The only fixture here that follows
+    /// the device's order for a resume; the others inject events the real service never sends.
+    #[test]
+    fn product_uri_plays_after_a_resume_seek_the_service_reports_on_its_subscription() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else { return };
+        plx_plex::plex::client_for(rig.sid).unwrap()
+            .set_link(plx_plex::plex::probe::Location::Local);
+        let bus: &'static Bus = Box::leak(Box::new(Bus::new()));
+        let display: &'static Display = Box::leak(Box::new(Display));
+        let caps = Capabilities { progressive_uri: true, hls_uri: false,
+            packet_feed: false, pause: true, seek: true, audio_track: true,
+            subtitle_track: false, audio_off: false, subtitle_off: false };
+        let port = ResolvePort::new(ProductEvidence { display_exported: true,
+            binding: Binding::Exported { canvas: (1920, 1080) },
+            callable: caps, certified: caps, preview_rectangle: false },
+            Arc::new(QualifiedOriginal));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, port, bus, display));
+        rig.request();
+        assert!(plx_media::route::arm_play_resume(&mut rig.app.player.session, 12_000_000_000),
+            "the viewer's resume point rides the resolve in flight");
+        rig.release.send(()).unwrap();
+        let mut resolved = None;
+        poll_until("qualified URI source did not resolve", || {
+            resolved = plx_media::route::pump_play(&mut rig.app.player.session,
+                rig.app.bridge.metadata_mut());
+            resolved.is_some()
+        });
+        assert!(rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session,
+            resolved.unwrap().uri_offer.expect("qualified source")).is_ok());
+        assert!(matches!(plx_media::player::start_playback_tracked(
+            &mut rig.app.player.session, &mut rig.app.adapters.player),
+            plx_media::player::BufferfeedStartOutcome::Launched(_)));
+        let frame = |rig: &mut Rig| {
+            let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+            unsafe { playback_tick(&mut rig.app, &mut fr); }
+        };
+        frame(&mut rig);
+        bus.say("load", r#"{"errorCode":0,"returnValue":true,"errorText":"No Error","mediaId":"m1"}"#);
+        frame(&mut rig);
+        // The subscription's events, in the captured order.
+        bus.say("subscribe", r#"{"audioInfo":{"track":0,"immersive":"none","mediaId":"m1"}}"#);
+        frame(&mut rig);
+        bus.say("subscribe", r#"{"loadCompleted":{"mediaId":"m1"}}"#);
+        for _ in 0..3 { frame(&mut rig); }
+        assert_eq!(bus.calls("selectTrack"), 0, "the audio track the service chose needs no call");
+        assert_eq!(bus.calls("seek"), 1, "the resume position is sought before the first Play");
+        let sought: serde_json::Value = serde_json::from_str(&bus.last_payload("seek")).unwrap();
+        assert_eq!(sought["position"], 12_000);
+        assert_eq!(bus.calls("play"), 0, "the seek has not landed");
+        bus.say("seek", r#"{"errorCode":0,"returnValue":true,"errorText":"No Error","mediaId":"m1"}"#);
+        for _ in 0..3 { frame(&mut rig); }
+        assert_eq!(bus.calls("play"), 0, "the reply to the seek call is not its landing");
+        bus.say("subscribe", r#"{"seekDone":{"mediaId":"m1"}}"#);
+        for _ in 0..3 { frame(&mut rig); }
+        assert_eq!(bus.calls("play"), 1,
+            "the service reported the seek done: the startup plan goes on to the first Play");
     }
 
     // ---- the URI dev route (`plxnative-uridev`): the production composition, ACB-bound ----
