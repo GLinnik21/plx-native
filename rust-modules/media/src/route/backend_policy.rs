@@ -105,6 +105,26 @@ impl BackendPolicy {
         true
     }
 
+    /// A deliberate quality transition (the Auto worker's fallback to HLS and its return to the
+    /// Original, which its own probes, dwell and switch budget govern) is no recovery candidate:
+    /// it may move the route between recipes this request already admitted on this backend, any
+    /// number of times, because it spends nothing. A recipe never admitted, or one on the other
+    /// backend, is still a candidate and is spent once.
+    pub fn can_revisit(&self, backend: BackendKind, id: OfferId) -> bool {
+        self.last_backend == Some(backend)
+            && self.offers.iter().zip(&self.tried).any(|(offer, tried)|
+                *tried && offer.backend == backend && offer.id == id)
+    }
+
+    /// The common owner admitted a [`can_revisit`](Self::can_revisit) recipe: it becomes the last
+    /// one admitted, so a seek or a foreground restore reopens it and a failed trial rolls back
+    /// from it. No budget moves.
+    pub fn admit_revisit(&mut self, backend: BackendKind, id: OfferId) -> bool {
+        if !self.can_revisit(backend, id) { return false; }
+        self.last_offer = Some((backend, id));
+        true
+    }
+
     /// Finite recipes for one selected source and its selected streams. The URI offer begins
     /// unknown: a feed declaration, PMS decision, or native queue answer cannot qualify it.
     /// A resolve qualifies only the Feed recipe it actually prepared.
@@ -265,6 +285,27 @@ mod tests {
         policy.qualify(first.backend, first.id, Qualification::Refused);
         policy.qualify(first.backend, first.id, Qualification::Qualified);
         assert_eq!(policy.choose(), Selection::Exhausted);
+    }
+
+    #[test]
+    fn a_revisit_moves_between_admitted_recipes_without_spending_anything() {
+        let (uri, feed) = (BackendKind::Uri, BackendKind::Feed);
+        let mut policy = BackendPolicy::new(vec![offer(1, feed, true), offer(2, feed, false),
+            offer(3, feed, false)], false);
+        assert!(!policy.can_revisit(feed, OfferId(1)), "nothing admitted yet");
+        consume(&mut policy, offer(1, feed, true));
+        assert!(!policy.can_revisit(feed, OfferId(2)), "a recipe nothing admitted is a candidate");
+        assert!(!policy.admit_revisit(feed, OfferId(2)));
+        consume(&mut policy, offer(2, feed, false));
+        for _ in 0..2 {
+            for id in [OfferId(1), OfferId(2)] {
+                assert!(policy.admit_revisit(feed, id));
+                assert!(policy.can_reopen(feed, id), "the revisited recipe is the last admitted");
+            }
+        }
+        assert_eq!(policy.choose(), Selection::Open(offer(3, feed, false)),
+            "revisiting spent nothing: the unspent recipe is still the next candidate");
+        assert!(!policy.can_revisit(uri, OfferId(1)), "the other backend was never admitted");
     }
 
     #[test]
