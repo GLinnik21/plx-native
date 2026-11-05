@@ -9096,9 +9096,9 @@ impl PersonOwnerGateFixture {
                          "`it.revision()` is not a registry read\n" + out)
 
     def test_globals_ledger_sees_the_player_transport_readers_in_a_machine(self):
-        """RED: `transport::paused`, `transport::viewer_paused` and `preview::paused` read `FEED_TX.paused` behind
-        a function (Sans-IO lifecycle PR B), so a machine that calls one reads the registry as surely as
-        `client_for` does. Qualified, bare-after-an-import (singly, in a group, through a glob) and the
+        """RED: `transport::paused`, `transport::viewer_paused` and `preview::paused` took the Pause from
+        `FEED_TX.paused` behind a function (Sans-IO lifecycle PR B) and now read the session's readout, but the
+        rule still names their spellings, so a machine that calls one is a site, as a `client_for` call is. Qualified, bare-after-an-import (singly, in a group, through a glob) and the
         rename that would hide the calls are all caught; the writers (`set_paused`, `set_transport_paused`)
         and a file that merely has a local named `paused` are not registry reads. An import that only
         ENDS in one of the module names (`plx_appkit::scrub_preview::*`, `plx_ui::hud_transport::{..}`) is not

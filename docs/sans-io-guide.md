@@ -53,11 +53,14 @@ it. The ledgers freeze the sites that were found; they are not the definition.
 - Reads the clock: `Instant::now`, `SystemTime::now`, a `today()`.
 - Reads a registry the globals rule matches: `client_for`, `current_server`, `current_snapshot`,
   `session::peek`, `keypin::revision`, `keypin::blocked_for`, `grant::offers`,
-  `transport::paused`, `devcaps::caps`, and the ones `docs/sans-io.md` lists as remaining:
+  `devcaps::caps`, and the ones `docs/sans-io.md` lists as remaining:
   `plex::server_ids()`, `server_roster_gen()`, `server_facts_gen()`, `server_probe_result()`
   (re-exports in `plex/src/plex/mod.rs`), `session::peek_settled()` and `session::current_gen()`
   (both in `plex/src/plex/session.rs`) and `tape::active()` (`data/src/stores/tape.rs`). A new use of
   any of these fails `make check` unless a ledger line names it, and is as wrong as a new `client_for`.
+  (`transport::paused`, `transport::viewer_paused` and `preview::paused` are not registry reads any
+  more: each takes the session and reads its `PlayerReadout`, a `ps`-addressed readout read. The rule
+  still matches those spellings, so a machine that calls one is a site until the rule is narrowed.)
 - Reads one the rule does not name. The rule matches a closed list of names, so a registry read it
   does not spell passes CI with no ledger line and is IO all the same. Two are left out on purpose,
   and the principle above still covers them: `i18n::current` (a display read) and the

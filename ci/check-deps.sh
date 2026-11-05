@@ -64,7 +64,8 @@
 #   globals  — a production read of a process-global registry in a machine: `client_for`,
 #              `current_server`, `current_snapshot`, `keypin::revision`, `keypin::blocked_for`,
 #              `session::peek`, `grant::offers`, the player's transport-pause readers
-#              (`transport::paused`, `transport::viewer_paused`, `preview::paused`), and `player::TX`
+#              (`transport::paused`, `transport::viewer_paused`, `preview::paused`: each takes the
+#              session and reads its `PlayerReadout`; the spellings stay guarded), and `player::TX`
 #              or the Feed owners `FEED_TX` / `FEED_SHARED` in the player's lifecycle (at zero: the
 #              machine takes the pause as a value on its event). The value arrives in an event or an
 #              argument instead.
@@ -1301,8 +1302,10 @@ LG_LEDGERS="$(echo ci/allow/workers/*.txt)" LG_AREA_CHECK=1 \
 # globals: a production read of a process-global registry in a MACHINE — `client_for(`, `current_server(`,
 # `current_snapshot(`, `keypin::revision(`, `keypin::blocked_for(`, `session::peek(`, `grant::offers(`, the
 # player's transport-pause readers `transport::paused(`, `transport::viewer_paused(` and `preview::paused(`
-# (each is `FEED_TX.paused` read behind a function; the lifecycle PR B move put them in player/transport.rs and
-# widened this rule to them, seeding the machines' existing reads as a coverage expansion), and `player::TX`
+# (each takes the session and reads its `PlayerReadout`, a `ps`-addressed readout read; they read `FEED_TX.paused`
+# until W3e L3b-2c moved the Pause into the readout, and the spellings stay guarded; the lifecycle PR B move put
+# them in player/transport.rs and widened this rule to them, seeding the machines' existing reads as a coverage
+# expansion), and `player::TX`
 # in the player's lifecycle (the machine, at zero: it takes the pause as a value on its event, and the
 # spelling stays pinned there as a guard; the HUD's direct reads are not machines). The pause moved with the
 # Feed backend's state to `plx_play_feed::shared::FEED_TX` (and the callback mailbox to `FEED_SHARED`), so the
