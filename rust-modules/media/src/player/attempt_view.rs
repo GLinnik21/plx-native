@@ -26,9 +26,15 @@ impl<A: Copy + Eq> AttemptView<A> {
 
     pub fn facts(&self) -> &AttemptFacts { &self.facts }
 
+    /// Whether `attempt` on `backend` is the one this view belongs to: the address every event
+    /// carrying one attempt's facts passes before it changes anything.
+    pub fn addresses(&self, attempt: A, backend: Backend) -> bool {
+        self.attempt == Some(attempt) && self.backend == Some(backend)
+    }
+
     /// An old worker or an unrelated backend cannot change the current readout.
     pub fn ingest(&mut self, attempt: A, backend: Backend, incoming: AttemptFacts) -> bool {
-        if self.attempt != Some(attempt) || self.backend != Some(backend) { return false; }
+        if !self.addresses(attempt, backend) { return false; }
         self.facts = incoming;
         true
     }

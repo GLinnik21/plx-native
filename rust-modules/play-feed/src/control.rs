@@ -10,7 +10,8 @@ use crate::feed_resources::FeedResources;
 use crate::native_executor::NativePrepared;
 use plx_base::task::MainThread;
 use plx_playback_contract::feed::{
-    AcceptedLoadOutcome, CtorGate, FeedControl, FeedLoad, FeedSeek, LoadTick, PausedSeekStep,
+    AcceptedLoadOutcome, CtorGate, FeedControl, FeedFacts, FeedLoad, FeedSeek, LoadTick,
+    PausedSeekStep,
     PresentationTick, SeekMode, SeekPause, Stage, StuckSeekAction,
 };
 use plx_playback_contract::{
@@ -182,6 +183,8 @@ impl FeedLoad for FeedBackend {
     fn mark_foreground_follows_load(&mut self, attempt: AttemptId) -> bool {
         self.resources.mark_foreground_follows_load(attempt)
     }
+
+    fn sample(&self) -> FeedFacts { feed_pump::native_feed_facts() }
 
     fn stage(&self) -> Option<Stage> { self.resources.stage() }
     fn loading(&self) -> bool { self.resources.loading() }
