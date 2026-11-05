@@ -6016,6 +6016,11 @@ class PresentedRate(unittest.TestCase):
         self.assertTrue(ok, why)
         self.assertIn("median 25.0", why)
 
+# Set by `_ParallelSuite` when an interrupt (Ctrl-C, or SIGTERM through `_unwind_on_termination`)
+# ends it: a `DepGates` test still running on the pool then starts no further gate run.
+_run_stopped = threading.Event()
+
+
 class DepGates(unittest.TestCase):
     """Restructure spec §15.2: `ci/check-deps.sh` is green, and every allowlist under ci/allow/
     declares the count it actually has — so an allowlist grows only by editing both lines, and a
@@ -6074,9 +6079,19 @@ class DepGates(unittest.TestCase):
         "Makefile",
     )
 
-    @functools.cached_property
+    @property
     def tree(self):
-        """The private copy of the gate's inputs; removed when the test ends."""
+        """The private copy of the gate's inputs. Every gate run builds its command from this, so a
+        stopped run (`_run_stopped`) raises here instead of starting one more ~11 s `check-deps.sh`:
+        the one `make check`'s stop signal never reached would outlive its 10 s grace and be
+        SIGKILLed with the copy still on disk."""
+        if _run_stopped.is_set():
+            raise KeyboardInterrupt("the run was stopped")
+        return self._private_copy
+
+    @functools.cached_property
+    def _private_copy(self):
+        """Removed when the test ends."""
         root = tempfile.mkdtemp(prefix="_check_deps_tree_")
         self.addCleanup(shutil.rmtree, root, True)
         for rel in self.TREE_INPUTS:
@@ -8029,6 +8044,9 @@ class _ParallelSuite(unittest.TestSuite):
                 if not (private.failures or private.errors or private.skipped):
                     result.addSuccess(test)
                 result.stopTest(test)
+        except BaseException:
+            _run_stopped.set()
+            raise
         finally:
             # Not `with`: its exit waits for EVERY queued test, so Ctrl-C would sit through the
             # whole class. Cancel what has not started; a running test cleans up its own copy.
@@ -8049,8 +8067,9 @@ class DepGatesLeaveNothingWhenStopped(unittest.TestCase):
     (`tools/check-parallel.py` signals the branch's whole process group), and an unhandled SIGTERM
     ends Python on the spot: no `addCleanup`, no `finally`. Every `DepGates` test in flight (up to
     8, `_ParallelSuite`) then left its 40 MB `_check_deps_tree_*` copy in `$TMPDIR`. A completed run
-    removes its trees; so does an interrupt now, on a pool (`_ParallelSuite` unwinds and each
-    running test cleans up) and serially (`DepGates.run`). Ctrl-C already did the first."""
+    removes its trees; so does an interrupt now, on a pool (`_ParallelSuite` unwinds, each running
+    test cleans up, and none starts another gate run: the group signal does not reach one started
+    after it) and serially (`DepGates.run`). Ctrl-C already did the pool's first part."""
 
     PROBE = r'''
 import io, os, sys, time, unittest
@@ -8063,8 +8082,11 @@ class Hold(harness.DepGates):
         self.tree
         probe = os.environ["PROBE_DIR"]
         os.mkdir(os.path.join(probe, "held-%d" % id(self)))
-        while not os.path.exists(os.path.join(probe, "release")):
+        deadline = time.monotonic() + 60
+        while not harness._run_stopped.is_set() and time.monotonic() < deadline:
             time.sleep(0.05)
+        self.tree  # what the next gate run builds its command from: it raises once the run is stopped
+        open(os.path.join(probe, "ran-after-stop"), "w").close()
 
 
 harness._unwind_on_termination()
@@ -8085,17 +8107,17 @@ unittest.TextTestRunner(stream=io.StringIO()).run(suite)
                 env = dict(os.environ, TMPDIR=tmp, PROBE_DIR=probe, PLX_TEST_JOBS=str(jobs))
                 child = subprocess.Popen([sys.executable, "-I", "-c", self.PROBE, TESTS_DIR], env=env,
                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-                self.addCleanup(lambda: child.poll() is None and os.killpg(child.pid, signal.SIGKILL))
+                self.addCleanup(lambda c=child: c.poll() is None and os.killpg(c.pid, signal.SIGKILL))
                 deadline = time.monotonic() + 120
-                while len(os.listdir(probe)) < jobs:
+                while len([name for name in os.listdir(probe) if name.startswith("held-")]) < jobs:
                     self.assertIsNone(child.poll(), "the probe exited before its tests held a tree")
                     self.assertLess(time.monotonic(), deadline, "the tests never held a tree")
                     time.sleep(0.05)
                 self.assertEqual(len(self.trees(tmp)), jobs)
                 os.killpg(child.pid, signal.SIGTERM)  # what check-parallel's `stop` sends: the whole group
-                open(os.path.join(probe, "release"), "w").close()  # a pool's tests in flight finish, as they do once their child dies
                 child.wait(timeout=120)
                 self.assertEqual(self.trees(tmp), [])
+                self.assertNotIn("ran-after-stop", os.listdir(probe))
 
 
 import contextlib

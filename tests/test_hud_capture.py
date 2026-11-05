@@ -132,7 +132,7 @@ with patch.object(shots.mock_pms, "serve", return_value=(Server(), Pms())), \
         for name, script, scene, kwargs, error in (
                 ("settled", settles, {}, {}, None),
                 ("refused", "exit 3\n", {}, {}, RuntimeError),
-                ("never settles", "sleep 30\n", {"timeout_s": 0.2}, {}, RuntimeError),
+                ("never settles", "exec sleep 30\n", {"timeout_s": 0.2}, {}, RuntimeError),
                 ("fixture fails", settles, {}, {"prepare": lambda pms, rt: 1 / 0}, ZeroDivisionError)):
             with self.subTest(name), tempfile.TemporaryDirectory() as temp:
                 scratch = pathlib.Path(temp)
