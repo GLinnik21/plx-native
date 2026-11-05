@@ -1202,7 +1202,7 @@ pub fn release_failed_engine(ps: &mut crate::route::PlaybackSession, pa: &mut su
     // the television mistakes for playback.
     if crate::route::is_preview(ps)
         || ps.readout().state() != super::shared::PlaybackState::Error
-        || FEED_SHARED.frames.load(Ordering::Relaxed) == 0
+        || ps.readout().raw().frames == 0
         || crate::route::recovery_flight_outstanding()
         || crate::route::engineless_flight_outstanding()
     {
@@ -1449,18 +1449,16 @@ pub(super) fn final_report(ps: &mut crate::route::PlaybackSession, for_reload: b
     // playback — so reporting an ending on any of them would turn the completion rate into a
     // measure of how often people scrub. Read before the teardown below zeroes both values, for
     // the same reason `final_report` is.
+    // The duration is the session's last sample of the live attempt (the pump's, taken at the
+    // frame's start and end), which is the container's duration for the whole of a playback.
+    let dur = super::duration_ns(ps).unwrap_or(0);
     if !for_reload {
-        crate::player::report::ended(
-            ps,
-            FEED_SHARED.playpos_ns.load(Ordering::Relaxed),
-            FEED_SHARED.duration_ns.load(Ordering::Relaxed),
-        );
+        crate::player::report::ended(ps, FEED_SHARED.playpos_ns.load(Ordering::Relaxed), dur);
     }
     if for_reload {
         None
     } else {
         let rk = crate::route::cur_rk(ps);
-        let dur = FEED_SHARED.duration_ns.load(Ordering::Relaxed);
         if !rk.is_empty() && dur > 0 {
             Some((
                 rk,

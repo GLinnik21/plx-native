@@ -45,6 +45,8 @@ pub mod machine;
 pub mod preview;
 #[cfg(all(test, feature = "play-feed"))]
 mod abr_plant_tests; // pins the ABR plant's constants to the Feed pipeline's
+#[cfg(all(test, feature = "play-feed"))]
+mod readout_obs_tests; // the readers that ask the session's readout, not the feed's mailbox
 pub mod route_fx; // the physical effects route policy asks of Feed (no-ops without it)
 pub mod recovery; // the failed-open ladder (pure machine); `pump` drives it
 pub mod release; // the native object's off-frame release lifecycle (pure machine); `engine` runs it
@@ -714,10 +716,6 @@ pub fn frames(ps: &crate::route::PlaybackSession) -> Option<i32> {
 /// pump zeroes `frames` as part of applying a seek (`pump.rs`), so that expression reads "no
 /// picture" for the whole of every seek. Cleared only by `reset_session` — i.e. by a real stop or
 /// a reload, both of which do blank the video plane. See [`shared::Shared::seen_frame`].
-#[cfg(feature = "play-feed")]
-pub(crate) fn feed_seen_frame() -> bool {
-    FEED_SHARED.seen_frame.load(Relaxed)
-}
 pub fn seen_frame(ps: &crate::route::PlaybackSession) -> Option<bool> {
     ps.attempt_view().facts().seen_frame
 }
@@ -1889,12 +1887,6 @@ pub fn rate_name(permille: i32) -> String {
 pub fn play_rate_permille(ps: &crate::route::PlaybackSession) -> i32 {
     ps.readout().play_rate_permille()
 }
-/// The speed the pipeline on screen is actually running at: [`play_rate_permille`] once a Load
-/// has applied it, 1x before that, and 1x for good if LG refused it.
-#[cfg(feature = "play-feed")]
-pub fn applied_rate_permille() -> i32 {
-    FEED_SHARED.applied_rate_permille.load(Relaxed)
-}
 
 /// Viewer-selected speed for the addressed attempt. This is an intent, independent of which
 /// executor applies it; [`applied_rate`] remains absent until a physical result is observed.
@@ -1905,7 +1897,9 @@ pub fn selected_rate(ps: &crate::route::PlaybackSession) -> Option<i32> {
 pub fn applied_rate(ps: &crate::route::PlaybackSession) -> Option<i32> {
     if ps.attempt_view().backend() != Some(attempt_view::Backend::Feed) { return None; }
     #[cfg(feature = "play-feed")]
-    { Some(applied_rate_permille()) }
+    // The speed the pipeline on screen is actually running at: [`play_rate_permille`] once a Load
+    // has applied it, 1x before that, and 1x for good if LG refused it. The session's last sample.
+    { Some(ps.readout().raw().applied_rate_permille) }
     #[cfg(not(feature = "play-feed"))]
     { None }
 }
@@ -2040,12 +2034,8 @@ pub fn speed_unsupported(ps: &crate::route::PlaybackSession) -> bool {
 /// What the pipeline reported for this speed session's audio, for the Stats for nerds read-out:
 /// `None` before any report, `Some(true)` for the declared 48 kHz stereo, `Some(false)` otherwise.
 #[cfg(feature = "play-feed")]
-pub fn speed_audio_report() -> Option<bool> {
-    match FEED_SHARED.speed_audio_verdict.load(Relaxed) {
-        plx_play_feed::shared::SPEED_AUDIO_OK => Some(true),
-        plx_play_feed::shared::SPEED_AUDIO_BAD => Some(false),
-        _ => None,
-    }
+pub fn speed_audio_report(ps: &crate::route::PlaybackSession) -> Option<bool> {
+    ps.readout().raw().speed_audio_ok
 }
 
 /// **The safety net**: this television did not take a speed session's PCM (`why`). Latch speed off

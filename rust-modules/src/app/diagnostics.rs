@@ -739,7 +739,7 @@ fn pipeline_rows(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::
     #[cfg(feature = "play-feed")]
     let (speed, speed_bad) = if feed {
         let rate = plx_media::player::applied_rate(ps);
-        let report = plx_media::player::speed_audio_report();
+        let report = plx_media::player::speed_audio_report(ps);
         (
             rate.map(|r| speed_suffix(r, report, plx_media::player::speed_unsupported(ps))).unwrap_or_default(),
             rate.is_some_and(|r| r != plx_media::player::RATE_NORMAL) && report == Some(false),
