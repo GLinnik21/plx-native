@@ -1993,8 +1993,9 @@ the curl path and got `fw-compat-reviewer`; PR14 took a pure-Rust crate and need
 - That the `info-panel` and `chapters-panel` fps scenes enter their scene on the set under the ` section=` word (PR8
   stage 2b settled the word; the host tests grade the table, only a TV run grades the scenes).
 - Whether a rooted set runs under one of the two jails; HBC availability for testing; USB mounts.
-- The TV's CA set and `objects.githubusercontent.com`; DNS for a registry subdomain; GitHub's unauthenticated rate
-  limit figure; Homebrew 4.0's API move.
+- The TV's CA set and `objects.githubusercontent.com`; the TV's first fetch from `huds.plxnative.com`, whose chain
+  (Let's Encrypt YR2, then Root YR cross-signed by ISRG Root X1) has the shape the TV accepted from
+  `glinnik21.github.io` in PR14; GitHub's unauthenticated rate limit figure; Homebrew 4.0's API move.
 - OpenSSL EVP reachability through the TV's libcrypto.
 - External format facts (JSON Schema 2020-12 support in Python `jsonschema`, DTCG, Adaptive Cards, DivKit, Lottie,
   `llms.txt`).
