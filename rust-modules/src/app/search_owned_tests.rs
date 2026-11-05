@@ -1045,16 +1045,16 @@ fn owned_search_content_probe_reports_zone_row_col_pill_and_card_as_focus_moves(
 
     // Up again, from the field itself, reaches the shared strip's Search pill — the same
     // transition `tests/keytable.json`'s Search "up" row records. With no library tabs seeded
-    // here the strip holds only Home (index 0), Watchlist (index 1) and Search (index 2), so the
-    // pill lands at 2 rather than the real 5-slot device's 4 — the field is a POSITION, not a fixed constant,
+    // here the strip holds only Home (index 0), Live TV (index 1), Watchlist (index 2) and Search
+    // (index 3), so the pill lands at 3 rather than the real 6-slot device's 5 — the field is a POSITION, not a fixed constant,
     // and this asserts it moved off -1 onto the strip's own answer rather than hardcoding a
     // count this test's fixture does not seed.
     frame(&mut d, &mut rig, AppArg::Search, tick(20), script_key(Key::Up, tick(20)));
     for i in 21..30 { frame(&mut d, &mut rig, AppArg::Search, tick(i), vec![]); }
     let on_strip = content_probe(&d, &rig);
     assert!(on_strip.contains("zone=Strip"), "Up from the field must reach the shared strip: {on_strip}");
-    assert!(on_strip.contains(" row=-1 col=-1 recent=-1 pill=2 card=0 "),
-        "the Search pill (Home, Watchlist, Search — no library tabs seeded here) sits at index 2, off this screen's own groups: {on_strip}");
+    assert!(on_strip.contains(" row=-1 col=-1 recent=-1 pill=3 card=0 "),
+        "the Search pill (Home, Live TV, Watchlist, Search — no library tabs seeded here) sits at index 3, off this screen's own groups: {on_strip}");
 }
 
 /// OK on a Collections-shelf tile asks for the COLLECTION page with the hit's identity, and the

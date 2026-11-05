@@ -601,6 +601,15 @@ interval and halved idle sleeps, passed `plxnative-rec check`, and were installe
 `tools/plxnative-rec rerecord`, anchors retained. `make check-replay` replays all three with
 `verdict=SAME` in Targets and Resolve and every difference counter at zero.
 
+The Live TV page added `AppArg::LiveTv` to `ARG_SHAPE` and appended `LiveTvScreen::SHAPE` to the
+screen census, which moved the state shape. All three anchors were refused on load, then recorded
+again against the synthetic server with `FOCUS_STEP=0.35 FOCUS_SETTLE=1 FOCUS_BOOT_SETTLE=1
+tests/focusfp.sh --rec --only 1,6,12` on the 120 Hz display (the default cadence overran the
+reader's record budget in all three), and installed with `tools/plxnative-rec rerecord`, anchors
+retained. The strip's new `TV` pill enters the measurement table, so the closed alphabet gains the
+literal `TV` (`live_tv_tab`). `tests/replay_fixtures.py` replays all three with `verdict=SAME` in
+Targets and Resolve and every difference counter at zero on three consecutive runs.
+
 Opt-in playback diagnostics adds the Settings root's recorder status and addressed query/reply
 shape. The three anchors were observed failing the old shape preflight, then recorded afresh
 against tests/mock_pms.py with tests/focusfp.sh --rec --only 1,6,12 (350 ms key interval and

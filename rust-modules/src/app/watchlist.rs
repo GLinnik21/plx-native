@@ -410,6 +410,11 @@ impl Bridge {
         std::mem::take(&mut self.watchlist_reqs)
     }
 
+    /// What the Live TV page asked since the last drain (`content::livetv_requests`).
+    pub(crate) fn take_livetv_reqs(&mut self) -> Vec<(MachineId, plx_screens::livetv::LiveTvOut, ReturnState<u32, PageMemory>)> {
+        std::mem::take(&mut self.livetv_reqs)
+    }
+
     /// Is this catalog id on the watchlist, intents in flight counted? (The Detail and catalog
     /// bookmark faces read it.)
     #[cfg(test)]
