@@ -179,11 +179,15 @@ def abr_playlist_rungs(fixture):
 #
 # What is rewritten, and what is not. PCR (and OPCR, which no part carries) in the adaptation
 # field, and the PTS and DTS in each PES header. Nothing changes length, so Range, HEAD and
-# Content-Length are exactly the unflagged ones. NOT rewritten: continuity counters (each part
-# still starts its own at 0 and a flagged stream therefore still shows a counter jump at every
-# segment join), and the audio/video offset inside a part (audio of a part is 1.92-1.98 s long
-# against 2.0 s of video, so the audio of consecutive segments has a gap of a few tens of
-# milliseconds at each join; a gap, never an overlap).
+# Content-Length are exactly the unflagged ones. NOT rewritten, so a flagged stream is still not a
+# PMS's one continuous stream in two ways:
+#   * continuity counters: each part starts its own at 0, so the counter jumps at every join;
+#   * the audio cut: the shift is the part's VIDEO length (48 frames, exactly 2.0 s in the pack),
+#     and a part's audio is not trimmed to it. Measured on the 20000 rung: inside a cycle each
+#     segment's first audio PTS lands one AAC frame (21.3 ms) after the previous segment's last,
+#     so it abuts; where the six-part cycle wraps (sequence 6, 12, 18 ...: part `_05` into part
+#     0) `_05`'s audio runs about 32 ms past its 2.0 s, so the next segment's first audio PTS is
+#     10.7 ms BEHIND the last one's (13.472667 s, then 13.462000 s).
 TS_PACKET = 188
 TICKS_PER_S = 90_000          # PTS, DTS and the PCR base run at 90 kHz
 PTS_MODULUS = 1 << 33         # 33-bit PTS/DTS/PCR base: wraps after 26.5 hours

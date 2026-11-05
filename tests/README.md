@@ -1012,8 +1012,9 @@ places segments by their timestamps, and the pack's parts each restart theirs at
 ladder master always serves `continuous=1` segments (a per-rung master takes the flag in its
 query): the server moves each segment's PCR, PTS and DTS forward by the measured duration of every
 earlier one (`tests/serve_fixtures.py`, "Continuous timestamps"), and the third case tells a
-stall caused by the restarting clock from one caused by the bitrate. Continuity counters and the
-audio join (a gap or overlap of tens of milliseconds) are not rewritten. Run
+stall caused by the restarting clock from one caused by the bitrate. Continuity counters (which
+restart at every segment) and the audio cut (the audio steps back about 11 ms where the six-part
+cycle wraps, every sixth segment) are not rewritten. Run
 `./tests/run.py --filter pipe_abr_uri_ --save-logs DIR`. The app's controller does not run in
 URI mode, so the harness verdict is FAIL by construction; the evidence is `DIR/<case>.log`
 (`uriprobe:` lines) and `DIR/<case>.rungs`, the segments the TV fetched per requested rung
