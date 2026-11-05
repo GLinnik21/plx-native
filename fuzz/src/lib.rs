@@ -69,8 +69,9 @@ impl Rng {
     }
 }
 
-/// Member paths a mutation may add: the package members the format knows, and one it does not.
-const ADDED: &[&str] = &["assets/extra.svg", "assets/a.svg", "NOTICE.txt", "LICENSE", "docs/README.md", "extra.json"];
+/// Member paths a mutation may add: names the format knows or ignores, and one it does not. All are
+/// `valid_path` names (lowercase only): `archive::pack` refuses any other, and the mutation would add nothing.
+const ADDED: &[&str] = &["assets/extra.svg", "assets/a.svg", "notice.txt", "license", "docs/readme.md", "extra.json"];
 
 /// libFuzzer's custom mutator for every target that reads a bundle.
 ///

@@ -3,6 +3,7 @@
 
     python3 tools/fuzz-hud.py list
     python3 tools/fuzz-hud.py seed                    # fuzz/seeds/: seed corpora and dictionaries, from files in the tree
+    python3 tools/fuzz-hud.py lock                    # fuzz/Cargo.lock: a copy of the shipped lock (build does this itself)
     python3 tools/fuzz-hud.py build [TARGET ...]      # the instrumented binaries; no target = all
     python3 tools/fuzz-hud.py run [--secs N] [TARGET ...]    # seed + build + each target for N seconds, one after another
 
@@ -167,6 +168,11 @@ def write_seeds():
         + sorted(EXAMPLES.glob("invalid/*/assets/*.svg"))
     for path in svgs:
         put(seeds / "svg_check", f"{path.parent.parent.name if path.parent.name == 'assets' else 'icons'}-{path.name}", path.read_bytes())
+    # The leading `<?xml ... ?>` is skipped by policy, so words the subset forbids elsewhere are admitted inside it:
+    # the regression input for the target's own scan, which once flagged them (a false crash, not a parser bug).
+    put(seeds / "svg_check", "prolog-holds-forbidden-words",
+        '<?xml version="1.0" stroke href url( data: opacity http://example.test/ ?>\n'
+        '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M0 0L1 1z"/></svg>\n')
 
     for n, text in enumerate(ADDRESSES):
         put(seeds / "address_parse", f"address-{n:02d}", text)
@@ -307,7 +313,7 @@ def summary(results):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=["list", "seed", "build", "run"])
+    parser.add_argument("command", choices=["list", "seed", "lock", "build", "run"])
     parser.add_argument("targets", nargs="*")
     parser.add_argument("--secs", type=int, default=60, help="seconds per target for `run` (default 60)")
     args = parser.parse_intermixed_args()
@@ -317,6 +323,9 @@ def main():
     names = targets_named(args.targets)
     if args.command == "seed":
         write_seeds()
+        return 0
+    if args.command == "lock":
+        sync_lock()
         return 0
     if shutil.which("cargo-fuzz") is None and not (Path.home() / ".cargo/bin/cargo-fuzz").exists():
         sys.exit("fuzz-hud: cargo-fuzz is not installed: cargo install cargo-fuzz --locked")

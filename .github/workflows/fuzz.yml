@@ -10,9 +10,10 @@ name: Fuzz the HUD parsers
 #                  change that breaks a target's assertion, or an API change that stops the package compiling,
 #                  before it lands. It starts only for those paths, and `ci.yml`'s required checks do not wait
 #                  for it (it is not one of them), so it adds no minutes to a PR's critical path.
-#   schedule       weekly: every target for 5 minutes, resuming from the corpus the previous run left (an
-#                  Actions cache that only this workflow reads), so coverage accumulates week over week
-#                  instead of restarting from the seeds. A crash fails the run and uploads the input.
+#   schedule       weekly: every target for 5 minutes, resuming from the corpus the previous run left when the
+#                  Actions cache still holds it (a cache only this workflow reads; GitHub evicts the least
+#                  recently used entries, and any entry unused for 7 days, so a run may start from the seeds
+#                  again). A crash fails the run and uploads the input.
 #   workflow_dispatch   the same, with the time per target and an optional target chosen by hand.
 #
 # WHY NOT ON EVERY PR. A cold build of the instrumented binaries takes minutes on a hosted runner and the long
@@ -26,7 +27,12 @@ name: Fuzz the HUD parsers
 #
 # CACHES. The build tree (3 GiB with debuginfo) is NOT cached: the repository's Actions cache is 10 GB and
 # is already evicting (cache-cleanup.yml), and the scheduled run is weekly. What is cached is small: the cargo
-# registry and the installed `cargo-fuzz` (rust-cache with `cache-targets: false`) and the corpus (tens of MB).
+# registry and the installed `cargo-fuzz` (rust-cache with `cache-targets: false`, on the `fuzz` package, whose
+# lock the tool seeds first so the cache key follows the shipped lock) and the corpus (tens of MB).
+#
+# THE TIMEOUT. The run step stops itself at 100 minutes, inside the job's 120: a dispatch asked for more
+# time than fits then FAILS that step instead of cancelling the job, so the corpus save and the crash upload
+# below (`!cancelled()`, `failure()`) still run.
 
 on:
   pull_request:
@@ -48,7 +54,7 @@ on:
   workflow_dispatch:
     inputs:
       secs:
-        description: 'Seconds per target'
+        description: 'Seconds per target (7 targets run one after another; the step stops at 100 minutes)'
         type: string
         default: '300'
       target:
@@ -91,9 +97,15 @@ jobs:
         run: |
           rustup toolchain install "$FUZZ_TOOLCHAIN" --profile minimal
           rustup run "$FUZZ_TOOLCHAIN" rustc --version --verbose
+      - name: Seed the fuzz package's lock
+        # rust-cache keys on, and prunes the registry to, the lock of its workspace: this is the copy of the
+        # shipped lock `make fuzz-hud` would make, so the key follows rust-modules/Cargo.lock.
+        run: python3 tools/fuzz-hud.py lock
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
-          # No target dir: see CACHES above. This keeps ~/.cargo/registry and ~/.cargo/bin (cargo-fuzz).
+          # `fuzz` is the one directory with a Cargo.toml (the repository root has none). No target dir: see
+          # CACHES above. This keeps ~/.cargo/registry and ~/.cargo/bin (cargo-fuzz).
+          workspaces: fuzz -> ../rust-modules/target-fuzz
           cache-targets: false
           key: fuzz-hud
       - name: Install cargo-fuzz
@@ -106,6 +118,7 @@ jobs:
           key: fuzz-corpus-${{ github.run_id }}
           restore-keys: fuzz-corpus-
       - name: Build every target, then run each for a bounded time
+        timeout-minutes: 100
         env:
           # 10 s per target on a PR, 5 minutes weekly, what was asked for on a dispatch.
           SECS: ${{ github.event_name == 'pull_request' && '10' || (github.event_name == 'schedule' && '300' || inputs.secs) }}

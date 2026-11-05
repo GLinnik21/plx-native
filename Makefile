@@ -791,8 +791,8 @@ RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(filter-out release,$(ARM_PROFI
 # it from the recipe AND its prerequisites, never the name (`check-ass` is a test goal and stages the
 # host libass into `pkg/`). Two kinds qualify:
 #
-#   * HOST-ONLY goals: the unit-test loops and the lint pass (`test-hostsim`, `check-nodef`,
-#     `test-fast`, `test-crate`, `lint`, `build-bench`), the pieces of `check` that are plain host work
+#   * HOST-ONLY goals: the unit-test loops, the fuzz runs and the lint pass (`test-hostsim`, `check-nodef`,
+#     `test-fast`, `test-crate`, `fuzz-hud`, `lint`, `build-bench`), the pieces of `check` that are plain host work
 #     (`check-cargo-lint`, `check-cargo-unit-hostsim`, `check-localization`, `check-c-unit`,
 #     `check-python-harness`), the notices tables, and the set-up and local tooling that writes outside
 #     `pkg/` (a toolchain install, the disk-watch agent, the test media, the demo library, the
@@ -817,7 +817,7 @@ RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(filter-out release,$(ARM_PROFI
 # goal in the two kinds above resets nothing under a dry run, and every goal named as NOT here stays out
 # of the list. The list is ONE line on purpose (`grep '^SIDE_EFFECT_FREE' Makefile` is the exact set,
 # and several tests read it that way).
-SIDE_EFFECT_FREE = $(QUERY_GOALS) release-guard lab-guard disk disk-preflight build-bench build-bench-quick test-hostsim check-nodef test-fast test-crate lint check-cargo-lint check-cargo-unit-hostsim check-localization check-c-unit check-python-harness notices notices-verify setup-rust setup-env disk-watch disk-watch-uninstall fixtures fixtures-quick fixtures-pipeline demo-library sim-token sim-macos-token sim-clean sim-macos-clean kill run run-stream verify-deploy uninstall fetch-profile softfloat-probe tv-lock-require
+SIDE_EFFECT_FREE = $(QUERY_GOALS) release-guard lab-guard disk disk-preflight build-bench build-bench-quick test-hostsim check-nodef test-fast test-crate fuzz-hud lint check-cargo-lint check-cargo-unit-hostsim check-localization check-c-unit check-python-harness notices notices-verify setup-rust setup-env disk-watch disk-watch-uninstall fixtures fixtures-quick fixtures-pipeline demo-library sim-token sim-macos-token sim-clean sim-macos-clean kill run run-stream verify-deploy uninstall fetch-profile softfloat-probe tv-lock-require
 PURE_QUERY := $(if $(MAKECMDGOALS),$(if $(filter-out $(SIDE_EFFECT_FREE),$(MAKECMDGOALS)),,yes),)
 ifneq ($(PURE_QUERY),yes)
 ifneq ($(RUST_CFG),$(shell cat $(RUST_STAMP) 2>/dev/null))

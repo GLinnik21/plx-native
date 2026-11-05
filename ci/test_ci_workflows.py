@@ -1175,6 +1175,21 @@ class FuzzWorkflow(unittest.TestCase):
         self.assertIn("run: make fuzz-hud", body)
         self.assertRegex(body, r"(?s)if: failure\(\)\n\s+uses: actions/upload-artifact@[0-9a-f]{40}.*?path: fuzz/artifacts/")
 
+    def test_a_dispatch_that_asks_for_too_long_fails_the_step_not_the_job(self):
+        # A timed-out JOB is cancelled, and the corpus save and the crash upload (`!cancelled()`, `failure()`)
+        # are then skipped: the run step must give up first, with the time to save and upload left over.
+        body = code(self.NAME)
+        job = int(re.search(r"(?m)^    timeout-minutes: (\d+)$", body).group(1))
+        step = re.search(r"(?s)- name: Build every target, then run each for a bounded time\n\s+timeout-minutes: (\d+)\n", body)
+        self.assertIsNotNone(step, "the run step needs its own timeout-minutes")
+        self.assertLessEqual(int(step.group(1)) + 10, job)
+
+    def test_rust_cache_reads_the_fuzz_package_not_the_repository_root(self):
+        # The root has no Cargo.toml, so `cargo metadata` there fails and the cache keys on, and prunes to, nothing.
+        body = code(self.NAME)
+        self.assertRegex(body, r"(?m)^          workspaces: fuzz -> \.\./rust-modules/target-fuzz$")
+        self.assertLess(body.index("tools/fuzz-hud.py lock"), body.index("Swatinem/rust-cache@"))
+
     def test_a_pull_request_never_reads_or_writes_the_corpus_cache(self):
         steps = re.split(r"(?m)^      - ", code(self.NAME))
         for action in ("restore", "save"):
