@@ -583,16 +583,7 @@ fn land_recovery_flight(
     }
 }
 
-/// How close to the container's duration the playhead must be, after the EOS, to count as the end.
-const EOS_TAIL_NS: i64 = 1_000_000_000;
-
-/// Whether a stream whose EOS has been pushed has ended: the pipeline said so
-/// (`Shared::pipeline_eos`), or the playhead is within [`EOS_TAIL_NS`] of the duration. The
-/// duration is the longest track's, so a film whose audio outlasts its video by more than the
-/// tail never gets there on the arithmetic alone.
-fn stream_ended(pos_ns: i64, duration_ns: i64, pipeline_eos: bool) -> bool {
-    pipeline_eos || (duration_ns > 0 && pos_ns >= duration_ns - EOS_TAIL_NS)
-}
+use super::readout::stream_ended;
 
 /// Settle a synchronous native reload effect.  A failed `start_bufferfeed` used to be only a log:
 /// callers had already advanced the route reducer and then returned, leaving no Engine to publish
@@ -1603,6 +1594,20 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
     } else {
         PlaybackState::Playing
     });
+
+    // The readout derives the same state and end of stream from a sample taken right after the tick
+    // (the ladder above reads `frames`, `hls_rebuffering`, `playpos` and `duration` live), for the
+    // attempt this frame belongs to. The statics are still what readers use until they move.
+    if let Some(attempt) = pa.active_feed_attempt() {
+        if let Some(sample) = pa.sample_feed() {
+            let inputs = super::readout::PresentInputs {
+                seeking: FEED_SHARED.seeking.load(Relaxed),
+                paused_and_idle: paused_and_idle(),
+                pipeline_eos: FEED_SHARED.pipeline_eos.load(Relaxed),
+            };
+            let _ = ps.present(attempt, physical, sample, inputs);
+        }
+    }
 
     if physical.eos_pushed && !FEED_SHARED.ended.load(Relaxed) {
         let dur = FEED_SHARED.duration_ns.load(Relaxed);

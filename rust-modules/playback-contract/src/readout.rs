@@ -106,7 +106,7 @@ impl PlaybackState {
     }
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct AttemptFacts {
     pub status: Option<PlaybackState>,
     /// The exact physical transport start flag, independent of a route or busy status.

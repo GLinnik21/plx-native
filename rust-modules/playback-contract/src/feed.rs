@@ -270,7 +270,7 @@ impl Default for FeedRaw {
 
 /// One sample of the feed: the mapped facts and the raw ones. `Copy`, addressed by the attempt
 /// that is ingesting it. L3c adds the demux ABR and the diagnostics.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FeedFacts {
     pub attempt: AttemptFacts,
     pub raw: FeedRaw,
@@ -324,6 +324,11 @@ pub trait FeedLoad {
     fn abandon_preview(&mut self);
     /// Mark the foreground as following this Load, for `attempt` only; false for any other.
     fn mark_foreground_follows_load(&mut self, attempt: AttemptId) -> bool;
+
+    /// One sample of what the feed observed: the sparse facts the HUD and the route read and the
+    /// raw ones a decision reads. Ungated: the caller asks [`Self::is_live`] first, because a feed
+    /// with no session answers its idle mailboxes, which is not an observation of any attempt.
+    fn sample(&self) -> FeedFacts;
 
     fn stage(&self) -> Option<Stage>;
     /// Whether the live session has yet to leave its Load stage.

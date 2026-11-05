@@ -10,11 +10,12 @@
 //! The machine is pure: no clock, no registry, no thread. It names no feed type; the facts it
 //! holds are the contract's [`FeedRaw`], so it builds whatever backends a composition installs.
 //! It has no effects yet: the intents that also yield a feed command (seek, pause, audio) are
-//! L3b's, and join as events beside these. Not yet fed by the pump (L3a-2 steps 3 and 4), so no
-//! production reader exists; the type is public like [`super::attempt_metrics`] so that is not dead
-//! code.
+//! L3b's, and join as events beside these. The pump feeds it: the session's one ingestion
+//! (`ingest_feed_facts`) takes the raw facts, and `present` derives the state and the end of
+//! stream at the pump's derivation point, both addressed by attempt. The readers still use the
+//! mailbox statics until L3a-2 step 4 moves each beside its writer.
 
-use plx_playback_contract::feed::FeedRaw;
+use plx_playback_contract::feed::{FeedRaw, PresentationTick, Stage};
 use plx_playback_contract::RATE_NORMAL;
 
 use super::attempt_view::PlaybackState;
@@ -36,6 +37,47 @@ pub struct PlayerReadout {
     play_rate_permille: i32,
     /// The feed's raw observations from the last ingestion.
     raw: FeedRaw,
+}
+
+/// How close to the container's duration the playhead must be, after the EOS, to count as the end.
+const EOS_TAIL_NS: i64 = 1_000_000_000;
+
+/// Whether a stream whose EOS has been pushed has ended: the pipeline said so
+/// (`Shared::pipeline_eos`), or the playhead is within [`EOS_TAIL_NS`] of the duration. The
+/// duration is the longest track's, so a film whose audio outlasts its video by more than the
+/// tail never gets there on the arithmetic alone.
+pub(super) fn stream_ended(pos_ns: i64, duration_ns: i64, pipeline_eos: bool) -> bool {
+    pipeline_eos || (duration_ns > 0 && pos_ns >= duration_ns - EOS_TAIL_NS)
+}
+
+/// What one pump frame hands the derivation of the UI state and the end of stream: the physical
+/// tick, the two sampled facts that have no [`FeedRaw`] field (a runtime rebuffer, the container's
+/// duration), and the inputs whose writer is still the player's own mailbox (`seeking`,
+/// `pipeline_eos`, the pause transport behind `paused_and_idle`; L3b moves each into the readout
+/// beside the intent that writes it, and this struct loses the field).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Presentation {
+    pub tick: PresentationTick,
+    /// The HLS runtime rebuffer, distinct from the initial Load and from seek priming.
+    pub rebuffering: bool,
+    /// The container's duration, 0 while unknown.
+    pub duration_ns: i64,
+    /// A seek is in flight: its target, not the stale frames on the panel, is what the HUD shows.
+    pub seeking: bool,
+    /// The viewer is paused and the pump is doing no work for a picture.
+    pub paused_and_idle: bool,
+    /// The pipeline reported its own end of stream.
+    pub pipeline_eos: bool,
+}
+
+/// The inputs of the derivation whose writer is still the player's own mailbox: what the pump hands
+/// [`super::super::route::PlaybackSession::present`] beside the post-tick sample. L3b moves each into
+/// the readout beside the intent that writes it and this struct shrinks to nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PresentInputs {
+    pub seeking: bool,
+    pub paused_and_idle: bool,
+    pub pipeline_eos: bool,
 }
 
 /// What can happen to the readout. Intent-named: a writer states what occurred, never a field
@@ -66,6 +108,10 @@ pub enum ReadoutEvent {
     SpeedRefused,
     /// The feed's raw observations, sampled for the live attempt.
     FactsIngested(FeedRaw),
+    /// The pump presented a frame: derive the UI state, and the end of stream, from the facts last
+    /// ingested and what the pump saw. The session steps it only for the attempt that is live
+    /// and only after the post-tick sample, so a frame that returned early derives nothing.
+    Presented(Presentation),
 }
 
 impl PlayerReadout {
@@ -88,7 +134,8 @@ impl PlayerReadout {
     pub fn play_rate_permille(&self) -> i32 { self.play_rate_permille }
     pub fn raw(&self) -> &FeedRaw { &self.raw }
 
-    /// The one writer. Applies `event`; there are no effects yet.
+    /// The one writer. Applies `event`; there are no effects yet. The session addresses the
+    /// events that carry an attempt's facts before it steps them.
     pub fn step(&mut self, event: ReadoutEvent) {
         match event {
             ReadoutEvent::StateDerived(state) => self.state = state,
@@ -113,6 +160,28 @@ impl PlayerReadout {
                 self.rate_reload = true;
             }
             ReadoutEvent::FactsIngested(raw) => self.raw = raw,
+            ReadoutEvent::Presented(p) => {
+                // Order matters: a seek in flight outranks "we have frames", because the frames
+                // on the panel are the PRE-seek ones and the HUD must show the target, not them.
+                self.state = if p.seeking {
+                    PlaybackState::Seeking
+                } else if p.tick.stage == Stage::Loading {
+                    PlaybackState::Connecting
+                } else if p.rebuffering {
+                    PlaybackState::Buffering
+                } else if self.raw.frames == 0 {
+                    // No picture yet. Work pending for one is Buffering; a paused player with
+                    // nothing in flight is waiting on the viewer, which is neither a spinner nor
+                    // `Playing` (no frame is presented, so `is_playing` stays false).
+                    if p.paused_and_idle { PlaybackState::Paused } else { PlaybackState::Buffering }
+                } else {
+                    PlaybackState::Playing
+                };
+                if p.tick.eos_pushed && !self.ended
+                    && stream_ended(self.raw.playpos_ns, p.duration_ns, p.pipeline_eos) {
+                    self.ended = true;
+                }
+            }
         }
     }
 }
@@ -124,6 +193,10 @@ impl Default for PlayerReadout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::attempt_view::Backend;
+    use crate::route::{PlaybackSession, RouteStartAttempt};
+    use plx_playback_contract::feed::{FeedFacts, FeedLoad};
+    use plx_playback_contract::feed_fake::FakeFeed;
 
     fn stepped(events: &[ReadoutEvent]) -> PlayerReadout {
         let mut readout = PlayerReadout::IDLE;
@@ -216,5 +289,138 @@ mod tests {
         assert!(r.start_queued());
         let r = stepped(&[ReadoutEvent::ReleaseQueue { queued: true }, ReadoutEvent::ReleaseQueue { queued: false }]);
         assert!(!r.start_queued());
+    }
+
+    // ---- the session's ingestion and the addressed `Presented` event (L3a-2 step 3) ----
+
+    fn facts(frames: i32, duration_ns: Option<i64>) -> FeedFacts {
+        let mut facts = FeedFacts::default();
+        facts.raw.frames = frames;
+        facts.raw.playpos_ns = 7;
+        facts.attempt.duration_ns = duration_ns;
+        facts
+    }
+
+    fn tick(stage: Stage, eos_pushed: bool) -> PresentationTick {
+        PresentationTick { stage, eos_pushed }
+    }
+
+    const QUIET: PresentInputs =
+        PresentInputs { seeking: false, paused_and_idle: false, pipeline_eos: false };
+
+    /// One sample splits between the attempt view and the readout, and only the attempt the view
+    /// belongs to can deliver it: a late worker of a previous attempt changes neither half.
+    #[test]
+    fn a_feed_sample_reaches_both_halves_addressed_by_its_attempt() {
+        let _serial = plx_base::testlock::serial();
+        let (a, b) = (RouteStartAttempt::fixture(), RouteStartAttempt::fixture_n(2));
+        let mut ps = PlaybackSession::IDLE;
+        ps.begin_attempt_view(a, Backend::Feed);
+        assert!(ps.ingest_feed_facts(a, facts(5, Some(100))));
+        assert_eq!(ps.readout().raw().frames, 5, "the raw half reaches the readout");
+        assert_eq!(ps.attempt_view().facts().duration_ns, Some(100), "the mapped half reaches the view");
+
+        ps.begin_attempt_view(b, Backend::Feed);
+        assert!(!ps.ingest_feed_facts(a, facts(9, Some(900))), "a stale attempt is refused");
+        assert_eq!(ps.readout().raw().frames, 5, "its raw facts did not reach the readout");
+        assert_eq!(ps.attempt_view().facts().duration_ns, None, "nor the view");
+        assert!(ps.ingest_feed_facts(b, facts(9, Some(900))));
+        assert_eq!(ps.readout().raw().frames, 9);
+    }
+
+    /// The Feed's sample is the Feed's: an attempt the view began for the other backend refuses it.
+    #[test]
+    fn a_feed_sample_is_refused_for_an_attempt_of_the_other_backend() {
+        let _serial = plx_base::testlock::serial();
+        let c = RouteStartAttempt::fixture_n(3);
+        let mut ps = PlaybackSession::IDLE;
+        ps.begin_attempt_view(c, Backend::Uri);
+        assert!(!ps.ingest_feed_facts(c, facts(5, None)));
+        assert_eq!(*ps.readout().raw(), FeedRaw::IDLE);
+        assert!(!ps.present(c, tick(Stage::Playing, false), facts(5, None), QUIET));
+        assert_eq!(ps.readout().state(), PlaybackState::Idle);
+    }
+
+    /// `Presented` is addressed like the ingestion: a frame the pump presented for an attempt that
+    /// has since been replaced derives nothing and ingests nothing.
+    #[test]
+    fn a_presented_frame_for_a_replaced_attempt_changes_nothing() {
+        let _serial = plx_base::testlock::serial();
+        let (a, b) = (RouteStartAttempt::fixture(), RouteStartAttempt::fixture_n(2));
+        let mut ps = PlaybackSession::IDLE;
+        ps.begin_attempt_view(a, Backend::Feed);
+        ps.begin_attempt_view(b, Backend::Feed);
+        assert!(!ps.present(a, tick(Stage::Streaming, true), facts(30, Some(10)), QUIET));
+        assert_eq!(ps.readout().state(), PlaybackState::Idle);
+        assert!(!ps.readout().ended());
+        assert_eq!(*ps.readout().raw(), FeedRaw::IDLE);
+        assert!(ps.present(b, tick(Stage::Streaming, false), facts(30, Some(10)), QUIET));
+        assert_eq!(ps.readout().state(), PlaybackState::Playing);
+        assert_eq!(ps.readout().raw().frames, 30, "the post-tick sample is the readout's raw facts");
+    }
+
+    /// A test scripts a `FakeFeed`'s sample and delivers it through the real ingestion: the helper
+    /// writes no readout field.
+    #[test]
+    fn a_scripted_fake_feed_sample_is_delivered_through_the_real_ingestion() {
+        let _serial = plx_base::testlock::serial();
+        let a = RouteStartAttempt::fixture();
+        let (fake, handle) = FakeFeed::new();
+        handle.script(|s| s.facts = facts(12, Some(4)));
+        let mut ps = PlaybackSession::IDLE;
+        ps.begin_attempt_view(a, Backend::Feed);
+        assert!(ps.ingest_feed_facts(a, fake.sample()));
+        assert_eq!(ps.readout().raw().frames, 12);
+        assert_eq!(handle.calls(), vec![plx_playback_contract::feed_fake::FeedCall::Sample]);
+    }
+
+    fn presented(raw_frames: i32, p: Presentation) -> PlayerReadout {
+        let mut raw = FeedRaw::IDLE;
+        raw.frames = raw_frames;
+        raw.playpos_ns = 99_500_000_000;
+        stepped(&[ReadoutEvent::FactsIngested(raw), ReadoutEvent::Presented(p)])
+    }
+
+    fn pres(stage: Stage) -> Presentation {
+        Presentation {
+            tick: tick(stage, false), rebuffering: false, duration_ns: 100_000_000_000,
+            seeking: false, paused_and_idle: false, pipeline_eos: false,
+        }
+    }
+
+    /// The ladder's order: a seek outranks everything, then a Load still opening, then a rebuffer,
+    /// then "no picture yet" (Paused when idle, else Buffering), else Playing.
+    #[test]
+    fn the_presented_frame_derives_the_state_in_the_ladders_order() {
+        assert_eq!(presented(30, Presentation { seeking: true, ..pres(Stage::Loading) }).state(),
+            PlaybackState::Seeking, "a seek outranks the frames on the panel");
+        assert_eq!(presented(30, pres(Stage::Loading)).state(), PlaybackState::Connecting);
+        assert_eq!(presented(30, Presentation { rebuffering: true, ..pres(Stage::Streaming) }).state(),
+            PlaybackState::Buffering);
+        assert_eq!(presented(0, pres(Stage::Streaming)).state(), PlaybackState::Buffering,
+            "no picture yet, work pending");
+        assert_eq!(presented(0, Presentation { paused_and_idle: true, ..pres(Stage::Streaming) }).state(),
+            PlaybackState::Paused, "no picture, nothing in flight: waiting on the viewer");
+        assert_eq!(presented(30, Presentation { paused_and_idle: true, ..pres(Stage::Streaming) }).state(),
+            PlaybackState::Playing, "paused-and-idle only matters before the first picture");
+        assert_eq!(presented(30, pres(Stage::Streaming)).state(), PlaybackState::Playing);
+    }
+
+    /// The end of stream needs the EOS pushed, then the pipeline's own word or a playhead inside the
+    /// tail of a known duration; it is latched until a seek supersedes it.
+    #[test]
+    fn the_presented_frame_ends_the_stream_only_after_the_eos_and_the_tail() {
+        let pushed = |p: Presentation| Presentation { tick: tick(Stage::Streaming, true), ..p };
+        assert!(!presented(30, pres(Stage::Streaming)).ended(), "the EOS is not pushed yet");
+        assert!(presented(30, pushed(pres(Stage::Streaming))).ended(), "within the tail of the duration");
+        assert!(!presented(30, pushed(Presentation { duration_ns: 0, ..pres(Stage::Streaming) })).ended(),
+            "no duration, no arithmetic");
+        assert!(presented(30, pushed(Presentation { duration_ns: 0, pipeline_eos: true, ..pres(Stage::Streaming) })).ended(),
+            "the pipeline said so");
+        let mut r = presented(30, pushed(pres(Stage::Streaming)));
+        r.step(ReadoutEvent::Presented(pres(Stage::Streaming)));
+        assert!(r.ended(), "a later frame without the EOS does not un-end it");
+        r.step(ReadoutEvent::EndSuperseded);
+        assert!(!r.ended());
     }
 }

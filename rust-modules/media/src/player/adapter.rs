@@ -1579,13 +1579,20 @@ impl PlayerAdapter {
         }
     }
 
+    /// One sample of the live feed, `None` with no session: an idle feed's mailboxes are not an
+    /// observation of any attempt. Reads the concrete backend (`&self`) until L3b.
+    #[cfg(feature = "play-feed")]
+    pub(super) fn sample_feed(&self) -> Option<plx_playback_contract::feed::FeedFacts> {
+        let feed = self.physical.feed_backend();
+        FeedLoad::is_live(feed).then(|| FeedLoad::sample(feed))
+    }
+
     /// Address the physical callback snapshot to the current route-owned attempt.
     #[cfg(feature = "play-feed")]
     pub(super) fn publish_feed_attempt_view(&self, ps: &mut crate::route::PlaybackSession) {
         let Some(attempt) = self.active_feed_attempt() else { return; };
-        let Some(facts) = plx_play_feed::feed_pump::attempt_facts(
-            self.physical.feed_backend().resources()) else { return; };
-        let _ = ps.ingest_attempt_facts(attempt, crate::player::attempt_view::Backend::Feed, facts);
+        let Some(facts) = self.sample_feed() else { return; };
+        let _ = ps.ingest_feed_facts(attempt, facts);
     }
 
     #[cfg(feature = "play-feed")]

@@ -16,7 +16,8 @@ use std::time::Duration;
 use plx_base::task::MainThread;
 
 use crate::feed::{
-    AcceptedLoadOutcome, CtorGate, FeedControl, FeedLoad, FeedSeek, LoadTick, PausedSeekStep,
+    AcceptedLoadOutcome, CtorGate, FeedControl, FeedFacts, FeedLoad, FeedSeek, LoadTick,
+    PausedSeekStep,
     PhysicalSet, PresentationTick, SeekMode, SeekPause, Stage, StuckSeekAction,
 };
 use crate::{
@@ -57,6 +58,7 @@ pub enum FeedCall {
     PublishDiag { now: u32, diag_readout_on: bool },
     AbandonPreview,
     MarkForegroundFollowsLoad { attempt: AttemptId },
+    Sample,
     Stage,
     Loading,
     LoadThreadFinished,
@@ -80,6 +82,8 @@ pub struct FeedScript {
     pub begin_seek_discontinuity: bool,
     pub load_tick: LoadTick,
     pub presentation: PresentationTick,
+    /// What `sample` answers: the scripted observation a test delivers through the real ingestion.
+    pub facts: FeedFacts,
     pub ctor_gate: CtorGate,
     /// Delivered once, in order, by the next `take_load_outcomes`.
     pub load_outcomes: Vec<AcceptedLoadOutcome>,
@@ -109,6 +113,7 @@ impl Default for FeedScript {
             begin_seek_discontinuity: false,
             load_tick: LoadTick::default(),
             presentation: PresentationTick { stage: Stage::Loading, eos_pushed: false },
+            facts: FeedFacts::default(),
             ctor_gate: CtorGate::Ready,
             load_outcomes: Vec::new(),
             arm_live_clock_prime: false,
@@ -254,6 +259,8 @@ impl FeedLoad for FakeFeed {
         self.answer(FeedCall::MarkForegroundFollowsLoad { attempt },
             |s| s.foreground_follows_for == Some(attempt))
     }
+
+    fn sample(&self) -> FeedFacts { self.answer(FeedCall::Sample, |s| s.facts) }
 
     fn stage(&self) -> Option<Stage> { self.answer(FeedCall::Stage, |s| s.stage) }
     fn loading(&self) -> bool { self.answer(FeedCall::Loading, |s| s.loading) }
