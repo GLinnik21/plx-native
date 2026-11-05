@@ -34,7 +34,7 @@
 //! `route::note_user_seek_intent`, no `report::note_seek_for(playback_trace_generation())` — a
 //! preview has no trace generation, and the watch-state promise this file opens with covers a
 //! seek exactly like every other write. Pausing has none of this to begin with: it is
-//! `player::pause`/`resume` on a live engine, and `FEED_TX.reset()` on a real stop clears the flag, so
+//! `player::pause`/`resume` on a live engine, and a real stop's `stop_transport` clears the flag, so
 //! a collapsed or ended preview cannot strand it.
 //!
 //! Sound stays on. A preview has no mute control: the per-pipeline `setVolume` the sink exposes is
@@ -46,8 +46,6 @@
 //! the plan is about 958 KiB (`ui/frame/render_set.rs`). 958 / 64 is 14.96, so the ceiling is 14
 //! admitted Loads, under the ratio rather than on it. Do not quote 14 as a television result.
 
-#[cfg(feature = "play-feed")]
-use plx_play_feed::shared::FEED_TX;
 use plx_plex::plex::ServerId;
 
 /// Admitted Loads per process, from the source arithmetic above. Not a device measurement.
@@ -805,12 +803,12 @@ pub fn after_pump(
     }
 }
 
-/// Is the live preview's transport paused? The engine is shared, so this is the same
-/// `FEED_TX.paused` the player HUD reads, qualified by a preview actually being what occupies
-/// it — with no session there is nothing paused, whatever the flag last said.
+/// Is the live preview's transport paused? The engine is shared, so this is the same transport
+/// Pause the session's readout holds for the player HUD, qualified by a preview actually being what
+/// occupies it — with no session there is nothing paused, whatever the readout last said.
 #[cfg(feature = "play-feed")]
-pub fn paused() -> bool {
-    occupies() && FEED_TX.paused.load(std::sync::atomic::Ordering::Relaxed)
+pub fn paused(ps: &crate::route::PlaybackSession) -> bool {
+    occupies() && super::transport::paused(ps)
 }
 
 /// Pause or resume the live preview session — full-trailer mode's OK/PLAY/PAUSE, performed by the
@@ -835,7 +833,7 @@ pub fn transport(
     if !crate::route::is_preview(ps) || !bound_or_playing() || !pa.is_live() {
         return false;
     }
-    let want = super::transport::transport_target(play, super::transport::viewer_paused_for(pa));
+    let want = super::transport::transport_target(play, super::transport::viewer_paused_for(ps, pa));
     super::transport::set_transport_paused(ps, pa, want)
 }
 

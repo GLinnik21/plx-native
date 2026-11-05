@@ -75,9 +75,10 @@ pub enum PlaybackState {
     /// the producer died (a failed open / no video stream). Terminal until teardown.
     Error = 6,
     /// the viewer is paused on a session that has no picture yet and the pump has no work in
-    /// flight for one (`pump::paused_and_idle`): not `Buffering` (nothing is being waited on, so
-    /// no spinner) and not `Playing` (no frame is on the panel, so no `is_playing`, no
-    /// `PlaybackStarted`). The HUD draws its ordinary paused transport.
+    /// flight for one (the readout's Pause with no preroll open, plus `pump::nothing_in_flight`):
+    /// not `Buffering` (nothing is being waited on, so no spinner) and not `Playing` (no frame is on
+    /// the panel, so no `is_playing`, no `PlaybackStarted`). The HUD draws its ordinary paused
+    /// transport.
     Paused = 7,
 }
 

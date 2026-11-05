@@ -35,15 +35,12 @@ pub(crate) use plx_screens::player::input::{
 pub(crate) use plx_screens::registry::RepeatGate;
 
 
+/// The foreground restore of a paused film still owes its re-pause: the session's readout holds it
+/// (`ReadoutEvent::ResumePending`, closed with the preroll).
 #[inline]
 #[cfg(feature = "play-feed")]
-pub(crate) fn resume_pend() -> bool {
-    plx_media::player::FEED_TX.resume_pend.load(Relaxed)
-}
-#[inline]
-#[cfg(feature = "play-feed")]
-pub(crate) fn set_resume_pend(v: bool) {
-    plx_media::player::FEED_TX.resume_pend.store(v, Relaxed)
+pub(crate) fn resume_pend(ps: &plx_media::route::PlaybackSession) -> bool {
+    ps.readout().resume_pend()
 }
 #[inline]
 pub(crate) fn dur(ps: &plx_media::route::PlaybackSession) -> Option<i64> {
@@ -481,7 +478,7 @@ pub(super) fn start_playback_with<R: PlaybackResources>(
         super::bridge::reseat_player_focus(pages);
     }
     #[cfg(feature = "play-feed")]
-    plx_media::player::commit_paused(pa, false);
+    plx_media::player::commit_paused(ps, pa, false);
     entering
 }
 
@@ -764,7 +761,7 @@ pub(crate) fn player_requests(
                     && prefs.mode(id.marker.kind) == plx_plex::plex::session::MarkerSkipMode::Automatic
                     && id.playback == plx_media::route::playback_trace_generation() && !player.session.finished
                     && !ended && !plx_media::route::play_pending()
-                    && !super::lifecycle::viewer_paused_for(pa) && !plx_media::player::loading(&player.session)
+                    && !super::lifecycle::viewer_paused_for(&player.session, pa) && !plx_media::player::loading(&player.session)
                     && plx_media::player::seek_pending(&player.session).is_none() && active == Some(id.marker)
                     && plx_media::player::is_playing(&player.session)
                     && super::bridge::player(pages).is_some_and(|screen| screen.accepts_auto_skip(id)) {
@@ -1438,7 +1435,7 @@ fn apply_transport(
     now: u32,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
-    let target = super::lifecycle::transport_target(play, super::lifecycle::viewer_paused_for(pa));
+    let target = super::lifecycle::transport_target(play, super::lifecycle::viewer_paused_for(ps, pa));
     set_transport_paused(ps, pa, target);
     if let Some(player) = super::bridge::player_mut(pages) {
         player.hud.extend(now, HUD_LINGER_MS);
@@ -1520,7 +1517,7 @@ pub(crate) fn key_pause(
     now: u32,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
-    if super::bridge::player(pages).is_some() && !super::lifecycle::viewer_paused_for(pa) {
+    if super::bridge::player(pages).is_some() && !super::lifecycle::viewer_paused_for(ps, pa) {
         if set_transport_paused(ps, pa, true) {
             plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
                 feature: plx_telemetry::diag::schema::Feature::Pause,
@@ -1572,11 +1569,11 @@ pub(crate) unsafe fn key_play(
                 enter_player(pages, bridge, Origin::Here, None);
                 // Keep the ordinary off-route start's existing stale-Pause defense. A foreground
                 // transition applies its explicit clock intent through the lifecycle actuator.
-                if super::lifecycle::viewer_paused_for(pa) {
+                if super::lifecycle::viewer_paused_for(ps, pa) {
                     set_transport_paused(ps, pa, false);
                 }
             }
-        } else if super::lifecycle::viewer_paused_for(pa) {
+        } else if super::lifecycle::viewer_paused_for(ps, pa) {
             set_transport_paused(ps, pa, false);
         }
     }
@@ -1634,29 +1631,31 @@ mod paused_seek_tests {
     fn a_scrub_commit_is_a_bare_seek_whether_or_not_the_film_is_paused() {
         let _g = plx_base::testlock::serial();
         let was_paused = plx_media::player::FEED_TX.paused.load(Relaxed);
-        let (was_seek, was_resume, was_seeking) = (plx_media::player::FEED_TX.seek_to_ns.load(Relaxed), resume_pend(), plx_media::player::FEED_SHARED.seeking.load(Relaxed));
-        set_resume_pend(false);
+        let (was_seek, was_seeking) = (plx_media::player::FEED_TX.seek_to_ns.load(Relaxed), plx_media::player::FEED_SHARED.seeking.load(Relaxed));
         for paused in [true, false] {
-            plx_media::player::FEED_TX.paused.store(paused, Relaxed);
             let mut ps = plx_media::route::PlaybackSession::IDLE;
             let mut pa = plx_media::player::adapter::PlayerAdapter::new(unsafe {
                 plx_base::task::MainThread::assume()
             });
+            plx_media::player::commit_paused(&mut ps, &mut pa, paused);
             commit_seek(&mut ps, &mut pa, 42_000_000_000);
             assert_eq!(plx_media::player::FEED_TX.seek_to_ns.load(Relaxed), 42_000_000_000,
                 "the command itself must carry the target");
-            assert!(!resume_pend());
+            assert!(!resume_pend(&ps));
             assert!(
-                !plx_media::player::seek_preroll_active(),
+                !plx_media::player::seek_preroll_active(&ps),
                 "the pump opens the preroll when it arms the seek; the commit does not",
             );
         }
-        plx_media::player::FEED_TX.paused.store(was_paused, Relaxed);
-        // Restore what the commit wrote: a seek left in flight reads as `Seeking` to every
-        // later test of this binary.
+        // The commit published the Pause to the Feed's global: put it back, and the seek the commit
+        // left in flight, which reads as `Seeking` to every later test of this binary.
+        let mut ps = plx_media::route::PlaybackSession::IDLE;
+        let mut pa = plx_media::player::adapter::PlayerAdapter::new(unsafe {
+            plx_base::task::MainThread::assume()
+        });
+        plx_media::player::commit_paused(&mut ps, &mut pa, was_paused);
         plx_media::player::FEED_TX.seek_to_ns.store(was_seek, Relaxed);
         plx_media::player::FEED_SHARED.seeking.store(was_seeking, Relaxed);
-        set_resume_pend(was_resume);
     }
 }
 

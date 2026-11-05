@@ -1463,12 +1463,14 @@ impl PlaybackSession {
     /// The pump presented a frame for `attempt`: take the post-tick `sample`'s raw facts into the
     /// readout and derive its UI state and end of stream. Refused, changing nothing, for any other
     /// attempt or backend: the readout holds no attempt, so the address is checked here.
+    /// `nothing_in_flight`: no claim hold is up and no route flight is out (the two inputs of "the
+    /// pump is doing no work for a picture" that are not the readout's).
     pub fn present(
         &mut self,
         attempt: RouteStartAttempt,
         tick: plx_playback_contract::feed::PresentationTick,
         sample: plx_playback_contract::feed::FeedFacts,
-        inputs: crate::player::readout::PresentInputs,
+        nothing_in_flight: bool,
     ) -> bool {
         if !self.attempt_view.addresses(attempt, crate::player::attempt_view::Backend::Feed) {
             return false;
@@ -1479,7 +1481,7 @@ impl PlaybackSession {
             tick,
             rebuffering: sample.attempt.rebuffering == Some(true),
             duration_ns: sample.attempt.duration_ns.unwrap_or(0),
-            paused_and_idle: inputs.paused_and_idle,
+            nothing_in_flight,
         }));
         true
     }

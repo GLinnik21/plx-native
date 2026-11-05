@@ -1297,12 +1297,13 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             app.down_sym = sym;
             return;
         }
+        let viewer_paused = viewer_paused_for(&app.player.session, &app.adapters.player);
         begin_fresh_press(&mut app.player.session,
             key,
             sym,
             wcode,
             app.last_input,
-            viewer_paused_for(&app.adapters.player),
+            viewer_paused,
             &mut app.down_sym,
             super::bridge::player_mut(&mut app.pages).map(|player| &mut player.hud),
             &mut app.ptr,
@@ -1459,7 +1460,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             // ONE key, both directions. `key_play`/`key_pause` are each half of the
             // toggle, so this arm picks; off the player route `key_play` is what starts
             // playback, which is the right answer for a PLAYPAUSE press on a card.
-            if viewer_paused_for(&app.adapters.player)
+            if viewer_paused_for(&app.player.session, &app.adapters.player)
                 || super::bridge::player(&app.pages).is_none() {
                 key_play(&mut app.player.session,
                     &mut app.adapters.player,
@@ -1783,7 +1784,7 @@ fn park_playback(app: &mut App) {
     // The transport is read HERE, as the viewer sees it (a claim's presentation hold keeps a pause
     // that is the hold's loan, not the viewer's): the machine reads no global.
     let _ = app.player.lifecycle.step(
-        &ForegroundEvent::Park { saved_ns, viewer_paused: viewer_paused_for(&app.adapters.player) },
+        &ForegroundEvent::Park { saved_ns, viewer_paused: viewer_paused_for(&app.player.session, &app.adapters.player) },
         &mut Vec::new(),
     );
     // The session is preserved for the foreground reload, so
@@ -2271,7 +2272,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         let section_up = super::bridge::player(&app.pages).is_some_and(|p| p.hud.sections.any());
         let bare = !app.pages.surface_up() && !section_up;
         if matches!(app.route(), AppArg::Player) {
-            let paused_now = viewer_paused_for(&app.adapters.player);
+            let paused_now = viewer_paused_for(&app.player.session, &app.adapters.player);
             let mut parked = false;
             if let Some(player) = super::bridge::player_mut(&mut app.pages) {
                 if player.up_next.armed() {
@@ -2344,9 +2345,9 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // already composited — re-freezing then shows it with the shortest possible play-blip
         // (a paused load must briefly Play to decode the frame; buffer-feed has no preroll).
         #[cfg(feature = "play-feed")]
-        if resume_pend()
+        if resume_pend(&app.player.session)
             && matches!(app.route(), AppArg::Player)
-            && plx_media::player::seek_preroll_active()
+            && plx_media::player::seek_preroll_active(&app.player.session)
             && seek_pending(&app.player.session).is_none()
             && frames(&app.player.session).is_some_and(|count| count >= 1)
             && playpos(&app.player.session)
@@ -3463,7 +3464,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
                     btn: player.hud.nav.btn,
                     tab: player.hud.nav.tab,
                     visible: player.hud.visible(&app.player.session, app.last_input,
-                        viewer_paused_for(&app.adapters.player)),
+                        viewer_paused_for(&app.player.session, &app.adapters.player)),
                 },
             )
         };
@@ -3850,8 +3851,9 @@ unsafe fn controlled_key_input(app: &mut App, event: plx_machine::machine::Input
         }
         _ => {
             app.last_input = event.at.ms;
+            let viewer_paused = viewer_paused_for(&app.player.session, &app.adapters.player);
             begin_fresh_press(&mut app.player.session, classify(sym, wcode), sym, wcode,
-                event.at.ms, viewer_paused_for(&app.adapters.player), &mut app.down_sym,
+                event.at.ms, viewer_paused, &mut app.down_sym,
                 None, &mut app.ptr, &mut app.ok_armed, &mut app.input.press);
         }
     }
@@ -3885,18 +3887,24 @@ mod lifecycle_regression_tests {
         panic!("{reason}");
     }
 
+    /// The Feed's own Pause: `FEED_TX.paused` is a process-global that outlives the rig's session.
+    fn feed_paused() -> bool {
+        plx_media::player::FEED_TX.paused.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// `FEED_TX.paused` is a process-global and these lifecycle tests are serialized, so restore the
     /// previous value even when an assertion panics. The decoder-release park reads the clock
-    /// through `viewer_paused()`, which is `FEED_TX.paused` minus a claim hold's loan.
+    /// through `viewer_paused_for`, which reads the session's readout minus a claim hold's loan; the
+    /// readout is the rig's and goes with it, so what this guard saves is the Feed's global alone.
     struct TransportPaused(bool);
     impl TransportPaused {
         /// Capture the current value without changing it: declare it BEFORE the rig, so it drops
         /// AFTER the rig's stop has reset the transport.
         fn keep() -> Self {
-            Self(paused())
+            Self(feed_paused())
         }
         fn set(value: bool) -> Self {
-            let previous = paused();
+            let previous = feed_paused();
             plx_media::player::FEED_TX.commit_paused(value);
             Self(previous)
         }
@@ -6540,7 +6548,7 @@ mod lifecycle_regression_tests {
             rig.app.player.lifecycle.state()
         );
         assert!(
-            plx_media::player::seek_preroll_active(),
+            plx_media::player::seek_preroll_active(&rig.app.player.session),
             "…and rebuilds through the paused-seek preroll"
         );
         assert!(
@@ -6664,20 +6672,20 @@ mod lifecycle_regression_tests {
                 "{press:?} must restore the paused snapshot Playing, got {:?}",
                 rig.app.player.lifecycle.state()
             );
-            assert!(!paused(), "{press:?}: the viewer's resume is published before the Load");
+            assert!(!paused(&rig.app.player.session), "{press:?}: the viewer's resume is published before the Load");
             assert!(
                 !plx_media::player::clock_user_held_for_test(),
                 "{press:?}: the Load's first Play must not be fenced behind the viewer's pause"
             );
             assert!(
-                !plx_media::player::seek_preroll_active(),
+                !plx_media::player::seek_preroll_active(&rig.app.player.session),
                 "{press:?}: a Playing restore must not open the paused-seek preroll"
             );
 
             land_the_wake_load(&mut rig, &mut fr);
             assert_eq!(rig.app.player.lifecycle.state(), ForegroundState::Idle, "{press:?}");
-            assert!(!paused(), "{press:?}: the started restore plays");
-            assert!(!plx_media::player::seek_preroll_active(), "{press:?}: and shows no preroll");
+            assert!(!paused(&rig.app.player.session), "{press:?}: the started restore plays");
+            assert!(!plx_media::player::seek_preroll_active(&rig.app.player.session), "{press:?}: and shows no preroll");
             assert!(
                 !claim_press_after_decoder_release(&mut rig.app, WakePress::Wake),
                 "{press:?}: the next press is ordinary"
@@ -6709,8 +6717,8 @@ mod lifecycle_regression_tests {
             "OK keeps the saved pause, got {:?}",
             rig.app.player.lifecycle.state()
         );
-        assert!(viewer_paused_for(&rig.app.adapters.player), "the viewer's pause stands");
-        assert!(plx_media::player::seek_preroll_active(), "…and the resume frame shows through the preroll");
+        assert!(viewer_paused_for(&rig.app.player.session, &rig.app.adapters.player), "the viewer's pause stands");
+        assert!(plx_media::player::seek_preroll_active(&rig.app.player.session), "…and the resume frame shows through the preroll");
     }
 
     /// **A toggle that wakes a PLAYING decoder-release park is spent as a wake.** PLAYPAUSE (or
@@ -6739,7 +6747,7 @@ mod lifecycle_regression_tests {
             );
             land_the_wake_load(&mut rig, &mut fr);
             assert_eq!(rig.app.player.lifecycle.state(), ForegroundState::Idle, "{press:?}");
-            assert!(!paused(), "{press:?}: the restore plays");
+            assert!(!paused(&rig.app.player.session), "{press:?}: the restore plays");
         }
     }
 
@@ -6766,8 +6774,8 @@ mod lifecycle_regression_tests {
             "a click on a control keeps the saved pause, got {:?}",
             rig.app.player.lifecycle.state()
         );
-        assert!(viewer_paused_for(&rig.app.adapters.player), "the viewer's pause stands");
-        assert!(plx_media::player::seek_preroll_active(), "…and the resume frame shows through the preroll");
+        assert!(viewer_paused_for(&rig.app.player.session, &rig.app.adapters.player), "the viewer's pause stands");
+        assert!(plx_media::player::seek_preroll_active(&rig.app.player.session), "…and the resume frame shows through the preroll");
         assert!(!rig.app.ptr.ok_from_click, "the click was not re-sent as OK, so this is the wake path");
     }
 
@@ -6856,7 +6864,7 @@ mod lifecycle_regression_tests {
                 &mut rig.app.adapters.player, true),
             "the fixture's pause is accepted"
         );
-        assert!(viewer_paused_for(&rig.app.adapters.player), "the common owner holds the viewer's pause goal");
+        assert!(viewer_paused_for(&rig.app.player.session, &rig.app.adapters.player), "the common owner holds the viewer's pause goal");
         // Prepared after a refused foreground Load, with the pump's replacement Engine live. (The
         // `PlayClock` that follows a CurrentAttempt landing is not driven here: the host rig arms
         // the Engine's initial hold from the pause at its START, so a pause pressed afterwards
@@ -6890,7 +6898,7 @@ mod lifecycle_regression_tests {
             },
         );
         assert!(
-            viewer_paused_for(&rig.app.adapters.player),
+            viewer_paused_for(&rig.app.player.session, &rig.app.adapters.player),
             "a Load that builds no Engine must not publish the viewer's resume over the live Engine's pause"
         );
     }
@@ -6913,7 +6921,7 @@ mod lifecycle_regression_tests {
                 return;
             };
         }
-        assert!(paused(), "the guard's restore must outlive the rig's reset");
+        assert!(feed_paused(), "the guard's restore must outlive the rig's reset");
     }
 
     /// **A surface open over the parked player gets its own press, not the restore.**

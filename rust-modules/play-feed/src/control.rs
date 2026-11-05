@@ -409,10 +409,10 @@ mod tests {
     /// the feed gate and the exact pause clock together, a preroll opens only under a Pause
     /// (`BeginPausedSeek`), the pump's seek under a Pause takes ownership of it and a later request
     /// retargets it (`OwnPausedSeek`, never below 0), and `FinishSeekPreroll` closes the preroll
-    /// and the ownership with it (and the resume-pending mark the preroll carried).
+    /// and the ownership with it.
     #[test]
     fn the_transport_commands_leave_the_mailboxes_as_the_players_own_stores_did() {
-        use std::sync::atomic::Ordering::{Acquire, Relaxed};
+        use std::sync::atomic::Ordering::Acquire;
         let _serial = plx_base::testlock::serial();
         FEED_SHARED.reset_session();
         FEED_TX.reset();
@@ -436,10 +436,8 @@ mod tests {
         control.command(FeedCommand::OwnPausedSeek { target_ns: 9_000_000_000 });
         assert_eq!(FEED_TX.owned_paused_seek(), Some(9_000_000_000), "a coalesced tap retargets it");
 
-        FEED_TX.resume_pend.store(true, Relaxed);
         control.command(FeedCommand::FinishSeekPreroll);
         assert!(!FEED_TX.seek_preroll_active() && FEED_TX.owned_paused_seek().is_none());
-        assert!(!FEED_TX.resume_pend.load(Relaxed), "closing the preroll ends the pending resume");
         assert!(!FEED_TX.feed_allowed(), "the gate is shut again behind the closed preroll");
 
         control.command(FeedCommand::BeginPausedSeek);

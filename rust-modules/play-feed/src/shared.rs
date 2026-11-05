@@ -1950,7 +1950,6 @@ pub struct Transport {
     /// interval that begins and ends while the demuxer is blocked, so bounded recovery work uses
     /// this synchronized clock to subtract exactly those intervals from elapsed time.
     pause_clock: Mutex<UserPauseClock>,
-    pub resume_pend: AtomicBool, // resumePausePending
     /// The viewer remains logically paused while a seek is allowed to feed, Play one landed frame,
     /// then re-pause. Keeping this separate prevents the UI/user intent from lying during preroll.
     seek_preroll: AtomicBool,
@@ -2118,7 +2117,6 @@ impl Transport {
             started: AtomicBool::new(false),
             paused: AtomicBool::new(false),
             pause_clock: Mutex::new(UserPauseClock::new()),
-            resume_pend: AtomicBool::new(false),
             seek_preroll: AtomicBool::new(false),
             seek_preroll_owned: AtomicI64::new(-1),
             preroll_volume: AtomicI32::new(PREROLL_VOLUME_NONE),
@@ -2224,7 +2222,6 @@ impl Transport {
     pub fn finish_seek_preroll(&self) {
         self.seek_preroll.store(false, Ordering::Release);
         self.seek_preroll_owned.store(-1, Ordering::Release);
-        self.resume_pend.store(false, Ordering::Release);
     }
 
     /// The paused preroll muted the sink; `saved` (0..=100) is what [`take_preroll_volume`]
@@ -2275,7 +2272,6 @@ impl Transport {
         self.started.store(false, Ordering::Relaxed);
         *self.pause_clock.lock().unwrap_or_else(|e| e.into_inner()) = UserPauseClock::new();
         self.paused.store(false, Ordering::Release);
-        self.resume_pend.store(false, Ordering::Relaxed);
         self.seek_preroll.store(false, Ordering::Relaxed);
         self.seek_preroll_owned.store(-1, Ordering::Relaxed);
         // The pipeline a mute belonged to is unloaded with the stop; the next one starts unmuted.
