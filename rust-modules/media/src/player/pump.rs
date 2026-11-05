@@ -808,7 +808,7 @@ fn seek_landing_tail(
             // Give up on THIS seek and say so, or the spinner and the frozen playhead outlive the
             // playback — see `player::abandon_seek`. The engine is untouched (no flush happened),
             // so the stream itself carries on from where it was.
-            super::abandon_seek();
+            super::abandon_seek(ps, pa);
             super::log("seek(transcode): rebuild failed");
         }
     }
@@ -836,7 +836,7 @@ fn start_transcode_seek_flight(
         }
         crate::route::SeekDispatch::Refused => {
             super::claim_hold::release(pa, inherited_hold);
-            super::abandon_seek();
+            super::abandon_seek(ps, pa);
             super::log("seek(transcode): rebuild failed");
         }
     }
@@ -1571,7 +1571,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         };
         super::report::note_load_gate_for(crate::route::playback_trace_generation(), class);
     }
-    if let Some(reason) = load.speed_fallback { super::fall_back_from_speed(ps, reason); }
+    if let Some(reason) = load.speed_fallback { super::fall_back_from_speed(ps, pa, reason); }
 
     // Load and speed policy are settled. Borrow the physical feed for ACB, feeding and EOS.
     let physical = pa.tick_feed_presentation(
@@ -1592,11 +1592,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
     // derived nothing, as before.
     if let Some(attempt) = pa.active_feed_attempt() {
         if let Some(sample) = pa.sample_feed() {
-            let inputs = super::readout::PresentInputs {
-                seeking: FEED_SHARED.seeking.load(Relaxed),
-                paused_and_idle: paused_and_idle(),
-                pipeline_eos: FEED_SHARED.pipeline_eos.load(Relaxed),
-            };
+            let inputs = super::readout::PresentInputs { paused_and_idle: paused_and_idle() };
             let was_ended = ps.readout().ended();
             if ps.present(attempt, physical, sample, inputs) && !was_ended && ps.readout().ended() {
                 let (pos, dur) = (ps.readout().raw().playpos_ns, sample.attempt.duration_ns.unwrap_or(0));
@@ -2116,7 +2112,7 @@ mod flight_tests {
         let before = crate::route::transcode_session(&rig.ps);
 
         rig.flight.hold_answers();
-        crate::player::request_seek(&mut rig.ps, SEEK_TARGET_NS);
+        crate::player::request_seek(&mut rig.ps, &mut rig.pa, SEEK_TARGET_NS);
         rig.frame();
         assert_eq!(
             rig.flight.answered(),
@@ -2165,7 +2161,7 @@ mod flight_tests {
     #[test]
     fn a_suspend_snapshot_during_a_seek_flight_is_the_seek_target() {
         let mut rig = Rig::new(150);
-        crate::player::request_seek(&mut rig.ps, SEEK_TARGET_NS);
+        crate::player::request_seek(&mut rig.ps, &mut rig.pa, SEEK_TARGET_NS);
         rig.frame();
         assert!(crate::route::flight_outstanding(), "the seek must be flying");
         assert_eq!(FEED_SHARED.playpos_ns.load(Relaxed), 60_000_000_000, "sanity: the published position is the old one");
@@ -2611,13 +2607,13 @@ mod flight_tests {
     #[test]
     fn seek_taps_during_a_flight_coalesce_to_the_last() {
         let mut rig = Rig::new(120);
-        crate::player::request_seek(&mut rig.ps, SEEK_TARGET_NS);
+        crate::player::request_seek(&mut rig.ps, &mut rig.pa, SEEK_TARGET_NS);
         rig.frame();
         assert!(crate::route::flight_outstanding());
         // The worker is up and its answer is being held: the taps below arrive mid-flight.
         rig.flight.wait_for("the first rebuild's request", |f| f.decisions() == 1);
-        crate::player::request_seek(&mut rig.ps, SEEK_TARGET_NS + 30_000_000_000);
-        crate::player::request_seek(&mut rig.ps, SEEK_TARGET_NS + 60_000_000_000);
+        crate::player::request_seek(&mut rig.ps, &mut rig.pa, SEEK_TARGET_NS + 30_000_000_000);
+        crate::player::request_seek(&mut rig.ps, &mut rig.pa, SEEK_TARGET_NS + 60_000_000_000);
         rig.frame();
         assert_eq!(rig.flight.decisions(), 1, "the taps must not start a second rebuild while one flies");
 
@@ -4549,7 +4545,7 @@ mod native_seek_pump_tests {
 
         /// Request a seek and frame until the pump has armed it (flushed, awaiting the keyframe).
         fn arm(&mut self, ns: i64) {
-            crate::player::request_seek(&mut self.ps, ns);
+            crate::player::request_seek(&mut self.ps, &mut self.pa, ns);
             for _ in 0..20 {
                 self.frame();
                 if self.eng().flushed {
@@ -4657,7 +4653,7 @@ mod native_seek_pump_tests {
         let mut fresh = super::super::engine::streaming_engine_for_test(epoch);
         fresh.stage = Stage::Playing;
         rig.pa.install(fresh);
-        crate::player::request_seek(&mut rig.ps, NEXT_NS);
+        crate::player::request_seek(&mut rig.ps, &mut rig.pa, NEXT_NS);
         for _ in 0..4 {
             rig.frame();
         }
@@ -4680,7 +4676,7 @@ mod native_seek_pump_tests {
         let mut rig = Rig::new(None);
         rig.ps.step_readout(ReadoutEvent::RateReloadArmed);
         assert!(rig.ps.readout().rate_reload());
-        crate::player::request_seek(&mut rig.ps, TARGET_NS);
+        crate::player::request_seek(&mut rig.ps, &mut rig.pa, TARGET_NS);
         for _ in 0..6 {
             rig.frame();
             if !reloads().is_empty() {
@@ -4758,7 +4754,7 @@ mod native_seek_pump_tests {
         rig.viewer_pause();
         FEED_SHARED.seek_target_ns.store(123_000_000_000, Relaxed); // a stale target from an earlier seek
         MID_SEEK_CLAIMS.store(0, Relaxed);
-        crate::player::request_seek(&mut rig.ps, TARGET_NS);
+        crate::player::request_seek(&mut rig.ps, &mut rig.pa, TARGET_NS);
         rig.frame();
         assert_eq!(
             MID_SEEK_CLAIMS.load(Relaxed),
@@ -4901,7 +4897,7 @@ mod native_seek_pump_tests {
         let mut rig = Rig::new(None);
         plx_play_feed::seek::set_seek_mode(SeekMode::Reload);
         rig.viewer_pause();
-        crate::player::request_seek(&mut rig.ps, TARGET_NS);
+        crate::player::request_seek(&mut rig.ps, &mut rig.pa, TARGET_NS);
         rig.frame_until_reload();
         assert_eq!(reloads(), vec![TARGET_NS]);
         assert_eq!(preroll_at_reload(), vec![true], "the fresh Load is dispatched with the feed gate open");
@@ -4923,7 +4919,7 @@ mod native_seek_pump_tests {
             super::super::engine::RELOAD_AT_LOG.lock().unwrap_or_else(|e| e.into_inner()).clear();
             super::super::engine::RELOAD_PREROLL_LOG.lock().unwrap_or_else(|e| e.into_inner()).clear();
             FEED_SHARED.frames.store(0, Relaxed);
-            crate::player::request_seek(&mut rig.ps, target);
+            crate::player::request_seek(&mut rig.ps, &mut rig.pa, target);
             rig.frame_until_reload();
             assert_eq!(reloads(), vec![target]);
             assert_eq!(preroll_at_reload(), vec![true], "the reload at {target} is dispatched with the gate open");
@@ -5299,7 +5295,7 @@ mod native_seek_pump_tests {
         let mut rig = Rig::new(None);
         paused_seek_playing_its_preroll(&mut rig);
         assert_eq!(ffi_host::host_volume_for_test(), 0, "sanity: muted");
-        crate::player::abandon_seek();
+        crate::player::abandon_seek(&mut rig.ps, &mut rig.pa);
         assert!(!FEED_TX.seek_preroll_active());
         rig.frame();
         assert_eq!(ffi_host::host_volume_for_test(), 100, "an abandoned preroll left the sink muted");

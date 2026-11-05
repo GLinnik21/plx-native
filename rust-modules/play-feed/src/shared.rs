@@ -292,6 +292,11 @@ pub struct Shared {
     // wobble through the seek/rebase. -1 display = not loading.
     pub seeking: AtomicBool,
     pub seek_display_ns: AtomicI64,
+    // The seek epoch the player's newest `FeedCommand::Seek` carried (0 = none this session), and
+    // the newest one whose playback has resumed (published where `seeking` is cleared by the
+    // landing). The player derives its own `seeking` from the epoch it requested and this one.
+    pub seek_epoch: AtomicU32,
+    pub seek_landed_epoch: AtomicU32,
     // NATIVE audio-track switch (direct-play, no transcode): the 0-based audio stream index
     // to feed. `desired` (-1 = av_find_best_stream) is read by the demuxer to pick the Nth audio
     // stream and PERSISTS across seeks/reloads (reset only on a new item, not in reset_session).
@@ -753,6 +758,8 @@ impl Shared {
             seek_target_ns: AtomicI64::new(-1),
             seeking: AtomicBool::new(false),
             seek_display_ns: AtomicI64::new(-1),
+            seek_epoch: AtomicU32::new(0),
+            seek_landed_epoch: AtomicU32::new(0),
             desired_audio_idx: AtomicI32::new(-1),
             applied_rate_permille: AtomicI32::new(RATE_NORMAL),
             speed_audio_verdict: AtomicU8::new(0),
@@ -1137,6 +1144,8 @@ impl Shared {
         self.seek_target_ns.store(-1, Ordering::Relaxed);
         self.seeking.store(false, Ordering::Relaxed);
         self.seek_display_ns.store(-1, Ordering::Relaxed);
+        self.seek_epoch.store(0, Ordering::Relaxed);
+        self.seek_landed_epoch.store(0, Ordering::Relaxed);
         // NB: desired_audio_idx is NOT reset here — it persists across seeks/reloads so a
         // native audio-track choice survives seeking. It is reset on a new item (route).
         // The viewer's offered rate lives in the session's readout and persists likewise; the

@@ -10,9 +10,8 @@ use crate::feed_resources::FeedResources;
 use crate::native_executor::NativePrepared;
 use plx_base::task::MainThread;
 use plx_playback_contract::feed::{
-    AcceptedLoadOutcome, CtorGate, FeedControl, FeedFacts, FeedLoad, FeedSeek, LoadTick,
-    PausedSeekStep,
-    PresentationTick, SeekMode, SeekPause, Stage, StuckSeekAction,
+    AcceptedLoadOutcome, CtorGate, FeedCommand, FeedControl, FeedFacts, FeedLoad, FeedSeek,
+    LoadTick, PausedSeekStep, PresentationTick, SeekMode, SeekPause, Stage, StuckSeekAction,
 };
 use plx_playback_contract::{
     AttemptId, BackendEvent, BackendKind, Capabilities, CommandId, DispatchResult, DriverSet,
@@ -199,7 +198,16 @@ impl FeedLoad for FeedBackend {
     fn active_attempt(&self) -> Option<AttemptId> { self.resources.active_attempt() }
 }
 
-impl FeedControl for FeedBackend {}
+impl FeedControl for FeedBackend {
+    fn command(&mut self, command: FeedCommand) {
+        match command {
+            FeedCommand::Seek { epoch, target_ns, display_ns } => {
+                feed_pump::seek_requested(epoch, target_ns, display_ns);
+            }
+            FeedCommand::AbandonSeek => feed_pump::seek_abandoned(),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -209,7 +217,7 @@ mod tests {
     };
     use crate::pcm_lead::PcmLead;
     use crate::send_ptr::SendPtr;
-    use crate::shared::FEED_SHARED;
+    use crate::shared::{FEED_SHARED, FEED_TX};
     use plx_platform::tv::sink::{NoSink, VideoSink};
     use std::os::raw::c_char;
 
@@ -266,6 +274,48 @@ mod tests {
         assert_eq!(control.route_actions_ready(), backend.resources().route_actions_ready());
         assert!(!control.pending_seek_ready(false));
         assert!(!control.begin_seek_discontinuity());
+    }
+
+    /// `command(Seek)` makes the stores the player's `request_seek` made itself, and the sample
+    /// carries what the player derives its `seeking` from: the epoch the landing reports (only
+    /// once playback resumed, so a request is in flight until then), and the pipeline's own end of
+    /// stream, which the request clears. `AbandonSeek` is the give-up's two stores, and the
+    /// session's reset zeroes the epochs with the rest of the seek family.
+    #[test]
+    fn the_seek_commands_leave_the_mailboxes_as_the_players_own_stores_did() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let _serial = plx_base::testlock::serial();
+        FEED_SHARED.reset_session();
+        FEED_TX.reset();
+        FEED_SHARED.pipeline_eos.store(true, Relaxed);
+        let mut backend = backend();
+        let control: &mut dyn FeedControl = &mut backend;
+
+        control.command(FeedCommand::Seek { epoch: 1, target_ns: 40_000_000_000, display_ns: 41_000_000_000 });
+        control.command(FeedCommand::Seek { epoch: 2, target_ns: 50_000_000_000, display_ns: 50_000_000_000 });
+        assert!(FEED_SHARED.seeking.load(Relaxed), "the request arms the flag the feed reads");
+        assert!(!FEED_SHARED.pipeline_eos.load(Relaxed), "a seek back from the end un-ends it");
+        assert_eq!(FEED_SHARED.seek_display_ns.load(Relaxed), 50_000_000_000);
+        assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), 50_000_000_000, "the newest target wins");
+        assert_eq!(FEED_TX.seek_reqs.load(Relaxed), 2, "the overwrite is countable as coalescing");
+        let raw = control.sample().raw;
+        assert_eq!(raw.seek_landed_epoch, 0, "requested is not landed");
+        assert!(!raw.pipeline_eos);
+
+        control.command(FeedCommand::AbandonSeek);
+        assert!(!FEED_SHARED.seeking.load(Relaxed));
+        assert_eq!(FEED_SHARED.seek_display_ns.load(Relaxed), -1, "no stale frozen playhead");
+        assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), 50_000_000_000,
+            "giving up leaves the pending target to the pump, as it always did");
+
+        control.command(FeedCommand::Seek { epoch: 3, target_ns: 1, display_ns: 1 });
+        FEED_SHARED.seek_landed_epoch
+            .store(FEED_SHARED.seek_epoch.load(Relaxed), std::sync::atomic::Ordering::Release);
+        assert_eq!(control.sample().raw.seek_landed_epoch, 3, "the landing reports the newest request");
+        FEED_SHARED.reset_session();
+        FEED_TX.reset();
+        assert_eq!(control.sample().raw.seek_landed_epoch, 0, "a new session has landed nothing");
+        assert_eq!(FEED_SHARED.seek_epoch.load(Relaxed), 0);
     }
 
     /// The backend is the runner's single-backend driver set: it answers for the feed alone, and

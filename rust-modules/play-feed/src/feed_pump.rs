@@ -1030,6 +1030,27 @@ pub fn tick_presentation(feed: &mut FeedResources, mt: &MainThread,
     PresentationTick { stage: eng.stage, eos_pushed: eng.eos_pushed }
 }
 
+/// A seek was requested (`FeedCommand::Seek`): the stores the player's `request_seek` used to make
+/// itself, in the same order. The target is published before a worker can observe the seek flag or
+/// the request, and the request is counted even though the target it carries may be overwritten
+/// before the pump ever sees it: that overwrite IS the coalescing, and this is the only place it
+/// is countable.
+pub fn seek_requested(epoch: u32, target_ns: i64, display_ns: i64) {
+    FEED_SHARED.pipeline_eos.store(false, Relaxed);
+    FEED_SHARED.seek_display_ns.store(display_ns, Relaxed);
+    FEED_SHARED.seek_epoch.store(epoch, Relaxed);
+    FEED_SHARED.seeking.store(true, Release);
+    FEED_TX.seek_to_ns.store(target_ns, Relaxed);
+    FEED_TX.seek_reqs.fetch_add(1, Relaxed);
+}
+
+/// The seek was given up on (`FeedCommand::AbandonSeek`): the spinner and the frozen playhead end
+/// with it. `seek_display_ns` goes back to `-1`, the HUD's "no seek target".
+pub fn seek_abandoned() {
+    FEED_SHARED.seeking.store(false, Relaxed);
+    FEED_SHARED.seek_display_ns.store(-1, Relaxed);
+}
+
 /// One sample of the physical feed callback mailboxes without route or session access: the sparse
 /// facts and the raw ones, for the player to ingest addressed to the attempt it installed. The
 /// caller asks `FeedLoad::is_live` first; a feed with no session answers its idle mailboxes.
@@ -1063,6 +1084,8 @@ fn native_feed_raw() -> FeedRaw {
         vpres_count: FEED_SHARED.dg_vpres_ct.load(Relaxed),
         vpres_gap: FEED_SHARED.dg_vpres_gap.load(Relaxed),
         pts_shift: FEED_SHARED.pts_shift.load(Relaxed),
+        pipeline_eos: FEED_SHARED.pipeline_eos.load(Relaxed),
+        seek_landed_epoch: FEED_SHARED.seek_landed_epoch.load(Acquire),
     }
 }
 

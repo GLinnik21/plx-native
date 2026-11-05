@@ -27,9 +27,12 @@
 //! | `hls_rebuffering` (1), `seen_frame` (1) | plain bool | **mapped** |
 //! | `native_audio_refused`, `decoder_revoked`, `file_size`, `applied_rate_permille`, `speed_audio_verdict`, `native_load_abandoned`, `dg_vpres_ct`, `dg_vpres_gap`, `pts_shift` (13) | no `AttemptFacts` field | **raw**, in [`FeedRaw`] |
 //!
-//! Not here yet: the seek family (`seeking`, `seek_target_ns`, `disp_base`, `pipeline_eos`, and the
-//! epoch'd `seek_requeue`/`seek_landed_epoch`; they have media writers and join with L3b's intents),
-//! `abr_seed` (a worker event, L3c), and the `DemuxAbr` and diagnostics halves of [`FeedFacts`] (L3c).
+//! The seek family is joining by lanes: `pipeline_eos` and the landed seek epoch are here
+//! (`seeking` is not stored anywhere: the player derives it from the epoch it requested and the
+//! landed one), and the requests themselves are the intent [`FeedCommand::Seek`] and
+//! [`FeedCommand::AbandonSeek`]. Not here yet: `seek_target_ns`, `disp_base` and the epoch'd
+//! `seek_requeue` (they still have media writers or readers), `abr_seed` (a worker event, L3c), and
+//! the `DemuxAbr` and diagnostics halves of [`FeedFacts`] (L3c).
 //! A value that is `-1` in the feed's mailbox is an `Option` here, as in [`AttemptFacts`].
 
 use std::sync::atomic::{AtomicI32, AtomicU32};
@@ -249,6 +252,13 @@ pub struct FeedRaw {
     pub vpres_gap: u32,
     /// The shift between the container's timestamps and the pipeline's.
     pub pts_shift: i64,
+    /// The pipeline reported its own end of stream after a picture; cleared by a seek and by
+    /// the session's reset.
+    pub pipeline_eos: bool,
+    /// The newest seek epoch (the one a [`FeedCommand::Seek`] carried) whose playback has resumed
+    /// at its new position; 0 before any, and again after the session's reset. A seek is in
+    /// flight while the player's requested epoch is above this one.
+    pub seek_landed_epoch: u32,
 }
 
 impl FeedRaw {
@@ -260,7 +270,7 @@ impl FeedRaw {
         },
         decoder_revoked: false, native_audio_refused: false, load_abandoned: false, file_size: 0,
         applied_rate_permille: crate::RATE_NORMAL, speed_audio_ok: None, vpres_count: 0,
-        vpres_gap: 0, pts_shift: 0,
+        vpres_gap: 0, pts_shift: 0, pipeline_eos: false, seek_landed_epoch: 0,
     };
 }
 
@@ -274,6 +284,26 @@ impl Default for FeedRaw {
 pub struct FeedFacts {
     pub attempt: AttemptFacts,
     pub raw: FeedRaw,
+}
+
+// ---------------------------------------------------------------------------------------------
+// Commands: what the player asks of the feed, by value.
+// ---------------------------------------------------------------------------------------------
+
+/// One intent the player gives the feed. Each is the effect of one readout event (the event states
+/// what the viewer or the route meant, the command is what the feed does about it), so a request
+/// that used to write several of the feed's members is one value here. The feed carries a command
+/// out where it stands, in the order it was given. Seeking is not an [`Operation`]: it stays
+/// outside the runner's door (R8).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FeedCommand {
+    /// A seek was requested. `epoch` is the player's requested-seek count after this request (a
+    /// later request carries a larger one); the feed reports it back as [`FeedRaw::seek_landed_epoch`]
+    /// once playback resumes at the new position. `display_ns` is the target the HUD freezes the
+    /// playhead at while the seek resolves.
+    Seek { epoch: u32, target_ns: i64, display_ns: i64 },
+    /// The seek was given up on: the spinner and the frozen playhead end with it.
+    AbandonSeek,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -345,9 +375,12 @@ pub trait FeedLoad {
     fn active_attempt(&self) -> Option<AttemptId>;
 }
 
-/// One buffer-feed backend as the player drives it. Later steps of the seam add the command,
-/// readout, open and stop verbs here; today it is the seek and Load halves.
-pub trait FeedControl: FeedSeek + FeedLoad {}
+/// One buffer-feed backend as the player drives it: the seek and Load halves, and the one verb
+/// every intent goes through. Later steps of the seam add the open and stop verbs here.
+pub trait FeedControl: FeedSeek + FeedLoad {
+    /// Carry out one player intent (see [`FeedCommand`]).
+    fn command(&mut self, command: FeedCommand);
+}
 
 /// The physical drivers one composition supplies, behind one object. It is the runner's
 /// [`DriverSet`] on the main thread, and `feed` is the buffer-feed half for the pump's direct

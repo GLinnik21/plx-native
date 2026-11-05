@@ -1281,6 +1281,7 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks
                 }
                 eng.prime_play = false;
                 shared.seeking.store(false, Ordering::Relaxed); // playback resumed at the new position → HUD spinner off
+                shared.seek_landed_epoch.store(shared.seek_epoch.load(Ordering::Relaxed), Ordering::Release);
                 if prime_kind == HlsPrimeKind::Rebuffer {
                     plx_base::eventlog::log(&format!(
                         "primed: v={}ms a={}ms recovery_n={} debt={}ms runway={}ms -> Play",

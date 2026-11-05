@@ -1479,9 +1479,7 @@ impl PlaybackSession {
             tick,
             rebuffering: sample.attempt.rebuffering == Some(true),
             duration_ns: sample.attempt.duration_ns.unwrap_or(0),
-            seeking: inputs.seeking,
             paused_and_idle: inputs.paused_and_idle,
-            pipeline_eos: inputs.pipeline_eos,
         }));
         true
     }

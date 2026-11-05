@@ -829,7 +829,7 @@ pub fn reload_transcode(ps: &mut crate::route::PlaybackSession, pa: &mut super::
     if crate::route::url(ps).is_empty() {
         // The other abandonment path with the same hole: `request_seek` armed the spinner and
         // nothing here would ever disarm it. See `player::abandon_seek`.
-        crate::player::abandon_seek();
+        crate::player::abandon_seek(ps, pa);
         log("reload_transcode: no url (ignored)");
         settle_missing_route_start();
         return ReloadOutcome::NoRoute;
@@ -852,7 +852,7 @@ pub fn reload_transcode(ps: &mut crate::route::PlaybackSession, pa: &mut super::
 #[cfg(feature = "play-feed")]
 pub fn reload_transcode_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, offset_ns: i64) -> BufferfeedStartOutcome {
     if crate::route::url(ps).is_empty() {
-        crate::player::abandon_seek();
+        crate::player::abandon_seek(ps, pa);
         log("reload_transcode_tracked: no url (ignored)");
         settle_missing_route_start();
         return BufferfeedStartOutcome::Failed;
