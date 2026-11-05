@@ -983,11 +983,6 @@ mod tests {
 
     use plx_machine::machine::{EntryId, FocusRead, Host, InputOwner, PressRead, Tick};
 
-    const FROZEN_CENSUS_LANGUAGES: [Preference; 11] = [
-        Preference::En, Preference::Es, Preference::Be, Preference::Fr, Preference::It, Preference::Pt,
-        Preference::De, Preference::Hu, Preference::Ru, Preference::Pl, Preference::Nl,
-    ];
-
     /// A host with `u32` elements: the least a `DrawFrame` needs for the renderer to paint the strip's Shelf.
     pub(super) struct HostFixture;
     impl Host for HostFixture {
@@ -1123,6 +1118,18 @@ mod tests {
     /// `FixtureMeasure` only, so the values do not depend on a font.
     const FROZEN_CENSUS: &str = include_str!("census-classic.golden.tsv");
 
+    fn frozen_census_languages() -> Vec<Preference> {
+        SHIPPED
+            .iter()
+            .copied()
+            .filter(|language| {
+                FROZEN_CENSUS
+                    .lines()
+                    .any(|line| line.split('\t').next() == Some(language.tag()))
+            })
+            .collect()
+    }
+
     /// FNV-1a, 64 bit: a hash whose algorithm is fixed here (`DefaultHasher`'s is not).
     fn fnv1a(text: &str) -> u64 {
         text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
@@ -1150,8 +1157,9 @@ mod tests {
     /// card (they need a playing item): the simulator's frame dump covers them.
     #[test]
     fn classic_through_the_renderer_draws_what_the_hand_written_hud_draws() {
+        let frozen_languages = frozen_census_languages();
         let mut compared = 0;
-        for language in FROZEN_CENSUS_LANGUAGES {
+        for language in frozen_languages.iter().copied() {
             let _language = language_on_this_thread_for_test(language);
             let cx = plx_platform::i18n::current();
             let hud = crate::player_hud::loaded::load_classic("0.0.0-test", cx, &FM);
@@ -1163,7 +1171,7 @@ mod tests {
                 compared += 1;
             }
         }
-        assert_eq!(compared, FROZEN_CENSUS_LANGUAGES.len() * cases().len(), "a count, so a loop that compares less cannot pass");
+        assert_eq!(compared, frozen_languages.len() * cases().len(), "a count, so a loop that compares less cannot pass");
         assert_eq!(FROZEN_CENSUS.lines().count(), compared, "the frozen file holds one line per case");
     }
 
