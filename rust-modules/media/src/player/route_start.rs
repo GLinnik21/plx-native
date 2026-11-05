@@ -410,9 +410,9 @@ pub(super) fn start_bufferfeed_inner(
     // A native refusal is mapped here, by the common owner: the executor logs why, and the route
     // only learns that the start failed.
     let mut prepared_native = plx_play_feed::native_executor::prepare_native_open(
-        pa.mt(), pa.feed.shared(), start_paused, FEED_TX.seek_preroll_active(),
+        pa.mt(), pa.physical.feed_backend().resources().shared(), start_paused, FEED_TX.seek_preroll_active(),
         open.map(super::feed_open::FeedOpenRequest::into_physical), sample, is_h265, session_rate,
-        side_reader, super::no_audio_armed(), super::play_rate_permille(), &pa.feed.hooks().prepare)
+        side_reader, super::no_audio_armed(), super::play_rate_permille(), &pa.physical.feed_backend().resources().hooks().prepare)
         .map_err(|_| crate::route::RouteStartResult::StartFailed)?;
     // The route reducer alone mints the physical attempt. The native constructor consumes this
     // identity; no backend-owned logical counter can alias a later route.
@@ -606,9 +606,9 @@ pub(super) fn run_release_effects(
                 if let Some(p) = joined.take() {
                     debug_assert_eq!(p.epoch(), epoch);
                     let attempt = p.attempt();
-                    let hooks = pa.feed.hooks();
+                    let hooks = pa.physical.feed_backend().resources().hooks();
                     let status = plx_play_feed::native_executor::run_release_tail(
-                        pa.mt(), p, pa.feed.shared(), &hooks.release);
+                        pa.mt(), p, pa.physical.feed_backend().resources().shared(), &hooks.release);
                     pa.note_backend_feed_release(attempt, status);
                     let at = pa.backend_tick();
                     let _ = pa.backend_poll_at(at);

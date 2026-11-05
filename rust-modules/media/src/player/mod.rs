@@ -22,6 +22,7 @@
 //! and `sink()` answers a no-op sink to every other main-thread verb until it is done.
 #![allow(non_upper_case_globals)]
 pub mod adapter;
+mod physical; // the adapter's physical drivers as one `PhysicalSet` (the Feed backend and the URI driver)
 pub mod attempt_view;
 #[cfg(feature = "play-feed")]
 pub mod demux_session;
