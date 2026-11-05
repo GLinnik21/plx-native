@@ -61,7 +61,7 @@ use plx_playback_contract::uri::native_index;
 struct StagedSource { attempt: AttemptId, key: SourceKey, source: UriSource, deadline_ms: u64 }
 
 #[derive(Clone, Copy)]
-enum ControlKind { Transport, Track(TrackSelection), Seek { ack: bool, done: bool } }
+enum ControlKind { Transport, Track(TrackSelection), Seek }
 #[derive(Clone, Copy)]
 struct PendingControl { command: CommandId, operation: Operation, kind: ControlKind,
     deadline_ms: u64 }
@@ -292,7 +292,7 @@ impl UriBackend {
     /// A Seek has been dispatched and has not landed (or timed out).
     fn seek_pending(&self) -> bool {
         self.controls.values().chain(self.dispatching.iter())
-            .any(|pending| matches!(pending.kind, ControlKind::Seek { .. }))
+            .any(|pending| matches!(pending.kind, ControlKind::Seek))
     }
 
     /// Step the picture rule and publish what it decides. The line says which rule fired, so a
@@ -360,7 +360,7 @@ impl UriBackend {
                     || matches!((method, pending.kind),
                         (Method::Pause, ControlKind::Transport) if pending.operation == Operation::Pause)
                     || matches!((method, pending.kind),
-                        (Method::Seek, ControlKind::Seek { .. })
+                        (Method::Seek, ControlKind::Seek)
                             | (Method::SelectTrack, ControlKind::Track(_)));
                 if matches_method && denied {
                     self.controls.remove(&request);
@@ -384,28 +384,9 @@ impl UriBackend {
                     self.mirror_transport(pending.operation, mt);
                 }
             }
-            if method == Method::Seek && !denied {
-                let landed = if let Some(pending) = self.controls.get_mut(&request) {
-                    if let ControlKind::Seek { ack, done } = &mut pending.kind {
-                        if message.accepted() == Some(true) { *ack = true; }
-                        if message.normalized.contains(&Ev::SeekDone) { *done = true; }
-                        *ack && *done
-                    } else { false }
-                } else { false };
-                if landed {
-                    let pending = self.controls.remove(&request).expect("landed seek is pending");
-                    self.retire_control(request);
-                    if let Some(attempt) = self.active {
-                        let position = message.current_time.and_then(|ms| u64::try_from(ms).ok())
-                            .map(|ms| Observed { value: ContentTime::from_millis(ms),
-                                from: EvidenceSource::BackendReport });
-                        self.pending.push_back(DriverEvent::SeekLanded {
-                            attempt, command: pending.command, position,
-                        });
-                        self.picture_step(PictureEvent::Seeked);
-                    }
-                }
-            }
+        }
+        if let Some((request, acknowledged)) = message.landed_seek {
+            self.land_seek(request, acknowledged, message.current_time);
         }
         if message.confirmed_track.is_some() {
             if let Some((kind, index)) = message.selected_track {
@@ -434,6 +415,31 @@ impl UriBackend {
             }
         }
         false
+    }
+
+    /// The service reported the pending Seek `request` done (the lifecycle attributed its
+    /// `seekDone`): the startup plan's wait is over. It lands on the event alone, in whatever order
+    /// the call's own reply came (first, later or, for all this knows, never), and one that already
+    /// refused is gone from the ledger, so a `seekDone` after a refusal lands nothing.
+    fn land_seek(&mut self, request: plx_platform::tv::uri::RequestId, acknowledged: bool,
+        current_time: Option<i64>) {
+        if !self.controls.get(&request).is_some_and(|pending| matches!(pending.kind, ControlKind::Seek)) {
+            return;
+        }
+        let pending = self.controls.remove(&request).expect("landed seek is pending");
+        self.retire_control(request);
+        plx_base::eventlog::log(&format!(
+            "uri: control {:?} landed on the service's seekDone (its reply acknowledged first: {})",
+            pending.operation, if acknowledged { "yes" } else { "no" }));
+        if let Some(attempt) = self.active {
+            let position = current_time.and_then(|ms| u64::try_from(ms).ok())
+                .map(|ms| Observed { value: ContentTime::from_millis(ms),
+                    from: EvidenceSource::BackendReport });
+            self.pending.push_back(DriverEvent::SeekLanded {
+                attempt, command: pending.command, position,
+            });
+            self.picture_step(PictureEvent::Seeked);
+        }
     }
 
     fn retire_control(&mut self, request: plx_platform::tv::uri::RequestId) {
@@ -520,8 +526,8 @@ impl UriBackend {
                         self.observe(Observation::Position(Observed {
                             value: ContentTime::from_millis(ms), from: EvidenceSource::BackendReport,
                         }));
-                        // A report that arrives while a Seek is pending (the subscription's own
-                        // `seekDone` can beat the addressed reply) may be the seek target: a
+                        // A report that arrives while a Seek is pending (a `currentTime` can
+                        // come before the `seekDone` that lands it) may be the seek target: a
                         // position jump, not movement of the stream that was playing.
                         if self.seek_pending() { self.picture_step(PictureEvent::Seeked); }
                         self.picture_step(PictureEvent::Clock(ms));
@@ -690,7 +696,7 @@ impl UriBackend {
                         let matches = matches!((call, pending.kind),
                             (UriCall::Play { .. }, ControlKind::Transport)
                                 | (UriCall::Pause { .. }, ControlKind::Transport)
-                                | (UriCall::Seek { .. }, ControlKind::Seek { .. })
+                                | (UriCall::Seek { .. }, ControlKind::Seek)
                                 | (UriCall::SelectTrack { .. }, ControlKind::Track(_)));
                         if matches { self.controls.insert(*request, pending); }
                     }
@@ -780,7 +786,7 @@ impl UriBackend {
                 (UriCall::Pause { media_id }, Some(ControlKind::Transport)),
             Operation::Seek(time) if self.config.capabilities.seek => {
                 let Ok(position) = i64::try_from(time.as_millis()) else { return DispatchResult::Refused(Failure::Unsupported); };
-                (UriCall::Seek { media_id, position }, Some(ControlKind::Seek { ack: false, done: false }))
+                (UriCall::Seek { media_id, position }, Some(ControlKind::Seek))
             }
             Operation::SelectTrack { kind, choice } => {
                 let enabled = match kind {
@@ -1496,7 +1502,7 @@ mod tests {
     }
 
     #[test]
-    fn seek_landing_requires_exact_request_and_ack_and_off_is_unsupported() {
+    fn seek_landing_requires_exact_request_and_off_is_unsupported() {
         let mut rig = Rig::new(); rig.opened();
         assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
             Operation::SelectTrack { kind: TrackKind::Subtitle, choice: TrackChoice::Off }),
@@ -1507,8 +1513,9 @@ mod tests {
             let state = rig.bus.0.lock().unwrap();
             (state.session, state.calls.iter().rev().find(|(method, _, _)| *method == "seek").unwrap().1)
         };
-        rig.bus.say("subscribe", r#"{"mediaId":"m1","seekDone":true,"currentTime":5000}"#);
-        assert!(!rig.driver.poll(&rig.mt).iter().any(|event| matches!(event, DriverEvent::SeekLanded { .. })));
+        // A report of the clock is not the seek's landing; only a `seekDone` is.
+        rig.bus.say("subscribe", r#"{"mediaId":"m1","currentTime":5000}"#);
+        assert!(!any_landing(&rig.driver.poll(&rig.mt)));
         rig.bus.0.lock().unwrap().replies.push_back(UriReply { session,
             request: RequestId::new(999), method: "seek",
             payload: r#"{"returnValue":true,"mediaId":"m1","seekDone":true}"#.into(), ok: true });
@@ -1521,8 +1528,100 @@ mod tests {
                 value: ContentTime::from_millis(5000), from: EvidenceSource::BackendReport }) },
             DriverEvent::Observation { attempt: A, observation: Observation::Position(Observed {
                 value: ContentTime::from_millis(5000), from: EvidenceSource::BackendReport }) }],
-            "the same native reply both lands the addressed seek and reports sparse position");
+            "a reply to the seek that carries the `seekDone` lands it and reports sparse position");
         assert_eq!(rig.bus.calls("play"), 0, "seeking never chooses playback policy");
+    }
+
+    // The 4.5 service's own shapes, from the ls-monitor capture of a bound session
+    // (`bound-controls/bus.jsonl`): the seek call is answered at once with the plain method reply,
+    // which carries NO `seekDone`; the `seekDone` is the subscription's own event, about 110 ms
+    // later, carrying the media id in its object.
+    const SEEK_ACK: &str = r#"{"errorCode":0,"returnValue":true,"errorText":"No Error","mediaId":"m1"}"#;
+    const SEEK_DONE: &str = r#"{"seekDone":{"mediaId":"m1"}}"#;
+
+    /// An open attempt with one Seek (the startup resume) dispatched and not yet landed.
+    fn seeking() -> Rig {
+        let mut rig = Rig::new(); rig.opened();
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
+            Operation::Seek(ContentTime::from_millis(77_830))), DispatchResult::Queued);
+        assert_eq!(rig.bus.calls("seek"), 1);
+        rig
+    }
+    fn landed(rig: &Rig) -> DriverEvent {
+        DriverEvent::SeekLanded { attempt: A, command: rig.command, position: None }
+    }
+    fn any_landing(events: &[DriverEvent]) -> bool {
+        events.iter().any(|event| matches!(event, DriverEvent::SeekLanded { .. }))
+    }
+
+    #[test]
+    fn a_seek_lands_on_the_subscriptions_seekdone_after_the_replys_ack() {
+        // The device order: call sent, the reply at once, `seekDone` ~110 ms later.
+        let mut rig = seeking();
+        rig.bus.say("seek", SEEK_ACK);
+        assert!(rig.driver.poll(&rig.mt).is_empty(), "the ack alone is not the landing");
+        rig.bus.say("subscribe", SEEK_DONE);
+        assert_eq!(rig.driver.poll(&rig.mt), [landed(&rig)]);
+        assert_eq!(rig.bus.calls("play"), 0, "seeking never chooses playback policy");
+    }
+
+    #[test]
+    fn a_seek_lands_on_seekdone_that_beats_the_reply_and_the_late_ack_adds_nothing() {
+        let mut rig = seeking();
+        rig.bus.say("subscribe", SEEK_DONE);
+        assert_eq!(rig.driver.poll(&rig.mt), [landed(&rig)]);
+        rig.bus.say("seek", SEEK_ACK);
+        assert!(rig.driver.poll(&rig.mt).is_empty(), "the retired request lands nothing twice");
+    }
+
+    #[test]
+    fn a_seek_lands_on_seekdone_when_the_service_never_replies() {
+        let mut rig = seeking();
+        rig.bus.say("subscribe", SEEK_DONE);
+        assert_eq!(rig.driver.poll(&rig.mt), [landed(&rig)]);
+    }
+
+    #[test]
+    fn a_refused_seek_is_refused_and_a_later_seekdone_lands_nothing() {
+        let mut rig = seeking();
+        rig.bus.say("seek", r#"{"errorCode":-1,"returnValue":false,"errorText":"refused","mediaId":"m1"}"#);
+        assert_eq!(rig.driver.poll(&rig.mt), [DriverEvent::ControlRefused { attempt: A,
+            command: rig.command, operation: Operation::Seek(ContentTime::from_millis(77_830)),
+            failure: Failure::Refused }]);
+        rig.bus.say("subscribe", SEEK_DONE);
+        assert!(!any_landing(&rig.driver.poll(&rig.mt)), "no pending seek is left to land");
+    }
+
+    #[test]
+    fn a_seekdone_before_any_seek_was_sent_settles_no_later_seek() {
+        let mut rig = Rig::new(); rig.opened();
+        rig.bus.say("subscribe", SEEK_DONE);
+        assert!(!any_landing(&rig.driver.poll(&rig.mt)));
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
+            Operation::Seek(ContentTime::from_millis(77_830))), DispatchResult::Queued);
+        assert!(!any_landing(&rig.driver.poll(&rig.mt)), "the earlier report is not this seek's");
+        rig.bus.say("subscribe", SEEK_DONE);
+        assert_eq!(rig.driver.poll(&rig.mt), [landed(&rig)]);
+    }
+
+    #[test]
+    fn one_seekdone_never_picks_between_two_pending_seeks() {
+        let mut rig = seeking();
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
+            Operation::Seek(ContentTime::from_millis(90_000))), DispatchResult::Queued);
+        assert_eq!(rig.bus.calls("seek"), 2);
+        rig.bus.say("subscribe", SEEK_DONE);
+        assert!(!any_landing(&rig.driver.poll(&rig.mt)), "which of the two it reports is unknown");
+    }
+
+    #[test]
+    fn a_seekdone_of_another_media_or_of_none_lands_no_seek() {
+        for payload in [r#"{"seekDone":{"mediaId":"other"}}"#, r#"{"seekDone":true}"#,
+            r#"{"seekDone":{}}"#] {
+            let mut rig = seeking();
+            rig.bus.say("subscribe", payload);
+            assert!(!any_landing(&rig.driver.poll(&rig.mt)), "{payload}");
+        }
     }
 
     #[test]
@@ -1725,8 +1824,8 @@ mod tests {
         assert!(landed.iter().any(|event| matches!(event, DriverEvent::SeekLanded { .. })), "{landed:?}");
         assert_eq!(presented(&landed), 0, "the jump from 100 to the seek target is not playback");
         assert_eq!(presented(&rig.clock_says(600_040)), 1, "the clock then moves on");
-        // The subscription's own `seekDone` report can beat the addressed reply; while the Seek
-        // is pending it is the target, not movement.
+        // The subscription's `seekDone` is what lands a seek (the reply carries none on the real
+        // service); while the Seek is pending its target is not movement.
         let (mut rig, sink) = acb_playing();
         assert_eq!(presented(&rig.clock_says(100)), 0);
         sink.mailbox.push(display, 1);
@@ -1739,11 +1838,13 @@ mod tests {
             (state.session, state.calls.iter().rev().find(|(method, _, _)| *method == "seek").unwrap().1)
         };
         rig.bus.say("subscribe", r#"{"mediaId":"m1","seekDone":true,"currentTime":600000}"#);
-        assert_eq!(presented(&rig.driver.poll(&rig.mt)), 0, "an unaddressed report of the target");
+        let landed = rig.driver.poll(&rig.mt);
+        assert!(landed.iter().any(|event| matches!(event, DriverEvent::SeekLanded { .. })), "{landed:?}");
+        assert_eq!(presented(&landed), 0, "the subscription's report landing the seek");
         rig.bus.0.lock().unwrap().replies.push_back(UriReply { session, request, method: "seek",
             payload: r#"{"returnValue":true,"mediaId":"m1","seekDone":true,"currentTime":600000}"#.into(),
             ok: true });
-        assert_eq!(presented(&rig.driver.poll(&rig.mt)), 0, "the addressed reply landing the seek");
+        assert_eq!(presented(&rig.driver.poll(&rig.mt)), 0, "the late reply of the retired seek");
         assert_eq!(presented(&rig.clock_says(600_040)), 1);
     }
 

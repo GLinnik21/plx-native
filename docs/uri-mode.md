@@ -157,6 +157,16 @@ different track before `play` is confirmed at all, are not. A control that is ne
 refused when its deadline passes and logs `uri: control ... unconfirmed after N ms; refused
 (TimedOut)`.
 
+A start that carries a resume position sends `seek` before the first `play` (track, seek, then Play).
+The service answers that call with the plain method reply, which has no `seekDone` in it, and reports
+`{"seekDone":{"mediaId":...}}` on the subscription some 110 ms later (the `bound-controls` bus
+capture; the TV's `..._bound_collapse` case waited 15 s for a `seekDone` in the reply and fell back
+to Feed). The backend lands the Seek on that event (`uri: control Seek(..) landed on the service's
+seekDone (its reply acknowledged first: yes|no)`): in whatever order the reply came, only for the
+loaded media's id, only when exactly one Seek is pending, and never after a refusal. Not determined:
+whether a `seek` sent before `play` is answered at all (the capture's came after `play`); the
+landing line says whether the reply had been acknowledged.
+
 ## Reproducing it
 
 1. Deploy a debug build carrying the probe (devtriggers; no `RELEASE=1` package contains it).

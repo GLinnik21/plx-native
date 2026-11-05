@@ -350,6 +350,11 @@ pub struct Message {
     pub(crate) reply_request: Option<plx_platform::tv::uri::RequestId>,
     pub(crate) reply_track: Option<&'static str>,
     pub(crate) confirmed_track: Option<&'static str>,
+    /// The Seek request this message's `seekDone` reports landed, and whether that request's own
+    /// reply had been acknowledged when it did (only the lifecycle, which owns the requests, fills
+    /// it). The 4.5 service answers a seek call with a plain reply that carries no `seekDone`: the
+    /// `seekDone` is the subscription's own event, so it is attributed, not read off the reply.
+    pub(crate) landed_seek: Option<(plx_platform::tv::uri::RequestId, bool)>,
 }
 
 /// A typed diagnostic scalar: numbers, booleans, a finite codec/HDR vocabulary, and

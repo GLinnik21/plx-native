@@ -363,6 +363,28 @@ impl Lifecycle {
                         }
                     }
                 }
+                // `seekDone` lands a seek. The seek call's own reply is the plain method reply
+                // and carries none (the ls-monitor capture of the 4.5 service): the event is the
+                // subscription's, a hundred milliseconds or more after the reply, and nothing in
+                // it names the request. A reply to a Seek that does carry one names its own
+                // request. Any other message's is attributed to the one Seek sent and not yet
+                // settled, and only with the loaded media's id in it (an absent id, or another
+                // media's, attributes nothing): with two Seeks pending it is not known which the
+                // service finished, so neither is named.
+                if message.normalized.contains(&Ev::SeekDone) {
+                    let landed = if method == Method::Seek {
+                        Some(reply.request)
+                    } else if message.media_id.is_some() && message.media_id == self.media_id {
+                        let mut seeks = self.requests.iter()
+                            .filter(|(_, request)| matches!(request.call, UriCall::Seek { .. }))
+                            .map(|(request, _)| *request);
+                        seeks.next().filter(|_| seeks.next().is_none())
+                    } else {
+                        None
+                    };
+                    message.landed_seek = landed.map(|request| (request,
+                        self.requests.get(&request).is_some_and(|sent| sent.ack == Some(true))));
+                }
                 // A matching event may have preceded the ACK.
                 if let Some(request) = self.requests.get(&reply.request) {
                     if request.confirmed && request.ack == Some(true) {
@@ -820,6 +842,36 @@ mod tests {
             matches!(&fx[0],Fx::Deliver{message,..} if message.confirmed_track.is_none()),
             "historical same-target commands make attribution ambiguous"
         );
+    }
+    #[test]
+    fn uri_lifecycle_seekdone_is_attributed_only_to_the_one_sent_seek_of_the_loaded_media() {
+        let mut m = open();
+        let load = call_request(&mut m, UriCall::Load { window_id: None, bps: AbrBps::default() });
+        reply(&mut m, load, "load", r#"{"returnValue":true,"mediaId":"m"}"#);
+        let sub = call_request(&mut m, UriCall::Subscribe { media_id: "m".into() });
+        let landed = |fx: &[Fx]| match &fx[0] {
+            Fx::Deliver { message, .. } => message.landed_seek,
+            other => panic!("{other:?}"),
+        };
+        let done = r#"{"seekDone":{"mediaId":"m"}}"#;
+        assert_eq!(landed(&reply(&mut m, sub, "subscribe", done)), None, "no seek was sent");
+        let seek = call_request(&mut m, UriCall::Seek { media_id: "m".into(), position: 5 });
+        assert_eq!(landed(&reply(&mut m, sub, "subscribe", r#"{"seekDone":true}"#)), None,
+            "an event that names no media is attributed to nothing");
+        assert!(reply(&mut m, sub, "subscribe", r#"{"seekDone":{"mediaId":"other"}}"#).is_empty(),
+            "another media's event is dropped");
+        assert_eq!(landed(&reply(&mut m, sub, "subscribe", done)), Some((seek, false)),
+            "the one sent seek, whose reply has not come");
+        reply(&mut m, seek, "seek", r#"{"returnValue":true,"mediaId":"m"}"#);
+        assert_eq!(landed(&reply(&mut m, sub, "subscribe", done)), Some((seek, true)),
+            "the same seek once its reply was acknowledged");
+        let second = call_request(&mut m, UriCall::Seek { media_id: "m".into(), position: 9 });
+        assert_eq!(landed(&reply(&mut m, sub, "subscribe", done)), None,
+            "which of two pending seeks the service finished is not known");
+        step(&mut m, Event::Retire { request: seek });
+        assert_eq!(landed(&reply(&mut m, sub, "subscribe", done)), Some((second, false)));
+        assert_eq!(landed(&reply(&mut m, second, "seek", r#"{"returnValue":true,"seekDone":true}"#)),
+            Some((second, true)), "a reply to the seek that carries the event names its own request");
     }
     #[test]
     fn uri_review_regression_wrong_media_refusal_cannot_affect_owner() {
