@@ -4959,6 +4959,91 @@
       "_uri_note": "PRODUCTION ROUTE (debug builds, `--guest --mock`). The same 20 Mbit/s HLS stream as pipe_uri_hls_720p24_20m_bound_collapse, but played by the PRODUCTION URI backend instead of the developer probe: the app resolves the carrier clip (`carrier`, a 90 s 720p24 progressive twin on the harness's own mock PMS, ratingKey 990001), the dev route (`plxnative-uridev`, written by the runner) answers the qualification with the fixture's URL, and the backend binds the ACB plane (`ptype=0`) and plays it. The runner writes `part=` from the carrier, `pms=` from the configured mock address (the origin the app's own client holds), `url=` from the fixture server, pins `quality=original` and `audioenh=off`, never arms `uriprobe`, and deletes `plxnative-uridev` afterwards. Graded from `uri-trace:` lines (the probe's event text under a new prefix) and the lines production writes: `uri: service playing`, `uri: presented (... from P to N ms)` with N > P, `videoplane: BOUND`, and the display and PLAYING ACB tasks read from the log, each with an `acb callback ... ev=1`. The probe pair stays as the instrument baseline; compare the two on the same stream."
     },
     {
+      "name": "pipe_uri_product_hls_720p24_2a_audio2",
+      "fixture": "pipe_hls_720p24_2a/index.m3u8",
+      "title": "URI product route: the app's startup audio choice is the SECOND stream, so the backend must select a non-default track before play",
+      "covers": [
+        "uri-mode",
+        "uri-product",
+        "acb-bound",
+        "audio-track",
+        "non-default-audio"
+      ],
+      "uri_route": "product",
+      "carrier": "pipe_uri_carrier_720p24_2a.mp4",
+      "carrier_audio": 2,
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "aac",
+        "fps": 24.0
+      },
+      "triggers": {
+        "ptype": "0"
+      },
+      "run_secs": 45,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "no_playing_error": true,
+        "uri_playing": true,
+        "uri_plane_bound": true,
+        "uri_clock_past_s": 30,
+        "uri_max_stall_s": 3,
+        "uri_presented": true,
+        "uri_service_playing": true,
+        "uri_audio_selected": {
+          "path": "select",
+          "index": 1
+        }
+      },
+      "_uri_note": "PRODUCTION ROUTE (debug builds, `--guest --mock`), the W6 pair. The stream is `pipe_hls_720p24_2a` (1280x720 at 24 fps, 4 Mbit/s CBR, TWO mono AAC streams in the TS: `eng` at 440 Hz first, `ger` at 880 Hz second) and the carrier its twin `pipe_uri_carrier_720p24_2a.mp4` (same tags, same order, the first the file's default, no subtitles). Both are built by `make fixtures-pipeline`. The mock PMS reports the carrier's second audio stream as the server's own pick (`carrier_audio: 2` is `tests/mock_pms.py --extra-media-audio 2`: selected, not default), the runner clears track memory (`plxnative-trackmemory=clear`, as for every case), and the app's own audio ladder (`audio_intents`: a selected non-default stream) picks it, so the app's startup plan asks the backend for it before the first Play. `uri_audio_selected` `select`, index 1 (the native index is the 0-based position, the numbering `audioInfo.track` uses): no `uri: audio index=N is already selected` line, a confirmation (`uri-trace: ... ev=trackSelected`, or an `ev=audioInfo ... track=` that moved off the track the service loaded on), no `uri: control SelectTrack ... refused (TimedOut)` and `uri: service playing`. It measures what the 4.5 service does with a `selectTrack` to another track before `play`: a settle is a PASS, a refusal or a timeout is a FAIL that names its line. The backend writes no line for the select it SENDS and the confirmation names no index, so the index is graded only through `audioInfo`. KNOWN LIMIT: `dev::uri_product::DevQualifier` maps whatever audio the plan picked to native index 0, so until it maps the stream's position the backend finds the service already on track 0, sends nothing and this case FAILS `uri_audio_selected` quoting that line: the finding, not a flake."
+    },
+    {
+      "name": "pipe_uri_product_hls_720p24_2a_audio1",
+      "fixture": "pipe_hls_720p24_2a/index.m3u8",
+      "title": "URI product route: the default (first) audio stream is selected, so the backend settles without a native select (the control)",
+      "covers": [
+        "uri-mode",
+        "uri-product",
+        "acb-bound",
+        "audio-track",
+        "control"
+      ],
+      "uri_route": "product",
+      "carrier": "pipe_uri_carrier_720p24_2a.mp4",
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "aac",
+        "fps": 24.0
+      },
+      "triggers": {
+        "ptype": "0"
+      },
+      "run_secs": 45,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "no_playing_error": true,
+        "uri_playing": true,
+        "uri_plane_bound": true,
+        "uri_clock_past_s": 30,
+        "uri_max_stall_s": 3,
+        "uri_presented": true,
+        "uri_service_playing": true,
+        "uri_audio_selected": {
+          "path": "already",
+          "index": 0
+        }
+      },
+      "_uri_note": "PRODUCTION ROUTE (debug builds, `--guest --mock`), the W6 pair. The stream is `pipe_hls_720p24_2a` (1280x720 at 24 fps, 4 Mbit/s CBR, TWO mono AAC streams in the TS: `eng` at 440 Hz first, `ger` at 880 Hz second) and the carrier its twin `pipe_uri_carrier_720p24_2a.mp4` (same tags, same order, the first the file's default, no subtitles). Both are built by `make fixtures-pipeline`. The control of `pipe_uri_product_hls_720p24_2a_audio2`: the same files, the mock keeps the file's own default (the first stream) as the selected one. `uri_audio_selected` `already`, index 0: `uri: audio index=0 is already selected (audioInfo); no selectTrack sent`, the last `ev=audioInfo track=` before it naming that very track, and `uri: service playing`. Everything else, the stream, the carrier, the grades and the 45 s cap, is the same, so a difference between the two cases is the audio selection and nothing else."
+    },
+    {
       "name": "pipe_abr_down_staircase",
       "fixture": "pipe_h264_aac_mp4.mp4",
       "title": "no-Plex Auto: a TWO-STEP collapse, the shape that outruns a downshift",

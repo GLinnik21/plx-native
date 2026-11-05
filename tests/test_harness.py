@@ -22,6 +22,7 @@ synthetic): the invariants being checked — every case ends with an `rk` or a `
 skips only its owner — are properties of the tracked matrix as it actually stands, and a case added
 tomorrow that breaks one of them should fail here rather than on the television.
 """
+import array
 import concurrent.futures
 import functools
 import http.client
@@ -6189,6 +6190,185 @@ class UriProductGrading(unittest.TestCase):
         self.assertIn("window", why)
 
 
+# The lines the production URI backend writes about the startup audio selection
+# (`rust-modules/play-uri/src/backend.rs`): the settle without a native call, the refusal of an
+# unconfirmed control (`{:?}` of the Operation, whose Selected(..) is the Plex stream id, not the
+# native index), and, under `devtriggers`, the service's own events as `uri-trace:` lines.
+ALREADY = "uri: audio index={n} is already selected (audioInfo); no selectTrack sent"
+TIMED_OUT = ("uri: control SelectTrack {{ kind: Audio, choice: Selected({sid}) }} unconfirmed "
+             "after 15000 ms; refused (TimedOut)")
+
+
+def _audio_log(*lines, playing=True):
+    """A synthetic startup audio-selection log: the lines given, in order, then `uri: service playing`
+    (unless `playing` is False). `info(n)` and `TRACK_SELECTED` are the trace lines the service's events
+    become. Nothing here comes from a television."""
+    return list(lines) + (["uri: service playing"] if playing else [])
+
+
+def _audio_info(track, t=300):
+    return _trace(t, f"ev=audioInfo codec=AAC channels=1 sampleRate=48000 track={track}")
+
+
+TRACK_SELECTED = _trace(900, "ev=trackSelected")
+SELECT_1 = {"path": "select", "index": 1}
+ALREADY_0 = {"path": "already", "index": 0}
+
+
+class UriAudioSelectedGrading(unittest.TestCase):
+    """`uri_audio_selected`: what the production backend did with the startup audio selection, read from
+    the lines it writes. `select` is a REAL native `selectTrack` to another track, which the service
+    confirmed before the first Play; `already` is the settle without a native call (the control)."""
+
+    def grade(self, log, want):
+        return run.a_uri_audio_selected(log, want)
+
+    # -- select: a non-default track, really asked for --
+
+    def test_a_select_the_service_confirmed_with_trackselected_passes(self):
+        ok, why = self.grade(_audio_log(_audio_info(0), TRACK_SELECTED), SELECT_1)
+        self.assertTrue(ok, why)
+        self.assertIn("ev=trackSelected", why)
+        self.assertIn("service playing", why)
+
+    def test_a_select_the_service_confirmed_by_naming_the_new_track_passes(self):
+        log = _audio_log(_audio_info(0), _audio_info(1, t=700))
+        ok, why = self.grade(log, SELECT_1)
+        self.assertTrue(ok, why)
+        self.assertIn("track=1", why)
+
+    def test_the_already_selected_line_is_the_dev_routes_index_zero_and_fails_a_select(self):
+        """**RED on today's app.** `dev::uri_product::DevQualifier` maps whatever audio the plan picked to
+        native index 0, so the backend finds the track the service already has (0) and sends nothing."""
+        line = ALREADY.format(n=0)
+        ok, why = self.grade(_audio_log(_audio_info(0), line), SELECT_1)
+        self.assertFalse(ok)
+        self.assertIn(line, why)
+        self.assertIn("no selectTrack was sent", why)
+
+    def test_a_refused_select_fails_and_names_the_line(self):
+        line = TIMED_OUT.format(sid=99100102)
+        ok, why = self.grade(_audio_log(_audio_info(0), line, playing=False), SELECT_1)
+        self.assertFalse(ok)
+        self.assertIn(line, why)
+        # ...also when something else still played afterwards (a Feed fallback writes the same lines)
+        ok, why = self.grade(_audio_log(_audio_info(0), line), SELECT_1)
+        self.assertFalse(ok)
+        self.assertIn("refused (TimedOut)", why)
+
+    def test_a_select_nothing_confirmed_fails(self):
+        ok, why = self.grade(_audio_log(_audio_info(0), _audio_info(0, t=700)), SELECT_1)
+        self.assertFalse(ok)
+        self.assertIn("no confirmation", why)
+
+    def test_a_service_that_ends_on_another_track_than_the_one_asked_fails(self):
+        ok, why = self.grade(_audio_log(_audio_info(0), _audio_info(2, t=700)), SELECT_1)
+        self.assertFalse(ok)
+        self.assertIn("track=2", why)
+        ok, why = self.grade(_audio_log(_audio_info(0), TRACK_SELECTED, _audio_info(2, t=950)), SELECT_1)
+        self.assertFalse(ok, "a confirmation does not excuse a service that names another track after it")
+
+    def test_a_select_without_the_service_ever_playing_fails(self):
+        ok, why = self.grade(_audio_log(_audio_info(0), TRACK_SELECTED, playing=False), SELECT_1)
+        self.assertFalse(ok)
+        self.assertIn("uri: service playing", why)
+
+    def test_a_select_needs_the_service_to_have_named_its_own_track_first(self):
+        ok, why = self.grade(_audio_log(TRACK_SELECTED), SELECT_1)
+        self.assertFalse(ok)
+        self.assertIn("ev=audioInfo", why)
+
+    def test_a_select_of_the_track_the_service_started_on_has_nothing_to_select(self):
+        ok, why = self.grade(_audio_log(_audio_info(1), TRACK_SELECTED), SELECT_1)
+        self.assertFalse(ok)
+        self.assertIn("nothing to select", why)
+
+    # -- already: the control --
+
+    def test_the_already_selected_settle_passes_the_control(self):
+        line = ALREADY.format(n=0)
+        ok, why = self.grade(_audio_log(_audio_info(0), line), ALREADY_0)
+        self.assertTrue(ok, why)
+        self.assertIn(line, why)
+
+    def test_the_control_fails_when_a_select_was_sent_instead(self):
+        ok, why = self.grade(_audio_log(_audio_info(0), TRACK_SELECTED), ALREADY_0)
+        self.assertFalse(ok)
+        self.assertIn("already selected", why)
+
+    def test_the_control_fails_on_another_index_or_a_report_that_disagrees(self):
+        ok, why = self.grade(_audio_log(_audio_info(1), ALREADY.format(n=1)), ALREADY_0)
+        self.assertFalse(ok)
+        self.assertIn("index=1", why)
+        ok, why = self.grade(_audio_log(_audio_info(1), ALREADY.format(n=0)), ALREADY_0)
+        self.assertFalse(ok, "the backend's claim must be the service's own last audioInfo")
+        self.assertIn("audioInfo", why)
+        ok, why = self.grade(_audio_log(ALREADY.format(n=0)), ALREADY_0)
+        self.assertFalse(ok, "no audioInfo line before the claim")
+
+    def test_the_control_fails_on_a_refusal_or_when_nothing_plays(self):
+        line = TIMED_OUT.format(sid=99100101)
+        ok, why = self.grade(_audio_log(_audio_info(0), ALREADY.format(n=0), line), ALREADY_0)
+        self.assertFalse(ok)
+        self.assertIn(line, why)
+        ok, why = self.grade(_audio_log(_audio_info(0), ALREADY.format(n=0), playing=False), ALREADY_0)
+        self.assertFalse(ok)
+        self.assertIn("uri: service playing", why)
+
+    def test_a_subtitle_refusal_is_not_an_audio_refusal(self):
+        sub = "uri: control SelectTrack { kind: Subtitle, choice: Selected(7) } unconfirmed after 15000 ms; refused (TimedOut)"
+        self.assertTrue(self.grade(_audio_log(_audio_info(0), ALREADY.format(n=0), sub), ALREADY_0)[0])
+
+    # -- the expectation itself --
+
+    def test_a_malformed_expectation_fails_by_name_instead_of_passing(self):
+        log = _audio_log(_audio_info(0), ALREADY.format(n=0))
+        for want in (True, "select", 1, None, {}, {"path": "select"}, {"index": 1},
+                     {"path": "both", "index": 0}, {"path": "select", "index": -1},
+                     {"path": "select", "index": True}, {"path": "select", "index": "1"},
+                     {"path": "select", "index": 1, "extra": 1}):
+            with self.subTest(want=want):
+                ok, why = self.grade(log, want)
+                self.assertFalse(ok)
+                self.assertIn("uri_audio_selected", why)
+
+    # -- wired into the product case's grades --
+
+    CASE = dict(UriProductGrading.CASE, expect=dict(UriProductGrading.CASE["expect"],
+                uri_clock_past_s=30, uri_audio_selected=SELECT_1))
+
+    def _graded(self, case, *audio):
+        return run.evaluate_pipeline(case, _product_run(40, extra=audio), (36, 36, 2))
+
+    def test_the_key_is_a_known_product_only_expectation(self):
+        self.assertIn("uri_audio_selected", run.URI_EXPECT_KEYS)
+        self.assertIn("uri_audio_selected", run.URI_PRODUCT_ONLY_KEYS)
+        probe = dict(UriModeGrading.BOUND_CASE, expect={"uri_audio_selected": SELECT_1})
+        passed, results = run.evaluate_pipeline(probe, _uri_run(10), (1, 1, 1))
+        self.assertFalse(passed)
+        self.assertEqual(results[0][:2], ("uri_expect", False))
+        self.assertIn("uri_audio_selected", results[0][2])
+
+    def test_a_healthy_select_log_passes_every_product_grade_with_the_new_one(self):
+        passed, results = self._graded(self.CASE, _audio_info(0), TRACK_SELECTED)
+        self.assertTrue(passed, results)
+        self.assertEqual(dict((label, ok) for label, ok, _ in results)["uri_audio_selected"], True)
+
+    def test_todays_dev_route_fails_only_the_new_grade_when_it_asks_for_the_second_track(self):
+        passed, results = self._graded(self.CASE, _audio_info(0), ALREADY.format(n=0))
+        self.assertFalse(passed)
+        self.assertEqual([label for label, ok, _ in results if not ok], ["uri_audio_selected"])
+
+    def test_the_control_passes_through_the_same_path_a_select_fails_on(self):
+        case = dict(self.CASE, expect=dict(self.CASE["expect"], uri_audio_selected=ALREADY_0))
+        passed, results = self._graded(case, _audio_info(0), ALREADY.format(n=0))
+        self.assertTrue(passed, results)
+
+    def test_a_case_that_does_not_ask_grades_nothing_about_audio(self):
+        _, results = run.evaluate_pipeline(UriProductGrading.CASE, _product_run(66), (36, 36, 2))
+        self.assertNotIn("uri_audio_selected", [label for label, _, _ in results])
+
+
 class UriProductRunner(unittest.TestCase):
     """The product route's runner: what it writes on the set, in what order, and what it always takes
     back. Nothing here touches a television, a mock PMS process or the network: every seam is patched."""
@@ -6452,6 +6632,33 @@ class UriProductRunner(unittest.TestCase):
                 self.assertFalse(out[0])
                 self.assertEqual(out[1][0][:2], ("uri_product", False))
                 self.assertIn(why, out[1][0][2])
+                self.assertEqual((rec["apply"], rec["mock"], rec["ssh"], rec["make"]), ([], [], [], []))
+
+    def test_the_carrier_args_name_the_audio_stream_the_mock_selects(self):
+        carrier = run.mock_fps.carrier_server_args
+        self.assertEqual(carrier("/p/c.mp4"), ["--extra-media", "/p/c.mp4"], "unchanged without a knob")
+        self.assertEqual(carrier("/p/c.mp4", None), ["--extra-media", "/p/c.mp4"])
+        self.assertEqual(carrier("/p/c.mp4", 2), ["--extra-media", "/p/c.mp4", "--extra-media-audio", "2"])
+        for bad in (0, -1, True, "2", 1.5):
+            with self.subTest(audio=bad), self.assertRaises(ValueError) as why:
+                carrier("/p/c.mp4", bad)
+            self.assertIn("carrier_audio", str(why.exception))
+
+    def test_a_case_with_a_carrier_audio_starts_its_mock_on_that_selection(self):
+        case = dict(self.case(), carrier_path="/packs/pipe_uri_carrier_720p24_2a.mp4", carrier_audio=2)
+        out, rec = self._run(case=case)
+        self.assertEqual(out[0], True, out)
+        self.assertEqual(rec["mock"][0], ("new", self.HOST, self.PORT, [
+            "--extra-media", "/packs/pipe_uri_carrier_720p24_2a.mp4", "--extra-media-audio", "2"]))
+
+    def test_a_bad_carrier_audio_fails_the_case_before_the_mock_or_the_set_is_touched(self):
+        for bad in (0, "2", True):
+            with self.subTest(audio=bad):
+                case = dict(self.case(), carrier_path="/packs/x.mp4", carrier_audio=bad)
+                out, rec = self._run(case=case)
+                self.assertFalse(out[0])
+                self.assertEqual(out[1][0][:2], ("uri_product", False))
+                self.assertIn("carrier_audio", out[1][0][2])
                 self.assertEqual((rec["apply"], rec["mock"], rec["ssh"], rec["make"]), ([], [], [], []))
 
     def test_the_suite_dispatches_a_product_case_to_the_product_runner(self):
@@ -6833,6 +7040,78 @@ class UriModeGrading(unittest.TestCase):
         for case in self._product_cases():
             self.assertEqual(case["carrier"], f"pipe_uri_carrier_720p24.{spec['ext']}")
 
+    # -- the audio pair: a NON-DEFAULT audio track selected at startup, and its control --
+
+    AUDIO = ("pipe_uri_product_hls_720p24_2a_audio2", "pipe_uri_product_hls_720p24_2a_audio1")
+
+    def _audio_cases(self):
+        cases = {c["name"]: c for c in _manifest()["pipeline_cases"]}
+        return [cases[n] for n in self.AUDIO]
+
+    def test_the_audio_pair_plays_the_two_audio_stream_through_its_own_carrier(self):
+        stream, twin = fixturegen.PIPE_SHAPES["pipe_hls_720p24_2a"], fixturegen.PIPE_SHAPES["pipe_uri_carrier_720p24_2a"]
+        for case in self._audio_cases():
+            with self.subTest(case["name"]):
+                self.assertEqual(run.uri_route(case), "product")
+                self.assertEqual(case["fixture"], "pipe_hls_720p24_2a/index.m3u8")
+                self.assertEqual(case["carrier"], "pipe_uri_carrier_720p24_2a.mp4")
+                self.assertEqual(case["triggers"], {"ptype": "0"})
+                self.assertNotIn("rk", case, "the runner supplies the carrier's ratingKey")
+                for k in ("vcodec", "acodec", "fps"):
+                    self.assertEqual(case["declare"][k], stream["declare"][k], f"declare.{k} drifted from the shape")
+                self.assertEqual(case["operations"], [{"op": "play"}])
+                # the stream outlasts the cap, so no case ends in a finish's teardown
+                self.assertLess(case["run_secs"], stream["duration"])
+                self.assertLessEqual(case["expect"]["uri_clock_past_s"], case["run_secs"] - 10)
+                self.assertGreaterEqual(stream["duration"] * 0.8, case["expect"]["uri_clock_past_s"])
+                # every grade of the product pair, and no more of its link: nothing here is shaped
+                for key in ("no_playing_error", "uri_playing", "uri_plane_bound", "uri_presented",
+                            "uri_service_playing"):
+                    self.assertTrue(case["expect"][key], key)
+                self.assertEqual(case["expect"]["uri_max_stall_s"], 3)
+                self.assertNotIn("network_profile", case)
+                self.assertGreaterEqual(twin["duration"], stream["duration"])
+
+    def test_the_audio_pair_differs_only_in_what_the_mock_selects_and_what_the_backend_must_do(self):
+        second, first = self._audio_cases()
+        self.assertEqual(second["carrier_audio"], 2)
+        self.assertNotIn("carrier_audio", first, "the control keeps the file's own default selection")
+        self.assertEqual(second["expect"]["uri_audio_selected"], {"path": "select", "index": 1})
+        self.assertEqual(first["expect"]["uri_audio_selected"], {"path": "already", "index": 0})
+        strip = lambda c: {k: v for k, v in c.items()                                  # noqa: E731
+                           if k not in ("name", "title", "covers", "_uri_note", "carrier_audio", "expect")}
+        self.assertEqual(strip(second), strip(first))
+        self.assertEqual({k: v for k, v in second["expect"].items() if k != "uri_audio_selected"},
+                         {k: v for k, v in first["expect"].items() if k != "uri_audio_selected"})
+
+    def test_the_selected_audio_is_a_stream_the_carrier_has_and_not_the_one_the_file_defaults_to(self):
+        second, _ = self._audio_cases()
+        audio = fixturegen.PIPE_SHAPES["pipe_uri_carrier_720p24_2a"]["audio"]
+        n = second["carrier_audio"]
+        self.assertTrue(1 <= n <= len(audio))
+        self.assertFalse(audio[n - 1].get("default"), "the server's pick must differ from the file's default")
+        self.assertTrue(audio[0].get("default"))
+        # the grade's native index is the 0-based position of that stream (`audioInfo.track`'s numbering)
+        self.assertEqual(second["expect"]["uri_audio_selected"]["index"], n - 1)
+
+    def test_the_audio_pair_resolves_its_own_carrier_and_skips_without_it(self):
+        cases = [dict(c) for c in self._audio_cases()]
+        with tempfile.TemporaryDirectory() as root:
+            cfg = os.path.join(root, "config.local.h")
+            with open(cfg, "w") as f:
+                f.write('#define PMS_HOST "192.0.2.5"\n#define PMS_PORT 32499\n')
+            run._resolve_uri_product(cases, root, flavour="debug", config=cfg)
+            for case in cases:
+                self.assertIn("pipe_uri_carrier_720p24_2a.mp4", case["skip"])
+            clip = os.path.join(root, "pipe_uri_carrier_720p24_2a.mp4")
+            with open(clip, "wb") as f:
+                f.write(b"\0")
+            cases = [dict(c) for c in self._audio_cases()]
+            run._resolve_uri_product(cases, root, flavour="debug", config=cfg)
+            for case in cases:
+                self.assertNotIn("skip", case)
+                self.assertEqual(case["carrier_path"], clip)
+
     def test_the_carrier_ids_are_the_mocks_first_extra_media_block(self):
         with open(os.path.join(TESTS_DIR, "mock_pms.py"), encoding="utf-8") as fh:
             text = fh.read()
@@ -6930,6 +7209,111 @@ class UriModeGrading(unittest.TestCase):
             dest.write_text(text)
             (dest.parent / "seg_001.ts").unlink()
             self.assertIn("not on disk", fixturegen.verify(key, spec, 6, dest)[1][0])
+
+    # -- the two-audio pair (W6: a NON-DEFAULT audio track selected at startup) --
+
+    TWO = "pipe_hls_720p24_2a"
+    TWIN = "pipe_uri_carrier_720p24_2a"
+
+    def test_the_two_audio_stream_is_the_20m_recipe_at_a_lower_rate_with_two_tagged_tones(self):
+        spec, base = fixturegen.PIPE_SHAPES[self.TWO], fixturegen.PIPE_SHAPES["pipe_hls_720p24_20m"]
+        for key in ("kind", "ext", "builder", "entry", "hls_seg_s", "declare"):
+            self.assertEqual(spec[key], base[key], key)
+        self.assertEqual({k: spec["video"][k] for k in ("codec", "size")},
+                         {k: base["video"][k] for k in ("codec", "size")})
+        self.assertEqual((spec["video"]["size"], fixturegen.shape_fps(spec)), ("1280x720", 24))
+        self.assertLess(spec["video"]["mbit"], base["video"]["mbit"], "nothing here needs 20 Mbit/s")
+        self.assertEqual([(a["codec"], a["lang"], a["pitch"], bool(a.get("default"))) for a in spec["audio"]],
+                         [("aac", "eng", 440, True), ("aac", "ger", 880, False)])
+        self.assertEqual(spec["subs"], [])
+        self.assertLessEqual(60, spec["duration"])
+        self.assertLessEqual(spec["duration"], 90)
+        self.assertIn(self.TWO, fixturegen.PIPE_MBIT)
+        self.assertEqual(fixturegen.out_paths(fixturegen.Path("/r"), self.TWO, spec),
+                         [(self.TWO, fixturegen.Path("/r") / self.TWO / "index.m3u8")])
+
+    def test_the_carrier_twin_has_the_same_two_audio_streams_in_the_same_order_and_no_subtitles(self):
+        spec, stream = fixturegen.PIPE_SHAPES[self.TWIN], fixturegen.PIPE_SHAPES[self.TWO]
+        self.assertEqual((spec["ext"], spec["kind"]), ("mp4", "clip"))
+        self.assertNotIn("entry", spec)
+        self.assertEqual(spec["subs"], [])
+        self.assertEqual([(a["codec"], a["lang"], a["pitch"], bool(a.get("default"))) for a in spec["audio"]],
+                         [(a["codec"], a["lang"], a["pitch"], bool(a.get("default"))) for a in stream["audio"]])
+        self.assertGreaterEqual(spec["duration"], stream["duration"], "the offer's duration bounds the clock")
+        self.assertEqual((spec["video"]["size"], fixturegen.shape_fps(spec)), ("1280x720", 24))
+        self.assertIn(self.TWIN, fixturegen.PIPE_MBIT)
+        self.assertEqual(fixturegen.out_paths(fixturegen.Path("/r"), self.TWIN, spec),
+                         [(self.TWIN, fixturegen.Path("/r") / (self.TWIN + ".mp4"))])
+
+    def _argv(self, key, dur=60):
+        captured = []
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(fixturegen, "run",
+                                  side_effect=lambda argv, quiet=True: captured.append(list(argv)) or ""):
+            root = fixturegen.Path(d)
+            (root / ".work").mkdir()
+            fixturegen.build_hls_vod(mock.Mock(markers=False), key, fixturegen.PIPE_SHAPES[key], dur, None,
+                                     root / key / "index.m3u8", root / ".work")
+        return captured[0]
+
+    def test_the_two_audio_stream_is_one_ffmpeg_run_with_both_tones_muxed_into_the_ts(self):
+        argv = self._argv(self.TWO)
+        flat = " ".join(argv)
+
+        def values(flag):
+            return [argv[i + 1] for i, a in enumerate(argv) if a == flag]
+
+        self.assertEqual(flat.count("testsrc2="), 1)
+        self.assertEqual(values("-i"), ["testsrc2=size=1280x720:rate=24", "sine=frequency=440:sample_rate=48000",
+                                        "sine=frequency=880:sample_rate=48000"])
+        self.assertEqual(values("-map"), ["0:v", "1:a", "2:a"], "every stream named: the default map takes ONE audio")
+        self.assertEqual(values("-metadata:s:a:0"), ["language=eng"])
+        self.assertEqual(values("-metadata:s:a:1"), ["language=ger"])
+        self.assertEqual({values(f)[0] for f in ("-b:v", "-minrate", "-maxrate", "-bufsize")},
+                         {"%dM" % fixturegen.PIPE_SHAPES[self.TWO]["video"]["mbit"]})
+        self.assertEqual(values("-x264-params"), ["nal-hrd=cbr"])
+        self.assertEqual(values("-t"), ["60"])
+        self.assertEqual(values("-f"), ["lavfi", "lavfi", "lavfi", "hls"])
+        self.assertEqual(len([a for a in argv if a.startswith("-c:a")]), 1, "one audio codec for every stream")
+
+    def test_the_one_audio_recipe_is_byte_for_byte_what_it_was_and_maps_nothing(self):
+        argv = self._argv("pipe_hls_720p24_20m", 90)
+        self.assertNotIn("-map", argv)
+        self.assertFalse([a for a in argv if a.startswith("-metadata")], "no tags on the 20m stream")
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe")
+                         and {"libx264", "aac"} <= set(fixturegen.ffmpeg_encoders()),
+                         "needs ffmpeg with libx264 and aac")
+    def test_a_built_two_audio_stream_verifies_and_its_audio_is_what_it_is_tagged_as(self):
+        key = self.TWO
+        spec = fixturegen.PIPE_SHAPES[key]
+        with tempfile.TemporaryDirectory() as d:
+            root = fixturegen.Path(d)
+            (root / ".work").mkdir()
+            dest = root / key / "index.m3u8"
+            fixturegen.build_hls_vod(mock.Mock(markers=False), key, spec, 6, None, dest, root / ".work")
+            rec, problems = fixturegen.verify(key, spec, 6, dest)
+            self.assertEqual(problems, [])
+            self.assertEqual([a["codec"] for a in rec["audio"]], ["aac", "aac"])
+            tags = json.loads(subprocess.check_output(
+                ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index:stream_tags=language",
+                 "-of", "json", str(dest)]))["streams"]
+            self.assertEqual([t["tags"]["language"] for t in tags], ["eng", "ger"])
+            for n, want_hz in ((0, 440), (1, 880)):
+                pcm = subprocess.check_output(
+                    ["ffmpeg", "-v", "error", "-nostdin", "-i", str(dest), "-map", f"0:a:{n}", "-t", "3",
+                     "-ac", "1", "-ar", "48000", "-f", "s16le", "-"])
+                samples = array.array("h")
+                samples.frombytes(pcm)
+                samples = samples[12000:]   # past the encoder's priming, which is not the tone
+                crossings = sum(1 for a, b in zip(samples, samples[1:]) if (a < 0) != (b < 0))
+                hz = crossings / 2 / (len(samples) / 48000)
+                self.assertAlmostEqual(hz, want_hz, delta=want_hz * 0.05, msg=f"audio stream {n}")
+            # a stream missing its second track does not verify
+            one = dict(spec, audio=spec["audio"][:1])
+            self.assertTrue(any("2 audio streams, wanted 1" in p for p in fixturegen.verify(key, one, 6, dest)[1]))
+            swapped = dict(spec, audio=[dict(spec["audio"][0], lang="ger"), dict(spec["audio"][1], lang="eng")])
+            self.assertTrue(any("language" in p for p in fixturegen.verify(key, swapped, 6, dest)[1]))
 
 
 class SharedLinkShaping(unittest.TestCase):

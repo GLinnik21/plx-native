@@ -1200,6 +1200,72 @@ class DoviAndExtraMedia(unittest.TestCase):
                 server.server_close()
 
 
+@unittest.skipUnless(
+    HAS_FFMPEG_AND_FFPROBE,
+    "needs ffmpeg+ffprobe; the host CI runner has neither -- the stream wire is the ffprobe record's",
+)
+class ExtraMediaAudioSelection(unittest.TestCase):
+    """`--extra-media-audio N`: the shape PMS reports when the profile's audio language picks a
+    track other than the file's default one (`selected` on stream N, the file's `default` flag left
+    as the file wrote it), which the app's `audio_intents` honours as the server's own pick."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.clip = pathlib.Path(cls.tmp.name) / "two-audio.mp4"
+        # Two audio streams, the FIRST the file's default (as `pipe_uri_carrier_720p24_2a.mp4` is).
+        subprocess.check_call([
+            "ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=size=64x64:rate=24:duration=1",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+            "-f", "lavfi", "-i", "sine=frequency=880:duration=1",
+            "-map", "0:v", "-map", "1:a", "-map", "2:a", "-c:v", "libx264", "-c:a", "aac",
+            "-metadata:s:a:0", "language=eng", "-metadata:s:a:1", "language=ger",
+            "-disposition:a:0", "default", "-disposition:a:1", "0", "-t", "1", str(cls.clip)])
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def audio(self, lib):
+        streams = lib.items[EXTRA_MEDIA_RK_BASE]["Media"][0]["Part"][0]["Stream"]
+        return [s for s in streams if s["streamType"] == 2]
+
+    def test_without_the_flag_the_files_default_stream_is_the_selected_one(self):
+        audio = self.audio(Library(movies=0, extra_media=[self.clip]))
+        self.assertEqual([(s["languageCode"], s["default"], s["selected"]) for s in audio],
+                         [("eng", True, True), ("ger", False, False)])
+
+    def test_the_flag_selects_the_nth_audio_stream_and_only_that_one(self):
+        audio = self.audio(Library(movies=0, extra_media=[self.clip], extra_media_audio=2))
+        self.assertEqual([(s["languageCode"], s["default"], s["selected"]) for s in audio],
+                         [("eng", True, False), ("ger", False, True)],
+                         "PMS reports one selected audio stream, and the file's default flag is untouched")
+
+    def test_the_flag_names_the_default_stream_too(self):
+        audio = self.audio(Library(movies=0, extra_media=[self.clip], extra_media_audio=1))
+        self.assertEqual([(s["languageCode"], s["default"], s["selected"]) for s in audio],
+                         [("eng", True, True), ("ger", False, False)])
+
+    def test_the_selected_stream_is_what_the_wire_answers(self):
+        server, pms = serve(0, movies=0, extra_media=[self.clip], extra_media_audio=2)
+        try:
+            meta = get(pms, f"/library/metadata/{EXTRA_MEDIA_RK_BASE}")["Metadata"][0]
+            streams = meta["Media"][0]["Part"][0]["Stream"]
+            self.assertEqual([s["selected"] for s in streams if s["streamType"] == 2], [False, True])
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_an_ordinal_the_file_cannot_satisfy_is_refused_at_startup(self):
+        for bad in (0, -1, 3):
+            with self.subTest(n=bad), self.assertRaises(ValueError) as why:
+                Library(movies=0, extra_media=[self.clip], extra_media_audio=bad)
+            self.assertIn("--extra-media-audio", str(why.exception))
+        with self.assertRaises(ValueError) as why:
+            Library(movies=0, extra_media_audio=2)
+        self.assertIn("--extra-media", str(why.exception))
+
+
 class PartFaults(unittest.TestCase):
     """`--cut-part-after` and `--part-range-answers-200`: opt-in faults on media part bytes, for
     reproducing a direct-play body cut (and a server that ignores Range) against the mock."""
