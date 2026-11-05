@@ -492,9 +492,11 @@ class TheCommand(Workdir):
         self.assertIn("no RFC 1918 address", err)
 
     def test_it_refuses_a_named_host_the_tv_would_refuse(self):
-        # The interrupt keeps a regression (the tool accepting loopback and serving) a failed assert, not a hang.
+        # The interrupt keeps a regression (the tool accepting loopback and serving) a failed assert, not a hang. It
+        # replaces the loop's own `pause`, never `time.sleep`: that is the module every subprocess wait shares, and a
+        # patched one stopped a build on a slow runner before it had printed `serving`.
         with mock.patch.object(hud_dev, "private_addresses", return_value=[]), \
-                mock.patch.object(hud_dev.time, "sleep", side_effect=KeyboardInterrupt):
+                mock.patch.object(hud_dev, "pause", side_effect=KeyboardInterrupt):
             code, _, err = self.run_main(str(self.source), "--sim", str(self.sim), "--host", "127.0.0.1", "--port", "0")
         self.assertEqual(code, 2)
         self.assertIn("not an RFC 1918 address", err)
@@ -506,7 +508,7 @@ class TheCommand(Workdir):
 
     def test_it_prints_the_address_and_the_recipe_builds_and_stops_on_interrupt(self):
         with mock.patch.object(hud_dev, "private_addresses", return_value=["192.168.1.20"]), \
-                mock.patch.object(hud_dev.time, "sleep", side_effect=KeyboardInterrupt):
+                mock.patch.object(hud_dev, "pause", side_effect=KeyboardInterrupt):
             code, out, _ = self.run_main(str(self.source), "--sim", str(self.sim), "--port", "0")
         self.assertEqual(code, 0)
         lines = out.splitlines()

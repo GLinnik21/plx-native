@@ -419,6 +419,12 @@ def say(line):
     print(line, flush=True)
 
 
+def pause(seconds):
+    """The wait between two looks at the source. Its own name so a test can end the loop here without touching
+    `time.sleep`, which the subprocess waits of a build share."""
+    time.sleep(seconds)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="hud-dev", description="Bundle, lint and serve a Player HUD to the television.")
     parser.add_argument("source", type=Path, help="a HUD source directory or a .plxhud")
@@ -454,7 +460,7 @@ def main(argv=None):
     try:
         while True:
             dev.poll()
-            time.sleep(args.interval)
+            pause(args.interval)
     except KeyboardInterrupt:
         say("stopped")
     finally:
