@@ -268,6 +268,12 @@ impl UriBackend {
         self.feed(LifeEvent::Close { now_ms, allowance_ms: self.config.release_allowance_ms }, mt, now_ms);
     }
 
+    /// A Seek has been dispatched and has not landed (or timed out).
+    fn seek_pending(&self) -> bool {
+        self.controls.values().chain(self.dispatching.iter())
+            .any(|pending| matches!(pending.kind, ControlKind::Seek { .. }))
+    }
+
     /// Step the picture rule and publish what it decides. The line says which rule fired, so a
     /// device log shows whether the three conditions were met (the lines before it are
     /// `acb display fullscreen=1 rv=1 task=N`, `acb playing rv=1 task=M`, the two
@@ -277,9 +283,9 @@ impl UriBackend {
         self.picture.step(event, &mut fx);
         for effect in fx {
             match effect {
-                PictureFx::Presented { clock_ms } => {
+                PictureFx::Presented { from_ms, clock_ms } => {
                     plx_base::eventlog::log(&format!(
-                        "uri: presented (service playing; plane window and PLAYING completed; clock advanced to {clock_ms} ms)"));
+                        "uri: presented (service playing; plane window and PLAYING completed; clock advanced from {from_ms} to {clock_ms} ms)"));
                     self.observe(Observation::Presented);
                 }
             }
@@ -483,6 +489,10 @@ impl UriBackend {
                         self.observe(Observation::Position(Observed {
                             value: ContentTime::from_millis(ms), from: EvidenceSource::BackendReport,
                         }));
+                        // A report that arrives while a Seek is pending (the subscription's own
+                        // `seekDone` can beat the addressed reply) may be the seek target: a
+                        // position jump, not movement of the stream that was playing.
+                        if self.seek_pending() { self.picture_step(PictureEvent::Seeked); }
                         self.picture_step(PictureEvent::Clock(ms));
                     }
                     None
@@ -493,9 +503,7 @@ impl UriBackend {
                 // either; an end is always reported so a reported start cannot stay open. The
                 // order of `bufferingStart` against `seekDone` is not measured on the device.
                 Ev::BufferingStart | Ev::BufferingEnd => {
-                    let seek_pending = self.controls.values().chain(self.dispatching.iter())
-                        .any(|pending| matches!(pending.kind, ControlKind::Seek { .. }));
-                    if self.played_once && !(*event == Ev::BufferingStart && seek_pending) {
+                    if self.played_once && !(*event == Ev::BufferingStart && self.seek_pending()) {
                         self.observe(Observation::Rebuffering(Observed {
                             value: *event == Ev::BufferingStart, from: EvidenceSource::BackendReport }));
                     }
@@ -1518,6 +1526,26 @@ mod tests {
         assert!(landed.iter().any(|event| matches!(event, DriverEvent::SeekLanded { .. })), "{landed:?}");
         assert_eq!(presented(&landed), 0, "the jump from 100 to the seek target is not playback");
         assert_eq!(presented(&rig.clock_says(600_040)), 1, "the clock then moves on");
+        // The subscription's own `seekDone` report can beat the addressed reply; while the Seek
+        // is pending it is the target, not movement.
+        let (mut rig, sink) = acb_playing();
+        assert_eq!(presented(&rig.clock_says(100)), 0);
+        sink.mailbox.push(display, 1);
+        sink.mailbox.push(playing, 1);
+        assert_eq!(presented(&rig.driver.poll(&rig.mt)), 0);
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
+            Operation::Seek(ContentTime::from_millis(600_000))), DispatchResult::Queued);
+        let (session, request) = {
+            let state = rig.bus.0.lock().unwrap();
+            (state.session, state.calls.iter().rev().find(|(method, _, _)| *method == "seek").unwrap().1)
+        };
+        rig.bus.say("subscribe", r#"{"mediaId":"m1","seekDone":true,"currentTime":600000}"#);
+        assert_eq!(presented(&rig.driver.poll(&rig.mt)), 0, "an unaddressed report of the target");
+        rig.bus.0.lock().unwrap().replies.push_back(UriReply { session, request, method: "seek",
+            payload: r#"{"returnValue":true,"mediaId":"m1","seekDone":true,"currentTime":600000}"#.into(),
+            ok: true });
+        assert_eq!(presented(&rig.driver.poll(&rig.mt)), 0, "the addressed reply landing the seek");
+        assert_eq!(presented(&rig.clock_says(600_040)), 1);
     }
 
     #[test]

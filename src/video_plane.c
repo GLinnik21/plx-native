@@ -329,20 +329,20 @@ int acb_send_video_data(const char *sourceInfo) {
 }
 /* setDisplayWindow + setState(PLAYING). `displayTask` / `playingTask` (either may be NULL) receive
  * the task id the firmware will complete each call with, ONLY when that call answered 1, else 0:
- * the plane owner matches the two completions on them (tv::plane, `Shown`). Both are written from
- * locals, never from g_taskId, which setState leaves untouched on a refusal (see acb_unload). */
+ * the plane owner matches the two completions on them (tv::plane, `Shown`). Both calls still hand
+ * the library &g_taskId, as they always have; an accepted call has just written it (the id is
+ * created before the call returns), so it is copied out at once, before the next call reuses it. */
 static int acb_start_impl(long x, long y, long w, long h, int strict, long *displayTask, long *playingTask) {
     if (displayTask) *displayTask = 0;
     if (playingTask) *playingTask = 0;
     if (!g_acb) return 0;
-    long dTask = 0, pTask = 0;
-    int display = acb.setDisplayWindow(g_acb, x, y, w, h, 1, &dTask);
-    if (elogf) { fprintf(elogf, "acb display fullscreen=1 rv=%d task=%ld\n", display, dTask); fflush(elogf); }
-    if (display == 1 && displayTask) *displayTask = dTask;
+    int display = acb.setDisplayWindow(g_acb, x, y, w, h, 1, &g_taskId);
+    if (elogf) { fprintf(elogf, "acb display fullscreen=1 rv=%d task=%ld\n", display, g_taskId); fflush(elogf); }
+    if (display == 1 && displayTask) *displayTask = g_taskId;
     if (strict && display != 1) return 0;
-    int playing = acb.setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_PLAYING, &pTask);
-    if (elogf) { fprintf(elogf, "acb playing rv=%d task=%ld\n", playing, pTask); fflush(elogf); }
-    if (playing == 1 && playingTask) *playingTask = pTask;
+    int playing = acb.setState(g_acb, APPSTATE_FOREGROUND, PLAYSTATE_PLAYING, &g_taskId);
+    if (elogf) { fprintf(elogf, "acb playing rv=%d task=%ld\n", playing, g_taskId); fflush(elogf); }
+    if (playing == 1 && playingTask) *playingTask = g_taskId;
     return display == 1 && playing == 1;
 }
 void acb_start(long x, long y, long w, long h) { (void)acb_start_impl(x, y, w, h, 0, NULL, NULL); }

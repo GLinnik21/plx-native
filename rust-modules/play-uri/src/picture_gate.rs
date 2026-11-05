@@ -48,8 +48,9 @@ pub enum Event {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Fx {
-    /// The rule holds; `clock_ms` is the sample that advanced. Emitted at most once per reset.
-    Presented { clock_ms: u64 },
+    /// The rule holds: `clock_ms` is the sample that advanced past `from_ms`, the one before it.
+    /// Emitted at most once per reset.
+    Presented { from_ms: u64, clock_ms: u64 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,11 +115,11 @@ impl PictureGate {
                 };
             }
             Event::Clock(ms) => {
-                let advanced = self.last_ms.is_some_and(|previous| ms > previous);
+                let previous = self.last_ms.filter(|previous| ms > *previous);
                 self.last_ms = Some(ms);
-                if self.stage == Stage::Armed && advanced {
+                if let (Stage::Armed, Some(from_ms)) = (self.stage, previous) {
                     self.stage = Stage::Presented;
-                    fx.push(Fx::Presented { clock_ms: ms });
+                    fx.push(Fx::Presented { from_ms, clock_ms: ms });
                 }
             }
         }
@@ -136,7 +137,7 @@ mod tests {
         }
         fx
     }
-    fn presented(ms: u64) -> Vec<Fx> { vec![Fx::Presented { clock_ms: ms }] }
+    fn presented(from_ms: u64, clock_ms: u64) -> Vec<Fx> { vec![Fx::Presented { from_ms, clock_ms }] }
 
     #[test]
     fn the_first_advance_after_playing_and_the_plane_is_the_picture_in_either_order() {
@@ -144,7 +145,7 @@ mod tests {
             let mut gate = PictureGate::new();
             assert!(feed(&mut gate, &[Event::Clock(1_000)]).is_empty());
             assert!(feed(&mut gate, &first).is_empty(), "arming is not the picture: {first:?}");
-            assert_eq!(feed(&mut gate, &[Event::Clock(1_040)]), presented(1_040), "{first:?}");
+            assert_eq!(feed(&mut gate, &[Event::Clock(1_040)]), presented(1_000, 1_040), "{first:?}");
         }
     }
 
@@ -152,7 +153,7 @@ mod tests {
     fn it_fires_once_and_then_stays_quiet() {
         let mut gate = PictureGate::new();
         feed(&mut gate, &[Event::Clock(0), Event::ServicePlaying, Event::PlaneShown]);
-        assert_eq!(feed(&mut gate, &[Event::Clock(40)]), presented(40));
+        assert_eq!(feed(&mut gate, &[Event::Clock(40)]), presented(0, 40));
         assert!(feed(&mut gate, &[Event::Clock(80), Event::Clock(120), Event::ServicePlaying, Event::PlaneShown]).is_empty());
     }
 
@@ -162,14 +163,14 @@ mod tests {
         feed(&mut gate, &[Event::ServicePlaying, Event::PlaneShown]);
         // The first report of a resumed start is its resume position: nothing to compare with.
         assert!(feed(&mut gate, &[Event::Clock(600_000)]).is_empty());
-        assert_eq!(feed(&mut gate, &[Event::Clock(600_040)]), presented(600_040));
+        assert_eq!(feed(&mut gate, &[Event::Clock(600_040)]), presented(600_000, 600_040));
     }
 
     #[test]
     fn the_sample_before_arming_is_what_the_first_one_after_it_is_compared_with() {
         let mut gate = PictureGate::new();
         feed(&mut gate, &[Event::Clock(600_000), Event::ServicePlaying, Event::PlaneShown]);
-        assert_eq!(feed(&mut gate, &[Event::Clock(600_040)]), presented(600_040));
+        assert_eq!(feed(&mut gate, &[Event::Clock(600_040)]), presented(600_000, 600_040));
     }
 
     #[test]
@@ -177,7 +178,7 @@ mod tests {
         let mut gate = PictureGate::new();
         feed(&mut gate, &[Event::ServicePlaying, Event::PlaneShown, Event::Clock(500)]);
         assert!(feed(&mut gate, &[Event::Clock(500), Event::Clock(400)]).is_empty(), "equal and backwards");
-        assert_eq!(feed(&mut gate, &[Event::Clock(450)]), presented(450), "forward of the previous sample");
+        assert_eq!(feed(&mut gate, &[Event::Clock(450)]), presented(400, 450), "forward of the previous sample");
     }
 
     #[test]
@@ -185,11 +186,11 @@ mod tests {
         // The service plays and the clock runs, but the plane never completes.
         let mut gate = PictureGate::new();
         assert!(feed(&mut gate, &[Event::ServicePlaying, Event::Clock(0), Event::Clock(40), Event::Clock(80)]).is_empty());
-        assert_eq!(feed(&mut gate, &[Event::PlaneShown, Event::Clock(120)]), presented(120));
+        assert_eq!(feed(&mut gate, &[Event::PlaneShown, Event::Clock(120)]), presented(80, 120));
         // The plane completes and the clock runs, but the service never says playing.
         let mut gate = PictureGate::new();
         assert!(feed(&mut gate, &[Event::PlaneShown, Event::Clock(0), Event::Clock(40), Event::Clock(80)]).is_empty());
-        assert_eq!(feed(&mut gate, &[Event::ServicePlaying, Event::Clock(120)]), presented(120));
+        assert_eq!(feed(&mut gate, &[Event::ServicePlaying, Event::Clock(120)]), presented(80, 120));
     }
 
     #[test]
@@ -207,14 +208,14 @@ mod tests {
         feed(&mut gate, &[Event::PlaneFailed, Event::Reset]);
         assert!(gate.wants_plane());
         assert_eq!(feed(&mut gate, &[Event::ServicePlaying, Event::PlaneShown, Event::Clock(0), Event::Clock(40)]),
-            presented(40), "a new attempt starts clean");
+            presented(0, 40), "a new attempt starts clean");
     }
 
     #[test]
     fn a_failure_after_the_picture_does_not_take_it_back() {
         let mut gate = PictureGate::new();
         feed(&mut gate, &[Event::ServicePlaying, Event::PlaneShown, Event::Clock(0)]);
-        assert_eq!(feed(&mut gate, &[Event::Clock(40)]), presented(40));
+        assert_eq!(feed(&mut gate, &[Event::Clock(40)]), presented(0, 40));
         assert!(feed(&mut gate, &[Event::PlaneFailed, Event::Clock(80)]).is_empty());
     }
 
@@ -224,7 +225,7 @@ mod tests {
         feed(&mut gate, &[Event::ServicePlaying, Event::PlaneShown, Event::Clock(100)]);
         // The seek's target looks like an enormous advance of the old position; it is not one.
         assert!(feed(&mut gate, &[Event::Seeked, Event::Clock(600_000)]).is_empty());
-        assert_eq!(feed(&mut gate, &[Event::Clock(600_040)]), presented(600_040));
+        assert_eq!(feed(&mut gate, &[Event::Clock(600_040)]), presented(600_000, 600_040));
     }
 
     #[test]
@@ -234,7 +235,7 @@ mod tests {
         feed(&mut gate, &[Event::Reset]);
         assert!(gate.wants_plane());
         assert!(feed(&mut gate, &[Event::Clock(80), Event::Clock(120)]).is_empty(), "the old conditions are gone");
-        assert_eq!(feed(&mut gate, &[Event::ServicePlaying, Event::PlaneShown, Event::Clock(160)]), presented(160));
+        assert_eq!(feed(&mut gate, &[Event::ServicePlaying, Event::PlaneShown, Event::Clock(160)]), presented(120, 160));
     }
 
     #[test]
