@@ -741,7 +741,7 @@ fn pipeline_rows(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::
         let rate = plx_media::player::applied_rate(ps);
         let report = plx_media::player::speed_audio_report();
         (
-            rate.map(|r| speed_suffix(r, report, plx_media::player::speed_unsupported())).unwrap_or_default(),
+            rate.map(|r| speed_suffix(r, report, plx_media::player::speed_unsupported(ps))).unwrap_or_default(),
             rate.is_some_and(|r| r != plx_media::player::RATE_NORMAL) && report == Some(false),
         )
     } else {

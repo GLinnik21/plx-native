@@ -9929,7 +9929,10 @@ fn request_play_with_queue(
     if !request.preview {
         meta.run(plx_data::stores::metadata::MetadataCmd::RetirePlayingItem);
         if retry.is_none() {
+            // A retry is the same item and keeps its speed; a new one starts at 1x, the viewer's
+            // intent and the readout's offered rate both.
             ps.requested_rate_permille = plx_playback_contract::RATE_NORMAL;
+            crate::player::route_fx::reset_play_rate(ps);
         }
         reset_track_selection(request.sid, &request.rk, retry);
     }
@@ -10062,8 +10065,6 @@ fn reset_track_selection(sid: ServerId, rk: &str, retry: Option<RetryContext>) {
     match retry {
         Some(retry) => crate::player::restore_subtitle_offset(retry.sub_offset_ms),
         None => {
-            // A retry is the same item and keeps its speed; a new one starts at 1x.
-            crate::player::route_fx::reset_play_rate();
             if let Some(offset_ms) = remembered_subtitle_offset(sid, rk) {
                 crate::player::restore_subtitle_offset(offset_ms);
             }

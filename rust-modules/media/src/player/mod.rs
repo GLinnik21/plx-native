@@ -821,7 +821,7 @@ pub fn state(ps: &crate::route::PlaybackSession) -> PlaybackState {
     // foreground restore's resume, a rollback after a Load that failed before its Engine
     // existed): `route::engineless_flight_outstanding`.
     if crate::route::play_pending() || crate::route::engineless_flight_outstanding()
-        || { #[cfg(feature = "play-feed")] { FEED_SHARED.start_queued.load(Relaxed) }
+        || { #[cfg(feature = "play-feed")] { ps.readout().start_queued() }
              #[cfg(not(feature = "play-feed"))] { false } } {
         return PlaybackState::Resolving;
     }
@@ -1881,10 +1881,13 @@ pub fn rate_name(permille: i32) -> String {
     if frac.is_empty() { format!("{whole}×") } else { format!("{whole}.{frac}×") }
 }
 
-/// The viewer's playback speed, in thousandths (1500 = 1.5x).
+/// The speed the session OFFERS its next Load, in thousandths (1500 = 1.5x): the readout's
+/// `play_rate_permille`, which [`session_rate_for`] lowers to 1x when this playback does not offer
+/// it. It is not the viewer's intent, which is the session's `requested_rate_permille`
+/// ([`selected_rate`]) and survives that downgrade.
 #[cfg(feature = "play-feed")]
-pub fn play_rate_permille() -> i32 {
-    FEED_SHARED.play_rate_permille.load(Relaxed)
+pub fn play_rate_permille(ps: &crate::route::PlaybackSession) -> i32 {
+    ps.readout().play_rate_permille()
 }
 /// The speed the pipeline on screen is actually running at: [`play_rate_permille`] once a Load
 /// has applied it, 1x before that, and 1x for good if LG refused it.
@@ -1914,7 +1917,7 @@ pub fn applied_rate(ps: &crate::route::PlaybackSession) -> Option<i32> {
 /// session: the payload declares PCM audio, the demuxer decodes and time-stretches the sound
 /// (`ff::SpeedDecoder`), and every timestamp crossing to the pipeline is divided by the speed
 /// ([`to_sink_ns`]). A change is therefore a reload at the viewer's position — a seek to where they
-/// already are, which `FEED_SHARED.rate_reload` makes a full reload in every seek mode — the same shape
+/// already are, which the readout's `rate_reload` makes a full reload in every seek mode — the same shape
 /// as a native audio-track switch, and while the speed is not 1x every direct-play seek reloads
 /// too (`pump::seek_must_reload`), so each session starts on a fresh timeline.
 ///
@@ -1929,12 +1932,12 @@ pub fn set_play_rate(ps: &mut crate::route::PlaybackSession, permille: i32) -> b
         return false;
     }
     ps.accept_requested_rate(permille);
-    FEED_SHARED.play_rate_permille.store(permille, Relaxed);
+    ps.step_readout(readout::ReadoutEvent::RateSelected { permille });
     log(&format!("rate: {permille} requested"));
     if !FEED_TX.started.load(Relaxed) {
         return true; // nothing on screen: the next Load applies it
     }
-    FEED_SHARED.rate_reload.store(true, Relaxed);
+    ps.step_readout(readout::ReadoutEvent::RateReloadArmed);
     let target = intended_pos_ns(ps).max(0);
     request_seek(ps, target);
     true
@@ -1978,7 +1981,7 @@ pub fn speed_offer(ps: &crate::route::PlaybackSession) -> Vec<i32> {
 #[cfg(feature = "play-feed")]
 pub(crate) fn feed_speed_offer(ps: &crate::route::PlaybackSession) -> Vec<i32> {
     if crate::route::forced_direct_play(ps) || crate::route::is_preview(ps)
-        || crate::route::is_segmented_hls(ps) || speed_unsupported() {
+        || crate::route::is_segmented_hls(ps) || speed_unsupported(ps) {
         return Vec::new();
     }
     let codec = crate::route::stream_acodec(ps);
@@ -2007,15 +2010,15 @@ pub fn speeds_within(fps: f64, max_fps: f64) -> Vec<i32> {
 /// and a refusal puts the viewer's speed back to Normal so the menu does not claim a speed the
 /// picture is not playing at.
 #[cfg(feature = "play-feed")]
-pub(crate) fn session_rate_for(ps: &crate::route::PlaybackSession) -> i32 {
-    let want = play_rate_permille();
+pub(crate) fn session_rate_for(ps: &mut crate::route::PlaybackSession) -> i32 {
+    let want = play_rate_permille(ps);
     if want == RATE_NORMAL || crate::route::is_preview(ps) {
         return RATE_NORMAL;
     }
     let offer = feed_speed_offer(ps);
     let rate = session_rate(want, &offer);
     if rate != want {
-        FEED_SHARED.play_rate_permille.store(RATE_NORMAL, Relaxed);
+        ps.step_readout(readout::ReadoutEvent::RateSelected { permille: RATE_NORMAL });
         log(&format!("speed: {want} not offered here ({offer:?}) -> 1x"));
     }
     rate
@@ -2026,11 +2029,12 @@ pub fn session_rate(want: i32, offer: &[i32]) -> i32 {
     if offer.contains(&want) { want } else { RATE_NORMAL }
 }
 
-/// **A television that did not take this session's PCM.** Latched for the life of the process:
+/// **A television that did not take this session's PCM.** Latched in the session's readout
+/// ([`fall_back_from_speed`]) for the life of the session, which is the life of the process:
 /// the same set will refuse the next one too.
 #[cfg(feature = "play-feed")]
-pub fn speed_unsupported() -> bool {
-    FEED_SHARED.speed_unsupported.load(Relaxed)
+pub fn speed_unsupported(ps: &crate::route::PlaybackSession) -> bool {
+    ps.readout().speed_unsupported()
 }
 
 /// What the pipeline reported for this speed session's audio, for the Stats for nerds read-out:
@@ -2050,19 +2054,18 @@ pub fn speed_audio_report() -> Option<bool> {
 #[cfg(feature = "play-feed")]
 pub(crate) fn fall_back_from_speed(ps: &mut crate::route::PlaybackSession, why: &str) {
     log(&format!("speed: FALLING BACK to 1x — {why}; speed is off until the app restarts"));
-    FEED_SHARED.speed_unsupported.store(true, Relaxed);
-    FEED_SHARED.play_rate_permille.store(RATE_NORMAL, Relaxed);
-    FEED_SHARED.rate_reload.store(true, Relaxed);
+    // One decision, one event: the latch, the viewer back at 1x and the reload that lands there.
+    ps.step_readout(readout::ReadoutEvent::SpeedRefused);
     let target = intended_pos_ns(ps).max(0);
     request_seek(ps, target);
 }
 
 /// Back to 1x — called on a new item, like [`reset_audio_track`]: a speed is a choice about what
-/// is playing, and Plex Web's resets the same way.
+/// is playing, and Plex Web's resets the same way. The readout drops the offered rate and a
+/// pending reload; the latch outlives the item.
 #[cfg(feature = "play-feed")]
-pub fn reset_play_rate() {
-    FEED_SHARED.play_rate_permille.store(RATE_NORMAL, Relaxed);
-    FEED_SHARED.rate_reload.store(false, Relaxed);
+pub fn reset_play_rate(ps: &mut crate::route::PlaybackSession) {
+    ps.step_readout(readout::ReadoutEvent::NewItem);
 }
 /// reset the subtitle selection to Off — called on a NEW item. Like desired_audio_idx, the
 /// subtitle selection PERSISTS across seeks/reloads (it is no longer cleared in reset_session),
@@ -2770,6 +2773,7 @@ mod tests {
     /// **A speed change is a seek to where the viewer already is, marked to reload**, and only a
     /// real change on the ladder is one: the speed already set, or a value Plex Web does not offer,
     /// asks for nothing. With nothing on screen the speed is only remembered for the next Load.
+    /// The choice, its one-shot reload and the latch are the SESSION's readout, not a mailbox.
     #[cfg(feature = "play-feed")]
     #[test]
     fn a_speed_change_requests_a_reload_at_the_viewers_position() {
@@ -2777,11 +2781,9 @@ mod tests {
         struct Restore;
         impl Drop for Restore {
             fn drop(&mut self) {
-                reset_play_rate();
                 SHARED.reset_session();
                 FEED_TX.reset();
                 crate::ff::force_speed_decoder_for_test(false);
-                FEED_SHARED.speed_unsupported.store(false, Relaxed);
             }
         }
         let _restore = Restore;
@@ -2791,9 +2793,9 @@ mod tests {
         crate::ff::force_speed_decoder_for_test(true);
 
         assert!(set_play_rate(&mut ps, 1250), "not started: remembered for the next Load");
-        assert_eq!(play_rate_permille(), 1250);
+        assert_eq!(ps.readout().play_rate_permille(), 1250);
         assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), -1, "with nothing on screen there is nothing to reload");
-        assert!(!FEED_SHARED.rate_reload.load(Relaxed));
+        assert!(!ps.readout().rate_reload());
 
         FEED_TX.started.store(true, Relaxed);
         let attempt = crate::route::RouteStartAttempt::fixture();
@@ -2802,25 +2804,63 @@ mod tests {
             position_ns: Some(42_000_000_000), ..Default::default()
         }));
         assert!(set_play_rate(&mut ps, 1500));
-        assert_eq!(play_rate_permille(), 1500);
+        assert_eq!(ps.readout().play_rate_permille(), 1500);
         assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), 42_000_000_000, "a seek to the viewer's own position");
-        assert!(FEED_SHARED.rate_reload.load(Relaxed), "marked so an in-place seek mode reloads it");
+        assert!(ps.readout().rate_reload(), "marked so an in-place seek mode reloads it");
 
         FEED_TX.seek_to_ns.store(-1, Relaxed);
-        FEED_SHARED.rate_reload.store(false, Relaxed);
+        ps.step_readout(readout::ReadoutEvent::RateReloadTaken);
         assert!(!set_play_rate(&mut ps, 1500), "the speed already set asks for nothing");
         assert!(!set_play_rate(&mut ps, 1300), "off the ladder");
         assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), -1);
-        assert_eq!(play_rate_permille(), 1500);
+        assert_eq!(ps.readout().play_rate_permille(), 1500);
+        assert!(!ps.readout().rate_reload(), "asking for nothing arms nothing");
 
-        reset_play_rate();
-        assert_eq!(play_rate_permille(), RATE_NORMAL, "a new item starts at 1x");
+        reset_play_rate(&mut ps);
+        assert_eq!(ps.readout().play_rate_permille(), RATE_NORMAL, "a new item starts at 1x");
 
         // a television that failed a PCM session offers no speed at all
-        FEED_SHARED.speed_unsupported.store(true, Relaxed);
+        ps.step_readout(readout::ReadoutEvent::SpeedRefused);
         assert!(speed_offer(&ps).is_empty());
         assert!(!set_play_rate(&mut ps, 1500), "nothing is offered after the fallback");
-        assert_eq!(play_rate_permille(), RATE_NORMAL);
+        assert_eq!(ps.readout().play_rate_permille(), RATE_NORMAL);
+    }
+
+    /// The safety net is ONE decision: the latch, the viewer back at 1x and the armed reload
+    /// together, with the reload's seek posted at the viewer's own position. The readout holds all
+    /// three, and the speed menu reads the latch from the session.
+    #[cfg(feature = "play-feed")]
+    #[test]
+    fn a_refused_speed_session_latches_the_set_and_arms_the_reload_in_the_readout() {
+        let _serial = plx_base::testlock::serial();
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                SHARED.reset_session();
+                FEED_TX.reset();
+                crate::ff::force_speed_decoder_for_test(false);
+            }
+        }
+        let _restore = Restore;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        SHARED.reset_session();
+        FEED_TX.reset();
+        crate::ff::force_speed_decoder_for_test(true);
+        let attempt = crate::route::RouteStartAttempt::fixture();
+        ps.begin_attempt_view(attempt, attempt_view::Backend::Feed);
+        assert!(ps.ingest_attempt_facts(attempt, attempt_view::Backend::Feed, attempt_view::AttemptFacts {
+            position_ns: Some(42_000_000_000), ..Default::default()
+        }));
+        ps.step_readout(readout::ReadoutEvent::RateSelected { permille: 1500 });
+        assert!(!ps.readout().speed_unsupported());
+
+        fall_back_from_speed(&mut ps, "test refusal");
+
+        assert!(ps.readout().speed_unsupported(), "the latch is for the life of the session");
+        assert_eq!(ps.readout().play_rate_permille(), RATE_NORMAL, "the viewer is back at 1x");
+        assert!(ps.readout().rate_reload(), "the reload that lands at 1x is armed");
+        assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), 42_000_000_000, "reloaded where the viewer is");
+        assert!(speed_offer(&ps).is_empty(), "the menu offers no speed after a refusal");
     }
 
     // The jail/rtkmem refusal (no Engine ever built, `state()` deriving `Error`, and the
@@ -2834,13 +2874,15 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         let mut ps = crate::route::PlaybackSession::IDLE;
         crate::route::set_direct_play_mode_for_test(&mut ps, crate::route::DirectPlayMode::Forced);
-        reset_play_rate();
         assert!(speed_offer(&ps).is_empty());
         assert!(!set_play_rate(&mut ps, 1250));
         // A speed retained from a preceding Auto route must not silently decode this Load.
-        FEED_SHARED.play_rate_permille.store(1500, Relaxed);
-        assert_eq!(session_rate_for(&ps), RATE_NORMAL);
-        assert_eq!(play_rate_permille(), RATE_NORMAL);
+        ps.accept_requested_rate(1500);
+        ps.step_readout(readout::ReadoutEvent::RateSelected { permille: 1500 });
+        assert_eq!(session_rate_for(&mut ps), RATE_NORMAL);
+        assert_eq!(ps.readout().play_rate_permille(), RATE_NORMAL,
+            "the offer downgrades the OFFERED rate, which is the readout's");
+        assert_eq!(ps.requested_rate_permille(), 1500, "and never the viewer's intent");
     }
 
     #[test]

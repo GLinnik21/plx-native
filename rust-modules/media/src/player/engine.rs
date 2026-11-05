@@ -2543,9 +2543,12 @@ mod off_frame_release_tests {
         playing_engine(&mut pa);
         crate::player::ffi_host::delay_unload_for_test(50);
         stop_bufferfeed(&mut ps, &mut pa);
+        assert!(!ps.readout().start_queued());
         assert_eq!(start_bufferfeed_tracked(&mut ps, &mut pa), BufferfeedStartOutcome::Deferred);
+        assert!(ps.readout().start_queued(), "the machine's queue reaches the session's readout");
         stop_bufferfeed(&mut ps, &mut pa);
         assert!(!pa.release_has_queued_start());
+        assert!(!ps.readout().start_queued(), "and leaves it with the stop that cancels it");
         assert_ne!(crate::player::state(&ps), crate::player::PlaybackState::Resolving);
         // The frame poll (may_start = true) is what would launch a surviving queued start.
         let give_up = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -2571,8 +2574,12 @@ mod off_frame_release_tests {
         stop_bufferfeed(&mut ps, &mut pa);
         assert_eq!(start_bufferfeed_tracked(&mut ps, &mut pa), BufferfeedStartOutcome::Deferred);
         assert_eq!(crate::player::state(&ps), crate::player::PlaybackState::Resolving, "derived from the machine");
-        ps = crate::route::PlaybackSession::IDLE; // the landing's rebuilt session
-        assert_eq!(crate::player::state(&ps), crate::player::PlaybackState::Resolving, "the session carries nothing");
+        // A landing's rebuild keeps the readout (`decision.rs`, `readout: s.readout`); a session built
+        // afresh, as here, learns the queue from the machine at the next sync, so no copy goes stale.
+        ps = crate::route::PlaybackSession::IDLE;
+        assert!(!ps.readout().start_queued(), "a session built afresh holds no queue");
+        pa.publish_release_queue(&mut ps);
+        assert_eq!(crate::player::state(&ps), crate::player::PlaybackState::Resolving, "the machine still holds it");
         stop_bufferfeed(&mut ps, &mut pa);
         assert!(!pa.release_has_queued_start());
         let give_up = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -2598,6 +2605,7 @@ mod off_frame_release_tests {
         stop_bufferfeed(&mut ps, &mut pa);
         let t = std::time::Instant::now();
         assert_eq!(start_bufferfeed_tracked(&mut ps, &mut pa), BufferfeedStartOutcome::Deferred);
+        assert!(ps.readout().start_queued());
         pa.watch_queued_start();
         assert_eq!(pa.take_queued_landing(), crate::player::adapter::QueuedLanding::Waiting);
         poll_release(&mut ps, &mut pa, std::time::Instant::now());
@@ -2619,6 +2627,7 @@ mod off_frame_release_tests {
             !matches!(landing, crate::player::adapter::QueuedLanding::Waiting | crate::player::adapter::QueuedLanding::Stale),
             "{landing:?}"
         );
+        assert!(!ps.readout().start_queued(), "the tail that launched it emptied the queue");
     }
 
     /// A preview whose start is queued behind the release is not admitted while queued, and a
