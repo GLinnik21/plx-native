@@ -4735,10 +4735,10 @@
         }
       ],
       "expect": {
-        "require_video_bound": false,
-        "no_playing_error": true
+        "no_playing_error": true,
+        "uri_playing": true
       },
-      "_uri_note": "R-ABR-2: does the TV's own HLS controller switch between the ladder's variants (/__abr/ladder/master.m3u8?top=6000 lists the rungs from 320 up to 6000, lowest first, with timestamps that run on across segments) when the link collapses, and what do streamingInfo/customizedStreamingInfo/bufferRange/videoInfo say while it does? The ladder stops at 6000 so the largest segment in flight when the link collapses is a 6000 one (1.4-1.7 MB in this pack, 23-28 s at 0.5 Mbit/s) rather than a 20000 or 22000 one (4.3-5.5 MB, 68-87 s). The link is pipe_abr_down_collapse's: 40 Mbit/s for 25 s, then 0.5 Mbit/s. The app's ABR controller does not run in URI mode, so the harness verdict is FAIL BY CONSTRUCTION (stream_path, load_decl, pos_climb and presented_rate grade buffer-feed lines this backend never writes); the evidence is the saved `uriprobe:` log lines (--save-logs) and the `<case>.rungs` file beside them, which counts the segments the TV fetched per rung. The armed line reads kind=direct for this entry. Do not pass --extra-trigger plxnative-uriprobe: it is written after the case's own and would replace its tokens."
+      "_uri_note": "R-ABR-2 INSTRUMENT. Does the TV's own HLS controller switch between the ladder's variants (/__abr/ladder/master.m3u8?top=6000 lists the rungs from 320 up to 6000, lowest first, with timestamps that run on across segments) when the link collapses, and what do streamingInfo/customizedStreamingInfo/bufferRange/videoInfo say while it does? The ladder stops at 6000 so the largest segment in flight when the link collapses is a 6000 one (1.4-1.7 MB in this pack, 23-28 s at 0.5 Mbit/s) rather than a 20000 or 22000 one (4.3-5.5 MB, 68-87 s). The link is pipe_abr_down_collapse's: 40 Mbit/s for 25 s, then 0.5 Mbit/s. The probe is UNBOUND (`window=none`, no ACB video plane). On that arm the TV's native player cannot carry a stream of about 20 Mbit/s past about 40 MB by construction: the clock stops near 14 s, no bufferingStart fires, and bufferRange keeps claiming 12 s ahead. So this case is an instrument and not a gate: the harness grades `uri_playing` only (the stream started and the media clock advanced) and `no_error` (no refusal, no failed load), and runs none of the buffer-feed checks (stream_path, load_decl, pos_climb, presented_rate), which a native player never writes lines for. The regression gates are pipe_uri_hls_720p24_20m_bound and pipe_uri_hls_720p24_20m_bound_collapse, which bind the plane (`uriprobe=acb-control`, `ptype=0`). The evidence is the saved `uriprobe:` log lines (--save-logs) and the `<case>.rungs` file beside them, which counts the segments the TV fetched per rung. The armed line reads kind=direct for this entry. Do not pass --extra-trigger plxnative-uriprobe: it is written after the case's own and would replace its tokens."
     },
     {
       "name": "pipe_abr_uri_ladder_capped",
@@ -4764,10 +4764,10 @@
         }
       ],
       "expect": {
-        "require_video_bound": false,
-        "no_playing_error": true
+        "no_playing_error": true,
+        "uri_playing": true
       },
-      "_uri_note": "R-ABR-2: does option.adaptiveStreaming.bps.maximum hold? The link is unshaped and the master lists every rung, so an uncapped controller climbs to the top; the cap is the second-lowest rung's BANDWIDTH (720 kbit/s, bit/s in the trigger), so a cap that holds keeps the `<case>.rungs` count on 320 and 720 and nothing above, and the `armed` line ends in bpsmax=720000. Same verdict caveat as pipe_abr_uri_ladder_collapse: the harness grades FAIL by construction and the saved log is the evidence."
+      "_uri_note": "R-ABR-2 INSTRUMENT. Does option.adaptiveStreaming.bps.maximum hold? The link is unshaped and the master lists every rung, so an uncapped controller climbs to the top; the cap is the second-lowest rung's BANDWIDTH (720 kbit/s, bit/s in the trigger), so a cap that holds keeps the `<case>.rungs` count on 320 and 720 and nothing above, and the `armed` line ends in bpsmax=720000. The probe is UNBOUND (`window=none`, no ACB video plane). On that arm the TV's native player cannot carry a stream of about 20 Mbit/s past about 40 MB by construction: the clock stops near 14 s, no bufferingStart fires, and bufferRange keeps claiming 12 s ahead. So this case is an instrument and not a gate: the harness grades `uri_playing` only (the stream started and the media clock advanced) and `no_error` (no refusal, no failed load), and runs none of the buffer-feed checks (stream_path, load_decl, pos_climb, presented_rate), which a native player never writes lines for. The regression gates are pipe_uri_hls_720p24_20m_bound and pipe_uri_hls_720p24_20m_bound_collapse, which bind the plane (`uriprobe=acb-control`, `ptype=0`). The saved log and `<case>.rungs` are the evidence."
     },
     {
       "name": "pipe_abr_uri_continuous_20000",
@@ -4793,10 +4793,86 @@
         }
       ],
       "expect": {
-        "require_video_bound": false,
-        "no_playing_error": true
+        "no_playing_error": true,
+        "uri_playing": true
       },
-      "_uri_note": "R-ABR-2: separates a fixture artefact from a pipeline limit at high bitrate. The native HLS player stalled after about 40 MB on the 20000 and 22000 rungs of the ladder, where every segment is an independent MPEG-TS program whose video restarts at PTS 1.483 s, with no #EXT-X-DISCONTINUITY. This case plays only the 20000 rung (a single-variant master, no ladder to switch on) and `continuous=1` rides master -> media -> segment URIs, so the server shifts each segment's PCR, PTS and DTS by the measured duration of every earlier one (tests/serve_fixtures.py, 'Continuous timestamps'). If the stall is gone, it was the restarting clock; if it still stops at about 40 MB, it is not the timestamps. Not rewritten: continuity counters, which still restart at every segment, and the audio cut: the audio abuts the previous segment's inside a cycle but steps back about 11 ms (about 32 ms of overlap) where the six-part cycle wraps, every sixth segment. The link is unshaped and the probe is armed with plain `load`. Same verdict caveat as pipe_abr_uri_ladder_collapse: the harness grades FAIL by construction and the saved log, with `<case>.rungs`, is the evidence."
+      "_uri_note": "R-ABR-2 INSTRUMENT. Separates a fixture artefact from a pipeline limit at high bitrate. The native HLS player stalled after about 40 MB on the 20000 and 22000 rungs of the ladder, where every segment is an independent MPEG-TS program whose video restarts at PTS 1.483 s, with no #EXT-X-DISCONTINUITY. This case plays only the 20000 rung (a single-variant master, no ladder to switch on) and `continuous=1` rides master -> media -> segment URIs, so the server shifts each segment's PCR, PTS and DTS by the measured duration of every earlier one (tests/serve_fixtures.py, 'Continuous timestamps'). Measured since: with continuous timestamps the unbound arm still stops at about 13.5 s, a clean ffmpeg HLS stream of the same rate stops the same way, and that rate plays on once the ACB plane is bound, so the stall is the unbound arm and neither the timestamps nor the fixture. Not rewritten here: continuity counters, which still restart at every segment, and the audio cut: the audio abuts the previous segment's inside a cycle but steps back about 11 ms (about 32 ms of overlap) where the six-part cycle wraps, every sixth segment. The link is unshaped and the probe is armed with plain `load`. The probe is UNBOUND (`window=none`, no ACB video plane). On that arm the TV's native player cannot carry a stream of about 20 Mbit/s past about 40 MB by construction: the clock stops near 14 s, no bufferingStart fires, and bufferRange keeps claiming 12 s ahead. So this case is an instrument and not a gate: the harness grades `uri_playing` only (the stream started and the media clock advanced) and `no_error` (no refusal, no failed load), and runs none of the buffer-feed checks (stream_path, load_decl, pos_climb, presented_rate), which a native player never writes lines for. The regression gates are pipe_uri_hls_720p24_20m_bound and pipe_uri_hls_720p24_20m_bound_collapse, which bind the plane (`uriprobe=acb-control`, `ptype=0`). The saved log, with `<case>.rungs`, is the evidence."
+    },
+    {
+      "name": "pipe_uri_hls_720p24_20m_bound",
+      "fixture": "pipe_hls_720p24_20m/index.m3u8",
+      "title": "URI mode, no Plex, plane bound: a 20 Mbit/s 720p24 HLS stream plays for a minute",
+      "covers": [
+        "uri-mode",
+        "high-bitrate",
+        "acb-bound"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "aac",
+        "fps": 24.0
+      },
+      "triggers": {
+        "uriprobe": "acb-control",
+        "ptype": "0"
+      },
+      "run_secs": 75,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "no_playing_error": true,
+        "uri_playing": true,
+        "uri_plane_bound": true,
+        "uri_clock_past_s": 60,
+        "uri_max_stall_s": 3
+      },
+      "_uri_note": "R-ABR-2 REGRESSION GATE. The same 20 Mbit/s stream that stalls an UNBOUND arm after about 40 MB (the clock stops near 14 s) plays on a plane the app has bound through ACB (`uriprobe=acb-control`, `ptype=0`: the plane is bound once the ACB callbacks for tasks 1-4 all answer ev=1). The fixture is a clean ffmpeg HLS VOD stream (tests/fixtures/make_fixtures.py, pipe_hls_720p24_20m: 1280x720 at 24 fps, 2 s segments, CBR) because the ACB arm accepts only a stream whose videoInfo is exactly 1280x720 at 24 fps. Graded from the `uriprobe:` lines: the clock advanced (`uri_playing`), the plane is bound (`uri_plane_bound`), the clock passed 60 s (`uri_clock_past_s`) and never stood still for more than 3 s of wall time (`uri_max_stall_s`, the trailing stretch to the end of the log included). The probe does not end on its own, so a run has no `summary` line unless the clock stops. The buffer-feed checks are not run. Do not pass --extra-trigger plxnative-uriprobe: it is written after the case's own and would replace its tokens."
+    },
+    {
+      "name": "pipe_uri_hls_720p24_20m_bound_collapse",
+      "fixture": "pipe_hls_720p24_20m/index.m3u8",
+      "title": "URI mode, no Plex, plane bound: the same stream through a sustained link collapse",
+      "covers": [
+        "uri-mode",
+        "high-bitrate",
+        "acb-bound",
+        "collapse"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "aac",
+        "fps": 24.0
+      },
+      "triggers": {
+        "uriprobe": "acb-control",
+        "ptype": "0"
+      },
+      "network_profile": [
+        {
+          "until_s": 25.0,
+          "kbps": 40000
+        },
+        {
+          "until_s": 300.0,
+          "kbps": 500
+        }
+      ],
+      "run_secs": 75,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "no_playing_error": true,
+        "uri_playing": true,
+        "uri_plane_bound": true,
+        "uri_drain_warning_s": 5
+      },
+      "_uri_note": "R-ABR-2 REGRESSION GATE. The bound case's stream and arm through pipe_abr_down_collapse's link (40 Mbit/s for 25 s, then 0.5 Mbit/s). On a bound plane the buffer the player reports drains in plain sight: remainingTime falls about a second per second (12 s down to 2 s) and a mid-playback bufferingStart fires at about 2 s remaining, so the viewer is warned before the picture freezes. `uri_drain_warning_s` 5 requires that decline to have lasted at least 5 s (counted from the last sample at the peak, no rise in between) before the first bufferingStart after the first `ev=playing`; a buffer that sat full and then stopped, with no slope or no bufferingStart, fails it. The probe's own watchdog ends the run about 10 s after the clock stops (`end=timeout:currentTime`), which is the expected ending here and not an error."
     },
     {
       "name": "pipe_abr_down_staircase",

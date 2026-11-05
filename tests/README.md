@@ -18,7 +18,7 @@ how a green run means nothing.
 | what it needs | a TV address and `make fixtures-pipeline` | a Plex server, a token, a `manifest.local.json`, and a library holding the shapes the matrix names |
 | media | generated clips, served off your Mac | real items on your PMS |
 | who can run it | **anyone** | whoever owns that library |
-| cost | ~0.9 GB, a few minutes to build; seconds per case | ~3 GB, ~20 minutes to build; ten to twenty minutes to run |
+| cost | ~1.1 GB, a few minutes to build; seconds per case (a URI-gate case runs its 75 s cap) | ~3 GB, ~20 minutes to build; ten to twenty minutes to run |
 
 ```sh
 ./tests/run.py                  # the synthetic tier — 20 cases, ~7 min, needs nothing
@@ -986,7 +986,7 @@ needs a fixture short enough to actually run out.
 ## The synthetic tier (the default) — the player, with no Plex behind it
 
 ```sh
-make fixtures-pipeline          # ~0.9 GB into $FIXTURES_OUT/pipeline; ~4 min, once
+make fixtures-pipeline          # ~1.1 GB into $FIXTURES_OUT/pipeline; ~4 min, once
 ./tests/run.py                  # runs them on the TV
 ./tests/run.py --list           # offline: what would run, at what resolution, what is missing
 ```
@@ -999,26 +999,87 @@ buffer-feed assertions or control scripts into a URI backend: inspect each saved
 probe variants are restricted to their known SDR720p24 fixture and must not be applied to this
 mixed-codec matrix.
 
-Three synthetic cases run the URI probe's adaptive-streaming experiment (R-ABR-2) and arm
-`plxnative-uriprobe` themselves, through the case's `triggers`, so they take no `--extra-trigger`
-(one for the same name would replace their tokens). Two play the fixture server's own
-`/__abr/ladder/master.m3u8`, which lists the rungs as variants (all of them, or only those up to
-`?top=<rung>`) and so needs those rungs' clips from `make fixtures-pipeline`:
-`pipe_abr_uri_ladder_collapse` (`pipe_abr_down_collapse`'s 40 Mbit/s then 0.5 Mbit/s link, probe
-`load`, `top=6000`) and `pipe_abr_uri_ladder_capped` (an unshaped link, the whole ladder, probe
-`load bpsmax=720000`, the second-lowest rung). The third, `pipe_abr_uri_continuous_20000`, plays
-the one-rung master `/__abr/20000/master.m3u8?continuous=1` on an unshaped link. A native player
-places segments by their timestamps, and the pack's parts each restart theirs at 1.48 s, so the
-ladder master always serves `continuous=1` segments (a per-rung master takes the flag in its
-query): the server moves each segment's PCR, PTS and DTS forward by the measured duration of every
-earlier one (`tests/serve_fixtures.py`, "Continuous timestamps"), and the third case tells a
-stall caused by the restarting clock from one caused by the bitrate. Continuity counters (which
-restart at every segment) and the audio cut (the audio steps back about 11 ms where the six-part
-cycle wraps, every sixth segment) are not rewritten. Run
-`./tests/run.py --filter pipe_abr_uri_ --save-logs DIR`. The app's controller does not run in
-URI mode, so the harness verdict is FAIL by construction; the evidence is `DIR/<case>.log`
-(`uriprobe:` lines) and `DIR/<case>.rungs`, the segments the TV fetched per requested rung
-(also printed as `segments fetched by rung (kbps)`).
+Five synthetic cases arm the URI probe themselves, through the case's `triggers`, so they take no
+`--extra-trigger` (one for the same name would replace their tokens); see *URI mode* below for how
+they are graded. Three are R-ABR-2 **instruments**, on an UNBOUND probe arm (`window=none`, no ACB
+video plane), and two are the regression **gates**, on a bound plane.
+
+The instruments. Two play the fixture server's own `/__abr/ladder/master.m3u8`, which lists the
+rungs as variants (all of them, or only those up to `?top=<rung>`) and so needs those rungs' clips
+from `make fixtures-pipeline`: `pipe_abr_uri_ladder_collapse` (`pipe_abr_down_collapse`'s 40 Mbit/s
+then 0.5 Mbit/s link, probe `load`, `top=6000`) and `pipe_abr_uri_ladder_capped` (an unshaped link,
+the whole ladder, probe `load bpsmax=720000`, the second-lowest rung). The third,
+`pipe_abr_uri_continuous_20000`, plays the one-rung master `/__abr/20000/master.m3u8?continuous=1` on
+an unshaped link. A native player places segments by their timestamps, and the pack's parts each
+restart theirs at 1.48 s, so the ladder master always serves `continuous=1` segments (a per-rung
+master takes the flag in its query): the server moves each segment's PCR, PTS and DTS forward by the
+measured duration of every earlier one (`tests/serve_fixtures.py`, "Continuous timestamps").
+Continuity counters (which restart at every segment) and the audio cut (the audio steps back about
+11 ms where the six-part cycle wraps, every sixth segment) are not rewritten. Run
+`./tests/run.py --filter pipe_abr_uri_ --save-logs DIR`. An unbound arm cannot carry a stream of about
+20 Mbit/s past about 40 MB, by construction (the clock stops near 14 s, no `bufferingStart` fires,
+and `bufferRange` keeps claiming 12 s ahead), so these cases assert only `uri_playing`: the evidence
+is `DIR/<case>.log` (`uriprobe:` lines) and `DIR/<case>.rungs`, the segments the TV fetched per
+requested rung (also printed as `segments fetched by rung (kbps)`).
+
+The gates. `pipe_uri_hls_720p24_20m_bound` plays `pipe_hls_720p24_20m/index.m3u8` (below) with
+`uriprobe=acb-control` and `ptype=0` (each case `triggers` entry `NAME: CONTENT` is written as
+`plxnative-NAME=CONTENT`, so those are the two files `plxnative-uriprobe` and `plxnative-ptype`): the
+plane is ACB-bound, and the same 20 Mbit/s stream that stalls an unbound arm plays through the
+75 s cap. `pipe_uri_hls_720p24_20m_bound_collapse` is that arm through the collapse link, where the
+bound plane's `remainingTime` drains in plain sight before a mid-playback `bufferingStart`. The ACB
+arm accepts only a stream whose `videoInfo` is exactly 1280x720 at 24 fps, which is why the fixture
+is that and not a 1080p one. Both skip with a reason when the pack lacks the stream or any of its
+segments (a build that stopped half way); `make fixtures-pipeline` builds it (about 230 MB, ~10 s).
+
+### URI mode — how a case that arms the probe is graded
+
+A case whose own `triggers` include `uriprobe` plays through the TV's native player, which writes
+none of the buffer-feed lines the other assertions read (`stream: ... path=`, `load:`, media-position
+samples). Grading it on them fails by construction, so `evaluate_pipeline` runs the URI branch
+INSTEAD: `no_error` and `server_wire` are kept, `stream_path`, `load_decl`, `codec`, `video_bound`,
+`pos_climb`, `presented_rate` and the operation assertions are not, and the case never exits early
+(the saved `uriprobe:` window is the evidence, and a stall can come late). `--extra-trigger
+plxnative-uriprobe=...` does not switch a case into this mode: it runs the Feed assertions with the
+probe armed on top.
+
+Every line the grader reads starts `uriprobe: t=<ms since arm> ...`, on the probe's own clock; the
+plane lines (`videoplane: BOUND`, `acb callback task=N ev=1 ...`) carry no `t=`. The probe does not
+end on its own, so a healthy run has NO terminal `summary` line (the harness stops at the cap); a run
+whose clock stops ends 10 s later with `summary ... end=timeout:currentTime`.
+
+`no_error` reads the summary instead of matching it: a `load=` that is not `ok`, an `end=refused:*`,
+an `end=error:*` or a `timeout:` before playback (`register`, `acb`, `acb-video`, `load`, `play`) is an
+error; `eos`, `back`, `script` and `timeout:currentTime` are not. A stopped clock is graded by
+`uri_max_stall_s`, and a collapse case ends that way on purpose.
+
+The URI expectations, all in `expect` and all optional:
+
+- **`uri_playing`** (`true`): the native player played. The terminal `summary` (the last one) must say
+  `playing=yes` and `currentTime_advanced=yes`; with no summary, the log must show an `ev=playing`
+  and a `currentTime` that strictly advanced after it.
+- **`uri_plane_bound`** (`true`): the ACB video plane was bound. A `videoplane: BOUND` line (matched
+  case-sensitively, so `videoplane: unbound` never counts), and `acb callback task=N ev=1` for each
+  of tasks 1-4, none answering another `ev`. Task 5 is the release and is ignored.
+- **`uri_clock_past_s: N`**: the largest `ev=currentTime value=<ms>` is at least N seconds. It also
+  counts as the depth the pack must have (`_resolve_fixtures` skips a pack shorter than 0.8 x N).
+- **`uri_max_stall_s: S`**: while playing, the media clock never stood still for more than S seconds
+  of probe time. The unit is the gap between successive strictly increasing `currentTime` samples,
+  from the first `ev=playing`, PLUS the stretch from the last advance to the end of what the probe
+  observed (the last `currentTime`, `bufferRange` or `streamingInfo`, or the `summary`, whichever is
+  last). The trailing stretch is the one that catches a stream that simply stops, because every gap
+  between samples then stays at a second. A gap that overlaps a pause (`drive pause`/`call pause`
+  to the `ev=playing` after `drive resume`) or a seek (`drive seek`/`call seek` to `ev=seekDone`) is
+  not a stall. A rebuffer is: a mid-playback `bufferingStart` stops the clock.
+- **`uri_drain_warning_s: W`**, for collapse cases: a collapse is warned of. There is a
+  `bufferingStart` after the first `ev=playing` (the one before it is the initial fill), and before
+  it `bufferRange.remainingTime` fell without once rising for at least W seconds, counted from the
+  last sample at the run's peak to the `bufferingStart`. Equal consecutive readings are allowed
+  (the value is whole seconds and repeats); a buffer that sat full and then stopped is not a
+  warning, however long it sat.
+
+A key starting `uri_` that is not in this list fails the case (`uri_expect`) instead of grading
+nothing, and `test_harness.py` pins that every such key sits on a case that arms the probe.
 
 If the TV cannot reach the fixture server over the LAN, `--fixtures-loopback --fixtures-port PORT`
 advertises the fixtures through the TV's loopback interface. Hold the TV lease and keep
