@@ -332,7 +332,26 @@ pub(super) fn start_bufferfeed_inner(
     pa: &mut super::adapter::PlayerAdapter,
     route_start: crate::route::RouteStartTransaction,
 ) -> Result<crate::route::RouteStartAttempt, crate::route::RouteStartResult> {
-    restoring_offered_rate_on_failure(ps, |ps| start_bufferfeed_prepared(ps, pa, route_start))
+    restoring_offered_rate_on_failure(ps, |ps| {
+        restoring_pause_on_failure(pa, |pa| start_bufferfeed_prepared(ps, pa, route_start))
+    })
+}
+
+/// Run a Feed start that publishes the viewer's pause goal to the Feed's transport, and put the
+/// pause the transport held back if the start fails: a candidate that was refused, or lost its
+/// route, leaves the outgoing attempt's pause exactly as found. (A guard that drops cannot reach
+/// the adapter that carries the command, so the rollback is a wrapper, like the offered rate's.)
+#[cfg(feature = "play-feed")]
+fn restoring_pause_on_failure<T, E>(
+    pa: &mut super::adapter::PlayerAdapter,
+    start: impl FnOnce(&mut super::adapter::PlayerAdapter) -> Result<T, E>,
+) -> Result<T, E> {
+    let before = FEED_TX.paused.load(Ordering::Acquire);
+    let started = start(pa);
+    if started.is_err() && FEED_TX.paused.load(Ordering::Acquire) != before {
+        super::commit_paused(pa, before);
+    }
+    started
 }
 
 /// Run a Feed start that publishes the session's offered rate to its native Load, and put the
@@ -429,10 +448,15 @@ fn start_bufferfeed_prepared(
     // Payload and native callback guards are resolved before the route mints an attempt, as in
     // the original Load path. A refusal here remains a Prepared transaction until the caller
     // aborts it; a later supersession drops both guards without launching a worker.
-    let mut physical_start = FeedStartTransport::capture();
     let session_rate = if stream { feed_start_rate(ps)? } else { super::RATE_NORMAL };
     let start_paused = feed_start_paused(ps);
-    physical_start.publish(ps, session_rate, start_paused);
+    // Publish the session's offered rate and the pause goal to the native Load. A refused start
+    // puts both back (the wrappers around this fn): a failed candidate cannot change the outgoing
+    // attempt's offer or its Feed mailbox.
+    ps.step_readout(super::readout::ReadoutEvent::RateSelected { permille: session_rate });
+    if FEED_TX.paused.load(Ordering::Acquire) != start_paused {
+        super::commit_paused(pa, start_paused);
+    }
     let trace_generation = crate::route::playback_trace_generation();
     // A native refusal is mapped here, by the common owner: the executor logs why, and the route
     // only learns that the start failed.
@@ -493,7 +517,6 @@ fn start_bufferfeed_prepared(
     }
     let admitted = ps.backend_offer_admitted(plx_playback_contract::BackendKind::Feed, offer);
     assert!(admitted, "the prechecked feed offer must remain admissible on the main thread");
-    physical_start.commit();
     ps.clear_reconfigure_pause_goal();
     pa.bind_feed_attempt(route_attempt, trace_generation);
     // The app gates its first pump on this readout. Publish after physical start and exact
@@ -527,47 +550,6 @@ fn feed_start_rate(ps: &mut crate::route::PlaybackSession)
 fn feed_start_paused(ps: &crate::route::PlaybackSession) -> bool {
     ps.reconfigure_pause_goal().unwrap_or_else(|| FEED_TX.paused.load(Ordering::Acquire))
 }
-
-/// Roll back the physical pause hold when native preparation, staging or Start admission fails.
-/// A queued Start owns it until its exact teardown; a failed candidate cannot change the outgoing
-/// attempt's Feed mailbox. The offered rate is the session's, rolled back by
-/// [`restoring_offered_rate_on_failure`] (a guard that drops cannot step the session).
-#[cfg(feature = "play-feed")]
-struct FeedStartTransport {
-    old_paused: bool,
-    published: bool,
-    committed: bool,
-}
-
-#[cfg(feature = "play-feed")]
-impl FeedStartTransport {
-    fn capture() -> Self {
-        Self {
-            old_paused: FEED_TX.paused.load(Ordering::Acquire),
-            published: false,
-            committed: false,
-        }
-    }
-
-    fn publish(&mut self, ps: &mut crate::route::PlaybackSession, rate: i32, paused: bool) {
-        ps.step_readout(super::readout::ReadoutEvent::RateSelected { permille: rate });
-        if self.old_paused != paused { FEED_TX.commit_paused(paused); }
-        self.published = true;
-    }
-
-    fn commit(&mut self) { self.committed = true; }
-}
-
-#[cfg(feature = "play-feed")]
-impl Drop for FeedStartTransport {
-    fn drop(&mut self) {
-        if self.committed { return; }
-        if self.published && FEED_TX.paused.load(Ordering::Acquire) != self.old_paused {
-            FEED_TX.commit_paused(self.old_paused);
-        }
-    }
-}
-
 
 /// What one pass of the effects did.
 #[derive(Default)]
@@ -1652,6 +1634,34 @@ mod feed_start_controls_tests {
         let started: Result<(), ()> = restoring_offered_rate_on_failure(&mut ps, |ps| { publish(ps); Ok(()) });
         assert!(started.is_ok());
         assert_eq!(ps.readout().play_rate_permille(), 1500, "a started candidate keeps the rate it published");
+    }
+
+    /// A start that fails after it published the viewer's pause goal to the Feed's transport leaves
+    /// the outgoing attempt's pause as it found it; one that succeeds keeps the goal it published.
+    #[test]
+    fn a_failed_feed_start_puts_the_pause_back_and_a_started_one_keeps_it() {
+        let _serial = plx_base::testlock::serial();
+        struct Restore(bool);
+        impl Drop for Restore {
+            fn drop(&mut self) { FEED_TX.commit_paused(self.0); }
+        }
+        let _restore = Restore(FEED_TX.paused.load(Ordering::Acquire));
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            plx_base::task::MainThread::assume()
+        });
+        FEED_TX.commit_paused(false);
+        let publish = |pa: &mut crate::player::adapter::PlayerAdapter| {
+            crate::player::commit_paused(pa, true);
+            assert!(FEED_TX.paused.load(Ordering::Acquire), "published before the refusal");
+        };
+
+        let failed: Result<(), ()> = restoring_pause_on_failure(&mut pa, |pa| { publish(pa); Err(()) });
+        assert!(failed.is_err());
+        assert!(!FEED_TX.paused.load(Ordering::Acquire), "a refused candidate leaves the pause as found");
+
+        let started: Result<(), ()> = restoring_pause_on_failure(&mut pa, |pa| { publish(pa); Ok(()) });
+        assert!(started.is_ok());
+        assert!(FEED_TX.paused.load(Ordering::Acquire), "a started candidate keeps the pause it published");
     }
 
     #[test]

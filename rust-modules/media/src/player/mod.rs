@@ -105,9 +105,9 @@ pub use plx_data::metadata::track_names::TrackNames;
 #[cfg(feature = "play-feed")]
 pub use shared::UserPauseCursor;
 #[cfg(feature = "play-feed")]
-use shared::{
-    HlsPauseCompletion, HlsPlayCompletion, HlsUserPause, HlsUserResume,
-};
+use shared::HlsPauseCompletion;
+#[cfg(feature = "play-feed")]
+use plx_playback_contract::feed::{UserPauseOutcome, UserResumeOutcome};
 
 /// The video sink every seam call goes through. The port installs the television's
 /// native `StarfishSink` or the simulator's (`player::ffi_host::HostSink`) once at boot; a
@@ -440,36 +440,32 @@ pub fn pause(pa: &mut adapter::PlayerAdapter) -> bool {
 }
 #[cfg(feature = "play-feed")]
 pub(crate) fn pause_result(pa: &mut adapter::PlayerAdapter) -> TransportResult {
-    match FEED_SHARED.prepare_hls_user_pause() {
-        Some(HlsUserPause::AlreadyHeld) => {
-            FEED_TX.commit_paused(true);
+    // The feed runs the clock transition, the native Pause and the transport commit as one step,
+    // and publishes the feed gate at the same accepted actuator boundary (leaving that to the
+    // caller let a deadline transaction charge accepted Pause time as active playback). What is
+    // left here is the ACB mirror and the log, which are the common player's.
+    match pa.feed_user_pause() {
+        UserPauseOutcome::AlreadyHeld => {
             acb_mirror_playstate(pa, false);
-            return TransportResult::deferred(true);
+            TransportResult::deferred(true)
         }
-        Some(HlsUserPause::Issue(token)) => {
-            let accepted = unsafe { sink().pause(pa.mt()) } != 0;
-            match FEED_SHARED.complete_hls_user_pause(token, accepted) {
-                HlsPauseCompletion::Accepted => {}
-                HlsPauseCompletion::Refused => {
-                    log("player: Starfish refused Pause");
-                    return TransportResult::deferred(false);
-                }
-                HlsPauseCompletion::Stale => {
-                    log("player: Pause result lost its clock token");
-                    return TransportResult::deferred(false);
-                }
-            }
+        UserPauseOutcome::Issued(HlsPauseCompletion::Accepted) => {
+            acb_mirror_playstate(pa, false);
+            TransportResult::native(true)
         }
-        None => {
+        UserPauseOutcome::Issued(HlsPauseCompletion::Refused) => {
+            log("player: Starfish refused Pause");
+            TransportResult::deferred(false)
+        }
+        UserPauseOutcome::Issued(HlsPauseCompletion::Stale) => {
+            log("player: Pause result lost its clock token");
+            TransportResult::deferred(false)
+        }
+        UserPauseOutcome::Deferred => {
             log("player: Pause deferred by an in-flight clock transition");
-            return TransportResult::deferred(false);
+            TransportResult::deferred(false)
         }
     }
-    // Publish the feed gate at the same accepted actuator boundary. Leaving this to app.rs after
-    // the ACB call let a deadline transaction charge accepted Pause time as active playback.
-    FEED_TX.commit_paused(true);
-    acb_mirror_playstate(pa, false);
-    TransportResult::native(true)
 } // playback_pause
 /// Mute the sink for a paused preroll's Play window (`native_executor::try_prime`, immediately before that
 /// Play): the preroll plays ONE picture for a viewer who is paused, and the ~0.2-0.3 s until the
@@ -481,7 +477,6 @@ pub(crate) fn pause_result(pa: &mut adapter::PlayerAdapter) -> TransportResult {
 pub(crate) fn mute_for_preroll(mt: &plx_base::task::MainThread) {
     unsafe { sink().set_volume(mt, 0) };
     let default = plx_platform::tv::sink::PIPELINE_DEFAULT_VOLUME;
-    FEED_TX.note_preroll_muted(default);
     log(&format!("preroll: volume set 0 (pipeline default {default} is restored later; no readback)"));
 }
 
@@ -491,9 +486,9 @@ pub(crate) fn mute_for_preroll(mt: &plx_base::task::MainThread) {
 /// (`abandon_seek`). A stop or reload needs no restore: the volume belonged to the pipeline that
 /// went with it (`Transport::reset` forgets the mute).
 #[cfg(feature = "play-feed")]
-pub(crate) fn restore_preroll_volume(mt: &plx_base::task::MainThread) {
-    let Some(volume) = FEED_TX.take_preroll_volume() else { return };
-    unsafe { sink().set_volume(mt, volume) };
+pub(crate) fn restore_preroll_volume(pa: &mut adapter::PlayerAdapter) {
+    let Some(volume) = pa.feed_take_preroll_volume() else { return };
+    unsafe { sink().set_volume(pa.mt(), volume) };
     log(&format!("preroll: volume set {volume} (restored; no readback)"));
 }
 
@@ -504,71 +499,73 @@ pub fn resume(pa: &mut adapter::PlayerAdapter) -> bool {
 #[cfg(feature = "play-feed")]
 pub(crate) fn resume_result(pa: &mut adapter::PlayerAdapter) -> TransportResult {
     // First, whichever branch follows: the viewer asked for sound, and a Play below must not run muted.
-    restore_preroll_volume(pa.mt());
-    let queued_stream = pa.feed_uses_stream_queues();
-    match FEED_SHARED.prepare_hls_user_resume(queued_stream) {
-        Some(HlsUserResume::Deferred) => {
+    restore_preroll_volume(pa);
+    // The feed runs the clock transition, the native Play (or the prime's arming) and the
+    // transport commit, closing an open paused-seek preroll with it. The ACB Resume of a native
+    // Play and the log lines are the common player's.
+    match pa.feed_user_resume() {
+        UserResumeOutcome::Fenced => {
             // Feeding may resume, but an initial/seek/recovery certificate still owns the physical
             // clock. Its eventual Play also carries the pending ACB Resume.
-            if FEED_TX.seek_preroll_active() {
-                FEED_TX.finish_seek_preroll();
-            }
-            FEED_TX.commit_paused(false);
             log("player: user Resume accepted; physical Play remains fenced");
             TransportResult::deferred(true)
         }
-        Some(HlsUserResume::Prime) => {
-            // Keep Starfish and ACB physically Paused. Opening TX first lets the two AU lanes fill
+        UserResumeOutcome::Priming => {
+            // Physical Starfish and ACB stay Paused. Opening TX first lets the two AU lanes fill
             // together; their ordinary exact prime certificate owns the eventual Play + ACB
             // Resume. Starting the clock here recreates the pause-to-fill A/V drift race.
-            if !pa.arm_feed_live_clock_prime() {
-                log("player: queued Resume lost its Engine before prime could arm");
-                return TransportResult::deferred(false);
-            }
-            if FEED_TX.seek_preroll_active() {
-                FEED_TX.finish_seek_preroll();
-            }
-            FEED_TX.commit_paused(false);
             log("player: queued Resume feeding; physical Play awaits balanced prime");
             TransportResult::deferred(true)
         }
-        Some(HlsUserResume::Issue(token)) => {
-            let accepted = unsafe { sink().play(pa.mt()) } != 0;
-            match FEED_SHARED.complete_hls_prime_play(token, accepted) {
-                HlsPlayCompletion::Accepted { resume_acb } => {
-                    if FEED_TX.seek_preroll_active() {
-                        FEED_TX.finish_seek_preroll();
-                    }
-                    FEED_TX.commit_paused(false);
-                    if resume_acb {
-                        acb_mirror_playstate(pa, true);
-                    }
-                    TransportResult::native(true)
-                }
-                HlsPlayCompletion::Refused => {
-                    log("player: Starfish refused Play");
-                    TransportResult::deferred(false)
-                }
-                HlsPlayCompletion::Stale => {
-                    log("player: Resume result lost its clock token");
-                    TransportResult::deferred(false)
-                }
+        UserResumeOutcome::PrimeLost => {
+            log("player: queued Resume lost its Engine before prime could arm");
+            TransportResult::deferred(false)
+        }
+        UserResumeOutcome::Played { resume_acb } => {
+            if resume_acb {
+                acb_mirror_playstate(pa, true);
             }
+            TransportResult::native(true)
         }
-        None if FEED_TX.seek_preroll_active() => {
-            // The viewer cancelled "stay paused" after the seek had already transferred the
-            // physical hold to Initial/Seek (or after its one-frame Play). No native command is
-            // needed here; the prime owns Play if it has not happened yet.
-            FEED_TX.finish_seek_preroll();
-            FEED_TX.commit_paused(false);
-            TransportResult::deferred(true)
+        UserResumeOutcome::PlayRefused => {
+            log("player: Starfish refused Play");
+            TransportResult::deferred(false)
         }
-        None => {
+        UserResumeOutcome::PlayStale => {
+            log("player: Resume result lost its clock token");
+            TransportResult::deferred(false)
+        }
+        // The viewer cancelled "stay paused" after the seek had already transferred the physical
+        // hold to Initial/Seek (or after its one-frame Play). No native command is needed; the
+        // prime owns Play if it has not happened yet.
+        UserResumeOutcome::PrerollCancelled => TransportResult::deferred(true),
+        UserResumeOutcome::NoHold => {
             log("player: Resume has no accepted user hold");
             TransportResult::deferred(false)
         }
     }
 } // playback_resume
+
+/// Publish a committed transport transition to the feed gate and its exact pause clock (an active
+/// object reaches this only after native acceptance; before a new object exists the common
+/// foreground owner seeds its saved paused viewer goal as the initial hold). The feed is the writer.
+#[cfg(feature = "play-feed")]
+pub fn commit_paused(pa: &mut adapter::PlayerAdapter, paused: bool) {
+    pa.feed_command(FeedCommand::CommitPaused { paused });
+}
+
+/// Open the one-frame paused-seek preroll for a restore that is about to Load (a feed that is not
+/// paused opens nothing).
+#[cfg(feature = "play-feed")]
+pub fn begin_paused_seek(pa: &mut adapter::PlayerAdapter) {
+    pa.feed_command(FeedCommand::BeginPausedSeek);
+}
+
+/// Close the paused-seek preroll and any ownership of it.
+#[cfg(feature = "play-feed")]
+pub fn finish_seek_preroll(pa: &mut adapter::PlayerAdapter) {
+    pa.feed_command(FeedCommand::FinishSeekPreroll);
+}
 
 #[cfg(feature = "play-feed")]
 pub fn seek_preroll_active() -> bool {
@@ -585,8 +582,8 @@ pub fn finish_paused_seek(pa: &mut adapter::PlayerAdapter) -> bool {
     if !pause(pa) {
         return false;
     }
-    FEED_TX.finish_seek_preroll();
-    restore_preroll_volume(pa.mt());
+    finish_seek_preroll(pa);
+    restore_preroll_volume(pa);
     // One receipt after the accepted pause, never per frame: device scrub checks pair this
     // boundary with stationary playhead samples rather than assuming CommitSeek held the pause.
     log(&format!("seek: paused frame restored ns={}", FEED_SHARED.playpos_ns.load(Relaxed)));
@@ -797,7 +794,7 @@ pub fn abandon_seek(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::Pl
     // A failed seek never got the one-frame preroll it was promised. Preserve the viewer's Paused
     // intent and close only the feed override; the existing user clock hold remains authoritative.
     if FEED_TX.seek_preroll_active() {
-        FEED_TX.finish_seek_preroll();
+        finish_seek_preroll(pa);
     }
 }
 /// The seek the pump took off the pending slot: where it is aimed and how many requests it folded.
@@ -3631,7 +3628,7 @@ mod tests {
         );
         assert_eq!(
             FEED_SHARED.prepare_hls_user_pause(),
-            Some(HlsUserPause::AlreadyHeld)
+            Some(shared::HlsUserPause::AlreadyHeld)
         );
         FEED_TX.commit_paused(true);
         struct Restore(bool);

@@ -786,7 +786,7 @@ fn seek_landing_tail(
             // The viewer's own Pause (a hold that owes a Play back is not): the fresh stream must
             // be allowed to prime a frame, then be paused again by `settle_paused_seek`.
             if !hold {
-                own_seek_under_pause(target_ns);
+                own_seek_under_pause(pa, target_ns);
             }
             settle_reload(super::engine::reload_transcode(ps, pa, target_ns), "transcode seek reload", ps);
             // The reload kept the hold's pause; only now does the new stream get its Play.
@@ -964,9 +964,9 @@ fn rejected_tail(
 /// survives the reload this call may be followed by. A preroll a caller already opened (the
 /// foreground restore) stays the caller's; a Pause the claim hold took (`claim_hold::owns_pause`)
 /// is not the viewer's and is given back by the hold.
-fn own_seek_under_pause(target_ns: i64) {
+fn own_seek_under_pause(pa: &mut super::adapter::PlayerAdapter, target_ns: i64) {
     if FEED_TX.paused.load(Acquire) && !super::claim_hold::owns_pause() {
-        FEED_TX.own_paused_seek(target_ns);
+        pa.feed_command(plx_playback_contract::feed::FeedCommand::OwnPausedSeek { target_ns });
     }
 }
 
@@ -1033,7 +1033,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
     // A preroll closed by a path with no adapter in hand (`abandon_seek`) leaves its mute behind;
     // the one place every closer funnels through is the next tick.
     if !FEED_TX.seek_preroll_active() {
-        super::restore_preroll_volume(pa.mt());
+        super::restore_preroll_volume(pa);
     }
     settle_paused_seek(pa, now);
     // An Engine that failed for good last frame: let go of its pipeline and the video plane.
@@ -1514,7 +1514,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         // so `eng` dangles after it: return immediately.
         if seek_must_reload(seek_mode(), super::play_rate_permille(ps), rate_reload) {
             crate::route::commit_user_seek();
-            own_seek_under_pause(t);
+            own_seek_under_pause(pa, t);
             settle_reload(super::engine::reload_at(ps, pa, t), "direct seek reload", ps);
             return;
         }
@@ -1526,14 +1526,14 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
             plx_playback_contract::feed::SeekPause::Refused => {
                 super::log("seek(in-place): Starfish refused Pause → reload fallback");
                 crate::route::commit_user_seek();
-                own_seek_under_pause(t);
+                own_seek_under_pause(pa, t);
                 settle_reload(super::engine::reload_at(ps, pa, t), "seek reload after native Pause refusal", ps);
                 return;
             }
             plx_playback_contract::feed::SeekPause::Stale => {
                 super::log("seek(in-place): stale Pause result → reload fallback");
                 crate::route::commit_user_seek();
-                own_seek_under_pause(t);
+                own_seek_under_pause(pa, t);
                 settle_reload(super::engine::reload_at(ps, pa, t), "seek reload after stale Pause", ps);
                 return;
             }
@@ -1546,7 +1546,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         if !pa.begin_seek_discontinuity() {
             crate::route::commit_user_seek();
             super::log("seek(in-place): native callback epoch retired → reload fallback");
-            own_seek_under_pause(t);
+            own_seek_under_pause(pa, t);
                         settle_reload(
                 super::engine::reload_at(ps, pa, t),
                 "seek reload after retired native epoch", ps,
@@ -1558,7 +1558,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         // would let pre-seek ABR evidence publish while queues are already being reset.
         crate::route::commit_user_seek();
         pa.apply_inplace_seek_pre(t, seek_mode(), coalesced);
-        own_seek_under_pause(t);
+        own_seek_under_pause(pa, t);
         pa.apply_inplace_seek_post(t, now);
     }
 

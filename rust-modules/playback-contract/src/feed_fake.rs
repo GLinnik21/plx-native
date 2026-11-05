@@ -18,7 +18,8 @@ use plx_base::task::MainThread;
 use crate::feed::{
     AcceptedLoadOutcome, CtorGate, FeedCommand, FeedControl, FeedFacts, FeedLoad, FeedSeek,
     LoadTick, PausedSeekStep,
-    PhysicalSet, PresentationTick, SeekMode, SeekPause, Stage, StuckSeekAction,
+    PhysicalSet, PresentationTick, SeekMode, SeekPause, Stage, StuckSeekAction, UserPauseOutcome,
+    UserResumeOutcome,
 };
 use crate::{
     AttemptId, BackendEvent, BackendKind, Capabilities, CommandId, DispatchResult, DriverSet,
@@ -52,7 +53,6 @@ pub enum FeedCall {
     TickPresentation { segmented_hls: bool, immersive: bool },
     CtorGate,
     TakeLoadOutcomes,
-    ArmLiveClockPrime,
     NativeAudioStallFired { now: u32 },
     NoteMissingEraCallback,
     InjectRefuse601 { generation: u32, preview: bool },
@@ -64,11 +64,13 @@ pub enum FeedCall {
     Loading,
     LoadThreadFinished,
     PreviewLoadJoinState,
-    UsesStreamQueues,
     ForegroundFollowsLoad,
     RouteActionsReady,
     IsLive,
     ActiveAttempt,
+    UserPause,
+    UserResume,
+    TakePrerollVolume,
 }
 
 /// What the fake feed answers. The default is an idle feed: nothing live, nothing loading, no
@@ -88,7 +90,6 @@ pub struct FeedScript {
     pub ctor_gate: CtorGate,
     /// Delivered once, in order, by the next `take_load_outcomes`.
     pub load_outcomes: Vec<AcceptedLoadOutcome>,
-    pub arm_live_clock_prime: bool,
     pub native_audio_stall_fired: bool,
     /// The one attempt `mark_foreground_follows_load` accepts; any other is refused.
     pub foreground_follows_for: Option<AttemptId>,
@@ -96,11 +97,14 @@ pub struct FeedScript {
     pub loading: bool,
     pub load_thread_finished: bool,
     pub preview_load_join_state: Option<(bool, bool)>,
-    pub uses_stream_queues: bool,
     pub foreground_follows_load: bool,
     pub route_actions_ready: bool,
     pub live: bool,
     pub active_attempt: Option<AttemptId>,
+    pub user_pause: UserPauseOutcome,
+    pub user_resume: UserResumeOutcome,
+    /// Delivered once by the next `take_preroll_volume`.
+    pub preroll_volume: Option<i32>,
 }
 
 impl Default for FeedScript {
@@ -117,18 +121,19 @@ impl Default for FeedScript {
             facts: FeedFacts::default(),
             ctor_gate: CtorGate::Ready,
             load_outcomes: Vec::new(),
-            arm_live_clock_prime: false,
             native_audio_stall_fired: false,
             foreground_follows_for: None,
             stage: None,
             loading: false,
             load_thread_finished: false,
             preview_load_join_state: None,
-            uses_stream_queues: false,
             foreground_follows_load: false,
             route_actions_ready: false,
             live: false,
             active_attempt: None,
+            user_pause: UserPauseOutcome::Deferred,
+            user_resume: UserResumeOutcome::NoHold,
+            preroll_volume: None,
         }
     }
 }
@@ -238,9 +243,6 @@ impl FeedLoad for FakeFeed {
     fn take_load_outcomes(&mut self) -> Vec<AcceptedLoadOutcome> {
         self.answer(FeedCall::TakeLoadOutcomes, |s| std::mem::take(&mut s.load_outcomes))
     }
-    fn arm_live_clock_prime(&mut self) -> bool {
-        self.answer(FeedCall::ArmLiveClockPrime, |s| s.arm_live_clock_prime)
-    }
     fn native_audio_stall_fired(&mut self, now: u32) -> bool {
         self.answer(FeedCall::NativeAudioStallFired { now }, |s| s.native_audio_stall_fired)
     }
@@ -271,9 +273,6 @@ impl FeedLoad for FakeFeed {
     fn preview_load_join_state(&self) -> Option<(bool, bool)> {
         self.answer(FeedCall::PreviewLoadJoinState, |s| s.preview_load_join_state)
     }
-    fn uses_stream_queues(&self) -> bool {
-        self.answer(FeedCall::UsesStreamQueues, |s| s.uses_stream_queues)
-    }
     fn foreground_follows_load(&self) -> bool {
         self.answer(FeedCall::ForegroundFollowsLoad, |s| s.foreground_follows_load)
     }
@@ -289,6 +288,15 @@ impl FeedLoad for FakeFeed {
 impl FeedControl for FakeFeed {
     fn command(&mut self, command: FeedCommand) {
         self.answer(FeedCall::Command(command), |_| ());
+    }
+    fn user_pause(&mut self, _mt: &MainThread) -> UserPauseOutcome {
+        self.answer(FeedCall::UserPause, |s| s.user_pause)
+    }
+    fn user_resume(&mut self, _mt: &MainThread) -> UserResumeOutcome {
+        self.answer(FeedCall::UserResume, |s| s.user_resume)
+    }
+    fn take_preroll_volume(&mut self) -> Option<i32> {
+        self.answer(FeedCall::TakePrerollVolume, |s| s.preroll_volume.take())
     }
 }
 
