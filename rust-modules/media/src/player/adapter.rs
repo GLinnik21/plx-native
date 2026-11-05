@@ -1958,7 +1958,12 @@ impl PlayerAdapter {
     }
 
     #[cfg(feature = "devtriggers")]
-    pub fn uri_acb_exit_quarantine(&self) -> bool { self.uri.as_ref().is_some_and(|session| session.acb_exit_quarantine()) }
+    pub(super) fn uri_acb_exit_quarantine(&self) -> bool { self.uri.as_ref().is_some_and(|session| session.acb_exit_quarantine()) }
+
+    /// [`uri_acb_exit_quarantine`](Self::uri_acb_exit_quarantine) for a suite outside this crate
+    /// (`dev::uriprobe`'s tests); the product reads it only inside `exit_native`.
+    #[cfg(all(feature = "devtriggers", any(test, feature = "test-support")))]
+    pub fn uri_acb_exit_quarantine_for_test(&self) -> bool { self.uri_acb_exit_quarantine() }
 
     /// Install the probe's session. `uriprobe_drive::start` guards on [`uri_live`](Self::uri_live)
     /// first: overwriting a live slot would drop a session without ending it.
