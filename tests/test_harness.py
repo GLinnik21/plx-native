@@ -3622,6 +3622,124 @@ class AbrTraceMetrics(unittest.TestCase):
             "the pipeline evaluator must grade every authored Pause/Resume edge",
         )
 
+    @staticmethod
+    def _paused_seek_log():
+        """The lines a healthy seek-under-Pause leaves: Pause, a stationary stretch, the scripted
+        seek, its in-place av_seek, the one-shot paused-frame receipt, a stationary landed frame,
+        the Resume, and a climb with both A/V lanes accepted."""
+        return [
+            "loop=60 route=player pos=9s fps=60",
+            "autopause: Pause accepted hold=18000ms",
+            "loop=60 route=player pos=9s fps=0",
+            "loop=60 route=player pos=9s fps=0",
+            "loop=60 route=player pos=9s fps=0",
+            "autoseek: step \u2192 30s (0 left)",
+            "seek(in-place): av_seek t=30000000000 coalesced=0",
+            "in-place seek: setTimeToDecode(30000000000) rv=1 setContentInfo=1 sendSegment=1",
+            "seek: paused frame restored ns=30040000000",
+            "loop=60 route=player pos=30s fps=0",
+            "loop=60 route=player pos=30s fps=0",
+            "loop=60 route=player pos=30s fps=0",
+            "autopause: Resume accepted",
+            "loop=60 route=player pos=30s fps=60",
+            "feed v#400 sz=4096 fed=31000000000 reply=O qbytes=8192",
+            "feed a#800 sz=512 fed=31000000000 reply=O qbytes=1024",
+            "loop=60 route=player pos=31s fps=60",
+            "loop=60 route=player pos=36s fps=60",
+            "loop=60 route=player pos=43s fps=60",
+        ]
+
+    def test_paused_seek_passes_on_the_healthy_sequence(self):
+        ok, why = run.op_paused_seek(self._paused_seek_log(), 30, 12)
+        self.assertTrue(ok, why)
+        self.assertIn("landed 30s", why)
+
+    def test_paused_seek_fails_without_the_paused_frame_receipt(self):
+        lines = [ln for ln in self._paused_seek_log() if "paused frame restored" not in ln]
+        ok, why = run.op_paused_seek(lines, 30, 12)
+        self.assertFalse(ok, "a seek whose landing under Pause was never logged cannot pass")
+        self.assertIn("never landed under the Pause", why)
+
+    def test_paused_seek_fails_when_the_film_plays_on_between_the_receipt_and_the_resume(self):
+        lines = self._paused_seek_log()
+        at = next(i for i, ln in enumerate(lines) if ln.startswith("loop=") and "pos=30s" in ln)
+        lines[at + 1] = "loop=60 route=player pos=33s fps=60"
+        ok, why = run.op_paused_seek(lines, 30, 12)
+        self.assertFalse(ok)
+        self.assertIn("did not stay paused", why)
+
+    def test_paused_seek_fails_when_the_receipt_only_comes_after_the_resume(self):
+        lines = self._paused_seek_log()
+        receipt = next(ln for ln in lines if "paused frame restored" in ln)
+        lines.remove(receipt)
+        lines.insert(lines.index("autopause: Resume accepted") + 1, receipt)
+        ok, why = run.op_paused_seek(lines, 30, 12)
+        self.assertFalse(ok)
+        self.assertIn("AFTER the Resume", why)
+
+    def test_paused_seek_names_a_seek_that_fired_outside_the_hold(self):
+        lines = self._paused_seek_log()
+        step = lines.pop(next(i for i, ln in enumerate(lines) if "autoseek: step" in ln))
+        after = lines.index("autopause: Resume accepted") + 1
+        late = lines[:after] + [step] + lines[after:]
+        ok, why = run.op_paused_seek(late, 30, 12)
+        self.assertFalse(ok)
+        self.assertIn("after the Resume", why)
+        early = [step] + lines
+        ok, why = run.op_paused_seek(early, 30, 12)
+        self.assertFalse(ok)
+        self.assertIn("before the Pause", why)
+        ok, why = run.op_paused_seek(lines, 30, 12)
+        self.assertFalse(ok)
+        self.assertIn("never fired", why)
+
+    def test_paused_seek_fails_when_it_lands_far_from_the_target(self):
+        lines = [ln.replace("ns=30040000000", "ns=9040000000") for ln in self._paused_seek_log()]
+        ok, why = run.op_paused_seek(lines, 30, 12)
+        self.assertFalse(ok)
+        self.assertIn("landed at 9s", why)
+
+    def test_paused_seek_fails_when_the_seek_fell_back_to_a_reload(self):
+        lines = self._paused_seek_log()
+        lines.insert(lines.index("seek(in-place): av_seek t=30000000000 coalesced=0") + 1,
+                     "reload_at: fresh Load t=30000000000")
+        ok, why = run.op_paused_seek(lines, 30, 12)
+        self.assertFalse(ok)
+        self.assertIn("fell back to a reload", why)
+        no_seek = [ln for ln in self._paused_seek_log() if "av_seek" not in ln]
+        self.assertFalse(run.op_paused_seek(no_seek, 30, 12)[0])
+
+    def test_paused_seek_needs_the_recovery_a_plain_resume_needs(self):
+        lines = self._paused_seek_log()
+        self.assertFalse(run.op_paused_seek(lines[:-2], 30, 12)[0], "no climb after the Resume")
+        self.assertFalse(
+            run.op_paused_seek([ln for ln in lines if "feed a#" not in ln], 30, 12)[0],
+            "moving pictures without a resumed audio lane are not recovery")
+        # a Resume that restarts from the PRE-seek position is not playing on from the landing
+        rewound = [ln.replace("pos=31s", "pos=10s").replace("pos=36s", "pos=22s")
+                   .replace("pos=43s", "pos=40s") for ln in lines]
+        rewound[rewound.index("autopause: Resume accepted") + 1] = "loop=60 route=player pos=9s fps=60"
+        self.assertFalse(run.op_paused_seek(rewound, 30, 12)[0])
+
+    def test_pause_resume_alone_still_fails_on_a_playhead_that_jumps_inside_the_hold(self):
+        """`op_pause_resume` stays the strict plain-hold grader; the seek variant is a different op."""
+        self.assertFalse(run.op_pause_resume(self._paused_seek_log(), 12)[0])
+
+    def test_pipeline_evaluation_routes_a_pause_resume_with_seek_s_to_the_paused_seek_grader(self):
+        case = {
+            "fixture": "fixture.mp4",
+            "expect": {"require_video_bound": False, "min_pos_climb_s": 0},
+            "operations": [{"op": "pause_resume", "seek_s": 30, "min_climb_after_s": 12}],
+        }
+        with mock.patch.object(run, "a_stream_path", return_value=(True, "fixture opened")), \
+             mock.patch.object(run, "a_load_decl", return_value=(True, "payload loaded")):
+            _passed, results = run.evaluate_pipeline(case, self._paused_seek_log(), (2, 1))
+        labels = [label for label, _ok, _evidence in results]
+        self.assertIn("paused_seek", labels)
+        self.assertNotIn("pause_resume", labels,
+                         "the hold-stationary grader would fail a seek the case authored")
+        self.assertTrue(dict((label, ok) for label, ok, _ in results)["paused_seek"])
+
     def test_min_rejected_upshifts_counts_refused_up_transactions_only(self):
         """`min_rejected_upshifts` grades E_tx(up, reject): an upshift PROPOSED and then REFUSED.
 
@@ -4633,6 +4751,64 @@ class AbrTriggers(unittest.TestCase):
             self._names(case)["plxnative-autopause"],
             "delay=25000,hold=6000",
         )
+
+    def test_a_pause_resume_with_seek_s_also_writes_the_autoseek_script(self):
+        case = {
+            **self.BASE,
+            "operations": [{"op": "pause_resume", "delay_ms": 10_000, "hold_ms": 18_000,
+                            "seek_s": 30, "seek_delay_ms": 14_000}],
+        }
+        names = self._names(case)
+        self.assertEqual(names["plxnative-autopause"], "delay=10000,hold=18000")
+        self.assertEqual(names["plxnative-autoseek"], "delay=14000,30")
+        undelayed = {**self.BASE, "operations": [{"op": "pause_resume", "hold_ms": 6_000,
+                                                  "seek_s": 30}]}
+        self.assertEqual(self._names(undelayed)["plxnative-autoseek"], "30")
+        plain = {**self.BASE, "operations": [{"op": "pause_resume", "hold_ms": 6_000}]}
+        self.assertNotIn("plxnative-autoseek", self._names(plain),
+                         "a plain hold must not grow a seek")
+
+    def test_a_seek_under_pause_is_a_depth_the_length_check_reads(self):
+        self.assertEqual(run._case_depth_s({
+            "operations": [{"op": "pause_resume", "hold_ms": 1, "seek_s": 40}],
+            "expect": {"min_pos_climb_s": 8}}), 40)
+        self.assertEqual(run._case_depth_s({
+            "operations": [{"op": "pause_resume", "hold_ms": 1}],
+            "expect": {"min_pos_climb_s": 8}}), 8)
+
+    def test_the_original_pause_cases_pin_direct_play_and_carry_no_abr_shape(self):
+        """No `auto_network` is what keeps the case off Auto and HLS: nothing writes the Auto
+        trigger set, and `stream_path` then requires the demuxer to open the fixture itself."""
+        cases = {c["name"]: c for c in _manifest()["pipeline_cases"]}
+        hls = cases["pipe_auto_pause_fill_resume"]
+        for name in ("pipe_original_pause_resume", "pipe_original_paused_seek"):
+            with self.subTest(case=name):
+                case = cases[name]
+                self.assertNotIn("auto_network", case)
+                self.assertEqual(case["fixture"], hls["fixture"])
+                self.assertNotIn("abr_shape", case["expect"])
+                names = dict(run.triggers_for_case(case, url_base="http://h:8020"))
+                for auto_only in ("plxnative-quality", "plxnative-abrpin"):
+                    self.assertNotIn(auto_only, names)
+                spec = json.loads(names["plxnative-playurl"])
+                self.assertNotIn("auto_start_hls", spec)
+                self.assertNotIn("auto_hls_base", spec)
+                self.assertIn("plxnative-autopause", names)
+                self.assertTrue(case["expect"]["no_playing_error"])
+                self.assertTrue(case["expect"]["require_video_bound"])
+        seek = cases["pipe_original_paused_seek"]
+        self.assertIn("plxnative-autoseek",
+                      dict(run.triggers_for_case(seek, url_base="http://h:8020")))
+        self.assertNotIn("plxnative-autoseek",
+                         dict(run.triggers_for_case(cases["pipe_original_pause_resume"],
+                                                    url_base="http://h:8020")))
+        # a pack too short for the case skips; it must not fail as a regression
+        self.assertLessEqual(run._case_depth_s(seek), 60 * 0.8)
+        pause_op = next(o for o in seek["operations"] if o["op"] == "pause_resume")
+        # the seek can land up to 6 s later than `seek_delay_ms - delay_ms` into the hold (its gate
+        # is 6 s later than the Pause's); the hold must still leave 6 s of paused landing after it
+        worst_seek_into_hold = pause_op["seek_delay_ms"] - pause_op["delay_ms"] + 6000
+        self.assertGreaterEqual(pause_op["hold_ms"] - worst_seek_into_hold, 2000 + 6000)
 
     def test_no_manifest_case_carries_a_new_abr_bound_yet(self):
         """POLICY GUARD, not a policy test. Increment I0 adds the metrics and deliberately grades

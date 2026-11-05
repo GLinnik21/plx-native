@@ -11,7 +11,9 @@ use plx_playback_contract::feed::SeekMode;
 #[cfg(all(test, feature = "hostsim"))]
 #[cfg(all(test, feature = "hostsim"))]
 use plx_base::task::MainThread;
-use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+use std::sync::atomic::Ordering::{Acquire, Relaxed};
+#[cfg(all(test, feature = "hostsim"))]
+use std::sync::atomic::Ordering::Release;
 use std::time::Duration;
 
 /// issue #74 D.1.4: the longest the `loadCompleted` arm will wait for `sf_load` to actually
@@ -279,7 +281,7 @@ fn open_facts(ps: &crate::route::PlaybackSession, native_audio: Option<plx_platf
     super::recovery::OpenFacts {
         pending_original: crate::route::original_recovery_pending(),
         auto_original: crate::route::auto_original_watch(ps).is_some(),
-        no_frames: FEED_SHARED.frames.load(Relaxed) == 0,
+        no_frames: ps.readout().raw().frames == 0,
         native_audio,
         forced: crate::route::forced_direct_play(ps),
         direct: !crate::route::is_transcoding(ps),
@@ -298,12 +300,15 @@ fn settled_by_foreground(foreground_follows: bool, start: crate::route::RouteSta
     foreground_follows && start == crate::route::RouteStartStatus::Failed
 }
 
-/// The pipeline's own account of the failed Load, from the flags its callbacks latched.
-fn load_refusal() -> super::recovery::LoadRefusal {
-    if FEED_SHARED.load_timed_out.load(Acquire) {
+/// The pipeline's own account of the failed Load, from the flags its callbacks latched. The flag
+/// and the code that explains it are one sample (the readout's last ingestion, which the feed loads
+/// flag first), so a code a worker published before its flag is never read as 0.
+fn load_refusal(ps: &crate::route::PlaybackSession) -> super::recovery::LoadRefusal {
+    let raw = ps.readout().raw();
+    if raw.flags.load_timed_out {
         super::recovery::LoadRefusal::TimedOut
     } else {
-        super::recovery::LoadRefusal::Refused { num: FEED_SHARED.dg_cb_err_num.load(Relaxed) }
+        super::recovery::LoadRefusal::Refused { num: raw.cb_err_num }
     }
 }
 
@@ -311,13 +316,15 @@ fn load_refusal() -> super::recovery::LoadRefusal {
 /// fed natively) or the stall watchdog raised, and the audio the demuxer is feeding. Peeks the flag,
 /// which [`confirm_refusal`] consumes when the ladder asks for the write (the facet itself travels
 /// on the effect); a flag raised with nothing fed natively is dropped here, as it always was.
-fn native_audio_fact() -> Option<plx_platform::devcaps::Facet> {
-    if !FEED_SHARED.native_audio_refused.load(Acquire) {
+fn native_audio_fact(ps: &mut crate::route::PlaybackSession) -> Option<plx_platform::devcaps::Facet> {
+    if !ps.readout().native_audio_refused() {
         return None;
     }
     let fed = refused_native_audio();
     if fed.is_none() {
-        FEED_SHARED.native_audio_refused.store(false, Release);
+        ps.step_readout(super::readout::ReadoutEvent::Taken {
+            edge: super::readout::Edge::NativeAudioRefused,
+        });
     }
     fed
 }
@@ -356,14 +363,14 @@ fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::rec
                         Evidence::Named => plx_plex::plex::session::record_named_refusal,
                         Evidence::Proof => plx_plex::plex::session::record_refusal_proof,
                     };
-                    confirm_refusal(&facet, evidence, why, record);
+                    confirm_refusal(ps, &facet, evidence, why, record);
                     continue;
                 }
                 RecoveryEffect::Rollback => {
                     // Capture before the reload clears the engine-scoped HTTP mirror. This sticky
                     // pair is the reason a successful HLS rollback can still explain on screen why
                     // Original was refused.
-                    let status = FEED_SHARED.dg_http_status.load(Relaxed);
+                    let status = ps.readout().raw().http_status;
                     match take_failed_original_rollback(ps, status) {
                         None => crate::route::RecoveryDispatch::Refused,
                         Some(rollback) => {
@@ -403,7 +410,7 @@ fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::rec
                     crate::route::dispatch_refusal_conversion(ps, secs, crate::route::VideoLane::Both)
                 }
                 RecoveryEffect::StartAutoHls => {
-                    let status = FEED_SHARED.dg_http_status.load(Relaxed);
+                    let status = ps.readout().raw().http_status;
                     if status >= 400 {
                         super::note_original_failure(super::ABR_FAILURE_ORIGINAL_HTTP, status);
                     } else {
@@ -516,6 +523,7 @@ fn refused_native_audio() -> Option<plx_platform::devcaps::Facet> {
 /// [`super::recovery::suspect`] and its loop guard, so a combination already stored, and so already
 /// absent from the attempt, gets no second conversion; the answer only words nothing today.
 fn confirm_refusal(
+    ps: &mut crate::route::PlaybackSession,
     facet: &plx_platform::devcaps::Facet,
     evidence: super::recovery::Evidence,
     why: &str,
@@ -523,9 +531,12 @@ fn confirm_refusal(
 ) -> bool {
     match evidence {
         super::recovery::Evidence::Named => {
-            if !FEED_SHARED.native_audio_refused.swap(false, Release) {
+            if !ps.readout().native_audio_refused() {
                 return false;
             }
+            ps.step_readout(super::readout::ReadoutEvent::Taken {
+                edge: super::readout::Edge::NativeAudioRefused,
+            });
             super::log(&format!("native audio: the pipeline refused {facet:?} ({why})"));
         }
         super::recovery::Evidence::Proof => {
@@ -600,10 +611,15 @@ pub(super) fn settle_reload(
     // The reload's teardown parked a Load that had already passed its budget and cleared the
     // session flags with the rest of that session's state, then the start was refused for the
     // outstanding object. Without the cause the report says `unspecified`; the cause is the
-    // timeout, so publish it again beside the Error.
-    if outcome == super::engine::ReloadOutcome::StartFailed && FEED_SHARED.native_load_abandoned() {
-        FEED_SHARED.load_failed.store(true, Release);
-        FEED_SHARED.load_timed_out.store(true, Release);
+    // timeout. The teardown recorded the parked Load in the torn-down attempt's terminal facts
+    // (`AttemptFacts::load_abandoned`, ingested before the session reset), and a refused start has
+    // not begun a new attempt, so that view is still the reporting attempt's. The cause is stated
+    // where a fresh start refused for the same Load states it (`start_bufferfeed`), the session's
+    // `native_start_refused`, which `live_runtime_failure` reads as a timed-out Load.
+    if outcome == super::engine::ReloadOutcome::StartFailed
+        && ps.attempt_view().facts().load_abandoned == Some(true)
+    {
+        ps.native_start_refused = Some(crate::route::StartRefusal::LoadTimeout);
     }
     set_state(ps, super::shared::PlaybackState::Error);
     false
@@ -633,7 +649,7 @@ fn start_original_trial_reload(
     ));
     // Capture before the reload clears the engine-scoped HTTP mirror. This sticky pair is the
     // reason a successful HLS rollback can still explain on screen why Original was refused.
-    let status = FEED_SHARED.dg_http_status.load(Relaxed);
+    let status = ps.readout().raw().http_status;
     if matches!(
         begin_engineless_rollback(ps, status),
         ForegroundOriginalRecovery::NotOriginal | ForegroundOriginalRecovery::Terminal
@@ -939,7 +955,12 @@ fn land_automatic_hls(
                 return false;
             }
             super::log(msg);
-            FEED_SHARED.demux_io_failed.store(true, Relaxed);
+            // The refused fallback leaves the Original with no producer: the failure goes up in the
+            // feed's own mailbox and comes back through the next sample, where the frame's
+            // `demux_io_failed` arm (and so the ladder) finds it.
+            pa.feed_command(plx_playback_contract::feed::FeedCommand::NoteFailure(
+                plx_playback_contract::feed::FailureFlag::DemuxIoFailed,
+            ));
             false
         }
         other => run_claim_tail(ps, pa, action, other, pending_seek, position_ns),
@@ -1070,9 +1091,16 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         pa.publish_timeline(attempt, snapshot);
     }
     // The physical refusal probe precedes a route flight landing that may replace this feed.
+    let refused_before = REFUSED_FOR.load(Acquire);
     pa.inject_refuse601(
         crate::route::playback_trace_generation(), crate::route::is_preview(ps), &REFUSED_FOR,
     );
+    // A refusal the probe just raised is read by the failure branches below, in THIS frame, from the
+    // readout: sample again so they see it, as for the stall watchdog's (a frame that raised
+    // nothing pays no second sample).
+    if REFUSED_FOR.load(Acquire) != refused_before {
+        pa.publish_feed_attempt_view(ps);
+    }
     // A failed open's recovery flight (the Original rollback's rebase, the unopened source's HLS
     // fallback, the refused native audio's conversion): land it, or wait for it. Ahead of every
     // failure branch below, whose flags stay up
@@ -1087,7 +1115,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
     }
     // `sf_load == 0` may leave no callable object, so this must precede the sf_ready wait below;
     // otherwise the pump returns Connecting forever and never consumes the explicit failure.
-    if FEED_SHARED.load_failed.load(Acquire) {
+    if ps.readout().raw().flags.load_failed {
         if crate::route::preview_request(ps) {
             finish_preview_open_failure(ps, pa);
             return;
@@ -1108,13 +1136,19 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         // lacks, a rebuild that cannot fly, or a request with no rung left ends on the read-out the
         // viewer would have had; a refusal the machine does not handle (it is in `Failed`, or a
         // flight is outstanding) fails the Engine again, never silence.
-        let run = recover_failed_open(ps, pa.feed_loading(), load_refusal(), native_audio_fact(), "Audio Codec Not Supported");
+        let loading = pa.feed_loading();
+        let refusal = load_refusal(ps);
+        let native_audio = native_audio_fact(ps);
+        let run = recover_failed_open(ps, loading, refusal, native_audio, "Audio Codec Not Supported");
         if let OpenRecoveryRun::DecodeInApp { offset_ns } = run {
             decode_in_app(ps, pa, offset_ns);
         }
         return;
     }
     if pa.native_audio_stall_fired(now) {
+        // The watchdog raised its refusal inside that call, after this frame's first sample: take
+        // the sample the ladder is about to read, or a one-shot fire would be lost.
+        pa.publish_feed_attempt_view(ps);
         // A trailer preview is direct-play only: its stall ends the preview, never the player's
         // read-out (as in the failure branches below).
         if crate::route::preview_request(ps) {
@@ -1126,7 +1160,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         // has no rung for, never a spinner for good. Nothing fed natively (the watchdog needs more
         // than two channels of it, so only a race gets here) names no audio to confirm, and the
         // frame goes on.
-        if let Some(audio) = native_audio_fact() {
+        if let Some(audio) = native_audio_fact(ps) {
             let why = "it swallowed the feed: no picture";
             let run = recover_failed_open(ps, pa.feed_loading(), super::recovery::LoadRefusal::Stalled, Some(audio), why);
             if let OpenRecoveryRun::DecodeInApp { offset_ns } = run {
@@ -1185,7 +1219,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
     // A worker may publish a more specific terminal code immediately before this generic Release
     // flag. Acquire is the matching hand-off; `error_now` can then report the transaction cause
     // instead of racing it into the generic producer bucket.
-    if FEED_SHARED.demux_io_failed.load(Acquire) {
+    if ps.readout().raw().flags.demux_io_failed {
         if crate::route::preview_request(ps) {
             finish_preview_open_failure(ps, pa);
             return;
@@ -1633,6 +1667,35 @@ mod tests {
         assert!(!settled_by_foreground(false, S::Failed), "a Load no foreground machine follows is the ladder's");
     }
 
+    /// **A refusal's code is read with its flag from ONE sample.** A worker publishes the code
+    /// before the flag; the feed loads the flag first, and the drain reads both from that sample, so
+    /// a code written (or cleared) after the sample cannot turn the refusal into `Refused { num: 0 }`.
+    #[test]
+    fn a_refusals_code_is_read_with_its_flag_from_one_sample() {
+        use std::sync::atomic::Ordering::{Relaxed, Release};
+        let _guard = plx_base::testlock::serial();
+        super::SHARED.reset_session();
+        let attempt = crate::route::RouteStartAttempt::fixture();
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        ps.begin_attempt_view(attempt, super::super::attempt_view::Backend::Feed);
+        FEED_SHARED.dg_cb_err_num.store(601, Relaxed);
+        FEED_SHARED.load_failed.store(true, Release);
+        assert!(ps.ingest_feed_facts(attempt, plx_play_feed::feed_pump::native_feed_facts()));
+        // The mailbox moves on after the sample (a reload cleared it, a later callback replaced it).
+        FEED_SHARED.dg_cb_err_num.store(0, Relaxed);
+        assert!(ps.readout().raw().flags.load_failed);
+        assert_eq!(super::load_refusal(&ps), super::super::recovery::LoadRefusal::Refused { num: 601 });
+        FEED_SHARED.load_timed_out.store(true, Release);
+        assert!(ps.ingest_feed_facts(attempt, plx_play_feed::feed_pump::native_feed_facts()));
+        assert_eq!(super::load_refusal(&ps), super::super::recovery::LoadRefusal::TimedOut);
+        // The ladder's "no frames" is the sample's too, not the mailbox's.
+        FEED_SHARED.frames.store(5, Relaxed);
+        assert!(ps.ingest_feed_facts(attempt, plx_play_feed::feed_pump::native_feed_facts()));
+        FEED_SHARED.frames.store(0, Relaxed);
+        assert!(!super::open_facts(&ps, None).no_frames);
+        super::SHARED.reset_session();
+    }
+
     /// **The learner is reached through its injected recorder and nowhere else.** A named write is
     /// the pipeline's own refusal: it records the facet the machine put on the effect once and
     /// consumes the flag that raised it. A proof is a facet-clean rescue: it records its facet and
@@ -1644,7 +1707,6 @@ mod tests {
     fn confirm_refusal_writes_only_through_the_injected_recorder() {
         use super::super::recovery::Evidence;
         use plx_platform::devcaps::Facet;
-        use std::sync::atomic::Ordering::{Acquire, Release};
         let _guard = plx_base::testlock::serial();
         let _set = plx_platform::devcaps::firmware_on_this_thread_for_test(
             "fw",
@@ -1660,25 +1722,36 @@ mod tests {
         };
         let opus6 = Facet::Audio { codec: "opus".into(), channels: 6 };
         let dts6 = Facet::Audio { codec: "dts".into(), channels: 6 };
+        // The session the pump's ingestion would have fed: the refusal is the readout's to take.
+        let attempt = crate::route::RouteStartAttempt::fixture();
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        ps.begin_attempt_view(attempt, super::super::attempt_view::Backend::Feed);
+        let ingest = |ps: &mut crate::route::PlaybackSession| {
+            assert!(ps.ingest_feed_facts(attempt, plx_play_feed::feed_pump::native_feed_facts()));
+        };
 
         // Named, with no flag raised: nothing to write.
         super::SHARED.reset_session();
-        assert!(!super::confirm_refusal(&opus6, Evidence::Named, "test", recorder));
+        ingest(&mut ps);
+        assert!(!super::confirm_refusal(&mut ps, &opus6, Evidence::Named, "test", recorder));
         assert!(recorded.borrow().is_empty());
 
         // Named, flag raised: the effect's facet is recorded once, and the flag is consumed.
-        FEED_SHARED.native_audio_refused.store(true, Release);
-        assert!(super::confirm_refusal(&opus6, Evidence::Named, "test", recorder));
+        FEED_SHARED.raise_native_audio_refused();
+        ingest(&mut ps);
+        assert!(super::confirm_refusal(&mut ps, &opus6, Evidence::Named, "test", recorder));
         assert_eq!(*recorded.borrow(), [opus6.clone()]);
-        assert!(!super::confirm_refusal(&opus6, Evidence::Named, "test", recorder), "the refusal flag was consumed");
+        assert!(!super::confirm_refusal(&mut ps, &opus6, Evidence::Named, "test", recorder), "the refusal flag was consumed");
         assert_eq!(recorded.borrow().len(), 1);
 
         // A proof: its own facet, and a raised flag is not its to consume.
-        FEED_SHARED.native_audio_refused.store(true, Release);
-        assert!(super::confirm_refusal(&dts6, Evidence::Proof, "test", recorder));
+        FEED_SHARED.raise_native_audio_refused();
+        ingest(&mut ps);
+        assert!(super::confirm_refusal(&mut ps, &dts6, Evidence::Proof, "test", recorder));
         assert_eq!(*recorded.borrow(), [opus6.clone(), dts6]);
-        assert!(FEED_SHARED.native_audio_refused.load(Acquire), "a proof touches no flag");
+        assert!(ps.readout().native_audio_refused(), "a proof touches no flag");
         super::SHARED.reset_session();
+        ps.step_readout(super::super::readout::ReadoutEvent::SessionReset);
 
         // The injected recorder was the only writer: the install's record holds nothing yet.
         plx_base::storage_worker::drain_for_test();
@@ -1686,8 +1759,9 @@ mod tests {
 
         // The real recorder, same call: the write is queued and the answer has not moved by the time
         // `confirm_refusal` returns; the record holds the row once the queue has drained.
-        FEED_SHARED.native_audio_refused.store(true, Release);
-        assert!(super::confirm_refusal(&opus6, Evidence::Named, "test", plx_plex::plex::session::record_named_refusal));
+        FEED_SHARED.raise_native_audio_refused();
+        ingest(&mut ps);
+        assert!(super::confirm_refusal(&mut ps, &opus6, Evidence::Named, "test", plx_plex::plex::session::record_named_refusal));
         assert!(std::sync::Arc::ptr_eq(&before, &plx_platform::devcaps::caps()), "queueing the write moved no global");
         plx_base::storage_worker::drain_for_test();
         assert_eq!(plx_plex::plex::session::peek().native_audio_refused().len(), 1, "the real recorder wrote the row");
@@ -3148,7 +3222,7 @@ mod flight_tests {
 
         crate::ff::native_audio::publish_fed(crate::ff::native_audio::Kind::Opus, 6);
         rig.flight.hold_answers();
-        FEED_SHARED.native_audio_refused.store(true, Release);
+        FEED_SHARED.raise_native_audio_refused();
         FEED_SHARED.load_failed.store(true, Release);
         rig.frame();
         assert_eq!(
@@ -3223,7 +3297,7 @@ mod flight_tests {
 
         crate::ff::native_audio::publish_fed(crate::ff::native_audio::Kind::Opus, 6);
         rig.flight.hold_answers();
-        FEED_SHARED.native_audio_refused.store(true, Release);
+        FEED_SHARED.raise_native_audio_refused();
         FEED_SHARED.load_failed.store(true, Release);
         rig.frame();
         assert!(crate::route::flight_outstanding(), "the rollback's rebase must be a flight");
@@ -3259,7 +3333,7 @@ mod flight_tests {
         let epoch = engine_epoch(&mut rig);
 
         crate::ff::native_audio::publish_fed(crate::ff::native_audio::Kind::Opus, 6);
-        FEED_SHARED.native_audio_refused.store(true, Release);
+        FEED_SHARED.raise_native_audio_refused();
         FEED_SHARED.load_failed.store(true, Release);
         rig.frame();
         assert!(crate::route::flight_outstanding(), "the conversion must be a flight, not an immediate failure");

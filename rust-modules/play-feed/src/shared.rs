@@ -351,14 +351,17 @@ pub struct Shared {
     /// (`"VDEC resource is released by policy action"`) after a picture. Measured on the dev set
     /// (webOS 4, 2026-10-13): a direct play left paused until the screensaver came on got this
     /// with NO `LIFECYCLE: background`, and every later Play was refused for good. Set on the
-    /// callback thread, taken once by the app loop (the common decoder-revocation drain), which parks
-    /// the session exactly as an app switch does and rebuilds it on the viewer's next press.
-    pub decoder_revoked: AtomicBool,
+    /// callback thread. It is a COUNT of the revocations this session (zeroed by the session's reset),
+    /// not a flag: the player's readout holds how many it has taken, and the app loop parks the
+    /// session exactly as an app switch does for each new one (rebuilding it on the viewer's next press).
+    pub decoder_revocations: AtomicU32,
     /// The pipeline refused the Load with `type=18 num=200` (`Audio Codec Not Supported`) before any
     /// picture while the session fed its audio natively (`ff::native_audio::fed`). Set on the
     /// callback thread; the pump turns it into a learned refusal and a recovery flight that has the
     /// server convert that audio (the machine's `ConfirmRefusal`, run by the common pump's `confirm_refusal`).
-    pub native_audio_refused: AtomicBool,
+    /// A COUNT of the refusals this session (the callback and the stall watchdog each add one),
+    /// taken by the player's readout like [`Self::decoder_revocations`].
+    pub native_audio_refusals: AtomicU32,
     /// issue #74 D.1: the epoch this session last logged "native: loadCompleted while Load in
     /// flight — deferring" for — 0 = never. `epoch` is monotonic and never 0 for a real session
     /// (the native gate refuses exhaustion instead of wrapping), so comparing against this is enough
@@ -544,7 +547,7 @@ pub struct Shared {
     /// photograph as twelve seconds.
     pub dg_load_at: AtomicU32,
     pub dg_frame_at: AtomicU32,
-    /// **The video plane's own cadence** — the three counters behind the heartbeat's `vtick=`/`vgap=`.
+    /// **The video plane's own cadence** — the counters behind the heartbeat's `vtick=`/`vgap=`.
     ///
     /// They exist because every other frame number in this app is about the GRAPHICS plane. `fps=`
     /// counts our GL swaps and `worstframe=` times our own draw, and both stay a flat 60/0.5 ms
@@ -552,17 +555,24 @@ pub struct Shared {
     /// plane we never touch. The one place the pipeline tells us it put a frame on that plane is
     /// the `ty == 0` callback, so that is where these are stamped.
     ///
-    /// Written on the LIBRARY thread (`sf_on_event`), drained on the main thread
-    /// (the common video-plane readout) — hence a drained COUNT rather than a delta of
-    /// [`frames`](Self::frames), which a seek resets underneath a reader.
+    /// Written on the LIBRARY thread (`sf_on_event`), sampled on the main thread into
+    /// `FeedRaw::{vpres_count, vpres_gap_sum_ms, vpres_gap_count}` (the heartbeat differences two
+    /// samples of them) — hence monotonic COUNTS rather than a delta of [`frames`](Self::frames),
+    /// which a seek resets underneath a reader. Nothing drains them: `dg_vpres_gap_sum` (ms,
+    /// wrapping) over `dg_vpres_gap_ct` is the mean gap between position callbacks over whatever
+    /// span two samples cover, and the session reset zeroes all four. The gap count is not the
+    /// callback count: a callback with no stamp before it adds a tick and no gap.
     ///
     /// `dg_vpres_at` is the previous presentation's stamp and MUST be zeroed wherever `frames` is
     /// (session reset, and the post-seek re-count in the pump): the pipeline legitimately shows
     /// nothing across a seek, and a gap measured over that pause is the harness reporting the seek
-    /// as a stutter.
+    /// as a stutter. A Pause or hold does NOT clear it (the clock-silence watchdog,
+    /// `native_clock_silence_ms`, reads its age), so the first callback after a hold posts the
+    /// hold's length: one spike in the line that holds it, which the mean over the next line forgets.
     pub dg_vpres_ct: AtomicU32,
     pub dg_vpres_at: AtomicU32,
-    pub dg_vpres_gap: AtomicU32,
+    pub dg_vpres_gap_sum: AtomicU32,
+    pub dg_vpres_gap_ct: AtomicU32,
     /// Bytes queued in each AU lane at the last tick, against `engine::aq_caps`.
     pub dg_aq_video: AtomicI64,
     pub dg_aq_audio: AtomicI64,
@@ -715,7 +725,8 @@ impl Shared {
             dg_frame_at: AtomicU32::new(0),
             dg_vpres_ct: AtomicU32::new(0),
             dg_vpres_at: AtomicU32::new(0),
-            dg_vpres_gap: AtomicU32::new(0),
+            dg_vpres_gap_sum: AtomicU32::new(0),
+            dg_vpres_gap_ct: AtomicU32::new(0),
             dg_aq_video: AtomicI64::new(0),
             dg_aq_audio: AtomicI64::new(0),
             dg_fed_v_pts: AtomicI64::new(0),
@@ -776,8 +787,8 @@ impl Shared {
             demux_no_video: AtomicBool::new(false),
             load_failed: AtomicBool::new(false),
             load_timed_out: AtomicBool::new(false),
-            decoder_revoked: AtomicBool::new(false),
-            native_audio_refused: AtomicBool::new(false),
+            decoder_revocations: AtomicU32::new(0),
+            native_audio_refusals: AtomicU32::new(0),
             native_load_deferred_logged_epoch: AtomicU32::new(0),
             native_load_elapsed_ms: AtomicU64::new(0),
             file_size: AtomicI64::new(0),
@@ -878,6 +889,16 @@ impl Shared {
 
     pub fn native_releasing(&self) -> bool {
         self.native_session.native_releasing()
+    }
+
+    /// The pipeline took the video decoder back: one more revocation this session.
+    pub fn raise_decoder_revoked(&self) {
+        self.decoder_revocations.fetch_add(1, Ordering::Release);
+    }
+
+    /// The pipeline refused natively fed audio (the callback, or the stall watchdog): one more refusal.
+    pub fn raise_native_audio_refused(&self) {
+        self.native_audio_refusals.fetch_add(1, Ordering::Release);
     }
 
     pub fn native_load_abandoned(&self) -> bool {
@@ -1096,7 +1117,8 @@ impl Shared {
         self.dg_frame_at.store(0, Ordering::Relaxed);
         self.dg_vpres_ct.store(0, Ordering::Relaxed);
         self.dg_vpres_at.store(0, Ordering::Relaxed);
-        self.dg_vpres_gap.store(0, Ordering::Relaxed);
+        self.dg_vpres_gap_sum.store(0, Ordering::Relaxed);
+        self.dg_vpres_gap_ct.store(0, Ordering::Relaxed);
         self.dg_aq_video.store(0, Ordering::Relaxed);
         self.dg_aq_audio.store(0, Ordering::Relaxed);
         self.dg_fed_v_pts.store(0, Ordering::Relaxed);
@@ -1168,8 +1190,8 @@ impl Shared {
         self.demux_no_video.store(false, Ordering::Relaxed);
         self.load_failed.store(false, Ordering::Relaxed);
         self.load_timed_out.store(false, Ordering::Relaxed);
-        self.decoder_revoked.store(false, Ordering::Relaxed);
-        self.native_audio_refused.store(false, Ordering::Relaxed);
+        self.decoder_revocations.store(0, Ordering::Relaxed);
+        self.native_audio_refusals.store(0, Ordering::Relaxed);
         self.file_size.store(0, Ordering::Relaxed);
         self.video_w.store(0, Ordering::Relaxed);
         self.video_h.store(0, Ordering::Relaxed);

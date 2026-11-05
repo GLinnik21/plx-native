@@ -212,6 +212,7 @@ impl FeedControl for FeedBackend {
             FeedCommand::BeginPausedSeek => { FEED_TX.begin_paused_seek(); }
             FeedCommand::OwnPausedSeek { target_ns } => { FEED_TX.own_paused_seek(target_ns); }
             FeedCommand::FinishSeekPreroll => FEED_TX.finish_seek_preroll(),
+            FeedCommand::NoteFailure(flag) => feed_pump::note_failure(flag),
         }
     }
 
@@ -527,6 +528,62 @@ mod tests {
         let raw = control.sample().raw;
         assert_eq!(raw.seek_requeue.epoch, 0, "a new session has requested nothing");
         assert_eq!(raw.seek_target_ns, None);
+    }
+
+    /// A failure the player notes is written inside the feed, in the callbacks' ordering, and
+    /// comes back through the sample's flags (the readout reads nothing else), alongside the code
+    /// that explains it: the flags are loaded first, so a code published before its flag is never
+    /// read as 0. The session's reset takes the notes with the rest.
+    #[test]
+    fn a_noted_failure_returns_through_the_samples_flags() {
+        use plx_playback_contract::feed::{FailureFlag, FailureFlags};
+        use std::sync::atomic::Ordering::Relaxed;
+        let _serial = plx_base::testlock::serial();
+        FEED_SHARED.reset_session();
+        FEED_TX.reset();
+        let mut backend = backend();
+        let control: &mut dyn FeedControl = &mut backend;
+        assert_eq!(control.sample().raw.flags, FailureFlags::default());
+
+        control.command(FeedCommand::NoteFailure(FailureFlag::LoadFailed));
+        control.command(FeedCommand::NoteFailure(FailureFlag::LoadTimedOut));
+        let raw = control.sample().raw;
+        assert!(raw.flags.load_failed && raw.flags.load_timed_out, "the notes come back as flags");
+        assert!(!raw.flags.demux_io_failed && !raw.flags.demux_failed, "and only those");
+        assert_eq!(control.sample().attempt.runtime_failure,
+            Some(plx_playback_contract::readout::RuntimeFailure::LoadTimeout),
+            "the mapped half collapses the same flags");
+
+        FEED_SHARED.dg_cb_err_num.store(601, Relaxed);
+        FEED_SHARED.dg_http_status.store(404, Relaxed);
+        control.command(FeedCommand::NoteFailure(FailureFlag::DemuxIoFailed));
+        let raw = control.sample().raw;
+        assert!(raw.flags.demux_io_failed);
+        assert_eq!((raw.cb_err_num, raw.http_status), (601, 404), "the codes ride the same sample");
+
+        FEED_SHARED.reset_session();
+        assert_eq!(control.sample().raw.flags, FailureFlags::default(), "a reset retires the notes");
+        assert_eq!(control.sample().raw.cb_err_num, 0);
+    }
+
+    /// The pipeline's decoder revocations and native-audio refusals are COUNTS the feed keeps for
+    /// the session: each callback adds one, the sample carries the count, the session's reset zeroes it.
+    #[test]
+    fn the_sample_counts_the_one_shot_edges_and_a_reset_zeroes_them() {
+        let _serial = plx_base::testlock::serial();
+        FEED_SHARED.reset_session();
+        FEED_TX.reset();
+        let backend = backend();
+        let control: &dyn FeedControl = &backend;
+        assert_eq!((control.sample().raw.decoder_revocations, control.sample().raw.native_audio_refusals), (0, 0));
+        FEED_SHARED.raise_decoder_revoked();
+        FEED_SHARED.raise_decoder_revoked();
+        FEED_SHARED.raise_native_audio_refused();
+        let raw = control.sample().raw;
+        assert_eq!((raw.decoder_revocations, raw.native_audio_refusals), (2, 1));
+        FEED_SHARED.reset_session();
+        let raw = control.sample().raw;
+        assert_eq!((raw.decoder_revocations, raw.native_audio_refusals), (0, 0));
     }
 
     /// The backend is the runner's single-backend driver set: it answers for the feed alone, and

@@ -1237,6 +1237,20 @@ def triggers_for_case(case, url_base=None):
                 "plxnative-autopause",
                 f'delay={int(op.get("delay_ms", 0))},hold={int(op["hold_ms"])}',
             ))
+            if "seek_s" in op:
+                # A seek INSIDE the hold: the same `plxnative-autoseek` a `seek` op writes, so the
+                # app's own scripted seek runs under the scripted Pause instead of a second
+                # mechanism standing in for it. The two scripts arm at different gates (autopause
+                # six seconds into the player route, autoseek twelve plus a known playhead), which
+                # is why `seek_delay_ms` is the authored distance from the AUTOSEEK gate, and why
+                # `op_paused_seek` reads the order of the log's own edges rather than trusting
+                # these numbers to have interleaved.
+                seek_delay = op.get("seek_delay_ms")
+                target = int(op["seek_s"])
+                files.append((
+                    "plxnative-autoseek",
+                    f"delay={int(seek_delay)},{target}" if seek_delay else str(target),
+                ))
         # "play", startup "resume" and "audio_enhancement_subtitle" (a cold-start proof against an
         # item whose subtitle is already server-selected) need no extra trigger: the last of those
         # grades the boot-forced preference the `plxnative-audioenh` trigger above already wrote,
@@ -1325,6 +1339,11 @@ RE_TIMELINE = re.compile(r"timeline playing t=(\d+)s/")
 # never pick up a `pos=` that some other line grows later. loop= and NOT fps=, because `pos=` sits
 # between them on the line and because a paused-but-alive player still emits loop=.
 RE_POS = re.compile(r"loop=\d+ .*?\bpos=(\d+)s")
+# The receipt `player::finish_paused_seek` logs ONCE, after the Pause that re-holds a paused seek's
+# landed frame was accepted: the seek prime has presented its first frame and the transport is
+# Paused again. `ns` is the published playhead at that boundary. tests/player_pointer.py pairs the
+# same line with stationary `pos=` samples for the pointer scrub.
+RE_PAUSED_FRAME = re.compile(r"seek: paused frame restored ns=(\d+)")
 # requests a single applied seek MERGED (pump.rs take_coalesced). Present on BOTH paths that
 # apply a coalesced target — the normal `seek(in-place)` and the stuck-watchdog `retry reopen` —
 # which is exactly why op_seek_rapid keys on it instead of on either line. See that docstring.
@@ -4202,12 +4221,47 @@ def op_quality_switch(lines, steps):
                   f"{ts[-1][0] - ts[0][0]}s over {len(ts)} sample(s); {adapt}")
 
 
+def _post_resume_recovery(resumed_lines, min_climb_after_s):
+    """`(why-not or None, [pos samples], climb)` for the lines after an accepted Resume.
+
+    The shared tail of `op_pause_resume` and `op_paused_seek`: the integer playhead must climb
+    `min_climb_after_s`, and BOTH lanes must have fed an accepted access unit after the Resume
+    (`feed v#`/`feed a#` with `reply=O`). Moving pictures with a silent audio lane are the
+    reported failure, so a climb alone is not recovery. The feed lines are sampled by the app
+    (the first four attempts, then every 100th video and 200th audio), so the post-Resume window
+    must be long enough to contain one of each: the callers' `min_climb_after_s` is what buys that.
+    """
+    after = [int(match.group(1)) for line in resumed_lines
+             for match in [RE_POS.search(line)] if match]
+    if len(after) < 2:
+        return f"only {len(after)} playhead sample(s) after Resume", after, 0
+    climb = max(after) - min(after)
+    if climb < min_climb_after_s:
+        return (f"playhead climbed only {climb}s after Resume, want >= {min_climb_after_s}s",
+                after, climb)
+    video_feeds = [match for line in resumed_lines
+                   for match in [RE_VIDEO_FEED.search(line)] if match and match.group(4) == "O"]
+    audio_feeds = [match for line in resumed_lines
+                   for match in [RE_AUDIO_FEED.search(line)] if match and match.group(4) == "O"]
+    if not video_feeds or not audio_feeds:
+        missing = "/".join(
+            name for name, feeds in (("video", video_feeds), ("audio", audio_feeds)) if not feeds
+        )
+        return (f"playhead recovered after Resume but no accepted {missing} feed followed it",
+                after, climb)
+    return None, after, climb
+
+
 def op_pause_resume(lines, min_climb_after_s):
     """The authored user hold was accepted by both clock edges and playback recovered afterward.
 
     This deliberately grades external state, not an ABR diagnostic flag: integer playhead samples
     must stay put during the accepted hold and then climb after Resume. The +/-1 second tolerance
     is the heartbeat's documented quantisation, not a playback threshold.
+
+    Nothing here is HLS-specific. The two edges are `dev/scenarios.rs`'s own `autopause:` lines on
+    any route, the playhead is the render heartbeat, and the feed lines are the Feed's, which it
+    logs for a direct-play (Original) session exactly as for an adaptive one.
     """
     pause = next((i for i, line in enumerate(lines)
                   if "autopause: Pause accepted" in line), None)
@@ -4223,30 +4277,94 @@ def op_pause_resume(lines, min_climb_after_s):
         return False, f"only {len(held)} playhead sample(s) inside the accepted hold"
     if max(held) - min(held) > 1:
         return False, f"playhead advanced during user Pause: {held}"
-    resumed_lines = lines[resume + 1:]
-    after = [int(match.group(1)) for line in resumed_lines
-             for match in [RE_POS.search(line)] if match]
-    if len(after) < 2:
-        return False, f"only {len(after)} playhead sample(s) after Resume"
-    climb = max(after) - min(after)
-    if climb < min_climb_after_s:
-        return False, (
-            f"playhead climbed only {climb}s after Resume, want >= {min_climb_after_s}s"
-        )
-    video_feeds = [match for line in resumed_lines
-                   for match in [RE_VIDEO_FEED.search(line)] if match and match.group(4) == "O"]
-    audio_feeds = [match for line in resumed_lines
-                   for match in [RE_AUDIO_FEED.search(line)] if match and match.group(4) == "O"]
-    if not video_feeds or not audio_feeds:
-        missing = "/".join(
-            name for name, feeds in (("video", video_feeds), ("audio", audio_feeds)) if not feeds
-        )
-        return False, (
-            f"playhead recovered after Resume but no accepted {missing} feed followed it"
-        )
+    why, after, climb = _post_resume_recovery(lines[resume + 1:], min_climb_after_s)
+    if why:
+        return False, why
     return True, (
         f"Pause held {held[0]}..{held[-1]}s over {len(held)} samples; "
         f"Resume climbed {climb}s over {len(after)} samples with both A/V lanes feeding"
+    )
+
+
+# How far the landed second may sit from the seek target. The same allowance `_reached_target`
+# documents: keyframe snap plus the heartbeat's report cadence, not a playback threshold.
+PAUSED_SEEK_LAND_TOLERANCE_S = 6
+
+
+def op_paused_seek(lines, target_s, min_climb_after_s):
+    """A seek taken UNDER the viewer's Pause lands on the target, stays paused, and resumes.
+
+    The Feed's paused-seek preroll: with the transport Paused a seek opens a one-frame preroll,
+    the landed frame is presented, and `player::finish_paused_seek` re-holds it. Four edges bracket
+    that, in the order the log must show them: `autopause: Pause accepted`, `autoseek: step`,
+    `seek: paused frame restored ns=`, `autopause: Resume accepted`. The case's two scripts arm at
+    different gates, so a slow boot can slide the seek out of the hold; this reads the log's own
+    order and FAILS NAMING where the seek fired instead of grading a window it never ran in.
+
+    Graded, each as external state:
+      * the playhead is stationary from the Pause to the seek;
+      * the seek went in place (`seek(in-place): av_seek`, no `reload_at: fresh Load` after it) and
+        the receipt lands before the Resume, at the target within the keyframe tolerance;
+      * the playhead is stationary from the receipt to the Resume, starting at the landed second:
+        the transport stayed Paused until the Resume rather than the seek's prime playing on;
+      * after the Resume the playhead climbs from the landed frame and both A/V lanes feed
+        (`_post_resume_recovery`).
+    Only lines the app prints are read; `tests/player_pointer.py` grades the same receipt.
+    """
+    pause = next((i for i, line in enumerate(lines)
+                  if "autopause: Pause accepted" in line), None)
+    if pause is None:
+        return False, "no accepted scripted Pause edge"
+    resume = next((i for i, line in enumerate(lines)
+                   if i > pause and "autopause: Resume accepted" in line), None)
+    if resume is None:
+        return False, "Pause was accepted but the scripted Resume edge never committed"
+    step = next((i for i, line in enumerate(lines) if "autoseek: step" in line), None)
+    if step is None:
+        return False, "the scripted seek never fired (no `autoseek: step` line)"
+    if not pause < step < resume:
+        where = "before the Pause" if step < pause else "after the Resume"
+        return False, (f"the scripted seek fired {where}, not inside the hold: it was not a seek "
+                       f"under Pause (move seek_delay_ms or widen hold_ms)")
+    before = [int(match.group(1)) for line in lines[pause + 1:step]
+              for match in [RE_POS.search(line)] if match]
+    if len(before) < 2:
+        return False, f"only {len(before)} playhead sample(s) between the Pause and the seek"
+    if max(before) - min(before) > 1:
+        return False, f"playhead advanced between the Pause and the seek: {before}"
+    av_seek = next((i for i in range(step, resume)
+                    if "seek(in-place): av_seek" in lines[i]), None)
+    if av_seek is None:
+        return False, "no `seek(in-place): av_seek` line inside the hold (the paused seek did not go in place)"
+    if find(lines[av_seek + 1:resume], "reload_at: fresh Load"):
+        return False, "the paused seek fell back to a reload (`reload_at: fresh Load` present)"
+    receipt = next((i for i in range(av_seek + 1, resume) if RE_PAUSED_FRAME.search(lines[i])), None)
+    if receipt is None:
+        late = any(RE_PAUSED_FRAME.search(line) for line in lines[resume + 1:])
+        return False, ("the paused frame was restored only AFTER the Resume: the film played on under the seek"
+                       if late else
+                       "no `seek: paused frame restored` line before the Resume: the seek never "
+                       "landed under the Pause")
+    landed_s = int(RE_PAUSED_FRAME.search(lines[receipt]).group(1)) // 1_000_000_000
+    if abs(landed_s - target_s) > PAUSED_SEEK_LAND_TOLERANCE_S:
+        return False, (f"the paused seek landed at {landed_s}s, want {target_s}s "
+                       f"+/- {PAUSED_SEEK_LAND_TOLERANCE_S}s")
+    held = [int(match.group(1)) for line in lines[receipt + 1:resume]
+            for match in [RE_POS.search(line)] if match]
+    if len(held) < 2:
+        return False, f"only {len(held)} playhead sample(s) between the landing and the Resume"
+    if max(held) - min(held) > 1 or abs(held[0] - landed_s) > 1:
+        return False, f"the landed frame did not stay paused (landed {landed_s}s): {held}"
+    why, after, climb = _post_resume_recovery(lines[resume + 1:], min_climb_after_s)
+    if why:
+        return False, why
+    if abs(after[0] - landed_s) > 2:
+        return False, (f"playback did not resume from the landed frame: landed {landed_s}s, "
+                       f"first sample after Resume {after[0]}s")
+    return True, (
+        f"Pause held {before[0]}s; seek under Pause landed {landed_s}s (target {target_s}s) and held "
+        f"{held[0]}..{held[-1]}s over {len(held)} samples; Resume climbed {climb}s over "
+        f"{len(after)} samples with both A/V lanes feeding"
     )
 
 
@@ -5462,6 +5580,9 @@ def evaluate(case, lines):
         elif k == "quality_switch":
             steps = op["to"] if isinstance(op["to"], list) else [op["to"]]
             results.append(("quality_switch", *op_quality_switch(lines, steps)))
+        elif k == "pause_resume" and "seek_s" in op:
+            results.append(("paused_seek", *op_paused_seek(
+                lines, op["seek_s"], op.get("min_climb_after_s", 8))))
         elif k == "pause_resume":
             results.append(("pause_resume", *op_pause_resume(
                 lines, op.get("min_climb_after_s", 8))))
@@ -5795,6 +5916,8 @@ def _case_depth_s(case):
     for op in case.get("operations", []):
         if op.get("op") == "seek":
             depth = max(depth, op.get("final_s", op.get("target_s", 140)))
+        elif op.get("op") == "pause_resume" and "seek_s" in op:
+            depth = max(depth, op["seek_s"])   # a seek under Pause still has to land inside the pack
     return depth
 
 
@@ -5968,6 +6091,9 @@ def evaluate_pipeline(case, lines, srv_delta, gst_lines=None):
         elif op["op"] == "seek":
             results.append(("seek_inplace", *op_seek_inplace(
                 lines, op.get("target_s", 140), op.get("min_climb_after_s", 0))))
+        elif op["op"] == "pause_resume" and "seek_s" in op:
+            results.append(("paused_seek", *op_paused_seek(
+                lines, op["seek_s"], op.get("min_climb_after_s", 8))))
         elif op["op"] == "pause_resume":
             results.append(("pause_resume", *op_pause_resume(
                 lines, op.get("min_climb_after_s", 8))))
