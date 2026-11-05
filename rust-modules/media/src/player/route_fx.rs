@@ -19,17 +19,19 @@ pub fn clear_original_failure() {
 }
 
 /// Select the audio stream index the demuxer feeds at the first Load (`-1`: the default).
-pub fn set_audio_track(idx: i32) {
+pub fn set_audio_track(ps: &mut PlaybackSession, idx: i32) {
     #[cfg(feature = "play-feed")]
-    super::set_audio_track(idx);
+    super::set_audio_track(ps, idx);
     #[cfg(not(feature = "play-feed"))]
-    let _ = idx;
+    let _ = (ps, idx);
 }
 
 /// Back to the default audio stream, for a new item.
-pub fn reset_audio_track() {
+pub fn reset_audio_track(ps: &mut PlaybackSession) {
     #[cfg(feature = "play-feed")]
-    super::reset_audio_track();
+    super::reset_audio_track(ps);
+    #[cfg(not(feature = "play-feed"))]
+    let _ = ps;
 }
 
 /// Back to 1x, for a new item: the session's readout drops the offered rate and a pending reload.

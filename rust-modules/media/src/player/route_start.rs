@@ -479,6 +479,10 @@ fn start_bufferfeed_prepared(
     let source = pa.next_source_key();
     pa.stage_native_feed(attempt, source, prepared_native)
         .map_err(|_| crate::route::RouteStartResult::StartFailed)?;
+    // The demuxer spawns inside the Start below and reads the feed's audio copy as it opens the
+    // container. Every writer of the choice that has no adapter in hand (the route's landing, a
+    // retry's reset, a displaced pick) stepped the session's readout; this is where it reaches the feed.
+    super::publish_audio_choice(ps, pa);
     pa.sync_request_metrics(ps);
     let backend_at = pa.backend_tick();
     let result = pa.backend_send_at(
@@ -785,7 +789,8 @@ pub fn reload_at(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter
 /// chosen stream and the choice survives later seeks.
 #[cfg(feature = "play-feed")]
 pub fn switch_audio_native(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, audio_idx: i32, pos_ns: i64) -> ReloadOutcome {
-    FEED_SHARED.desired_audio_idx.store(audio_idx, Ordering::Relaxed);
+    ps.step_readout(super::readout::ReadoutEvent::AudioSelected { idx: audio_idx });
+    super::publish_audio_choice(ps, pa);
     log(&format!(
         "switch_audio_native: audio_idx={audio_idx} at {}s",
         pos_ns / 1_000_000_000

@@ -69,6 +69,13 @@ pub struct PlayerReadout {
     /// How many of the feed's native-audio refusals ([`FeedRaw::native_audio_refusals`]) the pump
     /// has taken.
     taken_native_audio_refusals: u32,
+    /// The audio stream the viewer's pick or the route's plan chose for the demuxer: its 0-based
+    /// index, `-1` for the file's own default. The player's own choice, not a feed fact: a session
+    /// reset and a new item leave it alone (a retry resets the track selection too, and a reload
+    /// keeps the pick), and only a track write changes it ([`ReadoutEvent::AudioSelected`]). The
+    /// feed's copy, which its demuxer reads, is written by `FeedCommand::SelectAudio` from this one
+    /// before every start.
+    audio_choice: i32,
 }
 
 /// A one-shot fact the feed counts and the player takes: the feed keeps a monotonic count of the
@@ -174,6 +181,10 @@ pub enum ReadoutEvent {
     /// The player took the pending `edge`: it is spent until the feed counts another one. Read
     /// [`PlayerReadout::decoder_revoked`] or [`PlayerReadout::native_audio_refused`] first.
     Taken { edge: Edge },
+    /// The route chose the audio stream the demuxer feeds: the index, `-1` for the file's default.
+    /// The player sends `FeedCommand::SelectAudio` from [`PlayerReadout::audio_choice`] before the
+    /// start that spawns the demuxer.
+    AudioSelected { idx: i32 },
 }
 
 impl PlayerReadout {
@@ -193,6 +204,7 @@ impl PlayerReadout {
         seek_display_ns: None,
         taken_decoder_revocations: 0,
         taken_native_audio_refusals: 0,
+        audio_choice: -1,
     };
 
     pub fn state(&self) -> PlaybackState { self.state }
@@ -202,6 +214,8 @@ impl PlayerReadout {
     pub fn rate_reload(&self) -> bool { self.rate_reload }
     pub fn play_rate_permille(&self) -> i32 { self.play_rate_permille }
     pub fn raw(&self) -> &FeedRaw { &self.raw }
+    /// The audio stream the demuxer is to feed (`-1`: the file's own default).
+    pub fn audio_choice(&self) -> i32 { self.audio_choice }
     /// The epoch of the newest requested seek (the count of requests), 0 before any.
     pub fn seek_epoch(&self) -> u32 { self.seek_epoch }
     /// A seek is in flight: one was requested that neither landed (the feed's last ingested
@@ -319,6 +333,7 @@ impl PlayerReadout {
                     self.taken_native_audio_refusals = self.raw.native_audio_refusals;
                 }
             },
+            ReadoutEvent::AudioSelected { idx } => self.audio_choice = idx,
         }
     }
 }
@@ -365,6 +380,19 @@ mod tests {
         assert!(!r.ended() && !r.start_queued() && !r.speed_unsupported() && !r.rate_reload());
         assert_eq!(r.play_rate_permille(), RATE_NORMAL);
         assert_eq!(*r.raw(), FeedRaw::IDLE);
+    }
+
+    /// The player's audio choice is its own: a session reset (every reload) and a new item leave it,
+    /// as the feed's `desired_audio_idx` was left by the feed's reset; only a track write moves it.
+    #[test]
+    fn the_audio_choice_survives_a_session_reset_and_a_new_item_and_only_a_selection_moves_it() {
+        assert_eq!(PlayerReadout::IDLE.audio_choice(), -1);
+        let r = stepped(&[ReadoutEvent::AudioSelected { idx: 3 }, ReadoutEvent::SessionReset]);
+        assert_eq!(r.audio_choice(), 3, "a reload keeps the pick");
+        let r = stepped(&[ReadoutEvent::AudioSelected { idx: 3 }, ReadoutEvent::NewItem]);
+        assert_eq!(r.audio_choice(), 3, "a retry's new-item reset does not clear it either");
+        let r = stepped(&[ReadoutEvent::AudioSelected { idx: 3 }, ReadoutEvent::AudioSelected { idx: -1 }]);
+        assert_eq!(r.audio_choice(), -1);
     }
 
     #[test]

@@ -1135,6 +1135,11 @@ pub fn rebase(playpos_ns: i64, disp_base: i64) {
     FEED_SHARED.rebase(playpos_ns, disp_base);
 }
 
+/// The player's audio choice (`FeedCommand::SelectAudio`): what the demuxer feeds from its next open.
+pub fn select_audio(idx: i32) {
+    FEED_SHARED.select_audio(idx);
+}
+
 /// The seek was given up on (`FeedCommand::AbandonSeek`): the spinner and the frozen playhead end
 /// with it. `seek_display_ns` goes back to `-1`, the HUD's "no seek target".
 pub fn seek_abandoned() {

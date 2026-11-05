@@ -805,7 +805,7 @@ fn failed_original_then_auto_keeps_the_live_adaptive_route() {
     reset_session(&mut ps);
     restore_quality(Quality::Original);
     install_active_encoder("");
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 
@@ -866,7 +866,7 @@ fn hls_recovery_restores_the_exact_direct_source_and_rearms_its_watchdog() {
     restore_quality(Quality::Original);
     reset_session(&mut ps);
     install_active_encoder("");
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 
@@ -975,7 +975,7 @@ fn a_recovery_that_never_opens_can_still_go_back_to_the_encoder_it_replaced() {
     restore_quality(Quality::Original);
     reset_session(&mut ps);
     install_active_encoder("");
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 
@@ -1141,7 +1141,7 @@ fn a_remux_recovery_keeps_hls_until_frames_and_rolls_back_the_replacement() {
     reset_session(&mut ps);
     install_active_encoder("");
     plx_plex::plex::reset_servers_for_test();
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 
@@ -1296,7 +1296,7 @@ fn a_recovery_that_opens_spends_the_way_back_rather_than_leaving_it_armed() {
     restore_quality(Quality::Original);
     reset_session(&mut ps);
     install_active_encoder("");
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 
@@ -1366,7 +1366,7 @@ fn manual_original_adopts_one_running_trial_and_revokes_its_auto_ticket_on_frame
     reset_session(&mut ps);
     install_active_encoder("");
     reset_player_control_for_test(&ps);
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 
@@ -1878,7 +1878,7 @@ fn automatic_recovery_issues_no_part_admission_before_the_trial() {
     reset_session(&mut ps);
     install_active_encoder("");
     plx_plex::plex::reset_servers_for_test();
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 
@@ -2048,7 +2048,7 @@ fn a_confirmed_direct_recovery_remains_seekable_after_hls_is_retired() {
     reset_session(&mut ps);
     install_active_encoder("");
     plx_plex::plex::reset_servers_for_test();
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 
@@ -2186,7 +2186,7 @@ fn stopping_a_pending_direct_recovery_closes_its_resource_once() {
     reset_session(&mut ps);
     install_active_encoder("");
     plx_plex::plex::reset_servers_for_test();
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 
@@ -2314,7 +2314,7 @@ fn manually_picking_original_restores_native_dolby_vision_instead_of_retranscodi
 
     reset_session(&mut ps);
     install_active_encoder("");
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 
@@ -2605,7 +2605,7 @@ fn manual_original_after_a_fixed_rung_returns_to_the_native_source() {
 
     reset_session(&mut ps);
     install_active_encoder("");
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 
@@ -2827,7 +2827,7 @@ fn manual_original_after_a_fixed_rung_with_a_subtitle_returns_to_direct_play() {
 
     reset_session(&mut ps);
     install_active_encoder("");
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 

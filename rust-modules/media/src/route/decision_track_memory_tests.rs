@@ -1410,9 +1410,9 @@ fn a_pick_on_one_episode_is_what_the_next_episode_resolves_to() {
     let view = store.view();
     // A viewer's launch of `rk`, in the order `request_play_inner` does it: the outgoing item's live
     // selection is cleared, then the env is built (reading the memory off the mirror).
-    let resolve_episode = |ps: &PlaybackSession, rk: &str, part: &str, audio: Vec<plx_data::metadata::Stream>,
+    let resolve_episode = |ps: &mut PlaybackSession, rk: &str, part: &str, audio: Vec<plx_data::metadata::Stream>,
                            subs: Vec<plx_data::metadata::Stream>, mode: DirectPlayMode| {
-        reset_track_selection(sid, rk, None);
+        reset_track_selection(ps, sid, rk, None);
         let launch = PlaybackRequest { rk: rk.into(), part: part.into(), ..request(sid, false) };
         let mut env = request_env(ps, view, &launch, None);
         env.direct_play_mode = mode;
@@ -1426,7 +1426,7 @@ fn a_pick_on_one_episode_is_what_the_next_episode_resolves_to() {
 
     let e1_audio = audio_pair();
     let e1_subs = two_subs();
-    let e1 = resolve_episode(&ps, "rk-e1", "/library/parts/36013/1/file.mkv", e1_audio.clone(), e1_subs.clone(), DirectPlayMode::Auto);
+    let e1 = resolve_episode(&mut ps, "rk-e1", "/library/parts/36013/1/file.mkv", e1_audio.clone(), e1_subs.clone(), DirectPlayMode::Auto);
     assert_eq!((e1.audio.as_ref().map(|a| a.sid), e1.sub_sid), (Some(36014), 55002), "E1 starts on the server's own selection");
     apply_plan(&mut ps, e1, "rk-e1");
 
@@ -1442,7 +1442,7 @@ fn a_pick_on_one_episode_is_what_the_next_episode_resolves_to() {
         stream(46015, 2, "jpn", "eac3", 6),
     ];
     let e2_subs = vec![srt(65001, 3, "eng", false, false), srt(65002, 4, "spa", false, true)];
-    let e2 = resolve_episode(&ps, "rk-e2", "/library/parts/46013/1/file.mkv", e2_audio, e2_subs, DirectPlayMode::Disabled);
+    let e2 = resolve_episode(&mut ps, "rk-e2", "/library/parts/46013/1/file.mkv", e2_audio, e2_subs, DirectPlayMode::Disabled);
     let requests = rx.recv_timeout(std::time::Duration::from_secs(15)).expect("PMS never saw both resolves");
     server.join().unwrap();
 

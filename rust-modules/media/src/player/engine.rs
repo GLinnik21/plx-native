@@ -5138,6 +5138,49 @@ mod pcm_stack_wiring_tests {
         (pending, lead)
     }
 
+    /// The session's audio choice is the readout's, and reaches the feed's demuxer copy at the start
+    /// the demuxer spawns in: a writer with no adapter in hand (the route's landing) is heard by the
+    /// readout alone, and a reload keeps the choice on both sides.
+    #[test]
+    fn a_start_hands_the_feed_the_sessions_audio_choice_and_a_reload_keeps_it() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(&ps);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
+        let _cleanup = Cleanup;
+        let _stack = audio_stack_on_this_thread_for_test(AudioStack::Liblxa);
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        crate::route::set_url(&mut ps, "http://127.0.0.1:1/track.flac");
+        assert!(ps.qualify_resolved_feed_offer(crate::route::backend_policy::OfferId::FEED_ORIGINAL,
+            crate::route::CandidatePurpose::NewCandidate));
+        crate::route::set_stream_acodec(&mut ps, "flac");
+        crate::route::set_carried_audio_for_test(
+            &mut ps,
+            crate::route::CarriedAudio {
+                sid: 7, ordinal: 1, codec: "flac".into(), channels: 2,
+                can_normalize_loudness: false, immersive: false, sample_rate: 48_000, bit_depth: 16,
+            },
+        );
+        FEED_SHARED.desired_audio_idx.store(-1, Ordering::Relaxed);
+
+        crate::player::set_audio_track(&mut ps, 4);
+        assert_eq!(ps.readout().audio_choice(), 4, "the route's writer stepped the session's readout");
+        assert_eq!(crate::player::feed_audio_idx_for_test(), -1, "and the feed's copy waits for the start");
+
+        let started = start_bufferfeed_tracked(&mut ps, &mut pa);
+        assert!(matches!(started, BufferfeedStartOutcome::Launched(_)), "PRECONDITION FAILED: the start must launch ({started:?})");
+        assert_eq!(crate::player::feed_audio_idx_for_test(), 4, "the start sent the choice before the demuxer spawned");
+
+        // A reload tears the session down and starts again: the choice is on both sides throughout.
+        crate::player::ffi_host::delay_unload_for_test(0);
+        suspend_bufferfeed(&mut ps, &mut pa);
+        finish_release_for_test(&mut pa);
+        assert_eq!(ps.readout().audio_choice(), 4, "a session reset keeps the pick");
+        assert_eq!(crate::player::feed_audio_idx_for_test(), 4, "and so does the feed's own reset");
+    }
+
     /// `liblxa` and 2018's stack yield a lead for a PCM Load once the Load thread has read the output
     /// (the hostsim bus has no answer, so the 400 ms default), pending until then; the LG audio sink
     /// has its 400 ms from the start with nothing pending; 2016/2017's `adecsink`, any other stack and

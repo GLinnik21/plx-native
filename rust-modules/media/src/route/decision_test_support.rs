@@ -111,9 +111,10 @@ pub(super) fn fresh_registry(ps: &mut PlaybackSession) -> plx_base::testlock::Se
     g
 }
 
-/// The demuxer ordinal the next native audio reload will feed (`-1`: none staged).
-pub(super) fn desired_audio_idx() -> i32 {
-    crate::player::desired_audio_idx_for_test()
+/// The demuxer ordinal the next native audio reload will feed (`-1`: none staged): the session's own
+/// choice, which the feed's demuxer copy follows at the next start (`SelectAudio`).
+pub(super) fn desired_audio_idx(ps: &PlaybackSession) -> i32 {
+    ps.readout().audio_choice()
 }
 
 /// A `ServerId` naming a slot nothing is registered in — so `client_for` answers `None` and

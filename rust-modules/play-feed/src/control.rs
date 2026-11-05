@@ -214,6 +214,7 @@ impl FeedControl for FeedBackend {
             FeedCommand::FinishSeekPreroll => FEED_TX.finish_seek_preroll(),
             FeedCommand::NoteFailure(flag) => feed_pump::note_failure(flag),
             FeedCommand::Rebase { playpos_ns, disp_base } => feed_pump::rebase(playpos_ns, disp_base),
+            FeedCommand::SelectAudio { idx } => feed_pump::select_audio(idx),
         }
     }
 
@@ -429,6 +430,23 @@ mod tests {
         FEED_SHARED.reset_session();
         assert_eq!(FeedLoad::sample(control).raw.disp_base, 0, "the session reset is the feed's own");
         FEED_TX.reset();
+    }
+
+    /// `SelectAudio` writes the copy the demuxer reads as it opens the container, and the feed's own
+    /// session reset leaves it alone: the player's choice survives a reload and is sent again.
+    #[test]
+    fn select_audio_sets_the_stream_the_demuxer_feeds_and_a_session_reset_keeps_it() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let _serial = plx_base::testlock::serial();
+        FEED_SHARED.reset_session();
+        let mut backend = backend();
+        let control: &mut dyn FeedControl = &mut backend;
+        control.command(FeedCommand::SelectAudio { idx: 3 });
+        assert_eq!(FEED_SHARED.desired_audio_idx.load(Relaxed), 3);
+        FEED_SHARED.reset_session();
+        assert_eq!(FEED_SHARED.desired_audio_idx.load(Relaxed), 3, "a reload keeps the choice");
+        control.command(FeedCommand::SelectAudio { idx: -1 });
+        assert_eq!(FEED_SHARED.desired_audio_idx.load(Relaxed), -1);
     }
 
     /// The transport commands make the stores the player's own calls made: `CommitPaused` publishes

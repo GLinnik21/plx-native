@@ -854,7 +854,20 @@ fn start_transcode_seek_flight(
     }
 }
 
-/// A staged native audio switch (`desired_audio_idx` + payload codec): settle, reload direct.
+/// A claimed action that owes a displaced pick its reload stages the pick (route), and the feed's copy
+/// follows at once: the session's audio choice is what the demuxer is told to feed.
+fn honour_displaced_pick(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    displaced_pick: bool,
+    arm: &str,
+) {
+    let idx = ps.readout().audio_choice();
+    crate::route::honour_displaced_pick(ps, displaced_pick, idx, arm);
+    super::publish_audio_choice(ps, pa);
+}
+
+/// A staged native audio switch (the session's audio choice + payload codec): settle, reload direct.
 fn native_audio_tail(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
@@ -862,7 +875,7 @@ fn native_audio_tail(
     pending_seek: i64,
     user_target: i64,
 ) {
-    let idx = FEED_SHARED.desired_audio_idx.load(Relaxed);
+    let idx = ps.readout().audio_choice();
     land_prepared_route(
         ps,
         pa,
@@ -1310,7 +1323,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
                         }
                     }
                     crate::route::UserRouteIntent::NativeAudioReload => {
-                        crate::route::honour_displaced_pick(ps, action.displaced_pick, FEED_SHARED.desired_audio_idx.load(Relaxed), "NativeAudioReload");
+                        honour_displaced_pick(ps, pa, action.displaced_pick, "NativeAudioReload");
                         native_audio_tail(ps, pa, &action, pending_seek, user_target);
                         return;
                     }
@@ -1320,7 +1333,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
                             // the claim stays `Applying`, and the drain at the top of this block
                             // lands it (`adaptive_tail`). The claim offset is where the reload
                             // goes, so presentation holds there for the flight.
-                            crate::route::honour_displaced_pick(ps, action.displaced_pick, FEED_SHARED.desired_audio_idx.load(Relaxed), "AdaptiveReload");
+                            honour_displaced_pick(ps, pa, action.displaced_pick, "AdaptiveReload");
                             let secs = user_target / 1_000_000_000;
                             match crate::route::execute_adaptive_reload_claim(ps, &action, secs, pending_seek, user_target) {
                                 crate::route::RetranscodeClaimDispatch::Sync(tail) => {
@@ -1334,7 +1347,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
                                                         }
                             }
                         } else {
-                            crate::route::honour_displaced_pick(ps, action.displaced_pick, FEED_SHARED.desired_audio_idx.load(Relaxed), "AdaptiveReload");
+                            honour_displaced_pick(ps, pa, action.displaced_pick, "AdaptiveReload");
                             crate::route::finish_route_action(
                                 ps,
                                 &action,
@@ -5108,7 +5121,8 @@ mod native_seek_pump_tests {
         // The real entry the tail calls; this rig has no route, so it logs and returns NoRoute.
         let _ = super::super::engine::switch_audio_native(&mut rig.ps, &mut rig.pa, 2, pos);
         assert_eq!(reloads(), vec![pos], "the audio switch reloaded at the playhead");
-        assert_eq!(FEED_SHARED.desired_audio_idx.load(Relaxed), 2);
+        assert_eq!(FEED_SHARED.desired_audio_idx.load(Relaxed), 2, "the pick reached the feed's demuxer copy at once");
+        assert_eq!(rig.ps.readout().audio_choice(), 2, "and the session's own record");
         // What `reload_at` leaves once its route accepts: the session reset keeping the Pause, a
         // demuxer seek armed at the playhead, a fresh Engine awaiting its keyframe's rebase.
         rig.complete_reload(pos);

@@ -1574,11 +1574,11 @@ pub fn swap_state_for_test(ps: &mut crate::route::PlaybackSession, s: shared::Pl
 pub fn restore_state_for_test(ps: &mut crate::route::PlaybackSession, raw: u8) {
     ps.step_readout(readout::ReadoutEvent::StateDerived(shared::PlaybackState::from_u8(raw)));
 }
-/// Test-only: the native audio-track index the Feed's demuxer reads (what `set_audio_track`
-/// stores; -1 feeds the file's own default). `route` tests read it here instead of naming the
-/// Feed's owner, which route may not.
+/// Test-only: the native audio-track index the Feed's demuxer reads (what `SelectAudio` stores;
+/// -1 feeds the file's own default). Media's own choice is the session readout's
+/// (`PlayerReadout::audio_choice`).
 #[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
-pub fn desired_audio_idx_for_test() -> i32 {
+pub fn feed_audio_idx_for_test() -> i32 {
     FEED_SHARED.desired_audio_idx.load(Relaxed)
 }
 /// Test-only: the kind of the last Original open failure the Feed carried (0 = none).
@@ -1940,13 +1940,21 @@ pub fn request_audio_track(ps: &mut crate::route::PlaybackSession, audio_idx: i3
 #[cfg(feature = "play-feed")]
 pub fn stage_native_audio(ps: &mut crate::route::PlaybackSession, audio_idx: i32, codec: &str) {
     crate::route::set_stream_acodec(ps, codec); // the reload's Load payload uses this audio codec
-    FEED_SHARED.desired_audio_idx.store(audio_idx, Relaxed);
+    ps.step_readout(readout::ReadoutEvent::AudioSelected { idx: audio_idx });
 }
 /// reset to the default (best) audio stream — called on a new item so a prior track choice
-/// does not leak across items (desired_audio_idx persists across seeks, not across items).
+/// does not leak across items (the choice persists across seeks and reloads, not across items).
 #[cfg(feature = "play-feed")]
-pub fn reset_audio_track() {
-    FEED_SHARED.desired_audio_idx.store(-1, Relaxed);
+pub fn reset_audio_track(ps: &mut crate::route::PlaybackSession) {
+    ps.step_readout(readout::ReadoutEvent::AudioSelected { idx: -1 });
+}
+
+/// Hand the feed the session's audio choice: its demuxer reads that copy as it opens the container,
+/// so every start that spawns one sends it first (`start_bufferfeed_prepared`), and a pick made where
+/// the adapter is in hand sends it at once. The choice itself is the readout's.
+#[cfg(feature = "play-feed")]
+pub(super) fn publish_audio_choice(ps: &crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter) {
+    pa.feed_command(FeedCommand::SelectAudio { idx: ps.readout().audio_choice() });
 }
 
 /// Normal speed, in the thousandths every playback-rate value here is counted in.
@@ -2162,8 +2170,8 @@ pub fn reset_subtitle() {
 /// used by the decision to direct-play a non-default direct-playable track (e.g. an AC3 track on
 /// a TrueHD-default item). -1 = default/best.
 #[cfg(feature = "play-feed")]
-pub fn set_audio_track(idx: i32) {
-    FEED_SHARED.desired_audio_idx.store(idx, Relaxed);
+pub fn set_audio_track(ps: &mut crate::route::PlaybackSession, idx: i32) {
+    ps.step_readout(readout::ReadoutEvent::AudioSelected { idx });
 }
 /// request a re-transcode at the current position with the CURRENT audio + subtitle —
 /// used when a subtitle is (de)selected while already transcoding, so the server

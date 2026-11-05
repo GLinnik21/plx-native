@@ -426,7 +426,7 @@ fn cleanup(ps: &mut PlaybackSession) {
     reset_session(ps);
     install_active_encoder("");
     reset_player_control_for_test(ps);
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(ps);
     crate::player::reset_subtitle();
 }
 
@@ -1168,7 +1168,7 @@ fn capable_pick_while_enhanced_then_off_releases_to_new_track() {
     assert_eq!(tail, ClaimTail::Original(AutoOriginalReload::Direct));
     assert_eq!(ps.cur_audio, Some(a3()));
     assert_eq!(ps.stream_acodec, "ac3");
-    assert_eq!(desired_audio_idx(), 3, "the direct branch feeds the NEW track");
+    assert_eq!(desired_audio_idx(&ps), 3, "the direct branch feeds the NEW track");
     live.finish();
     cleanup(&mut ps);
 }
@@ -1241,7 +1241,7 @@ fn pending_release_plus_audio_pick_uses_new_track() {
     confirm_original_recovery(&mut ps);
     assert_eq!(ps.cur_audio, Some(a3()));
     assert!(pending_user_route_intent(UserRouteIntent::NativeAudioReload));
-    assert_eq!(desired_audio_idx(), 3);
+    assert_eq!(desired_audio_idx(&ps), 3);
     assert_eq!(ps.stream_acodec, "ac3");
     live.finish();
     cleanup(&mut ps);
@@ -1766,7 +1766,7 @@ fn rejected_remux_with_displaced_audio_runs_native_in_claim() {
     let revision = desired_contract_revision();
     assert!(action.displaced_pick);
     assert_eq!(tail, ClaimTail::NativeAudio);
-    assert_eq!(desired_audio_idx(), 3);
+    assert_eq!(desired_audio_idx(&ps), 3);
     assert_eq!(ps.stream_acodec, "ac3");
     assert!(matches!(phase(), ControlPhase::Applying(_)), "the PMS half never settles a reload tail");
     assert_eq!(desired_contract_revision(), revision, "no user-contract advance mid-claim");
@@ -1840,7 +1840,7 @@ fn not_involved_with_displaced_pick_native_switch_no_decision() {
     let (action, tail) = claim(&mut ps);
     assert!(action.displaced_pick);
     assert_eq!(tail, ClaimTail::NativeAudio);
-    assert_eq!(desired_audio_idx(), 2);
+    assert_eq!(desired_audio_idx(&ps), 2);
     assert_eq!(ps.stream_acodec, "eac3");
     let requests = live.finish();
     assert!(decisions(&requests).is_empty(), "{requests:?}");
@@ -1859,7 +1859,7 @@ fn not_involved_latest_pick_wins_native_a3() {
     toggle(&mut ps, NONE);
     let (_, tail) = claim(&mut ps);
     assert_eq!(tail, ClaimTail::NativeAudio);
-    assert_eq!(desired_audio_idx(), 3);
+    assert_eq!(desired_audio_idx(&ps), 3);
     assert_eq!(ps.stream_acodec, "ac3", "A3's payload codec");
     live.finish();
     cleanup(&mut ps);
@@ -1927,11 +1927,13 @@ fn other_arm_with_displaced_pick_stores_index_before_reload() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     { let s = &mut ps; s.cur_audio = Some(a3()); s.stream_acodec = "eac3".into(); }
-    crate::player::set_audio_track(1);
-    honour_displaced_pick(&mut ps, false, desired_audio_idx(), "NativeAudioReload");
-    assert_eq!(desired_audio_idx(), 1, "no marker, no change");
-    honour_displaced_pick(&mut ps, true, desired_audio_idx(), "NativeAudioReload");
-    assert_eq!(desired_audio_idx(), 3);
+    crate::player::set_audio_track(&mut ps, 1);
+    let staged = desired_audio_idx(&ps);
+    honour_displaced_pick(&mut ps, false, staged, "NativeAudioReload");
+    assert_eq!(desired_audio_idx(&ps), 1, "no marker, no change");
+    let staged = desired_audio_idx(&ps);
+    honour_displaced_pick(&mut ps, true, staged, "NativeAudioReload");
+    assert_eq!(desired_audio_idx(&ps), 3);
     assert_eq!(ps.stream_acodec, "ac3");
     cleanup(&mut ps);
 }
@@ -2299,7 +2301,7 @@ fn legacy_primary_rejection_keeps_the_legacy_rejected_label() {
     reset_player_control_for_test(&mut ps);
     reset_session(&mut ps);
     crate::player::restore_audio_enhancements(NONE);
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 
@@ -2607,7 +2609,7 @@ fn a_landing_from_a_torn_down_item_never_reaches_the_next_playback() {
     reset_player_control_for_test(&mut ps);
     reset_session(&mut ps);
     crate::player::restore_audio_enhancements(NONE);
-    crate::player::reset_audio_track();
+    crate::player::reset_audio_track(&mut ps);
     crate::player::reset_subtitle();
 }
 

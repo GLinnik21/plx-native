@@ -439,6 +439,10 @@ pub enum FeedCommand {
     /// stream starts at the offset by construction. `pts_shift` is not here: the feed's video lane
     /// alone writes it, when it rebases onto a landed keyframe.
     Rebase { playpos_ns: i64, disp_base: i64 },
+    /// The audio stream the demuxer feeds, as the player's session holds it (`idx` is the 0-based
+    /// audio stream index, `-1` the file's own default). The demuxer reads the feed's copy as it
+    /// opens the container, so the player sends this before every start that spawns one.
+    SelectAudio { idx: i32 },
 }
 
 // ---------------------------------------------------------------------------------------------
