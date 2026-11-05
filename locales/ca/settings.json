@@ -308,7 +308,6 @@
   "settings.consent.placeholder.webos_codename_short": "nom en clau de webOS",
   "settings.hud.title": "HUD del reproductor",
   "settings.hud.copy": "Tria l'aspecte dels controls de reproducció. Aquí es mostren els paquets copiats a la carpeta HUD d'aquest televisor.",
-  "settings.hud.classic": "Clàssic",
   "settings.hud.builtin": "Integrat",
   "settings.hud.unreviewed": "Sense revisar",
   "settings.hud.until_restart": "Instal·lat fins al reinici",

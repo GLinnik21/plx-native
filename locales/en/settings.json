@@ -1259,13 +1259,9 @@
     "value": "Choose how the playback controls look.",
     "description": "Settings > Playback > Player HUD: the line under the page title."
   },
-  "settings.hud.classic": {
-    "value": "Classic",
-    "description": "Settings > Playback > Player HUD: the name of the built-in HUD."
-  },
   "settings.hud.builtin": {
     "value": "Built-in",
-    "description": "Settings > Playback > Player HUD: the trust label of the HUD that ships with the app."
+    "description": "Settings > Playback > Player HUD: the name of the HUD that ships with the app (its row says only this, no trust label under it)."
   },
   "settings.hud.unreviewed": {
     "value": "Unreviewed",

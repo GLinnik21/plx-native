@@ -311,7 +311,6 @@
   "settings.consent.placeholder.webos_codename_short": "nazwa kodowa webOS",
   "settings.hud.title": "Interfejs odtwarzacza",
   "settings.hud.copy": "Wybierz wygląd elementów sterowania odtwarzaniem.",
-  "settings.hud.classic": "Klasyczny",
   "settings.hud.builtin": "Wbudowany",
   "settings.hud.unreviewed": "Niezweryfikowany",
   "settings.hud.until_restart": "Zainstalowano do ponownego uruchomienia",

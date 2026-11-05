@@ -308,7 +308,6 @@
   "settings.consent.placeholder.webos_codename_short": "nombre en clave de webOS",
   "settings.hud.title": "HUD del reproductor",
   "settings.hud.copy": "Elige el aspecto de los controles de reproducción.",
-  "settings.hud.classic": "Clásico",
   "settings.hud.builtin": "Integrado",
   "settings.hud.unreviewed": "Sin revisar",
   "settings.hud.until_restart": "Instalado hasta reiniciar",

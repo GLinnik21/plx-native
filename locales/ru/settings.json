@@ -311,7 +311,6 @@
   "settings.consent.placeholder.webos_codename_short": "кодовое имя webOS",
   "settings.hud.title": "Интерфейс плеера",
   "settings.hud.copy": "Выберите вид элементов управления воспроизведением.",
-  "settings.hud.classic": "Классический",
   "settings.hud.builtin": "Встроенный",
   "settings.hud.unreviewed": "Не проверен",
   "settings.hud.until_restart": "Установлен до перезапуска",

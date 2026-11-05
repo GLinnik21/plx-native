@@ -305,7 +305,6 @@
   "settings.consent.placeholder.webos_codename_short": "webOS-Codename",
   "settings.hud.title": "Player-HUD",
   "settings.hud.copy": "Wähle das Aussehen der Wiedergabesteuerung.",
-  "settings.hud.classic": "Klassisch",
   "settings.hud.builtin": "Eingebaut",
   "settings.hud.unreviewed": "Ungeprüft",
   "settings.hud.until_restart": "Installiert bis zum Neustart",

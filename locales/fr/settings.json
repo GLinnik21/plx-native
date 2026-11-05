@@ -308,7 +308,6 @@
   "settings.consent.placeholder.webos_codename_short": "nom de code webOS",
   "settings.hud.title": "Interface du lecteur",
   "settings.hud.copy": "Choisissez l’apparence des commandes de lecture.",
-  "settings.hud.classic": "Classique",
   "settings.hud.builtin": "Intégré",
   "settings.hud.unreviewed": "Non vérifié",
   "settings.hud.until_restart": "Installé jusqu'au redémarrage",
