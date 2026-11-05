@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-05T03:02:01Z",
+ "generated": "2026-11-05T03:10:45Z",
  "metrics": [
   {
    "change30_pct": 1.0,
@@ -144,18 +144,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -57.1,
-   "change7_pct": 18.1,
+   "change30_pct": -57.2,
+   "change7_pct": 17.9,
    "d30": 975.0,
-   "delta30": -557.0,
-   "delta7": 64,
+   "delta30": -557.5,
+   "delta7": 63.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 79,
+   "n_now": 80,
    "n_prev": 83,
-   "now": 418,
+   "now": 417.5,
    "prev7": 354,
    "shown": true,
    "state": "worse",
@@ -387,18 +387,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 27.5,
-   "change7_pct": 11.9,
+   "change30_pct": 27.3,
+   "change7_pct": 11.7,
    "d30": 233.0,
-   "delta30": 64.0,
-   "delta7": 31.5,
+   "delta30": 63.5,
+   "delta7": 31.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 71,
+   "n_now": 72,
    "n_prev": 72,
-   "now": 297,
+   "now": 296.5,
    "prev7": 265.5,
    "shown": true,
    "state": "flat",
@@ -408,18 +408,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -78.1,
-   "change7_pct": 5.9,
+   "change30_pct": -78.0,
+   "change7_pct": 6.2,
    "d30": 980.0,
-   "delta30": -765.0,
-   "delta7": 12,
+   "delta30": -764.5,
+   "delta7": 12.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 71,
+   "n_now": 72,
    "n_prev": 71,
-   "now": 215,
+   "now": 215.5,
    "prev7": 203,
    "shown": true,
    "state": "flat",
@@ -429,18 +429,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -37.9,
-   "change7_pct": 18.6,
+   "change30_pct": -38.1,
+   "change7_pct": 18.3,
    "d30": 328.5,
-   "delta30": -124.5,
-   "delta7": 32.0,
+   "delta30": -125.0,
+   "delta7": 31.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 71,
+   "n_now": 72,
    "n_prev": 72,
-   "now": 204,
+   "now": 203.5,
    "prev7": 172.0,
    "shown": true,
    "state": "flat",
@@ -566,9 +566,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 71,
+   "n_now": 72,
    "n_prev": 72,
-   "now": 19,
+   "now": 19.0,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 36.9,
    "commits": [
     {
-     "pr": 1225,
-     "sha": "579f44b97",
-     "title": "Avoid flashing hold-options hint on short OK presses"
-    },
-    {
      "pr": 1227,
      "sha": "9ac44e870",
      "title": "Add automatic intro and credits skipping for Plex Pass viewers"
@@ -715,6 +710,11 @@
      "pr": 1239,
      "sha": "5588f5bfd",
      "title": "HUD gallery: accept only a signed registry index"
+    },
+    {
+     "pr": 1240,
+     "sha": "ab00d73b0",
+     "title": "HUD plugins: a cargo fuzz package over every package and registry parser"
     }
    ],
    "from": 215.5,
@@ -728,11 +728,6 @@
    "change_pct": 31.9,
    "commits": [
     {
-     "pr": 1225,
-     "sha": "579f44b97",
-     "title": "Avoid flashing hold-options hint on short OK presses"
-    },
-    {
      "pr": 1227,
      "sha": "9ac44e870",
      "title": "Add automatic intro and credits skipping for Plex Pass viewers"
@@ -776,6 +771,11 @@
      "pr": 1239,
      "sha": "5588f5bfd",
      "title": "HUD gallery: accept only a signed registry index"
+    },
+    {
+     "pr": 1240,
+     "sha": "ab00d73b0",
+     "title": "HUD plugins: a cargo fuzz package over every package and registry parser"
     }
    ],
    "from": 63.7,
@@ -789,11 +789,6 @@
    "change_pct": 28.7,
    "commits": [
     {
-     "pr": 1225,
-     "sha": "579f44b97",
-     "title": "Avoid flashing hold-options hint on short OK presses"
-    },
-    {
      "pr": 1227,
      "sha": "9ac44e870",
      "title": "Add automatic intro and credits skipping for Plex Pass viewers"
@@ -837,6 +832,11 @@
      "pr": 1239,
      "sha": "5588f5bfd",
      "title": "HUD gallery: accept only a signed registry index"
+    },
+    {
+     "pr": 1240,
+     "sha": "ab00d73b0",
+     "title": "HUD plugins: a cargo fuzz package over every package and registry parser"
     }
    ],
    "from": 147.2,
@@ -850,11 +850,6 @@
    "change_pct": 22.5,
    "commits": [
     {
-     "pr": 1225,
-     "sha": "579f44b97",
-     "title": "Avoid flashing hold-options hint on short OK presses"
-    },
-    {
      "pr": 1227,
      "sha": "9ac44e870",
      "title": "Add automatic intro and credits skipping for Plex Pass viewers"
@@ -898,6 +893,11 @@
      "pr": 1239,
      "sha": "5588f5bfd",
      "title": "HUD gallery: accept only a signed registry index"
+    },
+    {
+     "pr": 1240,
+     "sha": "ab00d73b0",
+     "title": "HUD plugins: a cargo fuzz package over every package and registry parser"
     }
    ],
    "from": 288.5,
@@ -908,13 +908,8 @@
    "to": 353.5
   },
   {
-   "change_pct": 18.1,
+   "change_pct": 17.9,
    "commits": [
-    {
-     "pr": 1225,
-     "sha": "579f44b97",
-     "title": "Avoid flashing hold-options hint on short OK presses"
-    },
     {
      "pr": 1227,
      "sha": "9ac44e870",
@@ -959,14 +954,19 @@
      "pr": 1239,
      "sha": "5588f5bfd",
      "title": "HUD gallery: accept only a signed registry index"
+    },
+    {
+     "pr": 1240,
+     "sha": "ab00d73b0",
+     "title": "HUD plugins: a cargo fuzz package over every package and registry parser"
     }
    ],
    "from": 354,
    "id": "push_wait",
    "label": "Wait after merge",
-   "since": "2026-11-04",
+   "since": "2026-11-05",
    "threshold_pct": 15.0,
-   "to": 418
+   "to": 417.5
   }
  ],
  "schema": 2,
