@@ -11,10 +11,14 @@ use crate::readout::{playable_buffer_ms, runtime_failure};
 use crate::seek::SeekMode;
 use crate::shared::{FEED_SHARED, FEED_TX, SPEED_AUDIO_BAD, SPEED_AUDIO_OK};
 use crate::shared::Stage;
-use crate::shared::{HlsPauseCompletion, HlsSeekPause};
+use crate::shared::{
+    HlsPauseCompletion, HlsPlayCompletion, HlsSeekPause, HlsUserPause, HlsUserResume,
+};
 use plx_base::eventlog::log;
 use plx_base::task::MainThread;
-use plx_playback_contract::feed::{FailureFlags, FeedFacts, FeedRaw, SeekRequeue};
+use plx_playback_contract::feed::{
+    FailureFlags, FeedFacts, FeedRaw, SeekRequeue, UserPauseOutcome, UserResumeOutcome,
+};
 use plx_playback_contract::readout::{AttemptFacts, RuntimeFailure};
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::os::raw::c_char;
@@ -248,6 +252,70 @@ pub fn paused_seek_step(
         step.finish = true;
     }
     step
+}
+
+/// The viewer's Pause, end to end: the clock transition, the native Pause through the
+/// composition's sink, and the transport commit at the same accepted boundary. Publishing the feed
+/// gate here, with the native acceptance, is what keeps a deadline transaction from charging
+/// accepted Pause time as active playback. The player mirrors the ACB playstate after the answer.
+pub fn user_pause(feed: &mut FeedResources, mt: &MainThread) -> UserPauseOutcome {
+    match FEED_SHARED.prepare_hls_user_pause() {
+        Some(HlsUserPause::AlreadyHeld) => {
+            FEED_TX.commit_paused(true);
+            UserPauseOutcome::AlreadyHeld
+        }
+        Some(HlsUserPause::Issue(token)) => {
+            // SAFETY: the main thread, through the composition's fenced sink.
+            let accepted = unsafe { (feed.hooks().feed.sink)().pause(mt) } != 0;
+            let completion = FEED_SHARED.complete_hls_user_pause(token, accepted);
+            if completion == HlsPauseCompletion::Accepted {
+                FEED_TX.commit_paused(true);
+            }
+            UserPauseOutcome::Issued(completion)
+        }
+        None => UserPauseOutcome::Deferred,
+    }
+}
+
+/// The viewer's Resume, end to end: the mirror of [`user_pause`]. A paused-seek preroll that is
+/// open is closed with the commit, so the Play below it never runs against a gate it holds shut.
+pub fn user_resume(feed: &mut FeedResources, mt: &MainThread) -> UserResumeOutcome {
+    let queued_stream = feed.uses_stream_queues();
+    let close_preroll_and_commit = || {
+        if FEED_TX.seek_preroll_active() {
+            FEED_TX.finish_seek_preroll();
+        }
+        FEED_TX.commit_paused(false);
+    };
+    match FEED_SHARED.prepare_hls_user_resume(queued_stream) {
+        Some(HlsUserResume::Deferred) => {
+            close_preroll_and_commit();
+            UserResumeOutcome::Fenced
+        }
+        Some(HlsUserResume::Prime) => {
+            let Some(engine) = feed.engine() else { return UserResumeOutcome::PrimeLost };
+            crate::native_executor::arm_live_clock_prime(engine);
+            close_preroll_and_commit();
+            UserResumeOutcome::Priming
+        }
+        Some(HlsUserResume::Issue(token)) => {
+            // SAFETY: the main thread, through the composition's fenced sink.
+            let accepted = unsafe { (feed.hooks().feed.sink)().play(mt) } != 0;
+            match FEED_SHARED.complete_hls_prime_play(token, accepted) {
+                HlsPlayCompletion::Accepted { resume_acb } => {
+                    close_preroll_and_commit();
+                    UserResumeOutcome::Played { resume_acb }
+                }
+                HlsPlayCompletion::Refused => UserResumeOutcome::PlayRefused,
+                HlsPlayCompletion::Stale => UserResumeOutcome::PlayStale,
+            }
+        }
+        None if FEED_TX.seek_preroll_active() => {
+            close_preroll_and_commit();
+            UserResumeOutcome::PrerollCancelled
+        }
+        None => UserResumeOutcome::NoHold,
+    }
 }
 
 /// Is a picture the Engine has presented actually on the panel? Without ACB (webOS 5+) the sink is

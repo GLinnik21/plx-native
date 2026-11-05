@@ -8,10 +8,12 @@ use crate::feed_driver::{FeedDriver, FeedTransportAction};
 use crate::feed_pump;
 use crate::feed_resources::FeedResources;
 use crate::native_executor::NativePrepared;
+use crate::shared::FEED_TX;
 use plx_base::task::MainThread;
 use plx_playback_contract::feed::{
     AcceptedLoadOutcome, CtorGate, FeedCommand, FeedControl, FeedFacts, FeedLoad, FeedSeek,
     LoadTick, PausedSeekStep, PresentationTick, SeekMode, SeekPause, Stage, StuckSeekAction,
+    UserPauseOutcome, UserResumeOutcome,
 };
 use plx_playback_contract::{
     AttemptId, BackendEvent, BackendKind, Capabilities, CommandId, DispatchResult, DriverSet,
@@ -155,12 +157,6 @@ impl FeedLoad for FeedBackend {
         self.resources.take_load_outcomes()
     }
 
-    fn arm_live_clock_prime(&mut self) -> bool {
-        let Some(engine) = self.resources.engine() else { return false; };
-        crate::native_executor::arm_live_clock_prime(engine);
-        true
-    }
-
     fn native_audio_stall_fired(&mut self, now: u32) -> bool {
         feed_pump::native_audio_stall_fired(&mut self.resources, now)
     }
@@ -191,7 +187,6 @@ impl FeedLoad for FeedBackend {
     fn preview_load_join_state(&self) -> Option<(bool, bool)> {
         self.resources.preview_load_join_state()
     }
-    fn uses_stream_queues(&self) -> bool { self.resources.uses_stream_queues() }
     fn foreground_follows_load(&self) -> bool { self.resources.foreground_follows_load() }
     fn route_actions_ready(&self) -> bool { self.resources.route_actions_ready() }
     fn is_live(&self) -> bool { self.resources.is_live() }
@@ -213,8 +208,22 @@ impl FeedControl for FeedBackend {
             FeedCommand::ArmOpen { target_ns, disp_base, playpos_ns } => {
                 feed_pump::arm_open(target_ns, disp_base, playpos_ns);
             }
+            FeedCommand::CommitPaused { paused } => FEED_TX.commit_paused(paused),
+            FeedCommand::BeginPausedSeek => { FEED_TX.begin_paused_seek(); }
+            FeedCommand::OwnPausedSeek { target_ns } => { FEED_TX.own_paused_seek(target_ns); }
+            FeedCommand::FinishSeekPreroll => FEED_TX.finish_seek_preroll(),
         }
     }
+
+    fn user_pause(&mut self, mt: &MainThread) -> UserPauseOutcome {
+        feed_pump::user_pause(&mut self.resources, mt)
+    }
+
+    fn user_resume(&mut self, mt: &MainThread) -> UserResumeOutcome {
+        feed_pump::user_resume(&mut self.resources, mt)
+    }
+
+    fn take_preroll_volume(&mut self) -> Option<i32> { FEED_TX.take_preroll_volume() }
 }
 
 #[cfg(test)]
@@ -225,6 +234,7 @@ mod tests {
     };
     use crate::pcm_lead::PcmLead;
     use crate::send_ptr::SendPtr;
+    use crate::shared::HlsUserPause;
     use crate::shared::{FEED_SHARED, FEED_TX};
     use plx_platform::tv::sink::{NoSink, VideoSink};
     use std::os::raw::c_char;
@@ -392,6 +402,104 @@ mod tests {
 
         FEED_SHARED.reset_session();
         FEED_TX.reset();
+    }
+
+    /// The transport commands make the stores the player's own calls made: `CommitPaused` publishes
+    /// the feed gate and the exact pause clock together, a preroll opens only under a Pause
+    /// (`BeginPausedSeek`), the pump's seek under a Pause takes ownership of it and a later request
+    /// retargets it (`OwnPausedSeek`, never below 0), and `FinishSeekPreroll` closes the preroll
+    /// and the ownership with it (and the resume-pending mark the preroll carried).
+    #[test]
+    fn the_transport_commands_leave_the_mailboxes_as_the_players_own_stores_did() {
+        use std::sync::atomic::Ordering::{Acquire, Relaxed};
+        let _serial = plx_base::testlock::serial();
+        FEED_SHARED.reset_session();
+        FEED_TX.reset();
+        let mut backend = backend();
+        let control: &mut dyn FeedControl = &mut backend;
+
+        control.command(FeedCommand::BeginPausedSeek);
+        assert!(!FEED_TX.seek_preroll_active(), "a feed that is not paused opens no preroll");
+        control.command(FeedCommand::OwnPausedSeek { target_ns: 5 });
+        assert!(FEED_TX.owned_paused_seek().is_none(), "nothing to hold: nothing owned");
+
+        control.command(FeedCommand::CommitPaused { paused: true });
+        assert!(FEED_TX.paused.load(Acquire));
+        assert!(FEED_TX.pause_state_sample().paused, "the pause clock moved with the gate");
+        assert!(!FEED_TX.feed_allowed(), "a paused feed feeds nothing");
+
+        control.command(FeedCommand::OwnPausedSeek { target_ns: -7 });
+        assert!(FEED_TX.seek_preroll_active(), "the pump's seek under a Pause opens the preroll");
+        assert_eq!(FEED_TX.owned_paused_seek(), Some(0), "an owned target is never negative");
+        assert!(FEED_TX.feed_allowed(), "the preroll lets the keyframe through");
+        control.command(FeedCommand::OwnPausedSeek { target_ns: 9_000_000_000 });
+        assert_eq!(FEED_TX.owned_paused_seek(), Some(9_000_000_000), "a coalesced tap retargets it");
+
+        FEED_TX.resume_pend.store(true, Relaxed);
+        control.command(FeedCommand::FinishSeekPreroll);
+        assert!(!FEED_TX.seek_preroll_active() && FEED_TX.owned_paused_seek().is_none());
+        assert!(!FEED_TX.resume_pend.load(Relaxed), "closing the preroll ends the pending resume");
+        assert!(!FEED_TX.feed_allowed(), "the gate is shut again behind the closed preroll");
+
+        control.command(FeedCommand::BeginPausedSeek);
+        assert!(FEED_TX.seek_preroll_active(), "a caller's own preroll opens under a Pause");
+        assert!(FEED_TX.owned_paused_seek().is_none(), "and stays the caller's");
+
+        control.command(FeedCommand::CommitPaused { paused: false });
+        assert!(!FEED_TX.paused.load(Acquire));
+        assert!(!FEED_TX.pause_state_sample().paused);
+        FEED_SHARED.reset_session();
+        FEED_TX.reset();
+    }
+
+    /// The viewer's Pause and Resume, run by the feed. With the sink refusing (the stand-in sink
+    /// here), a native Pause or Play changes nothing: no transport commit, no preroll closed, and
+    /// the clock transition is completed as refused so the next press can try again. A Pause the
+    /// clock already holds commits without issuing anything native, and a Resume with no hold to
+    /// release says so.
+    #[test]
+    fn a_refused_native_transition_commits_nothing_and_a_held_clock_pauses_without_one() {
+        use std::sync::atomic::Ordering::Acquire;
+        use plx_playback_contract::feed::{HlsPauseCompletion, UserPauseOutcome, UserResumeOutcome};
+        let _serial = plx_base::testlock::serial();
+        // SAFETY: a host test; nothing here touches the thread-affine state the token guards.
+        let mt = unsafe { MainThread::assume() };
+        FEED_SHARED.reset_session();
+        FEED_TX.reset();
+        let mut backend = backend();
+        let control: &mut dyn FeedControl = &mut backend;
+
+        assert_eq!(control.user_resume(&mt), UserResumeOutcome::NoHold, "nothing is paused");
+        assert_eq!(control.user_pause(&mt), UserPauseOutcome::Issued(HlsPauseCompletion::Refused));
+        assert!(!FEED_TX.paused.load(Acquire), "a refused Pause never enters the transport");
+        assert_eq!(control.user_pause(&mt), UserPauseOutcome::Issued(HlsPauseCompletion::Refused),
+            "and leaves the clock free for the next press");
+
+        // The viewer's Pause is accepted elsewhere (a sink that took it); the next one finds it held.
+        let Some(HlsUserPause::Issue(token)) = FEED_SHARED.prepare_hls_user_pause() else {
+            panic!("a running clock issues the user Pause");
+        };
+        assert_eq!(FEED_SHARED.complete_hls_user_pause(token, true), HlsPauseCompletion::Accepted);
+        assert_eq!(control.user_pause(&mt), UserPauseOutcome::AlreadyHeld);
+        assert!(FEED_TX.paused.load(Acquire), "the held clock commits the transport Paused");
+
+        assert_eq!(control.user_resume(&mt), UserResumeOutcome::PlayRefused, "the sink refuses Play");
+        assert!(FEED_TX.paused.load(Acquire), "a refused Play leaves the viewer paused");
+        FEED_SHARED.reset_session();
+        FEED_TX.reset();
+    }
+
+    /// The mute a paused preroll saved is the feed's to hand back, once.
+    #[test]
+    fn the_saved_preroll_volume_is_handed_back_once() {
+        let _serial = plx_base::testlock::serial();
+        FEED_TX.reset();
+        let mut backend = backend();
+        let control: &mut dyn FeedControl = &mut backend;
+        assert_eq!(control.take_preroll_volume(), None, "nothing is muted");
+        FEED_TX.note_preroll_muted(30);
+        assert_eq!(control.take_preroll_volume(), Some(30));
+        assert_eq!(control.take_preroll_volume(), None, "the mute is cleared by the take");
     }
 
     /// The feed's request to seek again reaches the player as a numbered raw fact, together with

@@ -21,12 +21,6 @@ use std::sync::atomic::Ordering::Relaxed;
 pub fn paused() -> bool {
     FEED_TX.paused.load(Relaxed)
 }
-#[inline]
-#[cfg(feature = "play-feed")]
-pub fn set_paused(v: bool) {
-    FEED_TX.commit_paused(v)
-}
-
 /// Publish the viewer's Play for a restore that is about to Load with no Engine. A park keeps
 /// `FEED_TX.paused` across the reload (`TX::reset_for_reload`), and the Load arms its initial clock
 /// hold from it (`engine::ClockStartGuard`): a paused save restored PLAYING would otherwise start
@@ -36,9 +30,9 @@ pub fn set_paused(v: bool) {
 /// caller guarantees there is no Engine (`PlayerForegroundActuator::before_load` checks
 /// `is_live`): over a live one this would leave its pause standing while `FEED_TX` reads Playing.
 #[cfg(feature = "play-feed")]
-pub fn commit_viewer_resume_for_load() {
+pub fn commit_viewer_resume_for_load(pa: &mut crate::player::adapter::PlayerAdapter) {
     crate::player::claim_hold::note_user_transport();
-    FEED_TX.commit_paused(false);
+    crate::player::commit_paused(pa, false);
 }
 /// PURE: the paused value a transport request settles on. `Some(true)` is the remote's PLAY key,
 /// `Some(false)` its PAUSE, and `None` the single PLAYPAUSE toggle — which is the only one of the
@@ -163,7 +157,10 @@ mod viewer_resume_for_load_tests {
         let _restore = Restore(FEED_TX.paused.load(Ordering::Acquire));
         FEED_TX.commit_paused(true);
 
-        super::commit_viewer_resume_for_load();
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            plx_base::task::MainThread::assume()
+        });
+        super::commit_viewer_resume_for_load(&mut pa);
         assert!(!super::paused(), "the viewer's Play is published");
         assert!(!super::viewer_paused());
         assert!(!FEED_TX.seek_preroll_active(), "no preroll opens for a Playing Load");

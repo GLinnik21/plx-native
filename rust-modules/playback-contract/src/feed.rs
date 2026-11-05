@@ -195,6 +195,44 @@ pub enum HlsPlayCompletion {
     Stale,
 }
 
+/// What the feed did with a viewer's Pause (the handshake the player ran itself before the feed
+/// owned it). Every variant but `Deferred` and a refused or stale `Issued` has committed the
+/// transport Paused: the feed gate and the pause clock moved at the same accepted boundary as the
+/// native Pause, and the player mirrors the ACB playstate after it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UserPauseOutcome {
+    /// An internal clock hold already pauses the pipeline: nothing native was issued.
+    AlreadyHeld,
+    /// A native Pause was issued and the clock transition completed as `completion` says.
+    Issued(HlsPauseCompletion),
+    /// An in-flight clock transition owns the clock: the Pause waits, nothing changed.
+    Deferred,
+}
+
+/// What the feed did with a viewer's Resume. Every variant but the three that name a refusal
+/// committed the transport Playing (and closed any paused-seek preroll that was open).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UserResumeOutcome {
+    /// Feeding resumes, but an initial, seek or recovery certificate still owns the physical
+    /// clock: its eventual Play carries the pending ACB Resume.
+    Fenced,
+    /// Feeding resumes and the exact balanced prime owns the eventual Play and ACB Resume.
+    Priming,
+    /// A queued Resume found no engine to arm the prime on: nothing changed.
+    PrimeLost,
+    /// A native Play was issued and completed (`resume_acb`: the matching ACB Resume is owed).
+    Played { resume_acb: bool },
+    /// The pipeline refused the native Play: nothing changed.
+    PlayRefused,
+    /// The Play lost its clock token to a newer transition: nothing changed.
+    PlayStale,
+    /// The viewer cancelled "stay paused" after the seek handed the physical hold to its prime:
+    /// no native command, the prime owns Play.
+    PrerollCancelled,
+    /// There is no accepted user hold to release: nothing changed.
+    NoHold,
+}
+
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 /// **`Bound` is the ACB bind, and the webOS 5 path SKIPS it** — `VP_EXPORTED` goes
@@ -340,6 +378,17 @@ pub enum FeedCommand {
     /// there, the HUD reads `playpos_ns` until frames land, and `disp_base` is the offset the
     /// published position carries. The caller supplies the clamped values.
     ArmOpen { target_ns: i64, disp_base: i64, playpos_ns: i64 },
+    /// Publish a committed physical transport transition (or seed the viewer's saved goal as the
+    /// initial hold of a new object) to the feed gate and the exact pause clock.
+    CommitPaused { paused: bool },
+    /// Open the paused-seek preroll for a restore that is about to Load; a feed that is not
+    /// paused opens nothing.
+    BeginPausedSeek,
+    /// The pump dispatched a seek under the viewer's Pause: open the preroll if none is open and
+    /// take ownership of closing it, or retarget the one the pump already owns.
+    OwnPausedSeek { target_ns: i64 },
+    /// Close the paused-seek preroll, and with it any ownership of it.
+    FinishSeekPreroll,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -379,8 +428,6 @@ pub trait FeedLoad {
     fn ctor_gate(&mut self, mt: &MainThread) -> CtorGate;
     /// Load verdicts the live session still owns, in arrival order.
     fn take_load_outcomes(&mut self) -> Vec<AcceptedLoadOutcome>;
-    /// Prime the live clock for a feed that has presented nothing yet; false with no session.
-    fn arm_live_clock_prime(&mut self) -> bool;
     fn native_audio_stall_fired(&mut self, now: u32) -> bool;
     fn note_missing_era_callback(&mut self);
     /// Feed the dev firmware-refusal probe with route facts.
@@ -402,7 +449,6 @@ pub trait FeedLoad {
     fn load_thread_finished(&self) -> bool;
     /// `(still loading, load thread finished)` of the live session.
     fn preview_load_join_state(&self) -> Option<(bool, bool)>;
-    fn uses_stream_queues(&self) -> bool;
     fn foreground_follows_load(&self) -> bool;
     /// Native readiness for a route or action claim.
     fn route_actions_ready(&self) -> bool;
@@ -416,6 +462,15 @@ pub trait FeedLoad {
 pub trait FeedControl: FeedSeek + FeedLoad {
     /// Carry out one player intent (see [`FeedCommand`]).
     fn command(&mut self, command: FeedCommand);
+    /// The viewer's Pause: prepare the clock transition, issue the native Pause through the
+    /// composition's sink, complete the transition and commit the transport (see
+    /// [`UserPauseOutcome`]). A method rather than a command because the caller acts on the answer.
+    fn user_pause(&mut self, mt: &MainThread) -> UserPauseOutcome;
+    /// The viewer's Resume: the mirror of [`Self::user_pause`] (see [`UserResumeOutcome`]).
+    fn user_resume(&mut self, mt: &MainThread) -> UserResumeOutcome;
+    /// Take the sink volume a paused preroll's Play window muted, clearing the mute: `None` when
+    /// nothing is muted. The caller sets the volume back, so the answer is a value, not an intent.
+    fn take_preroll_volume(&mut self) -> Option<i32>;
 }
 
 /// The physical drivers one composition supplies, behind one object. It is the runner's
