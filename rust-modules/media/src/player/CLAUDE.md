@@ -126,11 +126,13 @@ and the native feed refuses a source shape it cannot represent.
   joins off-frame before the final stopped report. The **demux thread body is `ff::demux`**
   (spawned by `route_start::start_bufferfeed`): open
   the part URL, read+convert packets, push AUs to the two lanes; **and service seeks** — it
-  `av_seek_frame`s on `seek_to_ns` between two `av_read_frame` calls, which is the whole seek
-  mechanism (nothing interrupts it; see the seek gotcha below).
+  `av_seek_frame`s on `FEED_SHARED.seek_to_ns` (the demuxer's target, not the pending-seek slot
+  below) between two `av_read_frame` calls, which is the whole seek mechanism (nothing interrupts
+  it; see the seek gotcha below).
 - The Feed backend's cross-thread transport, callback and clock state (each field replaces a
   C `volatile` global — `g_*`) is owned by `plx_play_feed::shared`: the statics `FEED_SHARED` (the
-  native mailbox and gate) and `FEED_TX` (pause and seek intent). They are statics because
+  native mailbox and gate) and `FEED_TX` (the pause transport, and the Feed's own copy of the
+  pending seek). They are statics because
   `sf_on_event` is a firmware callback with no user-data pointer and the demux, Load and subtitle
   workers reach them off-thread; the executor types (`FeedResources`, `native_executor`) are handed
   `&'static` references instead of naming them. Media's `player::shared` re-exports the module,
@@ -140,6 +142,18 @@ and the native feed refuses a source shape it cannot represent.
   backend (captions, container track names, the audio-pick reason, `hud_until`, `scrub_ns`), and
   `SHARED.reset_session` composes the caption reset into the feed's reset barrier. Route ownership
   and route-changing intents are the separate process-wide authority in `route::PLAYER_CONTROL`.
+- **The pending seek is the session readout's, not a mailbox media writes.** A request is
+  `ReadoutEvent::SeekRequested` plus `FeedCommand::Seek` (`player::request_seek`, the one place);
+  the pump reads `ps.readout().pending_seek()` and TAKES it through `player::take_pending_seek`
+  (the `SeekTaken` event and command in one call, at every take site), or puts it back with
+  `player::requeue_seek` (`SeekRequeued`, not a request). `FEED_TX.seek_to_ns` is the Feed's private
+  copy that gates feeding while a seek waits (no AU is fed with it armed), written only by those
+  commands and by the Feed's own native-`Seek`-refused downgrade, which also publishes
+  `FeedRaw.seek_requeue { epoch, target_ns }`: the readout turns a NEW epoch into one pending seek.
+  A take that cleared only one copy would leave the gate shut through a transcode seek flight (the
+  take is a frame ahead of the landing). The next open's target is `FeedCommand::ArmOpen`
+  (`player::arm_open`, from `reload_at` and a direct-play resume); the transcode `disp_base` /
+  `playpos_ns` stores beside it are the Rebase intent, still raw writes.
   Put new state under the owner whose invariant it belongs to; never smuggle it through a raw
   static.
 
@@ -680,7 +694,7 @@ something.
   starts is `sidecar::restore_selection`'s one answer: the server's selected one, else the one the
   track memory chose for this episode (`Plan::memory_sidecar`, its key and codec read from the
   playing item).
-- **A seek NEVER interrupts the demuxer.** The pump publishes the target in `seek_to_ns` and the
+- **A seek NEVER interrupts the demuxer.** The pump publishes the target in `FEED_SHARED.seek_to_ns` and the
   demux thread — the only thread that touches the `AVFormatContext` — `av_seek_frame`s on it
   between two reads. Do not reintroduce an interrupt: the pump used to `shutdown(2)` the socket to
   break the read so the outer loop would reopen and seek, and it could not work, because our AVIO

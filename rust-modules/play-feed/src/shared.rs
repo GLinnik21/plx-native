@@ -292,6 +292,17 @@ pub struct Shared {
     // wobble through the seek/rebase. -1 display = not loading.
     pub seeking: AtomicBool,
     pub seek_display_ns: AtomicI64,
+    // The seek epoch the player's newest `FeedCommand::Seek` carried (0 = none this session), and
+    // the newest one whose playback has resumed (published where `seeking` is cleared by the
+    // landing). The player derives its own `seeking` from the epoch it requested and this one.
+    pub seek_epoch: AtomicU32,
+    pub seek_landed_epoch: AtomicU32,
+    // The feed's own request to seek again: a refused native `Seek` (the in-place downgrade in
+    // `native_executor`) counts it in `seek_requeue_epoch` (0 = none this session) and publishes
+    // where in `seek_requeue_target`. The player reads both through `FeedRaw::seek_requeue` and
+    // turns a sample whose epoch is new into one pending seek.
+    pub seek_requeue_epoch: AtomicU32,
+    pub seek_requeue_target: AtomicI64,
     // NATIVE audio-track switch (direct-play, no transcode): the 0-based audio stream index
     // to feed. `desired` (-1 = av_find_best_stream) is read by the demuxer to pick the Nth audio
     // stream and PERSISTS across seeks/reloads (reset only on a new item, not in reset_session).
@@ -753,6 +764,10 @@ impl Shared {
             seek_target_ns: AtomicI64::new(-1),
             seeking: AtomicBool::new(false),
             seek_display_ns: AtomicI64::new(-1),
+            seek_epoch: AtomicU32::new(0),
+            seek_landed_epoch: AtomicU32::new(0),
+            seek_requeue_epoch: AtomicU32::new(0),
+            seek_requeue_target: AtomicI64::new(0),
             desired_audio_idx: AtomicI32::new(-1),
             applied_rate_permille: AtomicI32::new(RATE_NORMAL),
             speed_audio_verdict: AtomicU8::new(0),
@@ -994,15 +1009,16 @@ impl Shared {
     }
 
     /// Arm the demuxer to open+seek to `target_ns` on the NEXT Load, displaying honest content
-    /// time. disp_base=0 and (via start_bufferfeed) rebase_pending=true, so feed_stream rebases
-    /// the landed keyframe K to fed-pts 0 and the presented position reads as num+K = content
-    /// time. Call BEFORE start_bufferfeed (resume) or via reload_at (mid-play seek). Main thread
-    /// only, and it takes no `MainThread` token: it publishes to this struct and reaches no slot.
-    pub fn arm_seek(&self, target_ns: i64) {
-        let t = target_ns.max(0);
-        self.seek_to_ns.store(t, Ordering::Release);
-        self.disp_base.store(0, Ordering::Relaxed);
-        self.playpos_ns.store(t, Ordering::Relaxed); // instant HUD feedback until frames land
+    /// time (`FeedCommand::ArmOpen`). The player passes disp_base=0 and, via start_bufferfeed,
+    /// rebase_pending=true, so feed_stream rebases the landed keyframe K to fed-pts 0 and the
+    /// presented position reads as num+K = content time; `playpos_ns` gives instant HUD feedback
+    /// until frames land. The values arrive clamped (`player::arm_open`). Sent BEFORE
+    /// start_bufferfeed (resume) or via reload_at (mid-play seek). Main thread only, and it takes no
+    /// `MainThread` token: it publishes to this struct and reaches no slot.
+    pub fn arm_open(&self, target_ns: i64, disp_base: i64, playpos_ns: i64) {
+        self.seek_to_ns.store(target_ns, Ordering::Release);
+        self.disp_base.store(disp_base, Ordering::Relaxed);
+        self.playpos_ns.store(playpos_ns, Ordering::Relaxed);
     }
 
     /// Publish the display aspect the sourceInfo declared, as a reduced `(num, den)`. Packed
@@ -1137,6 +1153,10 @@ impl Shared {
         self.seek_target_ns.store(-1, Ordering::Relaxed);
         self.seeking.store(false, Ordering::Relaxed);
         self.seek_display_ns.store(-1, Ordering::Relaxed);
+        self.seek_epoch.store(0, Ordering::Relaxed);
+        self.seek_landed_epoch.store(0, Ordering::Relaxed);
+        self.seek_requeue_epoch.store(0, Ordering::Relaxed);
+        self.seek_requeue_target.store(0, Ordering::Relaxed);
         // NB: desired_audio_idx is NOT reset here — it persists across seeks/reloads so a
         // native audio-track choice survives seeking. It is reset on a new item (route).
         // The viewer's offered rate lives in the session's readout and persists likewise; the
@@ -1923,11 +1943,11 @@ pub struct Transport {
     /// default again, so only a still-live pipeline ever needs the restore
     /// (`player::restore_preroll_volume`: resume, the accepted re-pause, and the pump's per-tick sweep).
     preroll_volume: AtomicI32,
-    pub seek_to_ns: AtomicI64, // g_seek_to_ns (UI seek request, -1 = none)
-    // Seek requests received since the pump last APPLIED one. seek_to_ns only ever holds the
-    // newest target, so without this counter a coalesced burst is indistinguishable from a
-    // single tap after the fact — the pump reports `coalesced=` from it (see pump.rs).
-    pub seek_reqs: AtomicU32,
+    /// The feed's copy of the pending seek (-1 = none). It gates feeding while a seek waits (no AU
+    /// is fed with one armed) and is written ONLY by commands: `Seek` and `SeekRequeued` arm it,
+    /// `SeekTaken` clears it, and the native-Seek-refused downgrade re-arms it itself. The
+    /// player's own pending target, and how many requests it folded, are its readout.
+    pub seek_to_ns: AtomicI64,
 }
 
 /// The instant the user-pause clock reads for a transition or a sample. `Instant::now()`, except
@@ -2081,7 +2101,6 @@ impl Transport {
             seek_preroll_owned: AtomicI64::new(-1),
             preroll_volume: AtomicI32::new(PREROLL_VOLUME_NONE),
             seek_to_ns: AtomicI64::new(-1),
-            seek_reqs: AtomicU32::new(0),
         }
     }
 
@@ -2227,7 +2246,6 @@ impl Transport {
     pub fn reset_for_reload(&self) {
         self.started.store(false, Ordering::Relaxed);
         self.seek_to_ns.store(-1, Ordering::Relaxed);
-        self.seek_reqs.store(0, Ordering::Relaxed);
     }
 
     /// reset on stop (mirrors the transport tail of stop_bufferfeed).
@@ -2244,7 +2262,6 @@ impl Transport {
         // `PlayerScreen` (or, on an auto-advance chain, `start_playback`'s in-place reset of the
         // live one), and both publish `Scrub::IDLE` themselves.
         self.seek_to_ns.store(-1, Ordering::Relaxed);
-        self.seek_reqs.store(0, Ordering::Relaxed);
     }
 }
 

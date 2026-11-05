@@ -7,8 +7,9 @@
 //! [`crate::player::adapter::PlayerAdapter`] that consumes a [`MainThread`] at construction, so a
 //! `&mut PlayerAdapter` borrow is what confines it now (see `player::adapter`). Which is also the
 //! rule for the rest of this file — a function here takes the token **iff** it reaches the slot
-//! or the ACB/Starfish seam, so the parameter carries information. `FEED_SHARED.arm_seek` runs on
-//! the main thread too and deliberately takes none: it only publishes to the Feed's own state.
+//! or the ACB/Starfish seam, so the parameter carries information. `FeedCommand::ArmOpen` (the Feed's
+//! `FEED_SHARED.arm_open`) runs on the main thread too and deliberately takes none: it only
+//! publishes to the Feed's own state.
 #[cfg(test)]
 use plx_play_feed::shared::FEED_SHARED;
 #[cfg(all(test, feature = "hostsim"))]
@@ -4564,7 +4565,6 @@ mod native_seek_tests {
             FEED_SHARED.seek_target_ns.store(-1, Ordering::Relaxed);
             FEED_SHARED.pres_fed.store(0, Ordering::Relaxed);
             FEED_TX.seek_to_ns.store(-1, Ordering::Relaxed);
-            FEED_TX.seek_reqs.store(0, Ordering::Relaxed);
         }
     }
 
@@ -4573,7 +4573,6 @@ mod native_seek_tests {
         ffi_host::reset_seek_probe_for_test(force_seek);
         FEED_SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
         FEED_TX.seek_to_ns.store(-1, Ordering::Relaxed);
-        FEED_TX.seek_reqs.store(0, Ordering::Relaxed);
         Restore
     }
 

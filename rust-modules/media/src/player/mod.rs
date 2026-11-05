@@ -229,6 +229,8 @@ pub fn seed_dev_track_names() {
     *SHARED.track_names.lock().unwrap() = TrackNames { audio, subs };
 }
 use std::os::raw::c_int;
+#[cfg(feature = "play-feed")]
+use plx_playback_contract::feed::FeedCommand;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
 pub static SHARED: Shared = Shared::new();
@@ -722,8 +724,14 @@ pub fn seen_frame(ps: &crate::route::PlaybackSession) -> Option<bool> {
 pub fn duration_ns(ps: &crate::route::PlaybackSession) -> Option<i64> {
     ps.attempt_view().facts().duration_ns
 }
+/// The seek that waits for the pump: the Feed's is the session's readout (`PlayerReadout::pending_seek`,
+/// written by the request and the pump's take); the URI backend's is the `AttemptFacts` value its
+/// driver writes.
 pub fn seek_pending(ps: &crate::route::PlaybackSession) -> Option<i64> {
-    ps.attempt_view().facts().seek_pending_ns
+    match ps.attempt_view().backend() {
+        Some(attempt_view::Backend::Feed) => ps.readout().pending_seek(),
+        _ => ps.attempt_view().facts().seek_pending_ns,
+    }
 }
 /// true once the pipeline has drained to true end-of-stream (see pump's EOS check). app.rs polls
 /// this to tear the player down at the credits.
@@ -741,26 +749,32 @@ pub fn ended(ps: &crate::route::PlaybackSession) -> Option<bool> {
     }
 }
 #[cfg(feature = "play-feed")]
-pub fn request_seek(ps: &mut crate::route::PlaybackSession, ns: i64) {
+pub fn request_seek(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut adapter::PlayerAdapter,
+    ns: i64,
+) {
     report::note_seek_for(crate::route::playback_trace_generation());
     crate::route::note_user_seek_intent(ns);
-    ps.step_readout(readout::ReadoutEvent::EndSuperseded); // seeking back from the end un-ends the stream
-    FEED_SHARED.pipeline_eos.store(false, Relaxed);
-    FEED_SHARED.seek_display_ns.store(ns, Relaxed);
-    FEED_SHARED.seeking.store(true, std::sync::atomic::Ordering::Release);
-    // The seek target is now published before a worker can observe the seek flag or request.
-    FEED_TX.seek_to_ns.store(ns, Relaxed);
-    // Count the request even though the target it carries may be overwritten before the pump
-    // ever sees it — that overwrite IS the coalescing, and this is the only place it's countable.
-    FEED_TX.seek_reqs.fetch_add(1, Relaxed);
+    // One intent, one event, one command. The event un-ends a stream that had drained, numbers the
+    // request and makes `ns` the pending target (the overwrite of an earlier one IS the
+    // coalescing, and the readout counts it); the command tells the feed, which publishes its copy
+    // of the target before a worker can observe the seek flag and clears the pipeline's own end of
+    // stream.
+    ps.step_readout(readout::ReadoutEvent::SeekRequested { target_ns: ns, display_ns: ns });
+    pa.feed_command(FeedCommand::Seek {
+        epoch: ps.readout().seek_epoch(),
+        target_ns: ns,
+        display_ns: ns,
+    });
 }
 /// **The seek was ABANDONED — put the playhead back on reality.**
 ///
-/// [`request_seek`] sets `FEED_SHARED.seeking`, and until 2026-08-27 exactly ONE place ever cleared it:
+/// [`request_seek`] puts a seek in flight, and until 2026-08-27 exactly ONE place ever ended it:
 /// the successful prime→Play in `native_executor::try_prime`. Every path that gives UP on a seek
 /// therefore leaked the flag — and that flag is what the readout's `Presented` derivation reads to publish
 /// `PlaybackState::Seeking`, which means a spinner over the picture, the playhead frozen at
-/// `seek_display_ns`, and `is_playing()` false, **for the rest of the playback**, while the
+/// the seek's display target, and `is_playing()` false, **for the rest of the playback**, while the
 /// pipeline goes on fetching and presenting underneath.
 ///
 /// Device-measured 2026-08-27 (`docs/measurements/j3e-logs/pipe_abr_seek_flat.log`): a transcode
@@ -770,20 +784,71 @@ pub fn request_seek(ps: &mut crate::route::PlaybackSession, ns: i64) {
 ///
 /// A flag set by the requester and cleared only on the success path is a wedge waiting to happen.
 /// This exists so every give-up path can say so in one word, rather than each remembering a store
-/// — which is the arrangement that failed. `seek_display_ns` goes back to `-1` with it, since the
-/// HUD reads that as "no seek target" and a stale one would keep the frozen playhead after the
-/// spinner cleared.
+/// — which is the arrangement that failed. Since the move into the readout the flag is not stored
+/// at all (`seeking` is the requested epoch above the landed one), and this is one event and one
+/// command: `SeekAbandoned` settles every request so far, and the feed's display target goes back
+/// to `-1` with it, since the HUD reads that as "no seek target" and a stale one would keep the
+/// frozen playhead after the spinner cleared.
 #[cfg(feature = "play-feed")]
-pub fn abandon_seek() {
+pub fn abandon_seek(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter) {
     crate::route::reject_user_seek();
-    FEED_SHARED.seeking.store(false, Relaxed);
-    FEED_SHARED.seek_display_ns.store(-1, Relaxed);
+    ps.step_readout(readout::ReadoutEvent::SeekAbandoned);
+    pa.feed_command(FeedCommand::AbandonSeek);
     // A failed seek never got the one-frame preroll it was promised. Preserve the viewer's Paused
     // intent and close only the feed override; the existing user clock hold remains authoritative.
     if FEED_TX.seek_preroll_active() {
         FEED_TX.finish_seek_preroll();
     }
 }
+/// The seek the pump took off the pending slot: where it is aimed and how many requests it folded.
+#[cfg(feature = "play-feed")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct TakenSeek {
+    pub target_ns: i64,
+    /// The requests merged into it beyond the first (`coalesced=` in the log).
+    pub coalesced: u32,
+}
+
+/// **The pump takes the pending seek.** Every take site goes through here: the readout's pending
+/// target and the feed's copy of it are cleared in the same call, so the feed's gate (no AU is fed
+/// while a seek is armed) never outlives a target the player no longer holds. The command goes out
+/// whether or not the player held one: a take is "nothing waits any more", and the feed clears its
+/// copy unconditionally. Returns what the readout held.
+#[cfg(feature = "play-feed")]
+pub(super) fn take_pending_seek(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut adapter::PlayerAdapter,
+) -> Option<TakenSeek> {
+    let taken = ps.readout().pending_seek()
+        .map(|target_ns| TakenSeek { target_ns, coalesced: ps.readout().seek_coalesced() });
+    ps.step_readout(readout::ReadoutEvent::SeekTaken);
+    pa.feed_command(FeedCommand::SeekTaken { epoch: ps.readout().seek_epoch() });
+    taken
+}
+
+/// **A taken seek waits again** (the clock transition was busy, or a newer tap outlived a reload):
+/// the readout's pending target and the feed's copy are armed in the same call. This is not a
+/// request, so no epoch is numbered and no seek is put in flight; see [`FeedCommand::SeekRequeued`].
+#[cfg(feature = "play-feed")]
+pub(super) fn requeue_seek(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut adapter::PlayerAdapter,
+    target_ns: i64,
+) {
+    ps.step_readout(readout::ReadoutEvent::SeekRequeued { target_ns });
+    pa.feed_command(FeedCommand::SeekRequeued { target_ns });
+}
+
+/// **The next open starts at `target_ns`**: a reload (`reload_at`) or a direct-play resume. The
+/// demuxer is armed to open and seek there, the display base is 0 (the landed keyframe is
+/// re-based to content time) and the HUD reads the target as the position until frames land. A
+/// negative target is the start (the clamp the Feed's old `arm_seek` applied itself).
+#[cfg(feature = "play-feed")]
+pub(super) fn arm_open(pa: &mut adapter::PlayerAdapter, target_ns: i64) {
+    let at = target_ns.max(0);
+    pa.feed_command(FeedCommand::ArmOpen { target_ns: at, disp_base: 0, playpos_ns: at });
+}
+
 /// true while a seek is resolving (request → reopen/reload → prime → Play): the HUD shows a
 /// spinner and freezes the playhead at `seek_display_ns` instead of wobbling through the reopen.
 pub fn loading(ps: &crate::route::PlaybackSession) -> bool {
@@ -852,7 +917,7 @@ pub fn state(ps: &crate::route::PlaybackSession) -> PlaybackState {
     }
     #[cfg(feature = "play-feed")]
     {
-        if FEED_SHARED.seeking.load(Relaxed) {
+        if ps.readout().seeking() {
             return PlaybackState::Seeking;
         }
         // A retranscode claim holds presentation during the server round trip.
@@ -1779,8 +1844,14 @@ pub fn diag(ps: &crate::route::PlaybackSession) -> Diag {
     }
 }
 
+/// The playhead the HUD freezes at while a seek resolves: the Feed's is the session's readout
+/// (`PlayerReadout::seek_display_ns`); the URI backend's is the `AttemptFacts` value its driver
+/// writes.
 pub fn seek_display_ns(ps: &crate::route::PlaybackSession) -> Option<i64> {
-    ps.attempt_view().facts().seek_display_ns
+    match ps.attempt_view().backend() {
+        Some(attempt_view::Backend::Feed) => ps.readout().seek_display_ns(),
+        _ => ps.attempt_view().facts().seek_display_ns,
+    }
 }
 /// The playhead the user INTENDS, which is not always the one being published: while a seek is
 /// still resolving (request → reopen → prime → Play) `playpos_ns` keeps reporting the PRE-seek
@@ -1917,7 +1988,11 @@ pub fn applied_rate(ps: &crate::route::PlaybackSession) -> Option<i32> {
 ///
 /// Returns whether anything was requested: picking the speed already set does nothing.
 #[cfg(feature = "play-feed")]
-pub fn set_play_rate(ps: &mut crate::route::PlaybackSession, permille: i32) -> bool {
+pub fn set_play_rate(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut adapter::PlayerAdapter,
+    permille: i32,
+) -> bool {
     if !PLAY_RATES.contains(&permille) || permille == ps.requested_rate_permille() {
         return false;
     }
@@ -1933,7 +2008,7 @@ pub fn set_play_rate(ps: &mut crate::route::PlaybackSession, permille: i32) -> b
     }
     ps.step_readout(readout::ReadoutEvent::RateReloadArmed);
     let target = intended_pos_ns(ps).max(0);
-    request_seek(ps, target);
+    request_seek(ps, pa, target);
     true
 }
 #[cfg(feature = "play-feed")]
@@ -2042,12 +2117,16 @@ pub fn speed_audio_report(ps: &crate::route::PlaybackSession) -> Option<bool> {
 /// ([`speed_unsupported`]), put the viewer's speed back to Normal, and reload at their position —
 /// the same reload a speed change is, which now lands at 1x on the TV's own audio path.
 #[cfg(feature = "play-feed")]
-pub(crate) fn fall_back_from_speed(ps: &mut crate::route::PlaybackSession, why: &str) {
+pub(crate) fn fall_back_from_speed(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut adapter::PlayerAdapter,
+    why: &str,
+) {
     log(&format!("speed: FALLING BACK to 1x — {why}; speed is off until the app restarts"));
     // One decision, one event: the latch, the viewer back at 1x and the reload that lands there.
     ps.step_readout(readout::ReadoutEvent::SpeedRefused);
     let target = intended_pos_ns(ps).max(0);
-    request_seek(ps, target);
+    request_seek(ps, pa, target);
 }
 
 /// Back to 1x — called on a new item, like [`reset_audio_track`]: a speed is a choice about what
@@ -2778,11 +2857,12 @@ mod tests {
         }
         let _restore = Restore;
         let mut ps = crate::route::PlaybackSession::IDLE;
+        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
         SHARED.reset_session();
         FEED_TX.reset();
         crate::ff::force_speed_decoder_for_test(true);
 
-        assert!(set_play_rate(&mut ps, 1250), "not started: remembered for the next Load");
+        assert!(set_play_rate(&mut ps, &mut pa, 1250), "not started: remembered for the next Load");
         assert_eq!(ps.readout().play_rate_permille(), 1250);
         assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), -1, "with nothing on screen there is nothing to reload");
         assert!(!ps.readout().rate_reload());
@@ -2793,15 +2873,16 @@ mod tests {
         assert!(ps.ingest_attempt_facts(attempt, crate::player::attempt_view::Backend::Feed, attempt_view::AttemptFacts {
             position_ns: Some(42_000_000_000), ..Default::default()
         }));
-        assert!(set_play_rate(&mut ps, 1500));
+        assert!(set_play_rate(&mut ps, &mut pa, 1500));
         assert_eq!(ps.readout().play_rate_permille(), 1500);
         assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), 42_000_000_000, "a seek to the viewer's own position");
+        assert_eq!(seek_pending(&ps), Some(42_000_000_000), "the player's own target is the same one");
         assert!(ps.readout().rate_reload(), "marked so an in-place seek mode reloads it");
 
-        FEED_TX.seek_to_ns.store(-1, Relaxed);
+        assert!(take_pending_seek(&mut ps, &mut pa).is_some());
         ps.step_readout(readout::ReadoutEvent::RateReloadTaken);
-        assert!(!set_play_rate(&mut ps, 1500), "the speed already set asks for nothing");
-        assert!(!set_play_rate(&mut ps, 1300), "off the ladder");
+        assert!(!set_play_rate(&mut ps, &mut pa, 1500), "the speed already set asks for nothing");
+        assert!(!set_play_rate(&mut ps, &mut pa, 1300), "off the ladder");
         assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), -1);
         assert_eq!(ps.readout().play_rate_permille(), 1500);
         assert!(!ps.readout().rate_reload(), "asking for nothing arms nothing");
@@ -2812,7 +2893,7 @@ mod tests {
         // a television that failed a PCM session offers no speed at all
         ps.step_readout(readout::ReadoutEvent::SpeedRefused);
         assert!(speed_offer(&ps).is_empty());
-        assert!(!set_play_rate(&mut ps, 1500), "nothing is offered after the fallback");
+        assert!(!set_play_rate(&mut ps, &mut pa, 1500), "nothing is offered after the fallback");
         assert_eq!(ps.readout().play_rate_permille(), RATE_NORMAL);
     }
 
@@ -2833,6 +2914,7 @@ mod tests {
         }
         let _restore = Restore;
         let mut ps = crate::route::PlaybackSession::IDLE;
+        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
         SHARED.reset_session();
         FEED_TX.reset();
         crate::ff::force_speed_decoder_for_test(true);
@@ -2844,13 +2926,92 @@ mod tests {
         ps.step_readout(readout::ReadoutEvent::RateSelected { permille: 1500 });
         assert!(!ps.readout().speed_unsupported());
 
-        fall_back_from_speed(&mut ps, "test refusal");
+        fall_back_from_speed(&mut ps, &mut pa, "test refusal");
 
         assert!(ps.readout().speed_unsupported(), "the latch is for the life of the session");
         assert_eq!(ps.readout().play_rate_permille(), RATE_NORMAL, "the viewer is back at 1x");
         assert!(ps.readout().rate_reload(), "the reload that lands at 1x is armed");
         assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), 42_000_000_000, "reloaded where the viewer is");
         assert!(speed_offer(&ps).is_empty(), "the menu offers no speed after a refusal");
+    }
+
+    /// **A take clears the feed's gate and the player's target in the SAME call.** The feed's copy of
+    /// the pending seek gates feeding (no AU is fed while one is armed) and the transcode path takes
+    /// the target a frame ahead of the flight's landing, so a take that cleared only the player's
+    /// copy would leave the AU gate shut through the whole flight. The take reports what the player
+    /// held, how many requests it folded, and clears the feed's copy even when the player held
+    /// nothing (a copy it no longer owns must never outlive it).
+    #[cfg(feature = "play-feed")]
+    #[test]
+    fn a_take_clears_the_feeds_gate_with_the_players_target_in_one_call() {
+        let _serial = plx_base::testlock::serial();
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                SHARED.reset_session();
+                FEED_TX.reset();
+            }
+        }
+        let _restore = Restore;
+        SHARED.reset_session();
+        FEED_TX.reset();
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+
+        request_seek(&mut ps, &mut pa, 42_000_000_000);
+        request_seek(&mut ps, &mut pa, 50_000_000_000);
+        assert_eq!(ps.readout().pending_seek(), Some(50_000_000_000), "the newest target wins");
+        assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), 50_000_000_000, "and the feed's gate is armed with it");
+
+        let taken = take_pending_seek(&mut ps, &mut pa);
+        assert_eq!(taken, Some(TakenSeek { target_ns: 50_000_000_000, coalesced: 1 }));
+        assert_eq!(ps.readout().pending_seek(), None, "the player no longer holds a target");
+        assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), -1, "the feed's gate reads no seek armed");
+        assert!(ps.readout().seeking(), "taking the target is not landing it");
+        assert_eq!(seek_pending(&ps), None);
+
+        // A copy the feed holds that the player does not (a reload zeroed the player's side first).
+        FEED_TX.seek_to_ns.store(7_000_000_000, Relaxed);
+        assert_eq!(take_pending_seek(&mut ps, &mut pa), None, "the player held nothing");
+        assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), -1, "the take still cleared the feed's copy");
+
+        // Putting a taken seek back arms both copies again, as one request, and numbers nothing.
+        let epoch = ps.readout().seek_epoch();
+        requeue_seek(&mut ps, &mut pa, 50_000_000_000);
+        assert_eq!(ps.readout().pending_seek(), Some(50_000_000_000));
+        assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), 50_000_000_000);
+        assert_eq!(ps.readout().seek_epoch(), epoch, "a requeue is not a request");
+        assert_eq!(take_pending_seek(&mut ps, &mut pa).map(|t| t.coalesced), Some(0));
+    }
+
+    /// `arm_open` is the old `arm_seek` through the feed's command: the demuxer's open target, a
+    /// display base of 0 and the HUD's position, with the start as the floor of a negative target.
+    #[cfg(feature = "play-feed")]
+    #[test]
+    fn arm_open_arms_the_next_open_with_the_start_as_the_floor() {
+        let _serial = plx_base::testlock::serial();
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                SHARED.reset_session();
+                FEED_TX.reset();
+            }
+        }
+        let _restore = Restore;
+        SHARED.reset_session();
+        FEED_TX.reset();
+        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+
+        FEED_SHARED.disp_base.store(77, Relaxed);
+        arm_open(&mut pa, 90_000_000_000);
+        assert_eq!(FEED_SHARED.seek_to_ns.load(Relaxed), 90_000_000_000);
+        assert_eq!(FEED_SHARED.disp_base.load(Relaxed), 0);
+        assert_eq!(FEED_SHARED.playpos_ns.load(Relaxed), 90_000_000_000);
+
+        arm_open(&mut pa, -5);
+        assert_eq!(FEED_SHARED.seek_to_ns.load(Relaxed), 0, "a negative target opens at the start");
+        assert_eq!(FEED_SHARED.playpos_ns.load(Relaxed), 0);
+        assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), -1, "the pending-seek gate is not the open target");
     }
 
     // The jail/rtkmem refusal (no Engine ever built, `state()` deriving `Error`, and the
@@ -2863,9 +3024,10 @@ mod tests {
     fn forced_original_never_offers_or_retains_a_pcm_speed() {
         let _serial = plx_base::testlock::serial();
         let mut ps = crate::route::PlaybackSession::IDLE;
+        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
         crate::route::set_direct_play_mode_for_test(&mut ps, crate::route::DirectPlayMode::Forced);
         assert!(speed_offer(&ps).is_empty());
-        assert!(!set_play_rate(&mut ps, 1250));
+        assert!(!set_play_rate(&mut ps, &mut pa, 1250));
         // A speed retained from a preceding Auto route must not silently decode this Load.
         ps.accept_requested_rate(1500);
         ps.step_readout(readout::ReadoutEvent::RateSelected { permille: 1500 });
@@ -3159,7 +3321,8 @@ mod tests {
         sf_on_event(epoch, 28, 1, c"true".as_ptr());
         assert!(FEED_SHARED.pipeline_eos.load(Relaxed), "the pipeline said it reached the end");
         let mut ps = crate::route::PlaybackSession::IDLE;
-        request_seek(&mut ps, 1_000_000_000);
+        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        request_seek(&mut ps, &mut pa, 1_000_000_000);
         assert!(!FEED_SHARED.pipeline_eos.load(Relaxed), "a seek back from the end un-ends it");
         FEED_SHARED.retire_native_session(epoch);
         SHARED.reset_session();
@@ -3503,13 +3666,12 @@ mod tests {
         FEED_TX.resume_pend
             .store(true, std::sync::atomic::Ordering::Release);
         assert!(FEED_TX.begin_paused_seek());
-        // Test setup only: avoid looking like a second production arm site to the source-level
-        // invariant in tests/test_harness.py.
-        FEED_SHARED
-            .seeking
-            .swap(true, std::sync::atomic::Ordering::AcqRel);
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        request_seek(&mut ps, &mut pa, 1_000_000_000);
 
-        abandon_seek();
+        abandon_seek(&mut ps, &mut pa);
+        assert!(!ps.readout().seeking(), "the give-up ended the seek the press put in flight");
 
         assert!(FEED_TX.paused.load(std::sync::atomic::Ordering::Acquire));
         assert!(!FEED_TX.seek_preroll_active());
@@ -3519,8 +3681,9 @@ mod tests {
 
     /// **A seek that is given up on must not leave the spinner armed forever.**
     ///
-    /// `request_seek` sets `FEED_SHARED.seeking`, and the ONLY place that cleared it was the successful
-    /// prime→Play. the readout's `Presented` derivation publishes `PlaybackState::Seeking` from that flag ahead of
+    /// `request_seek` put a seek in flight (the Feed's `seeking` flag, which the readout now derives from
+    /// the requested epoch against the landed one), and the ONLY place that ended it was the successful
+    /// prime→Play. the readout's `Presented` derivation publishes `PlaybackState::Seeking` from it ahead of
     /// every other arm — deliberately, since the frames on the panel during a seek are the
     /// pre-seek ones — so a leaked flag means a permanent spinner, a playhead frozen at the target
     /// and `is_playing()` false, while the pipeline plays on underneath. Device-measured: 84
@@ -3538,10 +3701,12 @@ mod tests {
         let was_display = FEED_SHARED.seek_display_ns.load(Relaxed);
 
         let mut ps = crate::route::PlaybackSession::IDLE;
-        request_seek(&mut ps, 40_000_000_000);
+        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        request_seek(&mut ps, &mut pa, 40_000_000_000);
+        assert!(ps.readout().seeking(), "the requester arms the spinner");
         assert!(
             FEED_SHARED.seeking.load(Relaxed),
-            "the requester arms the spinner"
+            "and the feed's own gate"
         );
         assert_eq!(
             FEED_SHARED.seek_display_ns.load(Relaxed),
@@ -3549,8 +3714,9 @@ mod tests {
             "and freezes the playhead at the target"
         );
 
-        abandon_seek();
-        assert!(!FEED_SHARED.seeking.load(Relaxed), "giving up must disarm it");
+        abandon_seek(&mut ps, &mut pa);
+        assert!(!ps.readout().seeking(), "giving up must disarm it");
+        assert!(!FEED_SHARED.seeking.load(Relaxed), "in the feed as well");
         assert_eq!(
             FEED_SHARED.seek_display_ns.load(Relaxed),
             -1,
@@ -4441,7 +4607,8 @@ mod seek_hud_regressions {
         assert_eq!(state(&ps), PlaybackState::Playing);
         // the REAL press path — and deliberately so: `tests/test_harness.py` holds that exactly
         // one place in the tree arms this flag, which a test arming it by hand would break
-        request_seek(&mut ps, 90_000_000_000);
+        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        request_seek(&mut ps, &mut pa, 90_000_000_000);
         assert_eq!(state(&ps), PlaybackState::Seeking, "the pump has not run yet");
         assert!(state(&ps).is_busy(), "busy is what freezes the HUD's playhead on the target");
         assert_eq!(FEED_SHARED.seek_display_ns.load(Relaxed), 90_000_000_000, "…and this is the target it freezes on");

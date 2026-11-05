@@ -1086,12 +1086,12 @@ mod tests {
 
     /// **Requirement 3, the trivial half: `seek` refuses outright, and touches nothing, when there
     /// is no live bound/playing preview to seek within** — the same race [`transport`] refuses for
-    /// the same reason. `FEED_TX.seek_reqs` is the counter `player::request_seek` bumps on every call;
-    /// this pins that `preview::seek` never becomes a second path to it, which is the whole of the
+    /// the same reason. The readout's seek epoch is the counter `player::request_seek` bumps on every
+    /// call; this pins that `preview::seek` never becomes a second path to it, which is the whole of the
     /// watch-state promise as it applies to a seek (`route::note_user_seek_intent` and
     /// `report::note_seek_for` live behind that same one call). The `Started`/`StartFailed` arms of
     /// `seek` reach `engine::reload_at`, which needs a live native session this host test cannot
-    /// build without the `hostsim` feature — those remain proven by `arm_seek`'s own body (it only
+    /// build without the `hostsim` feature — those remain proven by `ArmOpen`'s own body (it only
     /// touches engine-level `FEED_SHARED` atomics) and by device verification, not by this test.
     ///
     /// Gated on `hostsim`, like `player::engine`'s own `PlayerAdapter`-constructing tests
@@ -1107,16 +1107,17 @@ mod tests {
             plx_base::task::MainThread::assume()
         });
         assert!(!pa.is_live(), "test requires an empty native-session slot");
-        let before = FEED_TX.seek_reqs.load(std::sync::atomic::Ordering::Relaxed);
+        let before = ps.readout().seek_epoch();
 
         let outcome = seek(&mut ps, &mut pa, 5_000_000_000);
 
         assert_eq!(outcome, SeekOutcome::Refused);
         assert_eq!(
-            FEED_TX.seek_reqs.load(std::sync::atomic::Ordering::Relaxed),
+            ps.readout().seek_epoch(),
             before,
             "preview::seek must never go through player::request_seek's counter"
         );
+        assert_eq!(ps.readout().pending_seek(), None, "and leaves no seek waiting");
     }
 
     #[test]

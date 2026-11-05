@@ -581,7 +581,7 @@ impl PlayerAdapter {
         if let Some(accepted) = self.seek_uri(ps, target_ns) { return accepted; }
         #[cfg(feature = "play-feed")]
         {
-            super::request_seek(ps, target_ns);
+            super::request_seek(ps, self, target_ns);
             return true;
         }
         #[cfg(not(feature = "play-feed"))]
@@ -595,7 +595,7 @@ impl PlayerAdapter {
             return false;
         }
         #[cfg(feature = "play-feed")]
-        { super::set_play_rate(ps, permille) }
+        { super::set_play_rate(ps, self, permille) }
         #[cfg(not(feature = "play-feed"))]
         { let _ = (ps, permille); false }
     }
@@ -1601,6 +1601,12 @@ impl PlayerAdapter {
     #[cfg(feature = "play-feed")]
     pub(super) fn feed_uses_stream_queues(&self) -> bool {
         self.physical.feed_backend().uses_stream_queues()
+    }
+    /// Hand the feed one player intent. A composition with no feed drops it, as it does every
+    /// other feed verb.
+    #[cfg(feature = "play-feed")]
+    pub(super) fn feed_command(&mut self, command: plx_playback_contract::feed::FeedCommand) {
+        if let Some(feed) = self.physical.feed() { feed.command(command); }
     }
     #[cfg(feature = "play-feed")]
     pub(super) fn arm_feed_live_clock_prime(&mut self) -> bool {
