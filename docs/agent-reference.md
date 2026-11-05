@@ -1189,7 +1189,10 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   processes on purpose and checks the record AND the exit status, and probes another with the freeze
   signal (`SIGUSR2`) to check it records and survives. `src/starfish.c` — the
   StarfishMediaAPIs C++/ACB seam. `src/svg.c` — nanosvg rasterizer. `src/sentry_context.c` — the
-  narrow C wrapper that keeps Sentry's opaque by-value object ABI out of Rust. These five are the
+  narrow C wrapper that keeps Sentry's opaque by-value object ABI out of Rust. `src/exit.c` — libc
+  `exit` defined in the executable (and exported by the link), so a shared library's `exit()` ends the
+  process through `plx_base::process::plx_exit_intercepted` and `exit_now`; `ci/exit-interpose-test.c`
+  grades it on Linux. These six are the
   entire normal C side (`gpdebug.c` is an opt-in allocator instrument). Reach for
   `/tmp/plxnative-crashtest=<segv|abrt|bus|ill|trap|panic|unwind>` to fault the app deliberately
   ON the television — `segv` is a real null write, `abrt`/`bus`/`ill`/`trap` are `raise`, `panic`

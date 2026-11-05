@@ -6,6 +6,10 @@
 //! probes) are still running; their next `CRYPTO_THREAD_*_lock` is `pthread_rwlock_*lock(NULL)`, a
 //! SIGSEGV at 0x1c on a clean exit (#1115). It also runs the firmware libraries' C++ finalizers
 //! under a worker still inside them. `_exit` ends every thread at once and runs none of it.
+//!
+//! In the TV executable libc's `exit` itself is interposed (`src/exit.c`), so an `exit` made by a
+//! firmware or system library on a thread of its own ends the process through
+//! [`plx_exit_intercepted`] and [`exit_now`] as well.
 
 use crate::task::watchdog::CrashPhase;
 use std::os::raw::c_int;
@@ -33,93 +37,95 @@ pub fn exit_now(code: c_int) -> ! {
     }
 }
 
-/// **Pre-empt libc `exit` from a thread this app does not own** (PLX-NATIVE-1P).
+/// **The one function `src/exit.c` calls: an `exit()` made by a shared library ends the process
+/// like every other exit** (Sentry PLX-NATIVE-1P).
 ///
-/// Every exit the app makes goes through [`exit_now`], but a firmware or system library thread can
-/// still call libc `exit` on its own: measured on a webOS 4 Lite set (k5lp, `p.649`), a session
-/// backgrounded mid-playback was ended that way while the main thread was still inside SDL, and
-/// `__run_exit_handlers` ran a library finalizer that tore down the Wayland client state SDL was
-/// still using — SIGSEGV in `libwayland-client`. Same class as #1115, reached from outside.
+/// The executable defines libc's `exit` itself and the link exports it
+/// (`-Wl,--export-dynamic-symbol=exit`), so the `exit` that every other shared object calls binds
+/// to that definition. It lands here with the caller's real `status`; one event-log line names the
+/// calling thread, and [`exit_now`] ends the process: no `atexit` handler and no finalizer runs.
 ///
-/// `atexit` handlers run last-registered-first, so a handler registered AFTER the libraries that
-/// install finalizers runs before all of them (and before `_dl_fini`, which ld.so registers before
-/// `main`), and ends the process with `_exit` so none of them runs. A library loaded later registers
-/// after this one, so callers re-arm at the points where that matters (boot after the GL context and
-/// the video plane, and each background edge); a duplicate registration is harmless because the
-/// handler never returns. The `exit` status is not visible to an `atexit` handler, so the process
-/// ends with 0 — the caller of `exit` was ending a session the system had already decided to close.
+/// What the event shows (0.9.0, webOS TV Lite 4.10, board k5lp, firmware `p.649.grampians.k5lp.1`):
+/// the breadcrumbs run `will_background {playing:true}`, `wayland_released` (+9 ms),
+/// `native_unload` / `acb_plane_unload` / `native_destroyed` (about 1.2 s later), and the crash comes
+/// about 160 ms after that. The crashed thread is SDL's own `SDLTimer` thread (the app only calls
+/// `SDL_Init(SDL_INIT_VIDEO)` and adds no SDL timer), created late, next to the telemetry worker; its
+/// stack is `__run_exit_handlers` and then `<unknown>`, an unsymbolized exit handler that took
+/// SIGSEGV. The main thread was in `run::present_and_swap`, in `__nanosleep`. Which handler crashed,
+/// and why the platform's SDL called `exit`, is not determined.
 ///
-/// Only the app process may arm this: a host test binary reports failure through `exit(101)`, which
-/// this would turn into 0. Call sites are gated off under `test` and `hostsim`.
-pub fn arm_exit_guard() {
-    // SAFETY: `atexit` stores a plain `extern "C"` function pointer; it takes no data of ours.
-    let rc = unsafe { libc::atexit(intercept_exit) };
-    if rc != 0 {
-        crate::eventlog::log("exit guard: atexit registration failed; a foreign exit() runs library finalizers");
-    }
+/// **Why an interposer and not an `atexit` handler.** A handler registered at boot runs after
+/// everything registered later (such as a finalizer a library installs while the playback unload
+/// that follows the background edge runs); an `atexit` handler is also not told the status, and
+/// runs after `exit` has run the thread-local destructors (`__call_tls_dtors`). Interposing `exit`
+/// is independent of when any finalizer registered, keeps the status, and acts before any of it.
+///
+/// **Not covered:** glibc's own callers of `exit` (`error(3)` and `err(3)` with a nonzero status,
+/// `__libc_start_main` after `main` returns) reach libc's hidden alias, not the PLT, so they are not
+/// interposed. The app's own exits all go through [`exit_now`] already.
+///
+/// This can run on a thread this app did not create, after that thread's thread-local destructors
+/// ran, or before `main`, so it must not panic and must not use `std::thread::current()` or any
+/// `thread_local`; `caller_thread` reads the thread's identity from the kernel for that reason.
+#[no_mangle]
+pub extern "C" fn plx_exit_intercepted(status: c_int) -> ! {
+    crate::eventlog::log(&format!(
+        "exit: libc exit({status}) on {}; ending with _exit, no exit handlers run",
+        caller_thread()
+    ));
+    exit_now(status)
 }
 
-/// The handler [`arm_exit_guard`] registers: say who called `exit`, then [`exit_now`].
-extern "C" fn intercept_exit() {
-    crate::eventlog::log(&format!("exit guard: libc exit() intercepted on {}; ending with _exit", caller_thread()));
-    exit_now(0)
-}
-
-/// `tid=<n> name=<comm>` of the thread running the exit handlers, best effort.
+/// `tid=<n> name=<comm>` of the calling thread, best effort, with no filesystem and no thread-local.
 fn caller_thread() -> String {
     #[cfg(target_os = "linux")]
     {
         // SAFETY: `gettid` takes no arguments and cannot fail.
         let tid = unsafe { libc::syscall(libc::SYS_gettid) };
-        let name = std::fs::read_to_string("/proc/thread-self/comm").unwrap_or_default();
-        format!("tid={tid} name={}", name.trim())
+        // `PR_GET_NAME` writes at most 16 bytes (the 15-byte comm and its NUL); the buffer is zeroed,
+        // so a failed call leaves an empty name. The same pair `src/crashtrace.c` uses.
+        let mut buf = [0u8; 16];
+        // SAFETY: `buf` is a valid, writable 16-byte buffer for the whole call.
+        unsafe {
+            libc::prctl(
+                libc::PR_GET_NAME,
+                buf.as_mut_ptr() as libc::c_ulong,
+                0,
+                0,
+                0,
+            )
+        };
+        let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+        format!("tid={tid} name={}", String::from_utf8_lossy(&buf[..len]))
     }
     #[cfg(not(target_os = "linux"))]
     {
-        format!("thread={:?}", std::thread::current().name())
+        "tid=? name=?".to_string()
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
-    /// Run `body` in a forked child and return its exit status (or `None` on a signal).
-    fn in_child(body: impl FnOnce()) -> Option<i32> {
-        // SAFETY: the child only registers handlers and calls `exit`/`_exit`; it never returns
-        // into the test harness.
-        unsafe {
-            let pid = libc::fork();
-            assert!(pid >= 0, "fork");
-            if pid == 0 {
-                body();
-                libc::_exit(77);
-            }
-            let mut status = 0;
-            assert_eq!(libc::waitpid(pid, &mut status, 0), pid);
-            libc::WIFEXITED(status).then(|| libc::WEXITSTATUS(status))
-        }
-    }
-
-    extern "C" fn sentinel() {
-        // Would only run if the guard let the remaining exit handlers through.
-        unsafe { libc::_exit(42) }
-    }
+    use super::caller_thread;
 
     #[test]
-    fn a_foreign_exit_skips_every_handler_registered_before_the_guard() {
-        let status = in_child(|| unsafe {
-            libc::atexit(sentinel); // a "library finalizer", registered first
-            super::arm_exit_guard();
-            libc::exit(3);
-        });
-        assert_eq!(status, Some(0), "the guard ends the process with _exit(0) before the sentinel");
-    }
-
-    #[test]
-    fn without_the_guard_the_sentinel_runs() {
-        let status = in_child(|| unsafe {
-            libc::atexit(sentinel);
-            libc::exit(3);
-        });
-        assert_eq!(status, Some(42));
+    fn caller_thread_names_the_calling_thread_and_its_own_tid() {
+        let seen = std::thread::Builder::new()
+            .name("exit-probe".into())
+            .spawn(caller_thread)
+            .expect("spawn")
+            .join()
+            .expect("join");
+        assert!(seen.contains("name=exit-probe"), "{seen}");
+        let tid: u32 = seen
+            .strip_prefix("tid=")
+            .and_then(|rest| rest.split(' ').next())
+            .and_then(|tid| tid.parse().ok())
+            .unwrap_or_else(|| panic!("no tid in {seen:?}"));
+        assert_ne!(
+            tid,
+            std::process::id(),
+            "a spawned thread has a tid of its own: {seen}"
+        );
     }
 }

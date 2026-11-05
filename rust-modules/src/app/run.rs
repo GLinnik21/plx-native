@@ -1042,11 +1042,6 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         app.running = false;
     } else if et == 0x103 || et == 0x104 {
         // WILL/DID ENTER BACKGROUND
-        // Re-arm the exit guard: every playback library loaded since boot has registered its
-        // finalizers by now, and a backgrounded app is exactly the one the platform may end with
-        // a libc `exit` from its own thread (PLX-NATIVE-1P). Harmless when repeated.
-        #[cfg(all(not(feature = "hostsim"), not(test)))]
-        plx_base::process::arm_exit_guard();
         // The visit ends here: nothing is measured in the background, and the app may never come
         // back (the system kills it). The event is only QUEUED to the spool on disk (see
         // `diag::event_for_impl`), so it is sent by the next flush, this process's or the next

@@ -13,6 +13,11 @@ import check_steps
 ROOT = Path(__file__).resolve().parent.parent
 HOOK = "_ZN17StarfishMediaAPIs20callbackFunctionHookEixPKc"
 LOAD = "_ZN17StarfishMediaAPIs4LoadEPKcPFvixS1_PvES2_"
+HOOK_ROW = f"1: 00000000 16 FUNC GLOBAL DEFAULT 1 {HOOK}\n"
+# src/exit.c's `exit` as the executable's .dynsym shows it (a definition prints bare), and the import
+# it replaces (an import prints with its symbol version).
+EXIT_ROW = "2: 00010440 8 FUNC GLOBAL DEFAULT 13 exit\n"
+EXIT_IMPORT_ROW = "3: 00000000 0 FUNC GLOBAL DEFAULT UND exit@GLIBC_2.4 (2)\n"
 FILLER = "synthetic-padding-line\n" * 100000  # More than 2 MiB, far beyond a pipe buffer.
 # Hang guards, not budgets. This file's own timeouts used to be 20 s per gate run and 5 s for the
 # parallel-invocation rendezvous, which a quiet machine meets many times over; on a 3-core macOS runner
@@ -58,7 +63,7 @@ def defaults():
     return {key: {"output": value} for key, value in {
         "readelf:-h": "Class: ELF32\nMachine: ARM\nFlags: soft-float\nType: EXEC\n",
         "readelf:-A": "Tag_CPU_arch: v7\n",
-        "readelf:--dyn-syms": f"1: 00000000 16 FUNC GLOBAL DEFAULT 1 {HOOK}\n",
+        "readelf:--dyn-syms": HOOK_ROW + EXIT_ROW,
         "readelf:-rW": "No relocations\n",
         "readelf:-l": "  LOAD 0x000000 0x00010000 0x00010000\n",
         "readelf:-n": "Build ID: " + "a" * 40 + "\n",
@@ -198,6 +203,27 @@ class ElfGateTests(unittest.TestCase):
                 spec[key]["output"] = replacement
                 result = self.run_gate(spec)
                 self.assertNotEqual(result.returncode, 0, key)
+
+    def test_exit_interposer_must_be_defined_once_and_never_imported(self):
+        for label, rows in [
+                ("missing", HOOK_ROW),
+                ("only imported", HOOK_ROW + EXIT_IMPORT_ROW),
+                ("defined and imported", HOOK_ROW + EXIT_ROW + EXIT_IMPORT_ROW),
+                ("defined twice", HOOK_ROW + EXIT_ROW + EXIT_ROW),
+                ("a data object", HOOK_ROW + "2: 00010440 8 OBJECT GLOBAL DEFAULT 13 exit\n"),
+                ("undefined without a version", HOOK_ROW + "2: 00000000 0 FUNC GLOBAL DEFAULT UND exit\n"),
+                ("local", HOOK_ROW + "2: 00010440 8 FUNC LOCAL DEFAULT 13 exit\n")]:
+            with self.subTest(label=label):
+                spec = defaults()
+                spec["readelf:--dyn-syms"]["output"] = rows
+                result = self.run_gate(spec)
+                self.assertNotEqual(result.returncode, 0, "exit interposer drift was allowed: " + result.stdout)
+                self.assertIn("libc exit interposer", result.stdout)
+
+    def test_importing_underscore_exit_is_not_importing_exit(self):
+        spec = defaults()
+        spec["readelf:--dyn-syms"]["output"] += "4: 00000000 0 FUNC GLOBAL DEFAULT UND _exit@GLIBC_2.4 (2)\n"
+        self.assert_pass(spec)
 
     def test_local_libm_body_is_rejected(self):
         # compiler_builtins' weak soft-float copy won over glibc's libm: the objdump has a local body.

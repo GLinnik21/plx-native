@@ -2040,12 +2040,6 @@ pub(crate) unsafe fn construct(
     if !controlled {
         plx_media::player::acb_init(&mt);
         plx_media::ff::boot(); // Live playback resource boot; controlled Home cannot invoke ABI probes.
-        // After SDL, the GL context and the video plane have registered their finalizers: a libc
-        // `exit` from a firmware thread now ends the process before any of them runs
-        // (PLX-NATIVE-1P; `plx_base::process::arm_exit_guard`). Not under test/hostsim, where a
-        // test binary's failing `exit(101)` must keep its status.
-        #[cfg(all(not(feature = "hostsim"), not(test)))]
-        plx_base::process::arm_exit_guard();
     }
                        // dev: /tmp/plxnative-logintest validates the plex.tv account path end-to-end on the device — a
                        // real typed create_pin() through the libcurl transport + DTO deserialize. Logs only the
