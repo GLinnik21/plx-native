@@ -13,7 +13,7 @@ use plx_platform::tv::uri::{Shape, UriMedia};
 use plx_playback_contract::{AttemptId, BackendEvent, BackendKind, Capabilities, CommandId,
     ContentTime, DispatchResult, DriverEvent, DriverSet, EvidenceSource, ExitDisposition,
     Failure, Observation, Observed, Operation, Playback, ReleaseStatus, SourceKey, SourceKind,
-    TrackChoice, TrackKind, TrackSelection};
+    TrackChoice, TrackKind, TrackSelection, UriDriver};
 use std::collections::{BTreeMap, VecDeque};
 
 /// A monotonic clock supplied by the runner. The ownership reducer only receives its value.
@@ -836,6 +836,21 @@ impl DriverSet for UriBackend {
     }
 
     fn exit_disposition(&self) -> ExitDisposition { UriBackend::exit_disposition(self) }
+}
+
+/// The adapter's view of this driver beyond `DriverSet`: the contract names no driver crate, so the
+/// player holds `Box<dyn UriDriver>` and the composition root boxes a [`UriBackend`] into it.
+impl UriDriver for UriBackend {
+    fn stage_source(&mut self, attempt: AttemptId, key: SourceKey, source: UriSource)
+        -> Result<(), Failure> {
+        UriBackend::stage_source(self, attempt, key, source)
+    }
+
+    fn cancel_staged(&mut self, attempt: AttemptId) { UriBackend::cancel_staged(self, attempt) }
+
+    fn plane_owned(&self) -> bool { UriBackend::plane_owned(self) }
+
+    fn maps_track(&self, selection: TrackSelection) -> bool { UriBackend::maps_track(self, selection) }
 }
 
 #[cfg(test)]

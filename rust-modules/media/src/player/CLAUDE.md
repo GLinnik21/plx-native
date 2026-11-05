@@ -52,11 +52,14 @@ backend asks `PlaneOwner::shown` from `poll` until it has an answer) the URI dri
 picture. `acb_finish` / `PlaneFinish` are the only change to the C seam's shape; Feed's `acb_start` is
 the same two calls and does not use the ids.
 
-The separate `player/uriprobe_drive.rs` developer probe is invoked by the
-`plxnative-uriprobe` trigger. It plays one stream through `com.webos.media` with no Engine and
+The separate developer probe is invoked by the
+`plxnative-uriprobe` trigger. Media owns its route half and its port (`player/uriprobe_drive.rs`:
+the claimed start attempt, the settle, the adapter's one slot); the probe itself, the play-uri
+crate's driver over the URI transport, is the application's (`dev/uriprobe.rs`), installed at boot
+behind `UriProbeSession`, so media names no play-uri item. It plays one stream through `com.webos.media` with no Engine and
 can log pause, resume, seek, track selection and `setSubtitleEnable` behavior (issue #1064).
 That probe is `devtriggers`-only and reports nothing to Plex; the product driver is separate and
-uses common attempt reporting. `plx_play_uri` holds their protocol and driver implementation.
+uses common attempt reporting. The play-uri crate holds their protocol and driver implementation.
 `play-uri/src/uri_protocol.rs` holds pure builders/strict decoding; `play-uri/src/uri_lifecycle.rs` owns registration
 and request correlation, close deadlines and quarantine. The probe's logical Done does not release
 its adapter slot or exported window: the driver waits for successful bus unregister, keeps polling

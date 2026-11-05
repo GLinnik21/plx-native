@@ -1519,6 +1519,25 @@ PIPE_SHAPES = {
         "subs": [],
     },
     # -----------------------------------------------------------------------------------
+    # **The CARRIER of the URI product route: a 90 s 720p24 progressive twin of `pipe_hls_720p24_20m`.**
+    # `pipe_uri_product_hls_720p24_20m_bound*` do not play this file. The harness's mock PMS serves it as an
+    # `--extra-media` movie (ratingKey 990001), so the app has a REAL plan to resolve; the dev route
+    # (`plxnative-uridev`) then answers the qualification with the HLS fixture's URL, and the TV fetches the
+    # HLS stream from the fixture server. What the carrier must be is what the qualifier checks of the plan:
+    # at least the stream's 90 s (the offer's duration bounds the playback clock), exactly ONE audio stream
+    # (the offer selects it), NO subtitle stream (an item with subtitles and none selected is refused), and
+    # no viewOffset (the mock gives an extra-media movie none). Quality-targeted and small: nothing plays its
+    # bytes. Stereo, not the twin's mono, because the generic builder's audio graph has no mono layout.
+    "pipe_uri_carrier_720p24": {
+        "kind": "clip", "ext": "mp4",
+        "duration": 90, "rate": 0.02,
+        "declare": {"vcodec": "h264", "acodec": "aac", "fps": float(FPS), "atmos": False},
+        "video": {"codec": "h264", "size": "1280x720", "crf": 30},
+        "audio": [{"codec": "aac", "ch": 2, "lang": "eng", "br": "128k", "pitch": 440,
+                   "default": True, "title": "AAC 2.0 English"}],
+        "subs": [],
+    },
+    # -----------------------------------------------------------------------------------
     # ...and the one shape in either pack that is SUPPOSED to run out — LG item #46.
     "pipe_h264_ac3_short": {
         # 20 s, and the short length IS the feature: every other clip in both packs is sized so
@@ -1759,6 +1778,7 @@ PIPE_MBIT = {
     **{f"pipe_abr_1080p_{mbit}m": float(mbit) for mbit in (6, 8, 10, 12, 14, 16, 18, 20)},
     "pipe_abr_4k_22m": 22.0,
     "pipe_hls_720p24_20m": 20.1,        # CBR 20 Mbit/s video + 128 kbps AAC; MPEG-TS overhead not measured
+    "pipe_uri_carrier_720p24": 1.3,     # CRF 30 720p24 + 128 kbps AAC: measured 1.26 Mbit/s; nothing plays its bytes
     "pipe_h264_ac3_short": 1.71,        # = pipe_h264_ac3_480p, of which it is a 20 s copy
     "pipe_h264_ac3_audio_tail": 1.71,   # = pipe_h264_ac3_short (the 3 s tail is audio only)
 }

@@ -47,8 +47,8 @@ pub mod route_fx; // the physical effects route policy asks of Feed (no-ops with
 pub mod recovery; // the failed-open ladder (pure machine); `pump` drives it
 pub mod release; // the native object's off-frame release lifecycle (pure machine); `engine` runs it
 mod route_start; // common transaction admission and release-queued start policy
-#[cfg(all(feature = "devtriggers", feature = "play-uri"))]
-pub mod uriprobe_drive; // the URI-mode probe's route half (issue #1064, dev trigger `plxnative-uriprobe`): the transport, the window verbs and the route-start settle the machine leaves to a driver; the machine itself is the play-uri crate's `uriprobe`
+#[cfg(feature = "devtriggers")]
+pub mod uriprobe_drive; // the URI-mode probe's route half and its port (issue #1064, dev trigger `plxnative-uriprobe`): the route-start settle and the adapter slot; the probe itself is the application's (`dev::uriprobe`), over the play-uri crate's `uriprobe`
 /// The Feed backend's process-lifetime native mailbox and transport (`plx_play_feed::shared`),
 /// re-exported for the crates that may not name `plx_play_feed`: `screens` (its tests drive them)
 /// and the application loop (its manifest depends on `plx_media` alone). Media's own code spells
@@ -82,7 +82,6 @@ pub mod text_ass; // text subtitles to ASS: dialect converter, synthesized heade
 pub mod text_style; // the viewer's size/position picks as the numbers that converter and the screen's lift use (pure)
 #[cfg(feature = "play-feed")]
 pub mod threads;
-#[cfg(any(feature = "play-feed", feature = "play-uri"))]
 mod timeline;
 pub mod transport;
 pub mod video_geometry;
@@ -124,28 +123,9 @@ fn sink() -> &'static dyn plx_platform::tv::sink::VideoSink {
     }
 }
 
-/// The display surface of whichever backend set is built, for the URI probe's route half
-/// (`uriprobe_drive`), the one caller left in this crate that has no Feed. With `play-feed` it IS
-/// [`sink`], so it keeps both of its behaviours: the simulator's `HostSink` under hostsim, and the
-/// [`FENCE`] while an off-frame `Unload` owns the native object. Without it the port's installed
-/// display sink answers (a simulator always carries Feed). The plane's boot no longer comes through
-/// here: the application reads `display_installed()` itself (`app/adapters/backends.rs`).
-#[cfg(all(feature = "devtriggers", feature = "play-uri"))]
-#[cfg_attr(not(feature = "play-feed"), allow(dead_code))] // a URI-only build opens no probe: its tests are the caller
-fn display() -> &'static dyn plx_platform::tv::sink::DisplaySink {
-    #[cfg(feature = "play-feed")]
-    {
-        sink()
-    }
-    #[cfg(not(feature = "play-feed"))]
-    {
-        plx_platform::tv::sink::display_installed()
-    }
-}
-
 /// The process's ACB plane owner: the one holder of the video-plane binding for both backends,
 /// booted once by the application's `acb_init` (`app/adapters/backends.rs`). It replaces the old `ACB_OK` / `PTYPE` statics.
-#[cfg(any(feature = "play-feed", feature = "play-uri"))]
+#[cfg(feature = "play-feed")]
 pub(crate) fn plane() -> &'static plx_platform::tv::plane::PlaneOwner {
     plx_platform::tv::plane::installed()
 }
@@ -357,6 +337,10 @@ pub fn clock_user_held_for_test() -> bool {
 pub use engine::{
     start_bufferfeed, start_bufferfeed_tracked,
 };
+/// [`exit_native`] with the clock and the idle wait the caller names: a suite outside this crate
+/// ticks a scripted clock past the release deadline (`dev::uriprobe`'s tests).
+#[cfg(any(test, feature = "test-support"))]
+pub use route_start::exit_native_with;
 pub use route_start::{begin_resume, exit_native, land_resume, stop_bufferfeed,
     suspend_bufferfeed, BufferfeedStartOutcome, NativeExit, ResumeOutcome, ResumeStart,
     start_playback, start_playback_tracked, suspend_playback_if_attempt};
@@ -678,9 +662,8 @@ pub fn observe_video_plane(
     let bound = _pa.feed_stage().is_some_and(acb_playstate_ready);
     #[cfg(not(feature = "play-feed"))]
     let bound = false;
-    #[cfg(feature = "play-uri")]
     let bound = bound || _pa.uri_product_plane_owned();
-    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
+    #[cfg(feature = "devtriggers")]
     let bound = bound || _pa.uri_plane_open();
     pl.set_video_plane_bound(bound)
 }
@@ -815,7 +798,6 @@ pub fn is_playing(ps: &crate::route::PlaybackSession) -> bool {
 }
 /// The derived playback state — the ONE thing the HUD renders from. See `PlaybackState`.
 pub fn state(ps: &crate::route::PlaybackSession) -> PlaybackState {
-    #[cfg(feature = "play-uri")]
     if ps.uri_recovery_pending().is_some() {
         // The native URI owner still has to prove Released before a same-episode Feed resolve.
         // A physical Failed report during that close cannot be a handled terminal error yet.
@@ -1818,7 +1800,6 @@ pub fn intended_pos_ns(ps: &crate::route::PlaybackSession) -> i64 {
 /// backend has not yet reported a position. UI widgets may use their existing zero placeholder;
 /// a viewer reconfiguration requires this proof before replacing the current executor.
 pub fn intended_pos_known_ns(ps: &crate::route::PlaybackSession) -> Option<i64> {
-    #[cfg(feature = "play-uri")]
     if ps.attempt_view().backend() == Some(attempt_view::Backend::Uri) {
         let facts = ps.attempt_view().facts();
         if facts.seek_pending_ns.is_some() {
@@ -2716,7 +2697,6 @@ mod tests {
         assert_eq!(names, ["0.5×", "0.75×", "1×", "1.25×", "1.5×", "1.75×", "2×"]);
     }
 
-    #[cfg(feature = "play-uri")]
     #[test]
     fn accepted_uri_speed_intent_is_visible_without_claiming_feed_application() {
         let _serial = plx_base::testlock::serial();
@@ -2727,7 +2707,6 @@ mod tests {
         assert_eq!(applied_rate(&ps), None, "an active URI has no Feed speed evidence");
     }
 
-    #[cfg(feature = "play-uri")]
     #[test]
     fn reconfiguration_playhead_requires_addressed_position_evidence() {
         let _serial = plx_base::testlock::serial();
@@ -2741,7 +2720,6 @@ mod tests {
         assert_eq!(intended_pos_known_ns(&ps), Some(42_000_000_000));
     }
 
-    #[cfg(feature = "play-uri")]
     #[test]
     fn reported_uri_clock_supersedes_unpresented_resume_but_not_a_new_seek() {
         let _serial = plx_base::testlock::serial();

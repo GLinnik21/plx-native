@@ -1196,7 +1196,7 @@ fn seeded_folded_rows_are_mounted_into_the_next_more_menu_and_only_that_one() {
             frame(d, rig, AppArg::Player, tick(next()), vec![]);
         }
     };
-    plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+    plx_media_codecs::ffi::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
     rig.seed_player_more_folds(seeded());
     open(&mut d, &mut rig, OverlayKind::More { page: None });
     assert!(has_row(&mut d), "More mounts with the rows it was handed");

@@ -4875,6 +4875,90 @@
       "_uri_note": "R-ABR-2 REGRESSION GATE. The bound case's stream and arm through pipe_abr_down_collapse's link (40 Mbit/s for 25 s, then 0.5 Mbit/s). On a bound plane the buffer the player reports drains in plain sight: the lead (bufferRange remainingTime, or endTime minus beginTime when the line has no remainingTime, which the 4.5 set does not print reliably) falls about a second per second (12 s down to 2 s) and a mid-playback bufferingStart fires at about 2 s remaining, so the viewer is warned before the picture freezes. `uri_drain_warning_s` 5 requires that decline to have lasted at least 5 s (counted from the last sample at the peak, no rise in between) before the first bufferingStart after the first `ev=playing`; a buffer that sat full and then stopped, with no slope or no bufferingStart, fails it. The probe's own watchdog ends the run about 10 s after the clock stops (`end=timeout:currentTime`), which is the expected ending here and not an error."
     },
     {
+      "name": "pipe_uri_product_hls_720p24_20m_bound",
+      "fixture": "pipe_hls_720p24_20m/index.m3u8",
+      "title": "URI product route, plane bound: the production backend plays a 20 Mbit/s 720p24 HLS stream for a minute",
+      "covers": [
+        "uri-mode",
+        "uri-product",
+        "high-bitrate",
+        "acb-bound"
+      ],
+      "uri_route": "product",
+      "carrier": "pipe_uri_carrier_720p24.mp4",
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "aac",
+        "fps": 24.0
+      },
+      "triggers": {
+        "ptype": "0"
+      },
+      "run_secs": 75,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "no_playing_error": true,
+        "uri_playing": true,
+        "uri_plane_bound": true,
+        "uri_clock_past_s": 60,
+        "uri_max_stall_s": 3,
+        "uri_presented": true,
+        "uri_service_playing": true
+      },
+      "_uri_note": "PRODUCTION ROUTE (debug builds, `--guest --mock`). The same 20 Mbit/s HLS stream as pipe_uri_hls_720p24_20m_bound, but played by the PRODUCTION URI backend instead of the developer probe: the app resolves the carrier clip (`carrier`, a 90 s 720p24 progressive twin on the harness's own mock PMS, ratingKey 990001), the dev route (`plxnative-uridev`, written by the runner) answers the qualification with the fixture's URL, and the backend binds the ACB plane (`ptype=0`) and plays it. The runner writes `part=` and `server=` from the mock, `url=` from the fixture server, pins `quality=original` and `audioenh=off`, never arms `uriprobe`, and deletes `plxnative-uridev` afterwards. Graded from `uri-trace:` lines (the probe's event text under a new prefix) and the lines production writes: `uri: service playing`, `uri: presented (... from P to N ms)` with N > P, `videoplane: BOUND`, and the display and PLAYING ACB tasks read from the log, each with an `acb callback ... ev=1`. The probe pair stays as the instrument baseline; compare the two on the same stream."
+    },
+    {
+      "name": "pipe_uri_product_hls_720p24_20m_bound_collapse",
+      "fixture": "pipe_hls_720p24_20m/index.m3u8",
+      "title": "URI product route, plane bound: the same stream through a sustained link collapse",
+      "covers": [
+        "uri-mode",
+        "uri-product",
+        "high-bitrate",
+        "acb-bound",
+        "collapse"
+      ],
+      "uri_route": "product",
+      "carrier": "pipe_uri_carrier_720p24.mp4",
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "aac",
+        "fps": 24.0
+      },
+      "triggers": {
+        "ptype": "0"
+      },
+      "network_profile": [
+        {
+          "until_s": 25.0,
+          "kbps": 40000
+        },
+        {
+          "until_s": 300.0,
+          "kbps": 500
+        }
+      ],
+      "run_secs": 75,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "no_playing_error": true,
+        "uri_playing": true,
+        "uri_plane_bound": true,
+        "uri_drain_warning_s": 5,
+        "uri_presented": true,
+        "uri_service_playing": true
+      },
+      "_uri_note": "PRODUCTION ROUTE (debug builds, `--guest --mock`). The same 20 Mbit/s HLS stream as pipe_uri_hls_720p24_20m_bound_collapse, but played by the PRODUCTION URI backend instead of the developer probe: the app resolves the carrier clip (`carrier`, a 90 s 720p24 progressive twin on the harness's own mock PMS, ratingKey 990001), the dev route (`plxnative-uridev`, written by the runner) answers the qualification with the fixture's URL, and the backend binds the ACB plane (`ptype=0`) and plays it. The runner writes `part=` and `server=` from the mock, `url=` from the fixture server, pins `quality=original` and `audioenh=off`, never arms `uriprobe`, and deletes `plxnative-uridev` afterwards. Graded from `uri-trace:` lines (the probe's event text under a new prefix) and the lines production writes: `uri: service playing`, `uri: presented (... from P to N ms)` with N > P, `videoplane: BOUND`, and the display and PLAYING ACB tasks read from the log, each with an `acb callback ... ev=1`. The probe pair stays as the instrument baseline; compare the two on the same stream."
+    },
+    {
       "name": "pipe_abr_down_staircase",
       "fixture": "pipe_h264_aac_mp4.mp4",
       "title": "no-Plex Auto: a TWO-STEP collapse, the shape that outruns a downshift",

@@ -1,97 +1,107 @@
-//! Media adapter for the independent URI probe driver. Route ownership stays here.
+//! The URI probe's route half and its port (issue #1064, dev trigger `plxnative-uriprobe`). Route
+//! ownership stays here: the claimed start attempt, the settle into the route reducer, the facts the
+//! attempt view takes, the adapter's one probe slot and when it is freed, and every `uriprobe:` line
+//! the route side writes. The probe itself, the independent driver over the URI transport and the
+//! machine it steps (the play-uri crate's `uriprobe` and `uriprobe_drive`), is the application's: it
+//! implements [`UriProbe`] and [`UriProbeSession`] (`dev::uriprobe`) and installs them at boot
+//! ([`PlayerAdapter::install_uri_probe`](super::adapter::PlayerAdapter::install_uri_probe)), so this
+//! crate names neither the driver nor its types. Without an installed probe the trigger file is not
+//! even read.
 
 use crate::route::{PlaybackSession, RouteStartAttempt, RouteStartResult};
 #[cfg(feature = "play-feed")]
 use crate::route::RouteStartTransaction;
 use plx_base::task::MainThread;
-#[cfg(feature = "play-feed")]
-use plx_platform::tv::uri::UriMedia;
-use plx_play_uri::uriprobe::Settle;
-#[cfg(feature = "play-feed")]
-use plx_play_uri::uriprobe::{AbrBps, Kind, Trigger, Variant};
-#[cfg(feature = "play-feed")]
-use plx_play_uri::uriprobe_drive::DriverConfig;
-use plx_play_uri::uriprobe_drive::UriSession as CoreSession;
 
-/// One URI session held by PlayerAdapter. The URL stays inside the independent driver.
-pub struct UriSession(CoreSession<RouteStartAttempt>);
-
-impl UriSession {
-    /// Only the Feed start path arms the probe (`route_start::start_bufferfeed_inner`), so a
-    /// URI-only build has no way to open one.
-    #[cfg(feature = "play-feed")]
-    fn open(ps: &PlaybackSession, mt: &MainThread, transport: &'static dyn UriMedia,
-        attempt: RouteStartAttempt, variant: Variant, bps: AbrBps, url: &str) -> Self {
-        Self::open_with_ports(ps, mt, transport, super::display(), super::plane(), attempt, variant, bps, url)
-    }
-
-    /// [`open`](Self::open) over the display sink and plane owner the caller names: production
-    /// passes the process's own, a test passes a scripted sink and its own owner.
-    #[cfg(feature = "play-feed")]
-    #[allow(clippy::too_many_arguments)]
-    fn open_with_ports(ps: &PlaybackSession, mt: &MainThread, transport: &'static dyn UriMedia,
-        sink: &'static dyn plx_platform::tv::sink::DisplaySink, plane: &'static plx_platform::tv::plane::PlaneOwner,
-        attempt: RouteStartAttempt, variant: Variant, bps: AbrBps, url: &str) -> Self {
-        let kind = if crate::route::is_segmented_hls(ps) { Kind::Hls } else { Kind::Direct };
-        let input = DriverConfig {
-            attempt, variant, bps, kind, url: url.to_owned(),
-            app_id: plx_base::paths::app_id().to_owned(), transport,
-            sink,
-            log: super::log, plane,
-            release_allowance_ms: u64::try_from(super::release::RELEASE_DEADLINE.as_millis()).unwrap_or(u64::MAX),
-        };
-        Self(CoreSession::open(input, mt))
-    }
-
-    pub fn plane_open(&self) -> bool { self.0.plane_open() }
-    pub fn closing(&self) -> bool { self.0.closing() }
-    pub(super) fn route_start_attempt(&self) -> RouteStartAttempt { self.0.attempt() }
-    pub(super) fn acb_exit_quarantine(&self) -> bool { self.0.acb_exit_quarantine() }
-    fn poll(&self) -> Result<plx_platform::tv::uri::UriPoll, String> { self.0.poll() }
-    fn now_ms(&self) -> u64 { self.0.now_ms() }
-    #[cfg(test)]
-    fn is_done(&self) -> bool { self.0.is_done() }
-    fn ready_to_release(&self) -> bool { self.0.ready_to_release() }
-    #[cfg(all(test, feature = "hostsim"))]
-    fn window_created(&self) -> bool { self.0.window_created() }
-    #[cfg(test)]
-    fn ownership_released(&self) -> bool { self.0.ownership_released() }
-    #[cfg(all(test, feature = "hostsim"))]
-    fn touch_acb_for_test(&mut self, now_ms: u64) { self.0.touch_acb_for_test(now_ms); }
-    fn release(self, mt: &MainThread) { self.0.release(mt) }
-    fn advance(&mut self, ps: &mut PlaybackSession, mt: &MainThread,
-        poll: Result<plx_platform::tv::uri::UriPoll, String>, now_ms: u64) {
-        self.0.advance(&mut |attempt, how| settle(ps, attempt, how), mt, poll, now_ms);
-        ps.ingest_attempt_facts(self.0.attempt(), super::attempt_view::Backend::Uri, super::attempt_view::AttemptFacts {
-            position_ns: self.0.reported_position_ms().and_then(|ms| ms.checked_mul(1_000_000)),
-            ..Default::default()
-        });
-    }
-    fn stop_at(&mut self, ps: &mut PlaybackSession, mt: &MainThread, now_ms: u64) {
-        self.0.stop_at(&mut |attempt, how| settle(ps, attempt, how), mt, now_ms);
-    }
+/// How the route-start attempt a probe stands in for ends: media's own word for what the driver's
+/// machine reports, mapped onto [`RouteStartResult`] by [`settle`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProbeSettle {
+    Started,
+    StartFailed,
 }
 
-fn settle(ps: &mut PlaybackSession, attempt: RouteStartAttempt, how: Settle) -> bool {
+/// One probe session held by the adapter. The URL stays inside the driver. No `Debug`: a session may
+/// hold a tokenised URL.
+pub trait UriProbeSession {
+    /// The service says the probe's video plays, or the ACB experiment's plane ownership is retained.
+    fn plane_open(&self) -> bool;
+    /// Logical stop requested or ownership quarantined; the slot stays until release.
+    fn closing(&self) -> bool;
+    /// The route-start attempt this session stands in for.
+    fn route_start_attempt(&self) -> RouteStartAttempt;
+    /// ACB plane ownership that outlives the bus until process exit.
+    fn acb_exit_quarantine(&self) -> bool;
+    /// Logically done AND physically released: [`release`](Self::release) may now free the slot.
+    fn ready_to_release(&self) -> bool;
+    /// One frame: the replies which arrived, then the clock. `settle` is the route reducer's side of
+    /// the attempt (it answers whether this call settled it). Returns the service's reported
+    /// position in milliseconds, when it has one.
+    fn advance(&mut self, settle: &mut dyn FnMut(RouteStartAttempt, ProbeSettle) -> bool, mt: &MainThread) -> Option<i64>;
+    /// End the logical session; physical ownership remains until [`ready_to_release`](Self::ready_to_release).
+    fn stop(&mut self, settle: &mut dyn FnMut(RouteStartAttempt, ProbeSettle) -> bool, mt: &MainThread);
+    /// Give the physical ownership back (destroy the window). Called once, when ready.
+    fn release(self: Box<Self>, mt: &MainThread);
+}
+
+/// What media resolves at route start and hands the application to open a session over. Resolved
+/// here so the application reads no registry of its own and every line the open writes is the one
+/// the in-crate probe wrote. No `Debug`: `url` may carry a token.
+pub struct ProbeOpen<'a> {
+    pub attempt: RouteStartAttempt,
+    pub url: &'a str,
+    /// The URI bus ([`plx_platform::tv::uri::installed`]).
+    pub transport: &'static dyn plx_platform::tv::uri::UriMedia,
+    /// The display sink of the Feed start path this probe diverts from, fence included.
+    pub display: &'static dyn plx_platform::tv::sink::DisplaySink,
+    /// The process's ACB plane owner.
+    pub plane: &'static plx_platform::tv::plane::PlaneOwner,
+    pub log: fn(&str),
+    pub app_id: String,
+    /// The route is segmented HLS (the probe's `Kind::Hls`), not a direct file.
+    pub segmented_hls: bool,
+    /// The native release deadline, in milliseconds.
+    pub release_allowance_ms: u64,
+}
+
+/// An armed trigger: what the application read out of the trigger text, waiting to open a session.
+pub trait ProbeLaunch {
+    /// Create the session (the exported window for the variants which use one, then the first
+    /// registration). The attempt is already claimed; the first step settles nothing.
+    fn open(self: Box<Self>, input: ProbeOpen<'_>, mt: &MainThread) -> Box<dyn UriProbeSession>;
+}
+
+/// The application's probe, installed on the adapter at boot.
+pub trait UriProbe {
+    /// The launch a `plxnative-uriprobe` trigger text names; `None` when it names no variant, which
+    /// leaves the probe unarmed and the play normal.
+    fn armed(&self, text: &str) -> Option<Box<dyn ProbeLaunch>>;
+}
+
+/// The route reducer's side of the attempt: the driver's report mapped onto [`RouteStartResult`].
+pub fn settle(ps: &mut PlaybackSession, attempt: RouteStartAttempt, how: ProbeSettle) -> bool {
     let result = match how {
-        Settle::Started => RouteStartResult::Started,
-        Settle::StartFailed => RouteStartResult::StartFailed,
+        ProbeSettle::Started => RouteStartResult::Started,
+        ProbeSettle::StartFailed => RouteStartResult::StartFailed,
     };
     crate::route::settle_route_start(ps, attempt, result)
 }
 
-/// The variant and native ABR rates a `plxnative-uriprobe` trigger text names; `None` when it names
-/// no variant, which leaves the probe unarmed and the play normal.
-#[cfg(feature = "play-feed")]
-pub(super) fn armed(text: &str) -> Option<(Variant, AbrBps)> {
-    let trigger = Trigger::from_trigger(text)?;
-    Some((trigger.variant, trigger.bps))
+/// The service clock the probe reported is a reading of the service, never presentation evidence:
+/// it becomes the attempt's position and nothing else.
+pub fn ingest_position(ps: &mut PlaybackSession, attempt: RouteStartAttempt, position_ms: Option<i64>) {
+    ps.ingest_attempt_facts(attempt, super::attempt_view::Backend::Uri, super::attempt_view::AttemptFacts {
+        position_ns: position_ms.and_then(|ms| ms.checked_mul(1_000_000)),
+        ..Default::default()
+    });
 }
 
-/// Claim and install the route start before any probe reply can settle it.
+/// Claim and install the route start before any probe reply can settle it. Only the Feed start path
+/// arms the probe (`route_start::start_bufferfeed_inner`), so a build without Feed has no way to
+/// open one.
 #[cfg(feature = "play-feed")]
 pub(super) fn start(ps: &mut PlaybackSession, pa: &mut super::adapter::PlayerAdapter,
-    route_start: RouteStartTransaction, url: &str, variant: Variant, bps: AbrBps)
+    route_start: RouteStartTransaction, url: &str, launch: Box<dyn ProbeLaunch>)
     -> Result<RouteStartAttempt, RouteStartResult> {
     if pa.uri_live() { return Err(RouteStartResult::StartFailed); }
     let Some(attempt) = crate::route::claim_route_start_attempt(route_start) else {
@@ -99,7 +109,18 @@ pub(super) fn start(ps: &mut PlaybackSession, pa: &mut super::adapter::PlayerAda
         return Err(RouteStartResult::StartFailed);
     };
     ps.begin_attempt_view(attempt, super::attempt_view::Backend::Uri);
-    pa.install_uri(UriSession::open(ps, pa.mt(), plx_platform::tv::uri::installed(), attempt, variant, bps, url));
+    let input = ProbeOpen {
+        attempt, url,
+        transport: plx_platform::tv::uri::installed(),
+        display: super::sink(),
+        plane: super::plane(),
+        log: super::log,
+        app_id: plx_base::paths::app_id().to_owned(),
+        segmented_hls: crate::route::is_segmented_hls(ps),
+        release_allowance_ms: u64::try_from(super::release::RELEASE_DEADLINE.as_millis()).unwrap_or(u64::MAX),
+    };
+    let session = launch.open(input, pa.mt());
+    pa.install_uri(session);
     Ok(attempt)
 }
 
@@ -107,9 +128,8 @@ pub(super) fn start(ps: &mut PlaybackSession, pa: &mut super::adapter::PlayerAda
 pub fn drive(ps: &mut PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
     let (session, mt) = pa.uri_split();
     let Some(session) = session else { return };
-    let poll = session.poll();
-    let now_ms = session.now_ms();
-    session.advance(ps, mt, poll, now_ms);
+    let position_ms = session.advance(&mut |attempt, how| settle(ps, attempt, how), mt);
+    ingest_position(ps, session.route_start_attempt(), position_ms);
     if session.ready_to_release() {
         if let Some(done) = pa.take_uri() { done.release(pa.mt()); }
     }
@@ -119,923 +139,212 @@ pub fn drive(ps: &mut PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
 pub(super) fn stop(ps: &mut PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
     let (session, mt) = pa.uri_split();
     if let Some(session) = session {
-        let now_ms = session.now_ms();
-        session.stop_at(ps, mt, now_ms);
+        session.stop(&mut |attempt, how| settle(ps, attempt, how), mt);
     }
 }
 
+/// [`stop`] for a suite outside this crate that drives a session it built over a scripted
+/// transport (`dev::uriprobe`'s tests); the product reaches it only through `begin_teardown` and
+/// `exit_native`.
+#[cfg(any(test, feature = "test-support"))]
+pub fn stop_for_test(ps: &mut PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
+    stop(ps, pa);
+}
+
+/// The port, driven through the trait objects with scripted fakes: no play-uri, no transport. These
+/// pin what media keeps (the route half): when a session is installed and refused, how a reply
+/// settles the route start, which facts reach the attempt view, and when the slot is freed. What the
+/// probe DOES on the bus is the application's implementation and its tests (`dev::uriprobe`).
 #[cfg(test)]
-mod tests {
+mod port_tests {
     use super::*;
-    use plx_platform::tv::uri::{CloseStatus, RequestId, SessionId, Shape, UriPoll, UriReply};
-    use std::collections::VecDeque;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
-    /// A media URL as the planner hands it over: a `plex.direct` host, a port, a path and a token.
-    const URL: &str = "https://192-168-1-5.0123456789abcdef.plex.direct:32400/library/parts/42/file.mkv?X-Plex-Token=SECRETTOKEN123&x=1";
-    /// Every fragment of [`URL`] that must never reach the event log.
-    const LEAKS: [&str; 9] =
-        ["192.168", "192-168", "plex.direct", "SECRETTOKEN", "X-Plex-Token", "32400", "/library", "file.mkv", "0123456789abcdef"];
-
-    /// The transport a test scripts: it records what the driver sends and hands back the replies the
-    /// test queued. Leaked, because the driver holds a `&'static dyn UriMedia`.
+    /// What the fake session saw and what the test wants it to say next.
     #[derive(Default)]
-    struct Scripted {
-        opens: Mutex<Vec<Shape>>,
-        calls: Mutex<Vec<(&'static str, String)>>,
-        closes: AtomicUsize,
-        replies: Mutex<VecDeque<UriReply>>,
-        refuse_open: Mutex<Option<String>>,
-        current: Mutex<Option<SessionId>>,
-        requests: Mutex<Vec<(&'static str, RequestId)>>,
-        close_status: Mutex<Option<CloseStatus>>,
-        hold_close: std::sync::atomic::AtomicBool,
-        refuse_call: Mutex<Option<(&'static str, String)>>,
+    struct Script {
+        opened: Vec<(String, bool, u64)>,
+        advances: u32,
+        stops: u32,
+        released: u32,
+        /// Settled by the next `advance`, then spent.
+        settle_next: Option<ProbeSettle>,
+        /// What the settle callback answered, in order.
+        settled: Vec<bool>,
+        position_ms: Option<i64>,
+        ready: bool,
+        closing: bool,
+        plane_open: bool,
+        quarantine: bool,
     }
 
-    impl UriMedia for Scripted {
-        fn open(&self, shape: Shape) -> Result<SessionId, String> {
-            self.opens.lock().unwrap().push(shape);
-            if let Some(error) = self.refuse_open.lock().unwrap().clone() { return Err(error); }
-            let id = SessionId::new(self.opens.lock().unwrap().len() as u64);
-            *self.current.lock().unwrap() = Some(id);
-            *self.close_status.lock().unwrap() = Some(CloseStatus::Open);
-            self.requests.lock().unwrap().clear();
-            Ok(id)
-        }
-        fn call(&self, session: SessionId, request: RequestId, method: &'static str, payload: &str) -> Result<(), String> {
-            assert_eq!(*self.current.lock().unwrap(), Some(session));
-            self.calls.lock().unwrap().push((method, payload.to_owned()));
-            self.requests.lock().unwrap().push((method, request));
-            match self.refuse_call.lock().unwrap().clone() { Some((refused, text)) if refused == method => Err(text), _ => Ok(()) }
-        }
-        fn poll(&self, session: SessionId) -> Result<UriPoll, String> {
-            assert_eq!(*self.current.lock().unwrap(), Some(session));
-            Ok(UriPoll { replies: self.replies.lock().unwrap().drain(..).collect(), close: self.close_status.lock().unwrap().unwrap_or(CloseStatus::Open) })
-        }
-        fn close(&self, session: SessionId) -> Result<(), String> {
-            assert_eq!(*self.current.lock().unwrap(), Some(session));
-            self.closes.fetch_add(1, Ordering::SeqCst);
-            *self.close_status.lock().unwrap() = Some(if self.hold_close.load(Ordering::SeqCst) { CloseStatus::Closing } else { CloseStatus::Released });
-            Ok(())
-        }
-    }
+    struct FakeSession { attempt: RouteStartAttempt, script: Arc<Mutex<Script>> }
 
-    impl Scripted {
-        fn leak() -> &'static Scripted {
-            Box::leak(Box::default())
+    impl UriProbeSession for FakeSession {
+        fn plane_open(&self) -> bool { self.script.lock().unwrap().plane_open }
+        fn closing(&self) -> bool { self.script.lock().unwrap().closing }
+        fn route_start_attempt(&self) -> RouteStartAttempt { self.attempt }
+        fn acb_exit_quarantine(&self) -> bool { self.script.lock().unwrap().quarantine }
+        fn ready_to_release(&self) -> bool { self.script.lock().unwrap().ready }
+        fn advance(&mut self, settle: &mut dyn FnMut(RouteStartAttempt, ProbeSettle) -> bool, _mt: &MainThread) -> Option<i64> {
+            let mut script = self.script.lock().unwrap();
+            script.advances += 1;
+            if let Some(how) = script.settle_next.take() {
+                let answer = settle(self.attempt, how);
+                script.settled.push(answer);
+            }
+            script.position_ms
         }
-        fn say(&self, method: &'static str, payload: &str) {
-            self.replies.lock().unwrap().push_back(UriReply { session: self.current.lock().unwrap().unwrap(), request: if method == "register" { RequestId::new(0) } else { self.requests.lock().unwrap().iter().rev().find(|(m,_)| *m==method).map(|(_,id)| *id).unwrap_or(RequestId::new(0)) }, method, payload: payload.to_owned(), ok: true });
+        fn stop(&mut self, _settle: &mut dyn FnMut(RouteStartAttempt, ProbeSettle) -> bool, _mt: &MainThread) {
+            self.script.lock().unwrap().stops += 1;
         }
-        fn deny(&self, method: &'static str, text: &str) {
-            self.replies.lock().unwrap().push_back(UriReply { session: self.current.lock().unwrap().unwrap(), request: if method == "register" { RequestId::new(0) } else { self.requests.lock().unwrap().iter().rev().find(|(m,_)| *m==method).map(|(_,id)| *id).unwrap_or(RequestId::new(0)) }, method, payload: text.to_owned(), ok: false });
-        }
-        fn sent(&self) -> Vec<&'static str> {
-            self.calls.lock().unwrap().iter().map(|(method, _)| *method).collect()
-        }
-        fn payload_of(&self, method: &str) -> String {
-            self.calls.lock().unwrap().iter().find(|(m, _)| *m == method).map(|(_, p)| p.clone()).unwrap_or_default()
-        }
-        fn opened(&self) -> Vec<Shape> {
-            self.opens.lock().unwrap().clone()
-        }
-        fn closed(&self) -> usize {
-            self.closes.load(Ordering::SeqCst)
+        fn release(self: Box<Self>, _mt: &MainThread) {
+            self.script.lock().unwrap().released += 1;
         }
     }
 
-    /// A session over a scripted transport, with the route reducer in a claimed start.
+    struct FakeLaunch { script: Arc<Mutex<Script>> }
+
+    impl ProbeLaunch for FakeLaunch {
+        fn open(self: Box<Self>, input: ProbeOpen<'_>, _mt: &MainThread) -> Box<dyn UriProbeSession> {
+            self.script.lock().unwrap().opened.push((input.url.to_owned(), input.segmented_hls, input.release_allowance_ms));
+            Box::new(FakeSession { attempt: input.attempt, script: self.script })
+        }
+    }
+
+    /// Arms on a trigger text starting `fake`, like the application's reads the variant word.
+    struct FakeProbe { script: Arc<Mutex<Script>> }
+
+    impl UriProbe for FakeProbe {
+        fn armed(&self, text: &str) -> Option<Box<dyn ProbeLaunch>> {
+            text.starts_with("fake").then(|| Box::new(FakeLaunch { script: self.script.clone() }) as Box<dyn ProbeLaunch>)
+        }
+    }
+
+    const URL: &str = "https://example.invalid/library/parts/1/file.mkv?X-Plex-Token=SECRET";
+
     struct Rig {
         ps: PlaybackSession,
         pa: super::super::adapter::PlayerAdapter,
-        transport: &'static Scripted,
-        attempt: RouteStartAttempt,
-        session: Option<UriSession>,
-        now: u64,
+        script: Arc<Mutex<Script>>,
     }
 
     impl Rig {
-        fn new(variant: Variant) -> Rig {
-            Rig::build(variant, None)
-        }
-
-        /// `refuse_open`: the text the transport answers `open` with, from the very first call.
-        fn build(variant: Variant, refuse_open: Option<&str>) -> Rig {
-            Rig::build_on(variant, refuse_open, super::super::display(), super::super::plane())
-        }
-
-        /// A session whose ACB plane is the one a test hands in (a scripted sink and its own plane
-        /// owner), not the process-global pair other tests boot, reset and share.
-        #[cfg(feature = "hostsim")]
-        fn on_plane(variant: Variant, sink: &'static dyn plx_platform::tv::sink::DisplaySink,
-            plane: &'static plx_platform::tv::plane::PlaneOwner) -> Rig {
-            Rig::build_on(variant, None, sink, plane)
-        }
-
-        fn build_on(variant: Variant, refuse_open: Option<&str>,
-            sink: &'static dyn plx_platform::tv::sink::DisplaySink,
-            plane: &'static plx_platform::tv::plane::PlaneOwner) -> Rig {
-            let mut ps = PlaybackSession::IDLE;
+        fn new() -> Rig {
+            let ps = PlaybackSession::IDLE;
             crate::route::reset_player_control_for_test(&ps);
-            let pa = super::super::adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
+            let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
+            let script = Arc::new(Mutex::new(Script::default()));
+            pa.install_uri_probe(Box::new(FakeProbe { script: script.clone() }));
+            Rig { ps, pa, script }
+        }
+
+        /// Prepare a route start and hand it to the probe the way the Feed start path does.
+        fn start(&mut self) -> Result<RouteStartAttempt, RouteStartResult> {
             let ticket = crate::route::begin_route_start().expect("a start owner");
             assert!(crate::route::prepare_route_start(ticket));
-            let attempt = crate::route::claim_route_start_attempt(ticket).expect("an attempt");
-            ps.begin_attempt_view(attempt, super::super::attempt_view::Backend::Uri);
-            let transport = Scripted::leak();
-            *transport.refuse_open.lock().unwrap() = refuse_open.map(str::to_owned);
-            let session = UriSession::open_with_ports(&ps, pa.mt(), transport, sink, plane, attempt, variant, AbrBps::default(), URL);
-            Rig { ps, pa, transport, attempt, session: Some(session), now: 0 }
-        }
-
-        /// One frame, `ms` after the last.
-        fn frame(&mut self, ms: u64) {
-            self.now += ms;
-            let replies = self.session.as_ref().unwrap().poll();
-            let session = self.session.as_mut().expect("a live session");
-            session.advance(&mut self.ps, self.pa.mt(), replies, self.now);
-        }
-
-        fn is_done(&self) -> bool {
-            self.session.as_ref().is_some_and(UriSession::is_done)
-        }
-
-        fn status(&self) -> crate::route::RouteStartStatus {
-            crate::route::route_start_status(self.attempt)
-        }
-
-        /// Register ok, the `load` reply naming `_m1`.
-        fn load_answered(&mut self) {
-            self.frame(10);
-            self.transport.say("register", "");
-            self.frame(10);
-            self.transport.say("load", r#"{"returnValue":true,"mediaId":"_m1"}"#);
-            self.frame(10);
-        }
-
-        /// Back: what `engine::teardown` does with a live session.
-        fn back(&mut self) {
-            let mut session = self.session.take().expect("a live session");
-            session.stop_at(&mut self.ps, self.pa.mt(), self.now);
-            self.session = Some(session);
+            let launch = self.pa.uri_probe_armed("fake load").expect("the fake arms on `fake`");
+            start(&mut self.ps, &mut self.pa, ticket, URL, launch)
         }
     }
 
-    /// Run `f` against a private event log and return what it logged.
-    fn logged(f: impl FnOnce()) -> String {
-        plx_base::eventlog::with_private_log(|| {
-            f();
-            std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
-        })
+    #[cfg(feature = "play-feed")]
+    #[test]
+    fn a_probe_installed_through_the_port_is_opened_driven_settled_and_released_by_the_route_half() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new();
+        assert!(rig.pa.uri_probe_installed());
+        assert!(rig.pa.uri_probe_armed("none of the variants").is_none(), "the probe, not media, reads the trigger text");
+        assert!(!rig.pa.uri_live());
+
+        let attempt = rig.start().expect("the probe starts");
+        assert!(rig.pa.uri_live(), "the opened session sits in the adapter's slot");
+        assert_eq!(rig.pa.uri_attempt(), Some(attempt));
+        assert_eq!(crate::route::route_start_status(attempt), crate::route::RouteStartStatus::Pending);
+        let opened = rig.script.lock().unwrap().opened.clone();
+        assert_eq!(opened, [(URL.to_owned(), false, 10_000)], "media hands the launch the url, the stream kind and the release allowance");
+
+        // One frame: the session settles the attempt through media's reducer and reports a position.
+        {
+            let mut script = rig.script.lock().unwrap();
+            script.settle_next = Some(ProbeSettle::Started);
+            script.position_ms = Some(1_200);
+        }
+        drive(&mut rig.ps, &mut rig.pa);
+        assert_eq!(rig.script.lock().unwrap().advances, 1);
+        assert_eq!(rig.script.lock().unwrap().settled, [true], "the first settle reaches the route reducer");
+        assert_eq!(crate::route::route_start_status(attempt), crate::route::RouteStartStatus::Started);
+        assert_eq!(rig.ps.attempt_view().facts().position_ns, Some(1_200_000_000), "the reported position is ingested as nanoseconds");
+        assert!(rig.pa.uri_live(), "a session which is not ready to release keeps its slot");
+
+        // A stop is passed through, and the slot is freed only on the frame the session is ready.
+        stop(&mut rig.ps, &mut rig.pa);
+        assert_eq!(rig.script.lock().unwrap().stops, 1);
+        drive(&mut rig.ps, &mut rig.pa);
+        assert!(rig.pa.uri_live() && rig.script.lock().unwrap().released == 0, "closing is not released");
+        rig.script.lock().unwrap().ready = true;
+        drive(&mut rig.ps, &mut rig.pa);
+        assert!(!rig.pa.uri_live(), "a ready session leaves the slot");
+        assert_eq!(rig.script.lock().unwrap().released, 1, "and is released exactly once");
+        drive(&mut rig.ps, &mut rig.pa);
+        assert_eq!(rig.script.lock().unwrap().advances, 3, "an empty slot is not driven");
     }
 
-    fn line_with<'a>(log: &'a str, needle: &str) -> &'a str {
-        log.lines().find(|l| l.contains(needle)).unwrap_or_else(|| panic!("no log line contains {needle:?}:\n{log}"))
+    #[cfg(feature = "play-feed")]
+    #[test]
+    fn a_failed_settle_fails_the_route_start() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new();
+        let attempt = rig.start().expect("the probe starts");
+        rig.script.lock().unwrap().settle_next = Some(ProbeSettle::StartFailed);
+        drive(&mut rig.ps, &mut rig.pa);
+        assert_eq!(crate::route::route_start_status(attempt), crate::route::RouteStartStatus::Failed);
+        assert_eq!(rig.script.lock().unwrap().settled, [true]);
+        stop(&mut rig.ps, &mut rig.pa);
+        rig.script.lock().unwrap().settle_next = Some(ProbeSettle::Started);
+        drive(&mut rig.ps, &mut rig.pa);
+        assert_eq!(rig.script.lock().unwrap().settled, [true, false], "a settled attempt does not settle twice");
+        assert_eq!(crate::route::route_start_status(attempt), crate::route::RouteStartStatus::Failed);
+    }
+
+    #[cfg(feature = "play-feed")]
+    #[test]
+    fn a_second_start_under_a_live_session_is_refused_and_opens_nothing() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new();
+        // A session already in the slot, whose own start is over (the owner is free again).
+        let attempt = claimed_attempt();
+        assert!(crate::route::settle_route_start(&mut rig.ps, attempt, RouteStartResult::StartFailed));
+        rig.pa.install_uri(Box::new(FakeSession { attempt, script: rig.script.clone() }));
+        let ticket = crate::route::begin_route_start().expect("a start owner");
+        assert!(crate::route::prepare_route_start(ticket));
+        let launch = rig.pa.uri_probe_armed("fake").expect("armed");
+        assert_eq!(start(&mut rig.ps, &mut rig.pa, ticket, URL, launch), Err(RouteStartResult::StartFailed));
+        assert!(rig.script.lock().unwrap().opened.is_empty(), "a refused start opens nothing");
+        let _ = crate::route::abort_route_start(ticket, RouteStartResult::StartFailed);
     }
 
     #[test]
-    fn uri_clock_readout_requires_matching_service_evidence_and_never_confirms_picture() {
+    fn the_adapter_answers_the_session_questions_through_the_port() {
         let _serial = plx_base::testlock::serial();
-        logged(|| {
-            let mut rig = Rig::new(Variant::AtLoad);
-            rig.load_answered();
-            assert_eq!(rig.ps.attempt_view().facts().position_ns, None);
-            rig.transport.say("subscribe", r#"{"mediaId":"other","currentTime":9000}"#);
-            rig.frame(10);
-            assert_eq!(rig.ps.attempt_view().facts().position_ns, None);
-            rig.transport.say("subscribe", r#"{"mediaId":"_m1","currentTime":1200,"playing":true}"#);
-            rig.frame(10);
-            let facts = rig.ps.attempt_view().facts();
-            assert_eq!(facts.position_ns, Some(1_200_000_000));
-            assert_eq!(facts.reported_frame, None);
-            assert_eq!(facts.playable_buffer_ms, None);
-            assert_eq!(facts.duration_ns, None);
-            rig.back();
-        });
+        let mut rig = Rig::new();
+        assert!(!rig.pa.uri_plane_open() && !rig.pa.uri_closing() && !rig.pa.uri_acb_exit_quarantine(), "no session, no answers");
+        rig.pa.install_uri(Box::new(FakeSession { attempt: claimed_attempt(), script: rig.script.clone() }));
+        assert!(!rig.pa.uri_plane_open() && !rig.pa.uri_closing());
+        {
+            let mut script = rig.script.lock().unwrap();
+            script.plane_open = true;
+            script.closing = true;
+            script.quarantine = true;
+        }
+        assert!(rig.pa.uri_plane_open() && rig.pa.uri_closing() && rig.pa.uri_acb_exit_quarantine());
+        assert!(rig.pa.take_uri().is_some());
+        assert!(!rig.pa.uri_live());
     }
 
-    #[test]
-    fn uriprobe_driver_runs_a_whole_session_in_order_and_settles_the_attempt_started_once() {
-        let _serial = plx_base::testlock::serial();
-        let log = logged(|| {
-            let mut rig = Rig::new(Variant::AtLoad);
-            assert_eq!(rig.transport.opened(), [Shape::Named], "the first registration is the named client");
-            assert_eq!(rig.status(), crate::route::RouteStartStatus::Pending, "the attempt waits on the service");
-            rig.load_answered();
-            assert_eq!(rig.transport.sent(), ["load", "subscribe"]);
-            assert_eq!(rig.status(), crate::route::RouteStartStatus::Pending);
-            rig.transport.say("subscribe", r#"{"mediaId":"_m1","loadCompleted":true}"#);
-            rig.frame(10);
-            assert_eq!(rig.status(), crate::route::RouteStartStatus::Started, "loadCompleted settles it");
-            assert_eq!(rig.transport.sent(), ["load", "subscribe", "play"]);
-            assert!(!rig.session.as_ref().unwrap().plane_open(), "not before `playing`");
-            rig.transport.say("subscribe", r#"{"mediaId":"_m1","playing":true}"#);
-            rig.frame(10);
-            assert!(rig.session.as_ref().unwrap().plane_open(), "the plane opens on `playing`");
-            rig.back();
-            assert_eq!(rig.transport.sent(), ["load", "subscribe", "play", "unload"]);
-            assert!(rig.transport.payload_of("unload").contains("_m1"));
-            assert!(rig.transport.closed() >= 1, "the registration is closed");
-            assert_eq!(rig.status(), crate::route::RouteStartStatus::Started, "a stop does not unsettle a started attempt");
-        });
-        let summary = line_with(&log, " summary ");
-        for want in ["load=ok", "playing=yes", "window=none", "end=back", "variant=at-load"] {
-            assert!(summary.contains(want), "{want:?} missing from {summary}");
-        }
-        assert!(log.contains("uriprobe: t=") && line_with(&log, " armed ").contains("window=none"), "{log}");
-        assert!(!log.contains("no longer waits"), "the attempt was settled exactly once:\n{log}");
-        assert!(log.contains("tester: report picture yes/no and sound yes/no"));
-    }
-
-    #[test]
-    fn uriprobe_driver_builds_the_load_payload_from_the_held_url_without_a_window_on_a_set_that_exports_none() {
-        let _serial = plx_base::testlock::serial();
-        let _ = logged(|| {
-            let mut rig = Rig::new(Variant::AtLoad);
-            rig.frame(10);
-            rig.transport.say("register", "");
-            rig.frame(10);
-            let payload: serde_json::Value = serde_json::from_str(&rig.transport.payload_of("load")).expect("JSON");
-            assert_eq!(payload["uri"], URL);
-            assert_eq!(payload["type"], "media");
-            assert_eq!(payload["payload"]["option"]["appId"], plx_base::paths::app_id());
-            assert!(payload["payload"]["option"].get("windowId").is_none(), "no exported window on this sink: {payload}");
-            rig.back();
-        });
-    }
-
-    #[test]
-    fn uriprobe_driver_walks_the_register_ladder_close_then_open_the_anonymous_shape() {
-        let _serial = plx_base::testlock::serial();
-        let log = logged(|| {
-            let mut rig = Rig::new(Variant::AtLoad);
-            rig.transport.deny("register", "denied: com.webos.media");
-            rig.frame(10);
-            assert_eq!(rig.transport.opened(), [Shape::Named], "no reuse before close ACK");
-            rig.frame(0);
-            assert_eq!(rig.transport.opened(), [Shape::Named, Shape::Anon], "named, then anonymous");
-            assert_eq!(rig.transport.closed(), 1, "the refused registration is closed before the next opens");
-            assert!(rig.transport.sent().is_empty(), "nothing is sent before a registration succeeds");
-            rig.transport.say("register", "");
-            rig.frame(10);
-            assert_eq!(rig.transport.sent(), ["load"], "the anonymous registration sends the load again");
-            rig.back();
-        });
-        assert!(log.contains("register shape=named refused"), "{log}");
-        assert!(log.contains("register shape=anon ok"), "{log}");
-    }
-
-    #[test]
-    fn uriprobe_driver_leaves_the_attempt_start_failed_when_both_registrations_are_refused() {
-        let _serial = plx_base::testlock::serial();
-        let log = logged(|| {
-            let mut rig = Rig::new(Variant::AtLoad);
-            rig.transport.deny("register", "named refused");
-            rig.frame(10);
-            rig.frame(0);
-            rig.transport.deny("register", "anon refused");
-            rig.frame(10);
-            assert!(rig.is_done());
-            assert_eq!(rig.status(), crate::route::RouteStartStatus::Failed, "a failed register fails the start");
-            assert!(rig.transport.sent().is_empty());
-            // The player is not stuck: the Back that follows finds a finished session and ends cleanly.
-            rig.back();
-            assert_eq!(rig.status(), crate::route::RouteStartStatus::Failed);
-        });
-        let summary = line_with(&log, " summary ");
-        assert!(summary.contains("load=fail(register)") && summary.contains("end=refused:register"), "{summary}");
-        assert!(!log.contains("no longer waits"), "settled once, not twice:\n{log}");
-    }
-
-    #[test]
-    fn uriprobe_driver_settles_a_back_during_loading_once_and_sends_no_unload_without_a_media_id() {
-        let _serial = plx_base::testlock::serial();
-        let log = logged(|| {
-            let mut rig = Rig::new(Variant::AtLoad);
-            rig.frame(10);
-            rig.transport.say("register", "");
-            rig.frame(10);
-            assert_eq!(rig.transport.sent(), ["load"]);
-            rig.back();
-            assert_eq!(rig.status(), crate::route::RouteStartStatus::Failed, "the attempt the Back interrupted fails");
-            assert_eq!(rig.transport.sent(), ["load"], "no mediaId, so there is nothing to unload");
-            assert!(rig.transport.closed() >= 1, "closing the registration is what makes the service drop the load");
-        });
-        assert!(line_with(&log, " summary ").contains("end=back"), "{log}");
-        assert!(!log.contains("no longer waits"), "{log}");
-    }
-
-    #[test]
-    fn uriprobe_driver_unloads_a_back_that_comes_after_the_load_reply_but_before_loadcompleted() {
-        let _serial = plx_base::testlock::serial();
-        let _ = logged(|| {
-            let mut rig = Rig::new(Variant::AtLoad);
-            rig.load_answered();
-            rig.back();
-            assert_eq!(rig.transport.sent(), ["load", "subscribe", "unload"]);
-            assert_eq!(rig.status(), crate::route::RouteStartStatus::Failed);
-        });
-    }
-
-    #[test]
-    fn uriprobe_driver_times_out_a_load_the_service_never_answers() {
-        let _serial = plx_base::testlock::serial();
-        let log = logged(|| {
-            let mut rig = Rig::new(Variant::AtLoad);
-            rig.frame(10);
-            rig.transport.say("register", "");
-            rig.frame(10);
-            rig.frame(30_000);
-            assert!(rig.is_done());
-            assert_eq!(rig.status(), crate::route::RouteStartStatus::Failed);
-            rig.back();
-        });
-        assert!(line_with(&log, " summary ").contains("end=timeout:load"), "{log}");
-    }
-
-    #[test]
-    fn uriprobe_driver_fails_the_start_on_the_first_frame_when_the_transport_cannot_open() {
-        let _serial = plx_base::testlock::serial();
-        let log = logged(|| {
-            let mut rig = Rig::build(Variant::AtLoad, Some("no bus"));
-            // `open` was refused on the spot, but the start has already returned its attempt: the
-            // refusal is fed on the first frame, never inside the call that started the session.
-            assert_eq!(rig.status(), crate::route::RouteStartStatus::Pending);
-            assert!(!rig.is_done());
-            rig.frame(10);
-            assert!(rig.is_done());
-            assert_eq!(rig.transport.opened(), [Shape::Named, Shape::Anon], "the ladder still tries the second shape");
-            assert_eq!(rig.status(), crate::route::RouteStartStatus::Failed);
-            rig.back();
-        });
-        assert!(log.contains("register shape=named refused"), "{log}");
-        assert!(line_with(&log, " summary ").contains("end=refused:register"), "{log}");
-    }
-
-    #[test]
-    fn uriprobe_driver_never_writes_the_url_to_the_log_even_when_the_transport_echoes_it() {
-        let _serial = plx_base::testlock::serial();
-        let log = logged(|| {
-            let mut rig = Rig::new(Variant::AtLoad);
-            *rig.transport.refuse_call.lock().unwrap() = Some(("load", format!("could not send {URL}")));
-            rig.frame(10);
-            rig.transport.say("register", "");
-            rig.frame(10);
-            rig.transport.say("register", "");
-            rig.frame(10);
-            rig.back();
-        });
-        assert!(log.contains("call load err("), "the refusal is reported:\n{log}");
-        for leak in LEAKS {
-            assert!(!log.contains(leak), "{leak:?} reached the log:\n{log}");
-        }
-    }
-
-    #[test]
-    fn uriprobe_drive_releases_a_session_that_ended_by_itself_and_frees_the_slot() {
-        let _serial = plx_base::testlock::serial();
-        let log = logged(|| {
-            let mut rig = Rig::new(Variant::AtLoad);
-            let session = rig.session.take().unwrap();
-            let transport = rig.transport;
-            rig.pa.install_uri(session);
-            assert!(rig.pa.uri_live());
-            transport.deny("register", "named refused");
-            drive(&mut rig.ps, &mut rig.pa);
-            drive(&mut rig.ps, &mut rig.pa);
-            transport.deny("register", "anon refused");
-            drive(&mut rig.ps, &mut rig.pa);
-            drive(&mut rig.ps, &mut rig.pa);
-            assert!(!rig.pa.uri_live(), "a finished session is released, so the next Play is not refused");
-            assert!(!rig.pa.uri_plane_open());
-            assert_eq!(rig.status(), crate::route::RouteStartStatus::Failed);
-            drive(&mut rig.ps, &mut rig.pa);
-        });
-        assert!(line_with(&log, " summary ").contains("load=fail(register)"), "{log}");
-    }
-
-    #[test]
-    fn uriprobe_drive_reports_the_plane_open_only_while_the_service_says_playing() {
-        let _serial = plx_base::testlock::serial();
-        let _ = logged(|| {
-            let mut rig = Rig::new(Variant::AtLoad);
-            let transport = rig.transport;
-            let session = rig.session.take().unwrap();
-            rig.pa.install_uri(session);
-            assert!(!rig.pa.uri_plane_open());
-            for (method, payload) in [
-                ("register", ""),
-                ("load", r#"{"returnValue":true,"mediaId":"_m1"}"#),
-                ("subscribe", r#"{"mediaId":"_m1","loadCompleted":true}"#),
-                ("subscribe", r#"{"mediaId":"_m1","playing":true}"#),
-            ] {
-                transport.say(method, payload);
-                drive(&mut rig.ps, &mut rig.pa);
-            }
-            assert!(rig.pa.uri_plane_open());
-            stop(&mut rig.ps, &mut rig.pa);
-            drive(&mut rig.ps, &mut rig.pa);
-            assert!(!rig.pa.uri_plane_open());
-        });
-    }
-    #[test]
-    fn uriprobe_offscreen_stop_keeps_slot_through_deadline_and_releases_after_late_ack() {
-        let _serial = plx_base::testlock::serial();
-        let _ = logged(|| {
-            let mut rig = Rig::new(Variant::AtLoad);
-            rig.load_answered();
-            rig.transport.hold_close.store(true, Ordering::SeqCst);
-            let session = rig.session.take().unwrap(); rig.pa.install_uri(session);
-            stop(&mut rig.ps, &mut rig.pa); stop(&mut rig.ps, &mut rig.pa);
-            assert_eq!(rig.transport.closed(),1);
-            assert!(rig.pa.uri_live()); assert!(rig.pa.uri_closing());
-            assert_eq!(rig.status(), crate::route::RouteStartStatus::Failed);
-            let (session,mt)=rig.pa.uri_split();
-            let session=session.unwrap();
-            let poll=session.poll();
-            session.advance(&mut rig.ps,mt,poll,20_000);
-            assert!(session.closing()); assert!(!session.ownership_released());
-            assert!(rig.pa.uri_live());
-            // A frame loop with an idle route still polls; no player screen is required.
-            let mut idle=PlaybackSession::IDLE;
-            *rig.transport.close_status.lock().unwrap()=Some(CloseStatus::Released);
-            drive(&mut idle,&mut rig.pa);
-            assert!(!rig.pa.uri_live()); assert_eq!(rig.transport.closed(),1);
-        });
-    }
-
-    #[test]
-    fn uriprobe_driver_delayed_initial_play_reply_cannot_grade_resume() {
-        let _serial = plx_base::testlock::serial();
-        let output=logged(|| {
-            let mut rig=Rig::new(Variant::Drive); rig.load_answered();
-            rig.transport.say("subscribe",r#"{"mediaId":"_m1","loadCompleted":true}"#); rig.frame(10);
-            let initial=*rig.transport.requests.lock().unwrap().iter().find(|(method,_)|*method=="play").unwrap();
-            rig.transport.say("subscribe",r#"{"mediaId":"_m1","playing":true}"#); rig.frame(10);
-            rig.frame(3_000); rig.frame(2_500);
-            let session=*rig.transport.current.lock().unwrap();
-            rig.transport.replies.lock().unwrap().push_back(UriReply{session:session.unwrap(),request:initial.1,method:"play",payload:r#"{"returnValue":false}"#.into(),ok:true});
-            rig.frame(10);
-            rig.back();
-        });
-        assert!(line_with(&output," summary ").contains("resume=sent"),"delayed initial ACK changed resume: {output}");
-    }
-
-    /// The tests which need the host sink to export a window (the webOS 5+ path) or the whole
-    /// engine around the driver: `make test-hostsim C=plx_media T=uriprobe`.
-    #[cfg(feature = "hostsim")]
-    mod hostsim {
-        use super::*;
-        #[cfg(feature = "play-feed")]
-        use plx_play_feed::shared::FEED_SHARED;
-        use std::time::Instant;
-        use std::io::{BufRead, BufReader, Write};
-        use std::net::TcpListener;
-        use std::sync::atomic::AtomicBool;
-        use std::sync::Arc;
-
-        /// The host sink exports a window (`VP_EXPORTED`, id `clocksink-window`) while this lives
-        /// and is put back as it was found.
-        struct ExportedHost;
-
-        impl ExportedHost {
-            fn arm() -> ExportedHost {
-                crate::player::ffi_host::reset_native_lifecycle_for_test();
-                crate::player::ffi_host::force_clocksink_for_test(true);
-                ExportedHost
-            }
-        }
-
-        impl Drop for ExportedHost {
-            fn drop(&mut self) {
-                crate::player::ffi_host::force_clocksink_for_test(false);
-            }
-        }
-
-        #[test]
-        fn uriprobe_driver_on_an_exporting_set_names_the_window_in_the_load_and_places_it_on_videoinfo() {
-            let _serial = plx_base::testlock::serial();
-            let _host = ExportedHost::arm();
-            let log = logged(|| {
-                let mut rig = Rig::new(Variant::AtLoad);
-                assert!(rig.session.as_ref().unwrap().window_created(), "the window was created");
-                rig.frame(10);
-                rig.transport.say("register", "");
-                rig.frame(10);
-                let load: serde_json::Value = serde_json::from_str(&rig.transport.payload_of("load")).expect("JSON");
-                assert_eq!(load["payload"]["option"]["windowId"], "clocksink-window", "{load}");
-                rig.transport.say("load", r#"{"returnValue":true,"mediaId":"_m1"}"#);
-                rig.frame(10);
-                rig.transport.say("subscribe", r#"{"mediaId":"_m1","videoInfo":{"width":3840,"height":2160,"codec":"hevc"}}"#);
-                rig.frame(10);
-                rig.back();
-            });
-            assert!(line_with(&log, " armed ").contains("window=exported"), "{log}");
-            assert!(log.contains("window id=clocksink-window"), "{log}");
-            assert!(log.contains("window placed src=1920x1080 rv=1"), "placed over the canvas as soon as it exists:\n{log}");
-            assert!(log.contains("window placed src=3840x2160 rv=1"), "re-placed for the coded size videoInfo reported:\n{log}");
-            assert!(line_with(&log, " summary ").contains("window=exported"), "{log}");
-        }
-
-        #[test]
-        fn uriprobe_driver_late_variant_sends_the_window_after_loadcompleted_and_plays_after_its_reply() {
-            let _serial = plx_base::testlock::serial();
-            let _host = ExportedHost::arm();
-            let log = logged(|| {
-                let mut rig = Rig::new(Variant::Late);
-                rig.load_answered();
-                let load: serde_json::Value = serde_json::from_str(&rig.transport.payload_of("load")).expect("JSON");
-                assert!(load["payload"]["option"].get("windowId").is_none(), "the late variant loads without it: {load}");
-                rig.transport.say("subscribe", r#"{"mediaId":"_m1","loadCompleted":true}"#);
-                rig.frame(10);
-                assert_eq!(rig.transport.sent(), ["load", "subscribe", "setWindowId"], "play waits for the window call");
-                assert!(rig.transport.payload_of("setWindowId").contains("clocksink-window"));
-                assert_eq!(rig.status(), crate::route::RouteStartStatus::Started, "loadCompleted settles the attempt");
-                rig.transport.say("setWindowId", r#"{"returnValue":true}"#);
-                rig.frame(10);
-                assert_eq!(rig.transport.sent(), ["load", "subscribe", "setWindowId", "play"]);
-                rig.back();
-            });
-            assert!(line_with(&log, " summary ").contains("setWindowId=ok variant=late"), "{log}");
-        }
-
-        #[test]
-        fn uriprobe_driver_no_window_variant_creates_none_even_on_an_exporting_set() {
-            let _serial = plx_base::testlock::serial();
-            let _host = ExportedHost::arm();
-            let log = logged(|| {
-                let mut rig = Rig::new(Variant::NoWindow);
-                assert!(!rig.session.as_ref().unwrap().window_created(), "no window was created");
-                rig.frame(10);
-                rig.transport.say("register", "");
-                rig.frame(10);
-                let load: serde_json::Value = serde_json::from_str(&rig.transport.payload_of("load")).expect("JSON");
-                assert!(load["payload"]["option"].get("windowId").is_none(), "{load}");
-                rig.back();
-            });
-            assert!(line_with(&log, " armed ").contains("window=none"), "{log}");
-            assert!(!log.contains("window id="), "{log}");
-            assert!(!log.contains("window placed"), "{log}");
-        }
-
-        #[test]
-        fn uriprobe_closing_registration_refuses_engine_start_and_exit_keeps_display_safe() {
-            let _serial=plx_base::testlock::serial();
-            let _host=ExportedHost::arm();
-            let _=logged(|| {
-                let mut rig=Rig::new(Variant::AtLoad);
-                rig.load_answered();
-                rig.transport.hold_close.store(true,Ordering::SeqCst);
-                let session=rig.session.take().unwrap(); rig.pa.install_uri(session);
-                stop(&mut rig.ps,&mut rig.pa);
-                assert!(rig.pa.uri_live()); assert!(rig.pa.uri_closing());
-                assert_eq!(crate::player::start_bufferfeed_tracked(&mut rig.ps,&mut rig.pa),crate::player::BufferfeedStartOutcome::Failed);
-                let start=Instant::now(); let mut ticks=0;
-                let exit=crate::player::route_start::exit_native_with(&mut rig.pa,|| { ticks+=1; start+std::time::Duration::from_secs(ticks*5) },||{});
-                assert_eq!(exit,crate::player::NativeExit::WorkerInFirmware);
-                assert_eq!(rig.transport.closed(),1);
-                assert!(!rig.pa.uri_live(),"unresolved resource owner is deliberately leaked for process exit");
-            });
-        }
-
-        #[test]
-        fn uri_review_regression_prepared_start_is_settled_when_uri_is_closing() {
-            let _serial = plx_base::testlock::serial();
-            let _host = ExportedHost::arm();
-            let _ = logged(|| {
-                let mut rig = Rig::new(Variant::AtLoad);
-                rig.load_answered();
-                rig.transport.hold_close.store(true, Ordering::SeqCst);
-                let session = rig.session.take().unwrap();
-                rig.pa.install_uri(session);
-                stop(&mut rig.ps, &mut rig.pa);
-                let transaction = crate::route::begin_route_start().expect("new route owner");
-                assert!(crate::route::prepare_route_start(transaction));
-                assert_eq!(crate::route::pending_route_start(), Some(transaction));
-                let calls = rig.transport.sent();
-                let old_status = rig.status();
-                assert_eq!(crate::player::start_bufferfeed_tracked(&mut rig.ps, &mut rig.pa), crate::player::BufferfeedStartOutcome::Failed);
-                assert!(crate::route::pending_route_start().is_none(), "refused candidate stayed Prepared");
-                assert!(crate::route::control_phase_label().starts_with("Failed("));
-                assert_eq!(rig.status(), old_status, "refusing the new transaction cannot settle the old URI attempt again");
-                assert!(!rig.pa.is_live(), "no native Engine was constructed");
-                assert!(rig.pa.uri_live() && rig.pa.uri_closing());
-                assert_eq!(rig.transport.sent(), calls);
-                assert_eq!(rig.transport.closed(), 1);
-                *rig.transport.close_status.lock().unwrap() = Some(CloseStatus::Released);
-                drive(&mut rig.ps, &mut rig.pa);
-                assert!(!rig.pa.uri_live());
-            });
-        }
-
-        #[test]
-        fn uri_acb_exported_host_is_invalid_without_creating_window_or_registering() {
-            let _serial=plx_base::testlock::serial(); let _host=ExportedHost::arm();
-            let _=logged(|| {
-                for variant in [Variant::AcbControl,Variant::AcbDass] {
-                    let mut rig=Rig::new(variant);
-                    assert!(!rig.session.as_ref().unwrap().window_created());
-                    rig.frame(0);
-                    assert!(rig.is_done()); assert_eq!(rig.status(),crate::route::RouteStartStatus::Failed);
-                    assert!(rig.transport.opened().is_empty()); assert!(rig.transport.sent().is_empty());
-                }
-            });
-        }
-
-        /// The ACB plane of a probe that touched it, over a scripted sink that accepts UNLOADED as
-        /// task 5 and a plane owner of its own (booted with a handle): the firmware's completion is
-        /// whatever the test queues, or `complete_at_once` queues the event-1 one with the dispatch.
-        /// Closed through `stop` and one `drive`, as the engine's teardown does; the transport
-        /// releases the bus at once.
-        fn acb_plane_closed(complete_at_once: bool) -> (Rig, &'static plx_platform::tv::sink::ScriptedPlaneSink, &'static plx_platform::tv::plane::PlaneOwner) {
-            use plx_platform::tv::{plane::{PlaneFacts, PlaneOwner}, sink::{PlaneUnload, ScriptedPlaneSink}};
-            let sink: &'static ScriptedPlaneSink = Box::leak(Box::new(ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 })));
-            sink.complete_at_once.store(complete_at_once, Ordering::SeqCst);
-            let plane: &'static PlaneOwner = Box::leak(Box::new(PlaneOwner::new()));
-            plane.boot(PlaneFacts { handle: true, player_type: 0 });
-            let mut rig = Rig::on_plane(Variant::AtLoad, sink, plane);
-            rig.load_answered();
-            let mut session = rig.session.take().unwrap();
-            session.touch_acb_for_test(0);
-            rig.pa.install_uri(session);
-            stop(&mut rig.ps, &mut rig.pa);
-            drive(&mut rig.ps, &mut rig.pa);
-            (rig, sink, plane)
-        }
-
-        /// REWRITTEN for the fenced contract (it used to assert that the dispatch itself quarantined
-        /// the plane): the plane now waits for the firmware's completion of UNLOADED and is
-        /// quarantined by a completion which is not event 1 (or by the deadline, which the plane's own
-        /// machine tests cover on a clock they own). What stays: once the plane is quarantined, the
-        /// bus is already released, so the exit leaves at once without waiting for it again.
-        #[test]
-        fn uri_acb_quarantined_plane_exits_without_waiting_again_for_released_bus() {
-            use plx_platform::tv::plane::{Phase, Why};
-            let _serial=plx_base::testlock::serial();
-            let log=logged(|| {
-                let (mut rig,sink,plane)=acb_plane_closed(false);
-                // UNLOADED ran once and the plane waits on the firmware: still closing, plane held.
-                assert_eq!(sink.unload_count(),1); assert_eq!(plane.phase(),Phase::Releasing);
-                assert!(rig.pa.uri_closing()); assert!(rig.pa.uri_plane_open());
-                assert!(!rig.pa.uri_acb_exit_quarantine(),"a plane still being released is not yet quarantined");
-                // The firmware answers the dispatch (task 5) with something other than "complete".
-                sink.mailbox.push(5,-1);
-                drive(&mut rig.ps,&mut rig.pa);
-                assert_eq!(plane.phase(),Phase::Quarantined(Why::Completion(-1)));
-                assert!(rig.pa.uri_closing()); assert!(rig.pa.uri_plane_open());
-                assert!(rig.pa.uri_acb_exit_quarantine());
-                let exit=crate::player::route_start::exit_native_with(&mut rig.pa,Instant::now,||panic!("released-bus plane quarantine needs no extra wait"));
-                assert_eq!(exit,crate::player::NativeExit::WorkerInFirmware);
-                assert!(!rig.pa.uri_live()); assert_eq!(rig.transport.closed(),1);
-                assert_eq!(sink.unload_count(),1,"UNLOADED is never dispatched a second time");
-            });
-            assert!(log.contains("acb=quarantined bus=released reason=completion ev=-1"),"{log}");
-            assert!(!log.contains("plane-release=proven"),"{log}");
-        }
-
-        /// The happy path of the same contract: the firmware completes UNLOADED with event 1 as the
-        /// dispatch returns, so the plane is Released within the closing frame, the registration is
-        /// released with it, and the exit has nothing to wait for and nothing quarantined to leave.
-        #[test]
-        fn uri_acb_released_plane_ends_ownership_and_the_exit_is_clean() {
-            use plx_platform::tv::plane::Phase;
-            let _serial=plx_base::testlock::serial();
-            let log=logged(|| {
-                let (mut rig,sink,plane)=acb_plane_closed(true);
-                assert_eq!(sink.unload_count(),1); assert_eq!(plane.phase(),Phase::Released);
-                assert!(!rig.pa.uri_live(),"the completion released the registration, and the slot with it");
-                assert_eq!(rig.transport.closed(),1);
-                let exit=crate::player::route_start::exit_native_with(&mut rig.pa,Instant::now,||panic!("a released plane needs no wait"));
-                assert_eq!(exit,crate::player::NativeExit::Clean);
-                assert!(!rig.pa.uri_live()); assert_eq!(rig.transport.closed(),1);
-                assert_eq!(sink.unload_count(),1,"UNLOADED is never dispatched a second time");
-            });
-            assert!(log.contains("acb=released bus=released plane-release=proven"),"{log}");
-            assert!(!log.contains("quarantined"),"{log}");
-        }
-
-        /// The exit itself waits for a plane still being released, and only for as long as the
-        /// firmware takes: its own drive pumps the completion, ownership ends, and it leaves clean.
-        #[test]
-        fn uri_acb_exit_follows_a_releasing_plane_to_the_firmware_completion() {
-            use plx_platform::tv::plane::Phase;
-            let _serial=plx_base::testlock::serial();
-            let log=logged(|| {
-                let (mut rig,sink,plane)=acb_plane_closed(false);
-                assert_eq!(plane.phase(),Phase::Releasing); assert!(rig.pa.uri_live() && rig.pa.uri_closing());
-                sink.mailbox.push(5,1);
-                let exit=crate::player::route_start::exit_native_with(&mut rig.pa,Instant::now,||panic!("the completion was already queued"));
-                assert_eq!(exit,crate::player::NativeExit::Clean);
-                assert_eq!(plane.phase(),Phase::Released); assert!(!rig.pa.uri_live());
-                assert_eq!(rig.transport.closed(),1); assert_eq!(sink.unload_count(),1);
-            });
-            assert!(log.contains("acb=released bus=released plane-release=proven"),"{log}");
-            assert!(!log.contains("quarantined"),"{log}");
-        }
-
-        /// A stand-in for the media server that answers every request `200 {}` and remembers the
-        /// request lines, so a test can say what the route sent and what it did not.
-        struct CountingPms {
-            port: i32,
-            seen: Arc<Mutex<Vec<String>>>,
-            stop: Arc<AtomicBool>,
-            thread: Option<std::thread::JoinHandle<()>>,
-        }
-
-        impl CountingPms {
-            fn start() -> CountingPms {
-                let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-                let port = i32::from(listener.local_addr().unwrap().port());
-                let seen = Arc::new(Mutex::new(Vec::new()));
-                let stop = Arc::new(AtomicBool::new(false));
-                let (log, flag) = (seen.clone(), stop.clone());
-                let thread = std::thread::spawn(move || {
-                    for socket in listener.incoming() {
-                        if flag.load(Ordering::SeqCst) {
-                            break;
-                        }
-                        let Ok(mut socket) = socket else { continue };
-                        let _ = socket.set_read_timeout(Some(std::time::Duration::from_secs(2)));
-                        let mut request = String::new();
-                        {
-                            let mut reader = BufReader::new(&socket);
-                            if reader.read_line(&mut request).unwrap_or(0) == 0 {
-                                continue;
-                            }
-                            loop {
-                                let mut header = String::new();
-                                match reader.read_line(&mut header) {
-                                    Ok(0) | Err(_) => break,
-                                    Ok(_) if header == "\r\n" || header == "\n" => break,
-                                    Ok(_) => {}
-                                }
-                            }
-                        }
-                        log.lock().unwrap().push(request.trim_end().to_owned());
-                        let body = br#"{"MediaContainer":{}}"#;
-                        let _ = write!(
-                            socket,
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                            body.len()
-                        );
-                        let _ = socket.write_all(body);
-                    }
-                });
-                CountingPms { port, seen, stop, thread: Some(thread) }
-            }
-
-            fn requests(&self) -> Vec<String> {
-                self.seen.lock().unwrap().clone()
-            }
-        }
-
-        impl Drop for CountingPms {
-            fn drop(&mut self) {
-                self.stop.store(true, Ordering::SeqCst);
-                let _ = std::net::TcpStream::connect(("127.0.0.1", u16::try_from(self.port).unwrap_or(0)));
-                if let Some(thread) = self.thread.take() {
-                    let _ = thread.join();
-                }
-            }
-        }
-
-        /// A playback the route prepared: a server registered at the stand-in, an encoder the stop
-        /// owes that server, and the stream URL the engine would open. The host sink exports a window.
-        struct Fork {
-            ps: PlaybackSession,
-            pa: crate::player::adapter::PlayerAdapter,
-            pms: CountingPms,
-            _host: ExportedHost,
-        }
-
-        impl Fork {
-            fn new() -> Fork {
-                let host = ExportedHost::arm();
-                crate::player::SHARED.reset_session();
-                plx_plex::plex::reset_servers_for_test();
-                let pms = CountingPms::start();
-                let mut ps = PlaybackSession::IDLE;
-                crate::route::reset_player_control_for_test(&ps);
-                let sid = plx_plex::plex::register_for_test("uriprobe-fork-test", "127.0.0.1", pms.port, "token", "uriprobe-client");
-                crate::route::swap_cur_sid_for_test(&mut ps, sid);
-                crate::route::install_active_encoder_for_test("probe-encoder");
-                crate::route::set_url(&mut ps, URL);
-                assert!(ps.qualify_resolved_feed_offer(crate::route::backend_policy::OfferId::FEED_ORIGINAL,
-                    crate::route::CandidatePurpose::NewCandidate),
-                    "the prepared fixture source must qualify its stable Feed recipe");
-                let pa = crate::player::adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
-                Fork { ps, pa, pms, _host: host }
-            }
-
-            /// The requests the server saw, once the stop worker has finished.
-            fn requests_after_stop(&self) -> Vec<String> {
-                crate::route::drain_scrobble();
-                self.pms.requests()
-            }
-        }
-
-        impl Drop for Fork {
-            fn drop(&mut self) {
-                plx_plex::plex::reset_servers_for_test();
-            }
-        }
-
-        /// What the server must never hear from a playback that decoded nothing and watched nothing.
-        fn viewing_writes(requests: &[String]) -> Vec<&String> {
-            requests.iter().filter(|r| ["/:/timeline", "/:/scrobble", "/:/unscrobble"].iter().any(|p| r.contains(p))).collect()
-        }
-
-        fn only_the_encoder_stop(requests: &[String]) {
-            assert!(viewing_writes(requests).is_empty(), "the probe reported viewing to the server: {requests:?}");
-            let stops = requests.iter().filter(|r| r.contains("/video/:/transcode/universal/stop") && r.contains("probe-encoder")).count();
-            assert_eq!(stops, 1, "positive control: the stand-in is the server the route talks to, and the stop retired the encoder: {requests:?}");
-            assert_eq!(requests.len(), 1, "nothing but the encoder stop: {requests:?}");
-        }
-
-        #[test]
-        fn uriprobe_fork_builds_no_engine_and_a_back_posts_nothing_to_plex_but_the_encoder_stop() {
-            let _serial = plx_base::testlock::serial();
-            let mut fork = Fork::new();
-            let log = logged(|| {
-                plx_base::devtrig::with_private_triggers(|| {
-                    std::fs::write(plx_base::devtrig::path("uriprobe"), "late\n").expect("arm the trigger");
-                    let attempt = match crate::player::start_bufferfeed_tracked(&mut fork.ps, &mut fork.pa) {
-                        crate::player::BufferfeedStartOutcome::Launched(attempt) => attempt,
-                        other => panic!("the fork did not launch: {other:?}"),
-                    };
-                    assert!(fork.pa.uri_live(), "the probe session is installed");
-                    assert!(!fork.pa.is_live(), "and no Engine exists");
-                    assert_eq!(crate::route::route_start_status(attempt), crate::route::RouteStartStatus::Pending);
-                    assert_eq!(
-                        crate::player::start_bufferfeed_tracked(&mut fork.ps, &mut fork.pa),
-                        crate::player::BufferfeedStartOutcome::AlreadyRunning,
-                        "a second Play under a live session is a no-op"
-                    );
-                    crate::player::stop_bufferfeed(&mut fork.ps, &mut fork.pa);
-                    drive(&mut fork.ps, &mut fork.pa);
-                    assert!(!fork.pa.uri_live(), "the released stop ended the session");
-                    assert!(!fork.pa.uri_plane_open());
-                });
-            });
-            only_the_encoder_stop(&fork.requests_after_stop());
-            assert!(line_with(&log, " armed ").contains("variant=late"), "{log}");
-            assert!(line_with(&log, " armed ").contains("window=exported"), "{log}");
-            assert!(line_with(&log, " summary ").contains("end=back"), "{log}");
-            for leak in LEAKS {
-                assert!(!log.contains(leak), "{leak:?} reached the log:\n{log}");
-            }
-        }
-
-        #[test]
-        fn uriprobe_fork_without_a_bus_fails_the_start_on_the_first_frame_and_frees_the_slot() {
-            let _serial = plx_base::testlock::serial();
-            let mut fork = Fork::new();
-            let log = logged(|| {
-                plx_base::devtrig::with_private_triggers(|| {
-                    std::fs::write(plx_base::devtrig::path("uriprobe"), "").expect("arm the trigger");
-                    let attempt = match crate::player::start_bufferfeed_tracked(&mut fork.ps, &mut fork.pa) {
-                        crate::player::BufferfeedStartOutcome::Launched(attempt) => attempt,
-                        other => panic!("the fork did not launch: {other:?}"),
-                    };
-                    assert!(fork.pa.uri_live());
-                    // The host has no bus: every registration is refused, and the machine ends the
-                    // session on the next frame, which fails the attempt and frees the slot.
-                    drive(&mut fork.ps, &mut fork.pa);
-                    assert!(!fork.pa.uri_live(), "a session which ended by itself is released");
-                    assert_eq!(crate::route::route_start_status(attempt), crate::route::RouteStartStatus::Failed);
-                    crate::player::stop_bufferfeed(&mut fork.ps, &mut fork.pa);
-                });
-            });
-            only_the_encoder_stop(&fork.requests_after_stop());
-            assert!(log.contains("register shape=named refused"), "{log}");
-            assert!(line_with(&log, " summary ").contains("end=refused:register"), "{log}");
-        }
-
-        #[test]
-        fn uriprobe_fork_is_refused_while_an_earlier_session_still_owns_the_native_object() {
-            let _serial = plx_base::testlock::serial();
-            let mut fork = Fork::new();
-            // A timed-out Load an earlier Engine parked: every native start is refused, and the
-            // probe's window verbs would reach the same seam under it.
-            let epoch = FEED_SHARED.begin_native_session().expect("the native session is idle");
-            assert!(FEED_SHARED.abandon_native_session(epoch));
-            let log = logged(|| {
-                plx_base::devtrig::with_private_triggers(|| {
-                    std::fs::write(plx_base::devtrig::path("uriprobe"), "").expect("arm the trigger");
-                    assert_eq!(
-                        crate::player::start_bufferfeed_tracked(&mut fork.ps, &mut fork.pa),
-                        crate::player::BufferfeedStartOutcome::Failed
-                    );
-                    assert!(!fork.pa.uri_live(), "a refused start installs no session");
-                    crate::player::stop_bufferfeed(&mut fork.ps, &mut fork.pa);
-                });
-            });
-            assert!(FEED_SHARED.retire_native_session(epoch), "the parked phase was left as found");
-            assert!(line_with(&log, "probe NOT started").contains("earlier session"), "{log}");
-            assert!(!log.contains("uriprobe: t="), "the machine never ran: nothing was opened\n{log}");
-            assert!(viewing_writes(&fork.requests_after_stop()).is_empty());
-        }
+    fn claimed_attempt() -> RouteStartAttempt {
+        let ticket = crate::route::begin_route_start().expect("a start owner");
+        assert!(crate::route::prepare_route_start(ticket));
+        crate::route::claim_route_start_attempt(ticket).expect("an attempt")
     }
 }

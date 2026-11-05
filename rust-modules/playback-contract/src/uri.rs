@@ -4,7 +4,8 @@
 
 use std::os::raw::c_int;
 
-use crate::{Requirements, TrackChoice, TrackKind, TrackSelection};
+use crate::{AttemptId, DriverSet, Failure, Requirements, SourceKey, TrackChoice, TrackKind,
+    TrackSelection};
 
 /// An explicitly qualified display path. `Acb` is the webOS 4.x plane, bound through the plane
 /// owner; `Exported` is the exported window at a canvas size; `Unbound` is no certified path.
@@ -50,4 +51,22 @@ impl UriSource {
             && mapped(requirements.audio_track, TrackKind::Audio)
             && mapped(requirements.subtitle_track, TrackKind::Subtitle)
     }
+}
+
+/// What the player adapter needs of a URI driver beyond [`DriverSet`]: the escrow of an
+/// authorized source, and two ownership facts the route reads. The adapter holds one as
+/// `Box<dyn UriDriver<Context = MainThread>>`, so the product driver (`plx_play_uri`) and a
+/// test fake are interchangeable and the player crate names neither.
+pub trait UriDriver: DriverSet {
+    /// Give exactly one authorized, owned URL to the next matching Start. Superseding a staged
+    /// source destroys its old locator; a failed, cancelled or expired Start cannot reuse it.
+    fn stage_source(&mut self, attempt: AttemptId, key: SourceKey, source: UriSource)
+        -> Result<(), Failure>;
+    /// Cancel an unconsumed locator without changing a live native attempt.
+    fn cancel_staged(&mut self, attempt: AttemptId);
+    /// The plane remains owned after the service reports Playing until native release. This is
+    /// an ownership fact, not proof that a picture reached the panel.
+    fn plane_owned(&self) -> bool;
+    /// Whether the active source has an exact native index for this selected source track.
+    fn maps_track(&self, selection: TrackSelection) -> bool;
 }

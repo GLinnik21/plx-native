@@ -1002,7 +1002,8 @@ mixed-codec matrix.
 Five synthetic cases arm the URI probe themselves, through the case's `triggers`, so they take no
 `--extra-trigger` (one for the same name would replace their tokens); see *URI mode* below for how
 they are graded. Three are R-ABR-2 **instruments**, on an UNBOUND probe arm (`window=none`, no ACB
-video plane), and two are the regression **gates**, on a bound plane.
+video plane), and two are the regression **gates**, on a bound plane. Two more (`pipe_uri_product_*`,
+below) play the same stream through the PRODUCTION URI backend instead of the probe.
 
 The instruments. Two play the fixture server's own `/__abr/ladder/master.m3u8`, which lists the
 rungs as variants (all of them, or only those up to `?top=<rung>`) and so needs those rungs' clips
@@ -1032,9 +1033,26 @@ arm accepts only a stream whose `videoInfo` is exactly 1280x720 at 24 fps, which
 is that and not a 1080p one. Both skip with a reason when the pack lacks the stream or any of its
 segments (a build that stopped half way); `make fixtures-pipeline` builds it (about 230 MB, ~10 s).
 
-### URI mode — how a case that arms the probe is graded
+The product route. `pipe_uri_product_hls_720p24_20m_bound` and `..._bound_collapse` (`"uri_route":
+"product"`) have the same fixture, link and 75 s cap as the gate pair, but the app plays the stream with
+its production URI backend, bound through ACB, via the debug-only dev route `plxnative-uridev`. The
+harness's own mock PMS is the plan carrier: it starts on the configured `PMS_HOST:PMS_PORT` with the
+`pipe_uri_carrier_720p24.mp4` clip (a 90 s 720p24 progressive twin; one audio stream, no subtitles; built
+by `make fixtures-pipeline`) as ratingKey 990001, the app signs in as the synthetic guest and opens that
+item (`plxnative-play=990001`, with `quality=original`, `audioenh=off`, `ptype=0` pinned), and the runner
+writes `plxnative-uridev` as `acb part=991001 server=<the mock's machineIdentifier> url=<fixture
+server>/<fixture>`, so the app's qualifier answers with the fixture's URL and the TV fetches the HLS stream
+from the fixture server (shaper and wire counters keep working). `uriprobe` is never armed in this mode
+(`--extra-trigger` for it, `playurl`, `uridev`, `play`, `ptype` or `quality` is refused), the runner
+deletes `plxnative-uridev` when the case ends however it ends, and a log that does not show the
+synthetic mock (`check_synthetic_identity`) is not graded. A case skips with a reason when the install is
+not `debug`, `src/config.local.h` has no `PMS_HOST`/`PMS_PORT`, or the carrier is missing. The probe
+pair stays as the instrument baseline to compare against.
 
-A case whose own `triggers` include `uriprobe` plays through the TV's native player, which writes
+### URI mode — how a URI case is graded
+
+A case whose own `triggers` include `uriprobe` (the probe route), or that says `"uri_route": "product"`
+(the product route, below), plays through the TV's native player, which writes
 none of the buffer-feed lines the other assertions read (`stream: ... path=`, `load:`, media-position
 samples). Grading it on them fails by construction, so `evaluate_pipeline` runs the URI branch
 INSTEAD: `no_error` and `server_wire` are kept, `stream_path`, `load_decl`, `codec`, `video_bound`,
@@ -1043,8 +1061,8 @@ INSTEAD: `no_error` and `server_wire` are kept, `stream_path`, `load_decl`, `cod
 plxnative-uriprobe=...` does not switch a case into this mode: it runs the Feed assertions with the
 probe armed on top.
 
-Every line the grader reads starts `uriprobe: t=<ms since arm> ...`, on the probe's own clock; the
-plane lines (`videoplane: BOUND`, `acb callback task=N ev=1 ...`) carry no `t=`. The probe does not
+On the probe route every line the grader reads starts `uriprobe: t=<ms since arm> ...`, on the probe's
+own clock; the plane lines (`videoplane: BOUND`, `acb callback task=N ev=1 ...`) carry no `t=`. The probe does not
 end on its own, so a healthy run has NO terminal `summary` line (the harness stops at the cap); a run
 whose clock stops ends 10 s later with `summary ... end=timeout:currentTime`.
 
@@ -1060,7 +1078,10 @@ The URI expectations, all in `expect` and all optional:
   and a `currentTime` that strictly advanced after it.
 - **`uri_plane_bound`** (`true`): the ACB video plane was bound. A `videoplane: BOUND` line (matched
   case-sensitively, so `videoplane: unbound` never counts), and `acb callback task=N ev=1` for each
-  of tasks 1-4, none answering another `ev`. Task 5 is the release and is ignored.
+  of tasks 1-4, none answering another `ev`. Task 5 is the release and is ignored. On the product
+  route the task ids are read from the log instead: `acb display fullscreen=1 rv=1 task=N` and
+  `acb playing rv=1 task=M` (both `rv=1`) each need an `acb callback task=<id> ev=1`, no callback may
+  answer another `ev` except the id in an `acb unloaded ... task=K` line, and line order is not graded.
 - **`uri_clock_past_s: N`**: the largest `ev=currentTime value=<ms>` is at least N seconds. It also
   counts as the depth the pack must have (`_resolve_fixtures` skips a pack shorter than 0.8 x N).
 - **`uri_max_stall_s: S`**: while playing, the media clock never stood still for more than S seconds
@@ -1083,8 +1104,20 @@ The URI expectations, all in `expect` and all optional:
   is the same drain (12, 11, 10, 8, 7, 5, 4, 3 ahead of the `bufferingStart` on the TV capture
   without the field).
 
+- **`uri_service_playing`** and **`uri_presented`** (`true`, product route only): the production
+  backend wrote its own `uri: service playing` line (the words inside the `uri: presented (service
+  playing; ...` line do not count), and `uri: presented (... from P to N ms)` with N > P, i.e. the clock
+  advanced under the claimed picture.
+
+The product route reads the same event text under another prefix: `uri-trace: t=<ms> ev=<name> <detail>`
+(byte-identical to the probe's `ev=` text), so `uri_playing` (from the events only: it has no
+`summary`), `uri_clock_past_s`, `uri_max_stall_s` and `uri_drain_warning_s` run unchanged. Its
+`no_error` also fails on `uri-acb: the bind failed`, `uri-acb: bind not granted`, `uri: product driver
+installation refused` and a `uri-dev: ... ignored` line (the dev route refused its trigger).
+
 A key starting `uri_` that is not in this list fails the case (`uri_expect`) instead of grading
-nothing, and `test_harness.py` pins that every such key sits on a case that arms the probe.
+nothing (the two product-only keys are unknown on a probe case), and `test_harness.py` pins that every
+such key sits on a case that arms the probe or says `"uri_route": "product"`.
 
 If the TV cannot reach the fixture server over the LAN, `--fixtures-loopback --fixtures-port PORT`
 advertises the fixtures through the TV's loopback interface. Hold the TV lease and keep

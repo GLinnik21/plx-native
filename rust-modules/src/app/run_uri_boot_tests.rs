@@ -76,6 +76,16 @@ mod uri_boot_tests {
             state.3.push(UriReply { session: SessionId::new(1), request,
                 method, payload: payload.to_owned(), ok: true });
         }
+        /// The request id of the latest native call of `method`.
+        fn last_request(&self, method: &str) -> RequestId {
+            self.0.lock().unwrap().2.iter().rev().find(|(name, _, _)| *name == method)
+                .map(|(_, request, _)| *request).expect("the native method was queued")
+        }
+        /// A reply to one named earlier request, not the latest of its method.
+        fn say_request(&self, method: &'static str, request: RequestId, payload: &str) {
+            self.0.lock().unwrap().3.push(UriReply { session: SessionId::new(1), request,
+                method, payload: payload.to_owned(), ok: true });
+        }
         #[cfg(feature = "play-feed")]
         fn release(&self) { self.0.lock().unwrap().1 = CloseStatus::Released; }
     }
@@ -178,8 +188,8 @@ mod uri_boot_tests {
             binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, preview_rectangle: false },
             Arc::new(QualifiedOriginal));
-        assert!(rig.app.adapters.player.install_uri_product_with_ports(
-            &mut rig.app.player.session, port, bus, display));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, port, bus, display));
         rig.request();
         let metric_request = rig.app.player.session.metric_request().expect("accepted URI request");
         rig.release.send(()).unwrap();
@@ -226,8 +236,8 @@ mod uri_boot_tests {
         let display: &'static Display = Box::leak(Box::new(Display));
         let port = ResolvePort::new(ProductEvidence::unqualified(display.window_mode()),
             Arc::new(QualifiedOriginal));
-        assert!(rig.app.adapters.player.install_uri_product_with_ports(
-            &mut rig.app.player.session, port, bus, display));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, port, bus, display));
         rig.request();
         rig.release.send(()).unwrap();
         let mut resolved = None;
@@ -259,8 +269,8 @@ mod uri_boot_tests {
             binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, preview_rectangle: false },
             Arc::new(QualifiedOriginal));
-        assert!(rig.app.adapters.player.install_uri_product_with_ports(
-            &mut rig.app.player.session, port, bus, display));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, port, bus, display));
         rig.request();
         let request = rig.app.player.session.metric_request().expect("logical request");
         rig.release.send(()).unwrap();
@@ -328,8 +338,8 @@ mod uri_boot_tests {
             binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, preview_rectangle: false },
             Arc::new(QualifiedOriginal));
-        assert!(rig.app.adapters.player.install_uri_product_with_ports(
-            &mut rig.app.player.session, port, bus, display));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, port, bus, display));
         rig.request();
         let request = rig.app.player.session.metric_request().expect("logical request");
         rig.release.send(()).unwrap();
@@ -421,11 +431,11 @@ mod uri_boot_tests {
         let _serial = plx_base::testlock::serial();
         struct RestoreDecoder;
         impl Drop for RestoreDecoder {
-            fn drop(&mut self) { plx_media::ff::force_speed_decoder_for_test(false); }
+            fn drop(&mut self) { plx_media_codecs::ffi::force_speed_decoder_for_test(false); }
         }
         let _decoder = RestoreDecoder;
         // The host has no bundled TV FFmpeg; exercise the existing test-only decoder seam.
-        plx_media::ff::force_speed_decoder_for_test(true);
+        plx_media_codecs::ffi::force_speed_decoder_for_test(true);
         let Some(mut rig) = Rig::serving(false) else { return };
         plx_plex::plex::client_for(rig.sid).unwrap()
             .set_link(plx_plex::plex::probe::Location::Local);
@@ -438,8 +448,8 @@ mod uri_boot_tests {
             binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, preview_rectangle: false },
             Arc::new(QualifiedOriginal));
-        assert!(rig.app.adapters.player.install_uri_product_with_ports(
-            &mut rig.app.player.session, port, bus, display));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, port, bus, display));
         rig.request();
         rig.release.send(()).unwrap();
         let mut resolved = None;
@@ -541,6 +551,92 @@ mod uri_boot_tests {
             "Feed physical preparation applied the requested rate before its first Play");
     }
 
+    /// The native `selectTrack` protocol through the product driver (`UriBackend`) and the adapter,
+    /// read only through what the adapter publishes: a pick commits on the exact request's
+    /// acknowledgement AND the matching `trackSelected`, a retired request cannot answer for its
+    /// successor, and the latest refused pick is the one the resolver is asked about.
+    #[test]
+    fn a_native_audio_pick_commits_on_the_exact_request_and_a_refusal_falls_back_once() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving_with(|request| {
+            queue_body(request, false).replace(
+                r#"{"id":2,"streamType":2,"codec":"aac","selected":true}"#,
+                r#"{"id":2,"streamType":2,"codec":"aac","selected":true},{"id":3,"streamType":2,"codec":"ac3","channels":6}"#)
+        }) else { return };
+        plx_plex::plex::client_for(rig.sid).unwrap()
+            .set_link(plx_plex::plex::probe::Location::Local);
+        let bus: &'static Bus = Box::leak(Box::new(Bus::new()));
+        let display: &'static Display = Box::leak(Box::new(Display));
+        let caps = Capabilities { progressive_uri: true, hls_uri: false,
+            packet_feed: false, pause: true, seek: true, audio_track: true,
+            subtitle_track: true, audio_off: false, subtitle_off: false };
+        let port = ResolvePort::new(ProductEvidence { display_exported: true,
+            binding: Binding::Exported { canvas: (1920, 1080) },
+            callable: caps, certified: caps, preview_rectangle: false },
+            Arc::new(QualifiedTwoAudio));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, port, bus, display));
+        rig.request();
+        rig.release.send(()).unwrap();
+        let mut resolved = None;
+        poll_until("qualified URI source did not resolve", || {
+            resolved = plx_media::route::pump_play(&mut rig.app.player.session,
+                rig.app.bridge.metadata_mut());
+            resolved.is_some()
+        });
+        assert!(rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session,
+            resolved.unwrap().uri_offer.expect("qualified original source")).is_ok());
+        assert!(matches!(plx_media::player::start_playback_tracked(
+            &mut rig.app.player.session, &mut rig.app.adapters.player),
+            plx_media::player::BufferfeedStartOutcome::Launched(_)));
+        let poll = |rig: &mut Rig| {
+            let at = rig.app.adapters.player.backend_tick();
+            let _ = rig.app.adapters.player.backend_poll_session_at(&mut rig.app.player.session, at);
+        };
+        let audio = |rig: &Rig| rig.app.player.session.source_selection().map(|s| s.audio_sid);
+        poll(&mut rig);
+        bus.say("load", r#"{"returnValue":true,"mediaId":"m1","loadCompleted":true}"#);
+        poll(&mut rig);
+        bus.say("selectTrack", r#"{"returnValue":true,"mediaId":"m1"}"#);
+        bus.say("subscribe", r#"{"mediaId":"m1","trackSelected":{"type":"audio","index":0}}"#);
+        poll(&mut rig);
+        bus.say("play", r#"{"returnValue":true,"mediaId":"m1","playing":true,"currentTime":12000}"#);
+        poll(&mut rig);
+        assert_eq!(audio(&rig), Some(2));
+
+        let pick = |sid: i64, ordinal: i32| plx_media::route::CarriedAudio::named(sid, ordinal);
+        assert!(rig.app.adapters.player.commit_audio_track(&mut rig.app.player.session, pick(3, 1), None));
+        let first = bus.last_request("selectTrack");
+        assert_eq!(audio(&rig), Some(2), "queue success is not selection");
+        assert!(!rig.app.adapters.player.commit_audio_track(&mut rig.app.player.session, pick(2, 0), None),
+            "a second same-kind request is refused while the first native request is unresolved");
+        assert_eq!(bus.last_request("selectTrack"), first, "the refused request was never sent");
+        bus.say("selectTrack", r#"{"returnValue":true,"mediaId":"m1"}"#);
+        poll(&mut rig);
+        assert_eq!(audio(&rig), Some(2), "native ACK is not selected-track evidence");
+        bus.say("subscribe", r#"{"mediaId":"m1","trackSelected":{"type":"audio","index":1}}"#);
+        poll(&mut rig);
+        assert_eq!(audio(&rig), Some(3));
+
+        assert!(rig.app.adapters.player.commit_audio_track(&mut rig.app.player.session, pick(2, 0), None));
+        let successor = bus.last_request("selectTrack");
+        assert_ne!(successor, first);
+        bus.say("subscribe", r#"{"mediaId":"m1","trackSelected":{"type":"audio","index":1}}"#);
+        poll(&mut rig);
+        assert_eq!(audio(&rig), Some(3), "late old selection cannot commit the pending successor");
+        bus.say_request("selectTrack", first, r#"{"returnValue":false,"mediaId":"m1"}"#);
+        poll(&mut rig);
+        assert!(rig.app.adapters.player.take_uri_track_fallback().is_none(),
+            "a retired native request cannot schedule an old source reconfiguration");
+        bus.say_request("selectTrack", successor, r#"{"returnValue":false,"mediaId":"m1"}"#);
+        poll(&mut rig);
+        assert_eq!(audio(&rig), Some(3), "a refused pick never moves the route");
+        assert!(matches!(rig.app.adapters.player.take_uri_track_fallback(),
+            Some(plx_media::player::adapter::UriTrackFallback::Audio { audio, .. }) if audio.sid == 2),
+            "the exact refused command asks the resolver, once");
+        assert!(rig.app.adapters.player.take_uri_track_fallback().is_none());
+    }
+
     #[cfg(feature = "play-feed")]
     #[test]
     fn audio_pick_missing_from_uri_native_map_re_resolves_the_same_source() {
@@ -561,8 +657,8 @@ mod uri_boot_tests {
             binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, preview_rectangle: false },
             Arc::new(QualifiedOriginal));
-        assert!(rig.app.adapters.player.install_uri_product_with_ports(
-            &mut rig.app.player.session, port, bus, display));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, port, bus, display));
         rig.request();
         rig.release.send(()).unwrap();
         let mut resolved = None;
@@ -619,8 +715,8 @@ mod uri_boot_tests {
             binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, preview_rectangle: false },
             Arc::new(QualifiedTwoAudio));
-        assert!(rig.app.adapters.player.install_uri_product_with_ports(
-            &mut rig.app.player.session, port, bus, display));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, port, bus, display));
         rig.request();
         rig.release.send(()).unwrap();
         let mut resolved = None;
@@ -680,8 +776,8 @@ mod uri_boot_tests {
             binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, preview_rectangle: false },
             Arc::new(QualifiedOriginal));
-        assert!(rig.app.adapters.player.install_uri_product_with_ports(
-            &mut rig.app.player.session, port, bus, display));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, port, bus, display));
         rig.request();
         rig.release.send(()).unwrap();
         let mut resolved = None;
@@ -755,8 +851,8 @@ mod uri_boot_tests {
             binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, preview_rectangle: false },
             Arc::new(QualifiedOriginal));
-        assert!(rig.app.adapters.player.install_uri_product_with_ports(
-            &mut rig.app.player.session, port, bus, display));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, port, bus, display));
         rig.request();
         rig.release.send(()).unwrap();
         let mut resolved = None;
@@ -820,8 +916,8 @@ mod uri_boot_tests {
             binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, preview_rectangle: false },
             Arc::new(QualifiedOriginal));
-        assert!(rig.app.adapters.player.install_uri_product_with_ports(
-            &mut rig.app.player.session, port, bus, display));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, port, bus, display));
         rig.request();
         rig.release.send(()).unwrap();
         let mut resolved = None;

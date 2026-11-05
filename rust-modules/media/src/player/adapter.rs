@@ -33,7 +33,6 @@ use super::engine::Engine;
 use plx_play_feed::feed_resources::FeedResources;
 #[cfg(feature = "play-feed")]
 use plx_play_feed::native_executor::NativeStop;
-#[cfg(any(feature = "play-feed", feature = "play-uri"))]
 use super::timeline;
 use super::backend;
 #[cfg(feature = "play-feed")]
@@ -46,18 +45,13 @@ use std::collections::VecDeque;
 const MAX_METRIC_NOTICES: usize = 32;
 use plx_playback_contract::{AttemptId, BackendEvent, BackendKind, Capabilities, CommandId,
     DispatchResult, DriverSet, ExitDisposition, Failure, Intent, Operation,
-    SourceKey};
-#[cfg(any(feature = "play-feed", feature = "play-uri"))]
+    SourceKey, UriDriver};
+use plx_playback_contract::uri::UriSource;
 use plx_playback_contract::ReleaseStatus;
 #[cfg(feature = "play-feed")]
 use plx_playback_contract::StopReason;
-#[cfg(feature = "play-uri")]
 use plx_playback_contract::Playback;
-#[cfg(feature = "play-uri")]
-use plx_play_uri::backend::{Binding as UriBinding, Config as UriConfig,
-    MonotonicClock, UriBackend, UriSource};
 
-#[cfg(feature = "play-uri")]
 struct PendingUriAudio {
     attempt: AttemptId,
     command: CommandId,
@@ -65,11 +59,10 @@ struct PendingUriAudio {
     memo: Option<plx_plex::plex::session::prefs::AudioMemo>,
 }
 
-#[cfg(all(test, feature = "play-uri"))]
+#[cfg(test)]
 #[path = "adapter_track_tests.rs"]
 mod track_tests;
 
-#[cfg(feature = "play-uri")]
 struct PendingUriSubtitle {
     attempt: AttemptId,
     command: CommandId,
@@ -80,7 +73,6 @@ struct PendingUriSubtitle {
 
 /// A delivered native track command was refused for this exact URI attempt. The app can ask the
 /// existing same-source resolver for a new physical output; this is not a second Start queue.
-#[cfg(feature = "play-uri")]
 pub enum UriTrackFallback {
     Audio { audio: crate::route::CarriedAudio,
         memo: Option<plx_plex::plex::session::prefs::AudioMemo> },
@@ -88,41 +80,26 @@ pub enum UriTrackFallback {
         memo: Option<plx_plex::plex::session::prefs::SubtitleMemo> },
 }
 
-/// Explicit product URI settings captured with the resolve port's certification evidence.
-/// Platform transport and display are supplied at the IO composition boundary.
-#[cfg(feature = "play-uri")]
-pub struct UriDriverSettings {
-    pub clock: Box<dyn MonotonicClock>,
-    pub app_id: String,
-    pub binding: UriBinding,
-    pub capabilities: Capabilities,
-    pub startup_timeout_ms: u64,
-    pub release_allowance_ms: u64,
-    pub source_ttl_ms: u64,
-}
+pub use crate::route::{QualifiedUriOffer, UriRecoveryNotice, UriSourceRecipe};
 
-/// Product clock lives at the player IO boundary; the URI reducer receives elapsed values.
-#[cfg(feature = "play-uri")]
-struct ProductUriClock(std::time::Instant);
+/// A monotonic millisecond clock read at the player IO boundary. The composition root hands one to
+/// the URI driver as its clock, and the driver only ever receives elapsed values from it.
+pub struct MonotonicMs(std::time::Instant);
 
-/// Expiry for an off-frame source qualification, read at the player IO boundary. A qualifier
-/// owns the returned deadline with its source; the route only compares the supplied value.
-#[cfg(feature = "play-uri")]
-pub fn uri_source_expiry_after(ttl: std::time::Duration) -> std::time::Instant {
-    std::time::Instant::now() + ttl
-}
+impl MonotonicMs {
+    pub fn start() -> Self { Self(std::time::Instant::now()) }
 
-#[cfg(feature = "play-uri")]
-impl MonotonicClock for ProductUriClock {
-    fn now_ms(&self) -> u64 {
+    pub fn now_ms(&self) -> u64 {
         self.0.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
     }
 }
 
-#[cfg(feature = "play-uri")]
-pub use crate::route::{QualifiedUriOffer, UriRecoveryNotice, UriSourceRecipe};
+/// Expiry for an off-frame source qualification, read at the player IO boundary. A qualifier
+/// owns the returned deadline with its source; the route only compares the supplied value.
+pub fn uri_source_expiry_after(ttl: std::time::Duration) -> std::time::Instant {
+    std::time::Instant::now() + ttl
+}
 
-#[cfg(feature = "play-uri")]
 #[derive(Clone, Copy)]
 struct PendingUriRecovery { notice: UriRecoveryNotice, released: bool }
 
@@ -130,6 +107,7 @@ struct PendingUriRecovery { notice: UriRecoveryNotice, released: bool }
 mod composed_backends_tests {
     use super::*;
     use plx_playback_contract::BackendSet;
+    use plx_playback_contract::test_support::FakeUriDriver;
 
     /// The Feed driver is part of every adapter a Feed build constructs; nothing else is until a
     /// composition installs it.
@@ -141,38 +119,31 @@ mod composed_backends_tests {
         assert_eq!(adapter.composed_backends(), FEED_ONLY);
     }
 
-    #[cfg(feature = "play-uri")]
     #[test]
-    fn installing_the_uri_driver_adds_uri_and_a_refused_install_does_not() {
-        struct Clock;
-        impl MonotonicClock for Clock { fn now_ms(&self) -> u64 { 0 } }
-        let settings = |packet_feed: bool| UriDriverSettings {
-            clock: Box::new(Clock), app_id: "fixture".to_owned(), binding: UriBinding::Unbound,
-            capabilities: Capabilities { progressive_uri: true, hls_uri: false, packet_feed,
-                pause: true, seek: true, audio_track: true, subtitle_track: true,
-                audio_off: false, subtitle_off: false },
-            startup_timeout_ms: 100, release_allowance_ms: 100, source_ttl_ms: 100,
-        };
+    fn installing_the_uri_driver_adds_uri_and_a_second_driver_is_handed_back() {
+        let caps = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
+            pause: true, seek: true, audio_track: true, subtitle_track: true,
+            audio_off: false, subtitle_off: false };
         let mut adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
-        // A driver that claims packet feed is refused, so the set does not gain Uri.
-        assert!(adapter.install_uri_backend_with_ports(settings(true),
-            &plx_platform::tv::uri::NoUriMedia, &plx_platform::tv::sink::NoSink).is_err());
         assert_eq!(adapter.composed_backends(), FEED_ONLY);
-        assert!(adapter.install_uri_backend_with_ports(settings(false),
-            &plx_platform::tv::uri::NoUriMedia, &plx_platform::tv::sink::NoSink).is_ok());
+        let (first, _) = FakeUriDriver::new(caps);
+        assert!(adapter.install_uri_driver(Box::new(first)).is_ok());
+        assert_eq!(adapter.composed_backends(),
+            BackendSet { uri: true, feed: cfg!(feature = "play-feed") });
+        let (second, handle) = FakeUriDriver::new(caps);
+        assert!(adapter.install_uri_driver(Box::new(second)).is_err(),
+            "one URI driver per adapter: the second is handed back, not installed");
+        assert!(handle.staged().is_empty());
         assert_eq!(adapter.composed_backends(),
             BackendSet { uri: true, feed: cfg!(feature = "play-feed") });
     }
 }
 
-#[cfg(all(test, feature = "play-uri"))]
+#[cfg(test)]
 mod qualified_uri_offer_tests {
     use super::*;
     use plx_playback_contract::{Fidelity, InitialPlayback, Requirements, SourceKind, TrackChoice};
-    use plx_play_uri::backend::{Binding, MonotonicClock};
-
-    struct Clock;
-    impl MonotonicClock for Clock { fn now_ms(&self) -> u64 { 0 } }
+    use plx_playback_contract::test_support::FakeUriDriver;
 
     fn requirements(audio: TrackChoice) -> Requirements {
         Requirements { source: SourceKind::ProgressiveUri,
@@ -196,18 +167,13 @@ mod qualified_uri_offer_tests {
                     if offer.backend == BackendKind::Feed));
         }
         let mut adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
-        let config = UriConfig {
-            transport: &plx_platform::tv::uri::NoUriMedia,
-            display: &plx_platform::tv::sink::NoSink,
-            plane: plx_platform::tv::plane::installed(),
-            clock: Box::new(Clock), app_id: "fixture".to_owned(),
-            binding: Binding::Unbound,
-            capabilities: Capabilities { progressive_uri: true, hls_uri: false,
-                packet_feed: false, pause: true, seek: true, audio_track: true,
-                subtitle_track: true, audio_off: false, subtitle_off: false },
-            startup_timeout_ms: 100, release_allowance_ms: 100, source_ttl_ms: 100,
-        };
-        assert!(adapter.install_uri_backend_config(config).is_ok());
+        // The driver queues a Start, and its open is refused afterwards, as a transport that
+        // cannot open does.
+        let (driver, handle) = FakeUriDriver::new(Capabilities { progressive_uri: true,
+            hls_uri: false, packet_feed: false, pause: true, seek: true, audio_track: true,
+            subtitle_track: true, audio_off: false, subtitle_off: false });
+        handle.fail_open_after_start(Failure::Backend);
+        assert!(adapter.install_uri_driver(Box::new(driver)).is_ok());
         let selection = session.uri_selection();
         let mut stale = selection;
         stale.part_id += 1;
@@ -247,7 +213,7 @@ mod qualified_uri_offer_tests {
         let started = super::super::route_start::start_bufferfeed_for(
             &mut session, &mut adapter, ticket);
         assert!(matches!(started, super::super::route_start::BufferfeedStartOutcome::Launched(_)),
-            "queued URI Open is distinct from the fake transport's later refusal");
+            "queued URI Open is distinct from the driver's later refusal");
         assert!(!adapter.request_seek(&mut session, 3_000_000_000),
             "a URI still opening refuses runtime seek through the common door");
         assert!(adapter.qualified_uri.is_none(), "failed Start consumed the source authorization");
@@ -317,7 +283,6 @@ mod qualified_uri_offer_tests {
     }
 }
 
-#[cfg(feature = "play-uri")]
 fn uri_offer_executable(ps: &crate::route::PlaybackSession, offer: &QualifiedUriOffer) -> bool {
     // The URI driver has no speed transform. The server output, when it claims an enhancement,
     // must already have it applied; an app-only/pending ask cannot be silently dropped.
@@ -335,8 +300,7 @@ struct PhysicalDrivers<'a> {
     feed: &'a mut FeedResources,
     #[cfg(feature = "play-feed")]
     feed_driver: &'a mut FeedDriver,
-    #[cfg(feature = "play-uri")]
-    uri: &'a mut Option<UriBackend>,
+    uri: &'a mut Option<Box<dyn UriDriver<Context = MainThread>>>,
 }
 
 impl DriverSet for PhysicalDrivers<'_> {
@@ -351,10 +315,7 @@ impl DriverSet for PhysicalDrivers<'_> {
                 { None }
             }
             BackendKind::Uri => {
-                #[cfg(feature = "play-uri")]
-                { self.uri.as_ref().and_then(|driver| driver.capabilities(BackendKind::Uri)) }
-                #[cfg(not(feature = "play-uri"))]
-                { None }
+                self.uri.as_ref().and_then(|driver| driver.capabilities(BackendKind::Uri))
             }
         }
     }
@@ -370,28 +331,18 @@ impl DriverSet for PhysicalDrivers<'_> {
                     DispatchResult::Refused(Failure::Unavailable) }
             }
             BackendKind::Uri => {
-                #[cfg(feature = "play-uri")]
-                { self.uri.as_mut().map_or(DispatchResult::Refused(Failure::Unavailable),
-                    |driver| driver.dispatch(BackendKind::Uri, mt, attempt, command, operation)) }
-                #[cfg(not(feature = "play-uri"))]
-                { let _ = (mt, attempt, command, operation); DispatchResult::Refused(Failure::Unavailable) }
+                self.uri.as_mut().map_or(DispatchResult::Refused(Failure::Unavailable),
+                    |driver| driver.dispatch(BackendKind::Uri, mt, attempt, command, operation))
             }
         }
     }
 
     fn poll(&mut self, mt: &MainThread) -> Vec<BackendEvent> {
-        #[cfg(all(feature = "play-feed", feature = "play-uri"))]
+        #[cfg(feature = "play-feed")]
         let mut events = self.feed_driver.poll(self.feed);
-        #[cfg(all(feature = "play-feed", not(feature = "play-uri")))]
-        let events = self.feed_driver.poll(self.feed);
-        #[cfg(all(not(feature = "play-feed"), feature = "play-uri"))]
+        #[cfg(not(feature = "play-feed"))]
         let mut events = Vec::new();
-        #[cfg(not(any(feature = "play-feed", feature = "play-uri")))]
-        let events = Vec::new();
-        #[cfg(feature = "play-uri")]
         if let Some(uri) = self.uri.as_mut() { events.extend(uri.poll(mt)); }
-        #[cfg(not(feature = "play-uri"))]
-        let _ = mt;
         events
     }
 
@@ -404,12 +355,9 @@ impl DriverSet for PhysicalDrivers<'_> {
                 let _ = (attempt, key);
             }
             BackendKind::Uri => {
-                #[cfg(feature = "play-uri")]
                 if let Some(uri) = self.uri.as_mut() {
                     uri.discard_staged(BackendKind::Uri, attempt, key);
                 }
-                #[cfg(not(feature = "play-uri"))]
-                let _ = (attempt, key);
             }
         }
     }
@@ -419,7 +367,6 @@ impl DriverSet for PhysicalDrivers<'_> {
         if self.feed_driver.exit_disposition(self.feed) == ExitDisposition::PreserveNativeOwnership {
             return ExitDisposition::PreserveNativeOwnership;
         }
-        #[cfg(feature = "play-uri")]
         if self.uri.as_ref().is_some_and(|driver| driver.exit_disposition() == ExitDisposition::PreserveNativeOwnership) {
             return ExitDisposition::PreserveNativeOwnership;
         }
@@ -442,45 +389,30 @@ pub struct PlayerAdapter {
     metric_notices: VecDeque<backend::MetricNotice>,
     #[cfg(feature = "play-feed")]
     feed_driver: FeedDriver,
-    #[cfg(any(feature = "play-feed", feature = "play-uri"))]
     next_source_key: u64,
     backend_epoch: std::time::Instant,
-    #[cfg(feature = "play-uri")]
-    uri_backend: Option<UriBackend>,
-    #[cfg(feature = "play-uri")]
+    uri_backend: Option<Box<dyn UriDriver<Context = MainThread>>>,
     qualified_uri: Option<QualifiedUriOffer>,
-    #[cfg(feature = "play-uri")]
     uri_route_attempt: Option<crate::route::RouteStartAttempt>,
-    #[cfg(feature = "play-uri")]
     uri_offer_id: Option<crate::route::backend_policy::OfferId>,
-    #[cfg(feature = "play-uri")]
     uri_recovery: Option<PendingUriRecovery>,
-    #[cfg(feature = "play-uri")]
     uri_route_settled: bool,
-    #[cfg(feature = "play-uri")]
     uri_stop_requested: bool,
-    #[cfg(feature = "play-uri")]
     uri_finalized: bool,
-    #[cfg(feature = "play-uri")]
     pending_uri_audio: Option<PendingUriAudio>,
-    #[cfg(feature = "play-uri")]
     pending_uri_subtitle: Option<PendingUriSubtitle>,
-    #[cfg(feature = "play-uri")]
     refused_uri_audio: Option<PendingUriAudio>,
-    #[cfg(feature = "play-uri")]
     refused_uri_subtitle: Option<PendingUriSubtitle>,
     /// Route identity and product trace for the installed physical attempt. The feed itself
     /// receives only the canonical contract ID and native epoch.
     #[cfg(feature = "play-feed")]
     feed_attempt: Option<(crate::route::RouteStartAttempt, u32)>,
     /// Backend-independent periodic reporting resource for the current physical attempt.
-    #[cfg(any(feature = "play-feed", feature = "play-uri"))]
     timeline: Option<timeline::TimelineRunner>,
     repair: Option<(u64, std::sync::mpsc::Receiver<Result<(), plx_platform::tv::sandbox::Failure>>)>,
     release: super::release::NativeRelease,
     /// Effects produced by an addressed URI release while the backend poll has no session
     /// borrow. The release machine owns the sole queued transaction; these are only its IO work.
-    #[cfg(feature = "play-uri")]
     release_fx: Vec<super::release::ReleaseEffect>,
     /// What became of the start the FOREGROUND restore queued behind native release
     /// ([`watch_queued_start`](Self::watch_queued_start)); the lifecycle machine polls it.
@@ -496,8 +428,13 @@ pub struct PlayerAdapter {
     /// HUD, the stop ritual's `take`) must never see a probe. Owned here, not by a static, for the
     /// same reason the Engine is: ending it calls the window verbs of the sink, which only the
     /// main thread may. Absent from a release build.
-    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
-    uri: Option<super::uriprobe_drive::UriSession>,
+    #[cfg(feature = "devtriggers")]
+    uri: Option<Box<dyn super::uriprobe_drive::UriProbeSession>>,
+    /// The application's probe (`dev::uriprobe`), installed at boot: it reads the trigger text and
+    /// opens the [`uri`](Self::uri) session. Absent when nothing composed one, and then the trigger
+    /// file is not read.
+    #[cfg(feature = "devtriggers")]
+    uri_probe: Option<Box<dyn super::uriprobe_drive::UriProbe>>,
 }
 
 /// The foreground restore's view of its own queued start.
@@ -508,10 +445,8 @@ enum QueuedWatch {
     /// The restore's start is queued; it has not run.
     Watching,
     /// The queued start ran: the Load was launched ...
-    #[cfg(any(feature = "play-feed", feature = "play-uri"))]
     Launched(crate::route::RouteStartAttempt),
     /// ... or ended without one (refused at the deadline, or the start itself failed).
-    #[cfg(any(feature = "play-feed", feature = "play-uri"))]
     Failed,
 }
 
@@ -539,46 +474,33 @@ impl PlayerAdapter {
             metric_notices: VecDeque::new(),
             #[cfg(feature = "play-feed")]
             feed_driver: FeedDriver::new(),
-            #[cfg(any(feature = "play-feed", feature = "play-uri"))]
             next_source_key: 0,
             backend_epoch: std::time::Instant::now(),
-            #[cfg(feature = "play-uri")]
             uri_backend: None,
-            #[cfg(feature = "play-uri")]
             qualified_uri: None,
-            #[cfg(feature = "play-uri")]
             uri_route_attempt: None,
-            #[cfg(feature = "play-uri")]
             uri_offer_id: None,
-            #[cfg(feature = "play-uri")]
             uri_recovery: None,
-            #[cfg(feature = "play-uri")]
             uri_route_settled: false,
-            #[cfg(feature = "play-uri")]
             uri_stop_requested: false,
-            #[cfg(feature = "play-uri")]
             uri_finalized: false,
-            #[cfg(feature = "play-uri")]
             pending_uri_audio: None,
-            #[cfg(feature = "play-uri")]
             pending_uri_subtitle: None,
-            #[cfg(feature = "play-uri")]
             refused_uri_audio: None,
-            #[cfg(feature = "play-uri")]
             refused_uri_subtitle: None,
             #[cfg(feature = "play-feed")]
             feed_attempt: None,
-            #[cfg(any(feature = "play-feed", feature = "play-uri"))]
             timeline: None,
             repair: None,
             release: super::release::NativeRelease::new(),
-            #[cfg(feature = "play-uri")]
             release_fx: Vec::new(),
             queued_watch: QueuedWatch::Unwatched,
             #[cfg(feature = "play-feed")]
             preview_admission: None,
-            #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
+            #[cfg(feature = "devtriggers")]
             uri: None,
+            #[cfg(feature = "devtriggers")]
+            uri_probe: None,
         }
     }
 
@@ -690,15 +612,13 @@ impl PlayerAdapter {
     /// authorization before the app arms any backend-specific foreground transport hold.
     pub fn planned_start_backend(&mut self, ps: &mut crate::route::PlaybackSession)
         -> Option<BackendKind> {
-        #[cfg(feature = "play-uri")]
         self.refresh_uri_qualification(ps);
         ps.planned_start_backend()
     }
 
     /// Product URI plane ownership is separate from the diagnostic probe and panel evidence.
-    #[cfg(feature = "play-uri")]
     pub fn uri_product_plane_owned(&self) -> bool {
-        self.uri_backend.as_ref().is_some_and(UriBackend::plane_owned)
+        self.uri_backend.as_ref().is_some_and(|driver| driver.plane_owned())
     }
 
     /// A mounted page is not the owner of a physical attempt. A URI EOS may have already
@@ -706,7 +626,6 @@ impl PlayerAdapter {
     pub fn playback_needs_teardown(&self, ps: &crate::route::PlaybackSession) -> bool {
         #[cfg(feature = "play-feed")]
         if self.is_live() { return true; }
-        #[cfg(feature = "play-uri")]
         if self.uri_route_attempt.is_some()
             || (!self.uri_finalized
                 && ps.attempt_view().backend() == Some(super::attempt_view::Backend::Uri)
@@ -747,7 +666,6 @@ impl PlayerAdapter {
     /// The app's one seek door. URI uses the addressed runner; Feed retains its existing
     /// coalescing/reload planner. An unavailable physical backend refuses without global writes.
     pub fn request_seek(&mut self, ps: &mut crate::route::PlaybackSession, target_ns: i64) -> bool {
-        #[cfg(feature = "play-uri")]
         if let Some(accepted) = self.seek_uri(ps, target_ns) { return accepted; }
         #[cfg(feature = "play-feed")]
         {
@@ -773,7 +691,6 @@ impl PlayerAdapter {
 
     /// `None` is a Feed attempt. A URI answer is derived from the active source's private
     /// native map, so a PMS output with one selected track never advertises source siblings.
-    #[cfg(feature = "play-uri")]
     pub fn uri_maps_track(&self, ps: &crate::route::PlaybackSession,
         kind: plx_playback_contract::TrackKind, source_id: i64) -> Option<bool> {
         if ps.attempt_view().backend() != Some(super::attempt_view::Backend::Uri) {
@@ -788,7 +705,6 @@ impl PlayerAdapter {
 
     /// Drain one exact refused interactive choice after polling the native driver. The two
     /// per-kind slots are bounded and a later choice supersedes an earlier one of that kind.
-    #[cfg(feature = "play-uri")]
     pub fn take_uri_track_fallback(&mut self) -> Option<UriTrackFallback> {
         let active = self.uri_route_attempt.map(|route| route.contract_id());
         if let Some(pending) = self.refused_uri_audio.take() {
@@ -808,7 +724,6 @@ impl PlayerAdapter {
     /// An accepted explicit source reconfiguration supersedes interactive native selections
     /// still awaiting proof on the old URI attempt. Late replies may reach the runner, but they
     /// cannot commit old route or track-memory state into the replacement request.
-    #[cfg(feature = "play-uri")]
     pub fn cancel_uri_interactive_picks(&mut self) {
         self.pending_uri_audio = None;
         self.pending_uri_subtitle = None;
@@ -818,7 +733,6 @@ impl PlayerAdapter {
 
     /// `None` means the active route is Feed. `Some(false)` is an explicit URI refusal, so a
     /// caller must never fall through to Feed track or sidecar controls for this route.
-    #[cfg(feature = "play-uri")]
     pub fn select_uri_audio(&mut self, ps: &crate::route::PlaybackSession,
         audio: crate::route::CarriedAudio,
         memo: Option<plx_plex::plex::session::prefs::AudioMemo>) -> Option<bool> {
@@ -845,7 +759,6 @@ impl PlayerAdapter {
         Some(true)
     }
 
-    #[cfg(feature = "play-uri")]
     pub fn select_uri_subtitle(&mut self, ps: &crate::route::PlaybackSession,
         ordinal: i32, stream_id: i64, has_sidecar: bool,
         memo: Option<plx_plex::plex::session::prefs::SubtitleMemo>) -> Option<bool> {
@@ -876,7 +789,6 @@ impl PlayerAdapter {
     pub fn commit_audio_track(&mut self, ps: &mut crate::route::PlaybackSession,
         audio: crate::route::CarriedAudio,
         memo: Option<plx_plex::plex::session::prefs::AudioMemo>) -> bool {
-        #[cfg(feature = "play-uri")]
         if let Some(accepted) = self.select_uri_audio(ps, audio.clone(), memo.clone()) {
             return accepted;
         }
@@ -892,7 +804,6 @@ impl PlayerAdapter {
     pub fn commit_subtitle_track(&mut self, ps: &mut crate::route::PlaybackSession,
         ordinal: i32, stream_id: i64, sidecar_key: Option<String>, sidecar_codec: String,
         memo: Option<plx_plex::plex::session::prefs::SubtitleMemo>) -> bool {
-        #[cfg(feature = "play-uri")]
         if let Some(accepted) = self.select_uri_subtitle(ps, ordinal, stream_id,
             sidecar_key.is_some(), memo.clone()) {
             return accepted;
@@ -934,7 +845,6 @@ impl PlayerAdapter {
 
     /// Address a seek to the active URI attempt. A refused command changes no Feed mailbox or
     /// route selection; the visible target is held until that command's native landing report.
-    #[cfg(feature = "play-uri")]
     pub fn seek_uri(&mut self, ps: &mut crate::route::PlaybackSession, target_ns: i64)
         -> Option<bool> {
         if ps.attempt_view().backend() != Some(super::attempt_view::Backend::Uri) {
@@ -970,12 +880,10 @@ impl PlayerAdapter {
             feed: &mut self.feed,
             #[cfg(feature = "play-feed")]
             feed_driver: &mut self.feed_driver,
-            #[cfg(feature = "play-uri")]
             uri: &mut self.uri_backend,
         };
         let result = self.backend.send_at(&mut drivers, &self.mt, intent, origin, at);
         let result = self.finish_backend_actions(result, at);
-        #[cfg(feature = "play-uri")]
         {
             if let Intent::Stop { backend: BackendKind::Uri, attempt, .. } = intent {
                 let refused = result.playback.iter().any(|notice| matches!(notice,
@@ -1010,18 +918,15 @@ impl PlayerAdapter {
             feed: &mut self.feed,
             #[cfg(feature = "play-feed")]
             feed_driver: &mut self.feed_driver,
-            #[cfg(feature = "play-uri")]
             uri: &mut self.uri_backend,
         };
         let result = self.backend.poll_at(&mut drivers, &self.mt, at);
         let result = self.finish_backend_actions(result, at);
-        #[cfg(feature = "play-uri")]
         self.capture_uri_release(&result.playback);
         self.record_backend_metrics(&result.metrics);
         result
     }
 
-    #[cfg(feature = "play-uri")]
     fn capture_uri_release(&mut self, notices: &[plx_playback_contract::Fx]) {
         for notice in notices {
             if let plx_playback_contract::Fx::ReleaseOutcome {
@@ -1049,7 +954,6 @@ impl PlayerAdapter {
             feed: &mut self.feed,
             #[cfg(feature = "play-feed")]
             feed_driver: &mut self.feed_driver,
-            #[cfg(feature = "play-uri")]
             uri: &mut self.uri_backend,
         };
         let result = self.backend.set_foreground_at(&mut drivers, &self.mt, foreground, at);
@@ -1080,7 +984,6 @@ impl PlayerAdapter {
                 feed: &mut self.feed,
                 #[cfg(feature = "play-feed")]
                 feed_driver: &mut self.feed_driver,
-                #[cfg(feature = "play-uri")]
                 uri: &mut self.uri_backend,
             };
             let next = self.backend.poll_at(&mut drivers, &self.mt, at);
@@ -1104,7 +1007,6 @@ impl PlayerAdapter {
             feed: &mut self.feed,
             #[cfg(feature = "play-feed")]
             feed_driver: &mut self.feed_driver,
-            #[cfg(feature = "play-uri")]
             uri: &mut self.uri_backend,
         };
         plx_playback_contract::BackendSet::from_capabilities(&drivers)
@@ -1120,7 +1022,6 @@ impl PlayerAdapter {
             } {
             return ExitDisposition::PreserveNativeOwnership;
         }
-        #[cfg(feature = "play-uri")]
         if self.uri_backend.as_ref().is_some_and(|driver|
             driver.exit_disposition() == ExitDisposition::PreserveNativeOwnership) {
             return ExitDisposition::PreserveNativeOwnership;
@@ -1128,108 +1029,22 @@ impl PlayerAdapter {
         ExitDisposition::Clean
     }
 
-    /// Capture the installed display and URI bus at the playback IO boundary. Current product
-    /// evidence remains unqualified; returning a port never certifies a source by itself.
-    #[cfg(feature = "play-uri")]
-    pub fn install_uri_product(&mut self, session: &mut crate::route::PlaybackSession) -> bool {
-        let display = plx_platform::tv::sink::display_installed();
-        // SAFETY: the adapter holds the main-thread witness, and boot ran the application's `acb_init` before this.
-        let initialized = unsafe { display.plane_initialized(&self.mt) };
-        let evidence = crate::route::uri_preflight::ProductEvidence::unqualified_on(
-            display.window_mode(),
-            plx_play_uri::backend::product_binding(display.window_mode(), super::plane().facts(), initialized));
-        let port = crate::route::uri_preflight::ResolvePort::new(evidence,
-            std::sync::Arc::new(crate::route::uri_preflight::ProductQualifier));
-        self.install_uri_product_with_ports(session, port,
-            plx_platform::tv::uri::installed(), display)
-    }
-
-    /// One boot composition for both real and injected ports. The exact evidence configures the
-    /// driver and is handed to the resolver only after physical installation succeeds.
-    #[cfg(feature = "play-uri")]
-    pub fn install_uri_product_with_ports(&mut self,
-        session: &mut crate::route::PlaybackSession,
-        port: crate::route::uri_preflight::ResolvePort,
-        transport: &'static dyn plx_platform::tv::uri::UriMedia,
-        display: &'static dyn plx_platform::tv::sink::DisplaySink) -> bool {
-        let evidence = port.evidence();
-        let settings = UriDriverSettings {
-            clock: Box::new(ProductUriClock(std::time::Instant::now())),
-            app_id: plx_base::paths::app_id().to_owned(),
-            binding: evidence.binding,
-            capabilities: evidence.certified,
-            startup_timeout_ms: 15_000,
-            release_allowance_ms: 10_000,
-            source_ttl_ms: 30_000,
-        };
-        if self.install_uri_backend_with_ports(settings, transport, display).is_err() {
-            return false;
-        }
-        session.install_uri_preflight_port(port);
-        true
-    }
-
-    /// Install only an explicitly configured URI transport/display pair while no physical
-    /// attempt owns the player. Installation supplies no source-specific qualification and
-    /// therefore does not change the route's default Feed choice.
-    #[cfg(feature = "play-uri")]
-    pub fn install_uri_backend(&mut self, settings: UriDriverSettings)
-        -> Result<(), UriDriverSettings> {
-        self.install_uri_backend_with_ports(settings,
-            plx_platform::tv::uri::installed(),
-            plx_platform::tv::sink::display_installed())
-    }
-
-    /// IO composition may pass captured platform ports directly. Product boot supplies the
-    /// installed pair; a host rig can supply the same interfaces without a process-wide port.
-    #[cfg(feature = "play-uri")]
-    pub fn install_uri_backend_with_ports(&mut self, settings: UriDriverSettings,
-        transport: &'static dyn plx_platform::tv::uri::UriMedia,
-        display: &'static dyn plx_platform::tv::sink::DisplaySink)
-        -> Result<(), UriDriverSettings> {
-        if self.uri_backend.is_some() || self.backend_exit_disposition() != ExitDisposition::Clean
-            || settings.capabilities.packet_feed || settings.capabilities.audio_off
-            || settings.capabilities.subtitle_off {
-            return Err(settings);
-        }
-        let config = UriConfig {
-            transport,
-            display,
-            plane: super::plane(),
-            clock: settings.clock,
-            app_id: settings.app_id,
-            binding: settings.binding,
-            capabilities: settings.capabilities,
-            startup_timeout_ms: settings.startup_timeout_ms,
-            release_allowance_ms: settings.release_allowance_ms,
-            source_ttl_ms: settings.source_ttl_ms,
-        };
-        match self.install_uri_backend_config(config) {
-            Ok(()) => Ok(()),
-            Err(config) => Err(UriDriverSettings {
-                clock: config.clock, app_id: config.app_id, binding: config.binding,
-                capabilities: config.capabilities,
-                startup_timeout_ms: config.startup_timeout_ms,
-                release_allowance_ms: config.release_allowance_ms,
-                source_ttl_ms: config.source_ttl_ms,
-            }),
-        }
-    }
-
-    /// The same production installation seam with injected IO ports for deterministic tests.
-    #[cfg(feature = "play-uri")]
-    fn install_uri_backend_config(&mut self, config: UriConfig) -> Result<(), UriConfig> {
+    /// Install the URI driver the application's composition built, while no physical attempt
+    /// owns the player. Installation supplies no source-specific qualification and therefore
+    /// does not change the route's default Feed choice. A second driver, or one offered while
+    /// a native attempt is still being released, is handed back untouched.
+    pub fn install_uri_driver(&mut self, driver: Box<dyn UriDriver<Context = MainThread>>)
+        -> Result<(), Box<dyn UriDriver<Context = MainThread>>> {
         if self.uri_backend.is_some()
             || self.backend_exit_disposition() != ExitDisposition::Clean {
-            return Err(config);
+            return Err(driver);
         }
-        self.uri_backend = Some(UriBackend::new(config));
+        self.uri_backend = Some(driver);
         Ok(())
     }
 
     /// Escrow an exact resolved URL and its source-specific native track map. The route owner
     /// still has to supply a qualified offer and send an addressed Start through the runner.
-    #[cfg(feature = "play-uri")]
     pub fn stage_uri_source(&mut self, attempt: AttemptId, source: UriSource)
         -> Result<SourceKey, Failure> {
         let key = self.next_source_key();
@@ -1241,7 +1056,6 @@ impl PlayerAdapter {
     /// Accept source-specific qualification only for this session's current Part and selected
     /// streams. The external qualifier supplies an expiry; a deferred native release cannot
     /// retain an authorization past that deadline.
-    #[cfg(feature = "play-uri")]
     pub fn offer_qualified_uri(&mut self, ps: &mut crate::route::PlaybackSession,
         offer: QualifiedUriOffer) -> Result<(), Failure> {
         if self.uri_backend.is_none() { return Err(Failure::Unavailable); }
@@ -1265,7 +1079,6 @@ impl PlayerAdapter {
     }
 
     /// Consume only the exact still-authorized source after the route has won its native claim.
-    #[cfg(feature = "play-uri")]
     pub(super) fn take_qualified_uri(&mut self, ps: &mut crate::route::PlaybackSession,
         route_start: crate::route::RouteStartTransaction)
         -> Option<QualifiedUriOffer> {
@@ -1284,7 +1097,6 @@ impl PlayerAdapter {
 
     /// A cancelled queued start has no future claim boundary. Drop only the authorization
     /// attached to that route ticket; a newer replacement's escrow stays intact.
-    #[cfg(feature = "play-uri")]
     pub(super) fn discard_qualified_uri_for(&mut self, ps: &mut crate::route::PlaybackSession,
         route_start: crate::route::RouteStartTransaction) {
         if self.qualified_uri.as_ref().is_some_and(|offer| offer.route_start == route_start) {
@@ -1295,7 +1107,6 @@ impl PlayerAdapter {
         }
     }
 
-    #[cfg(feature = "play-uri")]
     pub(super) fn drop_qualified_uri_for_exit(&mut self,
         route_start: crate::route::RouteStartTransaction) {
         if self.qualified_uri.as_ref().is_some_and(|offer| offer.route_start == route_start) {
@@ -1303,12 +1114,10 @@ impl PlayerAdapter {
         }
     }
 
-    #[cfg(feature = "play-uri")]
     pub(super) fn take_release_effects(&mut self) -> Vec<super::release::ReleaseEffect> {
         std::mem::take(&mut self.release_fx)
     }
 
-    #[cfg(feature = "play-uri")]
     pub(super) fn refresh_uri_qualification(&mut self, ps: &mut crate::route::PlaybackSession) {
         if self.qualified_uri.as_ref().is_some_and(|offer|
             offer.expires_at <= std::time::Instant::now()
@@ -1322,7 +1131,6 @@ impl PlayerAdapter {
         }
     }
 
-    #[cfg(feature = "play-uri")]
     pub(super) fn bind_uri_attempt(&mut self, attempt: crate::route::RouteStartAttempt,
         offer_id: crate::route::backend_policy::OfferId) {
         self.uri_route_attempt = Some(attempt);
@@ -1337,21 +1145,18 @@ impl PlayerAdapter {
         self.refused_uri_subtitle = None;
     }
 
-    #[cfg(feature = "play-uri")]
     pub fn take_released_uri_recovery(&mut self) -> Option<UriRecoveryNotice> {
         if self.uri_recovery.is_some_and(|pending| pending.released) {
             self.uri_recovery.take().map(|pending| pending.notice)
         } else { None }
     }
 
-    #[cfg(feature = "play-uri")]
     pub(super) fn cancel_uri_recovery(&mut self, ps: &mut crate::route::PlaybackSession) {
         if let Some(pending) = self.uri_recovery.take() {
             ps.clear_uri_recovery_pending(pending.notice.attempt);
         }
     }
 
-    #[cfg(feature = "play-uri")]
     fn note_uri_failure(&mut self, ps: &mut crate::route::PlaybackSession,
         attempt: AttemptId, viewer_paused: Option<bool>) {
         let Some(route_attempt) = self.uri_route_attempt.filter(|route|
@@ -1385,7 +1190,6 @@ impl PlayerAdapter {
         }, released: false });
     }
 
-    #[cfg(feature = "play-uri")]
     pub(super) fn finalize_uri_once(&mut self) -> bool {
         if self.uri_finalized { false } else {
             self.uri_finalized = true;
@@ -1393,19 +1197,16 @@ impl PlayerAdapter {
         }
     }
 
-    #[cfg(feature = "play-uri")]
     pub(super) fn active_uri_attempt(&self) -> Option<crate::route::RouteStartAttempt> {
         self.uri_route_attempt
     }
 
-    #[cfg(feature = "play-uri")]
     pub(super) fn uri_backend_exit_pending(&self) -> bool {
         self.uri_backend.as_ref().is_some_and(|driver|
             driver.exit_disposition() == ExitDisposition::PreserveNativeOwnership)
     }
 
     /// A quarantined native registration must survive the stack unwind before `_exit`.
-    #[cfg(feature = "play-uri")]
     pub(super) fn park_uri_backend_for_exit(&mut self) {
         if let Some(driver) = self.uri_backend.take() { std::mem::forget(driver); }
     }
@@ -1414,15 +1215,11 @@ impl PlayerAdapter {
     /// A generic queue answer or clock observation cannot settle the start.
     pub fn backend_poll_session_at(&mut self, ps: &mut crate::route::PlaybackSession,
         at: super::attempt_metrics::Tick) -> backend::RunResult {
-        #[cfg(feature = "play-uri")]
         self.refresh_uri_qualification(ps);
-        #[cfg(feature = "play-uri")]
         let uri_viewer_goal = self.uri_route_attempt.and_then(|route|
             self.backend.viewer_paused(BackendKind::Uri, route.contract_id()));
         let result = self.backend_poll_at(at);
-        #[cfg(feature = "play-uri")]
         let mut failed_startup = None;
-        #[cfg(feature = "play-uri")]
         for notice in &result.playback {
             if let plx_playback_contract::Fx::AcceptedObservation {
                 backend: BackendKind::Uri, attempt, observation,
@@ -1598,7 +1395,6 @@ impl PlayerAdapter {
                 _ => {}
             }
         }
-        #[cfg(feature = "play-uri")]
         if let Some(attempt) = failed_startup.filter(|attempt|
             self.uri_route_attempt.is_some_and(|route| route.contract_id() == *attempt)) {
             // The common startup verdict alone distinguishes mandatory initial selection,
@@ -1607,9 +1403,7 @@ impl PlayerAdapter {
                 reason: plx_playback_contract::StopReason::Replace },
                 super::attempt_metrics::Origin::Fresh, at);
         }
-        #[cfg(feature = "play-uri")]
         self.publish_uri_timeline(ps);
-        #[cfg(feature = "play-uri")]
         {
             let mut release_fx = std::mem::take(&mut self.release_fx);
             if self.uri_route_attempt.is_some() && self.release.is_busy() {
@@ -1619,14 +1413,11 @@ impl PlayerAdapter {
             }
             super::route_start::run_uri_queued_effects(ps, self, release_fx);
         }
-        #[cfg(not(feature = "play-uri"))]
-        let _ = ps;
         result
     }
 
     /// The existing attempt-bound reporter consumes normalized URI clocks too. Missing native
     /// position or a non-playing state clears its mailbox, so it cannot repeat an old playhead.
-    #[cfg(feature = "play-uri")]
     fn publish_uri_timeline(&self, ps: &crate::route::PlaybackSession) {
         if ps.attempt_view().backend() != Some(super::attempt_view::Backend::Uri) { return; }
         let Some(attempt) = ps.attempt_view().attempt() else { return; };
@@ -1644,7 +1435,6 @@ impl PlayerAdapter {
 
     /// Map only addressed URI reports into the session's sparse readout. Playing and clock
     /// remain service reports; neither claims panel presentation or a Feed TX start flag.
-    #[cfg(feature = "play-uri")]
     fn publish_uri_observation(&self, ps: &mut crate::route::PlaybackSession,
         attempt: AttemptId, observation: plx_playback_contract::Observation) {
         let Some(route_attempt) = self.uri_route_attempt.filter(|route|
@@ -1719,7 +1509,6 @@ impl PlayerAdapter {
     }
 
     /// A locator is only an escrow key, never another playback attempt identity.
-    #[cfg(any(feature = "play-feed", feature = "play-uri"))]
     pub(super) fn next_source_key(&mut self) -> SourceKey {
         self.next_source_key = self.next_source_key.checked_add(1).expect("source keys exhausted");
         SourceKey::new(self.next_source_key)
@@ -1752,7 +1541,6 @@ impl PlayerAdapter {
     }
 
     /// The restore's queued start ran, and how.
-    #[cfg(any(feature = "play-feed", feature = "play-uri"))]
     pub(super) fn queued_start_ran(&mut self, outcome: Option<crate::route::RouteStartAttempt>) {
         if self.queued_watch == QueuedWatch::Watching {
             self.queued_watch = outcome.map_or(QueuedWatch::Failed, QueuedWatch::Launched);
@@ -1770,9 +1558,7 @@ impl PlayerAdapter {
             QueuedWatch::Unwatched => QueuedLanding::Stale,
             QueuedWatch::Watching if self.release.has_queued() => return QueuedLanding::Waiting,
             QueuedWatch::Watching => QueuedLanding::Stale,
-            #[cfg(any(feature = "play-feed", feature = "play-uri"))]
             QueuedWatch::Launched(a) => QueuedLanding::Launched(a),
-            #[cfg(any(feature = "play-feed", feature = "play-uri"))]
             QueuedWatch::Failed => QueuedLanding::Failed,
         };
         self.queued_watch = QueuedWatch::Unwatched;
@@ -2103,7 +1889,6 @@ impl PlayerAdapter {
 
     /// A preview has no route lease, hence no periodic PMS writes. This follows the existing
     /// begin_timeline_reporting gate and keeps the reporter outside the Engine resource set.
-    #[cfg(any(feature = "play-feed", feature = "play-uri"))]
     pub(super) fn start_timeline(&mut self, ps: &crate::route::PlaybackSession,
         attempt: crate::route::RouteStartAttempt) {
         debug_assert!(self.timeline.is_none(), "one reporter per player adapter");
@@ -2113,7 +1898,6 @@ impl PlayerAdapter {
         }
     }
 
-    #[cfg(any(feature = "play-feed", feature = "play-uri"))]
     pub(super) fn publish_timeline(&self, attempt: crate::route::RouteStartAttempt,
         snapshot: Option<timeline::TimelineSnapshot>) {
         if let Some(runner) = self.timeline.as_ref() { runner.publish(attempt, snapshot); }
@@ -2121,7 +1905,6 @@ impl PlayerAdapter {
 
     /// Stop and detach without joining on the main thread. Real stop passes this handle to
     /// route::scrobble_stop; reload simply drops it after the stop signal became sticky.
-    #[cfg(any(feature = "play-feed", feature = "play-uri"))]
     pub(super) fn stop_timeline(&mut self, attempt: crate::route::RouteStartAttempt)
         -> Option<std::thread::JoinHandle<()>> {
         let runner = self.timeline.take()?;
@@ -2150,7 +1933,7 @@ impl PlayerAdapter {
     /// Is a URI-mode probe session running? `start_bufferfeed`'s double-start guard asks this beside
     /// [`is_live`](Self::is_live): a probe holds the route-start attempt and the exported window, so
     /// a second Play cannot begin under it.
-    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
+    #[cfg(feature = "devtriggers")]
     #[inline]
     pub fn uri_live(&self) -> bool {
         self.uri.is_some()
@@ -2158,46 +1941,78 @@ impl PlayerAdapter {
 
     /// The service says the probe's video plays (`observe_video_plane`'s term for a session which
     /// has no Engine to read the ACB play state from).
-    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
+    #[cfg(feature = "devtriggers")]
     #[inline]
     pub fn uri_plane_open(&self) -> bool {
         self.uri.as_ref().is_some_and(|session| session.plane_open())
     }
 
-    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
+    #[cfg(feature = "devtriggers")]
     pub fn uri_closing(&self) -> bool {
         self.uri.as_ref().is_some_and(|session| session.closing())
     }
 
-    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
+    #[cfg(feature = "devtriggers")]
     pub(super) fn uri_attempt(&self) -> Option<crate::route::RouteStartAttempt> {
         self.uri.as_ref().map(|session| session.route_start_attempt())
     }
 
-    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
+    #[cfg(feature = "devtriggers")]
     pub(super) fn uri_acb_exit_quarantine(&self) -> bool { self.uri.as_ref().is_some_and(|session| session.acb_exit_quarantine()) }
+
+    /// [`uri_acb_exit_quarantine`](Self::uri_acb_exit_quarantine) for a suite outside this crate
+    /// (`dev::uriprobe`'s tests); the product reads it only inside `exit_native`.
+    #[cfg(all(feature = "devtriggers", any(test, feature = "test-support")))]
+    pub fn uri_acb_exit_quarantine_for_test(&self) -> bool { self.uri_acb_exit_quarantine() }
 
     /// Install the probe's session. `uriprobe_drive::start` guards on [`uri_live`](Self::uri_live)
     /// first: overwriting a live slot would drop a session without ending it.
-    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
+    #[cfg(feature = "devtriggers")]
     #[cfg(feature = "play-feed")]
-    pub(super) fn install_uri(&mut self, session: super::uriprobe_drive::UriSession) {
+    pub(super) fn install_uri(&mut self, session: Box<dyn super::uriprobe_drive::UriProbeSession>) {
         debug_assert!(self.uri.is_none(), "a second URI-mode session cannot start under a live one");
         self.uri = Some(session);
     }
 
+    /// Install the application's probe at boot (`dev::uriprobe`). A later install replaces it; a
+    /// session already open keeps running under the probe which opened it.
+    #[cfg(feature = "devtriggers")]
+    pub fn install_uri_probe(&mut self, probe: Box<dyn super::uriprobe_drive::UriProbe>) {
+        self.uri_probe = Some(probe);
+    }
+
+    /// Seat a probe session the way `uriprobe_drive::start` does, for a suite outside this crate that
+    /// drives a session it built over a scripted transport (`dev::uriprobe`'s tests).
+    #[cfg(all(feature = "devtriggers", feature = "play-feed", any(test, feature = "test-support")))]
+    pub fn install_uri_for_test(&mut self, session: Box<dyn super::uriprobe_drive::UriProbeSession>) {
+        self.install_uri(session);
+    }
+
+    /// Did the composition install a probe? Without one the trigger file is not read at all.
+    #[cfg(feature = "devtriggers")]
+    pub fn uri_probe_installed(&self) -> bool {
+        self.uri_probe.is_some()
+    }
+
+    /// The launch the installed probe arms for a `plxnative-uriprobe` trigger text; `None` when it
+    /// arms none (or nothing is installed).
+    #[cfg(feature = "devtriggers")]
+    pub fn uri_probe_armed(&self, text: &str) -> Option<Box<dyn super::uriprobe_drive::ProbeLaunch>> {
+        self.uri_probe.as_ref().and_then(|probe| probe.armed(text))
+    }
+
     /// Take a physically released probe out of the slot, or leak unresolved ownership at exit.
-    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
+    #[cfg(feature = "devtriggers")]
     #[inline]
-    pub(super) fn take_uri(&mut self) -> Option<super::uriprobe_drive::UriSession> {
+    pub(super) fn take_uri(&mut self) -> Option<Box<dyn super::uriprobe_drive::UriProbeSession>> {
         self.uri.take()
     }
 
     /// The probe's session AND the token at once, borrowed from disjoint fields (the same split
     /// [`split`](Self::split) makes for the Engine).
-    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
+    #[cfg(feature = "devtriggers")]
     #[inline]
-    pub(super) fn uri_split(&mut self) -> (Option<&mut super::uriprobe_drive::UriSession>, &MainThread) {
+    pub(super) fn uri_split(&mut self) -> (Option<&mut Box<dyn super::uriprobe_drive::UriProbeSession>>, &MainThread) {
         (self.uri.as_mut(), &self.mt)
     }
 
@@ -2294,7 +2109,7 @@ mod repair_receipt_tests {
     }
 }
 
-#[cfg(all(test, feature = "play-uri"))]
+#[cfg(test)]
 mod uri_stop_refusal_tests {
     use super::*;
     use plx_playback_contract::{BackendEvent, DriverEvent, DriverSet, EvidenceSource,
