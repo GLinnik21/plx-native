@@ -47,7 +47,7 @@ pub mod preview;
 mod abr_plant_tests; // pins the ABR plant's constants to the Feed pipeline's
 #[cfg(all(test, feature = "play-feed"))]
 mod readout_obs_tests; // the readers that ask the session's readout, not the feed's mailbox
-pub mod route_fx; // the physical effects route policy asks of Feed (no-ops without it)
+pub mod route_fx; // what route policy asks of the player: the audio and speed picks step the readout in every build; the Feed's own effects are no-ops without it
 pub mod recovery; // the failed-open ladder (pure machine); `pump` drives it
 pub mod release; // the native object's off-frame release lifecycle (pure machine); `engine` runs it
 mod route_start; // common transaction admission and release-queued start policy
@@ -600,6 +600,8 @@ pub(crate) fn assert_transport_copies_agree(ps: &crate::route::PlaybackSession) 
         "the feed's Pause and the readout's disagree");
     assert_eq!(FEED_TX.seek_preroll_active(), ps.readout().seek_preroll(),
         "the feed's preroll and the readout's disagree");
+    assert_eq!(FEED_TX.feed_allowed(), ps.readout().feed_allowed(),
+        "the feed's gate and the readout's derivation of it disagree");
 }
 
 /// The foreground restore of a paused film owes a re-pause for the instant its resume frame is on
@@ -1973,7 +1975,6 @@ pub fn request_audio_switch(ps: &crate::route::PlaybackSession, _sid: i64) {
 /// audio stream from the same MKV with codec `codec`. The pump reloads direct-play at the current
 /// position next tick (switch_audio_native). Used when the item direct-plays and the target track
 /// is a direct-playable codec (aac/ac3/eac3).
-#[cfg(feature = "play-feed")]
 pub fn request_audio_track(ps: &mut crate::route::PlaybackSession, audio_idx: i32, codec: &str) {
     stage_native_audio(ps, audio_idx, codec);
     crate::route::request_user_route_intent(ps, crate::route::UserRouteIntent::NativeAudioReload);
@@ -1982,14 +1983,12 @@ pub fn request_audio_track(ps: &mut crate::route::PlaybackSession, audio_idx: i3
 /// the Load payload codec and the demuxer's stream index.
 /// A claimed action that owes a displaced pick its reload (issue #266) stages it here and runs
 /// the reload itself, so no second intent is queued mid-claim.
-#[cfg(feature = "play-feed")]
 pub fn stage_native_audio(ps: &mut crate::route::PlaybackSession, audio_idx: i32, codec: &str) {
     crate::route::set_stream_acodec(ps, codec); // the reload's Load payload uses this audio codec
     ps.step_readout(readout::ReadoutEvent::AudioSelected { idx: audio_idx });
 }
 /// reset to the default (best) audio stream — called on a new item so a prior track choice
 /// does not leak across items (the choice persists across seeks and reloads, not across items).
-#[cfg(feature = "play-feed")]
 pub fn reset_audio_track(ps: &mut crate::route::PlaybackSession) {
     ps.step_readout(readout::ReadoutEvent::AudioSelected { idx: -1 });
 }
@@ -2069,7 +2068,7 @@ pub fn set_play_rate(
     ps.accept_requested_rate(permille);
     ps.step_readout(readout::ReadoutEvent::RateSelected { permille });
     log(&format!("rate: {permille} requested"));
-    if !FEED_TX.started.load(Relaxed) {
+    if is_started(ps) != Some(true) {
         return true; // nothing on screen: the next Load applies it
     }
     ps.step_readout(readout::ReadoutEvent::RateReloadArmed);
@@ -2198,7 +2197,6 @@ pub(crate) fn fall_back_from_speed(
 /// Back to 1x — called on a new item, like [`reset_audio_track`]: a speed is a choice about what
 /// is playing, and Plex Web's resets the same way. The readout drops the offered rate and a
 /// pending reload; the latch outlives the item.
-#[cfg(feature = "play-feed")]
 pub fn reset_play_rate(ps: &mut crate::route::PlaybackSession) {
     ps.step_readout(readout::ReadoutEvent::NewItem);
 }
@@ -2214,7 +2212,6 @@ pub fn reset_subtitle() {
 /// select the audio stream index the demuxer feeds at the FIRST Load (before start_bufferfeed) —
 /// used by the decision to direct-play a non-default direct-playable track (e.g. an AC3 track on
 /// a TrueHD-default item). -1 = default/best.
-#[cfg(feature = "play-feed")]
 pub fn set_audio_track(ps: &mut crate::route::PlaybackSession, idx: i32) {
     ps.step_readout(readout::ReadoutEvent::AudioSelected { idx });
 }
@@ -2942,6 +2939,7 @@ mod tests {
         impl Drop for Restore {
             fn drop(&mut self) {
                 SHARED.reset_session();
+                FEED_SHARED.reset_session();
                 FEED_TX.reset();
                 crate::ff::force_speed_decoder_for_test(false);
             }
@@ -2950,6 +2948,7 @@ mod tests {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
         SHARED.reset_session();
+        FEED_SHARED.reset_session();
         FEED_TX.reset();
         crate::ff::force_speed_decoder_for_test(true);
 
@@ -2958,12 +2957,21 @@ mod tests {
         assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), -1, "with nothing on screen there is nothing to reload");
         assert!(!ps.readout().rate_reload());
 
+        // The Load commits on its own thread and stores the transport's `started` there
+        // (`native_executor`): the feed's word, which media reads only from the session's facts.
         FEED_TX.started.store(true, Relaxed);
         let attempt = crate::route::RouteStartAttempt::fixture();
         ps.begin_attempt_view(attempt, attempt_view::Backend::Feed);
-        assert!(ps.ingest_attempt_facts(attempt, crate::player::attempt_view::Backend::Feed, attempt_view::AttemptFacts {
-            position_ns: Some(42_000_000_000), ..Default::default()
-        }));
+        assert_eq!(is_started(&ps), None, "premise: nothing has sampled the feed yet");
+        assert!(set_play_rate(&mut ps, &mut pa, 1750), "the facts do not say started yet: remembered");
+        assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), -1, "so there is no reload to ask for");
+        assert!(!ps.readout().rate_reload());
+
+        // The pump's sample carries `started` and the playhead into the session's facts.
+        FEED_SHARED.seen_frame.store(true, Relaxed);
+        FEED_SHARED.playpos_ns.store(42_000_000_000, Relaxed);
+        assert!(ps.ingest_feed_facts(attempt, plx_play_feed::feed_pump::native_feed_facts()));
+        assert_eq!(is_started(&ps), Some(true), "the sample read the feed's store");
         assert!(set_play_rate(&mut ps, &mut pa, 1500));
         assert_eq!(ps.readout().play_rate_permille(), 1500);
         assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), 42_000_000_000, "a seek to the viewer's own position");

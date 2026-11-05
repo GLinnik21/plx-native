@@ -544,7 +544,6 @@ impl PlayerAdapter {
                 && ps.attempt_view().facts().ended == Some(true)) {
             return true;
         }
-        let _ = ps;
         false
     }
 

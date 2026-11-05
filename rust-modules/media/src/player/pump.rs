@@ -1,6 +1,6 @@
 //! Common route and recovery pump. The physical feed tick in `feed_pump` binds the plane,
 //! feeds AUs, and returns the stage and EOS facts used here for common presentation policy.
-use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
+use plx_play_feed::shared::FEED_SHARED;
 #[cfg(all(test, feature = "hostsim"))]
 use super::engine::Engine;
 #[cfg(all(test, feature = "hostsim"))]
@@ -1500,7 +1500,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
     // once the claim lands (`commit_or_carry_seek`).
     const SEEK_STUCK_MS: u32 = 1200;
     // Route owns the pending target and commits it before the native demux can read a retry.
-    if pa.stuck_seek_due(now, FEED_TX.feed_allowed(), crate::route::flight_outstanding(), SEEK_STUCK_MS) {
+    if pa.stuck_seek_due(now, ps.readout().feed_allowed(), crate::route::flight_outstanding(), SEEK_STUCK_MS) {
         let taken = super::take_pending_seek(ps, pa);
         let pending = taken.map_or(-1, |t| t.target_ns);
         // The feed's own in-place target rides the sample (`FeedRaw::seek_target_ns`): the seek it
@@ -2060,6 +2060,7 @@ mod tests {
 mod flight_tests {
     use std::sync::atomic::Ordering::Relaxed;
     use super::*;
+    use plx_play_feed::shared::FEED_TX;
     use crate::player::{begin_resume, land_resume, suspend_bufferfeed, ResumeOutcome, ResumeStart};
     use crate::route::flight_rig::FlightRig;
 
@@ -4581,6 +4582,7 @@ mod flight_tests {
 mod native_seek_pump_tests {
     use std::sync::atomic::Ordering::Relaxed;
     use super::*;
+    use plx_play_feed::shared::FEED_TX;
     use crate::player::ffi_host;
     use plx_playback_contract::feed::SeekMode;
     use std::os::raw::c_int;
@@ -4824,6 +4826,8 @@ mod native_seek_pump_tests {
         rig.viewer_pause();
         rig.arm(TARGET_NS); // a bare request_seek, as the dev autoseek trigger does
         assert!(FEED_TX.seek_preroll_active(), "the pump opened the paused-seek preroll itself");
+        assert!(rig.ps.readout().feed_allowed() && FEED_TX.feed_allowed(),
+            "the gate the pump's watchdog reads is open for the preroll's keyframe, in both copies");
         rig.land_keyframe(TARGET_NS);
         for _ in 0..5 {
             rig.frame();
@@ -4845,6 +4849,7 @@ mod native_seek_pump_tests {
         rig.frame();
         assert!(!FEED_TX.seek_preroll_active(), "the preroll closed on the landing");
         assert!(FEED_TX.paused.load(Acquire), "the viewer is still paused");
+        assert!(!rig.ps.readout().feed_allowed() && !FEED_TX.feed_allowed(), "and the gate is shut again behind it");
         assert!(!ffi_host::clock_state_for_test().1, "the physical clock is held again");
         assert!(reloads().is_empty());
     }
@@ -5643,6 +5648,7 @@ mod native_seek_pump_tests {
 mod end_of_film_tests {
     use std::sync::atomic::Ordering::Relaxed;
     use super::*;
+    use plx_play_feed::shared::FEED_TX;
     use crate::player::ffi_host;
     use crate::player::readout::EOS_TAIL_NS;
     use std::os::raw::c_int;
