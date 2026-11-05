@@ -941,8 +941,8 @@ mod tests {
     // These run the shared runner against a scripted DriverSet for EACH BackendKind. They prove
     // the reducer, the wrapper and that both drivers' events take the same path; the real
     // drivers' own event vocabulary is covered beside them (play-uri backend rig, FeedDriver,
-    // run_uri_boot_tests). Production has no `Observation::Presented` producer yet, so the
-    // rebuffer scenario injects it exactly as the existing picture tests do.
+    // run_uri_boot_tests). The scripted sets inject `Observation::Presented` where the real
+    // drivers emit it: `FeedDriver::note_picture` (the displayed-frame counter after the bind).
     type Rec = measure::Record<LogicalRequestId, AttemptId>;
     fn incidents(result: &RunResult) -> Vec<Rec> {
         result.metrics.iter().filter_map(|n| match n {
@@ -1010,6 +1010,10 @@ mod tests {
         go(&mut runner, &mut drivers, backend, A, measure::Origin::Fresh, 1);
         drivers.events.extend(playing(backend, A));
         runner.poll_at(&mut drivers, &(), tick(5));
+        // The first `Presented` is what makes startup a number and a stall a rebuffer.
+        let summary = runner.metrics_snapshot().unwrap();
+        assert_eq!(summary.startup_ms, Some(5), "request began at tick 0");
+        assert_eq!(summary.current_attempt.unwrap().startup_ms, Some(4), "attempt began at tick 1");
         let stall = |runner: &mut BackendRunner, at| incidents(
             &runner.condition_at(backend, A, measure::Condition::Rebuffering, tick(at)));
         assert_eq!(stall(&mut runner, 10), [Rec { request, attempt: A, backend: mb(backend),

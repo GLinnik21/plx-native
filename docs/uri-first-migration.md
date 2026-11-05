@@ -118,9 +118,14 @@ now moves the common state from Playing to Buffering, so the existing `playback.
 event's `rebuffers` and `buffering` classes can be non-zero for URI playback, where URI had no
 source for them before; the handled error still carries the existing backend and terminal-stage
 classes. The reducer counts a rebuffer only after
-the request's first confirmed picture (`Observation::Presented`), and no production driver emits
-that observation yet, so rebuffer records, recovered refusals and request startup time have no
-production producer until one does. Preserve the existing local recorder limits and privacy policy;
+the request's first confirmed picture (`Observation::Presented`). The Feed driver emits it once per
+attempt when the plane shows the picture (on webOS 4, the ACB bind is complete and a position tick
+has followed it) and the sink's displayed-frame counter has reported a count above zero since that
+bind; on webOS 5+ the first such counter callback is enough. This is necessary-condition evidence,
+not photon proof, and a firmware that never delivers the counter leaves startup Unknown. A
+position tick (`FRAMEREADY`) is never a picture. The URI driver emits nothing yet. The player's
+transmitted `Presented` trace step and `startup` class are a separate, older value: they time the
+first position tick of a Feed playback, not its first picture, and are unchanged. Preserve the existing local recorder limits and privacy policy;
 new transmitted fields require schema, consent-preview and privacy updates. The closed attempt-origin domain includes `viewer_reconfigure` for a viewer-requested speed, audio-processing or source-track route change; it is listed by the same domain table in the consent preview. It does not add a payload field or enable reporting.
 
 ## Completion gates
