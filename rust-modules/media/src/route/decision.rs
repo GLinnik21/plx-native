@@ -368,9 +368,9 @@ pub struct PlaybackSession {
     /// physical backend chooses a different effective stream. Both backends use this one intent;
     /// `cur_audio` remains the stream the current Feed route actually carries.
     source_selection: Option<SourceSelection>,
-    /// The playback backends composed for this session ([`crate::player::route_fx::COMPOSED_BACKENDS`] unless the
-    /// composition installed another set). Policy asks it which physical backend can be offered, never
-    /// which drivers were compiled in.
+    /// The playback backends composed for this session: `BackendSet::FEED` until the composition installs
+    /// the set its drivers form (`install_backends`). Policy asks it which physical backend can be offered,
+    /// never which drivers were compiled in.
     backends: plx_playback_contract::BackendSet,
     /// Captured IO composition for source qualification; it owns no route or native session.
     uri_preflight_port: Option<super::uri_preflight::ResolvePort>,
@@ -1162,8 +1162,9 @@ impl PlaybackSession {
         self.uri_preflight_port = Some(port);
     }
 
-    /// The playback backends the composition supplies. Boot installs the set its drivers form;
-    /// a session that is never told keeps [`crate::player::route_fx::COMPOSED_BACKENDS`].
+    /// The playback backends the composition supplies. Boot installs the set its drivers form
+    /// (`PlayerAdapter::composed_backends`); a session that is never told keeps the Feed-only
+    /// default of [`PlaybackSession::IDLE`].
     pub fn install_backends(&mut self, backends: plx_playback_contract::BackendSet) {
         self.backends = backends;
     }
@@ -1370,7 +1371,7 @@ impl PlaybackSession {
         metric_request: None,
         pending_metric_lifecycle: Vec::new(),
         reconfigure_pause_goal: None,
-        backends: crate::player::route_fx::COMPOSED_BACKENDS,
+        backends: plx_playback_contract::BackendSet::FEED,
         uri_preflight_port: None,
         direct_play_mode: DirectPlayMode::Auto,
         jail_load_blocked: false,

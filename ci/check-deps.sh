@@ -14,7 +14,7 @@
 #   present  — the present gate's worker door: ONE atomic static in machine/src/present.rs and ONE
 #              `wake_from_worker`.
 #   effect   — `Effect::` spelled nowhere (the enum is `Fx::`, the app's `AppFx::`).
-#   sink     — `tv::sink::installed` and `VideoSink` only under player/, tv/, tv.rs and port.rs
+#   sink     — `tv::sink::installed` and `VideoSink` only under player/, tv/, tv.rs, port.rs and app/adapters/backends.rs
 #              (step L15: the Starfish/ACB verbs are the player's alone).
 #
 # Phase 4 rule (D3 rewrite, phase 12):
@@ -949,8 +949,10 @@ else fail "frame: $frame_bad line(s) of a privileged OS-primitive call outside a
 
 # sink: the Starfish/ACB verbs (`tv::sink::VideoSink`) are the player's alone (step L15). Only
 # `player/`, `play-uri/`, the native `webos/` port, and `port.rs` (which installs one)
-# and `tv.rs` with `tv/` (which hold it) name `tv::sink::installed` or `VideoSink`; every other module reaches
-# the television through the narrower `tv` interfaces. Wholly-test files are skipped like inline
+# and `tv.rs` with `tv/` (which hold it) name `tv::sink::installed` or `VideoSink`; so does
+# `app/adapters/backends.rs`, the boot composition that resolves the installed display once for the
+# ACB plane's boot and hands it on (it was `player/plane_boot.rs`; the composition root is where the
+# driver set is built). Every other module reaches the television through the narrower `tv` interfaces. Wholly-test files are skipped like inline
 # `#[cfg(test)]` blocks. Zero, no allowlist.
 sink_bad=0
 while IFS= read -r line; do
@@ -961,7 +963,7 @@ while IFS= read -r line; do
   case "$p" in "$SRC_PLAY_FEED"/*)
     case "$line" in *tv::sink::installed*|*tv::sink::display_installed*) ;; *) continue ;; esac ;;
   esac
-  case "$p" in "$SRC_MEDIA"/player/*|"$SRC_PLAY_URI"/*|"$SRC_PLATFORM"/tv/*|"$SRC_PLATFORM"/tv.rs|"$SRC_PLATFORM"/webos/*|"$SRC"/port.rs) continue ;; esac
+  case "$p" in "$SRC_MEDIA"/player/*|"$SRC_PLAY_URI"/*|"$SRC_PLATFORM"/tv/*|"$SRC_PLATFORM"/tv.rs|"$SRC_PLATFORM"/webos/*|"$SRC"/port.rs|"$SRC"/app/adapters/backends.rs) continue ;; esac
   if is_wholly_test "$p"; then continue; fi
   echo "    $line"; sink_bad=$((sink_bad+1))
 done < <(grep_code 'tv::sink::(installed|display_installed)|\b(VideoSink|DisplaySink)\b' "$SRC" "$SRC_PLATFORM" "$SRC_UI" "$SRC_MEDIA" "$SRC_PLAYBACK_CONTRACT" "$SRC_PLAY_URI" "$SRC_PLAY_FEED" "$SRC_MEDIA_CODECS" "$SRC_APPKIT" "$SRC_SCREENS")

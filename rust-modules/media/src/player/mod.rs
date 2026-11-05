@@ -35,7 +35,6 @@ pub mod ass_script; // a sidecar script fed in windows around the playhead
 pub mod ass_source; // bounded embedded scripts and subtitle presentation clock
 #[cfg(feature = "play-feed")]
 pub mod engine;
-mod plane_boot; // the backend-neutral boot of the ACB plane owner (was Feed's `acb_init`)
 #[cfg(feature = "play-feed")]
 mod feed_open; // gated: one resolved request for the prepared route's physical feed open, built over `plx_play_feed` types
 pub mod foreground;
@@ -49,13 +48,7 @@ pub mod recovery; // the failed-open ladder (pure machine); `pump` drives it
 pub mod release; // the native object's off-frame release lifecycle (pure machine); `engine` runs it
 mod route_start; // common transaction admission and release-queued start policy
 #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
-pub mod uri_protocol;
-#[cfg(all(feature = "devtriggers", feature = "play-uri"))]
-pub mod uri_lifecycle;
-#[cfg(all(feature = "devtriggers", feature = "play-uri"))]
-pub mod uriprobe; // the URI-mode probe (issue #1064, dev trigger `plxnative-uriprobe`): what to say to com.webos.media (pure machine); `uriprobe_drive` runs it
-#[cfg(all(feature = "devtriggers", feature = "play-uri"))]
-pub mod uriprobe_drive; // runs the probe: the transport, the window verbs and the route-start settle the machine leaves to a driver
+pub mod uriprobe_drive; // the URI-mode probe's route half (issue #1064, dev trigger `plxnative-uriprobe`): the transport, the window verbs and the route-start settle the machine leaves to a driver; the machine itself is the play-uri crate's `uriprobe`
 /// The Feed backend's process-lifetime native mailbox and transport (`plx_play_feed::shared`),
 /// re-exported for the crates that may not name `plx_play_feed`: `screens` (its tests drive them)
 /// and the application loop (its manifest depends on `plx_media` alone). Media's own code spells
@@ -131,11 +124,14 @@ fn sink() -> &'static dyn plx_platform::tv::sink::VideoSink {
     }
 }
 
-/// The display surface of whichever backend set is built, for composition code that has no Feed
-/// (the URI driver, the plane boot). With `play-feed` it IS [`sink`], so it keeps both of its
-/// behaviours: the simulator's `HostSink` under hostsim, and the [`FENCE`] while an off-frame
-/// `Unload` owns the native object. Without it the port's installed display sink answers (a
-/// simulator always carries Feed).
+/// The display surface of whichever backend set is built, for the URI probe's route half
+/// (`uriprobe_drive`), the one caller left in this crate that has no Feed. With `play-feed` it IS
+/// [`sink`], so it keeps both of its behaviours: the simulator's `HostSink` under hostsim, and the
+/// [`FENCE`] while an off-frame `Unload` owns the native object. Without it the port's installed
+/// display sink answers (a simulator always carries Feed). The plane's boot no longer comes through
+/// here: the application reads `display_installed()` itself (`app/adapters/backends.rs`).
+#[cfg(all(feature = "devtriggers", feature = "play-uri"))]
+#[cfg_attr(not(feature = "play-feed"), allow(dead_code))] // a URI-only build opens no probe: its tests are the caller
 fn display() -> &'static dyn plx_platform::tv::sink::DisplaySink {
     #[cfg(feature = "play-feed")]
     {
@@ -148,7 +144,8 @@ fn display() -> &'static dyn plx_platform::tv::sink::DisplaySink {
 }
 
 /// The process's ACB plane owner: the one holder of the video-plane binding for both backends,
-/// booted once by [`acb_init`]. It replaces the old `ACB_OK` / `PTYPE` statics.
+/// booted once by the application's `acb_init` (`app/adapters/backends.rs`). It replaces the old `ACB_OK` / `PTYPE` statics.
+#[cfg(any(feature = "play-feed", feature = "play-uri"))]
 pub(crate) fn plane() -> &'static plx_platform::tv::plane::PlaneOwner {
     plx_platform::tv::plane::installed()
 }
@@ -356,7 +353,6 @@ pub fn clock_user_held_for_test() -> bool {
     FEED_SHARED.clock_user_held_for_test()
 }
 
-pub use plane_boot::acb_init;
 #[cfg(feature = "play-feed")]
 pub use engine::{
     start_bufferfeed, start_bufferfeed_tracked,

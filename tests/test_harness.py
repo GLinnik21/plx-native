@@ -1960,16 +1960,26 @@ class PipelineTier(unittest.TestCase):
         return _manifest()["pipeline_cases"]
 
     def test_uri_terminal_errors_fail_the_error_gate_and_settle_early(self):
-        for end in ("timeout:load", "timeout:currentTime", "refused:play", "error:601"):
+        # A refusal, a platform error and a probe that could not START are failures. The summary line
+        # is the probe's closing line on a healthy run too, so it is read, never matched whole.
+        for end in ("timeout:load", "timeout:play", "timeout:acb", "timeout:acb-video",
+                    "timeout:register", "refused:play", "refused:acb", "error:601", "error:?"):
             with self.subTest(end=end):
                 lines = [f"uriprobe: t=40000 summary load=ok playing=yes end={end}"]
                 self.assertFalse(run.a_no_error(lines)[0])
                 self.assertIsNotNone(run.failed_for_good({"expect": {}, "operations": []}, lines))
+        failed_load = ["uriprobe: t=900 summary load=fail(load) playing=no end=back"]
+        self.assertFalse(run.a_no_error(failed_load)[0], "a load that did not complete is an error")
 
     def test_normal_uri_endings_do_not_fail_the_error_gate(self):
-        for end in ("eos", "back", "script"):
+        # `timeout:currentTime` is the probe's watchdog noticing a stopped clock (about 10 s after it
+        # stops): a stall is graded by `uri_max_stall_s`, and a link-collapse case ends this way on
+        # purpose, so it must not be an error of its own.
+        for end in ("eos", "back", "script", "timeout:currentTime"):
             with self.subTest(end=end):
-                self.assertTrue(run.a_no_error([f"uriprobe: t=40000 summary load=ok end={end}"])[0])
+                lines = [f"uriprobe: t=40000 summary load=ok playing=yes end={end}"]
+                self.assertTrue(run.a_no_error(lines)[0])
+                self.assertIsNone(run.failed_for_good({"expect": {}, "operations": []}, lines))
 
     def test_loopback_fixture_mode_requires_a_fixed_forwarded_port(self):
         result = subprocess.run([sys.executable, run.__file__, "--fixtures-loopback", "--list"],
@@ -5777,6 +5787,453 @@ class AbrContinuousTimestamps(unittest.TestCase):
                 self.assertAlmostEqual(srv.abr_timeline(part).duration / 90000, 2.0, delta=0.1, msg=part)
         if not found:
             self.skipTest("the pack has no ABR clips")
+
+
+def _uri(t, text):
+    """One synthetic probe line: `t` is the probe's own milliseconds since arm."""
+    return f"uriprobe: t={t} {text}"
+
+
+def _uri_run(seconds, clock=lambda sec: sec * 1000, remaining=lambda sec: 12, plane=True,
+             extra=None, first_ms=3000):
+    """A SYNTHETIC URI-probe log: the arm, the plane lines, the initial fill, `ev=playing`, then one
+    `currentTime` and one `bufferRange` a second for `seconds` seconds.
+
+    `clock(sec)` is the reported media clock in ms (None omits that second's sample), `remaining(sec)`
+    the reported `remainingTime`, `extra` maps a second to the lines to add at that second. None of
+    this is a device log: nothing here comes from the television.
+    """
+    lines = [_uri(0, "armed variant=acb-control scheme=http kind=hls window=none")]
+    if plane:
+        lines += ["videoplane: BOUND — the gate presents unconditionally and no frame may snapshot"]
+        lines += [f"acb callback task={n} ev=1 app=1 play={1 + n // 4}" for n in (1, 2, 3, 4)]
+    lines += [_uri(700, "ev=bufferingStart"), _uri(2000, "ev=bufferingEnd"), _uri(2000, "ev=playing")]
+    for sec in range(seconds):
+        t = first_ms + 1000 * sec
+        value = clock(sec)
+        if value is not None:
+            lines.append(_uri(t, f"ev=currentTime value={value}" + (" (first report)" if sec == 0 else "")))
+        r = remaining(sec)
+        lines.append(_uri(t, f"ev=bufferRange beginTime=0 endTime={r} remainingTime={r} percent=10"))
+        lines.extend(_uri(t, text) if not text.startswith(("videoplane", "acb ")) else text
+                     for text in (extra or {}).get(sec, ()))
+    return lines
+
+
+SUMMARY = ("summary load=ok playing={playing} t_load=700 t_playing=2000 currentTime_advanced={moved} "
+           "videoInfo=seen audioInfo=seen window=none setWindowId=n/a variant=acb-control scheme=http "
+           "shape=named end={end}")
+
+
+class UriModeGrading(unittest.TestCase):
+    """Cases that arm the URI probe play through the TV's native player, so the buffer-feed checks
+    grade lines it never writes. These tests pin the graders that replace them, on SYNTHETIC logs
+    (no device log is ever copied into the repo: they carry LAN addresses)."""
+
+    BOUND_CASE = {"name": "bound", "fixture": "pipe_hls_720p24_20m/index.m3u8",
+                  "triggers": {"uriprobe": "acb-control", "ptype": "0"},
+                  "operations": [{"op": "play"}],
+                  "expect": {"uri_playing": True, "uri_plane_bound": True,
+                             "uri_clock_past_s": 60, "uri_max_stall_s": 3}}
+
+    # -- dispatch --
+
+    def test_a_case_is_uri_mode_by_its_own_triggers_only(self):
+        self.assertTrue(run.uri_mode(self.BOUND_CASE))
+        self.assertFalse(run.uri_mode({"triggers": {"sinkmax": "4"}}))
+        self.assertFalse(run.uri_mode({"name": "plain"}))
+
+    def test_a_uri_case_runs_no_buffer_feed_check_and_keeps_the_wire_check(self):
+        log = _uri_run(66)
+        passed, results = run.evaluate_pipeline(self.BOUND_CASE, log, (36, 36, 2))
+        self.assertTrue(passed, results)
+        self.assertEqual({label for label, _, _ in results},
+                         {"uri_playing", "uri_plane_bound", "uri_clock_past", "uri_max_stall",
+                          "no_error", "server_wire"})
+        # ...and the same log graded as a Feed case fails on the lines a native player never writes
+        feed = dict(self.BOUND_CASE, triggers={}, expect={}, fixture="clip.mkv", declare={})
+        self.assertFalse(run.evaluate_pipeline(feed, log, (36, 36, 2))[0])
+
+    def test_a_refusal_fails_the_uri_gate_and_names_why(self):
+        log = [_uri(0, "armed variant=acb-control scheme=http kind=hls window=none"),
+               _uri(1000, SUMMARY.format(playing="no", moved="no", end="refused:acb"))]
+        passed, results = run.evaluate_pipeline(self.BOUND_CASE, log, (1, 1, 1))
+        self.assertFalse(passed)
+        self.assertEqual({label for label, ok, _ in results if not ok},
+                         {"uri_playing", "uri_plane_bound", "uri_clock_past", "uri_max_stall", "no_error"})
+
+    def test_a_mistyped_uri_expectation_fails_loudly_instead_of_grading_nothing(self):
+        case = dict(self.BOUND_CASE, expect={"uri_max_stal_s": 3})
+        passed, results = run.evaluate_pipeline(case, _uri_run(10), (1, 1, 1))
+        self.assertFalse(passed)
+        self.assertEqual(results[0][:2], ("uri_expect", False))
+        self.assertIn("uri_max_stal_s", results[0][2])
+
+    def test_a_uri_case_never_exits_early(self):
+        early, why = run.early_exit_allowed(self.BOUND_CASE, {})
+        self.assertFalse(early)
+        self.assertIn("window", why)
+        self.assertEqual(run.early_exit_allowed({"expect": {}, "operations": []}, {}), (True, ""))
+
+    def test_the_clock_a_case_must_reach_counts_as_the_depth_the_pack_needs(self):
+        self.assertEqual(run._case_depth_s({"expect": {"uri_clock_past_s": 60}}), 60)
+        self.assertEqual(run._case_depth_s({"expect": {"min_pos_climb_s": 8, "uri_clock_past_s": 3}}), 8)
+
+    # -- uri_playing --
+
+    def test_uri_playing_reads_the_terminal_summary_when_there_is_one(self):
+        ok = [_uri(9000, SUMMARY.format(playing="yes", moved="yes", end="timeout:currentTime"))]
+        self.assertTrue(run.a_uri_playing(ok)[0])
+        for playing, moved in (("no", "no"), ("yes", "no"), ("no", "yes")):
+            with self.subTest(playing=playing, moved=moved):
+                bad = [_uri(9000, SUMMARY.format(playing=playing, moved=moved, end="back"))]
+                self.assertFalse(run.a_uri_playing(bad)[0])
+        # the LAST summary is the terminal one
+        two = [_uri(1000, SUMMARY.format(playing="no", moved="no", end="refused:play")),
+               _uri(2000, SUMMARY.format(playing="yes", moved="yes", end="back"))]
+        self.assertTrue(run.a_uri_playing(two)[0])
+
+    def test_uri_playing_without_a_summary_reads_the_events(self):
+        # a healthy run has no summary: the probe never ends on its own, the harness stops at its cap
+        self.assertTrue(run.a_uri_playing(_uri_run(8))[0])
+        self.assertFalse(run.a_uri_playing([_uri(0, "armed variant=acb-control")])[0])
+        no_playing = [ln for ln in _uri_run(8) if "ev=playing" not in ln]
+        self.assertFalse(run.a_uri_playing(no_playing)[0])
+        frozen = _uri_run(8, clock=lambda sec: 500)
+        ok, why = run.a_uri_playing(frozen)
+        self.assertFalse(ok, "ev=playing with a clock that never advanced is not playing")
+        self.assertIn("never advanced", why)
+        self.assertFalse(run.a_uri_playing([])[0])
+
+    # -- uri_plane_bound --
+
+    def test_uri_plane_bound_wants_the_bound_line_and_acb_callbacks_1_to_4_all_ev_1(self):
+        self.assertTrue(run.a_uri_plane_bound(_uri_run(2))[0])
+        # task 5 is the release, not part of the bind
+        released = _uri_run(2) + ["acb callback task=5 ev=1 app=1 play=0",
+                                  "videoplane: unbound — ordinary idle rules from here"]
+        self.assertTrue(run.a_uri_plane_bound(released)[0])
+        cb = [f"acb callback task={n} ev=1 app=1 play=1" for n in (1, 2, 3, 4)]
+        self.assertFalse(run.a_uri_plane_bound(cb)[0], "callbacks alone are not a bound plane")
+        unbound = ["videoplane: unbound — ordinary idle rules from here"] + cb
+        self.assertFalse(run.a_uri_plane_bound(unbound)[0], "the match is case-sensitive")
+        for missing in (1, 2, 3, 4):
+            with self.subTest(missing=missing):
+                partial = ["videoplane: BOUND"] + [c for c in cb if f"task={missing} " not in c]
+                ok, why = run.a_uri_plane_bound(partial)
+                self.assertFalse(ok)
+                self.assertIn(str(missing), why)
+        refused = ["videoplane: BOUND"] + cb[:1] + ["acb callback task=2 ev=0 app=1 play=1"] + cb[2:]
+        ok, why = run.a_uri_plane_bound(refused)
+        self.assertFalse(ok)
+        self.assertIn("ev=1", why)
+
+    # -- uri_clock_past_s --
+
+    def test_uri_clock_past_is_the_largest_clock_sample(self):
+        log = _uri_run(66)
+        self.assertTrue(run.a_uri_clock_past(log, 60)[0])
+        self.assertTrue(run.a_uri_clock_past(_uri_run(61), 60)[0], "exactly 60 s counts")
+        ok, why = run.a_uri_clock_past(_uri_run(56), 60)
+        self.assertFalse(ok)
+        self.assertIn("55.0s", why)
+        self.assertFalse(run.a_uri_clock_past([_uri(0, "armed variant=at-load")], 1)[0])
+
+    # -- uri_max_stall_s --
+
+    def test_a_steady_clock_has_no_stall(self):
+        ok, why = run.a_uri_max_stall(_uri_run(66), 3)
+        self.assertTrue(ok, why)
+        self.assertIn("1.0s", why)
+
+    def test_a_clock_that_stands_still_mid_run_is_a_stall(self):
+        held = _uri_run(40, clock=lambda sec: min(sec, 19) * 1000 if sec < 27 else sec * 1000)
+        ok, why = run.a_uri_max_stall(held, 3)
+        self.assertFalse(ok)
+        self.assertIn("8.0s", why)
+        self.assertTrue(run.a_uri_max_stall(held, 8)[0])
+
+    def test_a_clock_that_stops_and_never_resumes_is_a_stall_by_its_trailing_stretch(self):
+        # the unbound arm's shape: every gap BETWEEN samples is a second, and then the samples repeat
+        for stopped in (lambda sec: min(sec, 14) * 1000, lambda sec: sec * 1000 if sec <= 14 else None):
+            with self.subTest():
+                log = _uri_run(31, clock=stopped)
+                ok, why = run.a_uri_max_stall(log, 3)
+                self.assertFalse(ok, why)
+                self.assertIn("16.0s", why)
+
+    def test_the_probes_closing_summary_extends_the_observation(self):
+        # nothing periodic after the clock stops: the summary is the probe's last word on when it quit
+        log = _uri_run(15, remaining=lambda sec: 12) + [
+            _uri(26000, SUMMARY.format(playing="yes", moved="yes", end="timeout:currentTime"))]
+        ok, why = run.a_uri_max_stall(log, 3)
+        self.assertFalse(ok, why)
+        self.assertIn("9.0s", why)
+
+    def test_a_pause_or_a_seek_the_case_drove_is_not_a_stall(self):
+        paused = _uri_run(40, clock=lambda sec: min(sec, 19) * 1000 if sec < 27 else (sec - 8) * 1000,
+                          extra={19: ["drive pause pos=19000", "call pause ok", "ev=paused"],
+                                 26: ["drive resume pos=19000"], 27: ["ev=playing"]})
+        self.assertTrue(run.a_uri_max_stall(paused, 3)[0])
+        # the same standing clock with nothing driving it is a stall
+        undriven = [ln for ln in paused if not any(w in ln for w in ("drive", "call pause", "ev=paused"))]
+        self.assertFalse(run.a_uri_max_stall(undriven, 3)[0])
+        # a seek BACK: the clock steps down and climbs again, and the gap over the seek is exempt
+        sought = _uri_run(40, clock=lambda sec: (sec * 1000 if sec < 20 else
+                                                 8000 if sec < 25 else (sec - 24) * 1000 + 8000),
+                          extra={20: ["drive seek target=8000", "call seek ok"], 21: ["ev=seekDone"]})
+        self.assertTrue(run.a_uri_max_stall(sought, 3)[0], run.a_uri_max_stall(sought, 3)[1])
+        unannounced = [ln for ln in sought if "seek" not in ln.lower()]
+        self.assertFalse(run.a_uri_max_stall(unannounced, 3)[0])
+
+    def test_uri_max_stall_needs_playback(self):
+        self.assertFalse(run.a_uri_max_stall([_uri(0, "armed variant=acb-control")], 3)[0])
+        no_clock = _uri_run(5, clock=lambda sec: None)
+        self.assertFalse(run.a_uri_max_stall(no_clock, 3)[0])
+
+    # -- uri_drain_warning_s --
+
+    @staticmethod
+    def _drain(series, tail=(), form="remaining"):
+        """The buffered lead, one `bufferRange` sample a second, then the stall's `bufferingStart`.
+
+        `form` is what the line carries: `remaining` (a `remainingTime` field), `window` (only
+        `beginTime`/`endTime`, as one TV session printed it, the position at `beginTime` and the lead
+        the gap to `endTime`) or `mixed` (the field on every other sample).
+        """
+        lines = [_uri(700, "ev=bufferingStart"), _uri(2000, "ev=bufferingEnd"), _uri(2000, "ev=playing")]
+        for i, r in enumerate(series):
+            with_field = form == "remaining" or (form == "mixed" and i % 2 == 0)
+            span = f"beginTime={i} endTime={i + r}" + (f" remainingTime={r} percent=1" if with_field else "")
+            lines.append(_uri(3000 + 1000 * i, f"ev=bufferRange {span}"))
+        return lines + [_uri(3000 + 1000 * len(series), "ev=bufferingStart")] + list(tail)
+
+    def test_a_buffer_that_drains_before_it_stalls_is_a_warning(self):
+        # fills to 12, holds, then falls about a second a second with repeats; the 10 s decline
+        # is counted from the last 12
+        log = self._drain([4, 6, 8, 10, 12, 12, 12, 12, 11, 11, 10, 9, 8, 8, 6, 5, 4, 3, 2])
+        ok, why = run.a_uri_drain_warning(log, 5)
+        self.assertTrue(ok, why)
+        self.assertIn("12 -> 2", why)
+        self.assertFalse(run.a_uri_drain_warning(log, 15)[0], "the threshold is a duration")
+
+    def test_a_full_buffer_that_just_stops_is_no_warning(self):
+        # the unbound arm's shape: remainingTime claims the same lead right up to the stall
+        flat = self._drain([4, 8, 12, 12, 12, 12, 12, 12, 12, 12])
+        ok, why = run.a_uri_drain_warning(flat, 5)
+        self.assertFalse(ok)
+        self.assertIn("12 -> 12", why)
+
+    def test_a_short_or_interrupted_decline_is_not_enough(self):
+        self.assertFalse(run.a_uri_drain_warning(self._drain([12, 12, 12, 12, 11, 10, 9]), 5)[0])
+        self.assertTrue(run.a_uri_drain_warning(self._drain([12, 12, 12, 12, 11, 10, 9]), 4)[0])
+        # 12 -> 9 over six seconds, but it rose once: only the run after the rise counts
+        risen = self._drain([12, 12, 11, 10, 9, 10, 9])
+        ok, why = run.a_uri_drain_warning(risen, 5)
+        self.assertFalse(ok)
+        self.assertIn("10 -> 9", why)
+
+    def test_the_lead_reads_the_buffer_window_when_the_field_is_absent(self):
+        # the field is not reliably printed on the 4.5 set (one session had it on every sample, the
+        # next on none): the window `endTime - beginTime` is the same lead on a bound plane
+        self.assertEqual(run._uri_lead("ev=bufferRange beginTime=33 endTime=35"), 2)
+        self.assertEqual(run._uri_lead("ev=bufferRange beginTime=0 endTime=4.5 percent=3"), 4.5)
+        self.assertEqual(run._uri_lead("ev=bufferRange beginTime=32 endTime=44 remainingTime=9 percent=1"), 9,
+                         "the field wins where the line has it")
+        self.assertIsNone(run._uri_lead("ev=currentTime value=1000"))
+        warned = [4, 6, 8, 10, 12, 12, 12, 12, 11, 11, 10, 8, 7, 5, 4, 3, 2]
+        for form in ("window", "mixed"):
+            with self.subTest(form=form, leg="drain"):
+                ok, why = run.a_uri_drain_warning(self._drain(warned, form=form), 5)
+                self.assertTrue(ok, why)
+                self.assertIn("12 -> 2", why)
+            with self.subTest(form=form, leg="full buffer that just stops"):
+                self.assertFalse(run.a_uri_drain_warning(
+                    self._drain([4, 8, 12, 12, 12, 12, 12, 12, 12, 12], form=form), 5)[0])
+            with self.subTest(form=form, leg="short decline"):
+                self.assertFalse(run.a_uri_drain_warning(self._drain([12, 12, 12, 12, 11, 10, 9], form=form), 5)[0])
+                self.assertTrue(run.a_uri_drain_warning(self._drain([12, 12, 12, 12, 11, 10, 9], form=form), 4)[0])
+            with self.subTest(form=form, leg="rise inside the decline"):
+                self.assertFalse(run.a_uri_drain_warning(self._drain([12, 12, 11, 10, 9, 10, 9], form=form), 5)[0])
+            with self.subTest(form=form, leg="no bufferRange sample at all"):
+                bare = [_uri(2000, "ev=playing"), _uri(9000, "ev=bufferingStart")]
+                self.assertFalse(run.a_uri_drain_warning(bare, 5)[0])
+
+    def test_a_field_that_disagrees_with_the_window_is_read_as_the_field(self):
+        # remainingTime drains while endTime - beginTime sits at 12: the field is the claim
+        series = [12, 12, 12, 12, 11, 10, 9, 8, 7, 6]
+        log = [_uri(2000, "ev=playing")]
+        log += [_uri(3000 + 1000 * i, f"ev=bufferRange beginTime={i} endTime={i + 12} remainingTime={r}")
+                for i, r in enumerate(series)]
+        log.append(_uri(13000, "ev=bufferingStart"))
+        self.assertTrue(run.a_uri_drain_warning(log, 5)[0])
+
+    def test_the_stall_must_be_a_mid_playback_one(self):
+        series = [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2]
+        playing_only = self._drain(series)[:-1]
+        ok, why = run.a_uri_drain_warning(playing_only, 5)
+        self.assertFalse(ok, "the initial bufferingStart precedes ev=playing and is not the stall")
+        self.assertIn("bufferingStart", why)
+        self.assertFalse(run.a_uri_drain_warning([ln for ln in self._drain(series)
+                                                  if "ev=playing" not in ln], 5)[0])
+        bare = [_uri(2000, "ev=playing"), _uri(9000, "ev=bufferingStart")]
+        self.assertFalse(run.a_uri_drain_warning(bare, 5)[0], "no bufferRange samples to read")
+
+    # -- the manifest --
+
+    def _cases(self):
+        return {c["name"]: c for c in _manifest()["pipeline_cases"]}
+
+    def test_every_uri_expectation_is_known_and_sits_on_a_case_that_arms_the_probe(self):
+        feed_only = ("min_pos_climb_s", "codec", "video_size", "min_video_width", "reaches_eos",
+                     "replays", "require_video_bound", "abr_shape", "load_count_exact",
+                     "audio_stream_index", "presented_rate")
+        for case in _manifest()["pipeline_cases"]:
+            uri_keys = [k for k in case["expect"] if k.startswith("uri_")]
+            for key in uri_keys:
+                self.assertIn(key, run.URI_EXPECT_KEYS, f"{case['name']}: {key}")
+            if uri_keys:
+                self.assertTrue(run.uri_mode(case), f"{case['name']} has uri_* expectations that "
+                                                    f"would grade nothing: it never arms the probe")
+            if run.uri_mode(case):
+                self.assertFalse([k for k in feed_only if k in case["expect"]],
+                                 f"{case['name']}: buffer-feed expectations on a URI case grade nothing")
+                self.assertTrue(uri_keys, f"{case['name']} arms the probe and asserts nothing about it")
+
+    def test_the_bound_cases_arm_the_acb_arm_and_the_bound_plane(self):
+        cases = self._cases()
+        bound, collapse = cases["pipe_uri_hls_720p24_20m_bound"], cases["pipe_uri_hls_720p24_20m_bound_collapse"]
+        for case in (bound, collapse):
+            files = dict(run.triggers_for_case(case, url_base="http://fixture.invalid"))
+            self.assertEqual((files["plxnative-uriprobe"], files["plxnative-ptype"]), ("acb-control", "0"),
+                             case["name"])
+            self.assertEqual(json.loads(files["plxnative-playurl"])["url"],
+                             "http://fixture.invalid/pipe_hls_720p24_20m/index.m3u8")
+            self.assertTrue(case["expect"]["uri_playing"] and case["expect"]["uri_plane_bound"], case["name"])
+            self.assertEqual(case["run_secs"], 75)
+        self.assertEqual(bound["expect"]["uri_clock_past_s"], 60)
+        self.assertEqual(bound["expect"]["uri_max_stall_s"], 3)
+        self.assertEqual(collapse["expect"]["uri_drain_warning_s"], 5)
+        self.assertNotIn("uri_max_stall_s", collapse["expect"], "the clock stops in a collapse on purpose")
+        self.assertNotIn("network_profile", bound)
+        self.assertEqual(collapse["network_profile"], cases["pipe_abr_uri_ladder_collapse"]["network_profile"])
+        for key in ("declare", "triggers", "fixture", "operations"):
+            self.assertEqual(bound[key], collapse[key], key)
+
+    def test_the_bound_cases_name_the_stream_the_generator_builds(self):
+        bound = self._cases()["pipe_uri_hls_720p24_20m_bound"]
+        key = "pipe_hls_720p24_20m"
+        spec = fixturegen.PIPE_SHAPES[key]
+        self.assertEqual(bound["fixture"], f"{key}/{spec['entry']}")
+        self.assertEqual([p for _, p in fixturegen.out_paths(fixturegen.Path("/root"), key, spec)],
+                         [fixturegen.Path("/root") / key / "index.m3u8"])
+        for k in ("vcodec", "acodec", "fps"):
+            self.assertEqual(bound["declare"][k], spec["declare"][k], f"declare.{k} drifted from the shape")
+        # the ACB arm accepts a stream whose videoInfo is exactly 1280x720 at 24 fps
+        self.assertEqual((spec["video"]["size"], fixturegen.shape_fps(spec)), ("1280x720", 24))
+        self.assertGreaterEqual(spec["duration"] * 0.8, bound["expect"]["uri_clock_past_s"],
+                                "the stream must outlast the clock the case demands")
+        self.assertIn(key, fixturegen.PIPE_MBIT)
+
+    def test_the_ladder_instruments_assert_only_what_an_unbound_arm_can_carry(self):
+        cases = self._cases()
+        for name in ("pipe_abr_uri_ladder_collapse", "pipe_abr_uri_ladder_capped",
+                     "pipe_abr_uri_continuous_20000"):
+            case = cases[name]
+            self.assertEqual(case["expect"], {"no_playing_error": True, "uri_playing": True}, name)
+            for needle in ("INSTRUMENT", "UNBOUND", "pipe_uri_hls_720p24_20m_bound"):
+                self.assertIn(needle, case["_uri_note"], f"{name}: {needle}")
+
+    # -- the fixture --
+
+    def test_a_static_playlist_needs_every_segment_it_names(self):
+        case = {"name": "bound", "fixture": "pipe_hls_720p24_20m/index.m3u8", "expect": {}}
+        with tempfile.TemporaryDirectory() as root:
+            cases = [dict(case)]
+            run._resolve_fixtures(cases, root)
+            self.assertIn("no fixture 'pipe_hls_720p24_20m/index.m3u8'", cases[0]["skip"])
+            self.assertIn("make fixtures-pipeline", cases[0]["skip"])
+            self.assertNotIn("path", cases[0])
+            stream = os.path.join(root, "pipe_hls_720p24_20m")
+            os.makedirs(stream)
+            with open(os.path.join(stream, "index.m3u8"), "w") as f:
+                f.write("#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n" + "".join(
+                    f"#EXTINF:2.000000,\nseg_{i:03d}.ts\n" for i in range(4)) + "#EXT-X-ENDLIST\n")
+            with open(os.path.join(stream, "seg_000.ts"), "wb") as f:
+                f.write(b"\0")
+            cases = [dict(case)]
+            run._resolve_fixtures(cases, root)
+            self.assertIn("3 segment file(s)", cases[0]["skip"])
+            self.assertIn("seg_001.ts", cases[0]["skip"])
+            self.assertNotIn("path", cases[0])
+            for i in range(1, 4):
+                with open(os.path.join(stream, f"seg_{i:03d}.ts"), "wb") as f:
+                    f.write(b"\0")
+            cases = [dict(case)]
+            run._resolve_fixtures(cases, root)
+            self.assertNotIn("skip", cases[0])
+            self.assertEqual(cases[0]["path"], os.path.join(stream, "index.m3u8"))
+
+    def test_the_stream_is_built_by_the_recipe_that_played_on_the_television(self):
+        captured = []
+        key = "pipe_hls_720p24_20m"
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(fixturegen, "run",
+                                  side_effect=lambda argv, quiet=True: captured.append(list(argv)) or ""):
+            root = fixturegen.Path(d)
+            work = root / ".work"
+            work.mkdir()
+            dest = root / key / "index.m3u8"
+            fixturegen.build_hls_vod(mock.Mock(markers=False), key, fixturegen.PIPE_SHAPES[key], 90, None,
+                                     dest, work)
+            self.assertTrue(dest.parent.is_dir(), "the staged directory is renamed into place")
+            self.assertFalse((work / (key + "__hls")).exists())
+        argv = captured[0]
+        flat = " ".join(argv)
+
+        def after(flag):
+            return argv[argv.index(flag) + 1]
+
+        self.assertIn("testsrc2=size=1280x720:rate=24", flat)
+        self.assertIn("sine=frequency=440:sample_rate=48000", flat)
+        self.assertEqual(after("-t"), "90")
+        self.assertEqual([after(f) for f in ("-profile:v", "-level", "-pix_fmt", "-preset")],
+                         ["high", "4.1", "yuv420p", "veryfast"])
+        self.assertEqual({after(f) for f in ("-b:v", "-minrate", "-maxrate", "-bufsize")}, {"20M"})
+        self.assertEqual(after("-x264-params"), "nal-hrd=cbr")
+        self.assertEqual([after(f) for f in ("-g", "-keyint_min", "-sc_threshold")], ["48", "48", "0"])
+        self.assertEqual([after(f) for f in ("-c:a", "-b:a")], ["aac", "128k"])
+        self.assertEqual([after(f) for f in ("-hls_time", "-hls_playlist_type")], ["2", "vod"])
+        self.assertEqual([argv[i + 1] for i, a in enumerate(argv) if a == "-f"], ["lavfi", "lavfi", "hls"],
+                         "two lavfi inputs and the hls muxer")
+        self.assertTrue(after("-hls_segment_filename").endswith("seg_%03d.ts"))
+        self.assertTrue(argv[-1].endswith("index.m3u8"))
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe")
+                         and {"libx264", "aac"} <= set(fixturegen.ffmpeg_encoders()),
+                         "needs ffmpeg with libx264 and aac")
+    def test_a_built_stream_verifies_and_a_damaged_one_does_not(self):
+        key = "pipe_hls_720p24_20m"
+        spec = fixturegen.PIPE_SHAPES[key]
+        with tempfile.TemporaryDirectory() as d:
+            root = fixturegen.Path(d)
+            (root / ".work").mkdir()
+            dest = root / key / "index.m3u8"
+            fixturegen.build_hls_vod(mock.Mock(markers=False), key, spec, 6, None, dest, root / ".work")
+            rec, problems = fixturegen.verify(key, spec, 6, dest)
+            self.assertEqual(problems, [])
+            self.assertEqual((rec["segments"], rec["video"]["key_packets"]), (3, 3))
+            self.assertEqual((rec["video"]["width"], rec["video"]["height"]), (1280, 720))
+            self.assertTrue(rec["quick"], "6 s is shorter than the shape declares")
+            # asked for less than is on disk: the ONE complaint is the duration, which is what
+            # main() keys its keep-the-longer-file rule on
+            self.assertEqual([p.split()[0] for p in fixturegen.verify(key, spec, 2, dest)[1]], ["duration"])
+            text = dest.read_text()
+            dest.write_text(text.replace("#EXT-X-ENDLIST", ""))
+            self.assertTrue(any("complete VOD" in p for p in fixturegen.verify(key, spec, 6, dest)[1]))
+            dest.write_text(text)
+            (dest.parent / "seg_001.ts").unlink()
+            self.assertIn("not on disk", fixturegen.verify(key, spec, 6, dest)[1][0])
 
 
 class SharedLinkShaping(unittest.TestCase):

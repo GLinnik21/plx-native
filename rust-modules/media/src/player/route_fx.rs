@@ -1,14 +1,10 @@
-//! The physical effects route policy asks of the Feed executor, and, with [`COMPOSED_BACKENDS`], the one
-//! place that knows which backends were composed. Route decides (it names no backend and carries no backend `cfg`); this module
-//! executes, and every function is a no-op when the build composes no Feed driver. Each one writes
-//! the Feed executor's shared state or its side reader, which only a composed Feed reads.
+//! The physical effects route policy asks of the Feed executor. Route decides (it names no backend and
+//! carries no backend `cfg`); this module executes, and every function is a no-op when the build composes
+//! no Feed driver. Each one writes the Feed executor's shared state or its side reader, which only a
+//! composed Feed reads. Which backends a session may offer is not decided here: the application's boot
+//! installs the set its drivers form (`PlayerAdapter::composed_backends`).
 
 use crate::route::{PlaybackSession, SideReaderTarget};
-
-/// The playback backends this build composes. Route policy never reads the Cargo features: a session
-/// starts from this value and the composition may replace it (`PlaybackSession::install_backends`).
-pub const COMPOSED_BACKENDS: plx_playback_contract::BackendSet = plx_playback_contract::BackendSet {
-    uri: cfg!(feature = "play-uri"), feed: cfg!(feature = "play-feed") };
 
 /// Drop the claim hold: the playback it belonged to is gone.
 pub fn clear_claim_hold() {
