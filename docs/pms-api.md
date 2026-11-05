@@ -1767,6 +1767,12 @@ array of `{ "id": "…", "uuid": "…" }` records. `uuid` identifies the feature
 A public unauthenticated read with a synthetic client identifier returned a valid list without
 either marker capability. An empty list is a valid denial; a malformed response is unavailable.
 
+**The viewer's own Plex Pass grants both.** An account with an active Plex Pass, read on a webOS 10
+set on 2026-11-05, listed 109 features including `pass` and neither `intro-markers` nor
+`credits-markers`, so both settings were hidden from a Pass holder watching on that account. `pass`
+in this list is the VIEWER's own subscription (the list is read with the viewer's credential), not
+a server owner's, so it satisfies the rule below.
+
 [Plex's intro documentation](https://support.plex.tv/articles/skip-content/) and
 [credits documentation](https://support.plex.tv/articles/credits-detection/) tie skipping to the
 player's viewer or that viewer's eligible Plex Home, rather than an unrelated server owner's Pass.

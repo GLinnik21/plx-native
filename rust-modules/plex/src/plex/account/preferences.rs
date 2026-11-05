@@ -469,8 +469,12 @@ impl PreferenceRequest {
         let features: Vec<ViewerFeature> = serde_json::from_slice(&read("/api/v2/features")?)
             .map_err(|_| PreferenceError::InvalidResponse)?;
         if !current() { return Err(PreferenceError::Stale); }
-        Ok(MarkerAccess { intro: features.iter().any(|f| f.id == "intro-markers"),
-            credits: features.iter().any(|f| f.id == "credits-markers") })
+        // The viewer's OWN Plex Pass (`pass`, in this same viewer-credential list) grants both: an
+        // account with an active Pass was measured listing `pass` and neither marker id (a webOS 10
+        // set, 2026-11-05: 109 features), which hid both settings from a Pass holder.
+        let has = |id: &str| features.iter().any(|f| f.id == id);
+        let pass = has("pass");
+        Ok(MarkerAccess { intro: pass || has("intro-markers"), credits: pass || has("credits-markers") })
     }
 }
 
@@ -514,7 +518,10 @@ mod marker_access_tests {
         let (request, _) = PreferenceRequest::fixture_for_test(user, 1, Default::default());
         for (features, expected) in [("[]", MarkerAccess::default()),
             (r#"[{"id":"intro-markers"}]"#, MarkerAccess { intro: true, credits: false }),
-            (r#"[{"id":"credits-markers"}]"#, MarkerAccess { intro: false, credits: true })] {
+            (r#"[{"id":"credits-markers"}]"#, MarkerAccess { intro: false, credits: true }),
+            // the viewer's own Plex Pass, listed without either marker id, grants both
+            (r#"[{"id":"sync"},{"id":"pass"},{"id":"webhooks"}]"#, MarkerAccess { intro: true, credits: true }),
+            (r#"[{"id":"sync"},{"id":"webhooks"}]"#, MarkerAccess::default())] {
             let result = request.load_marker_access_with(|| true, |path| Ok(if path.ends_with("features") {
                 features.as_bytes().to_vec()
             } else { br#"{"id":7,"uuid":"viewer"}"#.to_vec() }));

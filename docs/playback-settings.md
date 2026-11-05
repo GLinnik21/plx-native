@@ -177,7 +177,8 @@ credits use five presented seconds on the Up Next controls wherever that pair is
 final-credits offers keep their standalone Watch control. Disabled and Manual retain
 Next episode's independent policy, and synthetic end-of-item tails never auto-skip.
 
-The app checks the **viewer’s** `intro-markers` and `credits-markers` grants; a shared server
+The app checks the **viewer’s** `intro-markers` and `credits-markers` grants, and the viewer's own
+Plex Pass (`pass` in the same list) grants both; a shared server
 owner's subscription is not evidence of viewer eligibility. An unavailable, expired or denied
 grant hides the new settings and uses the existing manual controls. Saved choices remain intact.
 No Plex viewing-history write is needed to change these local settings.
