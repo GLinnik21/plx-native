@@ -2423,7 +2423,7 @@ mod off_frame_release_tests {
         let _cleanup = Cleanup;
         playing_engine(&mut pa);
         crate::player::ffi_host::delay_unload_for_test(150);
-        pa.feed.set_unload_spawner(Some(|_| None));
+        pa.physical.feed_backend_mut().resources_mut().set_unload_spawner(Some(|_| None));
         let started = std::time::Instant::now();
         stop_bufferfeed(&mut ps, &mut pa);
         assert!(

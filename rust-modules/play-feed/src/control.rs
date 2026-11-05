@@ -1,32 +1,101 @@
-//! The buffer-feed backend behind the contract's [`FeedControl`]: the player's seek and Load
-//! verbs reach the physical feed through this one owner of its native session, and every method
-//! is the body of the function the player's adapter called directly before the seam existed.
-//! A forwarding layer only; the verbs, their borrows and their answers are unchanged.
+//! The buffer-feed backend behind the contract's [`FeedControl`] and [`DriverSet`]: the player's
+//! seek and Load verbs reach the physical feed through this one owner of its native session and
+//! its driver, and every method is the body of the function the player's adapter called directly
+//! before the seam existed. A forwarding layer only; the verbs, their borrows and their answers
+//! are unchanged.
 
+use crate::feed_driver::{FeedDriver, FeedTransportAction};
 use crate::feed_pump;
 use crate::feed_resources::FeedResources;
+use crate::native_executor::NativePrepared;
 use plx_base::task::MainThread;
 use plx_playback_contract::feed::{
     AcceptedLoadOutcome, CtorGate, FeedControl, FeedLoad, FeedSeek, LoadTick, PausedSeekStep,
     PresentationTick, SeekMode, SeekPause, Stage, StuckSeekAction,
 };
-use plx_playback_contract::AttemptId;
+use plx_playback_contract::{
+    AttemptId, BackendEvent, BackendKind, Capabilities, CommandId, DispatchResult, DriverSet,
+    ExitDisposition, Failure, Operation, ReleaseStatus, SourceKey, StopReason,
+};
 use std::sync::atomic::{AtomicI32, AtomicU32};
 use std::time::Duration;
 
-/// The physical buffer-feed backend: the native session slot and its Load and release resources.
+/// The physical buffer-feed backend: the native session slot with its Load and release
+/// resources, and the driver that answers the runner for it.
 pub struct FeedBackend {
     resources: FeedResources,
+    driver: FeedDriver,
 }
 
 impl FeedBackend {
-    pub fn new(resources: FeedResources) -> Self { Self { resources } }
+    pub fn new(resources: FeedResources) -> Self { Self { resources, driver: FeedDriver::new() } }
 
     /// The session resources, for the open, stop and release paths that do not yet go through
     /// the trait.
     pub fn resources(&self) -> &FeedResources { &self.resources }
 
     pub fn resources_mut(&mut self) -> &mut FeedResources { &mut self.resources }
+
+    /// Escrow the prepared native open for the Start the runner will address to `attempt`.
+    pub fn stage_prepared(&mut self, attempt: AttemptId, key: SourceKey, prepared: NativePrepared)
+        -> Result<(), Failure> {
+        self.driver.stage(attempt, key, prepared)
+    }
+
+    /// The stop the driver asked the player for, once.
+    pub fn take_stop_request(&mut self) -> Option<(AttemptId, StopReason)> {
+        self.driver.take_stop_request()
+    }
+
+    /// The next native transport action the driver queued for the player's transport door.
+    pub fn take_transport_action(&mut self) -> Option<FeedTransportAction> {
+        self.driver.take_transport_action()
+    }
+
+    /// Report what the transport door did with `action`, so the driver can answer the runner.
+    pub fn note_transport_result(&mut self, mt: &MainThread, action: FeedTransportAction,
+        accepted: bool, native_acknowledged: bool) {
+        self.driver.note_transport_result(&mut self.resources, mt, action, accepted,
+            native_acknowledged);
+    }
+
+    /// The native release of `attempt` progressed to `status`.
+    pub fn note_release(&mut self, attempt: AttemptId, status: ReleaseStatus) {
+        self.driver.note_release(attempt, status);
+    }
+
+    /// The Load for `attempt` settled.
+    pub fn note_load_outcome(&mut self, attempt: AttemptId, ok: bool) {
+        self.driver.note_load_outcome(attempt, ok);
+    }
+}
+
+/// The feed alone composes with the runner directly, as a URI-only set does: it answers only for
+/// [`BackendKind::Feed`], and a larger composition wraps it beside the URI driver.
+impl DriverSet for FeedBackend {
+    type Context = MainThread;
+
+    fn capabilities(&self, backend: BackendKind) -> Option<Capabilities> {
+        (backend == BackendKind::Feed).then(|| self.driver.capabilities())
+    }
+
+    fn dispatch(&mut self, backend: BackendKind, mt: &MainThread, attempt: AttemptId,
+        command: CommandId, operation: Operation) -> DispatchResult {
+        if backend != BackendKind::Feed { return DispatchResult::Refused(Failure::Unavailable); }
+        self.driver.dispatch(&mut self.resources, mt, attempt, command, operation)
+    }
+
+    fn poll(&mut self, _mt: &MainThread) -> Vec<BackendEvent> {
+        self.driver.poll(&mut self.resources)
+    }
+
+    fn discard_staged(&mut self, backend: BackendKind, attempt: AttemptId, key: SourceKey) {
+        if backend == BackendKind::Feed { self.driver.discard_staged(attempt, key); }
+    }
+
+    fn exit_disposition(&self) -> ExitDisposition {
+        self.driver.exit_disposition(&self.resources)
+    }
 }
 
 impl FeedSeek for FeedBackend {
@@ -194,5 +263,21 @@ mod tests {
         assert_eq!(control.route_actions_ready(), backend.resources().route_actions_ready());
         assert!(!control.pending_seek_ready(false));
         assert!(!control.begin_seek_discontinuity());
+    }
+
+    /// The backend is the runner's single-backend driver set: it answers for the feed alone, and
+    /// with no session installed it has nothing to report and nothing to preserve at exit.
+    #[test]
+    fn the_backend_is_a_feed_only_driver_set_that_is_idle_without_a_session() {
+        // SAFETY: a host test; nothing here touches the thread-affine state the token guards.
+        let mt = unsafe { MainThread::assume() };
+        let mut backend = backend();
+        assert!(backend.capabilities(BackendKind::Feed).is_some_and(|caps| caps.packet_feed));
+        assert_eq!(backend.capabilities(BackendKind::Uri), None);
+        assert!(backend.poll(&mt).is_empty());
+        assert_eq!(backend.exit_disposition(), ExitDisposition::Clean);
+        backend.discard_staged(BackendKind::Feed, AttemptId::new(1, 1), SourceKey::new(1));
+        assert_eq!(backend.take_stop_request(), None);
+        assert_eq!(backend.take_transport_action(), None);
     }
 }
