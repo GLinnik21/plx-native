@@ -1,4 +1,4 @@
-{"updated":"2026-11-05T21:45:44Z",
+{"updated":"2026-11-05T21:52:32Z",
 "ci":[
 {"id":31142003278,"at":"2026-08-07T02:41:31Z","sha":"dd7138b09","title":"pkg: satisfy webosbrew's packager check honestly, and record why not ares-package","jobs":{"host checks (NOT a device gate)":81,"cross-build (armv7) + artifact assertions":95},"pr":null,"conclusion":"success","attempt":1},
 {"id":31319241597,"at":"2026-08-09T14:44:31Z","sha":"6c3858f9e","title":"docs: webOS 5+ is known broken, not untested \u2014 restore the 4.x bound","jobs":{"cross-build (armv7) + artifact assertions":89,"host checks (NOT a device gate)":80},"pr":null,"conclusion":"success","attempt":1},
@@ -4615,7 +4615,8 @@
 {"id":42104078521,"at":"2026-11-05T20:30:53Z","sha":"7cbcb2831","title":"ci snapshot: integ/uri-first at 06fca97b7 (L3b-3 merged)","pr":1231,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":20,"macOS tests against bundled FFmpeg and ASS":158,"macOS simulator build + launch":154,"Linux simulator build + launch":271}},
 {"id":42106003767,"at":"2026-11-05T20:43:21Z","sha":"2e9de8a5f","title":"Settings: the built-in HUD is named Built-in","pr":1247,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":21,"Linux simulator build + launch":363,"macOS simulator build + launch":271,"macOS tests against bundled FFmpeg and ASS":242}},
 {"id":42108044274,"at":"2026-11-05T20:56:44Z","sha":"43cdc8deb","title":"Settings: the built-in HUD is named Built-in","pr":1247,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":205,"macOS tests against bundled FFmpeg and ASS":154,"Linux simulator build + launch":391,"Windows launcher syntax":21}},
-{"id":42111503878,"at":"2026-11-05T21:18:57Z","sha":"00b9951c7","title":"CI snapshot of integ/uri-first 28e55883d (L3b-5a), not for merge","pr":1231,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":331,"macOS tests against bundled FFmpeg and ASS":246,"Windows launcher syntax":21,"macOS simulator build + launch":261}}
+{"id":42111503878,"at":"2026-11-05T21:18:57Z","sha":"00b9951c7","title":"CI snapshot of integ/uri-first 28e55883d (L3b-5a), not for merge","pr":1231,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":331,"macOS tests against bundled FFmpeg and ASS":246,"Windows launcher syntax":21,"macOS simulator build + launch":261}},
+{"id":42115599807,"at":"2026-11-05T21:46:04Z","sha":"bd1cfc8f1","title":"Deps: Bump encoding_rs in /rust-modules in the rust-minor-patch group","pr":1250,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":342,"macOS simulator build + launch":217,"macOS tests against bundled FFmpeg and ASS":177,"Windows launcher syntax":23}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
