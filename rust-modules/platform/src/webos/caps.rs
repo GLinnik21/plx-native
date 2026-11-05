@@ -79,9 +79,8 @@ pub fn start_probe() {
 
 fn run_probe() {
     let started = Instant::now();
-    if let Some((capability, conflict)) =
-        override_capability(forced_unsupported(), forced_supported())
-    {
+    let overridden = override_capability(forced_unsupported(), forced_supported());
+    if let Some((capability, conflict)) = overridden {
         if conflict {
             plx_base::eventlog::log("webos-caps: dvcaps0 and dvcaps1 both armed; dvcaps0 wins");
         }
@@ -99,9 +98,8 @@ fn run_probe() {
             None,
             None,
         );
-        return;
     }
-    run_transport(started);
+    run_transport(started, overridden.is_some());
 }
 
 #[cfg(all(
@@ -110,7 +108,7 @@ fn run_probe() {
     not(feature = "hostsim"),
     not(any(test, feature = "test-support"))
 ))]
-fn run_transport(started: Instant) {
+fn run_transport(started: Instant, dv_overridden: bool) {
     use std::time::Duration;
 
     let registration = match super::ls2::register() {
@@ -120,20 +118,26 @@ fn run_transport(started: Instant) {
             detail,
             code,
         }) => {
-            publish(
-                DvProbe {
-                    capability: DvCapability::Unknown,
-                    source: ProbeSource::Failure,
-                    reason: stage,
-                },
-                started,
-                code.map(i64::from),
-                Some(&detail),
-            );
+            if !dv_overridden {
+                publish(
+                    DvProbe {
+                        capability: DvCapability::Unknown,
+                        source: ProbeSource::Failure,
+                        reason: stage,
+                    },
+                    started,
+                    code.map(i64::from),
+                    Some(&detail),
+                );
+            }
             publish_panel(Err(stage), Instant::now());
             return;
         }
     };
+    if dv_overridden {
+        probe_panel(&registration);
+        return;
+    }
     let reply = registration.call(
         "luna://com.webos.service.config/getConfigs",
         r#"{"configNames":["tv.config.supportDolbyHDRContents"]}"#,
@@ -241,7 +245,10 @@ fn publish_panel(answer: Result<crate::devcaps::panel::Panel, &'static str>, sta
     not(feature = "hostsim"),
     not(any(test, feature = "test-support"))
 )))]
-fn run_transport(started: Instant) {
+fn run_transport(started: Instant, dv_overridden: bool) {
+    if dv_overridden {
+        return;
+    }
     publish(
         DvProbe {
             capability: DvCapability::Unknown,

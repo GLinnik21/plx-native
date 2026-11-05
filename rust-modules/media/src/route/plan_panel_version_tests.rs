@@ -93,5 +93,13 @@ fn without_a_resolution_class_the_frame_size_decides() {
     assert_eq!(resolution_class(&unmeasured), None);
     assert_eq!(resolution_class(&version(11, "sd", 720, 576, "h264", 0)), Some(480));
     assert_eq!(resolution_class(&version(12, "576", 720, 576, "h264", 0)), Some(576));
+    assert_eq!(resolution_class(&version(13, "", 0, 1080, "h264", 0)), Some(1080));
     assert_eq!(picked(&[scope, unmeasured, cropped], Panel::NotUhd), Some(8));
+}
+
+#[test]
+fn a_garbage_frame_size_is_a_large_class_not_an_overflow() {
+    assert_eq!(resolution_class(&version(14, "", i64::MAX, 0, "hevc", 0)), Some(2160));
+    assert_eq!(resolution_class(&version(15, "", 0, i64::MAX, "hevc", 0)), Some(2160));
+    assert_eq!(resolution_class(&version(16, "", -1, i64::MIN, "hevc", 0)), None);
 }

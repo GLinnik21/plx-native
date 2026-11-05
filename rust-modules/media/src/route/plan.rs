@@ -3798,8 +3798,6 @@ pub(super) fn panel_version<'a>(
     (chosen.id != first.id).then_some(chosen)
 }
 
-const RESOLUTION_CLASSES: [u32; 7] = [480, 576, 720, 1080, 1440, 2160, 4320];
-
 fn resolution_class(version: &plx_data::pms::MediaVersion) -> Option<u32> {
     match version.resolution.trim().to_ascii_lowercase().as_str() {
         "sd" => Some(480),
@@ -3814,15 +3812,16 @@ fn resolution_class(version: &plx_data::pms::MediaVersion) -> Option<u32> {
 }
 
 fn frame_class(width: i64, height: i64) -> Option<u32> {
-    let tallest = height.max(width * 9 / 16);
-    if tallest <= 0 {
-        return None;
+    let width = if width > 0 { width } else { height.saturating_mul(16) / 9 };
+    match width {
+        w if w <= 0 => None,
+        w if w >= 3000 => Some(2160),
+        w if w >= 2400 => Some(1440),
+        w if w >= 1700 => Some(1080),
+        w if w >= 1100 => Some(720),
+        w if w >= 900 => Some(576),
+        _ => Some(480),
     }
-    RESOLUTION_CLASSES
-        .iter()
-        .copied()
-        .find(|&class| tallest <= i64::from(class) * 11 / 10)
-        .or_else(|| u32::try_from(tallest).ok())
 }
 
 
