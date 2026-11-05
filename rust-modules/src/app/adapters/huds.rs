@@ -93,10 +93,19 @@ pub(crate) fn live_setup() -> Setup {
 /// One effect's blocking work. `None` is an effect with no answer (`Delete`).
 fn run_effect(effect: HudEffect, app_version: &str) -> Option<HudEvent> {
     match effect {
+        // The cache is verified again here, on the storage worker, with the same function a reply goes through.
         HudEffect::Catalog(catalog::CatalogEffect::Read { tag, at }) => Some(HudEvent::Catalog(catalog::Event::Read {
-            tag, result: read_file(&at, catalog::CACHE_BYTE_LIMIT).and_then(|bytes| catalog::CacheRecord::decode(&bytes).ok_or(ReadError::Failed)) })),
+            tag, result: read_file(&at, catalog::CACHE_BYTE_LIMIT).and_then(|bytes| catalog::CacheRecord::decode(&bytes, &catalog::ACCEPTED_KEYS).map_err(|cause| {
+                plx_base::eventlog::log(&format!("hud: index cache refused cause={}", cause.cause()));
+                ReadError::Failed
+            })) })),
         HudEffect::Catalog(catalog::CatalogEffect::Write { tag, at, record }) => Some(HudEvent::Catalog(catalog::Event::Written {
             tag, outcome: write_file(&at, &record.encode()) })),
+        // The machine kept its cached index and counted the attempt; this is the one line saying why.
+        HudEffect::Catalog(catalog::CatalogEffect::Refused { cause }) => {
+            plx_base::eventlog::log(&format!("hud: index refused cause={}", cause.cause()));
+            None
+        }
         HudEffect::Catalog(catalog::CatalogEffect::Get { .. }) | HudEffect::FetchRegistry { .. } => None,
         HudEffect::ScanDir { tag, at } => Some(HudEvent::Scanned { tag, result: scan_dir(&at) }),
         HudEffect::ReadFile { tag, at, max_bytes } => Some(HudEvent::Read { tag, result: read_file(&at, max_bytes) }),
@@ -462,8 +471,9 @@ impl HudRunner {
             if let HudEffect::Catalog(catalog::CatalogEffect::Get { tag, etag }) = effect {
                 let get = self.catalog_get;
                 self.catalog_fetch = Some((tag, self.exec.run_net(move || {
-                    let result = get(&format!("{}/index.json", catalog::ORIGIN), etag.as_deref(), catalog::INDEX_BYTE_LIMIT)
-                        .map(|r| catalog::Reply::http(r.status, r.etag, r.body)).map_err(|_| ());
+                    // The signature and the index are checked here, on the network lane, before the reply reaches the machine.
+                    let result = get(&format!("{}/{}", catalog::ORIGIN, catalog::SIGNED_FILE), etag.as_deref(), catalog::SIGNED_BYTE_LIMIT)
+                        .map(|r| catalog::Reply::http(r.status, r.etag, &r.body, &catalog::ACCEPTED_KEYS)).map_err(|_| ());
                     HudEvent::Catalog(catalog::Event::Reply { tag, result })
                 })));
                 continue;
@@ -673,6 +683,16 @@ impl HudDriver {
     /// its recording holds.
     pub(crate) fn off() -> Self {
         Self::new(HudRunner::live(""))
+    }
+
+    /// A started driver on an offline runner that runs each effect where it is started, with its files in `dir`: what a
+    /// Bridge test puts in place of [`off`](Self::off) to see the commands the Settings page sends reach the store.
+    #[cfg(test)]
+    pub(crate) fn started_in(dir: PathBuf, classic: LoadedHud, app_version: &str) -> Self {
+        let mut driver = Self::new(HudRunner::inline(app_version));
+        driver.setup = Some(Setup { candidates: vec![Candidate { dir, volatile: false }], max_pack_bytes: MAX_ARTIFACT_BYTES });
+        driver.start(classic, app_version);
+        driver
     }
 
     /// Begin: keep the compiled classic as what draws until a package lands.

@@ -133,12 +133,13 @@ fn the_page_opens_its_channel_once_and_lists_what_it_is_sent() {
         [
             HudId::Pack(BUILTIN_CLASSIC.into()),
             HudId::Pack("com.example.a".into()),
+            HudId::Browse,
             HudId::Remove("com.example.a".into()),
             HudId::Address,
             HudId::Drop(Sha::of(&[9]))
         ]
     );
-    assert_eq!(page.state.rows, 5);
+    assert_eq!(page.state.rows, 6);
 }
 
 #[test]
@@ -328,7 +329,7 @@ fn every_row_fits_its_column_in_every_language() {
         every.drops.push(drop_file("ok.plxhud", 40, Ok(())));
         let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
         form.table.compact = false;
-        form.set(hud_form(&every, None, None), None);
+        form.set(hud_form(&every, None), None);
         for e in form.table.app_fit_failures(RouteLayout::screen().sectioned_table().w, language.tag()) {
             out.push(e);
         }
@@ -340,7 +341,7 @@ fn every_row_fits_its_column_in_every_language() {
             let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
             form.table.compact = false;
             let draft = draft.map(|text| TextBuffer::new(text.to_owned(), text.len()));
-            form.set(hud_form(&busy, draft.as_ref(), None), None);
+            form.set(hud_form(&busy, draft.as_ref()), None);
             out.extend(form.table.app_fit_failures(RouteLayout::screen().sectioned_table().w, language.tag()));
         }
     }
@@ -563,7 +564,7 @@ fn the_address_caret_follows_an_interior_correction() {
 fn gallery_list() -> HudList {
     let index=plx_data::hudpacks::catalog::parse(include_bytes!("../../../tests/fixtures/hud-gallery/index.json")).unwrap();
     HudList {catalog:plx_data::hudpacks::catalog::Snapshot {index:Some(std::sync::Arc::new(index)),checked_at:Some(10),..Default::default()},
-        gallery_enabled:true,app_version:"0.10.0".into(),language_tag:"en".into(),entries:vec![builtin(true)],..HudList::default()}
+        app_version:"0.10.0".into(),language_tag:"en".into(),entries:vec![builtin(true)],..HudList::default()}
 }
 
 fn gallery_page(page: SettingsPage) -> HudPage {
