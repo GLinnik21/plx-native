@@ -685,6 +685,16 @@ impl HudDriver {
         Self::new(HudRunner::live(""))
     }
 
+    /// A started driver on an offline runner that runs each effect where it is started, with its files in `dir`: what a
+    /// Bridge test puts in place of [`off`](Self::off) to see the commands the Settings page sends reach the store.
+    #[cfg(test)]
+    pub(crate) fn started_in(dir: PathBuf, classic: LoadedHud, app_version: &str) -> Self {
+        let mut driver = Self::new(HudRunner::inline(app_version));
+        driver.setup = Some(Setup { candidates: vec![Candidate { dir, volatile: false }], max_pack_bytes: MAX_ARTIFACT_BYTES });
+        driver.start(classic, app_version);
+        driver
+    }
+
     /// Begin: keep the compiled classic as what draws until a package lands.
     pub(crate) fn start(&mut self, classic: LoadedHud, app_version: &str) {
         self.shown = Some(Arc::clone(&classic.compiled));

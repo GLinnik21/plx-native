@@ -1003,7 +1003,7 @@ impl Bridge {
                 self.huds_notice = None;
                 self.huds_watch(page);
                 self.huds_refresh();
-                if !self.playback_live && (plx_base::paths::ENV_STEERABLE || plx_base::paths::flavour().is_some()) {
+                if !self.playback_live {
                     self.huds.open_catalog(plx_telemetry::telemetry::crashreport::now_secs());
                 }
             }

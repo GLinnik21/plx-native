@@ -1907,12 +1907,13 @@ PR13. Gallery (shipped, behind a flavour gate until PR14): a Settings FormTable 
 
 PR14. Signed index (shipped, app half; the registry half, which publishes `index.signed`, is a PR in plxnative-huds):
 ed25519 over `index.json` as one `index.signed` file, two accepted public keys compiled in, the primary's private key in
-the registry's Actions secrets, the rotation plan, and the `gallery_enabled` gate removed so stable has the gallery
+the registry's Actions secrets, the rotation plan, and both flavour gates removed (the page's `gallery_enabled` field and
+the Bridge's `ENV_STEERABLE || flavour()` test on `HudCmd::Open`) so stable shows the gallery and fetches the index
 ("Trust and safety"). The primitive is the verify-only pure-Rust `ed25519-compact`, so the evidence is the `make build-bench` table and
 no `fw-compat-reviewer` (no FFI, no new library). Verified on the host: the verifier against both keys, every header
 fault, a flipped index or signature byte, a signature over another body, a missing or lower serial, the cache
-re-verified on load (tampered, PR13-era), and every refusal keeping the cached index under the backoff, all with
-TEST ONLY keys. Not verified here: the TV pass, and the live registry (its publisher signing with the real primary).
+re-verified on load (tampered, PR13-era), every refusal keeping the cached index under the backoff, all with
+TEST ONLY keys, and the Settings page's `Open` reaching the catalog in a build with no flavour. Not verified here: the TV pass, and the live registry (its publisher signing with the real primary).
 
 PR15. Authoring tools: `tools/hud-dev` (serves a package over LAN http with a version counter; the TV re-fetches a
 dev source on a key while the dev row is focused), `plxnative-sim --hud <file>` rendering the state matrix locally,
