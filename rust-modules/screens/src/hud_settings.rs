@@ -51,8 +51,6 @@ use super::registry::{word, AppFx, HudCmd, ALERT, BAND};
 pub struct HudList {
     pub catalog: plx_data::hudpacks::catalog::Snapshot,
     pub catalog_date: String,
-    /// Stable stays off until the signed-index PR14.
-    pub gallery_enabled: bool,
     pub app_version: String,
     pub language_tag: String,
     /// The built-in first, then one row per installed id.
@@ -262,7 +260,7 @@ fn facts_of(entry: &Entry, list: &HudList) -> Vec<String> {
 
 /// The page's rows from the list alone: the packages (the built-in first), a removal row for each installed
 /// one, and the drop files under their own header when there are any.
-fn hud_form(list: &HudList, draft: Option<&TextBuffer>, browse: Option<SettingsPage>) -> Form<HudId, HudAction, SettingsPage> {
+fn hud_form(list: &HudList, draft: Option<&TextBuffer>) -> Form<HudId, HudAction, SettingsPage> {
     let mut packs = FormSection::new("");
     let mut removals = FormSection::new("");
     for (i, entry) in list.entries.iter().enumerate() {
@@ -273,7 +271,7 @@ fn hud_form(list: &HudList, draft: Option<&TextBuffer>, browse: Option<SettingsP
         }
         packs = packs.item_keyed(HudId::Pack(entry.id.clone()), RowKey(i as u32), RowKind::Choice, HudAction::Select(entry.id.clone()), row)
             .disabled(entry.loadable.is_err());
-        let managed_in_gallery = list.gallery_enabled && entry.sha.is_some_and(|sha|
+        let managed_in_gallery = entry.sha.is_some_and(|sha|
             list.catalog.index.as_ref().is_some_and(|index| index.entries.iter().any(|p| p.sha() == sha
                 && p.compatible(&list.app_version, &list.language_tag, plx_appkit::hud_format::bundle::MAX_ARTIFACT_BYTES)))
                 && list.catalog.revoked(sha).is_none() && !list.unfit.contains(&sha));
@@ -304,11 +302,8 @@ fn hud_form(list: &HudList, draft: Option<&TextBuffer>, browse: Option<SettingsP
         };
         folder = folder.item_keyed(id, RowKey(DROP_KEY + i as u32), RowKind::Button, action, row).disabled(file.status.is_err());
     }
-    let mut gallery = FormSection::new("");
-    if let Some(page) = browse {
-        gallery = gallery.item_keyed(HudId::Browse, RowKey(0x4000), RowKind::Nav(page), HudAction::Inert,
-            Row::new(plx_platform::i18n::msg::settings_hud_browse()));
-    }
+    let gallery = FormSection::new("").item_keyed(HudId::Browse, RowKey(0x4000), RowKind::Nav(SettingsPage::HudGallery), HudAction::Inert,
+        Row::new(plx_platform::i18n::msg::settings_hud_browse()));
     Form::new().section(packs).section(gallery).section(removals).section(address).section(folder)
 }
 
@@ -381,20 +376,17 @@ impl HudPage {
         let mut rows = FormSection::new("");
         let (title, parent, mut copy) = match self.page {
             SettingsPage::PlayerHud => {
-                let browse = self.list.gallery_enabled.then_some(SettingsPage::HudGallery);
-                let form = hud_form(&self.list, self.state.editing.then_some(&self.draft), browse);
+                let form = hud_form(&self.list, self.state.editing.then_some(&self.draft));
                 return (form, msg::settings_hud_title().into(), parent_title().into(), copy_of(&self.list, self.address_error));
             }
             SettingsPage::HudGallery => {
-                if self.list.gallery_enabled {
-                    if let Some(index) = &self.list.catalog.index {
-                        for (i, package) in index.entries.iter().enumerate().filter(|(_, p)|
-                            p.compatible(&self.list.app_version, &self.list.language_tag, plx_appkit::hud_format::bundle::MAX_ARTIFACT_BYTES)
-                                && self.list.catalog.revoked(p.sha()).is_none() && !self.list.unfit.contains(&p.sha())) {
-                            rows = rows.item_keyed(HudId::Catalog(package.sha()), RowKey(i as u32),
-                                RowKind::Nav(SettingsPage::HudDetail(package.sha())), HudAction::Inert,
-                                Row::new(&package.name).server_label());
-                        }
+                if let Some(index) = &self.list.catalog.index {
+                    for (i, package) in index.entries.iter().enumerate().filter(|(_, p)|
+                        p.compatible(&self.list.app_version, &self.list.language_tag, plx_appkit::hud_format::bundle::MAX_ARTIFACT_BYTES)
+                            && self.list.catalog.revoked(p.sha()).is_none() && !self.list.unfit.contains(&p.sha())) {
+                        rows = rows.item_keyed(HudId::Catalog(package.sha()), RowKey(i as u32),
+                            RowKind::Nav(SettingsPage::HudDetail(package.sha())), HudAction::Inert,
+                            Row::new(&package.name).server_label());
                     }
                 }
                 let empty = self.list.catalog.index.as_ref().is_none_or(|index| !index.entries.iter().any(|p|
@@ -984,7 +976,7 @@ impl Screen<InnerHost> for HudPage {
 #[cfg(test)]
 fn rows_for_test(list: &HudList) -> Vec<(u32, HudId)> {
     let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
-    form.set(hud_form(list, None, None), None);
+    form.set(hud_form(list, None), None);
     (0..form.table.n_rows() as usize).filter_map(|i| Some((form.key_at(i)?.0, form.binding_at(i)?.id.clone()))).collect()
 }
 

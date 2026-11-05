@@ -1383,7 +1383,7 @@ fn registry_fixture(bytes: &[u8], revoked: bool) -> Vec<u8> {
     let sha = Sha::of(bytes).hex();
     let art = "b".repeat(64);
     let base = catalog::ORIGIN;
-    serde_json::to_vec(&serde_json::json!({"format":1,"entries":[{
+    serde_json::to_vec(&serde_json::json!({"format":1,"serial":1000,"entries":[{
         "id":meta.id,"name":meta.name,"version":meta.version,"package_format":"1.0","hud_format":"1.0",
         "author":"Author","license":"CC0-1.0","app":{},"sha256":sha,"bytes":bytes.len(),
         "url":format!("{base}/p/{sha}.plxhud"),"unfit":[],
@@ -1397,7 +1397,8 @@ fn publish_catalog(store: &mut HudStore, bytes: Vec<u8>) -> Vec<HudEffect> {
     store.step(HudEvent::Catalog(catalog::Event::Open {candidates:vec![],now:10}),&mut fx);
     let tag=fx.iter().find_map(|e| match e {HudEffect::Catalog(catalog::CatalogEffect::Get {tag,..})=>Some(*tag),_=>None}).unwrap();
     fx.clear();
-    store.step(HudEvent::Catalog(catalog::Event::Reply {tag,result:Ok(catalog::Reply::http(200,None,bytes))}),&mut fx);
+    let signed=catalog::testing::sign(&bytes);
+    store.step(HudEvent::Catalog(catalog::Event::Reply {tag,result:Ok(catalog::Reply::http(200,None,&signed,&catalog::testing::keys()))}),&mut fx);
     fx
 }
 

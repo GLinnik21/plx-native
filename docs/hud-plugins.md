@@ -242,8 +242,8 @@ Other subsystems the plan touches
   `https_get_public_bounded(url, max_body)` (the same request with `Some(max_body)`),
   `PUBLIC_MAX_REDIRECTS = 5` (`:146`); curl 7.53.1 (`:2098`). App text entry is `src/textinput.rs`; a QR
   encoder is `ui/src/qr.rs`. The site is static GitHub Pages (`site/CNAME`, `.github/workflows/pages.yml`).
-- F41. Crypto and parsing: no signature crate (`grep ed25519|minisign|ring =|signature` over every
-  `Cargo.toml` prints nothing); `plx_base` has `sha256`, `b64`, `spki`; a duplicate-key-preserving JSON
+- F41. Crypto and parsing: before PR14 there was no signature crate (`grep ed25519|minisign|ring =|signature` over every
+  `Cargo.toml` printed nothing; PR14 added `ed25519-compact` to `plx_data`); `plx_base` has `sha256`, `b64`, `spki`; a duplicate-key-preserving JSON
   reader exists, private (`ui/src/rec/strict_json.rs`, `mod strict_json;` at `ui/src/rec.rs:40`); no JSON
   Schema crate (`grep -c 'name = "schemars"\|name = "jsonschema"' Cargo.lock` prints 0); `plx_ui` already
   depends on `serde_json` (`ui/Cargo.toml:50`). The lint host is the existing `plxnative-sim` bin
@@ -1492,7 +1492,7 @@ New `paths::hud_candidates()` on F39's pattern, keyed by `app_id()`:
 
 The first candidate that accepts a write is used; all are read when listing; the flavours never share (D14).
 Layout: `packs/<sha256>.plxhud` (content-addressed, so an update is a new file and a switch is atomic),
-`installed.json` (id -> sha, source, installed-at), `index-cache.json` (plus ETag), `drop/` (the sideload
+`installed.json` (id -> sha, source, installed-at), `index-cache.json` (the signed index it was verified from, plus ETag), `drop/` (the sideload
 drop folder, scanned when HUD settings open).
 
 The current installed index requires integer v1 and closed records containing the complete archive SHA,
@@ -1573,10 +1573,10 @@ this session, no network).
   mock frames; posted on the PR; (3) a diff against the previous version's previews.
 - Re-lint on every app release, with `unfit`, `app.max` and an issue for the author (Text fit, (a)).
 - Publish on merge: a static `index.json` (`id`, `version`, `package_format`, `hud_format`, `app` range, `sha256`, `bytes`, preview
-  URLs, author, license, `unfit` per Text fit), packages at `p/<sha256>.plxhud`, a `revoked` list of hashes with reasons, and
-  `index.json.sig` (PR14). Hosted on that repo's Pages under a plxnative.com subdomain (UNVERIFIED: DNS), or
-  under this repo's `site/` if the owner prefers one Pages site.
-- TV side: one conditional GET of the index (ETag) that does NOT follow redirects, because a
+  URLs, author, license, `unfit` per Text fit), packages at `p/<sha256>.plxhud`, a `revoked` list of hashes with reasons, a
+  `serial`, and `index.signed`, the same index signed (PR14, "Trust and safety"). Hosted on that repo's Pages under a
+  plxnative.com subdomain (UNVERIFIED: DNS), or under this repo's `site/` if the owner prefers one Pages site.
+- TV side: one conditional GET of `index.signed` (ETag) that does NOT follow redirects, because a
   redirect-following request may carry no headers (F40); the URL is pinned to the host that serves it, and a
   3xx is an error. It refreshes only when HUD settings open, at most once per 24 h, never at boot or during
   playback, with backoff. The 24 h rule lives in the HudStore machine, which reads no clock (F31): the runner
@@ -1599,10 +1599,34 @@ this session, no network).
 - Tiers: Built-in, Registry (CI plus review), Unreviewed (sideload, `gh:`, URL). Every tier passes the format
   invariants; only the registry tier is reviewed.
 - Integrity: every package is identified by its sha256, and the index names hashes, so a mirror cannot
-  substitute content. Authenticity: HTTPS first; PR14 adds a detached ed25519 signature over the index, checked
-  against a public key compiled in, through either a small verify-only crate (a Cargo change, so a
-  `make build-bench` table) or OpenSSL EVP through the TV's libcrypto (FFI, so `fw-compat-reviewer`;
-  UNVERIFIED whether reachable). The gallery is on by default in a stable release only after PR14.
+  substitute content. Authenticity: HTTPS first, and since PR14 the gallery accepts only a signed index, in every
+  flavour (PR13 kept it off in stable until then).
+- The signed index. The registry publishes `index.signed` in one file, so the signature and the bytes it covers cannot
+  come from different deploys or CDN generations (Pages serves `max-age=600`): line 1 is a compact JSON header,
+  `{"format":1,"key":"<16 lower-case hex>","sig":"<128 lower-case hex>"}`, then a single `\n`; the rest is the exact
+  bytes of that deploy's `index.json`, and `sig` is pure Ed25519 (RFC 8032: no prehash, no context) over them. `key` is the first 16 hex digits
+  of SHA-256 over the signer's raw 32-byte public key. `index.json` stays for PR13-era builds and gains a `serial`, the
+  UTC epoch seconds at which the publish run built it. The app compiles in two public keys
+  (`catalog::ACCEPTED_KEYS`): the primary, whose private half is the registry repository's `HUD_INDEX_ED25519_KEY`
+  Actions secret, and a standby, whose private half the maintainer holds offline. The primitive is
+  `ed25519-compact` 2.6.0, pinned exactly like `zip`: pure Rust, verify only in this build, `default-features = false`, so it has no
+  dependency of its own (no `getrandom`), no C and no asm; it is strict, refusing a non-canonical `S` and a
+  small-order public key or `R`. It is a Cargo change, so the PR carries a `make build-bench` table; it adds no FFI.
+- Acceptance is all or nothing, in this order: the header parses (the line at most 256 bytes, the index at most
+  `catalog::INDEX_BYTE_LIMIT`, exactly the keys `format` = 1, `key` and `sig`) -> `key` names an accepted key -> the signature
+  verifies over the index bytes -> `catalog::parse` accepts them -> they carry a `serial` -> that `serial` is not lower than
+  the cached index's (equal is accepted). A refusal shows nothing, caches nothing, keeps the cached index, counts as a failed
+  refresh under the daily backoff and logs one line, `hud: index refused cause=` `malformed`, `unknown-key`, `bad-signature`,
+  `index`, `no-serial` or `rollback`. A 304 keeps the cached state. The cache file holds the whole `index.signed` and its ETag and
+  is verified again, by the same function, on every load: a cache that does not verify, which is every PR13-era cache
+  (a bare index), is dropped with its ETag (`hud: index cache refused cause=`), so the next request is unconditional.
+  The signature check and the parse run on the network lane (reply) and the storage worker (cache), never on the frame
+  thread. The rollback floor is the cached serial, so a device with no cache has none.
+- Rotation (no code beyond accepting two keys): to rotate, or on a suspected compromise of the primary, put the standby's
+  private key into `HUD_INDEX_ED25519_KEY` and publish (the index is now signed by the standby, which every shipped
+  app already accepts), generate a new standby, ship an app release whose two accepted keys are {old standby, new
+  standby}, and drop the old primary. A key is never removed from the app before a release that accepts its successor
+  has shipped.
 - Revocation: a revoked hash disables the matching package from every source, sideloads of the same bytes
   included; the fallback is `builtin:classic` and Settings says why. It does not stop an author who changes a
   byte; the invariants are the protection there.
@@ -1736,7 +1760,7 @@ state matrix before and after, via `ui-sim`; TV work holds the TV lock around th
 | PR11 | Install from address | PR10 |
 | PR12 | Registry repository and authoring kit | PR6, PR8 |
 | PR13 | In-app gallery | PR10, PR11, PR12 |
-| PR14 | Signed index (gates the stable default) | PR12, PR13 |
+| PR14 | Signed index (shipped; it gated the stable default) | PR12, PR13 |
 | PR15 | Authoring tools | PR6 |
 | PR16 | `cargo fuzz` package | PR5 |
 | PR17 | Owner-gated: lift captions clear of open sections | PR8 |
@@ -1877,13 +1901,23 @@ of 4–9 px, leaving TV admission unchanged. The registry's
 [acceptance record](https://github.com/GLinnik21/plxnative-huds/blob/main/IMPLEMENTATION.md) links the exact runs,
 source pins and verification evidence.
 
-PR13. Gallery: a Settings FormTable page with preview art through the image cache, the refresh policy, updates by
+PR13. Gallery (shipped, behind a flavour gate until PR14): a Settings FormTable page with preview art through the image cache, the refresh policy, updates by
 `version`, revocation, `unfit` entries hidden or offered as their update (Text fit). Verify with mock index tests
 (304, offline, revoked, format too new, unfit in the current language), sim captures, a TV pass.
 
-PR14. Signed index: ed25519 over `index.json`, two accepted public keys compiled in, the key in the registry's
-Actions secrets, a rotation plan; tests with good, bad and missing signatures; the build-bench table or the
-fw-compat review, by the primitive chosen.
+PR14. Signed index (shipped; the registry half, which publishes `index.signed`, is plxnative-huds#7, merged):
+ed25519 over `index.json` as one `index.signed` file, two accepted public keys compiled in, the primary's private key in
+the registry's Actions secrets, the rotation plan, and both flavour gates removed (the page's `gallery_enabled` field and
+the Bridge's `ENV_STEERABLE || flavour()` test on `HudCmd::Open`) so stable shows the gallery and fetches the index
+("Trust and safety"). The primitive is the verify-only pure-Rust `ed25519-compact`, so the evidence is the `make build-bench` table and
+no `fw-compat-reviewer` (no FFI, no new library). Verified on the host: the verifier against both keys, every header
+fault, a flipped index or signature byte, a signature over another body, a missing or lower serial, the cache
+re-verified on load (tampered, PR13-era), every refusal keeping the cached index under the backoff, all with
+TEST ONLY keys, and the Settings page's `Open` reaching the catalog in a build with no flavour.
+Verified against the live registry and on the TV: `index.signed` carries the primary's key id and a serial, its body equals `index.json`, and the stock `openssl`
+recipe accepts it; a release build on the TV dropped the PR13-era cache (`cause=malformed`), fetched and accepted the live index (Minimal and Reference, no refusal
+logged), and after a relaunch verified the cache it had written, with no `hud:` line and no new fetch. Not verified on the TV: a tampered or rolled-back index
+(the host tests cover every refusal cause).
 
 PR15. Authoring tools: `tools/hud-dev` (serves a package over LAN http with a version counter; the TV re-fetches a
 dev source on a key while the dev row is focused), `plxnative-sim --hud <file>` rendering the state matrix locally,
@@ -1896,8 +1930,8 @@ a rise per Position on `HudBand`, aimed from the open block's height the HUD rep
 `HudMotion`, with the safe-area clamp and captions drawn above the sections. It changes the frames of classic's info
 and chapters states that carry a caption, which is why it waited for the owner.
 
-The bundle implementation adds the pinned minimal-feature ZIP dependency, with before/after build-bench and ARM compatibility evidence. The schema remains generated from the descriptor table. PR11 and PR14 may touch
-the curl or crypto path and get `fw-compat-reviewer`. Each PR runs `doc-claim-auditor` after behaviour changes and
+The bundle implementation adds the pinned minimal-feature ZIP dependency, with before/after build-bench and ARM compatibility evidence. The schema remains generated from the descriptor table. PR11 touched
+the curl path and got `fw-compat-reviewer`; PR14 took a pure-Rust crate and needed none. Each PR runs `doc-claim-auditor` after behaviour changes and
 `pr-reviewer` on its combined diff before it opens.
 
 ## Verification summary
