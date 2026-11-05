@@ -4364,43 +4364,97 @@ class TheQualitySwitchAssertion(unittest.TestCase):
 class EverySeekGiveUpPathDisarmsTheSpinner(unittest.TestCase):
     """**A source-level spot-check on an invariant the type system cannot state.**
 
-    `player::request_seek` sets `FEED_SHARED.seeking`; `pump::set_state` publishes
-    `PlaybackState::Seeking` from it AHEAD of every other arm; and until 2026-08-27 the only place
-    that ever cleared it was the successful prime→Play. So any path that gave up on a seek left a
-    permanent spinner, a playhead frozen at the target and `is_playing()` false, while the pipeline
-    played on underneath. Device-measured: 84 seconds of that, through 37 segment acquisitions and
-    four rung commits (`docs/measurements/j3e-logs/pipe_abr_seek_flat.log`).
+    A requested seek puts `PlaybackState::Seeking` ahead of every other arm of the derived state, and
+    until 2026-08-27 the only thing that ever ended it was the successful prime->Play. So any path
+    that gave up on a seek left a permanent spinner, a playhead frozen at the target and
+    `is_playing()` false, while the pipeline played on underneath. Device-measured: 84 seconds of
+    that, through 37 segment acquisitions and four rung commits
+    (`docs/measurements/j3e-logs/pipe_abr_seek_flat.log`).
 
-    **This checks the two KNOWN give-up paths and cannot check a future one**, which is stated
-    rather than papered over: a real guard would derive the state instead of latching a flag —
-    `Seeking` iff a target is pending or the engine is priming after one — and that is the shape
-    this should eventually take. It is not taken here because `prime_play` is also set outside a
-    seek, so deriving would change the startup read-out too, and stacking that onto a bug fix is
-    what the plan forbids.
+    The flag is no longer stored: the readout DERIVES `seeking()` from the epoch of the newest
+    request against the epoch the feed reports landed, so nothing can leave a latch armed. A seek is
+    still in flight until it lands, though, so a path that gives up on one must say so, and the one
+    way to say so is `player::abandon_seek(ps, pa)`: the `SeekAbandoned` event (it settles every
+    request so far) and the `AbandonSeek` command (the feed's flag and display target).
+
+    **This checks the KNOWN give-up paths and cannot check a future one**, which is stated rather
+    than papered over. What it also pins is the other half of the old count: the one place that
+    ARMS a seek is the `SeekRequested` event, sent from `player::request_seek`, so a second writer
+    cannot appear without this class noticing that its account of the give-up paths is incomplete.
     """
+
+    # Where the first inline test module starts: from there on the text is test code, not the shipped
+    # player (`mod x;` declarations of test files do not match: they have no body).
+    _TEST_MOD = re.compile(r"^#\[cfg\((?:all\()?test[^\n]*\]\n(?:#\[[^\n]*\]\n)*(?:pub )?mod \w+\s*\{", re.M)
 
     def _src(self, *parts):
         with open(os.path.join(REPO_ROOT, "rust-modules", "media", "src", *parts), encoding="utf-8") as fh:
             return fh.read()
 
+    def _shipped(self, *parts):
+        """The file's text without its test module."""
+        src = self._src(*parts)
+        m = self._TEST_MOD.search(src)
+        return src[:m.start()] if m else src
+
+    def _every(self, src, needle):
+        starts = [m.start() for m in re.finditer(re.escape(needle), src)]
+        self.assertTrue(starts, f"{needle!r} is gone: this check no longer guards what it names")
+        return starts
+
     def test_a_failed_transcode_seek_rebuild_abandons_the_seek(self):
+        """Both places the rebuild can be refused (the flight's landing, and its dispatch)."""
         src = self._src("player", "pump.rs")
-        i = src.index('"seek(transcode): rebuild failed"')
-        self.assertIn("abandon_seek()", src[max(0, i - 600):i],
-                      "the failed rebuild returns without disarming the spinner")
+        for i in self._every(src, '"seek(transcode): rebuild failed"'):
+            self.assertIn("abandon_seek(ps, pa)", src[max(0, i - 600):i],
+                          "a failed rebuild returns without abandoning the seek through the readout")
 
     def test_a_reload_with_no_url_abandons_the_seek(self):
         src = self._src("player", "route_start.rs")
-        i = src.index('"reload_transcode: no url (ignored)"')
-        self.assertIn("abandon_seek()", src[max(0, i - 400):i],
-                      "the ignored reload returns without disarming the spinner")
+        for needle in ('"reload_transcode: no url (ignored)"', '"reload_transcode_tracked: no url (ignored)"'):
+            for i in self._every(src, needle):
+                self.assertIn("abandon_seek(ps, pa)", src[max(0, i - 400):i],
+                              "the ignored reload returns without abandoning the seek")
 
-    def test_the_flag_is_armed_in_exactly_one_place(self):
-        """If a second writer appears, the two known clear sites stop being a complete account and
-        this whole class is measuring the wrong thing."""
-        src = self._src("player", "mod.rs")
-        self.assertEqual(src.count("FEED_SHARED.seeking.store(true"), 1,
-                         "more than one place arms the spinner; re-audit the give-up paths")
+    def test_abandoning_is_the_readout_event_and_the_feed_command(self):
+        """The one way to give up says it twice, in one call: the readout settles the requests and
+        the feed ends its flag and its frozen display target."""
+        src = self._shipped("player", "mod.rs")
+        i = src.index("pub fn abandon_seek(")
+        body = src[i:src.index("\n}\n", i)]
+        self.assertIn("ReadoutEvent::SeekAbandoned", body)
+        self.assertIn("FeedCommand::AbandonSeek", body)
+
+    def test_a_seek_is_requested_in_exactly_one_place(self):
+        """If a second writer appears, the known give-up paths stop being a complete account and
+        this whole class is measuring the wrong thing. The request is one event and one command, in
+        `request_seek`; a requeue or a take (`pump.rs`) is neither, and never numbers a request."""
+        root = os.path.join(REPO_ROOT, "rust-modules", "media", "src")
+        events, commands = [], []
+        for dirpath, _dirs, files in os.walk(root):
+            for name in sorted(files):
+                if not name.endswith(".rs") or name.endswith("_tests.rs") or name == "tests.rs":
+                    continue
+                path = os.path.join(dirpath, name)
+                with open(path, encoding="utf-8") as fh:
+                    src = fh.read()
+                m = self._TEST_MOD.search(src)
+                src = src[:m.start()] if m else src
+                rel = os.path.relpath(path, root)
+                if name != "readout.rs":  # the machine that defines the event steps it in its tests only
+                    events += [rel] * src.count("ReadoutEvent::SeekRequested {")
+                commands += [rel] * len(re.findall(r"FeedCommand::Seek\s*\{", src))
+        self.assertEqual(events, [os.path.join("player", "mod.rs")],
+                         "more than one place requests a seek; re-audit the give-up paths")
+        self.assertEqual(commands, [os.path.join("player", "mod.rs")],
+                         "more than one place sends the feed a Seek; re-audit the give-up paths")
+
+    def test_the_spinner_is_derived_never_stored(self):
+        """What makes a forgotten clear the only way to wedge it: no field holds `seeking`."""
+        src = self._shipped("player", "readout.rs")
+        body = src[src.index("pub struct PlayerReadout"):src.index("\n}\n", src.index("pub struct PlayerReadout"))]
+        self.assertNotRegex(body, r"\bseeking\s*:", "the readout stores the spinner again")
+        self.assertIn("pub fn seeking(&self) -> bool", src)
 
 
 class TheRequestIndexedShaper(unittest.TestCase):

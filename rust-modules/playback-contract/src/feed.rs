@@ -27,12 +27,14 @@
 //! | `hls_rebuffering` (1), `seen_frame` (1) | plain bool | **mapped** |
 //! | `native_audio_refused`, `decoder_revoked`, `file_size`, `applied_rate_permille`, `speed_audio_verdict`, `native_load_abandoned`, `dg_vpres_ct`, `dg_vpres_gap`, `pts_shift` (13) | no `AttemptFacts` field | **raw**, in [`FeedRaw`] |
 //!
-//! The seek family is joining by lanes: `pipeline_eos` and the landed seek epoch are here
-//! (`seeking` is not stored anywhere: the player derives it from the epoch it requested and the
-//! landed one), and the requests themselves are the intent [`FeedCommand::Seek`] and
-//! [`FeedCommand::AbandonSeek`]. Not here yet: `seek_target_ns`, `disp_base` and the epoch'd
-//! `seek_requeue` (they still have media writers or readers), `abr_seed` (a worker event, L3c), and
-//! the `DemuxAbr` and diagnostics halves of [`FeedFacts`] (L3c).
+//! The seek family is here: `pipeline_eos`, the landed seek epoch, the feed's in-place target
+//! (`seek_target_ns`) and the epoch'd `seek_requeue` are raw facts (`seeking` is not stored
+//! anywhere: the player derives it from the epoch it requested and the landed one, and the pending
+//! target and the HUD's display target are the player's own readout), and the requests themselves
+//! are the intents [`FeedCommand::Seek`], [`FeedCommand::SeekTaken`], [`FeedCommand::SeekRequeued`],
+//! [`FeedCommand::AbandonSeek`] and [`FeedCommand::ArmOpen`]. Not here yet: `disp_base` (it still has
+//! media writers and readers), `abr_seed` (a worker event, L3c), and the `DemuxAbr` and diagnostics
+//! halves of [`FeedFacts`] (L3c).
 //! A value that is `-1` in the feed's mailbox is an `Option` here, as in [`AttemptFacts`].
 
 use std::sync::atomic::{AtomicI32, AtomicU32};
@@ -259,6 +261,26 @@ pub struct FeedRaw {
     /// at its new position; 0 before any, and again after the session's reset. A seek is in
     /// flight while the player's requested epoch is above this one.
     pub seek_landed_epoch: u32,
+    /// Where the feed's last in-place seek was aimed (what the demuxer re-opens at); `None` before
+    /// any seek this session.
+    pub seek_target_ns: Option<i64>,
+    /// The feed's own request to seek again: a refused native `Seek` leaves the pipeline flushed and
+    /// the feed asks the player to redo that seek as a reload. See [`SeekRequeue`].
+    pub seek_requeue: SeekRequeue,
+}
+
+/// A seek the feed asked the player to take up again. `epoch` counts the feed's requests this
+/// session (0 = none); the player turns a sample whose epoch differs from the previous sample's
+/// into ONE pending seek at `target_ns`, so a repeated sample of the same request adds nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SeekRequeue {
+    pub epoch: u32,
+    pub target_ns: i64,
+}
+
+impl SeekRequeue {
+    /// No request: a feed with no session.
+    pub const NONE: Self = Self { epoch: 0, target_ns: 0 };
 }
 
 impl FeedRaw {
@@ -270,7 +292,8 @@ impl FeedRaw {
         },
         decoder_revoked: false, native_audio_refused: false, load_abandoned: false, file_size: 0,
         applied_rate_permille: crate::RATE_NORMAL, speed_audio_ok: None, vpres_count: 0,
-        vpres_gap: 0, pts_shift: 0, pipeline_eos: false, seek_landed_epoch: 0,
+        vpres_gap: 0, pts_shift: 0, pipeline_eos: false, seek_landed_epoch: 0, seek_target_ns: None,
+        seek_requeue: SeekRequeue::NONE,
     };
 }
 
@@ -304,6 +327,19 @@ pub enum FeedCommand {
     Seek { epoch: u32, target_ns: i64, display_ns: i64 },
     /// The seek was given up on: the spinner and the frozen playhead end with it.
     AbandonSeek,
+    /// The player took the pending seek (it is applying it, flying it or reloading at it): the
+    /// feed's copy of the pending target, which gates feeding while a seek waits, is cleared with
+    /// the player's own in the same call. `epoch` is the newest request the take belongs to.
+    SeekTaken { epoch: u32 },
+    /// The player put a taken seek back (the clock transition was busy, or a newer tap outlived a
+    /// reload): only the feed's copy of the pending target is re-armed. This is not a [`Self::Seek`]:
+    /// nothing was requested again, so the in-flight flag, the HUD's display target and the
+    /// pipeline's end of stream stay as they were.
+    SeekRequeued { target_ns: i64 },
+    /// The next open starts at `target_ns` (a reload or a resume): the demuxer is armed to seek
+    /// there, the HUD reads `playpos_ns` until frames land, and `disp_base` is the offset the
+    /// published position carries. The caller supplies the clamped values.
+    ArmOpen { target_ns: i64, disp_base: i64, playpos_ns: i64 },
 }
 
 // ---------------------------------------------------------------------------------------------

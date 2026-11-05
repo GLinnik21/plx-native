@@ -41,7 +41,7 @@ impl Rig {
 
     fn begin_at(&mut self, resume_ns: i64) -> ResumeStart {
         let _frame = plx_base::task::FrameScope::enter();
-        begin_resume(&mut self.ps, resume_ns)
+        begin_resume(&mut self.ps, &mut self.pa, resume_ns)
     }
 
     /// Frames until the flight's landing is drained, each asking the question the loop asks.

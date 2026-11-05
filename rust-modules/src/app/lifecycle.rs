@@ -75,7 +75,7 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
     type Attempt = plx_media::route::RouteStartAttempt;
 
     fn prepare_resume(&mut self, ps: &mut plx_media::route::PlaybackSession, resume_ns: i64) -> plx_media::player::ResumeStart {
-        plx_media::player::begin_resume(ps, resume_ns)
+        plx_media::player::begin_resume(ps, self.pa, resume_ns)
     }
 
     fn land_prepare(&mut self, ps: &mut plx_media::route::PlaybackSession) -> FlightLanding<plx_media::player::ResumeOutcome> {

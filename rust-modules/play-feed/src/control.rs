@@ -205,6 +205,14 @@ impl FeedControl for FeedBackend {
                 feed_pump::seek_requested(epoch, target_ns, display_ns);
             }
             FeedCommand::AbandonSeek => feed_pump::seek_abandoned(),
+            // The take addresses the newest request it belongs to; the feed clears its copy of the
+            // pending target whatever that is (a reload zeroes the feed's own epoch, and a copy
+            // left armed would hold the AU gate shut).
+            FeedCommand::SeekTaken { epoch: _ } => feed_pump::seek_taken(),
+            FeedCommand::SeekRequeued { target_ns } => feed_pump::seek_requeued(target_ns),
+            FeedCommand::ArmOpen { target_ns, disp_base, playpos_ns } => {
+                feed_pump::arm_open(target_ns, disp_base, playpos_ns);
+            }
         }
     }
 }
@@ -297,7 +305,6 @@ mod tests {
         assert!(!FEED_SHARED.pipeline_eos.load(Relaxed), "a seek back from the end un-ends it");
         assert_eq!(FEED_SHARED.seek_display_ns.load(Relaxed), 50_000_000_000);
         assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), 50_000_000_000, "the newest target wins");
-        assert_eq!(FEED_TX.seek_reqs.load(Relaxed), 2, "the overwrite is countable as coalescing");
         let raw = control.sample().raw;
         assert_eq!(raw.seek_landed_epoch, 0, "requested is not landed");
         assert!(!raw.pipeline_eos);
@@ -316,6 +323,104 @@ mod tests {
         FEED_TX.reset();
         assert_eq!(control.sample().raw.seek_landed_epoch, 0, "a new session has landed nothing");
         assert_eq!(FEED_SHARED.seek_epoch.load(Relaxed), 0);
+    }
+
+    /// The feed's copy of the pending seek gates feeding, and only commands write it: a take clears
+    /// it whatever epoch the feed holds (a reload zeroes the feed's own, and a copy left armed would
+    /// hold every AU back), and a requeue re-arms it WITHOUT being a request: the in-flight flag,
+    /// the display target and the pipeline's end of stream keep the values the reload left, exactly
+    /// as the pump's own re-arm stores did.
+    #[test]
+    fn the_take_clears_the_feed_gate_and_the_requeue_rearms_only_it() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let _serial = plx_base::testlock::serial();
+        FEED_SHARED.reset_session();
+        FEED_TX.reset();
+        let mut backend = backend();
+        let control: &mut dyn FeedControl = &mut backend;
+
+        control.command(FeedCommand::Seek { epoch: 9, target_ns: 7_000_000_000, display_ns: 7_000_000_000 });
+        assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), 7_000_000_000);
+        // The take names an epoch the feed does not hold (a reload zeroed it): it clears anyway.
+        FEED_SHARED.seek_epoch.store(0, Relaxed);
+        control.command(FeedCommand::SeekTaken { epoch: 9 });
+        assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), -1, "the feed gate reads no seek armed");
+        control.command(FeedCommand::SeekTaken { epoch: 9 });
+        assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), -1, "a take with nothing armed changes nothing");
+
+        // A reload reset the session; a newer tap is carried across it.
+        FEED_SHARED.reset_session();
+        FEED_TX.reset_for_reload();
+        control.command(FeedCommand::SeekRequeued { target_ns: 8_000_000_000 });
+        assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), 8_000_000_000, "the carried target is armed again");
+        assert!(!FEED_SHARED.seeking.load(Relaxed), "re-arming a target is not a request");
+        assert_eq!(FEED_SHARED.seek_display_ns.load(Relaxed), -1);
+        assert_eq!(FEED_SHARED.seek_epoch.load(Relaxed), 0);
+        FEED_SHARED.reset_session();
+        FEED_TX.reset();
+    }
+
+    /// `ArmOpen` stores what the player's old `arm_seek` stored: the demuxer's open target, the display base
+    /// and the position the HUD reads until frames land, and nothing of the pending-seek mailbox.
+    #[test]
+    fn arm_open_leaves_the_mailboxes_as_the_players_own_arm_did() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let _serial = plx_base::testlock::serial();
+        FEED_SHARED.reset_session();
+        FEED_TX.reset();
+        FEED_SHARED.disp_base.store(123, Relaxed);
+        FEED_SHARED.playpos_ns.store(456, Relaxed);
+        let mut backend = backend();
+        let control: &mut dyn FeedControl = &mut backend;
+
+        control.command(FeedCommand::ArmOpen {
+            target_ns: 90_000_000_000, disp_base: 0, playpos_ns: 90_000_000_000,
+        });
+        assert_eq!(FEED_SHARED.seek_to_ns.load(Relaxed), 90_000_000_000, "the demuxer's open target");
+        assert_eq!(FEED_SHARED.disp_base.load(Relaxed), 0, "direct-play reads content time");
+        assert_eq!(FEED_SHARED.playpos_ns.load(Relaxed), 90_000_000_000, "instant HUD feedback");
+        assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), -1, "the feed gate is not the open target");
+        assert!(!FEED_SHARED.seeking.load(Relaxed), "arming an open is not a seek request");
+
+        // The three values are stored as given, each in its own cell.
+        control.command(FeedCommand::ArmOpen {
+            target_ns: 11_000_000_000, disp_base: 7_000_000_000, playpos_ns: 8_000_000_000,
+        });
+        assert_eq!(FEED_SHARED.seek_to_ns.load(Relaxed), 11_000_000_000);
+        assert_eq!(FEED_SHARED.disp_base.load(Relaxed), 7_000_000_000);
+        assert_eq!(FEED_SHARED.playpos_ns.load(Relaxed), 8_000_000_000);
+
+        FEED_SHARED.reset_session();
+        FEED_TX.reset();
+    }
+
+    /// The feed's request to seek again reaches the player as a numbered raw fact, together with
+    /// the in-place target it aimed at, and the session's reset forgets both.
+    #[test]
+    fn the_sample_carries_the_requeue_and_the_in_place_target() {
+        use std::sync::atomic::Ordering::{Release, Relaxed};
+        let _serial = plx_base::testlock::serial();
+        FEED_SHARED.reset_session();
+        FEED_TX.reset();
+        let mut backend = backend();
+        let control: &mut dyn FeedControl = &mut backend;
+        let idle = control.sample().raw;
+        assert_eq!(idle.seek_requeue, plx_playback_contract::feed::SeekRequeue::NONE);
+        assert_eq!(idle.seek_target_ns, None);
+
+        FEED_SHARED.seek_target_ns.store(61_000_000_000, Relaxed);
+        FEED_SHARED.seek_requeue_target.store(61_000_000_000, Relaxed);
+        FEED_SHARED.seek_requeue_epoch.fetch_add(1, Release);
+        let raw = control.sample().raw;
+        assert_eq!(raw.seek_target_ns, Some(61_000_000_000));
+        assert_eq!(raw.seek_requeue.epoch, 1);
+        assert_eq!(raw.seek_requeue.target_ns, 61_000_000_000);
+
+        FEED_SHARED.reset_session();
+        FEED_TX.reset();
+        let raw = control.sample().raw;
+        assert_eq!(raw.seek_requeue.epoch, 0, "a new session has requested nothing");
+        assert_eq!(raw.seek_target_ns, None);
     }
 
     /// The backend is the runner's single-backend driver set: it answers for the feed alone, and

@@ -84,10 +84,6 @@ pub(super) fn seek_must_reload(mode: SeekMode, rate_permille: i32, rate_reload: 
     seek_reloads(mode) || rate_reload || rate_permille != super::RATE_NORMAL
 }
 
-fn take_coalesced() -> u32 {
-    FEED_TX.seek_reqs.swap(0, Relaxed).saturating_sub(1)
-}
-
 #[cfg(test)]
 use plx_play_feed::feed_pump::prime_before_play;
 #[cfg(test)]
@@ -685,16 +681,15 @@ fn run_claim_tail(
 /// At claim-landing time, decide whether the seek target this claim was built with (`pending_seek`,
 /// captured when the claim was made) is still the newest one requested. The pump's own pending-seek
 /// branch skips entirely while `flight_outstanding()` holds (see its own doc), so a fresher tap that
-/// landed during this claim's flight sits untouched in `FEED_TX.seek_to_ns` rather than being folded in —
+/// landed during this claim's flight sits untouched in the readout's pending target rather than being folded in —
 /// committing THIS claim's stale target with `commit_user_seek` would silently discard it. Returns
-/// the fresher value to re-arm into `FEED_TX.seek_to_ns` after the reload resets it
-/// (`FEED_TX.reset_for_reload`), or `None` if there is nothing to carry.
-fn commit_or_carry_seek(pending_seek: i64) -> Option<i64> {
-    let current = FEED_TX.seek_to_ns.load(Relaxed);
+/// the fresher value to re-arm into the pending target after the reload resets it (the teardown's
+/// `SessionReset` and `FEED_TX.reset_for_reload`), or `None` if there is nothing to carry.
+fn commit_or_carry_seek(ps: &crate::route::PlaybackSession, pending_seek: i64) -> Option<i64> {
+    let current = ps.readout().pending_seek().unwrap_or(-1);
     // Anything on the mailbox that is not exactly the target this claim was built for is a press
     // the claim never saw — including the first press of the flight when NO seek was pending at
-    // claim time (`pending_seek < 0`), which the reload's `FEED_TX.reset_for_reload()` would otherwise
-    // clear. Its reducer intent (`pending_seek_ns`) is left owed: the pump's own seek branch
+    // claim time (`pending_seek < 0`), which the reload's teardown would otherwise clear. Its reducer intent (`pending_seek_ns`) is left owed: the pump's own seek branch
     // commits it when it applies the re-armed target.
     if current >= 0 && current != pending_seek {
         return Some(current);
@@ -709,9 +704,13 @@ fn commit_or_carry_seek(pending_seek: i64) -> Option<i64> {
 /// Restore a fresher seek target carried past a reload by [`commit_or_carry_seek`]. The pump's
 /// ordinary pending-seek branch (no longer blocked — the claim it was waiting on just settled)
 /// picks it up on the very next tick, exactly as if it had just arrived.
-fn rearm_carried_seek(carried: Option<i64>) {
+fn rearm_carried_seek(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    carried: Option<i64>,
+) {
     if let Some(target) = carried {
-        FEED_TX.seek_to_ns.store(target, Release);
+        super::requeue_seek(ps, pa, target);
     }
 }
 
@@ -735,14 +734,14 @@ fn land_prepared_route(
         super::log(&format!("route transition: {label} landing superseded; not reloading"));
         return;
     }
-    let carried_seek = commit_or_carry_seek(pending_seek);
+    let carried_seek = commit_or_carry_seek(ps, pending_seek);
     super::log(&format!(
         "route transition: {label}{detail} at {}s{}",
         user_target / 1_000_000_000,
         if pending_seek >= 0 { " + seek" } else { "" },
     ));
     settle_reload(reload(ps, pa, user_target), &format!("{label} reload"), ps);
-    rearm_carried_seek(carried_seek);
+    rearm_carried_seek(ps, pa, carried_seek);
 }
 
 /// A prepared transcode route: settle the action, cross the seek, reload onto it.
@@ -795,10 +794,8 @@ fn seek_landing_tail(
         }
         crate::route::SeekVerdict::Superseded => {
             // A newer tap is waiting in the seek target: fly at THAT, carrying the hold over.
-            let newest = FEED_TX.seek_to_ns.swap(-1, Relaxed);
-            if newest >= 0 {
-                take_coalesced();
-                start_transcode_seek_flight(ps, pa, newest, hold);
+            if let Some(newest) = super::take_pending_seek(ps, pa) {
+                start_transcode_seek_flight(ps, pa, newest.target_ns, hold);
             } else {
                 super::claim_hold::release(pa, hold);
             }
@@ -815,7 +812,7 @@ fn seek_landing_tail(
 }
 
 /// Start the flight for a seek on a live transcode at `target_ns` (already taken off
-/// `FEED_TX.seek_to_ns`): plan on this frame, PMS on a worker, presentation held until it lands.
+/// the pending slot): plan on this frame, PMS on a worker, presentation held until it lands.
 /// `inherited_hold` is the restore a superseded flight's hold still owes.
 fn start_transcode_seek_flight(
     ps: &mut crate::route::PlaybackSession,
@@ -830,8 +827,7 @@ fn start_transcode_seek_flight(
         }
         crate::route::SeekDispatch::Busy => {
             // Another transaction holds the reducer for a frame or two: the tap stays a tap.
-            FEED_TX.seek_to_ns.store(target_ns, Release);
-            FEED_TX.seek_reqs.store(1, Release);
+            super::requeue_seek(ps, pa, target_ns);
             super::claim_hold::release(pa, inherited_hold);
         }
         crate::route::SeekDispatch::Refused => {
@@ -872,9 +868,9 @@ fn original_tail(
     pending_seek: i64,
     user_target: i64,
 ) {
-    let carried_seek = commit_or_carry_seek(pending_seek);
+    let carried_seek = commit_or_carry_seek(ps, pending_seek);
     start_original_trial_reload(ps, pa, reload, user_target);
-    rearm_carried_seek(carried_seek);
+    rearm_carried_seek(ps, pa, carried_seek);
 }
 
 /// An AUTOMATIC HLS-to-Original claim's tail. An accepted recovery is [`original_tail`]. A refused
@@ -901,12 +897,12 @@ fn land_automatic_original(
         return false;
     }
     super::log(msg);
-    let carried_seek = commit_or_carry_seek(pending_seek);
+    let carried_seek = commit_or_carry_seek(ps, pending_seek);
     settle_reload(
         super::engine::reload_transcode(ps, pa, position_ns),
         "retained HLS reopen after rejected Original", ps,
     );
-    rearm_carried_seek(carried_seek);
+    rearm_carried_seek(ps, pa, carried_seek);
     true
 }
 
@@ -993,12 +989,15 @@ fn settle_paused_seek(pa: &mut super::adapter::PlayerAdapter, now: u32) {
 /// paused transport) instead.
 /// A Load still opening (`Stage::Loading` -> Connecting) and an HLS rebuffer are real work and are
 /// decided before this is asked.
+///
+/// A seek waiting for the pump is also work, but the readout owns it and asks it after taking this
+/// frame's sample in (`readout::Presentation::paused_and_idle`), so a seek the feed itself just
+/// re-posted in this tick counts.
 fn paused_and_idle() -> bool {
     FEED_TX.paused.load(Acquire)
         && !FEED_TX.feed_allowed()
         && !super::claim_hold::active()
         && !crate::route::flight_outstanding()
-        && FEED_TX.seek_to_ns.load(Relaxed) < 0
 }
 
 /// The playback trace generation `refuse601` already refused (0: none yet). One request is refused
@@ -1213,7 +1212,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         // `Applying` the whole time, so `claim_route_action` below never fires for the SAME action
         // while this is pending; it only starts returning `Some` again once `run_claim_tail`
         // settles the drained landing.
-        let ready = crate::route::take_ready_flight(ps, FEED_TX.seek_to_ns.load(Relaxed) >= 0);
+        let ready = crate::route::take_ready_flight(ps, ps.readout().pending_seek().is_some());
         if let Some(crate::route::ReadyFlight::Claim { action, tail, pending_seek, user_target }) = ready {
             // The claim held presentation at its offset for the flight (`claim_hold`). Give play
             // back only once the tail has run: a rejection left the same Engine playing, and an
@@ -1246,7 +1245,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
                 return; // A fresh physical feed replaced this attempt.
             }
         } else if let Some(action) = crate::route::claim_route_action() {
-            let pending_seek = FEED_TX.seek_to_ns.load(Relaxed);
+            let pending_seek = ps.readout().pending_seek().unwrap_or(-1);
             let current_pos = FEED_SHARED.playpos_ns.load(Relaxed).max(0);
             let user_target = if pending_seek >= 0 {
                 pending_seek
@@ -1432,7 +1431,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
 
     // ---------- an in-place seek is still resolving (flushed, not yet re-anchored): COALESCE.
     // Firing another now would race the demux reopen (rapid tap-seeks) and the rebase guard would
-    // then eat everything → stuck. Hold the latest requested target (it stays in FEED_TX.seek_to_ns) and
+    // then eat everything → stuck. Hold the latest requested target (it stays the readout's pending target) and
     // process it once this seek anchors. If it hasn't anchored within SEEK_STUCK_MS the reopen was
     // lost — first RETRY the reopen cheaply (re-interrupt the demuxer + re-arm), and only fall back
     // to a full (slow) reload if the retries also fail.
@@ -1443,19 +1442,22 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
     // A claim's worker owns `ControlPhase::Applying` and has no vocabulary for a seek reload
     // reaching in and replacing the encoder/engine out from under it (see `route::flight_outstanding`'s own
     // doc). Skip both this branch and the plain pending-seek branch below while one is in flight —
-    // `FEED_TX.seek_to_ns` stays exactly where it is and the retranscode/native-audio tail re-checks it
+    // the pending target stays exactly where it is and the retranscode/native-audio tail re-checks it
     // once the claim lands (`commit_or_carry_seek`).
     const SEEK_STUCK_MS: u32 = 1200;
     // Route owns the pending target and commits it before the native demux can read a retry.
     if pa.stuck_seek_due(now, FEED_TX.feed_allowed(), crate::route::flight_outstanding(), SEEK_STUCK_MS) {
-        let pending = FEED_TX.seek_to_ns.swap(-1, Relaxed);
-        let tgt = if pending >= 0 { pending } else { FEED_SHARED.seek_target_ns.load(Relaxed) }.max(0);
+        let taken = super::take_pending_seek(ps, pa);
+        let pending = taken.map_or(-1, |t| t.target_ns);
+        // The feed's own in-place target rides the sample (`FeedRaw::seek_target_ns`): the seek it
+        // belongs to was applied in an earlier frame, so the pump-start sample holds it.
+        let tgt = if pending >= 0 { pending } else { ps.readout().raw().seek_target_ns.unwrap_or(-1) }.max(0);
         if pending >= 0 { crate::route::commit_user_seek(); }
         match pa.retry_stuck_seek(now, tgt, !seek_reloads(seek_mode())) {
             plx_playback_contract::feed::StuckSeekAction::Retried(retries) => {
                 super::log(&format!(
                     "seek: in-place stuck → retry reopen at {}s (#{}) coalesced={}",
-                    tgt / 1_000_000_000, retries, take_coalesced(),
+                    tgt / 1_000_000_000, retries, taken.map_or(0, |t| t.coalesced),
                 ));
             }
             plx_playback_contract::feed::StuckSeekAction::Reload => {
@@ -1466,7 +1468,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         }
     }
     // ---------- pending seek: flush, drop queued AUs, re-point the demux ----------
-    let t = FEED_TX.seek_to_ns.load(Relaxed);
+    let t = ps.readout().pending_seek().unwrap_or(-1);
     // A live transcode has NO Content-Length (file_size stays -1), so gate it on duration
     // only and seek by RESTARTING the transcode at a time &offset (below). Direct-play
     // seeks in place via av_seek.
@@ -1480,8 +1482,8 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         && super::duration_ns(ps).unwrap_or(0) > 0
         && (is_transcode || ps.readout().raw().file_size > 0)
     {
-        FEED_TX.seek_to_ns.store(-1, Relaxed);
-        let coalesced = take_coalesced(); // read here so BOTH branches consume this seek's requests
+        // Taken here so BOTH branches consume this seek's requests; the feed's copy goes with it.
+        let coalesced = super::take_pending_seek(ps, pa).map_or(0, |taken| taken.coalesced);
         // Consumed by whichever branch lands this seek: a transcode seek is a fresh Load anyway.
         let rate_reload = ps.readout().rate_reload();
         ps.step_readout(super::readout::ReadoutEvent::RateReloadTaken);
@@ -1536,8 +1538,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
                 return;
             }
             plx_playback_contract::feed::SeekPause::Busy => {
-                FEED_TX.seek_to_ns.store(t, Release);
-                FEED_TX.seek_reqs.store(1, Release);
+                super::requeue_seek(ps, pa, t);
                 super::log("seek(in-place): clock transition busy; retrying");
                 return;
             }
@@ -1890,20 +1891,29 @@ mod tests {
 
     /// Run one claim landing's seek settlement the way the tails do: the viewer pressed `pressed`
     /// (if anything) during the flight, the claim was built with `pending_seek`, then the reload
-    /// resets the mailbox. Returns what was carried, the mailbox after the re-arm, and whether the
-    /// reducer still owed the seek intent.
+    /// resets the pending seek. Returns what was carried, the pending target after the re-arm, and
+    /// whether the reducer still owed the seek intent. The feed's copy of the target is the
+    /// readout's at every step.
     fn run_carry(pending_seek: i64, pressed: Option<i64>) -> (Option<i64>, i64, bool) {
         let _serial = plx_base::testlock::serial();
         FEED_TX.reset();
         crate::route::reject_user_seek();
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            plx_base::task::MainThread::assume()
+        });
         if let Some(target) = pressed {
-            crate::route::note_user_seek_intent(target);
-            FEED_TX.seek_to_ns.store(target, Release);
+            crate::player::request_seek(&mut ps, &mut pa, target);
         }
-        let carried = commit_or_carry_seek(pending_seek);
+        assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), ps.readout().pending_seek().unwrap_or(-1));
+        let carried = commit_or_carry_seek(&ps, pending_seek);
+        // The reload's teardown: the feed's transport reset and the readout's session reset.
         FEED_TX.reset_for_reload();
-        rearm_carried_seek(carried);
-        let landed = FEED_TX.seek_to_ns.load(Relaxed);
+        ps.step_readout(crate::player::readout::ReadoutEvent::SessionReset);
+        assert_eq!(ps.readout().pending_seek(), None, "the reload cleared what it was asked to");
+        rearm_carried_seek(&mut ps, &mut pa, carried);
+        let landed = ps.readout().pending_seek().unwrap_or(-1);
+        assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), landed, "the feed's gate is armed with the carried target");
         let still_owed = crate::route::commit_user_seek();
         FEED_TX.reset();
         crate::route::reject_user_seek();
@@ -2135,6 +2145,7 @@ mod flight_tests {
         assert_eq!(rig.flight.decisions(), 1, "exactly one /decision for the seek");
         assert_ne!(crate::route::transcode_session(&rig.ps), before, "the landing installed the replacement encoder");
         assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), -1, "the seek was consumed, not re-armed");
+        assert_eq!(rig.ps.readout().pending_seek(), None, "and the player's own target went with the feed's");
         rig.flight.wait_for("the replaced encoder's stop", |f| f.stopped().iter().any(|s| s == "rig-1"));
     }
 
@@ -2629,6 +2640,7 @@ mod flight_tests {
             f.stopped().iter().any(|s| s.starts_with("rig-logical-abr-"))
         });
         assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), -1);
+        assert_eq!(rig.ps.readout().pending_seek(), None);
     }
 
     // ---- a CLAIM flight that an app-switch suspend crosses ------------------------------------
@@ -2685,7 +2697,7 @@ mod flight_tests {
 
         let started = {
             let _frame = plx_base::task::FrameScope::enter();
-            begin_resume(&mut rig.ps, saved_ns)
+            begin_resume(&mut rig.ps, &mut rig.pa, saved_ns)
         };
         assert_eq!(started, ResumeStart::Pending, "the foreground restore's resume was refused");
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -4602,6 +4614,8 @@ mod native_seek_pump_tests {
         rig.frame(); // the feed refuses the Seek and re-posts the target for the reload
         assert_eq!(ffi_host::seek_log_for_test().len(), 1, "one refused Seek");
         assert_eq!(FEED_TX.seek_to_ns.load(Relaxed), TARGET_NS, "re-posted for the reload");
+        assert_eq!(rig.ps.readout().pending_seek(), Some(TARGET_NS),
+            "the player adopted the feed's request once its sample was ingested");
         // Late in the window: the stuck watchdog (SEEK_STUCK_MS) is due on the very next tick, and
         // it runs BEFORE the pending-seek branch.
         rig.now += 5_000;
@@ -4846,9 +4860,10 @@ mod native_seek_pump_tests {
         fn complete_reload(&mut self, target: i64) {
             FEED_TX.reset_for_reload();
             SHARED.reset_session_for_reload();
+            self.ps.step_readout(crate::player::readout::ReadoutEvent::SessionReset);
             FEED_SHARED.reset_hls_clock_for_test();
             assert!(FEED_SHARED.arm_initial_clock_hold(FEED_TX.paused.load(Acquire), FEED_TX.seek_preroll_active()));
-            FEED_SHARED.arm_seek(target);
+            crate::player::arm_open(&mut self.pa, target);
             let epoch = FEED_SHARED.begin_native_session().unwrap_or(0);
             let mut fresh = super::super::engine::streaming_engine_for_test(epoch);
             fresh.stage = Stage::Playing;
@@ -5577,6 +5592,7 @@ mod end_of_film_tests {
             let ended = crate::player::feed_ended(&self.ps);
             let streaming = self.eng().stage >= Stage::Streaming;
             let pending = self.eng().pending_video.is_some();
+            let seek_pending = self.ps.readout().pending_seek().unwrap_or(-1);
             format!(
                 "playpos={}ms duration={}ms eos_pushed={} pipeline_eos={} ended={} \
                  clock={}ms running={running} stage_streaming={streaming} pending_video={pending} \
@@ -5588,7 +5604,7 @@ mod end_of_film_tests {
                 ended,
                 clock_ns / 1_000_000,
                 FEED_TX.feed_allowed(),
-                FEED_TX.seek_to_ns.load(Relaxed),
+                seek_pending,
             )
         }
     }

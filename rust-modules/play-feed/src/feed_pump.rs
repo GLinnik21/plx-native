@@ -14,7 +14,7 @@ use crate::shared::Stage;
 use crate::shared::{HlsPauseCompletion, HlsSeekPause};
 use plx_base::eventlog::log;
 use plx_base::task::MainThread;
-use plx_playback_contract::feed::{FailureFlags, FeedFacts, FeedRaw};
+use plx_playback_contract::feed::{FailureFlags, FeedFacts, FeedRaw, SeekRequeue};
 use plx_playback_contract::readout::{AttemptFacts, RuntimeFailure};
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::os::raw::c_char;
@@ -1032,16 +1032,34 @@ pub fn tick_presentation(feed: &mut FeedResources, mt: &MainThread,
 
 /// A seek was requested (`FeedCommand::Seek`): the stores the player's `request_seek` used to make
 /// itself, in the same order. The target is published before a worker can observe the seek flag or
-/// the request, and the request is counted even though the target it carries may be overwritten
-/// before the pump ever sees it: that overwrite IS the coalescing, and this is the only place it
-/// is countable.
+/// the request. The feed's copy of the pending target only ever holds the newest one; the player's
+/// readout counts how many requests it folded (`coalesced=`).
 pub fn seek_requested(epoch: u32, target_ns: i64, display_ns: i64) {
     FEED_SHARED.pipeline_eos.store(false, Relaxed);
     FEED_SHARED.seek_display_ns.store(display_ns, Relaxed);
     FEED_SHARED.seek_epoch.store(epoch, Relaxed);
     FEED_SHARED.seeking.store(true, Release);
     FEED_TX.seek_to_ns.store(target_ns, Relaxed);
-    FEED_TX.seek_reqs.fetch_add(1, Relaxed);
+}
+
+/// The player took the pending seek (`FeedCommand::SeekTaken`): the feed's copy goes with the
+/// player's, unconditionally, so a target the player no longer holds can never leave the feed gate
+/// shut (an armed copy blocks every AU, and the transcode path takes it a frame before its flight
+/// lands). The store is the one the pump's own take made.
+pub fn seek_taken() {
+    FEED_TX.seek_to_ns.store(-1, Relaxed);
+}
+
+/// The player put a taken seek back (`FeedCommand::SeekRequeued`): only the feed's copy of the
+/// pending target, with the release the pump's own re-arm used. Nothing was requested again, so the
+/// in-flight flag, the display target and the pipeline's end of stream are not touched.
+pub fn seek_requeued(target_ns: i64) {
+    FEED_TX.seek_to_ns.store(target_ns, Release);
+}
+
+/// The next open starts at `target_ns` (`FeedCommand::ArmOpen`).
+pub fn arm_open(target_ns: i64, disp_base: i64, playpos_ns: i64) {
+    FEED_SHARED.arm_open(target_ns, disp_base, playpos_ns);
 }
 
 /// The seek was given up on (`FeedCommand::AbandonSeek`): the spinner and the frozen playhead end
@@ -1086,6 +1104,12 @@ fn native_feed_raw() -> FeedRaw {
         pts_shift: FEED_SHARED.pts_shift.load(Relaxed),
         pipeline_eos: FEED_SHARED.pipeline_eos.load(Relaxed),
         seek_landed_epoch: FEED_SHARED.seek_landed_epoch.load(Acquire),
+        seek_target_ns: Some(FEED_SHARED.seek_target_ns.load(Relaxed)).filter(|&t| t >= 0),
+        // The epoch is the publication point of the requeue: its target is stored first.
+        seek_requeue: {
+            let epoch = FEED_SHARED.seek_requeue_epoch.load(Acquire);
+            SeekRequeue { epoch, target_ns: FEED_SHARED.seek_requeue_target.load(Relaxed) }
+        },
     }
 }
 
@@ -1113,15 +1137,13 @@ pub fn native_attempt_facts() -> plx_playback_contract::readout::AttemptFacts {
         FEED_SHARED.load_timed_out.load(Relaxed),
     );
     let requested_kbps = FEED_SHARED.dg_abr_kbps.load(Relaxed);
-    let seek_pending_ns = FEED_TX.seek_to_ns.load(Relaxed);
-    let seek_display_ns = FEED_SHARED.seek_display_ns.load(Relaxed);
     let facts = AttemptFacts {
         started: Some(FEED_TX.started.load(Relaxed)),
         playing_observed: None,
         ended: None, // the player's readout owns the end of stream (`PlayerReadout::ended`)
-        seek_pending_ns: (seek_pending_ns >= 0).then_some(seek_pending_ns),
+        seek_pending_ns: None, // the pending seek and its display target are the player's own (`PlayerReadout`)
         rebuffering: Some(FEED_SHARED.hls_rebuffering.load(Relaxed)),
-        seek_display_ns: (seek_display_ns >= 0).then_some(seek_display_ns),
+        seek_display_ns: None,
         status: None, // ... and the derived UI state (`PlayerReadout::state`)
         requested_kbps: (requested_kbps > 0).then_some(requested_kbps),
         refusal_path: Some(FEED_SHARED.refusal_path()),

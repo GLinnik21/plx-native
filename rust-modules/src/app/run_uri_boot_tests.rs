@@ -687,7 +687,7 @@ mod uri_boot_tests {
         assert_eq!(rig.app.player.session.source_selection(), source);
         assert_eq!(rig.app.player.session.metric_request(), Some(request));
         assert!(matches!(plx_media::player::begin_resume(&mut rig.app.player.session,
-            replacement.resume_ns), plx_media::player::ResumeStart::Settled(
+            &mut rig.app.adapters.player, replacement.resume_ns), plx_media::player::ResumeStart::Settled(
                 plx_media::player::ResumeOutcome::Prepared)));
         assert!(matches!(plx_media::player::start_playback_tracked(
             &mut rig.app.player.session, &mut rig.app.adapters.player),
@@ -803,7 +803,7 @@ mod uri_boot_tests {
         assert_eq!(rig.app.player.session.reconfigure_pause_goal(), Some(true),
             "the next physical Start still owes the paused viewer goal");
         assert!(matches!(plx_media::player::begin_resume(&mut rig.app.player.session,
-            revised.resume_ns), plx_media::player::ResumeStart::Settled(
+            &mut rig.app.adapters.player, revised.resume_ns), plx_media::player::ResumeStart::Settled(
                 plx_media::player::ResumeOutcome::Prepared)));
         let next = plx_media::player::start_playback_tracked(
             &mut rig.app.player.session, &mut rig.app.adapters.player);

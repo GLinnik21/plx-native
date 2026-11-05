@@ -2899,7 +2899,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                     match if r.resume_ns <= 0 {
                         plx_media::player::ResumeStart::Settled(plx_media::player::ResumeOutcome::Prepared)
                     } else {
-                        plx_media::player::begin_resume(&mut app.player.session, r.resume_ns)
+                        plx_media::player::begin_resume(&mut app.player.session, &mut app.adapters.player, r.resume_ns)
                     } {
                         plx_media::player::ResumeStart::Pending => {}
                         plx_media::player::ResumeStart::Settled(outcome) => finish_landed_play(
@@ -4655,9 +4655,21 @@ mod lifecycle_regression_tests {
         let attempt = plx_media::route::RouteStartAttempt::fixture();
         app.player.session.begin_attempt_view(attempt, plx_media::player::attempt_view::Backend::Feed);
         assert!(app.player.session.ingest_attempt_facts(attempt, plx_media::player::attempt_view::Backend::Feed, plx_media::player::attempt_view::AttemptFacts {
-            position_ns: Some(7_000_000_000), seek_display_ns: Some(9_000_000_000),
+            position_ns: Some(7_000_000_000),
             duration_ns: Some(100_000_000_000), ..Default::default()
         }));
+        // The Feed's seek display target is the readout's (`PlayerReadout`), not an attempt fact: it
+        // is delivered as the events a LANDED seek produces (the request, the feed's landed epoch,
+        // the pump's take), which leaves the Buffering state above in place with the target held.
+        {
+            use plx_media::player::readout::ReadoutEvent;
+            let session = &mut app.player.session;
+            session.step_readout(ReadoutEvent::SeekRequested { target_ns: 9_000_000_000, display_ns: 9_000_000_000 });
+            let mut raw = *session.readout().raw();
+            raw.seek_landed_epoch = session.readout().seek_epoch();
+            session.step_readout(ReadoutEvent::FactsIngested(raw));
+            session.step_readout(ReadoutEvent::SeekTaken);
+        }
         // A projected attempt alone does not install a common backend runner.
         // Supply the viewer goal explicitly, opposite to the idle physical mailbox.
         let mut model = hud_model(&app.player.session, app.bridge.metadata_view(), true);

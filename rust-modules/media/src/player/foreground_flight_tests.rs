@@ -26,7 +26,10 @@ impl ForegroundActuator for RigActuator {
     type Attempt = u64;
 
     fn prepare_resume(&mut self, ps: &mut crate::route::PlaybackSession, resume_ns: i64) -> ResumeStart {
-        begin_resume(ps, resume_ns)
+        // The rig's adapter belongs to the `Rig`; `ArmOpen` reaches the same process mailboxes
+        // through any adapter of this composition.
+        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        begin_resume(ps, &mut pa, resume_ns)
     }
 
     fn land_prepare(&mut self, ps: &mut crate::route::PlaybackSession) -> FlightLanding<ResumeOutcome> {
@@ -262,7 +265,7 @@ fn a_resume_from_idle_never_reaches_the_rebuild_because_a_completed_stop_clears_
     assert!(crate::route::control_phase_label().contains("Idle"), "{}", crate::route::control_phase_label());
     assert!(crate::route::url(&rig.ps).is_empty(), "a completed stop clears the URL");
     assert!(crate::route::transcode_session(&rig.ps).is_empty(), "and the transcode session");
-    assert_eq!(begin_resume(&mut rig.ps, RESUME_NS), ResumeStart::Settled(ResumeOutcome::NoRoute));
+    assert_eq!(begin_resume(&mut rig.ps, &mut rig.pa, RESUME_NS), ResumeStart::Settled(ResumeOutcome::NoRoute));
     assert!(!crate::route::engineless_flight_outstanding());
     assert_eq!(rig.flight.decisions(), 0);
 }
