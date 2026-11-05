@@ -8182,6 +8182,7 @@ impl ResolveEnv {
             direct_play_mode: direct_play_mode(),
             dolby_vision_mode: dolby_vision_mode(),
             dv_capability: plx_platform::devcaps::dv::capability(),
+            panel: plx_platform::devcaps::panel::panel(),
             caps: ps.attempt_caps(),
             src_kbps: resolve_src_kbps(meta.current(), sid, rk),
             omit_queue_continuous: false,
@@ -8560,10 +8561,27 @@ fn request_env(
         env.cached_item = None;
         env.src_kbps = 0;
     }
+    leave_the_cached_default_for_the_panel(&mut env, meta, request.sid, &request.rk);
     if let Some(retry) = retry {
         apply_retry(&mut env, retry);
     }
     env
+}
+
+fn leave_the_cached_default_for_the_panel(
+    env: &mut ResolveEnv, meta: plx_data::metadata::MetadataView<'_>, sid: ServerId, rk: &str,
+) {
+    if env.version.is_some() || env.cached_item.is_none() {
+        return;
+    }
+    let chosen = meta
+        .current()
+        .filter(|d| plx_plex::plex::same_item((d.sid, &d.rk), (sid, rk)))
+        .and_then(|d| panel_version(&d.versions, env.panel, &env.caps));
+    if let Some(version) = chosen {
+        env.cached_item = None;
+        env.src_kbps = version.kbps;
+    }
 }
 
 /// Common async request transaction. A retry waits for the real stop's PMS work on THIS worker
