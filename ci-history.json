@@ -1,4 +1,4 @@
-{"updated":"2026-11-05T16:07:20Z",
+{"updated":"2026-11-05T16:14:57Z",
 "ci":[
 {"id":31142003278,"at":"2026-08-07T02:41:31Z","sha":"dd7138b09","title":"pkg: satisfy webosbrew's packager check honestly, and record why not ares-package","jobs":{"host checks (NOT a device gate)":81,"cross-build (armv7) + artifact assertions":95},"pr":null,"conclusion":"success","attempt":1},
 {"id":31319241597,"at":"2026-08-09T14:44:31Z","sha":"6c3858f9e","title":"docs: webOS 5+ is known broken, not untested \u2014 restore the 4.x bound","jobs":{"cross-build (armv7) + artifact assertions":89,"host checks (NOT a device gate)":80},"pr":null,"conclusion":"success","attempt":1},
@@ -4589,7 +4589,8 @@
 {"id":42035103766,"at":"2026-11-05T13:21:52Z","sha":"031210b22","title":"HUD registry: serve from huds.plxnative.com","pr":1243,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":228,"Linux simulator build + launch":327,"Windows launcher syntax":23,"macOS simulator build + launch":244}},
 {"id":42050980079,"at":"2026-11-05T15:02:59Z","sha":"2fd49e956","title":"ci snapshot: integ/uri-first at 0907e7b71 (L3b-2a)","pr":1231,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":240,"Linux simulator build + launch":366,"macOS simulator build + launch":217}},
 {"id":42024510554,"at":"2026-11-05T15:05:55Z","sha":"9fdc1fc13","title":"Update shipped-language lint documentation","pr":1230,"event":"pull_request","conclusion":"failure","attempt":2,"jobs":{"Windows launcher syntax":23},"wall":10831,"failed":["Linux simulator build + launch","macOS simulator build + launch","macOS tests against bundled FFmpeg and ASS"]},
-{"id":42057508944,"at":"2026-11-05T15:50:49Z","sha":"ef969ba17","title":"Iterate HUD tests over shipped languages","pr":1230,"event":"pull_request","conclusion":"success","attempt":2,"jobs":{"macOS tests against bundled FFmpeg and ASS":206,"macOS simulator build + launch":212,"Linux simulator build + launch":338,"Windows launcher syntax":22},"wall":1086}
+{"id":42057508944,"at":"2026-11-05T15:50:49Z","sha":"ef969ba17","title":"Iterate HUD tests over shipped languages","pr":1230,"event":"pull_request","conclusion":"success","attempt":2,"jobs":{"macOS tests against bundled FFmpeg and ASS":206,"macOS simulator build + launch":212,"Linux simulator build + launch":338,"Windows launcher syntax":22},"wall":1086},
+{"id":42060535531,"at":"2026-11-05T15:59:27Z","sha":"e1ea6e2ec","title":"Add Catalan localization","pr":1230,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":20,"macOS tests against bundled FFmpeg and ASS":299,"Linux simulator build + launch":324,"macOS simulator build + launch":274}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
