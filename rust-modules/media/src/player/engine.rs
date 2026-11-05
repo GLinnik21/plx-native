@@ -5442,6 +5442,64 @@ mod explicit_source_start_tests {
         });
     }
 
+    /// `pipe_replay_after_eos` on the set: the replay arrives while the finished play's off-frame
+    /// `Unload` is still running, so the start is deferred into the release machine and must run
+    /// when the release completes. The in-between tests above wait for the release before they
+    /// start again, which is why none of them could see a deferred start that is lost.
+    #[test]
+    fn a_playurl_replay_deferred_behind_the_unload_launches_when_the_release_completes() {
+        with_playurl_armed(|ps, pa| {
+            let first = start_playurl(ps, pa);
+            assert!(matches!(first, BufferfeedStartOutcome::Launched(_)), "first start {first:?}");
+            crate::player::ffi_host::delay_unload_for_test(50);
+            stop_bufferfeed(ps, pa);
+            assert!(pa.has_pending_release(), "the stop must leave its Unload running");
+            let second = start_playurl(ps, pa);
+            assert_eq!(second, BufferfeedStartOutcome::Deferred, "the replay over a running Unload");
+            pa.watch_queued_start();
+            let give_up = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let landing = loop {
+                poll_release(ps, pa, std::time::Instant::now());
+                match pa.take_queued_landing() {
+                    crate::player::adapter::QueuedLanding::Waiting => {
+                        assert!(std::time::Instant::now() < give_up, "the deferred replay never ran");
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                    }
+                    other => break other,
+                }
+            };
+            assert!(matches!(landing, crate::player::adapter::QueuedLanding::Launched(_)),
+                "the release completed but the deferred replay did not launch ({landing:?})");
+            assert!(pa.is_live(), "a launched replay builds the Engine");
+            stop(ps, pa);
+        });
+    }
+
+    /// The cause of `pipe_replay_after_eos` on the set. A play that ends is stopped with its
+    /// end-of-stream still standing in the attempt view (`teardown` publishes the physical facts, `ended`
+    /// among them, before `SHARED.reset_session()` clears them). The replay's page mounts while its
+    /// start is deferred behind the old `Unload`, with no new attempt yet to replace those facts, and
+    /// the loop's end-of-stream rule (`app::run::playback_tick`: player page up and `ended` true)
+    /// exits the player again: that stop cancels the deferred start, so no second Load ever comes.
+    #[test]
+    fn a_stopped_play_leaves_no_end_of_stream_for_the_deferred_replay_to_find() {
+        with_playurl_armed(|ps, pa| {
+            let first = start_playurl(ps, pa);
+            assert!(matches!(first, BufferfeedStartOutcome::Launched(_)), "first start {first:?}");
+            // The pump's end of stream: the physical flag the terminal facts are captured from.
+            FEED_SHARED.ended.store(true, Ordering::Relaxed);
+            crate::player::ffi_host::delay_unload_for_test(50);
+            stop_bufferfeed(ps, pa);
+            FEED_SHARED.ended.store(false, Ordering::Relaxed); // `reset_session`, as the real stop does
+            assert!(pa.has_pending_release(), "the stop must leave its Unload running");
+            let second = start_playurl(ps, pa);
+            assert_eq!(second, BufferfeedStartOutcome::Deferred, "the replay over a running Unload");
+            assert_ne!(crate::player::ended(ps), Some(true),
+                "the finished play's end of stream outlived its stop: the replay's page would exit it again");
+            stop(ps, pa);
+        });
+    }
+
     /// A seek that escalates (or any reload) comes back through the same door with the route's URL
     /// already installed: it reopens the recipe the start admitted, and must not qualify a new
     /// candidate (that would clear the admission it reopens from).

@@ -1279,6 +1279,13 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
     native.unblock_join_close();
     let mut terminal_facts = plx_play_feed::feed_pump::native_attempt_facts();
     terminal_facts.started = Some(false);
+    // A real stop ends the playback and its end of stream with it (`SHARED.reset_session()` below
+    // clears the physical flag these facts were just read from). Left standing, the finished
+    // play's `ended` is what a replay finds while its start is deferred behind this Unload: the
+    // loop's end-of-stream rule exits the replay's player page and that stop cancels the start.
+    if !for_reload {
+        terminal_facts.ended = Some(false);
+    }
     let _ = ps.ingest_attempt_facts(route_attempt, crate::player::attempt_view::Backend::Feed, terminal_facts);
     after_physical_close(ps, for_reload, final_report, &mut report_th);
     native.report_dispatched();
