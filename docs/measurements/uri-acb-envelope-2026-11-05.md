@@ -111,8 +111,10 @@ For the capture above the backend sends (key order as the firmware writes it):
 {"context":"_M7yz1mOAwtVmU7","content":"movie","video":{"frameRate":24,"scanType":"VIDEO_PROGRESSIVE","width":1280,"height":720,"bitRate":120,"adaptive":false,"path":"network","pixelAspectRatio":{"width":1,"height":1},"afd":16,"rotation":0,"data3D":{"originalPattern":"2d","currentPattern":"2d","typeLR":"LR"},"hfr":false,"hdrType":"none","mediaSei":{"displayPrimariesX0":0,"displayPrimariesX1":0,"displayPrimariesX2":0,"displayPrimariesY0":0,"displayPrimariesY1":0,"displayPrimariesY2":0,"whitePointX":0,"whitePointY":0,"minDisplayMasteringLuminance":0,"maxDisplayMasteringLuminance":0,"maxContentLightLevel":0,"maxPicAverageLightLevel":0},"mediaVui":{"transferCharacteristics":2,"colorPrimaries":2,"matrixCoeffs":2}}}
 ```
 
-(No crate of the workspace enables `serde_json`'s `preserve_order`, so the text on the wire has the same
-members sorted by key; nothing known about the firmware's reader depends on order.)
+(`serde_json`'s `preserve_order` is not enabled anywhere in the workspace's feature graph
+(`cargo tree -e features -i serde_json`), so the text on the wire has the same members sorted by key,
+which is also how the pinned descriptor ACB accepted was written; nothing known about the firmware's
+reader depends on order.)
 
 ## Not determined
 

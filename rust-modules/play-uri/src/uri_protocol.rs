@@ -131,7 +131,8 @@ impl AcbSource {
 }
 
 /// Pinned Stremio051818e descriptor, allowed ONLY for the explicitly controlled SDR720p24 fixture.
-/// Arbitrary URI/HDR streams require an actual validated sourceInfo envelope instead.
+/// Arbitrary URI/HDR streams need a real envelope instead: the ACB-schema `sourceInfo` the service
+/// sent, or the one the production backend derives from its `videoInfo` (`acb_envelope`).
 #[cfg(feature = "devtriggers")]
 pub fn build_acb_fixture_video(media_id: &MediaId, video: VideoFacts) -> Option<String> {
     if video.width != 1280 || video.height != 720 || video.frame_rate != 24.0 { return None; }
@@ -471,8 +472,9 @@ pub fn parse_event(payload: &str) -> Message {
             if message.video_info.is_none() { message.video_info = Some(video); }
         }
     }
-    // Known event envelopes can carry the same opaque identity. The ACB experiment reads only
-    // sourceInfo context and numeric video facts above; streamingInfo remains diagnostic-only.
+    // Known event envelopes can carry the same opaque identity. The ACB bind reads only the
+    // sourceInfo context and video facts and the videoInfo members above; streamingInfo remains
+    // diagnostic-only.
     if object.get("mediaId").is_some_and(|id| !id.is_string()) {
         message.identity_conflict = true;
     }
