@@ -14,8 +14,8 @@ pub(super) struct FeedOpenRequest {
 
 /// Original wire evidence for Force preflight and the declaration log. The converted sink
 /// presentation is separately represented by `feed_payload.dv`.
-pub(super) fn original_dv(dv: plx_data::metadata::Dovi) -> plx_play_feed::open::OriginalDvFacts {
-    plx_play_feed::open::OriginalDvFacts {
+pub(super) fn original_dv(dv: plx_data::metadata::Dovi) -> plx_playback_contract::feed::OriginalDvFacts {
+    plx_playback_contract::feed::OriginalDvFacts {
         present: dv.present, profile: dv.profile,
         bl_compat: dv.bl_compat, el_present: dv.el_present,
     }
@@ -77,7 +77,7 @@ pub(super) struct PayloadFacts {
     pub force_direct_play: bool,
 }
 
-impl From<route::PcmFormat> for plx_play_feed::PcmFormat {
+impl From<route::PcmFormat> for plx_playback_contract::feed::PcmFormat {
     fn from(f: route::PcmFormat) -> Self {
         Self {
             sample_rate: f.sample_rate,
@@ -89,12 +89,12 @@ impl From<route::PcmFormat> for plx_play_feed::PcmFormat {
 }
 
 impl PayloadFacts {
-    pub fn to_feed(&self) -> plx_play_feed::PayloadFacts {
-        plx_play_feed::PayloadFacts {
+    pub fn to_feed(&self) -> plx_playback_contract::feed::PayloadFacts {
+        plx_playback_contract::feed::PayloadFacts {
             pcm: self.pcm.clone().map(|value| value.map(Into::into)),
             max_raster: self.max_raster,
             fps: self.fps,
-            dv: self.dv_presentation.declared().map(|n| plx_play_feed::DolbyHdrInfo {
+            dv: self.dv_presentation.declared().map(|n| plx_playback_contract::feed::DolbyHdrInfo {
                 profile_id: n.profile_id,
                 track_type: n.track_type,
                 encryption_type: n.encryption_type,
@@ -172,13 +172,13 @@ impl FeedOpenRequest {
 
 /// The developer switches are read once by the common open runner. The physical payload builder
 /// receives resolved values and never consults route metadata or trigger files.
-pub(super) fn payload_options(facts: &plx_play_feed::PayloadFacts) -> plx_play_feed::PayloadOptions {
+pub(super) fn payload_options(facts: &plx_playback_contract::feed::PayloadFacts) -> plx_playback_contract::feed::PayloadOptions {
     let with_fps = !plx_base::devtrig::flag("nofps");
     if !with_fps {
         #[cfg(feature = "devtriggers")]
         log("esInfo: videoFps WITHHELD by /tmp/plxnative-nofps");
     }
-    plx_play_feed::PayloadOptions {
+    plx_playback_contract::feed::PayloadOptions {
         with_fps,
         suppress_dv_node: facts.dv.is_some() && plx_data::metadata::dv_node_suppressed(),
     }

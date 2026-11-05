@@ -48,31 +48,28 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering::Relaxed};
 /// session that re-selects. It remains a static rather than an `Engine` field only because
 /// `pump.rs` reads it without an Engine borrow at hand; its LIFETIME is the Engine's, since
 /// `launch_native_open` is the sole constructor and the mode is only read while a session is live.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum SeekMode {
-    Segment,
-    NativeSeek,
-    Reload,
-}
+///
+/// The enum itself is contract vocabulary (`plx_playback_contract::feed::SeekMode`), so the player's
+/// pump names it without naming this crate; the static below stores it as a byte.
+pub use plx_playback_contract::feed::SeekMode;
 
-impl SeekMode {
-    const fn to_u8(self) -> u8 {
-        match self {
-            SeekMode::Segment => 0,
-            SeekMode::NativeSeek => 1,
-            SeekMode::Reload => 2,
-        }
-    }
-    const fn from_u8(v: u8) -> SeekMode {
-        match v {
-            0 => SeekMode::Segment,
-            1 => SeekMode::NativeSeek,
-            _ => SeekMode::Reload,
-        }
+const fn seek_mode_to_u8(mode: SeekMode) -> u8 {
+    match mode {
+        SeekMode::Segment => 0,
+        SeekMode::NativeSeek => 1,
+        SeekMode::Reload => 2,
     }
 }
 
-static SEEK_MODE: AtomicU8 = AtomicU8::new(SeekMode::Segment.to_u8());
+const fn seek_mode_from_u8(v: u8) -> SeekMode {
+    match v {
+        0 => SeekMode::Segment,
+        1 => SeekMode::NativeSeek,
+        _ => SeekMode::Reload,
+    }
+}
+
+static SEEK_MODE: AtomicU8 = AtomicU8::new(seek_mode_to_u8(SeekMode::Segment));
 
 /// Set once a native `Seek` was REFUSED during the current playback, and preserved by `reload_at`
 /// (whose fresh session would otherwise re-select `NativeSeek` and pay a refused `Seek` plus a full
@@ -90,12 +87,12 @@ pub fn set_native_seek_refused(refused: bool) {
 
 /// This session's direct-play seek mode.
 pub fn seek_mode() -> SeekMode {
-    SeekMode::from_u8(SEEK_MODE.load(Relaxed))
+    seek_mode_from_u8(SEEK_MODE.load(Relaxed))
 }
 
 /// Set this session's direct-play seek mode (`launch_native_open` selects it, `feed_stream` downgrades it).
 pub fn set_seek_mode(mode: SeekMode) {
-    SEEK_MODE.store(mode.to_u8(), Relaxed);
+    SEEK_MODE.store(seek_mode_to_u8(mode), Relaxed);
 }
 
 /// Select this session's seek mode from the device and the installed sink, and publish it. The

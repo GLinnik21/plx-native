@@ -2,6 +2,7 @@
 //! Payload builders take resolved facts; the physical Load worker reads sound output and logs.
 
 pub mod aq;
+pub mod control;
 pub mod era_callbacks;
 pub mod demux_clock;
 pub mod feed_driver;
@@ -323,36 +324,9 @@ pub fn decoder_row(video: LoadVideo, caps: &plx_platform::devcaps::Caps) -> (u32
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PcmFormat {
-    pub sample_rate: u32,
-    pub bits: u32,
-    pub channels: u32,
-    pub source_rate: u32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DolbyHdrInfo {
-    pub profile_id: i64,
-    pub track_type: &'static str,
-    pub encryption_type: &'static str,
-}
-
-/// Facts frozen by the common route adapter before native Load construction.
-pub struct PayloadFacts {
-    pub pcm: Option<Result<PcmFormat, String>>,
-    pub max_raster: (u16, u16),
-    pub fps: f64,
-    pub dv: Option<DolbyHdrInfo>,
-    pub immersive: bool,
-    pub force_direct_play: bool,
-}
-
-#[derive(Clone, Copy)]
-pub struct PayloadOptions {
-    pub with_fps: bool,
-    pub suppress_dv_node: bool,
-}
+// The Load payload's plain facts live in the contract (`plx_playback_contract::feed`), where the
+// player names them without naming this crate; the old paths stay for this crate's own code.
+pub use plx_playback_contract::feed::{DolbyHdrInfo, PayloadFacts, PayloadOptions, PcmFormat};
 
 pub struct BuiltPayload {
     pub json: String,

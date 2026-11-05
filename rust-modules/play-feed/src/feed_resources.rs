@@ -59,11 +59,7 @@ struct LoadTicket {
     native_epoch: u32,
 }
 
-pub struct AcceptedLoadOutcome {
-    pub attempt: AttemptId,
-    pub ok: bool,
-    pub elapsed_ms: Option<u64>,
-}
+pub use plx_playback_contract::feed::AcceptedLoadOutcome;
 
 impl FeedResources {
     pub fn new(shared: &'static crate::shared::PhysicalShared,

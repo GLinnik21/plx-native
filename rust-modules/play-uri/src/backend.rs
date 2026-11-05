@@ -5,6 +5,7 @@ use crate::acb_drive::{self, Descriptor, Executed, Verdict};
 use crate::picture_gate::{Event as PictureEvent, Fx as PictureFx, PictureGate};
 use crate::session_io;
 use crate::uri_lifecycle::{Event as LifeEvent, Fx as LifeFx, Lifecycle, Phase};
+use crate::acb_envelope::Ls2VideoInfo;
 use crate::uri_protocol::{AbrBps, AcbSource, Ev, Message, Method, UriCall};
 use plx_base::task::MainThread;
 use plx_platform::tv::plane::{Refusal, Shown};
@@ -65,6 +66,10 @@ enum ControlKind { Transport, Track(TrackSelection), Seek { ack: bool, done: boo
 struct PendingControl { command: CommandId, operation: Operation, kind: ControlKind,
     deadline_ms: u64 }
 
+/// The adaptive-streaming rates the production `load` carries: none. The one place they are named,
+/// so the `adaptive` member of a derived envelope is judged against the Load that was sent.
+const LOAD_BPS: AbrBps = AbrBps { start: None, maximum: None, minimum: None };
+
 /// The active URL and the staged URL are deliberately excluded from `Debug` and all notices.
 /// The caller must keep this object until `Release::Released`, or retain it in quarantine.
 pub struct UriBackend {
@@ -88,7 +93,8 @@ pub struct UriBackend {
     close_reported: bool,
     quarantine_reported: bool,
     acb: AcbBind,
-    /// The envelope the service reported for the loaded media: the only descriptor an ACB bind sends.
+    /// The envelope for the loaded media that an ACB bind sends: the one the service sent in the ACB
+    /// schema, else the one derived from its `videoInfo`. Never anything else.
     acb_source: Option<AcbSource>,
     foreground_sent: bool,
     /// Why the plane owner refused the bind, when it did; the failure reported is typed from it.
@@ -450,7 +456,7 @@ impl UriBackend {
             return;
         }
         if method == Method::Register {
-            self.feed(LifeEvent::Call(UriCall::Load { window_id: self.window_id.clone(), bps: AbrBps::default() }), mt, now_ms);
+            self.feed(LifeEvent::Call(UriCall::Load { window_id: self.window_id.clone(), bps: LOAD_BPS }), mt, now_ms);
             return;
         }
         if method == Method::Load {
@@ -461,8 +467,9 @@ impl UriBackend {
         // sequence that `loadCompleted` starts already has the facts it waits for.
         if self.config.binding == Binding::Acb {
             if let Some(source) = message.acb_source.as_ref() {
-                self.acb_source = Some(source.clone());
-                self.acb_step(AcbEvent::Video(source.video), mt, now_ms);
+                self.take_source(source.clone(), mt, now_ms);
+            } else if let Some(info) = message.ls2_video.as_ref() {
+                self.derive_source(info, mt, now_ms);
             }
         }
         let mut ended = false;
@@ -533,6 +540,24 @@ impl UriBackend {
         else { self.maybe_subscribe(mt, now_ms); }
     }
 
+    /// Hold `source` as the envelope to send and tell the sequence its facts.
+    fn take_source(&mut self, source: AcbSource, mt: &MainThread, now_ms: u64) {
+        let video = source.video;
+        self.acb_source = Some(source);
+        self.acb_step(AcbEvent::Video(video), mt, now_ms);
+    }
+
+    /// The 4.5 service sends `videoInfo` and never the ACB schema, so the envelope is the
+    /// firmware's own spelling of those facts (`acb_envelope`). An envelope the service sent in the
+    /// ACB schema is always preferred; among derived ones the latest wins.
+    fn derive_source(&mut self, info: &Ls2VideoInfo, mt: &MainThread, now_ms: u64) {
+        if self.acb_source.as_ref().is_some_and(|held| !held.is_derived()) { return; }
+        let source = AcbSource::derived(info, LOAD_BPS.is_adaptive());
+        if self.acb_source.as_ref() == Some(&source) { return; }
+        if self.acb_source.is_none() { plx_base::eventlog::log("uri-acb: envelope derived from videoInfo"); }
+        self.take_source(source, mt, now_ms);
+    }
+
     /// The ACB gate, run through the shared sequence's own first step before anything is opened.
     fn acb_gate(&mut self, mt: &MainThread) -> bool {
         self.acb = AcbBind::new(false);
@@ -597,13 +622,14 @@ impl UriBackend {
         }
     }
 
-    /// Perform one step of the sequence. The descriptor is only ever the service's own envelope
-    /// for exactly these facts; nothing is built here.
+    /// Perform one step of the sequence. The descriptor is only ever the held envelope
+    /// ([`Self::acb_source`]) for exactly these facts; nothing is built here.
     fn acb_run(&mut self, op: &crate::acb_bind::Op, mt: &MainThread, now_ms: u64) -> Executed {
         let source = self.acb_source.as_ref();
         let mut descriptor = |media_id: &crate::uri_protocol::MediaId, video: crate::uri_protocol::VideoFacts| {
             source.filter(|source| &source.media_id == media_id && source.video == video)
-                .map(|source| Descriptor { text: source.text().to_owned(), label: "observed-envelope" })
+                .map(|source| Descriptor { text: source.text().to_owned(),
+                    label: if source.is_derived() { "derived-envelope" } else { "observed-envelope" } })
                 .ok_or("the service reported no source envelope for these video facts")
         };
         let executed = acb_drive::execute(op, mt, self.config.display, self.config.plane, &mut descriptor,
@@ -1429,6 +1455,11 @@ mod tests {
             self.bus.say("load", r#"{"returnValue":true,"mediaId":"m1"}"#);
             self.driver.poll(&self.mt);
         }
+        /// The service says `message` on the subscription and the backend polls it in.
+        fn subscription_says(&mut self, message: &str) {
+            self.bus.say("subscribe", message);
+            self.driver.poll(&self.mt);
+        }
         fn bus_methods(&self) -> Vec<&'static str> {
             self.bus.0.lock().unwrap().calls.iter().map(|(name, _, _)| *name).collect()
         }
@@ -1754,6 +1785,126 @@ mod tests {
             observation: Observation::Failed(Failure::TimedOut) }));
         assert!(sink.calls().is_empty(), "a descriptor is never made up from bare video facts");
         assert!(!rig.driver.plane_owned());
+    }
+
+    /// What the 4.5 set's LS2 service sent on the subscription for the measured 720p24 H.264 clip
+    /// (2026-11-05), one message each and in this order, with the media id the rig's Load reply
+    /// gives (`m1`) in place of the captured one: `mediaId` sits INSIDE each event object, and the
+    /// service never sent the ACB `context`+`video` schema.
+    const CAPTURED_VIDEO_INFO: &str = r#"{"videoInfo":{"width":1280,"height":720,"aspectRatio":"16:9","frameRate":24,"bitRate":120,"mode3D":"2d","actual3D":"2d","scanType":"progressive","pixelAspectRatio":"1:1","afd":16,"rotation":0,"userData":"userData=(null)","specificRendering":"none","hfr":false,"hdrType":"none","SEI":{"displayPrimariesX0":0,"displayPrimariesX1":0,"displayPrimariesX2":0,"displayPrimariesY0":0,"displayPrimariesY1":0,"displayPrimariesY2":0,"whitePointX":0,"whitePointY":0,"minDisplayMasteringLuminance":0,"maxDisplayMasteringLuminance":0,"maxContentLightLevel":0,"maxPicAverageLightLevel":0},"VUI":{"transferCharacteristics":2,"colorPrimaries":2,"matrixCoeffs":2},"mediaId":"m1"}}"#;
+    const CAPTURED_SOURCE_INFO: &str = r#"{"sourceInfo":{"numPrograms":1,"seekable":true,"trickable":true,"startDate":-1,"rotation":0,"programInfo":[{"duration":90000,"numAudioTracks":1,"audioTrackInfo":[{"bitRate":0,"codec":"aac","profile":"lc","level":2,"sampleRate":48,"channels":1,"pid":257,"ctag":-1,"audioType":0,"trackId":-1,"immersive":"none","periodStart":0}],"numVideoTracks":1,"videoTrackInfo":[{"angleNumber":0,"codec":"h264","profile":"high","level":4.1,"frameRate":24,"pid":256,"ctag":-1,"trackId":-1,"orgCodec":"h264","width":1280,"height":720,"periodStart":0}],"numSubtitleTracks":0,"subtitleTrackInfo":""}],"mediaId":"m1"}}"#;
+    const CAPTURED_LOAD_COMPLETED: &str = r#"{"loadCompleted":{"mediaId":"m1"}}"#;
+
+    /// The envelope the firmware's own conversion makes of [`CAPTURED_VIDEO_INFO`] (report:
+    /// `docs/measurements/uri-acb-envelope-2026-11-05.md`), as compact JSON.
+    fn captured_envelope() -> serde_json::Value {
+        serde_json::json!({"context":"m1","content":"movie","video":{
+            "frameRate":24,"scanType":"VIDEO_PROGRESSIVE","width":1280,"height":720,"bitRate":120,
+            "adaptive":false,"path":"network","pixelAspectRatio":{"width":1,"height":1},"afd":16,
+            "rotation":0,"data3D":{"originalPattern":"2d","currentPattern":"2d","typeLR":"LR"},
+            "hfr":false,"hdrType":"none",
+            "mediaSei":{"displayPrimariesX0":0,"displayPrimariesX1":0,"displayPrimariesX2":0,"displayPrimariesY0":0,"displayPrimariesY1":0,"displayPrimariesY2":0,"whitePointX":0,"whitePointY":0,"minDisplayMasteringLuminance":0,"maxDisplayMasteringLuminance":0,"maxContentLightLevel":0,"maxPicAverageLightLevel":0},
+            "mediaVui":{"transferCharacteristics":2,"colorPrimaries":2,"matrixCoeffs":2}}})
+    }
+
+    #[test]
+    fn acb_binds_with_the_envelope_derived_from_the_services_video_info() {
+        let (mut rig, sink, plane) = Rig::acb();
+        rig.acb_loading();
+        for message in [r#"{"audioInfo":{"sampleRate":48,"channels":1,"codec":"aac","mediaId":"m1"}}"#,
+            r#"{"bufferRange":{"beginTime":0,"endTime":0,"remainingTime":0,"percent":0,"mediaId":"m1"}}"#,
+            CAPTURED_VIDEO_INFO, CAPTURED_SOURCE_INFO] {
+            rig.subscription_says(message);
+        }
+        assert!(sink.calls().is_empty(), "nothing binds before the service has loaded the media");
+        rig.subscription_says(CAPTURED_LOAD_COMPLETED);
+        assert_eq!(sink.calls(), ["plane_media_id m1"]);
+        assert_eq!(plane.phase(), plx_platform::tv::plane::Phase::Bound);
+        for t in [200, 400, 600, 900] { rig.at(t); rig.driver.poll(&rig.mt); }
+        let len = captured_envelope().to_string().len();
+        assert_eq!(sink.calls(), ["plane_media_id m1", "plane_loaded",
+            &format!("plane_send_video_data len={len}"), "plane_finish"]);
+        assert!(rig.driver.plane_owned());
+    }
+
+    impl Rig {
+        /// Pace the sequence out from `loadCompleted` at t=0, as `acb_bound` does.
+        fn pace_out(&mut self) { for t in [200, 400, 600, 900] { self.at(t); self.driver.poll(&self.mt); } }
+        /// The poll at `ms` carries the start's `TimedOut` failure.
+        fn assert_times_out_at(&mut self, ms: u64) {
+            self.at(ms - 1);
+            assert!(self.driver.poll(&self.mt).is_empty());
+            self.at(ms);
+            assert!(self.driver.poll(&self.mt).contains(&DriverEvent::Observation { attempt: A,
+                observation: Observation::Failed(Failure::TimedOut) }));
+        }
+    }
+
+    #[test]
+    fn acb_video_info_after_load_completed_ends_the_wait_and_binds() {
+        let (mut rig, sink, _) = Rig::acb();
+        rig.acb_loading();
+        rig.subscription_says(CAPTURED_LOAD_COMPLETED);
+        assert!(sink.calls().is_empty(), "no facts yet: the sequence waits");
+        rig.at(5_000);
+        rig.subscription_says(CAPTURED_VIDEO_INFO);
+        assert_eq!(sink.calls(), ["plane_media_id m1"]);
+        for t in [200, 400, 600, 900] { rig.at(5_000 + t); rig.driver.poll(&rig.mt); }
+        let len = captured_envelope().to_string().len();
+        assert_eq!(sink.calls(), ["plane_media_id m1", "plane_loaded", &format!("plane_send_video_data len={len}"), "plane_finish"]);
+    }
+
+    #[test]
+    fn acb_load_completed_without_a_usable_video_info_still_times_out_and_sends_nothing() {
+        let derived_from = |info: &str| info.to_owned();
+        let missing_par = CAPTURED_VIDEO_INFO.replace(r#""pixelAspectRatio":"1:1","#, "");
+        let bad_par = CAPTURED_VIDEO_INFO.replace(r#""pixelAspectRatio":"1:1""#, r#""pixelAspectRatio":"16/9""#);
+        let unknown_3d = CAPTURED_VIDEO_INFO.replace(r#""mode3D":"2d""#, r#""mode3D":"hologram""#);
+        let other_media = CAPTURED_VIDEO_INFO.replace(r#""mediaId":"m1""#, r#""mediaId":"m2""#);
+        let no_nested_id = format!(r#"{{"mediaId":"m1",{}"#, &CAPTURED_VIDEO_INFO.replace(r#","mediaId":"m1""#, "")[1..]);
+        for (why, video_info) in [("no videoInfo at all", None), ("a missing member", Some(missing_par)),
+            ("a malformed pixel aspect ratio", Some(bad_par)), ("an unknown 3D string", Some(unknown_3d)),
+            ("another media's facts", Some(other_media)), ("an identity only outside the event", Some(derived_from(&no_nested_id)))] {
+            let (mut rig, sink, _) = Rig::acb();
+            rig.acb_loading();
+            if let Some(video_info) = video_info { rig.subscription_says(&video_info); }
+            rig.subscription_says(CAPTURED_LOAD_COMPLETED);
+            rig.assert_times_out_at(20_000);
+            assert!(sink.calls().is_empty(), "{why}: a descriptor is never made up");
+            assert!(!rig.driver.plane_owned(), "{why}");
+        }
+    }
+
+    #[test]
+    fn acb_the_services_own_acb_envelope_is_preferred_to_a_derived_one_in_either_order() {
+        let own_len = serde_json::from_str::<serde_json::Value>(ENVELOPE).unwrap()["sourceInfo"].to_string().len();
+        // The service's envelope arrives after `videoInfo`: it replaces the derived one.
+        let (mut rig, sink, _) = Rig::acb();
+        rig.acb_loading();
+        rig.subscription_says(CAPTURED_VIDEO_INFO);
+        rig.subscription_says(ENVELOPE);
+        rig.pace_out();
+        assert_eq!(sink.calls()[2], format!("plane_send_video_data len={own_len}"), "{:?}", sink.calls());
+        // It arrives first: a later `videoInfo` does not displace it.
+        let (mut rig, sink, _) = Rig::acb();
+        rig.acb_loading();
+        rig.subscription_says(ENVELOPE);
+        rig.subscription_says(CAPTURED_VIDEO_INFO);
+        rig.pace_out();
+        assert_eq!(sink.calls()[2], format!("plane_send_video_data len={own_len}"), "{:?}", sink.calls());
+        assert_eq!(sink.calls().len(), 4);
+    }
+
+    #[test]
+    fn acb_a_later_video_info_replaces_a_derived_envelope_before_the_descriptor_is_sent() {
+        let (mut rig, sink, _) = Rig::acb();
+        rig.acb_loading();
+        rig.subscription_says(&CAPTURED_VIDEO_INFO.replace(r#""rotation":0"#, r#""rotation":90"#));
+        rig.subscription_says(CAPTURED_VIDEO_INFO);
+        rig.subscription_says(CAPTURED_LOAD_COMPLETED);
+        rig.pace_out();
+        let len = captured_envelope().to_string().len();
+        assert_eq!(sink.calls()[2], format!("plane_send_video_data len={len}"), "{:?}", sink.calls());
     }
 
     #[test]

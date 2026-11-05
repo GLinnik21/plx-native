@@ -16,11 +16,4 @@ pub struct PhysicalOpen {
     pub auto_original: Option<Box<dyn plx_playback_contract::adaptive::OriginalSession>>,
 }
 
-/// Evidence about the unchanged source wire, separate from the native Load presentation.
-#[derive(Clone, Copy)]
-pub struct OriginalDvFacts {
-    pub present: bool,
-    pub profile: i64,
-    pub bl_compat: i64,
-    pub el_present: bool,
-}
+pub use plx_playback_contract::feed::OriginalDvFacts;
