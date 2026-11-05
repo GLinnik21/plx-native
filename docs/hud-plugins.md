@@ -1940,7 +1940,11 @@ the recipe and the tool's own output, to remove the dev install (the page's Remo
 The local state-matrix preview is
 `tools/hud_preview.py --hud <file>` (already on main), the PR15 "`plxnative-sim --hud <file>`" of this plan; a static web
 editor stays later. Verified on the host (the store, the page, the tool against a stub simulator and a local HTTP
-client). Not verified on the set: the whole loop on the television.
+client).
+On a debug build on the television, with a dev-source install seeded by hand, Play on its row fetched the next
+`tools/hud-dev` build over the home network and showed the install offer as a development source; Install replaced it,
+the store kept the address, and the Remove row took it out. Not verified on the set: typing an address into "Install
+from address", because the remote harness cannot type into that field (its text token reaches only Search).
 
 PR16. `fuzz/`, a `cargo fuzz` package outside the `rust-modules` workspace: one libFuzzer target per untrusted-input
 parser (`admit`, `bundle::read`, `bundle::archive::read`, `svg_subset::check_asset`, `address::parse`,
