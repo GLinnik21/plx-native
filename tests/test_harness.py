@@ -5825,6 +5825,247 @@ SUMMARY = ("summary load=ok playing={playing} t_load=700 t_playing=2000 currentT
            "shape=named end={end}")
 
 
+def _trace(t, text):
+    """One synthetic PRODUCT trace line: `t` is the backend's own clock in ms."""
+    return f"uri-trace: t={t} {text}"
+
+
+def _product_run(seconds, clock=lambda sec: sec * 1000, remaining=lambda sec: 12, display=6, playing=7,
+                 service=True, presented=True, plane=True, callbacks=True, extra=()):
+    """A SYNTHETIC log in the line formats the PRODUCTION URI backend writes (the dev route): the plane
+    lines with task ids that are NOT 1-4, `uri: service playing`, `uri: presented`, then one
+    `uri-trace:` `currentTime` and `bufferRange` a second. No line here comes from a television."""
+    lines = []
+    if plane:
+        lines += ["videoplane: BOUND — the gate presents unconditionally and no frame may snapshot",
+                  f"acb display fullscreen=1 rv=1 task={display}", f"acb playing rv=1 task={playing}"]
+    if callbacks:
+        lines += [f"acb callback task={display} ev=1 app=1 play=0",
+                  f"acb callback task={playing} ev=1 app=1 play=1",
+                  "uri-acb: display/PLAYING completed (event 1 on both tasks)"]
+    lines += [_trace(700, "ev=bufferingStart"), _trace(2000, "ev=bufferingEnd")]
+    if service:
+        lines.append("uri: service playing")
+    lines.append(_trace(2000, "ev=playing"))
+    for sec in range(seconds):
+        t = 3000 + 1000 * sec
+        value = clock(sec)
+        if value is not None:
+            lines.append(_trace(t, f"ev=currentTime value={value}"))
+        r = remaining(sec)
+        lines.append(_trace(t, f"ev=bufferRange beginTime=0 endTime={r} remainingTime={r} percent=10"))
+    if presented:
+        lines.append("uri: presented (service playing; plane window and PLAYING completed; "
+                     "clock advanced from 0 to 1042 ms)")
+    return lines + list(extra)
+
+
+class UriProductGrading(unittest.TestCase):
+    """The product route (`uri_route: product`): the PRODUCTION URI backend, bound through ACB, on a
+    dev route. Its evidence is `uri-trace:` lines (the probe's event text, a different prefix) plus the
+    plane and backend lines production already writes. Synthetic logs in those line formats."""
+
+    CASE = {"name": "product", "fixture": "pipe_hls_720p24_20m/index.m3u8", "uri_route": "product",
+            "triggers": {"ptype": "0"}, "operations": [{"op": "play"}],
+            "expect": {"no_playing_error": True, "uri_playing": True, "uri_plane_bound": True,
+                       "uri_presented": True, "uri_service_playing": True,
+                       "uri_clock_past_s": 60, "uri_max_stall_s": 3}}
+    P = "product"
+
+    def test_the_route_selects_the_graders(self):
+        self.assertEqual(run.uri_route(self.CASE), "product")
+        self.assertEqual(run.uri_route({"triggers": {"uriprobe": "load"}}), "probe")
+        self.assertIsNone(run.uri_route({"triggers": {"sinkmax": "4"}}))
+        self.assertTrue(run.uri_mode(self.CASE))
+        self.assertFalse(run.uri_mode({"name": "plain"}))
+
+    def test_a_healthy_product_log_passes_every_grade_and_the_wire_check(self):
+        passed, results = run.evaluate_pipeline(self.CASE, _product_run(66), (36, 36, 2))
+        self.assertTrue(passed, results)
+        self.assertEqual({label for label, _, _ in results},
+                         {"uri_playing", "uri_plane_bound", "uri_presented", "uri_service_playing",
+                          "uri_clock_past", "uri_max_stall", "no_error", "server_wire"})
+
+    def test_the_probe_prefix_is_not_product_evidence_and_the_trace_prefix_is_not_probe_evidence(self):
+        probe_lines = [ln.replace("uri-trace:", "uriprobe:") for ln in _product_run(66)]
+        self.assertFalse(run.a_uri_playing(probe_lines, self.P)[0])
+        self.assertFalse(run.a_uri_clock_past(probe_lines, 60, self.P)[0])
+        self.assertFalse(run.a_uri_max_stall(probe_lines, 3, self.P)[0])
+        self.assertFalse(run.a_uri_playing(_product_run(66))[0], "the probe reader reads uriprobe: only")
+
+    def test_each_grade_fails_on_its_own_broken_log(self):
+        broken = {
+            "uri_playing": _product_run(8, clock=lambda sec: 500),
+            "uri_plane_bound": _product_run(66, plane=False),
+            "uri_presented": _product_run(66, presented=False),
+            "uri_service_playing": _product_run(66, service=False),
+            "uri_clock_past": _product_run(40),
+            "uri_max_stall": _product_run(40, clock=lambda sec: min(sec, 19) * 1000 if sec < 30 else sec * 1000),
+            "no_error": _product_run(66, extra=["uri-acb: the bind failed (Refused(Rejected)); closing"]),
+        }
+        for label, log in broken.items():
+            with self.subTest(label):
+                passed, results = run.evaluate_pipeline(self.CASE, log, (36, 36, 2))
+                self.assertFalse(passed)
+                self.assertIn(label, {name for name, ok, _ in results if not ok})
+
+    def test_a_probe_only_log_has_no_product_lines_so_it_cannot_pass_a_product_case(self):
+        passed, results = run.evaluate_pipeline(self.CASE, _uri_run(66), (36, 36, 2))
+        self.assertFalse(passed)
+
+    # -- uri_service_playing / uri_presented --
+
+    def test_service_playing_is_its_own_line_and_not_the_words_inside_the_presented_line(self):
+        only_presented = _product_run(5, service=False)
+        self.assertTrue(any("service playing" in ln for ln in only_presented))
+        self.assertFalse(run.a_uri_service_playing(only_presented)[0])
+        self.assertTrue(run.a_uri_service_playing(_product_run(5))[0])
+        self.assertFalse(run.a_uri_service_playing([])[0])
+
+    def test_presented_wants_the_clock_to_have_advanced(self):
+        def line(p, n):
+            return (f"uri: presented (service playing; plane window and PLAYING completed; "
+                    f"clock advanced from {p} to {n} ms)")
+        self.assertTrue(run.a_uri_presented([line(0, 1042)])[0])
+        self.assertTrue(run.a_uri_presented([line(500, 501)])[0])
+        for p, n in ((1000, 1000), (1000, 900), (0, 0)):
+            with self.subTest(p=p, n=n):
+                ok, why = run.a_uri_presented([line(p, n)])
+                self.assertFalse(ok)
+                self.assertIn("from", why)
+        self.assertFalse(run.a_uri_presented(_product_run(5, presented=False))[0])
+        self.assertFalse(run.a_uri_presented(["uri: presented (garbled)"])[0])
+        stuck_then_moved = [line(10, 10), line(10, 400)]
+        self.assertTrue(run.a_uri_presented(stuck_then_moved)[0])
+
+    # -- uri_plane_bound reads the ids from the log --
+
+    def test_the_plane_bound_grade_reads_the_task_ids_from_the_log(self):
+        for display, playing in ((6, 7), (1, 2), (41, 9)):
+            with self.subTest(display=display, playing=playing):
+                ok, why = run.a_uri_plane_bound(_product_run(2, display=display, playing=playing), self.P)
+                self.assertTrue(ok, why)
+                self.assertIn(f"task={display}", why)
+                self.assertIn(f"task={playing}", why)
+        # the order of the lines is not graded: a callback may print before the display line
+        shuffled = ["acb callback task=6 ev=1 app=1 play=0", "acb callback task=7 ev=1 app=1 play=1",
+                    "acb display fullscreen=1 rv=1 task=6", "acb playing rv=1 task=7",
+                    "videoplane: BOUND"]
+        self.assertTrue(run.a_uri_plane_bound(shuffled, self.P)[0])
+
+    def test_the_plane_bound_grade_refuses_each_way_the_bind_can_be_incomplete(self):
+        base = ["videoplane: BOUND", "acb display fullscreen=1 rv=1 task=6", "acb playing rv=1 task=7",
+                "acb callback task=6 ev=1 app=1 play=0", "acb callback task=7 ev=1 app=1 play=1"]
+        self.assertTrue(run.a_uri_plane_bound(base, self.P)[0])
+        cases = {
+            "no BOUND line": [ln for ln in base if "BOUND" not in ln],
+            "unbound": [ln.replace("BOUND", "unbound") for ln in base],
+            "no display line": [ln for ln in base if "acb display" not in ln],
+            "no playing line": [ln for ln in base if "acb playing" not in ln],
+            "display rv=0": [ln.replace("fullscreen=1 rv=1", "fullscreen=1 rv=0") for ln in base],
+            "playing rv=-1": [ln.replace("playing rv=1", "playing rv=-1") for ln in base],
+            "display task never called back": [ln for ln in base if "callback task=6" not in ln],
+            "playing task never called back": [ln for ln in base if "callback task=7" not in ln],
+            "display callback ev=0": [ln.replace("task=6 ev=1", "task=6 ev=0") for ln in base],
+            "a stray task answers ev=2": base + ["acb callback task=9 ev=2 app=1 play=1"],
+            "callbacks for the wrong ids": [ln.replace("callback task=6", "callback task=1")
+                                            .replace("callback task=7", "callback task=2") for ln in base],
+        }
+        for what, log in cases.items():
+            with self.subTest(what):
+                self.assertFalse(run.a_uri_plane_bound(log, self.P)[0], what)
+
+    def test_only_the_unloaded_task_may_answer_other_than_ev_1(self):
+        base = ["videoplane: BOUND", "acb display fullscreen=1 rv=1 task=6", "acb playing rv=1 task=7",
+                "acb callback task=6 ev=1 app=1 play=0", "acb callback task=7 ev=1 app=1 play=1"]
+        released = base + ["acb unloaded rv=1 task=8", "acb callback task=8 ev=0 app=1 play=0"]
+        self.assertTrue(run.a_uri_plane_bound(released, self.P)[0])
+        wrong = base + ["acb unloaded rv=1 task=8", "acb callback task=9 ev=0 app=1 play=0"]
+        self.assertFalse(run.a_uri_plane_bound(wrong, self.P)[0])
+        # an unload that was refused (task=0) excuses nothing
+        refused = base + ["acb unloaded rv=-2 task=0", "acb callback task=0 ev=3 app=1 play=0"]
+        self.assertFalse(run.a_uri_plane_bound(refused, self.P)[0])
+        # ...and the unloaded id does not stand in for the bind's own callback
+        self.assertFalse(run.a_uri_plane_bound(
+            [ln for ln in released if "callback task=6" not in ln] +
+            ["acb unloaded rv=1 task=6", "acb callback task=6 ev=0 app=1 play=0"], self.P)[0])
+
+    def test_the_probe_plane_rule_is_unchanged(self):
+        self.assertTrue(run.a_uri_plane_bound(_uri_run(2))[0])
+        self.assertFalse(run.a_uri_plane_bound(_product_run(2))[0], "tasks 1-4 are the PROBE's contract")
+
+    # -- the shared clock graders, on the other prefix --
+
+    def test_clock_stall_and_drain_run_unchanged_on_trace_lines(self):
+        log = _product_run(66)
+        self.assertTrue(run.a_uri_clock_past(log, 60, self.P)[0])
+        self.assertFalse(run.a_uri_clock_past(_product_run(56), 60, self.P)[0])
+        self.assertTrue(run.a_uri_max_stall(log, 3, self.P)[0])
+        held = _product_run(40, clock=lambda sec: min(sec, 19) * 1000 if sec < 27 else sec * 1000)
+        ok, why = run.a_uri_max_stall(held, 3, self.P)
+        self.assertFalse(ok)
+        self.assertIn("stall", why)
+        series = [12, 12, 12, 12, 11, 10, 9, 8, 7, 6]
+        drain = [_trace(2000, "ev=playing")]
+        drain += [_trace(3000 + 1000 * i, f"ev=bufferRange beginTime={i} endTime={i + r} remainingTime={r}")
+                  for i, r in enumerate(series)]
+        drain.append(_trace(13000, "ev=bufferingStart"))
+        self.assertTrue(run.a_uri_drain_warning(drain, 5, self.P)[0])
+        self.assertFalse(run.a_uri_drain_warning(drain, 15, self.P)[0])
+        probe = [ln.replace("uri-trace:", "uriprobe:") for ln in drain]
+        self.assertFalse(run.a_uri_drain_warning(probe, 5, self.P)[0])
+
+    def test_a_product_playing_grade_never_reads_a_probe_summary(self):
+        summary = _uri(9000, SUMMARY.format(playing="yes", moved="yes", end="back"))
+        ok, why = run.a_uri_playing([summary], self.P)
+        self.assertFalse(ok)
+        self.assertIn("uri-trace", why)
+
+    # -- no_error --
+
+    def test_the_product_error_keys(self):
+        for line in ("uri-acb: the bind failed (Refused(Rejected)); closing",
+                     "uri-acb: bind not granted (Refused(Deferred))",
+                     "uri: product driver installation refused",
+                     "uri-dev: armed but this display is not ACB-bound; ignored",
+                     "uri-dev: the trigger names no part=; ignored",
+                     "smp_cb type=18 error", "Playing error 5"):
+            with self.subTest(line):
+                ok, why = run.a_no_error(_product_run(3, extra=[line]), self.P)
+                self.assertFalse(ok)
+                self.assertIn(line.split(" (")[0][:20], why)
+        self.assertTrue(run.a_no_error(_product_run(3), self.P)[0])
+        # a log line that merely mentions the dev route is not a refusal
+        self.assertTrue(run.a_no_error(["uri-dev: armed part=990001"], self.P)[0])
+
+    def test_the_product_error_gate_has_no_summary_to_read(self):
+        summary = _uri(9000, SUMMARY.format(playing="no", moved="no", end="refused:acb"))
+        self.assertTrue(run.a_no_error([summary], self.P)[0])
+        self.assertFalse(run.a_no_error([summary])[0], "the probe mode still reads it")
+
+    # -- the expect keys --
+
+    def test_product_only_keys_are_unknown_on_a_probe_case_and_known_on_a_product_one(self):
+        for key in ("uri_presented", "uri_service_playing"):
+            self.assertIn(key, run.URI_EXPECT_KEYS)
+        probe = dict(UriModeGrading.BOUND_CASE, expect={"uri_presented": True})
+        passed, results = run.evaluate_pipeline(probe, _uri_run(10), (1, 1, 1))
+        self.assertFalse(passed)
+        self.assertEqual(results[0][:2], ("uri_expect", False))
+        self.assertIn("uri_presented", results[0][2])
+
+    def test_an_unknown_route_fails_loudly(self):
+        case = dict(self.CASE, uri_route="prduct")
+        passed, results = run.evaluate_pipeline(case, _product_run(66), (36, 36, 2))
+        self.assertFalse(passed)
+        self.assertEqual(results[0][:2], ("uri_route", False))
+
+    def test_a_product_case_never_exits_early(self):
+        early, why = run.early_exit_allowed(self.CASE, {})
+        self.assertFalse(early)
+        self.assertIn("window", why)
+
+
 class UriModeGrading(unittest.TestCase):
     """Cases that arm the URI probe play through the TV's native player, so the buffer-feed checks
     grade lines it never writes. These tests pin the graders that replace them, on SYNTHETIC logs

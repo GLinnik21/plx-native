@@ -1529,14 +1529,32 @@ def a_codec(lines, expected, min_width, size=None):
 
 
 # ---------------------------------------------------------------------------------------------
-# URI mode. A case whose own `triggers` arm `uriprobe` plays through the TV's NATIVE player, not
-# the app's buffer feed, so none of the Feed vocabulary (`stream: ... path=`, `load:`, media-position
-# samples) is ever written. The evidence is the probe's `uriprobe: t=<ms since arm> ...` lines,
-# graded below; `evaluate_pipeline` runs this branch INSTEAD of the Feed checks.
+# URI mode. A case whose own `triggers` arm `uriprobe`, or that says `"uri_route": "product"`, plays
+# through the TV's NATIVE player, not the app's buffer feed, so none of the Feed vocabulary
+# (`stream: ... path=`, `load:`, media-position samples) is ever written. Two routes, one set of graders:
+#   probe    the developer probe (`uriprobe`): evidence is `uriprobe: t=<ms since arm> ...` lines;
+#   product  the PRODUCTION URI backend, ACB-bound, on the debug-only dev route (`plxnative-uridev`):
+#            evidence is `uri-trace: t=<ms> ...` lines whose event text is the probe's, plus the
+#            plane and backend lines production writes (`uri: service playing`, `uri: presented`).
+# `evaluate_pipeline` runs this branch INSTEAD of the Feed checks.
 # ---------------------------------------------------------------------------------------------
+URI_PROBE, URI_PRODUCT = "probe", "product"
 URI_EXPECT_KEYS = ("uri_playing", "uri_plane_bound", "uri_clock_past_s", "uri_max_stall_s",
-                   "uri_drain_warning_s")
+                   "uri_drain_warning_s", "uri_presented", "uri_service_playing")
+# Lines only the production backend writes: on a probe case they grade nothing, so they are unknown there.
+URI_PRODUCT_ONLY_KEYS = ("uri_presented", "uri_service_playing")
 RE_URI_LINE = re.compile(r"uriprobe: t=(\d+) (\S.*?)\s*$")
+RE_URI_TRACE_LINE = re.compile(r"uri-trace: t=(\d+) (\S.*?)\s*$")
+URI_LINE_RES = {URI_PROBE: RE_URI_LINE, URI_PRODUCT: RE_URI_TRACE_LINE}
+URI_LINE_NAMES = {URI_PROBE: "uriprobe", URI_PRODUCT: "uri-trace"}
+RE_URI_SERVICE_PLAYING = re.compile(r"\buri: service playing\b")
+RE_URI_PRESENTED = re.compile(r"\buri: presented \(.*?\bfrom (-?\d+) to (-?\d+) ms\)")
+RE_ACB_DISPLAY = re.compile(r"acb display fullscreen=\d+ rv=(-?\d+) task=(-?\d+)")
+RE_ACB_PLAYING = re.compile(r"acb playing rv=(-?\d+) task=(-?\d+)")
+RE_ACB_UNLOADED = re.compile(r"acb unloaded rv=(-?\d+) task=(-?\d+)")
+# What the production backend and the dev route log when the bind did not happen or the route was refused.
+RE_URI_PRODUCT_ERROR = re.compile(r"uri-acb: the bind failed|uri-acb: bind not granted|"
+                                  r"uri: product driver installation refused|uri-dev: .*ignored")
 RE_URI_CLOCK = re.compile(r"ev=currentTime value=(-?\d+)")
 RE_URI_REMAINING = re.compile(r"ev=bufferRange .*?remainingTime=(-?\d+(?:\.\d+)?)")
 RE_URI_RANGE = re.compile(r"ev=bufferRange beginTime=(-?\d+(?:\.\d+)?) endTime=(-?\d+(?:\.\d+)?)")
@@ -1547,20 +1565,29 @@ RE_ACB_CALLBACK = re.compile(r"acb callback task=(\d+) ev=(-?\d+)")
 URI_START_PHASES = ("register", "acb", "acb-video", "load", "play", "setWindowId")
 
 
-def uri_mode(case):
-    """Whether this case arms the URI probe itself, through its own `triggers`.
+def uri_route(case):
+    """`"probe"` when the case arms the URI probe itself, through its own `triggers`; `"product"` when it
+    says `"uri_route": "product"` (the production backend on the dev route); None for a Feed case.
+    Any other `uri_route` value is returned as written, so `evaluate_uri` can fail it by name.
 
     Deliberately NOT `--extra-trigger plxnative-uriprobe=...`: that flag runs the Feed assertions
     with the probe armed on top (README), and grading it as a URI case would swallow them.
     """
-    return "uriprobe" in (case.get("triggers") or {})
+    if "uri_route" in case:
+        return case["uri_route"]
+    return URI_PROBE if "uriprobe" in (case.get("triggers") or {}) else None
 
 
-def _uri_events(lines):
-    """`[(t_ms, text), ...]` for every `uriprobe: t=<ms> ...` line, in log order."""
+def uri_mode(case):
+    """Whether this case is graded as a URI case at all (either route)."""
+    return uri_route(case) is not None
+
+
+def _uri_events(lines, mode=URI_PROBE):
+    """`[(t_ms, text), ...]` for every `uriprobe:` (probe) or `uri-trace:` (product) line, in log order."""
     out = []
     for ln in lines:
-        m = RE_URI_LINE.search(ln)
+        m = URI_LINE_RES[mode].search(ln)
         if m:
             out.append((int(m.group(1)), m.group(2)))
     return out
@@ -1591,10 +1618,17 @@ def _uri_summary_error(fields):
     return None
 
 
-def a_no_error(lines):
+def a_no_error(lines, mode=URI_PROBE):
+    """No Starfish playing error, and in URI mode no terminal URI error: the probe's own `summary` for
+    the probe route; for the product route (which has no summary) a bind that failed or was not granted,
+    a driver installation that was refused, or a dev trigger that was `ignored`."""
     for ln in lines:
         if "smp_cb type=18" in ln or "Playing error" in ln:
             return False, f"error surfaced :: {ln.strip()}"
+        if mode == URI_PRODUCT:
+            if RE_URI_PRODUCT_ERROR.search(ln):
+                return False, f"URI product error surfaced :: {ln.strip()}"
+            continue
         m = RE_URI_LINE.search(ln)
         if m and m.group(2).startswith("summary "):
             # The summary is the probe's own closing line and exists on a healthy run that ended
@@ -1615,15 +1649,16 @@ def _uri_clock(events):
     return out
 
 
-def a_uri_playing(lines):
+def a_uri_playing(lines, mode=URI_PROBE):
     """The native player played: `playing` and a media clock that advanced.
 
     Read from the probe's terminal `summary` when there is one (`playing=yes`,
     `currentTime_advanced=yes`). A run the harness cut off at its cap has none, so the same claim
     is then read from the events: an `ev=playing`, and a `currentTime` that strictly advanced after it.
+    The product route has no summary and is read from its `uri-trace:` events alone.
     """
-    events = _uri_events(lines)
-    summary = _uri_summary(events)
+    events = _uri_events(lines, mode)
+    summary = _uri_summary(events) if mode == URI_PROBE else None
     if summary:
         fields = summary[1]
         ok = fields.get("playing") == "yes" and fields.get("currentTime_advanced") == "yes"
@@ -1631,21 +1666,58 @@ def a_uri_playing(lines):
                     f"currentTime_advanced={fields.get('currentTime_advanced')}")
     play = next((i for i, (_, text) in enumerate(events) if text == "ev=playing"), None)
     if play is None:
-        return False, "no `uriprobe: ... ev=playing` and no summary"
+        return False, f"no `{URI_LINE_NAMES[mode]}: ... ev=playing`" + (" and no summary" if mode == URI_PROBE else "")
     clock = [v for _, v in _uri_clock(events[play:])]
     if not any(b > a for a, b in zip(clock, clock[1:])):
         return False, f"ev=playing seen, but the media clock never advanced ({len(clock)} sample(s))"
     return True, f"ev=playing, then the media clock advanced to {max(clock) / 1000:.1f}s"
 
 
-def a_uri_plane_bound(lines):
+def _uri_product_plane_bound(lines):
+    """The product route's bind: the task ids are READ from the log, never assumed.
+
+    `acb display fullscreen=1 rv=1 task=N` and `acb playing rv=1 task=M` name the two tasks the bind
+    waits on; each needs an `acb callback task=<id> ev=1`. No callback may answer another `ev`, except
+    for the id an `acb unloaded ... task=K` line names (the release answers for itself, and a refused
+    unload, `task=0`, excuses nothing). Line order is not graded.
+    """
+    shown = {}
+    for what, rx in (("display", RE_ACB_DISPLAY), ("playing", RE_ACB_PLAYING)):
+        found = [m for m in (rx.search(ln) for ln in lines) if m]
+        if not found:
+            return False, f"`videoplane: BOUND`, but no `acb {what} ... task=N` line"
+        bad = [m.group(0) for m in found if int(m.group(1)) != 1]
+        if bad:
+            return False, f"`acb {what}` did not answer rv=1 :: {bad[0]}"
+        shown[what] = sorted({int(m.group(2)) for m in found})
+    callbacks = {}
+    for ln in lines:
+        m = RE_ACB_CALLBACK.search(ln)
+        if m:
+            callbacks.setdefault(int(m.group(1)), []).append(int(m.group(2)))
+    released = {int(m.group(2)) for m in (RE_ACB_UNLOADED.search(ln) for ln in lines) if m} - {0}
+    for what, tasks in shown.items():
+        for task in tasks:
+            if 1 not in callbacks.get(task, ()):
+                return False, f"`acb {what}` named task={task}, which has no `acb callback task={task} ev=1`"
+    odd = {t: evs for t, evs in callbacks.items() if t not in released and any(ev != 1 for ev in evs)}
+    if odd:
+        return False, f"acb callback task(s) answered other than ev=1 (and were not unloaded): {odd}"
+    return True, (f"videoplane: BOUND, display task={shown['display'][-1]} and playing "
+                  f"task={shown['playing'][-1]} both answered ev=1")
+
+
+def a_uri_plane_bound(lines, mode=URI_PROBE):
     """The ACB video plane was bound: `videoplane: BOUND`, and ACB callback tasks 1-4, all `ev=1`.
 
     A `videoplane: unbound` line (case-sensitive match) is a plane that was never attached or has
-    been released, and a task that answered anything but `ev=1` did not complete.
+    been released, and a task that answered anything but `ev=1` did not complete. The product route
+    reads its task ids from the display and playing lines instead (`_uri_product_plane_bound`).
     """
     if not any("videoplane: BOUND" in ln for ln in lines):
         return False, "no `videoplane: BOUND` line"
+    if mode == URI_PRODUCT:
+        return _uri_product_plane_bound(lines)
     seen = {}
     for ln in lines:
         m = RE_ACB_CALLBACK.search(ln)
@@ -1660,9 +1732,32 @@ def a_uri_plane_bound(lines):
     return True, "videoplane: BOUND, acb callbacks 1-4 all ev=1"
 
 
-def a_uri_clock_past(lines, secs):
+def a_uri_service_playing(lines):
+    """The production backend logged `uri: service playing` (the service reported Playing). The words
+    also sit inside the `uri: presented (service playing; ...` line, so the match wants the line's own
+    `uri: ` prefix."""
+    hit = next((ln for ln in lines if RE_URI_SERVICE_PLAYING.search(ln)), None)
+    if hit is None:
+        return False, "no `uri: service playing` line"
+    return True, hit.strip()
+
+
+def a_uri_presented(lines):
+    """The production backend claimed a picture and its clock moved: `uri: presented (... from P to N ms)`
+    with N > P. A claim whose clock did not advance is not a presentation."""
+    seen = [m for m in (RE_URI_PRESENTED.search(ln) for ln in lines) if m]
+    if not seen:
+        return False, "no `uri: presented (... from P to N ms)` line"
+    for m in seen:
+        if int(m.group(2)) > int(m.group(1)):
+            return True, f"presented, clock advanced from {m.group(1)} to {m.group(2)} ms"
+    last = seen[-1]
+    return False, f"presented, but the clock did not advance (from {last.group(1)} to {last.group(2)} ms)"
+
+
+def a_uri_clock_past(lines, secs, mode=URI_PROBE):
     """The media clock reached `secs` seconds: the largest `ev=currentTime value=` (ms)."""
-    clock = _uri_clock(_uri_events(lines))
+    clock = _uri_clock(_uri_events(lines, mode))
     if not clock:
         return False, "no `ev=currentTime` sample"
     top = max(v for _, v in clock)
@@ -1693,7 +1788,7 @@ def _uri_exempt_spans(events):
     return spans
 
 
-def a_uri_max_stall(lines, max_s):
+def a_uri_max_stall(lines, max_s, mode=URI_PROBE):
     """While playing, the media clock never stood still for more than `max_s` seconds of wall time.
 
     The unit is the gap between successive STRICTLY INCREASING `currentTime` samples (a sample
@@ -1704,7 +1799,7 @@ def a_uri_max_stall(lines, max_s):
     `bufferRange`, `streamingInfo`), which keeps arriving through a stall, or the probe's closing
     `summary` if that is later. A gap that overlaps a pause or seek the case drove is not a stall.
     """
-    events = _uri_events(lines)
+    events = _uri_events(lines, mode)
     play = next((i for i, (_, text) in enumerate(events) if text == "ev=playing"), None)
     if play is None:
         return False, "no `ev=playing`, so there was no playback to hold steady"
@@ -1747,7 +1842,7 @@ def _uri_lead(text):
     return float(m.group(2)) - float(m.group(1)) if m else None
 
 
-def a_uri_drain_warning(lines, min_s):
+def a_uri_drain_warning(lines, min_s, mode=URI_PROBE):
     """A collapse is WARNED of: before the first mid-playback `bufferingStart`, the buffered lead
     (`bufferRange.remainingTime`, else `endTime - beginTime`: see `_uri_lead`) declined without once
     rising for at least `min_s` seconds.
@@ -1758,7 +1853,7 @@ def a_uri_drain_warning(lines, min_s):
     at the run's peak, so a buffer that sat full and then stalled with no slope in between is not
     a warning, and it must be a net decline.
     """
-    events = _uri_events(lines)
+    events = _uri_events(lines, mode)
     play = next((i for i, (_, text) in enumerate(events) if text == "ev=playing"), None)
     if play is None:
         return False, "no `ev=playing`"
@@ -1793,22 +1888,34 @@ def evaluate_uri(case, lines, srv_delta):
     `server_wire` (the TV did fetch from the fixture server).
     """
     exp = case["expect"]
-    unknown = sorted(k for k in exp if k.startswith("uri_") and k not in URI_EXPECT_KEYS)
+    mode = uri_route(case)
     results = []
+    if mode not in (URI_PROBE, URI_PRODUCT):
+        results.append(("uri_route", False, f"unknown uri_route {mode!r}: want 'product' (or arm uriprobe)"))
+        mode = URI_PRODUCT if "uri_route" in case else URI_PROBE
+    if mode == URI_PRODUCT and "uriprobe" in (case.get("triggers") or {}):
+        results.append(("uri_route", False, "a product case must not arm the probe: the two routes "
+                                           "would write one boot's evidence twice"))
+    unknown = sorted(k for k in exp if k.startswith("uri_")
+                     and (k not in URI_EXPECT_KEYS or (mode != URI_PRODUCT and k in URI_PRODUCT_ONLY_KEYS)))
     if unknown:
         results.append(("uri_expect", False, f"unknown expect key(s): {', '.join(unknown)}"))
     if exp.get("uri_playing"):
-        results.append(("uri_playing", *a_uri_playing(lines)))
+        results.append(("uri_playing", *a_uri_playing(lines, mode)))
     if exp.get("uri_plane_bound"):
-        results.append(("uri_plane_bound", *a_uri_plane_bound(lines)))
+        results.append(("uri_plane_bound", *a_uri_plane_bound(lines, mode)))
+    if exp.get("uri_service_playing"):
+        results.append(("uri_service_playing", *a_uri_service_playing(lines)))
+    if exp.get("uri_presented"):
+        results.append(("uri_presented", *a_uri_presented(lines)))
     if "uri_clock_past_s" in exp:
-        results.append(("uri_clock_past", *a_uri_clock_past(lines, exp["uri_clock_past_s"])))
+        results.append(("uri_clock_past", *a_uri_clock_past(lines, exp["uri_clock_past_s"], mode)))
     if "uri_max_stall_s" in exp:
-        results.append(("uri_max_stall", *a_uri_max_stall(lines, exp["uri_max_stall_s"])))
+        results.append(("uri_max_stall", *a_uri_max_stall(lines, exp["uri_max_stall_s"], mode)))
     if "uri_drain_warning_s" in exp:
-        results.append(("uri_drain_warning", *a_uri_drain_warning(lines, exp["uri_drain_warning_s"])))
+        results.append(("uri_drain_warning", *a_uri_drain_warning(lines, exp["uri_drain_warning_s"], mode)))
     if exp.get("no_playing_error", True):
-        results.append(("no_error", *a_no_error(lines)))
+        results.append(("no_error", *a_no_error(lines, mode)))
     results.append(("server_wire", *a_server_wire(
         srv_delta, exp.get("server_opens_min", 1), exp.get("server_range_opens_min", 0),
         exp.get("server_opens_exact"), exp.get("server_range_opens_exact"))))
@@ -2514,7 +2621,7 @@ def early_exit_allowed(case, cfg):
         # instrument exists to show the collapse, which comes late), and `uri_max_stall_s` grades the
         # WORST stretch of the clock, which a prefix cannot settle: a stall at 50 s is invisible to a
         # run that stopped at 8 s because every assertion held.
-        return False, "a URI case's evidence is the whole `uriprobe:` window, and a stall can come late"
+        return False, "a URI case's evidence is the whole `uriprobe:`/`uri-trace:` window, and a stall can come late"
     if case.get("gst_trace"):
         return False, "gst_trace assertions are graded only after the run"
     if "abr_shape" in exp:
