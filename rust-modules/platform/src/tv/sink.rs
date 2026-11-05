@@ -58,8 +58,9 @@ impl PlaneUnload {
 /// `setDisplayWindow` and `setState(PLAYING)`. `rv` is 1 only when BOTH calls were accepted, and
 /// then each call's firmware task id is in `display_task` / `playing_task`; the firmware completes
 /// each call with its own id, and `tv::plane::Plane` matches those two completions (its `Shown`).
-/// The ids are meaningful ONLY when `rv == 1` (the seam writes them from locals and a refused call
-/// writes none), exactly as [`PlaneUnload::task`].
+/// The ids are meaningful ONLY when `rv == 1`: the seam copies each id out of the library's task
+/// slot only for a call that answered 1, and writes 0 otherwise, as [`PlaneUnload::task`] is
+/// meaningful only for an answered unload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlaneFinish {
     pub rv: c_int,

@@ -178,8 +178,8 @@ mod uri_boot_tests {
             binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, preview_rectangle: false },
             Arc::new(QualifiedOriginal));
-        assert!(rig.app.adapters.player.install_uri_product_with_ports(
-            &mut rig.app.player.session, port, bus, display));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, port, bus, display));
         rig.request();
         let metric_request = rig.app.player.session.metric_request().expect("accepted URI request");
         rig.release.send(()).unwrap();
@@ -226,8 +226,8 @@ mod uri_boot_tests {
         let display: &'static Display = Box::leak(Box::new(Display));
         let port = ResolvePort::new(ProductEvidence::unqualified(display.window_mode()),
             Arc::new(QualifiedOriginal));
-        assert!(rig.app.adapters.player.install_uri_product_with_ports(
-            &mut rig.app.player.session, port, bus, display));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, port, bus, display));
         rig.request();
         rig.release.send(()).unwrap();
         let mut resolved = None;
@@ -259,8 +259,8 @@ mod uri_boot_tests {
             binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, preview_rectangle: false },
             Arc::new(QualifiedOriginal));
-        assert!(rig.app.adapters.player.install_uri_product_with_ports(
-            &mut rig.app.player.session, port, bus, display));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, port, bus, display));
         rig.request();
         let request = rig.app.player.session.metric_request().expect("logical request");
         rig.release.send(()).unwrap();
@@ -328,8 +328,8 @@ mod uri_boot_tests {
             binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, preview_rectangle: false },
             Arc::new(QualifiedOriginal));
-        assert!(rig.app.adapters.player.install_uri_product_with_ports(
-            &mut rig.app.player.session, port, bus, display));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, port, bus, display));
         rig.request();
         let request = rig.app.player.session.metric_request().expect("logical request");
         rig.release.send(()).unwrap();
@@ -421,11 +421,11 @@ mod uri_boot_tests {
         let _serial = plx_base::testlock::serial();
         struct RestoreDecoder;
         impl Drop for RestoreDecoder {
-            fn drop(&mut self) { plx_media::ff::force_speed_decoder_for_test(false); }
+            fn drop(&mut self) { plx_media_codecs::ffi::force_speed_decoder_for_test(false); }
         }
         let _decoder = RestoreDecoder;
         // The host has no bundled TV FFmpeg; exercise the existing test-only decoder seam.
-        plx_media::ff::force_speed_decoder_for_test(true);
+        plx_media_codecs::ffi::force_speed_decoder_for_test(true);
         let Some(mut rig) = Rig::serving(false) else { return };
         plx_plex::plex::client_for(rig.sid).unwrap()
             .set_link(plx_plex::plex::probe::Location::Local);
@@ -438,8 +438,8 @@ mod uri_boot_tests {
             binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, preview_rectangle: false },
             Arc::new(QualifiedOriginal));
-        assert!(rig.app.adapters.player.install_uri_product_with_ports(
-            &mut rig.app.player.session, port, bus, display));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, port, bus, display));
         rig.request();
         rig.release.send(()).unwrap();
         let mut resolved = None;
@@ -561,8 +561,8 @@ mod uri_boot_tests {
             binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, preview_rectangle: false },
             Arc::new(QualifiedOriginal));
-        assert!(rig.app.adapters.player.install_uri_product_with_ports(
-            &mut rig.app.player.session, port, bus, display));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, port, bus, display));
         rig.request();
         rig.release.send(()).unwrap();
         let mut resolved = None;
@@ -619,8 +619,8 @@ mod uri_boot_tests {
             binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, preview_rectangle: false },
             Arc::new(QualifiedTwoAudio));
-        assert!(rig.app.adapters.player.install_uri_product_with_ports(
-            &mut rig.app.player.session, port, bus, display));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, port, bus, display));
         rig.request();
         rig.release.send(()).unwrap();
         let mut resolved = None;
@@ -680,8 +680,8 @@ mod uri_boot_tests {
             binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, preview_rectangle: false },
             Arc::new(QualifiedOriginal));
-        assert!(rig.app.adapters.player.install_uri_product_with_ports(
-            &mut rig.app.player.session, port, bus, display));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, port, bus, display));
         rig.request();
         rig.release.send(()).unwrap();
         let mut resolved = None;
@@ -755,8 +755,8 @@ mod uri_boot_tests {
             binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, preview_rectangle: false },
             Arc::new(QualifiedOriginal));
-        assert!(rig.app.adapters.player.install_uri_product_with_ports(
-            &mut rig.app.player.session, port, bus, display));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, port, bus, display));
         rig.request();
         rig.release.send(()).unwrap();
         let mut resolved = None;
@@ -820,8 +820,8 @@ mod uri_boot_tests {
             binding: Binding::Exported { canvas: (1920, 1080) },
             callable: caps, certified: caps, preview_rectangle: false },
             Arc::new(QualifiedOriginal));
-        assert!(rig.app.adapters.player.install_uri_product_with_ports(
-            &mut rig.app.player.session, port, bus, display));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, port, bus, display));
         rig.request();
         rig.release.send(()).unwrap();
         let mut resolved = None;

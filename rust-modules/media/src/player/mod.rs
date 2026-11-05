@@ -82,7 +82,6 @@ pub mod text_ass; // text subtitles to ASS: dialect converter, synthesized heade
 pub mod text_style; // the viewer's size/position picks as the numbers that converter and the screen's lift use (pure)
 #[cfg(feature = "play-feed")]
 pub mod threads;
-#[cfg(any(feature = "play-feed", feature = "play-uri"))]
 mod timeline;
 pub mod transport;
 pub mod video_geometry;
@@ -145,7 +144,7 @@ fn display() -> &'static dyn plx_platform::tv::sink::DisplaySink {
 
 /// The process's ACB plane owner: the one holder of the video-plane binding for both backends,
 /// booted once by the application's `acb_init` (`app/adapters/backends.rs`). It replaces the old `ACB_OK` / `PTYPE` statics.
-#[cfg(any(feature = "play-feed", feature = "play-uri"))]
+#[cfg(any(feature = "play-feed", all(feature = "devtriggers", feature = "play-uri")))]
 pub(crate) fn plane() -> &'static plx_platform::tv::plane::PlaneOwner {
     plx_platform::tv::plane::installed()
 }
@@ -678,7 +677,6 @@ pub fn observe_video_plane(
     let bound = _pa.feed_stage().is_some_and(acb_playstate_ready);
     #[cfg(not(feature = "play-feed"))]
     let bound = false;
-    #[cfg(feature = "play-uri")]
     let bound = bound || _pa.uri_product_plane_owned();
     #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
     let bound = bound || _pa.uri_plane_open();
@@ -815,7 +813,6 @@ pub fn is_playing(ps: &crate::route::PlaybackSession) -> bool {
 }
 /// The derived playback state — the ONE thing the HUD renders from. See `PlaybackState`.
 pub fn state(ps: &crate::route::PlaybackSession) -> PlaybackState {
-    #[cfg(feature = "play-uri")]
     if ps.uri_recovery_pending().is_some() {
         // The native URI owner still has to prove Released before a same-episode Feed resolve.
         // A physical Failed report during that close cannot be a handled terminal error yet.
@@ -1818,7 +1815,6 @@ pub fn intended_pos_ns(ps: &crate::route::PlaybackSession) -> i64 {
 /// backend has not yet reported a position. UI widgets may use their existing zero placeholder;
 /// a viewer reconfiguration requires this proof before replacing the current executor.
 pub fn intended_pos_known_ns(ps: &crate::route::PlaybackSession) -> Option<i64> {
-    #[cfg(feature = "play-uri")]
     if ps.attempt_view().backend() == Some(attempt_view::Backend::Uri) {
         let facts = ps.attempt_view().facts();
         if facts.seek_pending_ns.is_some() {
@@ -2716,7 +2712,6 @@ mod tests {
         assert_eq!(names, ["0.5×", "0.75×", "1×", "1.25×", "1.5×", "1.75×", "2×"]);
     }
 
-    #[cfg(feature = "play-uri")]
     #[test]
     fn accepted_uri_speed_intent_is_visible_without_claiming_feed_application() {
         let _serial = plx_base::testlock::serial();
@@ -2727,7 +2722,6 @@ mod tests {
         assert_eq!(applied_rate(&ps), None, "an active URI has no Feed speed evidence");
     }
 
-    #[cfg(feature = "play-uri")]
     #[test]
     fn reconfiguration_playhead_requires_addressed_position_evidence() {
         let _serial = plx_base::testlock::serial();
@@ -2741,7 +2735,6 @@ mod tests {
         assert_eq!(intended_pos_known_ns(&ps), Some(42_000_000_000));
     }
 
-    #[cfg(feature = "play-uri")]
     #[test]
     fn reported_uri_clock_supersedes_unpresented_resume_but_not_a_new_seek() {
         let _serial = plx_base::testlock::serial();

@@ -3,7 +3,8 @@ use super::*;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use plx_platform::tv::uri::{CloseStatus, RequestId, SessionId, Shape, UriMedia, UriPoll, UriReply};
-use plx_play_uri::backend::NativeTrackIndex;
+use plx_play_uri::backend::{Binding as UriBinding, Config as UriConfig, MonotonicClock, UriBackend};
+use plx_playback_contract::uri::NativeTrackIndex;
 use plx_playback_contract::{Fidelity, InitialPlayback, Requirements, SourceKind, TrackChoice,
     TrackKind, TrackSelection};
 
@@ -80,7 +81,7 @@ fn opened() -> (crate::route::PlaybackSession, PlayerAdapter, &'static Bus,
     ps.begin_attempt_view(route_attempt, super::super::attempt_view::Backend::Uri);
     let bus = Box::leak(Box::new(Bus::new()));
     let mut pa = PlayerAdapter::new(unsafe { MainThread::assume() });
-    assert!(pa.install_uri_backend_config(UriConfig {
+    assert!(pa.install_uri_driver(Box::new(UriBackend::new(UriConfig {
         transport: bus, display: Box::leak(Box::new(plx_platform::tv::sink::NoSink)),
         plane: plx_platform::tv::plane::installed(),
         clock: Box::new(Clock), app_id: "fixture".into(), binding: UriBinding::Unbound,
@@ -88,7 +89,7 @@ fn opened() -> (crate::route::PlaybackSession, PlayerAdapter, &'static Bus,
             pause: true, seek: true, audio_track: true, subtitle_track: true,
             audio_off: false, subtitle_off: false },
         startup_timeout_ms: 500, release_allowance_ms: 100, source_ttl_ms: 100,
-    }).is_ok());
+    }))).is_ok());
     let attempt = route_attempt.contract_id();
     let source = pa.stage_uri_source(attempt, UriSource::new(
         "https://example.invalid/selected.mkv".into(), vec![

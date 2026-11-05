@@ -220,8 +220,9 @@ long acb_create(const char *appId, int playerType) {
      * NULL when SAM had not exported it, and this line then quietly claimed to be the app users
      * install. With a developer build able to sit beside that app on one television, a wrong id
      * here binds the video plane for the WRONG application — audio with a black plane, no error
-     * line anywhere. The near half is fixed (`plane_boot::acb_init_acb` now passes
-     * `paths::app_id()`, read from the install directory, which cannot be absent); refusing here
+     * line anywhere. The near half is fixed (`acb_init_acb` in the app's
+     * `src/app/adapters/backends.rs` now passes `paths::app_id()`, read from the install
+     * directory, which cannot be absent); refusing here
      * rather than guessing is what keeps the pair readable together. */
     if (g_acb) {
         if (appId) {

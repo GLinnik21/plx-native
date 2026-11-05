@@ -1456,7 +1456,6 @@ mod tests {
         assert!(!starts_rebuffer(S::Playing, S::Buffering, false));
     }
 
-    #[cfg(feature = "play-uri")]
     #[test]
     fn uri_playing_starts_lifecycle_without_claiming_panel_presentation() {
         use plx_telemetry::telemetry::consent::{self, Consent};
