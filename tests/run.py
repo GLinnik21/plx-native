@@ -6121,10 +6121,18 @@ def run_uri_product_case(case, cfg, srv, url_base, verbose):
     The harness's own mock PMS is only the plan CARRIER: the app resolves its clip as an ordinary movie
     (guest, `--mock`), the dev route (`plxnative-uridev`) answers the qualification with the fixture
     server's URL, and the TV fetches the HLS stream from the fixture server (shaper and wire counters
-    keep working). Order matters and is kept: refuse (case, address) -> mock up -> fabricated guest token
-    (which proves the synthetic mock) -> triggers -> stream; the dev trigger is deleted in a `finally` however the run ends, and the log must
-    prove the synthetic mock before anything is graded (fail closed). A refusal that comes before the
-    set is touched fails THIS case, not the suite.
+    keep working). Order matters and is kept: refuse (case, address) -> close the previous app -> mock up ->
+    fabricated guest token (which proves the synthetic mock) -> triggers -> stream; the dev trigger is
+    deleted in a `finally` however the run ends, and the log must prove the synthetic mock before anything
+    is graded (fail closed). A refusal that comes before the set is touched fails THIS case, not the suite.
+
+    **The previous app is closed BEFORE the mock is up, never after.** Nothing closes a case's app at the end
+    of its own case, so the previous case's app is still playing when this one starts, and every case's mock
+    listens on the same configured address. Its close reports `stopped` with its position, and a close that
+    comes after this case's mock is up delivers that report to the FRESH mock, which stores it as the carrier's
+    `viewOffset`: the app then resumes from the previous case's position (`_bound_collapse` resumed at 76.8 s of
+    its 90 s clip and ran to the end of stream instead of draining). This is the rule `run_case` keeps for the
+    integration tier's seeded position; the position is server state, and the mock is that server.
     """
     name = case["name"]
     tv = cfg["tv"]
@@ -6144,13 +6152,17 @@ def run_uri_product_case(case, cfg, srv, url_base, verbose):
             files = uri_product_files(case, url_base, (host, port), extra)
             log = os.path.join(tempfile.gettempdir(), f"plx-mock-pms-{os.getpid()}-{name}.log")
             args = mock_fps.carrier_server_args(case["carrier_path"])
+            # The previous case's app is closed HERE, before this case's mock listens: its close reports
+            # `stopped` at its position, and the mock would store that as the carrier's `viewOffset` (see
+            # the docstring). After the refusals above, so a refused case still touches neither the set nor
+            # the mock.
+            make(["kill", f"TV={tv}"], timeout=40)
             print(f"    mock: tests/mock_pms.py {' '.join(args)}")
             stack.enter_context(mock_fps.MockPms(host, port, args, log_path=log))
             token = mock_fps.resolve_mock_token(CONFIG_LOCAL_H)
         except (SystemExit, UriProductRefused) as why:
             print(f"    [FAIL] {why}")
             return False, [("uri_product", False, str(why))], []
-        make(["kill", f"TV={tv}"], timeout=40)
         _shape_fixture_server(srv, case)
 
         def take_back():
