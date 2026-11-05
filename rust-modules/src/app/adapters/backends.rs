@@ -106,6 +106,10 @@ pub(crate) fn compose_backends(adapter: &mut PlayerAdapter, session: &mut Playba
     }
     #[cfg(not(feature = "play-uri"))]
     let _ = controlled;
+    // The URI-mode probe (issue #1064) rides every boot, controlled or not: it reads its trigger
+    // file only when a play starts.
+    #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
+    crate::dev::uriprobe::install(adapter);
     session.install_backends(adapter.composed_backends());
 }
 

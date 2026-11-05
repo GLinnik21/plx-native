@@ -105,6 +105,7 @@ devtriggers = [
     "plx_data/devtriggers",
     "plx_session/devtriggers",
     "plx_media/devtriggers",
+    "plx_play_uri?/devtriggers",
     "plx_media_codecs/devtriggers",
     "plx_appkit/devtriggers",
     "plx_screens/devtriggers",
@@ -337,6 +338,8 @@ plx_telemetry = { path = "telemetry", features = ["test-support"] }
 plx_data = { path = "data", features = ["test-support"] }
 # Likewise the session layer's test fixtures (`auth::test_support`, `auth::owner::scenarios`, ...).
 plx_session = { path = "session", features = ["test-support"] }
+# Likewise the play-uri layer's seams (`uriprobe_drive::UriSession::touch_acb_for_test`), for the probe's tests.
+plx_play_uri = { path = "play-uri", features = ["test-support"] }
 # Likewise the media layer's seams (`player::preview`, `player::restore_state_for_test`, ...).
 plx_media = { path = "media", default-features = false, features = ["test-support"] }
 # Likewise the codec layer's seams (`ffi::force_speed_decoder_for_test`: a host test loads no FFmpeg).
