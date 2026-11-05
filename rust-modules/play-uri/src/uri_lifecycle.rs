@@ -331,6 +331,8 @@ impl Lifecycle {
                     message.reply_track = Some(*kind);
                 }
                 if message.acb_source.as_ref().is_some_and(|source| self.media_id.as_ref() != Some(&source.media_id)) { message.acb_source = None; message.video_info = None; }
+                // The same rule for the facts the envelope is derived from: only the loaded media's.
+                if message.ls2_video.as_ref().is_some_and(|info| self.media_id.as_ref() != Some(&info.media_id)) { message.ls2_video = None; message.video_info = None; }
                 // Bus success is not the method's ACK. Subscription events do not acknowledge a call.
                 if let Some(accepted) = message.return_value {
                     pending.ack = Some(reply.ok && accepted);
@@ -893,6 +895,29 @@ mod tests {
         step(&mut m, Event::Status { session: SID, status: CloseStatus::Released });
         assert_eq!(step(&mut m, Event::AcbUnloadDispatched { session: SID, plane: PlanePhase::Released }), [Fx::AcbReleased, Fx::Released]);
         assert!(m.released());
+    }
+
+    #[test]
+    fn uri_acb_derived_envelope_facts_reach_the_owner_only_with_the_owners_own_nested_identity() {
+        let video = |id: &str| format!(r#"{{"videoInfo":{{"mediaId":{id},"width":1280,"height":720,"frameRate":24,"bitRate":120,"mode3D":"2d","scanType":"progressive","pixelAspectRatio":"1:1","afd":16,"rotation":0,"hdrType":"none"}}}}"#);
+        let delivered = |payload: &str| {
+            let mut m = open();
+            let load = call_request(&mut m, UriCall::Load { window_id: None, bps: AbrBps::default() });
+            reply(&mut m, load, "load", r#"{"returnValue":true,"mediaId":"owner"}"#);
+            let sub = call_request(&mut m, UriCall::Subscribe { media_id: "owner".into() });
+            reply(&mut m, sub, "subscribe", payload).into_iter().find_map(|fx| match fx {
+                Fx::Deliver { message, .. } => Some(message),
+                _ => None,
+            })
+        };
+        let own = delivered(&video(r#""owner""#)).expect("the owner's facts are delivered");
+        assert!(own.ls2_video.is_some());
+        // Facts with no identity of their own (an outer id does not count) or another's are dropped.
+        let outer_only = delivered(&video(r#""owner""#).replace(r#""mediaId":"owner","#, "").replacen("{", r#"{"mediaId":"owner","#, 1))
+            .expect("the message itself is the owner's");
+        assert!(outer_only.ls2_video.is_none() && outer_only.acb_source.is_none());
+        assert!(delivered(&video(r#""other""#)).is_none(), "another media's facts never reach the owner");
+        assert!(delivered(&video("42")).is_none());
     }
 
     #[test]

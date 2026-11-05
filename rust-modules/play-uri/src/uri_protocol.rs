@@ -1,4 +1,5 @@
 //! Pure URI protocol builders and normalized decoder. Only explicit supported envelopes drive state.
+use crate::acb_envelope::Ls2VideoInfo;
 use serde_json::{json, Map, Value};
 pub(crate) const SCRUBBED_TEXT_CHARS: usize = 120;
 
@@ -55,6 +56,14 @@ impl AbrBps {
         text.parse().ok().filter(|rate| (1..=MAX_ABR_BPS).contains(rate))
     }
 
+    /// Whether the `load` these rates build is adaptive in the firmware's sense: it carries
+    /// `option.adaptiveStreaming` (the only adaptive marker [`build_load`] ever writes; it sends
+    /// no `mediaTransportType`). libplayerAPIs sets the envelope's `adaptive` from that test on
+    /// the Load it was given.
+    pub fn is_adaptive(self) -> bool {
+        self.object().is_some()
+    }
+
     /// The `bps` object of the load option, `None` when no rate was asked for.
     fn object(self) -> Option<Value> {
         let mut bps = Map::new();
@@ -96,7 +105,7 @@ pub fn build_load(url: &str, app_id: &str, window_id: Option<&str>, bps: AbrBps)
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VideoFacts { pub width: u32, pub height: u32, pub frame_rate: f64, pub bit_rate: Option<u64> }
 impl VideoFacts {
-    fn decode(value: &Value) -> Option<Self> {
+    pub(crate) fn decode(value: &Value) -> Option<Self> {
         let dim = |key| value.get(key)?.as_u64().and_then(|n| u32::try_from(n).ok()).filter(|n| *n > 0);
         let rate = value.get("frameRate")?;
         let frame_rate = rate.as_f64().or_else(|| Some(rate.get("num")?.as_f64()? / rate.get("den")?.as_f64()?))?;
@@ -104,11 +113,22 @@ impl VideoFacts {
         Some(Self { width: dim("width")?, height: dim("height")?, frame_rate, bit_rate: value.get("bitRate").and_then(Value::as_u64).filter(|n| *n > 0) })
     }
 }
-/// A validated observed ACB envelope; driver-only content, excluded from all diagnostics.
+/// A validated ACB envelope: one the service sent (`sourceInfo` in the ACB schema) or one derived
+/// from its `videoInfo` ([`AcbSource::derived`]). Driver-only content, excluded from all diagnostics.
 #[derive(Clone, PartialEq)]
-pub struct AcbSource { pub(crate) media_id: MediaId, pub(crate) video: VideoFacts, text: String }
+pub struct AcbSource { pub(crate) media_id: MediaId, pub(crate) video: VideoFacts, text: String, derived: bool }
 impl std::fmt::Debug for AcbSource { fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str("AcbSource(<opaque>)") } }
-impl AcbSource { pub fn text(&self) -> &str { &self.text } }
+impl AcbSource {
+    pub fn text(&self) -> &str { &self.text }
+    /// The envelope the firmware's own conversion makes of the service's `videoInfo`, for a Load
+    /// that was (`adaptive`) or was not adaptive.
+    pub(crate) fn derived(info: &Ls2VideoInfo, adaptive: bool) -> Self {
+        Self { media_id: info.media_id.clone(), video: info.video, text: info.envelope(adaptive), derived: true }
+    }
+    /// Made here from `videoInfo`, rather than sent by the service in the ACB schema. An envelope
+    /// the service sent is always preferred to a derived one.
+    pub(crate) fn is_derived(&self) -> bool { self.derived }
+}
 
 /// Pinned Stremio051818e descriptor, allowed ONLY for the explicitly controlled SDR720p24 fixture.
 /// Arbitrary URI/HDR streams require an actual validated sourceInfo envelope instead.
@@ -316,7 +336,12 @@ pub struct Message {
     pub(crate) normalized: Vec<Ev>,
     pub(crate) identity_conflict: bool,
     pub(crate) video_info: Option<VideoFacts>,
+    /// The ACB-schema envelope the service itself sent; never filled from `videoInfo`.
     pub(crate) acb_source: Option<AcbSource>,
+    /// The service's `videoInfo`, validated for the firmware's envelope (see `acb_envelope`). Kept
+    /// apart from `acb_source`: the backend writes the envelope (it knows whether the Load was
+    /// adaptive) and the dev probe never sees it.
+    pub(crate) ls2_video: Option<Ls2VideoInfo>,
     pub(crate) selected_track: Option<(&'static str, i64)>,
     pub(crate) reply_request: Option<plx_platform::tv::uri::RequestId>,
     pub(crate) reply_track: Option<&'static str>,
@@ -439,9 +464,10 @@ pub fn parse_event(payload: &str) -> Message {
         .map(diagnostic_text);
     message.current_time = object.get("currentTime").and_then(current_time_of);
     message.video_info = object.get("videoInfo").and_then(VideoFacts::decode);
+    message.ls2_video = object.get("videoInfo").and_then(Ls2VideoInfo::decode);
     if let Some(source) = object.get("sourceInfo").filter(|value| value.is_object()) {
         if let (Some(id), Some(video)) = (source.get("context").and_then(Value::as_str), source.get("video").and_then(VideoFacts::decode)) {
-            message.acb_source = Some(AcbSource {media_id: id.into(), video, text: source.to_string()});
+            message.acb_source = Some(AcbSource {media_id: id.into(), video, text: source.to_string(), derived: false});
             if message.video_info.is_none() { message.video_info = Some(video); }
         }
     }
@@ -584,6 +610,7 @@ pub fn parse_event(payload: &str) -> Message {
         message.selected_track = None;
         message.video_info = None;
         message.acb_source = None;
+        message.ls2_video = None;
         // Refusals still belong to an opaque identity and must pass the owner's check.
         if message.identity_conflict {
             message.media_id = None;
@@ -970,6 +997,30 @@ mod tests {
         assert!(!format!("{message:?} {source:?}").contains("SECRET"));
         let refused=parse_event(&input.replace("{\"mediaId", "{\"returnValue\":false,\"mediaId"));
         assert!(refused.acb_source.is_none()); assert!(refused.video_info.is_none());
+    }
+
+    #[test]
+    fn uri_acb_video_info_is_kept_for_the_derived_envelope_apart_from_the_services_own() {
+        let video=r#""videoInfo":{"mediaId":"m","width":1280,"height":720,"frameRate":24,"bitRate":120,"mode3D":"2d","scanType":"progressive","pixelAspectRatio":"1:1","afd":16,"rotation":0,"hdrType":"none"}"#;
+        let message=parse_event(&format!("{{{video}}}"));
+        assert!(message.ls2_video.is_some()); assert!(message.acb_source.is_none(),"the dev probe reads acb_source and must not see a derived envelope");
+        assert!(!format!("{message:?}").contains("1280"));
+        // A refused call or an identity conflict discards it with the rest.
+        assert!(parse_event(&format!(r#"{{"returnValue":false,{video}}}"#)).ls2_video.is_none());
+        assert!(parse_event(&format!(r#"{{"mediaId":"owner",{video}}}"#)).ls2_video.is_none());
+        // An event that is not a `videoInfo` object, or lacks a member the firmware always writes, keeps none.
+        assert!(parse_event(&format!("{{{}}}",video.replace(r#""afd":16,"#, ""))).ls2_video.is_none());
+        assert!(parse_event(r#"{"videoInfo":{"width":1280,"height":720,"frameRate":24}}"#).ls2_video.is_none());
+    }
+
+    #[test]
+    fn uri_acb_adaptive_follows_the_load_that_build_load_writes() {
+        for bps in [AbrBps::default(), AbrBps{start:Some(1),..AbrBps::default()}, AbrBps{maximum:Some(2),..AbrBps::default()}, AbrBps{minimum:Some(3),..AbrBps::default()}] {
+            let load: Value=serde_json::from_str(&build_load("http://h/v", "app", Some("w"), bps)).unwrap();
+            assert_eq!(bps.is_adaptive(), load["payload"]["option"].get("adaptiveStreaming").is_some(), "{bps:?}");
+            assert!(!load.to_string().contains("mediaTransportType"));
+        }
+        assert!(!AbrBps::default().is_adaptive());
     }
 
     #[test]
