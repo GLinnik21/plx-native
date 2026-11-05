@@ -351,7 +351,7 @@ mod tests {
         let (code,out,err) = go(&["--hud-info"], &|_| panic!("info read a file"), &never);
         assert_eq!((code,err.as_str()),(0,""));
         let info: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(info["languages"].as_array().unwrap().len(),11);
+        assert_eq!(info["languages"].as_array().unwrap().len(),12);
         let (code,out,err) = go(&["--hud-inspect","ref.json","--lang","de"], &serve(REFERENCE_FIXTURE), &shipped);
         assert_eq!((code,err.as_str()),(0,""));
         let info: serde_json::Value = serde_json::from_str(&out).unwrap();
@@ -527,7 +527,7 @@ mod tests {
             (&["--hud-lint", "p.json", "--format", "xml"], "--format is text or json, not \"xml\""),
             (&["--hud-lint", "p.json", "--format", "json", "--format", "text"], "--format given twice"),
             (&["--hud-lint", "p.json", "--lang"], "--lang needs a value"),
-            (&["--hud-lint", "p.json", "--lang", "xx"], "--lang is all or one of en es be fr it pt de hu ru pl nl, not"),
+            (&["--hud-lint", "p.json", "--lang", "xx"], "--lang is all or one of en es be ca fr it pt de hu ru pl nl, not"),
             (&["--hud-lint", "p.json", "--lang", "system"], "not \"system\""),
             (&["--hud-lint", "p.json", "--lang", "de", "--lang", "fr"], "--lang given twice"),
             (&["--hud-export"], "--hud-export needs a package id"),
@@ -620,7 +620,7 @@ mod tests {
         let (code, _, _) = go_priced(&["--hud-lint", "dir/my hud.json", "--lang", "all"], &reader, &factory, &price);
         assert_eq!(code, 0);
         assert_eq!(read.take(), ["dir/my hud.json"]);
-        assert_eq!((built.get(), priced.get()), (1, 1), "each measurer is built once, for all eleven languages");
+        assert_eq!((built.get(), priced.get()), (1, 1), "each measurer is built once, for all twelve languages");
     }
 
     #[test]
@@ -629,11 +629,11 @@ mod tests {
         let all = widths(&["--lang", "all"]);
         assert!(de > 0, "a compile measures text");
         assert_eq!(widths(&[]), all, "all is the default");
-        let tags = ["en", "es", "be", "fr", "it", "pt", "de", "hu", "ru", "pl", "nl"];
+        let tags = ["en", "es", "be", "ca", "fr", "it", "pt", "de", "hu", "ru", "pl", "nl"];
         let each: usize = tags.iter().map(|tag| widths(&["--lang", tag])).sum();
-        assert_eq!(all, each, "the all run is the eleven single-language runs");
+        assert_eq!(all, each, "the all run is the twelve single-language runs");
         assert!(all > de);
-        assert!(all >= 5 * de, "eleven languages, not two: all {all}, de {de}");
+        assert!(all >= 5 * de, "twelve languages, not two: all {all}, de {de}");
     }
 
     #[test]
@@ -792,7 +792,7 @@ mod tests {
             assert_eq!(price.width(&c, size, bold), ShippedMeasure.width(&c, size, bold), "{text:?} at {size} bold={bold}");
         }
         assert_eq!((price.line_h(28), price.cap_h(28)), (ShippedMeasure.line_h(28), ShippedMeasure.cap_h(28)));
-        // and the whole tool over both real measurers: the classic and the reference in all eleven languages
+        // and the whole tool over both real measurers: the classic and the reference in all twelve languages
         // are not rejected, and the cost lines are the television's (`ShippedMeasure`'s), not SDL_ttf's
         for (name, text) in [("classic", CLASSIC_FIXTURE), ("reference", REFERENCE_FIXTURE)] {
             let file = format!("{name}.plxhud");

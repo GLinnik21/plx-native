@@ -976,12 +976,17 @@ mod tests {
     use crate::player_hud::state::Controls;
     use crate::skip_pill::prompt_for;
     use plx_data::metadata::{Marker, MarkerKind};
-    use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+    use plx_platform::i18n::{language_on_this_thread_for_test, Preference, SHIPPED};
     use plx_ui::draw_census::{capture, capture_icons, capture_inks, capture_runs, Run};
     use plx_ui::fixture::FixtureMeasure;
     use plx_ui::icons::Icon;
 
     use plx_machine::machine::{EntryId, FocusRead, Host, InputOwner, PressRead, Tick};
+
+    const FROZEN_CENSUS_LANGUAGES: [Preference; 11] = [
+        Preference::En, Preference::Es, Preference::Be, Preference::Fr, Preference::It, Preference::Pt,
+        Preference::De, Preference::Hu, Preference::Ru, Preference::Pl, Preference::Nl,
+    ];
 
     /// A host with `u32` elements: the least a `DrawFrame` needs for the renderer to paint the strip's Shelf.
     pub(super) struct HostFixture;
@@ -1141,12 +1146,12 @@ mod tests {
     /// **Classic through the renderer is the frozen census of the hand-written draw**: every primitive,
     /// glyph, text run and fill the renderer hands the painter hashes to the line `census-classic.golden.tsv`
     /// froze from the hand-written `classic::draw_hud` (93fc5091d), for every slot, focus, pause and panel
-    /// state, in every shipped language. The state the host cannot reach is the title text and Up Next's
+    /// state, in the eleven historical languages. Catalan has a live-render test below; the state the host cannot reach is the title text and Up Next's
     /// card (they need a playing item): the simulator's frame dump covers them.
     #[test]
     fn classic_through_the_renderer_draws_what_the_hand_written_hud_draws() {
         let mut compared = 0;
-        for language in SHIPPED {
+        for language in FROZEN_CENSUS_LANGUAGES {
             let _language = language_on_this_thread_for_test(language);
             let cx = plx_platform::i18n::current();
             let hud = crate::player_hud::loaded::load_classic("0.0.0-test", cx, &FM);
@@ -1158,8 +1163,22 @@ mod tests {
                 compared += 1;
             }
         }
-        assert_eq!(compared, SHIPPED.len() * cases().len(), "a count, so a loop that compares less cannot pass");
+        assert_eq!(compared, FROZEN_CENSUS_LANGUAGES.len() * cases().len(), "a count, so a loop that compares less cannot pass");
         assert_eq!(FROZEN_CENSUS.lines().count(), compared, "the frozen file holds one line per case");
+    }
+
+    /// Catalan is newer than the frozen hand-written census. Check its live renderer output
+    /// for every reachable frame without fabricating historical hashes.
+    #[test]
+    fn catalan_classic_renders_every_case() {
+        let _language = language_on_this_thread_for_test(Preference::Ca);
+        let cx = plx_platform::i18n::current();
+        let hud = crate::player_hud::loaded::load_classic("0.0.0-test", cx, &FM);
+        for c in cases() {
+            let (drawn_census, drew) = drawn(&hud.compiled, c);
+            assert!(drew, "{c:?}: Catalan classic has a state for every frame");
+            assert!(!drawn_census.0.is_empty(), "{c:?}: Catalan classic draws something");
+        }
     }
 
     /// A failure owns the frame: nothing of the transport draws, and the title's marquee resets.

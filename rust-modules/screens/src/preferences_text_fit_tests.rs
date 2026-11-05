@@ -216,6 +216,7 @@ fn the_subtitle_mode_readouts_are_pinned_in_every_language() {
         ("be", "Калі гук не на мове субцітраў"),
         ("ru", "Если аудио не на языке субтитров"),
         ("nl", "Audio niet in ondertiteltaal"),
+        ("ca", "Àudio en un altre idioma"),
     ];
     for (tag, _) in WANT {
         assert!(SHIPPED.iter().any(|p| p.tag() == *tag), "{tag} is pinned but no longer shipped");

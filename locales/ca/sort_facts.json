@@ -1,0 +1,15 @@
+{
+  "sort_facts.title": "Títol",
+  "sort_facts.date_added": "Data d'alta",
+  "sort_facts.release_date": "Data d'estrena",
+  "sort_facts.rating": "Valoració",
+  "sort_facts.audience_rating": "Valoració del públic",
+  "sort_facts.last_viewed": "Data de visualització",
+  "sort_facts.random": "Aleatori",
+  "sort_facts.a_to_z": "A–Z",
+  "sort_facts.z_to_a": "Z–A",
+  "sort_facts.oldest_first": "Els més antics primer",
+  "sort_facts.newest_first": "Més recents primer",
+  "sort_facts.lowest_first": "De menor a major",
+  "sort_facts.highest_first": "Els més alts primer"
+}

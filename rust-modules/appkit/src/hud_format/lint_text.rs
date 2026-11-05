@@ -1144,7 +1144,7 @@ mod tests {
     #[test]
     fn classic_and_the_fixtures_have_no_text_findings_in_any_language() {
         let langs = LintLang::shipped();
-        assert_eq!(langs.len(), 11);
+        assert_eq!(langs.len(), 12);
         for (name, text) in [
             ("classic", CLASSIC_HUD),
             ("reference", REFERENCE),
@@ -1188,7 +1188,7 @@ mod tests {
             .filter(|f| f.pointer == CHAPTERS_LABEL)
             .map(|f| f.ctx.lang.clone())
             .collect();
-        assert_eq!(tags.len(), 11, "{tags:?}");
+        assert_eq!(tags.len(), 12, "{tags:?}");
         // ... and the clock is the same in all of them, so its finding collapsed to one.
         let clocks: Vec<_> = found.iter().filter(|f| f.pointer == CLOCK).collect();
         assert!(clocks.iter().all(|f| f.ctx.lang.is_none()), "{clocks:?}");
@@ -1380,7 +1380,7 @@ mod tests {
         let tags: BTreeSet<&str> = found.iter().filter_map(|f| f.ctx.lang.as_deref()).collect();
         assert_eq!(
             tags.len(),
-            11,
+            12,
             "the button outgrows 200 px in every shipped language: {tags:?}"
         );
         assert!(
@@ -1436,10 +1436,10 @@ mod tests {
             .filter(|f| f.pointer == FALLBACK)
             .map(|f| f.ctx.lang.clone().unwrap())
             .collect();
-        assert_eq!(fallback.len(), 11, "{fallback:?}");
+        assert_eq!(fallback.len(), 12, "{fallback:?}");
         assert_eq!(
             found.iter().filter(|f| f.pointer == FALLBACK).count(),
-            11,
+            12,
             "{found:?}"
         );
     }
