@@ -11,7 +11,7 @@ use plx_playback_contract::feed::SeekMode;
 #[cfg(all(test, feature = "hostsim"))]
 #[cfg(all(test, feature = "hostsim"))]
 use plx_base::task::MainThread;
-use std::sync::atomic::Ordering::{Acquire, Relaxed};
+use std::sync::atomic::Ordering::Acquire;
 #[cfg(all(test, feature = "hostsim"))]
 use std::sync::atomic::Ordering::Release;
 use std::time::Duration;
@@ -1024,7 +1024,7 @@ fn settle_paused_seek(ps: &mut crate::route::PlaybackSession, pa: &mut super::ad
 fn apply_paused_seek_step(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter,
     step: plx_playback_contract::feed::PausedSeekStep) {
     #[cfg(test)]
-    if step.mid_seek_claimed { MID_SEEK_CLAIMS.fetch_add(1, Relaxed); }
+    if step.mid_seek_claimed { MID_SEEK_CLAIMS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
     if step.preroll_opened { ps.step_readout(super::readout::ReadoutEvent::BeginPausedSeek); }
     if step.finish { super::finish_paused_seek(ps, pa); }
 }
@@ -2058,6 +2058,7 @@ mod tests {
 /// thread did: a frame that makes a PMS round trip is a frame the viewer waits on.
 #[cfg(all(test, feature = "hostsim"))]
 mod flight_tests {
+    use std::sync::atomic::Ordering::Relaxed;
     use super::*;
     use crate::player::{begin_resume, land_resume, suspend_bufferfeed, ResumeOutcome, ResumeStart};
     use crate::route::flight_rig::FlightRig;
@@ -4578,6 +4579,7 @@ mod flight_tests {
 /// reload's EFFECT (a new Engine) where the next seek needs one.
 #[cfg(all(test, feature = "hostsim"))]
 mod native_seek_pump_tests {
+    use std::sync::atomic::Ordering::Relaxed;
     use super::*;
     use crate::player::ffi_host;
     use plx_playback_contract::feed::SeekMode;
@@ -5639,6 +5641,7 @@ mod native_seek_pump_tests {
 /// whole chain, the sink, its callback, the flag and the pump.
 #[cfg(all(test, feature = "hostsim"))]
 mod end_of_film_tests {
+    use std::sync::atomic::Ordering::Relaxed;
     use super::*;
     use crate::player::ffi_host;
     use crate::player::readout::EOS_TAIL_NS;
