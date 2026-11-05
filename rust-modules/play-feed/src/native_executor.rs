@@ -1281,6 +1281,7 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks
                 }
                 eng.prime_play = false;
                 shared.seeking.store(false, Ordering::Relaxed); // playback resumed at the new position → HUD spinner off
+                shared.seek_landed_epoch.store(shared.seek_epoch.load(Ordering::Relaxed), Ordering::Release);
                 if prime_kind == HlsPrimeKind::Rebuffer {
                     plx_base::eventlog::log(&format!(
                         "primed: v={}ms a={}ms recovery_n={} debt={}ms runway={}ms -> Play",
@@ -1431,7 +1432,11 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks: 
                              the rest of this playback",
                         );
                         let tgt = shared.seek_target_ns.load(Ordering::Relaxed).max(0);
-                        transport.seek_reqs.store(1, Ordering::Release);
+                        // Tell the player (it adopts a new epoch as ONE pending seek, which the
+                        // pump takes and reloads at), and keep the feed's own copy armed: it is
+                        // what holds the AU gate shut while the pipeline refuses Feed.
+                        shared.seek_requeue_target.store(tgt, Ordering::Relaxed);
+                        shared.seek_requeue_epoch.fetch_add(1, Ordering::Release);
                         transport.seek_to_ns.store(tgt, Ordering::Release);
                         eng.pending_video = None;
                         break;

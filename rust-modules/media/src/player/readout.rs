@@ -10,8 +10,9 @@
 //!
 //! The machine is pure: no clock, no registry, no thread. It names no feed type; the facts it
 //! holds are the contract's [`FeedRaw`], so it builds whatever backends a composition installs.
-//! It has no effects yet: the intents that also yield a feed command (seek, pause, audio) are
-//! L3b's, and join as events beside these. The pump feeds it: the session's one ingestion
+//! It has no effects of its own: an intent that also yields a feed command (the seek family here;
+//! pause and audio are L3b's) is one event here and one `FeedCommand` the caller sends, so the two
+//! halves never name the same member twice. The pump feeds it: the session's one ingestion
 //! (`ingest_feed_facts`) takes the raw facts, and `present` derives the state and the end of
 //! stream at the pump's derivation point, both addressed by attempt. `state` and `ended` are read
 //! from here alone (`player::state`, `player::ended`), and a `SessionReset` at every real call of
@@ -47,6 +48,22 @@ pub struct PlayerReadout {
     play_rate_permille: i32,
     /// The feed's raw observations from the last ingestion.
     raw: FeedRaw,
+    /// How many seeks this session has asked for: the epoch of the newest request. Monotonic for
+    /// the life of the process; a reset retires the requests it numbered ([`Self::seek_settled`]).
+    seek_epoch: u32,
+    /// Requests up to this epoch are over without the feed's say: a session reset ended them with
+    /// the playback they belonged to, or the player gave up on them.
+    seek_settled: u32,
+    /// Where the seek that waits for the pump is aimed: the newest request's target, or the one a
+    /// refused native `Seek` asked to redo. The pump takes it ([`ReadoutEvent::SeekTaken`]); the
+    /// feed keeps its own copy of it to gate feeding, written by the matching commands only.
+    pending_seek_ns: Option<i64>,
+    /// How many requests the pending target folded since the pump last took one: what the
+    /// `coalesced=` log lines report (a burst of N taps applies one seek and reports N - 1).
+    seek_requests: u32,
+    /// The playhead the HUD freezes at while a seek resolves: the newest request's display target,
+    /// until the player gives up on it or the session resets.
+    seek_display_ns: Option<i64>,
 }
 
 /// How close to the container's duration the playhead must be, after the EOS, to count as the end.
@@ -62,9 +79,11 @@ pub(super) fn stream_ended(pos_ns: i64, duration_ns: i64, pipeline_eos: bool) ->
 
 /// What one pump frame hands the derivation of the UI state and the end of stream: the physical
 /// tick, the two sampled facts that have no [`FeedRaw`] field (a runtime rebuffer, the container's
-/// duration), and the inputs whose writer is still the player's own mailbox (`seeking`,
-/// `pipeline_eos`, the pause transport behind `paused_and_idle`; L3b moves each into the readout
-/// beside the intent that writes it, and this struct loses the field).
+/// duration), and the one input whose writer is still the player's own mailbox (the pause
+/// transport behind `paused_and_idle`; L3b moves it into the readout beside the intent that writes
+/// it, and this struct loses the field). A seek in flight and the pipeline's own end of stream are
+/// the readout's: the requested epoch against the landed one, and the ingested raw facts; so is a
+/// seek that waits for the pump, which the readout adds to `paused_and_idle` itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Presentation {
     pub tick: PresentationTick,
@@ -72,22 +91,17 @@ pub struct Presentation {
     pub rebuffering: bool,
     /// The container's duration, 0 while unknown.
     pub duration_ns: i64,
-    /// A seek is in flight: its target, not the stale frames on the panel, is what the HUD shows.
-    pub seeking: bool,
-    /// The viewer is paused and the pump is doing no work for a picture.
+    /// The viewer is paused and the pump is doing no work for a picture, a seek waiting for the
+    /// pump apart: the readout holds that one, and asks it after taking the frame's sample in.
     pub paused_and_idle: bool,
-    /// The pipeline reported its own end of stream.
-    pub pipeline_eos: bool,
 }
 
 /// The inputs of the derivation whose writer is still the player's own mailbox: what the pump hands
-/// [`super::super::route::PlaybackSession::present`] beside the post-tick sample. L3b moves each into
+/// [`super::super::route::PlaybackSession::present`] beside the post-tick sample. L3b moves it into
 /// the readout beside the intent that writes it and this struct shrinks to nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PresentInputs {
-    pub seeking: bool,
     pub paused_and_idle: bool,
-    pub pipeline_eos: bool,
 }
 
 /// What can happen to the readout. Intent-named: a writer states what occurred, never a field
@@ -98,8 +112,27 @@ pub enum ReadoutEvent {
     StateDerived(PlaybackState),
     /// The pipeline drained to its end of stream.
     StreamEnded,
-    /// A seek was requested, so a drained stream is no longer the end.
-    EndSuperseded,
+    /// A seek was requested: a drained stream is no longer the end, a seek is in flight until the
+    /// feed reports this request's epoch landed, `target_ns` is the pending target (overwriting an
+    /// earlier one, which is the coalescing) and `display_ns` the playhead the HUD freezes at. The
+    /// caller sends the matching `FeedCommand::Seek` carrying [`PlayerReadout::seek_epoch`] read
+    /// after this event.
+    SeekRequested { target_ns: i64, display_ns: i64 },
+    /// The player gave up on the seek in flight (every request so far): the spinner and the frozen
+    /// playhead end without a landing. The pending target is left to the pump, as it always was.
+    /// The caller sends `FeedCommand::AbandonSeek`.
+    SeekAbandoned,
+    /// The pump took the pending seek (applying it, flying it, or reloading at it): nothing
+    /// waits any more and the requests it folded are spent. Read [`PlayerReadout::pending_seek`]
+    /// and [`PlayerReadout::seek_coalesced`] first. The caller sends `FeedCommand::SeekTaken`, so
+    /// the feed's copy goes with this one in the same call.
+    SeekTaken,
+    /// A taken seek was put back (the clock transition was busy, or a newer tap outlived a reload):
+    /// `target_ns` waits again, as a single request. Not a request: the epoch, the in-flight seek
+    /// and the display target are as they were. The caller sends `FeedCommand::SeekRequeued`. The
+    /// feed's own request to redo a refused native `Seek` is not this event: it arrives in the
+    /// ingested raw facts ([`ReadoutEvent::FactsIngested`]).
+    SeekRequeued { target_ns: i64 },
     /// One session's facts are gone (its engine was torn down): back to Idle, nothing ended, no
     /// raw facts. The viewer's speed, the speed latch and the release queue outlive a session.
     SessionReset,
@@ -134,6 +167,11 @@ impl PlayerReadout {
         rate_reload: false,
         play_rate_permille: RATE_NORMAL,
         raw: FeedRaw::IDLE,
+        seek_epoch: 0,
+        seek_settled: 0,
+        pending_seek_ns: None,
+        seek_requests: 0,
+        seek_display_ns: None,
     };
 
     pub fn state(&self) -> PlaybackState { self.state }
@@ -143,6 +181,22 @@ impl PlayerReadout {
     pub fn rate_reload(&self) -> bool { self.rate_reload }
     pub fn play_rate_permille(&self) -> i32 { self.play_rate_permille }
     pub fn raw(&self) -> &FeedRaw { &self.raw }
+    /// The epoch of the newest requested seek (the count of requests), 0 before any.
+    pub fn seek_epoch(&self) -> u32 { self.seek_epoch }
+    /// A seek is in flight: one was requested that neither landed (the feed's last ingested
+    /// `seek_landed_epoch`), nor was given up on, nor ended with a session reset. It is derived,
+    /// not stored, so no writer can leave it armed: this is the wedge `abandon_seek` exists for.
+    pub fn seeking(&self) -> bool {
+        self.seek_epoch > self.seek_settled.max(self.raw.seek_landed_epoch)
+    }
+    /// The target of the seek that waits for the pump, if one does (never negative).
+    pub fn pending_seek(&self) -> Option<i64> { self.pending_seek_ns }
+    /// How many requests the pending target folded beyond the first: what the pump logs as
+    /// `coalesced=` when it applies it. Read it before [`ReadoutEvent::SeekTaken`].
+    pub fn seek_coalesced(&self) -> u32 { self.seek_requests.saturating_sub(1) }
+    /// The playhead the HUD freezes at while a seek resolves, until the seek is given up on or the
+    /// session resets.
+    pub fn seek_display_ns(&self) -> Option<i64> { self.seek_display_ns }
 
     /// The one writer. Applies `event`; there are no effects yet. The session addresses the
     /// events that carry an attempt's facts before it steps them.
@@ -150,11 +204,32 @@ impl PlayerReadout {
         match event {
             ReadoutEvent::StateDerived(state) => self.state = state,
             ReadoutEvent::StreamEnded => self.ended = true,
-            ReadoutEvent::EndSuperseded => self.ended = false,
+            ReadoutEvent::SeekRequested { target_ns, display_ns } => {
+                self.ended = false;
+                self.seek_epoch = self.seek_epoch.saturating_add(1);
+                self.pending_seek_ns = (target_ns >= 0).then_some(target_ns);
+                self.seek_requests = self.seek_requests.saturating_add(1);
+                self.seek_display_ns = (display_ns >= 0).then_some(display_ns);
+            }
+            ReadoutEvent::SeekAbandoned => {
+                self.seek_settled = self.seek_epoch;
+                self.seek_display_ns = None;
+            }
+            ReadoutEvent::SeekTaken => {
+                self.pending_seek_ns = None;
+                self.seek_requests = 0;
+            }
+            ReadoutEvent::SeekRequeued { target_ns } => self.wait_for_pump(target_ns),
             ReadoutEvent::SessionReset => {
                 self.state = PlaybackState::Idle;
                 self.ended = false;
                 self.raw = FeedRaw::IDLE;
+                self.seek_settled = self.seek_epoch;
+                // The feed's transport reset (`reset_for_reload`, `reset`) clears its copy of the
+                // pending target at the same teardown, and its session reset the display target.
+                self.pending_seek_ns = None;
+                self.seek_requests = 0;
+                self.seek_display_ns = None;
             }
             ReadoutEvent::NewItem => {
                 self.play_rate_permille = RATE_NORMAL;
@@ -169,11 +244,21 @@ impl PlayerReadout {
                 self.play_rate_permille = RATE_NORMAL;
                 self.rate_reload = true;
             }
-            ReadoutEvent::FactsIngested(raw) => self.raw = raw,
+            ReadoutEvent::FactsIngested(raw) => {
+                // The feed asks to redo a refused native `Seek` as a reload: a requeue epoch that
+                // differs from the previous sample's is ONE new pending seek (the feed armed its
+                // own copy when it asked). The same epoch again adds nothing; a reset that zeroed
+                // the feed's epoch makes the next request new again.
+                let asked = raw.seek_requeue;
+                if asked.epoch != 0 && asked.epoch != self.raw.seek_requeue.epoch {
+                    self.wait_for_pump(asked.target_ns);
+                }
+                self.raw = raw;
+            }
             ReadoutEvent::Presented(p) => {
                 // Order matters: a seek in flight outranks "we have frames", because the frames
                 // on the panel are the PRE-seek ones and the HUD must show the target, not them.
-                self.state = if p.seeking {
+                self.state = if self.seeking() {
                     PlaybackState::Seeking
                 } else if p.tick.stage == Stage::Loading {
                     PlaybackState::Connecting
@@ -183,16 +268,28 @@ impl PlayerReadout {
                     // No picture yet. Work pending for one is Buffering; a paused player with
                     // nothing in flight is waiting on the viewer, which is neither a spinner nor
                     // `Playing` (no frame is presented, so `is_playing` stays false).
-                    if p.paused_and_idle { PlaybackState::Paused } else { PlaybackState::Buffering }
+                    if p.paused_and_idle && self.pending_seek_ns.is_none() {
+                        PlaybackState::Paused
+                    } else {
+                        PlaybackState::Buffering
+                    }
                 } else {
                     PlaybackState::Playing
                 };
                 if p.tick.eos_pushed && !self.ended
-                    && stream_ended(self.raw.playpos_ns, p.duration_ns, p.pipeline_eos) {
+                    && stream_ended(self.raw.playpos_ns, p.duration_ns, self.raw.pipeline_eos) {
                     self.ended = true;
                 }
             }
         }
+    }
+}
+
+impl PlayerReadout {
+    /// `target_ns` waits for the pump as one request.
+    fn wait_for_pump(&mut self, target_ns: i64) {
+        self.pending_seek_ns = (target_ns >= 0).then_some(target_ns);
+        self.seek_requests = 1;
     }
 }
 
@@ -205,13 +302,18 @@ mod tests {
     use super::*;
     use super::super::attempt_view::Backend;
     use crate::route::{PlaybackSession, RouteStartAttempt};
-    use plx_playback_contract::feed::{FeedFacts, FeedLoad};
+    use plx_playback_contract::feed::{FeedFacts, FeedLoad, SeekRequeue};
     use plx_playback_contract::feed_fake::FakeFeed;
 
     fn stepped(events: &[ReadoutEvent]) -> PlayerReadout {
         let mut readout = PlayerReadout::IDLE;
         for event in events { readout.step(*event); }
         readout
+    }
+
+    /// A seek request for `secs`, the HUD freezing at the same target.
+    fn tap(secs: i64) -> ReadoutEvent {
+        ReadoutEvent::SeekRequested { target_ns: secs * 1_000_000_000, display_ns: secs * 1_000_000_000 }
     }
 
     #[test]
@@ -228,7 +330,7 @@ mod tests {
         let r = stepped(&[ReadoutEvent::StateDerived(PlaybackState::Playing), ReadoutEvent::StreamEnded]);
         assert_eq!(r.state(), PlaybackState::Playing);
         assert!(r.ended());
-        let r = stepped(&[ReadoutEvent::StreamEnded, ReadoutEvent::EndSuperseded]);
+        let r = stepped(&[ReadoutEvent::StreamEnded, tap(1)]);
         assert!(!r.ended(), "a seek supersedes the end");
     }
 
@@ -315,8 +417,7 @@ mod tests {
         PresentationTick { stage, eos_pushed }
     }
 
-    const QUIET: PresentInputs =
-        PresentInputs { seeking: false, paused_and_idle: false, pipeline_eos: false };
+    const QUIET: PresentInputs = PresentInputs { paused_and_idle: false };
 
     /// One sample splits between the attempt view and the readout, and only the attempt the view
     /// belongs to can deliver it: a late worker of a previous attempt changes neither half.
@@ -391,10 +492,20 @@ mod tests {
         stepped(&[ReadoutEvent::FactsIngested(raw), ReadoutEvent::Presented(p)])
     }
 
+    fn presented_seeking(raw_frames: i32, p: Presentation) -> PlayerReadout {
+        let mut raw = FeedRaw::IDLE;
+        raw.frames = raw_frames;
+        stepped(&[
+            tap(1),
+            ReadoutEvent::FactsIngested(raw),
+            ReadoutEvent::Presented(p),
+        ])
+    }
+
     fn pres(stage: Stage) -> Presentation {
         Presentation {
             tick: tick(stage, false), rebuffering: false, duration_ns: 100_000_000_000,
-            seeking: false, paused_and_idle: false, pipeline_eos: false,
+            paused_and_idle: false,
         }
     }
 
@@ -402,7 +513,7 @@ mod tests {
     /// then "no picture yet" (Paused when idle, else Buffering), else Playing.
     #[test]
     fn the_presented_frame_derives_the_state_in_the_ladders_order() {
-        assert_eq!(presented(30, Presentation { seeking: true, ..pres(Stage::Loading) }).state(),
+        assert_eq!(presented_seeking(30, pres(Stage::Loading)).state(),
             PlaybackState::Seeking, "a seek outranks the frames on the panel");
         assert_eq!(presented(30, pres(Stage::Loading)).state(), PlaybackState::Connecting);
         assert_eq!(presented(30, Presentation { rebuffering: true, ..pres(Stage::Streaming) }).state(),
@@ -425,13 +536,184 @@ mod tests {
         assert!(presented(30, pushed(pres(Stage::Streaming))).ended(), "within the tail of the duration");
         assert!(!presented(30, pushed(Presentation { duration_ns: 0, ..pres(Stage::Streaming) })).ended(),
             "no duration, no arithmetic");
-        assert!(presented(30, pushed(Presentation { duration_ns: 0, pipeline_eos: true, ..pres(Stage::Streaming) })).ended(),
-            "the pipeline said so");
+        let mut said = FeedRaw::IDLE;
+        said.pipeline_eos = true;
+        assert!(stepped(&[
+            ReadoutEvent::FactsIngested(said),
+            ReadoutEvent::Presented(pushed(Presentation { duration_ns: 0, ..pres(Stage::Streaming) })),
+        ]).ended(), "the pipeline said so: the ingested raw fact, not an input of the frame");
         let mut r = presented(30, pushed(pres(Stage::Streaming)));
         r.step(ReadoutEvent::Presented(pres(Stage::Streaming)));
         assert!(r.ended(), "a later frame without the EOS does not un-end it");
-        r.step(ReadoutEvent::EndSuperseded);
+        r.step(tap(1));
         assert!(!r.ended());
+    }
+
+    // ---- the seek family: the requested epoch, the derived `seeking` (L3b step 1) ----
+
+    fn landed(epoch: u32) -> ReadoutEvent {
+        let mut raw = FeedRaw::IDLE;
+        raw.seek_landed_epoch = epoch;
+        ReadoutEvent::FactsIngested(raw)
+    }
+
+    /// A seek requested twice before the first lands is in flight until the LATER epoch lands: the
+    /// first landing is not the second request's.
+    #[test]
+    fn a_seek_requested_twice_is_in_flight_until_the_later_epoch_lands() {
+        let mut r = stepped(&[tap(1), tap(1)]);
+        assert_eq!(r.seek_epoch(), 2);
+        assert!(r.seeking());
+        r.step(landed(1));
+        assert!(r.seeking(), "the first request's landing does not end the second");
+        r.step(landed(2));
+        assert!(!r.seeking());
+        r.step(tap(1));
+        assert!(r.seeking(), "a request after a landing is a new flight");
+        assert_eq!(r.seek_epoch(), 3, "the epoch counts requests for the life of the readout");
+    }
+
+    /// Giving up on a seek ends it without a landing: nothing can leave `seeking` armed, because
+    /// nothing stores it. A request after that is a new flight.
+    #[test]
+    fn an_abandoned_seek_is_no_longer_in_flight() {
+        let mut r = stepped(&[tap(1), tap(1)]);
+        r.step(ReadoutEvent::SeekAbandoned);
+        assert!(!r.seeking(), "every request so far is given up on");
+        r.step(landed(1));
+        assert!(!r.seeking(), "a late landing of an abandoned seek changes nothing");
+        r.step(tap(1));
+        assert!(r.seeking());
+    }
+
+    /// A real stop or a reload retires the seek it interrupted exactly as the feed's own reset
+    /// cleared its flag, and a request made after the reset is in flight again even though the
+    /// feed's epoch cell was zeroed with the session.
+    #[test]
+    fn a_session_reset_ends_the_seek_that_was_in_flight() {
+        let mut r = stepped(&[tap(1), tap(1), ReadoutEvent::SessionReset]);
+        assert!(!r.seeking());
+        assert_eq!(r.seek_epoch(), 2, "the count is not the session's");
+        r.step(tap(1));
+        assert!(r.seeking());
+        r.step(landed(3));
+        assert!(!r.seeking());
+    }
+
+    /// A seek in flight outranks the frames on the panel in the presented state, and the frame
+    /// after the landing is Playing again.
+    #[test]
+    fn the_presented_state_is_seeking_exactly_while_a_requested_seek_has_not_landed() {
+        assert_eq!(presented_seeking(30, pres(Stage::Streaming)).state(), PlaybackState::Seeking);
+        let mut raw = FeedRaw::IDLE;
+        raw.frames = 30;
+        raw.seek_landed_epoch = 1;
+        let r = stepped(&[
+            tap(1),
+            ReadoutEvent::FactsIngested(raw),
+            ReadoutEvent::Presented(pres(Stage::Streaming)),
+        ]);
+        assert_eq!(r.state(), PlaybackState::Playing, "the landing is one ingestion away");
+    }
+
+    // ---- the pending seek: where it waits, what it folded, who may re-arm it (L3b step 1b) ----
+
+    /// The sample the feed's native-Seek-refused downgrade leaves: request number `epoch`, aimed at
+    /// `secs`.
+    fn requeue_sample(epoch: u32, secs: i64) -> ReadoutEvent {
+        let mut raw = FeedRaw::IDLE;
+        raw.seek_requeue = SeekRequeue { epoch, target_ns: secs * 1_000_000_000 };
+        ReadoutEvent::FactsIngested(raw)
+    }
+
+    const fn secs(s: i64) -> i64 { s * 1_000_000_000 }
+
+    /// A burst of taps leaves ONE pending target, the newest, and reports how many it folded; a take
+    /// spends both; the seek in flight and the HUD's display target are the request's, not the take's.
+    #[test]
+    fn a_burst_of_taps_leaves_one_pending_target_and_counts_the_folded_requests() {
+        let mut r = stepped(&[tap(10), tap(20), tap(30)]);
+        assert_eq!(r.pending_seek(), Some(secs(30)), "the newest target wins");
+        assert_eq!(r.seek_coalesced(), 2, "three requests applied as one merged two");
+        assert_eq!(r.seek_display_ns(), Some(secs(30)));
+        r.step(ReadoutEvent::SeekTaken);
+        assert_eq!(r.pending_seek(), None);
+        assert_eq!(r.seek_coalesced(), 0, "a take spends the count");
+        assert!(r.seeking(), "taking the target is not landing it");
+        assert_eq!(r.seek_display_ns(), Some(secs(30)), "the playhead stays frozen until the seek resolves");
+        r.step(ReadoutEvent::SeekTaken);
+        assert_eq!(r.pending_seek(), None, "a take with nothing waiting changes nothing");
+    }
+
+    /// Giving up ends the spinner and the frozen playhead but leaves the target to the pump, as it
+    /// always did; a session reset takes everything the session held, as the feed's resets do.
+    #[test]
+    fn giving_up_keeps_the_pending_target_and_a_reset_takes_it() {
+        let mut r = stepped(&[tap(10), ReadoutEvent::SeekAbandoned]);
+        assert_eq!(r.seek_display_ns(), None, "no stale frozen playhead");
+        assert_eq!(r.pending_seek(), Some(secs(10)), "giving up leaves the target to the pump");
+        r.step(ReadoutEvent::SessionReset);
+        assert_eq!((r.pending_seek(), r.seek_display_ns(), r.seek_coalesced()), (None, None, 0));
+        let r = stepped(&[tap(10), tap(20), ReadoutEvent::SessionReset]);
+        assert_eq!((r.pending_seek(), r.seek_display_ns(), r.seek_coalesced()), (None, None, 0));
+    }
+
+    /// A taken seek put back waits again as ONE request and is not a request: nothing is numbered,
+    /// nothing is put in flight, the display target is untouched.
+    #[test]
+    fn a_requeued_seek_waits_again_without_being_requested_again() {
+        let mut r = stepped(&[tap(10), ReadoutEvent::SeekTaken, ReadoutEvent::SeekAbandoned]);
+        let epoch = r.seek_epoch();
+        r.step(ReadoutEvent::SeekRequeued { target_ns: secs(10) });
+        assert_eq!(r.pending_seek(), Some(secs(10)));
+        assert_eq!(r.seek_coalesced(), 0, "one request waits");
+        assert_eq!(r.seek_epoch(), epoch, "nothing was numbered");
+        assert!(!r.seeking(), "re-arming a target puts nothing in flight");
+        assert_eq!(r.seek_display_ns(), None, "and does not freeze the playhead");
+        r.step(tap(40));
+        assert_eq!(r.seek_coalesced(), 1, "a tap on top of a requeued one folds it");
+        assert_eq!(r.pending_seek(), Some(secs(40)));
+    }
+
+    /// The feed's request to redo a refused native Seek is adopted ONCE per epoch: the same sample
+    /// again (every ingestion re-reads the cell) adds nothing, even after the pump took the seek,
+    /// and a feed-only reset that zeroed the epoch makes the next request new again.
+    #[test]
+    fn the_feeds_requeue_becomes_one_pending_seek_per_new_epoch() {
+        let mut r = stepped(&[tap(10), ReadoutEvent::SeekTaken]);
+        r.step(requeue_sample(1, 40));
+        assert_eq!(r.pending_seek(), Some(secs(40)), "adopted from the sample");
+        assert_eq!(r.seek_coalesced(), 0);
+        assert_eq!(r.seek_epoch(), 1, "the feed redoing a seek is not a new request");
+        r.step(ReadoutEvent::SeekTaken);
+        r.step(requeue_sample(1, 40));
+        r.step(requeue_sample(1, 40));
+        assert_eq!(r.pending_seek(), None, "the same epoch again adds nothing once it was taken");
+
+        // The cell was zeroed with the feed's session and the next downgrade counts from 1 again.
+        r.step(requeue_sample(0, 0));
+        r.step(requeue_sample(1, 55));
+        assert_eq!(r.pending_seek(), Some(secs(55)), "a new request after a reset is new");
+        r.step(ReadoutEvent::SeekTaken);
+        r.step(requeue_sample(2, 60));
+        assert_eq!(r.pending_seek(), Some(secs(60)), "a later epoch is a later request");
+
+        // The player's reset forgets what it had seen of the old session.
+        r.step(ReadoutEvent::SeekTaken);
+        r.step(ReadoutEvent::SessionReset);
+        r.step(requeue_sample(1, 70));
+        assert_eq!(r.pending_seek(), Some(secs(70)));
+    }
+
+    /// A seek waiting for the pump is work: a paused player with one is not "waiting on the viewer".
+    #[test]
+    fn a_seek_waiting_for_the_pump_keeps_a_paused_player_buffering() {
+        let paused = Presentation { paused_and_idle: true, ..pres(Stage::Streaming) };
+        assert_eq!(presented(0, paused).state(), PlaybackState::Paused);
+        let mut raw = FeedRaw::IDLE;
+        raw.seek_requeue = SeekRequeue { epoch: 1, target_ns: secs(5) };
+        let r = stepped(&[ReadoutEvent::FactsIngested(raw), ReadoutEvent::Presented(paused)]);
+        assert_eq!(r.state(), PlaybackState::Buffering, "the feed's own requeue, adopted from the very sample the frame took");
     }
 
     // ---- the readout is the READER of `state` and `ended` (L3a-2 step 4a) ----

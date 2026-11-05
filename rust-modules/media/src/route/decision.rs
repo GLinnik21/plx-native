@@ -1479,9 +1479,7 @@ impl PlaybackSession {
             tick,
             rebuffering: sample.attempt.rebuffering == Some(true),
             duration_ns: sample.attempt.duration_ns.unwrap_or(0),
-            seeking: inputs.seeking,
             paused_and_idle: inputs.paused_and_idle,
-            pipeline_eos: inputs.pipeline_eos,
         }));
         true
     }
@@ -3507,7 +3505,7 @@ pub fn control_phase_label() -> String {
 /// claim's flight holds `Applying`; a seek's holds `Preparing` AND names itself in `flight` (a
 /// `Preparing` an inline caller opened is a preparation one frame completes, not a flight). The
 /// pump's own seek branches (the stuck in-place retry/reload and the plain pending-seek reducer)
-/// must skip while this holds and leave `FEED_TX.seek_to_ns` exactly where it is: neither branch checks
+/// must skip while this holds and leave the readout's pending seek exactly where it is: neither branch checks
 /// `ControlPhase`, and either one planning a rebuild or calling `commit_user_seek` against an
 /// action it does not own corrupts or silently rejects that very flight (see the pump's own doc on
 /// the call sites that consult this).

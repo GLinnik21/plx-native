@@ -160,6 +160,19 @@ mod tests {
             edit(&mut facts);
             super::super::overlay_tests::publish_facts(&mut self.session, facts);
         }
+
+        /// A seek the feed has LANDED while its display target still holds (the first new picture
+        /// has not arrived): the request, the feed's `seek_landed_epoch` and the pump's take, as the
+        /// real flow delivers them. The Feed's display target is the session's readout, not an
+        /// attempt fact (the URI backend's is the fact).
+        fn seek_display(&mut self, ns: i64) {
+            use plx_media::player::readout::ReadoutEvent;
+            self.session.step_readout(ReadoutEvent::SeekRequested { target_ns: ns, display_ns: ns });
+            let mut raw = *self.session.readout().raw();
+            raw.seek_landed_epoch = self.session.readout().seek_epoch();
+            self.session.step_readout(ReadoutEvent::FactsIngested(raw));
+            self.session.step_readout(ReadoutEvent::SeekTaken);
+        }
     }
     impl Drop for PlaybackFixture {
         fn drop(&mut self) {
@@ -313,10 +326,8 @@ mod tests {
                 vec![PlayerReq::CommitSeek(target)]
             );
             assert!(key(&playback.session, &mut page, sym, Edge::Up, at + 20).is_empty());
-            playback.update(|facts| {
-                facts.seek_display_ns = Some(target);
-                facts.position_ns = Some(40_000_000_000);
-            });
+            playback.seek_display(target);
+            playback.update(|facts| facts.position_ns = Some(40_000_000_000));
         }
     }
 
@@ -431,7 +442,7 @@ mod tests {
         assert!(input::hud_visible(&playback.session, 1_000, 0, false, true));
         // Play has been issued after seeking, but its first new picture has not arrived yet.
         // The derived state briefly becomes Buffering; that must not flash the transport.
-        playback.update(|facts| facts.seek_display_ns = Some(50_000_000_000));
+        playback.seek_display(50_000_000_000);
         assert!(!input::hud_visible(&playback.session, 1_000, 0, false, true));
         playback.update(|facts| facts.rebuffering = Some(true));
         assert!(

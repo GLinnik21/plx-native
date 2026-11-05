@@ -16,8 +16,8 @@ use std::time::Duration;
 use plx_base::task::MainThread;
 
 use crate::feed::{
-    AcceptedLoadOutcome, CtorGate, FeedControl, FeedFacts, FeedLoad, FeedSeek, LoadTick,
-    PausedSeekStep,
+    AcceptedLoadOutcome, CtorGate, FeedCommand, FeedControl, FeedFacts, FeedLoad, FeedSeek,
+    LoadTick, PausedSeekStep,
     PhysicalSet, PresentationTick, SeekMode, SeekPause, Stage, StuckSeekAction,
 };
 use crate::{
@@ -46,6 +46,7 @@ pub enum FeedCall {
     BeginSeekDiscontinuity,
     ApplyInplaceSeekPre { target_ns: i64, mode: SeekMode, coalesced: u32 },
     ApplyInplaceSeekPost { target_ns: i64, now: u32 },
+    Command(FeedCommand),
     TickLoad { now: u32, segmented_hls: bool, budget: Duration, speed_deadline_ms: u32,
         no_audio: bool },
     TickPresentation { segmented_hls: bool, immersive: bool },
@@ -285,7 +286,11 @@ impl FeedLoad for FakeFeed {
     }
 }
 
-impl FeedControl for FakeFeed {}
+impl FeedControl for FakeFeed {
+    fn command(&mut self, command: FeedCommand) {
+        self.answer(FeedCall::Command(command), |_| ());
+    }
+}
 
 /// A scriptable [`PhysicalSet`]: the runner's [`DriverSet`] for the packet-feed backend it holds,
 /// and the lender of its [`FakeFeed`]. A set built without a feed is a composition with no feed

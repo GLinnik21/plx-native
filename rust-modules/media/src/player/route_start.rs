@@ -798,7 +798,7 @@ pub fn reload_at(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter
         target_ns / 1_000_000_000
     ));
     teardown(ps, pa, true, plx_playback_contract::StopReason::Replace); // reload mode: preserve the session (no url-clear / stop-scrobble)
-    FEED_SHARED.arm_seek(target_ns);
+    super::arm_open(pa, target_ns);
     reload_start_outcome(ps, pa, ticket)
 }
 
@@ -829,7 +829,7 @@ pub fn reload_transcode(ps: &mut crate::route::PlaybackSession, pa: &mut super::
     if crate::route::url(ps).is_empty() {
         // The other abandonment path with the same hole: `request_seek` armed the spinner and
         // nothing here would ever disarm it. See `player::abandon_seek`.
-        crate::player::abandon_seek();
+        crate::player::abandon_seek(ps, pa);
         log("reload_transcode: no url (ignored)");
         settle_missing_route_start();
         return ReloadOutcome::NoRoute;
@@ -852,7 +852,7 @@ pub fn reload_transcode(ps: &mut crate::route::PlaybackSession, pa: &mut super::
 #[cfg(feature = "play-feed")]
 pub fn reload_transcode_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, offset_ns: i64) -> BufferfeedStartOutcome {
     if crate::route::url(ps).is_empty() {
-        crate::player::abandon_seek();
+        crate::player::abandon_seek(ps, pa);
         log("reload_transcode_tracked: no url (ignored)");
         settle_missing_route_start();
         return BufferfeedStartOutcome::Failed;
@@ -878,7 +878,7 @@ pub fn suspend_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut super
 }
 
 
-/// Resume/seek AT the first Load. A direct-play item seeks the demuxer (av_seek via arm_seek).
+/// Resume/seek AT the first Load. A direct-play item seeks the demuxer (av_seek via `ArmOpen`).
 /// A TRANSCODE item's stream is 0-based and NOT seekable (no byte-index, Content-Length=-1), so
 /// av_seek fails — instead restart the encode at `&offset=secs` and display content time via
 /// disp_base. Call BEFORE start_bufferfeed, AFTER route::play_movie has run the decision (so the
@@ -915,7 +915,11 @@ enum ResumePrelude {
     Rebuild,
 }
 
-fn resume_prelude(ps: &mut crate::route::PlaybackSession, resume_ns: i64) -> ResumePrelude {
+fn resume_prelude(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    resume_ns: i64,
+) -> ResumePrelude {
     if resume_ns <= 0 {
         return ResumePrelude::Settled(ResumeOutcome::Prepared);
     }
@@ -924,7 +928,9 @@ fn resume_prelude(ps: &mut crate::route::PlaybackSession, resume_ns: i64) -> Res
     }
     if !crate::route::is_transcoding(ps) {
         #[cfg(feature = "play-feed")]
-        FEED_SHARED.arm_seek(resume_ns); // direct-play: av_seek the file at the first open
+        super::arm_open(pa, resume_ns); // direct-play: av_seek the file at the first open
+        #[cfg(not(feature = "play-feed"))]
+        let _ = pa;
         return ResumePrelude::Settled(ResumeOutcome::Prepared);
     }
     ResumePrelude::Rebuild
@@ -949,8 +955,12 @@ fn note_transcode_resumed(resume_ns: i64) {
 /// reaching the rebuild). No Engine exists. Everything but a transcode settles on the spot; a transcode's
 /// rebuild at the saved position is a FLIGHT — planned here on the frame thread, the PMS half on a
 /// worker — and answers [`ResumeStart::Pending`]. The frame never reaches the server.
-pub fn begin_resume(ps: &mut crate::route::PlaybackSession, resume_ns: i64) -> ResumeStart {
-    match resume_prelude(ps, resume_ns) {
+pub fn begin_resume(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    resume_ns: i64,
+) -> ResumeStart {
+    match resume_prelude(ps, pa, resume_ns) {
         ResumePrelude::Settled(outcome) => ResumeStart::Settled(outcome),
         ResumePrelude::Rebuild => match crate::route::dispatch_resume_rebase(ps, resume_ns) {
             crate::route::RecoveryDispatch::Flying { .. } => ResumeStart::Pending,

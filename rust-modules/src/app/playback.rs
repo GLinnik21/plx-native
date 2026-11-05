@@ -386,10 +386,11 @@ impl PlaybackResources for LivePlaybackResources {
         pa: &mut plx_media::player::adapter::PlayerAdapter, resume_ns: i64) -> bool {
         // A resolve in flight means the route statics are NOT installed yet. Applying the
         // resume now would read a stale/empty TSESSION, so `begin_resume` would take its
-        // DIRECT-PLAY branch and arm_seek() a transcode — and pump.rs's feed gate requires
-        // `seek_to_ns < 0`, so that stray armed seek blocks feeding forever: no frames, no
+        // DIRECT-PLAY branch and arm the open (`ArmOpen`) of a transcode — the demuxer's open
+        // target, which the feed reads as a seek waiting to be re-anchored, so that stray armed
+        // seek blocks feeding forever: no frames, no
         // ACB bind, timeline frozen at the resume point. (Exactly what broke
-        // transcode_av1_no_dp_audio. Direct-play never noticed because arm_seek is what the
+        // transcode_av1_no_dp_audio. Direct-play never noticed because arming the open is what the
         // correct branch does anyway. That item is a transcode only where the codec table lists
         // no AV1 decoder, which the dev set does not; on a set that does, it direct-streams video.)
         // Defer it to `pump_play`, after apply_plan.
@@ -400,7 +401,7 @@ impl PlaybackResources for LivePlaybackResources {
         let resume = if pending || resume_ns <= 0 {
             plx_media::player::ResumeStart::Settled(plx_media::player::ResumeOutcome::Prepared)
         } else {
-            plx_media::player::begin_resume(ps, resume_ns)
+            plx_media::player::begin_resume(ps, pa, resume_ns)
         };
         let resume_prepared = matches!(
             resume,
