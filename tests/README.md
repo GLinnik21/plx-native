@@ -918,6 +918,10 @@ Append an entry to `manifest.json` → `cases`:
     // or: {"op":"resume","mode":"directplay"|"transcode","offset_s":600}
     // or: {"op":"pause_resume","delay_ms":25000,"hold_ms":6000,
     //      "min_climb_after_s":20}
+    // or, the same with a seek taken UNDER the Pause (`seek_delay_ms` counts from the autoseek
+    //  gate, 12 s into the player route; the Pause's gate is 6 s):
+    //      {"op":"pause_resume","delay_ms":10000,"hold_ms":18000,"seek_s":30,
+    //       "seek_delay_ms":14000,"min_climb_after_s":12}
   ],
   "expect": {
     "decision": "directplay",       // or "transcode"
@@ -933,7 +937,9 @@ Append an entry to `manifest.json` → `cases`:
 `run.py` derives the triggers from `operations` (`play`→`plxnative-play`, `seek`→`plxnative-autoseek`
 — for `"mode":"rapid"` the op's `script` becomes the trigger content: optional `gap=<ms>` +
 comma-separated steps, absolute `120` or tap-relative `+10`/`-10`, fired one per gap;
-`pause_resume`→one `plxnative-autopause=delay=<ms>,hold=<ms>` script;
+`pause_resume`→one `plxnative-autopause=delay=<ms>,hold=<ms>` script, plus a `plxnative-autoseek`
+when it carries `seek_s` (graded by `op_paused_seek`, which reads the log's own edge order:
+Pause, `autoseek: step`, `seek: paused frame restored`, Resume);
 `audio_switch`/`subtitle`→`plxnative-menupick`) and picks the
 per-op assertions from the `op`/`mode`. Track-menu row semantics: **audio tab** row = the
 metadata audio index (0-based, file order); **subtitles tab** row 0 = *Off*, row 1 = *Forced only*
