@@ -17,7 +17,7 @@ use crate::shared::{
 use plx_base::eventlog::log;
 use plx_base::task::MainThread;
 use plx_playback_contract::feed::{
-    FailureFlag, FailureFlags, FeedFacts, FeedRaw, SeekRequeue, UserPauseOutcome, UserResumeOutcome,
+    FailureFlag, FailureFlags, FeedFacts, FeedRaw, LoadRaw, SeekRequeue, UserPauseOutcome, UserResumeOutcome,
 };
 use plx_playback_contract::readout::{AttemptFacts, RuntimeFailure};
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -1151,7 +1151,9 @@ pub fn seek_abandoned() {
 
 /// One sample of the physical feed callback mailboxes without route or session access: the sparse
 /// facts and the raw ones, for the player to ingest addressed to the attempt it installed. The
-/// caller asks `FeedLoad::is_live` first; a feed with no session answers its idle mailboxes.
+/// caller is `FeedBackend::sample`, which answers only for a live session and adds the Engine's
+/// Load-side facts (`FeedRaw::load`, [`LoadRaw::IDLE`] here); a feed with no session answers its
+/// idle mailboxes.
 ///
 /// The failure flags are loaded ONCE, first, and both halves are built from that one load: a
 /// worker publishes the code that explains a failure (`dg_cb_err_num`, `dg_http_status`) before the
@@ -1219,6 +1221,8 @@ fn native_feed_raw(failure: FailureSample) -> FeedRaw {
         vpres_gap_sum_ms: FEED_SHARED.dg_vpres_gap_sum.load(Relaxed),
         vpres_gap_count: FEED_SHARED.dg_vpres_gap_ct.load(Relaxed),
         disp_base: FEED_SHARED.disp_base.load(Relaxed),
+        // The Engine's own fields are not statics: `FeedBackend::sample` fills this half.
+        load: LoadRaw::IDLE,
     }
 }
 

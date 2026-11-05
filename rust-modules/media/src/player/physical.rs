@@ -214,6 +214,6 @@ mod tests {
             as *const ();
         assert_eq!(lent, concrete);
         assert!(!set.feed_backend().resources().is_live());
-        assert!(!set.feed().unwrap().is_live());
+        assert!(set.feed().unwrap().sample().is_none());
     }
 }

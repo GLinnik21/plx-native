@@ -16,7 +16,7 @@ use std::time::Duration;
 use plx_base::task::MainThread;
 
 use crate::feed::{
-    AcceptedLoadOutcome, CtorGate, FeedCommand, FeedControl, FeedFacts, FeedLoad, FeedSeek,
+    defer_media_join, AcceptedLoadOutcome, CtorGate, FeedCommand, FeedControl, FeedFacts, FeedLoad, FeedSeek,
     LoadTick, PausedSeekStep,
     PhysicalSet, PresentationTick, SeekMode, SeekPause, Stage, StuckSeekAction, UserPauseOutcome,
     UserResumeOutcome,
@@ -57,17 +57,8 @@ pub enum FeedCall {
     NoteMissingEraCallback,
     InjectRefuse601 { generation: u32, preview: bool },
     PublishDiag { now: u32, diag_readout_on: bool },
-    AbandonPreview,
-    MarkForegroundFollowsLoad { attempt: AttemptId },
+    DeferPreviewJoin,
     Sample,
-    Stage,
-    Loading,
-    LoadThreadFinished,
-    PreviewLoadJoinState,
-    ForegroundFollowsLoad,
-    RouteActionsReady,
-    IsLive,
-    ActiveAttempt,
     UserPause,
     UserResume,
     TakePrerollVolume,
@@ -85,22 +76,14 @@ pub struct FeedScript {
     pub begin_seek_discontinuity: bool,
     pub load_tick: LoadTick,
     pub presentation: PresentationTick,
-    /// What `sample` answers: the scripted observation a test delivers through the real ingestion.
+    /// What `sample` answers while a session is installed (`facts.raw.load.stage` is `Some`): the
+    /// scripted observation a test delivers through the real ingestion. `defer_preview_join` reads
+    /// `facts.raw.load` too.
     pub facts: FeedFacts,
     pub ctor_gate: CtorGate,
     /// Delivered once, in order, by the next `take_load_outcomes`.
     pub load_outcomes: Vec<AcceptedLoadOutcome>,
     pub native_audio_stall_fired: bool,
-    /// The one attempt `mark_foreground_follows_load` accepts; any other is refused.
-    pub foreground_follows_for: Option<AttemptId>,
-    pub stage: Option<Stage>,
-    pub loading: bool,
-    pub load_thread_finished: bool,
-    pub preview_load_join_state: Option<(bool, bool)>,
-    pub foreground_follows_load: bool,
-    pub route_actions_ready: bool,
-    pub live: bool,
-    pub active_attempt: Option<AttemptId>,
     pub user_pause: UserPauseOutcome,
     pub user_resume: UserResumeOutcome,
     /// Delivered once by the next `take_preroll_volume`.
@@ -122,15 +105,6 @@ impl Default for FeedScript {
             ctor_gate: CtorGate::Ready,
             load_outcomes: Vec::new(),
             native_audio_stall_fired: false,
-            foreground_follows_for: None,
-            stage: None,
-            loading: false,
-            load_thread_finished: false,
-            preview_load_join_state: None,
-            foreground_follows_load: false,
-            route_actions_ready: false,
-            live: false,
-            active_attempt: None,
             user_pause: UserPauseOutcome::Deferred,
             user_resume: UserResumeOutcome::NoHold,
             preroll_volume: None,
@@ -145,6 +119,8 @@ struct Shared {
     dispatched: Vec<(AttemptId, CommandId, Operation)>,
     events: VecDeque<BackendEvent>,
     exit_preserved: bool,
+    /// Whether `defer_preview_join` marked the preview abandoned.
+    preview_abandoned: bool,
 }
 
 /// The test's side of a [`FakeFeed`] or [`FakePhysical`]: what it was asked, and what it should
@@ -169,6 +145,8 @@ impl FakeFeedHandle {
     pub fn queue(&self, events: impl IntoIterator<Item = BackendEvent>) {
         self.0.lock().unwrap().events.extend(events);
     }
+    /// Whether `defer_preview_join` deferred and marked the preview abandoned.
+    pub fn preview_abandoned(&self) -> bool { self.0.lock().unwrap().preview_abandoned }
     /// Whether native ownership is still held at exit.
     pub fn set_exit_preserved(&self, preserved: bool) {
         self.0.lock().unwrap().exit_preserved = preserved;
@@ -255,33 +233,17 @@ impl FeedLoad for FakeFeed {
     fn publish_diag(&mut self, now: u32, _last_frames: &AtomicI32, diag_readout_on: bool) {
         self.answer(FeedCall::PublishDiag { now, diag_readout_on }, |_| ());
     }
-    fn abandon_preview(&mut self) {
-        self.answer(FeedCall::AbandonPreview, |_| ());
-    }
-    fn mark_foreground_follows_load(&mut self, attempt: AttemptId) -> bool {
-        self.answer(FeedCall::MarkForegroundFollowsLoad { attempt },
-            |s| s.foreground_follows_for == Some(attempt))
+    fn defer_preview_join(&mut self) -> bool {
+        let mut shared = self.shared.lock().unwrap();
+        shared.calls.push(FeedCall::DeferPreviewJoin);
+        let load = shared.script.facts.raw.load;
+        let defer = defer_media_join(load.loading(), load.load_thread_finished);
+        shared.preview_abandoned |= defer;
+        defer
     }
 
-    fn sample(&self) -> FeedFacts { self.answer(FeedCall::Sample, |s| s.facts) }
-
-    fn stage(&self) -> Option<Stage> { self.answer(FeedCall::Stage, |s| s.stage) }
-    fn loading(&self) -> bool { self.answer(FeedCall::Loading, |s| s.loading) }
-    fn load_thread_finished(&self) -> bool {
-        self.answer(FeedCall::LoadThreadFinished, |s| s.load_thread_finished)
-    }
-    fn preview_load_join_state(&self) -> Option<(bool, bool)> {
-        self.answer(FeedCall::PreviewLoadJoinState, |s| s.preview_load_join_state)
-    }
-    fn foreground_follows_load(&self) -> bool {
-        self.answer(FeedCall::ForegroundFollowsLoad, |s| s.foreground_follows_load)
-    }
-    fn route_actions_ready(&self) -> bool {
-        self.answer(FeedCall::RouteActionsReady, |s| s.route_actions_ready)
-    }
-    fn is_live(&self) -> bool { self.answer(FeedCall::IsLive, |s| s.live) }
-    fn active_attempt(&self) -> Option<AttemptId> {
-        self.answer(FeedCall::ActiveAttempt, |s| s.active_attempt)
+    fn sample(&self) -> Option<FeedFacts> {
+        self.answer(FeedCall::Sample, |s| s.facts.raw.load.stage.is_some().then_some(s.facts))
     }
 }
 
@@ -396,8 +358,7 @@ mod tests {
         let outcome = AcceptedLoadOutcome { attempt: AttemptId::new(1, 3), ok: true,
             elapsed_ms: Some(40) };
         handle.script(|script| {
-            script.stage = Some(Stage::Streaming);
-            script.live = true;
+            script.facts.raw.load.stage = Some(Stage::Streaming);
             script.paused_seek_step = PausedSeekStep { finish: true, mid_seek_claimed: false, preroll_opened: false };
             script.retry_stuck_seek = StuckSeekAction::Retried(1);
             script.seek_pause = SeekPause::Busy;
@@ -405,27 +366,50 @@ mod tests {
         });
         let mut set: Box<dyn PhysicalSet<Context = MainThread>> = Box::new(fake);
         let feed = set.feed().unwrap();
-        assert_eq!(feed.stage(), Some(Stage::Streaming));
-        assert!(feed.is_live());
+        assert_eq!(feed.sample().map(|facts| facts.raw.load.stage), Some(Some(Stage::Streaming)));
         assert_eq!(feed.paused_seek_step(1, false, false),
             PausedSeekStep { finish: true, mid_seek_claimed: false, preroll_opened: false });
         assert_eq!(feed.retry_stuck_seek(1, 0, true), StuckSeekAction::Retried(1));
         assert_eq!(feed.prepare_seek_pause(&mt()), SeekPause::Busy);
         assert_eq!(feed.take_load_outcomes(), [outcome]);
         assert!(feed.take_load_outcomes().is_empty(), "a verdict is delivered once");
-        assert_eq!(handle.calls().len(), 7, "every query is logged too");
+        assert_eq!(handle.calls().len(), 6, "every query is logged too");
     }
 
-    /// The unscripted fake is an idle feed: nothing live, nothing loading, no pending verdicts.
+    /// The unscripted fake is an idle feed: no session to sample, no pending verdicts, no join to
+    /// defer.
     #[test]
     fn an_unscripted_fake_is_an_idle_feed() {
-        let (fake, _handle) = FakePhysical::new();
+        let (fake, handle) = FakePhysical::new();
         let mut set = fake;
         let feed = PhysicalSet::feed(&mut set).unwrap();
-        assert!(!feed.is_live() && !feed.loading() && !feed.route_actions_ready());
-        assert_eq!(feed.stage(), None);
-        assert_eq!(feed.active_attempt(), None);
+        assert!(feed.sample().is_none(), "a feed with no session is not an observation");
+        assert!(!feed.defer_preview_join());
+        assert!(!handle.preview_abandoned());
         assert!(feed.take_load_outcomes().is_empty());
+    }
+
+    /// A preview whose Load has not returned is deferred and marked abandoned; one whose Load has
+    /// returned, one past its Load stage, and one with no session are joined as before.
+    #[test]
+    fn a_preview_join_defers_only_for_a_load_stage_with_an_unfinished_thread() {
+        let load = |stage, load_thread_finished| crate::feed::LoadRaw {
+            stage, load_thread_finished, route_actions_ready: false };
+        for (raw, defers) in [
+            (load(Some(Stage::Loading), false), true),
+            (load(Some(Stage::Loading), true), false),
+            (load(Some(Stage::Playing), false), false),
+            (load(Some(Stage::Streaming), true), false),
+            (crate::feed::LoadRaw::IDLE, false),
+        ] {
+            let (fake, handle) = FakePhysical::new();
+            handle.script(|script| script.facts.raw.load = raw);
+            let mut set: Box<dyn PhysicalSet<Context = MainThread>> = Box::new(fake);
+            let feed = set.feed().unwrap();
+            assert_eq!(feed.defer_preview_join(), defers, "{raw:?}");
+            assert_eq!(handle.preview_abandoned(), defers, "{raw:?}: the mark follows the answer");
+            assert_eq!(handle.calls(), [FeedCall::DeferPreviewJoin]);
+        }
     }
 
     /// A composition with no feed answers `None`, as the default set does.

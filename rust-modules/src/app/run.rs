@@ -6526,7 +6526,7 @@ mod lifecycle_regression_tests {
         ));
         let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
 
-        plx_media::player::note_decoder_revoked_for_test(&mut rig.app.player.session, &rig.app.adapters.player);
+        plx_media::player::note_decoder_revoked_for_test(&mut rig.app.player.session, &mut rig.app.adapters.player);
         unsafe { playback_tick(&mut rig.app, &mut fr); }
         assert!(!rig.app.adapters.player.is_live(), "the dead pipeline is dropped");
         assert!(rig.app.player.lifecycle.awaiting_load(), "…and the session parked for a restore");
@@ -6584,7 +6584,7 @@ mod lifecycle_regression_tests {
         ));
         let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
 
-        plx_media::player::note_decoder_revoked_for_test(&mut rig.app.player.session, &rig.app.adapters.player);
+        plx_media::player::note_decoder_revoked_for_test(&mut rig.app.player.session, &mut rig.app.adapters.player);
         unsafe { playback_tick(&mut rig.app, &mut fr); }
         assert!(rig.app.player.lifecycle.awaiting_load(), "{press:?}: the session parked");
 
@@ -6945,7 +6945,7 @@ mod lifecycle_regression_tests {
         frame(&mut rig.app, 0); // settle the pending Player page mount before opening a surface
         let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
 
-        plx_media::player::note_decoder_revoked_for_test(&mut rig.app.player.session, &rig.app.adapters.player);
+        plx_media::player::note_decoder_revoked_for_test(&mut rig.app.player.session, &mut rig.app.adapters.player);
         unsafe { playback_tick(&mut rig.app, &mut fr); }
         assert!(rig.app.player.lifecycle.awaiting_load(), "the session is parked for a restore");
 

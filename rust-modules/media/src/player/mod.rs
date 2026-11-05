@@ -325,7 +325,7 @@ pub fn take_decoder_revoked(ps: &mut crate::route::PlaybackSession) -> bool {
 /// The pipeline's decoder release as the app loop sees it: the feed counts one, and the sample the
 /// pump would take next is ingested now.
 #[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
-pub fn note_decoder_revoked_for_test(ps: &mut crate::route::PlaybackSession, pa: &adapter::PlayerAdapter) {
+pub fn note_decoder_revoked_for_test(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter) {
     FEED_SHARED.raise_decoder_revoked();
     pa.publish_feed_attempt_view(ps);
 }
@@ -447,12 +447,12 @@ pub(crate) fn pause_result(ps: &mut crate::route::PlaybackSession, pa: &mut adap
     match pa.feed_user_pause() {
         UserPauseOutcome::AlreadyHeld => {
             ps.step_readout(readout::ReadoutEvent::CommitPaused { paused: true });
-            acb_mirror_playstate(pa, false);
+            acb_mirror_playstate(ps, pa, false);
             TransportResult::deferred(true)
         }
         UserPauseOutcome::Issued(HlsPauseCompletion::Accepted) => {
             ps.step_readout(readout::ReadoutEvent::CommitPaused { paused: true });
-            acb_mirror_playstate(pa, false);
+            acb_mirror_playstate(ps, pa, false);
             TransportResult::native(true)
         }
         UserPauseOutcome::Issued(HlsPauseCompletion::Refused) => {
@@ -539,7 +539,7 @@ pub(crate) fn resume_result(ps: &mut crate::route::PlaybackSession, pa: &mut ada
         UserResumeOutcome::Played { resume_acb } => {
             step_resume_commit(ps);
             if resume_acb {
-                acb_mirror_playstate(pa, true);
+                acb_mirror_playstate(ps, pa, true);
             }
             TransportResult::native(true)
         }
@@ -650,8 +650,9 @@ pub fn force_play_result_for_test(result: Option<c_int>) {
 /// setMediaId/LOADED has happened but setMediaVideoData/window/PLAYING has not, so mirroring a user
 /// Resume there would overtake the rest of the ordered bind transaction.
 #[cfg(feature = "play-feed")]
-pub fn acb_mirror_playstate(pa: &mut adapter::PlayerAdapter, playing: bool) {
-    let Some(stage) = pa.feed_stage() else {
+pub fn acb_mirror_playstate(ps: &crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter,
+    playing: bool) {
+    let Some(stage) = ps.readout().raw().load.stage else {
         return;
     };
     acb_mirror_playstate_at(pa.mt(), stage, playing);
@@ -707,7 +708,7 @@ pub fn observe_video_plane(
     _pa: &mut adapter::PlayerAdapter,
 ) -> Option<bool> {
     #[cfg(feature = "play-feed")]
-    let bound = _pa.feed_stage().is_some_and(acb_playstate_ready);
+    let bound = pl.session.readout().raw().load.stage.is_some_and(acb_playstate_ready);
     #[cfg(not(feature = "play-feed"))]
     let bound = false;
     let bound = bound || _pa.uri_product_plane_owned();

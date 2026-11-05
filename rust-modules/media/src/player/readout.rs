@@ -650,10 +650,14 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         let a = RouteStartAttempt::fixture();
         let (fake, handle) = FakeFeed::new();
-        handle.script(|s| s.facts = facts(12, Some(4)));
+        handle.script(|s| {
+            s.facts = facts(12, Some(4));
+            s.facts.raw.load.stage = Some(Stage::Loading);
+        });
         let mut ps = PlaybackSession::IDLE;
         ps.begin_attempt_view(a, Backend::Feed);
-        assert!(ps.ingest_feed_facts(a, fake.sample()));
+        assert!(ps.ingest_feed_facts(a, fake.sample().expect("a session is installed")));
+        assert_eq!(ps.readout().raw().load.stage, Some(Stage::Loading), "the Load half arrives too");
         assert_eq!(ps.readout().raw().frames, 12);
         assert_eq!(handle.calls(), vec![plx_playback_contract::feed_fake::FeedCall::Sample]);
     }

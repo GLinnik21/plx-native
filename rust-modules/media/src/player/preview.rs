@@ -437,12 +437,6 @@ pub fn accepts_direct_play(direct_play: bool, part_nonempty: bool, adaptive: boo
     direct_play && part_nonempty && !adaptive
 }
 
-/// Defer the media join while an in-flight Load has not returned. Joining it on the main thread
-/// is the stall Abandoning exists to avoid.
-pub fn defer_media_join(loading: bool, thread_finished: bool) -> bool {
-    loading && !thread_finished
-}
-
 plx_base::devtrig::latched_flag!(
     /// `/tmp/plxnative-nopreview` — disable background trailer autoplay. Latched: `enabled()`
     /// runs on `preview_tick`'s every-frame path (via `blocked`) while the detail hero holds
@@ -740,6 +734,10 @@ pub fn after_pump(
         return;
     }
     if abandoning() {
+        // The Load thread returns on its own thread at any instant, after the pump's last sample
+        // (`pump` ends on one): sample again, so this frame's `finished` is the thread's, not the
+        // frame's earlier one. `pump` does not run at all in a frame the player is not started.
+        pa.publish_feed_attempt_view(ps);
         // KNOWN GAP (code review, unresolved): this poll has no timeout. If the native load
         // thread never finishes (the k5lp DirectVoInit hang class this app already has a general
         // budget for on the live path, `pump::NATIVE_LOAD_BUDGET`), `finished` stays false
@@ -751,7 +749,7 @@ pub fn after_pump(
         // resource an OS thread may still be executing against — a real memory-safety question
         // (does the leaked `SfSlot` pattern in `src/starfish.c` make that safe, or does it not)
         // that needs `player/CLAUDE.md`'s device verification + fw-compat review, not a desk fix.
-        let finished = pa.feed_load_thread_finished();
+        let finished = ps.readout().raw().load.load_thread_finished;
         if finished {
             retire(ps, pa, "abandoned Load returned");
         }
@@ -762,7 +760,7 @@ pub fn after_pump(
     if preview && live && occupies() {
         if seen_frame {
             note_picture(now_ms);
-        } else if pa.feed_stage().is_some_and(|stage| stage >= super::shared::Stage::Playing) {
+        } else if ps.readout().raw().load.stage.is_some_and(|stage| stage >= super::shared::Stage::Playing) {
             transition("bound", Machine::bound);
         }
     }
@@ -1189,13 +1187,6 @@ mod tests {
     }
 
     #[test]
-    fn abandon_defers_the_join_until_the_load_thread_has_returned() {
-        assert!(defer_media_join(true, false));
-        assert!(!defer_media_join(true, true));
-        assert!(!defer_media_join(false, false));
-    }
-
-    #[test]
     fn chrome_recedes_only_after_a_picture() {
         let mut m = Machine::default();
         assert_eq!(m.view(), View::STILL);
@@ -1316,5 +1307,121 @@ mod tests {
         assert_eq!(m.start(sid(), "rk", 0, false), Start::Disabled);
         assert_eq!(m.phase(), Phase::Idle);
         assert_eq!(m.cycles(), 0);
+    }
+}
+
+/// The retire path of a preview whose Load has not returned, against a real Engine and the real
+/// Feed: the join is deferred while the Load thread runs, and the abandoned-Load poll finishes it.
+#[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
+mod abandoned_load_tests {
+    use super::*;
+    use crate::player::shared::Stage;
+    use crate::player::{FEED_SHARED, SHARED};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    struct Cleanup;
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            reset_for_test();
+            crate::player::ffi_host::reset_native_lifecycle_for_test();
+            crate::player::ffi_host::force_clocksink_for_test(false);
+            FEED_SHARED.test_force_native_idle();
+            SHARED.reset_session();
+            crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
+        }
+    }
+
+    /// A preview Engine on a ready host object, still in its Load stage, whose Load thread parks
+    /// until `release` is set. Bound to the fixture attempt, addressed in `ps`.
+    fn loading_preview(ps: &mut crate::route::PlaybackSession,
+        release: &Arc<AtomicBool>) -> crate::player::adapter::PlayerAdapter {
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(ps);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        let epoch = FEED_SHARED.begin_native_session().expect("native session");
+        assert_eq!(unsafe { crate::player::sink().load(c"{}".as_ptr(), epoch) }, 1);
+        assert!(FEED_SHARED.mark_native_load_returned(epoch, None).is_some());
+        let mut eng = crate::player::engine::streaming_engine_for_test(epoch);
+        let attempt = crate::route::RouteStartAttempt::fixture();
+        eng.attempt = attempt.contract_id();
+        eng.stage = Stage::Loading;
+        let hold = Arc::clone(release);
+        eng.load_th = plx_base::task::spawn("media", move || {
+            while !hold.load(Ordering::SeqCst) { std::thread::sleep(std::time::Duration::from_millis(1)); }
+        });
+        assert!(eng.load_th.is_some(), "the Load stand-in thread started");
+        pa.install(eng);
+        ps.begin_attempt_view(attempt, crate::player::attempt_view::Backend::Feed);
+        crate::route::mark_preview_for_test(ps);
+        pa
+    }
+
+    /// Wait (bounded) until the Engine's Load thread has returned.
+    fn await_load_return(pa: &mut crate::player::adapter::PlayerAdapter) {
+        let give_up = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !pa.engine().and_then(|eng| eng.load_th.as_ref()).is_none_or(|th| th.is_finished()) {
+            assert!(std::time::Instant::now() < give_up, "the Load thread never returned");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    /// The Feed answers the join question in the call that acts on it: deferred (and marked
+    /// abandoned) only for a session still in its Load stage whose thread is unfinished.
+    #[test]
+    fn the_feed_defers_a_preview_join_only_for_an_unfinished_load() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let _cleanup = Cleanup;
+        let release = Arc::new(AtomicBool::new(false));
+        let mut pa = loading_preview(&mut ps, &release);
+        assert!(!pa.engine().unwrap().preview_abandon);
+        assert!(pa.defer_preview_join(), "Load stage, thread running");
+        assert!(pa.engine().unwrap().preview_abandon, "the deferral marks the preview abandoned");
+
+        pa.engine().unwrap().preview_abandon = false;
+        pa.engine().unwrap().stage = Stage::Playing;
+        assert!(!pa.defer_preview_join(), "past the Load stage the join is the stop's");
+        assert!(!pa.engine().unwrap().preview_abandon, "and nothing is marked");
+
+        pa.engine().unwrap().stage = Stage::Loading;
+        release.store(true, Ordering::SeqCst);
+        await_load_return(&mut pa);
+        assert!(!pa.defer_preview_join(), "the Load thread has returned");
+        assert!(!pa.engine().unwrap().preview_abandon);
+        drop(pa.take());
+    }
+
+    /// **The Load thread returns after the pump's last sample** (`pump`'s S2): the abandoning arm
+    /// of `after_pump` must retire the preview in that same frame, so it re-samples first. Reading
+    /// the frame's last sample would carry `load_thread_finished == false` until the next pump.
+    #[test]
+    fn a_load_that_returns_after_the_pump_is_retired_in_the_same_frame() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let _cleanup = Cleanup;
+        let release = Arc::new(AtomicBool::new(false));
+        let mut pa = loading_preview(&mut ps, &release);
+        set_phase_for_test(Phase::Loading);
+
+        halt(&mut ps, &mut pa);
+        assert!(abandoning(), "the halt abandoned the preview");
+        assert!(pa.is_live(), "the Load had not returned: the Engine stays installed");
+
+        // The frame: the pump's last sample (S2) still sees the Load thread running.
+        pa.publish_feed_attempt_view(&mut ps);
+        assert!(!ps.readout().raw().load.load_thread_finished, "PRECONDITION: S2 saw it running");
+        after_pump(&mut ps, &mut pa, 0);
+        assert!(abandoning() && pa.is_live(), "still running: nothing retires yet");
+
+        // The Load returns between S2 and the next `after_pump`, which runs in the same frame.
+        release.store(true, Ordering::SeqCst);
+        await_load_return(&mut pa);
+        after_pump(&mut ps, &mut pa, 1);
+        assert!(!pa.is_live(), "the abandoning arm retires the preview in the frame the Load returned");
+        assert!(!abandoning());
+        crate::player::route_start::finish_release_for_test(&mut pa);
     }
 }

@@ -1123,7 +1123,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         return;
     }
     if crate::route::recovery_flight_outstanding() {
-        hold_connecting_state(ps, pa.feed_loading());
+        hold_connecting_state(ps, ps.readout().raw().load.loading());
         return;
     }
     // `sf_load == 0` may leave no callable object, so this must precede the sf_ready wait below;
@@ -1149,7 +1149,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         // lacks, a rebuild that cannot fly, or a request with no rung left ends on the read-out the
         // viewer would have had; a refusal the machine does not handle (it is in `Failed`, or a
         // flight is outstanding) fails the Engine again, never silence.
-        let loading = pa.feed_loading();
+        let loading = ps.readout().raw().load.loading();
         let refusal = load_refusal(ps);
         let native_audio = native_audio_fact(ps);
         let run = recover_failed_open(ps, loading, refusal, native_audio, "Audio Codec Not Supported");
@@ -1175,7 +1175,8 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         // frame goes on.
         if let Some(audio) = native_audio_fact(ps) {
             let why = "it swallowed the feed: no picture";
-            let run = recover_failed_open(ps, pa.feed_loading(), super::recovery::LoadRefusal::Stalled, Some(audio), why);
+            let loading = ps.readout().raw().load.loading();
+            let run = recover_failed_open(ps, loading, super::recovery::LoadRefusal::Stalled, Some(audio), why);
             if let OpenRecoveryRun::DecodeInApp { offset_ns } = run {
                 decode_in_app(ps, pa, offset_ns);
             }
@@ -1237,7 +1238,8 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
             finish_preview_open_failure(ps, pa);
             return;
         }
-        let run = recover_failed_open(ps, pa.feed_loading(), super::recovery::LoadRefusal::SourceFailed, None, "");
+        let loading = ps.readout().raw().load.loading();
+        let run = recover_failed_open(ps, loading, super::recovery::LoadRefusal::SourceFailed, None, "");
         if let OpenRecoveryRun::DecodeInApp { offset_ns } = run {
             decode_in_app(ps, pa, offset_ns);
         }
@@ -1248,7 +1250,8 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
             finish_preview_open_failure(ps, pa);
             return;
         }
-        let run = recover_failed_open(ps, pa.feed_loading(), super::recovery::LoadRefusal::SourceFailed, None, "");
+        let loading = ps.readout().raw().load.loading();
+        let run = recover_failed_open(ps, loading, super::recovery::LoadRefusal::SourceFailed, None, "");
         if let OpenRecoveryRun::DecodeInApp { offset_ns } = run {
             decode_in_app(ps, pa, offset_ns);
         }
@@ -1259,7 +1262,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
     // User quality/track changes survive pre-roll and outrank automatic ABR. A simultaneous seek
     // is not a competing mailbox: it supplies this action's target, so the two become ONE reload
     // instead of either resetting the seek or rebuilding at the position the viewer already left.
-    if pa.route_actions_ready() {
+    if ps.readout().raw().load.route_actions_ready {
         // A retranscode claim's PMS half may now be running on a worker (the freeze this fixes:
         // `execute_retranscode_claim` used to run `put_selection` + `/decision` right on this frame
         // thread). Drain any landing BEFORE trying to claim a new action — `ControlPhase` stays
@@ -2155,7 +2158,7 @@ mod flight_tests {
                 assert!(std::time::Instant::now() < deadline,
                     "timed out waiting for {what}: phase={}, decisions={}, answered={}, live={}, stage={:?}, recovery={}, state={:?}",
                     crate::route::control_phase_label(), self.flight.decisions(),
-                    self.flight.answered(), self.pa.is_live(), self.pa.feed_stage().map(|stage| stage as u8),
+                    self.flight.answered(), self.pa.is_live(), self.ps.readout().raw().load.stage.map(|stage| stage as u8),
                     crate::route::recovery_flight_outstanding(), crate::player::state(&self.ps));
                 std::thread::sleep(Duration::from_millis(2));
                 self.frame();
@@ -2172,7 +2175,7 @@ mod flight_tests {
                 crate::route::control_phase_label(), self.ps.backend_offer(),
                 self.ps.planned_feed_offer(), self.ps.backend_planned_feed_allowed(),
                 self.pa.is_live(), self.pa.active_feed_attempt(), self.pa.backend_snapshot(),
-                self.pa.feed_stage().map(|stage| stage as u8), FEED_SHARED.native_releasing(),
+                self.ps.readout().raw().load.stage.map(|stage| stage as u8), FEED_SHARED.native_releasing(),
                 FEED_SHARED.native_load_abandoned(), self.ps.native_start_refused,
                 crate::route::engine_failure(&self.ps), crate::route::play_refused(&self.ps),
                 crate::route::play_resolution_failed(&self.ps), FEED_SHARED.load_failed.load(Relaxed),

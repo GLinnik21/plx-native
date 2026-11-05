@@ -623,7 +623,7 @@ something.
   observes it:** the machine owns a
   refusal the pump sees AFTER a Load call returned (`type=18` once `route_start_status` read `Started`,
   a Load budget, a stall, a source failure). The Load CALL's own synchronous refusal (`StartFailed`
-  with `load_failed`) of a Load the foreground lifecycle follows (`Engine::foreground_follows_load`,
+  with `load_failed`) of a Load the foreground lifecycle follows (the adapter's bound-attempt record, `PlayerAdapter::foreground_follows_feed_load`,
   marked by `app/lifecycle.rs` wherever it starts following an attempt) is the lifecycle's alone:
   `pump` returns before the ladder (`settled_by_foreground`) and `ForegroundLifecycle` settles it as
   #1018's retry (`Prepared`, the Engine retired). A fresh play's synchronous refusal has no

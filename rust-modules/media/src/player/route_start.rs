@@ -1253,8 +1253,8 @@ pub fn suspend_playback_if_attempt(ps: &mut crate::route::PlaybackSession,
 
 /// The foreground lifecycle follows `attempt` (it launched that Load, or took over following it):
 /// from now on the Load call's own synchronous refusal is the lifecycle's to settle
-/// (`PlayerAdapter::mark_foreground_follows_feed_load`). True when the live Engine owns that exact attempt; a
-/// replaced Engine (a different attempt) is not marked.
+/// (`PlayerAdapter::mark_foreground_follows_feed_load`). True when the adapter has bound that exact
+/// attempt; a replaced one (a different attempt) is not marked.
 #[cfg(feature = "play-feed")]
 pub fn foreground_follows_load(pa: &mut super::adapter::PlayerAdapter, attempt: crate::route::RouteStartAttempt) -> bool {
     pa.mark_foreground_follows_feed_load(attempt)
@@ -1298,13 +1298,8 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
     #[cfg(feature = "play-feed")]
     {
     // An abandoned preview Load is never joined on the frame while native Load is in flight.
-    if crate::route::is_preview(ps) {
-        if let Some((loading, finished)) = pa.preview_load_join_state() {
-            if super::preview::defer_media_join(loading, finished) {
-                pa.abandon_preview_load();
-                return;
-            }
-        }
+    if crate::route::is_preview(ps) && pa.defer_preview_join() {
+        return;
     }
     begin_feed_teardown(for_reload);
     FEED_SHARED.stop_hls_clock();
