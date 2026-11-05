@@ -5994,11 +5994,18 @@ class UriModeGrading(unittest.TestCase):
     # -- uri_drain_warning_s --
 
     @staticmethod
-    def _drain(series, tail=()):
-        """The reported `remainingTime`, one sample a second, then the stall's `bufferingStart`."""
+    def _drain(series, tail=(), form="remaining"):
+        """The buffered lead, one `bufferRange` sample a second, then the stall's `bufferingStart`.
+
+        `form` is what the line carries: `remaining` (a `remainingTime` field), `window` (only
+        `beginTime`/`endTime`, as one TV session printed it, the position at `beginTime` and the lead
+        the gap to `endTime`) or `mixed` (the field on every other sample).
+        """
         lines = [_uri(700, "ev=bufferingStart"), _uri(2000, "ev=bufferingEnd"), _uri(2000, "ev=playing")]
-        lines += [_uri(3000 + 1000 * i, f"ev=bufferRange beginTime=0 endTime={r} remainingTime={r} percent=1")
-                  for i, r in enumerate(series)]
+        for i, r in enumerate(series):
+            with_field = form == "remaining" or (form == "mixed" and i % 2 == 0)
+            span = f"beginTime={i} endTime={i + r}" + (f" remainingTime={r} percent=1" if with_field else "")
+            lines.append(_uri(3000 + 1000 * i, f"ev=bufferRange {span}"))
         return lines + [_uri(3000 + 1000 * len(series), "ev=bufferingStart")] + list(tail)
 
     def test_a_buffer_that_drains_before_it_stalls_is_a_warning(self):
@@ -6025,6 +6032,41 @@ class UriModeGrading(unittest.TestCase):
         ok, why = run.a_uri_drain_warning(risen, 5)
         self.assertFalse(ok)
         self.assertIn("10 -> 9", why)
+
+    def test_the_lead_reads_the_buffer_window_when_the_field_is_absent(self):
+        # the field is not reliably printed on the 4.5 set (one session had it on every sample, the
+        # next on none): the window `endTime - beginTime` is the same lead on a bound plane
+        self.assertEqual(run._uri_lead("ev=bufferRange beginTime=33 endTime=35"), 2)
+        self.assertEqual(run._uri_lead("ev=bufferRange beginTime=0 endTime=4.5 percent=3"), 4.5)
+        self.assertEqual(run._uri_lead("ev=bufferRange beginTime=32 endTime=44 remainingTime=9 percent=1"), 9,
+                         "the field wins where the line has it")
+        self.assertIsNone(run._uri_lead("ev=currentTime value=1000"))
+        warned = [4, 6, 8, 10, 12, 12, 12, 12, 11, 11, 10, 8, 7, 5, 4, 3, 2]
+        for form in ("window", "mixed"):
+            with self.subTest(form=form, leg="drain"):
+                ok, why = run.a_uri_drain_warning(self._drain(warned, form=form), 5)
+                self.assertTrue(ok, why)
+                self.assertIn("12 -> 2", why)
+            with self.subTest(form=form, leg="full buffer that just stops"):
+                self.assertFalse(run.a_uri_drain_warning(
+                    self._drain([4, 8, 12, 12, 12, 12, 12, 12, 12, 12], form=form), 5)[0])
+            with self.subTest(form=form, leg="short decline"):
+                self.assertFalse(run.a_uri_drain_warning(self._drain([12, 12, 12, 12, 11, 10, 9], form=form), 5)[0])
+                self.assertTrue(run.a_uri_drain_warning(self._drain([12, 12, 12, 12, 11, 10, 9], form=form), 4)[0])
+            with self.subTest(form=form, leg="rise inside the decline"):
+                self.assertFalse(run.a_uri_drain_warning(self._drain([12, 12, 11, 10, 9, 10, 9], form=form), 5)[0])
+            with self.subTest(form=form, leg="no bufferRange sample at all"):
+                bare = [_uri(2000, "ev=playing"), _uri(9000, "ev=bufferingStart")]
+                self.assertFalse(run.a_uri_drain_warning(bare, 5)[0])
+
+    def test_a_field_that_disagrees_with_the_window_is_read_as_the_field(self):
+        # remainingTime drains while endTime - beginTime sits at 12: the field is the claim
+        series = [12, 12, 12, 12, 11, 10, 9, 8, 7, 6]
+        log = [_uri(2000, "ev=playing")]
+        log += [_uri(3000 + 1000 * i, f"ev=bufferRange beginTime={i} endTime={i + 12} remainingTime={r}")
+                for i, r in enumerate(series)]
+        log.append(_uri(13000, "ev=bufferingStart"))
+        self.assertTrue(run.a_uri_drain_warning(log, 5)[0])
 
     def test_the_stall_must_be_a_mid_playback_one(self):
         series = [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2]
