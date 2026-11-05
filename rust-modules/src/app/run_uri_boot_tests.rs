@@ -828,7 +828,7 @@ mod uri_boot_tests {
             "an explicit viewer edit is a new request, not an automatic handoff");
         assert_eq!(feed_metrics.current_attempt.expect("Feed physical attempt").backend,
             plx_media::player::attempt_metrics::Backend::Feed);
-        assert_eq!(plx_media::player::play_rate_permille(), 1500,
+        assert_eq!(plx_media::player::play_rate_permille(&rig.app.player.session), 1500,
             "Feed physical preparation applied the requested rate before its first Play");
     }
 

@@ -3,9 +3,10 @@
 //!
 //! They lived in the feed's process-global mailbox (`FEED_SHARED`: `pb_state`, `ended`,
 //! `start_queued`, `speed_unsupported`, `rate_reload`, `play_rate_permille`), although the feed
-//! never wrote any of them. They move here (D2 v2, 1.2 and 3.3) so a reader asks the session,
+//! never wrote any of them. They moved here (D2 v2, 1.2 and 3.3) so a reader asks the session,
 //! and a test and a replay drive the same events the product does. A writer is an event; the
-//! session applies it through [`PlayerReadout::step`] and nothing else can change a field.
+//! session applies it through [`PlayerReadout::step`] and nothing else can change a field, and the
+//! mailbox statics are gone.
 //!
 //! The machine is pure: no clock, no registry, no thread. It names no feed type; the facts it
 //! holds are the contract's [`FeedRaw`], so it builds whatever backends a composition installs.
@@ -13,10 +14,16 @@
 //! L3b's, and join as events beside these. The pump feeds it: the session's one ingestion
 //! (`ingest_feed_facts`) takes the raw facts, and `present` derives the state and the end of
 //! stream at the pump's derivation point, both addressed by attempt. `state` and `ended` are read
-//! from here alone (`player::state`, `player::ended`; their mailbox statics are gone), and a
-//! `SessionReset` at every real call of the Feed's session reset retires them; the speed, latch
-//! and queue members still have their mailbox statics until L3a-2 step 4b moves each beside its
-//! writer.
+//! from here alone (`player::state`, `player::ended`), and a `SessionReset` at every real call of
+//! the Feed's session reset retires them.
+//!
+//! The speed members follow their writers. `play_rate_permille` is the OFFERED rate: what the next
+//! Load plays at, which `session_rate_for` lowers to 1x when this playback does not offer the
+//! viewer's pick. It is not the viewer's intent, which is the session's `requested_rate_permille`
+//! and survives that downgrade. `rate_reload` is the one-shot the pump takes with the seek that
+//! carries a speed change (read it, then step `RateReloadTaken`). `start_queued` is the release
+//! machine's answer, stated by the runners of its effects after a step
+//! (`PlayerAdapter::publish_release_queue`).
 
 use plx_playback_contract::feed::{FeedRaw, PresentationTick, Stage};
 use plx_playback_contract::RATE_NORMAL;

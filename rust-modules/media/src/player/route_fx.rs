@@ -32,10 +32,12 @@ pub fn reset_audio_track() {
     super::reset_audio_track();
 }
 
-/// Back to 1x, for a new item.
-pub fn reset_play_rate() {
+/// Back to 1x, for a new item: the session's readout drops the offered rate and a pending reload.
+pub fn reset_play_rate(ps: &mut PlaybackSession) {
     #[cfg(feature = "play-feed")]
-    super::reset_play_rate();
+    super::reset_play_rate(ps);
+    #[cfg(not(feature = "play-feed"))]
+    let _ = ps;
 }
 
 /// Stage a native audio switch (the Load codec and the demuxer's stream index) without queueing

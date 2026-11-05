@@ -25,8 +25,6 @@
 //! DIFFERENT thing — the ACB/Starfish seam (`tv::sink::VideoSink`'s methods, whose bind order is a
 //! sequence of calls with no locking behind it) — and that surface is not this module's.
 
-#[cfg(feature = "play-feed")]
-use plx_play_feed::shared::FEED_SHARED;
 #[cfg(all(test, feature = "play-feed"))]
 use super::engine::Engine;
 #[cfg(feature = "play-feed")]
@@ -1472,11 +1470,17 @@ impl PlayerAdapter {
     /// The release machine's verdict on one event; the effects are the caller's to run.
     pub(super) fn release_step(&mut self, event: &super::release::ReleaseEvent, fx: &mut Vec<super::release::ReleaseEffect>) {
         self.release.step(event, fx);
-        // Publish the one fact `player::state` needs (no session copy of it can drift).
-        #[cfg(feature = "play-feed")]
-        FEED_SHARED
-            .start_queued
-            .store(self.release.has_queued(), std::sync::atomic::Ordering::Release);
+    }
+
+    /// Publish the release machine's queue to the session's readout, the one fact `player::state`
+    /// needs. The machine stays the owner: this states its current answer, so a session built
+    /// afresh is corrected by the next call rather than carrying a stale copy. The runners of the
+    /// machine's effects (`poll_release`, a start, a stop, the URI poll) call it after a step, so a
+    /// step an adapter-internal path makes without the session (a URI `Released` verdict taken in
+    /// `backend_poll_at`) reaches the readout when its queued effect is run.
+    #[cfg(feature = "play-feed")]
+    pub(super) fn publish_release_queue(&self, ps: &mut crate::route::PlaybackSession) {
+        ps.step_readout(super::readout::ReadoutEvent::ReleaseQueue { queued: self.release.has_queued() });
     }
 
     /// An `Unload` is running or overdue: the object slot is not free.
