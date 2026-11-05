@@ -87,7 +87,7 @@ mod sys {
         pub(super) fn acb_loaded() -> c_int;
         #[cfg(feature = "devtriggers")]
         pub(super) fn acb_probe_connect_dass() -> c_int;
-        pub(super) fn acb_finish() -> c_int;
+        pub(super) fn acb_finish(display_task: *mut c_long, playing_task: *mut c_long) -> c_int;
         pub(super) fn acb_bind(media_id: *const c_char);
         pub(super) fn acb_send_video_data(source_info: *const c_char) -> c_int;
         pub(super) fn acb_send_atmos(media_id: *const c_char) -> c_int;
@@ -284,7 +284,11 @@ impl crate::tv::sink::DisplaySink for StarfishSink {
     unsafe fn plane_loaded(&self, _: &MainThread) -> c_int { sys::acb_loaded() }
     #[cfg(feature = "devtriggers")]
     unsafe fn plane_probe_connect_dass(&self, _: &MainThread) -> c_int { sys::acb_probe_connect_dass() }
-    unsafe fn plane_finish(&self, _: &MainThread) -> c_int { sys::acb_finish() }
+    unsafe fn plane_finish(&self, _: &MainThread) -> crate::tv::sink::PlaneFinish {
+        let (mut display_task, mut playing_task): (c_long, c_long) = (0, 0);
+        let rv = sys::acb_finish(&mut display_task, &mut playing_task);
+        crate::tv::sink::PlaneFinish { rv, display_task, playing_task }
+    }
     unsafe fn plane_bind(&self, _: &MainThread, media_id: *const c_char) {
         sys::acb_bind(media_id)
     }

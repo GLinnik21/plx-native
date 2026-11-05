@@ -136,7 +136,8 @@ mod uri_boot_tests {
         unsafe fn plane_probe_connect_dass(&self, mt: &plx_base::task::MainThread) -> c_int {
             NoSink.plane_probe_connect_dass(mt)
         }
-        unsafe fn plane_finish(&self, mt: &plx_base::task::MainThread) -> c_int {
+        unsafe fn plane_finish(&self, mt: &plx_base::task::MainThread)
+            -> plx_platform::tv::sink::PlaneFinish {
             NoSink.plane_finish(mt)
         }
         unsafe fn plane_bind(&self, mt: &plx_base::task::MainThread, id: *const c_char) {

@@ -2009,12 +2009,20 @@ class PipelineTier(unittest.TestCase):
     def test_the_uri_ladder_cases_serve_the_ladder_master_and_arm_the_probe(self):
         cases = {c["name"]: c for c in self._pipeline_cases()}
         collapse, capped = cases["pipe_abr_uri_ladder_collapse"], cases["pipe_abr_uri_ladder_capped"]
-        for case in (collapse, capped):
-            self.assertTrue(serve_fixtures.RE_ABR_LADDER.match("/" + case["fixture"]), case["fixture"])
+        for case, query in ((collapse, "?top=6000"), (capped, "")):
+            # the query is the server's (`top=`), so the ladder pattern is matched on the path alone
+            self.assertTrue(serve_fixtures.RE_ABR_LADDER.match("/" + case["fixture"].split("?", 1)[0]),
+                            case["fixture"])
             self.assertNotIn("auto_network", case, "the app's own ABR controller never runs in URI mode")
             files = dict(run.triggers_for_case(case, url_base="http://fixture.invalid"))
             self.assertEqual(json.loads(files["plxnative-playurl"])["url"],
-                             "http://fixture.invalid/__abr/ladder/master.m3u8")
+                             "http://fixture.invalid/__abr/ladder/master.m3u8" + query,
+                             "a query in `fixture` must survive into the URL the TV is handed")
+        self.assertEqual(serve_fixtures.abr_playlist_rungs(collapse["fixture"]),
+                         ("320", "720", "2000", "4000", "6000"),
+                         "the collapse case stops at 6000, so a segment in flight is not a 20000 one")
+        self.assertEqual(serve_fixtures.abr_playlist_rungs(capped["fixture"]), serve_fixtures.ABR_LADDER,
+                         "the capped case keeps the whole ladder")
         self.assertEqual(dict(run.triggers_for_case(collapse, url_base="http://fixture.invalid"))["plxnative-uriprobe"],
                          "load")
         # the link is the sibling's, so the two cases differ in the controller under test only
@@ -5279,7 +5287,9 @@ class AbrLadderMaster(unittest.TestCase):
         rungs = serve_fixtures.ABR_RUNGS.split("|")
         self.assertEqual(
             self._variants(text),
-            [(int(r) * 1000, serve_fixtures.ABR_RASTER[r], f"/__abr/{r}/media.m3u8") for r in rungs])
+            [(int(r) * 1000, serve_fixtures.ABR_RASTER[r], f"/__abr/{r}/media.m3u8?continuous=1")
+             for r in rungs],
+            "the ladder is for a native player, so every child asks for continuous timestamps")
         self.assertEqual(rungs[:2], ["320", "720"], "the manifest caps at the second-lowest rung")
         bandwidths = [bw for bw, _, _ in self._variants(text)]
         self.assertEqual(bandwidths, sorted(bandwidths))
@@ -5295,14 +5305,16 @@ class AbrLadderMaster(unittest.TestCase):
         srv.set_abr_response_profile({"22000": ["2000", "22000"]})
         first = self._variants(self._playlist(srv, "/__abr/ladder/master.m3u8"))
         top = first[-1]
-        self.assertEqual(top, (2_000_000, "1280x720", "/__abr/22000/media.m3u8?fixtureGeneration=1"),
+        self.assertEqual(top, (2_000_000, "1280x720",
+                               "/__abr/22000/media.m3u8?fixtureGeneration=1&continuous=1"),
                          "the first fresh master maps 22000 to the 2000 rendition, as its own master would")
         self.assertTrue(all("fixtureGeneration" not in uri for _, _, uri in first[:-1]),
                         "unprofiled rungs are untouched")
         media = self._playlist(srv, "/__abr/22000/media.m3u8?fixtureGeneration=1")
         self.assertIn("segment.ts?sequence=0&fixtureGeneration=1", media)
         second = self._variants(self._playlist(srv, "/__abr/ladder/master.m3u8"))
-        self.assertEqual(second[-1], (22_000_000, "3840x2160", "/__abr/22000/media.m3u8?fixtureGeneration=2"))
+        self.assertEqual(second[-1], (22_000_000, "3840x2160",
+                                      "/__abr/22000/media.m3u8?fixtureGeneration=2&continuous=1"))
         # the ordinary single-rung master still allocates from the same counter
         self.assertIn("fixtureGeneration=3", self._playlist(srv, "/__abr/22000/master.m3u8"))
 
@@ -5342,6 +5354,429 @@ class AbrLadderMaster(unittest.TestCase):
         self.assertEqual(run.rung_segments_line({"320": 1}, {"320": 1, "720": 3, "2000": 2}), "720=3 2000=2")
         self.assertEqual(run.rung_segments_line({"320": 1, "720": 2}, {"320": 4, "720": 2}), "320=3")
         self.assertEqual(run.rung_segments_line({}, {}), "")
+
+
+# ---- Continuous timestamps (`?continuous=1`) ----
+#
+# Synthetic MPEG-TS, because the pack may be absent on CI and because the expected value of a
+# shifted segment must come from somewhere that is not the code under test: `TsBuilder` encodes the
+# timestamps itself from the ISO 13818-1 bit layouts, so "the server's answer equals the builder's
+# part rebuilt with every timestamp moved on" is checked byte for byte, marker bits and PCR
+# reserved bits included.
+class TsBuilder:
+    VIDEO_PID, AUDIO_PID, FRAME = 0x100, 0x101, 3750      # 24 fps at 90 kHz
+    AUDIO_FRAME = 1920                                    # 1024 samples at 48 kHz
+
+    @staticmethod
+    def stamp(prefix, value):
+        """A 5-byte PTS/DTS field: 4-bit prefix, then 33 bits in 3 groups, each closed by a marker."""
+        value %= 1 << 33
+        bits = (prefix << 36) | ((value >> 30) << 33) | (1 << 32) | (((value >> 15) & 0x7FFF) << 17) \
+            | (1 << 16) | ((value & 0x7FFF) << 1) | 1
+        return bits.to_bytes(5, "big")
+
+    @staticmethod
+    def pcr(base, extension):
+        """A 6-byte PCR: 33-bit base, 6 reserved bits all ones, 9-bit extension."""
+        return (((base % (1 << 33)) << 15) | (0x3F << 9) | extension).to_bytes(6, "big")
+
+    @staticmethod
+    def first_video(segment):
+        """(PCR base, PCR extension, PTS, DTS) of a part's first video packet, read back from the
+        bits: the packet after the PAT, with its PCR in the adaptation field and a DTS-carrying PES."""
+        packet = segment[188:376]
+        pcr = int.from_bytes(packet[6:12], "big")
+        pes = packet[5 + packet[4]:]
+
+        def read(raw):
+            bits = int.from_bytes(raw, "big")
+            return (bits >> 33 & 0x7) << 30 | (bits >> 17 & 0x7FFF) << 15 | (bits >> 1 & 0x7FFF)
+
+        return pcr >> 15, pcr & 0x1FF, read(pes[9:14]), read(pes[14:19])
+
+    @classmethod
+    def pes(cls, stream_id, pts, dts, body):
+        marks = 0xC0 if dts is not None else 0x80
+        head = bytes([0, 0, 1, stream_id, 0, 0, 0x80, marks, 10 if dts is not None else 5])
+        head += cls.stamp(3 if dts is not None else 2, pts)
+        if dts is not None:
+            head += cls.stamp(1, dts)
+        return head + body
+
+    @classmethod
+    def packets(cls, pid, counter, payload, pcr=None):
+        """`payload` over as many 188-byte packets as it needs; the first carries `pcr` if given."""
+        out, first = [], True
+        while first or payload:
+            need = 8 if (first and pcr is not None) else 0        # adaptation field bytes for the PCR
+            chunk, payload = payload[:184 - need], payload[184 - need:]
+            adaptation = 184 - len(chunk)                         # whole adaptation field, stuffing included
+            head = bytes([0x47, (0x40 if first else 0) | (pid >> 8), pid & 0xFF,
+                          (0x30 if adaptation else 0x10) | counter[pid] & 0x0F])
+            counter[pid] += 1
+            field = b""
+            if adaptation:
+                field = bytes([adaptation - 1])
+                if adaptation > 1:
+                    field += bytes([0x10 if (first and pcr is not None) else 0])
+                    field += pcr if (first and pcr is not None) else b""
+                    field += b"\xff" * (adaptation - len(field))
+            out.append(head + field + chunk)
+            first = False
+        return b"".join(out)
+
+    @classmethod
+    def part(cls, frames, video_pts, audio_pts):
+        """A part: a PAT, then per video frame one video PES (an every-4th-frame PCR, DTS on all
+        but every 5th, a start-code-looking run in a continuation packet) and one audio PES."""
+        counter = {0: 0, cls.VIDEO_PID: 0, cls.AUDIO_PID: 0}
+        out = [cls.packets(0, counter, bytes([0, 0, 0xB0, 13, 0, 1, 0xC1, 0, 0, 0, 1, 0xE1, 0]))]
+        for i in range(frames):
+            pts = video_pts + i * cls.FRAME
+            dts = None if i % 5 == 3 else pts - 2 * cls.FRAME
+            body = bytes(range(200)) + bytes([0, 0, 1, 0xE0, 0x12, 0x34, 0x80, 0xC0, 10]) + bytes(range(60))
+            out.append(cls.packets(cls.VIDEO_PID, counter, cls.pes(0xE0, pts, dts, body),
+                                   pcr=cls.pcr(pts - 9000, i) if i % 4 == 0 else None))
+            out.append(cls.packets(cls.AUDIO_PID, counter,
+                                   cls.pes(0xC0, audio_pts + i * cls.AUDIO_FRAME, None, bytes(range(90)))))
+        return b"".join(out)
+
+
+class AbrContinuousTimestamps(unittest.TestCase):
+    """`?continuous=1`: the same bytes with every PCR/PTS/DTS moved on by what came before."""
+
+    FRAMES = (48, 47, 48)           # the middle part is one frame short: 2.0 s, 1.958333 s, 2.0 s
+    VIDEO0, AUDIO0 = 133500, 131580  # where every real part starts: 1.4833 s, 1.4620 s
+    RUNG = "320"
+
+    @classmethod
+    def ticks(cls, sequence):
+        """Where `sequence` starts in the continuous stream, from the part lengths and nothing else."""
+        return sum(cls.FRAMES[k % len(cls.FRAMES)] * TsBuilder.FRAME for k in range(sequence))
+
+    @classmethod
+    def part_bytes(cls, sequence, extra=0):
+        frames = cls.FRAMES[sequence % len(cls.FRAMES)]
+        return TsBuilder.part(frames, cls.VIDEO0 + extra, cls.AUDIO0 + extra)
+
+    def _pack(self):
+        """A root holding the three parts of `RUNG`, named as the generator names them."""
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        stem = serve_fixtures.ABR_FIXTURE[self.RUNG][:-len(".ts")]
+        for i, name in enumerate([f"{stem}.ts", f"{stem}_01.ts", f"{stem}_02.ts"]):
+            with open(os.path.join(root, name), "wb") as stream:
+                stream.write(self.part_bytes(i))
+        return root
+
+    def _serve(self, root):
+        srv = serve_fixtures.FixtureServer(root, 0, bind="127.0.0.1")
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        return srv
+
+    @staticmethod
+    def _get(srv, path, headers=None, method="GET"):
+        conn = http.client.HTTPConnection(*srv.server_address, timeout=10)
+        try:
+            conn.request(method, path, headers=headers or {})
+            response = conn.getresponse()
+            return response.status, response.read(), response
+        finally:
+            conn.close()
+
+    def _segment_path(self, sequence, suffix="&continuous=1"):
+        return f"/__abr/{self.RUNG}/segment.ts?sequence={sequence}{suffix}"
+
+    # -- the byte level --
+
+    def test_a_part_is_measured_as_its_video_span_plus_one_frame(self):
+        for frames in (48, 47):
+            timeline = serve_fixtures.scan_ts(TsBuilder.part(frames, self.VIDEO0, self.AUDIO0))
+            self.assertEqual(timeline.duration, frames * TsBuilder.FRAME,
+                             "first-to-last PTS alone would be one frame short")
+            self.assertEqual(len(timeline.dts), frames - len(range(3, frames, 5)), "DTS only where flagged")
+            self.assertEqual(len(timeline.pcr), len(range(0, frames, 4)))
+            self.assertEqual(len(timeline.pts), 2 * frames, "one video and one audio PTS per frame")
+            self.assertEqual(timeline.opcr, [])
+            # a PES-looking run inside every video frame's continuation packet added no entry
+
+    def test_a_shift_equals_the_part_rebuilt_with_every_timestamp_moved_on(self):
+        original = TsBuilder.part(48, self.VIDEO0, self.AUDIO0)
+        timeline = serve_fixtures.scan_ts(original)
+        for ticks in (0, 1, 180000, 536250, 123456789):
+            shifted = serve_fixtures.shift_ts(original, timeline, ticks)
+            self.assertEqual(len(shifted), len(original))
+            self.assertEqual(shifted, TsBuilder.part(48, self.VIDEO0 + ticks, self.AUDIO0 + ticks), ticks)
+        self.assertEqual(serve_fixtures.shift_ts(original, timeline, 0), original)
+
+    def test_the_33_bit_clocks_wrap_and_the_pcr_extension_and_markers_survive(self):
+        wrap = 1 << 33
+        near = wrap - 5000                     # video and audio both about to wrap
+        original = TsBuilder.part(48, near, near - 2000)
+        timeline = serve_fixtures.scan_ts(original)
+        self.assertEqual(timeline.duration, 180000, "a part straddling 2^33 still measures 2.0 s")
+        shifted = serve_fixtures.shift_ts(original, timeline, 10000)
+        expected = TsBuilder.part(48, 5000, near - 2000 + 10000 - wrap)
+        self.assertEqual(shifted, expected)
+        # and a shift that is itself a whole turn of the clock is a no-op
+        self.assertEqual(serve_fixtures.shift_ts(original, timeline, wrap), original)
+
+    def test_a_file_it_cannot_honestly_shift_is_refused(self):
+        part = TsBuilder.part(48, self.VIDEO0, self.AUDIO0)
+        for bad, why in ((part[:-1], "whole number"), (b"", "whole number"),
+                         (part[:188] + b"\x00" + part[189:], "lost TS sync"),
+                         (TsBuilder.part(1, self.VIDEO0, self.AUDIO0), "too few")):
+            with self.subTest(why=why):
+                with self.assertRaisesRegex(ValueError, why):
+                    serve_fixtures.scan_ts(bad)
+
+    # -- through the server --
+
+    def test_a_flagged_segment_is_its_part_moved_on_by_every_earlier_duration_across_cycles(self):
+        srv = self._serve(self._pack())
+        # 8 sequences over 3 parts: both cycle wraps (3 and 6) and a 47-frame part before them
+        for sequence in range(8):
+            status, body, _ = self._get(srv, self._segment_path(sequence))
+            self.assertEqual(status, 200)
+            offset = self.ticks(sequence)
+            self.assertEqual(body, self.part_bytes(sequence, offset), f"sequence {sequence} @ +{offset}")
+            # spelled out for the first fields of the segment: PCR, then the video PES's PTS and DTS
+            self.assertEqual(
+                TsBuilder.first_video(body),
+                ((self.VIDEO0 + offset - 9000) % (1 << 33), 0, self.VIDEO0 + offset,
+                 self.VIDEO0 + offset - 2 * TsBuilder.FRAME),
+                "PCR base, PCR extension (not a timestamp), PTS, DTS")
+        self.assertEqual(self.ticks(3), 2 * 180000 + 176250, "the sum of the real lengths, not 3 x 2.0 s")
+
+    def test_unflagged_segments_are_byte_identical_to_their_files(self):
+        root = self._pack()
+        srv = self._serve(root)
+        stem = serve_fixtures.ABR_FIXTURE[self.RUNG][:-len(".ts")]
+        names = [f"{stem}.ts", f"{stem}_01.ts", f"{stem}_02.ts"]
+        for sequence in range(7):
+            with open(os.path.join(root, names[sequence % 3]), "rb") as stream:
+                on_disk = stream.read()
+            for path in (f"/__abr/{self.RUNG}/segment.ts?sequence={sequence}",
+                         f"/__abr/{self.RUNG}/segment.ts?sequence={sequence}&continuous=0"):
+                self.assertEqual(self._get(srv, path)[1], on_disk, path)
+
+    def test_range_head_and_length_of_a_flagged_segment_are_the_files(self):
+        srv = self._serve(self._pack())
+        path = self._segment_path(4)
+        _, whole, _ = self._get(srv, path)
+        status, tail, response = self._get(srv, path, {"Range": "bytes=1000-"})
+        self.assertEqual(status, 206)
+        self.assertEqual(tail, whole[1000:], "a ranged flagged body is the tail of the whole one")
+        self.assertEqual(response.getheader("Content-Range"), f"bytes 1000-{len(whole) - 1}/{len(whole)}")
+        status, middle, _ = self._get(srv, path, {"Range": "bytes=188-375"})
+        self.assertEqual((status, middle), (206, whole[188:376]))
+        status, empty, head = self._get(srv, path, method="HEAD")
+        self.assertEqual((status, empty), (200, b""))
+        self.assertEqual(int(head.getheader("Content-Length")), len(whole))
+        self.assertEqual(len(whole), len(self.part_bytes(4)), "the bytes keep their length")
+
+    def test_flagged_segments_are_counted_like_any_other(self):
+        srv = self._serve(self._pack())
+        self._get(srv, self._segment_path(0))
+        self._get(srv, self._segment_path(1, suffix=""))
+        self.assertEqual(srv.segment_rungs(), {self.RUNG: 2})
+        self.assertEqual(srv.count_segment(), 2, "both went through the segment-indexed counter")
+
+    def test_a_missing_clip_is_never_served_from_the_1080p_fallback_when_flagged(self):
+        """6000 is a 1080p rung, so an unflagged request for its missing clip falls back to
+        `pipe_abr_1080p.ts`. A flagged one has no timeline for that stand-in: 404, loudly."""
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        with open(os.path.join(root, serve_fixtures.ABR_FALLBACK), "wb") as stream:
+            stream.write(TsBuilder.part(48, self.VIDEO0, self.AUDIO0))
+        notes = []
+        srv = serve_fixtures.FixtureServer(root, 0, sink=notes.append, bind="127.0.0.1")
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        self.assertEqual(self._get(srv, "/__abr/6000/segment.ts?sequence=0")[0], 200, "unflagged: the old fallback")
+        self.assertEqual(self._get(srv, "/__abr/6000/segment.ts?sequence=0&continuous=1")[0], 404)
+        self.assertEqual(self._get(srv, "/__abr/6000/media.m3u8?continuous=1")[0], 404)
+        self.assertTrue(any("never takes" in note for note in notes), notes)
+
+    def test_a_clip_that_is_not_transport_stream_is_a_500_when_flagged_and_served_when_not(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        with open(os.path.join(root, serve_fixtures.ABR_FIXTURE[self.RUNG]), "wb") as stream:
+            stream.write(b"fixture")
+        srv = self._serve(root)
+        self.assertEqual(self._get(srv, f"/__abr/{self.RUNG}/segment.ts?sequence=0")[:2], (200, b"fixture"))
+        self.assertEqual(self._get(srv, self._segment_path(0))[0], 500)
+        self.assertEqual(self._get(srv, f"/__abr/{self.RUNG}/media.m3u8?continuous=1")[0], 500)
+
+    # -- the playlists --
+
+    @staticmethod
+    def _extinfs(text):
+        return [float(row[len("#EXTINF:"):].rstrip(",")) for row in text.splitlines()
+                if row.startswith("#EXTINF:")]
+
+    def test_a_flagged_playlist_says_what_the_media_measures_and_the_two_agree(self):
+        srv = self._serve(self._pack())
+        status, body, _ = self._get(srv, f"/__abr/{self.RUNG}/media.m3u8?continuous=1")
+        self.assertEqual(status, 200)
+        text = body.decode()
+        extinfs = self._extinfs(text)
+        self.assertEqual(len(extinfs), 90)
+        for sequence, length in enumerate(extinfs):
+            self.assertAlmostEqual(length, self.FRAMES[sequence % 3] * TsBuilder.FRAME / 90000, delta=1e-6)
+        self.assertEqual(extinfs[:3], [2.0, 1.958333, 2.0], "never sequence * 2.0")
+        self.assertIn("#EXT-X-TARGETDURATION:2\n", text)
+        self.assertIn("segment.ts?sequence=3&continuous=1\n", text)
+        # the playlist's running total is where the media itself starts that segment
+        for sequence in (1, 2, 3, 4, 7):
+            _, segment, _ = self._get(srv, self._segment_path(sequence))
+            starts = (TsBuilder.first_video(segment)[2] - self.VIDEO0) / 90000
+            self.assertAlmostEqual(sum(extinfs[:sequence]), starts, delta=1e-5, msg=f"sequence {sequence}")
+
+    def test_target_duration_is_the_longest_extinf_rounded(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        with open(os.path.join(root, serve_fixtures.ABR_FIXTURE[self.RUNG]), "wb") as stream:
+            stream.write(TsBuilder.part(72, self.VIDEO0, self.AUDIO0))     # 3.0 s
+        srv = self._serve(root)
+        _, body, _ = self._get(srv, f"/__abr/{self.RUNG}/media.m3u8?continuous=1")
+        self.assertIn("#EXT-X-TARGETDURATION:3\n", body.decode())
+        self.assertEqual(set(self._extinfs(body.decode())), {3.0})
+
+    def test_an_unflagged_playlist_is_exactly_what_it_always_was(self):
+        srv = self._serve(self._pack())
+        _, body, _ = self._get(srv, f"/__abr/{self.RUNG}/media.m3u8")
+        rows = ["#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:2", "#EXT-X-MEDIA-SEQUENCE:0"]
+        for sequence in range(90):
+            rows.extend(("#EXTINF:2.0,", f"segment.ts?sequence={sequence}"))
+        rows.append("#EXT-X-ENDLIST")
+        self.assertEqual(body.decode(), "\n".join(rows) + "\n")
+
+    def test_the_flag_rides_master_to_media_to_segment_with_and_without_a_generation(self):
+        srv = self._serve(self._pack())
+
+        def follow(path):
+            """master -> its child playlist -> that playlist's first segment URI, as a player resolves them."""
+            rows = self._get(srv, path)[1].decode().splitlines()
+            child = rows[[i for i, row in enumerate(rows) if row.startswith("#EXT-X-STREAM-INF")][0] + 1]
+            media_path = child if child.startswith("/") else path.rsplit("/", 1)[0] + "/" + child
+            media = self._get(srv, media_path)[1].decode().splitlines()
+            return child, [row for row in media if row.startswith("segment.ts")][0]
+
+        self.assertEqual(follow(f"/__abr/{self.RUNG}/master.m3u8?continuous=1"),
+                         ("media.m3u8?continuous=1", "segment.ts?sequence=0&continuous=1"))
+        self.assertEqual(follow(f"/__abr/{self.RUNG}/master.m3u8"),
+                         ("media.m3u8", "segment.ts?sequence=0"), "unflagged: nothing is added")
+        srv.set_abr_response_profile({self.RUNG: [self.RUNG]})
+        self.assertEqual(
+            follow(f"/__abr/{self.RUNG}/master.m3u8?continuous=1"),
+            ("media.m3u8?fixtureGeneration=1&continuous=1",
+             "segment.ts?sequence=0&fixtureGeneration=1&continuous=1"))
+        # ...and the ladder master, which asks for no flag and always gets it
+        _, ladder, _ = self._get(srv, "/__abr/ladder/master.m3u8?top=320")
+        self.assertIn(f"/__abr/{self.RUNG}/media.m3u8?fixtureGeneration=2&continuous=1\n", ladder.decode())
+
+    def test_a_flagged_segment_follows_the_generation_to_the_rendition_it_names(self):
+        """The offset walks the EFFECTIVE rung's parts, so a profile that maps 720 to 320 serves 320's."""
+        srv = self._serve(self._pack())
+        srv.set_abr_response_profile({"720": [self.RUNG]})
+        _, master, _ = self._get(srv, "/__abr/720/master.m3u8?continuous=1")
+        self.assertIn("BANDWIDTH=320000", master.decode())
+        status, body, _ = self._get(srv, "/__abr/720/segment.ts?sequence=4&fixtureGeneration=1&continuous=1")
+        self.assertEqual((status, body), (200, self.part_bytes(4, self.ticks(4))))
+
+    # -- `top=` --
+
+    def test_top_limits_the_ladder_and_an_unknown_rung_is_refused(self):
+        srv = self._serve(self._pack())
+
+        def listed(query):
+            status, body, _ = self._get(srv, "/__abr/ladder/master.m3u8" + query)
+            rungs = [row.split("/")[2] for row in body.decode().splitlines() if row.startswith("/__abr/")]
+            return status, rungs
+
+        self.assertEqual(listed(""), (200, list(serve_fixtures.ABR_LADDER)))
+        self.assertEqual(listed("?top=6000"), (200, ["320", "720", "2000", "4000", "6000"]))
+        self.assertEqual(listed("?top=320"), (200, ["320"]))
+        self.assertEqual(listed("?top=22000"), (200, list(serve_fixtures.ABR_LADDER)))
+        for bad in ("?top=7000", "?top=", "?top=abc", "?top=06000", "?x=1&top=-1"):
+            with self.subTest(query=bad):
+                self.assertEqual(listed(bad)[0], 400)
+        with self.assertRaises(ValueError):
+            serve_fixtures.ladder_rungs("top=7000")
+        self.assertEqual(serve_fixtures.ladder_rungs("continuous=1&top=2000"), ("320", "720", "2000"))
+
+    def test_a_fixture_string_names_the_clips_it_needs_query_and_all(self):
+        rungs = serve_fixtures.abr_playlist_rungs
+        self.assertEqual(rungs("__abr/ladder/master.m3u8"), serve_fixtures.ABR_LADDER)
+        self.assertEqual(rungs("__abr/ladder/master.m3u8?top=720"), ("320", "720"))
+        self.assertEqual(rungs("__abr/20000/master.m3u8?continuous=1"), ("20000",))
+        self.assertEqual(rungs("__abr/720/media.m3u8"), ("720",))
+        self.assertIsNone(rungs("pipe_h264_aac_mp4.mp4"))
+        self.assertIsNone(rungs("__abr/999/master.m3u8"), "not a rung: a plain (missing) file name")
+        with self.assertRaises(ValueError):
+            rungs("__abr/ladder/master.m3u8?top=7000")
+
+    def test_the_harness_resolves_query_carrying_playlist_fixtures_by_the_rungs_they_list(self):
+        def resolve(root, name):
+            cases = [{"name": "case", "fixture": name}]
+            run._resolve_fixtures(cases, root)
+            return cases[0]
+
+        with tempfile.TemporaryDirectory() as root:
+            for rung in ("320", "720"):
+                with open(os.path.join(root, serve_fixtures.ABR_FIXTURE[rung]), "wb") as stream:
+                    stream.write(b"\0")
+            sliced = resolve(root, "__abr/ladder/master.m3u8?top=720")
+            self.assertEqual((sliced.get("path", "absent"), sliced.get("skip")), (None, None),
+                             "only the clips of the rungs listed are needed")
+            whole = resolve(root, "__abr/ladder/master.m3u8")
+            self.assertIn(serve_fixtures.ABR_FIXTURE["22000"], whole["skip"])
+            single = resolve(root, "__abr/20000/master.m3u8?continuous=1")
+            self.assertIn(serve_fixtures.ABR_FIXTURE["20000"], single["skip"])
+            self.assertNotIn("path", single)
+            with open(os.path.join(root, serve_fixtures.ABR_FIXTURE["20000"]), "wb") as stream:
+                stream.write(b"\0")
+            single = resolve(root, "__abr/20000/master.m3u8?continuous=1")
+            self.assertEqual((single.get("path", "absent"), single.get("skip")), (None, None))
+            self.assertIn("7000", resolve(root, "__abr/ladder/master.m3u8?top=7000")["skip"])
+
+    # -- the manifest --
+
+    def test_the_continuous_case_is_the_capped_case_on_one_flagged_rung(self):
+        cases = {c["name"]: c for c in _manifest()["pipeline_cases"]}
+        case, capped = cases["pipe_abr_uri_continuous_20000"], cases["pipe_abr_uri_ladder_capped"]
+        self.assertEqual(case["fixture"], "__abr/20000/master.m3u8?continuous=1")
+        self.assertEqual(serve_fixtures.abr_playlist_rungs(case["fixture"]), ("20000",))
+        self.assertEqual(case["triggers"], {"uriprobe": "load"})
+        self.assertNotIn("network_profile", case)
+        self.assertNotIn("auto_network", case)
+        for key in ("declare", "run_secs", "operations", "expect"):
+            self.assertEqual(case[key], capped[key], key)
+        self.assertIn("pipeline limit", case["_uri_note"])
+        self.assertEqual(json.loads(dict(run.triggers_for_case(case, url_base="http://fixture.invalid"))
+                                    ["plxnative-playurl"])["url"],
+                         "http://fixture.invalid/__abr/20000/master.m3u8?continuous=1")
+        self.assertEqual(dict(run.triggers_for_case(case, url_base="http://fixture.invalid"))
+                         ["plxnative-uriprobe"], "load")
+
+    @unittest.skipUnless(os.path.isdir(serve_fixtures.default_root()), "no fixture pack built here")
+    def test_every_clip_of_a_built_pack_can_be_shifted_and_is_about_two_seconds(self):
+        root = serve_fixtures.default_root()
+        srv = serve_fixtures.FixtureServer.__new__(serve_fixtures.FixtureServer)
+        srv.lock, srv.root, srv._abr_parts, srv._abr_timelines = threading.Lock(), root, {}, {}
+        found = 0
+        for rung, base in serve_fixtures.ABR_FIXTURE.items():
+            if not os.path.isfile(os.path.join(root, base)):
+                continue
+            for part in srv.abr_parts(base):
+                found += 1
+                self.assertAlmostEqual(srv.abr_timeline(part).duration / 90000, 2.0, delta=0.1, msg=part)
+        if not found:
+            self.skipTest("the pack has no ABR clips")
 
 
 class SharedLinkShaping(unittest.TestCase):

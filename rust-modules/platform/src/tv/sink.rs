@@ -54,6 +54,26 @@ impl PlaneUnload {
     pub const NOT_REGISTERED: Self = Self { rv: super::plane::UNLOAD_NOT_REGISTERED, task: 0 };
 }
 
+/// What the paced URI bind's last step answered (`src/starfish.h`, `acb_finish`): the full-screen
+/// `setDisplayWindow` and `setState(PLAYING)`. `rv` is 1 only when BOTH calls were accepted, and
+/// then each call's firmware task id is in `display_task` / `playing_task`; the firmware completes
+/// each call with its own id, and `tv::plane::Plane` matches those two completions (its `Shown`).
+/// The ids are meaningful ONLY when `rv == 1` (the seam writes them from locals and a refused call
+/// writes none), exactly as [`PlaneUnload::task`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlaneFinish {
+    pub rv: c_int,
+    pub display_task: c_long,
+    pub playing_task: c_long,
+}
+
+impl PlaneFinish {
+    /// A sink with no plane to show: nothing was sent, nothing will complete.
+    pub const REFUSED: Self = Self { rv: 0, display_task: 0, playing_task: 0 };
+    /// Both calls were accepted and carry the task ids to wait for.
+    pub fn accepted(&self) -> bool { self.rv == 1 }
+}
+
 /// Shared display surface for URI playback and the buffer-feed player. Window and ACB verbs
 /// retain their original main-thread token and native call order. Only the two memoized window
 /// queries are token-free; neither mutates the pipeline.
@@ -89,9 +109,12 @@ pub trait DisplaySink: Sync {
     unsafe fn plane_loaded(&self, mt: &MainThread) -> c_int;
     #[cfg(feature = "devtriggers")]
     unsafe fn plane_probe_connect_dass(&self, mt: &MainThread) -> c_int;
-    /// The full-screen `setDisplayWindow` and `setState(PLAYING)` of the paced URI bind; 1 only when
-    /// both were accepted (`plane_start`, Feed's, does not check).
-    unsafe fn plane_finish(&self, mt: &MainThread) -> c_int;
+    /// The full-screen `setDisplayWindow` and `setState(PLAYING)` of the paced URI bind; `rv` is 1
+    /// only when both were accepted (`plane_start`, Feed's, does not check), and then the answer
+    /// carries both calls' task ids. Dispatch only: a call is complete when its completion arrives
+    /// through [`plane_completions`](Self::plane_completions); route it through
+    /// `tv::plane::PlaneOwner::show`, which is the only caller of both.
+    unsafe fn plane_finish(&self, mt: &MainThread) -> PlaneFinish;
     unsafe fn plane_bind(&self, mt: &MainThread, media_id: *const c_char);
     unsafe fn plane_send_video_data(&self, mt: &MainThread, source_info: *const c_char) -> c_int;
     unsafe fn plane_send_atmos(&self, mt: &MainThread, media_id: *const c_char) -> c_int;
@@ -225,7 +248,7 @@ macro_rules! refuse_plane_verbs {
         unsafe fn plane_initialized(&self, _mt: &MainThread) -> bool { false }
         unsafe fn plane_media_id(&self, _mt: &MainThread, _media_id: *const c_char) -> c_int { 0 }
         unsafe fn plane_loaded(&self, _mt: &MainThread) -> c_int { 0 }
-        unsafe fn plane_finish(&self, _mt: &MainThread) -> c_int { 0 }
+        unsafe fn plane_finish(&self, _mt: &MainThread) -> PlaneFinish { PlaneFinish::REFUSED }
         unsafe fn plane_bind(&self, _mt: &MainThread, _media_id: *const c_char) {}
         unsafe fn plane_send_video_data(&self, _mt: &MainThread, _source_info: *const c_char) -> c_int { -1 }
         unsafe fn plane_send_atmos(&self, _mt: &MainThread, _media_id: *const c_char) -> c_int { 0 }
@@ -285,6 +308,14 @@ impl VideoSink for RefusingSink {
     fn feed_abi_is_cow(&self) -> bool { (self.0)().feed_abi_is_cow() }
 }
 
+/// The task ids [`ScriptedPlaneSink`] answers `plane_finish` with: the device log's own (LOADED,
+/// video data, window and PLAYING are tasks 1 to 4 on a fresh handle, `docs/measurements/
+/// acb-release-fence-2026-11-04.md`), so a test completes them with `mailbox.push(task, 1)`.
+#[cfg(any(test, feature = "test-support"))]
+pub const SCRIPTED_DISPLAY_TASK: c_long = 3;
+#[cfg(any(test, feature = "test-support"))]
+pub const SCRIPTED_PLAYING_TASK: c_long = 4;
+
 /// A display sink for tests of the plane owner and of the backends that use it. Every verb is
 /// refused as `NoSink` does except the plane unload (whose answer a test scripts), the completion
 /// mailbox (which a test, or the unload itself with `complete_at_once`, fills), and the ACB bind
@@ -341,7 +372,13 @@ impl DisplaySink for ScriptedPlaneSink {
         self.answer("plane_media_id", unsafe { CStr::from_ptr(media_id) }.to_string_lossy().into_owned())
     }
     unsafe fn plane_loaded(&self, _mt: &MainThread) -> c_int { self.answer("plane_loaded", String::new()) }
-    unsafe fn plane_finish(&self, _mt: &MainThread) -> c_int { self.answer("plane_finish", String::new()) }
+    unsafe fn plane_finish(&self, _mt: &MainThread) -> PlaneFinish {
+        if self.answer("plane_finish", String::new()) == 1 {
+            PlaneFinish { rv: 1, display_task: SCRIPTED_DISPLAY_TASK, playing_task: SCRIPTED_PLAYING_TASK }
+        } else {
+            PlaneFinish::REFUSED
+        }
+    }
     unsafe fn plane_bind(&self, _mt: &MainThread, _media_id: *const c_char) {
         self.answer("plane_bind", String::new());
     }

@@ -15,19 +15,19 @@
       "what": "Third-party (registry/git) packages the app crate compiles for armv7-unknown-linux-gnueabi with its DEFAULT features: normal + build dependencies, dev-dependencies excluded, workspace members excluded.",
       "unit": "packages",
       "mode": "fail",
-      "limit": 92,
-      "measured": 92,
-      "measured_on": "2026-11-03",
-      "headroom": "0 (exact measured graph, including the reviewed STORE ZIP reader/writer)"
+      "limit": 93,
+      "measured": 93,
+      "measured_on": "2026-11-05",
+      "headroom": "0 (exact measured graph, including the reviewed STORE ZIP reader/writer and the verify-only ed25519-compact)"
     },
     "packages_no_default_features": {
       "what": "The same count with the shipping feature set: the Makefile's `RELEASE=1` flags (--no-default-features plus the playback backends, asked of `make print-playback-config`), which is what every shipped binary is built with.",
       "unit": "packages",
       "mode": "fail",
-      "limit": 92,
-      "measured": 92,
-      "measured_on": "2026-11-03",
-      "headroom": "0 (exact measured graph, including the reviewed STORE ZIP reader/writer)"
+      "limit": 93,
+      "measured": 93,
+      "measured_on": "2026-11-05",
+      "headroom": "0 (exact measured graph, including the reviewed STORE ZIP reader/writer and the verify-only ed25519-compact)"
     },
     "duplicate_versions_default": {
       "what": "Crate names present in more than one version in the NORMAL-edge graph for the default feature set (the set `cargo tree -d --edges normal --target armv7-unknown-linux-gnueabi` prints).",

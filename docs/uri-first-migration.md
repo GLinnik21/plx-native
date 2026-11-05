@@ -123,7 +123,16 @@ attempt when the plane shows the picture (on webOS 4, the ACB bind is complete a
 has followed it) and the sink's displayed-frame counter has reported a count above zero since that
 bind; on webOS 5+ the first such counter callback is enough. This is necessary-condition evidence,
 not photon proof, and a firmware that never delivers the counter leaves startup Unknown. A
-position tick (`FRAMEREADY`) is never a picture. The URI driver emits nothing yet. The player's
+position tick (`FRAMEREADY`) is never a picture. The URI driver emits it only on the ACB binding
+(`Binding::Acb`, the webOS 4 plane), once per attempt, when the service has said `playing`, the plane
+owner has seen the firmware complete BOTH the bind's full-screen `setDisplayWindow` and its
+`setState(PLAYING)` with event 1 (matched on each call's own task id), and the service's
+`currentTime` then advances past the sample before it (`play-uri/src/picture_gate.rs`). That is the
+same necessary-condition grade: the plane was told to show the stream and the stream then moved. The
+exported window and an unbound attempt emit nothing, and so does a firmware that never completes the
+two calls. The rule is device-unverified: the log lines that confirm or refute it are
+`acb display fullscreen=1 rv=1 task=N`, `acb playing rv=1 task=M`, the two `acb callback task=.. ev=1`
+lines, `uri-acb: display/PLAYING completed` and then `uri: presented (...)`. The player's
 transmitted `Presented` trace step and `startup` class are a separate, older value: they time the
 first position tick of a Feed playback, not its first picture, and are unchanged. Preserve the existing local recorder limits and privacy policy;
 new transmitted fields require schema, consent-preview and privacy updates. The closed attempt-origin domain includes `viewer_reconfigure` for a viewer-requested speed, audio-processing or source-track route change; it is listed by the same domain table in the consent preview. It does not add a payload field or enable reporting.
