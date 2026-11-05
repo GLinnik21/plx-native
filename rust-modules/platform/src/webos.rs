@@ -590,7 +590,7 @@ pub const URI_MEDIA: &dyn crate::tv::uri::UriMedia = &crate::tv::uri::NoUriMedia
 ///
 /// | registration | answer |
 /// |---|---|
-/// | `LSRegisterApplicationService(app_id, app_id)` | `-1028 Attempted to register for a service name that already exists` — this PROCESS already holds the app id: `ls-monitor -l` lists it beside an anonymous client, both ours, from boot; ACB is the one component handed the app id (`AcbAPI_initialize`, `player::acb_init` at boot) |
+/// | `LSRegisterApplicationService(app_id, app_id)` | `-1028 Attempted to register for a service name that already exists` — this PROCESS already holds the app id: `ls-monitor -l` lists it beside an anonymous client, both ours, from boot; ACB is the one component handed the app id (`AcbAPI_initialize`, the app's `adapters::backends::acb_init` at boot) |
 /// | `LSRegisterApplicationService(NULL, app_id)` | `-1027 Invalid permissions for (null)` — the `""` name has no permissions entry |
 /// | **`LSRegister(NULL)`** | registered, and `com.webos.applicationManager/getForegroundAppInfo` answered it |
 ///

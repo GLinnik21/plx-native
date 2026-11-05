@@ -2473,7 +2473,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   and onto the `armed` line; any other token leaves the probe unarmed. Read at each playback start, no relaunch; skipped for a hero preview. No Engine
   runs, so nothing is reported to Plex (no timeline, scrobble or unscrobble). The event log gets `uriprobe: …` lines ending in one `summary` line, never the URL,
   token, host or a service payload; a tester sends those lines and removes the file.
-  `dev::DIAG`, so it does not move the boot screen; `media::player::uriprobe`, `uriprobe_drive`),
+  `dev::DIAG`, so it does not move the boot screen; the play-uri crate's `uriprobe` (the machine), `media::player::uriprobe_drive` (its route half)),
   `/tmp/plxnative-url` (override the streamed part
   URL) and **`/tmp/plxnative-playurl`** (the same, plus the LOAD DECLARATION — one JSON object,
   `{"url":…,"vcodec":…,"acodec":…,"fps":…,"dovi":{…},"atmos":…}`, which is what the pipeline test

@@ -2038,7 +2038,7 @@ pub(crate) unsafe fn construct(
         activate_session(&mut bridge, &mut pages, &mut super::recorder::Recplay::Off)
     };
     if !controlled {
-        plx_media::player::acb_init(&mt); // every backend set: the plane owner's boot facts
+        super::adapters::backends::acb_init(&mt); // every backend set: the plane owner's boot facts
         plx_media_codecs::ffi::boot(); // Codec resource boot; controlled Home cannot invoke ABI probes.
     }
                        // dev: /tmp/plxnative-logintest validates the plex.tv account path end-to-end on the device — a
@@ -2315,13 +2315,12 @@ pub(crate) unsafe fn construct(
     let adapters = super::Adapters {
         player: plx_media::player::adapter::PlayerAdapter::new(mt),
     };
-    #[cfg(feature = "play-uri")]
+    // The session's backend set is the one the installed drivers form (after the product URI driver
+    // is installed, and for every build, not only a URI one).
     let (player, adapters) = {
         let mut player = player;
         let mut adapters = adapters;
-        if !controlled && !adapters.player.install_uri_product(&mut player.session) {
-            log("uri: product driver installation refused");
-        }
+        super::adapters::backends::compose_backends(&mut adapters.player, &mut player.session, controlled);
         (player, adapters)
     };
     let repause_at = 0i64;

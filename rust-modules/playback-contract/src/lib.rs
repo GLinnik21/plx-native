@@ -34,6 +34,16 @@ impl BackendSet {
     pub const fn contains(self, backend: BackendKind) -> bool {
         match backend { BackendKind::Uri => self.uri, BackendKind::Feed => self.feed }
     }
+
+    /// The set a composition's installed drivers form: a backend is in it when its driver reports
+    /// capabilities. This is the only way a production boot derives its set, so route policy offers
+    /// what is physically installed and never what Cargo features happened to be on.
+    pub fn from_capabilities<D: DriverSet + ?Sized>(drivers: &D) -> Self {
+        Self {
+            uri: drivers.capabilities(BackendKind::Uri).is_some(),
+            feed: drivers.capabilities(BackendKind::Feed).is_some(),
+        }
+    }
 }
 pub mod demux;
 
@@ -263,4 +273,47 @@ pub trait DriverSet {
     fn poll(&mut self, ctx: &Self::Context) -> Vec<BackendEvent>;
     fn discard_staged(&mut self, backend: BackendKind, attempt: AttemptId, key: SourceKey);
     fn exit_disposition(&self) -> ExitDisposition;
+}
+
+#[cfg(test)]
+mod backend_set_tests {
+    use super::*;
+
+    const CAPS: Capabilities = Capabilities {
+        progressive_uri: true, hls_uri: false, packet_feed: true, pause: true, seek: true,
+        audio_track: false, subtitle_track: false, audio_off: false, subtitle_off: false,
+    };
+
+    /// A driver set whose only fact is which backends answer `capabilities`.
+    struct Installed { uri: bool, feed: bool }
+    impl DriverSet for Installed {
+        type Context = ();
+        fn capabilities(&self, backend: BackendKind) -> Option<Capabilities> {
+            match backend { BackendKind::Uri => self.uri, BackendKind::Feed => self.feed }.then_some(CAPS)
+        }
+        fn dispatch(&mut self, _: BackendKind, _: &(), _: AttemptId, _: CommandId, _: Operation)
+            -> DispatchResult { DispatchResult::Refused(Failure::Unavailable) }
+        fn poll(&mut self, _: &()) -> Vec<BackendEvent> { Vec::new() }
+        fn discard_staged(&mut self, _: BackendKind, _: AttemptId, _: SourceKey) {}
+        fn exit_disposition(&self) -> ExitDisposition { ExitDisposition::Clean }
+    }
+
+    #[test]
+    fn the_set_is_exactly_the_backends_whose_driver_reports_capabilities() {
+        for (uri, feed, want) in [
+            (false, false, BackendSet::NONE),
+            (true, false, BackendSet::URI),
+            (false, true, BackendSet::FEED),
+            (true, true, BackendSet::BOTH),
+        ] {
+            assert_eq!(BackendSet::from_capabilities(&Installed { uri, feed }), want,
+                "uri={uri} feed={feed}");
+        }
+    }
+
+    #[test]
+    fn a_trait_object_forms_the_same_set() {
+        let drivers: &dyn DriverSet<Context = ()> = &Installed { uri: true, feed: false };
+        assert_eq!(BackendSet::from_capabilities(drivers), BackendSet::URI);
+    }
 }

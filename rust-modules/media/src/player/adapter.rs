@@ -126,6 +126,45 @@ pub use crate::route::{QualifiedUriOffer, UriRecoveryNotice, UriSourceRecipe};
 #[derive(Clone, Copy)]
 struct PendingUriRecovery { notice: UriRecoveryNotice, released: bool }
 
+#[cfg(test)]
+mod composed_backends_tests {
+    use super::*;
+    use plx_playback_contract::BackendSet;
+
+    /// The Feed driver is part of every adapter a Feed build constructs; nothing else is until a
+    /// composition installs it.
+    const FEED_ONLY: BackendSet = BackendSet { uri: false, feed: cfg!(feature = "play-feed") };
+
+    #[test]
+    fn a_fresh_adapter_forms_exactly_the_set_its_constructor_installs() {
+        let mut adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
+        assert_eq!(adapter.composed_backends(), FEED_ONLY);
+    }
+
+    #[cfg(feature = "play-uri")]
+    #[test]
+    fn installing_the_uri_driver_adds_uri_and_a_refused_install_does_not() {
+        struct Clock;
+        impl MonotonicClock for Clock { fn now_ms(&self) -> u64 { 0 } }
+        let settings = |packet_feed: bool| UriDriverSettings {
+            clock: Box::new(Clock), app_id: "fixture".to_owned(), binding: UriBinding::Unbound,
+            capabilities: Capabilities { progressive_uri: true, hls_uri: false, packet_feed,
+                pause: true, seek: true, audio_track: true, subtitle_track: true,
+                audio_off: false, subtitle_off: false },
+            startup_timeout_ms: 100, release_allowance_ms: 100, source_ttl_ms: 100,
+        };
+        let mut adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
+        // A driver that claims packet feed is refused, so the set does not gain Uri.
+        assert!(adapter.install_uri_backend_with_ports(settings(true),
+            &plx_platform::tv::uri::NoUriMedia, &plx_platform::tv::sink::NoSink).is_err());
+        assert_eq!(adapter.composed_backends(), FEED_ONLY);
+        assert!(adapter.install_uri_backend_with_ports(settings(false),
+            &plx_platform::tv::uri::NoUriMedia, &plx_platform::tv::sink::NoSink).is_ok());
+        assert_eq!(adapter.composed_backends(),
+            BackendSet { uri: true, feed: cfg!(feature = "play-feed") });
+    }
+}
+
 #[cfg(all(test, feature = "play-uri"))]
 mod qualified_uri_offer_tests {
     use super::*;
@@ -1054,6 +1093,23 @@ impl PlayerAdapter {
         result
     }
 
+    /// The playback backends this adapter's installed drivers form: a backend is in the set when
+    /// its driver answers [`DriverSet::capabilities`]. Boot hands it to
+    /// `PlaybackSession::install_backends`, so route policy offers what is physically installed
+    /// (a URI driver the product install refused is not offered) and never reads a Cargo feature.
+    pub fn composed_backends(&mut self) -> plx_playback_contract::BackendSet {
+        let drivers = PhysicalDrivers {
+            marker: std::marker::PhantomData,
+            #[cfg(feature = "play-feed")]
+            feed: &mut self.feed,
+            #[cfg(feature = "play-feed")]
+            feed_driver: &mut self.feed_driver,
+            #[cfg(feature = "play-uri")]
+            uri: &mut self.uri_backend,
+        };
+        plx_playback_contract::BackendSet::from_capabilities(&drivers)
+    }
+
     pub fn backend_exit_disposition(&self) -> ExitDisposition {
         if self.backend.snapshot().phase != plx_playback_contract::Phase::Vacant
             || {
@@ -1077,7 +1133,7 @@ impl PlayerAdapter {
     #[cfg(feature = "play-uri")]
     pub fn install_uri_product(&mut self, session: &mut crate::route::PlaybackSession) -> bool {
         let display = plx_platform::tv::sink::display_installed();
-        // SAFETY: the adapter holds the main-thread witness, and boot ran `acb_init` before this.
+        // SAFETY: the adapter holds the main-thread witness, and boot ran the application's `acb_init` before this.
         let initialized = unsafe { display.plane_initialized(&self.mt) };
         let evidence = crate::route::uri_preflight::ProductEvidence::unqualified_on(
             display.window_mode(),
