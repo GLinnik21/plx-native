@@ -52,6 +52,10 @@
 
 pub(crate) mod scenarios;
 
+/// The URI-mode probe's driver, the application's half of media's probe port (issue #1064).
+#[cfg(all(feature = "devtriggers", feature = "play-uri"))]
+pub(crate) mod uriprobe;
+
 /// The demo video's frame dump (simulator only): see the module doc.
 #[cfg(all(feature = "hostsim", feature = "devtriggers"))]
 pub(crate) mod framedump;
@@ -183,7 +187,7 @@ const DIAG: [&str; 48] = [
     // The side subtitle reader (`plx_play_feed::side_reader`, `media::player::subside`): content = the 0-based position of the
     // embedded subtitle stream to draw over a plain remux, read at each playback start.
     "plxnative-subside",
-    // The URI-mode probe (`media::player::uriprobe_drive`, issue #1064): content = `load`, `late`
+    // The URI-mode probe (`dev::uriprobe`, the application's half of `media::player::uriprobe_drive`, issue #1064): content = `load`, `late`
     // or `none` (empty = `load`), read at each playback start. It changes how ONE play is carried
     // out and nothing about the boot: the tester signs in and picks a profile as always, then
     // plays a title. A non-DIAG trigger would suppress the who's-watching picker and move that

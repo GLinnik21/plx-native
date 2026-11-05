@@ -33,6 +33,7 @@ import os
 import re
 import shutil
 import socket
+import socketserver
 import subprocess
 import sys
 import tempfile
@@ -5825,6 +5826,502 @@ SUMMARY = ("summary load=ok playing={playing} t_load=700 t_playing=2000 currentT
            "shape=named end={end}")
 
 
+def _trace(t, text):
+    """One synthetic PRODUCT trace line: `t` is the backend's own clock in ms."""
+    return f"uri-trace: t={t} {text}"
+
+
+def _product_run(seconds, clock=lambda sec: sec * 1000, remaining=lambda sec: 12, display=6, playing=7,
+                 service=True, presented=True, plane=True, callbacks=True, extra=()):
+    """A SYNTHETIC log in the line formats the PRODUCTION URI backend writes (the dev route): the plane
+    lines with task ids that are NOT 1-4, `uri: service playing`, `uri: presented`, then one
+    `uri-trace:` `currentTime` and `bufferRange` a second. No line here comes from a television."""
+    lines = []
+    if plane:
+        lines += ["videoplane: BOUND — the gate presents unconditionally and no frame may snapshot",
+                  f"acb display fullscreen=1 rv=1 task={display}", f"acb playing rv=1 task={playing}"]
+    if callbacks:
+        lines += [f"acb callback task={display} ev=1 app=1 play=0",
+                  f"acb callback task={playing} ev=1 app=1 play=1",
+                  "uri-acb: display/PLAYING completed (event 1 on both tasks)"]
+    lines += [_trace(700, "ev=bufferingStart"), _trace(2000, "ev=bufferingEnd")]
+    if service:
+        lines.append("uri: service playing")
+    lines.append(_trace(2000, "ev=playing"))
+    for sec in range(seconds):
+        t = 3000 + 1000 * sec
+        value = clock(sec)
+        if value is not None:
+            lines.append(_trace(t, f"ev=currentTime value={value}"))
+        r = remaining(sec)
+        lines.append(_trace(t, f"ev=bufferRange beginTime=0 endTime={r} remainingTime={r} percent=10"))
+    if presented:
+        lines.append("uri: presented (service playing; plane window and PLAYING completed; "
+                     "clock advanced from 0 to 1042 ms)")
+    return lines + list(extra)
+
+
+class UriProductGrading(unittest.TestCase):
+    """The product route (`uri_route: product`): the PRODUCTION URI backend, bound through ACB, on a
+    dev route. Its evidence is `uri-trace:` lines (the probe's event text, a different prefix) plus the
+    plane and backend lines production already writes. Synthetic logs in those line formats."""
+
+    CASE = {"name": "product", "fixture": "pipe_hls_720p24_20m/index.m3u8", "uri_route": "product",
+            "triggers": {"ptype": "0"}, "operations": [{"op": "play"}],
+            "expect": {"no_playing_error": True, "uri_playing": True, "uri_plane_bound": True,
+                       "uri_presented": True, "uri_service_playing": True,
+                       "uri_clock_past_s": 60, "uri_max_stall_s": 3}}
+    P = "product"
+
+    def test_the_route_selects_the_graders(self):
+        self.assertEqual(run.uri_route(self.CASE), "product")
+        self.assertEqual(run.uri_route({"triggers": {"uriprobe": "load"}}), "probe")
+        self.assertIsNone(run.uri_route({"triggers": {"sinkmax": "4"}}))
+        self.assertTrue(run.uri_mode(self.CASE))
+        self.assertFalse(run.uri_mode({"name": "plain"}))
+
+    def test_a_healthy_product_log_passes_every_grade_and_the_wire_check(self):
+        passed, results = run.evaluate_pipeline(self.CASE, _product_run(66), (36, 36, 2))
+        self.assertTrue(passed, results)
+        self.assertEqual({label for label, _, _ in results},
+                         {"uri_playing", "uri_plane_bound", "uri_presented", "uri_service_playing",
+                          "uri_clock_past", "uri_max_stall", "no_error", "server_wire"})
+
+    def test_the_probe_prefix_is_not_product_evidence_and_the_trace_prefix_is_not_probe_evidence(self):
+        probe_lines = [ln.replace("uri-trace:", "uriprobe:") for ln in _product_run(66)]
+        self.assertFalse(run.a_uri_playing(probe_lines, self.P)[0])
+        self.assertFalse(run.a_uri_clock_past(probe_lines, 60, self.P)[0])
+        self.assertFalse(run.a_uri_max_stall(probe_lines, 3, self.P)[0])
+        self.assertFalse(run.a_uri_playing(_product_run(66))[0], "the probe reader reads uriprobe: only")
+
+    def test_each_grade_fails_on_its_own_broken_log(self):
+        broken = {
+            "uri_playing": _product_run(8, clock=lambda sec: 500),
+            "uri_plane_bound": _product_run(66, plane=False),
+            "uri_presented": _product_run(66, presented=False),
+            "uri_service_playing": _product_run(66, service=False),
+            "uri_clock_past": _product_run(40),
+            "uri_max_stall": _product_run(40, clock=lambda sec: min(sec, 19) * 1000 if sec < 30 else sec * 1000),
+            "no_error": _product_run(66, extra=["uri-acb: the bind failed (Refused(Rejected)); closing"]),
+        }
+        for label, log in broken.items():
+            with self.subTest(label):
+                passed, results = run.evaluate_pipeline(self.CASE, log, (36, 36, 2))
+                self.assertFalse(passed)
+                self.assertIn(label, {name for name, ok, _ in results if not ok})
+
+    def test_a_probe_only_log_has_no_product_lines_so_it_cannot_pass_a_product_case(self):
+        passed, results = run.evaluate_pipeline(self.CASE, _uri_run(66), (36, 36, 2))
+        self.assertFalse(passed)
+
+    # -- uri_service_playing / uri_presented --
+
+    def test_service_playing_is_its_own_line_and_not_the_words_inside_the_presented_line(self):
+        only_presented = _product_run(5, service=False)
+        self.assertTrue(any("service playing" in ln for ln in only_presented))
+        self.assertFalse(run.a_uri_service_playing(only_presented)[0])
+        self.assertTrue(run.a_uri_service_playing(_product_run(5))[0])
+        self.assertFalse(run.a_uri_service_playing([])[0])
+
+    def test_presented_wants_the_clock_to_have_advanced(self):
+        def line(p, n):
+            return (f"uri: presented (service playing; plane window and PLAYING completed; "
+                    f"clock advanced from {p} to {n} ms)")
+        self.assertTrue(run.a_uri_presented([line(0, 1042)])[0])
+        self.assertTrue(run.a_uri_presented([line(500, 501)])[0])
+        for p, n in ((1000, 1000), (1000, 900), (0, 0)):
+            with self.subTest(p=p, n=n):
+                ok, why = run.a_uri_presented([line(p, n)])
+                self.assertFalse(ok)
+                self.assertIn("from", why)
+        self.assertFalse(run.a_uri_presented(_product_run(5, presented=False))[0])
+        self.assertFalse(run.a_uri_presented(["uri: presented (garbled)"])[0])
+        stuck_then_moved = [line(10, 10), line(10, 400)]
+        self.assertTrue(run.a_uri_presented(stuck_then_moved)[0])
+
+    # -- uri_plane_bound reads the ids from the log --
+
+    def test_the_plane_bound_grade_reads_the_task_ids_from_the_log(self):
+        for display, playing in ((6, 7), (1, 2), (41, 9)):
+            with self.subTest(display=display, playing=playing):
+                ok, why = run.a_uri_plane_bound(_product_run(2, display=display, playing=playing), self.P)
+                self.assertTrue(ok, why)
+                self.assertIn(f"task={display}", why)
+                self.assertIn(f"task={playing}", why)
+        # the order of the lines is not graded: a callback may print before the display line
+        shuffled = ["acb callback task=6 ev=1 app=1 play=0", "acb callback task=7 ev=1 app=1 play=1",
+                    "acb display fullscreen=1 rv=1 task=6", "acb playing rv=1 task=7",
+                    "videoplane: BOUND"]
+        self.assertTrue(run.a_uri_plane_bound(shuffled, self.P)[0])
+
+    def test_the_plane_bound_grade_refuses_each_way_the_bind_can_be_incomplete(self):
+        base = ["videoplane: BOUND", "acb display fullscreen=1 rv=1 task=6", "acb playing rv=1 task=7",
+                "acb callback task=6 ev=1 app=1 play=0", "acb callback task=7 ev=1 app=1 play=1"]
+        self.assertTrue(run.a_uri_plane_bound(base, self.P)[0])
+        cases = {
+            "no BOUND line": [ln for ln in base if "BOUND" not in ln],
+            "unbound": [ln.replace("BOUND", "unbound") for ln in base],
+            "no display line": [ln for ln in base if "acb display" not in ln],
+            "no playing line": [ln for ln in base if "acb playing" not in ln],
+            "display rv=0": [ln.replace("fullscreen=1 rv=1", "fullscreen=1 rv=0") for ln in base],
+            "playing rv=-1": [ln.replace("playing rv=1", "playing rv=-1") for ln in base],
+            "display task never called back": [ln for ln in base if "callback task=6" not in ln],
+            "playing task never called back": [ln for ln in base if "callback task=7" not in ln],
+            "display callback ev=0": [ln.replace("task=6 ev=1", "task=6 ev=0") for ln in base],
+            "a stray task answers ev=2": base + ["acb callback task=9 ev=2 app=1 play=1"],
+            "callbacks for the wrong ids": [ln.replace("callback task=6", "callback task=1")
+                                            .replace("callback task=7", "callback task=2") for ln in base],
+        }
+        for what, log in cases.items():
+            with self.subTest(what):
+                self.assertFalse(run.a_uri_plane_bound(log, self.P)[0], what)
+
+    def test_only_the_unloaded_task_may_answer_other_than_ev_1(self):
+        base = ["videoplane: BOUND", "acb display fullscreen=1 rv=1 task=6", "acb playing rv=1 task=7",
+                "acb callback task=6 ev=1 app=1 play=0", "acb callback task=7 ev=1 app=1 play=1"]
+        released = base + ["acb unloaded rv=1 task=8", "acb callback task=8 ev=0 app=1 play=0"]
+        self.assertTrue(run.a_uri_plane_bound(released, self.P)[0])
+        wrong = base + ["acb unloaded rv=1 task=8", "acb callback task=9 ev=0 app=1 play=0"]
+        self.assertFalse(run.a_uri_plane_bound(wrong, self.P)[0])
+        # an unload that was refused (task=0) excuses nothing
+        refused = base + ["acb unloaded rv=-2 task=0", "acb callback task=0 ev=3 app=1 play=0"]
+        self.assertFalse(run.a_uri_plane_bound(refused, self.P)[0])
+        # ...and the unloaded id does not stand in for the bind's own callback
+        self.assertFalse(run.a_uri_plane_bound(
+            [ln for ln in released if "callback task=6" not in ln] +
+            ["acb unloaded rv=1 task=6", "acb callback task=6 ev=0 app=1 play=0"], self.P)[0])
+
+    def test_the_probe_plane_rule_is_unchanged(self):
+        self.assertTrue(run.a_uri_plane_bound(_uri_run(2))[0])
+        self.assertFalse(run.a_uri_plane_bound(_product_run(2))[0], "tasks 1-4 are the PROBE's contract")
+
+    # -- the shared clock graders, on the other prefix --
+
+    def test_clock_stall_and_drain_run_unchanged_on_trace_lines(self):
+        log = _product_run(66)
+        self.assertTrue(run.a_uri_clock_past(log, 60, self.P)[0])
+        self.assertFalse(run.a_uri_clock_past(_product_run(56), 60, self.P)[0])
+        self.assertTrue(run.a_uri_max_stall(log, 3, self.P)[0])
+        held = _product_run(40, clock=lambda sec: min(sec, 19) * 1000 if sec < 27 else sec * 1000)
+        ok, why = run.a_uri_max_stall(held, 3, self.P)
+        self.assertFalse(ok)
+        self.assertIn("stall", why)
+        series = [12, 12, 12, 12, 11, 10, 9, 8, 7, 6]
+        drain = [_trace(2000, "ev=playing")]
+        drain += [_trace(3000 + 1000 * i, f"ev=bufferRange beginTime={i} endTime={i + r} remainingTime={r}")
+                  for i, r in enumerate(series)]
+        drain.append(_trace(13000, "ev=bufferingStart"))
+        self.assertTrue(run.a_uri_drain_warning(drain, 5, self.P)[0])
+        self.assertFalse(run.a_uri_drain_warning(drain, 15, self.P)[0])
+        probe = [ln.replace("uri-trace:", "uriprobe:") for ln in drain]
+        self.assertFalse(run.a_uri_drain_warning(probe, 5, self.P)[0])
+
+    def test_a_product_playing_grade_never_reads_a_probe_summary(self):
+        summary = _uri(9000, SUMMARY.format(playing="yes", moved="yes", end="back"))
+        ok, why = run.a_uri_playing([summary], self.P)
+        self.assertFalse(ok)
+        self.assertIn("uri-trace", why)
+
+    # -- no_error --
+
+    def test_the_product_error_keys(self):
+        for line in ("uri-acb: the bind failed (Refused(Rejected)); closing",
+                     "uri-acb: bind not granted (Refused(Deferred))",
+                     "uri: product driver installation refused",
+                     "uri-dev: armed but this display is not ACB-bound; ignored",
+                     "uri-dev: the trigger names no part=; ignored",
+                     "smp_cb type=18 error", "Playing error 5"):
+            with self.subTest(line):
+                ok, why = run.a_no_error(_product_run(3, extra=[line]), self.P)
+                self.assertFalse(ok)
+                self.assertIn(line.split(" (")[0][:20], why)
+        self.assertTrue(run.a_no_error(_product_run(3), self.P)[0])
+        # a log line that merely mentions the dev route is not a refusal
+        self.assertTrue(run.a_no_error(["uri-dev: armed part=990001"], self.P)[0])
+
+    def test_the_product_error_gate_has_no_summary_to_read(self):
+        summary = _uri(9000, SUMMARY.format(playing="no", moved="no", end="refused:acb"))
+        self.assertTrue(run.a_no_error([summary], self.P)[0])
+        self.assertFalse(run.a_no_error([summary])[0], "the probe mode still reads it")
+
+    # -- the expect keys --
+
+    def test_product_only_keys_are_unknown_on_a_probe_case_and_known_on_a_product_one(self):
+        for key in ("uri_presented", "uri_service_playing"):
+            self.assertIn(key, run.URI_EXPECT_KEYS)
+        probe = dict(UriModeGrading.BOUND_CASE, expect={"uri_presented": True})
+        passed, results = run.evaluate_pipeline(probe, _uri_run(10), (1, 1, 1))
+        self.assertFalse(passed)
+        self.assertEqual(results[0][:2], ("uri_expect", False))
+        self.assertIn("uri_presented", results[0][2])
+
+    def test_an_unknown_route_fails_loudly(self):
+        case = dict(self.CASE, uri_route="prduct")
+        passed, results = run.evaluate_pipeline(case, _product_run(66), (36, 36, 2))
+        self.assertFalse(passed)
+        self.assertEqual(results[0][:2], ("uri_route", False))
+
+    def test_a_product_case_never_exits_early(self):
+        early, why = run.early_exit_allowed(self.CASE, {})
+        self.assertFalse(early)
+        self.assertIn("window", why)
+
+
+class UriProductRunner(unittest.TestCase):
+    """The product route's runner: what it writes on the set, in what order, and what it always takes
+    back. Nothing here touches a television, a mock PMS process or the network: every seam is patched."""
+
+    URL = "http://192.0.2.10:8020/pipe_hls_720p24_20m/index.m3u8"
+    MACHINE = "0123456789abcdef0123456789abcdef01234567"
+    SYN = "pms: server 0 version=1.41.0.0000-synthetic name=demo"
+
+    @staticmethod
+    def case(**over):
+        base = next(c for c in _manifest()["pipeline_cases"]
+                    if c["name"] == "pipe_uri_product_hls_720p24_20m_bound")
+        return dict(json.loads(json.dumps(base)), **over)
+
+    # -- the trigger text --
+
+    def test_the_dev_trigger_text_is_the_grammar_the_app_parses(self):
+        self.assertEqual(run.uri_dev_trigger(991001, self.MACHINE, self.URL),
+                         f"acb part=991001 server={self.MACHINE} url={self.URL}")
+
+    def test_the_dev_trigger_refuses_what_the_app_would_ignore_silently(self):
+        bad_urls = ["https://192.0.2.10:8020/a.m3u8", "http://fixtures.local:8020/a.m3u8",
+                    "http://192.0.2.10/a.m3u8", "http://192.0.2.300:8020/a.m3u8",
+                    "http://192.0.2.10:0/a.m3u8", "http://192.0.2.10:70000/a.m3u8",
+                    "http://u:p@192.0.2.10:8020/a.m3u8", "http://192.0.2.10:8020",
+                    "http://192.0.2.10:8020/a b.m3u8", "http://192.0.2.10:8020/a'b.m3u8"]
+        for url in bad_urls:
+            with self.subTest(url=url):
+                with self.assertRaises(run.UriProductRefused):
+                    run.uri_dev_trigger(991001, self.MACHINE, url)
+        for machine in ("", "a b", "a'b", "a=b"):
+            with self.subTest(machine=machine), self.assertRaises(run.UriProductRefused):
+                run.uri_dev_trigger(991001, machine, self.URL)
+        for part in (0, -3, "991001", None):
+            with self.subTest(part=part), self.assertRaises(run.UriProductRefused):
+                run.uri_dev_trigger(part, self.MACHINE, self.URL)
+
+    # -- the trigger files --
+
+    def test_the_files_pin_the_routing_contract_and_name_the_carrier(self):
+        files = run.uri_product_files(self.case(), "http://192.0.2.10:8020", self.MACHINE)
+        names = [n for n, _ in files]
+        self.assertEqual(len(names), len(set(names)), "a trigger name written twice is read once")
+        got = dict(files)
+        self.assertEqual(got["plxnative-play"], str(run.mock_fps.CARRIER_RK))
+        self.assertEqual((got["plxnative-quality"], got["plxnative-audioenh"], got["plxnative-ptype"]),
+                         ("original", "off", "0"))
+        self.assertEqual(got["plxnative-uridev"],
+                         f"acb part={run.mock_fps.CARRIER_PART_ID} server={self.MACHINE} "
+                         f"url=http://192.0.2.10:8020/pipe_hls_720p24_20m/index.m3u8")
+        for never in ("plxnative-uriprobe", "plxnative-playurl"):
+            self.assertNotIn(never, got)
+
+    def test_nothing_may_arm_the_probe_or_the_dev_route_by_hand_in_a_product_run(self):
+        for name in ("plxnative-uriprobe", "plxnative-playurl", "plxnative-uridev", "plxnative-play",
+                     "plxnative-ptype", "plxnative-quality"):
+            with self.subTest(extra=name), self.assertRaises(run.UriProductRefused):
+                run.uri_product_files(self.case(), "http://192.0.2.10:8020", self.MACHINE,
+                                      extra=[(name, "x")])
+        for key in ("uriprobe", "uridev", "playurl"):
+            with self.subTest(case_trigger=key), self.assertRaises(run.UriProductRefused):
+                run.uri_product_files(self.case(triggers={"ptype": "0", key: "x"}),
+                                      "http://192.0.2.10:8020", self.MACHINE)
+        # an unrelated extra trigger still passes through, after the case's own
+        files = run.uri_product_files(self.case(), "http://192.0.2.10:8020", self.MACHINE,
+                                      extra=[("plxnative-framedrop", "20")])
+        self.assertEqual(files[-1], ("plxnative-framedrop", "20"))
+
+    # -- the carrier and the mock --
+
+    def test_the_carrier_resolves_against_the_runs_own_pack_root(self):
+        with tempfile.TemporaryDirectory() as root:
+            cfg = os.path.join(root, "config.local.h")
+            with open(cfg, "w") as f:
+                f.write('#define PMS_HOST "192.0.2.5"\n#define PMS_PORT 32400\n')
+            cases = [self.case()]
+            run._resolve_uri_product(cases, root, flavour="debug", config=cfg)
+            self.assertIn("carrier", cases[0]["skip"])
+            self.assertNotIn("carrier_path", cases[0])
+            clip = os.path.join(root, "pipe_uri_carrier_720p24.mp4")
+            open(clip, "wb").close()
+            cases = [self.case()]
+            run._resolve_uri_product(cases, root, flavour="debug", config=cfg)
+            self.assertNotIn("skip", cases[0])
+            self.assertEqual(cases[0]["carrier_path"], clip)
+            for flavour, config, why in (("stable", cfg, "debug"), ("debug", cfg + ".gone", "PMS_HOST")):
+                with self.subTest(flavour=flavour, config=os.path.basename(config)):
+                    cases = [self.case()]
+                    run._resolve_uri_product(cases, root, flavour=flavour, config=config)
+                    self.assertIn(why, cases[0]["skip"])
+            # a sidecar subtitle beside the carrier would give the movie a subtitle stream
+            sidecar = os.path.join(root, "pipe_uri_carrier_720p24.srt")
+            open(sidecar, "w").close()
+            cases = [self.case()]
+            run._resolve_uri_product(cases, root, flavour="debug", config=cfg)
+            self.assertIn("sidecar", cases[0]["skip"])
+            os.unlink(sidecar)
+            # a Feed case is none of its business
+            feed = [{"name": "plain", "fixture": "x.mkv"}]
+            run._resolve_uri_product(feed, root, flavour="stable", config=cfg + ".gone")
+            self.assertNotIn("skip", feed[0])
+
+    def test_the_mock_identifies_itself_or_the_run_is_refused(self):
+        import http.server
+
+        body = {"MediaContainer": {"machineIdentifier": self.MACHINE, "version": "1.41.0.0000-synthetic"}}
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                data = json.dumps(body).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        class Quiet(http.server.HTTPServer):
+            def server_bind(self):   # HTTPServer's own bind does a reverse-DNS lookup (slow on a Mac)
+                socketserver.TCPServer.server_bind(self)
+                self.server_port = self.server_address[1]
+
+        srv = Quiet(("127.0.0.1", 0), H)
+        threading.Thread(target=lambda: srv.serve_forever(poll_interval=0.05), daemon=True).start()
+        try:
+            port = srv.server_address[1]
+            self.assertEqual(run.mock_fps.mock_machine_identifier("127.0.0.1", port), self.MACHINE)
+            body["MediaContainer"]["version"] = "1.40.1.8227"
+            with self.assertRaises(SystemExit) as why:
+                run.mock_fps.mock_machine_identifier("127.0.0.1", port)
+            self.assertIn("synthetic", str(why.exception))
+            body["MediaContainer"] = {"version": "1.41.0.0000-synthetic"}
+            with self.assertRaises(SystemExit):
+                run.mock_fps.mock_machine_identifier("127.0.0.1", port)
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    # -- the run --
+
+    def _run(self, lines=None, *, stream=None, apply=None, case=None, endpoint=("127.0.0.1", 32400),
+             machine=None, cfg_extra=None):
+        """`run_uri_product_case` with every seam patched. Returns (outcome, record)."""
+        rec = {"ssh": [], "apply": [], "mock": [], "reported": []}
+        lines = lines if lines is not None else [self.SYN] + _product_run(66)
+        case = case or dict(self.case(), carrier_path="/packs/pipe_uri_carrier_720p24.mp4")
+
+        class FakeMock:
+            def __init__(self, host, port, args=(), log_path=None):
+                rec["mock"].append(("new", host, port, list(args)))
+
+            def __enter__(self):
+                rec["mock"].append("enter")
+                return self
+
+            def __exit__(self, *exc):
+                rec["mock"].append("exit")
+                return False
+
+        def fake_stream(c, cfg, secs, early=True, **kw):
+            rec["mock"].append("stream")
+            if stream:
+                raise stream
+            return list(lines), 75.0, False, None
+
+        def fake_apply(tv, files, extra=None):
+            rec["apply"].append((list(files), extra))
+            if apply:
+                raise apply
+
+        cfg = {"tv": "192.0.2.99", "extra_triggers": (), **(cfg_extra or {})}
+        endpoint_patch = (mock.patch.object(run.mock_fps, "configured_endpoint", return_value=endpoint)
+                          if not isinstance(endpoint, BaseException) else
+                          mock.patch.object(run.mock_fps, "configured_endpoint", side_effect=endpoint))
+        with mock.patch.object(run, "RUNDIR", "/tmp/com.beb.plxnative.debug"), \
+                mock.patch.object(run, "require_tv"), mock.patch.object(run, "make"), \
+                mock.patch.object(run, "ssh", side_effect=lambda tv, cmd, timeout=30: rec["ssh"].append(cmd)), \
+                mock.patch.object(run, "apply_triggers", side_effect=fake_apply), \
+                mock.patch.object(run, "stream_case", side_effect=fake_stream), \
+                mock.patch.object(run, "crash_gate", side_effect=lambda cfg, c, n, ls, p, r: (p, r)), \
+                mock.patch.object(run, "report_and_record",
+                                  side_effect=lambda *a, **k: rec["reported"].append(a[2:4])), \
+                mock.patch.object(run.mock_fps, "MockPms", FakeMock), \
+                mock.patch.object(run.mock_fps, "resolve_mock_token", return_value="plxnative-mock-guest"), \
+                mock.patch.object(run.mock_fps, "mock_machine_identifier", return_value=machine or self.MACHINE), \
+                endpoint_patch:
+            srv = mock.Mock()
+            reads = iter([(0, 0, 0), (36, 36, 2)] * 4)   # before the stream, then after it
+            srv.stats.side_effect = lambda: next(reads)
+            out = None
+            try:
+                out = run.run_uri_product_case(case, cfg, srv, "http://192.0.2.10:8020", False)
+            except Exception as e:  # noqa: BLE001 — the tests below assert on it
+                out = e
+        return out, rec
+
+    def test_a_healthy_run_arms_the_route_then_grades_and_takes_the_trigger_back(self):
+        out, rec = self._run()
+        self.assertEqual(out[0], True, out)
+        # the mock carries the carrier, on the configured address, alive across the stream
+        self.assertEqual(rec["mock"][0], ("new", "127.0.0.1", 32400,
+                                          ["--extra-media", "/packs/pipe_uri_carrier_720p24.mp4"]))
+        self.assertEqual(rec["mock"][1:], ["enter", "stream", "exit"])
+        files, extra = rec["apply"][0]
+        got = dict(files)
+        self.assertIn(f"server={self.MACHINE}", got["plxnative-uridev"])
+        self.assertNotIn("plxnative-uriprobe", got)
+        # the token rides `extra=` so it never reaches stdout, and is the fabricated guest's
+        self.assertTrue(any("plxnative-token" in cmd and "plxnative-mock-guest" in cmd for cmd in extra))
+        self.assertNotIn("plxnative-mock-guest", " ".join(f"{n}={c}" for n, c in files))
+        self.assertEqual(rec["ssh"], ["rm -f /tmp/com.beb.plxnative.debug/plxnative-uridev"])
+        self.assertTrue(rec["reported"][0][0])
+
+    def test_the_dev_trigger_is_deleted_however_the_run_ends(self):
+        for what, kwargs in (("the stream raises", {"stream": RuntimeError("ssh died")}),
+                             ("arming raises", {"apply": RuntimeError("no route to host")})):
+            with self.subTest(what):
+                out, rec = self._run(**kwargs)
+                self.assertIsInstance(out, RuntimeError)
+                self.assertEqual(rec["ssh"], ["rm -f /tmp/com.beb.plxnative.debug/plxnative-uridev"])
+                self.assertEqual(rec["mock"][-1], "exit", "the mock is stopped too")
+
+    def test_a_log_that_does_not_prove_the_synthetic_mock_is_not_graded(self):
+        for what, lines in (("no server line", _product_run(66)),
+                            ("a real server", ["pms: server 0 version=1.40.1.8227 name=home"] + _product_run(66))):
+            with self.subTest(what):
+                out, rec = self._run(lines=lines)
+                self.assertFalse(out[0])
+                self.assertEqual(out[1][0][:2], ("synthetic_identity", False))
+                self.assertEqual(len(out[1]), 1, "refusing to grade means grading nothing else")
+                self.assertFalse(rec["reported"][0][0])
+                self.assertEqual(len(rec["ssh"]), 1, "the trigger is still taken back")
+
+    def test_a_setup_refusal_fails_the_case_instead_of_ending_the_suite(self):
+        out, rec = self._run(endpoint=SystemExit("--mock needs src/config.local.h for PMS_HOST"))
+        self.assertFalse(out[0])
+        self.assertEqual(out[1][0][:2], ("uri_product", False))
+        self.assertIn("PMS_HOST", out[1][0][2])
+        self.assertEqual(rec["apply"], [], "nothing was written to the set")
+        out, rec = self._run(cfg_extra={"extra_triggers": [("plxnative-uriprobe", "load")]})
+        self.assertFalse(out[0])
+        self.assertIn("uriprobe", out[1][0][2])
+        self.assertEqual((rec["apply"], rec["mock"]), ([], []), "refused before the mock started")
+
+    def test_the_suite_dispatches_a_product_case_to_the_product_runner(self):
+        with mock.patch.object(run, "run_uri_product_case", return_value=(True, [], [])) as product, \
+                mock.patch.object(run, "make") as make_, mock.patch.object(run, "require_tv"):
+            out = run.run_pipeline_case(self.case(), {"tv": "192.0.2.99"}, mock.Mock(), "http://192.0.2.10:8020",
+                                        False)
+        self.assertEqual(out, (True, [], []))
+        product.assert_called_once()
+        make_.assert_not_called()
+
+
 class UriModeGrading(unittest.TestCase):
     """Cases that arm the URI probe play through the TV's native player, so the buffer-feed checks
     grade lines it never writes. These tests pin the graders that replace them, on SYNTHETIC logs
@@ -6143,6 +6640,63 @@ class UriModeGrading(unittest.TestCase):
             self.assertEqual(case["expect"], {"no_playing_error": True, "uri_playing": True}, name)
             for needle in ("INSTRUMENT", "UNBOUND", "pipe_uri_hls_720p24_20m_bound"):
                 self.assertIn(needle, case["_uri_note"], f"{name}: {needle}")
+
+    # -- the manifest and the carrier --
+
+    PRODUCT = ("pipe_uri_product_hls_720p24_20m_bound", "pipe_uri_product_hls_720p24_20m_bound_collapse")
+
+    def _product_cases(self):
+        cases = {c["name"]: c for c in _manifest()["pipeline_cases"]}
+        return [cases[n] for n in self.PRODUCT]
+
+    def test_the_product_pair_mirrors_the_probe_pair_and_adds_the_two_product_grades(self):
+        cases = {c["name"]: c for c in _manifest()["pipeline_cases"]}
+        for product, probe in zip(self._product_cases(), ("pipe_uri_hls_720p24_20m_bound",
+                                                          "pipe_uri_hls_720p24_20m_bound_collapse")):
+            probe = cases[probe]
+            for key in ("fixture", "declare", "network_profile", "run_secs", "operations"):
+                self.assertEqual(product.get(key), probe.get(key), f"{product['name']}: {key}")
+            self.assertEqual(product["uri_route"], "product")
+            want = dict(probe["expect"], uri_presented=True, uri_service_playing=True)
+            self.assertEqual(product["expect"], want, product["name"])
+            self.assertEqual(run.uri_route(product), "product")
+        bound, collapse = self._product_cases()
+        self.assertEqual((bound["expect"]["uri_clock_past_s"], bound["expect"]["uri_max_stall_s"]), (60, 3))
+        self.assertEqual(collapse["expect"]["uri_drain_warning_s"], 5)
+        self.assertNotIn("uri_max_stall_s", collapse["expect"], "the clock stops in a collapse on purpose")
+
+    def test_the_product_cases_arm_neither_the_probe_nor_the_dev_route_by_hand(self):
+        """`uridev` carries the carrier's part id, the mock's machine identifier and the fixture URL, none
+        of which a manifest knows, so the RUNNER writes it; `uriprobe` would divert the very route under
+        test; `playurl` would play the Feed."""
+        for case in self._product_cases():
+            self.assertEqual(case["triggers"], {"ptype": "0"}, case["name"])
+            self.assertNotIn("rk", case, "the runner supplies the carrier's ratingKey")
+            self.assertEqual(case["carrier"], "pipe_uri_carrier_720p24.mp4")
+
+    def test_the_carrier_is_the_progressive_twin_the_dev_qualifier_needs(self):
+        spec = fixturegen.PIPE_SHAPES["pipe_uri_carrier_720p24"]
+        twin = fixturegen.PIPE_SHAPES["pipe_hls_720p24_20m"]
+        self.assertEqual((spec["ext"], spec["kind"]), ("mp4", "clip"))
+        self.assertNotIn("entry", spec, "a flat progressive file, not a playlist directory")
+        self.assertGreaterEqual(spec["duration"], twin["duration"], "the offer's duration bounds the clock")
+        self.assertEqual((spec["video"]["size"], fixturegen.shape_fps(spec)), ("1280x720", 24))
+        self.assertEqual(spec["video"]["codec"], twin["video"]["codec"])
+        self.assertEqual(len(spec["audio"]), 1, "ONE audio stream: the qualifier needs a selected audio track")
+        self.assertEqual(spec["subs"], [], "no subtitle stream: subtitle_choice Off is refused")
+        self.assertNotIn("sidecar", str(spec))
+        self.assertIn("pipe_uri_carrier_720p24", fixturegen.PIPE_MBIT)
+        self.assertEqual(fixturegen.out_paths(fixturegen.Path("/r"), "pipe_uri_carrier_720p24", spec),
+                         [("pipe_uri_carrier_720p24", fixturegen.Path("/r/pipe_uri_carrier_720p24.mp4"))])
+        for case in self._product_cases():
+            self.assertEqual(case["carrier"], f"pipe_uri_carrier_720p24.{spec['ext']}")
+
+    def test_the_carrier_ids_are_the_mocks_first_extra_media_block(self):
+        with open(os.path.join(TESTS_DIR, "mock_pms.py"), encoding="utf-8") as fh:
+            text = fh.read()
+        rk = int(re.search(r"^EXTRA_MEDIA_RK_BASE = (\d+)", text, re.M).group(1))
+        part = int(re.search(r"^EXTRA_MEDIA_PART_ID_BASE = (\d+)", text, re.M).group(1))
+        self.assertEqual((run.mock_fps.CARRIER_RK, run.mock_fps.CARRIER_PART_ID), (rk, part))
 
     # -- the fixture --
 
