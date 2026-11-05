@@ -42,6 +42,16 @@ outcome of a failed fence, not the normal one. `uri_preflight::product_binding` 
 composition (ACB display mode, an initialized handle, player type 0); `ProductEvidence::permits`
 still requires `Binding::Exported`, which is what keeps it from being offered a source.
 
+The sequence's last step (`Op::Display`, the full-screen `setDisplayWindow` and `setState(PLAYING)`)
+goes through `PlaneOwner::show`, not straight to the sink: the C seam (`acb_finish`) returns the task id
+of each call and the owner's `Plane` keeps a `Shown` state, `Done` only when BOTH tasks have completed
+with event 1 (matched on the ids, like the `UNLOADED` fence; reset by a granted bind and by an unload).
+That fence is what `Observation::Presented` waits for on this binding: with the service's `playing`
+and a later `currentTime` advance (`play-uri/src/picture_gate.rs`, fed by `UriBackend`, ACB only; the
+backend asks `PlaneOwner::shown` from `poll` until it has an answer) the URI driver reports the first
+picture. `acb_finish` / `PlaneFinish` are the only change to the C seam's shape; Feed's `acb_start` is
+the same two calls and does not use the ids.
+
 The separate `player/uriprobe_drive.rs` developer probe is invoked by the
 `plxnative-uriprobe` trigger. It plays one stream through `com.webos.media` with no Engine and
 can log pause, resume, seek, track selection and `setSubtitleEnable` behavior (issue #1064).

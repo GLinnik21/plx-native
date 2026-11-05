@@ -6,6 +6,7 @@
 
 pub mod acb_bind;
 pub mod acb_drive;
+pub mod picture_gate;
 pub mod uri_protocol;
 pub mod uri_lifecycle;
 mod session_io;

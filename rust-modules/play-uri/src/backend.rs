@@ -2,11 +2,12 @@
 //! admission. The native session and every bus request stay behind `Lifecycle`.
 use crate::acb_bind::{AcbBind, Event as AcbEvent, Failure as AcbFailure, Fx as AcbFx};
 use crate::acb_drive::{self, Descriptor, Executed, Verdict};
+use crate::picture_gate::{Event as PictureEvent, Fx as PictureFx, PictureGate};
 use crate::session_io;
 use crate::uri_lifecycle::{Event as LifeEvent, Fx as LifeFx, Lifecycle, Phase};
 use crate::uri_protocol::{AbrBps, AcbSource, Ev, Message, Method, UriCall};
 use plx_base::task::MainThread;
-use plx_platform::tv::plane::Refusal;
+use plx_platform::tv::plane::{Refusal, Shown};
 use plx_platform::tv::sink::{DisplaySink, VP_ACB, VP_EXPORTED};
 use plx_platform::tv::uri::{Shape, UriMedia};
 use plx_playback_contract::{AttemptId, BackendEvent, BackendKind, Capabilities, CommandId,
@@ -92,6 +93,10 @@ pub struct UriBackend {
     /// The transport state the service last accepted, and whether the plane was told it is paused.
     transport_paused: bool,
     plane_paused: bool,
+    /// When `Observation::Presented` may be published (see `picture_gate`): the service's
+    /// `playing`, the plane owner's `Shown`, then a clock advance. Only an ACB attempt is ever
+    /// told the plane's verdict, so any other binding never presents.
+    picture: PictureGate,
 }
 
 impl UriBackend {
@@ -107,7 +112,7 @@ impl UriBackend {
             dispatching: None, controls: BTreeMap::new(),
             pending: VecDeque::new(), close_reported: false, quarantine_reported: false,
             acb: AcbBind::new(false), acb_source: None, foreground_sent: false, acb_refusal: None,
-            transport_paused: false, plane_paused: false }
+            transport_paused: false, plane_paused: false, picture: PictureGate::new() }
     }
 
     /// Give exactly one authorized, owned URL to the next matching Start. Superseding a staged
@@ -239,6 +244,7 @@ impl UriBackend {
         self.acb_refusal = None;
         self.transport_paused = false;
         self.plane_paused = false;
+        self.picture_step(PictureEvent::Reset);
         self.lifecycle = Lifecycle::new();
         self.feed(LifeEvent::Open(Shape::Named), mt, self.config.clock.now_ms());
         DispatchResult::Queued
@@ -260,6 +266,51 @@ impl UriBackend {
             self.feed(LifeEvent::Call(UriCall::Unload { media_id }), mt, now_ms);
         }
         self.feed(LifeEvent::Close { now_ms, allowance_ms: self.config.release_allowance_ms }, mt, now_ms);
+    }
+
+    /// A Seek has been dispatched and has not landed (or timed out).
+    fn seek_pending(&self) -> bool {
+        self.controls.values().chain(self.dispatching.iter())
+            .any(|pending| matches!(pending.kind, ControlKind::Seek { .. }))
+    }
+
+    /// Step the picture rule and publish what it decides. The line says which rule fired, so a
+    /// device log shows whether the three conditions were met (the lines before it are
+    /// `acb display fullscreen=1 rv=1 task=N`, `acb playing rv=1 task=M`, the two
+    /// `acb callback task=.. ev=1` lines and `uri-acb: display/PLAYING completed`).
+    fn picture_step(&mut self, event: PictureEvent) {
+        let mut fx = Vec::new();
+        self.picture.step(event, &mut fx);
+        for effect in fx {
+            match effect {
+                PictureFx::Presented { from_ms, clock_ms } => {
+                    plx_base::eventlog::log(&format!(
+                        "uri: presented (service playing; plane window and PLAYING completed; clock advanced from {from_ms} to {clock_ms} ms)"));
+                    self.observe(Observation::Presented);
+                }
+            }
+        }
+    }
+
+    /// Ask the plane owner whether the firmware has completed the bind's window and PLAYING calls,
+    /// until it has answered. Only an ACB attempt whose sequence has dispatched them has anything
+    /// to ask about; every other binding never feeds the picture rule a plane verdict.
+    fn watch_plane_show(&mut self, mt: &MainThread) {
+        if self.config.binding != Binding::Acb || !self.acb.bound() || !self.picture.wants_plane() {
+            return;
+        }
+        match self.config.plane.shown(self.config.display, mt) {
+            Shown::Done => {
+                plx_base::eventlog::log("uri-acb: display/PLAYING completed (event 1 on both tasks)");
+                self.picture_step(PictureEvent::PlaneShown);
+            }
+            Shown::Failed { ev } => {
+                plx_base::eventlog::log(&format!(
+                    "uri-acb: display/PLAYING completion failed (event {ev}); no picture will be claimed"));
+                self.picture_step(PictureEvent::PlaneFailed);
+            }
+            Shown::No | Shown::Waiting { .. } => {}
+        }
     }
 
     fn maybe_subscribe(&mut self, mt: &MainThread, now_ms: u64) {
@@ -330,6 +381,7 @@ impl UriBackend {
                         self.pending.push_back(DriverEvent::SeekLanded {
                             attempt, command: pending.command, position,
                         });
+                        self.picture_step(PictureEvent::Seeked);
                     }
                 }
             }
@@ -421,6 +473,7 @@ impl UriBackend {
                         None
                     } else {
                         self.played_once = true;
+                        self.picture_step(PictureEvent::ServicePlaying);
                         Some(Playback::Playing)
                     }
                 }
@@ -436,6 +489,11 @@ impl UriBackend {
                         self.observe(Observation::Position(Observed {
                             value: ContentTime::from_millis(ms), from: EvidenceSource::BackendReport,
                         }));
+                        // A report that arrives while a Seek is pending (the subscription's own
+                        // `seekDone` can beat the addressed reply) may be the seek target: a
+                        // position jump, not movement of the stream that was playing.
+                        if self.seek_pending() { self.picture_step(PictureEvent::Seeked); }
+                        self.picture_step(PictureEvent::Clock(ms));
                     }
                     None
                 }
@@ -445,9 +503,7 @@ impl UriBackend {
                 // either; an end is always reported so a reported start cannot stay open. The
                 // order of `bufferingStart` against `seekDone` is not measured on the device.
                 Ev::BufferingStart | Ev::BufferingEnd => {
-                    let seek_pending = self.controls.values().chain(self.dispatching.iter())
-                        .any(|pending| matches!(pending.kind, ControlKind::Seek { .. }));
-                    if self.played_once && !(*event == Ev::BufferingStart && seek_pending) {
+                    if self.played_once && !(*event == Ev::BufferingStart && self.seek_pending()) {
                         self.observe(Observation::Rebuffering(Observed {
                             value: *event == Ev::BufferingStart, from: EvidenceSource::BackendReport }));
                     }
@@ -725,6 +781,9 @@ impl UriBackend {
             self.feed(LifeEvent::AcbPlane { session, plane }, mt, now_ms);
         }
         self.acb_step(AcbEvent::Tick, mt, now_ms);
+        // After this poll's replies: a clock sample delivered in the same poll as the completions
+        // is a sample from before them, never the advance that follows them.
+        self.watch_plane_show(mt);
         if self.start_deadline_ms.is_some_and(|deadline| now_ms >= deadline)
             && matches!(self.lifecycle.phase(), Phase::Opening | Phase::Open) {
             self.observe(Observation::Failed(Failure::TimedOut));
@@ -1317,8 +1376,9 @@ mod tests {
     impl Rig {
         fn at(&self, ms: u64) { self.clock.store(ms, Ordering::Relaxed); }
         /// Started, registered, loaded, subscribed: the service has not said `loadCompleted` yet.
-        fn acb_loading(&mut self) {
-            assert_eq!(self.start(A), DispatchResult::Queued);
+        fn acb_loading(&mut self) { self.acb_loading_as(A) }
+        fn acb_loading_as(&mut self, attempt: AttemptId) {
+            assert_eq!(self.start(attempt), DispatchResult::Queued);
             self.bus.say("register", "");
             self.driver.poll(&self.mt);
             self.bus.say("load", r#"{"returnValue":true,"mediaId":"m1"}"#);
@@ -1334,6 +1394,227 @@ mod tests {
             self.driver.poll(&self.mt);
             for t in [200, 400, 600, 900] { self.at(t); self.driver.poll(&self.mt); }
         }
+        /// `acb_bound` for `attempt`, with `loadCompleted` at `base` ms.
+        fn acb_bound_as(&mut self, attempt: AttemptId, base: u64) {
+            self.at(base);
+            self.acb_loading_as(attempt);
+            self.bus.say("subscribe", ENVELOPE);
+            self.driver.poll(&self.mt);
+            for t in [200, 400, 600, 900] { self.at(base + t); self.driver.poll(&self.mt); }
+        }
+        /// The service accepts the first Play and reports `playing`; returns that poll's events.
+        fn service_plays(&mut self) -> Vec<DriverEvent> { self.service_plays_as(A) }
+        fn service_plays_as(&mut self, attempt: AttemptId) -> Vec<DriverEvent> {
+            assert_eq!(self.driver.dispatch(&self.mt, attempt, self.command, Operation::Play), DispatchResult::Queued);
+            self.bus.say("play", r#"{"returnValue":true,"mediaId":"m1","playing":true}"#);
+            self.driver.poll(&self.mt)
+        }
+        /// The service reports `currentTime` (ms) on its subscription; returns that poll's events.
+        fn clock_says(&mut self, ms: u64) -> Vec<DriverEvent> {
+            self.bus.say("subscribe", &format!(r#"{{"mediaId":"m1","currentTime":{ms}}}"#));
+            self.driver.poll(&self.mt)
+        }
+    }
+
+    /// How many `Presented` observations `events` carry.
+    fn presented(events: &[DriverEvent]) -> usize {
+        events.iter().filter(|event| matches!(event, DriverEvent::Observation {
+            observation: Observation::Presented, .. })).count()
+    }
+
+    #[test]
+    fn acb_presents_once_when_the_service_plays_the_plane_completed_and_the_clock_then_advances() {
+        let (mut rig, sink, _) = Rig::acb();
+        rig.acb_bound();
+        assert_eq!(presented(&rig.service_plays()), 0, "a state report is not a picture");
+        // The clock runs, but neither plane completion has arrived: no picture is claimed.
+        assert_eq!(presented(&rig.clock_says(1_000)), 0);
+        assert_eq!(presented(&rig.clock_says(1_040)), 0);
+        // Both completions arrive (the display window's task, then PLAYING's): armed, and the
+        // very poll that learns of them cannot also be the advance.
+        sink.mailbox.push(3, 1);
+        sink.mailbox.push(4, 1);
+        assert_eq!(presented(&rig.driver.poll(&rig.mt)), 0);
+        assert_eq!(presented(&rig.clock_says(1_040)), 0, "a clock that did not advance proves nothing");
+        // The first advance after everything else is the picture, and it is reported once.
+        assert_eq!(presented(&rig.clock_says(1_080)), 1);
+        assert_eq!(presented(&rig.clock_says(1_120)), 0);
+        assert_eq!(presented(&rig.driver.poll(&rig.mt)), 0);
+    }
+
+    /// A bound ACB attempt whose service has said `playing`; the plane's completions have not come.
+    fn acb_playing() -> (Rig, &'static ScriptedPlaneSink) {
+        let (mut rig, sink, _) = Rig::acb();
+        rig.acb_bound();
+        assert_eq!(presented(&rig.service_plays()), 0, "a state report is not a picture");
+        (rig, sink)
+    }
+
+    /// The firmware's completion callbacks of the bind's window and PLAYING calls (the ids the
+    /// scripted sink answered `plane_finish` with).
+    fn plane_tasks() -> (i64, i64) {
+        use plx_platform::tv::sink::{SCRIPTED_DISPLAY_TASK, SCRIPTED_PLAYING_TASK};
+        (i64::from(SCRIPTED_DISPLAY_TASK), i64::from(SCRIPTED_PLAYING_TASK))
+    }
+
+    #[test]
+    fn acb_presents_only_when_both_of_the_binds_own_tasks_complete_with_event_1() {
+        let (display, playing) = plane_tasks();
+        // (case, the completions the firmware delivers, how many pictures are reported). The
+        // first two rows are the positive legs: they fail on a tree that has no producer.
+        let cases: [(&str, Vec<(i64, i32)>, usize); 9] = [
+            ("both complete", vec![(display, 1), (playing, 1)], 1),
+            ("both complete, PLAYING first", vec![(playing, 1), (display, 1)], 1),
+            ("only the window completes", vec![(display, 1)], 0),
+            ("only PLAYING completes", vec![(playing, 1)], 0),
+            ("the window times out", vec![(display, -2), (playing, 1)], 0),
+            ("PLAYING errors", vec![(display, 1), (playing, -1)], 0),
+            ("the window is cancelled", vec![(display, 0), (playing, 1)], 0),
+            ("other tasks complete (video data, LOADED)", vec![(1, 1), (2, 1)], 0),
+            ("no completion at all", vec![], 0),
+        ];
+        for (case, completions, expected) in cases {
+            let (mut rig, sink) = acb_playing();
+            for (task, ev) in completions { sink.mailbox.push(task, ev); }
+            assert_eq!(presented(&rig.driver.poll(&rig.mt)), 0, "{case}: learning of them is not the advance");
+            let reported: usize = [1_000, 1_040, 1_080, 1_120].into_iter()
+                .map(|ms| presented(&rig.clock_says(ms))).sum();
+            assert_eq!(reported, expected, "{case}");
+        }
+    }
+
+    #[test]
+    fn acb_a_sample_delivered_with_the_completions_is_not_the_advance_and_a_resume_needs_two() {
+        let (display, playing) = plane_tasks();
+        // A clock report that shares a poll with the completions was observed before them.
+        let (mut rig, sink) = acb_playing();
+        sink.mailbox.push(display, 1);
+        sink.mailbox.push(playing, 1);
+        rig.bus.say("subscribe", r#"{"mediaId":"m1","currentTime":600000}"#);
+        assert_eq!(presented(&rig.driver.poll(&rig.mt)), 0);
+        assert_eq!(presented(&rig.clock_says(600_000)), 0, "a clock that stands still");
+        assert_eq!(presented(&rig.clock_says(600_040)), 1);
+        // A resumed start's first report is its resume position: with no sample to compare it
+        // with, it is not movement (and the second report, which is, is the picture).
+        let (mut rig, sink) = acb_playing();
+        sink.mailbox.push(display, 1);
+        sink.mailbox.push(playing, 1);
+        assert_eq!(presented(&rig.driver.poll(&rig.mt)), 0);
+        assert_eq!(presented(&rig.clock_says(600_000)), 0);
+        assert_eq!(presented(&rig.clock_says(600_040)), 1);
+        assert_eq!(presented(&rig.clock_says(600_080)), 0, "once");
+    }
+
+    #[test]
+    fn acb_a_seek_that_lands_before_the_picture_is_not_an_advance() {
+        let (display, playing) = plane_tasks();
+        let (mut rig, sink) = acb_playing();
+        assert_eq!(presented(&rig.clock_says(100)), 0);
+        sink.mailbox.push(display, 1);
+        sink.mailbox.push(playing, 1);
+        assert_eq!(presented(&rig.driver.poll(&rig.mt)), 0);
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
+            Operation::Seek(ContentTime::from_millis(600_000))), DispatchResult::Queued);
+        let (session, request) = {
+            let state = rig.bus.0.lock().unwrap();
+            (state.session, state.calls.iter().rev().find(|(method, _, _)| *method == "seek").unwrap().1)
+        };
+        rig.bus.0.lock().unwrap().replies.push_back(UriReply { session, request, method: "seek",
+            payload: r#"{"returnValue":true,"mediaId":"m1","seekDone":true,"currentTime":600000}"#.into(),
+            ok: true });
+        let landed = rig.driver.poll(&rig.mt);
+        assert!(landed.iter().any(|event| matches!(event, DriverEvent::SeekLanded { .. })), "{landed:?}");
+        assert_eq!(presented(&landed), 0, "the jump from 100 to the seek target is not playback");
+        assert_eq!(presented(&rig.clock_says(600_040)), 1, "the clock then moves on");
+        // The subscription's own `seekDone` report can beat the addressed reply; while the Seek
+        // is pending it is the target, not movement.
+        let (mut rig, sink) = acb_playing();
+        assert_eq!(presented(&rig.clock_says(100)), 0);
+        sink.mailbox.push(display, 1);
+        sink.mailbox.push(playing, 1);
+        assert_eq!(presented(&rig.driver.poll(&rig.mt)), 0);
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command,
+            Operation::Seek(ContentTime::from_millis(600_000))), DispatchResult::Queued);
+        let (session, request) = {
+            let state = rig.bus.0.lock().unwrap();
+            (state.session, state.calls.iter().rev().find(|(method, _, _)| *method == "seek").unwrap().1)
+        };
+        rig.bus.say("subscribe", r#"{"mediaId":"m1","seekDone":true,"currentTime":600000}"#);
+        assert_eq!(presented(&rig.driver.poll(&rig.mt)), 0, "an unaddressed report of the target");
+        rig.bus.0.lock().unwrap().replies.push_back(UriReply { session, request, method: "seek",
+            payload: r#"{"returnValue":true,"mediaId":"m1","seekDone":true,"currentTime":600000}"#.into(),
+            ok: true });
+        assert_eq!(presented(&rig.driver.poll(&rig.mt)), 0, "the addressed reply landing the seek");
+        assert_eq!(presented(&rig.clock_says(600_040)), 1);
+    }
+
+    #[test]
+    fn acb_an_attempt_that_is_closing_claims_no_picture() {
+        let (display, playing) = plane_tasks();
+        // The same events with and without the Stop: the positive leg is the first. What holds the
+        // second is the lifecycle, which delivers no service report once the close has begun (and
+        // the plane is no longer asked: the sequence is cancelled), so this also passes if the
+        // backend did nothing about it; a new attempt starts the picture rule afresh.
+        for (stopped, expected) in [(false, 1), (true, 0)] {
+            let (mut rig, sink) = acb_playing();
+            assert_eq!(presented(&rig.clock_says(1_000)), 0);
+            sink.mailbox.push(display, 1);
+            sink.mailbox.push(playing, 1);
+            assert_eq!(presented(&rig.driver.poll(&rig.mt)), 0);
+            if stopped {
+                assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, Operation::Stop(StopReason::Stop)),
+                    DispatchResult::Queued);
+            }
+            assert_eq!(presented(&rig.clock_says(1_040)), expected, "stopped: {stopped}");
+        }
+    }
+
+    #[test]
+    fn acb_a_successor_attempt_presents_afresh() {
+        let (display, playing) = plane_tasks();
+        let (mut rig, sink) = acb_playing();
+        sink.mailbox.push(display, 1);
+        sink.mailbox.push(playing, 1);
+        rig.driver.poll(&rig.mt);
+        assert_eq!(presented(&rig.clock_says(1_000)), 0);
+        assert_eq!(presented(&rig.clock_says(1_040)), 1, "attempt A presents");
+        // A is stopped and released (the UNLOADED completion), then B is bound and played.
+        assert_eq!(rig.driver.dispatch(&rig.mt, A, rig.command, Operation::Stop(StopReason::Stop)), DispatchResult::Queued);
+        rig.at(2_000);
+        rig.driver.poll(&rig.mt);
+        sink.mailbox.push(5, 1);
+        let released = rig.driver.poll(&rig.mt);
+        assert!(released.contains(&DriverEvent::Release { attempt: A, status: ReleaseStatus::Released }), "{released:?}");
+        rig.acb_bound_as(B, 3_000);
+        assert_eq!(presented(&rig.service_plays_as(B)), 0);
+        // B's window and PLAYING are new tasks of the same scripted ids; its own completions
+        // are what count, and its clock is its own.
+        sink.mailbox.push(display, 1);
+        sink.mailbox.push(playing, 1);
+        assert_eq!(presented(&rig.driver.poll(&rig.mt)), 0);
+        assert_eq!(presented(&rig.clock_says(10)), 0);
+        let events = rig.clock_says(50);
+        assert!(events.contains(&DriverEvent::Observation { attempt: B, observation: Observation::Presented }), "{events:?}");
+        assert_eq!(presented(&events), 1);
+    }
+
+    #[test]
+    fn acb_an_unbound_attempt_never_presents_whatever_the_mailbox_holds() {
+        // A guard that passes on a tree without the producer too: without an ACB binding nothing
+        // asks the plane owner and nothing is claimed. The positive leg is the tests above.
+        let (display, playing) = plane_tasks();
+        let sink: &'static ScriptedPlaneSink =
+            Box::leak(Box::new(ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 })));
+        let plane: &'static plx_platform::tv::plane::PlaneOwner =
+            Box::leak(Box::new(plx_platform::tv::plane::PlaneOwner::new()));
+        plane.boot(plx_platform::tv::plane::PlaneFacts { handle: true, player_type: 0 });
+        let mut rig = Rig::with(Binding::Unbound, sink, plane);
+        rig.opened();
+        assert_eq!(presented(&rig.service_plays()), 0);
+        sink.mailbox.push(display, 1);
+        sink.mailbox.push(playing, 1);
+        for ms in [1_000, 1_040, 1_080, 1_120] { assert_eq!(presented(&rig.clock_says(ms)), 0, "{ms}"); }
+        assert!(sink.calls().is_empty(), "an unbound attempt calls no ACB verb: {:?}", sink.calls());
     }
 
     #[test]

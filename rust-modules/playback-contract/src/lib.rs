@@ -184,7 +184,15 @@ pub enum Observation {
     ///   (callback type 47) has reported a count above zero since that bind.
     /// - **Feed, webOS 5+ (no bind):** the first displayed-frame counter callback (type 49) with
     ///   a count above zero. Never the type-0 `FRAMEREADY` tick, which is a 5 Hz position report.
-    /// - A firmware that never delivers the counter never presents; startup stays Unknown.
+    /// - **URI, ACB binding (webOS 4):** all three, in this order of observation: the service has
+    ///   said `playing`; the plane owner has seen the firmware complete BOTH the full-screen
+    ///   `setDisplayWindow` and the `setState(PLAYING)` of the bind with event 1, each matched on
+    ///   its own task id; and the service's `currentTime` then advances (a sample above the one
+    ///   before it, so a resumed start's first report is not movement). A completion of another
+    ///   task, or one that is not event 1, never counts. The exported window and an unbound
+    ///   attempt never present: nothing there says the plane was told to show the stream.
+    /// - A firmware that never delivers the counter (Feed) or the completions (URI) never
+    ///   presents; startup stays Unknown.
     Presented,
     TrackSelected(Observed<TrackSelection>),
     TrackOff(Observed<TrackKind>),
