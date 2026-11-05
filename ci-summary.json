@@ -57,29 +57,8 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-05T11:14:57Z",
+ "generated": "2026-11-05T12:00:43Z",
  "metrics": [
-  {
-   "change30_pct": null,
-   "change7_pct": 43.4,
-   "d30": null,
-   "delta30": null,
-   "delta7": 25.4,
-   "group": "local",
-   "id": "bench.ui",
-   "kind": "local",
-   "label": "Rebuild after editing plx_ui",
-   "n_now": 6,
-   "n_prev": 6,
-   "now": 84.1,
-   "prev7": 58.6,
-   "shown": true,
-   "state": "worse",
-   "state30": "new",
-   "threshold_abs": 5.0,
-   "threshold_pct": 25.0,
-   "unit": "s"
-  },
   {
    "change30_pct": 2.4,
    "change7_pct": 36.1,
@@ -99,27 +78,6 @@
    "state30": "flat",
    "threshold_abs": 20.0,
    "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": 32.3,
-   "d30": null,
-   "delta30": null,
-   "delta7": 46.3,
-   "group": "local",
-   "id": "bench.leaf",
-   "kind": "local",
-   "label": "Rebuild after editing plx_base",
-   "n_now": 6,
-   "n_prev": 6,
-   "now": 189.5,
-   "prev7": 143.2,
-   "shown": true,
-   "state": "worse",
-   "state30": "new",
-   "threshold_abs": 5.0,
-   "threshold_pct": 25.0,
    "unit": "s"
   },
   {
@@ -144,10 +102,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -55.2,
+   "change30_pct": -54.9,
    "change7_pct": 18.3,
-   "d30": 939.5,
-   "delta30": -518.5,
+   "d30": 934,
+   "delta30": -513,
    "delta7": 65,
    "group": "ci",
    "id": "push_wait",
@@ -167,16 +125,16 @@
   {
    "change30_pct": -57.6,
    "change7_pct": 18.1,
-   "d30": 1033.5,
-   "delta30": -595.5,
+   "d30": 1033,
+   "delta30": -595,
    "delta7": 67.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 202,
+   "n_now": 203,
    "n_prev": 220,
-   "now": 438.0,
+   "now": 438,
    "prev7": 371.0,
    "shown": true,
    "state": "flat",
@@ -187,18 +145,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -17.8,
+   "change7_pct": -11.8,
    "d30": null,
    "delta30": null,
-   "delta7": -4.9,
+   "delta7": -3.1,
    "group": "local",
    "id": "bench.app",
    "kind": "local",
    "label": "Rebuild after editing the app crate",
-   "n_now": 6,
-   "n_prev": 6,
-   "now": 22.4,
-   "prev7": 27.3,
+   "n_now": 5,
+   "n_prev": 7,
+   "now": 23.1,
+   "prev7": 26.1,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -208,18 +166,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -9.5,
+   "change7_pct": -3.4,
    "d30": null,
    "delta30": null,
-   "delta7": -5.1,
+   "delta7": -1.8,
    "group": "local",
    "id": "bench.screens",
    "kind": "local",
    "label": "Rebuild after editing plx_screens",
-   "n_now": 6,
-   "n_prev": 6,
-   "now": 48.6,
-   "prev7": 53.7,
+   "n_now": 5,
+   "n_prev": 7,
+   "now": 50.4,
+   "prev7": 52.2,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -229,18 +187,60 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -1.6,
+   "change7_pct": 17.4,
    "d30": null,
    "delta30": null,
-   "delta7": -2.5,
+   "delta7": 11.1,
+   "group": "local",
+   "id": "bench.ui",
+   "kind": "local",
+   "label": "Rebuild after editing plx_ui",
+   "n_now": 5,
+   "n_prev": 7,
+   "now": 74.8,
+   "prev7": 63.7,
+   "shown": true,
+   "state": "flat",
+   "state30": "new",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 8.0,
+   "d30": null,
+   "delta30": null,
+   "delta7": 12.5,
+   "group": "local",
+   "id": "bench.leaf",
+   "kind": "local",
+   "label": "Rebuild after editing plx_base",
+   "n_now": 5,
+   "n_prev": 7,
+   "now": 168.9,
+   "prev7": 156.4,
+   "shown": true,
+   "state": "flat",
+   "state30": "new",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 0.6,
+   "d30": null,
+   "delta30": null,
+   "delta7": 0.9,
    "group": "local",
    "id": "bench.tests",
    "kind": "local",
    "label": "Unit suite",
-   "n_now": 6,
-   "n_prev": 6,
-   "now": 153.4,
-   "prev7": 155.9,
+   "n_now": 5,
+   "n_prev": 7,
+   "now": 155.7,
+   "prev7": 154.8,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -601,8 +601,8 @@
   {
    "change30_pct": 0.0,
    "change7_pct": 33.3,
-   "d30": 4,
-   "delta30": 0,
+   "d30": 4.0,
+   "delta30": 0.0,
    "delta7": 1,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
@@ -620,10 +620,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -98.9,
+   "change30_pct": -98.8,
    "change7_pct": 0.0,
-   "d30": 261,
-   "delta30": -258.0,
+   "d30": 260.5,
+   "delta30": -257.5,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
@@ -642,18 +642,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 13.7,
+   "change7_pct": 1.8,
    "d30": null,
    "delta30": null,
-   "delta7": 0.1,
+   "delta7": 0.0,
    "group": "local",
    "id": "bench.noop",
    "kind": "local",
    "label": "No-op build",
-   "n_now": 6,
-   "n_prev": 6,
+   "n_now": 5,
+   "n_prev": 7,
    "now": 0.6,
-   "prev7": 0.5,
+   "prev7": 0.6,
    "shown": false,
    "state": "flat",
    "state30": "new",
@@ -663,67 +663,6 @@
   }
  ],
  "regressions": [
-  {
-   "change_pct": 43.4,
-   "commits": [
-    {
-     "pr": 1229,
-     "sha": "b20a7105c",
-     "title": "Bound every plx_plex test server's accept, and give its deadlines room"
-    },
-    {
-     "pr": 1226,
-     "sha": "a1fccea41",
-     "title": "Add the native Player HUD gallery and cached registry"
-    },
-    {
-     "pr": 1232,
-     "sha": "ba276e92f",
-     "title": "Bound every plx_net test server's accept, and give its deadlines room"
-    },
-    {
-     "pr": 1234,
-     "sha": "9357da73b",
-     "title": "Let the playurl dev trigger start playback from the sign-in and picker pages"
-    },
-    {
-     "pr": 1235,
-     "sha": "7ad737eea",
-     "title": "Hold the simulator's settled capture until an armed autopause lands"
-    },
-    {
-     "pr": 1237,
-     "sha": "95c526366",
-     "title": "Make three timing-dependent unit tests deterministic"
-    },
-    {
-     "pr": 1238,
-     "sha": "c5c2b7e1a",
-     "title": "Cycle HUD preview backgrounds and use shared glass controls"
-    },
-    {
-     "pr": 1239,
-     "sha": "5588f5bfd",
-     "title": "HUD gallery: accept only a signed registry index"
-    },
-    {
-     "pr": 1240,
-     "sha": "ab00d73b0",
-     "title": "HUD plugins: a cargo fuzz package over every package and registry parser"
-    },
-    {
-     "pr": 1241,
-     "sha": "951db621f",
-     "title": "HUD plugins: tools/hud-dev, and Play re-fetches a development-source HUD on the TV"
-    }
-   ],
-   "from": 58.6,
-   "id": "bench.ui",
-   "label": "Rebuild after editing plx_ui",
-   "since": "2026-11-02",
-   "threshold_pct": 25.0,
-   "to": 84.1
-  },
   {
    "change_pct": 36.1,
    "commits": [
@@ -784,67 +723,6 @@
    "since": "2026-11-05",
    "threshold_pct": 20.0,
    "to": 296.0
-  },
-  {
-   "change_pct": 32.3,
-   "commits": [
-    {
-     "pr": 1229,
-     "sha": "b20a7105c",
-     "title": "Bound every plx_plex test server's accept, and give its deadlines room"
-    },
-    {
-     "pr": 1226,
-     "sha": "a1fccea41",
-     "title": "Add the native Player HUD gallery and cached registry"
-    },
-    {
-     "pr": 1232,
-     "sha": "ba276e92f",
-     "title": "Bound every plx_net test server's accept, and give its deadlines room"
-    },
-    {
-     "pr": 1234,
-     "sha": "9357da73b",
-     "title": "Let the playurl dev trigger start playback from the sign-in and picker pages"
-    },
-    {
-     "pr": 1235,
-     "sha": "7ad737eea",
-     "title": "Hold the simulator's settled capture until an armed autopause lands"
-    },
-    {
-     "pr": 1237,
-     "sha": "95c526366",
-     "title": "Make three timing-dependent unit tests deterministic"
-    },
-    {
-     "pr": 1238,
-     "sha": "c5c2b7e1a",
-     "title": "Cycle HUD preview backgrounds and use shared glass controls"
-    },
-    {
-     "pr": 1239,
-     "sha": "5588f5bfd",
-     "title": "HUD gallery: accept only a signed registry index"
-    },
-    {
-     "pr": 1240,
-     "sha": "ab00d73b0",
-     "title": "HUD plugins: a cargo fuzz package over every package and registry parser"
-    },
-    {
-     "pr": 1241,
-     "sha": "951db621f",
-     "title": "HUD plugins: tools/hud-dev, and Play re-fetches a development-source HUD on the TV"
-    }
-   ],
-   "from": 143.2,
-   "id": "bench.leaf",
-   "label": "Rebuild after editing plx_base",
-   "since": "2026-11-02",
-   "threshold_pct": 25.0,
-   "to": 189.5
   },
   {
    "change_pct": 22.5,
@@ -1013,25 +891,25 @@
    "group": "local",
    "id": "bench.leaf",
    "label": "Rebuild after editing plx_base",
-   "now": 189.5
+   "now": 168.9
   },
   {
    "group": "local",
    "id": "bench.tests",
    "label": "Unit suite",
-   "now": 153.4
+   "now": 155.7
   },
   {
    "group": "local",
    "id": "bench.ui",
    "label": "Rebuild after editing plx_ui",
-   "now": 84.1
+   "now": 74.8
   },
   {
    "group": "local",
    "id": "bench.screens",
    "label": "Rebuild after editing plx_screens",
-   "now": 48.6
+   "now": 50.4
   }
  ],
  "thresholds": {
