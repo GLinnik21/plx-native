@@ -745,6 +745,36 @@ mod backend_offer_session_tests {
             "rollback does not replenish a prior recovery recipe");
     }
 
+    /// The Auto worker's return to the Original file is the ABR machine's to budget: the recipe
+    /// the request last admitted on this backend reopens, however often the route returns to it.
+    /// A recipe the request has since LEFT through a resolved plan stays spent: that is the
+    /// failure-recovery budget doing its job, and a returning trial does not buy it back.
+    #[test]
+    fn a_returning_trial_reopens_the_last_admitted_recipe_and_cannot_replay_a_left_one() {
+        let mut session = PlaybackSession::IDLE;
+        session.install_backends(plx_playback_contract::BackendSet::BOTH);
+        set_url(&mut session, "https://example.invalid/original.mkv");
+        assert!(session.qualify_explicit_feed_source());
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+
+        for _ in 0..2 {
+            set_url(&mut session, "https://example.invalid/original-again.mkv");
+            assert!(session.qualify_returning_feed_offer(OfferId::FEED_ORIGINAL));
+            assert!(session.backend_planned_feed_allowed(), "the request opened this recipe");
+            assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+        }
+
+        set_url(&mut session, "https://example.invalid/hls.m3u8");
+        assert!(session.qualify_resolved_feed_offer(OfferId::FEED_PMS_HLS,
+            CandidatePurpose::NewCandidate));
+        assert!(session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_PMS_HLS));
+        set_url(&mut session, "https://example.invalid/original-once-more.mkv");
+        assert!(session.qualify_returning_feed_offer(OfferId::FEED_ORIGINAL));
+        assert!(!session.backend_planned_feed_allowed(),
+            "a plan moved the request off this recipe, so it is a spent candidate again");
+        assert!(!session.backend_offer_admitted(BackendKind::Feed, OfferId::FEED_ORIGINAL));
+    }
+
     #[test]
     fn abandoned_original_trial_reopens_the_still_current_hls_without_spending_rollback() {
         let mut session = PlaybackSession::IDLE;
@@ -1276,6 +1306,22 @@ impl PlaybackSession {
         } else {
             super::backend_policy::OfferId::FEED_PMS_ENCODE
         }
+    }
+
+    /// Qualify the Feed recipe a deliberate quality transition moves the route onto. The Auto
+    /// worker's return to the Original file is one: the request opened that recipe, an HLS drop
+    /// left the route and kept the recipe as the one this backend last admitted, and the ABR
+    /// machine (its probes, its dwell, its switch budget) owns how often the route may return.
+    /// Landing on the recipe the backend last admitted is that recipe's own reopen, exactly as a
+    /// seek or a foreground restore reads it, so the catalog's failure-recovery budget is not
+    /// charged a second time for it; any other recipe is a new candidate and is spent once.
+    fn qualify_returning_feed_offer(&mut self, id: super::backend_policy::OfferId) -> bool {
+        let returning = self.backend_policy.as_ref().is_some_and(|policy|
+            policy.can_reopen(plx_playback_contract::BackendKind::Feed, id));
+        let purpose = if returning { CandidatePurpose::ReopenCurrent } else { CandidatePurpose::NewCandidate };
+        let qualified = self.qualify_resolved_feed_offer(id, purpose);
+        if qualified && returning { self.admitted_feed_offer = Some(id); }
+        qualified
     }
 
     pub(crate) fn qualify_installed_feed_offer(&mut self, purpose: CandidatePurpose) -> bool {
@@ -5982,8 +6028,7 @@ fn recover_original_direct(
     );
     crate::player::request_subtitle(candidate.subtitle_ordinal.unwrap_or(-1));
     set_pending_original(ps, rollback, automatic);
-    let _ = ps.qualify_resolved_feed_offer(super::backend_policy::OfferId::FEED_ORIGINAL,
-        CandidatePurpose::NewCandidate);
+    let _ = ps.qualify_returning_feed_offer(super::backend_policy::OfferId::FEED_ORIGINAL);
     // This is a new source attempt. A prior probe's typed failure explains the HLS route we
     // are leaving, not the replacement now being opened; a failure of this open republishes
     // its own exact status from the pump.
