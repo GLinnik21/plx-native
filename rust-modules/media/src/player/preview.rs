@@ -47,7 +47,7 @@
 //! admitted Loads, under the ratio rather than on it. Do not quote 14 as a television result.
 
 #[cfg(feature = "play-feed")]
-use plx_play_feed::shared::{FEED_SHARED, FEED_TX};
+use plx_play_feed::shared::FEED_TX;
 use plx_plex::plex::ServerId;
 
 /// Admitted Loads per process, from the source arithmetic above. Not a device measurement.
@@ -774,7 +774,7 @@ pub fn after_pump(
         live,
         resolving: crate::route::play_pending(),
         ended: crate::player::feed_ended(ps),
-        failed: FEED_SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
+        failed: ps.readout().raw().flags.load_failed,
         seen_frame,
     };
     match settle(facts) {

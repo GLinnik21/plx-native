@@ -35,7 +35,7 @@ pub fn install(hooks: &'static SfEventHooks) -> Result<(), &'static SfEventHooks
 }
 
 /// `type=18`'s `num` when the pipeline releases the video decoder from an established session
-/// (`"VDEC resource is released by policy action"`). See `Shared::decoder_revoked`.
+/// (`"VDEC resource is released by policy action"`). See `Shared::decoder_revocations`.
 const DECODER_REVOKED_BY_POLICY: i64 = 600;
 
 /// `type=18`'s `num` for `"Audio Codec Not Supported"`: libpf's `handleBusWarningMessage` raises it
@@ -278,7 +278,7 @@ pub fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::E
             FEED_SHARED.note_refusal_path(shared::RefusalPath::Async);
             FEED_SHARED.load_failed.store(true, std::sync::atomic::Ordering::Release);
             if num == AUDIO_CODEC_NOT_SUPPORTED && crate::ff::native_audio::fed().is_some() {
-                FEED_SHARED.native_audio_refused.store(true, std::sync::atomic::Ordering::Release);
+                FEED_SHARED.raise_native_audio_refused();
             }
         } else if ty == 18 && num == DECODER_REVOKED_BY_POLICY {
             // **After a picture, ONE number is measured: the decoder taken back.** A paused direct
@@ -288,7 +288,7 @@ pub fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::E
             // and rebuilds it on the viewer's next press (`take_decoder_revoked`). Every other
             // number after a picture stays diagnostic-only, as above.
             log("smp: the pipeline released the video decoder (type=18 num=600) — parking the session");
-            FEED_SHARED.decoder_revoked.store(true, std::sync::atomic::Ordering::Release);
+            FEED_SHARED.raise_decoder_revoked();
         }
     }
     // The pipeline's end-of-stream (`Shared::pipeline_eos`): only after a picture, where it can

@@ -3449,6 +3449,9 @@ mod load_in_flight_tests {
         pa: &mut crate::player::adapter::PlayerAdapter,
     ) {
         let epoch = FEED_SHARED.begin_native_session().expect("native session");
+        // What a real start does (`begin_native_open`): the attempt's readout exists before the
+        // pump samples into it and before the teardown records its terminal facts.
+        ps.begin_attempt_view(crate::route::RouteStartAttempt::fixture(), crate::player::attempt_view::Backend::Feed);
         let mut eng = engine_loading(epoch);
         crate::player::ffi_host::hold_load_for_test();
         let payload_ptr = threads::SendPtr(eng.payload.as_ptr() as *mut c_char);
@@ -4393,6 +4396,8 @@ mod load_refusal_tests {
             plx_base::task::MainThread::assume()
         });
         let epoch = FEED_SHARED.begin_native_session().expect("native session");
+        // The attempt's readout, as `begin_native_open` begins it: the pump samples the refusal into it.
+        ps.begin_attempt_view(crate::route::RouteStartAttempt::fixture(), crate::player::attempt_view::Backend::Feed);
         let mut eng = super::prime_livelock_tests::engine_after_reload();
         eng.native_epoch = epoch;
         pa.install(eng);

@@ -14,7 +14,7 @@ use crate::shared::Stage;
 use crate::shared::{HlsPauseCompletion, HlsSeekPause};
 use plx_base::eventlog::log;
 use plx_base::task::MainThread;
-use plx_playback_contract::feed::{FailureFlags, FeedFacts, FeedRaw, SeekRequeue};
+use plx_playback_contract::feed::{FailureFlag, FailureFlags, FeedFacts, FeedRaw, SeekRequeue};
 use plx_playback_contract::readout::{AttemptFacts, RuntimeFailure};
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use std::os::raw::c_char;
@@ -400,7 +400,7 @@ pub fn native_audio_stall_fired(feed: &mut FeedResources, now: u32) -> bool {
                 "native audio: STALL, no picture: {accepted} AUs accepted, none for {stalled_ms} ms (watching for {armed_ms} ms), \
                  audio queue {qa} B, video queue {qv} B, fed packet sizes {sizes}"
             ));
-            FEED_SHARED.native_audio_refused.store(true, Release);
+            FEED_SHARED.raise_native_audio_refused();
             true
         }
     }
@@ -1072,26 +1072,51 @@ pub fn seek_abandoned() {
 /// One sample of the physical feed callback mailboxes without route or session access: the sparse
 /// facts and the raw ones, for the player to ingest addressed to the attempt it installed. The
 /// caller asks `FeedLoad::is_live` first; a feed with no session answers its idle mailboxes.
+///
+/// The failure flags are loaded ONCE, first, and both halves are built from that one load: a
+/// worker publishes the code that explains a failure (`dg_cb_err_num`, `dg_http_status`) before the
+/// `Release` store of the flag, so a reader that loads the flag with `Acquire` and the code after it
+/// can never see a flag without its code, and the mapped and raw halves never disagree about it.
 pub fn native_feed_facts() -> FeedFacts {
-    FeedFacts { attempt: native_attempt_facts(), raw: native_feed_raw() }
+    let failure = failure_sample();
+    FeedFacts { attempt: attempt_facts(failure), raw: native_feed_raw(failure) }
+}
+
+/// A feed's failure flags and what explains them, in the only order that is consistent: the flags
+/// (`Acquire`, pairing with their writers' `Release`), then the codes they were published after.
+#[derive(Clone, Copy)]
+struct FailureSample {
+    flags: FailureFlags,
+    cb_err_num: i32,
+    http_status: i32,
+    native_audio_refusals: u32,
+}
+
+fn failure_sample() -> FailureSample {
+    let flags = FailureFlags {
+        load_failed: FEED_SHARED.load_failed.load(Acquire),
+        load_timed_out: FEED_SHARED.load_timed_out.load(Acquire),
+        demux_failed: FEED_SHARED.demux_failed.load(Acquire),
+        demux_io_failed: FEED_SHARED.demux_io_failed.load(Acquire),
+    };
+    FailureSample {
+        flags,
+        cb_err_num: FEED_SHARED.dg_cb_err_num.load(Relaxed),
+        http_status: FEED_SHARED.dg_http_status.load(Relaxed),
+        native_audio_refusals: FEED_SHARED.native_audio_refusals.load(Acquire),
+    }
 }
 
 /// The values whose sparse `AttemptFacts` form would lose what a decision reads (the contract's
 /// `feed` module audits each member). Plain loads of the mailboxes, in the orderings their writers
-/// publish with.
-fn native_feed_raw() -> FeedRaw {
+/// publish with; the failure flags and their companions are `failure`'s.
+fn native_feed_raw(failure: FailureSample) -> FeedRaw {
     FeedRaw {
         playpos_ns: FEED_SHARED.playpos_ns.load(Relaxed),
         frames: FEED_SHARED.frames.load(Relaxed),
-        flags: FailureFlags {
-            load_failed: FEED_SHARED.load_failed.load(Acquire),
-            load_timed_out: FEED_SHARED.load_timed_out.load(Acquire),
-            demux_failed: FEED_SHARED.demux_failed.load(Acquire),
-            demux_io_failed: FEED_SHARED.demux_io_failed.load(Acquire),
-        },
-        decoder_revoked: FEED_SHARED.decoder_revoked.load(Acquire),
-        native_audio_refused: FEED_SHARED.native_audio_refused.load(Acquire),
-        load_abandoned: FEED_SHARED.native_load_abandoned(),
+        flags: failure.flags,
+        decoder_revocations: FEED_SHARED.decoder_revocations.load(Acquire),
+        native_audio_refusals: failure.native_audio_refusals,
         file_size: FEED_SHARED.file_size.load(Relaxed),
         applied_rate_permille: FEED_SHARED.applied_rate_permille.load(Relaxed),
         speed_audio_ok: match FEED_SHARED.speed_audio_verdict.load(Relaxed) {
@@ -1110,31 +1135,48 @@ fn native_feed_raw() -> FeedRaw {
             let epoch = FEED_SHARED.seek_requeue_epoch.load(Acquire);
             SeekRequeue { epoch, target_ns: FEED_SHARED.seek_requeue_target.load(Relaxed) }
         },
+        cb_err_num: failure.cb_err_num,
+        http_status: failure.http_status,
     }
+}
+
+/// The player noted a failure ([`plx_playback_contract::feed::FeedCommand::NoteFailure`]): the flag
+/// goes up in the feed's own mailbox, with the `Release` the callbacks' stores use, so it comes back
+/// through the next [`native_feed_facts`] as any callback's would.
+pub fn note_failure(flag: FailureFlag) {
+    let cell = match flag {
+        FailureFlag::LoadFailed => &FEED_SHARED.load_failed,
+        FailureFlag::LoadTimedOut => &FEED_SHARED.load_timed_out,
+        FailureFlag::DemuxFailed => &FEED_SHARED.demux_failed,
+        FailureFlag::DemuxIoFailed => &FEED_SHARED.demux_io_failed,
+    };
+    cell.store(true, Release);
 }
 
 /// The native stop retains the exact Engine while its workers join, so it may capture one last
 /// addressed mailbox snapshot after they finish and before teardown clears the process mailboxes.
 pub fn native_attempt_facts() -> plx_playback_contract::readout::AttemptFacts {
+    attempt_facts(failure_sample())
+}
+
+fn attempt_facts(failure_sample: FailureSample) -> plx_playback_contract::readout::AttemptFacts {
     let reported_frame = FEED_SHARED.seen_frame.load(Relaxed);
     let position = FEED_SHARED.playpos_ns.load(Relaxed);
     let duration = FEED_SHARED.duration_ns.load(Relaxed);
     let (width, height) = FEED_SHARED.video_raster();
     let (aspect_num, aspect_den) = FEED_SHARED.video_aspect_pair();
     let stage = FEED_SHARED.dg_stage.load(Relaxed);
-    let pipeline_error = FEED_SHARED.dg_cb_err_num.load(Relaxed);
-    let http_status = FEED_SHARED.dg_http_status.load(Relaxed);
+    let pipeline_error = failure_sample.cb_err_num;
+    let http_status = failure_sample.http_status;
     let demux_exit = FEED_SHARED.dg_demux_exit.load(Relaxed);
     let declared_kbps = FEED_SHARED.dg_abr_declared_kbps.load(Relaxed);
     let media_kbps = FEED_SHARED.dg_abr_media_kbps.load(Relaxed);
     let abr_buffer_ms = FEED_SHARED.dg_abr_buffer_ms.load(Relaxed);
     let transport_rc = FEED_SHARED.dg_transport_rc.load(Relaxed);
     let transfer_age_ms = FEED_SHARED.dg_transport_age_ms.load(Relaxed);
+    let flags = failure_sample.flags;
     let failure = runtime_failure(
-        FEED_SHARED.demux_failed.load(std::sync::atomic::Ordering::Acquire),
-        FEED_SHARED.demux_io_failed.load(std::sync::atomic::Ordering::Acquire),
-        FEED_SHARED.load_failed.load(Relaxed),
-        FEED_SHARED.load_timed_out.load(Relaxed),
+        flags.demux_failed, flags.demux_io_failed, flags.load_failed, flags.load_timed_out,
     );
     let requested_kbps = FEED_SHARED.dg_abr_kbps.load(Relaxed);
     let facts = AttemptFacts {
@@ -1173,6 +1215,9 @@ pub fn native_attempt_facts() -> plx_playback_contract::readout::AttemptFacts {
         transport_rc: (transport_rc != 0).then_some(transport_rc),
         transfer_age_ms: (transfer_age_ms > 0).then_some(transfer_age_ms),
         transport_reopen_failed: FEED_SHARED.dg_transport_reopen_failed.load(Relaxed).then_some(true),
+        // The teardown's own ingestion records it (`NativeStop::load_abandoned`): no live session
+        // has a parked Load.
+        load_abandoned: None,
     };
     facts
 }

@@ -1810,7 +1810,7 @@ fn park_playback(app: &mut App) {
 /// refuses ends on the failure read-out.
 #[cfg(feature = "play-feed")]
 fn park_on_decoder_release(app: &mut App) {
-    if !plx_media::player::take_decoder_revoked() {
+    if !plx_media::player::take_decoder_revoked(&mut app.player.session) {
         return;
     }
     if plx_media::route::preview_request(&app.player.session) {
@@ -3622,16 +3622,17 @@ pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
             // through playback that visibly stutters, because the decoded picture is
             // composited by the television on a surface we never touch.
             //
-            // **It is not a frame rate** — `player::vplane_take` says why, and the healthy
+            // **It is not a frame rate** — `player::vplane_since` says why, and the healthy
             // reading is 5 / 201 on every stream. Read it as liveness: `vtick=0` is a pipeline
             // that has stopped, and a steady 5 / 201 under a stutter report is the pipeline
-            // saying the fault is not in anything this process can reach. Drained here, so it
-            // must be taken every heartbeat while playing or the worst gap accumulates.
+            // saying the fault is not in anything this process can reach. `vtick` differences two
+            // samples (`app.vpres_prev` is the last one), so it is per heartbeat whenever one is
+            // printed; `vgap` is the feed's running maximum for the session.
             #[cfg(feature = "play-feed")]
             let vp = if app.player.session.attempt_view().backend()
                 == Some(plx_media::player::attempt_view::Backend::Feed)
                 && plx_media::player::is_playing(&app.player.session) {
-                let (vtick, vgap) = plx_media::player::vplane_take();
+                let (vtick, vgap) = plx_media::player::vplane_since(&app.player.session, &mut app.vpres_prev);
                 format!(" vtick={vtick} vgap={vgap}ms")
             } else {
                 String::new()
@@ -3915,6 +3916,8 @@ mod lifecycle_regression_tests {
             #[cfg(feature = "devtools")]
             fps_shown: Default::default(),
             play_prev: None,
+            #[cfg(feature = "play-feed")]
+            vpres_prev: Default::default(),
             hud: None,
             dev_hud: Default::default(),
             running: Default::default(),
@@ -6513,7 +6516,7 @@ mod lifecycle_regression_tests {
         ));
         let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
 
-        plx_media::player::note_decoder_revoked_for_test();
+        plx_media::player::note_decoder_revoked_for_test(&mut rig.app.player.session, &rig.app.adapters.player);
         unsafe { playback_tick(&mut rig.app, &mut fr); }
         assert!(!rig.app.adapters.player.is_live(), "the dead pipeline is dropped");
         assert!(rig.app.player.lifecycle.awaiting_load(), "…and the session parked for a restore");
@@ -6571,7 +6574,7 @@ mod lifecycle_regression_tests {
         ));
         let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
 
-        plx_media::player::note_decoder_revoked_for_test();
+        plx_media::player::note_decoder_revoked_for_test(&mut rig.app.player.session, &rig.app.adapters.player);
         unsafe { playback_tick(&mut rig.app, &mut fr); }
         assert!(rig.app.player.lifecycle.awaiting_load(), "{press:?}: the session parked");
 
@@ -6931,7 +6934,7 @@ mod lifecycle_regression_tests {
         frame(&mut rig.app, 0); // settle the pending Player page mount before opening a surface
         let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
 
-        plx_media::player::note_decoder_revoked_for_test();
+        plx_media::player::note_decoder_revoked_for_test(&mut rig.app.player.session, &rig.app.adapters.player);
         unsafe { playback_tick(&mut rig.app, &mut fr); }
         assert!(rig.app.player.lifecycle.awaiting_load(), "the session is parked for a restore");
 

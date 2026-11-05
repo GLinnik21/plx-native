@@ -1321,6 +1321,10 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
     native.unblock_join_close();
     let mut terminal_facts = plx_play_feed::feed_pump::native_attempt_facts();
     terminal_facts.started = Some(false);
+    // The Load this teardown is about to park (its budget had expired) is a fact of THIS attempt: the
+    // native phase says so only after the release below and outlives the session reset, which the
+    // readout does not. A reload refused for that Load reads it from here (`pump::settle_reload`).
+    terminal_facts.load_abandoned = Some(native.load_abandoned());
     let _ = ps.ingest_attempt_facts(route_attempt, crate::player::attempt_view::Backend::Feed, terminal_facts);
     after_physical_close(ps, for_reload, final_report, &mut report_th);
     native.report_dispatched();

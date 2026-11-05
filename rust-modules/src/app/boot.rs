@@ -2292,6 +2292,8 @@ pub(crate) unsafe fn construct(
     // nothing is presenting, so the first beat of a playback reports no rate rather than a
     // fabricated one.
     let play_prev: Option<(i64, u32)> = None;
+    #[cfg(feature = "play-feed")]
+    let vpres_prev = plx_media::player::VplaneMark::default();
     let running = true;
     // Dev-only panel proof: advance a red/green counter phase only after SDL_GL_SwapWindow
     // returns. Hold each colour for 30 swaps: per-buffer alternation blends yellow at 60 Hz,
@@ -2479,6 +2481,8 @@ pub(crate) unsafe fn construct(
         #[cfg(feature = "devtools")]
         fps_shown,
         play_prev,
+        #[cfg(feature = "play-feed")]
+        vpres_prev,
         hud,
         dev_hud: Default::default(),
         running,

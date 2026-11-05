@@ -21,11 +21,13 @@
 //! |---|---|---|
 //! | `playpos_ns` (10) | `position_ns = reported_frame.then_some(pos.max(0))` | **raw**: every resume seeds it before any frame, and the open-recovery resume offset (`pump.rs` `drive_open_recovery`) reads it before one; through `position_ns` a refused resume would reconvert at 0 |
 //! | `frames` (6) | `reported_frame.then_some(frames)` | **raw**: `== 0` and `> 0` tests where "no callback yet" differs from "0 frames" whenever frames > 0 arrive without a frame callback (not proven impossible) |
-//! | `load_failed`, `load_timed_out`, `demux_failed`, `demux_io_failed` (10) | one collapsed `runtime_failure` (`play-feed/src/readout.rs`) | **raw**: [`FailureFlags`]; readers test single flags and `live_runtime_failure` re-derives the collapse in media |
+//! | `load_failed`, `load_timed_out`, `demux_failed`, `demux_io_failed` (10) | one collapsed `runtime_failure` (`play-feed/src/readout.rs`) | **raw**: [`FailureFlags`]; readers test single flags and `live_runtime_failure` re-derives the collapse in media. The player's own notes of one are [`FeedCommand::NoteFailure`]: the flag is written inside the feed and returns through the next sample |
 //! | `duration_ns` (5) | `(d > 0).then_some(d)` | **mapped**, `unwrap_or(0)`: every reader tests `> 0` (`timeline.rs` `from_content_ns`, `pump.rs` `stream_ended` and the `> 0` seek gate, `route_start.rs` `final_report`) or passes it to `report::ended`; the store is 0 or positive (`reset` stores 0), so `<= 0` never carries a meaning `None` loses |
-//! | `dg_http_status` (3), `dg_cb_err_num` (1) | `> 0` and `!= 0` gates | **mapped**, `unwrap_or(0)`: every site compares a code against a constant, and 0 is "none" |
+//! | `dg_http_status` (3), `dg_cb_err_num` (1) | `> 0` and `!= 0` gates | **mapped** in `AttemptFacts`, and **raw** beside the flags ([`FeedRaw::http_status`], [`FeedRaw::cb_err_num`], 0 = none): the failure drains read a flag and its code from ONE sample, and a reload's session reset clears the raw one with the mirror it mirrors |
 //! | `hls_rebuffering` (1), `seen_frame` (1) | plain bool | **mapped** |
-//! | `native_audio_refused`, `decoder_revoked`, `file_size`, `applied_rate_permille`, `speed_audio_verdict`, `native_load_abandoned`, `dg_vpres_ct`, `dg_vpres_gap`, `pts_shift` (13) | no `AttemptFacts` field | **raw**, in [`FeedRaw`] |
+//! | `native_audio_refused`, `decoder_revoked` | one-shot takes | **raw counters** ([`FeedRaw::native_audio_refusals`], [`FeedRaw::decoder_revocations`]): the feed counts each edge, the player's readout holds how many it has taken |
+//! | `file_size`, `applied_rate_permille`, `speed_audio_verdict`, `dg_vpres_ct`, `dg_vpres_gap`, `pts_shift` | no `AttemptFacts` field | **raw**, in [`FeedRaw`]; the two presentation counters are diagnostics only (the heartbeat's liveness line differences two samples) |
+//! | `native_load_abandoned` | the Load a teardown parked | **terminal fact**: `AttemptFacts::load_abandoned`, recorded by the teardown's own ingestion, because the live phase outlives the session reset and the readout does not |
 //!
 //! The seek family is here: `pipeline_eos`, the landed seek epoch, the feed's in-place target
 //! (`seek_target_ns`) and the epoch'd `seek_requeue` are raw facts (`seeking` is not stored
@@ -226,6 +228,27 @@ pub struct FailureFlags {
     pub demux_io_failed: bool,
 }
 
+/// One of the failure flags the player can note ([`FeedCommand::NoteFailure`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FailureFlag {
+    LoadFailed,
+    LoadTimedOut,
+    DemuxFailed,
+    DemuxIoFailed,
+}
+
+impl FailureFlags {
+    /// `flag` raised.
+    pub fn set(&mut self, flag: FailureFlag) {
+        match flag {
+            FailureFlag::LoadFailed => self.load_failed = true,
+            FailureFlag::LoadTimedOut => self.load_timed_out = true,
+            FailureFlag::DemuxFailed => self.demux_failed = true,
+            FailureFlag::DemuxIoFailed => self.demux_io_failed = true,
+        }
+    }
+}
+
 /// The feed's observations whose `AttemptFacts` form would lose what a decision reads (the
 /// module doc audits each member). A fresh `Default` is a feed with no session: nothing seen,
 /// every counter 0, 1x applied.
@@ -236,12 +259,12 @@ pub struct FeedRaw {
     /// Frames the pipeline reported, 0 before any.
     pub frames: i32,
     pub flags: FailureFlags,
-    /// The pipeline took the video decoder back from an established session.
-    pub decoder_revoked: bool,
-    /// The pipeline refused the PCM audio of a speed session.
-    pub native_audio_refused: bool,
-    /// A timed-out Load is still inside the native call.
-    pub load_abandoned: bool,
+    /// How many times the pipeline took the video decoder back from an established session this
+    /// session; the player holds how many of them it has taken (an edge, not a level).
+    pub decoder_revocations: u32,
+    /// How many times the pipeline refused natively fed audio this session (the refusal callback or
+    /// the stall watchdog raised it); taken like [`Self::decoder_revocations`].
+    pub native_audio_refusals: u32,
     /// The source's size in bytes; 0 while unknown.
     pub file_size: i64,
     /// The speed this session's Load plays at, 1000 = 1x.
@@ -267,6 +290,12 @@ pub struct FeedRaw {
     /// The feed's own request to seek again: a refused native `Seek` leaves the pipeline flushed and
     /// the feed asks the player to redo that seek as a reload. See [`SeekRequeue`].
     pub seek_requeue: SeekRequeue,
+    /// The firmware's error number of the first `type=18` callback, 0 = none. Loaded after the
+    /// failure flags: its writer publishes it before the flag it explains.
+    pub cb_err_num: i32,
+    /// The HTTP status of the last failed transport request, 0 = none; loaded like
+    /// [`Self::cb_err_num`].
+    pub http_status: i32,
 }
 
 /// A seek the feed asked the player to take up again. `epoch` counts the feed's requests this
@@ -290,10 +319,10 @@ impl FeedRaw {
         flags: FailureFlags {
             load_failed: false, load_timed_out: false, demux_failed: false, demux_io_failed: false,
         },
-        decoder_revoked: false, native_audio_refused: false, load_abandoned: false, file_size: 0,
+        decoder_revocations: 0, native_audio_refusals: 0, file_size: 0,
         applied_rate_permille: crate::RATE_NORMAL, speed_audio_ok: None, vpres_count: 0,
         vpres_gap: 0, pts_shift: 0, pipeline_eos: false, seek_landed_epoch: 0, seek_target_ns: None,
-        seek_requeue: SeekRequeue::NONE,
+        seek_requeue: SeekRequeue::NONE, cb_err_num: 0, http_status: 0,
     };
 }
 
@@ -340,6 +369,10 @@ pub enum FeedCommand {
     /// there, the HUD reads `playpos_ns` until frames land, and `disp_base` is the offset the
     /// published position carries. The caller supplies the clamped values.
     ArmOpen { target_ns: i64, disp_base: i64, playpos_ns: i64 },
+    /// The player's own judgement ended the open, not a callback: the feed raises the flag in its
+    /// own mailbox (the callbacks' ordering, `Release`), and it comes back through
+    /// [`FeedRaw::flags`] with the next sample. The player does not keep a copy of it.
+    NoteFailure(FailureFlag),
 }
 
 // ---------------------------------------------------------------------------------------------

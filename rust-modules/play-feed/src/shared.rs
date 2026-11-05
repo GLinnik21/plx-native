@@ -351,14 +351,17 @@ pub struct Shared {
     /// (`"VDEC resource is released by policy action"`) after a picture. Measured on the dev set
     /// (webOS 4, 2026-10-13): a direct play left paused until the screensaver came on got this
     /// with NO `LIFECYCLE: background`, and every later Play was refused for good. Set on the
-    /// callback thread, taken once by the app loop (the common decoder-revocation drain), which parks
-    /// the session exactly as an app switch does and rebuilds it on the viewer's next press.
-    pub decoder_revoked: AtomicBool,
+    /// callback thread. It is a COUNT of the revocations this session (zeroed by the session's reset),
+    /// not a flag: the player's readout holds how many it has taken, and the app loop parks the
+    /// session exactly as an app switch does for each new one (rebuilding it on the viewer's next press).
+    pub decoder_revocations: AtomicU32,
     /// The pipeline refused the Load with `type=18 num=200` (`Audio Codec Not Supported`) before any
     /// picture while the session fed its audio natively (`ff::native_audio::fed`). Set on the
     /// callback thread; the pump turns it into a learned refusal and a recovery flight that has the
     /// server convert that audio (the machine's `ConfirmRefusal`, run by the common pump's `confirm_refusal`).
-    pub native_audio_refused: AtomicBool,
+    /// A COUNT of the refusals this session (the callback and the stall watchdog each add one),
+    /// taken by the player's readout like [`Self::decoder_revocations`].
+    pub native_audio_refusals: AtomicU32,
     /// issue #74 D.1: the epoch this session last logged "native: loadCompleted while Load in
     /// flight — deferring" for — 0 = never. `epoch` is monotonic and never 0 for a real session
     /// (the native gate refuses exhaustion instead of wrapping), so comparing against this is enough
@@ -552,9 +555,11 @@ pub struct Shared {
     /// plane we never touch. The one place the pipeline tells us it put a frame on that plane is
     /// the `ty == 0` callback, so that is where these are stamped.
     ///
-    /// Written on the LIBRARY thread (`sf_on_event`), drained on the main thread
-    /// (the common video-plane readout) — hence a drained COUNT rather than a delta of
-    /// [`frames`](Self::frames), which a seek resets underneath a reader.
+    /// Written on the LIBRARY thread (`sf_on_event`), sampled on the main thread into
+    /// `FeedRaw::{vpres_count, vpres_gap}` (the heartbeat differences two samples of the count) —
+    /// hence a monotonic COUNT rather than a delta of [`frames`](Self::frames), which a seek resets
+    /// underneath a reader. Nothing drains them: the gap is the session's running maximum, and the
+    /// session reset zeroes all three.
     ///
     /// `dg_vpres_at` is the previous presentation's stamp and MUST be zeroed wherever `frames` is
     /// (session reset, and the post-seek re-count in the pump): the pipeline legitimately shows
@@ -776,8 +781,8 @@ impl Shared {
             demux_no_video: AtomicBool::new(false),
             load_failed: AtomicBool::new(false),
             load_timed_out: AtomicBool::new(false),
-            decoder_revoked: AtomicBool::new(false),
-            native_audio_refused: AtomicBool::new(false),
+            decoder_revocations: AtomicU32::new(0),
+            native_audio_refusals: AtomicU32::new(0),
             native_load_deferred_logged_epoch: AtomicU32::new(0),
             native_load_elapsed_ms: AtomicU64::new(0),
             file_size: AtomicI64::new(0),
@@ -878,6 +883,16 @@ impl Shared {
 
     pub fn native_releasing(&self) -> bool {
         self.native_session.native_releasing()
+    }
+
+    /// The pipeline took the video decoder back: one more revocation this session.
+    pub fn raise_decoder_revoked(&self) {
+        self.decoder_revocations.fetch_add(1, Ordering::Release);
+    }
+
+    /// The pipeline refused natively fed audio (the callback, or the stall watchdog): one more refusal.
+    pub fn raise_native_audio_refused(&self) {
+        self.native_audio_refusals.fetch_add(1, Ordering::Release);
     }
 
     pub fn native_load_abandoned(&self) -> bool {
@@ -1168,8 +1183,8 @@ impl Shared {
         self.demux_no_video.store(false, Ordering::Relaxed);
         self.load_failed.store(false, Ordering::Relaxed);
         self.load_timed_out.store(false, Ordering::Relaxed);
-        self.decoder_revoked.store(false, Ordering::Relaxed);
-        self.native_audio_refused.store(false, Ordering::Relaxed);
+        self.decoder_revocations.store(0, Ordering::Relaxed);
+        self.native_audio_refusals.store(0, Ordering::Relaxed);
         self.file_size.store(0, Ordering::Relaxed);
         self.video_w.store(0, Ordering::Relaxed);
         self.video_h.store(0, Ordering::Relaxed);

@@ -320,16 +320,23 @@ pub const ABR_WHY_SWITCH_COST: u8 = 14;
 // refusal on leaving the player, called from `app.rs`'s `exit_player`) retires it precisely the
 // same way. See `engine.rs`'s `start_bufferfeed`/`start_bufferfeed_tracked` for the gate itself.
 /// Did the pipeline take this session's video decoder back since the last ask? Consumes the
-/// answer: the app loop parks the session once per release.
+/// answer ([`readout::ReadoutEvent::Taken`]): the app loop parks the session once per release. It
+/// reads the readout's last ingested sample, so the answer is the pump's, a frame behind the callback.
 #[cfg(feature = "play-feed")]
-pub fn take_decoder_revoked() -> bool {
-    FEED_SHARED.decoder_revoked.swap(false, std::sync::atomic::Ordering::AcqRel)
+pub fn take_decoder_revoked(ps: &mut crate::route::PlaybackSession) -> bool {
+    if !ps.readout().decoder_revoked() {
+        return false;
+    }
+    ps.step_readout(readout::ReadoutEvent::Taken { edge: readout::Edge::DecoderRevoked });
+    true
 }
 
-/// The pipeline's decoder release as the app loop sees it, for a test with no native session.
+/// The pipeline's decoder release as the app loop sees it: the feed counts one, and the sample the
+/// pump would take next is ingested now.
 #[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
-pub fn note_decoder_revoked_for_test() {
-    FEED_SHARED.decoder_revoked.store(true, std::sync::atomic::Ordering::Release);
+pub fn note_decoder_revoked_for_test(ps: &mut crate::route::PlaybackSession, pa: &adapter::PlayerAdapter) {
+    FEED_SHARED.raise_decoder_revoked();
+    pa.publish_feed_attempt_view(ps);
 }
 
 /// Whether the session's native clock is held for the viewer's pause, for a test with no native
@@ -1229,14 +1236,18 @@ fn live_runtime_failure(ps: &crate::route::PlaybackSession) -> RuntimeFailure {
     }
     #[cfg(not(feature = "play-feed"))]
     { ps.attempt_view().facts().runtime_failure.unwrap_or(RuntimeFailure::Unknown) }
+    // One sample of the four flags: the readout's last ingestion, which collapses them together.
     #[cfg(feature = "play-feed")]
-    runtime_failure(
-        FEED_SHARED.demux_failed.load(std::sync::atomic::Ordering::Acquire),
-        FEED_SHARED.demux_io_failed.load(std::sync::atomic::Ordering::Acquire),
-        FEED_SHARED.load_failed.load(Relaxed),
-        // The refused start's cause: an abandoned Load exists only after the budget fired.
-        FEED_SHARED.load_timed_out.load(Relaxed) || ps.native_start_refused == Some(crate::route::StartRefusal::LoadTimeout),
-    )
+    {
+        let flags = ps.readout().raw().flags;
+        runtime_failure(
+            flags.demux_failed,
+            flags.demux_io_failed,
+            flags.load_failed,
+            // The refused start's cause: an abandoned Load exists only after the budget fired.
+            flags.load_timed_out || ps.native_start_refused == Some(crate::route::StartRefusal::LoadTimeout),
+        )
+    }
 }
 
 /// The read-out for [`FailureKind::JailMissingRtkmem`] — the one `ErrorShape` not produced by
@@ -1792,7 +1803,7 @@ pub fn diag(ps: &crate::route::PlaybackSession) -> Diag {
         placed_h: FEED_SHARED.dg_placed_h.load(Relaxed),
         stage: observed.pipeline_stage.unwrap_or(0),
         load_completed: FEED_SHARED.load_completed.load(Relaxed),
-        load_failed: FEED_SHARED.load_failed.load(Relaxed),
+        load_failed: ps.readout().raw().flags.load_failed,
         cb_count: FEED_SHARED.dg_cb_count.load(Relaxed),
         pushed_any: crate::ff::pushed_any(),
         fed_v,
@@ -2667,9 +2678,18 @@ fn vclock_ms() -> u32 {
     T0.get_or_init(Instant::now).elapsed().as_millis() as u32
 }
 
-/// **The pipeline's `FRAMEREADY` cadence since the last call**: ticks received, and the worst gap
-/// between two consecutive ones in milliseconds. Draining, like
-/// [`plx_machine::idle::take_presents`] — the heartbeat is the one caller, once a second.
+/// What the heartbeat remembers of the pipeline's `FRAMEREADY` count between two of its lines: it
+/// differences two samples of the readout's raw facts itself, so nothing is drained from the feed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VplaneMark {
+    count: u32,
+}
+
+/// **The pipeline's `FRAMEREADY` cadence since the last line**: ticks received since `mark`, and the
+/// worst gap between two consecutive ones in milliseconds. The tick count is a difference of two
+/// samples (a count the feed zeroed with its session counts from 0); the gap is the feed's running
+/// maximum for the session, so a single late tick stays in it until the session ends. The heartbeat
+/// is the one caller, once a second, like [`plx_machine::idle::take_presents`].
 ///
 /// **This is a liveness signal, not a frame rate.** See `plx_play_feed::sf_event::sf_on_event`: the healthy reading on
 /// every codec, resolution and container measured so far is `5` and `201`, because the tick is
@@ -2678,11 +2698,11 @@ fn vclock_ms() -> u32 {
 /// viewer says is stuttering is a real and useful finding: it rules the fault OUT of everything
 /// this process can see, and sends the search to the display side.
 #[cfg(feature = "play-feed")]
-pub fn vplane_take() -> (u32, u32) {
-    (
-        FEED_SHARED.dg_vpres_ct.swap(0, Relaxed),
-        FEED_SHARED.dg_vpres_gap.swap(0, Relaxed),
-    )
+pub fn vplane_since(ps: &crate::route::PlaybackSession, mark: &mut VplaneMark) -> (u32, u32) {
+    let raw = ps.readout().raw();
+    let ticks = if raw.vpres_count >= mark.count { raw.vpres_count - mark.count } else { raw.vpres_count };
+    mark.count = raw.vpres_count;
+    (ticks, raw.vpres_gap)
 }
 
 /// The shape the `failtest=policy` arm builds, for tests outside this module.
@@ -3269,7 +3289,7 @@ mod tests {
             crate::ff::native_audio::reset();
             crate::ff::native_audio::publish_fed(crate::ff::native_audio::Kind::Opus, 2);
         };
-        let flagged = || FEED_SHARED.native_audio_refused.load(Acquire);
+        let flagged = || FEED_SHARED.native_audio_refusals.load(Acquire) != 0;
         let refuse = |epoch: u32, num: i64| sf_on_event(epoch, 18, num, c"Audio Codec Not Supported".as_ptr());
 
         // Native audio fed, num 200, no picture: flagged (and the Load is failed as ever).
@@ -3332,8 +3352,8 @@ mod tests {
     /// **The decoder taken back from an established session is the one `type=18` after a picture
     /// that acts.** Device log, 2026-10-13: a paused direct play under the screensaver got
     /// `type=18 num=600 "VDEC resource is released by policy action"`, no app-switch edge, and
-    /// `Starfish refused Play` on every press after it. It raises `decoder_revoked` once, for the
-    /// app loop to park the session; before a picture it is still a Load refusal, and any other
+    /// `Starfish refused Play` on every press after it. It counts one decoder revocation, taken once
+    /// by the app loop to park the session; before a picture it is still a Load refusal, and any other
     /// number after a picture is still diagnostic only.
     #[test]
     fn a_decoder_released_after_a_picture_is_reported_once_and_nothing_else_is() {
@@ -3341,27 +3361,60 @@ mod tests {
         let released = c"{\"errorCode\":600,\"errorText\":\"VDEC resource is released by policy action\"}".as_ptr();
         let failed = || FEED_SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire);
 
+        // The app loop reads what the pump last ingested: sample the feed, then ask.
+        let attempt = crate::route::RouteStartAttempt::fixture();
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        ps.begin_attempt_view(attempt, attempt_view::Backend::Feed);
+        let take = |ps: &mut crate::route::PlaybackSession| {
+            assert!(ps.ingest_feed_facts(attempt, plx_play_feed::feed_pump::native_feed_facts()));
+            take_decoder_revoked(ps)
+        };
+
         SHARED.reset_session();
-        let _ = take_decoder_revoked();
+        ps.step_readout(readout::ReadoutEvent::SessionReset);
+        let _ = take(&mut ps);
         let epoch = FEED_SHARED.begin_native_session().expect("session");
         sf_on_event(epoch, 0, 7_000_000_000, std::ptr::null());
         sf_on_event(epoch, 18, 601, c"Resource Allocation Error".as_ptr());
-        assert!(!take_decoder_revoked(), "another number after a picture stays diagnostic");
+        assert!(!take(&mut ps), "another number after a picture stays diagnostic");
         sf_on_event(epoch, 18, 600, released);
         assert!(!failed(), "an established session is not a Load refusal");
-        assert!(take_decoder_revoked(), "the release is reported");
-        assert!(!take_decoder_revoked(), "…once");
+        assert!(take(&mut ps), "the release is reported");
+        assert!(!take(&mut ps), "…once");
+        sf_on_event(epoch, 18, 600, released);
+        assert!(take(&mut ps), "a second release is a new edge");
         sf_on_event(epoch, 18, 600, released);
         FEED_SHARED.retire_native_session(epoch);
         SHARED.reset_session();
-        assert!(!take_decoder_revoked(), "a reset session forgets an unread release");
+        ps.step_readout(readout::ReadoutEvent::SessionReset);
+        assert!(!take(&mut ps), "a reset session forgets an unread release");
 
         let epoch = FEED_SHARED.begin_native_session().expect("session");
         sf_on_event(epoch, 18, 600, released);
         assert!(failed(), "before any picture it is still the Load refusal it always was");
-        assert!(!take_decoder_revoked());
+        assert!(!take(&mut ps), "a Load refusal is not a revocation");
         FEED_SHARED.retire_native_session(epoch);
         SHARED.reset_session();
+    }
+
+    /// The heartbeat's presentation line differences two samples of the readout itself: the tick
+    /// count is per line, a count the feed zeroed with its session starts over, and the gap is the
+    /// feed's running maximum.
+    #[test]
+    fn the_heartbeat_differences_two_samples_of_the_presentation_count() {
+        let sampled = |count: u32, gap: u32| {
+            let mut raw = plx_playback_contract::feed::FeedRaw::IDLE;
+            raw.vpres_count = count;
+            raw.vpres_gap = gap;
+            let mut ps = crate::route::PlaybackSession::IDLE;
+            ps.step_readout(readout::ReadoutEvent::FactsIngested(raw));
+            ps
+        };
+        let mut mark = VplaneMark::default();
+        assert_eq!(vplane_since(&sampled(5, 201), &mut mark), (5, 201));
+        assert_eq!(vplane_since(&sampled(10, 201), &mut mark), (5, 201), "per line, not since the session");
+        assert_eq!(vplane_since(&sampled(10, 201), &mut mark), (0, 201), "a stopped pipeline reads 0 ticks");
+        assert_eq!(vplane_since(&sampled(3, 40), &mut mark), (3, 40), "a new session counts from 0");
     }
 
     /// **The firmware's error number is latched beside the type, once.** `type=18 num=601
