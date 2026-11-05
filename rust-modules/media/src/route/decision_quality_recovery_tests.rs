@@ -2879,10 +2879,11 @@ fn an_auto_request_that_started_on_its_original_can_reload_it_after_an_hls_drop(
         let hls = fallback_auto_to_hls_for(&mut ps, &worker_ticket(), 4_000, 11)
             .expect("the watched fixture Original falls back to fixture HLS");
         assert!(hls.contains("/__abr/"), "cycle {cycle}: {hls}");
-        // No plan resolved the HLS route, so it rides the recipe the request opened with.
+        // The fallback qualifies the recipe it installed (it used to ride the Original's label),
+        // the first time as a new candidate and every later time as a revisit.
         assert_eq!(
             feed_start_door(&mut ps),
-            Some(OfferId::FEED_ORIGINAL),
+            Some(OfferId::FEED_PMS_HLS),
             "cycle {cycle}: the HLS reload is admitted at the door",
         );
 
@@ -2899,5 +2900,56 @@ fn an_auto_request_that_started_on_its_original_can_reload_it_after_an_hls_drop(
         // The trial's first decoded frame makes the recovery permanent.
         settle_pending_native_start(&mut ps, RouteStartResult::Started);
         confirm_original_recovery(&mut ps);
+    }
+}
+
+/// **A failed Original trial of a request that STARTED on its Original rolls back to the HLS route
+/// it left.** The Auto fallback installs an HLS route nobody re-qualified, so the way back named
+/// the Original's recipe, not the HLS the viewer was watching: the rollback's Start was refused at
+/// the door with "no qualified feed offer for this resolved route" and the restored HLS never
+/// reloaded. The trial fails either after its Start was admitted (the Load or its first frame
+/// fails) or before it (the Start is refused), and both rollbacks must pass the door.
+///
+/// The rollback mirrors the flight's landing: the route is restored, then the installed recipe is
+/// qualified as `RollbackExisting` and the door asks for it.
+#[test]
+fn a_failed_original_trial_of_an_original_start_rolls_back_through_the_door() {
+    use crate::route::backend_policy::OfferId;
+    for trial_admitted in [true, false] {
+        let mut ps = PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        restore_quality(Quality::Auto);
+        reset_player_control_for_test(&ps);
+        assert_eq!(
+            arm_auto_fixture(&mut ps, "http://host/clip.mp4", 8_000, "http://host/__abr", false, (1_920, 1_080)),
+            None,
+            "the fixture starts on its Original",
+        );
+        assert!(ps.qualify_explicit_feed_source());
+        assert_eq!(feed_start_door(&mut ps), Some(OfferId::FEED_ORIGINAL), "the Original start");
+
+        let hls = fallback_auto_to_hls_for(&mut ps, &worker_ticket(), 4_000, 11)
+            .expect("the watched fixture Original falls back to fixture HLS");
+        assert!(hls.contains("/__abr/"), "{hls}");
+        assert_eq!(
+            feed_start_door(&mut ps),
+            Some(OfferId::FEED_PMS_HLS),
+            "the HLS reload carries the recipe it actually installed",
+        );
+        assert_eq!(
+            recover_auto_to_original_for(&mut ps, &worker_ticket(), 24, RecoveryCause::Automatic),
+            Some(AutoOriginalReload::Direct),
+        );
+        if trial_admitted {
+            assert_eq!(feed_start_door(&mut ps), Some(OfferId::FEED_ORIGINAL), "the trial's Start");
+        }
+        // The trial fails to open: the way back restores the HLS route.
+        assert_eq!(rollback_seconds(&mut ps), Some(24), "trial_admitted={trial_admitted}");
+        assert!(ps.qualify_installed_feed_offer(CandidatePurpose::RollbackExisting));
+        assert_eq!(
+            feed_start_door(&mut ps),
+            Some(OfferId::FEED_PMS_HLS),
+            "trial_admitted={trial_admitted}: the rollback reopens the HLS route through the door",
+        );
     }
 }
