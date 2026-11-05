@@ -451,11 +451,12 @@ fn start_bufferfeed_prepared(
     // The prepared route has finished choosing the stream. Freeze the values the native Load,
     // payload and demux worker will use before any of those physical resources are constructed.
     let side_reader = Box::new(super::feed_open::SideReaderOpen::capture(ps, stream));
-    let open = stream.then(|| super::feed_open::FeedOpenRequest::capture(ps, url));
+    let mut open = stream.then(|| super::feed_open::FeedOpenRequest::capture(ps, url));
     if open.as_ref().is_some_and(|request| !request.credential_transport_allowed()) {
         plx_base::eventlog::log("stream: refused insecure credential transport");
         return Err(crate::route::RouteStartResult::StartFailed);
     }
+    let abr_inbox = open.as_mut().map(super::feed_open::FeedOpenRequest::take_readouts);
     // Payload and native callback guards are resolved before the route mints an attempt, as in
     // the original Load path. A refusal here remains a Prepared transaction until the caller
     // aborts it; a later supersession drops both guards without launching a worker.
@@ -491,6 +492,9 @@ fn start_bufferfeed_prepared(
     let source = pa.next_source_key();
     pa.stage_native_feed(attempt, source, prepared_native)
         .map_err(|_| crate::route::RouteStartResult::StartFailed)?;
+    if let Some(inbox) = abr_inbox {
+        pa.bind_abr_inbox(route_attempt, inbox);
+    }
     // The demuxer spawns inside the Start below and reads the feed's audio copy as it opens the
     // container. Every writer of the choice that has no adapter in hand (the route's landing, a
     // retry's reset, a displaced pick) stepped the session's readout; this is where it reaches the feed.
@@ -1312,7 +1316,12 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
     native.stop_side_reader(for_reload);
     let mut report_th = stop_feed_timeline(pa, route_attempt);
     native.unblock_join_close();
+    // The adaptive worker is joined: take its last report in (the carried link estimate a reload
+    // hands on, and the two members the terminal facts carry), then close its channel.
+    pa.drain_abr(ps);
+    pa.close_abr_inbox();
     let mut terminal_facts = plx_play_feed::feed_pump::native_attempt_facts();
+    ps.readout().fill_abr_facts(&mut terminal_facts);
     terminal_facts.started = Some(false);
     // The Load this teardown is about to park (its budget had expired) is a fact of THIS attempt: the
     // native phase says so only after the release below and outlives the session reset, which the
@@ -1518,13 +1527,17 @@ pub(super) fn finish_feed_teardown(
 ) {
     // The worker has stopped, so a reload hands route the last estimate it published, which the
     // replacement controller starts from (I8); a stop carries none.
-    ps.observe_link_seed(if for_reload { FEED_SHARED.abr_seed() } else { None });
+    if for_reload {
+        ps.carry_readout_seed();
+    } else {
+        ps.observe_link_seed(None);
+    }
     if !for_reload {
         // **The carried link estimate dies with the PLAYBACK, not with the engine** (I8). A reload
         // is the same item on the same link at a new position — a seek, a quality pick, an
         // app-switch resume — and re-measuring the link from nothing across one is what made every
         // skip re-ramp the ladder for ten to twenty seconds.
-        FEED_SHARED.clear_abr_seed();
+        ps.step_readout(super::readout::ReadoutEvent::AbrSeed(None));
         // The failure is retained across the rollback reload only; a new playback must not carry
         // another item's PMS response into its diagnostics.
         FEED_SHARED.clear_abr_failure();

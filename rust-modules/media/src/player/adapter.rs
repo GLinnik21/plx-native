@@ -339,6 +339,11 @@ pub struct PlayerAdapter {
     /// exactly while this is `Some`, which is what [`Self::is_live`] answers.
     #[cfg(feature = "play-feed")]
     feed_attempt: Option<BoundFeed>,
+    /// The adaptive worker's channel of the open claimed under that attempt: the worker is a thread
+    /// of the Engine, so the receiver stays on the main thread beside the attempt and the pump
+    /// drains it into the session's readout ([`Self::drain_abr`]). Closed once the workers are joined.
+    #[cfg(feature = "play-feed")]
+    abr_inbox: Option<(crate::route::RouteStartAttempt, crate::adaptive::AbrInbox)>,
     /// Backend-independent periodic reporting resource for the current physical attempt.
     timeline: Option<timeline::TimelineRunner>,
     repair: Option<(u64, std::sync::mpsc::Receiver<Result<(), plx_platform::tv::sandbox::Failure>>)>,
@@ -418,6 +423,8 @@ impl PlayerAdapter {
             refused_uri_subtitle: None,
             #[cfg(feature = "play-feed")]
             feed_attempt: None,
+            #[cfg(feature = "play-feed")]
+            abr_inbox: None,
             timeline: None,
             repair: None,
             release: super::release::NativeRelease::new(),
@@ -1620,6 +1627,31 @@ impl PlayerAdapter {
         let Some(facts) = self.sample_feed() else { return; };
         let _ = ps.ingest_feed_facts(attempt, facts);
     }
+
+    /// Hold the inbox of the adaptive worker of the open just claimed under `attempt`.
+    #[cfg(feature = "play-feed")]
+    pub(super) fn bind_abr_inbox(
+        &mut self, attempt: crate::route::RouteStartAttempt, inbox: crate::adaptive::AbrInbox,
+    ) {
+        self.abr_inbox = Some((attempt, inbox));
+    }
+
+    /// Take what the adaptive worker has reported since the last call into the session's readout,
+    /// addressed to the attempt its open was claimed under (a late report of a retired open changes
+    /// nothing). Never blocks. The age of the carried estimate is read here, where the clock is.
+    #[cfg(feature = "play-feed")]
+    pub(super) fn drain_abr(&mut self, ps: &mut crate::route::PlaybackSession) {
+        let Some((attempt, inbox)) = self.abr_inbox.as_ref() else { return; };
+        let Some(shipment) = inbox.newest() else { return; };
+        let seed = shipment.seed.map(|(seed, observed_at)| {
+            (seed, u64::try_from(observed_at.elapsed().as_millis()).unwrap_or(u64::MAX))
+        });
+        let _ = ps.ingest_abr(*attempt, shipment.readout, seed);
+    }
+
+    /// The worker is joined: nothing more can be reported, and the receiver goes.
+    #[cfg(feature = "play-feed")]
+    pub(super) fn close_abr_inbox(&mut self) { self.abr_inbox = None; }
 
     /// Hand the feed one player intent. A composition with no feed drops it, as it does every
     /// other feed verb.

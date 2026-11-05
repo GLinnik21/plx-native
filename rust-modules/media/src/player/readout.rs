@@ -25,6 +25,7 @@
 //! carries a speed change (read it, then step `RateReloadTaken`). `start_queued` is the release
 //! machine's answer, stepped by `PlayerAdapter::release_step` after every step of the machine.
 
+use plx_playback_contract::adaptive::{AbrReadout, CarriedSeed, SeedReadout};
 use plx_playback_contract::feed::{FeedRaw, PresentationTick, Stage};
 use plx_playback_contract::RATE_NORMAL;
 
@@ -91,6 +92,14 @@ pub struct PlayerReadout {
     /// [`ReadoutEvent::SessionReset`]). A start's side subtitle reader is captured before the attempt
     /// exists to sample the feed's own `disp_base`, and the readout is idle then.
     open_disp_base_ns: i64,
+    /// The adaptive worker's last photograph ([`ReadoutEvent::Abr`]): the Auto-quality
+    /// measurements and decisions the diagnostics show. The worker is its only writer.
+    abr: AbrReadout,
+    /// **The HLS worker's last delivery estimate, carried to the next controller** (I8), with the
+    /// frame-tick stamp (`PlaybackSession::now_ms` units) it was observed at
+    /// ([`ReadoutEvent::AbrSeed`]). It outlives a session reset (a reload is the same item on the
+    /// same link) and dies with the playback (`AbrSeed(None)`).
+    abr_seed: Option<(SeedReadout, u32)>,
 }
 
 /// A one-shot fact the feed counts and the player takes: the feed keeps a monotonic count of the
@@ -215,6 +224,14 @@ pub enum ReadoutEvent {
     /// the feed carries as its display base from the first frame. Appended with the command, before the
     /// start that follows it.
     OpenRebased { disp_base: i64 },
+    /// The adaptive worker's photograph, taken in for the attempt that is live (the session checks
+    /// the address). A session reset returns it to [`AbrReadout::IDLE`].
+    Abr(AbrReadout),
+    /// The worker's carried link estimate, observed at the frame-tick stamp `observed_at_ms`
+    /// (`None`: the worker published none, or the playback is over and the estimate goes with it).
+    /// Unlike every other fact here it survives [`ReadoutEvent::SessionReset`]: a reload keeps the
+    /// link it measured.
+    AbrSeed(Option<(SeedReadout, u32)>),
 }
 
 impl PlayerReadout {
@@ -239,6 +256,8 @@ impl PlayerReadout {
         taken_native_audio_refusals: 0,
         audio_choice: -1,
         open_disp_base_ns: 0,
+        abr: AbrReadout::IDLE,
+        abr_seed: None,
     };
 
     pub fn state(&self) -> PlaybackState { self.state }
@@ -248,6 +267,19 @@ impl PlayerReadout {
     pub fn rate_reload(&self) -> bool { self.rate_reload }
     pub fn play_rate_permille(&self) -> i32 { self.play_rate_permille }
     pub fn raw(&self) -> &FeedRaw { &self.raw }
+    /// The adaptive worker's last photograph ([`AbrReadout::IDLE`] before one and after a reset).
+    pub fn abr(&self) -> &AbrReadout { &self.abr }
+    /// Put the two members of the worker's photograph that an attempt's facts carry (the last
+    /// segment's media rate and the reserve, which the error context classes) into `facts`.
+    pub fn fill_abr_facts(&self, facts: &mut plx_playback_contract::readout::AttemptFacts) {
+        facts.media_kbps = (self.abr.media_kbps > 0).then_some(self.abr.media_kbps);
+        facts.abr_buffer_ms = (self.abr.buffer_ms > 0).then_some(self.abr.buffer_ms);
+    }
+    /// The carried link estimate with the milliseconds since it was observed, as the route takes
+    /// it ([`PlaybackSession::observe_link_seed`](crate::route::PlaybackSession::observe_link_seed)).
+    pub fn abr_seed(&self, now_ms: u32) -> Option<CarriedSeed> {
+        self.abr_seed.map(|(seed, observed_at_ms)| (seed, u64::from(now_ms.wrapping_sub(observed_at_ms))))
+    }
     /// The audio stream the demuxer is to feed (`-1`: the file's own default).
     pub fn audio_choice(&self) -> i32 { self.audio_choice }
     /// The display base the player last commanded the feed to open with (0 after any session reset).
@@ -327,7 +359,12 @@ impl PlayerReadout {
                 self.taken_native_audio_refusals = 0;
                 // ...and its display base with them.
                 self.open_disp_base_ns = 0;
+                // The worker's photograph went with the engine (the feed's mirrors reset at the same
+                // teardown); its carried link estimate did not (I8).
+                self.abr = AbrReadout::IDLE;
             }
+            ReadoutEvent::Abr(abr) => self.abr = abr,
+            ReadoutEvent::AbrSeed(seed) => self.abr_seed = seed,
             ReadoutEvent::NewItem => {
                 self.play_rate_permille = RATE_NORMAL;
                 self.rate_reload = false;

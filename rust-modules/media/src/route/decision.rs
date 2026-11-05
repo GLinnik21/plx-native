@@ -1453,7 +1453,10 @@ impl PlaybackSession {
         attempt: RouteStartAttempt,
         facts: plx_playback_contract::feed::FeedFacts,
     ) -> bool {
-        if !self.attempt_view.ingest(attempt, crate::player::attempt_view::Backend::Feed, facts.attempt) {
+        // The adaptive worker's two members of the sparse facts are the readout's, not the feed's.
+        let mut sparse = facts.attempt;
+        self.readout.fill_abr_facts(&mut sparse);
+        if !self.attempt_view.ingest(attempt, crate::player::attempt_view::Backend::Feed, sparse) {
             return false;
         }
         self.readout.step(crate::player::readout::ReadoutEvent::FactsIngested(facts.raw));
@@ -1484,6 +1487,36 @@ impl PlaybackSession {
             nothing_in_flight,
         }));
         true
+    }
+
+    /// The adaptive worker's photograph, and its carried link estimate with the milliseconds since
+    /// the worker observed it, for `attempt`: the player adapter takes them from the open's channel.
+    /// Refused, changing nothing, for any other attempt or backend, like [`Self::present`]. The
+    /// estimate is stamped on this session's frame clock, where the route reads it back
+    /// ([`Self::carry_readout_seed`]).
+    pub fn ingest_abr(
+        &mut self,
+        attempt: RouteStartAttempt,
+        readout: plx_playback_contract::adaptive::AbrReadout,
+        seed: Option<plx_playback_contract::adaptive::CarriedSeed>,
+    ) -> bool {
+        if !self.attempt_view.addresses(attempt, crate::player::attempt_view::Backend::Feed) {
+            return false;
+        }
+        use crate::player::readout::ReadoutEvent;
+        let now_ms = self.now_ms;
+        self.readout.step(ReadoutEvent::Abr(readout));
+        self.readout.step(ReadoutEvent::AbrSeed(seed.map(|(seed, unobserved_ms)| {
+            (seed, now_ms.wrapping_sub(u32::try_from(unobserved_ms).unwrap_or(u32::MAX)))
+        })));
+        true
+    }
+
+    /// Hand the route the link estimate the readout holds ([`Self::observe_link_seed`], again every
+    /// frame, as the route's only input of it).
+    pub fn carry_readout_seed(&mut self) {
+        let seed = self.readout.abr_seed(self.now_ms);
+        self.observe_link_seed(seed);
     }
 
     /// Nothing playing: what the module holds before the first play, and the value the static is

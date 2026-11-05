@@ -22,7 +22,7 @@ use plx_playback_contract::demux::{
     DemuxMedia, DemuxObserver, DemuxSession, DemuxSubtitle, HlsBufferClocks, PauseClock,
     PauseEvent, PauseLane,
 };
-use plx_playback_contract::readout::{ABR_ACTION_STEADY, ABR_MODE_HLS, ABR_MODE_ORIGINAL};
+use plx_playback_contract::readout::{ABR_MODE_HLS, ABR_MODE_ORIGINAL};
 use plx_playback_contract::subtitle::CaptionRetention;
 use plx_playback_contract::tracks::TrackNames;
 use plx_playback_contract::AttemptId;
@@ -384,25 +384,16 @@ impl DemuxMedia for FeedDemuxMedia {
                 FEED_SHARED.dg_abr_mode.store(ABR_MODE_HLS, Ordering::Relaxed);
                 FEED_SHARED.dg_abr_kbps.store(kbps, Ordering::Relaxed);
                 FEED_SHARED.dg_abr_declared_kbps.store(-1, Ordering::Relaxed);
-                FEED_SHARED.dg_abr_media_kbps.store(-1, Ordering::Relaxed);
-                FEED_SHARED.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
-                FEED_SHARED.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
-                FEED_SHARED.dg_abr_ratio_pm.store(-1, Ordering::Relaxed);
-                FEED_SHARED.dg_abr_action.store(ABR_ACTION_STEADY, Ordering::Relaxed);
-                FEED_SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
-                FEED_SHARED.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
             }
             DemuxEffect::AbrHlsDeclared { kbps } =>
                 FEED_SHARED.dg_abr_declared_kbps.store(kbps, Ordering::Relaxed),
+            DemuxEffect::AbrCommitted { kbps, declared_kbps } => {
+                FEED_SHARED.dg_abr_kbps.store(kbps, Ordering::Relaxed);
+                FEED_SHARED.dg_abr_declared_kbps.store(declared_kbps, Ordering::Relaxed);
+            }
             DemuxEffect::AbrOriginalStart { kbps } => {
                 FEED_SHARED.dg_abr_mode.store(ABR_MODE_ORIGINAL, Ordering::Relaxed);
                 FEED_SHARED.dg_abr_kbps.store(kbps, Ordering::Relaxed);
-                FEED_SHARED.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
-                FEED_SHARED.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
-                FEED_SHARED.dg_abr_ratio_pm.store(-1, Ordering::Relaxed);
-                FEED_SHARED.dg_abr_action.store(ABR_ACTION_STEADY, Ordering::Relaxed);
-                FEED_SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
-                FEED_SHARED.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
             }
             DemuxEffect::NoteFault(fault) => FEED_SHARED.note_demux_exit_latch((self.hooks.exit_latch)(fault)),
             DemuxEffect::FailFault(fault) => FEED_SHARED.fail_demux_latch((self.hooks.exit_latch)(fault)),
@@ -430,6 +421,7 @@ impl DemuxMedia for FeedDemuxMedia {
             DemuxEffect::AudioTailNs(ns) => FEED_SHARED.hls_audio_tail_ns.store(ns, Ordering::Release),
             DemuxEffect::AudioExpected(expected) => FEED_SHARED.hls_audio_expected.store(expected, Ordering::Release),
             DemuxEffect::PrimeRunwayMax(runway_ms) => { FEED_SHARED.hls_prime_runway_ms.fetch_max(runway_ms, Ordering::AcqRel); }
+            DemuxEffect::PrimeRunway(runway_ms) => FEED_SHARED.hls_prime_runway_ms.store(runway_ms, Ordering::Release),
             DemuxEffect::RecoverySegment { total_us, duration } => FEED_SHARED.observe_hls_recovery(total_us, duration),
         });
         // Old container strings may own large allocations. Release them after

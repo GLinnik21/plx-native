@@ -2,24 +2,89 @@
 //! queue application; this module owns the controller and route transition.
 #![deny(clippy::debug_assert_with_mut_call)]
 
-use plx_play_feed::shared::FEED_SHARED;
 use crate::{abr, route};
 use plx_playback_contract::adaptive::PublicationGate;
 use plx_playback_contract::adaptive::{
-    ActionReadout, AdaptiveDirection, AdaptiveEffects, AdaptivePhysicalPort, AdaptiveProgress, AdaptiveSession, Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, ActiveQuantum, AdaptiveRoundPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, CommitReadout, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
+    AbrReadout, ActionReadout, AdaptiveDirection, AdaptiveEffects, AdaptivePhysicalPort, AdaptiveProgress, AdaptiveSession, Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, ActiveQuantum, AdaptiveRoundPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, CommitReadout, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
     OriginalProgress, OriginalQuantum, OriginalSession, RoundId, SeedReadout, TrialObservation, TrialPhase, TrialProtocol, TrialProtocolError,
 };
 use plx_playback_contract::SourceKey;
-use std::sync::atomic::Ordering;
+use std::cell::{Cell, RefCell};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
+use std::time::Instant;
+
+/// How many shipments one open's channel holds before the worker's sends are refused. A shipment
+/// is the worker's whole accumulated state, so the depth only sets how long the player may go
+/// without pumping before the worker starts keeping its newest state to itself (see
+/// [`PlayerAdaptiveEffects`]); the worker produces a handful per segment round and the pump drains
+/// every frame, so a healthy open never gets near it.
+const READOUT_QUEUE_DEPTH: usize = 16;
+
+/// Everything the adaptive worker has told its sink so far, as the player takes it in: the
+/// accumulated [`AbrReadout`] and the carried link estimate with the instant the worker observed it.
+/// A shipment is cumulative, so the newest one stands for all of them.
+#[derive(Clone, Copy)]
+pub(crate) struct AbrShipment {
+    pub(crate) readout: AbrReadout,
+    pub(crate) seed: Option<(SeedReadout, Instant)>,
+}
+
+/// The player's end of one open's channel from its adaptive worker. It lives with the claimed open
+/// on the main thread, beside the attempt the open was claimed under; the pump drains it into the
+/// session's readout. Dropping it is the normal stop: the worker's next send finds no receiver and
+/// carries on.
+pub(crate) struct AbrInbox(Receiver<AbrShipment>);
+
+impl AbrInbox {
+    /// The newest shipment sent since the last call, if any. Never blocks.
+    pub(crate) fn newest(&self) -> Option<AbrShipment> { self.0.try_iter().last() }
+}
+
+/// One open's channel: the worker's sender (clone it into each adaptive session the open carries)
+/// and the player's inbox.
+pub(crate) fn readout_channel() -> (SyncSender<AbrShipment>, AbrInbox) {
+    let (tx, rx) = sync_channel(READOUT_QUEUE_DEPTH);
+    (tx, AbrInbox(rx))
+}
 
 /// The player sink for common adaptive effects. Only the common worker invokes
 /// these callbacks; the physical feed does not choose when a seed or committed
 /// route becomes visible.
-pub struct PlayerAdaptiveEffects;
+///
+/// The seed and the readout cross to the player on the open's channel, by `try_send`: the worker
+/// never blocks on a main thread that may be joining it (the teardown joins the worker while the
+/// receiver is undrained). `latest` is the whole state the worker has handed the sink, and every send
+/// carries all of it. A full channel refuses the NEW shipment (`std`'s sender cannot evict the queued
+/// ones) and the sink keeps `latest`, so the next call, whichever member it changes, carries
+/// everything the refused one did. The player therefore ends on the state as of the worker's next
+/// call after the channel has room again, and a disconnected receiver (the stop) is not an error.
+pub struct PlayerAdaptiveEffects {
+    tx: SyncSender<AbrShipment>,
+    latest: AbrShipment,
+}
+
+impl PlayerAdaptiveEffects {
+    pub(crate) fn new(tx: SyncSender<AbrShipment>) -> Self {
+        Self { tx, latest: AbrShipment { readout: AbrReadout::IDLE, seed: None } }
+    }
+
+    fn ship(&self) {
+        match self.tx.try_send(self.latest) {
+            Ok(()) | Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {}
+        }
+    }
+}
 
 impl AdaptiveEffects for PlayerAdaptiveEffects {
     fn seed(&mut self, readout: SeedReadout) {
-        FEED_SHARED.publish_abr_seed_readout(readout);
+        // An estimate without a sample is no estimate: it clears the carried one.
+        self.latest.seed = (readout.samples > 0).then(|| (readout, Instant::now()));
+        self.ship();
+    }
+
+    fn readout(&mut self, readout: AbrReadout) {
+        self.latest.readout = readout;
+        self.ship();
     }
 
     fn committed(&mut self, readout: CommitReadout) {
@@ -38,35 +103,111 @@ impl AdaptiveEffects for PlayerAdaptiveEffects {
     }
 }
 
-fn publish_action(action: ActionReadout) {
-    use AdaptiveDirection::{Down, Up};
-    let ActionReadout { direction, target_kbps, refreshing, committed } = action;
-    let code = if refreshing {
-        match committed {
-            None => plx_playback_contract::readout::ABR_ACTION_PRIME_REFRESH,
-            Some(true) => plx_playback_contract::readout::ABR_ACTION_COMMIT_REFRESH,
-            Some(false) => plx_playback_contract::readout::ABR_ACTION_REJECT_REFRESH,
-        }
-    } else {
-        match (direction, committed) {
-            (Down, None) => plx_playback_contract::readout::ABR_ACTION_PRIME_DOWN,
-            (Up, None) => plx_playback_contract::readout::ABR_ACTION_PRIME_UP,
-            (Down, Some(true)) => plx_playback_contract::readout::ABR_ACTION_COMMIT_DOWN,
-            (Up, Some(true)) => plx_playback_contract::readout::ABR_ACTION_COMMIT_UP,
-            (Down, Some(false)) => plx_playback_contract::readout::ABR_ACTION_REJECT_DOWN,
-            (Up, Some(false)) => plx_playback_contract::readout::ABR_ACTION_REJECT_UP,
-        }
-    };
-    FEED_SHARED.dg_abr_action.store(code, Ordering::Relaxed);
-    FEED_SHARED.dg_abr_target_kbps.store(i64::from(target_kbps), Ordering::Relaxed);
+/// The worker's side of the readout: it accumulates the members the worker writes, one change at
+/// a time, and hands the sink the whole value after each. Shared by reference among the
+/// callbacks one round passes down (`Cell`/`RefCell`: one thread, never contended).
+pub(crate) struct AbrPublisher {
+    readout: Cell<AbrReadout>,
+    effects: RefCell<Box<dyn AdaptiveEffects>>,
 }
 
-fn publish_sample(sample: SampleReadout) {
-    let shared = &FEED_SHARED;
-    shared.dg_abr_net_kbps.store(sample.network_kbps, Ordering::Relaxed);
-    shared.dg_abr_media_kbps.store(sample.media_kbps, Ordering::Relaxed);
-    shared.dg_abr_buffer_ms.store(sample.buffer_ms, Ordering::Relaxed);
-    shared.dg_abr_ratio_pm.store(sample.ratio_pm, Ordering::Relaxed);
+impl AbrPublisher {
+    pub(crate) fn new(effects: Box<dyn AdaptiveEffects>) -> Self {
+        Self { readout: Cell::new(AbrReadout::IDLE), effects: RefCell::new(effects) }
+    }
+
+    fn update(&self, change: impl FnOnce(&mut AbrReadout)) {
+        let mut readout = self.readout.get();
+        change(&mut readout);
+        self.readout.set(readout);
+        self.effects.borrow_mut().readout(readout);
+    }
+
+    pub(crate) fn seed(&self, seed: SeedReadout) { self.effects.borrow_mut().seed(seed); }
+
+    pub(crate) fn committed(&self, readout: CommitReadout) {
+        self.effects.borrow_mut().committed(readout);
+    }
+
+    fn set_action(&self, code: u8, target_kbps: Option<i64>) {
+        self.update(|r| {
+            r.action = code;
+            if let Some(target) = target_kbps { r.target_kbps = target; }
+        });
+    }
+
+    fn action(&self, action: ActionReadout) {
+        use AdaptiveDirection::{Down, Up};
+        let ActionReadout { direction, target_kbps, refreshing, committed } = action;
+        let code = if refreshing {
+            match committed {
+                None => plx_playback_contract::readout::ABR_ACTION_PRIME_REFRESH,
+                Some(true) => plx_playback_contract::readout::ABR_ACTION_COMMIT_REFRESH,
+                Some(false) => plx_playback_contract::readout::ABR_ACTION_REJECT_REFRESH,
+            }
+        } else {
+            match (direction, committed) {
+                (Down, None) => plx_playback_contract::readout::ABR_ACTION_PRIME_DOWN,
+                (Up, None) => plx_playback_contract::readout::ABR_ACTION_PRIME_UP,
+                (Down, Some(true)) => plx_playback_contract::readout::ABR_ACTION_COMMIT_DOWN,
+                (Up, Some(true)) => plx_playback_contract::readout::ABR_ACTION_COMMIT_UP,
+                (Down, Some(false)) => plx_playback_contract::readout::ABR_ACTION_REJECT_DOWN,
+                (Up, Some(false)) => plx_playback_contract::readout::ABR_ACTION_REJECT_UP,
+            }
+        };
+        self.set_action(code, Some(i64::from(target_kbps)));
+    }
+
+    fn recover_original(&self) {
+        self.set_action(plx_playback_contract::readout::ABR_ACTION_RECOVER_ORIGINAL, None);
+    }
+
+    fn steady(&self) {
+        self.set_action(plx_playback_contract::readout::ABR_ACTION_STEADY, Some(0));
+    }
+
+    fn sample(&self, sample: SampleReadout) {
+        self.update(|r| {
+            r.net_kbps = sample.network_kbps;
+            r.media_kbps = sample.media_kbps;
+            r.buffer_ms = sample.buffer_ms;
+            r.ratio_pm = sample.ratio_pm;
+        });
+    }
+
+    fn model(&self, model: &ModelReadout) {
+        self.update(|r| {
+            r.safe_kbps = model.safe_kbps;
+            r.optimal_kbps = model.optimal_kbps;
+            r.unc_pm = model.uncertainty_pm;
+            r.samples = model.samples;
+            r.slope_ms_per_s = model.slope_ms_per_s;
+            r.starve_secs = model.starvation_secs;
+            r.pred_pm = model.production_pm;
+            r.risk = model.risk;
+            r.why = why_code(model.reason);
+        });
+    }
+
+    /// The Original watchdog's refreshed ticket after a seek: the measurements restart.
+    fn original_refreshed(&self) {
+        self.update(|r| {
+            r.net_kbps = -1;
+            r.buffer_ms = -1;
+            r.unsafe_deficit_ms = 0;
+        });
+    }
+
+    fn original_observed(&self, observation: &abr::OriginalObservation) {
+        self.update(|r| {
+            r.net_kbps = i64::from(observation.measured_kbps);
+            r.buffer_ms = observation.buffered_ms;
+            r.unsafe_deficit_ms = observation.unsafe_deficit_ms;
+            r.slope_ms_per_s = observation.slope_ms_per_s;
+            r.starve_secs = observation.horizon_secs.map(i64::from).unwrap_or(-1);
+            r.safe_kbps = i64::from(observation.conservative_kbps);
+        });
+    }
 }
 
 fn why_code(reason: Option<WhyReadout>) -> u8 {
@@ -89,21 +230,10 @@ fn why_code(reason: Option<WhyReadout>) -> u8 {
     }
 }
 
-fn publish_model(model: ModelReadout) {
-    let shared = &FEED_SHARED;
-    let rel = Ordering::Relaxed;
-    shared.dg_abr_safe_kbps.store(model.safe_kbps, rel);
-    shared.dg_abr_optimal_kbps.store(model.optimal_kbps, rel);
-    shared.dg_abr_unc_pm.store(model.uncertainty_pm, rel);
-    shared.dg_abr_samples.store(model.samples, rel);
-    shared.dg_abr_slope_ms_per_s.store(model.slope_ms_per_s, rel);
-    shared.dg_abr_starve_secs.store(model.starvation_secs, rel);
-    shared.dg_abr_pred_pm.store(model.production_pm, rel);
-    shared.dg_abr_risk.store(model.risk, rel);
-    shared.dg_abr_why.store(why_code(model.reason), rel);
+struct PlayerActiveDiagnostics<'a> {
+    cleanup_wait_logged: &'a mut bool,
+    publisher: &'a AbrPublisher,
 }
-
-struct PlayerActiveDiagnostics<'a> { cleanup_wait_logged: &'a mut bool }
 
 impl ActiveDiagnostics for PlayerActiveDiagnostics<'_> {
     fn cleanup(&mut self, ready: bool) {
@@ -132,7 +262,7 @@ impl ActiveDiagnostics for PlayerActiveDiagnostics<'_> {
         }
     }
 
-    fn sample(&mut self, sample: SampleReadout) { publish_sample(sample); }
+    fn sample(&mut self, sample: SampleReadout) { self.publisher.sample(sample); }
 
     fn fresh_boundary(&mut self) {
         crate::player::log(
@@ -141,37 +271,28 @@ impl ActiveDiagnostics for PlayerActiveDiagnostics<'_> {
     }
 
     fn observed(&mut self, readout: ActiveReadout) {
-        if let Some(runway_ms) = readout.prime_runway_ms {
-            FEED_SHARED.hls_prime_runway_ms.store(runway_ms, Ordering::Release);
-        }
-        publish_model(readout.model);
+        self.publisher.model(&readout.model);
         crate::player::log(&readout.sample_line);
         crate::player::log(&readout.window_line);
     }
+
+    fn seed(&mut self, seed: SeedReadout) { self.publisher.seed(seed); }
 }
 
-struct PlayerOriginalProbeDiagnostics;
+struct PlayerOriginalProbeDiagnostics<'a> { publisher: &'a AbrPublisher }
 
-impl OriginalProbeDiagnostics for PlayerOriginalProbeDiagnostics {
+impl OriginalProbeDiagnostics for PlayerOriginalProbeDiagnostics<'_> {
     fn action(&mut self, action: ProbeTraceAction, target_kbps: u32) {
-        let shared = &FEED_SHARED;
+        use plx_playback_contract::readout as code;
         match action {
             ProbeTraceAction::Start => {
-                shared.dg_abr_action.store(plx_playback_contract::readout::ABR_ACTION_PROBE_ORIGINAL, Ordering::Relaxed);
-                shared.dg_abr_target_kbps.store(i64::from(target_kbps), Ordering::Relaxed);
+                self.publisher.set_action(code::ABR_ACTION_PROBE_ORIGINAL, Some(i64::from(target_kbps)));
                 crate::player::clear_original_failure();
             }
-            ProbeTraceAction::Failed => {
-                shared.dg_abr_action.store(plx_playback_contract::readout::ABR_ACTION_ORIGINAL_PROBE_FAILED, Ordering::Relaxed);
-                shared.dg_abr_target_kbps.store(0, Ordering::Relaxed);
-            }
-            ProbeTraceAction::Steady => {
-                shared.dg_abr_action.store(plx_playback_contract::readout::ABR_ACTION_STEADY, Ordering::Relaxed);
-                shared.dg_abr_target_kbps.store(0, Ordering::Relaxed);
-            }
-            ProbeTraceAction::RecoverOriginal => {
-                shared.dg_abr_action.store(plx_playback_contract::readout::ABR_ACTION_RECOVER_ORIGINAL, Ordering::Relaxed);
-            }
+            ProbeTraceAction::Failed =>
+                self.publisher.set_action(code::ABR_ACTION_ORIGINAL_PROBE_FAILED, Some(0)),
+            ProbeTraceAction::Steady => self.publisher.steady(),
+            ProbeTraceAction::RecoverOriginal => self.publisher.recover_original(),
         }
     }
 
@@ -328,15 +449,19 @@ struct ProgressiveOriginalSession {
     coordinator: Option<OriginalCoordinator>,
     source_kbps: u32,
     since: Option<std::time::Instant>,
+    publisher: AbrPublisher,
 }
 
 /// Capture the progressive route owner without reading time or player state.
 /// The existing feed worker starts its watchdog clock after the first source
 /// declaration and before opening the progressive URL.
-pub fn boxed_original_session(start: OriginalStart) -> Box<dyn OriginalSession> {
+pub fn boxed_original_session(
+    start: OriginalStart, effects: Box<dyn AdaptiveEffects>,
+) -> Box<dyn OriginalSession> {
     let source_kbps = start.source_kbps();
     Box::new(ProgressiveOriginalSession {
         start: Some(start), coordinator: None, source_kbps, since: None,
+        publisher: AbrPublisher::new(effects),
     })
 }
 
@@ -355,10 +480,7 @@ impl OriginalSession for ProgressiveOriginalSession {
         let refreshed = self.coordinator.as_mut()
             .expect("Original worker owns its controller").seek(bytes, active_us);
         if refreshed {
-            let shared = &FEED_SHARED;
-            shared.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
-            shared.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
-            shared.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
+            self.publisher.original_refreshed();
             self.since = Some(std::time::Instant::now());
         }
         refreshed
@@ -383,15 +505,7 @@ impl OriginalSession for ProgressiveOriginalSession {
             quantum.bytes, quantum.active_us, quantum.buffered_ms,
             remaining_ms, now_ms,
         ) else { return OriginalProgress::Continue; };
-        let shared = &FEED_SHARED;
-        shared.dg_abr_net_kbps.store(i64::from(observation.measured_kbps), Ordering::Relaxed);
-        shared.dg_abr_buffer_ms.store(observation.buffered_ms, Ordering::Relaxed);
-        shared.dg_abr_unsafe_deficit_ms.store(observation.unsafe_deficit_ms, Ordering::Relaxed);
-        let rel = Ordering::Relaxed;
-        let horizon = observation.horizon_secs.map(i64::from).unwrap_or(-1);
-        shared.dg_abr_slope_ms_per_s.store(observation.slope_ms_per_s, rel);
-        shared.dg_abr_starve_secs.store(horizon, rel);
-        shared.dg_abr_safe_kbps.store(i64::from(observation.conservative_kbps), rel);
+        self.publisher.original_observed(&observation);
         if let Some(reason) = observation.fallback {
             crate::player::log(&format!(
                 "auto: Original -> HLS {reason:?} measured={}kbps safe={}kbps need={}kbps buf={}ms slope={}ms/s starve={} held={}ms target={}kbps",
@@ -1337,7 +1451,6 @@ pub(crate) struct Coordinator {
     control: route::HlsAbrControl,
     ticket: route::WorkerTicket,
     controller: abr::Controller,
-    effects: Box<dyn AdaptiveEffects>,
     recovery: Option<abr::OriginalRecovery>,
     recover_kbps: u32,
     last_probe_block: Option<abr::ProbeBlock>,
@@ -1825,6 +1938,8 @@ pub(crate) trait ActiveDiagnostics {
     fn sample(&mut self, sample: SampleReadout);
     fn fresh_boundary(&mut self);
     fn observed(&mut self, readout: ActiveReadout);
+    /// The controller's delivery estimate after this round, which the next controller starts from.
+    fn seed(&mut self, seed: SeedReadout);
 }
 
 pub(crate) enum ActiveRunError<E> { Physical(E), Protocol(&'static str) }
@@ -1951,8 +2066,11 @@ pub(crate) fn run_active_round<P: ActiveFeedPort + ?Sized>(
         active.observe(coordinator, rollback_media_ms, now_ms(), boundary);
     let readout = ActiveReadout::new(&round_decision, sample);
     let seed = readout.model.seed;
+    if let Some(runway_ms) = readout.prime_runway_ms {
+        port.note_prime_runway(runway_ms);
+    }
     diagnostics.observed(readout);
-    coordinator.effects.seed(seed);
+    diagnostics.seed(seed);
     if prefetch_allowed && active_step(port, round, ActiveAction::Prefetch {
         round, at_floor: Some(coordinator.at_floor()),
     })? != (ActiveObservation::Prefetched { round }) {
@@ -2307,7 +2425,7 @@ impl ExplorationFailure {
 
 impl Coordinator {
     pub(crate) fn start(
-        start: Start, pin: Option<abr::Rung>, effects: Box<dyn AdaptiveEffects>,
+        start: Start, pin: Option<abr::Rung>,
     ) -> Self {
         let Start { control, ticket } = start;
         let recovery = control.can_recover_original().then(|| {
@@ -2332,7 +2450,7 @@ impl Coordinator {
             controller.observe_active_variant(variant, evidence_kbps);
         }
         Self {
-            control, ticket, controller, effects, recovery, recover_kbps: 0,
+            control, ticket, controller, recovery, recover_kbps: 0,
             last_probe_block: None,
             next_trial_serial: 0, next_round_serial: 0,
         }
@@ -2586,11 +2704,6 @@ impl Coordinator {
             target_kbps: proposal.rung.kbps(), refreshing, declared_bps,
             observed_width: observed.width, observed_height: observed.height,
         }
-    }
-    /// Called after the AQ publication and native gauge projection. The sink
-    /// receives the generation captured with this route, never a global lookup.
-    pub(crate) fn emit_committed(&mut self, readout: CommitReadout) {
-        self.effects.committed(readout);
     }
     pub(crate) fn original_source_kbps(&self) -> u32 { self.control.original_source_kbps() }
     pub(crate) fn retain_original_recovery(&mut self, kbps: u32) { self.recover_kbps = kbps; }
@@ -3250,7 +3363,7 @@ impl Coordinator {
 struct Session {
     start: Option<Start>,
     initial_kbps: u32,
-    effects: Option<Box<dyn AdaptiveEffects>>,
+    publisher: AbrPublisher,
     coordinator: Option<Coordinator>,
     /// Minted on the worker after the initial cursor opens, at the same
     /// boundary as the former in-loop controller construction.
@@ -3270,7 +3383,7 @@ pub fn boxed_session(
 ) -> Box<dyn AdaptiveSession> {
     let initial_kbps = start.info().initial.kbps();
     Box::new(Session {
-        start: Some(start), initial_kbps, effects: Some(effects),
+        start: Some(start), initial_kbps, publisher: AbrPublisher::new(effects),
         coordinator: None, history_since: None,
         session_boundary_pending: true, cleanup_wait_logged: false,
     })
@@ -3281,7 +3394,6 @@ impl Session {
         if self.coordinator.is_some() { return; }
         let history_since = std::time::Instant::now();
         let start = self.start.take().expect("an uninitialized session owns its start");
-        let effects = self.effects.take().expect("an uninitialized session owns its effects");
         let info = start.info();
         crate::player::log(&format!(
             "abr: history switches={} since_last={} advanced=0ms",
@@ -3297,7 +3409,7 @@ impl Session {
             ));
         }
         let pin = abr::abr_pin();
-        let coordinator = Coordinator::start(start, pin, effects);
+        let coordinator = Coordinator::start(start, pin);
         if info.original_refused && coordinator.has_recovery() {
             crate::player::log(
                 "abr: Original was refused on this HLS route; not asked again until the route changes",
@@ -3338,8 +3450,10 @@ impl AdaptiveSession for Session {
             return AdaptiveProgress::Failed("adaptive active round generation exhausted");
         };
         physical.begin_round(round_id);
+        let publisher = &self.publisher;
         let mut diagnostics = PlayerActiveDiagnostics {
             cleanup_wait_logged: &mut self.cleanup_wait_logged,
+            publisher,
         };
         let remaining_playback_ms = physical.remaining_playback_sampler();
         let user_sequence = physical.user_sequence_sampler();
@@ -3362,21 +3476,16 @@ impl AdaptiveSession for Session {
         };
         let (proposal, reserve_policy, sample, start) = match coordinator.advance_round(
             cycle, physical, || now_ms(),
-            || FEED_SHARED.dg_abr_action.store(
-                plx_playback_contract::readout::ABR_ACTION_RECOVER_ORIGINAL, Ordering::Relaxed,
-            ),
-            publish_action,
+            || publisher.recover_original(),
+            |action| publisher.action(action),
             |diagnostic| match diagnostic {
                 RoundDiagnostic::Line(line) => crate::player::log(&line),
                 RoundDiagnostic::Steady(line) => {
-                    FEED_SHARED.dg_abr_action.store(
-                        plx_playback_contract::readout::ABR_ACTION_STEADY, Ordering::Relaxed,
-                    );
-                    FEED_SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
+                    publisher.steady();
                     crate::player::log(&line);
                 }
             },
-            &mut PlayerOriginalProbeDiagnostics,
+            &mut PlayerOriginalProbeDiagnostics { publisher },
         ) {
             RoundCourse::Stay => return AdaptiveProgress::Continue,
             RoundCourse::OriginalPublished => return AdaptiveProgress::OriginalPublished,
@@ -3405,7 +3514,7 @@ impl AdaptiveSession for Session {
             proposal, coordinator.current(), sample, &coordinator.delivery(),
             physical.buffer_sampler(), crate::player::log,
         );
-        publish_action(action_readout(proposal, refreshing, None));
+        publisher.action(action_readout(proposal, refreshing, None));
         let Some(offset_micros) = physical.candidate_offset_micros() else {
             return AdaptiveProgress::Failed("HLS candidate content offset overflow");
         };
@@ -3425,7 +3534,7 @@ impl AdaptiveSession for Session {
                     tx.mark_media(acquisition.bytes, acquisition.total_us, false),
                 TrialTrace::Decided => tx.mark_decided(),
                 TrialTrace::Rejected { refreshing } =>
-                    publish_action(action_readout(proposal, refreshing, Some(false))),
+                    publisher.action(action_readout(proposal, refreshing, Some(false))),
                 TrialTrace::Finish(outcome) => tx.finish(outcome),
                 TrialTrace::Log(line) => crate::player::log(&line),
             },
@@ -3461,7 +3570,7 @@ impl AdaptiveSession for Session {
             |event, _| match event {
                 TrialTrace::Decided => tx.mark_decided(),
                 TrialTrace::Rejected { refreshing } =>
-                    publish_action(action_readout(proposal, refreshing, Some(false))),
+                    publisher.action(action_readout(proposal, refreshing, Some(false))),
                 TrialTrace::Finish(outcome) => tx.finish(outcome),
                 TrialTrace::Log(line) => crate::player::log(&line),
                 _ => unreachable!("settling staged media cannot emit acquisition timing"),
@@ -3491,7 +3600,7 @@ impl AdaptiveSession for Session {
         };
         drop(runner);
         if let Some(runway_ms) = coordinator.prime_runway_ms() {
-            FEED_SHARED.hls_prime_runway_ms.store(runway_ms, Ordering::Release);
+            physical.note_prime_runway(runway_ms);
         }
         tx.finish("committed");
         let candidate_declared_bps = physical.candidate_declared_bps()
@@ -3499,16 +3608,17 @@ impl AdaptiveSession for Session {
         let committed = coordinator.commit_readout(
             proposal, refreshing, candidate_declared_bps, final_acquisition,
         );
-        FEED_SHARED.dg_abr_kbps.store(i64::from(committed.target_kbps), Ordering::Relaxed);
-        FEED_SHARED.dg_abr_declared_kbps.store(
-            i64::try_from(committed.declared_bps / 1_000).unwrap_or(i64::MAX), Ordering::Relaxed,
-        );
-        publish_action(ActionReadout {
+        publisher.action(ActionReadout {
             direction: committed.direction, target_kbps: committed.target_kbps,
             refreshing: committed.refreshing, committed: Some(true),
         });
-        coordinator.emit_committed(committed);
-        assert!(physical.promote_candidate(), "published trial promotes its candidate cursor");
+        // Called after the AQ publication and native gauge projection. The sink
+        // receives the generation captured with this route, never a global lookup.
+        publisher.committed(committed);
+        assert!(
+            physical.promote_candidate(&committed),
+            "published trial promotes its candidate cursor",
+        );
         coordinator.on_hls_commit(proposal.direction);
         physical.settle(fence);
         drop(trial_reserve.take());
