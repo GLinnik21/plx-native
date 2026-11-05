@@ -62,6 +62,7 @@ No third-party deps -- Python 3 stdlib only (macOS system python3 is fine).
 
 import argparse
 import atexit
+import contextlib
 import datetime as datetime_module
 import functools
 import json
@@ -1920,6 +1921,87 @@ def evaluate_uri(case, lines, srv_delta):
         srv_delta, exp.get("server_opens_min", 1), exp.get("server_range_opens_min", 0),
         exp.get("server_opens_exact"), exp.get("server_range_opens_exact"))))
     return all(ok for _, ok, _ in results), results
+
+
+# ---------------------------------------------------------------------------------------------
+# URI product route: the runner's pure half. `plxnative-uridev` is the debug-only dev route that makes the
+# PRODUCTION URI backend play a URL on a 4.x set bound through ACB; its grammar is
+# `acb part=<N> server=<machineIdentifier> url=<http://dotted-quad:port/path>`. The app ignores a
+# trigger it cannot parse (one log line), so every refusal the app would make is made here first.
+# ---------------------------------------------------------------------------------------------
+class UriProductRefused(Exception):
+    """The product route cannot run as asked; the case FAILS with the reason instead of ending the suite."""
+
+
+RE_URI_DEV_URL = re.compile(r"http://(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3}):(\d{1,5})/[^\s']+")
+RE_URI_DEV_WORD = re.compile(r"[A-Za-z0-9._-]+")
+
+
+def uri_dev_trigger(part_id, machine_id, url):
+    """The content of `plxnative-uridev`, in the order the app documents it: `acb part= server= url=`."""
+    if not isinstance(part_id, int) or isinstance(part_id, bool) or part_id <= 0:
+        raise UriProductRefused(f"part id {part_id!r} is not a positive integer")
+    if not isinstance(machine_id, str) or not RE_URI_DEV_WORD.fullmatch(machine_id):
+        raise UriProductRefused(f"machine identifier {machine_id!r} is not a plain word")
+    m = RE_URI_DEV_URL.fullmatch(url or "")
+    if m is None or any(int(m.group(i)) > 255 for i in (1, 2, 3, 4)) or not 1 <= int(m.group(5)) <= 65535:
+        raise UriProductRefused("the fixture URL must be http://<dotted-quad>:<port>/<path> with no space "
+                                "or apostrophe (the app ignores anything else)")
+    return f"acb part={part_id} server={machine_id} url={url}"
+
+
+# What a product run must never inherit from the case or the command line: `uriprobe` would divert the
+# route under test, `playurl` would play the Feed, and the rest are written by the runner itself.
+URI_PRODUCT_RESERVED = ("plxnative-uriprobe", "plxnative-playurl", "plxnative-uridev", "plxnative-play",
+                        "plxnative-ptype", "plxnative-quality")
+
+
+def uri_product_files(case, url_base, machine_id, extra=()):
+    """The trigger files of a product case: the integration tier's routing pins (`play=<rk>`,
+    `quality=original`, `audioenh=off`, the case's `ptype`) pointed at the CARRIER clip's ratingKey, plus
+    `plxnative-uridev` carrying the carrier's part, the mock's machine identifier and the fixture URL."""
+    for name in (f"plxnative-{k}" for k in (case.get("triggers") or {})):
+        if name in URI_PRODUCT_RESERVED[:3]:
+            raise UriProductRefused(f"a product case must not set {name} itself: the runner writes it")
+    for name, _ in extra:
+        if name in URI_PRODUCT_RESERVED:
+            raise UriProductRefused(f"--extra-trigger {name} would replace what the product route pins "
+                                    f"(or arm the probe on top of it)")
+    carrier = dict(case, rk=str(mock_fps.CARRIER_RK))
+    files = triggers_for_case(carrier)
+    files.append(("plxnative-uridev", uri_dev_trigger(
+        mock_fps.CARRIER_PART_ID, machine_id, f"{url_base}/{case['fixture']}")))
+    files.extend(extra)
+    names = [n for n, _ in files]
+    dup = sorted({n for n in names if names.count(n) > 1})
+    if dup:
+        raise UriProductRefused(f"trigger(s) written twice: {', '.join(dup)}")
+    return files
+
+
+def _resolve_uri_product(cases, root, flavour=None, config=None):
+    """The skip channel for product cases: they need the debug install (the dev route is compiled out of
+    a release), the configured PMS address (`src/config.local.h`, where the mock must listen), and the
+    carrier clip in the pack being served, with no sidecar subtitle beside it. Sets `carrier_path`."""
+    flavour = FLAVOUR if flavour is None else flavour
+    config = CONFIG_LOCAL_H if config is None else config
+    for c in cases:
+        if uri_route(c) != URI_PRODUCT or c.get("skip"):
+            continue
+        carrier = c.get("carrier") or ""
+        path = os.path.join(root, carrier)
+        if flavour != "debug":
+            c["skip"] = f"the product route drives the debug install only (this run resolved FLAVOR={flavour})"
+        elif not re.fullmatch(r"[\w.-]+\.\w+", carrier):
+            c["skip"] = f"carrier {carrier!r} must be a plain file name inside the pack"
+        elif not os.path.isfile(config):
+            c["skip"] = f"needs {config} for PMS_HOST and PMS_PORT: the mock listens at the configured address"
+        elif not os.path.isfile(path):
+            c["skip"] = f"no carrier clip {carrier!r} in {root} -- run `make fixtures-pipeline`"
+        elif any(os.path.isfile(os.path.splitext(path)[0] + ext) for ext in (".srt", ".ass", ".ssa", ".vtt")):
+            c["skip"] = f"a sidecar subtitle sits beside {carrier}: the mock would serve it as a subtitle stream"
+        else:
+            c["carrier_path"] = path
 
 
 def a_resolve_pin(lines, want="any"):
@@ -5844,6 +5926,8 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
     Dropped: the unscrobble, the viewOffset seed, `also_reset`, and the token injection. There is
     no ratingKey here to reset and no identity to be.
     """
+    if uri_route(case) == URI_PRODUCT:
+        return run_uri_product_case(case, cfg, srv, url_base, verbose)
     name = case["name"]
     tv = cfg["tv"]
     run_secs = case.get("run_secs", 30)
@@ -5922,6 +6006,83 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
               "every case, it is almost certainly the macOS application firewall — accept the "
               "'allow incoming connections' prompt for this python once, with a human present.")
     return passed, results, lines
+
+
+def _shape_fixture_server(srv, case):
+    """The fixture server's per-case link: the wall-clock profile, the request-indexed one (they compose;
+    the request-indexed wins where it applies) and the ABR response profile. Each setter clears on None."""
+    srv.set_network_profile(case.get("network_profile"))
+    srv.set_segment_profile(case.get("segment_profile"))
+    srv.set_abr_response_profile(case.get("abr_response_profile"))
+
+
+def run_uri_product_case(case, cfg, srv, url_base, verbose):
+    """One product-route case (`"uri_route": "product"`): the PRODUCTION URI backend, ACB-bound, on a 4.x set.
+
+    The harness's own mock PMS is only the plan CARRIER: the app resolves its clip as an ordinary movie
+    (guest, `--mock`), the dev route (`plxnative-uridev`) answers the qualification with the fixture
+    server's URL, and the TV fetches the HLS stream from the fixture server (shaper and wire counters
+    keep working). Order matters and is kept: mock up -> fabricated guest token -> machine identifier ->
+    triggers -> stream; the dev trigger is deleted in a `finally` however the run ends, and the log must
+    prove the synthetic mock before anything is graded (fail closed). A refusal that comes before the
+    set is touched fails THIS case, not the suite.
+    """
+    name = case["name"]
+    tv = cfg["tv"]
+    run_secs = case.get("run_secs", 30)
+    print(f"\n=== {name}  ({case['fixture']}, {case.get('title', '')}) ===")
+    print(f"    covers: {', '.join(case.get('covers', []))}")
+    require_tv(tv, name)
+    with contextlib.ExitStack() as stack:
+        try:
+            if not case.get("carrier_path"):
+                raise UriProductRefused("no carrier clip resolved (see _resolve_uri_product)")
+            extra = list(cfg.get("extra_triggers") or ())
+            uri_product_files(case, url_base, "placeholder", extra)   # refuse a bad case/CLI BEFORE any start
+            host, port = mock_fps.configured_endpoint(CONFIG_LOCAL_H)
+            log = os.path.join(tempfile.gettempdir(), f"plx-mock-pms-{os.getpid()}-{name}.log")
+            args = mock_fps.carrier_server_args(case["carrier_path"])
+            print(f"    mock: tests/mock_pms.py {' '.join(args)}")
+            stack.enter_context(mock_fps.MockPms(host, port, args, log_path=log))
+            token = mock_fps.resolve_mock_token(CONFIG_LOCAL_H)
+            machine = mock_fps.mock_machine_identifier(host, port)
+            files = uri_product_files(case, url_base, machine, extra)
+        except (SystemExit, UriProductRefused) as why:
+            print(f"    [FAIL] {why}")
+            return False, [("uri_product", False, str(why))], []
+        make(["kill", f"TV={tv}"], timeout=40)
+        _shape_fixture_server(srv, case)
+
+        def take_back():
+            try:
+                ssh(tv, f"rm -f {RUNDIR}/plxnative-uridev", timeout=30)
+            except Exception as e:  # noqa: BLE001 — never mask the run's own outcome
+                print(f"    WARN: could not remove plxnative-uridev: {e}")
+        stack.callback(take_back)   # registered BEFORE arming: a half-written arm is still taken back
+        apply_triggers(tv, files, extra=[f"printf '%s' '{token}' > {RUNDIR}/plxnative-token"])
+        print("    triggers: " + ", ".join(n + ("=" + c if c is not None else "") for n, c in files))
+        print("    plxnative-token: <synthetic guest, redacted>")
+        before = srv.stats()
+        early, why = early_exit_allowed(case, cfg)
+        print(f"    run-stream (cap {run_secs}s, early exit off) ...")
+        lines, elapsed, stopped_early, settled = stream_case(
+            case, cfg, run_secs, early=early,
+            evaluator=lambda c, ls: evaluate_pipeline(c, ls, tuple(n - b for n, b in zip(srv.stats(), before))))
+        delta = tuple(a - b for a, b in zip(srv.stats(), before))
+        ok_id, why_id = mock_fps.check_synthetic_identity(lines)
+        if not ok_id:
+            msg = f"refusing to grade: {why_id}"
+            print(f"    [FAIL] {msg}")
+            passed, results = False, [("synthetic_identity", False, msg)]
+        else:
+            print(f"    identity: {why_id}")
+            passed, results = evaluate_pipeline(case, lines, delta)
+            passed, results = crash_gate(cfg, case, name, lines, passed, results)
+        report_and_record(cfg, name, passed, results, lines, elapsed, run_secs, stopped_early, settled, verbose)
+        if delta[0] == 0:
+            print("       NOTE: the fixture server saw NO request from the TV (macOS application "
+                  "firewall? see run_pipeline_case).")
+        return passed, results, lines
 
 
 def run_pipeline_suite(cases, cfg, srv, url_base, verbose, skipped=()):
@@ -7627,6 +7788,7 @@ def main():
         # in the other table.
         root, pcases = fixtures_root, pipeline_cases
         _resolve_fixtures(pcases, root)
+        _resolve_uri_product(pcases, root)
         for c in pcases:
             d = c.get("declare", {})
             decl = f"{d.get('vcodec','?')}/{d.get('acodec','?')}"
@@ -7717,6 +7879,7 @@ def main():
         if args.filter:
             pcases = [c for c in pcases if args.filter in c["name"]]
         _resolve_fixtures(pcases, root)
+        _resolve_uri_product(pcases, root)
         pcases, pskipped = partition_skips(pcases)
         # Bail BEFORE the server is started and before arm_teardown: arming commits to driving the
         # television, and its cleanup closes the app on EVERY exit path including this one. A run
