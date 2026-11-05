@@ -284,7 +284,7 @@ fn with_pcm_info(p: &str, audio: &str, pcm: Option<crate::route::PcmFormat>) -> 
 /// the sink envelope.
 #[cfg(test)]
 fn build_av_payload(ps: &crate::route::PlaybackSession, video: &str, audio: &str, env: SinkEnvelope) -> String {
-    build_av_payload_at(ps, video, audio, env, super::applied_rate_permille())
+    build_av_payload_at(ps, video, audio, env, FEED_SHARED.applied_rate_permille.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 /// [`build_av_payload`] at an explicit session speed (`rate`, permille), so the host tests can pin
@@ -505,7 +505,7 @@ fn feed_clock_us() -> u64 {
 /// only — the audio lane (feed_audio_lane) keeps flowing so the audioSync master clock advances.
 #[cfg(test)]
 fn audio_sink_pts(fp: i64, pcm_lead_ns: i64) -> i64 {
-    plx_play_feed::native_executor::audio_sink_pts(fp, pcm_lead_ns, super::applied_rate_permille())
+    plx_play_feed::native_executor::audio_sink_pts(fp, pcm_lead_ns, FEED_SHARED.applied_rate_permille.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 #[cfg(all(test, feature = "hostsim"))]
