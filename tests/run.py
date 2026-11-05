@@ -1542,9 +1542,9 @@ def a_codec(lines, expected, min_width, size=None):
 # ---------------------------------------------------------------------------------------------
 URI_PROBE, URI_PRODUCT = "probe", "product"
 URI_EXPECT_KEYS = ("uri_playing", "uri_plane_bound", "uri_clock_past_s", "uri_max_stall_s",
-                   "uri_drain_warning_s", "uri_presented", "uri_service_playing")
+                   "uri_drain_warning_s", "uri_presented", "uri_service_playing", "uri_audio_selected")
 # Lines only the production backend writes: on a probe case they grade nothing, so they are unknown there.
-URI_PRODUCT_ONLY_KEYS = ("uri_presented", "uri_service_playing")
+URI_PRODUCT_ONLY_KEYS = ("uri_presented", "uri_service_playing", "uri_audio_selected")
 RE_URI_LINE = re.compile(r"uriprobe: t=(\d+) (\S.*?)\s*$")
 RE_URI_TRACE_LINE = re.compile(r"uri-trace: t=(\d+) (\S.*?)\s*$")
 URI_LINE_RES = {URI_PROBE: RE_URI_LINE, URI_PRODUCT: RE_URI_TRACE_LINE}
@@ -1568,6 +1568,19 @@ RE_URI_ACB_ANY = re.compile(r"\buri-acb: ")
 RE_URI_SESSION_ENDED = re.compile(r"\bls2uri: (?:released|quarantined)\b")
 RE_FEED_DECISION = re.compile(r"\bdecision: part=.*->")
 RE_URI_CLOCK = re.compile(r"ev=currentTime value=(-?\d+)")
+# The startup audio selection. The backend settles a select of the track the service already has without
+# a native call and says so (`uri: audio index=N is already selected (audioInfo); no selectTrack sent`);
+# a control the service never confirms is refused when its deadline passes, and `{:?}` of the Operation
+# names it (`Selected(..)` is the Plex stream id, not the native index). The service's own events come
+# from the `uri-trace:` stream: `ev=audioInfo ... track=N` is the track in use, `ev=trackSelected` the
+# confirmation of a select that changed it (`ev=trackSelected type=audio index=N` when the service names the
+# track, bare when it only says true). A select the backend SENDS writes `uri: selectTrack sent kind=audio
+# index=N stream=SID`: N the native index it asked the service for, SID the Plex stream id it stands for.
+RE_URI_AUDIO_ALREADY = re.compile(r"\buri: audio index=(-?\d+) is already selected \(audioInfo\); no selectTrack sent")
+RE_URI_AUDIO_SENT = re.compile(r"\buri: selectTrack sent kind=audio index=(-?\d+) stream=(\d+)\s*$")
+RE_URI_TRACK_SELECTED = re.compile(r"^ev=trackSelected(?: type=(\w+) index=(-?\d+))?$")
+RE_URI_AUDIO_REFUSED = re.compile(r"\buri: control SelectTrack \{ kind: Audio\b.*\} unconfirmed after \d+ ms; refused \(TimedOut\)")
+RE_URI_AUDIO_INFO = re.compile(r"^ev=audioInfo\b.*?\btrack=(\d+)\b")
 RE_URI_REMAINING = re.compile(r"ev=bufferRange .*?remainingTime=(-?\d+(?:\.\d+)?)")
 RE_URI_RANGE = re.compile(r"ev=bufferRange beginTime=(-?\d+(?:\.\d+)?) endTime=(-?\d+(?:\.\d+)?)")
 RE_ACB_CALLBACK = re.compile(r"acb callback task=(\d+) ev=(-?\d+)")
@@ -1825,6 +1838,100 @@ def a_uri_presented(lines):
     return False, f"presented, but the clock did not advance (from {last.group(1)} to {last.group(2)} ms)"
 
 
+URI_AUDIO_PATHS = ("select", "already")
+
+
+def a_uri_audio_selected(lines, want):
+    """What the production backend did with the startup audio selection, read from the lines it writes.
+
+    `want` is `{"path": "select"|"already", "index": N}` (N the native audio index, in the numbering the
+    service's own `audioInfo.track` uses):
+
+    * `already` (the control): the backend found the wanted track already the service's (`uri: audio
+      index=N is already selected (audioInfo); no selectTrack sent`, N equal to the last `ev=audioInfo
+      track=` before it) and sent nothing.
+    * `select`: a native `selectTrack` WAS sent, to index N (`uri: selectTrack sent kind=audio index=N
+      stream=SID`, the backend's own line for the call it makes), which is a track other than the one the
+      service started on, and the service confirmed it before the first Play: an `ev=trackSelected`
+      (naming `type=audio index=N` when it names anything: another type or index fails), or an
+      `ev=audioInfo` that names a different track than the first, and no later `audioInfo` that names a
+      third. A bare `ev=trackSelected` names no index, so then only `audioInfo` and the sent line carry it.
+
+    The control also fails on a sent line: it sent nothing. Both need the first Play to have happened (`uri: service playing`: the startup plan holds it behind
+    the select) and no refusal. A refused select (`... unconfirmed after N ms; refused (TimedOut)`) fails
+    with that line as the evidence.
+    """
+    bad = (not isinstance(want, dict) or set(want) != {"path", "index"} or want["path"] not in URI_AUDIO_PATHS
+           or not isinstance(want["index"], int) or isinstance(want["index"], bool) or want["index"] < 0)
+    if bad:
+        return False, (f"uri_audio_selected wants {{'path': 'select'|'already', 'index': N >= 0}}, got {want!r}")
+    path, index = want["path"], want["index"]
+    already = next(((i, m) for i, ln in enumerate(lines) if (m := RE_URI_AUDIO_ALREADY.search(ln))), None)
+    trace = [(i, m.group(2)) for i, ln in enumerate(lines) if (m := RE_URI_TRACE_LINE.search(ln))]
+    tracks = [(i, int(m.group(1))) for i, text in trace if (m := RE_URI_AUDIO_INFO.match(text))]
+    selected = [(i, m) for i, text in trace if (m := RE_URI_TRACK_SELECTED.match(text))]
+    confirmed = lines[selected[0][0]] if selected else None
+    sent = next(((i, m) for i, ln in enumerate(lines) if (m := RE_URI_AUDIO_SENT.search(ln))), None)
+    played = a_uri_service_playing(lines)[0]
+    refused = next((ln for ln in lines if RE_URI_AUDIO_REFUSED.search(ln)), None)
+    if refused:
+        # A refusal is where a wrong numbering ends (the service names an index the backend cannot match
+        # to its pending select, and the control times out), so it carries what the run did say: the
+        # index that went out, the track the service named, and the track it last reported in use.
+        said = [f"sent :: {lines[sent[0]].strip()}"] if sent else ["no `uri: selectTrack sent` line"]
+        said += [f"the service named :: {lines[i].strip()}" for i, m in selected if m.group(1) is not None]
+        if tracks:
+            said.append(f"audioInfo last said track={tracks[-1][1]}")
+        return False, f"the audio select was never confirmed :: {refused.strip()} ; " + " ; ".join(said)
+    if path == "already":
+        if already is None:
+            return False, ("no `uri: audio index=N is already selected (audioInfo); no selectTrack sent` line: "
+                           + (f"a selectTrack was sent :: {lines[sent[0]].strip()}" if sent
+                              else "a selectTrack was sent (`ev=trackSelected` followed)" if confirmed
+                              else "the app never reached the startup selection"))
+        at, said = already[0], int(already[1].group(1))
+        if sent is not None:
+            return False, f"the control sent a selectTrack as well :: {lines[sent[0]].strip()}"
+        before = [track for i, track in tracks if i < at]
+        if said != index:
+            return False, f"the backend settled audio index={said}, wanted {index} :: {lines[at].strip()}"
+        if not before:
+            return False, f"no `ev=audioInfo ... track=` line before the claim :: {lines[at].strip()}"
+        if before[-1] != said:
+            return False, (f"the claim (index={said}) is not the service's own last audioInfo "
+                           f"(track={before[-1]}) :: {lines[at].strip()}")
+        if not played:
+            return False, "no `uri: service playing` line: the first Play never went out behind the selection"
+        return True, f"{lines[at].strip()} ; audioInfo track={before[-1]} ; uri: service playing"
+    if already is not None:
+        return False, ("the backend took the already-selected path, so no selectTrack was sent :: "
+                       f"{lines[already[0]].strip()}")
+    if sent is None:
+        return False, ("no `uri: selectTrack sent kind=audio index=N stream=SID` line: the backend never sent "
+                       "the audio selectTrack")
+    sent_at, sent_index = sent[0], int(sent[1].group(1))
+    if sent_index != index:
+        return False, f"the backend sent selectTrack index={sent_index}, wanted {index} :: {lines[sent_at].strip()}"
+    for i, m in selected:
+        if m.group(1) is not None and (m.group(1) != "audio" or int(m.group(2)) != index):
+            return False, (f"the service confirmed {m.group(1)} index={m.group(2)}, not audio index={index} :: "
+                           f"{lines[i].strip()}")
+    if not tracks:
+        return False, "no `ev=audioInfo ... track=` line: the service never named the track it started on"
+    initial, final = tracks[0][1], tracks[-1][1]
+    if initial == index:
+        return False, f"the service started on audio track={index} already: nothing to select"
+    if confirmed is None and final == initial:
+        return False, (f"no confirmation: no `ev=trackSelected`, and audioInfo never moved off track={initial}")
+    if final not in (initial, index):
+        return False, f"the service ended on audio track={final}, wanted {index} (it started on {initial})"
+    if not played:
+        return False, "no `uri: service playing` line: the first Play never went out behind the selection"
+    how = confirmed.strip() if confirmed else f"audioInfo moved track={initial} -> track={final}"
+    return True, (f"{lines[sent_at].strip()} ; selected away from track={initial} and confirmed (not an "
+                  f"already-selected settle) :: {how} ; audioInfo last said track={final} ; uri: service playing")
+
+
 def a_uri_clock_past(lines, secs, mode=URI_PROBE):
     """The media clock reached `secs` seconds: the largest `ev=currentTime value=` (ms)."""
     clock = _uri_clock(_uri_events(lines, mode))
@@ -1981,6 +2088,8 @@ def evaluate_uri(case, lines, srv_delta):
     if mode == URI_PRODUCT:
         results.append(("uri_dev_offer", *a_uri_dev_offer(lines)))
         results.append(("uri_route_held", *a_uri_route_held(lines)))
+    if "uri_audio_selected" in exp and mode == URI_PRODUCT:
+        results.append(("uri_audio_selected", *a_uri_audio_selected(lines, exp["uri_audio_selected"])))
     if "uri_clock_past_s" in exp:
         results.append(("uri_clock_past", *a_uri_clock_past(lines, exp["uri_clock_past_s"], mode)))
     if "uri_max_stall_s" in exp:
@@ -6151,7 +6260,10 @@ def run_uri_product_case(case, cfg, srv, url_base, verbose):
             # configured address the mock listens on. Refuse a bad case/CLI/address BEFORE any start.
             files = uri_product_files(case, url_base, (host, port), extra)
             log = os.path.join(tempfile.gettempdir(), f"plx-mock-pms-{os.getpid()}-{name}.log")
-            args = mock_fps.carrier_server_args(case["carrier_path"])
+            try:
+                args = mock_fps.carrier_server_args(case["carrier_path"], case.get("carrier_audio"))
+            except ValueError as why:
+                raise UriProductRefused(str(why))
             # The previous case's app is closed HERE, before this case's mock listens: its close reports
             # `stopped` at its position, and the mock would store that as the carrier's `viewOffset` (see
             # the docstring). After the refusals above, so a refused case still touches neither the set nor

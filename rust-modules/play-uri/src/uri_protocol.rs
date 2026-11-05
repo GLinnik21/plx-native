@@ -546,6 +546,12 @@ pub fn parse_event(payload: &str) -> Message {
             ),
             Ev::AudioInfo => details(value, &["codec", "channels", "sampleRate", "track"]),
             Ev::BufferRange => details(value, &["beginTime", "endTime", "remainingTime", "percent"]),
+            // The track kind and index the service says it selected, when it names them: already
+            // reduced to the whitelist (`audio`/`text`, a JSON integer) in `selected_track`.
+            Ev::TrackSelected => message
+                .selected_track
+                .map(|(kind, index)| format!("type={kind} index={index}"))
+                .unwrap_or_default(),
             // Firmware decompile: `instantBitrate` is the measured download rate and `totalBitrate`
             // the selected variant, both bit/s (the R-ABR-2 run tests that). Numbers only: this
             // event can also carry a host.

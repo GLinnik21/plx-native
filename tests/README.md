@@ -1069,6 +1069,26 @@ when the next case starts, and its close reports `stopped` at its position, whic
 stores as the carrier's `viewOffset` (the collapse case then resumed at 76.8 s of its 90 s clip and ran to
 the end of stream instead of draining). The resume point is server state, not the app's.
 
+The audio pair. `pipe_uri_product_hls_720p24_2a_audio2` and `..._audio1` play `pipe_hls_720p24_2a` (60 s of
+1280x720 at 24 fps, 4 Mbit/s CBR, about 33 MB, two mono AAC streams in the TS: `eng` at 440 Hz first, `ger` at
+880 Hz second) through its carrier `pipe_uri_carrier_720p24_2a.mp4` (the same two tags in the same order, no
+subtitles, about 10 MB); `make fixtures-pipeline` builds both. They measure what the 4.5 service does when the
+backend's startup audio choice is NOT the track it loaded on. `audio2` sets `carrier_audio: 2`
+(`mock_pms.py --extra-media-audio 2`: the mock reports the second stream `selected` and not default, which the
+app's own audio ladder takes once track memory is cleared), and `uri_audio_selected` `{"path": "select",
+"index": 1}` passes only when the backend SENT a native `selectTrack` to that index (`uri: selectTrack sent
+kind=audio index=1 stream=SID`: the native index and the Plex stream id it stands for) and the service
+confirmed it before the first Play (`uri-trace: ... ev=trackSelected`, which names `type=audio index=N` when the
+service does and then must name index 1, or an `ev=audioInfo ... track=` that moved off the load-time track,
+then `uri: service playing`): a refusal fails quoting the `uri: control SelectTrack ... refused (TimedOut)`
+line together with the sent line and any track the service named, a send to another index fails quoting the sent line, no sent line at all fails as "never sent", and `uri:
+audio index=N is already selected (audioInfo); no selectTrack sent` fails it as "nothing was sent". The native
+index the app asks for is the selected stream's 0-based position among the Part's audio streams in container
+order (`OriginalRequest::audio_ordinal`, mapped by `dev::uri_product::DevQualifier`), the numbering
+`audioInfo.track` is taken to use; that numbering is part of what the case tests. `audio1` is the control: no
+`carrier_audio`, the first stream is the pick, and `{"path": "already", "index": 0}` wants that
+already-selected line and no sent line.
+
 ### URI mode — how a URI case is graded
 
 A case whose own `triggers` include `uriprobe` (the probe route), or that says `"uri_route": "product"`

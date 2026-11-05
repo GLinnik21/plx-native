@@ -336,6 +336,67 @@ impl crate::route::uri_preflight::OriginalQualifier for QualifiedOriginal {
     }
 }
 
+/// Two audio streams listed OUT of container order: the German one (PMS stream index 2) comes first in
+/// the document, the English one (index 1) second, so a position in the list and a position in the file
+/// are different numbers.
+#[cfg(feature = "devtriggers")]
+const URI_TWO_AUDIO_OUT_OF_ORDER: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-v","type":"movie","duration":600000,"Media":[
+  {"id":3086,"duration":450000,"bitrate":2372,"width":1920,"height":1080,"videoCodec":"h264","audioCodec":"aac","container":"mkv",
+   "Part":[{"id":3134,"duration":450000,"key":"/library/parts/3134/1/file.mkv","container":"mkv","Stream":[
+     {"id":31341,"streamType":1,"codec":"h264","index":0},
+     {"id":31344,"streamType":2,"codec":"aac","channels":1,"index":2,"languageCode":"ger"},
+     {"id":31342,"streamType":2,"codec":"aac","channels":1,"index":1,"languageCode":"eng","default":true}]}]}]}]}}"#;
+
+/// Records, for every Original the plan asks about, the audio stream it selected and where the Part
+/// lists it, and qualifies nothing.
+#[cfg(feature = "devtriggers")]
+struct RecordingOriginal(std::sync::Arc<std::sync::Mutex<Vec<(i64, Option<i64>)>>>);
+
+#[cfg(feature = "devtriggers")]
+impl crate::route::uri_preflight::OriginalQualifier for RecordingOriginal {
+    fn qualify(&self, _: &plx_base::task::OffFrame,
+        request: crate::route::uri_preflight::OriginalRequest) -> crate::route::uri_preflight::Verdict {
+        self.0.lock().unwrap().push((request.selection.audio_sid, request.audio_ordinal));
+        crate::route::uri_preflight::Verdict::Unknown
+    }
+}
+
+/// W6: the plan hands the qualifier the selected audio stream's position among the Part's audio
+/// streams in CONTAINER order (PMS `Stream.index`), not its place in the response document and not
+/// its stream id.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn the_original_request_carries_the_selected_audio_streams_container_position() {
+    use plx_playback_contract::uri::Binding;
+    use plx_playback_contract::Capabilities;
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    assert!(plx_net::net::global_init());
+    let capabilities = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
+        pause: true, seek: true, audio_track: true, subtitle_track: false,
+        audio_off: false, subtitle_off: false };
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
+        crate::route::uri_preflight::ProductEvidence { display_exported: true,
+            binding: Binding::Exported { canvas: (1920, 1080) },
+            callable: capabilities, certified: capabilities, preview_rectangle: false },
+        std::sync::Arc::new(RecordingOriginal(asked.clone()))));
+    let (port, done, server) = versions_pms_with(URI_TWO_AUDIO_OUT_OF_ORDER, MDE_TRANSCODE_VIDEO);
+    let sid = plx_plex::plex::register_for_test("two-audio", "127.0.0.1", port, "token", "two-audio-client");
+    let mut env = ResolveEnv::snapshot(&ps,
+        plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-v");
+    for audio_sid in [31344, 31342] {
+        env.audio_sid = audio_sid;
+        build_stream(&plx_base::task::OffFrame::for_test(), "rk-v",
+            "/library/parts/3134/1/file.mkv", "h264", "aac", &env);
+    }
+    done.send(()).unwrap();
+    let _ = server.join().unwrap();
+    assert_eq!(*asked.lock().unwrap(), [(31344, Some(1)), (31342, Some(0))],
+        "the German stream is listed first but is the file's second audio stream");
+    plx_plex::plex::reset_servers_for_test();
+}
+
 #[test]
 #[cfg(feature = "devtriggers")]
 fn remembered_subtitle_off_remains_off_during_uri_source_qualification() {

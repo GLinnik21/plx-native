@@ -266,11 +266,20 @@ def configured_endpoint(config_path):
     return host[1], int(port[1])
 
 
-def carrier_server_args(path):
+def carrier_server_args(path, audio=None):
     """The `tests/mock_pms.py` arguments of the URI product route's mock: the carrier clip as its ONE
     `--extra-media` movie (ratingKey `CARRIER_RK`, part `CARRIER_PART_ID`). `path` is absolute, resolved
-    by the runner against the pack it is serving, not against `fixtures_base()`."""
-    return ["--extra-media", str(path)]
+    by the runner against the pack it is serving, not against `fixtures_base()`.
+
+    `audio` (a case's `carrier_audio`) is the 1-based audio stream of the carrier the mock reports as the
+    server-selected one (`--extra-media-audio`): the app's own startup pick, with track memory cleared.
+    None leaves the selection on the file's default stream."""
+    args = ["--extra-media", str(path)]
+    if audio is not None:
+        if not isinstance(audio, int) or isinstance(audio, bool) or audio < 1:
+            raise ValueError(f"carrier_audio {audio!r} must be a positive integer (the 1-based audio stream)")
+        args += ["--extra-media-audio", str(audio)]
+    return args
 
 
 def _mock_guest_module():
