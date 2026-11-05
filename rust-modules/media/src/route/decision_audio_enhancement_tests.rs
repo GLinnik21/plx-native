@@ -2537,7 +2537,7 @@ fn an_engine_failure_during_the_flight_ends_in_error_with_no_spinner() {
 
     // What the pump does on a terminal failure.
     fail_current_engine();
-    crate::player::swap_state_for_test(PlaybackState::Error);
+    crate::player::swap_state_for_test(&mut ps, PlaybackState::Error);
 
     assert!(matches!(phase(), ControlPhase::Failed(_)), "the failure was hidden behind Applying: {:?}", phase());
     assert!(!crate::player::claim_hold::active(), "the hold's spinner outlived the failure");
@@ -2561,7 +2561,7 @@ fn an_engine_failure_during_the_flight_ends_in_error_with_no_spinner() {
         wait_until("the failed claim's encoder to be stopped", || any_stop_seen(&log));
     }
 
-    crate::player::restore_state_for_test(PlaybackState::Idle as u8);
+    crate::player::restore_state_for_test(&mut ps, PlaybackState::Idle as u8);
     crate::player::claim_hold::clear();
     live.finish();
     cleanup(&mut ps);

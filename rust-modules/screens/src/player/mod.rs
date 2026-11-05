@@ -2800,27 +2800,21 @@ mod clock_animator_tests {
     #[test]
     fn a_read_out_appearing_presents_a_frame_while_the_plane_is_unbound() {
         let _g = plx_base::testlock::serial();
-        let ps = PlaybackSession::IDLE;
+        let mut ps = PlaybackSession::IDLE;
         let mut pl = Player::new();
         let mut screen = PlayerScreen::new(plx_machine::machine::EntryId(1), plx_appkit::player_hud::loaded::classic_for_test());
         screen.busy = plx_appkit::player_hud::Busy::None;
 
         settled(&mut pl, &screen, &ps, 9_000);
         // The fingerprint reads `player_hud::busy(ps)` for itself rather than this field, so the
-        // state has to move where the read-out reads it — the pipeline state the pump publishes.
-        plx_media::player::FEED_SHARED.pb_state.store(
-            plx_media::player::PlaybackState::Error as u8,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        // state has to move where the read-out reads it — the session's readout, which the pump
+        // updates with the state it derives.
+        super::overlay_tests::derive_state(&mut ps, plx_media::player::PlaybackState::Error);
         assert!(
             reported(&mut pl, &screen, &ps, 9_005),
             "the failure read-out took the screen on this frame: it must report",
         );
         assert!(presents(9_005), "…and a report is a frame");
-        plx_media::player::FEED_SHARED.pb_state.store(
-            plx_media::player::PlaybackState::Idle as u8,
-            std::sync::atomic::Ordering::Relaxed,
-        );
     }
 }
 
@@ -3036,18 +3030,20 @@ mod travel_rig {
 /// inventing a fixture.
 ///
 /// **Every case holds `testlock::serial()` since phase 12 (PX-PLAYER), and none did before.**
-/// `handle_key`'s first test is now `player_hud::transport_hidden`, which reads the crate-global
-/// playback state — so a case in another module driving that state to `Error` turns every key
-/// here into the failure read-out's policy. It was not hypothetical: the failure-escape case in
-/// `scrub_ownership_tests` below does exactly that, and two cases here failed on the first run
+/// `handle_key`'s first test is now `player_hud::transport_hidden`, which reads `player::state`.
+/// That state was a crate global when this was written, so a case in another module driving it to
+/// `Error` turned every key here into the failure read-out's policy: the failure-escape case in
+/// `scrub_ownership_tests` below did exactly that, and two cases here failed on the first run
 /// after it was written, in the shape `docs/agent-reference.md` describes — plausible wrong data
 /// rather than a clean failure (`ok_elsewhere_toggles_play_pause` asked for the quality ladder).
-/// A screen that reads a crate global from its input path owes the lock to every test that drives
-/// that path.
+/// The derived state is the session's own readout now, and a case that needs one steps it on a
+/// session it owns (`overlay_tests::derive_state`) and hands THAT to the `Cx` (`bound_press_over`),
+/// so it can no longer reach another case; `player::state` still reads other crate globals
+/// (`seeking`, the resolve window), which is what the lock is for.
 #[cfg(test)]
 mod step_ladder_tests {
     use super::*;
-    use crate::player::overlay_tests::TestHost;
+    use crate::player::overlay_tests::{derive_state, TestHost};
     use crate::registry::AppFx;
     use plx_ui::consts::{
         SDLK_DOWN, SDLK_RETURN, SDLK_UP, WCODE_BACK, WCODE_PAUSE, WCODE_PLAY, WCODE_PLAYPAUSE,
@@ -3064,8 +3060,15 @@ mod step_ladder_tests {
     const INST: InstanceId = InstanceId(3);
 
     fn cx() -> Cx<'static, TestHost> {
+        cx_over(plx_media::route::idle_session_for_test())
+    }
+
+    /// [`cx`] over a session the case owns: the one a case that needs a derived state (a stalled
+    /// load, a seek in flight) steps `overlay_tests::derive_state` on, since `player::state` reads
+    /// the session's own readout.
+    fn cx_over(ps: &plx_media::route::PlaybackSession) -> Cx<'_, TestHost> {
         Cx {
-            views: plx_media::route::idle_session_for_test(),
+            views: ps,
             tick: Tick::default(),
             measure: &FixtureMeasure,
             focus: Default::default(),
@@ -3077,6 +3080,17 @@ mod step_ladder_tests {
     /// One key press through `PlayerScreen::step`, returning `(handled, the PlayerReqs it asked
     /// for)` — the same shape `overlay_tests.rs::press` returns for the sibling surface.
     fn press(page: &mut PlayerScreen, sym: u32, wcode: u32, edge: Edge) -> (Handled, Vec<PlayerReq>) {
+        press_over(plx_media::route::idle_session_for_test(), page, sym, wcode, edge)
+    }
+
+    /// [`press`] over the session `ps`, for a case whose page reads a derived state.
+    fn press_over(
+        ps: &plx_media::route::PlaybackSession,
+        page: &mut PlayerScreen,
+        sym: u32,
+        wcode: u32,
+        edge: Edge,
+    ) -> (Handled, Vec<PlayerReq>) {
         let mut out = Vec::new();
         let mut present = plx_machine::present::Present::new();
         let ev = ScreenEvent::<TestHost>::Input(InputEvent {
@@ -3092,7 +3106,7 @@ mod step_ladder_tests {
         });
         let handled = page.step(
             &ev,
-            &cx(),
+            &cx_over(ps),
             &mut Effects::new(&mut out, MachineId::Instance(INST), &mut present),
         );
         let reqs = out
@@ -3130,12 +3144,12 @@ mod step_ladder_tests {
 
     /// One frame's `ScreenEvent::Tick` through `PlayerScreen::step`: the per-frame half of the page,
     /// where nothing is pressed.
-    fn tick(page: &mut PlayerScreen, ms: u32) {
+    fn tick(ps: &plx_media::route::PlaybackSession, page: &mut PlayerScreen, ms: u32) {
         let mut out = Vec::new();
         let mut present = plx_machine::present::Present::new();
         page.step(
             &ScreenEvent::<TestHost>::Tick(Tick { ms, dt_us: 16_000 }),
-            &cx(),
+            &cx_over(ps),
             &mut Effects::new(&mut out, MachineId::Instance(INST), &mut present),
         );
     }
@@ -3149,15 +3163,25 @@ mod step_ladder_tests {
     /// skips that sample, which is right for a test of one arm's body and wrong for anything about
     /// what the PREVIOUS press left behind — the two-press BACK reads exactly that.
     fn bound_press(page: &mut PlayerScreen, sym: u32, wcode: u32) -> (Handled, Vec<PlayerReq>) {
-        page.hud.note_fresh_press(TestHost::session(&cx()), 1_000, false);
-        press(page, sym, wcode, Edge::Down)
+        bound_press_over(plx_media::route::idle_session_for_test(), page, sym, wcode)
+    }
+
+    /// [`bound_press`] over the session `ps`: the sample and the press read the SAME derived state.
+    fn bound_press_over(
+        ps: &plx_media::route::PlaybackSession,
+        page: &mut PlayerScreen,
+        sym: u32,
+        wcode: u32,
+    ) -> (Handled, Vec<PlayerReq>) {
+        page.hud.note_fresh_press(ps, 1_000, false);
+        press_over(ps, page, sym, wcode, Edge::Down)
     }
 
     /// [`bound_press`] for UP and DOWN, which the page leaves to the focus engine: the press goes
     /// through the dispatcher's own order ([`travel_rig`]), so the travel under test is the page's
     /// declared links and edge rules and nothing a test wrote.
     fn bound_travel(rig: &mut Rig, page: &mut PlayerScreen, sym: u32) -> (Handled, Vec<PlayerReq>) {
-        page.hud.note_fresh_press(TestHost::session(&cx()), 1_000, false);
+        page.hud.note_fresh_press(TestHost::session(&rig.cx()), 1_000, false);
         rig.key(page, sym, 0, Edge::Down, 1_000)
     }
 
@@ -3639,12 +3663,12 @@ mod step_ladder_tests {
         use plx_media::player::PlaybackState::{Buffering, Resolving};
         let _g = plx_base::testlock::serial();
         for busy in [Resolving, Buffering] {
-            let was = plx_media::player::swap_state_for_test(busy);
+            let mut ps = plx_media::route::PlaybackSession::IDLE;
+            derive_state(&mut ps, busy);
             let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
-            let (handled, first) = bound_press(&mut page, 0, WCODE_BACK);
+            let (handled, first) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
             let latched = (page.hud.dismissed, page.hud.exit_armed);
-            let (_, second) = bound_press(&mut page, 0, WCODE_BACK);
-            plx_media::player::restore_state_for_test(was);
+            let (_, second) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
             assert_eq!(handled, Handled::Yes);
             assert_eq!(first, vec![], "the first BACK over a {busy:?} load only hides the transport");
             assert_eq!(latched, (true, true), "{busy:?}: the hide is latched and arms the exit");
@@ -3657,11 +3681,11 @@ mod step_ladder_tests {
     #[test]
     fn back_during_a_seek_hides_rather_than_leaves() {
         let _g = plx_base::testlock::serial();
-        let was = plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Seeking);
+        let mut ps = plx_media::route::PlaybackSession::IDLE;
+        derive_state(&mut ps, plx_media::player::PlaybackState::Seeking);
         let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
         assert!(!page.scrub.is_live(), "the fixture: a committed seek leaves no live scrub");
-        let (handled, reqs) = bound_press(&mut page, 0, WCODE_BACK);
-        plx_media::player::restore_state_for_test(was);
+        let (handled, reqs) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
         assert_eq!(handled, Handled::Yes);
         assert_eq!(reqs, vec![], "BACK during a seek must not leave the film");
         assert!(page.hud.dismissed, "BACK during a seek latches the hide");
@@ -3672,11 +3696,11 @@ mod step_ladder_tests {
     #[test]
     fn a_second_back_during_a_seek_leaves() {
         let _g = plx_base::testlock::serial();
-        let was = plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Seeking);
+        let mut ps = plx_media::route::PlaybackSession::IDLE;
+        derive_state(&mut ps, plx_media::player::PlaybackState::Seeking);
         let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
-        let (_, first) = bound_press(&mut page, 0, WCODE_BACK);
-        let (_, second) = bound_press(&mut page, 0, WCODE_BACK);
-        plx_media::player::restore_state_for_test(was);
+        let (_, first) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
+        let (_, second) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
         assert_eq!(first, vec![], "the first BACK only hides");
         assert_eq!(second, vec![PlayerReq::Exit], "the second BACK leaves");
     }
@@ -3687,15 +3711,15 @@ mod step_ladder_tests {
     fn a_back_hide_in_play_does_not_arm_the_exit_for_a_later_rebuffer() {
         use plx_media::player::PlaybackState::{Buffering, Playing};
         let _g = plx_base::testlock::serial();
-        let was = plx_media::player::swap_state_for_test(Playing);
+        let mut ps = plx_media::route::PlaybackSession::IDLE;
+        derive_state(&mut ps, Playing);
         let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
         page.hud.until = 5_000; // the transport is up and lingering
-        let (_, hide) = bound_press(&mut page, 0, WCODE_BACK);
+        let (_, hide) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
         let hidden = (page.hud.dismissed, page.hud.exit_armed);
-        plx_media::player::swap_state_for_test(Buffering);
-        let (_, one) = bound_press(&mut page, 0, WCODE_BACK);
-        let (_, two) = bound_press(&mut page, 0, WCODE_BACK);
-        plx_media::player::restore_state_for_test(was);
+        derive_state(&mut ps, Buffering);
+        let (_, one) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
+        let (_, two) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
         assert_eq!(hide, vec![], "the first BACK hides the transport");
         assert_eq!(hidden, (true, false), "…and, with nothing busy, arms nothing");
         assert_eq!(one, vec![], "one BACK over the rebuffer hides again");
@@ -3712,17 +3736,17 @@ mod step_ladder_tests {
     fn a_busy_hide_stops_arming_the_exit_once_the_pipeline_settles() {
         use plx_media::player::PlaybackState::{Buffering, Playing};
         let _g = plx_base::testlock::serial();
-        let was = plx_media::player::swap_state_for_test(Buffering);
+        let mut ps = plx_media::route::PlaybackSession::IDLE;
+        derive_state(&mut ps, Buffering);
         let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
-        let (_, hide) = bound_press(&mut page, 0, WCODE_BACK);
+        let (_, hide) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
         let armed = (page.hud.dismissed, page.hud.exit_armed);
-        plx_media::player::swap_state_for_test(Playing);
-        tick(&mut page, 2_000);
+        derive_state(&mut ps, Playing);
+        tick(&ps, &mut page, 2_000);
         let settled = (page.hud.dismissed, page.hud.exit_armed);
-        plx_media::player::swap_state_for_test(Buffering);
-        let (_, one) = bound_press(&mut page, 0, WCODE_BACK);
-        let (_, two) = bound_press(&mut page, 0, WCODE_BACK);
-        plx_media::player::restore_state_for_test(was);
+        derive_state(&mut ps, Buffering);
+        let (_, one) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
+        let (_, two) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
         assert_eq!(hide, vec![], "the first BACK over a Buffering load only hides the transport");
         assert_eq!(armed, (true, true), "the fixture: that busy hide armed the exit");
         assert_eq!(settled, (true, false), "a Tick over a settled pipeline drops the arming, not the hide");
@@ -3736,16 +3760,16 @@ mod step_ladder_tests {
     fn an_up_hide_does_not_arm_the_exit_for_a_later_rebuffer() {
         use plx_media::player::PlaybackState::{Buffering, Playing};
         let _g = plx_base::testlock::serial();
-        let was = plx_media::player::swap_state_for_test(Playing);
+        let mut ps = plx_media::route::PlaybackSession::IDLE;
+        derive_state(&mut ps, Playing);
         let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
         page.hud.until = 5_000;
         page.hud.nav.focus = GROUP_ROW; // on the control row, where UP hides
-        let mut rig = Rig::on(&page, ENTRY);
+        let mut rig = Rig::on_session(&page, ENTRY, &ps);
         bound_travel(&mut rig, &mut page, SDLK_UP);
         let hidden = (page.hud.dismissed, page.hud.exit_armed);
-        plx_media::player::swap_state_for_test(Buffering);
-        let (_, one) = bound_press(&mut page, 0, WCODE_BACK);
-        plx_media::player::restore_state_for_test(was);
+        derive_state(&mut ps, Buffering);
+        let (_, one) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
         assert_eq!(hidden, (true, false), "the fixture: UP hid the transport and armed nothing");
         assert_eq!(one, vec![], "one BACK over the rebuffer does not leave");
     }
@@ -3758,14 +3782,14 @@ mod step_ladder_tests {
     fn an_up_hide_while_busy_does_not_arm_the_exit() {
         use plx_media::player::PlaybackState::Buffering;
         let _g = plx_base::testlock::serial();
-        let was = plx_media::player::swap_state_for_test(Buffering);
+        let mut ps = plx_media::route::PlaybackSession::IDLE;
+        derive_state(&mut ps, Buffering);
         let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
         page.hud.nav.focus = GROUP_ROW; // on the control row, where UP hides
-        let mut rig = Rig::on(&page, ENTRY);
+        let mut rig = Rig::on_session(&page, ENTRY, &ps);
         bound_travel(&mut rig, &mut page, SDLK_UP);
         let hidden = (page.hud.dismissed, page.hud.exit_armed);
-        let (_, one) = bound_press(&mut page, 0, WCODE_BACK);
-        plx_media::player::restore_state_for_test(was);
+        let (_, one) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
         assert_eq!(hidden, (true, false), "the fixture: UP hid the transport over a Buffering load and armed nothing");
         assert_eq!(one, vec![], "one BACK after an UP-hide over a busy load does not leave");
     }
@@ -3775,16 +3799,16 @@ mod step_ladder_tests {
     #[test]
     fn another_bound_press_between_the_backs_disarms_the_exit() {
         let _g = plx_base::testlock::serial();
-        let was = plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Buffering);
+        let mut ps = plx_media::route::PlaybackSession::IDLE;
+        derive_state(&mut ps, plx_media::player::PlaybackState::Buffering);
         let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
-        let (_, first) = bound_press(&mut page, 0, WCODE_BACK);
-        bound_press(&mut page, SDLK_DOWN, 0);
+        let (_, first) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
+        bound_press_over(&ps, &mut page, SDLK_DOWN, 0);
         // DOWN walks the ring; it must not have started a scrub, whose own BACK arm would then
         // swallow the next press and make this test pass without the disarm.
         let scrubbing = page.scrub.is_live();
-        let (_, third) = bound_press(&mut page, 0, WCODE_BACK);
-        let (_, fourth) = bound_press(&mut page, 0, WCODE_BACK);
-        plx_media::player::restore_state_for_test(was);
+        let (_, third) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
+        let (_, fourth) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
         assert_eq!(first, vec![]);
         assert!(!scrubbing, "the fixture: DOWN started no scrub");
         assert_eq!(third, vec![], "a BACK after another key is a fresh first BACK");
@@ -3796,12 +3820,12 @@ mod step_ladder_tests {
     #[test]
     fn a_segment_offer_between_the_backs_disarms_the_exit() {
         let _g = plx_base::testlock::serial();
-        let was = plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Buffering);
+        let mut ps = plx_media::route::PlaybackSession::IDLE;
+        derive_state(&mut ps, plx_media::player::PlaybackState::Buffering);
         let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
-        let (_, first) = bound_press(&mut page, 0, WCODE_BACK);
+        let (_, first) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
         page.hud.raise_for_offer(1_000, 1);
-        let (_, second) = bound_press(&mut page, 0, WCODE_BACK);
-        plx_media::player::restore_state_for_test(was);
+        let (_, second) = bound_press_over(&ps, &mut page, 0, WCODE_BACK);
         assert_eq!(first, vec![]);
         assert_eq!(second, vec![], "an offer put the transport back: this BACK is a first one");
     }
@@ -4458,9 +4482,8 @@ mod scrub_ownership_tests {
     /// the easiest to lose in a port that dispatches on a resolved element.
     #[test]
     fn a_click_on_the_picture_toggles_play_pause_but_not_over_a_failure() {
-        use std::sync::atomic::Ordering::Relaxed;
         let _g = plx_base::testlock::serial();
-        let f = Fixture::new(false);
+        let mut f = Fixture::new(false);
         let mut page = page_on_the_bar();
 
         let (handled, reqs) = pointer(
@@ -4473,10 +4496,7 @@ mod scrub_ownership_tests {
 
         // …and not while a failure owns the frame: there is nothing to toggle, and the read-out's
         // one drawn target is its own escape.
-        let was = plx_media::player::FEED_SHARED.pb_state.load(Relaxed);
-        plx_media::player::FEED_SHARED
-            .pb_state
-            .store(plx_media::player::PlaybackState::Error as u8, Relaxed);
+        super::overlay_tests::derive_state(&mut f.session, plx_media::player::PlaybackState::Error);
         let mut page = page_on_the_bar();
         let (handled, reqs) = pointer(
             &f.session, &mut page,
@@ -4485,7 +4505,6 @@ mod scrub_ownership_tests {
         );
         assert_eq!(handled, Handled::Yes, "swallowed, as the old block's early return did");
         assert!(reqs.is_empty());
-        plx_media::player::FEED_SHARED.pb_state.store(was, Relaxed);
     }
 
     /// **The failure read-out's own two escapes, as the page's first test rather than a ladder
@@ -4499,13 +4518,9 @@ mod scrub_ownership_tests {
     /// `transport_hidden` FIRST, which is the same precedence expressed as one condition.
     #[test]
     fn a_failed_playback_answers_only_its_two_drawn_escapes() {
-        use std::sync::atomic::Ordering::Relaxed;
         let _g = plx_base::testlock::serial();
-        let f = Fixture::new(false);
-        let was = plx_media::player::FEED_SHARED.pb_state.load(Relaxed);
-        plx_media::player::FEED_SHARED
-            .pb_state
-            .store(plx_media::player::PlaybackState::Error as u8, Relaxed);
+        let mut f = Fixture::new(false);
+        super::overlay_tests::derive_state(&mut f.session, plx_media::player::PlaybackState::Error);
 
         // With no Plex request behind it nothing can be retried, so the row is only the way out
         // (`player::failure_actions`; the support facts are the footer, never a control); OK
@@ -4534,8 +4549,6 @@ mod scrub_ownership_tests {
         let (handled, reqs) = key_w(&f.session, &mut page, 0, WCODE_EXIT, Edge::Down, 1_000);
         assert_eq!(handled, Handled::No, "EXIT falls through to the loop's own arm");
         assert!(reqs.is_empty());
-
-        plx_media::player::FEED_SHARED.pb_state.store(was, Relaxed);
     }
 
     /// **The failure table never offers more controls than the read-out's row has slots.** The
@@ -4561,8 +4574,8 @@ mod scrub_ownership_tests {
         use std::sync::atomic::Ordering::Relaxed;
         use plx_ui::screen::DrawFrame;
         let _g = plx_base::testlock::serial();
-        let f = Fixture::new(false);
-        let was = plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Playing);
+        let mut f = Fixture::new(false);
+        super::overlay_tests::derive_state(&mut f.session, plx_media::player::PlaybackState::Playing);
         plx_media::player::TX.scrub_ns.store(-1, Relaxed);
         let elems = |page: &PlayerScreen| {
             let cx = cx(&f.session);
@@ -4589,7 +4602,6 @@ mod scrub_ownership_tests {
         assert_eq!(elems(&page), vec![player_hud::ELEM_SCRUB], "still hidden in the 150 ms wait");
         step(&mut page, 2_300);
         assert_eq!(elems(&page), before, "back, and clickable again");
-        plx_media::player::restore_state_for_test(was);
     }
 
     /// **A reveal tap is not a scrub, so it does not blink the chrome.** LEFT/RIGHT on a HIDDEN
@@ -4602,7 +4614,7 @@ mod scrub_ownership_tests {
         use std::sync::atomic::Ordering::Relaxed;
         let _g = plx_base::testlock::serial();
         let mut f = Fixture::new(false);
-        let was = plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Playing);
+        super::overlay_tests::derive_state(&mut f.session, plx_media::player::PlaybackState::Playing);
         f.playhead(50 * S);
         let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
         assert!(!page.hud.visible_at_press, "the fixture: the transport is hidden");
@@ -4635,7 +4647,6 @@ mod scrub_ownership_tests {
         assert!(!page.row.chrome_interactive(), "a travelled hold is a scrub: the chrome is away");
 
         page.transport_reset(true);
-        plx_media::player::restore_state_for_test(was);
     }
 
     /// **(c) The scrubber's stop is a SEEK target, and a drag previews across it.**
@@ -4651,8 +4662,8 @@ mod scrub_ownership_tests {
         use plx_ui::hit::{HitMap, PointerKind};
         use plx_ui::screen::DrawFrame;
         let _g = plx_base::testlock::serial();
-        let f = Fixture::new(false);
-        let was = plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Playing);
+        let mut f = Fixture::new(false);
+        super::overlay_tests::derive_state(&mut f.session, plx_media::player::PlaybackState::Playing);
         for y in [870.0, 890.0] {
             let mut page = page_on_the_bar();
             page.hud.dismissed = true;
@@ -4693,7 +4704,6 @@ mod scrub_ownership_tests {
             assert_eq!(seeks(key(&f.session, &mut page, SDLK_RETURN, Edge::Up, 1_080).1),
                 vec![PlayerReq::CommitSeek(previewed)]);
         }
-        plx_media::player::restore_state_for_test(was);
     }
 
     #[test]

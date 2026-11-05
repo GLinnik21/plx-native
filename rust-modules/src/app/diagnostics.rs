@@ -3483,19 +3483,14 @@ mod tests {
     /// language, including the shared helpers (units, decimals, quality labels) that read the UI
     /// language elsewhere. Nothing but ASCII and the panel's own symbols may appear.
     #[test]
-    #[cfg(feature = "play-feed")] // swaps the pump's playback state, a Feed-gated test hook
+    #[cfg(feature = "play-feed")] // derives the session's playback state, a Feed-gated test hook
     fn panel_rows_are_english_in_every_language() {
         let _g = plx_base::testlock::serial();
-        let ps = EnhTestSession::new(EnhTestFixture::default());
+        let mut ps = EnhTestSession::new(EnhTestFixture::default());
         // Not idle: an idle panel shows only the device rows and builds no pipeline/model columns,
-        // which is where the shared localized helpers are reached.
-        struct RestoreState(u8);
-        impl Drop for RestoreState {
-            fn drop(&mut self) {
-                plx_media::player::restore_state_for_test(self.0);
-            }
-        }
-        let _state = RestoreState(plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Playing));
+        // which is where the shared localized helpers are reached. The state is this session's own
+        // readout, so nothing global is written and nothing needs restoring.
+        plx_media::player::swap_state_for_test(&mut ps.ps, plx_media::player::PlaybackState::Playing);
         for pref in plx_platform::i18n::SHIPPED {
             let _lang = plx_platform::i18n::language_on_this_thread_for_test(pref);
             let mut panel = Diagnostics::default();

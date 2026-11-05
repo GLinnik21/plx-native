@@ -143,17 +143,14 @@ mod tests {
     struct PlaybackFixture {
         session: plx_media::route::PlaybackSession,
         dpad_seeking: InstantDpadSeeking,
-        state: u8,
     }
     impl PlaybackFixture {
         fn new() -> Self {
-            let saved = Self {
+            let mut saved = Self {
                 session: super::super::overlay_tests::playback_session(40_000_000_000, 100_000_000_000),
                 dpad_seeking: plx_media::route::instant_dpad_seeking(),
-                state: plx_media::player::swap_state_for_test(
-                    plx_media::player::PlaybackState::Playing,
-                ),
             };
+            super::super::overlay_tests::derive_state(&mut saved.session, plx_media::player::PlaybackState::Playing);
             plx_media::route::restore_instant_dpad_seeking(InstantDpadSeeking::On);
             saved
         }
@@ -167,7 +164,6 @@ mod tests {
     impl Drop for PlaybackFixture {
         fn drop(&mut self) {
             plx_media::route::restore_instant_dpad_seeking(self.dpad_seeking);
-            plx_media::player::restore_state_for_test(self.state);
         }
     }
 
@@ -428,10 +424,10 @@ mod tests {
     fn seek_jump_do_not_raise_the_hud_during_seeking_but_buffering_still_does() {
         let _g = plx_base::testlock::serial();
         let mut playback = PlaybackFixture::new();
-        plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Seeking);
+        super::super::overlay_tests::derive_state(&mut playback.session, plx_media::player::PlaybackState::Seeking);
         assert!(!input::hud_visible(&playback.session, 1_000, 0, false, true));
         assert!(input::hud_visible(&playback.session, 1_000, 2_000, false, false));
-        plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Buffering);
+        super::super::overlay_tests::derive_state(&mut playback.session, plx_media::player::PlaybackState::Buffering);
         assert!(input::hud_visible(&playback.session, 1_000, 0, false, true));
         // Play has been issued after seeking, but its first new picture has not arrived yet.
         // The derived state briefly becomes Buffering; that must not flash the transport.

@@ -1169,7 +1169,7 @@ pub fn release_failed_engine(ps: &mut crate::route::PlaybackSession, pa: &mut su
     // a picture up (a Load that failed, an open that never produced a frame) and so holds nothing
     // the television mistakes for playback.
     if crate::route::is_preview(ps)
-        || FEED_SHARED.pb_state.load(Ordering::Relaxed) != super::shared::PlaybackState::Error as u8
+        || ps.readout().state() != super::shared::PlaybackState::Error
         || FEED_SHARED.frames.load(Ordering::Relaxed) == 0
         || crate::route::recovery_flight_outstanding()
         || crate::route::engineless_flight_outstanding()
@@ -1279,13 +1279,6 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
     native.unblock_join_close();
     let mut terminal_facts = plx_play_feed::feed_pump::native_attempt_facts();
     terminal_facts.started = Some(false);
-    // A real stop ends the playback and its end of stream with it (`SHARED.reset_session()` below
-    // clears the physical flag these facts were just read from). Left standing, the finished
-    // play's `ended` is what a replay finds while its start is deferred behind this Unload: the
-    // loop's end-of-stream rule exits the replay's player page and that stop cancels the start.
-    if !for_reload {
-        terminal_facts.ended = Some(false);
-    }
     let _ = ps.ingest_attempt_facts(route_attempt, crate::player::attempt_view::Backend::Feed, terminal_facts);
     after_physical_close(ps, for_reload, final_report, &mut report_th);
     native.report_dispatched();
@@ -1293,6 +1286,10 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
     let release_status = native.release_status();
     // A reload preserves the file's duration and viewer transport, then restarts the same item.
     // A real stop retires both along with the current claim hold.
+    // Every reset of the Feed's session also retires the readout's view of it (`SessionReset`). A
+    // real stop ends the playback and its end of stream with it: left standing, the finished play's
+    // `ended` is what a replay finds while its start is deferred behind this Unload, the loop's
+    // end-of-stream rule exits the replay's player page and that stop cancels the start.
     if for_reload {
         SHARED.reset_session_for_reload();
         FEED_TX.reset_for_reload();
@@ -1301,6 +1298,7 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
         FEED_TX.reset();
         super::claim_hold::clear();
     }
+    ps.step_readout(super::readout::ReadoutEvent::SessionReset);
     finish_feed_teardown(ps, for_reload, report_th);
     pa.finish_native_stop(native, for_reload);
     pa.note_backend_feed_release(route_attempt.contract_id(), release_status);
@@ -1382,6 +1380,7 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
             SHARED.reset_session();
             #[cfg(feature = "play-feed")]
             FEED_TX.reset();
+            ps.step_readout(super::readout::ReadoutEvent::SessionReset);
             mark_attempt_stopped(ps);
             #[cfg(feature = "play-feed")]
             super::claim_hold::clear();

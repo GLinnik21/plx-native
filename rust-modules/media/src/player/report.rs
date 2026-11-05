@@ -44,7 +44,7 @@
 //! # Observed at the DERIVED state, not at `pump::set_state`
 //!
 //! `set_state` looks like the choke point and is not: [`super::state`] derives two of its answers
-//! outside `pb_state` entirely — `Resolving` while a plan is in flight, and `Error` for a
+//! outside the readout's state entirely — `Resolving` while a plan is in flight, and `Error` for a
 //! `/decision` refusal, which happens before an engine exists and so before the pump has ever run.
 //! Hooking the setter would have silently missed the earliest and most certain failure there is.
 //! So this observes the value the HUD reads, once a frame.
@@ -753,8 +753,6 @@ pub fn last_delivery_requested_for_test() -> Option<(DeliveryReason, DeliveryCla
 /// asked for a trace.
 #[cfg(any(test, feature = "test-support"))]
 pub fn reset_latches_for_test() {
-    #[cfg(feature = "play-feed")]
-    plx_play_feed::shared::FEED_SHARED.pb_state.store(super::attempt_view::PlaybackState::Idle as u8, Relaxed);
     LAST.store(super::attempt_view::PlaybackState::Idle as u8, Relaxed);
     SAW_START.store(false, Relaxed);
     SAW_FAIL.store(false, Relaxed);
@@ -1502,20 +1500,20 @@ mod tests {
     #[test]
     fn a_paused_session_with_no_picture_reports_no_playback_started() {
         let _g = plx_base::testlock::serial();
-        let ps = crate::route::PlaybackSession::IDLE;
+        let mut ps = crate::route::PlaybackSession::IDLE;
         SAW_START.store(false, Relaxed);
         REBUFFER_COUNT.store(0, Relaxed);
         LAST.store(S::Connecting as u8, Relaxed);
         FEED_SHARED.seeking.store(false, Relaxed);
-        FEED_SHARED.pb_state.store(S::Paused as u8, Relaxed);
+        ps.step_readout(crate::player::readout::ReadoutEvent::StateDerived(S::Paused));
         let steps_before = trace_steps().len();
         tick(&ps);
         let steps_after = trace_steps().len();
         let started = SAW_START.load(Relaxed);
-        FEED_SHARED.pb_state.store(S::Buffering as u8, Relaxed);
+        ps.step_readout(crate::player::readout::ReadoutEvent::StateDerived(S::Buffering));
         tick(&ps);
         let rebuffers = REBUFFER_COUNT.load(Relaxed);
-        FEED_SHARED.pb_state.store(S::Idle as u8, Relaxed);
+        ps.step_readout(crate::player::readout::ReadoutEvent::StateDerived(S::Idle));
         LAST.store(S::Idle as u8, Relaxed);
         SAW_START.store(false, Relaxed);
         REBUFFER_COUNT.store(0, Relaxed);
@@ -1531,7 +1529,7 @@ mod tests {
     #[test]
     fn a_claim_hold_is_not_a_rebuffer() {
         let _g = plx_base::testlock::serial();
-        let ps = crate::route::PlaybackSession::IDLE;
+        let mut ps = crate::route::PlaybackSession::IDLE;
         REBUFFER_COUNT.store(0, Relaxed);
         SAW_START.store(true, Relaxed);
         LAST.store(S::Playing as u8, Relaxed);
@@ -1549,11 +1547,11 @@ mod tests {
         crate::player::claim_hold::clear();
         crate::route::reset_player_control_for_test(&ps);
         LAST.store(S::Playing as u8, Relaxed);
-        FEED_SHARED.pb_state.store(S::Buffering as u8, Relaxed);
+        ps.step_readout(crate::player::readout::ReadoutEvent::StateDerived(S::Buffering));
         tick(&ps);
         let genuine = REBUFFER_COUNT.load(Relaxed);
 
-        FEED_SHARED.pb_state.store(S::Idle as u8, Relaxed);
+        ps.step_readout(crate::player::readout::ReadoutEvent::StateDerived(S::Idle));
         LAST.store(S::Idle as u8, Relaxed);
         SAW_START.store(false, Relaxed);
         REBUFFER_COUNT.store(0, Relaxed);
@@ -1855,12 +1853,12 @@ mod tests {
         let mut ps = crate::route::PlaybackSession::default();
         crate::route::install_transcode_for_test(&mut ps, false, true);
         let generation = requested(&ps, plx_plex::plex::ServerId::UNSET, AttemptOrigin::Fresh);
-        let set = |state: S| {
-            FEED_SHARED.pb_state.store(state as u8, Relaxed);
-            tick(&ps);
+        let set = |ps: &mut crate::route::PlaybackSession, state: S| {
+            ps.step_readout(crate::player::readout::ReadoutEvent::StateDerived(state));
+            tick(ps);
         };
-        set(S::Connecting);
-        set(S::Playing);
+        set(&mut ps, S::Connecting);
+        set(&mut ps, S::Playing);
         assert!(SAW_START.load(Relaxed), "the session played");
         let playing = error_context(&ps);
         assert!(playing.started && playing.attempt_started, "a picture is up on this attempt");
@@ -1878,8 +1876,8 @@ mod tests {
             DeliveryReason::OriginalRecovery,
             AttemptOrigin::QualityChange,
         );
-        set(S::Connecting);
-        set(S::Error);
+        set(&mut ps, S::Connecting);
+        set(&mut ps, S::Error);
 
         let ctx = error_context(&ps);
         assert_eq!(ctx.delivery.code(), "hls", "the session's route is still reported, for continuity");
@@ -1889,7 +1887,7 @@ mod tests {
         assert_eq!(ctx.attempt_origin.code(), "quality_change", "the viewer asked for Original");
         assert_eq!(ctx.attempt_ordinal.code(), "2", "the second open of this playback");
 
-        FEED_SHARED.pb_state.store(S::Idle as u8, Relaxed);
+        ps.step_readout(crate::player::readout::ReadoutEvent::StateDerived(S::Idle));
         LAST.store(S::Idle as u8, Relaxed);
         SAW_START.store(false, Relaxed);
         SAW_FAIL.store(false, Relaxed);
@@ -1937,9 +1935,9 @@ mod tests {
         consented(|| {
             crate::player::preview::reset_for_test();
             clear_error_trace();
-            let ps = refused_preview();
+            let mut ps = refused_preview();
             preview_requested();
-            observe(&ps, S::Error);
+            observe(&mut ps, S::Error);
             let v = event_for(&ps);
             assert_eq!(v["tags"]["playback.kind"], "preview_not_direct");
             assert_eq!(v["tags"]["playback.attempt_origin"], "preview");
@@ -1962,10 +1960,10 @@ mod tests {
             // the preview's.
             ledger().begin(7, AttemptOrigin::QualityChange);
             ledger().reopen(7, AttemptOrigin::UserRetry);
-            let ps = refused_preview();
+            let mut ps = refused_preview();
             let calls = plx_telemetry::telemetry::playback::report_calls_for_test();
             preview_requested();
-            observe(&ps, S::Error);
+            observe(&mut ps, S::Error);
 
             let steps = trace_steps();
             assert!(
@@ -2039,8 +2037,8 @@ mod tests {
             let mut ps = crate::route::PlaybackSession::default();
             crate::route::refuse_for_test(&mut ps, crate::route::PlayVerdict::DirectPlayDisabled);
             requested(&ps, plx_plex::plex::ServerId::UNSET, AttemptOrigin::Fresh);
-            observe(&ps, S::Resolving);
-            observe(&ps, S::Error);
+            observe(&mut ps, S::Resolving);
+            observe(&mut ps, S::Error);
             assert_eq!(error_context(&ps).attempt_origin, AttemptOrigin::Fresh);
             let v = event_for(&ps);
             let kind = v["tags"]["playback.kind"].as_str().expect("kind tag").to_owned();
@@ -2059,18 +2057,18 @@ mod tests {
         consented(|| {
             crate::player::preview::reset_for_test();
             clear_error_trace();
-            let ps = refused_preview();
-            let idle = crate::route::PlaybackSession::default();
+            let mut ps = refused_preview();
+            let mut idle = crate::route::PlaybackSession::default();
             let calls = plx_telemetry::telemetry::playback::report_calls_for_test();
 
             preview_requested();
-            observe(&ps, S::Error);
+            observe(&mut ps, S::Error);
             assert_eq!(plx_telemetry::telemetry::playback::report_calls_for_test() - calls, 1);
 
             // The viewer browses on; the next trailer's resolve is in flight, then it fails too.
-            observe(&idle, S::Resolving);
+            observe(&mut idle, S::Resolving);
             preview_requested();
-            observe(&ps, S::Error);
+            observe(&mut ps, S::Error);
             assert_eq!(
                 plx_telemetry::telemetry::playback::report_calls_for_test() - calls,
                 2,
@@ -2088,17 +2086,17 @@ mod tests {
         let _g = plx_base::testlock::serial();
         consented(|| {
             crate::player::preview::reset_for_test();
-            let film = crate::route::PlaybackSession::default();
+            let mut film = crate::route::PlaybackSession::default();
             requested(&film, plx_plex::plex::ServerId::UNSET, AttemptOrigin::Fresh);
             // The film played and ended; its latches stay up until the next film request.
             SAW_START.store(true, Relaxed);
             let attempt = ATTEMPT.load(Relaxed);
-            let ps = refused_preview();
+            let mut ps = refused_preview();
             let calls = plx_telemetry::telemetry::playback::report_calls_for_test();
 
             let (_, events) = plx_telemetry::diag::test_events::capture(|| {
                 preview_requested();
-                observe(&ps, S::Error);
+                observe(&mut ps, S::Error);
             });
             assert!(events.is_empty(), "a trailer is no attempt: {events:?}");
             assert!(!SAW_FAIL.load(Relaxed), "the film did not fail");
@@ -2112,8 +2110,8 @@ mod tests {
 
             // …and the film's own failure afterwards is still its own.
             SAW_START.store(false, Relaxed);
-            observe(&film, S::Resolving);
-            let (_, events) = plx_telemetry::diag::test_events::capture(|| observe(&film, S::Error));
+            observe(&mut film, S::Resolving);
+            let (_, events) = plx_telemetry::diag::test_events::capture(|| observe(&mut film, S::Error));
             assert!(matches!(events.as_slice(), [DiagEvent::PlaybackFailed { playback_id, .. }] if *playback_id == attempt));
             assert!(SAW_FAIL.load(Relaxed));
         });
@@ -2146,8 +2144,8 @@ mod tests {
                 refusal_path: Some(FEED_SHARED.refusal_path()),
                 ..Default::default()
             });
-            observe(&ps, S::Resolving);
-            let (_, events) = plx_telemetry::diag::test_events::capture(|| observe(&ps, S::Error));
+            observe(&mut ps, S::Resolving);
+            let (_, events) = plx_telemetry::diag::test_events::capture(|| observe(&mut ps, S::Error));
             FEED_SHARED.retire_native_session(epoch);
             super::super::SHARED.reset_session();
             match events.as_slice() {
@@ -2186,8 +2184,8 @@ mod tests {
                 refusal_path: Some(FEED_SHARED.refusal_path()),
                 ..Default::default()
             });
-            observe(&ps, S::Resolving);
-            let (_, events) = plx_telemetry::diag::test_events::capture(|| observe(&ps, S::Error));
+            observe(&mut ps, S::Resolving);
+            let (_, events) = plx_telemetry::diag::test_events::capture(|| observe(&mut ps, S::Error));
             FEED_SHARED.retire_native_session(epoch);
             super::super::SHARED.reset_session();
             assert_eq!(FEED_SHARED.refusal_path(), super::super::shared::RefusalPath::None, "reset_session clears it");
@@ -2213,8 +2211,8 @@ mod tests {
             let mut ps = crate::route::PlaybackSession::default();
             crate::route::resolve_as_preview_for_test(&mut ps);
             let (_, events) = plx_telemetry::diag::test_events::capture(|| {
-                observe(&ps, S::Connecting);
-                observe(&ps, S::Playing);
+                observe(&mut ps, S::Connecting);
+                observe(&mut ps, S::Playing);
             });
             assert!(events.is_empty(), "a trailer's first picture is not playback.started: {events:?}");
             assert!(!SAW_START.load(Relaxed));
@@ -2232,12 +2230,12 @@ mod tests {
             let film = crate::route::PlaybackSession::default();
             requested(&film, plx_plex::plex::ServerId::UNSET, AttemptOrigin::Fresh);
             clear_error_trace();
-            let ps = refused_preview();
+            let mut ps = refused_preview();
             let calls = plx_telemetry::telemetry::playback::report_calls_for_test();
 
             let (_, events) = plx_telemetry::diag::test_events::capture(|| {
                 preview_requested();
-                FEED_SHARED.pb_state.store(S::Error as u8, Relaxed);
+                ps.step_readout(crate::player::readout::ReadoutEvent::StateDerived(S::Error));
                 tick_with(&ps, false, None);
             });
             assert!(events.is_empty(), "no usage event: {events:?}");
@@ -2263,7 +2261,6 @@ mod tests {
         enabled.asked_version = consent::POLICY_VERSION;
         consent::install(enabled);
         let out = body();
-        FEED_SHARED.pb_state.store(S::Idle as u8, Relaxed);
         LAST.store(S::Idle as u8, Relaxed);
         SAW_START.store(false, Relaxed);
         SAW_FAIL.store(false, Relaxed);
@@ -2446,8 +2443,8 @@ mod tests {
     }
 
     /// Present `state` to the per-frame observer, as the main loop does once a frame.
-    fn observe(ps: &crate::route::PlaybackSession, state: S) {
-        FEED_SHARED.pb_state.store(state as u8, Relaxed);
+    fn observe(ps: &mut crate::route::PlaybackSession, state: S) {
+        ps.step_readout(crate::player::readout::ReadoutEvent::StateDerived(state));
         tick(ps);
     }
 
@@ -2458,19 +2455,19 @@ mod tests {
     fn a_retry_press_reports_user_retry_as_the_second_open_and_a_fresh_play_starts_over() {
         let _g = plx_base::testlock::serial();
         consented(|| {
-            let ps = crate::route::PlaybackSession::default();
+            let mut ps = crate::route::PlaybackSession::default();
             let sid = plx_plex::plex::ServerId::UNSET;
             requested(&ps, sid, AttemptOrigin::Fresh);
-            observe(&ps, S::Connecting);
-            observe(&ps, S::Error);
+            observe(&mut ps, S::Connecting);
+            observe(&mut ps, S::Error);
             let first = error_context(&ps);
             assert_eq!((first.attempt_origin.code(), first.attempt_ordinal.code()), ("fresh", "1"));
 
             // The Retry: the failed playback is stopped (which clears the trace), then re-requested.
             clear_error_trace();
             requested(&ps, sid, AttemptOrigin::UserRetry);
-            observe(&ps, S::Resolving);
-            observe(&ps, S::Error);
+            observe(&mut ps, S::Resolving);
+            observe(&mut ps, S::Error);
             let retried = error_context(&ps);
             assert_eq!(retried.attempt_origin.code(), "user_retry");
             assert_eq!(retried.attempt_ordinal.code(), "2");
@@ -2518,13 +2515,13 @@ mod tests {
     fn a_recovery_that_also_fails_emits_one_report_and_names_the_recovery() {
         let _g = plx_base::testlock::serial();
         consented(|| {
-            let ps = crate::route::PlaybackSession::default();
+            let mut ps = crate::route::PlaybackSession::default();
             let sid = plx_plex::plex::ServerId::UNSET;
             let before = plx_telemetry::telemetry::playback::report_calls_for_test();
             let generation = requested(&ps, sid, AttemptOrigin::Fresh);
-            observe(&ps, S::Connecting);
+            observe(&mut ps, S::Connecting);
             // The first open failed; the recovery flight flies (Resolving), lands, and reopens.
-            observe(&ps, S::Resolving);
+            observe(&mut ps, S::Resolving);
             note_delivery_requested_for(
                 generation,
                 DeliveryClass::Hls,
@@ -2532,10 +2529,10 @@ mod tests {
                 DeliveryReason::OriginalOpenRollback,
                 AttemptOrigin::Recovery,
             );
-            observe(&ps, S::Connecting);
-            observe(&ps, S::Error);
+            observe(&mut ps, S::Connecting);
+            observe(&mut ps, S::Error);
             // The error read-out is republished on the frames that follow.
-            observe(&ps, S::Error);
+            observe(&mut ps, S::Error);
             let ctx = error_context(&ps);
             assert_eq!((ctx.attempt_origin.code(), ctx.attempt_ordinal.code()), ("recovery", "2"));
             assert_eq!(
@@ -2547,8 +2544,8 @@ mod tests {
             // The flight refused: no second open was ever decided, so the first open is what failed.
             clear_error_trace();
             requested(&ps, sid, AttemptOrigin::Fresh);
-            observe(&ps, S::Connecting);
-            observe(&ps, S::Error);
+            observe(&mut ps, S::Connecting);
+            observe(&mut ps, S::Error);
             let refused = error_context(&ps);
             assert_eq!((refused.attempt_origin.code(), refused.attempt_ordinal.code()), ("fresh", "1"));
         });
