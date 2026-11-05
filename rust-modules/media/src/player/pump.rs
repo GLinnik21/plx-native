@@ -2763,7 +2763,7 @@ mod flight_tests {
         while replacement_stops(&rig.flight) == 0 {
             {
                 let _frame = plx_base::task::FrameScope::enter();
-                assert!(land_resume(&mut rig.ps).is_none(), "a dropped flight landed");
+                assert!(land_resume(&mut rig.ps, &mut rig.pa).is_none(), "a dropped flight landed");
             }
             assert!(std::time::Instant::now() < deadline, "timed out waiting for the late landing's reap");
             std::thread::sleep(Duration::from_millis(5));
@@ -2777,7 +2777,7 @@ mod flight_tests {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             let _frame = plx_base::task::FrameScope::enter();
-            if let Some(outcome) = land_resume(&mut rig.ps) {
+            if let Some(outcome) = land_resume(&mut rig.ps, &mut rig.pa) {
                 assert_eq!(outcome, ResumeOutcome::Prepared);
                 break;
             }
@@ -4008,7 +4008,7 @@ mod flight_tests {
         while replacement_stops(&rig.flight) == 0 {
             {
                 let _frame = plx_base::task::FrameScope::enter();
-                assert!(land_resume(&mut rig.ps).is_none(), "a dropped flight landed");
+                assert!(land_resume(&mut rig.ps, &mut rig.pa).is_none(), "a dropped flight landed");
             }
             assert!(std::time::Instant::now() < deadline, "timed out waiting for the dropped flight's reap");
             std::thread::sleep(Duration::from_millis(5));

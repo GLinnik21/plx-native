@@ -34,9 +34,11 @@
 //! anywhere: the player derives it from the epoch it requested and the landed one, and the pending
 //! target and the HUD's display target are the player's own readout), and the requests themselves
 //! are the intents [`FeedCommand::Seek`], [`FeedCommand::SeekTaken`], [`FeedCommand::SeekRequeued`],
-//! [`FeedCommand::AbandonSeek`] and [`FeedCommand::ArmOpen`]. Not here yet: `disp_base` (it still has
-//! media writers and readers), `abr_seed` (a worker event, L3c), and the `DemuxAbr` and diagnostics
-//! halves of [`FeedFacts`] (L3c).
+//! [`FeedCommand::AbandonSeek`] and [`FeedCommand::ArmOpen`]. `disp_base` is raw too
+//! ([`FeedRaw::disp_base`]): the feed zeroes it on its own seek and on every reset, so the player reads it
+//! back from the sample, and a transcode restart's new base is the intent [`FeedCommand::Rebase`]. Not
+//! here yet: `abr_seed` (a worker event, L3c), and the `DemuxAbr` and diagnostics halves of
+//! [`FeedFacts`] (L3c).
 //! A value that is `-1` in the feed's mailbox is an `Option` here, as in [`AttemptFacts`].
 
 use std::sync::atomic::{AtomicI32, AtomicU32};
@@ -338,6 +340,10 @@ pub struct FeedRaw {
     /// callbacks with no stamp reset between them, so the count is NOT [`Self::vpres_count`].
     pub vpres_gap_sum_ms: u32,
     pub vpres_gap_count: u32,
+    /// The offset the published position carries (`playpos = fed - pts_shift + disp_base`): a
+    /// transcode restart's content offset, 0 once the feed rebases onto a landed keyframe and after
+    /// the session's reset.
+    pub disp_base: i64,
 }
 
 /// A seek the feed asked the player to take up again. `epoch` counts the feed's requests this
@@ -365,7 +371,7 @@ impl FeedRaw {
         applied_rate_permille: crate::RATE_NORMAL, speed_audio_ok: None, vpres_count: 0,
         pts_shift: 0, pipeline_eos: false, seek_landed_epoch: 0, seek_target_ns: None,
         seek_requeue: SeekRequeue::NONE, cb_err_num: 0, http_status: 0,
-        vpres_gap_sum_ms: 0, vpres_gap_count: 0,
+        vpres_gap_sum_ms: 0, vpres_gap_count: 0, disp_base: 0,
     };
 }
 
@@ -427,6 +433,12 @@ pub enum FeedCommand {
     /// own mailbox (the callbacks' ordering, `Release`), and it comes back through
     /// [`FeedRaw::flags`] with the next sample. The player does not keep a copy of it.
     NoteFailure(FailureFlag),
+    /// A transcode restarted at a content offset (`reload_transcode`, a resume's rebuild): the
+    /// encode is 0-based there, so the published position carries `disp_base` and the HUD reads
+    /// `playpos_ns` until frames land. Unlike [`Self::ArmOpen`] nothing is armed to seek: the new
+    /// stream starts at the offset by construction. `pts_shift` is not here: the feed's video lane
+    /// alone writes it, when it rebases onto a landed keyframe.
+    Rebase { playpos_ns: i64, disp_base: i64 },
 }
 
 // ---------------------------------------------------------------------------------------------

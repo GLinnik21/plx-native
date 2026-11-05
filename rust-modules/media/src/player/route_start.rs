@@ -725,8 +725,7 @@ fn reload_transcode_start(ps: &mut crate::route::PlaybackSession, pa: &mut super
         offset_ns / 1_000_000_000
     ));
     teardown(ps, pa, true, plx_playback_contract::StopReason::Replace); // keep the session; reload mode
-    FEED_SHARED.disp_base.store(offset_ns, Ordering::Relaxed); // transcode is 0-based at content=offset
-    FEED_SHARED.playpos_ns.store(offset_ns, Ordering::Relaxed);
+    super::rebase_transcode(pa, offset_ns); // transcode is 0-based at content=offset
     Some(start_bufferfeed_for(ps, pa, ticket))
 }
 
@@ -916,9 +915,8 @@ fn resume_prelude(
 /// The transcode half of a resume, once its encode restarts at the offset (0-based): `disp_base`
 /// carries the offset so the HUD reads content time.
 #[cfg(feature = "play-feed")]
-fn note_transcode_resumed(resume_ns: i64) {
-    FEED_SHARED.disp_base.store(resume_ns, Ordering::Relaxed);
-    FEED_SHARED.playpos_ns.store(resume_ns, Ordering::Relaxed);
+fn note_transcode_resumed(pa: &mut super::adapter::PlayerAdapter, resume_ns: i64) {
+    super::rebase_transcode(pa, resume_ns);
     log(&format!(
         "resume(transcode): restart at offset {}s",
         resume_ns / 1_000_000_000
@@ -954,7 +952,10 @@ pub fn begin_resume(
 /// flight owns what happens next). `Some` is the outcome of the rebuild: the
 /// route is installed and `Prepared` (the caller starts the Load), or the rebuild was refused and
 /// the transaction is `Failed`.
-pub fn land_resume(ps: &mut crate::route::PlaybackSession) -> Option<ResumeOutcome> {
+pub fn land_resume(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+) -> Option<ResumeOutcome> {
     crate::route::discard_stale_flight_landing();
     if !crate::route::resume_flight_outstanding() {
         return None;
@@ -963,9 +964,9 @@ pub fn land_resume(ps: &mut crate::route::PlaybackSession) -> Option<ResumeOutco
     Some(match landing.verdict {
         crate::route::RecoveryVerdict::Install => {
             #[cfg(feature = "play-feed")]
-            note_transcode_resumed(landing.offset_ns);
+            note_transcode_resumed(pa, landing.offset_ns);
             #[cfg(not(feature = "play-feed"))]
-            let _ = landing.offset_ns;
+            let _ = (pa, landing.offset_ns);
             ResumeOutcome::Prepared
         }
         crate::route::RecoveryVerdict::Refused => ResumeOutcome::RebuildRejected,

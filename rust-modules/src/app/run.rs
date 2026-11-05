@@ -2851,7 +2851,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                 }
                 // A cold resume's rebuild landed (`player::land_resume`): the Load the pending play
                 // was holding for starts now.
-                if let Some(outcome) = plx_media::player::land_resume(&mut app.player.session) {
+                if let Some(outcome) = plx_media::player::land_resume(&mut app.player.session, &mut app.adapters.player) {
                     plx_machine::idle::invalidate();
                     finish_landed_play(app, matches!(outcome, plx_media::player::ResumeOutcome::Prepared));
                 }

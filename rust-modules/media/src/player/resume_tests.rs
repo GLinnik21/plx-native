@@ -50,7 +50,7 @@ impl Rig {
         loop {
             {
                 let _frame = plx_base::task::FrameScope::enter();
-                if let Some(outcome) = land_resume(&mut self.ps) {
+                if let Some(outcome) = land_resume(&mut self.ps, &mut self.pa) {
                     return outcome;
                 }
             }
@@ -68,7 +68,7 @@ impl Rig {
             assert!(std::time::Instant::now() < deadline, "timed out waiting for the replacement's stop");
             {
                 let _frame = plx_base::task::FrameScope::enter();
-                assert!(land_resume(&mut self.ps).is_none(), "a stale flight landed");
+                assert!(land_resume(&mut self.ps, &mut self.pa).is_none(), "a stale flight landed");
             }
             std::thread::sleep(Duration::from_millis(2));
         }
@@ -152,10 +152,10 @@ fn back_during_a_cold_resume_discards_the_landing_and_stops_its_replacement() {
     rig.flight.wait_for("the resume's request", |f| f.decisions() == 1);
     stop_bufferfeed(&mut rig.ps, &mut rig.pa);
     assert!(!crate::route::resume_flight_outstanding());
-    assert!(land_resume(&mut rig.ps).is_none());
+    assert!(land_resume(&mut rig.ps, &mut rig.pa).is_none());
     rig.frames_until_replacement_stopped();
     assert_eq!(FEED_SHARED.disp_base.load(Relaxed), 0, "nothing was installed over the next playback");
-    assert!(land_resume(&mut rig.ps).is_none());
+    assert!(land_resume(&mut rig.ps, &mut rig.pa).is_none());
     assert_eq!(rig.replacement_stops(), 1, "stopped exactly once: {:?}", rig.flight.stopped());
 }
 
@@ -174,7 +174,7 @@ fn a_suspend_during_a_cold_resume_drops_the_flight_and_leaves_the_foreground_res
     suspend_bufferfeed(&mut rig.ps, &mut rig.pa);
     assert!(!crate::route::resume_flight_outstanding());
     assert!(crate::route::control_phase_label().contains("Stable"), "{}", crate::route::control_phase_label());
-    assert!(land_resume(&mut rig.ps).is_none());
+    assert!(land_resume(&mut rig.ps, &mut rig.pa).is_none());
     rig.frames_until_replacement_stopped();
     assert_eq!(crate::route::transcode_session(&rig.ps), "rig-1", "the suspended session keeps its route");
 

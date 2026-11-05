@@ -77,7 +77,7 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
     }
 
     fn land_prepare(&mut self, ps: &mut plx_media::route::PlaybackSession) -> FlightLanding<plx_media::player::ResumeOutcome> {
-        match plx_media::player::land_resume(ps) {
+        match plx_media::player::land_resume(ps, self.pa) {
             Some(outcome) => FlightLanding::Landed(outcome),
             // `land_resume` reaped a stale landing first: nothing outstanding means the flight
             // ended (a Back, a newer request) and its ender owns what comes next.

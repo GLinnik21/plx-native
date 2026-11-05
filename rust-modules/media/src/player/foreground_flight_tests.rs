@@ -33,7 +33,8 @@ impl ForegroundActuator for RigActuator {
     }
 
     fn land_prepare(&mut self, ps: &mut crate::route::PlaybackSession) -> FlightLanding<ResumeOutcome> {
-        match land_resume(ps) {
+        let mut pa = adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        match land_resume(ps, &mut pa) {
             Some(outcome) => FlightLanding::Landed(outcome),
             None if crate::route::resume_flight_outstanding() => FlightLanding::Waiting,
             None => FlightLanding::Stale,

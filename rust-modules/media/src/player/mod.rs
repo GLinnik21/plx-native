@@ -153,23 +153,14 @@ fn raw_sink() -> &'static dyn plx_platform::tv::sink::VideoSink {
 
 /// The simulator's video sink ([`ffi_host::HostSink`]), built with this crate's side of what the
 /// Feed backend's stand-in cannot name: the pipeline-event entry `plx_play_feed::sf_event::sf_on_event`, the inverse of the
-/// position rebase that entry applies, and the simulator's decoded picture ([`sim_video`]). The
+/// position rebase that entry applies (`plx_play_feed::sf_event::media_to_fed`), and the simulator's decoded picture ([`sim_video`]). The
 /// simulator's port table holds it as `Port.sink`; a hostsim test binary reads it directly.
 #[cfg(all(feature = "hostsim", feature = "play-feed"))]
 pub static HOST_SINK: ffi_host::HostSink = ffi_host::HostSink::new(ffi_host::Hooks {
     deliver_event: plx_play_feed::sf_event::sf_on_event,
-    media_to_fed: host_media_to_fed,
+    media_to_fed: plx_play_feed::sf_event::media_to_fed,
     frames: &sim_video::SimVideo,
 });
-
-/// The rebase `sf_on_event` (`plx_play_feed::sf_event`) applies to a reported position (`playpos = fed - pts_shift +
-/// disp_base`), inverted: the fed PTS at which the app will read `media_ns`.
-#[cfg(all(feature = "hostsim", feature = "play-feed"))]
-fn host_media_to_fed(media_ns: i64) -> i64 {
-    media_ns
-        .saturating_add(FEED_SHARED.pts_shift.load(Relaxed))
-        .saturating_sub(FEED_SHARED.disp_base.load(Relaxed))
-}
 
 /// `/tmp/plxnative-tracknames[=<audio>;<subs>]` — **stand in for the container's own track names**,
 /// which nothing off-device can read.
@@ -852,6 +843,15 @@ pub(super) fn requeue_seek(
 pub(super) fn arm_open(pa: &mut adapter::PlayerAdapter, target_ns: i64) {
     let at = target_ns.max(0);
     pa.feed_command(FeedCommand::ArmOpen { target_ns: at, disp_base: 0, playpos_ns: at });
+}
+
+/// **A transcode restarted at `offset_ns`** (`reload_transcode`, a resume's rebuild landing): the
+/// encode is 0-based there, so the published position carries the offset as its display base from
+/// the first frame and the HUD reads it until frames land. Nothing is armed to seek, and the feed's
+/// video lane alone owns the pts shift.
+#[cfg(feature = "play-feed")]
+pub(super) fn rebase_transcode(pa: &mut adapter::PlayerAdapter, offset_ns: i64) {
+    pa.feed_command(FeedCommand::Rebase { playpos_ns: offset_ns, disp_base: offset_ns });
 }
 
 /// true while a seek is resolving (request → reopen/reload → prime → Play): the HUD shows a
