@@ -1042,8 +1042,13 @@ fn tick_with(ps: &crate::route::PlaybackSession, report_preview_failures: bool,
         && now == super::attempt_view::PlaybackState::Playing
         && ps.attempt_view().backend() != Some(super::attempt_view::Backend::Uri)
     {
-        // Feed's Playing transition follows its reported frame. A URI service Playing report,
-        // even with an advancing position, cannot establish panel presentation.
+        // Feed's Playing transition follows its first reported position tick (`seen_frame` is
+        // set by the pipeline's type-0 `FRAMEREADY` callback, a ~5 Hz position report), so the
+        // trace step and `PlaybackStarted.startup` below measure the time to that first position
+        // tick, NOT to a first picture. The reducer's `Observation::Presented` (local metrics
+        // only, set from the displayed-frame counter) is a different and stricter fact; the two
+        // are not merged. A URI service Playing report, even with an advancing position, cannot
+        // establish panel presentation.
         push_trace(presented_event(ps));
     }
     match transition(prev, now, SAW_START.load(Relaxed), SAW_FAIL.load(Relaxed)) {

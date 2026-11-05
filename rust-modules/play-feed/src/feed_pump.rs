@@ -266,11 +266,31 @@ pub fn paused_seek_step(
 /// a tick leaves a black panel (device-measured: a VIDEO-only capture read "no signal" until
 /// Resume), because the pause stops the ticks the bind is waiting on. So the landing needs the
 /// bind complete AND one tick after it (`Engine::bound_at_frames`).
-fn plane_shows_the_picture(eng: &Engine, hooks: &NativeHooks) -> bool {
-    if !hooks.release.plane.handle() {
+pub(crate) fn plane_shows_the_picture(eng: &Engine, hooks: &NativeHooks) -> bool {
+    plane_shows(hooks.release.plane.handle(), eng.stage, eng.bound_at_frames, eng.shared.frames.load(Relaxed))
+}
+
+/// The pure rule of [`plane_shows_the_picture`], over the facts it reads.
+pub(crate) fn plane_shows(acb_plane: bool, stage: Stage, bound_at_frames: Option<i32>, frames: i32) -> bool {
+    if !acb_plane {
         return true;
     }
-    eng.stage >= Stage::Streaming && eng.bound_at_frames.is_none_or(|at| FEED_SHARED.frames.load(Relaxed) != at)
+    stage >= Stage::Streaming && bound_at_frames.is_none_or(|at| frames != at)
+}
+
+/// **Is a picture on the panel, as far as this process can know?** The Feed driver's grounds for
+/// `Observation::Presented`: [`plane_shows`] (on the ACB route the bind is complete and one
+/// position tick has followed it) AND the video sink's displayed-frame counter has reported a
+/// positive count since that bind ([`crate::shared::Shared::displayed_after_bind`]; with no bind
+/// to wait for on webOS 5+, since the session began). A position tick alone (type 0 `FRAMEREADY`)
+/// is never enough: it is a 5 Hz clock sample, and one counted before the plane bind left the
+/// panel black on the device. Necessary-condition evidence, not photon proof; a firmware that
+/// never delivers the counter (`era callbacks: no displayed-frame counter`) never presents.
+pub(crate) fn picture_on_panel(
+    shared: &crate::shared::Shared, acb_plane: bool, stage: Stage, bound_at_frames: Option<i32>,
+) -> bool {
+    plane_shows(acb_plane, stage, bound_at_frames, shared.frames.load(Relaxed))
+        && shared.displayed_after_bind()
 }
 
 
@@ -980,6 +1000,8 @@ pub fn tick_presentation(feed: &mut FeedResources, mt: &MainThread,
                 unsafe { (hooks.feed.sink)().plane_start(mt, 0, 0, 1920, 1080) };
                 eng.stage = Stage::Streaming;
                 eng.bound_at_frames = Some(FEED_SHARED.frames.load(Relaxed));
+                // A displayed count taken before this point was taken against an unconnected plane.
+                eng.shared.forget_displayed_before_bind();
                 // `acb_start` sets ACB PLAYING. Under a pipeline that is really paused (a late
                 // tick bound the plane after the re-pause; an open preroll is a PLAYING pipeline,
                 // and its re-pause mirrors the pause itself) ACB must follow it, or it is left
