@@ -630,6 +630,14 @@ mod tests {
         assert_eq!(facts.raw.speed_audio_ok, None, "no report is not a refusal");
     }
 
+    /// A feed with no session has no controller: the demux's half of the Auto-quality facts is
+    /// what the session's reset stored (`0`, `0`, no declaration).
+    #[test]
+    fn a_feed_with_no_session_has_no_controller() {
+        assert_eq!(FeedRaw::IDLE.abr, DemuxAbr { mode: 0, kbps: 0, declared_kbps: -1 });
+        assert_eq!(DemuxAbr::default(), DemuxAbr::IDLE);
+    }
+
     /// A feed with no session has no stage, no Load to wait for and nothing ready; the IDLE value
     /// is what a session reset hands back.
     #[test]

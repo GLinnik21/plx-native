@@ -1096,4 +1096,83 @@ mod tests {
         ps.step_readout(ReadoutEvent::SessionReset);
         assert_eq!(crate::player::ended(&ps), Some(true), "a Feed reset leaves a URI attempt's fact alone");
     }
+
+    fn seed(samples: u32) -> SeedReadout {
+        SeedReadout { slow_kbps: 40_000, fast_kbps: 42_000, uncertainty_pm: 100, samples }
+    }
+
+    /// The worker's photograph is taken in as sent and a session reset (every reload and stop) returns
+    /// it to idle; the carried link estimate survives the reset (a reload is the same item on the
+    /// same link, I8) and only the playback's end clears it.
+    #[test]
+    fn the_photograph_dies_with_the_session_and_the_carried_estimate_with_the_playback() {
+        let photograph = AbrReadout { net_kbps: 4_000, action: 5, target_kbps: 3_000, ..AbrReadout::IDLE };
+        let r = stepped(&[ReadoutEvent::Abr(photograph), ReadoutEvent::AbrSeed(Some((seed(19), 10_000)))]);
+        assert_eq!(*r.abr(), photograph);
+        assert_eq!(r.abr_seed(10_000).map(|(s, unobserved)| (s.samples, unobserved)), Some((19, 0)));
+        assert_eq!(r.abr_seed(15_000).map(|(_, unobserved)| unobserved), Some(5_000), "it ages on the frame tick");
+        let reloaded = stepped(&[ReadoutEvent::Abr(photograph),
+            ReadoutEvent::AbrSeed(Some((seed(19), 10_000))), ReadoutEvent::SessionReset]);
+        assert_eq!(*reloaded.abr(), AbrReadout::IDLE, "the engine's photograph went with it");
+        assert!(reloaded.abr_seed(10_000).is_some(), "the link estimate outlives a reload");
+        let stopped = stepped(&[ReadoutEvent::AbrSeed(Some((seed(19), 10_000))),
+            ReadoutEvent::SessionReset, ReadoutEvent::AbrSeed(None)]);
+        assert_eq!(stopped.abr_seed(10_000), None, "a real stop clears it");
+    }
+
+    /// The two members of the photograph an attempt's facts carry follow the sparse form: `None`
+    /// until a positive value, as the feed's own sample mapped them.
+    #[test]
+    fn the_attempt_facts_take_the_photographs_media_rate_and_reserve_as_positive_or_none() {
+        use plx_playback_contract::readout::AttemptFacts;
+        let mut facts = AttemptFacts { media_kbps: Some(7), abr_buffer_ms: Some(7), ..Default::default() };
+        PlayerReadout::IDLE.fill_abr_facts(&mut facts);
+        assert_eq!((facts.media_kbps, facts.abr_buffer_ms), (None, None), "-1 is unknown");
+        let r = stepped(&[ReadoutEvent::Abr(AbrReadout { media_kbps: 2_500, buffer_ms: 0, ..AbrReadout::IDLE })]);
+        r.fill_abr_facts(&mut facts);
+        assert_eq!((facts.media_kbps, facts.abr_buffer_ms), (Some(2_500), None), "0 ms is not a reserve");
+    }
+
+    /// The worker's photograph is addressed like the sample: only the attempt the view belongs to,
+    /// and only for the Feed, can deliver it. A late worker of a previous attempt changes neither
+    /// the photograph nor the carried estimate.
+    #[test]
+    fn the_workers_photograph_is_addressed_by_its_attempt_and_backend() {
+        let _serial = plx_base::testlock::serial();
+        let (a, b, c) = (RouteStartAttempt::fixture(), RouteStartAttempt::fixture_n(2), RouteStartAttempt::fixture_n(3));
+        let mut ps = PlaybackSession::IDLE;
+        ps.begin_attempt_view(a, Backend::Feed);
+        assert!(ps.ingest_abr(a, net_readout(4_000), Some((seed(19), 0))));
+        assert_eq!(ps.readout().abr().net_kbps, 4_000);
+        ps.begin_attempt_view(b, Backend::Feed);
+        assert!(!ps.ingest_abr(a, net_readout(9), Some((seed(3), 0))), "a stale attempt is refused");
+        assert_eq!(ps.readout().abr().net_kbps, 4_000, "its photograph did not reach the readout");
+        assert_eq!(ps.readout().abr_seed(0).map(|(s, _)| s.samples), Some(19), "nor its estimate");
+        ps.begin_attempt_view(c, Backend::Uri);
+        assert!(!ps.ingest_abr(c, net_readout(9), None), "the photograph is the Feed's");
+    }
+
+    fn net_readout(kbps: i64) -> AbrReadout { AbrReadout { net_kbps: kbps, ..AbrReadout::IDLE } }
+
+    /// `report.rs` reads the media rate and the reserve off the attempt's facts, and the attempt view
+    /// keeps them past a session reset. The sample's facts no longer carry them (the feed does not
+    /// see the worker's measurements), so the session lays the photograph's two members over each
+    /// sample it ingests.
+    #[test]
+    fn a_sample_ingested_after_a_photograph_carries_its_media_rate_and_reserve() {
+        let _serial = plx_base::testlock::serial();
+        let a = RouteStartAttempt::fixture();
+        let mut ps = PlaybackSession::IDLE;
+        ps.begin_attempt_view(a, Backend::Feed);
+        assert!(ps.ingest_feed_facts(a, facts(5, Some(100))));
+        let view = ps.attempt_view().facts();
+        assert_eq!((view.media_kbps, view.abr_buffer_ms), (None, None), "nothing measured yet");
+        assert!(ps.ingest_abr(a, AbrReadout { media_kbps: 2_500, buffer_ms: 8_000, ..AbrReadout::IDLE }, None));
+        assert!(ps.ingest_feed_facts(a, facts(6, Some(100))));
+        let view = ps.attempt_view().facts();
+        assert_eq!((view.media_kbps, view.abr_buffer_ms), (Some(2_500), Some(8_000)));
+        ps.step_readout(ReadoutEvent::SessionReset);
+        assert_eq!((ps.attempt_view().facts().media_kbps, ps.attempt_view().facts().abr_buffer_ms),
+            (Some(2_500), Some(8_000)), "the terminal facts outlive the reset");
+    }
 }

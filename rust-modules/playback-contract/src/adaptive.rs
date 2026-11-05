@@ -623,4 +623,34 @@ mod tests {
         assert_eq!(trial.observe(id, TrialObservation::Ended), Ok(TrialPhase::Ended));
         assert_eq!(trial.observe(id, TrialObservation::Published), Err(TrialProtocolError::OutOfOrder));
     }
+
+    /// The idle photograph is what the diagnostics mirror held before any publication and after a
+    /// session reset: `-1` is "no measurement yet" and `0` "nothing decided", per member.
+    #[test]
+    fn the_idle_photograph_is_the_mirrors_reset_values() {
+        let idle = AbrReadout::IDLE;
+        assert_eq!(AbrReadout::default(), idle);
+        assert_eq!((idle.media_kbps, idle.net_kbps, idle.buffer_ms, idle.ratio_pm), (-1, -1, -1, -1));
+        assert_eq!((idle.action, idle.target_kbps, idle.unsafe_deficit_ms, idle.why), (0, 0, 0, 0));
+        assert_eq!((idle.safe_kbps, idle.optimal_kbps, idle.unc_pm, idle.samples), (-1, -1, -1, -1));
+        assert_eq!((idle.slope_ms_per_s, idle.starve_secs, idle.pred_pm, idle.risk), (0, -1, -1, -1));
+    }
+
+    /// The demux's start stored STEADY where the reset stores 0, and the panel words them
+    /// differently ("hold current" and "starting"): a started controller that has decided nothing
+    /// reads as holding its rung, one that has decided keeps its action, and no controller is 0.
+    #[test]
+    fn a_started_controller_that_has_decided_nothing_is_holding() {
+        use crate::feed::DemuxAbr;
+        use crate::readout::{ABR_ACTION_COMMIT_UP, ABR_ACTION_STEADY, ABR_MODE_HLS, ABR_MODE_ORIGINAL};
+        let idle = AbrReadout::IDLE;
+        assert_eq!(idle.action_beside(DemuxAbr::IDLE), 0, "no controller: nothing to hold");
+        let hls = DemuxAbr { mode: ABR_MODE_HLS, kbps: 3_000, declared_kbps: -1 };
+        let original = DemuxAbr { mode: ABR_MODE_ORIGINAL, kbps: 8_000, declared_kbps: -1 };
+        assert_eq!(idle.action_beside(hls), ABR_ACTION_STEADY);
+        assert_eq!(idle.action_beside(original), ABR_ACTION_STEADY);
+        let committed = AbrReadout { action: ABR_ACTION_COMMIT_UP, ..idle };
+        assert_eq!(committed.action_beside(hls), ABR_ACTION_COMMIT_UP);
+        assert_eq!(committed.action_beside(DemuxAbr::IDLE), ABR_ACTION_COMMIT_UP);
+    }
 }

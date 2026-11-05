@@ -1,6 +1,8 @@
 //! Common route and recovery pump. The physical feed tick in `feed_pump` binds the plane,
 //! feeds AUs, and returns the stage and EOS facts used here for common presentation policy.
 #[cfg(all(test, feature = "hostsim"))]
+use plx_play_feed::shared::FEED_SHARED;
+#[cfg(all(test, feature = "hostsim"))]
 use super::engine::Engine;
 #[cfg(all(test, feature = "hostsim"))]
 use super::shared::Stage;

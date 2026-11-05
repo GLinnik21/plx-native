@@ -3962,3 +3962,290 @@ mod trial_runner_tests {
     }
 }
 
+
+/// The worker's report to the player: what crosses the open's channel, what the worker's sink
+/// accumulates, and what each publication writes. None of it needs the television.
+#[cfg(test)]
+mod abr_readout_tests {
+    use super::*;
+    use plx_playback_contract::readout as code;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    fn seed(samples: u32) -> SeedReadout {
+        SeedReadout { fast_kbps: 42_000, slow_kbps: 40_000, uncertainty_pm: 100, samples }
+    }
+
+    fn net(kbps: i64) -> AbrReadout { AbrReadout { net_kbps: kbps, ..AbrReadout::IDLE } }
+
+    /// The teardown joins the adaptive worker while the player's inbox is undrained (the pump is
+    /// not running). A blocking `send` on a full bounded channel would park the worker there
+    /// forever and the join with it, so the worker has to finish its whole run of publications
+    /// with nobody receiving, far past the channel's depth, and the join has to return.
+    #[test]
+    fn a_worker_whose_inbox_is_never_drained_still_finishes() {
+        let (tx, inbox) = readout_channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = plx_base::task::spawn("abr-readout-test", move || {
+            let mut sink = PlayerAdaptiveEffects::new(tx);
+            for i in 0..(READOUT_QUEUE_DEPTH as i64 * 40) {
+                sink.readout(net(i));
+                sink.seed(seed(1 + i as u32));
+            }
+            let _ = done_tx.send(());
+        }).expect("a thread for the test worker");
+        assert!(done_rx.recv_timeout(Duration::from_secs(20)).is_ok(),
+            "the worker blocked on a full channel nobody was draining");
+        worker.join().expect("the worker did not panic");
+        drop(inbox);
+    }
+
+    /// The stop path drops the inbox with the worker still publishing: a send into a channel with
+    /// no receiver is the normal end of the open, not an error and not a panic.
+    #[test]
+    fn a_worker_publishing_after_the_inbox_is_gone_carries_on() {
+        let (tx, inbox) = readout_channel();
+        drop(inbox);
+        let mut sink = PlayerAdaptiveEffects::new(tx);
+        sink.readout(net(5));
+        sink.seed(seed(3));
+        sink.seed(seed(0));
+        sink.readout(AbrReadout::IDLE);
+    }
+
+    /// A full channel refuses the new shipment, never the worker. The documented bound: a player
+    /// that has not drained since the channel filled reads the state as of the shipment that filled
+    /// it, and the worker's next call after the drain carries everything the refused calls changed
+    /// (the readout and the seed), whichever member that call is about.
+    #[test]
+    fn a_full_channel_costs_staleness_bounded_by_the_next_call_not_the_worker() {
+        let (tx, inbox) = readout_channel();
+        let mut sink = PlayerAdaptiveEffects::new(tx);
+        for i in 1..=READOUT_QUEUE_DEPTH as i64 { sink.readout(net(i)); }
+        // Past the depth: refused, and the worker is back at once.
+        sink.readout(AbrReadout { action: code::ABR_ACTION_COMMIT_UP, ..net(100) });
+        sink.seed(seed(19));
+        let stale = inbox.newest().expect("the filled queue");
+        assert_eq!(stale.readout.net_kbps, READOUT_QUEUE_DEPTH as i64,
+            "the player ends on the shipment that filled the channel");
+        assert_eq!(stale.seed.map(|(s, _)| s.samples), None);
+        assert!(inbox.newest().is_none(), "a drain empties the queue");
+        // Room again: the next call, about a different member, carries what the refused ones changed.
+        sink.seed(seed(21));
+        let fresh = inbox.newest().expect("room after the drain");
+        assert_eq!(fresh.readout.net_kbps, 100);
+        assert_eq!(fresh.readout.action, code::ABR_ACTION_COMMIT_UP);
+        assert_eq!(fresh.seed.map(|(s, _)| s.samples), Some(21));
+    }
+
+    /// The pump keeps the last of what it drains, and an inbox with nothing new answers `None`.
+    #[test]
+    fn the_inbox_answers_the_newest_shipment_and_none_when_idle() {
+        let (tx, inbox) = readout_channel();
+        assert!(inbox.newest().is_none());
+        let mut sink = PlayerAdaptiveEffects::new(tx);
+        sink.readout(net(1));
+        sink.readout(net(2));
+        sink.readout(net(3));
+        assert_eq!(inbox.newest().map(|s| s.readout.net_kbps), Some(3));
+        assert!(inbox.newest().is_none());
+    }
+
+    /// The carried link estimate crosses with the instant the worker observed it; an estimate with
+    /// no sample is no estimate and clears the carried one.
+    #[test]
+    fn the_seed_crosses_with_its_observed_instant_and_zero_samples_clears_it() {
+        let (tx, inbox) = readout_channel();
+        let mut sink = PlayerAdaptiveEffects::new(tx);
+        let before = Instant::now();
+        sink.seed(seed(19));
+        let shipped = inbox.newest().expect("seed shipment");
+        let (carried, at) = shipped.seed.expect("a seed with samples");
+        assert_eq!((carried.slow_kbps, carried.fast_kbps, carried.samples), (40_000, 42_000, 19));
+        assert!(at >= before && at.elapsed() < Duration::from_secs(10));
+        sink.seed(seed(0));
+        assert_eq!(inbox.newest().expect("clearing shipment").seed.map(|(s, _)| s.samples), None);
+    }
+
+    /// A recording sink: every cumulative readout the publisher hands its sink.
+    struct Recorder(Arc<Mutex<Vec<AbrReadout>>>);
+    impl AdaptiveEffects for Recorder {
+        fn seed(&mut self, _: SeedReadout) {}
+        fn committed(&mut self, _: CommitReadout) {}
+        fn readout(&mut self, readout: AbrReadout) {
+            self.0.lock().expect("recorder").push(readout);
+        }
+    }
+
+    fn publisher() -> (AbrPublisher, Arc<Mutex<Vec<AbrReadout>>>) {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        (AbrPublisher::new(Box::new(Recorder(Arc::clone(&log)))), log)
+    }
+
+    fn last(log: &Arc<Mutex<Vec<AbrReadout>>>) -> AbrReadout {
+        *log.lock().expect("recorder").last().expect("a publication")
+    }
+
+    /// The action family: one code per (direction, refresh, outcome), as the panel prints them, with
+    /// the target beside it; the steady and the Original recovery actions follow the same rule.
+    #[test]
+    fn the_action_codes_are_the_panels_for_every_direction_and_outcome() {
+        use AdaptiveDirection::{Down, Up};
+        let (publisher, log) = publisher();
+        let table = [
+            (Down, false, None, code::ABR_ACTION_PRIME_DOWN),
+            (Up, false, None, code::ABR_ACTION_PRIME_UP),
+            (Down, false, Some(true), code::ABR_ACTION_COMMIT_DOWN),
+            (Up, false, Some(true), code::ABR_ACTION_COMMIT_UP),
+            (Down, false, Some(false), code::ABR_ACTION_REJECT_DOWN),
+            (Up, false, Some(false), code::ABR_ACTION_REJECT_UP),
+            (Down, true, None, code::ABR_ACTION_PRIME_REFRESH),
+            (Up, true, Some(true), code::ABR_ACTION_COMMIT_REFRESH),
+            (Down, true, Some(false), code::ABR_ACTION_REJECT_REFRESH),
+        ];
+        for (direction, refreshing, committed, expected) in table {
+            publisher.action(ActionReadout { direction, target_kbps: 3_000, refreshing, committed });
+            let r = last(&log);
+            assert_eq!((r.action, r.target_kbps), (expected, 3_000));
+        }
+        publisher.recover_original();
+        let r = last(&log);
+        assert_eq!((r.action, r.target_kbps), (code::ABR_ACTION_RECOVER_ORIGINAL, 3_000), "the target stays");
+        publisher.steady();
+        let r = last(&log);
+        assert_eq!((r.action, r.target_kbps), (code::ABR_ACTION_STEADY, 0), "steady clears the target");
+    }
+
+    /// The sample and model families write their own members, the `why` as the panel's code, and
+    /// leave every other member as the earlier publications left it.
+    #[test]
+    fn the_sample_and_model_publications_write_their_members_and_keep_the_rest() {
+        let (publisher, log) = publisher();
+        publisher.sample(SampleReadout { network_kbps: 12_000, media_kbps: 6_000, ratio_pm: 2_000, buffer_ms: 31_000 });
+        let r = last(&log);
+        assert_eq!((r.net_kbps, r.media_kbps, r.ratio_pm, r.buffer_ms), (12_000, 6_000, 2_000, 31_000));
+        assert_eq!((r.samples, r.why, r.action), (-1, 0, 0), "the model has not spoken");
+        publisher.model(&ModelReadout {
+            safe_kbps: 9_000, optimal_kbps: 8_000, uncertainty_pm: 150, samples: 12, slope_ms_per_s: -40,
+            starvation_secs: 90, production_pm: 1_100, risk: 7, reason: Some(WhyReadout::ResponseLimited),
+            seed: seed(12),
+        });
+        let r = last(&log);
+        assert_eq!((r.safe_kbps, r.optimal_kbps, r.unc_pm, r.samples), (9_000, 8_000, 150, 12));
+        assert_eq!((r.slope_ms_per_s, r.starve_secs, r.pred_pm, r.risk), (-40, 90, 1_100, 7));
+        assert_eq!(r.why, crate::player::ABR_WHY_RESPONSE_LIMITED);
+        assert_eq!((r.net_kbps, r.buffer_ms), (12_000, 31_000), "the sample stands");
+        publisher.model(&ModelReadout {
+            safe_kbps: 1, optimal_kbps: -1, uncertainty_pm: 1, samples: 1, slope_ms_per_s: 0,
+            starvation_secs: -1, production_pm: -1, risk: 0, reason: None, seed: seed(1),
+        });
+        assert_eq!(last(&log).why, crate::player::ABR_WHY_NONE);
+    }
+
+    /// The Original watchdog's family: a refreshed ticket restarts the measurements; an observation
+    /// writes the window's members, `-1` for an unbounded starvation horizon.
+    #[test]
+    fn the_original_watchdog_publishes_its_window_and_restarts_it_on_refresh() {
+        let (publisher, log) = publisher();
+        publisher.original_observed(&abr::OriginalObservation {
+            measured_kbps: 20_000, conservative_kbps: 18_000, requirement_kbps: 9_000, buffered_ms: 12_000,
+            slope_ms_per_s: -250, horizon_secs: Some(48), unsafe_deficit_ms: 1_500, fallback: None, target: None,
+        });
+        let r = last(&log);
+        assert_eq!((r.net_kbps, r.buffer_ms, r.unsafe_deficit_ms), (20_000, 12_000, 1_500));
+        assert_eq!((r.slope_ms_per_s, r.starve_secs, r.safe_kbps), (-250, 48, 18_000));
+        publisher.original_observed(&abr::OriginalObservation {
+            measured_kbps: 20_000, conservative_kbps: 18_000, requirement_kbps: 9_000, buffered_ms: 12_000,
+            slope_ms_per_s: 0, horizon_secs: None, unsafe_deficit_ms: 0, fallback: None, target: None,
+        });
+        assert_eq!(last(&log).starve_secs, -1, "no horizon reads -1");
+        publisher.original_refreshed();
+        let r = last(&log);
+        assert_eq!((r.net_kbps, r.buffer_ms, r.unsafe_deficit_ms), (-1, -1, 0));
+        assert_eq!(r.safe_kbps, 18_000, "a refresh restarts the measurements, not the estimate");
+    }
+}
+
+/// What the diagnostics line prints for the Auto-quality members, now that the demux's half rides
+/// the sample and the worker's half is the readout's photograph: the same text and values the
+/// shared mirror held. `diag()` reaches the host stand-ins for the TV's seam, so these run in the
+/// `hostsim` pass.
+#[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
+mod abr_diag_tests {
+    use super::*;
+    use crate::player::attempt_view::Backend;
+    use crate::player::readout::ReadoutEvent;
+    use crate::route::{PlaybackSession, RouteStartAttempt};
+    use plx_playback_contract::feed::{DemuxAbr, FeedFacts};
+    use plx_playback_contract::readout as code;
+
+    fn session(demux: DemuxAbr, photograph: AbrReadout) -> (PlaybackSession, RouteStartAttempt) {
+        let attempt = RouteStartAttempt::fixture();
+        let mut ps = PlaybackSession::IDLE;
+        ps.begin_attempt_view(attempt, Backend::Feed);
+        let mut facts = FeedFacts::default();
+        facts.raw.abr = demux;
+        assert!(ps.ingest_feed_facts(attempt, facts));
+        assert!(ps.ingest_abr(attempt, photograph, None));
+        (ps, attempt)
+    }
+
+    fn full() -> AbrReadout {
+        AbrReadout {
+            media_kbps: 6_000, net_kbps: 12_000, buffer_ms: 31_000, ratio_pm: 2_000, action: code::ABR_ACTION_COMMIT_DOWN,
+            target_kbps: 3_000, unsafe_deficit_ms: 1_500, safe_kbps: 9_000, optimal_kbps: 8_000, unc_pm: 150,
+            samples: 12, slope_ms_per_s: -40, starve_secs: 90, pred_pm: 1_100, risk: 7, why: crate::player::ABR_WHY_BUFFER,
+        }
+    }
+
+    /// One golden per family: the demux's request and declaration, the sample, the decision, the
+    /// model, and the Original watchdog's window all read through `diag()` as they were written.
+    #[test]
+    fn diag_reads_the_demuxs_half_from_the_sample_and_the_workers_from_the_photograph() {
+        let _serial = plx_base::testlock::serial();
+        let demux = DemuxAbr { mode: code::ABR_MODE_HLS, kbps: 3_000, declared_kbps: 2_900 };
+        let (ps, _) = session(demux, full());
+        let d = crate::player::diag(&ps);
+        assert_eq!((d.abr_mode, d.abr_kbps, d.abr_declared_kbps), (code::ABR_MODE_HLS, 3_000, 2_900));
+        assert_eq!((d.abr_media_kbps, d.abr_net_kbps, d.abr_buffer_ms, d.abr_ratio_pm), (6_000, 12_000, 31_000, 2_000));
+        assert_eq!((d.abr_action, d.abr_target_kbps, d.abr_why), (code::ABR_ACTION_COMMIT_DOWN, 3_000, crate::player::ABR_WHY_BUFFER));
+        assert_eq!((d.abr_safe_kbps, d.abr_optimal_kbps, d.abr_unc_pm, d.abr_samples), (9_000, 8_000, 150, 12));
+        assert_eq!((d.abr_slope_ms_per_s, d.abr_starve_secs, d.abr_pred_pm, d.abr_risk), (-40, 90, 1_100, 7));
+        assert_eq!(d.abr_unsafe_deficit_ms, 1_500);
+    }
+
+    /// The demux's start used to store STEADY where the reset stores 0; the panel words them
+    /// differently, so a started controller that has decided nothing reads STEADY, no controller
+    /// reads 0, and a decision shows as itself.
+    #[test]
+    fn diag_words_a_started_controller_that_has_decided_nothing_as_steady() {
+        let _serial = plx_base::testlock::serial();
+        let started = DemuxAbr { mode: code::ABR_MODE_HLS, kbps: 3_000, declared_kbps: -1 };
+        let (ps, _) = session(started, AbrReadout::IDLE);
+        let d = crate::player::diag(&ps);
+        assert_eq!((d.abr_action, d.abr_target_kbps), (code::ABR_ACTION_STEADY, 0));
+        assert_eq!((d.abr_media_kbps, d.abr_net_kbps, d.abr_samples, d.abr_why), (-1, -1, -1, 0));
+        let (ps, _) = session(DemuxAbr::IDLE, AbrReadout::IDLE);
+        assert_eq!(crate::player::diag(&ps).abr_action, 0, "no controller at all");
+        let original = DemuxAbr { mode: code::ABR_MODE_ORIGINAL, kbps: 8_000, declared_kbps: -1 };
+        let decided = AbrReadout { action: code::ABR_ACTION_PRIME_UP, ..AbrReadout::IDLE };
+        let (ps, _) = session(original, decided);
+        assert_eq!(crate::player::diag(&ps).abr_action, code::ABR_ACTION_PRIME_UP);
+    }
+
+    /// A line printed after the stop reads what the reset left: the photograph and the sample's
+    /// demux half go back together, at the one `SessionReset` the stop runs.
+    #[test]
+    fn diag_after_a_session_reset_reads_the_idle_values() {
+        let _serial = plx_base::testlock::serial();
+        let demux = DemuxAbr { mode: code::ABR_MODE_HLS, kbps: 3_000, declared_kbps: 2_900 };
+        let (mut ps, _) = session(demux, full());
+        ps.step_readout(ReadoutEvent::SessionReset);
+        let d = crate::player::diag(&ps);
+        assert_eq!((d.abr_mode, d.abr_kbps, d.abr_declared_kbps), (0, 0, -1));
+        assert_eq!((d.abr_media_kbps, d.abr_net_kbps, d.abr_buffer_ms, d.abr_ratio_pm), (-1, -1, -1, -1));
+        assert_eq!((d.abr_action, d.abr_target_kbps, d.abr_unsafe_deficit_ms, d.abr_why), (0, 0, 0, 0));
+        assert_eq!((d.abr_safe_kbps, d.abr_optimal_kbps, d.abr_unc_pm, d.abr_samples), (-1, -1, -1, -1));
+        assert_eq!((d.abr_slope_ms_per_s, d.abr_starve_secs, d.abr_pred_pm, d.abr_risk), (0, -1, -1, -1));
+    }
+}
