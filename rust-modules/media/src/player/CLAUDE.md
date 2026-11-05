@@ -32,7 +32,9 @@ The product driver also carries the ACB plane binding the probe proved (`Binding
 the `connectDass` slot left empty, video data, full-screen display and PLAYING) is ONE pure machine,
 `play-uri/src/acb_bind.rs`, stepped by both the probe and the backend and performed through the sink by
 `play-uri/src/acb_drive.rs`; neither keeps a private copy. The backend starts it at `loadCompleted`
-from the service's own source envelope (it never builds a descriptor from bare `videoInfo`),
+from the envelope the service sent in the ACB schema, else the one the firmware itself makes of the
+service's `videoInfo` (`play-uri/src/acb_envelope.rs`, a fail-closed map; no fixture descriptor outside
+the probe, and nothing is built from video facts that lack the members the firmware writes),
 grants the bind through `PlaneOwner::bind(.., BindPolicy::Strict, ..)` (deferred: retried on a later
 poll; refused: a typed failure and a close that does not unload someone else's binding), and mirrors
 accepted pause/resume to the plane once the bind has completed. Release is `UNLOADED` and then the

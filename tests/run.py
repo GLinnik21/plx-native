@@ -1557,6 +1557,16 @@ RE_ACB_UNLOADED = re.compile(r"acb unloaded rv=(-?\d+) task=(-?\d+)")
 # What the production backend and the dev route log when the bind did not happen or the route was refused.
 RE_URI_PRODUCT_ERROR = re.compile(r"uri-acb: the bind failed|uri-acb: bind not granted|"
                                   r"uri: product driver installation refused|uri-dev: .*ignored")
+# The URI binding's OWN bind lines. Feed prints `videoplane: BOUND` and `acb display/playing ... task=N` through
+# the same display sink, so those lines prove a bind for a product case only together with these.
+RE_URI_ACB_BOUND = re.compile(r"\buri-acb: bound\b")
+RE_URI_ACB_COMPLETED = re.compile(r"\buri-acb: display/PLAYING completed\b")
+RE_URI_ACB_COMPLETION_FAILED = re.compile(r"\buri-acb: display/PLAYING completion failed\b")
+RE_URI_ACB_WAITING = re.compile(r"\buri-acb: waiting for the service's source envelope\b")
+RE_URI_ACB_ANY = re.compile(r"\buri-acb: ")
+# The URI session ending, and what only the Feed route writes after it (the route fell back to Feed).
+RE_URI_SESSION_ENDED = re.compile(r"\bls2uri: (?:released|quarantined)\b")
+RE_FEED_DECISION = re.compile(r"\bdecision: part=.*->")
 RE_URI_CLOCK = re.compile(r"ev=currentTime value=(-?\d+)")
 RE_URI_REMAINING = re.compile(r"ev=bufferRange .*?remainingTime=(-?\d+(?:\.\d+)?)")
 RE_URI_RANGE = re.compile(r"ev=bufferRange beginTime=(-?\d+(?:\.\d+)?) endTime=(-?\d+(?:\.\d+)?)")
@@ -1675,6 +1685,24 @@ def a_uri_playing(lines, mode=URI_PROBE):
     return True, f"ev=playing, then the media clock advanced to {max(clock) / 1000:.1f}s"
 
 
+def _uri_own_bind(lines):
+    """The production URI backend's own evidence of a bind: `uri-acb: bound` and, from the plane owner,
+    `uri-acb: display/PLAYING completed`. The plane lines Feed also prints (`videoplane: BOUND`,
+    `acb display ... task=N`, `acb playing ...`) say nothing about WHO bound: a route that fell back
+    to Feed writes all of them, so on a product case they are read only once these two are there."""
+    if not any(RE_URI_ACB_BOUND.search(ln) for ln in lines):
+        why = ("no `uri-acb: bound` line: the production URI backend never bound the plane"
+               + (" (it waited for an envelope the service never sent)"
+                  if any(RE_URI_ACB_WAITING.search(ln) for ln in lines) else ""))
+        return False, why
+    failed = next((ln for ln in lines if RE_URI_ACB_COMPLETION_FAILED.search(ln)), None)
+    if failed:
+        return False, f"the URI bind's display/PLAYING did not complete :: {failed.strip()}"
+    if not any(RE_URI_ACB_COMPLETED.search(ln) for ln in lines):
+        return False, "`uri-acb: bound`, but no `uri-acb: display/PLAYING completed` line"
+    return True, "uri-acb: bound, display/PLAYING completed"
+
+
 def _uri_product_plane_bound(lines):
     """The product route's bind: the task ids are READ from the log, never assumed.
 
@@ -1716,6 +1744,10 @@ def a_uri_plane_bound(lines, mode=URI_PROBE):
     been released, and a task that answered anything but `ev=1` did not complete. The product route
     reads its task ids from the display and playing lines instead (`_uri_product_plane_bound`).
     """
+    if mode == URI_PRODUCT:
+        uri = _uri_own_bind(lines)
+        if not uri[0]:
+            return uri
     if not any("videoplane: BOUND" in ln for ln in lines):
         return False, "no `videoplane: BOUND` line"
     if mode == URI_PRODUCT:
@@ -1756,7 +1788,28 @@ def a_uri_dev_offer(lines):
         return True, "the dev route did not arm (a refusal is graded by no_error)"
     if a_uri_service_playing(lines)[0]:
         return True, "the dev route armed and the production backend played"
+    if any(RE_URI_ACB_WAITING.search(ln) for ln in lines):
+        return False, ("offer made but the ACB bind never completed: the production backend waited for the "
+                       "service's source envelope and none was usable")
+    if any(RE_URI_ACB_ANY.search(ln) for ln in lines):
+        return False, "offer made but the ACB bind never completed (see the `uri-acb:` lines)"
     return False, "dev route armed but no product offer (pin mismatch?)"
+
+
+def a_uri_route_held(lines):
+    """A product run stayed on the production URI backend. The route falls back to the Feed when the URI
+    start fails (a bind that never completes, a timeout), and the Feed then plays the same stream: the
+    picture is real and every Feed-written plane line is there, so the run must fail by name. The
+    fallback is told by what only the Feed route writes (`decision: part=... ->`, `load: v=...`,
+    `stream: ... path=`) AFTER the URI session ended (`ls2uri: released` / `ls2uri: quarantined`)."""
+    ended = next((i for i, ln in enumerate(lines) if RE_URI_SESSION_ENDED.search(ln)), None)
+    if ended is None:
+        return True, "the URI session did not end before the log did"
+    for ln in lines[ended + 1:]:
+        if RE_FEED_DECISION.search(ln) or RE_LOAD.search(ln) or RE_STREAM_PATH.search(ln):
+            return False, ("the route fell back to the Feed: the URI session ended (`ls2uri: released`), "
+                           f"then the Feed wrote :: {ln.strip()}")
+    return True, "no Feed line after the URI session ended"
 
 
 def a_uri_presented(lines):
@@ -1927,6 +1980,7 @@ def evaluate_uri(case, lines, srv_delta):
         results.append(("uri_presented", *a_uri_presented(lines)))
     if mode == URI_PRODUCT:
         results.append(("uri_dev_offer", *a_uri_dev_offer(lines)))
+        results.append(("uri_route_held", *a_uri_route_held(lines)))
     if "uri_clock_past_s" in exp:
         results.append(("uri_clock_past", *a_uri_clock_past(lines, exp["uri_clock_past_s"], mode)))
     if "uri_max_stall_s" in exp:

@@ -5839,7 +5839,8 @@ def _product_run(seconds, clock=lambda sec: sec * 1000, remaining=lambda sec: 12
     lines = []
     if plane:
         lines += ["videoplane: BOUND — the gate presents unconditionally and no frame may snapshot",
-                  f"acb display fullscreen=1 rv=1 task={display}", f"acb playing rv=1 task={playing}"]
+                  f"acb display fullscreen=1 rv=1 task={display}", f"acb playing rv=1 task={playing}",
+                  "uri-acb: bound (a dispatch result, not a picture)"]
     if callbacks:
         lines += [f"acb callback task={display} ev=1 app=1 play=0",
                   f"acb callback task={playing} ev=1 app=1 play=1",
@@ -5885,7 +5886,8 @@ class UriProductGrading(unittest.TestCase):
         self.assertTrue(passed, results)
         self.assertEqual({label for label, _, _ in results},
                          {"uri_playing", "uri_plane_bound", "uri_presented", "uri_service_playing",
-                          "uri_dev_offer", "uri_clock_past", "uri_max_stall", "no_error", "server_wire"})
+                          "uri_dev_offer", "uri_route_held", "uri_clock_past", "uri_max_stall", "no_error",
+                          "server_wire"})
 
     def test_the_probe_prefix_is_not_product_evidence_and_the_trace_prefix_is_not_probe_evidence(self):
         probe_lines = [ln.replace("uri-trace:", "uriprobe:") for ln in _product_run(66)]
@@ -5941,6 +5943,9 @@ class UriProductGrading(unittest.TestCase):
 
     # -- uri_plane_bound reads the ids from the log --
 
+    URI_OWN = ["uri-acb: bound (a dispatch result, not a picture)",
+               "uri-acb: display/PLAYING completed (event 1 on both tasks)"]
+
     def test_the_plane_bound_grade_reads_the_task_ids_from_the_log(self):
         for display, playing in ((6, 7), (1, 2), (41, 9)):
             with self.subTest(display=display, playing=playing):
@@ -5951,12 +5956,12 @@ class UriProductGrading(unittest.TestCase):
         # the order of the lines is not graded: a callback may print before the display line
         shuffled = ["acb callback task=6 ev=1 app=1 play=0", "acb callback task=7 ev=1 app=1 play=1",
                     "acb display fullscreen=1 rv=1 task=6", "acb playing rv=1 task=7",
-                    "videoplane: BOUND"]
+                    "videoplane: BOUND"] + self.URI_OWN
         self.assertTrue(run.a_uri_plane_bound(shuffled, self.P)[0])
 
     def test_the_plane_bound_grade_refuses_each_way_the_bind_can_be_incomplete(self):
         base = ["videoplane: BOUND", "acb display fullscreen=1 rv=1 task=6", "acb playing rv=1 task=7",
-                "acb callback task=6 ev=1 app=1 play=0", "acb callback task=7 ev=1 app=1 play=1"]
+                "acb callback task=6 ev=1 app=1 play=0", "acb callback task=7 ev=1 app=1 play=1"] + self.URI_OWN
         self.assertTrue(run.a_uri_plane_bound(base, self.P)[0])
         cases = {
             "no BOUND line": [ln for ln in base if "BOUND" not in ln],
@@ -5978,7 +5983,7 @@ class UriProductGrading(unittest.TestCase):
 
     def test_only_the_unloaded_task_may_answer_other_than_ev_1(self):
         base = ["videoplane: BOUND", "acb display fullscreen=1 rv=1 task=6", "acb playing rv=1 task=7",
-                "acb callback task=6 ev=1 app=1 play=0", "acb callback task=7 ev=1 app=1 play=1"]
+                "acb callback task=6 ev=1 app=1 play=0", "acb callback task=7 ev=1 app=1 play=1"] + self.URI_OWN
         released = base + ["acb unloaded rv=1 task=8", "acb callback task=8 ev=0 app=1 play=0"]
         self.assertTrue(run.a_uri_plane_bound(released, self.P)[0])
         wrong = base + ["acb unloaded rv=1 task=8", "acb callback task=9 ev=0 app=1 play=0"]
@@ -6046,7 +6051,8 @@ class UriProductGrading(unittest.TestCase):
     def test_an_armed_dev_route_that_never_reaches_the_product_backend_fails_with_the_pin_reason(self):
         """The pin matches no server, the qualifier answers Unknown, the route plays the Feed, and the log
         says nothing else: the grade names the likely cause."""
-        lines = [self.ARMED] + _product_run(66, service=False, presented=False)
+        lines = [self.ARMED] + [ln for ln in _product_run(66, service=False, presented=False)
+                                if not ln.startswith("uri-acb:")]
         ok, why = run.a_uri_dev_offer(lines)
         self.assertFalse(ok)
         self.assertEqual(why, "dev route armed but no product offer (pin mismatch?)")
@@ -6055,6 +6061,92 @@ class UriProductGrading(unittest.TestCase):
         graded = {label: (ok, why) for label, ok, why in results}
         self.assertEqual(graded["uri_dev_offer"],
                          (False, "dev route armed but no product offer (pin mismatch?)"))
+
+    WAITING = "uri-acb: waiting for the service's source envelope (real video facts)"
+
+    def test_an_offer_whose_bind_never_completed_is_told_from_no_offer(self):
+        """The 4.5 service sent `videoInfo` and no ACB-schema envelope, so the production backend waited
+        and timed out: the offer WAS made, and a pin mismatch is the wrong thing to suspect."""
+        waited = [self.ARMED, "uri-acb: request=1 step=Check", self.WAITING]
+        ok, why = run.a_uri_dev_offer(waited)
+        self.assertFalse(ok)
+        self.assertIn("offer made but the ACB bind never completed", why)
+        self.assertIn("source envelope", why)
+        self.assertNotIn("pin mismatch", why)
+        # an offer that stopped elsewhere in the sequence says so without naming the envelope
+        other = [self.ARMED, "uri-acb: request=1 step=Check", "uri-acb: bind not granted (Refused(NoPlane))"]
+        ok, why = run.a_uri_dev_offer(other)
+        self.assertFalse(ok)
+        self.assertIn("offer made but the ACB bind never completed", why)
+        self.assertNotIn("envelope", why)
+        self.assertNotIn("pin mismatch", why)
+        # no `uri-acb:` line at all stays the pin reason
+        self.assertIn("pin mismatch", run.a_uri_dev_offer([self.ARMED])[1])
+
+    # -- the route held: a fallback to the Feed fails the case by name --
+
+    FALLBACK = ["uri-dev: armed part=990001", "uri-acb: request=1 step=Check", WAITING,
+                "uri-acb: the bind failed (TimedOut); closing", "ls2uri: released",
+                "decision: part=991001 video=- general=Some(1000) mde=None -> DIRECT PLAY",
+                'load: v=H264 a="AAC" fps=24.000 dv=present:0 P0/0 el:0 atmos:0 max=1280x720@24',
+                "stream: path=direct"]
+
+    def test_the_route_held_grade_fails_a_run_the_feed_finished_and_passes_one_that_never_fell_back(self):
+        ok, why = run.a_uri_route_held(self.FALLBACK)
+        self.assertFalse(ok)
+        self.assertIn("fell back to the Feed", why)
+        self.assertIn("decision: part=991001", why)
+        for dropped in (5, 6, 7):
+            with self.subTest(first_feed_line=self.FALLBACK[dropped]):
+                ok, why = run.a_uri_route_held(self.FALLBACK[:5] + self.FALLBACK[dropped:dropped + 1])
+                self.assertFalse(ok, why)
+        # the release at the end of a healthy run is followed by no Feed line
+        self.assertTrue(run.a_uri_route_held(_product_run(66) + ["ls2uri: released"])[0])
+        self.assertTrue(run.a_uri_route_held(self.FALLBACK[:5])[0])
+        self.assertTrue(run.a_uri_route_held(_product_run(66))[0])
+        # Feed vocabulary BEFORE the URI session is the route's own planning, not a fallback
+        self.assertTrue(run.a_uri_route_held([self.FALLBACK[5], "ls2uri: released"])[0])
+        # a quarantined session that the Feed then replaced counts too
+        quarantined = [ln.replace("ls2uri: released", "ls2uri: quarantined") for ln in self.FALLBACK]
+        self.assertFalse(run.a_uri_route_held(quarantined)[0])
+
+    def test_a_product_case_the_feed_finished_fails_even_with_every_feed_plane_line_in_the_log(self):
+        """The false pass of 2026-11-05: the route fell back to the Feed, which wrote `videoplane: BOUND`,
+        `acb display/playing ... task=N` and their callbacks, so the plane grade read a bind that the
+        URI backend never made."""
+        feed = [ln for ln in _product_run(66, service=False, presented=False) if not ln.startswith("uri-acb:")]
+        log = ["uri-dev: armed part=990001", "uri-acb: request=1 step=Check", self.WAITING,
+               "ls2uri: released", "decision: part=991001 video=- general=Some(1000) mde=None -> DIRECT PLAY",
+               'load: v=H264 a="AAC" fps=24.000 dv=present:0 P0/0 el:0 atmos:0'] + feed
+        passed, results = run.evaluate_pipeline(self.CASE, log, (36, 36, 2))
+        self.assertFalse(passed)
+        graded = {label: (ok, why) for label, ok, why in results}
+        for label in ("uri_plane_bound", "uri_route_held", "uri_dev_offer", "uri_service_playing", "uri_presented"):
+            self.assertFalse(graded[label][0], label)
+        self.assertIn("waited for an envelope", graded["uri_plane_bound"][1])
+        self.assertIn("fell back to the Feed", graded["uri_route_held"][1])
+        self.assertIn("offer made but the ACB bind never completed", graded["uri_dev_offer"][1])
+
+    def test_the_plane_grade_reads_the_uri_backends_own_bind_lines_on_a_product_case(self):
+        feed_only = ["videoplane: BOUND", "acb display fullscreen=1 rv=1 task=6", "acb playing rv=1 task=7",
+                     "acb callback task=6 ev=1 app=1 play=0", "acb callback task=7 ev=1 app=1 play=1"]
+        ok, why = run.a_uri_plane_bound(feed_only, self.P)
+        self.assertFalse(ok)
+        self.assertIn("uri-acb: bound", why)
+        # bound, but the plane's display/PLAYING never completed (or said it failed)
+        bound = feed_only + [self.URI_OWN[0]]
+        ok, why = run.a_uri_plane_bound(bound, self.P)
+        self.assertFalse(ok)
+        self.assertIn("display/PLAYING completed", why)
+        failed = bound + ["uri-acb: display/PLAYING completion failed (event 3); no picture will be claimed"]
+        ok, why = run.a_uri_plane_bound(failed, self.P)
+        self.assertFalse(ok)
+        self.assertIn("did not complete", why)
+        self.assertTrue(run.a_uri_plane_bound(feed_only + self.URI_OWN, self.P)[0])
+        # the URI lines alone do not stand in for the plane's own evidence
+        self.assertFalse(run.a_uri_plane_bound(self.URI_OWN, self.P)[0])
+        # the probe route is unchanged: it never reads the production lines
+        self.assertTrue(run.a_uri_plane_bound(_uri_run(2))[0])
 
     def test_an_armed_dev_route_that_played_passes_and_an_unarmed_log_has_nothing_to_check(self):
         self.assertTrue(run.a_uri_dev_offer([self.ARMED] + _product_run(66))[0])
