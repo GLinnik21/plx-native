@@ -5457,7 +5457,7 @@ mod native_seek_pump_tests {
 }
 
 /// **A film whose audio outlasts its video ends on the host sink too (#865).** The pipeline stops
-/// its clock at the last video frame, so the playhead never comes within [`EOS_TAIL_NS`] of the
+/// its clock at the last video frame, so the playhead never comes within [`EOS_TAIL_NS`](crate::player::readout::EOS_TAIL_NS) of the
 /// container's duration (the longest track's) and only the pipeline's own end-of-stream can end
 /// the film. These drive the REAL feed lanes and the REAL `pump` against the clock sink and grade
 /// `player::ended()`. Nothing here sets `Shared::pipeline_eos` or `ended`: what is graded is the
@@ -5466,6 +5466,7 @@ mod native_seek_pump_tests {
 mod end_of_film_tests {
     use super::*;
     use crate::player::ffi_host;
+    use crate::player::readout::EOS_TAIL_NS;
     use std::os::raw::c_int;
 
     const S: i64 = 1_000_000_000;

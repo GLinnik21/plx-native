@@ -40,7 +40,7 @@ pub struct PlayerReadout {
 }
 
 /// How close to the container's duration the playhead must be, after the EOS, to count as the end.
-const EOS_TAIL_NS: i64 = 1_000_000_000;
+pub(super) const EOS_TAIL_NS: i64 = 1_000_000_000;
 
 /// Whether a stream whose EOS has been pushed has ended: the pipeline said so
 /// (`Shared::pipeline_eos`), or the playhead is within [`EOS_TAIL_NS`] of the duration. The
