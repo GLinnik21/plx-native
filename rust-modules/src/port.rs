@@ -75,3 +75,20 @@ pub unsafe extern "C" fn plx_launch_args(json: *const c_char) {
     let raw = unsafe { std::ffi::CStr::from_ptr(json) }.to_string_lossy();
     plx_platform::tv::launch::offer(&raw);
 }
+
+#[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
+mod tests {
+    use super::PORT;
+
+    /// The app's plane boot resolves the display through `display_installed()` (this table's
+    /// `display_sink`), where media's old `acb_init` resolved it through `player::display()`. In
+    /// the simulator both must be the host sink, never `NoSink`: a boot that read `NoSink` would
+    /// report no plane to every backend and nothing in a simulator run would say so.
+    #[test]
+    fn the_simulator_resolves_the_display_the_plane_boots_on_to_the_host_sink() {
+        let host = std::ptr::from_ref(&plx_media::player::HOST_SINK).cast::<()>();
+        assert_eq!(std::ptr::from_ref(PORT.display_sink).cast::<()>(), host,
+            "display_installed() is the host sink");
+        assert_eq!(std::ptr::from_ref(PORT.sink).cast::<()>(), host, "so is the video sink");
+    }
+}

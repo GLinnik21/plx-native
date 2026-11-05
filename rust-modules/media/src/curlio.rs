@@ -49,6 +49,47 @@ where
     )
 }
 
+/// Why [`first_read`] came back without bytes; `Display` is the short reason the TLS self-test
+/// prints (`open=…`, `rc=…`, `read=…`).
+#[cfg(feature = "devtriggers")]
+#[derive(Debug, PartialEq, Eq)]
+pub enum FirstReadFailure {
+    /// No transfer slot could be reserved.
+    Reserve(OpenErr),
+    /// The open failed: libcurl's own code for a transport failure, else the typed refusal.
+    Open(OpenErr),
+    /// The open succeeded and the read returned this non-positive count.
+    Read(std::os::raw::c_int),
+}
+
+#[cfg(feature = "devtriggers")]
+impl std::fmt::Display for FirstReadFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Open(OpenErr::Transport(rc)) => write!(f, "rc={rc}"),
+            Self::Reserve(e) | Self::Open(e) => write!(f, "open={e:?}"),
+            Self::Read(n) => write!(f, "read={n}"),
+        }
+    }
+}
+
+/// Open `url` at offset 0 through a real [`CurlSource`] and read its first bytes into `dst`, both
+/// bounded by `until` (the TLS self-test's media-plane half). It is not generic on purpose: the
+/// application calls this instead of naming `CurlSource<PlexAuthorization>`, so only this crate
+/// instantiates that transport and the binary carries one copy of it.
+#[cfg(feature = "devtriggers")]
+pub fn first_read(url: &str, until: std::time::Instant, dst: &mut [u8]) -> Result<usize, FirstReadFailure> {
+    let reservation = CurlSource::reserve_open().map_err(FirstReadFailure::Reserve)?;
+    let mut src = CurlSource::open_reserved_checked(
+        url, 0, reservation, Some(until), &mut plx_base::checkpoint::NoCheckpoint,
+    ).map_err(FirstReadFailure::Open)?;
+    let n = src.read_until(dst, Some(until), &mut plx_base::checkpoint::NoCheckpoint);
+    if n <= 0 {
+        return Err(FirstReadFailure::Read(n));
+    }
+    Ok(n as usize)
+}
+
 #[cfg(test)]
 fn media_url_allowed_by_policy(url: &str, policy: plx_plex::plex::CredentialPolicy) -> bool {
     let (origin, path) = plx_net::net::origin::split(url);
@@ -110,4 +151,47 @@ mod policy_tests {
         ));
     }
 
+}
+
+#[cfg(all(test, feature = "devtriggers"))]
+mod first_read_tests {
+    use super::*;
+    use plx_net::net::{curl_ready, expired_leaf, remember, spawn_observed, TestCaGuard};
+    use std::sync::Arc;
+
+    fn until() -> std::time::Instant { std::time::Instant::now() + std::time::Duration::from_secs(10) }
+
+    #[test]
+    fn reads_the_first_bytes_of_a_served_body_through_the_media_transport() {
+        let _serial = plx_base::testlock::serial();
+        if !curl_ready() { return; }
+        let cert = expired_leaf(&["127.0.0.1"]);
+        let _ca = TestCaGuard::install(&cert.pem, "first-read-ok");
+        let served = spawn_observed(Arc::clone(&cert), test_fixtures::media_body());
+        let _key = remember(served.port, &cert);
+        let mut buf = [0u8; 64];
+        let n = first_read(&format!("https://127.0.0.1:{}/video.mkv", served.port), until(), &mut buf)
+            .expect("the remembered key admits the server");
+        assert!(n > 0 && n <= 64);
+        assert_eq!(buf[..n], test_fixtures::media_body()[..n]);
+    }
+
+    #[test]
+    fn a_closed_port_is_reported_as_libcurls_own_code_and_prints_as_rc() {
+        let _serial = plx_base::testlock::serial();
+        if !curl_ready() { return; }
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let err = first_read(&format!("https://127.0.0.1:{port}/video.mkv"), until(), &mut [0u8; 8])
+            .expect_err("nothing listens");
+        assert_eq!(err, FirstReadFailure::Open(OpenErr::Transport(7)));
+        assert_eq!(err.to_string(), "rc=7");
+    }
+
+    #[test]
+    fn the_failure_texts_are_the_self_tests_own() {
+        assert_eq!(FirstReadFailure::Read(-1).to_string(), "read=-1");
+        assert_eq!(FirstReadFailure::Read(0).to_string(), "read=0");
+        assert_eq!(FirstReadFailure::Open(OpenErr::Transport(60)).to_string(), "rc=60");
+        assert_eq!(FirstReadFailure::Reserve(OpenErr::Transport(60)).to_string(), format!("open={:?}", OpenErr::Transport(60)));
+    }
 }
