@@ -1,8 +1,9 @@
 //! The buffer-feed backend behind the contract's [`FeedControl`] and [`DriverSet`]: the player's
 //! seek and Load verbs reach the physical feed through this one owner of its native session and
 //! its driver, and every method is the body of the function the player's adapter called directly
-//! before the seam existed. A forwarding layer only; the verbs, their borrows and their answers
-//! are unchanged.
+//! before the seam existed. A forwarding layer, except `sample`, which answers only for a live
+//! session and adds the Engine's Load-side half (`FeedRaw::load`) to the mailbox sample; the verbs,
+//! their borrows and their answers are otherwise unchanged.
 
 use crate::feed_driver::{FeedDriver, FeedTransportAction};
 use crate::feed_pump;

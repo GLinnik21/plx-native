@@ -1349,9 +1349,10 @@ mod abandoned_load_tests {
         eng.attempt = attempt.contract_id();
         eng.stage = Stage::Loading;
         let hold = Arc::clone(release);
-        eng.load_th = Some(std::thread::spawn(move || {
+        eng.load_th = plx_base::task::spawn("media", move || {
             while !hold.load(Ordering::SeqCst) { std::thread::sleep(std::time::Duration::from_millis(1)); }
-        }));
+        });
+        assert!(eng.load_th.is_some(), "the Load stand-in thread started");
         pa.install(eng);
         ps.begin_attempt_view(attempt, crate::player::attempt_view::Backend::Feed);
         crate::route::mark_preview_for_test(ps);

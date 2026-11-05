@@ -27,6 +27,7 @@
 //! | `hls_rebuffering` (1), `seen_frame` (1) | plain bool | **mapped** |
 //! | `native_audio_refused`, `decoder_revoked` | one-shot takes | **raw counters** ([`FeedRaw::native_audio_refusals`], [`FeedRaw::decoder_revocations`]): the feed counts each edge, the player's readout holds how many it has taken |
 //! | `file_size`, `applied_rate_permille`, `speed_audio_verdict`, `dg_vpres_ct`, `dg_vpres_gap_sum`, `dg_vpres_gap_ct`, `pts_shift` | no `AttemptFacts` field | **raw**, in [`FeedRaw`]; the three presentation counters are diagnostics only (the heartbeat's liveness line differences two samples: the tick count, and the mean gap as sum over gap count) |
+//! | `stage`, `load_thread_finished`, `route_actions_ready` (the Engine's own fields, not mailboxes) | none | **raw**, in [`LoadRaw`] (`FeedRaw::load`), which `FeedBackend::sample` fills beside the mailbox half: a `None` stage, a finished Load thread and "not ready" each mean something the idle default would lose, and the session's reset returns them to [`LoadRaw::IDLE`] |
 //! | `native_load_abandoned` | the Load a teardown parked | **terminal fact**: `AttemptFacts::load_abandoned`, recorded by the teardown's own ingestion, because the live phase outlives the session reset and the readout does not |
 //!
 //! The seek family is here: `pipeline_eos`, the landed seek epoch, the feed's in-place target
@@ -365,8 +366,8 @@ pub struct LoadRaw {
     /// only goes `false` to `true` within a session, so a stale sample says "still running", never
     /// the reverse.
     pub load_thread_finished: bool,
-    /// Native readiness for a route or action claim: a stream source at `Playing` or later whose
-    /// seek flush has not yet been rebased.
+    /// Native readiness for a route or action claim: a stream source at `Playing` or later,
+    /// unless an in-place seek's flush still waits for its rebase.
     pub route_actions_ready: bool,
 }
 
