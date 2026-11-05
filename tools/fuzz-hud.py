@@ -53,6 +53,8 @@ EXAMPLES = ROOT / "site/hud/examples"
 SCHEMAS = ROOT / "site/hud/schema"
 ICONS = ROOT / "assets/icons"
 ORIGIN = "https://glinnik21.github.io/plxnative-huds"       # data/src/hudpacks/catalog.rs, ORIGIN
+CATALOG = ROOT / "rust-modules/data/src/hudpacks/catalog.rs"
+CATALOG_TESTING = ROOT / "rust-modules/data/src/hudpacks/catalog/testing.rs"
 
 # target -> (dictionary, -max_len). max_len is above the bound the parser checks first (a bundle's 2 MiB is a
 # plain length compare, covered in-crate; an SVG's 16 KiB and an address's 2048 bytes are reached), because
@@ -64,6 +66,7 @@ TARGETS = {
     "svg_check": ("svg", 20000),
     "address_parse": ("address", 2200),
     "catalog_parse": ("catalog", 65536),
+    "catalog_verify": ("catalog", 65536),
     "catalog_cache": ("catalog", 65536),
 }
 
@@ -98,8 +101,9 @@ def put(directory, name, data):
     (directory / name).write_bytes(data if isinstance(data, bytes) else data.encode())
 
 
-def index_seed(entries=2, revoked=1):
-    """A registry index `catalog::parse` accepts: the shape `catalog/tests.rs` builds, with several entries."""
+def index_seed(entries=2, revoked=1, serial=1000):
+    """A registry index `catalog::parse` accepts: the shape `catalog/tests.rs` builds, with several entries. A
+    `serial` of None leaves it out, as a bare `index.json` has none (`verify` refuses such a signed index)."""
     packs = []
     for n in range(entries):
         sha = sha256_hex(f"package {n}".encode())
@@ -113,8 +117,11 @@ def index_seed(entries=2, revoked=1):
             "unfit": [{"from": "0.10.1", "langs": ["fr"]}, {"from": "0.10.2", "langs": []}] if n else [],
             "sdk": {"source_sha": "ignored provenance"},
         })
-    return {"format": 1, "entries": packs,
-            "revoked": [{"sha256": sha256_hex(f"revoked {n}".encode()), "reason": "withdrawn"} for n in range(revoked)]}
+    index = {"format": 1, "entries": packs,
+             "revoked": [{"sha256": sha256_hex(f"revoked {n}".encode()), "reason": "withdrawn"} for n in range(revoked)]}
+    if serial is not None:
+        index = {"format": 1, "serial": serial, **{k: v for k, v in index.items() if k != "format"}}
+    return index
 
 
 def cache_seed(body, **fields):
@@ -122,6 +129,93 @@ def cache_seed(body, **fields):
               "body": body}
     record.update(fields)
     return json.dumps(record, separators=(",", ":"))
+
+
+# --- the signed registry index (PR14) ------------------------------------------------------------------------
+# `index.signed` is one header line, a newline, and the index bytes; the header carries an Ed25519 signature over
+# those bytes by a key whose first 8 bytes of SHA-256 name it (`catalog.rs`, `verify`). The seeds that reach what
+# FOLLOWS the signature check are signed with the TEST ONLY keys the data layer's own tests use
+# (`catalog/testing.rs`: seeds 7, 8 and 9, public knowledge, none of them the registry's). The standard library has
+# no Ed25519, so this is the RFC 8032 reference signer (a dozen signatures a run; ci/test_ci_workflows.py pins it to
+# the RFC's test vectors). No private key of the registry exists in this repository, and none is read here.
+_P = 2**255 - 19
+_Q = 2**252 + 27742317777372353535851937790883648493
+_D = -121665 * pow(121666, _P - 2, _P) % _P
+_SQRT_M1 = pow(2, (_P - 1) // 4, _P)
+
+
+def _inv(x):
+    return pow(x, _P - 2, _P)
+
+
+def _recover_x(y, sign):
+    x2 = (y * y - 1) * _inv(_D * y * y + 1) % _P
+    x = pow(x2, (_P + 3) // 8, _P)
+    if (x * x - x2) % _P:
+        x = x * _SQRT_M1 % _P
+    return _P - x if x & 1 != sign else x
+
+
+_GY = 4 * _inv(5) % _P
+_G = (_recover_x(_GY, 0), _GY, 1, _recover_x(_GY, 0) * _GY % _P)
+
+
+def _add(a, b):
+    p, q = (a[1] - a[0]) * (b[1] - b[0]) % _P, (a[1] + a[0]) * (b[1] + b[0]) % _P
+    c, d = 2 * a[3] * b[3] * _D % _P, 2 * a[2] * b[2] % _P
+    e, f, g, h = q - p, d - c, d + c, q + p
+    return (e * f % _P, g * h % _P, f * g % _P, e * h % _P)
+
+
+def _mul(scalar, point):
+    out = (0, 1, 1, 0)
+    while scalar:
+        if scalar & 1:
+            out = _add(out, point)
+        point = _add(point, point)
+        scalar >>= 1
+    return out
+
+
+def _compress(point):
+    zi = _inv(point[2])
+    x, y = point[0] * zi % _P, point[1] * zi % _P
+    return (y | ((x & 1) << 255)).to_bytes(32, "little")
+
+
+def ed25519_sign(seed, message):
+    """(public key, signature) of `message` for a 32-byte `seed`: RFC 8032, section 5.1.6."""
+    h = hashlib.sha512(seed).digest()
+    a = int.from_bytes(h[:32], "little") & ((1 << 254) - 8) | (1 << 254)
+    public = _compress(_mul(a, _G))
+    r = int.from_bytes(hashlib.sha512(h[32:] + message).digest(), "little") % _Q
+    r_point = _compress(_mul(r, _G))
+    k = int.from_bytes(hashlib.sha512(r_point + public + message).digest(), "little") % _Q
+    return public, r_point + ((r + k * a) % _Q).to_bytes(32, "little")
+
+
+def test_only_seeds():
+    """{'PRIMARY': 7, 'STANDBY': 8, 'STRANGER': 9}: read from the data layer's test module, so they cannot drift."""
+    found = re.findall(r"const TEST_ONLY_([A-Z]+): u8 = (\d+);", CATALOG_TESTING.read_text())
+    seeds = {name: int(value) for name, value in found}
+    missing = {"PRIMARY", "STANDBY", "STRANGER"} - set(seeds)
+    if missing:
+        sys.exit(f"fuzz-hud: {CATALOG_TESTING.relative_to(ROOT)} no longer names TEST_ONLY_{sorted(missing)[0]}")
+    return seeds
+
+
+def real_key_ids():
+    """The 16-hex-digit ids of `ACCEPTED_KEYS`, the way a signed header names them. Public values."""
+    ids = re.findall(r"id: \[((?:0x[0-9a-f]{2},? ?){8})\]", CATALOG.read_text())
+    return [bytes(int(b, 16) for b in re.findall(r"0x([0-9a-f]{2})", ident)).hex() for ident in ids]
+
+
+def signed_index(seed, index, key_id=None):
+    """`index.signed`: the header line, a newline, `index`, signed by the key made from `seed`. `key_id` names a
+    different key in the header (a real one, whose signature then cannot verify)."""
+    public, signature = ed25519_sign(bytes([seed]) * 32, index)
+    key = key_id or hashlib.sha256(public).digest()[:8].hex()
+    return f'{{"format":1,"key":"{key}","sig":"{signature.hex()}"}}\n'.encode() + index
 
 
 def schema_words():
@@ -182,9 +276,41 @@ def write_seeds():
     put(seeds / "catalog_parse", "index-two-entries", good)
     put(seeds / "catalog_parse", "index-one-entry", one)
     put(seeds / "catalog_parse", "index-empty", '{"format":1,"entries":[],"revoked":[]}')
-    put(seeds / "catalog_cache", "cache-index", cache_seed(good))
-    put(seeds / "catalog_cache", "cache-index-no-validators", cache_seed(one, checked_at=None, attempted_at=None, etag=None))
+
+    # The signed index (PR14). The TEST ONLY keys are not the app's, so under the shipped keys these are refused
+    # as an unknown key: what they give the fuzzer is a header and a framing that are well formed to mutate. A real
+    # key's id on a test signature reaches the shipped key's verification, which refuses it as a bad signature.
+    seeds_of = test_only_seeds()
+    index = good.encode()
+    real_ids = real_key_ids()
+    signed = {
+        "signed-test-primary": signed_index(seeds_of["PRIMARY"], index),
+        "signed-test-standby": signed_index(seeds_of["STANDBY"], index),
+        "signed-stranger": signed_index(seeds_of["STRANGER"], index),
+        "signed-one-entry": signed_index(seeds_of["PRIMARY"], one.encode()),
+        "signed-no-serial": signed_index(seeds_of["PRIMARY"], json.dumps(index_seed(serial=None), separators=(",", ":")).encode()),
+        "signed-empty-index": signed_index(seeds_of["PRIMARY"], b""),
+        "bare-index": index,
+        "empty": b"",
+    }
+    for n, ident in enumerate(real_ids):
+        signed[f"real-key-{n}-test-signature"] = signed_index(seeds_of["PRIMARY"], index, key_id=ident)
+    header = signed["signed-test-primary"].split(b"\n", 1)[0]
+    signed["header-no-newline"] = header
+    signed["header-only"] = header + b"\n"
+    for name, data in signed.items():
+        put(seeds / "catalog_verify", name, data)
+
+    # The cache file (`CacheRecord::decode`): the same bodies wrapped, a bare index as a PR13-era build left it, and
+    # the record that remembers only an attempt (the one that needs no signature).
+    for name in ("signed-test-primary", "signed-test-standby", "signed-no-serial", "real-key-0-test-signature"):
+        if name in signed:
+            put(seeds / "catalog_cache", f"cache-{name}", cache_seed(signed[name].decode()))
+    put(seeds / "catalog_cache", "cache-signed-no-validators",
+        cache_seed(signed["signed-one-entry"].decode(), checked_at=None, attempted_at=None, etag=None))
+    put(seeds / "catalog_cache", "cache-bare-index", cache_seed(good))
     put(seeds / "catalog_cache", "cache-empty", cache_seed("", checked_at=None))
+    put(seeds / "catalog_cache", "cache-attempt-only", cache_seed("", checked_at=None, attempted_at=1_700_000_100, etag=None))
 
     words = schema_words()
     dicts = seeds / "dict"
@@ -202,9 +328,10 @@ def write_seeds():
     put(dicts, "catalog.dict", dict_entries([
         "format", "entries", "revoked", "id", "name", "version", "author", "license", "package_format", "hud_format",
         "app", "min", "max", "sha256", "bytes", "url", "previews", "unfit", "state", "lang", "file", "from", "langs",
-        "reason", "protocol", "checked_at", "attempted_at", "etag", "body", "sdk", "compact",
+        "reason", "protocol", "checked_at", "attempted_at", "etag", "body", "sdk", "compact", "serial", "key", "sig",
+        '{"format":1,"key":"', '","sig":"', *real_key_ids(),
         "sections-0-movie-paused-no-chapters", ORIGIN, "builtin:classic", "com.example.hud", "1.0", "0.0.0", "null",
-    ]))
+    ]) + '"\\x0a"\n')
     say(f"seeds: {sum(1 for p in seeds.rglob('*') if p.is_file())} files in {seeds}")
 
 

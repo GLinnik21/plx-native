@@ -1495,7 +1495,7 @@ DISK_TREE = $(if $(CARGO_TARGET_DIR),$(if $(filter /%,$(CARGO_TARGET_DIR)),$(CAR
 DISK_NEED =
 test-fast test-crate: DISK_TREE = $(CURDIR)/rust-modules/$(TEST_FAST_TDIR)
 test-hostsim: DISK_TREE = $(CURDIR)/rust-modules/$(TEST_HOSTSIM_TDIR)
-# The fuzz tree (ASan + coverage, release with debuginfo, seven binaries): 3.1 GiB measured after a cold build.
+# The fuzz tree (ASan + coverage, release with debuginfo, eight binaries): 3.1 GiB measured after a cold build.
 fuzz-hud: DISK_TREE = $(CURDIR)/rust-modules/$(FUZZ_TDIR)
 fuzz-hud: DISK_NEED = 3.3
 check-replay sim-macos: DISK_TREE = $(abspath $(SIM_TDIR)$(if $(LAB),-lab,))

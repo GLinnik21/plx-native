@@ -1,4 +1,5 @@
-//! What the fuzz targets share: the finding-shape check and the mutator that keeps a bundle a bundle.
+//! What the fuzz targets share: the finding-shape check, the mutator that keeps a bundle a bundle, and the
+//! TEST ONLY keys the registry-index targets sign with ([`signing`]).
 //!
 //! Each target asserts only what the code under test promises (its module docs and the in-crate tests'
 //! contracts): no panic, no unbounded work, and the invariants named in the target's own header. A
@@ -11,6 +12,8 @@
 
 use plx_appkit::hud_format::bundle::{archive, valid_path, MAX_MEMBER_BYTES};
 use plx_appkit::hud_format::{codes, Finding, MAX_NEAREST};
+
+pub mod signing;
 
 /// The lint shape every finding must have (`hud_format/tests.rs`, `assert_lint_shaped`): a code of the
 /// table with its own rule and severity, an RFC 6901 pointer, a message and a hint, at most

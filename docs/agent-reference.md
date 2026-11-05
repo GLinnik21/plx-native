@@ -331,13 +331,15 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
 - `make fuzz-hud [T=<target> ...] [SECS=60]` — the `cargo fuzz` package over every parser a HUD package or the
   registry reaches (`docs/hud-plugins.md`, threat model): `admit` (the whole admission path),
   `bundle_read`, `archive_read` (the 1.0 ZIP container), `svg_check` (the SVG gate in front of nanosvg),
-  `address_parse`, `catalog_parse` (the registry index) and `catalog_cache` (its cache record). Each target
+  `address_parse`, `catalog_parse` (the registry index), `catalog_verify` (the signed index: no input is accepted
+  under the shipped keys; the fuzzer's bytes are also signed with the data layer's TEST ONLY keys to reach what
+  follows the signature check) and `catalog_cache` (its cache record, verified again). Each target
   asserts only what its code promises (no panic, the documented bounds, round trips) and a crash fails the
   run, with the input in `fuzz/artifacts/<target>/`. The package is a top-level `fuzz/` with its own
   `[workspace]`, so no shipped `Cargo.toml` names it and no shipped build changes; it depends on the layer
   crates by path, with `plx_media/hostsim` (the one configuration that links on a host), and `fuzz/build.rs`
   reuses `rust-modules/build_support/host_link.rs`. `tools/fuzz-hud.py` is the whole workflow
-  (`list | seed | build | run`): it copies `rust-modules/Cargo.lock` to the gitignored `fuzz/Cargo.lock`
+  (`list | seed | lock | build | run`): it copies `rust-modules/Cargo.lock` to the gitignored `fuzz/Cargo.lock`
   (the shared crates are exactly the shipped versions), builds with the nightly named by `FUZZ_TOOLCHAIN`
   (default `nightly`; CI names a dated one; `cargo install cargo-fuzz --locked` once) in
   `rust-modules/target-fuzz` (3.1 GiB after a cold build; `make disk` lists it), generates the seeds from
@@ -348,7 +350,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   crash with `cargo +nightly fuzz tmin --fuzz-dir fuzz --target-dir rust-modules/target-fuzz <target> <file>`,
   add it as a red-first test in the owning crate, then fix the code. `.github/workflows/fuzz.yml` builds
   every target and runs each for 10 s on a PR that touches the package or a parser, and runs each for 5
-  minutes weekly, resuming from a cached corpus. Not a gate: nothing in `make check` runs it.
+  minutes weekly, resuming from a cached corpus when the cache still holds one. Not a gate: nothing in `make check` runs it.
 - `make check-nodef` — the shipping-feature-set type check, `cargo check --lib
   --no-default-features`, which is the configuration `RELEASE=1` ships and which `make check` does
   not cover. `CARGO_INCREMENTAL=0`, as every one-shot gate. It builds in the checkout's own

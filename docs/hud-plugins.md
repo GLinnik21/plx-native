@@ -1634,7 +1634,8 @@ this session, no network).
   no delete, no macro (Commands). Attack surface: the strict JSON parser and the SVG subset check (Rust) before
   nanosvg (C), and the compiler (Rust, bounded by the cost model). The format PR ships in-crate seeded mutation
   tests over `parse + compile` and the SVG checker; PR16's `cargo fuzz` package (`fuzz/`, `make fuzz-hud`) puts a
-  libFuzzer target on each of them and on the 1.0 bundle reader, the address parser and the registry index parser.
+  libFuzzer target on each of them and on the 1.0 bundle reader, the address parser, the registry index parser and
+  the signed-index verifier (which must refuse every input under the shipped keys).
 - Privacy: a registry fetch reveals the TV's IP to the host, like any web fetch; no account or identifier is
   sent.
 
@@ -1926,8 +1927,9 @@ later a static web editor on the site.
 
 PR16. `fuzz/`, a `cargo fuzz` package outside the `rust-modules` workspace: one libFuzzer target per untrusted-input
 parser (`admit`, `bundle::read`, `bundle::archive::read`, `svg_subset::check_asset`, `address::parse`,
-`catalog::parse` and the registry cache record), each asserting what its code promises, seeded from the repository's
-own fixtures. `make fuzz-hud [T=<target>] [SECS=60]` runs it; `.github/workflows/fuzz.yml` builds every target on a
+`catalog::parse`, the signed-index verifier `catalog::verify` / `Reply::http` and the registry cache record), each
+asserting what its code promises (the verifier: never accepts a byte string under the shipped keys), seeded from the
+repository's own fixtures. `make fuzz-hud [T=<target>] [SECS=60]` runs it; `.github/workflows/fuzz.yml` builds every target on a
 pinned nightly for a PR that touches them and runs them weekly. Its `make build-bench` table is in the PR.
 
 PR17. Owner-gated: captions rise clear of an open section (section "Captions", "Captions clear of an open section"):

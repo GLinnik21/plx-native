@@ -54,11 +54,11 @@ on:
   workflow_dispatch:
     inputs:
       secs:
-        description: 'Seconds per target (7 targets run one after another; the step stops at 100 minutes)'
+        description: 'Seconds per target (8 targets run one after another; the step stops at 100 minutes)'
         type: string
         default: '300'
       target:
-        description: 'One target (admit, bundle_read, archive_read, svg_check, address_parse, catalog_parse, catalog_cache); empty runs all'
+        description: 'One target (admit, bundle_read, archive_read, svg_check, address_parse, catalog_parse, catalog_verify, catalog_cache); empty runs all'
         type: string
         default: ''
 
