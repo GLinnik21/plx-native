@@ -582,7 +582,8 @@ pub fn seek_preroll_active() -> bool {
 /// Re-establish the viewer's Pause after the seek prime has decoded its first landed frame. The
 /// transport intent stayed Paused throughout; only this method closes the temporary feed override.
 #[cfg(feature = "play-feed")]
-pub fn finish_paused_seek(pa: &mut adapter::PlayerAdapter) -> bool {
+pub fn finish_paused_seek(ps: &mut crate::route::PlaybackSession, pa: &mut adapter::PlayerAdapter) -> bool {
+    let _ = ps;
     if !FEED_TX.seek_preroll_active() {
         return true;
     }

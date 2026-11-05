@@ -77,6 +77,7 @@ pub fn viewer_paused_for(pa: &crate::player::adapter::PlayerAdapter) -> bool {
 /// Resume during an internal HLS hold is accepted as a deferred transition: feeding reopens, while
 /// measured re-prime owns both the eventual Starfish Play and the matching ACB Resume.
 pub fn set_transport_paused(
+    ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     value: bool,
 ) -> bool {
@@ -99,7 +100,7 @@ pub fn set_transport_paused(
     if viewer_paused_for(pa) == value {
         return true;
     }
-    if let Some(accepted) = pa.backend_transport_control(value) {
+    if let Some(accepted) = pa.backend_transport_control(ps, value) {
         return accepted;
     }
     #[cfg(feature = "play-feed")]
@@ -113,9 +114,10 @@ pub fn set_transport_paused(
 /// `app::playback::commit_seek` is a bare seek and holds nothing. Written out four separate times
 /// in `app::playback` before it had a name; it came from `app/playback.rs` (module-layer step L12
 /// moved it into `lifecycle.rs`, and the Sans-IO lifecycle PR B moved it on, here).
-pub fn resume_if_paused(pa: &mut crate::player::adapter::PlayerAdapter) {
+pub fn resume_if_paused(ps: &mut crate::route::PlaybackSession,
+    pa: &mut crate::player::adapter::PlayerAdapter) {
     if viewer_paused_for(pa) {
-        set_transport_paused(pa, false);
+        set_transport_paused(ps, pa, false);
     }
 }
 
@@ -208,30 +210,31 @@ mod transport_pause_contract_tests {
             paused: old_paused,
             rebuffering: old_rebuffering,
         };
+        let mut ps = crate::route::PlaybackSession::IDLE;
         let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
             plx_base::task::MainThread::assume()
         });
 
         crate::player::force_pause_result_for_test(Some(0));
-        assert!(!set_transport_paused(&mut pa, true));
+        assert!(!set_transport_paused(&mut ps, &mut pa, true));
         assert!(
             !paused(),
             "feed must continue when the native clock refused Pause"
         );
 
         crate::player::force_pause_result_for_test(Some(1));
-        assert!(set_transport_paused(&mut pa, true));
+        assert!(set_transport_paused(&mut ps, &mut pa, true));
         assert!(paused());
 
         crate::player::force_play_result_for_test(Some(0));
-        assert!(!set_transport_paused(&mut pa, false));
+        assert!(!set_transport_paused(&mut ps, &mut pa, false));
         assert!(
             paused(),
             "feed must remain stopped when the native clock refused Play"
         );
 
         crate::player::force_play_result_for_test(Some(1));
-        assert!(set_transport_paused(&mut pa, false));
+        assert!(set_transport_paused(&mut ps, &mut pa, false));
         assert!(!paused());
     }
 
@@ -256,7 +259,7 @@ mod transport_pause_contract_tests {
             plx_base::task::MainThread::assume()
         });
         crate::player::force_pause_result_for_test(Some(1));
-        assert!(set_transport_paused(&mut pa, true));
+        assert!(set_transport_paused(&mut ps, &mut pa, true));
 
         struct Actuator<'a> {
             pa: &'a mut crate::player::adapter::PlayerAdapter,
@@ -317,8 +320,8 @@ mod transport_pause_contract_tests {
             ) {
             }
 
-            fn play_clock(&mut self) -> bool {
-                set_transport_paused(self.pa, false)
+            fn play_clock(&mut self, ps: &mut crate::route::PlaybackSession) -> bool {
+                set_transport_paused(ps, self.pa, false)
             }
         }
 

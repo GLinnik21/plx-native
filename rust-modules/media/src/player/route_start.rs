@@ -108,7 +108,7 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
                 // owner first, then reserve the existing route transaction in the shared
                 // release queue; the successor must not open while close is only pending.
                 let at = pa.backend_tick();
-                let stopped = pa.backend_send_at(plx_playback_contract::Intent::Stop {
+                let stopped = pa.backend_send_at(ps, plx_playback_contract::Intent::Stop {
                     backend: plx_playback_contract::BackendKind::Uri,
                     attempt: existing.contract_id(),
                     reason: plx_playback_contract::StopReason::Replace,
@@ -198,11 +198,10 @@ pub(super) fn start_bufferfeed_for(
     }
     let mut fx = Vec::new();
     pa.release_step(
+        ps,
         &super::release::ReleaseEvent::StartRequested(super::release::QueuedStart { route_start }),
         &mut fx,
     );
-    #[cfg(feature = "play-feed")]
-    pa.publish_release_queue(ps);
     let mut go = false;
     let mut refused = false;
     for effect in fx {
@@ -294,7 +293,7 @@ fn start_qualified_uri_inner(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
     };
     pa.sync_request_metrics(ps);
     let at = pa.backend_tick();
-    let result = pa.backend_send_at(plx_playback_contract::Intent::Start {
+    let result = pa.backend_send_at(ps, plx_playback_contract::Intent::Start {
         backend: plx_playback_contract::BackendKind::Uri,
         attempt,
         source,
@@ -396,7 +395,7 @@ fn start_bufferfeed_prepared(
     // `begin_native_open` can reap a previously abandoned Load. Admit its exact D1/quarantine
     // verdict before asking the common runner to admit another attempt.
     let at = pa.backend_tick();
-    let _ = pa.backend_poll_at(at);
+    let _ = pa.backend_poll_at(ps, at);
     // Guard a double-start: overwriting a live ENGINE slot would DROP the running
     // Engine, detaching its worker threads and freeing the hs/aq boxes those
     // threads still hold raw ptrs into -> use-after-free. If already running, no-op.
@@ -483,6 +482,7 @@ fn start_bufferfeed_prepared(
     pa.sync_request_metrics(ps);
     let backend_at = pa.backend_tick();
     let result = pa.backend_send_at(
+        ps,
         plx_playback_contract::Intent::Start {
             backend: plx_playback_contract::BackendKind::Feed,
             attempt,
@@ -560,15 +560,12 @@ pub(super) struct ReleasePass {
 }
 
 /// Execute the existing release machine's queued route transaction after the addressed URI
-/// `Released` verdict. The backend poll cannot start a route until it has the session borrow;
-/// the adapter carries only these effects between those two steps, never a second queue.
+/// `Released` verdict. A raw backend poll (`backend_poll_at`) only steps the machine; the route
+/// start waits for the session poll to run these effects, and the adapter carries only these
+/// effects between those two steps, never a second queue.
 pub(super) fn run_uri_queued_effects(ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter, fx: Vec<super::release::ReleaseEffect>) {
     use super::release::ReleaseEffect as E;
-    // The steps that produced these effects (`backend_poll_at`'s `Released`, the tick) emptied or
-    // kept the queue without the session in hand: state it now.
-    #[cfg(feature = "play-feed")]
-    pa.publish_release_queue(ps);
     for effect in fx {
         match effect {
             E::Start(q) => {
@@ -612,8 +609,6 @@ pub(super) fn run_release_effects(
 ) -> ReleasePass {
     use super::release::ReleaseEffect as E;
     let mut pass = ReleasePass::default();
-    // `drive_release` (and a stop's `CancelQueued`) stepped the machine without the session.
-    pa.publish_release_queue(ps);
     for effect in fx {
         match effect {
             E::RunTail { epoch } => {
@@ -625,7 +620,7 @@ pub(super) fn run_release_effects(
                         pa.mt(), p, pa.physical.feed_backend().resources().shared(), &hooks.release);
                     pa.note_backend_feed_release(attempt, status);
                     let at = pa.backend_tick();
-                    let _ = pa.backend_poll_at(at);
+                    let _ = pa.backend_poll_at(ps, at);
                     pass.tail_ran = true;
                 }
             }
@@ -987,7 +982,7 @@ pub fn poll_release(
     pa: &mut super::adapter::PlayerAdapter,
     now: std::time::Instant,
 ) -> bool {
-    let (fx, joined) = drive_release(pa, now, None);
+    let (fx, joined) = drive_release(ps, pa, now, None);
     super::route_start::run_release_effects(ps, pa, fx, joined, true).tail_ran
 }
 
@@ -1007,6 +1002,7 @@ pub fn reap_abandoned_load(pa: &mut super::adapter::PlayerAdapter) -> bool {
 /// exit request. Returns the effects and the joined release, whose tail the effects may run.
 #[cfg(feature = "play-feed")]
 fn drive_release(
+    ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
     now: std::time::Instant,
     exit: Option<std::time::Instant>,
@@ -1015,12 +1011,12 @@ fn drive_release(
     let mut fx = Vec::new();
     let joined = pa.take_finished_release().map(|mut p| {
         p.join_returned_worker();
-        pa.release_step(&V::UnloadReturned { epoch: p.epoch() }, &mut fx);
+        pa.release_step(ps, &V::UnloadReturned { epoch: p.epoch() }, &mut fx);
         p
     });
-    pa.release_step(&V::Tick { now }, &mut fx);
+    pa.release_step(ps, &V::Tick { now }, &mut fx);
     if let Some(at) = exit {
-        pa.release_step(&V::Exit { now: at }, &mut fx);
+        pa.release_step(ps, &V::Exit { now: at }, &mut fx);
     }
     (fx, joined)
 }
@@ -1037,11 +1033,12 @@ pub enum NativeExit {
 
 /// The native half of `app::run::shutdown`, after the final stop. Waits for the native Unload or
 /// URI registration release up to the release deadline, then preserves unresolved display ownership.
-pub fn exit_native(pa: &mut super::adapter::PlayerAdapter) -> NativeExit {
-    exit_native_with(pa, std::time::Instant::now, || std::thread::sleep(std::time::Duration::from_millis(2)))
+pub fn exit_native(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> NativeExit {
+    exit_native_with(ps, pa, std::time::Instant::now, || std::thread::sleep(std::time::Duration::from_millis(2)))
 }
 
 pub fn exit_native_with(
+    ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
     _clock: impl FnMut() -> std::time::Instant,
     _idle: impl FnMut(),
@@ -1051,7 +1048,7 @@ pub fn exit_native_with(
     // Exit cannot launch the successor a release was holding. Retire its exact route ticket
     // before waiting for the old native owner; no URL escrow or encoder may be started later.
     let mut queued_fx = Vec::new();
-    pa.release_step(&super::release::ReleaseEvent::CancelQueued, &mut queued_fx);
+    pa.release_step(ps, &super::release::ReleaseEvent::CancelQueued, &mut queued_fx);
     queued_fx.extend(pa.take_release_effects());
     for effect in queued_fx {
         if let super::release::ReleaseEffect::AbortSuperseded(q)
@@ -1068,10 +1065,9 @@ pub fn exit_native_with(
     #[cfg(feature = "devtriggers")]
     if pa.uri_live() {
         let started = clock();
-        let mut ps = crate::route::PlaybackSession::IDLE;
-        super::uriprobe_drive::stop(&mut ps, pa);
+        super::uriprobe_drive::stop(ps, pa);
         while pa.uri_live() {
-            super::uriprobe_drive::drive(&mut ps, pa);
+            super::uriprobe_drive::drive(ps, pa);
             if !pa.uri_live() { break; }
             if pa.uri_acb_exit_quarantine() || clock().saturating_duration_since(started) >= super::release::RELEASE_DEADLINE {
                 log("exit: URI ownership unresolved; the display is left to the OS");
@@ -1088,7 +1084,7 @@ pub fn exit_native_with(
             if !matches!(pa.backend_snapshot().phase,
                 plx_playback_contract::Phase::Releasing | plx_playback_contract::Phase::Quarantined) {
                 let at = pa.backend_tick();
-                let _ = pa.backend_send_at(plx_playback_contract::Intent::Stop {
+                let _ = pa.backend_send_at(ps, plx_playback_contract::Intent::Stop {
                     backend: plx_playback_contract::BackendKind::Uri,
                     attempt: attempt.contract_id(),
                     reason: plx_playback_contract::StopReason::Exit,
@@ -1098,7 +1094,7 @@ pub fn exit_native_with(
         let started = clock();
         while pa.uri_backend_exit_pending() {
             let at = pa.backend_tick();
-            let _ = pa.backend_poll_at(at);
+            let _ = pa.backend_poll_at(ps, at);
             if !pa.uri_backend_exit_pending() { break; }
             if clock().saturating_duration_since(started) >= super::release::RELEASE_DEADLINE {
                 log("exit: URI ownership unresolved; the display is left to the OS");
@@ -1121,12 +1117,10 @@ pub fn exit_native_with(
     #[cfg(not(feature = "play-feed"))]
     { return NativeExit::Clean; }
     #[cfg(feature = "play-feed")]
-    let mut ps = crate::route::PlaybackSession::IDLE;
-    #[cfg(feature = "play-feed")]
     loop {
         let now = clock();
-        let (fx, joined) = drive_release(pa, now, Some(now));
-        match super::route_start::run_release_effects(&mut ps, pa, fx, joined, false).exit {
+        let (fx, joined) = drive_release(ps, pa, now, Some(now));
+        match super::route_start::run_release_effects(ps, pa, fx, joined, false).exit {
             Some(super::release::ReleaseEffect::ExitClean) => return NativeExit::Clean,
             Some(super::release::ReleaseEffect::ExitWorkerInFirmware) => {
                 log("exit: the native Unload is overdue; the display is left to the OS");
@@ -1160,7 +1154,7 @@ fn leak_parked_for_exit(pa: &mut super::adapter::PlayerAdapter) {
 pub(crate) fn finish_release_for_test(pa: &mut super::adapter::PlayerAdapter) {
     let mut ps = crate::route::PlaybackSession::IDLE;
     while pa.release_busy() {
-        let (fx, joined) = drive_release(pa, std::time::Instant::now(), None);
+        let (fx, joined) = drive_release(&mut ps, pa, std::time::Instant::now(), None);
         let _ = super::route_start::run_release_effects(&mut ps, pa, fx, joined, false);
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
@@ -1257,7 +1251,7 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
     pa.cancel_uri_recovery(ps);
     if let Some(route_attempt) = pa.active_uri_attempt() {
         let at = pa.backend_tick();
-        let _ = pa.backend_send_at(plx_playback_contract::Intent::Stop {
+        let _ = pa.backend_send_at(ps, plx_playback_contract::Intent::Stop {
             backend: plx_playback_contract::BackendKind::Uri,
             attempt: route_attempt.contract_id(), reason,
         }, super::attempt_metrics::Origin::Fresh, at);
@@ -1271,6 +1265,7 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
         let attempt = route_attempt.contract_id();
         let at = pa.backend_tick();
         let _ = pa.backend_send_at(
+            ps,
             plx_playback_contract::Intent::Stop {
                 backend: plx_playback_contract::BackendKind::Feed,
                 attempt,
@@ -1328,10 +1323,10 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
     }
     ps.step_readout(super::readout::ReadoutEvent::SessionReset);
     finish_feed_teardown(ps, for_reload, report_th);
-    pa.finish_native_stop(native, for_reload);
+    pa.finish_native_stop(ps, native, for_reload);
     pa.note_backend_feed_release(route_attempt.contract_id(), release_status);
     let at = pa.backend_tick();
-    let _ = pa.backend_poll_at(at);
+    let _ = pa.backend_poll_at(ps, at);
     }
     #[cfg(not(feature = "play-feed"))]
     let _ = reason;
@@ -1352,7 +1347,7 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
     // that fact in the session can go stale across a landing that replaced the session.
     {
         let mut fx = Vec::new();
-        pa.release_step(&super::release::ReleaseEvent::CancelQueued, &mut fx);
+        pa.release_step(ps, &super::release::ReleaseEvent::CancelQueued, &mut fx);
         #[cfg(feature = "play-feed")]
         let _ = run_release_effects(ps, pa, fx, None, false);
         #[cfg(not(feature = "play-feed"))]

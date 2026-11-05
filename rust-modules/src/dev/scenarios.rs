@@ -1728,7 +1728,8 @@ fn autopause_arm(app: &mut App, fr: &mut Frame) {
         let reached = at_ms.is_none_or(|ms| crate::app::playback::playpos(&app.player.session)
             .is_some_and(|pos| pos >= i64::from(ms) * 1_000_000));
         if matches!(app.route(), AppArg::Player) && script_step_due(fr.now, pause_at, 0) && reached {
-            if crate::app::lifecycle::set_transport_paused(&mut app.adapters.player, true) {
+            if crate::app::lifecycle::set_transport_paused(&mut app.player.session,
+                &mut app.adapters.player, true) {
                 plx_base::eventlog::log(&format!(
                     "autopause: Pause accepted hold={}ms",
                     hold_ms.map_or_else(|| "forever".to_string(), |ms| ms.to_string()),
@@ -1743,7 +1744,8 @@ fn autopause_arm(app: &mut App, fr: &mut Frame) {
     }
     if let Some(resume_at) = app.scenarios.pause_resume_at {
         if matches!(app.route(), AppArg::Player) && script_step_due(fr.now, resume_at, 0) {
-            if crate::app::lifecycle::set_transport_paused(&mut app.adapters.player, false) {
+            if crate::app::lifecycle::set_transport_paused(&mut app.player.session,
+                &mut app.adapters.player, false) {
                 plx_base::eventlog::log("autopause: Resume accepted");
                 app.scenarios.pause_resume_at = None;
             }

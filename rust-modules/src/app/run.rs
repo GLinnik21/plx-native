@@ -1444,7 +1444,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             // above took the key; the row's press is the engine's, `PlayerScreen::row_pressed`.
             // The arm stays, empty, so OK keeps its place in front of the arms below.
         } else if matches!(key, Key::Pause) {
-            key_pause(&mut app.adapters.player, app.last_input, &mut app.pages);
+            key_pause(&mut app.player.session, &mut app.adapters.player, app.last_input, &mut app.pages);
         } else if matches!(key, Key::Play) {
             key_play(&mut app.player.session,
                 &mut app.adapters.player,
@@ -1471,7 +1471,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
                     &mut app.bridge,
                 );
             } else {
-                key_pause(&mut app.adapters.player, app.last_input, &mut app.pages);
+                key_pause(&mut app.player.session, &mut app.adapters.player, app.last_input, &mut app.pages);
             }
         } else if matches!(key, Key::Exit) {
             // The remote's EXIT key — LG's checklist item 38 wants the app terminated,
@@ -2022,7 +2022,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         app.adapters.player.sync_request_metrics(&mut app.player.session);
         let foreground = playback_may_run(app);
         let backend_at = app.adapters.player.backend_tick();
-        let _ = app.adapters.player.backend_set_foreground_at(foreground, backend_at);
+        let _ = app.adapters.player.backend_set_foreground_at(&mut app.player.session, foreground, backend_at);
         #[cfg(feature = "play-feed")]
         if foreground {
             if is_started(&app.player.session) == Some(true) {
@@ -2352,7 +2352,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
             && playpos(&app.player.session)
                 .is_some_and(|pos| pos + 15 * 1_000_000_000 >= app.repause_at)
         {
-            plx_media::player::finish_paused_seek(&mut app.adapters.player);
+            plx_media::player::finish_paused_seek(&mut app.player.session, &mut app.adapters.player);
         }
 }
 
@@ -3730,7 +3730,7 @@ pub(crate) unsafe fn shutdown(
     // firmware (an overdue `Unload`, or a timed-out Load's media thread) means the display must not
     // be torn down under it, and nothing may run the firmware libraries' destructors either: the
     // caller (`app::run_and_shutdown`) ends the process with `_exit`.
-    let native_exit = plx_media::player::exit_native(pa);
+    let native_exit = plx_media::player::exit_native(ps, pa);
     // The stop scrobble is posted off-thread now, and this process is about to die with any
     // worker still running — so THIS is the one place its result has to be waited for, or the
     // resume point the user just earned is silently dropped. Same cost the old inline call
@@ -6514,7 +6514,7 @@ mod lifecycle_regression_tests {
         assert!(rig.app.adapters.player.is_live(), "fixture must create the actual Engine");
         // The measured decoder-release case: a paused video behind the screensaver.
         assert!(plx_media::player::transport::set_transport_paused(
-            &mut rig.app.adapters.player, true,
+            &mut rig.app.player.session, &mut rig.app.adapters.player, true,
         ));
         let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
 
@@ -6572,7 +6572,7 @@ mod lifecycle_regression_tests {
         rig.accept_start();
         assert!(rig.app.adapters.player.is_live(), "fixture must create the actual Engine");
         assert!(plx_media::player::transport::set_transport_paused(
-            &mut rig.app.adapters.player, paused,
+            &mut rig.app.player.session, &mut rig.app.adapters.player, paused,
         ));
         let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
 
@@ -6824,7 +6824,7 @@ mod lifecycle_regression_tests {
         ) {
         }
 
-        fn play_clock(&mut self) -> bool {
+        fn play_clock(&mut self, _ps: &mut plx_media::route::PlaybackSession) -> bool {
             unreachable!("RefusedLoad starts no clock")
         }
     }
@@ -6852,7 +6852,8 @@ mod lifecycle_regression_tests {
         // The viewer pauses the live Engine through the real transport, so it owns a user hold
         // that only a real resume releases.
         assert!(
-            plx_media::player::transport::set_transport_paused(&mut rig.app.adapters.player, true),
+            plx_media::player::transport::set_transport_paused(&mut rig.app.player.session,
+                &mut rig.app.adapters.player, true),
             "the fixture's pause is accepted"
         );
         assert!(viewer_paused_for(&rig.app.adapters.player), "the common owner holds the viewer's pause goal");

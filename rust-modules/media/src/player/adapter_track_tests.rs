@@ -76,7 +76,7 @@ fn opened() -> (crate::route::PlaybackSession, PlayerAdapter, FakeUriHandle,
         video: Fidelity::Exact, audio: Fidelity::Exact,
         audio_track: TrackChoice::Unspecified, subtitle_track: TrackChoice::Unspecified };
     let at = pa.backend_tick();
-    let started = pa.backend_send_at(Intent::Start { backend: BackendKind::Uri, attempt, source,
+    let started = pa.backend_send_at(&mut ps, Intent::Start { backend: BackendKind::Uri, attempt, source,
         requirements, initial: InitialPlayback { position: None, paused: true } },
         super::super::attempt_metrics::Origin::Fresh, at);
     assert!(!started.playback.iter().any(|fx| matches!(fx,
@@ -160,7 +160,7 @@ fn queued_and_settled_uri_picks_keep_the_prior_route_until_exact_confirmation() 
     assert_eq!(crate::route::cur_sub_sid(&ps), 77);
     let at = pa.backend_tick();
     let attempt = pa.active_uri_attempt().expect("URI attempt").contract_id();
-    let resumed = pa.backend_send_at(Intent::Control { backend: BackendKind::Uri,
+    let resumed = pa.backend_send_at(&mut ps, Intent::Control { backend: BackendKind::Uri,
         attempt,
         operation: Operation::Play }, super::super::attempt_metrics::Origin::Fresh, at);
     assert!(!resumed.playback.iter().any(|fx| matches!(fx,
@@ -190,13 +190,14 @@ fn uri_subtitle_pick_commits_only_after_the_driver_settles_that_command() {
     crate::route::reset_player_control_for_test(&ps);
 }
 
-#[test]
-fn a_qualified_uri_successor_waits_for_the_prior_registration_to_release() {
-    let _serial = plx_base::testlock::serial();
+/// A URI registration that was asked to stop and has not reported its release, with a qualified
+/// successor deferred behind it in the release machine. Returns the closing attempt.
+fn closing_with_a_deferred_successor() -> (crate::route::PlaybackSession, PlayerAdapter,
+    FakeUriHandle, crate::route::RouteStartAttempt) {
     let (mut ps, mut pa, handle, first) = opened();
     // The driver is asked to stop and never reports the release: the registration stays closing.
     let at = pa.backend_tick();
-    let _ = pa.backend_send_at(Intent::Stop { backend: BackendKind::Uri,
+    let _ = pa.backend_send_at(&mut ps, Intent::Stop { backend: BackendKind::Uri,
         attempt: first.contract_id(), reason: plx_playback_contract::StopReason::Replace },
         super::super::attempt_metrics::Origin::Fresh, at);
     poll(&mut pa, &mut ps);
@@ -218,6 +219,13 @@ fn a_qualified_uri_successor_waits_for_the_prior_registration_to_release() {
     assert_eq!(super::super::route_start::start_bufferfeed_for(&mut ps, &mut pa, ticket),
         super::super::route_start::BufferfeedStartOutcome::Deferred);
     pa.watch_queued_start();
+    (ps, pa, handle, first)
+}
+
+#[test]
+fn a_qualified_uri_successor_waits_for_the_prior_registration_to_release() {
+    let _serial = plx_base::testlock::serial();
+    let (mut ps, mut pa, handle, first) = closing_with_a_deferred_successor();
     let starts = |handle: &FakeUriHandle| dispatches(handle, |op| matches!(op, Operation::Start { .. }));
     assert_eq!(starts(&handle), 1, "no second native registration while closing");
     assert!(pa.qualified_uri.is_some(), "the pending URL stays in one-shot escrow");
@@ -229,5 +237,28 @@ fn a_qualified_uri_successor_waits_for_the_prior_registration_to_release() {
     assert!(pa.qualified_uri.is_none(), "the exact Start consumed its authorization once");
     assert_eq!(starts(&handle), 2, "exact release permits one successor native registration");
     assert_eq!(handle.staged().len(), 2, "the successor's source was staged exactly once");
+    crate::route::reset_player_control_for_test(&ps);
+}
+
+/// The release machine's step is where the readout hears a URI `Released`: a raw backend poll
+/// consumes the queue into the successor's `Start` effect and the readout already says no start is
+/// queued, although nothing has run that effect (the session poll does).
+#[test]
+fn a_uri_released_verdict_reaches_the_readout_at_the_step_before_its_start_runs() {
+    let _serial = plx_base::testlock::serial();
+    let (mut ps, mut pa, handle, first) = closing_with_a_deferred_successor();
+    let starts = |handle: &FakeUriHandle| dispatches(handle, |op| matches!(op, Operation::Start { .. }));
+    assert!(ps.readout().start_queued(), "the deferred start reached the readout at its own step");
+    handle.queue([DriverEvent::Release { attempt: first.contract_id(),
+        status: ReleaseStatus::Released }]);
+    let at = pa.backend_tick();
+    let _ = pa.backend_poll_at(&mut ps, at);
+    assert!(!pa.release_has_queued_start(), "the verdict took the start out of the machine's queue");
+    assert!(!ps.readout().start_queued(),
+        "and the readout heard it at that step, not when the start's effect runs");
+    let effects = pa.take_release_effects();
+    assert!(matches!(effects.as_slice(), [super::super::release::ReleaseEffect::Start(_)]),
+        "the verdict's one effect is the successor's Start, not yet run");
+    assert_eq!(starts(&handle), 1, "no second native registration: nothing ran the effect");
     crate::route::reset_player_control_for_test(&ps);
 }

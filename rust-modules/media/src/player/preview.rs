@@ -836,7 +836,7 @@ pub fn transport(
         return false;
     }
     let want = super::transport::transport_target(play, super::transport::viewer_paused_for(pa));
-    super::transport::set_transport_paused(pa, want)
+    super::transport::set_transport_paused(ps, pa, want)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
