@@ -472,7 +472,7 @@ pub struct Shared {
     // Engine, republished from the pump.
     // The render path holds no `&mut PlayerAdapter` and so cannot reach the `Engine` at all (when
     // the slot was a `static mut` it could, and a second live borrow was instant UB) — so it reads
-    // these instead.
+    // these instead, as the pump's sample of them (`FeedRaw::diag`).
     //
     // STRICTLY ONE-WAY: written by the pump and seam, read only for observation. Nothing in the
     // playback state machine may ever branch on one, or a diagnostic becomes load-bearing.

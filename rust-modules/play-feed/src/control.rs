@@ -622,6 +622,47 @@ mod tests {
         assert_eq!((raw.decoder_revocations, raw.native_audio_refusals), (0, 0));
     }
 
+    /// The read-out's feed-written values ride the sample, each from the mailbox of its own name
+    /// (every one given a different value, so a swapped pair fails), and the session's reset returns
+    /// the whole set to `FeedDiag::IDLE`: the value the read-out showed from the mailboxes after a
+    /// stop or a reload, `place_rv` included (`i32::MIN`, not 0).
+    #[test]
+    fn the_sample_carries_the_readouts_mailboxes_and_a_reset_returns_them_to_idle() {
+        use plx_playback_contract::feed::FeedDiag;
+        use std::sync::atomic::Ordering::Relaxed;
+        let _serial = plx_base::testlock::serial();
+        FEED_SHARED.reset_session();
+        assert_eq!(mailboxes().raw.diag, FeedDiag::IDLE, "a fresh session reads the idle set");
+
+        FEED_SHARED.dg_place_rv.store(-3, Relaxed);
+        FEED_SHARED.dg_placed_w.store(3840, Relaxed);
+        FEED_SHARED.dg_placed_h.store(2160, Relaxed);
+        FEED_SHARED.load_completed.store(true, Relaxed);
+        FEED_SHARED.dg_cb_count.store(41, Relaxed);
+        FEED_SHARED.dg_aq_video.store(9_000_001, Relaxed);
+        FEED_SHARED.dg_aq_audio.store(9_000_002, Relaxed);
+        FEED_SHARED.dg_fed_v_pts.store(10_400_000_000, Relaxed);
+        FEED_SHARED.dg_fed_a_pts.store(10_300_000_000, Relaxed);
+        FEED_SHARED.dg_load_v.store(2, Relaxed);
+        FEED_SHARED.dg_load_a.store(5, Relaxed);
+        FEED_SHARED.dg_feed_state.store(4, Relaxed);
+        FEED_SHARED.dg_cb_err.store(18, Relaxed);
+        FEED_SHARED.dg_cb_err_at.store(7, Relaxed);
+        FEED_SHARED.dg_net_rx.store(13_000_000, Relaxed);
+        FEED_SHARED.dg_load_at.store(4_200, Relaxed);
+        FEED_SHARED.dg_frame_at.store(5_300, Relaxed);
+        FEED_SHARED.video_fps_milli.store(23_976, Relaxed);
+        assert_eq!(mailboxes().raw.diag, FeedDiag {
+            place_rv: -3, placed_w: 3840, placed_h: 2160, load_completed: true, cb_count: 41,
+            aq_video: 9_000_001, aq_audio: 9_000_002, fed_v_pts: 10_400_000_000,
+            fed_a_pts: 10_300_000_000, load_v: 2, load_a: 5, feed_state: 4, cb_err: 18, cb_err_at: 7,
+            net_rx: 13_000_000, load_at: 4_200, frame_at: 5_300, video_fps_milli: 23_976,
+        });
+
+        FEED_SHARED.reset_session();
+        assert_eq!(mailboxes().raw.diag, FeedDiag::IDLE, "a stop or a reload returns the whole set");
+    }
+
     /// The backend is the runner's single-backend driver set: it answers for the feed alone, and
     /// with no session installed it has nothing to report and nothing to preserve at exit.
     #[test]

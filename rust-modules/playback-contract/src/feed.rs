@@ -38,8 +38,8 @@
 //! [`FeedCommand::AbandonSeek`] and [`FeedCommand::ArmOpen`]. `disp_base` is raw too
 //! ([`FeedRaw::disp_base`]): the feed zeroes it on its own seek and on every reset, so the player reads it
 //! back from the sample, and a transcode restart's new base is the intent [`FeedCommand::Rebase`]. Not
-//! here yet: `abr_seed` (a worker event, L3c), and the `DemuxAbr` and diagnostics halves of
-//! [`FeedFacts`] (L3c).
+//! here yet: `abr_seed` (a worker event, L3c), and the `DemuxAbr` half of [`FeedFacts`] (L3c). The
+//! feed-written diagnostics are [`FeedRaw::diag`] ([`FeedDiag`]).
 //! A value that is `-1` in the feed's mailbox is an `Option` here, as in [`AttemptFacts`].
 
 use std::sync::atomic::{AtomicI32, AtomicU32};
@@ -341,6 +341,8 @@ pub struct FeedRaw {
     /// The HTTP status of the last failed transport request, 0 = none; loaded like
     /// [`Self::cb_err_num`].
     pub http_status: i32,
+    /// What the Stats-for-nerds read-out shows of the feed's own mailboxes, from the same sample.
+    pub diag: FeedDiag,
     /// The summed length (ms, wrapping) of the gaps between consecutive native presentation
     /// callbacks this session, and how many gaps that is. A gap is counted only between two
     /// callbacks with no stamp reset between them, so the count is NOT [`Self::vpres_count`].
@@ -380,6 +382,60 @@ impl LoadRaw {
     pub fn loading(&self) -> bool { self.stage == Some(Stage::Loading) }
 }
 
+/// The feed-written values the Stats-for-nerds read-out and the lab snapshot show, taken in the
+/// same sample as every other raw fact (`FeedRaw::diag`). They are diagnostics only: nothing in the
+/// player decides on one. Each is the value of the feed mailbox of the same name, so a reader gets
+/// what a live read of it would have given, one frame old at most (the pump samples at its start and
+/// end), and [`Self::IDLE`] is what the mailboxes hold after the session's reset. The ABR half of
+/// the read-out is not here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FeedDiag {
+    /// `setDisplayWindow`'s return code of the last placement; `i32::MIN` before any.
+    pub place_rv: i32,
+    /// The source rectangle the last placement used.
+    pub placed_w: i32,
+    pub placed_h: i32,
+    /// The pipeline reported `loadCompleted`.
+    pub load_completed: bool,
+    /// Pipeline callbacks seen this session.
+    pub cb_count: u32,
+    /// The bytes queued in the video and audio access-unit lanes (sampled only while the read-out
+    /// is on screen; 0 otherwise).
+    pub aq_video: i64,
+    pub aq_audio: i64,
+    /// The newest presentation timestamp fed to each lane (ns).
+    pub fed_v_pts: i64,
+    pub fed_a_pts: i64,
+    /// The codec the Load payload declared, as a code (`0` = none).
+    pub load_v: u8,
+    pub load_a: u8,
+    /// Why the video feeder is where it is, as a code (`0` = nothing fed yet).
+    pub feed_state: u8,
+    /// The pipeline's first `type=18` error number and the callback count it arrived at.
+    pub cb_err: i32,
+    pub cb_err_at: u32,
+    /// Bytes the movie's transport has delivered this session.
+    pub net_rx: i64,
+    /// The millisecond stamps of the Load's completion and of the last frame-count movement.
+    pub load_at: u32,
+    pub frame_at: u32,
+    /// The pipeline's reported frame rate in thousandths of a frame per second; 0 = not reported.
+    pub video_fps_milli: i64,
+}
+
+impl FeedDiag {
+    /// A feed with no session: the values its mailboxes are reset to.
+    pub const IDLE: Self = Self {
+        place_rv: i32::MIN, placed_w: 0, placed_h: 0, load_completed: false, cb_count: 0,
+        aq_video: 0, aq_audio: 0, fed_v_pts: 0, fed_a_pts: 0, load_v: 0, load_a: 0, feed_state: 0,
+        cb_err: 0, cb_err_at: 0, net_rx: 0, load_at: 0, frame_at: 0, video_fps_milli: 0,
+    };
+}
+
+impl Default for FeedDiag {
+    fn default() -> Self { Self::IDLE }
+}
+
 /// Whether to defer joining a preview's Load thread: while an in-flight Load has not returned,
 /// joining it on the main thread is the stall abandoning a preview exists to avoid.
 pub fn defer_media_join(loading: bool, thread_finished: bool) -> bool {
@@ -411,6 +467,7 @@ impl FeedRaw {
         applied_rate_permille: crate::RATE_NORMAL, speed_audio_ok: None, vpres_count: 0,
         pts_shift: 0, pipeline_eos: false, seek_landed_epoch: 0, seek_target_ns: None,
         seek_requeue: SeekRequeue::NONE, cb_err_num: 0, http_status: 0,
+        diag: FeedDiag::IDLE,
         vpres_gap_sum_ms: 0, vpres_gap_count: 0, disp_base: 0, load: LoadRaw::IDLE,
     };
 }
@@ -420,7 +477,7 @@ impl Default for FeedRaw {
 }
 
 /// One sample of the feed: the mapped facts and the raw ones. `Copy`, addressed by the attempt
-/// that is ingesting it. L3c adds the demux ABR and the diagnostics.
+/// that is ingesting it. L3c adds the demux ABR.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FeedFacts {
     pub attempt: AttemptFacts,
@@ -606,6 +663,9 @@ mod tests {
     #[test]
     fn the_idle_load_half_has_no_stage_and_no_load_to_wait_for() {
         assert_eq!(FeedRaw::IDLE.load, LoadRaw::IDLE);
+        assert_eq!(FeedRaw::IDLE.diag, FeedDiag::IDLE);
+        assert_eq!(FeedDiag::default(), FeedDiag::IDLE);
+        assert_eq!(FeedDiag::IDLE.place_rv, i32::MIN, "no placement yet is not a placement that returned 0");
         assert_eq!(LoadRaw::IDLE.stage, None);
         assert!(LoadRaw::IDLE.load_thread_finished, "no thread is a finished one");
         assert!(!LoadRaw::IDLE.route_actions_ready && !LoadRaw::IDLE.loading());

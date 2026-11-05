@@ -66,6 +66,8 @@ pub mod attempt_metrics; // pure logical-request and physical-attempt measuremen
 mod pump; // gated: the per-frame tick reads and drives `FEED_SHARED`/`FEED_TX` and `plx_play_feed::feed_pump`
 pub mod report;
 #[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
+mod diag_sample_tests; // the Stats-for-nerds rows the Feed writes are the readout's last sample of it
+#[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
 mod foreground_flight_tests;
 #[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
 mod resume_tests;
@@ -1835,7 +1837,10 @@ pub fn diag(ps: &crate::route::PlaybackSession) -> Diag {
     // The sink hands back the seam's own static buffer — never NULL, "" when no window was
     // created — so this is a copy of a bounded char[64], not a borrow with a lifetime to reason about.
     let window_id = sink().window_id().to_string_lossy().into_owned();
-    let load_a = FEED_SHARED.dg_load_a.load(Relaxed);
+    // The feed-written rows are the readout's last sample of the Feed (`FeedRaw::diag`): the pump
+    // samples at its start and end of every frame, and a teardown's `SessionReset` returns them to
+    // the idle set the mailboxes were just reset to.
+    let fd = ps.readout().raw().diag;
     let playable_buffer_ms = observed.playable_buffer_ms;
     let (video_w, video_h) = observed.raster.unwrap_or((0, 0));
     Diag {
@@ -1844,39 +1849,39 @@ pub fn diag(ps: &crate::route::PlaybackSession) -> Diag {
         vp_mode: sink().window_mode(),
         window_id,
         acb_ok: plane().handle(),
-        place_rv: FEED_SHARED.dg_place_rv.load(Relaxed),
-        placed_w: FEED_SHARED.dg_placed_w.load(Relaxed),
-        placed_h: FEED_SHARED.dg_placed_h.load(Relaxed),
+        place_rv: fd.place_rv,
+        placed_w: fd.placed_w,
+        placed_h: fd.placed_h,
         stage: observed.pipeline_stage.unwrap_or(0),
-        load_completed: FEED_SHARED.load_completed.load(Relaxed),
+        load_completed: fd.load_completed,
         // A start refused for a parked Load builds no Engine and begins no attempt, so the readout's
         // flags are idle: the session's refusal is the fact (`live_runtime_failure` reads it the
         // same way), for a fresh start and a refused reload alike.
         load_failed: ps.readout().raw().flags.load_failed
             || ps.native_start_refused == Some(crate::route::StartRefusal::LoadTimeout),
-        cb_count: FEED_SHARED.dg_cb_count.load(Relaxed),
+        cb_count: fd.cb_count,
         pushed_any: crate::ff::pushed_any(),
         fed_v,
         fed_a,
         frames: observed.frames.unwrap_or(0),
         seen_frame: observed.reported_frame.unwrap_or(false),
-        aq_video: FEED_SHARED.dg_aq_video.load(Relaxed),
-        aq_audio: FEED_SHARED.dg_aq_audio.load(Relaxed),
-        fed_v_pts: FEED_SHARED.dg_fed_v_pts.load(Relaxed),
-        fed_a_pts: FEED_SHARED.dg_fed_a_pts.load(Relaxed),
-        load_v: FEED_SHARED.dg_load_v.load(Relaxed),
-        load_a,
-        feed_state: FEED_SHARED.dg_feed_state.load(Relaxed),
-        cb_err: FEED_SHARED.dg_cb_err.load(Relaxed),
-        cb_err_at: FEED_SHARED.dg_cb_err_at.load(Relaxed),
+        aq_video: fd.aq_video,
+        aq_audio: fd.aq_audio,
+        fed_v_pts: fd.fed_v_pts,
+        fed_a_pts: fd.fed_a_pts,
+        load_v: fd.load_v,
+        load_a: fd.load_a,
+        feed_state: fd.feed_state,
+        cb_err: fd.cb_err,
+        cb_err_at: fd.cb_err_at,
         http_status: observed.http_status.unwrap_or(0),
-        net_rx: FEED_SHARED.dg_net_rx.load(Relaxed),
+        net_rx: fd.net_rx,
         playable_buffer_ms,
-        load_at: FEED_SHARED.dg_load_at.load(Relaxed),
-        frame_at: FEED_SHARED.dg_frame_at.load(Relaxed),
+        load_at: fd.load_at,
+        frame_at: fd.frame_at,
         video_w,
         video_h,
-        video_fps_milli: FEED_SHARED.video_fps_milli.load(Relaxed),
+        video_fps_milli: fd.video_fps_milli,
         pos_ns: observed.position_ns.unwrap_or(0),
         dur_ns: observed.duration_ns.unwrap_or(0),
         source_kbps: crate::route::transport_kbps(ps),

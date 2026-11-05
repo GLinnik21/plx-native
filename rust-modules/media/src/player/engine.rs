@@ -3507,6 +3507,70 @@ mod load_in_flight_tests {
         crate::player::ffi_host::release_load_for_test();
     }
 
+    /// A live session's Stats-for-nerds rows: an Engine installed, the mailboxes holding a
+    /// session's values, the pump's sample ingested, and `diag()` showing them.
+    fn show_live_rows(ps: &mut crate::route::PlaybackSession,
+        pa: &mut crate::player::adapter::PlayerAdapter) {
+        crate::route::set_url(ps, "http://127.0.0.1:1/hls/start.m3u8");
+        assert!(ps.qualify_resolved_feed_offer(crate::route::backend_policy::OfferId::FEED_ORIGINAL,
+            crate::route::CandidatePurpose::NewCandidate));
+        install_engine_with_timed_out_load(ps, pa);
+        let live = crate::player::diag_sample_tests::scripted();
+        crate::player::diag_sample_tests::store_mailboxes(&live);
+        pa.publish_feed_attempt_view(ps);
+        assert_eq!(crate::player::diag_sample_tests::rows(&crate::player::diag(ps)), live,
+            "PRECONDITION FAILED: the live session's rows must be on the read-out before the teardown");
+    }
+
+    /// **The line printed right after a real stop** reads the idle rows: the teardown resets the
+    /// mailboxes and then the readout (`SessionReset`), in one call, so the sample the read-out holds
+    /// is the idle set the mailboxes were reset to (`place_rv` is `i32::MIN`, not 0).
+    #[test]
+    fn the_rows_after_a_real_stop_are_the_idle_rows() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(&ps);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
+        let _cleanup = Cleanup;
+        let _release = ReleaseLoadOnDrop;
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            plx_base::task::MainThread::assume()
+        });
+        show_live_rows(&mut ps, &mut pa);
+        stop_bufferfeed(&mut ps, &mut pa);
+        let d = crate::player::diag(&ps);
+        assert_eq!(crate::player::diag_sample_tests::rows(&d), plx_playback_contract::feed::FeedDiag::IDLE,
+            "after a stop the rows are the reset mailboxes' values");
+        assert_eq!(d.place_rv, i32::MIN);
+        crate::player::ffi_host::release_load_for_test();
+    }
+
+    /// **The line printed right after a real reload** reads the idle rows too: a reload resets the
+    /// session's mailboxes and its readout alike, and the new Engine has not been sampled yet.
+    #[test]
+    fn the_rows_after_a_real_reload_are_the_idle_rows() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(&ps);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
+        let _cleanup = Cleanup;
+        let _release = ReleaseLoadOnDrop;
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            plx_base::task::MainThread::assume()
+        });
+        show_live_rows(&mut ps, &mut pa);
+        let outcome = reload_transcode(&mut ps, &mut pa, 0);
+        let _ = crate::player::pump::settle_reload(outcome, "test reload", &mut ps);
+        let d = crate::player::diag(&ps);
+        assert_eq!(crate::player::diag_sample_tests::rows(&d), plx_playback_contract::feed::FeedDiag::IDLE,
+            "after a reload the rows are the reset mailboxes' values");
+        crate::player::ffi_host::release_load_for_test();
+    }
+
     /// PLX-NATIVE-15: the Auto Original's Load passes its budget, the HLS recovery reloads while
     /// the Load is still inside `sf_load`, the reload's teardown parks that Load (clearing
     /// `load_timed_out` with the rest of the session) and the start is refused. The failure was
