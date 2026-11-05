@@ -999,14 +999,22 @@ buffer-feed assertions or control scripts into a URI backend: inspect each saved
 probe variants are restricted to their known SDR720p24 fixture and must not be applied to this
 mixed-codec matrix.
 
-Two synthetic cases run the URI probe's adaptive-streaming experiment (R-ABR-2) and arm
+Three synthetic cases run the URI probe's adaptive-streaming experiment (R-ABR-2) and arm
 `plxnative-uriprobe` themselves, through the case's `triggers`, so they take no `--extra-trigger`
-(one for the same name would replace their tokens). Both play the fixture server's own
-`/__abr/ladder/master.m3u8`, which lists every rung as a variant and so needs the whole ABR clip
-set from `make fixtures-pipeline`: `pipe_abr_uri_ladder_collapse` (`pipe_abr_down_collapse`'s
-40 Mbit/s then 0.5 Mbit/s link, probe `load`) and `pipe_abr_uri_ladder_capped` (an unshaped link,
-probe `load bpsmax=720000`, the second-lowest rung). Run
-`./tests/run.py --filter pipe_abr_uri_ladder --save-logs DIR`. The app's controller does not run in
+(one for the same name would replace their tokens). Two play the fixture server's own
+`/__abr/ladder/master.m3u8`, which lists the rungs as variants (all of them, or only those up to
+`?top=<rung>`) and so needs those rungs' clips from `make fixtures-pipeline`:
+`pipe_abr_uri_ladder_collapse` (`pipe_abr_down_collapse`'s 40 Mbit/s then 0.5 Mbit/s link, probe
+`load`, `top=6000`) and `pipe_abr_uri_ladder_capped` (an unshaped link, the whole ladder, probe
+`load bpsmax=720000`, the second-lowest rung). The third, `pipe_abr_uri_continuous_20000`, plays
+the one-rung master `/__abr/20000/master.m3u8?continuous=1` on an unshaped link. A native player
+places segments by their timestamps, and the pack's parts each restart theirs at 1.48 s, so the
+ladder master always serves `continuous=1` segments (a per-rung master takes the flag in its
+query): the server moves each segment's PCR, PTS and DTS forward by the measured duration of every
+earlier one (`tests/serve_fixtures.py`, "Continuous timestamps"), and the third case tells a
+stall caused by the restarting clock from one caused by the bitrate. Continuity counters and the
+audio join (a gap or overlap of tens of milliseconds) are not rewritten. Run
+`./tests/run.py --filter pipe_abr_uri_ --save-logs DIR`. The app's controller does not run in
 URI mode, so the harness verdict is FAIL by construction; the evidence is `DIR/<case>.log`
 (`uriprobe:` lines) and `DIR/<case>.rungs`, the segments the TV fetched per requested rung
 (also printed as `segments fetched by rung (kbps)`).
