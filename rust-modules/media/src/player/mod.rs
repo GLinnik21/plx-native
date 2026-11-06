@@ -66,6 +66,8 @@ pub mod attempt_metrics; // pure logical-request and physical-attempt measuremen
 mod pump; // gated: the per-frame tick reads and drives `FEED_SHARED`/`FEED_TX` and `plx_play_feed::feed_pump`
 pub mod report;
 #[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
+mod diag_sample_tests; // the Stats-for-nerds rows the Feed writes are the readout's last sample of it
+#[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
 mod foreground_flight_tests;
 #[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
 mod resume_tests;
@@ -234,24 +236,23 @@ pub static TX: Transport = Transport::new();
 /// Off at boot, and never persisted.
 pub static DIAG_READOUT_ON: AtomicBool = AtomicBool::new(false);
 
-/// Typed, playback-scoped reason the last Original source experiment/open failed. It deliberately
-/// survives the engine reload that restores HLS, otherwise the successful rollback erases the
-/// only fact explaining why Original is no longer being attempted.
+/// Typed, playback-scoped reason the last Original source experiment/open failed
+/// ([`readout::PlayerReadout::original_failure`]). It deliberately survives the engine reload that
+/// restores HLS, otherwise the successful rollback erases the only fact explaining why Original is
+/// no longer being attempted.
 pub const ABR_FAILURE_ORIGINAL_HTTP: u8 = 1;
 pub const ABR_FAILURE_ORIGINAL_DEADLINE: u8 = 2;
 pub const ABR_FAILURE_ORIGINAL_TRANSPORT: u8 = 3;
 pub const ABR_FAILURE_ORIGINAL_NO_BODY: u8 = 4;
 pub const ABR_FAILURE_ORIGINAL_OPEN: u8 = 5;
 
-#[cfg(feature = "play-feed")]
-pub fn note_original_failure(kind: u8, http_status: i32) {
-    FEED_SHARED.abr_failure_status.store(http_status.max(0), Relaxed);
-    FEED_SHARED.abr_failure_kind.store(kind, Relaxed);
-}
-
-#[cfg(feature = "play-feed")]
-pub fn clear_original_failure() {
-    FEED_SHARED.clear_abr_failure();
+/// The player noticed an Original source refuse to open: record why, in the session's readout.
+/// (The adaptive worker's probe notes its own failures on the open's channel, and the pump applies
+/// them to the same readout.)
+pub fn note_original_failure(ps: &mut crate::route::PlaybackSession, kind: u8, http_status: i32) {
+    ps.step_readout(readout::ReadoutEvent::OriginalFailure(
+        plx_playback_contract::adaptive::FailureEdit::Noted { kind, status: http_status },
+    ));
 }
 /// Why the controller last moved (or declined to) — `crate::abr::HlsReason` as a code, so the
 /// read-out can name the CONSTRAINT that bound rather than only the action it produced. `0` is
@@ -1629,11 +1630,6 @@ pub fn restore_state_for_test(ps: &mut crate::route::PlaybackSession, raw: u8) {
 pub fn feed_audio_idx_for_test() -> i32 {
     FEED_SHARED.desired_audio_idx.load(Relaxed)
 }
-/// Test-only: the kind of the last Original open failure the Feed carried (0 = none).
-#[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
-pub fn abr_failure_kind_for_test() -> u8 {
-    FEED_SHARED.abr_failure_kind.load(Relaxed)
-}
 /// Test-only: put the Feed's playhead clock where a remux run leaves it (`playpos_ns` is
 /// `fed - pts_shift + disp_base`). `pts_shift` is left alone when `None`.
 #[cfg(all(feature = "play-feed", any(test, feature = "test-support")))]
@@ -1835,7 +1831,10 @@ pub fn diag(ps: &crate::route::PlaybackSession) -> Diag {
     // The sink hands back the seam's own static buffer — never NULL, "" when no window was
     // created — so this is a copy of a bounded char[64], not a borrow with a lifetime to reason about.
     let window_id = sink().window_id().to_string_lossy().into_owned();
-    let load_a = FEED_SHARED.dg_load_a.load(Relaxed);
+    // The feed-written rows are the readout's last sample of the Feed (`FeedRaw::diag`): the pump
+    // samples at its start and end of every frame, and a teardown's `SessionReset` returns them to
+    // the idle set the mailboxes were just reset to.
+    let fd = ps.readout().raw().diag;
     let playable_buffer_ms = observed.playable_buffer_ms;
     let (video_w, video_h) = observed.raster.unwrap_or((0, 0));
     Diag {
@@ -1844,39 +1843,39 @@ pub fn diag(ps: &crate::route::PlaybackSession) -> Diag {
         vp_mode: sink().window_mode(),
         window_id,
         acb_ok: plane().handle(),
-        place_rv: FEED_SHARED.dg_place_rv.load(Relaxed),
-        placed_w: FEED_SHARED.dg_placed_w.load(Relaxed),
-        placed_h: FEED_SHARED.dg_placed_h.load(Relaxed),
+        place_rv: fd.place_rv,
+        placed_w: fd.placed_w,
+        placed_h: fd.placed_h,
         stage: observed.pipeline_stage.unwrap_or(0),
-        load_completed: FEED_SHARED.load_completed.load(Relaxed),
+        load_completed: fd.load_completed,
         // A start refused for a parked Load builds no Engine and begins no attempt, so the readout's
         // flags are idle: the session's refusal is the fact (`live_runtime_failure` reads it the
         // same way), for a fresh start and a refused reload alike.
         load_failed: ps.readout().raw().flags.load_failed
             || ps.native_start_refused == Some(crate::route::StartRefusal::LoadTimeout),
-        cb_count: FEED_SHARED.dg_cb_count.load(Relaxed),
+        cb_count: fd.cb_count,
         pushed_any: crate::ff::pushed_any(),
         fed_v,
         fed_a,
         frames: observed.frames.unwrap_or(0),
         seen_frame: observed.reported_frame.unwrap_or(false),
-        aq_video: FEED_SHARED.dg_aq_video.load(Relaxed),
-        aq_audio: FEED_SHARED.dg_aq_audio.load(Relaxed),
-        fed_v_pts: FEED_SHARED.dg_fed_v_pts.load(Relaxed),
-        fed_a_pts: FEED_SHARED.dg_fed_a_pts.load(Relaxed),
-        load_v: FEED_SHARED.dg_load_v.load(Relaxed),
-        load_a,
-        feed_state: FEED_SHARED.dg_feed_state.load(Relaxed),
-        cb_err: FEED_SHARED.dg_cb_err.load(Relaxed),
-        cb_err_at: FEED_SHARED.dg_cb_err_at.load(Relaxed),
+        aq_video: fd.aq_video,
+        aq_audio: fd.aq_audio,
+        fed_v_pts: fd.fed_v_pts,
+        fed_a_pts: fd.fed_a_pts,
+        load_v: fd.load_v,
+        load_a: fd.load_a,
+        feed_state: fd.feed_state,
+        cb_err: fd.cb_err,
+        cb_err_at: fd.cb_err_at,
         http_status: observed.http_status.unwrap_or(0),
-        net_rx: FEED_SHARED.dg_net_rx.load(Relaxed),
+        net_rx: fd.net_rx,
         playable_buffer_ms,
-        load_at: FEED_SHARED.dg_load_at.load(Relaxed),
-        frame_at: FEED_SHARED.dg_frame_at.load(Relaxed),
+        load_at: fd.load_at,
+        frame_at: fd.frame_at,
         video_w,
         video_h,
-        video_fps_milli: FEED_SHARED.video_fps_milli.load(Relaxed),
+        video_fps_milli: fd.video_fps_milli,
         pos_ns: observed.position_ns.unwrap_or(0),
         dur_ns: observed.duration_ns.unwrap_or(0),
         source_kbps: crate::route::transport_kbps(ps),
@@ -1891,8 +1890,8 @@ pub fn diag(ps: &crate::route::PlaybackSession) -> Diag {
         abr_ratio_pm: ps.readout().abr().ratio_pm,
         abr_action: ps.readout().abr().action_beside(ps.readout().raw().abr),
         abr_target_kbps: ps.readout().abr().target_kbps,
-        abr_failure_kind: FEED_SHARED.abr_failure_kind.load(Relaxed),
-        abr_failure_status: FEED_SHARED.abr_failure_status.load(Relaxed),
+        abr_failure_kind: ps.readout().original_failure().map_or(0, |(kind, _)| kind),
+        abr_failure_status: ps.readout().original_failure().map_or(0, |(_, status)| status),
         abr_unsafe_deficit_ms: ps.readout().abr().unsafe_deficit_ms,
         abr_safe_kbps: ps.readout().abr().safe_kbps,
         abr_optimal_kbps: ps.readout().abr().optimal_kbps,

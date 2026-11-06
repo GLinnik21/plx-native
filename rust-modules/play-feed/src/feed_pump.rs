@@ -17,8 +17,8 @@ use crate::shared::{
 use plx_base::eventlog::log;
 use plx_base::task::MainThread;
 use plx_playback_contract::feed::{
-    DemuxAbr, FailureFlag, FailureFlags, FeedFacts, FeedRaw, LoadRaw, SeekRequeue, UserPauseOutcome,
-    UserResumeOutcome,
+    DemuxAbr, FailureFlag, FailureFlags, FeedDiag, FeedFacts, FeedRaw, LoadRaw, SeekRequeue,
+    UserPauseOutcome, UserResumeOutcome,
 };
 use plx_playback_contract::readout::{AttemptFacts, RuntimeFailure};
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -1219,6 +1219,7 @@ fn native_feed_raw(failure: FailureSample) -> FeedRaw {
         },
         cb_err_num: failure.cb_err_num,
         http_status: failure.http_status,
+        diag: native_feed_diag(),
         vpres_gap_sum_ms: FEED_SHARED.dg_vpres_gap_sum.load(Relaxed),
         vpres_gap_count: FEED_SHARED.dg_vpres_gap_ct.load(Relaxed),
         disp_base: FEED_SHARED.disp_base.load(Relaxed),
@@ -1229,6 +1230,33 @@ fn native_feed_raw(failure: FailureSample) -> FeedRaw {
             kbps: FEED_SHARED.dg_abr_kbps.load(Relaxed),
             declared_kbps: FEED_SHARED.dg_abr_declared_kbps.load(Relaxed),
         },
+    }
+}
+
+/// The feed-written values the Stats-for-nerds read-out shows ([`FeedDiag`]): plain `Relaxed` loads
+/// of the mailboxes the read-out used to read itself, each by its own name. Their writers are the
+/// pump's publish ([`publish_diag`]), the placement, the Load's payload, the pipeline's callbacks
+/// and the demux's byte counter; the session's reset returns every one to [`FeedDiag::IDLE`].
+fn native_feed_diag() -> FeedDiag {
+    FeedDiag {
+        place_rv: FEED_SHARED.dg_place_rv.load(Relaxed),
+        placed_w: FEED_SHARED.dg_placed_w.load(Relaxed),
+        placed_h: FEED_SHARED.dg_placed_h.load(Relaxed),
+        load_completed: FEED_SHARED.load_completed.load(Relaxed),
+        cb_count: FEED_SHARED.dg_cb_count.load(Relaxed),
+        aq_video: FEED_SHARED.dg_aq_video.load(Relaxed),
+        aq_audio: FEED_SHARED.dg_aq_audio.load(Relaxed),
+        fed_v_pts: FEED_SHARED.dg_fed_v_pts.load(Relaxed),
+        fed_a_pts: FEED_SHARED.dg_fed_a_pts.load(Relaxed),
+        load_v: FEED_SHARED.dg_load_v.load(Relaxed),
+        load_a: FEED_SHARED.dg_load_a.load(Relaxed),
+        feed_state: FEED_SHARED.dg_feed_state.load(Relaxed),
+        cb_err: FEED_SHARED.dg_cb_err.load(Relaxed),
+        cb_err_at: FEED_SHARED.dg_cb_err_at.load(Relaxed),
+        net_rx: FEED_SHARED.dg_net_rx.load(Relaxed),
+        load_at: FEED_SHARED.dg_load_at.load(Relaxed),
+        frame_at: FEED_SHARED.dg_frame_at.load(Relaxed),
+        video_fps_milli: FEED_SHARED.video_fps_milli.load(Relaxed),
     }
 }
 

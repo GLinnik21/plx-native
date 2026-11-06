@@ -107,7 +107,7 @@ pub(super) fn fresh_registry(ps: &mut PlaybackSession) -> plx_base::testlock::Se
     crate::player::restore_audio_enhancements(plx_plex::plex::AudioEnhancements::NONE);
     crate::player::reset_route_requests_for_test(ps);
     plx_plex::plex::reset_servers_for_test();
-    crate::player::clear_original_failure();
+    crate::player::route_fx::clear_original_failure(ps);
     g
 }
 

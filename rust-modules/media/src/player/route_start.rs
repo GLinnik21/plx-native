@@ -1317,7 +1317,8 @@ pub(super) fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut PlayerAd
     let mut report_th = stop_feed_timeline(pa, route_attempt);
     native.unblock_join_close();
     // The adaptive worker is joined: take its last report in (the carried link estimate a reload
-    // hands on, and the two members the terminal facts carry), then close its channel.
+    // hands on, the Original failure its probe noted, and the two members the terminal facts
+    // carry), then close its channel. The reset below keeps the failure; a real stop clears it last.
     pa.drain_abr(ps);
     pa.close_abr_inbox();
     let mut terminal_facts = plx_play_feed::feed_pump::native_attempt_facts();
@@ -1539,8 +1540,11 @@ pub(super) fn finish_feed_teardown(
         // skip re-ramp the ladder for ten to twenty seconds.
         ps.step_readout(super::readout::ReadoutEvent::AbrSeed(None));
         // The failure is retained across the rollback reload only; a new playback must not carry
-        // another item's PMS response into its diagnostics.
-        FEED_SHARED.clear_abr_failure();
+        // another item's PMS response into its diagnostics. Its own event, not the session's reset,
+        // which a reload steps too.
+        ps.step_readout(super::readout::ReadoutEvent::OriginalFailure(
+            plx_playback_contract::adaptive::FailureEdit::Cleared,
+        ));
         // A deferred Original recovery outlives nothing: the playback it belonged to is over, so
         // there is no frame left that could confirm it and no route left to roll back to. The
         // encoder it was holding is still running on the server, which is why this RETIRES rather

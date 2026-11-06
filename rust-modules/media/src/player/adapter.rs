@@ -1636,9 +1636,10 @@ impl PlayerAdapter {
         self.abr_inbox = Some((attempt, inbox));
     }
 
-    /// Take what the adaptive worker has reported since the last call into the session's readout,
-    /// addressed to the attempt its open was claimed under (a late report of a retired open changes
-    /// nothing). Never blocks. The age of the carried estimate is read here, where the clock is.
+    /// Take what the adaptive worker has reported since the last call into the session's readout
+    /// (its photograph, the carried link estimate and the Original failure edit it has not handed
+    /// out yet), addressed to the attempt its open was claimed under (a late report of a retired open
+    /// changes nothing). Never blocks. The age of the carried estimate is read here, where the clock is.
     #[cfg(feature = "play-feed")]
     pub(super) fn drain_abr(&mut self, ps: &mut crate::route::PlaybackSession) {
         let Some((attempt, inbox)) = self.abr_inbox.as_ref() else { return; };
@@ -1647,6 +1648,9 @@ impl PlayerAdapter {
             (seed, u64::try_from(observed_at.elapsed().as_millis()).unwrap_or(u64::MAX))
         });
         let _ = ps.ingest_abr(*attempt, shipment.readout, seed);
+        if let Some((_, edit)) = shipment.failure {
+            let _ = ps.ingest_original_failure(*attempt, edit);
+        }
     }
 
     /// The worker is joined: nothing more can be reported, and the receiver goes.

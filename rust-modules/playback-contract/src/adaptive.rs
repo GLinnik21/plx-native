@@ -207,6 +207,21 @@ impl Default for AbrReadout {
     fn default() -> Self { Self::IDLE }
 }
 
+/// One edit of the typed reason the last Original source experiment or open failed, which the
+/// player's readout owns. It is an EDIT, not a photograph: the readout keeps the reason across the
+/// engine reload that restores HLS (the rollback must not erase its own cause) and drops it with the
+/// playback, so a value that merely arrives with every shipment would either replay a reason the
+/// player has since cleared or, on a new open's idle shipment, wipe one it should keep. Each edit
+/// replaces the whole pair, so the newest of a run of them stands for all of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FailureEdit {
+    /// The Original failed: `kind` is a `player::ABR_FAILURE_ORIGINAL_*` code, `status` the HTTP
+    /// status when one was observed (`0` when none was; a negative one reads as none).
+    Noted { kind: u8, status: i32 },
+    /// A new source attempt or a new probe supersedes the reason, or the playback is over.
+    Cleared,
+}
+
 trait LeaseGuard: Send {}
 impl<T: Send> LeaseGuard for T {}
 
@@ -252,6 +267,13 @@ pub trait AdaptiveEffects: Send {
     /// The worker's accumulated [`AbrReadout`], after any member of it changed. The whole value
     /// crosses each time, so a sink that drops one loses nothing the next does not carry.
     fn readout(&mut self, readout: AbrReadout);
+    /// The worker's Original probe noted or cleared the reason an Original attempt failed. Unlike
+    /// [`Self::readout`] these are not a photograph to replace: the sink numbers each edit, and the
+    /// player applies the newest one it has not applied yet, so a later shipment that only carries
+    /// other members never replays it. A run of edits between two drains collapses to its last one,
+    /// which loses nothing because every edit replaces the whole pair; a consumer that needs to see
+    /// each note would be written against a promise this does not keep.
+    fn failure(&mut self, edit: FailureEdit);
 }
 
 /// Physical automatic-actuator lease and the existing queue abort fence. The

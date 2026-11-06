@@ -3507,6 +3507,213 @@ mod load_in_flight_tests {
         crate::player::ffi_host::release_load_for_test();
     }
 
+    /// A live session's Stats-for-nerds rows: an Engine installed, the mailboxes holding a
+    /// session's values, the pump's sample ingested, and `diag()` showing them.
+    fn show_live_rows(ps: &mut crate::route::PlaybackSession,
+        pa: &mut crate::player::adapter::PlayerAdapter) {
+        crate::route::set_url(ps, "http://127.0.0.1:1/hls/start.m3u8");
+        assert!(ps.qualify_resolved_feed_offer(crate::route::backend_policy::OfferId::FEED_ORIGINAL,
+            crate::route::CandidatePurpose::NewCandidate));
+        install_engine_with_timed_out_load(ps, pa);
+        let live = crate::player::diag_sample_tests::scripted();
+        crate::player::diag_sample_tests::store_mailboxes(&live);
+        pa.publish_feed_attempt_view(ps);
+        assert_eq!(crate::player::diag_sample_tests::rows(&crate::player::diag(ps)), live,
+            "PRECONDITION FAILED: the live session's rows must be on the read-out before the teardown");
+    }
+
+    /// **The line printed right after a real stop** reads the idle rows: the teardown resets the
+    /// mailboxes and then the readout (`SessionReset`), in one call, so the sample the read-out holds
+    /// is the idle set the mailboxes were reset to (`place_rv` is `i32::MIN`, not 0).
+    #[test]
+    fn the_rows_after_a_real_stop_are_the_idle_rows() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(&ps);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
+        let _cleanup = Cleanup;
+        let _release = ReleaseLoadOnDrop;
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            plx_base::task::MainThread::assume()
+        });
+        show_live_rows(&mut ps, &mut pa);
+        stop_bufferfeed(&mut ps, &mut pa);
+        let d = crate::player::diag(&ps);
+        assert_eq!(crate::player::diag_sample_tests::rows(&d), plx_playback_contract::feed::FeedDiag::IDLE,
+            "after a stop the rows are the reset mailboxes' values");
+        assert_eq!(d.place_rv, i32::MIN);
+        crate::player::ffi_host::release_load_for_test();
+    }
+
+    /// **The line printed right after a real reload** reads the idle rows too: a reload resets the
+    /// session's mailboxes and its readout alike, and the new Engine has not been sampled yet.
+    #[test]
+    fn the_rows_after_a_real_reload_are_the_idle_rows() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(&ps);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
+        let _cleanup = Cleanup;
+        let _release = ReleaseLoadOnDrop;
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            plx_base::task::MainThread::assume()
+        });
+        show_live_rows(&mut ps, &mut pa);
+        let outcome = reload_transcode(&mut ps, &mut pa, 0);
+        let _ = crate::player::pump::settle_reload(outcome, "test reload", &mut ps);
+        let d = crate::player::diag(&ps);
+        assert_eq!(crate::player::diag_sample_tests::rows(&d), plx_playback_contract::feed::FeedDiag::IDLE,
+            "after a reload the rows are the reset mailboxes' values");
+        crate::player::ffi_host::release_load_for_test();
+    }
+
+    /// The Original failure pair is the playback's: the stop that ends the playback clears it, the
+    /// reload that restores HLS keeps it. A live session whose Original was refused, as the rows
+    /// show it, then each teardown.
+    fn show_original_failure(ps: &mut crate::route::PlaybackSession,
+        pa: &mut crate::player::adapter::PlayerAdapter) {
+        show_live_rows(ps, pa);
+        crate::player::note_original_failure(ps, crate::player::ABR_FAILURE_ORIGINAL_HTTP, 503);
+        assert_eq!(ps.readout().original_failure(), Some((crate::player::ABR_FAILURE_ORIGINAL_HTTP, 503)),
+            "PRECONDITION FAILED: the failure is the readout's before the teardown");
+    }
+
+    /// **A real stop clears the Original failure**: a new playback must not carry another item's PMS
+    /// response into its diagnostics. Its own event, stepped after the session's reset.
+    #[test]
+    fn a_real_stop_clears_the_original_failure() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(&ps);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
+        let _cleanup = Cleanup;
+        let _release = ReleaseLoadOnDrop;
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            plx_base::task::MainThread::assume()
+        });
+        show_original_failure(&mut ps, &mut pa);
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert_eq!(ps.readout().original_failure(), None);
+        let d = crate::player::diag(&ps);
+        assert_eq!((d.abr_failure_kind, d.abr_failure_status), (0, 0));
+        crate::player::ffi_host::release_load_for_test();
+    }
+
+    /// **A rollback reload keeps the Original failure**: restoring HLS tears the Engine down and
+    /// rebuilds it, and the cause of the refusal must still be there to be photographed.
+    #[test]
+    fn a_rollback_reload_keeps_the_original_failure() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(&ps);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
+        let _cleanup = Cleanup;
+        let _release = ReleaseLoadOnDrop;
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            plx_base::task::MainThread::assume()
+        });
+        show_original_failure(&mut ps, &mut pa);
+        let outcome = reload_transcode(&mut ps, &mut pa, 0);
+        let _ = crate::player::pump::settle_reload(outcome, "test rollback reload", &mut ps);
+        assert_eq!(ps.readout().original_failure(), Some((crate::player::ABR_FAILURE_ORIGINAL_HTTP, 503)));
+        let d = crate::player::diag(&ps);
+        assert_eq!((d.abr_failure_kind, d.abr_failure_status), (crate::player::ABR_FAILURE_ORIGINAL_HTTP, 503));
+        crate::player::ffi_host::release_load_for_test();
+    }
+
+    /// The channel half: an edit the worker sent that the pump has not drained when the Engine is
+    /// torn down is taken in by the teardown's last drain (the worker is joined by then), so a
+    /// reload keeps a failure noted a frame ago and a real stop still ends with it cleared. The new
+    /// open's channel that follows a reload starts with an idle shipment, and applying that cannot
+    /// erase the failure; the new open's own clear does.
+    #[test]
+    fn a_workers_note_survives_the_reload_that_follows_it_and_the_new_opens_idle_shipment() {
+        use plx_playback_contract::adaptive::{AdaptiveEffects, FailureEdit};
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(&ps);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
+        let _cleanup = Cleanup;
+        let _release = ReleaseLoadOnDrop;
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            plx_base::task::MainThread::assume()
+        });
+        show_live_rows(&mut ps, &mut pa);
+        let attempt = crate::route::RouteStartAttempt::fixture();
+        let (tx, inbox) = crate::adaptive::readout_channel();
+        pa.bind_abr_inbox(attempt, inbox);
+        let mut worker = crate::adaptive::PlayerAdaptiveEffects::new(tx);
+        worker.failure(FailureEdit::Noted { kind: crate::player::ABR_FAILURE_ORIGINAL_DEADLINE, status: 0 });
+        assert_eq!(ps.readout().original_failure(), None, "PRECONDITION FAILED: nobody has drained the edit");
+
+        let outcome = reload_transcode(&mut ps, &mut pa, 0);
+        let _ = crate::player::pump::settle_reload(outcome, "test reload", &mut ps);
+        assert_eq!(ps.readout().original_failure(), Some((crate::player::ABR_FAILURE_ORIGINAL_DEADLINE, 0)),
+            "the teardown took the worker's last report in before it closed the channel");
+
+        // The reload's new open: a new channel and a worker that has said nothing yet.
+        ps.begin_attempt_view(attempt, crate::player::attempt_view::Backend::Feed);
+        let (tx, inbox) = crate::adaptive::readout_channel();
+        pa.bind_abr_inbox(attempt, inbox);
+        let mut renewed = crate::adaptive::PlayerAdaptiveEffects::new(tx);
+        renewed.readout(plx_playback_contract::adaptive::AbrReadout::IDLE);
+        pa.drain_abr(&mut ps);
+        assert_eq!(ps.readout().original_failure(), Some((crate::player::ABR_FAILURE_ORIGINAL_DEADLINE, 0)),
+            "the new open's idle shipment must not erase the failure the reload kept");
+        renewed.failure(FailureEdit::Cleared);
+        pa.drain_abr(&mut ps);
+        assert_eq!(ps.readout().original_failure(), None, "the new open's own clear does");
+
+        // Two edits between drains end as the later one, in either order: every edit replaces the
+        // whole pair, so the drain's coalescing loses nothing.
+        renewed.failure(FailureEdit::Noted { kind: crate::player::ABR_FAILURE_ORIGINAL_HTTP, status: 503 });
+        renewed.failure(FailureEdit::Cleared);
+        pa.drain_abr(&mut ps);
+        assert_eq!(ps.readout().original_failure(), None, "a note and the clear after it, one drain");
+        renewed.failure(FailureEdit::Cleared);
+        renewed.failure(FailureEdit::Noted { kind: crate::player::ABR_FAILURE_ORIGINAL_OPEN, status: 0 });
+        pa.drain_abr(&mut ps);
+        assert_eq!(ps.readout().original_failure(), Some((crate::player::ABR_FAILURE_ORIGINAL_OPEN, 0)),
+            "a clear and the note after it, one drain");
+        crate::player::ffi_host::release_load_for_test();
+    }
+
+    /// A note the worker sent just before a REAL stop is taken in by the teardown's drain and then
+    /// cleared with the playback: the stop's own event comes after the drain, so it is the last word.
+    #[test]
+    fn a_workers_note_before_a_real_stop_is_taken_in_and_then_cleared() {
+        use plx_playback_contract::adaptive::{AdaptiveEffects, FailureEdit};
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(&ps);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
+        let _cleanup = Cleanup;
+        let _release = ReleaseLoadOnDrop;
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            plx_base::task::MainThread::assume()
+        });
+        show_live_rows(&mut ps, &mut pa);
+        let (tx, inbox) = crate::adaptive::readout_channel();
+        pa.bind_abr_inbox(crate::route::RouteStartAttempt::fixture(), inbox);
+        let mut worker = crate::adaptive::PlayerAdaptiveEffects::new(tx);
+        worker.failure(FailureEdit::Noted { kind: crate::player::ABR_FAILURE_ORIGINAL_TRANSPORT, status: 0 });
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert_eq!(ps.readout().original_failure(), None);
+        crate::player::ffi_host::release_load_for_test();
+    }
+
     /// PLX-NATIVE-15: the Auto Original's Load passes its budget, the HLS recovery reloads while
     /// the Load is still inside `sf_load`, the reload's teardown parks that Load (clearing
     /// `load_timed_out` with the rest of the session) and the start is refused. The failure was
