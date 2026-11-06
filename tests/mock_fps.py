@@ -266,19 +266,26 @@ def configured_endpoint(config_path):
     return host[1], int(port[1])
 
 
-def carrier_server_args(path, audio=None):
-    """The `tests/mock_pms.py` arguments of the URI product route's mock: the carrier clip as its ONE
+def carrier_server_args(path, audio=None, subtitle=None, transcode=None):
+    """The `tests/mock_pms.py` arguments of a mock-carried pipeline case: the carrier clip as its ONE
     `--extra-media` movie (ratingKey `CARRIER_RK`, part `CARRIER_PART_ID`). `path` is absolute, resolved
     by the runner against the pack it is serving, not against `fixtures_base()`.
 
     `audio` (a case's `carrier_audio`) is the 1-based audio stream of the carrier the mock reports as the
     server-selected one (`--extra-media-audio`): the app's own startup pick, with track memory cleared.
-    None leaves the selection on the file's default stream."""
+    `subtitle` (`carrier_subtitle`) is the same for the 1-based subtitle stream (`--extra-media-subtitle`).
+    `transcode` is the absolute path the mock serves for every `/video/:/transcode/universal/start`
+    (`--transcode-fixture`: the enhanced remux of a `pms_route: "mock"` case). None leaves each as it was."""
     args = ["--extra-media", str(path)]
-    if audio is not None:
-        if not isinstance(audio, int) or isinstance(audio, bool) or audio < 1:
-            raise ValueError(f"carrier_audio {audio!r} must be a positive integer (the 1-based audio stream)")
-        args += ["--extra-media-audio", str(audio)]
+    for flag, key, value in (("--extra-media-audio", "carrier_audio", audio),
+                             ("--extra-media-subtitle", "carrier_subtitle", subtitle)):
+        if value is None:
+            continue
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise ValueError(f"{key} {value!r} must be a positive integer (the 1-based stream)")
+        args += [flag, str(value)]
+    if transcode is not None:
+        args += ["--transcode-fixture", str(transcode)]
     return args
 
 

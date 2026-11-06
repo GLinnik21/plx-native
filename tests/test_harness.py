@@ -11903,6 +11903,101 @@ class FpsMock(unittest.TestCase):
         self.assertIn("[mock ok]", grid[0])
 
 
+class MockRouteSideReader(unittest.TestCase):
+    """`pms_route: "mock"` (`pipe_side_reader_srt`): the app plays an item of the harness's mock PMS, and the
+    case is graded on the log alone: the side reader opened on the server-selected track, anchored, and drew
+    a cue. The lines are the app's own (`subside:` in `ff_subside.rs`, `sub cue` in `ass_source.rs`)."""
+
+    CASE = next(c for c in json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                       "manifest.json")))["pipeline_cases"]
+                if c["name"] == "pipe_side_reader_srt")
+    GOOD = [
+        "route: Normalize Loudness on",
+        "enhancement: applied boost=0 loudness=1",
+        "stream: /video/:/transcode/universal/start.mkv path=/video/:/transcode/universal/start.mkv"
+        "?directStream=1&directStreamAudio=1&subtitles=none",
+        "server-selected subtitle: sid=9910013 render_idx=0",
+        "subside: open tracks=1 ordinal=0 kbps=1400",
+        "subside: anchor match=exact part_kf_ms=0 remux_kf_ms=0 disp_base_ms=0 pts_shift_ms=0 delta_ms=0 "
+        "assumed_delta_ms=0 scan_bytes=1 scan_ms=1",
+        "sub cue [10000..18000ms] len=24",
+    ]
+
+    def test_the_case_is_a_mock_route_case_and_not_a_uri_one(self):
+        self.assertTrue(run.mock_route(self.CASE))
+        self.assertFalse(run.uri_mode(self.CASE))
+        self.assertEqual(self.CASE["carrier_subtitle"], 1)
+
+    def test_its_clips_exist_in_the_pipeline_table_and_agree_with_it(self):
+        spec, remux = fixturegen.PIPE_SHAPES["pipe_side_reader_srt"], fixturegen.PIPE_SHAPES["pipe_side_reader_remux"]
+        self.assertEqual(self.CASE["carrier"], "pipe_side_reader_srt." + spec["ext"])
+        self.assertEqual(self.CASE["fixture"], "pipe_side_reader_remux." + remux["ext"])
+        self.assertEqual([s["codec"] for s in spec["subs"]], ["subrip"], "one embedded SubRip track: ordinal 0")
+        self.assertEqual(remux["subs"], [], "the remux is what the server sends for subtitles=none")
+        self.assertEqual(spec["video"], remux["video"], "the same picture: the reader's keyframe anchor matches")
+        self.assertEqual(spec["duration"], remux["duration"])
+        self.assertEqual(remux["declare"]["acodec"], "ac3")
+        self.assertLess(fixturegen.PIPE_MBIT["pipe_side_reader_srt"] * 1000, 30000, "under SIDE_MAX_PART_KBPS")
+
+    def test_the_carrier_args_select_the_subtitle_and_serve_the_remux(self):
+        self.assertEqual(
+            run.mock_fps.carrier_server_args("/p/a.mkv", None, 1, "/p/b.mkv"),
+            ["--extra-media", "/p/a.mkv", "--extra-media-subtitle", "1", "--transcode-fixture", "/p/b.mkv"])
+        self.assertEqual(run.mock_fps.carrier_server_args("/p/a.mkv"), ["--extra-media", "/p/a.mkv"])
+        for bad in (0, -1, True, "1"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                run.mock_fps.carrier_server_args("/p/a.mkv", None, bad)
+
+    def test_the_triggers_pin_the_carrier_the_enhancement_and_no_other_route(self):
+        files = dict(run.mock_route_files(self.CASE))
+        self.assertEqual(files["plxnative-play"], str(run.mock_fps.CARRIER_RK))
+        self.assertEqual(files["plxnative-audioenh"], "loudness")
+        for name in ("plxnative-playurl", "plxnative-uridev", "plxnative-uriprobe", "plxnative-pms-origin"):
+            self.assertNotIn(name, files)
+        with self.assertRaises(run.UriProductRefused):
+            run.mock_route_files(self.CASE, [("plxnative-uriprobe", "load")])
+        with self.assertRaises(run.UriProductRefused):
+            run.mock_route_files(dict(self.CASE, triggers={"uridev": "x"}))
+
+    def grade(self, lines):
+        return dict((n, (ok, ev)) for n, ok, ev in run.evaluate_mock_route(
+            dict(self.CASE), lines + ["videoplane: BOUND"], ())[1])
+
+    def test_a_log_with_the_whole_chain_passes_the_side_reader_grades(self):
+        got = self.grade(self.GOOD)
+        self.assertTrue(got["side_reader"][0], got["side_reader"])
+        self.assertTrue(got["side_reader_anchor"][0], got["side_reader_anchor"])
+
+    def test_each_link_of_the_chain_is_graded_by_name(self):
+        for drop, side, anchor in (
+                ("subside: open", False, False), ("subside: anchor", True, False),
+                ("sub cue", False, True), ("server-selected", False, True), ("enhancement: applied", False, True)):
+            with self.subTest(drop=drop):
+                got = self.grade([ln for ln in self.GOOD if not ln.startswith(drop)])
+                self.assertEqual((got["side_reader"][0], got["side_reader_anchor"][0]), (side, anchor), got)
+
+    def test_a_cue_of_length_zero_and_a_failed_reader_are_not_a_drawn_cue(self):
+        self.assertFalse(self.grade([ln.replace("len=24", "len=0") for ln in self.GOOD])["side_reader"][0])
+        self.assertFalse(self.grade(self.GOOD[:5] + ["subside: failed"] + self.GOOD[5:])["side_reader"][0])
+
+    def test_the_wrong_track_is_refused(self):
+        self.assertFalse(self.grade([ln.replace("ordinal=0", "ordinal=1") for ln in self.GOOD])["side_reader"][0])
+
+    def test_a_missing_pack_or_a_release_install_skips_the_case(self):
+        with tempfile.TemporaryDirectory() as root, tempfile.NamedTemporaryFile() as cfg:
+            c = dict(self.CASE)
+            run._resolve_mock_route([c], root, flavour="stable", config=cfg.name)
+            self.assertIn("debug install only", c["skip"])
+            c = dict(self.CASE)
+            run._resolve_mock_route([c], root, flavour="debug", config=cfg.name)
+            self.assertIn("pipe_side_reader_srt.mkv", c["skip"])
+            open(os.path.join(root, "pipe_side_reader_srt.mkv"), "w").close()
+            c = dict(self.CASE)
+            run._resolve_mock_route([c], root, flavour="debug", config=cfg.name)
+            self.assertNotIn("skip", c)
+            self.assertEqual(c["transcode_path"], os.path.join(root, "pipe_side_reader_remux.mkv"))
+
+
 def load_tests(loader, tests, pattern):
     """Whole-module runs (`python3 tests/test_harness.py`, `make check`) run `DepGates` in
     parallel; naming a test on the command line still runs it alone, in the foreground.
