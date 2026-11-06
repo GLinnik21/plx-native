@@ -7507,23 +7507,25 @@ mod load_in_flight_tests {
         let mut eng = engine_loading(epoch);
         crate::player::ffi_host::hold_load_for_test();
         let payload_ptr = threads::SendPtr(eng.payload.as_ptr() as *mut c_char);
-        eng.load_th = Some(std::thread::spawn(move || {
+        eng.load_th = Some(plx_base::task::spawn("test-server-stopped-load", move || {
             threads::load_thread(payload_ptr, epoch, None, PcmLead::Off)
-        }));
+        }).expect("spawn the held Load"));
         pa.install(eng);
         let (done, wait) = std::sync::mpsc::channel::<()>();
-        let watchdog = std::thread::spawn(move || {
-            let returned = wait.recv_timeout(Duration::from_secs(5)).is_ok();
+        let (result, returned) = std::sync::mpsc::channel();
+        let watchdog = plx_base::task::spawn("test-server-stop-watchdog", move || {
+            let returned_in_time = wait.recv_timeout(Duration::from_secs(5)).is_ok();
             crate::player::ffi_host::release_load_for_test();
-            returned
-        });
+            let _ = result.send(returned_in_time);
+        }).expect("spawn the held Load watchdog");
         wait_for_load_in_flight();
 
         super::super::note_server_stop(crate::route::playback_session_id(&ps), "rig-1", "admin stop", 12_000);
         crate::player::pump::pump(&mut ps, &mut pa, 1_000);
         let parked = !pa.is_live() && pa.has_abandoned_load();
         let _ = done.send(());
-        let returned = watchdog.join().unwrap();
+        plx_base::task::join("test-server-stop-watchdog", watchdog);
+        let returned = returned.recv().unwrap();
         if pa.is_live() {
             stop_bufferfeed(&mut ps, &mut pa);
         }
