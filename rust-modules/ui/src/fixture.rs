@@ -603,6 +603,8 @@ pub struct FixtureModal {
     /// One entry per [`Screen::draw_held`] call: whether the painter it was handed was LIVE (not
     /// the text recorder a held surface's `draw` is walked through).
     pub held_faces: Vec<bool>,
+    /// One entry per [`Screen::draw_warm`] call: whether the painter it was handed records.
+    pub warm_walks: Vec<bool>,
 }
 
 thread_local! {
@@ -612,6 +614,17 @@ thread_local! {
 /// Make every [`FixtureModal`] drawn on this thread paint one line of text ("modal surface text").
 pub fn modal_draws_text(on: bool) {
     MODAL_TEXT.with(|t| t.set(on));
+}
+
+thread_local! {
+    static MODAL_WARMS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Make every [`FixtureModal`] on this thread hold one string back ("held back text"): it answers
+/// [`Screen::warms_text`] and walks that string in [`Screen::draw_warm`], as a Settings push does for
+/// the page it is about to show.
+pub fn modal_warms_text(on: bool) {
+    MODAL_WARMS.with(|t| t.set(on));
 }
 
 /// A monotonic tick the fixture screens stamp their draw-order observations with.
@@ -646,6 +659,7 @@ impl FixtureModal {
             opener: None,
             tick_dts: Vec::new(),
             held_faces: Vec::new(),
+            warm_walks: Vec::new(),
         }
     }
 
@@ -790,6 +804,10 @@ impl Machine<FixtureHost> for FixtureModal {
             }
             ScreenEvent::Tick(t) => {
                 self.tick_dts.push(t.dt_us);
+                // a surface waiting for its text asks for the next frame, as a push's pre-roll does
+                if MODAL_WARMS.with(|w| w.get()) {
+                    fx.note(plx_machine::present::PresentEvent::Motion);
+                }
                 // the surface's own foreground spring: reports motion while it settles
                 if self.pop < 1.0 {
                     self.pop = (self.pop + 0.25).min(1.0);
@@ -841,6 +859,13 @@ impl Screen<FixtureHost> for FixtureModal {
     }
     fn draw_held(&mut self, f: &mut DrawFrame<'_, '_, FixtureHost>) {
         self.held_faces.push(!f.painter.records());
+    }
+    fn warms_text(&self) -> bool {
+        MODAL_WARMS.with(|t| t.get())
+    }
+    fn draw_warm(&mut self, f: &mut DrawFrame<'_, '_, FixtureHost>) {
+        self.warm_walks.push(f.painter.records());
+        f.painter.text(c"held back text".as_ptr(), 640.0, 300.0, 24, [1.0; 4], 0, 0);
     }
     fn scrim(&self) -> super::screen::Scrim {
         self.scrim_at.set(draw_order());
@@ -2114,7 +2139,9 @@ fn below_drawn(d: &Dispatcher<FixtureHost>) -> u32 {
 #[test]
 fn a_video_plane_screen_replaces_its_host_and_takes_no_snapshot() {
     let _g = plx_base::testlock::serial();
-    // A transition that DRAWS BELOW while it is in flight (`RoutePush`, the Settings family's).
+    // A transition that DRAWS BELOW while it is in flight (`transition::RoutePush`, the stack
+    // transition that draws both levels; the Settings family's own push is `route_screen::RoutePush`,
+    // a different type).
     // The default `Immediate` never draws the level under the top one, so on it this test's first
     // half would be vacuous — it would pass whether or not the rule exists.
     let mut d: Dispatcher<FixtureHost> = Dispatcher::with_transition(Box::new(

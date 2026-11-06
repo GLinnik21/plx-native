@@ -285,6 +285,19 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     /// as it stands at the start of its motion, through a live painter. The text it draws is the
     /// page's own and was resident a frame ago. The default draws nothing.
     fn draw_held(&mut self, _f: &mut DrawFrame<'_, '_, H>) {}
+    /// **A VISIBLE surface is holding content back until its text is resident.** A Settings push
+    /// commits at once and the page it brings in would be rasterised, cold, in the push's first
+    /// drawn frame; the surface waits at the push's start instead ([`crate::route_screen::RoutePush::begin_warm`])
+    /// and answers `true` while it does. The dispatcher's surface pass then walks
+    /// [`draw_warm`](Self::draw_warm) through the text recorder after the surface's own `draw` and
+    /// drains the queue under the frame's shared prewarm budget. The default is `false`.
+    fn warms_text(&self) -> bool {
+        false
+    }
+    /// **Walk the content that is about to be shown through the text recorder** (the frame's painter
+    /// records; nothing is drawn). Called only while [`warms_text`](Self::warms_text) is true, and
+    /// not in a blur source pass. The default walks nothing.
+    fn draw_warm(&mut self, _f: &mut DrawFrame<'_, '_, H>) {}
     /// **The card the page has focused, and where it sits** — the host's question for an item menu
     /// and for the focus probe, asked of whichever card page is on screen so the host names no
     /// screen type. `focus` is the engine key to answer for (a page answers only its own entry's

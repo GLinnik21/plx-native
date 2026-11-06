@@ -27,6 +27,12 @@
 //! at commit: `leaving` holds that body for the spring's length and draws it in the child role,
 //! exactly as `legal.rs`'s index/document pair never swapped roles when BACK ran the same spring
 //! backward.
+//!
+//! A push commits at once, but its spring waits at 0 while the destination's strings are made
+//! resident ([`RoutePush::begin_warm`]): the surface answers `Screen::warms_text`, walks the
+//! incoming page through the text recorder (`Screen::draw_warm`) and the dispatcher drains it under
+//! the shared prewarm budget, so a page's first open rasterises nothing in a visible frame. A warm
+//! page waits no longer than the one frame it takes to find that out, and the spring is repaid it.
 
 use std::borrow::Cow;
 
@@ -435,6 +441,11 @@ impl RouteSurface {
             self.push.leaving_page = None;
             self.push.route.jump(false);
             self.push.open = true;
+            // The destination is mounted and owns input already, but its strings have never met the
+            // glyph cache: the spring waits at 0 while `draw_warm` walks them off-screen and the
+            // dispatcher rasterises them under its prewarm budget, instead of the push's first
+            // drawn frame paying for all of them at once.
+            self.push.route.begin_warm();
         }
         // A pop returns to a page that has been entered: the row it left from, else its first.
         if popping {
@@ -891,6 +902,22 @@ impl<H: DirectoryLike> Screen<H> for RouteSurface {
             Family::FirstRunConsent => root.alpha(a).translate(Rect::FULL.w * (1.0 - a), 0.0),
         };
         self.draw_pages(f, entrance);
+    }
+    /// A push is waiting for its destination's text ([`RoutePush::begin_warm`]): the incoming page
+    /// is not drawn yet, and `draw_warm` walks it through the recorder.
+    fn warms_text(&self) -> bool {
+        self.push.route.warming()
+    }
+    fn draw_warm(&mut self, f: &mut DrawFrame<'_, '_, H>) {
+        // The page the push will show, at rest: the strings are the same whatever the spring's
+        // position (`the_narrative_frame_is_constant_and_the_list_travels_on_every_held_page`).
+        let navigation = f.navigation();
+        let icx = inner_cx(f.cx);
+        if let Some(inst) = self.top_mut() {
+            let mut inner = DrawFrame::with_navigation(&icx, f.painter, navigation);
+            inst.screen.draw(&mut inner);
+        }
+        self.push.route.walked();
     }
     fn render(&self) -> RenderStrategy {
         RenderStrategy::Page
@@ -1791,6 +1818,10 @@ mod test_support;
 #[cfg(test)]
 #[path = "settings_push_tests.rs"]
 mod push_tests;
+
+#[cfg(test)]
+#[path = "settings_warm_tests.rs"]
+mod warm_tests;
 
 #[cfg(test)]
 #[path = "settings_draw_and_lifecycle_tests.rs"]

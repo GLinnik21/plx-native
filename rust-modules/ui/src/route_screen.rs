@@ -84,6 +84,7 @@
 //! The paragraph is never shortened to make translated actions fit.
 
 use crate::consts::SAFE;
+use crate::containers::modal::SURFACE_TEXT_HOLD_MAX_MS;
 use crate::hstack::{Align as StackAlign, HStack, Item as HItem};
 use crate::icons::{self, Icon};
 use crate::vstack::{Anchor, VSpan, VStack};
@@ -401,6 +402,34 @@ pub struct RoutePush {
     /// [`FADE_K`]. It moves nothing: a page that holds its narrative column
     /// ([`PushFrame::narrative`]) fades its content with this and keeps its frame still.
     fade: Spring,
+    /// A push waiting at its start for the destination's text ([`RoutePush::begin_warm`]).
+    warm: Option<Warm>,
+}
+
+/// **A push's pre-roll**: the springs wait at 0 while the incoming page's strings are rasterised
+/// off-screen, so the push's first drawn frame finds them resident.
+///
+/// A push commits at once: the destination is mounted and owns input before the spring moves, so
+/// its strings were first rasterised in the first frame the page was drawn. On the television a
+/// cold page (Video & playback, Language) cost that one frame 28-30 ms (`textx33:18.2`). The route
+/// dip never had the problem: its OUT half walks the staged destination through the text recorder
+/// and drains the queue under a budget (`Transition::prewarms_text`). This is the same walk for the
+/// surface's own spring.
+///
+/// The wait costs a warm page nothing. The frame the push is requested on is the probe: it draws
+/// the parent alone while the surface walks the destination ([`Screen::draw_warm`]), and the springs
+/// step on the next frame with the probe's `dt` added, so the push is exactly where it would have
+/// been without the wait. If that walk queued strings, the springs hold until the iteration's
+/// latched readiness ([`plx_gfx::text::surface_text_pending`]) says they are resident, for at most
+/// [`SURFACE_TEXT_HOLD_MAX_MS`], and then start from rest.
+#[derive(Clone, Copy, Debug)]
+struct Warm {
+    /// The destination has been walked at least once since the wait began.
+    walked: bool,
+    /// Frame time spent waiting, against the bound.
+    waited_ms: f32,
+    /// The probe frame's own `dt`, repaid to the springs when the wait ends the frame after it.
+    owed_us: u32,
 }
 
 /// **Which end of a push a page is on.**
@@ -467,6 +496,7 @@ impl RoutePush {
         Self {
             progress: Spring::at(0.0),
             fade: Spring::at(0.0),
+            warm: None,
         }
     }
 
@@ -476,6 +506,7 @@ impl RoutePush {
         Self {
             progress: Spring::at(t),
             fade: Spring::at(t),
+            warm: None,
         }
     }
 
@@ -483,6 +514,30 @@ impl RoutePush {
         let to = if open { 1.0 } else { 0.0 };
         self.progress.jump(to);
         self.fade.jump(to);
+        // a jump names a new journey: a wait for the old one's destination ends with it
+        self.warm = None;
+    }
+
+    /// **Hold a push at its start until the incoming page's text is resident** (see [`Warm`]).
+    /// Called after [`jump`](Self::jump)`(false)` on a push; a pop never waits, since the page it
+    /// returns to has been drawn. The surface answers [`warming`](Self::warming) by walking the
+    /// destination and says so with [`walked`](Self::walked).
+    pub fn begin_warm(&mut self) {
+        self.warm = Some(Warm { walked: false, waited_ms: 0.0, owed_us: 0 });
+    }
+
+    /// Is the push waiting for its destination's text? Then the surface walks the incoming page
+    /// through the recorder this frame ([`Screen::draw_warm`]).
+    pub fn warming(&self) -> bool {
+        self.warm.is_some()
+    }
+
+    /// The surface walked the destination this frame. The wait ends no earlier than the next one,
+    /// when the iteration's latch has seen what the walk queued.
+    pub fn walked(&mut self) {
+        if let Some(w) = self.warm.as_mut() {
+            w.walked = true;
+        }
     }
 
     pub fn update(&mut self, open: bool, dt: f32) {
@@ -519,6 +574,7 @@ impl RoutePush {
         if self.resting(open) {
             return;
         }
+        let Some(t) = self.wait_for_text(t, present) else { return };
         let target = if open { 1.0 } else { 0.0 };
         plx_machine::motion::spring(
             &mut self.progress.pos,
@@ -542,6 +598,32 @@ impl RoutePush {
             self.fade.pos = target;
             self.fade.vel = 0.0;
         }
+    }
+
+    /// One frame of the pre-roll ([`Warm`]). `None`: still waiting, the springs stay put and the
+    /// next frame is requested. `Some(t)`: step the springs with `t`, which carries the probe
+    /// frame's `dt` when the wait lasted only that frame (and was not spent).
+    fn wait_for_text(
+        &mut self,
+        t: plx_machine::machine::Tick,
+        present: &mut plx_machine::machine::PresentHandle<'_>,
+    ) -> Option<plx_machine::machine::Tick> {
+        let Some(w) = self.warm.as_mut() else { return Some(t) };
+        w.waited_ms += t.dt() * 1000.0;
+        let spent = w.waited_ms >= SURFACE_TEXT_HOLD_MAX_MS;
+        if !spent && !w.walked {
+            // the probe: nothing has been walked yet, so nothing is known to be pending
+            w.owed_us = w.owed_us.saturating_add(t.dt_us);
+        } else if !spent && plx_gfx::text::surface_text_pending() {
+            // still rasterising: the wait is dead time, not part of the motion
+            w.owed_us = 0;
+        } else {
+            let owed = if spent { 0 } else { w.owed_us };
+            self.warm = None;
+            return Some(plx_machine::machine::Tick { ms: t.ms, dt_us: t.dt_us.saturating_add(owed) });
+        }
+        present.note(plx_machine::present::PresentEvent::Motion);
+        None
     }
 
     /// Seed this push's springs — position AND velocity, not just [`amount`](Self::amount)'s
@@ -2287,5 +2369,116 @@ mod tests {
         other.sync_to(&push);
         assert_eq!((other.amount(), other.fade_amount()), (push.amount(), push.fade_amount()), "sync_to seeds both springs");
         assert!(other.fade_amount() > 0.999);
+    }
+
+    // ---- the pre-roll: a push waits at 0 while its destination's text is rasterised --------------
+
+    /// One frame of `push` toward open at 16 ms, the way the surface's tick drives it. `latched`
+    /// is the iteration's text readiness; `walk` is what the surface's draw does afterwards.
+    /// Returns whether the frame asked for another.
+    fn warm_frame(push: &mut RoutePush, ms: &mut u32, latched: bool, walk: bool) -> bool {
+        let mut present = plx_machine::present::Present::new();
+        *ms += 16;
+        plx_gfx::text::latch_surface_text_pending(latched);
+        let t = plx_machine::machine::Tick { ms: *ms, dt_us: 16_000 };
+        push.tick(true, t, &mut plx_machine::machine::PresentHandle::of(&mut present));
+        if walk && push.warming() {
+            push.walked();
+        }
+        present.changed()
+    }
+
+    fn started() -> RoutePush {
+        let mut push = RoutePush::new();
+        push.jump(false);
+        push.begin_warm();
+        push
+    }
+
+    /// The same push without a wait, `frames` ticks of 16 ms in.
+    fn unwarmed(frames: u32) -> RoutePush {
+        let mut push = RoutePush::new();
+        push.jump(false);
+        let mut ms = 0;
+        for _ in 0..frames {
+            warm_frame(&mut push, &mut ms, false, false);
+        }
+        push
+    }
+
+    /// **A warm page's push is exactly where it would have been without the wait**: the request
+    /// frame is the probe (nothing is moved, the next frame is asked for), and the next frame steps
+    /// the springs by both frames' time.
+    #[test]
+    fn a_warm_pages_push_loses_no_time_to_its_probe() {
+        let _g = plx_base::testlock::serial();
+        let mut push = started();
+        let mut ms = 0;
+        assert!(warm_frame(&mut push, &mut ms, false, true), "the probe frame asks for another");
+        assert_eq!(push.amount(), 0.0, "…and moved nothing: the incoming page was walked, not shown");
+        assert!(push.warming());
+        warm_frame(&mut push, &mut ms, false, true);
+        assert!(!push.warming(), "nothing pending: the wait is over");
+        let reference = unwarmed(2);
+        assert!((push.amount() - reference.amount()).abs() < 1e-5, "{} vs {}", push.amount(), reference.amount());
+        assert!((push.fade_amount() - reference.fade_amount()).abs() < 1e-5);
+        for _ in 0..3 {
+            warm_frame(&mut push, &mut ms, false, true);
+        }
+        let reference = unwarmed(5);
+        assert!((push.amount() - reference.amount()).abs() < 1e-5, "and it stays on that curve");
+    }
+
+    /// **A cold page's push waits, motionless, while its text is pending, then starts from rest**
+    /// without crediting the wait to the spring.
+    #[test]
+    fn a_cold_pages_push_waits_for_its_text_and_starts_from_rest() {
+        let _g = plx_base::testlock::serial();
+        let mut push = started();
+        let mut ms = 0;
+        warm_frame(&mut push, &mut ms, false, true); // the probe
+        for frame in 0..3 {
+            assert!(warm_frame(&mut push, &mut ms, true, true), "wait {frame} asks for another frame");
+            assert_eq!((push.amount(), push.fade_amount()), (0.0, 0.0), "wait {frame}: still at the start");
+            assert!(push.warming());
+        }
+        warm_frame(&mut push, &mut ms, false, true);
+        assert!(!push.warming());
+        let reference = unwarmed(1);
+        assert!(push.amount() > 0.0, "it started");
+        assert!((push.amount() - reference.amount()).abs() < 1e-5, "from rest, one frame of spring: {} vs {}", push.amount(), reference.amount());
+    }
+
+    /// **The wait is bounded**: a queue that never drains, and a surface that is never drawn, each
+    /// release the push by [`SURFACE_TEXT_HOLD_MAX_MS`], and the spring then runs from rest.
+    #[test]
+    fn the_wait_is_bounded() {
+        let _g = plx_base::testlock::serial();
+        for (label, walks) in [("a queue that never drains", true), ("a surface that is never drawn", false)] {
+            let mut push = started();
+            let mut ms = 0;
+            let mut frames = 0u32;
+            while push.warming() {
+                warm_frame(&mut push, &mut ms, true, walks);
+                frames += 1;
+                assert!(frames <= (SURFACE_TEXT_HOLD_MAX_MS / 16.0).ceil() as u32 + 1, "{label}: still waiting after {frames} frames");
+            }
+            assert!(push.amount() > 0.0 && push.amount() < 0.05, "{label}: released into a spring that starts from rest ({})", push.amount());
+        }
+    }
+
+    /// **A pop never waits, and a jump ends a wait**: the page a pop returns to has been drawn, and
+    /// a new journey is not held for the old one's destination.
+    #[test]
+    fn a_pop_never_waits_and_a_jump_ends_a_wait() {
+        let mut push = started();
+        assert!(push.warming());
+        push.jump(true);
+        assert!(!push.warming(), "BACK during the wait ends it");
+        let mut push = RoutePush::new();
+        push.jump(true);
+        assert!(!push.warming(), "a pop has no wait to begin");
+        push.walked();
+        assert!(!push.warming(), "…and a walk reported to no wait begins none");
     }
 }
