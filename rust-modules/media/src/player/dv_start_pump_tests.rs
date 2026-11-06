@@ -331,13 +331,15 @@ fn push_audio(rig: &mut Rig, ns: i64, n: i64) {
     }
 }
 
+/// The order D5 claims: the Dolby Vision watch speaks first and the audio watchdog has not. The case stops
+/// stepping at the withdrawal's reload attempt: this rig has no url, so the reload fails synchronously and
+/// the Engine (and its stall watch) survives, where production replaces it with a fresh session.
 #[test]
 fn a_dv_and_surround_opus_stall_withdraws_dolby_vision_first() {
     let _serial = plx_base::testlock::serial();
     // No row: the 4 s watch is the trigger, so the landing is fed and anchored before it runs.
     let mut rig = declared(p81(), false);
     let _opus = NativeOpus51::on(&mut rig);
-    let mut held = false;
     let log = logged(|| {
         rig.arm(TARGET_NS);
         // The presented position the feed-ahead throttle measures from: once the prime has released
@@ -353,19 +355,20 @@ fn a_dv_and_surround_opus_stall_withdraws_dolby_vision_first() {
         push_audio(&mut rig, TARGET_NS + 4_000_000_000, 40);
         advance(&mut rig, 3_000);
         assert!(reloads().is_empty(), "inside the 4 s");
-        advance(&mut rig, 2_500);
-        // The rig's Engine is not replaced by the reload (production builds a fresh one and a fresh
-        // watch): what keeps the audio watchdog quiet from here on is the landing the guard still holds.
-        held = rig.eng().dv_start.landing_held();
-        advance(&mut rig, 6_000);
+        // Step to the first frame that attempts the reload, and no further: the withdrawal's frame
+        // returns right after `reload_at`, so nothing the audio watchdog does later is in this log.
+        let mut waited = 0;
+        while reloads().is_empty() && waited < 3_000 {
+            advance(&mut rig, 250);
+            waited += 250;
+        }
     });
     assert!(log.contains("native audio: watching opus with 6 channels"), "PRECONDITION: native_stall armed on this feed:\n{log}");
     assert_eq!(reloads(), vec![TARGET_NS], "the Dolby Vision watch fired: one reload at the landing\n{log}");
-    assert!(log.contains("dv: withdrawn"), "{log}");
+    assert!(log.contains("dv: withdrawn for this play: no position update"), "the withdrawal came from the watch:\n{log}");
     assert!(!is_declared(&rig));
-    assert!(!log.contains("native audio: STALL"), "the audio watchdog stayed out of it:\n{log}");
+    assert!(!log.contains("native audio: STALL"), "the audio watchdog spoke before the Dolby Vision watch:\n{log}");
     assert!(!SHARED.native_audio_refused.load(Relaxed), "no install-wide Opus refusal is raised for the Dolby Vision splitter's silence");
-    assert!(held, "the guard still holds the landing until the reload replaces the Engine");
 }
 
 #[test]
