@@ -48,12 +48,9 @@ pub fn request_audio_track(ps: &mut PlaybackSession, audio_idx: i32, codec: &str
     super::request_audio_track(ps, audio_idx, codec);
 }
 
-/// Is the side subtitle reader running?
-pub fn side_reader_active() -> bool {
-    #[cfg(feature = "play-feed")]
-    { plx_play_feed::side_reader::active() }
-    #[cfg(not(feature = "play-feed"))]
-    { false }
+/// Is the side subtitle reader running (as of the feed's last sample)?
+pub fn side_reader_active(ps: &PlaybackSession) -> bool {
+    ps.readout().raw().side_reader_active
 }
 
 /// The track the dev trigger arms the side reader for, if any.
@@ -65,11 +62,18 @@ pub fn side_reader_dev_armed_ordinal() -> Option<i32> {
 }
 
 /// Make the side reader match the route's target: start, switch, run clock-only, or stop for `None`.
+/// The route only says what it wants (a readout event); the pump hands it to the feed on its next
+/// frame (`FeedCommand::SyncSideReader`).
 ///
 /// A reader begun mid-play starts at the display base the live sample carries.
-pub fn sync_side_reader(ps: &PlaybackSession, target: Option<SideReaderTarget>) {
+pub fn sync_side_reader(ps: &mut PlaybackSession, target: Option<SideReaderTarget>) {
     #[cfg(feature = "play-feed")]
-    super::subside::sync(target.and_then(|t| super::subside::spec_for(&t, ps.readout().raw().disp_base)));
+    {
+        let want = target
+            .and_then(|t| super::subside::spec_for(&t, ps.readout().raw().disp_base))
+            .map(std::sync::Arc::new);
+        ps.step_readout(super::readout::ReadoutEvent::SideReaderWanted(want));
+    }
     #[cfg(not(feature = "play-feed"))]
     let _ = (ps, target);
 }

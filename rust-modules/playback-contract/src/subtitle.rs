@@ -142,7 +142,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// What the reader thread asks of the common caption runner. Unlike
-/// [`SideReaderPort`](crate::feed::SideReaderPort), which one Engine owns and drives from the main
+/// `plx_play_feed`'s `SideReaderPort`, which one Engine owns and drives from the main
 /// thread, this is shared with the reader thread and with `sync`'s worker, neither of which has an
 /// Engine, so it is a `'static` value handed to the reader's `start` and `sync` and kept by the
 /// reader for its `stop`.
@@ -263,8 +263,9 @@ pub enum RunEnd {
     Measured,
 }
 
-/// Everything one run of the reader is started with. `url` carries the token: held, never logged.
-#[derive(Clone)]
+/// Everything one run of the reader is started with. `url` carries the token: held, never logged
+/// (so `Debug` leaves it out).
+#[derive(Clone, PartialEq, Eq)]
 pub struct Spec {
     /// The fresh-session URL of the original Part (`direct_play_url(part, "<live>-subs")`).
     pub url: String,
@@ -281,6 +282,31 @@ pub struct Spec {
     /// The Part-to-playhead clock delta a reader of this same run already measured, so a reader
     /// that replaces it (a track switch) does not scan for the anchor again.
     pub delta: Option<i64>,
+}
+
+impl std::fmt::Debug for Spec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Spec")
+            .field("offset_ns", &self.offset_ns).field("part_kbps", &self.part_kbps)
+            .field("ordinal", &self.ordinal).field("from_playhead", &self.from_playhead)
+            .field("delta", &self.delta).finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod spec_tests {
+    use super::*;
+
+    /// The URL carries the token, and a `Spec` rides in a `FeedCommand` that derives `Debug`.
+    #[test]
+    fn a_spec_debug_never_shows_the_url() {
+        let spec = Spec { url: "http://host/part?X-Plex-Token=SECRET".into(), offset_ns: 5, part_kbps: 7,
+            ordinal: 2, from_playhead: false, delta: None };
+        let shown = format!("{spec:?}");
+        assert!(!shown.contains("SECRET") && !shown.contains("http"), "{shown}");
+        assert!(shown.contains("ordinal: 2"), "{shown}");
+        assert_eq!(spec.clone(), spec);
+    }
 }
 
 #[cfg(test)]

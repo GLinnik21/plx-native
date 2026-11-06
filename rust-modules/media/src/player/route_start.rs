@@ -450,7 +450,7 @@ fn start_bufferfeed_prepared(
     }
     // The prepared route has finished choosing the stream. Freeze the values the native Load,
     // payload and demux worker will use before any of those physical resources are constructed.
-    let side_reader = Box::new(super::feed_open::SideReaderOpen::capture(ps, stream));
+    let side_reader = super::feed_open::side_reader_request(ps, stream);
     let mut open = stream.then(|| super::feed_open::FeedOpenRequest::capture(ps, url));
     if open.as_ref().is_some_and(|request| !request.credential_transport_allowed()) {
         plx_base::eventlog::log("stream: refused insecure credential transport");

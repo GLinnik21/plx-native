@@ -1096,7 +1096,16 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
     // Preserve the old per-frame ordering: diagnostic mirror, side-reader failure, then Load
     // settlement. Borrowing the Engine only for each step lets the adapter land its owned inbox.
     pa.publish_feed_diag(now, &LAST_FRAMES);
-    if plx_play_feed::side_reader::take_failure() { crate::route::side_subtitles_failed(ps); }
+    if ps.readout().side_reader_failed() {
+        ps.step_readout(super::readout::ReadoutEvent::Taken { edge: super::readout::Edge::SideReaderFailed });
+        crate::route::side_subtitles_failed(ps);
+    }
+    // The route's wish for the side reader (a pick on a live remux) is handed to the feed here, the
+    // frame after the route stated it.
+    if let Some(want) = ps.readout().side_reader_want().cloned() {
+        ps.step_readout(super::readout::ReadoutEvent::SideReaderWantTaken);
+        pa.feed_command(plx_playback_contract::feed::FeedCommand::SyncSideReader(want));
+    }
     // The native Load may return before its Engine is installed. Only this main-thread landing
     // maps its worker token to the current attempt and settles the route, after installation.
     pa.drain_load_outcomes(ps);

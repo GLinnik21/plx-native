@@ -1260,7 +1260,8 @@ mod prime_livelock_tests {
             source: Source::Stream,
             stream_th: None,
             load_th: None,
-            side_reader: Box::new(super::super::feed_open::SideReaderOpen::empty()),
+            side_reader: Box::new(plx_play_feed::side_reader::SideReaderOpen::new(
+                Default::default(), super::super::subside::JOB)),
             preview_abandon: false,
             era_watch: plx_play_feed::era_callbacks::Watch::new(),
         }

@@ -27,12 +27,14 @@
 
 use plx_playback_contract::adaptive::{AbrReadout, CarriedSeed, FailureEdit, SeedReadout};
 use plx_playback_contract::feed::{FeedRaw, PresentationTick, Stage};
+use plx_playback_contract::subtitle::Spec;
 use plx_playback_contract::RATE_NORMAL;
+use std::sync::Arc;
 
 use super::attempt_view::PlaybackState;
 
 /// Everything the player knows about the playback on screen that the feed does not own.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlayerReadout {
     /// The pump's derived UI state, published once a frame.
     state: PlaybackState,
@@ -80,6 +82,11 @@ pub struct PlayerReadout {
     /// How many of the feed's native-audio refusals ([`FeedRaw::native_audio_refusals`]) the pump
     /// has taken.
     taken_native_audio_refusals: u32,
+    /// How many of the side reader's give-ups ([`FeedRaw::side_failures`]) the pump has taken.
+    taken_side_failures: u32,
+    /// The side reader the route wants and the pump has not yet handed the feed
+    /// ([`ReadoutEvent::SideReaderWanted`]): `None` = nothing waits, `Some(None)` = stop the reader.
+    side_reader_want: Option<Option<Arc<Spec>>>,
     /// The audio stream the viewer's pick or the route's plan chose for the demuxer: its 0-based
     /// index, `-1` for the file's own default. The player's own choice, not a feed fact: a session
     /// reset and a new item leave it alone (a retry resets the track selection too, and a reload
@@ -119,6 +126,8 @@ pub enum Edge {
     DecoderRevoked,
     /// The pipeline refused natively fed audio (the callback, or the stall watchdog).
     NativeAudioRefused,
+    /// The side subtitle reader gave up (and no stop has voided it).
+    SideReaderFailed,
 }
 
 /// How close to the container's duration the playhead must be, after the EOS, to count as the end.
@@ -154,7 +163,7 @@ pub struct Presentation {
 
 /// What can happen to the readout. Intent-named: a writer states what occurred, never a field
 /// value to store, so a transition that touches several members is one event.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReadoutEvent {
     /// The pump derived this frame's state.
     StateDerived(PlaybackState),
@@ -228,6 +237,12 @@ pub enum ReadoutEvent {
     /// The player sends `FeedCommand::SelectAudio` from [`PlayerReadout::audio_choice`] before the
     /// start that spawns the demuxer.
     AudioSelected { idx: i32 },
+    /// The route wants the side subtitle reader to match `want` (`None` = stopped): replaces any
+    /// request the pump has not yet taken, the newest wins. The pump hands it to the feed as
+    /// `FeedCommand::SyncSideReader` and sends [`Self::SideReaderWantTaken`].
+    SideReaderWanted(Option<Arc<Spec>>),
+    /// The pump handed the wanted side reader to the feed (read [`PlayerReadout::side_reader_want`] first).
+    SideReaderWantTaken,
     /// A transcode restart's `FeedCommand::Rebase` was sent: the encode is 0-based at `disp_base`, which
     /// the feed carries as its display base from the first frame. Appended with the command, before the
     /// start that follows it.
@@ -266,6 +281,8 @@ impl PlayerReadout {
         resume_pend: false,
         taken_decoder_revocations: 0,
         taken_native_audio_refusals: 0,
+        taken_side_failures: 0,
+        side_reader_want: None,
         audio_choice: -1,
         open_disp_base_ns: 0,
         abr: AbrReadout::IDLE,
@@ -280,6 +297,13 @@ impl PlayerReadout {
     pub fn rate_reload(&self) -> bool { self.rate_reload }
     pub fn play_rate_permille(&self) -> i32 { self.play_rate_permille }
     pub fn raw(&self) -> &FeedRaw { &self.raw }
+    /// The side reader gave up and nobody has taken that yet.
+    pub fn side_reader_failed(&self) -> bool {
+        edge_pending(self.raw.side_failures, self.taken_side_failures)
+    }
+    /// The side reader the route wants, not yet handed the feed: `Some(Some(spec))` = run a reader
+    /// on `spec`, `Some(None)` = stop it, `None` = nothing waits.
+    pub fn side_reader_want(&self) -> Option<&Option<Arc<Spec>>> { self.side_reader_want.as_ref() }
     /// The adaptive worker's last photograph ([`AbrReadout::IDLE`] before one and after a reset).
     pub fn abr(&self) -> &AbrReadout { &self.abr }
     /// Put the two members of the worker's photograph that an attempt's facts carry (the last
@@ -374,6 +398,10 @@ impl PlayerReadout {
                 // The feed's own reset zeroed its counts at the same teardown.
                 self.taken_decoder_revocations = 0;
                 self.taken_native_audio_refusals = 0;
+                self.taken_side_failures = 0;
+                // A reader wanted for the engine that is gone describes a stream that is gone
+                // (the feed's stop retires its own queued request the same way).
+                self.side_reader_want = None;
                 // ...and its display base with them.
                 self.open_disp_base_ns = 0;
                 // The worker's photograph went with the engine (the feed's mirrors reset at the same
@@ -456,7 +484,10 @@ impl PlayerReadout {
                 Edge::NativeAudioRefused => {
                     self.taken_native_audio_refusals = self.raw.native_audio_refusals;
                 }
+                Edge::SideReaderFailed => self.taken_side_failures = self.raw.side_failures,
             },
+            ReadoutEvent::SideReaderWanted(want) => self.side_reader_want = Some(want),
+            ReadoutEvent::SideReaderWantTaken => self.side_reader_want = None,
             ReadoutEvent::AudioSelected { idx } => self.audio_choice = idx,
             ReadoutEvent::OpenRebased { disp_base } => self.open_disp_base_ns = disp_base,
         }
@@ -489,7 +520,7 @@ mod tests {
 
     fn stepped(events: &[ReadoutEvent]) -> PlayerReadout {
         let mut readout = PlayerReadout::IDLE;
-        for event in events { readout.step(*event); }
+        for event in events { readout.step(event.clone()); }
         readout
     }
 
@@ -976,7 +1007,7 @@ mod tests {
         assert!(!r.seek_preroll(), "a transport that is not paused opens nothing");
         let once = stepped(&[ReadoutEvent::CommitPaused { paused: true }, ReadoutEvent::BeginPausedSeek]);
         assert!(once.paused() && once.seek_preroll());
-        let mut twice = once;
+        let mut twice = once.clone();
         twice.step(ReadoutEvent::BeginPausedSeek);
         assert_eq!(twice, once);
         let resumed = stepped(&[ReadoutEvent::CommitPaused { paused: true }, ReadoutEvent::BeginPausedSeek,
@@ -1030,13 +1061,62 @@ mod tests {
             r.step(ReadoutEvent::Presented(p));
             r.state()
         };
-        assert_eq!(derive(&[paused], pres(Stage::Streaming)), PlaybackState::Paused);
+        assert_eq!(derive(&[paused.clone()], pres(Stage::Streaming)), PlaybackState::Paused);
         assert_eq!(derive(&[], pres(Stage::Streaming)), PlaybackState::Buffering, "not paused");
-        assert_eq!(derive(&[paused, ReadoutEvent::BeginPausedSeek], pres(Stage::Streaming)),
+        assert_eq!(derive(&[paused.clone(), ReadoutEvent::BeginPausedSeek], pres(Stage::Streaming)),
             PlaybackState::Buffering, "a preroll open is work: the gate is not shut");
-        assert_eq!(derive(&[paused], Presentation { nothing_in_flight: false, ..pres(Stage::Streaming) }),
+        assert_eq!(derive(&[paused.clone()], Presentation { nothing_in_flight: false, ..pres(Stage::Streaming) }),
             PlaybackState::Buffering, "a claim hold or a flight is work");
         assert_eq!(derive(&[paused, tap(1)], pres(Stage::Streaming)), PlaybackState::Seeking);
+    }
+
+    // ---- the side reader: the failure edge the feed counts, and the want the pump hands over ----
+
+    fn side_failures(count: u32) -> ReadoutEvent {
+        ReadoutEvent::FactsIngested(FeedRaw { side_failures: count, ..FeedRaw::IDLE })
+    }
+
+    /// The reader's give-up is a counted edge like the decoder's: pending until taken, spent after
+    /// it, pending again for the next raise, never pending for a stop's voided `0`, and a session
+    /// reset forgets what was taken (the feed's stop zeroes its count with it).
+    #[test]
+    fn a_side_reader_failure_is_taken_once_and_a_stop_voids_it() {
+        let mut r = stepped(&[side_failures(1)]);
+        assert!(r.side_reader_failed(), "a raise nobody has taken is pending");
+        r.step(ReadoutEvent::Taken { edge: Edge::SideReaderFailed });
+        assert!(!r.side_reader_failed(), "taken once, it is spent");
+        r.step(side_failures(1));
+        assert!(!r.side_reader_failed(), "the next sample of the same count is no new edge");
+        r.step(side_failures(2));
+        assert!(r.side_reader_failed(), "the next raise is a new edge");
+        r.step(side_failures(0));
+        assert!(!r.side_reader_failed(), "a stop voided it before it was taken");
+        r.step(ReadoutEvent::Taken { edge: Edge::SideReaderFailed });
+        r.step(side_failures(3));
+        assert!(r.side_reader_failed());
+        r.step(ReadoutEvent::SessionReset);
+        assert!(!r.side_reader_failed(), "the session's raw facts are gone with it");
+    }
+
+    /// The route's wish for the reader waits in the readout until the pump takes it; the newest
+    /// wins (a stop after a start is one request, not two), and a session reset drops it.
+    #[test]
+    fn the_side_reader_the_route_wants_waits_for_the_pump_and_the_newest_wins() {
+        let spec = |ordinal| Arc::new(Spec {
+            url: String::new(), offset_ns: 0, part_kbps: 0, ordinal, from_playhead: false, delta: None,
+        });
+        let mut r = PlayerReadout::IDLE;
+        assert_eq!(r.side_reader_want(), None);
+        r.step(ReadoutEvent::SideReaderWanted(Some(spec(2))));
+        r.step(ReadoutEvent::SideReaderWanted(Some(spec(5))));
+        assert_eq!(r.side_reader_want().map(|w| w.as_ref().map(|s| s.ordinal)), Some(Some(5)));
+        r.step(ReadoutEvent::SideReaderWanted(None));
+        assert_eq!(r.side_reader_want(), Some(&None), "stopping is a wish too");
+        r.step(ReadoutEvent::SideReaderWantTaken);
+        assert_eq!(r.side_reader_want(), None, "the pump took it");
+        r.step(ReadoutEvent::SideReaderWanted(Some(spec(1))));
+        r.step(ReadoutEvent::SessionReset);
+        assert_eq!(r.side_reader_want(), None, "a wish for an engine that is gone is dropped");
     }
 
     // ---- the one-shot edges the feed counts and the readout takes (L3b-4) ----

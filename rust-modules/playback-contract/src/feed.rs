@@ -147,14 +147,18 @@ impl SampleBuf {
     }
 }
 
-/// The player's side-subtitle reader as one Engine owns it and drives it from the main thread.
-pub trait SideReaderPort: Send {
-    /// The demuxer must leave embedded subtitles to this reader from its first instruction.
-    fn embedded_owner(&self) -> bool;
-    /// Start only after both demux and native Load workers have spawned.
-    fn start_after_load_spawn(&mut self);
-    /// Stop and join before the paired demux worker is joined, including a failed Load spawn.
-    fn stop_before_demux_join(&mut self, reason: &str);
+/// What the route decided about the side subtitle reader for one open: whether a reader is
+/// admitted for it, whether it runs clock-only (a sidecar the app draws itself), and the
+/// [`Spec`] it starts with (`None` when the target's server is gone). Plain data: the Feed
+/// builds the reader's port from it ([`OpenRequest::side_reader`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SideReaderRequest {
+    /// A reader is admitted for this open.
+    pub selected: bool,
+    /// The reader reads no subtitle and only measures the remux's clock
+    /// ([`crate::subtitle::SIDE_READER_CLOCK_ONLY`]).
+    pub clock_only: bool,
+    pub spec: Option<crate::subtitle::Spec>,
 }
 
 /// Everything [`FeedOpen::open_prepare`] consumes. `stream` is `Some` for a stream and `sample`
@@ -170,7 +174,7 @@ pub struct OpenRequest {
     /// The viewer's requested playback rate, in permille.
     pub requested_rate: i32,
     pub no_audio: bool,
-    pub side_reader: Box<dyn SideReaderPort>,
+    pub side_reader: SideReaderRequest,
 }
 
 /// A native transport action the feed's driver queued for the player's transport door.
@@ -439,6 +443,15 @@ pub struct FeedRaw {
     pub load: LoadRaw,
     /// The Auto-quality facts the demux publishes ([`DemuxAbr`]).
     pub abr: DemuxAbr,
+    /// The side subtitle reader's thread is running (the draw gate reads it for the dev trigger's run).
+    pub side_reader_active: bool,
+    /// The reader's give-ups this session that no stop has voided (`0` = none): a counter like
+    /// [`Self::decoder_revocations`], so the player holds how many it has taken. A failure the stopped
+    /// reader raised is voided by that stop, and reads `0` again.
+    pub side_failures: u32,
+    /// The clock delta the reader matched byte for byte for this engine run (Part time minus the
+    /// playhead, ns); `None` while none has been measured.
+    pub side_exact_delta_ns: Option<i64>,
 }
 
 /// The Auto-quality facts the demux publishes about the open it runs: which controller started, the
@@ -584,6 +597,7 @@ impl FeedRaw {
         diag: FeedDiag::IDLE,
         vpres_gap_sum_ms: 0, vpres_gap_count: 0, disp_base: 0, load: LoadRaw::IDLE,
         abr: DemuxAbr::IDLE,
+        side_reader_active: false, side_failures: 0, side_exact_delta_ns: None,
     };
 }
 
@@ -609,7 +623,7 @@ pub struct FeedFacts {
 /// that used to write several of the feed's members is one value here. The feed carries a command
 /// out where it stands, in the order it was given. Seeking is not an [`Operation`]: it stays
 /// outside the runner's door (R8).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FeedCommand {
     /// A seek was requested. `epoch` is the player's requested-seek count after this request (a
     /// later request carries a larger one); the feed reports it back as [`FeedRaw::seek_landed_epoch`]
@@ -656,6 +670,11 @@ pub enum FeedCommand {
     /// audio stream index, `-1` the file's own default). The demuxer reads the feed's copy as it
     /// opens the container, so the player sends this before every start that spawns one.
     SelectAudio { idx: i32 },
+    /// Make the running side subtitle reader match the route's target while the stream plays on:
+    /// start one for a track picked on a live remux, run it clock-only for a sidecar, switch its
+    /// track, or stop it (`None`). Never blocks: stopping a reader joins its thread, which the feed
+    /// hands to a worker. The newest request wins.
+    SyncSideReader(Option<std::sync::Arc<crate::subtitle::Spec>>),
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -116,6 +116,9 @@ pub struct PrepareHooks {
     pub sink: fn() -> &'static dyn VideoSink,
     pub on_exported_window_create: fn(),
     pub load_refusal_latch: u8,
+    /// The common caption runner the side subtitle reader's thread calls back into: what each
+    /// open's reader and every `FeedCommand::SyncSideReader` run over.
+    pub side_reader_job: &'static dyn plx_playback_contract::subtitle::SideReaderJobPort,
 }
 
 /// Native release uses the installed raw sink while the public sink is fenced for other verbs.

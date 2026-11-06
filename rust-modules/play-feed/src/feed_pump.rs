@@ -1230,6 +1230,9 @@ fn native_feed_raw(failure: FailureSample) -> FeedRaw {
             kbps: FEED_SHARED.dg_abr_kbps.load(Relaxed),
             declared_kbps: FEED_SHARED.dg_abr_declared_kbps.load(Relaxed),
         },
+        side_reader_active: crate::side_reader::active(),
+        side_failures: crate::side_reader::failures(),
+        side_exact_delta_ns: crate::side_reader::exact_delta_ns(),
     }
 }
 

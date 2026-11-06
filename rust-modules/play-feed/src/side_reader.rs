@@ -17,7 +17,7 @@
 //! **A SIDECAR gets the same reader CLOCK-ONLY** ([`SIDE_READER_CLOCK_ONLY`]): the app fetches that
 //! subtitle itself, so the reader reads no cue, owns no subtitle selection (`side_subs_owner` stays
 //! false, `desired_sub_idx` is untouched), fills no store, and never ends in the server's burn:
-//! neither its give-up path nor a mid-play start failure raises `FAILED` ([`failed_reading`]), and
+//! neither its give-up path nor a mid-play start failure raises a failure ([`failed_reading`]), and
 //! `route::side_subtitles_failed` ignores the flag for a sidecar anyway.
 //! It runs the keyframe scan only, to learn where in the Part the remux's first keyframe is: a
 //! sidecar is in file time, the remux is labelled with the REQUESTED offset, and PMS starts it on
@@ -33,15 +33,52 @@
 
 use crate::shared::FEED_SHARED;
 use plx_playback_contract::subtitle::{Anchor, SIDE_READER_CLOCK_ONLY};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-pub use plx_playback_contract::feed::SideReaderPort;
+/// The player's side-subtitle reader as one Engine owns it and drives it from the main thread.
+pub trait SideReaderPort: Send {
+    /// The demuxer must leave embedded subtitles to this reader from its first instruction.
+    fn embedded_owner(&self) -> bool;
+    /// Start only after both demux and native Load workers have spawned.
+    fn start_after_load_spawn(&mut self);
+    /// Stop and join before the paired demux worker is joined, including a failed Load spawn.
+    fn stop_before_demux_join(&mut self, reason: &str);
+}
+
+/// One open's reader, built from what the route decided ([`SideReaderRequest`]) over the common
+/// caption runner the composition hands the Feed. It remains attached to the Engine through
+/// teardown, so a failed Load spawn and a later dynamic track switch get the same
+/// stop-before-join barrier.
+pub struct SideReaderOpen {
+    request: SideReaderRequest,
+    job: &'static dyn SideReaderJobPort,
+}
+
+impl SideReaderOpen {
+    pub fn new(request: SideReaderRequest, job: &'static dyn SideReaderJobPort) -> Self {
+        Self { request, job }
+    }
+}
+
+impl SideReaderPort for SideReaderOpen {
+    fn embedded_owner(&self) -> bool { self.request.selected && !self.request.clock_only }
+
+    fn start_after_load_spawn(&mut self) {
+        if !self.request.selected { return; }
+        start_run(self.request.spec.take(), self.request.clock_only, self.job);
+    }
+
+    fn stop_before_demux_join(&mut self, reason: &str) {
+        stop(reason);
+    }
+}
 
 // The job seam's types are contract vocabulary (`plx_playback_contract::subtitle`), where the
 // common caption runner names them without naming this crate; the old paths stay for this crate's
 // own code.
+pub use plx_playback_contract::feed::SideReaderRequest;
 pub use plx_playback_contract::subtitle::{ReadCfg, RunEnd, SideReaderJobPort, SideStop, SCAN_NS, Spec};
 
 // ---- the reader thread and its state ----------------------------------------------------------
@@ -68,7 +105,11 @@ struct Running {
 
 static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
-static FAILED: AtomicBool = AtomicBool::new(false);
+/// The reader's give-ups, counted, and the count a stop has voided: `FAILED` as a level could be
+/// cleared by a stop, which the player's counted edge cannot do, so the count it reads is
+/// [`failures`] (the raises no stop has voided).
+static RAISED: AtomicU32 = AtomicU32::new(0);
+static VOIDED: AtomicU32 = AtomicU32::new(0);
 /// Serialises every start and stop (the engine's, and the worker `sync` hands its change to).
 static LIFECYCLE: Mutex<()> = Mutex::new(());
 /// Bumped by every engine-level `start`/`stop`: a `sync` queued before one is stale after it.
@@ -112,15 +153,24 @@ pub fn active() -> bool {
     ACTIVE.load(Ordering::Acquire)
 }
 
-/// Did the reader give up (every reopen failed, or the Part has no such track)? Reads and clears the
-/// flag, so a failure is reported once.
-pub fn take_failure() -> bool {
-    FAILED.swap(false, Ordering::AcqRel)
+/// How many times the reader gave up (every reopen failed, or the Part has no such track, or it
+/// could not start) that no stop has voided; `0` when none stands. A counter, not a level: the
+/// player's readout holds how many it has taken (`FeedRaw::side_failures`), so a failure is reported
+/// once. Each raise makes the count differ from every count taken before it; a stop voids what was
+/// raised and not yet taken (a failure the stopped reader raised names a reader that is gone) and
+/// reads `0`.
+pub fn failures() -> u32 {
+    let raised = RAISED.load(Ordering::Acquire);
+    if raised == VOIDED.load(Ordering::Acquire) { 0 } else { raised }
 }
 
-/// Raise the failure flag from outside the reader thread: the reader could not even be started.
-pub fn raise_failure() {
-    FAILED.store(true, Ordering::Release);
+fn raise_failure() {
+    RAISED.fetch_add(1, Ordering::AcqRel);
+}
+
+/// A stop voids every failure raised so far.
+fn void_failures() {
+    VOIDED.store(RAISED.load(Ordering::Acquire), Ordering::Release);
 }
 
 /// Start the reader for this engine run. Replaces a reader still running (it is stopped first).
@@ -138,7 +188,7 @@ pub fn start(spec: Spec, job: &'static dyn SideReaderJobPort) -> bool {
 }
 
 fn start_locked(spec: Spec, job: &'static dyn SideReaderJobPort) -> bool {
-    FAILED.store(false, Ordering::Release);
+    void_failures();
     let stop_handle = SideStop::new();
     let prev_selection = job.desired_sub_idx();
     let clock_only = spec.ordinal == SIDE_READER_CLOCK_ONLY;
@@ -171,7 +221,7 @@ pub fn stop(reason: &str) {
     stop_locked(reason, false);
     // A failure raised but never polled named a reader that is gone; it must not be consumed
     // against whatever the next engine run, or the next selection, draws.
-    FAILED.store(false, Ordering::Release);
+    void_failures();
     // The engine run is over: its anchor names a stream that no reader will match again, whether
     // or not a reader was running (the sync worker may have stopped it already, keeping the anchor).
     *FEED_SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -193,7 +243,7 @@ fn stop_locked(reason: &str, keep_anchor: bool) -> Option<i64> {
     ACTIVE.store(false, Ordering::Release);
     // A failure the stopped reader raised and nobody has polled yet belongs to it, not to the
     // reader (or the sidecar) that replaces it.
-    FAILED.store(false, Ordering::Release);
+    void_failures();
     if !keep_anchor {
         *FEED_SHARED.side_anchor.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
@@ -314,7 +364,7 @@ pub fn failed_reading(clock_only: bool, embedded_label: &'static str) {
         plx_base::eventlog::log("subside: clock-only failed");
     } else {
         plx_base::eventlog::log(embedded_label);
-        FAILED.store(true, Ordering::Release);
+        raise_failure();
     }
 }
 
@@ -397,6 +447,14 @@ fn run(spec: Spec, stop: Arc<SideStop>, job: &dyn SideReaderJobPort) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The player's side of the counted failure: the readout's edge rule (`counted != 0 && counted
+    /// != taken`) over [`failures`], taking what it reads.
+    fn take_failure() -> bool {
+        static TAKEN: AtomicU32 = AtomicU32::new(0);
+        let counted = failures();
+        counted != 0 && TAKEN.swap(counted, Ordering::AcqRel) != counted
+    }
     use plx_playback_contract::subtitle::CaptionRetention;
     use std::sync::atomic::AtomicI32;
 
@@ -600,6 +658,25 @@ mod tests {
             stop("test-cleanup");
         });
     }
+    /// What the player reads of the reader (the draw gate, the sidecar clock, the failure edge) is
+    /// the feed's sample, not a call into this module.
+    #[test]
+    fn the_feed_sample_carries_the_readers_facts() {
+        let _g = plx_base::testlock::serial();
+        stop("test-before");
+        let raw = || crate::feed_pump::native_feed_facts().raw;
+        let quiet = raw();
+        assert_eq!((quiet.side_reader_active, quiet.side_failures, quiet.side_exact_delta_ns), (false, 0, None));
+        publish_exact(-5);
+        raise_failure();
+        let seen = raw();
+        assert_eq!(seen.side_exact_delta_ns, Some(-5));
+        assert_ne!(seen.side_failures, 0, "a raise nobody stopped stands");
+        stop("test-after");
+        let gone = raw();
+        assert_eq!((gone.side_failures, gone.side_exact_delta_ns), (0, None), "a stop voids both");
+    }
+
     #[test]
     fn stop_without_a_reader_is_a_no_op() {
         let _g = plx_base::testlock::serial();

@@ -172,6 +172,7 @@ macro_rules! native_hooks_over {
                 sink: fenced,
                 on_exported_window_create: plx_media::player::engine::exported_window_created,
                 load_refusal_latch: plx_telemetry::telemetry::classes::DemuxExitClass::LoadRefused.latch(),
+                side_reader_job: plx_media::player::subside::JOB,
             },
             launch: LaunchHooks {
                 demux_transport,

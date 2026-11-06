@@ -17,6 +17,7 @@ use crate::native_executor::{
 };
 use crate::open::PhysicalOpen;
 use crate::shared::FEED_TX;
+use crate::side_reader::SideReaderOpen;
 use plx_base::task::MainThread;
 use plx_playback_contract::feed::{
     AcceptedLoadOutcome, CtorGate, FeedCommand, FeedControl, FeedFacts, FeedLoad, FeedSeek,
@@ -192,11 +193,13 @@ impl FeedOpen for FeedBackend {
 
     fn open_prepare(&mut self, mt: &MainThread, request: OpenRequest) -> Result<u32, Failure> {
         debug_assert!(self.prepared.is_none(), "an open is staged or aborted before the next one");
+        let hooks = &self.resources.hooks().prepare;
+        let side_reader = Box::new(SideReaderOpen::new(request.side_reader, hooks.side_reader_job));
         let prepared = prepare_native_open(
             mt, self.resources.shared(), request.start_paused, request.seek_preroll,
             request.stream.map(PhysicalOpen::from), request.sample, request.is_h265,
-            request.session_rate, request.side_reader, request.no_audio, request.requested_rate,
-            &self.resources.hooks().prepare,
+            request.session_rate, side_reader, request.no_audio, request.requested_rate,
+            hooks,
         ).map_err(|refusal| match refusal {
             PrepareRefusal::ClockBusy | PrepareRefusal::NativeBusy => Failure::Busy,
             PrepareRefusal::Refused => Failure::Refused,
@@ -315,6 +318,8 @@ impl FeedControl for FeedBackend {
             FeedCommand::NoteFailure(flag) => feed_pump::note_failure(flag),
             FeedCommand::Rebase { playpos_ns, disp_base } => feed_pump::rebase(playpos_ns, disp_base),
             FeedCommand::SelectAudio { idx } => feed_pump::select_audio(idx),
+            FeedCommand::SyncSideReader(want) => crate::side_reader::sync(
+                want.map(|spec| (*spec).clone()), self.resources.hooks().prepare.side_reader_job),
         }
     }
 
@@ -362,6 +367,7 @@ pub(crate) mod tests {
     const HOOKS: NativeHooks = NativeHooks {
         prepare: PrepareHooks {
             sink, on_exported_window_create: || {}, load_refusal_latch: 0,
+            side_reader_job: &NoSideJob,
         },
         launch: LaunchHooks {
             demux_transport: || unreachable!("no session, no demux"),
@@ -804,14 +810,19 @@ pub(crate) mod tests {
         assert_eq!(mailboxes().raw.diag, FeedDiag::IDLE, "a stop or a reload returns the whole set");
     }
 
-    /// The backend is the runner's single-backend driver set: it answers for the feed alone, and
-    /// with no session installed it has nothing to report and nothing to preserve at exit.
-    struct NoSideReader;
+    /// The side reader's caption runner for tests that never start a reader.
+    struct NoSideJob;
 
-    impl plx_playback_contract::feed::SideReaderPort for NoSideReader {
-        fn embedded_owner(&self) -> bool { false }
-        fn start_after_load_spawn(&mut self) {}
-        fn stop_before_demux_join(&mut self, _reason: &str) {}
+    impl plx_playback_contract::subtitle::SideReaderJobPort for NoSideJob {
+        fn read_once(
+            &self, _: &plx_playback_contract::subtitle::ReadCfg, _: &std::sync::Arc<crate::side_reader::SideStop>,
+            _: &plx_playback_contract::subtitle::Anchor, _: &mut Option<i64>, _: &dyn Fn(i64) -> i64,
+            _: &dyn Fn() -> i64, _: &dyn Fn() -> (i64, i64),
+            _: &dyn Fn() -> plx_playback_contract::subtitle::CaptionRetention, _: &dyn Fn(i64),
+        ) -> crate::side_reader::RunEnd { crate::side_reader::RunEnd::Stopped }
+        fn desired_sub_idx(&self) -> i32 { -1 }
+        fn request_subtitle(&self, _: i32) {}
+        fn clear_bitmaps(&self) {}
     }
 
     /// A local-sample open: it needs no stream, no demux session and no device.
@@ -820,7 +831,7 @@ pub(crate) mod tests {
             start_paused: false, seek_preroll: false, stream: None,
             sample: Some(Box::new(crate::feed_state::SampleBuf::new(Vec::new(), Vec::new()))),
             is_h265: false, session_rate: crate::shared::RATE_NORMAL, requested_rate: 1000,
-            no_audio: true, side_reader: Box::new(NoSideReader),
+            no_audio: true, side_reader: Default::default(),
         }
     }
 

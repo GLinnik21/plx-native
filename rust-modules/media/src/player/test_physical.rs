@@ -122,6 +122,7 @@ pub(super) const TEST_HOOKS: NativeHooks = NativeHooks {
         sink,
         on_exported_window_create: super::engine::exported_window_created,
         load_refusal_latch: DemuxExitClass::LoadRefused.latch(),
+        side_reader_job: super::subside::JOB,
     },
     launch: LaunchHooks {
         demux_transport,
