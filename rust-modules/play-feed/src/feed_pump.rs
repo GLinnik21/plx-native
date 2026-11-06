@@ -17,7 +17,8 @@ use crate::shared::{
 use plx_base::eventlog::log;
 use plx_base::task::MainThread;
 use plx_playback_contract::feed::{
-    FailureFlag, FailureFlags, FeedDiag, FeedFacts, FeedRaw, LoadRaw, SeekRequeue, UserPauseOutcome, UserResumeOutcome,
+    DemuxAbr, FailureFlag, FailureFlags, FeedDiag, FeedFacts, FeedRaw, LoadRaw, SeekRequeue,
+    UserPauseOutcome, UserResumeOutcome,
 };
 use plx_playback_contract::readout::{AttemptFacts, RuntimeFailure};
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -1224,6 +1225,11 @@ fn native_feed_raw(failure: FailureSample) -> FeedRaw {
         disp_base: FEED_SHARED.disp_base.load(Relaxed),
         // The Engine's own fields are not statics: `FeedBackend::sample` fills this half.
         load: LoadRaw::IDLE,
+        abr: DemuxAbr {
+            mode: FEED_SHARED.dg_abr_mode.load(Relaxed),
+            kbps: FEED_SHARED.dg_abr_kbps.load(Relaxed),
+            declared_kbps: FEED_SHARED.dg_abr_declared_kbps.load(Relaxed),
+        },
     }
 }
 
@@ -1284,8 +1290,6 @@ fn attempt_facts(failure_sample: FailureSample) -> plx_playback_contract::readou
     let http_status = failure_sample.http_status;
     let demux_exit = FEED_SHARED.dg_demux_exit.load(Relaxed);
     let declared_kbps = FEED_SHARED.dg_abr_declared_kbps.load(Relaxed);
-    let media_kbps = FEED_SHARED.dg_abr_media_kbps.load(Relaxed);
-    let abr_buffer_ms = FEED_SHARED.dg_abr_buffer_ms.load(Relaxed);
     let transport_rc = FEED_SHARED.dg_transport_rc.load(Relaxed);
     let transfer_age_ms = FEED_SHARED.dg_transport_age_ms.load(Relaxed);
     let flags = failure_sample.flags;
@@ -1324,8 +1328,10 @@ fn attempt_facts(failure_sample: FailureSample) -> plx_playback_contract::readou
         http_status: (http_status > 0).then_some(http_status),
         demux_exit: (demux_exit != 0).then_some(demux_exit),
         declared_kbps: (declared_kbps > 0).then_some(declared_kbps),
-        media_kbps: (media_kbps > 0).then_some(media_kbps),
-        abr_buffer_ms: (abr_buffer_ms > 0).then_some(abr_buffer_ms),
+        // The adaptive worker's measurements are not the feed's: the player fills these two from
+        // its readout (`AbrReadout`), which the worker ships.
+        media_kbps: None,
+        abr_buffer_ms: None,
         transport_rc: (transport_rc != 0).then_some(transport_rc),
         transfer_age_ms: (transfer_age_ms > 0).then_some(transfer_age_ms),
         transport_reopen_failed: FEED_SHARED.dg_transport_reopen_failed.load(Relaxed).then_some(true),

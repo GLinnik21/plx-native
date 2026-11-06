@@ -22,7 +22,7 @@ use plx_playback_contract::demux::{
     DemuxMedia, DemuxObserver, DemuxSession, DemuxSubtitle, HlsBufferClocks, PauseClock,
     PauseEvent, PauseLane,
 };
-use plx_playback_contract::readout::{ABR_ACTION_STEADY, ABR_MODE_HLS, ABR_MODE_ORIGINAL};
+use plx_playback_contract::readout::{ABR_MODE_HLS, ABR_MODE_ORIGINAL};
 use plx_playback_contract::subtitle::CaptionRetention;
 use plx_playback_contract::tracks::TrackNames;
 use plx_playback_contract::AttemptId;
@@ -384,25 +384,16 @@ impl DemuxMedia for FeedDemuxMedia {
                 FEED_SHARED.dg_abr_mode.store(ABR_MODE_HLS, Ordering::Relaxed);
                 FEED_SHARED.dg_abr_kbps.store(kbps, Ordering::Relaxed);
                 FEED_SHARED.dg_abr_declared_kbps.store(-1, Ordering::Relaxed);
-                FEED_SHARED.dg_abr_media_kbps.store(-1, Ordering::Relaxed);
-                FEED_SHARED.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
-                FEED_SHARED.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
-                FEED_SHARED.dg_abr_ratio_pm.store(-1, Ordering::Relaxed);
-                FEED_SHARED.dg_abr_action.store(ABR_ACTION_STEADY, Ordering::Relaxed);
-                FEED_SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
-                FEED_SHARED.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
             }
             DemuxEffect::AbrHlsDeclared { kbps } =>
                 FEED_SHARED.dg_abr_declared_kbps.store(kbps, Ordering::Relaxed),
+            DemuxEffect::AbrCommitted { kbps, declared_kbps } => {
+                FEED_SHARED.dg_abr_kbps.store(kbps, Ordering::Relaxed);
+                FEED_SHARED.dg_abr_declared_kbps.store(declared_kbps, Ordering::Relaxed);
+            }
             DemuxEffect::AbrOriginalStart { kbps } => {
                 FEED_SHARED.dg_abr_mode.store(ABR_MODE_ORIGINAL, Ordering::Relaxed);
                 FEED_SHARED.dg_abr_kbps.store(kbps, Ordering::Relaxed);
-                FEED_SHARED.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
-                FEED_SHARED.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
-                FEED_SHARED.dg_abr_ratio_pm.store(-1, Ordering::Relaxed);
-                FEED_SHARED.dg_abr_action.store(ABR_ACTION_STEADY, Ordering::Relaxed);
-                FEED_SHARED.dg_abr_target_kbps.store(0, Ordering::Relaxed);
-                FEED_SHARED.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
             }
             DemuxEffect::NoteFault(fault) => FEED_SHARED.note_demux_exit_latch((self.hooks.exit_latch)(fault)),
             DemuxEffect::FailFault(fault) => FEED_SHARED.fail_demux_latch((self.hooks.exit_latch)(fault)),
@@ -430,6 +421,7 @@ impl DemuxMedia for FeedDemuxMedia {
             DemuxEffect::AudioTailNs(ns) => FEED_SHARED.hls_audio_tail_ns.store(ns, Ordering::Release),
             DemuxEffect::AudioExpected(expected) => FEED_SHARED.hls_audio_expected.store(expected, Ordering::Release),
             DemuxEffect::PrimeRunwayMax(runway_ms) => { FEED_SHARED.hls_prime_runway_ms.fetch_max(runway_ms, Ordering::AcqRel); }
+            DemuxEffect::PrimeRunway(runway_ms) => FEED_SHARED.hls_prime_runway_ms.store(runway_ms, Ordering::Release),
             DemuxEffect::RecoverySegment { total_us, duration } => FEED_SHARED.observe_hls_recovery(total_us, duration),
         });
         // Old container strings may own large allocations. Release them after
@@ -583,5 +575,51 @@ mod tests {
         assert_eq!(FEED_SHARED.dg_http_status.load(Ordering::Relaxed), 300);
         assert!(!session.observer().publish(DemuxCallbackEffect::HttpStatus(498)));
         assert_eq!(FEED_SHARED.dg_http_status.load(Ordering::Relaxed), 300);
+    }
+
+    /// The demux half of the Auto-quality facts and the prime runway each land in their mirror as
+    /// the typed publication says, an HLS start before the declaration before a commit, and the
+    /// runway's two writers differ: the round's `PrimeRunway` STORES (a newer, smaller value
+    /// replaces) where the demux's `PrimeRunwayMax` only raises. A retired open writes neither.
+    #[test]
+    fn the_abr_and_prime_runway_publications_land_in_their_mirrors_for_the_current_open_only() {
+        let _serial = plx_base::testlock::serial();
+        let _reset = ResetSession;
+        FEED_SHARED.reset_session();
+        let first_epoch = FEED_SHARED.begin_native_session().expect("first native epoch");
+        let mut first = capture(AttemptId::new(8, 1), first_epoch);
+        let read = || (
+            FEED_SHARED.dg_abr_mode.load(Ordering::Relaxed),
+            FEED_SHARED.dg_abr_kbps.load(Ordering::Relaxed),
+            FEED_SHARED.dg_abr_declared_kbps.load(Ordering::Relaxed),
+        );
+        assert_eq!(read(), (0, 0, -1), "no controller yet");
+        first.media().publish(DemuxEffect::AbrHlsStart { kbps: 3_000 });
+        assert_eq!(read(), (ABR_MODE_HLS, 3_000, -1), "the start declares nothing");
+        first.media().publish(DemuxEffect::AbrHlsDeclared { kbps: 2_900 });
+        assert_eq!(read(), (ABR_MODE_HLS, 3_000, 2_900));
+        first.media().publish(DemuxEffect::AbrCommitted { kbps: 2_000, declared_kbps: 1_950 });
+        assert_eq!(read(), (ABR_MODE_HLS, 2_000, 1_950), "a commit moves the request and the declaration together");
+        first.media().publish(DemuxEffect::AbrOriginalStart { kbps: 8_000 });
+        assert_eq!(read().0, ABR_MODE_ORIGINAL);
+        assert_eq!(read().1, 8_000);
+
+        first.media().publish(DemuxEffect::PrimeRunway(5_000));
+        assert_eq!(FEED_SHARED.hls_prime_runway_ms.load(Ordering::Acquire), 5_000);
+        first.media().publish(DemuxEffect::PrimeRunway(1_000));
+        assert_eq!(FEED_SHARED.hls_prime_runway_ms.load(Ordering::Acquire), 1_000, "the round's value replaces");
+        first.media().publish(DemuxEffect::PrimeRunwayMax(3_000));
+        first.media().publish(DemuxEffect::PrimeRunwayMax(2_000));
+        assert_eq!(FEED_SHARED.hls_prime_runway_ms.load(Ordering::Acquire), 3_000, "the demux's only raises");
+
+        FEED_SHARED.reset_session();
+        let next_epoch = FEED_SHARED.begin_native_session().expect("successor native epoch");
+        let mut next = capture(AttemptId::new(8, 2), next_epoch);
+        first.media().publish(DemuxEffect::AbrCommitted { kbps: 1, declared_kbps: 1 });
+        first.media().publish(DemuxEffect::PrimeRunway(77));
+        assert_eq!(read(), (0, 0, -1), "a retired open cannot write its successor's picture");
+        assert_ne!(FEED_SHARED.hls_prime_runway_ms.load(Ordering::Acquire), 77);
+        next.media().publish(DemuxEffect::PrimeRunway(77));
+        assert_eq!(FEED_SHARED.hls_prime_runway_ms.load(Ordering::Acquire), 77);
     }
 }

@@ -4,7 +4,7 @@
 #![allow(dead_code)]
 #![deny(clippy::debug_assert_with_mut_call)]
 use crate::aq::AuQueue;
-use plx_playback_contract::adaptive::{Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, AdaptivePhysicalPort, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, ExplorationFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, RoundId, TrialActuatorPort, TrialClock, TrialId, VariantFact};
+use plx_playback_contract::adaptive::{Acquisition, ActiveAction, CommitReadout, ActiveFeedPort, ActiveObservation, AdaptivePhysicalPort, AdaptiveRoundPort, AutomaticPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, ExplorationFact, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, RoundId, TrialActuatorPort, TrialClock, TrialId, VariantFact};
 use plx_playback_contract::demux::{DemuxCallbackEffect, DemuxClock, DemuxEffect, DemuxObserver, DemuxSession, HlsBufferClocks, PauseLane};
 use plx_playback_contract::SourceKey;
 use crate::SendPtr;
@@ -4618,11 +4618,16 @@ impl CandidateMediaPort for HlsRoundPort<'_> {
         true
     }
 
-    fn promote_candidate(&mut self) -> bool {
+    fn promote_candidate(&mut self, committed: &CommitReadout) -> bool {
         let Some(mut candidate) = self.candidate.take() else { return false; };
         candidate.publishes_duration = true;
         *self.prefetched = None;
         *self.cursor = candidate;
+        // The promoted rung is the active one: its request and its declaration are the demux facts.
+        self.session.media().publish(DemuxEffect::AbrCommitted {
+            kbps: i64::from(committed.target_kbps),
+            declared_kbps: i64::try_from(committed.declared_bps / 1_000).unwrap_or(i64::MAX),
+        });
         true
     }
 
@@ -5275,6 +5280,10 @@ impl ActiveFeedPort for HlsRoundPort<'_> {
 
     fn step_active(&mut self, action: ActiveAction) -> Result<ActiveObservation, Self::Error> {
         self.step_active_native(action).map_err(Into::into)
+    }
+
+    fn note_prime_runway(&mut self, ms: i64) {
+        self.session.media().publish(DemuxEffect::PrimeRunway(ms));
     }
 }
 

@@ -126,6 +126,10 @@ pub enum DemuxFault {
 pub enum DemuxEffect {
     AbrHlsStart { kbps: i64 },
     AbrHlsDeclared { kbps: i64 },
+    /// The adaptive worker committed a new HLS rung: its target and the declaration of the cursor it
+    /// promoted, in kbit/s. Published by the feed's own port at the promotion, so the demux facts
+    /// keep one writer.
+    AbrCommitted { kbps: i64, declared_kbps: i64 },
     AbrOriginalStart { kbps: i64 },
     NoteFault(DemuxFault),
     FailFault(DemuxFault),
@@ -146,6 +150,9 @@ pub enum DemuxEffect {
     AudioTailNs(i64),
     AudioExpected(bool),
     PrimeRunwayMax(i64),
+    /// The adaptive controller's prime runway (ms), replacing the published one: a completed round or a
+    /// committed trial. [`Self::PrimeRunwayMax`] only raises it.
+    PrimeRunway(i64),
     RecoverySegment { total_us: u64, duration: Duration },
 }
 

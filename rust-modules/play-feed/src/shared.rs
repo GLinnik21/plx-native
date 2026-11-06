@@ -219,12 +219,6 @@ pub use plx_playback_contract::feed::{
     HlsPauseCompletion, HlsPlayCompletion, HlsSeekPause, HlsUserPause, HlsUserResume, Stage,
 };
 
-#[derive(Clone, Copy, Debug)]
-struct AbrSeed {
-    estimate: plx_playback_contract::adaptive::SeedReadout,
-    observed_at: Instant,
-}
-
 pub use plx_playback_contract::readout::PlaybackState;
 
 pub struct Shared {
@@ -473,8 +467,8 @@ pub struct Shared {
     // The render path holds no `&mut PlayerAdapter` and so cannot reach the `Engine` at all (when
     // the slot was a `static mut` it could, and a second live borrow was instant UB) — so it reads
     // these instead. Eighteen of them (`FeedDiag`: `dg_place_rv` ... `video_fps_milli`) reach the
-    // read-out as the pump's sample, `FeedRaw::diag`; the `dg_abr_*` rows and the handled-error
-    // snapshot's `dg_cb_err_num` are still direct mailbox loads.
+    // read-out as the pump's sample, `FeedRaw::diag`, and the demux's `dg_abr_*` rows reach it as
+    // `FeedRaw::abr`; the handled-error snapshot's `dg_cb_err_num` is still a direct mailbox load.
     //
     // STRICTLY ONE-WAY: written by the pump and seam, read only for observation. Nothing in the
     // playback state machine may ever branch on one, or a diagnostic becomes load-bearing.
@@ -594,73 +588,22 @@ pub struct Shared {
     /// "there is no sound": the pipeline was never asked for any.
     pub dg_load_v: AtomicU8,
     pub dg_load_a: AtomicU8,
-    /// Auto-quality facts written by the demux worker and read only by Stats for Nerds.
-    /// Mode: 0 inactive, 1 progressive Original watchdog, 2 fixed-session HLS controller.
+    /// Auto-quality facts written by the demux worker and read through `FeedRaw::abr`.
+    /// Mode: 0 inactive, 1 progressive Original watchdog, 2 fixed-session HLS controller. The
+    /// adaptive worker's own measurements and decisions are not mailboxes: it ships them to the
+    /// player as an `AbrReadout` (`media/src/adaptive.rs`).
     pub dg_abr_mode: AtomicU8,
     /// Current Original source requirement or active HLS rung, in kbit/s.
     pub dg_abr_kbps: AtomicI64,
-    /// The current HLS master declaration and the last completed segment's measured media rate.
-    /// Both are observations of what PMS actually emitted; `dg_abr_kbps` is the requested ceiling
-    /// and must never be presented as either of these.
+    /// The current HLS master declaration, an observation of what PMS actually emitted;
+    /// `dg_abr_kbps` is the requested ceiling and must never be presented as this.
     pub dg_abr_declared_kbps: AtomicI64,
-    pub dg_abr_media_kbps: AtomicI64,
-    /// Latest measured body throughput and normalized content reserve. `-1` means no complete
-    /// measurement exists yet. Production ratio is total segment acquisition / media duration in
-    /// per-mille; it is meaningful for HLS only.
-    pub dg_abr_net_kbps: AtomicI64,
-    pub dg_abr_buffer_ms: AtomicI64,
-    pub dg_abr_ratio_pm: AtomicI64,
-    /// Current controller action plus its candidate rung. A discrete transaction remains visible
-    /// until the next completed segment publishes its steady decision; keeping it beyond that made
-    /// `Action` describe an old commit beside `Reason` from the current model state.
-    pub dg_abr_action: AtomicU8,
-    pub dg_abr_target_kbps: AtomicI64,
     /// Last Original source failure, as `player::ABR_FAILURE_*` plus its HTTP status when one was
     /// observed. These are playback-scoped rather than engine-scoped: HLS→Original failure tears
     /// the Engine down while restoring HLS, and clearing them in `reset_session` would make the
     /// successful rollback erase its own cause before the diagnostics panel could photograph it.
     pub abr_failure_kind: AtomicU8,
     pub abr_failure_status: AtomicI32,
-    /// Consecutive Original windows whose starvation horizon sat inside the unsafe band.
-    /// Wall milliseconds an unsafe Original deficit has held (N13). Was a COUNT of
-    /// 750 ms active-read windows, on a clock that stops under backpressure.
-    pub dg_abr_unsafe_deficit_ms: AtomicI64,
-    /// **The controller's own model state**, published beside the measurements above so the
-    /// read-out shows what the DECISION was made on rather than what a reader can infer. Every
-    /// one is `-1` until the controller has produced it; the controller telemetry is the
-    /// single struct they are all taken from, in one go, so the panel can never show a budget
-    /// from one sample beside an uncertainty from the next.
-    ///
-    /// Safe budget (what selection may actually spend), the operating point the model would pick
-    /// for this link ignoring hysteresis, the delivery estimate's own dispersion and sample count,
-    /// the buffer's slope, its starvation horizon in seconds (`-1` = no deficit, so no horizon),
-    /// the predicted production cost of the current candidate, and the risk score.
-    /// **The live link estimate, carried ACROSS A SEEK** (I8) — and deliberately not a `dg_`
-    /// field, because this coherent posterior decides something. An HLS seek tears the engine
-    /// down and builds a fresh `Controller`, so before this the only survivor was
-    /// `session().auto_prior_kbps`, whose
-    /// writer on the fallback path is the rate measured at the moment Original FAILED. Every seek
-    /// therefore re-seeded from the worst rate the playback had ever measured, at maximum
-    /// uncertainty with one sample, and the ladder re-ramped for five to ten segments: ten to
-    /// twenty seconds of visibly softer picture after every skip.
-    ///
-    /// One coherent estimate plus the wall instant it was last observed. Cleared by
-    /// [`Shared::clear_abr_seed`] and **deliberately NOT by [`Shared::reset_session`]**. The time
-    /// is load-bearing: a pause, app background or reload gap with no segment observations must
-    /// age the carried evidence before a new controller may use it.
-    abr_seed: Mutex<Option<AbrSeed>>,
-    pub dg_abr_safe_kbps: AtomicI64,
-    pub dg_abr_optimal_kbps: AtomicI64,
-    pub dg_abr_unc_pm: AtomicI64,
-    pub dg_abr_samples: AtomicI64,
-    pub dg_abr_slope_ms_per_s: AtomicI64,
-    pub dg_abr_starve_secs: AtomicI64,
-    pub dg_abr_pred_pm: AtomicI64,
-    pub dg_abr_risk: AtomicI64,
-    /// Why the last steady-state decision went the way it did — the common ABR reason code, `0`
-    /// while nothing has decided anything. The plan's reason code, on the surface a user
-    /// photographs rather than only in the event log.
-    pub dg_abr_why: AtomicU8,
     /// `vp_place` return, and the size it was called with. `i32::MIN` = never called.
     pub dg_place_rv: AtomicI32,
     pub dg_placed_w: AtomicI32,
@@ -738,25 +681,8 @@ impl Shared {
             dg_abr_mode: AtomicU8::new(0),
             dg_abr_kbps: AtomicI64::new(0),
             dg_abr_declared_kbps: AtomicI64::new(-1),
-            dg_abr_media_kbps: AtomicI64::new(-1),
-            dg_abr_net_kbps: AtomicI64::new(-1),
-            dg_abr_buffer_ms: AtomicI64::new(-1),
-            dg_abr_ratio_pm: AtomicI64::new(-1),
-            dg_abr_action: AtomicU8::new(0),
-            dg_abr_target_kbps: AtomicI64::new(0),
             abr_failure_kind: AtomicU8::new(0),
             abr_failure_status: AtomicI32::new(0),
-            dg_abr_unsafe_deficit_ms: AtomicI64::new(0),
-            abr_seed: Mutex::new(None),
-            dg_abr_safe_kbps: AtomicI64::new(-1),
-            dg_abr_optimal_kbps: AtomicI64::new(-1),
-            dg_abr_unc_pm: AtomicI64::new(-1),
-            dg_abr_samples: AtomicI64::new(-1),
-            dg_abr_slope_ms_per_s: AtomicI64::new(0),
-            dg_abr_starve_secs: AtomicI64::new(-1),
-            dg_abr_pred_pm: AtomicI64::new(-1),
-            dg_abr_risk: AtomicI64::new(-1),
-            dg_abr_why: AtomicU8::new(0),
             dg_place_rv: AtomicI32::new(i32::MIN),
             dg_placed_w: AtomicI32::new(0),
             dg_placed_h: AtomicI32::new(0),
@@ -986,37 +912,6 @@ impl Shared {
         self.sink_displayed_live.load(Ordering::Relaxed)
     }
 
-    /// reset per-file state on stop (mirrors the tail of stop_bufferfeed).
-    /// **Drop the carried link estimate.** Called from `engine::teardown` on a real STOP only —
-    /// `reset_session` runs on a reload too, and a reload is the same item on the same link at a
-    /// new position, which is exactly the case I8 exists to preserve. Splitting it out rather than
-    /// making `reset_session` caller-conditional keeps "clear everything about this session" a
-    /// method with no exceptions in it.
-    pub fn clear_abr_seed(&self) {
-        *self.abr_seed.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    }
-
-    pub fn publish_abr_seed_readout(
-        &self, readout: plx_playback_contract::adaptive::SeedReadout,
-    ) {
-        self.publish_abr_seed_at(readout, Instant::now());
-    }
-
-    fn publish_abr_seed_at(
-        &self, estimate: plx_playback_contract::adaptive::SeedReadout, observed_at: Instant,
-    ) {
-        let mut seed = self.abr_seed.lock().unwrap_or_else(|e| e.into_inner());
-        *seed = (estimate.samples > 0).then_some(AbrSeed { estimate, observed_at });
-    }
-
-    /// Return captured delivery evidence and its unobserved interval. Aging belongs to the
-    /// common adaptive policy; the physical transport neither chooses nor copies that policy.
-    pub fn abr_seed(&self) -> Option<(plx_playback_contract::adaptive::SeedReadout, u64)> {
-        let seed = (*self.abr_seed.lock().unwrap_or_else(|e| e.into_inner()))?;
-        let elapsed_ms = u64::try_from(seed.observed_at.elapsed().as_millis()).unwrap_or(u64::MAX);
-        Some((seed.estimate, elapsed_ms))
-    }
-
     /// Clear a playback's sticky Original failure. Kept separate from [`Shared::reset_session`]
     /// for the same lifetime reason as the ABR seed: an engine reload is not a new playback.
     pub fn clear_abr_failure(&self) {
@@ -1088,9 +983,8 @@ impl Shared {
         self.duration_ns.store(duration_ns, Ordering::Relaxed);
     }
 
-    /// **NB: this does NOT clear the ABR seed OR Original failure** — see
-    /// [`Shared::clear_abr_seed`] and [`Shared::clear_abr_failure`]. Everything else here describes
-    /// one engine's session and must not outlive it.
+    /// **NB: this does NOT clear the Original failure** — see [`Shared::clear_abr_failure`].
+    /// Everything else here describes one engine's session and must not outlive it.
     pub fn reset_session(&self) {
         self.reset_session_inner();
     }
@@ -1146,22 +1040,6 @@ impl Shared {
         self.dg_abr_mode.store(0, Ordering::Relaxed);
         self.dg_abr_kbps.store(0, Ordering::Relaxed);
         self.dg_abr_declared_kbps.store(-1, Ordering::Relaxed);
-        self.dg_abr_media_kbps.store(-1, Ordering::Relaxed);
-        self.dg_abr_net_kbps.store(-1, Ordering::Relaxed);
-        self.dg_abr_buffer_ms.store(-1, Ordering::Relaxed);
-        self.dg_abr_ratio_pm.store(-1, Ordering::Relaxed);
-        self.dg_abr_action.store(0, Ordering::Relaxed);
-        self.dg_abr_target_kbps.store(0, Ordering::Relaxed);
-        self.dg_abr_unsafe_deficit_ms.store(0, Ordering::Relaxed);
-        self.dg_abr_safe_kbps.store(-1, Ordering::Relaxed);
-        self.dg_abr_optimal_kbps.store(-1, Ordering::Relaxed);
-        self.dg_abr_unc_pm.store(-1, Ordering::Relaxed);
-        self.dg_abr_samples.store(-1, Ordering::Relaxed);
-        self.dg_abr_slope_ms_per_s.store(0, Ordering::Relaxed);
-        self.dg_abr_starve_secs.store(-1, Ordering::Relaxed);
-        self.dg_abr_pred_pm.store(-1, Ordering::Relaxed);
-        self.dg_abr_risk.store(-1, Ordering::Relaxed);
-        self.dg_abr_why.store(0, Ordering::Relaxed);
         self.dg_place_rv.store(i32::MIN, Ordering::Relaxed);
         self.dg_placed_w.store(0, Ordering::Relaxed);
         self.dg_placed_h.store(0, Ordering::Relaxed);
@@ -2989,51 +2867,6 @@ mod tests {
         );
     }
 
-    /// **`reset_session` must NOT drop the ABR seed, and `clear_abr_seed` must** (I8).
-    ///
-    /// `engine::teardown` calls `reset_session` on both paths — a real stop AND a reload — and a
-    /// reload is the same item on the same link at a new position: a seek, a quality pick, an
-    /// app-switch resume. Re-measuring the link from nothing across one is what made every skip
-    /// re-ramp the ladder for ten to twenty seconds. So the split is load-bearing and this is the
-    /// assertion that keeps it: the two methods are one keystroke apart and merging them back would
-    /// otherwise be silent.
-    #[test]
-    fn the_carried_link_estimate_survives_a_reload_and_not_a_stop() {
-        let s = Shared::new();
-        let estimate = plx_playback_contract::adaptive::SeedReadout {
-            slow_kbps: 40_000, fast_kbps: 41_000, uncertainty_pm: 200, samples: 19,
-        };
-        s.publish_abr_seed_readout(estimate);
-
-        s.reset_session();
-        let carried = s
-            .abr_seed()
-            .expect("a reload tears the engine down and keeps the link; this is the seek path");
-        assert_eq!(carried.0.samples, 19);
-        assert_eq!(carried.0.slow_kbps, 40_000);
-
-        s.clear_abr_seed();
-        assert!(
-            s.abr_seed().is_none(),
-            "a real stop ends the playback, and the next one measures its own link",
-        );
-    }
-
-    #[test]
-    fn carried_link_evidence_preserves_its_unobserved_interval() {
-        let s = Shared::new();
-        let estimate = plx_playback_contract::adaptive::SeedReadout {
-            slow_kbps: 40_000, fast_kbps: 42_000, uncertainty_pm: 100, samples: 19,
-        };
-        let observed_at = Instant::now().checked_sub(Duration::from_millis(5_000))
-            .expect("test instant");
-        s.publish_abr_seed_at(estimate, observed_at);
-        s.reset_session();
-        let (carried, elapsed_ms) = s.abr_seed().expect("a reload carries the estimate");
-        assert_eq!(carried, estimate);
-        assert!(elapsed_ms >= 5_000);
-    }
-
     /// A failed HLS→Original transaction immediately tears down the failed Engine and reloads
     /// the retained HLS one. The HTTP cause must survive that reset, then die with the playback.
     #[test]
@@ -3077,13 +2910,6 @@ mod tests {
         s.dg_abr_mode.store(2, Ordering::Relaxed);
         s.dg_abr_kbps.store(2_000, Ordering::Relaxed);
         s.dg_abr_declared_kbps.store(1_459, Ordering::Relaxed);
-        s.dg_abr_media_kbps.store(1_051, Ordering::Relaxed);
-        s.dg_abr_net_kbps.store(4_000, Ordering::Relaxed);
-        s.dg_abr_buffer_ms.store(2_800, Ordering::Relaxed);
-        s.dg_abr_ratio_pm.store(500, Ordering::Relaxed);
-        s.dg_abr_action.store(5, Ordering::Relaxed);
-        s.dg_abr_target_kbps.store(4_000, Ordering::Relaxed);
-        s.dg_abr_unsafe_deficit_ms.store(1_500, Ordering::Relaxed);
         s.reset_session();
         assert!(
             !s.seen_frame.load(Ordering::Relaxed),
@@ -3110,13 +2936,6 @@ mod tests {
         assert_eq!(s.dg_abr_mode.load(Ordering::Relaxed), 0);
         assert_eq!(s.dg_abr_kbps.load(Ordering::Relaxed), 0);
         assert_eq!(s.dg_abr_declared_kbps.load(Ordering::Relaxed), -1);
-        assert_eq!(s.dg_abr_media_kbps.load(Ordering::Relaxed), -1);
-        assert_eq!(s.dg_abr_net_kbps.load(Ordering::Relaxed), -1);
-        assert_eq!(s.dg_abr_buffer_ms.load(Ordering::Relaxed), -1);
-        assert_eq!(s.dg_abr_ratio_pm.load(Ordering::Relaxed), -1);
-        assert_eq!(s.dg_abr_action.load(Ordering::Relaxed), 0);
-        assert_eq!(s.dg_abr_target_kbps.load(Ordering::Relaxed), 0);
-        assert_eq!(s.dg_abr_unsafe_deficit_ms.load(Ordering::Relaxed), 0);
     }
 }
 
