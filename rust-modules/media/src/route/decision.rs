@@ -1212,10 +1212,13 @@ fn commit_in_place_route_projection(ps: &PlaybackSession, quality_contract: bool
     }
 }
 
-/// Immutable main-thread projection consumed by the periodic timeline worker. `Session` itself is
+/// Main-thread projection consumed by the periodic timeline worker. `Session` itself is
 /// deliberately absent: it is main-thread-confined, while this owned clone lives under the same
 /// mutex as the active encoder and engine epoch. A report therefore observes either the complete
 /// old playback projection or the complete new one, never a hybrid assembled across a reload.
+///
+/// Every field but `reported_session` is fixed when the projection is published (the track pair
+/// follows a pick, under the same lock). `reported_session` is the one the reporter writes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TimelineProjection {
     sid: ServerId,
@@ -1225,6 +1228,13 @@ struct TimelineProjection {
     play_queue_item_id: String,
     audio_stream_id: i64,
     subtitle_stream_id: i64,
+    /// **The session id this playback last sent a periodic report under** — `None` until the first
+    /// one goes out. PMS keeps a dashboard row for every id that ever reported `playing`, whatever
+    /// the encoder stop and `/status/sessions/close` did, so when the reporting identity moves
+    /// (an ABR commit, a seek's retranscode, an Original-to-HLS fallback) the id it left must be
+    /// told `stopped` ([`retired_report_session`]; issue #1236). Carried across an Engine reload
+    /// of the same item by [`begin_timeline_reporting`]; a stop discards the projection with it.
+    reported_session: Option<String>,
 }
 
 /// One reporter's authority to sample the playback which spawned it.
@@ -1248,6 +1258,32 @@ struct TimelineSnapshot {
     play_queue_item_id: String,
     audio_stream_id: i64,
     subtitle_stream_id: i64,
+    /// [`TimelineProjection::reported_session`] as the sample saw it.
+    reported_session: Option<String>,
+}
+
+impl TimelineSnapshot {
+    /// This sample as one wire report under `session`: the sampled item, PlayQueue and tracks,
+    /// whichever id and state the caller sends them as.
+    fn wire<'a>(
+        &'a self,
+        session: &'a str,
+        state: plx_plex::plex::TimelineState,
+        continuing: bool,
+    ) -> plx_plex::plex::TimelineReport<'a> {
+        plx_plex::plex::TimelineReport {
+            rating_key: &self.rating_key,
+            state,
+            time_ms: self.time_ms,
+            duration_ms: self.duration_ms,
+            session,
+            play_queue_id: &self.play_queue_id,
+            play_queue_item_id: &self.play_queue_item_id,
+            audio_stream_id: self.audio_stream_id,
+            subtitle_stream_id: self.subtitle_stream_id,
+            continuing,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -6372,6 +6408,9 @@ struct ScrobbleWork {
     audio_stream_id: i64,
     subtitle_stream_id: i64,
     transcode_session: String,
+    /// The id the playback's last periodic report went out under, when that is not `session`: it
+    /// is told `stopped` (with `continuing=1`, like every retired id) just before the final one.
+    retired_report_session: Option<String>,
     timeline_stop: Option<TimelineStopCompletion>,
     /// Mark the item watched once the `stopped` report is in, if it landed below the server's own
     /// watched threshold (`PlaybackSession::finished`).
@@ -6472,19 +6511,33 @@ impl ScrobbleWork {
         if let Some((rk, t_ms, d_ms)) = self.final_report.take() {
             let ok = {
                 let _effect = TIMELINE_EFFECT.lock().unwrap_or_else(|e| e.into_inner());
-                self.client.is_some_and(|c| {
-                    c.timeline(&plx_plex::plex::TimelineReport {
-                        rating_key: &rk,
-                        state: plx_plex::plex::TimelineState::Stopped,
-                        time_ms: t_ms,
-                        duration_ms: d_ms,
-                        session: &self.session,
-                        play_queue_id: &self.play_queue_id,
-                        play_queue_item_id: &self.play_queue_item_id,
-                        audio_stream_id: self.audio_stream_id,
-                        subtitle_stream_id: self.subtitle_stream_id,
+                let stopped = |session: &str, continuing: bool| {
+                    self.client.is_some_and(|c| {
+                        c.timeline(&plx_plex::plex::TimelineReport {
+                            rating_key: &rk,
+                            state: plx_plex::plex::TimelineState::Stopped,
+                            time_ms: t_ms,
+                            duration_ms: d_ms,
+                            session,
+                            play_queue_id: &self.play_queue_id,
+                            play_queue_item_id: &self.play_queue_item_id,
+                            audio_stream_id: self.audio_stream_id,
+                            subtitle_stream_id: self.subtitle_stream_id,
+                            continuing,
+                        })
                     })
-                })
+                };
+                if let Some(retired) = self.retired_report_session.take() {
+                    // The reporter's last id lost its place after its last tick, so it has had
+                    // no `stopped` yet. Before the final one, which commits the resume point.
+                    let ok = stopped(&retired, true);
+                    plx_base::eventlog::log(&format!(
+                        "timeline stopped (retired session) t={}s ok={}",
+                        t_ms / 1000,
+                        ok as i32,
+                    ));
+                }
+                stopped(&self.session, false)
             };
             plx_base::eventlog::log(&format!(
                 "timeline stopped t={}s/{}s ok={}",
@@ -6525,8 +6578,10 @@ impl ScrobbleWork {
 }
 
 /// The end-of-playback PMS work, moved OFF the main thread: the `state=stopped` timeline report
-/// (which commits the server-side resume point and watched state) and the server-side transcode
-/// stop. Replaces the inline `report_timeline` + `stop_transcode` pair in `engine::teardown`.
+/// (which commits the server-side resume point and watched state, preceded by a `continuing=1`
+/// one for the id the periodic reporter last used when the encoder moved on after that report)
+/// and the server-side transcode stop. Replaces the inline `report_timeline` + `stop_transcode`
+/// pair in `engine::teardown`.
 ///
 /// Both ran inline on the SDL
 /// thread — two blocking PMS round trips, each bounded by `CONNECT_TIMEOUT_MS` + `SO_RCVTIMEO`
@@ -6554,6 +6609,12 @@ pub fn scrobble_stop(
     } else {
         tsession.clone()
     };
+    // What the reporter last reported under is read here, on the thread that owns the route, next
+    // to the id the final `stopped` goes out under. The reporter itself is only joined by the
+    // worker, so a tick landing between this read and `begin_engine_teardown` (which retires its
+    // lease, a few calls later on this thread) is not accounted for.
+    let retired_id = retired_report_session(reported_timeline_session().as_deref(), &session)
+        .map(str::to_owned);
     // The two fields THIS function retires (teardown clears the URL a few lines later, and that is
     // the whole of what a stop resets). A partial write rather than a whole-session reset because
     // the rest is still read after teardown returns — see `reset_session`'s doc for the reader that
@@ -6601,6 +6662,7 @@ pub fn scrobble_stop(
         audio_stream_id: aud,
         subtitle_stream_id: sub,
         transcode_session: tsession,
+        retired_report_session: retired_id,
         timeline_stop,
         mark_watched,
         stop_mail,
@@ -11553,13 +11615,16 @@ pub fn set_forced_only_lang_for_test(ps: &mut PlaybackSession, lang: &str) {
 /// Atomically publish the main-thread session fields a newly spawned timeline reporter may read.
 /// Called at the reporter spawn site, before ownership crosses to its worker. The active encoder
 /// remains in `PlayerControl`, so a later in-place ABR commit changes the wire session and this
-/// projection under one lock without touching main-thread-only `Session`.
+/// projection under one lock without touching main-thread-only `Session`. A reload of the same
+/// item hands the new projection the id its predecessor last reported under
+/// ([`TimelineProjection::reported_session`]), so the id the reload retired still gets its
+/// `stopped`.
 pub fn begin_timeline_reporting(ps: &PlaybackSession) -> Option<TimelineLease> {
     // A trailer never writes watch state, whatever became of its preview flag.
     if preview_request(ps) {
         return None;
     }
-    let projection = TimelineProjection {
+    let mut projection = TimelineProjection {
         sid: cur_sid(ps),
         rating_key: cur_rk(ps),
         logical_session: sess(ps),
@@ -11567,12 +11632,22 @@ pub fn begin_timeline_reporting(ps: &PlaybackSession) -> Option<TimelineLease> {
         play_queue_item_id: pq_item_id(ps),
         audio_stream_id: cur_audio_sid(ps),
         subtitle_stream_id: cur_sub_sid(ps),
+        reported_session: None,
     };
     if projection.rating_key.is_empty() || !projection.sid.is_set() {
         return None;
     }
     let required_stop = TIMELINE_STOP_FENCE.announced();
     let mut control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
+    // An Engine reload (a quality change, a transcode seek) starts a new reporter for the SAME
+    // playback while the old projection still stands, and the id the old reporter last reported
+    // under may be the one that reload just retired. A stop (or a failed start) cleared the
+    // projection, so a playback that follows one starts with nothing to carry.
+    projection.reported_session = control
+        .timeline
+        .take()
+        .filter(|old| old.sid == projection.sid && old.rating_key == projection.rating_key)
+        .and_then(|old| old.reported_session);
     control.timeline = Some(projection);
     Some(TimelineLease {
         engine_epoch: control.engine_epoch,
@@ -11583,6 +11658,8 @@ pub fn begin_timeline_reporting(ps: &PlaybackSession) -> Option<TimelineLease> {
 /// Linearize one worker sample against route replacement and engine teardown. No network work is
 /// done while the mutex is held. `None` permanently invalidates this reporter after its Engine is
 /// retired; transient Applying/Resolving phases skip a hybrid report without borrowing Session.
+/// The sample also carries the id the previous report went out under, so [`report_timeline`] can
+/// tell whether the reporting identity moved since.
 fn timeline_snapshot(
     lease: &TimelineLease,
     state: plx_plex::plex::TimelineState,
@@ -11616,7 +11693,39 @@ fn timeline_snapshot(
         play_queue_item_id: projection.play_queue_item_id.clone(),
         audio_stream_id: projection.audio_stream_id,
         subtitle_stream_id: projection.subtitle_stream_id,
+        reported_session: projection.reported_session.clone(),
     })
+}
+
+/// **Which session id must be told `stopped` before a report goes out under `current`.** Every id
+/// a playback reported to `/:/timeline` gets exactly one `stopped` when it stops being the
+/// reporting identity (issue #1236): PMS holds a dashboard row for each id that ever reported
+/// `playing`, for minutes after its last report, however its encoder was stopped. So the answer is
+/// the id the playback last reported under when that is not `current`; nothing for a first report
+/// (`reported` is `None`), for the same id again, or for an id that never reported, which is what
+/// keeps an abandoned candidate encoder (minted, primed, never made active) from ever being named.
+fn retired_report_session<'a>(reported: Option<&'a str>, current: &str) -> Option<&'a str> {
+    reported.filter(|id| !id.is_empty() && *id != current)
+}
+
+/// Record `session` as the id this playback last reported under, for the Engine `lease` names. A
+/// reporter whose Engine was retired while its POST was in flight writes nothing: the projection
+/// it would write into is another Engine's, or gone.
+fn note_reported_session(lease: &TimelineLease, session: &str) {
+    let mut control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
+    if control.engine_epoch != lease.engine_epoch {
+        return;
+    }
+    if let Some(projection) = control.timeline.as_mut() {
+        projection.reported_session = Some(session.to_owned());
+    }
+}
+
+/// The id this playback last reported under, for [`scrobble_stop`] to compare with the id its
+/// final `stopped` goes out under.
+fn reported_timeline_session() -> Option<String> {
+    let control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
+    control.timeline.as_ref()?.reported_session.clone()
 }
 
 /// POST one periodic timeline update for an exact [`TimelineLease`]. After waiting for the stop
@@ -11624,6 +11733,13 @@ fn timeline_snapshot(
 /// server, item, PlayQueue and selected tracks together from [`PlayerControl`]; a stale Engine lease
 /// sends nothing. Final `Stopped` is emitted separately by [`ScrobbleWork`] from its owned teardown
 /// snapshot.
+///
+/// When the snapshot's session id is not the one the previous report went out under (an ABR
+/// commit, a seek's retranscode, a fallback replaced the encoder in between), the previous id is
+/// first sent a `stopped` with `continuing=1` at this report's position
+/// ([`retired_report_session`]), then this report goes out and its id is recorded. Both POSTs
+/// sit inside the one `TIMELINE_EFFECT` hold, in that order, and the recording is the lease's own
+/// Engine's.
 pub fn report_timeline(
     lease: &TimelineLease,
     state: plx_plex::plex::TimelineState,
@@ -11642,17 +11758,20 @@ pub fn report_timeline(
         Some(c) => c,
         None => return true,
     };
-    let ok = c.timeline(&plx_plex::plex::TimelineReport {
-        rating_key: &report.rating_key,
-        state: report.state,
-        time_ms: report.time_ms,
-        duration_ms: report.duration_ms,
-        session: &report.session,
-        play_queue_id: &report.play_queue_id,
-        play_queue_item_id: &report.play_queue_item_id,
-        audio_stream_id: report.audio_stream_id,
-        subtitle_stream_id: report.subtitle_stream_id,
-    });
+    if let Some(retired) = retired_report_session(report.reported_session.as_deref(), &report.session) {
+        // One attempt, like every report here: a failure is logged below and the next tick does
+        // not repeat it (the id is no longer the one on record), the row simply ages out.
+        let stopped = c.timeline(&report.wire(retired, plx_plex::plex::TimelineState::Stopped, true));
+        if !stopped {
+            plx_base::eventlog::log(&format!(
+                "timeline post failed rk={} state=stopped (retired session) t={}s",
+                report.rating_key,
+                report.time_ms / 1000,
+            ));
+        }
+    }
+    let ok = c.timeline(&report.wire(&report.session, report.state, false));
+    note_reported_session(lease, &report.session);
     // FAILURES ONLY. The reporter thread logs `timeline <state> t=…s/…s` for every tick whichever
     // way the POST went (`player::threads`), so a report the server never took looks exactly like
     // one it did — for the whole length of a film, ten seconds at a time. The success half is

@@ -494,6 +494,46 @@ pub(super) fn stub_pms() -> (
     (port, rx, h)
 }
 
+/// A loopback PMS that answers up to `max` requests, one connection each, and hands every request
+/// line down the channel in arrival order. The multi-request sibling of [`stub_pms`], for a test
+/// that must read WHICH reports one playback sent and in what order (the retired-session `stopped`
+/// is graded on the line itself). It gives up after ten idle seconds, so a test that fails on an
+/// earlier assertion leaves no thread parked on `accept` for the rest of the run.
+pub(super) fn recording_pms(
+    max: usize,
+) -> (
+    i32,
+    std::sync::mpsc::Receiver<String>,
+    std::thread::JoinHandle<()>,
+) {
+    use std::io::{BufRead, BufReader, Write};
+    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    l.set_nonblocking(true).expect("nonblocking listener");
+    let port = l.local_addr().unwrap().port() as i32;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let h = std::thread::spawn(move || {
+        let mut idle = std::time::Instant::now();
+        let mut served = 0;
+        while served < max && idle.elapsed() < std::time::Duration::from_secs(10) {
+            match l.accept() {
+                Ok((mut s, _)) => {
+                    let _ = s.set_nonblocking(false);
+                    let mut line = String::new();
+                    let _ = BufReader::new(&s).read_line(&mut line);
+                    let _ = s.write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                    let _ = tx.send(line);
+                    served += 1;
+                    idle = std::time::Instant::now();
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(5)),
+            }
+        }
+    });
+    (port, rx, h)
+}
+
 pub(super) fn ordered_stub_pms(
     label: &'static str,
     tx: std::sync::mpsc::Sender<(&'static str, String)>,
