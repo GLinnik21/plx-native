@@ -57,22 +57,22 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-06T19:21:15Z",
+ "generated": "2026-11-06T19:26:44Z",
  "metrics": [
   {
-   "change30_pct": 10.9,
-   "change7_pct": 29.9,
+   "change30_pct": 11.1,
+   "change7_pct": 30.4,
    "d30": 270.0,
-   "delta30": 29.5,
-   "delta7": 69.0,
+   "delta30": 30.0,
+   "delta7": 70,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 64,
-   "n_prev": 94,
-   "now": 299.5,
-   "prev7": 230.5,
+   "n_now": 63,
+   "n_prev": 95,
+   "now": 300,
+   "prev7": 230,
    "shown": true,
    "state": "worse",
    "state30": "flat",
@@ -103,18 +103,18 @@
   },
   {
    "change30_pct": 63.6,
-   "change7_pct": 23.5,
+   "change7_pct": 23.3,
    "d30": 236.0,
    "delta30": 150.0,
-   "delta7": 73.5,
+   "delta7": 73.0,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 63,
-   "n_prev": 94,
-   "now": 386,
-   "prev7": 312.5,
+   "n_now": 62,
+   "n_prev": 95,
+   "now": 386.0,
+   "prev7": 313,
    "shown": true,
    "state": "worse",
    "state30": "worse",
@@ -123,40 +123,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 46.8,
-   "change7_pct": 20.8,
-   "d30": 299.0,
-   "delta30": 140.0,
-   "delta7": 75.5,
-   "group": "ci",
-   "id": "ci|host unit tests (default features)",
-   "kind": "job",
-   "label": "CI: host unit tests (default features)",
-   "n_now": 63,
-   "n_prev": 94,
-   "now": 439,
-   "prev7": 363.5,
-   "shown": true,
-   "state": "worse",
-   "state30": "worse",
-   "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": 168.0,
-   "change7_pct": 20.0,
+   "change30_pct": 168.4,
+   "change7_pct": 20.2,
    "d30": 137.5,
-   "delta30": 231.0,
-   "delta7": 61.5,
+   "delta30": 231.5,
+   "delta7": 62,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 64,
-   "n_prev": 94,
-   "now": 368.5,
-   "prev7": 307.0,
+   "n_now": 63,
+   "n_prev": 95,
+   "now": 369,
+   "prev7": 307,
    "shown": true,
    "state": "worse",
    "state30": "worse",
@@ -165,19 +144,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -40.1,
-   "change7_pct": 19.6,
+   "change30_pct": -40.2,
+   "change7_pct": 18.7,
    "d30": 743,
-   "delta30": -298,
-   "delta7": 73.0,
+   "delta30": -299.0,
+   "delta7": 70.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 63,
-   "n_prev": 94,
-   "now": 445,
-   "prev7": 372.0,
+   "n_now": 62,
+   "n_prev": 95,
+   "now": 444.0,
+   "prev7": 374,
    "shown": true,
    "state": "worse",
    "state30": "better",
@@ -186,18 +165,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -50.3,
+   "change30_pct": -50.2,
    "change7_pct": 20.1,
-   "d30": 915.0,
-   "delta30": -460.0,
+   "d30": 913,
+   "delta30": -458.0,
    "delta7": 76.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 197,
+   "n_now": 198,
    "n_prev": 232,
-   "now": 455,
+   "now": 455.0,
    "prev7": 379.0,
    "shown": true,
    "state": "flat",
@@ -324,19 +303,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 12.1,
+   "change30_pct": 12.3,
    "change7_pct": 13.0,
    "d30": 2402,
-   "delta30": 290.5,
-   "delta7": 310.5,
+   "delta30": 295,
+   "delta7": 311,
    "group": "ci",
    "id": "minutes",
    "kind": "cost",
    "label": "Runner time per push",
-   "n_now": 56,
-   "n_prev": 76,
-   "now": 2692.5,
-   "prev7": 2382.0,
+   "n_now": 55,
+   "n_prev": 77,
+   "now": 2697,
+   "prev7": 2386,
    "shown": true,
    "state": "flat",
    "state30": "flat",
@@ -366,19 +345,40 @@
    "unit": "s"
   },
   {
+   "change30_pct": 46.0,
+   "change7_pct": 19.6,
+   "d30": 299.0,
+   "delta30": 137.5,
+   "delta7": 71.5,
+   "group": "ci",
+   "id": "ci|host unit tests (default features)",
+   "kind": "job",
+   "label": "CI: host unit tests (default features)",
+   "n_now": 62,
+   "n_prev": 95,
+   "now": 436.5,
+   "prev7": 365,
+   "shown": true,
+   "state": "flat",
+   "state30": "worse",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
    "change30_pct": null,
-   "change7_pct": 9.8,
+   "change7_pct": 9.5,
    "d30": null,
    "delta30": null,
-   "delta7": 32.0,
+   "delta7": 31,
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 64,
-   "n_prev": 94,
-   "now": 359.5,
-   "prev7": 327.5,
+   "n_now": 63,
+   "n_prev": 95,
+   "now": 359,
+   "prev7": 328,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -387,19 +387,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 21.9,
+   "change30_pct": 22.1,
    "change7_pct": 12.5,
    "d30": 247,
-   "delta30": 54,
+   "delta30": 54.5,
    "delta7": 33.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 59,
-   "n_prev": 82,
-   "now": 301,
-   "prev7": 267.5,
+   "n_now": 58,
+   "n_prev": 83,
+   "now": 301.5,
+   "prev7": 268,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -408,19 +408,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -32.4,
-   "change7_pct": 15.8,
+   "change30_pct": -32.2,
+   "change7_pct": 18.0,
    "d30": 315,
-   "delta30": -102,
-   "delta7": 29.0,
+   "delta30": -101.5,
+   "delta7": 32.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 59,
-   "n_prev": 82,
-   "now": 213,
-   "prev7": 184.0,
+   "n_now": 58,
+   "n_prev": 83,
+   "now": 213.5,
+   "prev7": 181,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -429,19 +429,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -74.2,
-   "change7_pct": -0.2,
+   "change30_pct": -74.3,
+   "change7_pct": -0.7,
    "d30": 822,
-   "delta30": -610,
-   "delta7": -0.5,
+   "delta30": -610.5,
+   "delta7": -1.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 59,
-   "n_prev": 82,
-   "now": 212,
-   "prev7": 212.5,
+   "n_now": 58,
+   "n_prev": 83,
+   "now": 211.5,
+   "prev7": 213,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -450,19 +450,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 16.6,
-   "change7_pct": 19.3,
+   "change30_pct": 16.3,
+   "change7_pct": 19.0,
    "d30": 172.0,
-   "delta30": 28.5,
-   "delta7": 32.5,
+   "delta30": 28.0,
+   "delta7": 32,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 64,
-   "n_prev": 94,
-   "now": 200.5,
-   "prev7": 168.0,
+   "n_now": 63,
+   "n_prev": 95,
+   "now": 200,
+   "prev7": 168,
    "shown": true,
    "state": "flat",
    "state30": "flat",
@@ -557,19 +557,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 17.6,
-   "change7_pct": 11.1,
+   "change30_pct": 14.7,
+   "change7_pct": 8.3,
    "d30": 17,
-   "delta30": 3,
-   "delta7": 2.0,
+   "delta30": 2.5,
+   "delta7": 1.5,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 59,
-   "n_prev": 82,
-   "now": 20,
-   "prev7": 18.0,
+   "n_now": 58,
+   "n_prev": 83,
+   "now": 19.5,
+   "prev7": 18,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -582,15 +582,15 @@
    "change7_pct": 0.0,
    "d30": null,
    "delta30": null,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 64,
-   "n_prev": 94,
-   "now": 5.0,
-   "prev7": 5.0,
+   "n_now": 63,
+   "n_prev": 95,
+   "now": 5,
+   "prev7": 5,
    "shown": false,
    "state": "flat",
    "state30": "new",
@@ -608,10 +608,10 @@
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 63,
-   "n_prev": 94,
-   "now": 4,
-   "prev7": 3.0,
+   "n_now": 62,
+   "n_prev": 95,
+   "now": 4.0,
+   "prev7": 3,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -624,15 +624,15 @@
    "change7_pct": 0.0,
    "d30": 262.5,
    "delta30": -259.5,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 64,
-   "n_prev": 94,
-   "now": 3.0,
-   "prev7": 3.0,
+   "n_now": 63,
+   "n_prev": 95,
+   "now": 3,
+   "prev7": 3,
    "shown": false,
    "state": "flat",
    "state30": "better",
@@ -664,7 +664,7 @@
  ],
  "regressions": [
   {
-   "change_pct": 29.9,
+   "change_pct": 30.4,
    "commits": [
     {
      "pr": 1244,
@@ -717,12 +717,12 @@
      "title": "Settings: fps scenes for the pages Settings v2 added"
     }
    ],
-   "from": 230.5,
+   "from": 230,
    "id": "ci|host python/shell/C gates",
    "label": "CI: host python/shell/C gates",
    "since": "2026-11-06",
    "threshold_pct": 20.0,
-   "to": 299.5
+   "to": 300
   },
   {
    "change_pct": 25.2,
@@ -786,7 +786,7 @@
    "to": 93.7
   },
   {
-   "change_pct": 23.5,
+   "change_pct": 23.3,
    "commits": [
     {
      "pr": 1244,
@@ -839,15 +839,15 @@
      "title": "Settings: fps scenes for the pages Settings v2 added"
     }
    ],
-   "from": 312.5,
+   "from": 313,
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-11-06",
    "threshold_pct": 20.0,
-   "to": 386
+   "to": 386.0
   },
   {
-   "change_pct": 20.8,
+   "change_pct": 20.2,
    "commits": [
     {
      "pr": 1244,
@@ -900,76 +900,15 @@
      "title": "Settings: fps scenes for the pages Settings v2 added"
     }
    ],
-   "from": 363.5,
-   "id": "ci|host unit tests (default features)",
-   "label": "CI: host unit tests (default features)",
-   "since": "2026-11-06",
-   "threshold_pct": 20.0,
-   "to": 439
-  },
-  {
-   "change_pct": 20.0,
-   "commits": [
-    {
-     "pr": 1244,
-     "sha": "6d5089359",
-     "title": "Tests: the lint, screenshot and replay runs delete their temp trees"
-    },
-    {
-     "pr": 1247,
-     "sha": "43cdc8deb",
-     "title": "Settings: the built-in HUD is named Built-in"
-    },
-    {
-     "pr": 1252,
-     "sha": "02be3ead1",
-     "title": "Site: add three outlets to Featured in"
-    },
-    {
-     "pr": 1253,
-     "sha": "c01b5136a",
-     "title": "HUD previews: the long-title corpus covers Catalan"
-    },
-    {
-     "pr": 1254,
-     "sha": "e5f19d679",
-     "title": "Playback: a retired PMS session gets its stopped timeline"
-    },
-    {
-     "pr": 1250,
-     "sha": "9cc53ed28",
-     "title": "Deps: Bump encoding_rs from 0.8.42 to 0.8.44 in /rust-modules in the rust-minor-patch group"
-    },
-    {
-     "pr": 1256,
-     "sha": "ece36ea6d",
-     "title": "Settings: v2 anatomy and root (follow-focus sentence, 48 title, groups, Diagnostics page)"
-    },
-    {
-     "pr": null,
-     "sha": "a67e3c95f",
-     "title": "Settings v2: the remaining pages, the push motion and the Under posters split"
-    },
-    {
-     "pr": null,
-     "sha": "5b9ff4a0a",
-     "title": "Settings: a pushed page's text is made resident before it moves"
-    },
-    {
-     "pr": null,
-     "sha": "4bf133d57",
-     "title": "Settings: fps scenes for the pages Settings v2 added"
-    }
-   ],
-   "from": 307.0,
+   "from": 307,
    "id": "ci|host harness tests",
    "label": "CI: host harness tests",
    "since": "2026-11-06",
    "threshold_pct": 20.0,
-   "to": 368.5
+   "to": 369
   },
   {
-   "change_pct": 19.6,
+   "change_pct": 18.7,
    "commits": [
     {
      "pr": 1244,
@@ -1022,12 +961,12 @@
      "title": "Settings: fps scenes for the pages Settings v2 added"
     }
    ],
-   "from": 372.0,
+   "from": 374,
    "id": "push_wait",
    "label": "Wait after merge",
    "since": "2026-11-06",
    "threshold_pct": 15.0,
-   "to": 445
+   "to": 444.0
   }
  ],
  "schema": 2,
@@ -1042,25 +981,25 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 439
+   "now": 436.5
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 386
+   "now": 386.0
   },
   {
    "group": "ci",
    "id": "ci|host harness tests",
    "label": "CI: host harness tests",
-   "now": 368.5
+   "now": 369
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 359.5
+   "now": 359
   }
  ],
  "slowest_local": [

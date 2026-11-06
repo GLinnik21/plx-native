@@ -1,4 +1,4 @@
-{"updated":"2026-11-06T19:20:56Z",
+{"updated":"2026-11-06T19:26:25Z",
 "ci":[
 {"id":31319241597,"at":"2026-08-09T14:44:31Z","sha":"6c3858f9e","title":"docs: webOS 5+ is known broken, not untested \u2014 restore the 4.x bound","jobs":{"cross-build (armv7) + artifact assertions":89,"host checks (NOT a device gate)":80},"pr":null,"conclusion":"success","attempt":1},
 {"id":31321824174,"at":"2026-08-09T15:42:19Z","sha":"afedac6b2","title":"webos5: it runs on 6 and 10 \u2014 only playback is unfinished, so the ceiling comes off","jobs":{"cross-build (armv7) + artifact assertions":83,"host checks (NOT a device gate)":70},"pr":null,"conclusion":"success","attempt":1},
@@ -4707,7 +4707,8 @@
 {"id":42266550083,"at":"2026-11-06T17:59:01Z","sha":"4bf133d57","title":"Settings: fps scenes for the pages Settings v2 added","pr":null,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":235,"Windows launcher syntax":21,"macOS simulator build + launch":255,"Linux simulator build + launch":313}},
 {"id":42268461977,"at":"2026-11-06T18:11:44Z","sha":"77775f092","title":"ci snapshot of integ/uri-first ee6a6b75b","pr":1231,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":177,"macOS tests against bundled FFmpeg and ASS":263,"Linux simulator build + launch":443,"Windows launcher syntax":19}},
 {"id":42276561934,"at":"2026-11-06T19:05:33Z","sha":"32e8d8798","title":"Playback: the C1 nativeaudiowide test compares the Opus ceiling, not the channel table","pr":1263,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":213,"macOS simulator build + launch":239,"Windows launcher syntax":20,"Linux simulator build + launch":226}},
-{"id":42276582237,"at":"2026-11-06T19:05:41Z","sha":"f401e2800","title":"Test a pack made for a PlxNative release against the base","pr":1267,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":303,"Linux simulator build + launch":244,"Windows launcher syntax":18},"failed":["macOS simulator build + launch"]}
+{"id":42276582237,"at":"2026-11-06T19:05:41Z","sha":"f401e2800","title":"Test a pack made for a PlxNative release against the base","pr":1267,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":303,"Linux simulator build + launch":244,"Windows launcher syntax":18},"failed":["macOS simulator build + launch"]},
+{"id":42278488765,"at":"2026-11-06T19:18:40Z","sha":"b574f5c15","title":"ci snapshot of integ/uri-first 5a81ceb53","pr":1231,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":251,"Linux simulator build + launch":451,"macOS tests against bundled FFmpeg and ASS":247,"Windows launcher syntax":27}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
