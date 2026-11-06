@@ -27,6 +27,7 @@ use plx_machine::motion;
 use plx_machine::machine::GroupId;
 use super::super::screen::{Enter, FocusTarget, ReturnState, ScreenEvent, UnderlaySource};
 use super::stack::{Entry, Instance};
+use super::transition::{dip_eased, DIP_IN_MS, DIP_OUT_MS};
 use super::{Life, Minter};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -76,6 +77,19 @@ pub enum OnMiss {
     Swallow,
 }
 
+/// **How a surface arrives** ([`Screen::entry_motion`](crate::screen::Screen::entry_motion)).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum EntryMotion {
+    /// The appear spring ([`APPEAR_K`]) every surface rides: the ground rises over the live host.
+    #[default]
+    Spring,
+    /// **The route dip** (Settings v2): the host dips to the app ground in [`DIP_OUT_MS`], then the
+    /// surface's own opaque ground fades up off it in [`DIP_IN_MS`], on `PageDip`'s smoothstep —
+    /// the page transition every other route already has, as a surface's entry. It is the entry
+    /// only: a dismissal runs the appear spring back down from wherever the surface is.
+    Dip,
+}
+
 /// The appear spring (the `Popover` choreography's first half, pure).
 #[derive(Clone, Copy, Debug)]
 pub struct PopoverMotion {
@@ -100,6 +114,13 @@ pub struct PopoverMotion {
     held_ms: f32,
     /// Ticks the current hold has lasted; the first is the capture frame.
     held_ticks: u32,
+    /// How the surface arrives; chosen from the mounted screen on its first ticks
+    /// ([`PopoverMotion::choose`]) and fixed once a real step has run.
+    entry: EntryMotion,
+    /// Milliseconds of the entry dip stepped so far (`EntryMotion::Dip` only).
+    dip_ms: f32,
+    /// A real (non-held) step has run: `entry` is fixed.
+    begun: bool,
 }
 
 /// The appear spring's stiffness (`popover.rs`'s number).
@@ -127,7 +148,26 @@ impl PopoverMotion {
             holding: false,
             held_ms: 0.0,
             held_ticks: 0,
+            entry: EntryMotion::Spring,
+            dip_ms: 0.0,
+            begun: false,
         }
+    }
+    /// Choose how the surface arrives. Honoured until the first real step has run (the screen is
+    /// mounted by the time the held frames tick, and a late answer must not retime a running entry).
+    pub fn choose(&mut self, entry: EntryMotion) {
+        if !self.begun {
+            self.entry = entry;
+        }
+    }
+    /// **How far the entry dip has taken the host page to the app ground**, `0..=1`: it rises over
+    /// [`DIP_OUT_MS`], stays at 1 while the ground fades up over it, and is 0 for every other
+    /// surface, before the dip starts and once it is over or a dismissal has begun.
+    pub fn floor(&self) -> f32 {
+        if self.entry != EntryMotion::Dip || self.target <= 0.0 || self.dip_ms >= DIP_OUT_MS + DIP_IN_MS {
+            return 0.0;
+        }
+        dip_eased(self.dip_ms / DIP_OUT_MS)
     }
     /// Pin the spring where it is for the next [`tick`](Self::tick) — see [`hold`](Self::hold).
     pub fn hold_one_frame(&mut self) {
@@ -173,6 +213,11 @@ impl PopoverMotion {
             present.note(plx_machine::present::PresentEvent::Motion);
             return;
         }
+        self.begun = true;
+        if self.entry == EntryMotion::Dip && self.target > 0.0 && self.dip_ms < DIP_OUT_MS + DIP_IN_MS {
+            self.step_dip(t, present);
+            return;
+        }
         motion::spring(&mut self.appear, &mut self.vel, self.target, APPEAR_K, t, present);
         if self.settled() {
             let changed = self.appear != self.target || self.vel != 0.0;
@@ -184,6 +229,23 @@ impl PopoverMotion {
                 present.note(plx_machine::present::PresentEvent::Motion);
             }
         }
+    }
+}
+
+impl PopoverMotion {
+    /// One frame of the entry dip: the host dips for [`DIP_OUT_MS`] with the surface still at
+    /// appear 0, then `appear` rises over [`DIP_IN_MS`] on the dip's smoothstep and lands exactly on
+    /// its target. Time-driven, so a frame dump and a replay see the same curve.
+    fn step_dip(&mut self, t: Tick, present: &mut PresentHandle<'_>) {
+        self.dip_ms += t.dt() * 1000.0;
+        self.vel = 0.0;
+        if self.dip_ms >= DIP_OUT_MS + DIP_IN_MS {
+            self.appear = self.target;
+        } else {
+            self.appear = self.target * dip_eased((self.dip_ms - DIP_OUT_MS) / DIP_IN_MS);
+        }
+        // the frame that lands the endpoint is painted too
+        present.note(plx_machine::present::PresentEvent::Motion);
     }
 }
 
@@ -710,6 +772,11 @@ impl<H: Host> ModalStack<H> {
                 continue;
             }
             let _scope = plx_machine::idle::MotionScope::open();
+            if s.phase == Phase::Opening {
+                if let Some(inst) = s.entry.inst.as_ref() {
+                    s.motion.choose(inst.screen.entry_motion());
+                }
+            }
             s.motion.tick(t, present);
             if s.phase == Phase::Opening && s.motion.settled() {
                 s.phase = Phase::Open;
@@ -1186,5 +1253,128 @@ mod hide_tests {
         assert!(!ms.hide(EntryId(id.0 + 99)));
         assert_eq!(ms.surface(id).unwrap().phase, Phase::Open);
         assert!(ms.prune().is_empty());
+    }
+}
+
+/// **The entry dip** ([`EntryMotion::Dip`]): the 70 + 140 ms curve a surface that opts in arrives on,
+/// sampled frame by frame, and the guarantee that every other surface still rides the spring.
+#[cfg(test)]
+mod entry_dip_tests {
+    use super::*;
+    use plx_machine::present::Present;
+
+    /// 10 ms frames: 70 and 210 ms land exactly on a frame.
+    const DT_US: u32 = 10_000;
+
+    /// A motion opened toward 1 with the held capture frame already spent, as `ModalStack::present`
+    /// leaves it, advanced one tick at a time.
+    struct Rig {
+        motion: PopoverMotion,
+        present: Present,
+        ms: u32,
+    }
+    impl Rig {
+        fn opening(entry: EntryMotion) -> Self {
+            let mut motion = PopoverMotion::at(0.0);
+            motion.to(1.0);
+            motion.hold_one_frame();
+            motion.choose(entry);
+            let mut rig = Self { motion, present: Present::new(), ms: 0 };
+            rig.step(); // the held frame: appear stays 0, nothing of the entry has started
+            assert_eq!((rig.motion.appear, rig.motion.floor()), (0.0, 0.0));
+            rig
+        }
+        fn step(&mut self) {
+            self.ms += DT_US / 1000;
+            let mut ph = PresentHandle::of(&mut self.present);
+            self.motion.tick_gated(Tick { ms: self.ms, dt_us: DT_US }, &mut ph, false);
+        }
+        /// Advance to `ms` into the entry (past the held frame).
+        fn to(&mut self, ms: u32) -> (f32, f32) {
+            while self.ms - DT_US / 1000 < ms {
+                self.step();
+            }
+            (self.motion.appear, self.motion.floor())
+        }
+    }
+
+    fn smooth(t: f32) -> f32 {
+        t * t * (3.0 - 2.0 * t)
+    }
+
+    /// **The curve**: the surface stays at 0 and the host dips for 70 ms, then `appear` runs the
+    /// smoothstep over 140 ms and lands exactly on 1; the floor rises over the first 70 ms, holds at
+    /// 1 under the fade-up and is 0 once the entry is over.
+    #[test]
+    fn the_dip_is_70_ms_out_then_140_ms_in() {
+        let mut rig = Rig::opening(EntryMotion::Dip);
+        let (a, f) = rig.to(40);
+        assert_eq!(a, 0.0, "nothing of the surface is visible while the host dips");
+        assert!((f - smooth(40.0 / 70.0)).abs() < 1e-4, "down the dip after 40 ms: {f}");
+        let (a, f) = rig.to(70);
+        assert_eq!((a, f), (0.0, 1.0), "at the floor, the surface not yet begun");
+        let (a, f) = rig.to(140);
+        assert!((a - 0.5).abs() < 1e-4, "half way up after 70 + 70 ms: {a}");
+        assert_eq!(f, 1.0, "the ground fades up OFF the floor");
+        let (a, f) = rig.to(210);
+        assert_eq!(a, 1.0, "lands exactly on the target");
+        assert_eq!(f, 0.0, "the floor is gone with the entry");
+        assert!(rig.motion.settled());
+    }
+
+    /// Every frame of the rise is the smoothstep of its own elapsed time and never goes backwards.
+    #[test]
+    fn the_rise_is_the_route_dips_smoothstep_and_monotone() {
+        let mut rig = Rig::opening(EntryMotion::Dip);
+        let mut last = 0.0;
+        for ms in (10..=210).step_by(10) {
+            let (a, _) = rig.to(ms);
+            let want = smooth(((ms as f32 - 70.0) / 140.0).clamp(0.0, 1.0));
+            assert!((a - want).abs() < 1e-4, "{ms} ms: {a} vs {want}");
+            assert!(a >= last, "{ms} ms went backwards");
+            last = a;
+        }
+        assert_eq!(last, 1.0);
+    }
+
+    /// **A dismissal mid-dip is the spring, from where it stands**: no floor over the host it is
+    /// leaving, and it runs down to 0 rather than snapping.
+    #[test]
+    fn a_dismissal_during_the_dip_runs_the_spring_down_with_no_floor() {
+        let mut rig = Rig::opening(EntryMotion::Dip);
+        rig.to(140);
+        let before = rig.motion.appear;
+        assert!(before > 0.0 && before < 1.0);
+        rig.motion.to(0.0);
+        assert_eq!(rig.motion.floor(), 0.0, "no floor on the way out");
+        rig.step();
+        let after = rig.motion.appear;
+        assert!(after < before && after > 0.0, "{before} -> {after}: a spring, not a cut");
+        for _ in 0..400 {
+            rig.step();
+        }
+        assert_eq!(rig.motion.appear, 0.0);
+        assert!(rig.motion.settled());
+    }
+
+    /// **Every other surface is unchanged**: with `EntryMotion::Spring` (the default) the motion is
+    /// the `APPEAR_K` spring frame for frame and never has a floor; and a late `choose` cannot retime
+    /// an entry that has begun.
+    #[test]
+    fn a_spring_surface_is_the_appear_spring_and_a_begun_entry_is_not_retimed() {
+        let mut rig = Rig::opening(EntryMotion::Spring);
+        let mut reference = crate::Spring::at(0.0);
+        // (the first 45 frames: past that the spring's own visual-rest snap takes over)
+        for i in 0..45 {
+            rig.step();
+            reference.step(1.0, APPEAR_K, DT_US as f32 / 1e6);
+            assert_eq!(rig.motion.appear, reference.pos, "frame {i}");
+            assert_eq!(rig.motion.floor(), 0.0);
+        }
+        rig.motion.choose(EntryMotion::Dip);
+        assert_eq!(rig.motion.floor(), 0.0, "a begun spring entry stays a spring");
+        rig.step();
+        reference.step(1.0, APPEAR_K, DT_US as f32 / 1e6);
+        assert_eq!(rig.motion.appear, reference.pos, "…and keeps stepping the spring");
     }
 }

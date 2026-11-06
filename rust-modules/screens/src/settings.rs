@@ -30,6 +30,7 @@
 
 use std::borrow::Cow;
 
+use plx_ui::containers::modal::EntryMotion;
 use plx_ui::containers::stack::{Instance, NavStack};
 use plx_ui::containers::transition::Immediate;
 use plx_ui::containers::{Life, Minter};
@@ -40,7 +41,7 @@ use plx_machine::machine::{
     LogicalState, Machine, MachineId, NavOp, PresentHandle, Stamped, Tick,
 };
 use plx_machine::present::Provenance;
-use plx_ui::route_screen::{RouteLayout, RoutePush};
+use plx_ui::route_screen::{PushFrame, PushRole, RouteLayout, RoutePush};
 use plx_ui::route_screen::RouteGround;
 use plx_ui::screen::{
     At, Dir, DrawFrame, Enter, FocusSource, FocusTarget, Focusable, GroupSpec, HitSource, Mounter,
@@ -88,6 +89,9 @@ struct Push {
     open: bool,
     /// A popped body, drawn in the child role until the spring settles at 0.
     leaving: Option<Instance<InnerHost>>,
+    /// Which page `leaving` is: whether the push holds the narrative column asks it
+    /// ([`SettingsPage::holds_narrative`]), and the retired entry is gone from the stack.
+    leaving_page: Option<SettingsPage>,
 }
 
 impl Push {
@@ -96,6 +100,7 @@ impl Push {
             route: RoutePush::new(),
             open: false,
             leaving: None,
+            leaving_page: None,
         }
     }
     fn amount(&self) -> f32 {
@@ -109,6 +114,9 @@ impl Push {
     }
     fn child(&self, p: Painter) -> Painter {
         self.route.child(p)
+    }
+    fn frame(&self, role: PushRole) -> PushFrame {
+        self.route.frame(role)
     }
 }
 
@@ -227,10 +235,12 @@ impl RouteSurface {
                 }
                 Life::Unmount(eid) => {
                     self.deliver(eid, ScreenEvent::Unmount, cx, fx);
+                    let leaving_page = self.inner.entry(eid).map(|e| e.arg);
                     let body = self.inner.entry_mut(eid).and_then(|e| e.inst.take());
                     // the popped page keeps drawing for the spring's length
                     if self.push.leaving.is_none() {
                         self.push.leaving = body;
+                        self.push.leaving_page = leaving_page;
                     }
                 }
                 // **An EVICTION is not a departure, and must not join the outgoing spring.**
@@ -422,6 +432,7 @@ impl RouteSurface {
             self.push.open = false;
         } else {
             self.push.leaving = None;
+            self.push.leaving_page = None;
             self.push.route.jump(false);
             self.push.open = true;
         }
@@ -767,6 +778,7 @@ impl RouteSurface {
             self.push.route.tick(self.push.open, t, &mut ph);
             if self.push.settled() && !self.push.open {
                 self.push.leaving = None;
+                self.push.leaving_page = None;
             }
         }
         // every body ticks (both levels stay warm through a push, as the legacy pair did)
@@ -857,6 +869,12 @@ impl<H: DirectoryLike> Screen<H> for RouteSurface {
         super::family::set_palette(self.ground.palette());
         match self.kind {
             Family::Settings => {
+                // the entry dip: the host goes to the app ground for 70 ms, and the ground below
+                // fades up off it (`entry_motion`); 0 on every other frame
+                if f.entry_floor > 0.0 {
+                    root.alpha(f.entry_floor * f.nav_page_alpha)
+                        .rect(Rect::FULL, 0.0, theme::SURFACE_APP, theme::SURFACE_APP, 0.0);
+                }
                 // the scrim over the live host while the modal fades in; invisible under the
                 // opaque ground at rest and what fades out over the host on dismissal
                 let dim = theme::scrim_black(settings_scrim_alpha(a, f.nav_page_alpha));
@@ -886,9 +904,34 @@ impl<H: DirectoryLike> Screen<H> for RouteSurface {
     fn ground_ready(&self) -> bool {
         self.ground_ready
     }
+    /// Settings opens with the route dip (70 + 140 ms): its ground is opaque and does not
+    /// translate. The first-run consent question arrives from nowhere and keeps the spring.
+    fn entry_motion(&self) -> EntryMotion {
+        match self.kind {
+            Family::Settings => EntryMotion::Dip,
+            Family::FirstRunConsent => EntryMotion::Spring,
+        }
+    }
 }
 
 impl RouteSurface {
+    /// **Do the two pages of the push in flight both hold their narrative column?** The parent is
+    /// the page beneath the top on a push and the top itself on a pop; the child is the top on a
+    /// push and the page being retired on a pop. Asked of the stack's arguments, because the
+    /// retired entry is already gone from it (`push.leaving_page`).
+    fn push_holds_narrative(&self) -> bool {
+        let n = self.inner.entries.len();
+        let top = self.inner.top().map(|e| e.arg);
+        let (parent, child) = if self.push.leaving.is_some() {
+            (top, self.push.leaving_page)
+        } else if n >= 2 {
+            (Some(self.inner.entries[n - 2].arg), top)
+        } else {
+            return false;
+        };
+        matches!((parent, child), (Some(a), Some(b)) if a.holds_narrative() && b.holds_narrative())
+    }
+
     /// Draw the nested pages through the surface's entrance cascade. Kept separate from the
     /// ground paint so the real page selection and frame propagation can be tested without GL.
     fn draw_pages<H: DirectoryLike>(&mut self, f: &mut DrawFrame<'_, '_, H>, entrance: Painter) {
@@ -897,9 +940,19 @@ impl RouteSurface {
         let icx = inner_cx(f.cx);
         let mut stops = Vec::new();
         // the parent role: the page beneath the top on a push, the top itself on a pop
-        let parent_p = self.push.parent(entrance);
-        let child_p = self.push.child(entrance);
         let popping = self.push.leaving.is_some();
+        // **A push whose two pages both hold their narrative column** (Settings v2's anatomy,
+        // `SettingsPage::holds_narrative`) is drawn at the plain entrance with a `PushFrame`:
+        // the column stays and cross-fades its content on the appear token, and only the list
+        // travels. Any other pair is drawn whole through the painter's translate, as before.
+        let held = self.push_holds_narrative();
+        let (parent_p, child_p) = if held {
+            (entrance, entrance)
+        } else {
+            (self.push.parent(entrance), self.push.child(entrance))
+        };
+        let frame = |role| held.then(|| self.push.frame(role));
+        let (parent_frame, child_frame) = (frame(PushRole::Parent), frame(PushRole::Child));
         // **AT REST THERE IS EXACTLY ONE PAGE ON SCREEN — THE TOP — AND THE SPRING IS WHAT SAYS
         // SO.** It settles at BOTH ends (0 after a pop and at mount, 1 after a push), and at
         // either end the surviving page belongs at `entrance`: untranslated, undimmed, and the
@@ -919,6 +972,7 @@ impl RouteSurface {
             if t < 0.999 {
                 if let Some(inst) = if popping { self.top_mut() } else { self.below() } {
                     let mut inner = DrawFrame::with_navigation(&icx, parent_p, navigation);
+                    inner.push = parent_frame;
                     inst.screen.draw(&mut inner);
                     stops.extend(inner.into_stops());
                 }
@@ -931,6 +985,7 @@ impl RouteSurface {
                 };
                 if let Some(inst) = child {
                     let mut inner = DrawFrame::with_navigation(&icx, child_p, navigation);
+                    inner.push = child_frame;
                     inst.screen.draw(&mut inner);
                     // a leaving page takes no input: its stops are not registered
                     if !popping {
@@ -1731,6 +1786,10 @@ pub use under_posters::caption_policy_of;
 #[cfg(test)]
 #[path = "settings_test_support.rs"]
 mod test_support;
+
+#[cfg(test)]
+#[path = "settings_push_tests.rs"]
+mod push_tests;
 
 #[cfg(test)]
 #[path = "settings_draw_and_lifecycle_tests.rs"]

@@ -93,6 +93,31 @@ pub enum PickerKind {
 }
 
 impl SettingsPage {
+    /// **Does this page hold its narrative column under a push?** (Settings v2, brief
+    /// `settings-v2-motion`.) When BOTH pages of a push do, the surface draws them at the plain
+    /// entrance with a [`plx_ui::route_screen::PushFrame`]: the title area, sentence, picture slot and
+    /// action band stay where they are and cross-fade their content, and only the table travels
+    /// (`DrawFrame::narrative_painter` / `list_painter`, which `table_screen`'s parts read). Any
+    /// other pair is drawn whole through the painter's translate, exactly as before.
+    ///
+    /// A page may answer `true` only if everything it draws is the narrative column
+    /// (`Header`/`BandPart`) or the list (`TablePart`) of a `TableScreen`, because a page that
+    /// paints anything else with `f.painter` would not travel with the push. The pages that
+    /// still draw their header or extras by hand (Privacy & data, Favorite libraries, Under
+    /// posters, the documents, the pickers, the HUD pages) answer `false` until their stage
+    /// moves them onto the shared parts; flipping one is this line and nothing else.
+    pub fn holds_narrative(self) -> bool {
+        matches!(
+            self,
+            SettingsPage::Root
+                | SettingsPage::Language
+                | SettingsPage::Playback
+                | SettingsPage::AudioSubtitles
+                | SettingsPage::Legal
+                | SettingsPage::Diagnostics
+        )
+    }
+
     /// The pages a boot target asks the surface to stand on, root first: `plxnative-settings=picker-…` and
     /// `player-hud` name root → Playback → the page (root → the picker for a root row's), the stack an interactive visit
     /// builds. `RouteSurface::new` issues one request per page and the inner stack keeps only the newest request, so

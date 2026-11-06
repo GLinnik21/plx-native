@@ -220,7 +220,8 @@ where
 impl<H: Host> Part<H> for Header<'_> {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, _rect: Rect) {
-        self.paint(f.painter, f.measure);
+        // the narrative column holds still under a route push and cross-fades its content
+        self.paint(f.narrative_painter(), f.measure);
     }
 }
 
@@ -345,7 +346,8 @@ where
 {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, rect: Rect) {
-        let p = f.painter;
+        // the list is what travels under a route push that holds the narrative column
+        let p = f.list_painter();
         self.frame = rect;
         self.paint(p, f.measure);
         // every selectable row is a stop (rule 11: hover parks, a click activates)
@@ -537,7 +539,8 @@ where
 {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>, _rect: Rect) {
-        let p = f.painter;
+        // the action band is the narrative column's: it holds still and cross-fades with it
+        let p = f.narrative_painter();
         let focused = f.focus.current.and_then(|k| k.elem.index()).and_then(|e| e.checked_sub(BAND_BASE));
         let rects = self.rects(f.measure);
         let env = super::Env::inert();
