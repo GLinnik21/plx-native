@@ -53,7 +53,7 @@ pub enum LoadGateVerdict {
 /// becomes a failure read-out instead of a permanent Connecting spinner.
 ///
 /// Its clock is the wall clock from `begin_native_session`, so it counts the Load thread's
-/// sound-output read in front of `Load`; the Load-timing log and telemetry do not (`threads::load_alone`).
+/// sound-output read in front of `Load`; the Load-timing log and telemetry do not (`native_load::load_alone`).
 /// The feed owns it: the player is told only that it ran out ([`LoadTimeout`]).
 pub const NATIVE_LOAD_BUDGET: Duration = Duration::from_secs(20);
 

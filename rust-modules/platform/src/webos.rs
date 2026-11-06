@@ -461,7 +461,7 @@ pub fn system_locale() -> crate::tv::LocaleReply {
 
 /// What the settings service says about the active sound output; `tv::sound` owns the parse and the
 /// log line. The caller is the player's Load thread (never the frame thread), once per PCM Load, only on
-/// a stack whose lead follows the output (`liblxa`, `audiosink_new`; see `player::engine::pcm_lead_plan`);
+/// a stack whose lead follows the output (`liblxa`, `audiosink_new`; see `plx_play_feed::pcm_lead::pcm_lead_plan`);
 /// other stacks never ask. The Load waits for it.
 ///
 /// **What 300 ms bounds, and what it does not.** It bounds the call: a healthy round trip is tens of

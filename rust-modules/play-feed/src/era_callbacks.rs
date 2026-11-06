@@ -1,4 +1,4 @@
-//! player::era_callbacks — the one diagnostic line for an era-chosen callback that never arrives.
+//! plx_play_feed::era_callbacks — the one diagnostic line for an era-chosen callback that never arrives.
 //!
 //! The pipeline's two frame counters sit above the point where libpf's callback numbering shifts by
 //! two between webOS 4 and 5+ (46/47 against 48/49, [`the sink counter mapping`]). The app picks the

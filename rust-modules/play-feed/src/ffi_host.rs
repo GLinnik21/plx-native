@@ -377,7 +377,7 @@ fn drain_unload_workers_for_test() {
     }
 }
 /// How long the host `sf_unload` takes, in ms — the device's `StarfishMediaAPIs::Unload` blocks
-/// for 110-150 ms (`engine::PendingRelease`), and a test of the frame that pays for it needs a
+/// for 110-150 ms (`feed_state::PendingRelease`), and a test of the frame that pays for it needs a
 /// sink that takes measurable time too. 0 (the default) is the unmodified, instant Unload.
 #[cfg(any(test, feature = "test-support"))]
 static UNLOAD_DELAY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

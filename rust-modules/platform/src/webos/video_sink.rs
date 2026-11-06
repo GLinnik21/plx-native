@@ -9,7 +9,7 @@
 //!
 //! **Everything here but `load` and `unload` takes a [`MainThread`]** (`unload` takes an
 //! `UnloadTicket`, which only a `&MainThread` can issue, so a real stop's Unload can run on the
-//! `sf-unload` worker — `engine::PendingRelease`), because the seam has no locking of
+//! `sf-unload` worker — `plx_play_feed::feed_state::PendingRelease`), because the seam has no locking of
 //! its own: the ACB bind order is a bare call sequence, and `sf_feed` races the pump's own
 //! bookkeeping. The raw declarations live in a private `sys` module so the token is the only way
 //! to reach them — a `use crate::webos::video_sink::sys` from elsewhere does not compile, which is
