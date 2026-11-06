@@ -1446,7 +1446,7 @@
       "name": "settings-under-posters-movie",
       "tier": "ui",
       "route": "home",
-      "overlay": "under-posters-details",
+      "overlay": "under-posters-movie",
       "loop_floor": 50,
       "fps_floor": 50,
       "run_secs": 18,
@@ -1455,13 +1455,13 @@
         "plxnative-settings": "under-posters-movie",
         "plxnative-settingsosc": true
       },
-      "comment": "The Movie details picker, booted over Under posters over the Settings root (`SettingsPage::boot_trail`). settingsosc sweeps UP/DOWN through its options (Nothing first, a sample on each row). The heartbeat word `under-posters-details` is shared with the TV show details picker (one `DetailsPage` serves both kinds, so a scene cannot tell them apart by word; the boot target does). It is NOT shared with the parent page (`under-posters`) or the root (`settings`), so a boot that stopped on either cannot satisfy it."
+      "comment": "The Movie details picker, booted over Under posters over the Settings root (`SettingsPage::boot_trail`). settingsosc sweeps UP/DOWN through its options (Nothing first, a sample on each row). The heartbeat word is the page's own PER KIND (`DetailsPage::name`), so neither the TV show picker (`under-posters-show`), the parent page (`under-posters`) nor the root (`settings`) can satisfy it."
     },
     {
       "name": "settings-under-posters-show",
       "tier": "ui",
       "route": "home",
-      "overlay": "under-posters-details",
+      "overlay": "under-posters-show",
       "loop_floor": 50,
       "fps_floor": 50,
       "run_secs": 18,
@@ -1470,7 +1470,7 @@
         "plxnative-settings": "under-posters-show",
         "plxnative-settingsosc": true
       },
-      "comment": "The TV show details picker: the same `DetailsPage` as settings-under-posters-movie with PosterKind::Show (its list never offers Video quality, so it has one row fewer). It selects on the shared `under-posters-details` word; only the boot target separates the two scenes."
+      "comment": "The TV show details picker: the same `DetailsPage` as settings-under-posters-movie with PosterKind::Show (its list never offers Video quality, so it has one row fewer). Its heartbeat word is its own (`under-posters-show`), distinct from the Movie picker's (`under-posters-movie`), so a boot target that opened the wrong kind cannot satisfy either scene."
     },
     {
       "name": "settings-player-hud",

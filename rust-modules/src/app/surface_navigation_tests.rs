@@ -178,29 +178,23 @@ fn switching_profile_leaves_the_container_holding_nothing_of_the_previous_profil
 /// **Each `settings-*` fps scene's boot target stands on the page whose heartbeat word the scene selects on.**
 /// `tests/manifest.json` names a `plxnative-settings=<target>` trigger and an `overlay` word; the harness grades
 /// the frames that print the word, so a target that opened another page (or the root, as an unknown one does)
-/// would leave the scene with no samples or, worse, another page's. The words here are the manifest's; the
-/// Under posters details pickers share one (`DetailsPage` serves both kinds) and About answers the Legal
-/// index's, which is why it has a boot target and no scene.
+/// would leave the scene with no samples or, worse, another page's. The pairs are READ from the manifest (every
+/// scene that names a `plxnative-settings` trigger and an `overlay`), not transcribed. About answers the Legal
+/// index's word, which is why it has a boot target and no scene of its own.
 #[test]
 fn each_settings_fps_scene_boot_target_prints_the_overlay_word_the_scene_selects_on() {
     let _g = plx_base::testlock::serial();
-    for (target, word) in [
-        ("root", "settings"),
-        ("language", "language"),
-        ("audio", "audio"),
-        ("playback", "playback"),
-        ("picker-quality", "picker"),
-        ("privacy", "privacy"),
-        ("legal", "legal"),
-        ("under-posters", "under-posters"),
-        ("under-posters-movie", "under-posters-details"),
-        ("under-posters-show", "under-posters-details"),
-        ("player-hud", "player-hud"),
-        ("diagnostics", "diagnostics"),
-        ("about", "legal"),
-    ] {
+    let manifest: serde_json::Value =
+        serde_json::from_str(include_str!("../../../tests/manifest.json")).expect("manifest.json parses");
+    let mut checked = 0;
+    for scene in manifest["fps_scenes"].as_array().expect("fps_scenes is an array") {
+        let name = scene["name"].as_str().unwrap_or("?");
+        let (Some(target), Some(word)) = (
+            scene["triggers"]["plxnative-settings"].as_str(),
+            scene["overlay"].as_str(),
+        ) else { continue };
         let page = crate::dev::scenarios::settings_boot_page(target)
-            .unwrap_or_else(|| panic!("{target}: no such boot target"));
+            .unwrap_or_else(|| panic!("scene {name}: no such boot target {target:?}"));
         let mut d = Dispatcher::<AppHost>::new();
         let mut rig = Bridge::for_test(|| 0);
         frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
@@ -208,9 +202,11 @@ fn each_settings_fps_scene_boot_target_prints_the_overlay_word_the_scene_selects
         for ms in 1..=40 {
             frame(&mut d, &mut rig, AppArg::Home, tick(ms * 16), vec![]);
         }
-        assert!(settings_up(&d), "{target}: the Settings surface is up");
-        assert_eq!(overlay_word(&d), Some(word), "{target}: the heartbeat word of the booted page");
+        assert!(settings_up(&d), "scene {name}: the Settings surface is up");
+        assert_eq!(overlay_word(&d), Some(word), "scene {name}: the heartbeat word of the page {target:?} boots");
+        checked += 1;
     }
+    assert!(checked >= 14, "the manifest's settings scenes were found ({checked})");
     assert!(crate::dev::scenarios::settings_boot_page("no-such-page").is_none());
 }
 

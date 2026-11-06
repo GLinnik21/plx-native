@@ -1158,13 +1158,13 @@ class FpsIdentity(unittest.TestCase):
         as "never entered"."""
         lines = [
             "loop=60 route=home overlay=under-posters fps=61",
-            "loop=60 route=home overlay=under-posters-details fps=57 worstframe=9.5ms",
+            "loop=60 route=home overlay=under-posters-movie fps=57 worstframe=9.5ms",
             "loop=60 route=home overlay=player-hud fps=55",
         ]
         self.assertEqual(run.parse_fps(lines, "home", "under-posters"), [61])
-        self.assertEqual(run.parse_fps(lines, "home", "under-posters-details"), [57])
+        self.assertEqual(run.parse_fps(lines, "home", "under-posters-movie"), [57])
         self.assertEqual(run.parse_fps(lines, "home", "player-hud"), [55])
-        self.assertEqual(run.parse_worst(lines, "home", "under-posters-details"), [9.5])
+        self.assertEqual(run.parse_worst(lines, "home", "under-posters-movie"), [9.5])
         self.assertEqual(run.parse_loop(lines, "home", "player-hud"), [60])
 
     def test_a_scene_that_pins_a_section_grades_only_the_heartbeats_that_name_it(self):
@@ -1247,8 +1247,8 @@ class FpsIdentity(unittest.TestCase):
                               ("settings-language", "language"),
                               ("settings-audio", "audio"),
                               ("settings-under-posters", "under-posters"),
-                              ("settings-under-posters-movie", "under-posters-details"),
-                              ("settings-under-posters-show", "under-posters-details"),
+                              ("settings-under-posters-movie", "under-posters-movie"),
+                              ("settings-under-posters-show", "under-posters-show"),
                               ("settings-player-hud", "player-hud"),
                               ("settings-diagnostics", "diagnostics")):
             with self.subTest(scene=name):
@@ -1270,9 +1270,9 @@ class FpsIdentity(unittest.TestCase):
             with self.subTest(scene=name, boot=boot):
                 self.assertEqual(scenes[name]["triggers"]["plxnative-settings"], boot)
                 self.assertNotEqual(scenes[name]["overlay"], "settings")
-        # the two details pickers share one heartbeat word; the boot target is all that tells them apart
-        self.assertEqual(scenes["settings-under-posters-movie"]["overlay"],
-                         scenes["settings-under-posters-show"]["overlay"])
+        # the two details pickers answer one heartbeat word each, so neither scene can be satisfied by the other
+        self.assertNotEqual(scenes["settings-under-posters-movie"]["overlay"],
+                            scenes["settings-under-posters-show"]["overlay"])
 
         idle = scenes["settings-idle"]
         self.assertEqual(idle["overlay"], "settings")
