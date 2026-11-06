@@ -167,10 +167,15 @@ const CURLALTSVC_H3: c_long = 1 << 5;
 pub fn altsvc_cache_path() -> &'static CString {
     static PATH: OnceLock<CString> = OnceLock::new();
     PATH.get_or_init(|| {
-        let p = plx_base::paths::in_runtime_dir("plxnative-altsvc.cache");
-        CString::new(p.to_string_lossy().into_owned()).unwrap_or_else(|_| CString::new("/tmp/plxnative-altsvc.cache").unwrap())
+        let p = plx_base::paths::in_runtime_dir(ALTSVC_CACHE_FILE);
+        // A path with a NUL in it cannot be handed to libcurl; the empty string is curl's "no cache
+        // file", which costs the upgrade, not the request.
+        CString::new(p.to_string_lossy().into_owned()).unwrap_or_default()
     })
 }
+/// The Alt-Svc cache's file name in the runtime directory. Not a dev trigger: only the bundled curl
+/// (`bundled()`) reads or writes it, and no test does.
+const ALTSVC_CACHE_FILE: &str = "plxnative-altsvc.cache";
 const CURLOPT_NOSIGNAL: c_int = 99;
 /// `CURLOPT_FRESH_CONNECT` (LONG + 74) and `CURLOPT_FORBID_REUSE` (LONG + 75): never take a cached
 /// connection for this handle, and never leave this handle's connection in the cache. Read off

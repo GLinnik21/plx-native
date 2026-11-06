@@ -558,7 +558,7 @@ $(if $(findstring nightly,$(RUST_TOOLCHAIN)),,$(error HOST_THREADS=$(HOST_THREAD
 endif
 HOST_ENV = $(if $(filter-out 0 1,$(HOST_THREADS)),CARGO_BUILD_RUSTFLAGS='-Zthreads=$(HOST_THREADS)')
 
-RUST_FEATFLAGS = $(if $(RELEASE),--no-default-features,)$(if $(LAB), --features lab-diagnostics,)
+RUST_FEATFLAGS = $(if $(RELEASE),--no-default-features,)$(if $(LAB), --features lab-diagnostics,)$(CURLSTACK_FEATFLAG)
 RUST_TDIR      = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOLS),-sym,)$(if $(CURLSTACK),-curlstack,)
 # OVERRIDING RUST_FEATFLAGS BY HAND? PASS RUST_TDIR TOO. This dir is keyed on RELEASE, not on the
 # flag set, so `make RUST_FEATFLAGS=...` alone lands in the SAME target/ as an ordinary build:
@@ -751,7 +751,7 @@ TELEMETRY_CFG  = $(shell printf '%s|%s|%s|%s' '$(PLX_SENTRY_DSN)' '$(PLX_POSTHOG
 # byte-for-byte what it always was. `+rc:<n>` is the same argument for a release candidate: the
 # number is what `ci/check-package.py` grades the binary's `X.Y.Z-rc.<n>` against, and an rc.1 and
 # an rc.2 of one tree must not share a link.
-RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(filter-out release,$(ARM_PROFILE)),+profile:$(ARM_PROFILE),)$(if $(SYMBOLS),+symbols,)$(if $(CURLSTACK),+curlstack,)$(if $(filter nightly,$(FLAVOR)),+nightly:$(PLX_NIGHTLY_DATE),)$(if $(PLX_RC),+rc:$(PLX_RC),)+tel:$(TELEMETRY_CFG)
+RUST_CFG       = features:$(RUST_CFG_FEATFLAGS)$(if $(filter-out release,$(ARM_PROFILE)),+profile:$(ARM_PROFILE),)$(if $(SYMBOLS),+symbols,)$(if $(CURLSTACK),+curlstack,)$(if $(filter nightly,$(FLAVOR)),+nightly:$(PLX_NIGHTLY_DATE),)$(if $(PLX_RC),+rc:$(PLX_RC),)+tel:$(TELEMETRY_CFG)
 # Handled by $(shell) during PARSING, and by DELETING the output rather than by timestamps.
 # Both choices are load-bearing, and both were arrived at by measuring the failures:
 #   * A rule cannot do it. macOS ships GNU make 3.81, which decides whether a target is up to date
@@ -921,6 +921,10 @@ ifneq ($(filter-out 1,$(CURLSTACK)),)
 $(error CURLSTACK=$(CURLSTACK): use CURLSTACK=1 to build the bundled curl stack, or leave it unset)
 endif
 CURLSTACK_FEATFLAG = $(if $(CURLSTACK), --features http3-curlstack,)
+# The stamp's `features:` field without the curlstack feature, which `+curlstack` records instead:
+# `ci/check-package.py` grades that field as exactly the dev or the release flag set, and a
+# CURLSTACK=1 package is still one of the two. A hand-set RUST_FEATFLAGS is recorded as given.
+RUST_CFG_FEATFLAGS = $(if $(CURLSTACK),$(subst $(CURLSTACK_FEATFLAG),,$(RUST_FEATFLAGS)),$(RUST_FEATFLAGS))
 CURLSTACK_PREFIXES = gmp nettle libtasn1 gnutls nghttp2 nghttp3 ngtcp2 curl
 CURLSTACK_ALL_SONAMES = libgmp-plx.so.10 libnettle-plx.so.8 libhogweed-plx.so.6 libtasn1-plx.so.6 \
                      libgnutls-plx.so.30 libnghttp2-plx.so.14 libnghttp3-plx.so.9 \
@@ -1036,7 +1040,7 @@ $(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.l
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" $(RUST_ENV) \
 	  $(TELEMETRY_ENV) \
 	  cargo +$(RUST_TOOLCHAIN) rustc $(ARM_PROFILE_FLAG) --target $(RUST_TARGET) \
-	    --lib --crate-type staticlib --target-dir $(RUST_TDIR) $(RUST_FEATFLAGS)$(CURLSTACK_FEATFLAG) \
+	    --lib --crate-type staticlib --target-dir $(RUST_TDIR) $(RUST_FEATFLAGS) \
 	    --message-format=json-render-diagnostics > $(RUST_TDIR)/.lib-artifacts.json
 	@# The crate declares `crate-type = ["rlib"]`, so this `.a` exists only because the line above
 	@# asked for it. Checked AFTER cargo returns (never as a prerequisite, which would make a no-op
