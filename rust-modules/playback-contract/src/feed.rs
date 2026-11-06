@@ -7,7 +7,7 @@
 //!
 //! [`PhysicalSet`] is the one object the player adapter holds for every physical executor it can
 //! drive. Its `feed` answers the buffer-feed half as a [`FeedControl`], or `None` when the
-//! composition installed no feed (the default, [`NoPhysical`]), so the player runs without naming
+//! composition installed no feed (the default, [`UriOnlySet`]), so the player runs without naming
 //! the crate that implements the feed.
 //!
 //! # Facts: the mapped readout and the raw one
@@ -285,12 +285,6 @@ pub enum HlsPauseCompletion {
     Accepted,
     Refused,
     Stale,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HlsSeekPause {
-    Issue(u64),
-    AlreadyHeld,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -925,30 +919,9 @@ pub trait PhysicalSet: DriverSet<Context = MainThread> {
     fn take_uri(&mut self) -> Option<Box<dyn UriDriver<Context = MainThread>>> { None }
 }
 
-/// The set that installs no physical driver: every backend is absent, every dispatch is refused
-/// as unavailable, and there is no feed.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct NoPhysical;
-
-impl DriverSet for NoPhysical {
-    type Context = MainThread;
-    fn capabilities(&self, _backend: BackendKind) -> Option<Capabilities> { None }
-    fn dispatch(&mut self, _backend: BackendKind, _ctx: &MainThread, _attempt: AttemptId,
-        _command: CommandId, _operation: Operation) -> DispatchResult {
-        DispatchResult::Refused(Failure::Unavailable)
-    }
-    fn poll(&mut self, _ctx: &MainThread) -> Vec<BackendEvent> { Vec::new() }
-    fn discard_staged(&mut self, _backend: BackendKind, _attempt: AttemptId, _key: SourceKey) {}
-    fn exit_disposition(&self) -> ExitDisposition { ExitDisposition::Clean }
-}
-
-impl PhysicalSet for NoPhysical {
-    fn feed(&mut self) -> Option<&mut dyn FeedControl> { None }
-}
-
 /// The set a player starts with before a composition installs its own, and the whole set of a
-/// build with no Feed: no feed, and the URI driver's seat. It is [`NoPhysical`] that keeps the one
-/// driver the composition may seat, so a URI-only build installs nothing but the driver.
+/// build with no Feed: no feed, and the URI driver's seat, so a URI-only build installs nothing
+/// but the one driver the composition may seat.
 #[derive(Default)]
 pub struct UriOnlySet {
     uri: Option<Box<dyn UriDriver<Context = MainThread>>>,
@@ -1041,66 +1014,32 @@ pub enum ReleaseStep {
     NativeDestroyed,
 }
 
-/// Why an HLS clock fence was refused.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HlsClockFenceError {
-    Stopping,
-    Overlap,
-    Exhausted,
-    Superseded,
-}
-
-/// Which automatic quality transition owns the HLS clock.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HlsAutomaticTransition {
-    QualityUp,
-    QualityDown,
-    Original,
-}
-
-/// The accepted-transport state a worker samples: the monotone sequence of Pause/Resume pairs and
-/// the cumulative time spent paused.
-#[derive(Clone, Copy, Debug)]
-pub struct UserPauseSnapshot {
-    pub now: std::time::Instant,
-    pub elapsed: Duration,
-    pub paused: bool,
-    pub sequence: u64,
-}
-
-/// Per-worker cursor over accepted transport events. A complete Pause→Resume may happen while a
-/// worker is blocked in native queue/network I/O; consuming the monotone sequence plus cumulative
-/// duration makes that interval observable even when both surrounding boolean samples are false.
-#[derive(Clone, Copy, Debug)]
-pub struct UserPauseCursor {
-    sequence: u64,
-    elapsed: Duration,
-}
-
-impl UserPauseCursor {
-    pub fn new(snapshot: UserPauseSnapshot) -> Self {
-        Self {
-            sequence: snapshot.sequence,
-            elapsed: snapshot.elapsed,
-        }
-    }
-
-    pub fn consume_completed(&mut self, snapshot: UserPauseSnapshot) -> Option<Duration> {
-        if snapshot.paused || snapshot.sequence == self.sequence {
-            return None;
-        }
-        let elapsed = snapshot.elapsed.saturating_sub(self.elapsed);
-        self.sequence = snapshot.sequence;
-        self.elapsed = snapshot.elapsed;
-        (!elapsed.is_zero()).then_some(elapsed)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::FakeUriDriver;
     use crate::{DriverEvent, ReleaseStatus};
+
+    /// The set that installs no physical driver: every backend is absent, every dispatch is refused
+    /// as unavailable, and there is no feed. It overrides none of [`PhysicalSet`]'s defaults, so the
+    /// tests below read what a set with no URI seat does.
+    struct NoPhysical;
+
+    impl DriverSet for NoPhysical {
+        type Context = MainThread;
+        fn capabilities(&self, _backend: BackendKind) -> Option<Capabilities> { None }
+        fn dispatch(&mut self, _backend: BackendKind, _ctx: &MainThread, _attempt: AttemptId,
+            _command: CommandId, _operation: Operation) -> DispatchResult {
+            DispatchResult::Refused(Failure::Unavailable)
+        }
+        fn poll(&mut self, _ctx: &MainThread) -> Vec<BackendEvent> { Vec::new() }
+        fn discard_staged(&mut self, _backend: BackendKind, _attempt: AttemptId, _key: SourceKey) {}
+        fn exit_disposition(&self) -> ExitDisposition { ExitDisposition::Clean }
+    }
+
+    impl PhysicalSet for NoPhysical {
+        fn feed(&mut self) -> Option<&mut dyn FeedControl> { None }
+    }
 
     /// The URI driver answers through the seat alone: its capabilities, its polled events, its
     /// staged-source discards (never a feed discard) and its exit disposition count, and nothing

@@ -84,13 +84,10 @@ use plx_play_feed::shared::FEED_SHARED;
 use plx_play_feed::shared::FEED_TX;
 #[cfg(test)]
 pub(crate) use plx_play_feed::shared::pinned_pause_clock;
-pub use plx_playback_contract::feed::HlsAutomaticTransition;
-pub use plx_playback_contract::feed::HlsClockFenceError;
 /// one rect of an image-subtitle display set — the demuxer builds them, the HUD draws them
 pub use subtitle_bitmap::SubRect;
 use subtitle_bitmap::SubBitmap;
 pub use plx_data::metadata::track_names::TrackNames;
-pub use plx_playback_contract::feed::UserPauseCursor;
 use plx_playback_contract::feed::HlsPauseCompletion;
 use plx_playback_contract::feed::{UserPauseOutcome, UserResumeOutcome};
 
