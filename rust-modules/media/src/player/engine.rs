@@ -2321,9 +2321,10 @@ mod off_frame_release_tests {
                 "{} waited for the running Unload (PLX-NATIVE-1Q)",
                 if use_split { "split()" } else { "mt()" }
             );
-            // …and a verb through the fenced sink does not reach the object the worker is inside.
+            // …and a verb through the adapter's sink (the composition's fence) does not reach the
+            // object the worker is inside.
             assert_eq!(
-                unsafe { crate::player::test_physical::sink().pause(pa.mt()) },
+                unsafe { pa.display_sink().pause(pa.mt()) },
                 0,
                 "a main-thread verb reached the object while it was Releasing"
             );

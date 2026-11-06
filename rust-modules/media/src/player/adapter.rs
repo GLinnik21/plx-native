@@ -114,6 +114,44 @@ mod composed_backends_tests {
         assert_eq!(adapter.composed_backends(), FEED_ONLY);
     }
 
+    /// The sink a composition installs is asked afresh at every use (the Feed's fence changes its
+    /// answer while an off-frame `Unload` owns the object), and until one is installed the adapter
+    /// reaches the seam through a sink that refuses every verb.
+    #[test]
+    fn the_adapters_sink_is_inert_until_installed_and_asked_afresh_at_every_use() {
+        use plx_platform::tv::sink::{NoSink, VideoSink, VP_NONE};
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        static ASKED: AtomicUsize = AtomicUsize::new(0);
+        fn counted() -> &'static dyn VideoSink {
+            ASKED.fetch_add(1, SeqCst);
+            &NoSink
+        }
+        let mut adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
+        assert_eq!(adapter.display_sink().window_mode(), VP_NONE);
+        assert_eq!(ASKED.load(SeqCst), 0, "nothing installed yet: the inert sink answered");
+        assert!(adapter.install_display_sink(counted));
+        let _ = (adapter.display_sink(), adapter.display_sink());
+        assert_eq!(ASKED.load(SeqCst), 2, "the provider is asked at each use, not once at install");
+    }
+
+    /// A set the adapter refuses brings its sink with it: the adapter keeps the one it had.
+    #[cfg(feature = "play-feed")]
+    #[test]
+    fn a_refused_physical_set_leaves_the_adapters_sink_alone() {
+        use plx_platform::tv::sink::{NoSink, VideoSink};
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        static ASKED: AtomicUsize = AtomicUsize::new(0);
+        fn counted() -> &'static dyn VideoSink {
+            ASKED.fetch_add(1, SeqCst);
+            &NoSink
+        }
+        let mut adapter = PlayerAdapter::new_fed(unsafe { MainThread::assume() });
+        assert!(adapter.install_physical(Box::new(UriOnlySet::new()), counted).is_err(),
+            "a Feed is already installed");
+        let _ = adapter.display_sink();
+        assert_eq!(ASKED.load(SeqCst), 0, "the refused set's sink was not installed");
+    }
+
     #[test]
     fn installing_the_uri_driver_adds_uri_and_a_second_driver_is_handed_back() {
         let caps = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
